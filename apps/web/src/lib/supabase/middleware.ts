@@ -32,11 +32,13 @@ export async function updateSession(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   const publicPaths = ["/login", "/signup", "/auth/callback"];
-  const isPublic = publicPaths.some((p) => pathname.startsWith(p));
-  // Telegram calls the webhook without browser cookies; do not force login.
-  const isPublicApi = pathname.startsWith("/api/telegram/webhook");
+  const isAnonymousOk =
+    publicPaths.some((p) => pathname.startsWith(p)) ||
+    pathname.startsWith("/book/") ||
+    pathname.startsWith("/api/public/") ||
+    pathname.startsWith("/api/telegram/webhook");
 
-  if (!user && !isPublic && !isPublicApi) {
+  if (!user && !isAnonymousOk) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);

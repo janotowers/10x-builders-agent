@@ -2,7 +2,14 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SettingsForm } from "./settings-form";
 
-export default async function SettingsPage() {
+type Search = { google_calendar?: string; reason?: string };
+
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Search>;
+}) {
+  const sp = await searchParams;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -22,7 +29,23 @@ export default async function SettingsPage() {
     .from("telegram_accounts")
     .select("*")
     .eq("user_id", user.id)
-    .single();
+    .maybeSingle();
+
+  const { data: githubIntegration } = await supabase
+    .from("user_integrations")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("provider", "github")
+    .eq("status", "active")
+    .maybeSingle();
+
+  const { data: googleCalendarIntegration } = await supabase
+    .from("user_integrations")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("provider", "google_calendar")
+    .eq("status", "active")
+    .maybeSingle();
 
   return (
     <div className="min-h-screen">
@@ -43,6 +66,10 @@ export default async function SettingsPage() {
           profile={profile}
           toolSettings={toolSettings ?? []}
           telegramLinked={!!telegramAccount}
+          githubConnected={!!githubIntegration}
+          googleCalendarConnected={!!googleCalendarIntegration}
+          googleOAuthStatus={sp.google_calendar}
+          googleOAuthReason={sp.reason}
         />
       </main>
     </div>

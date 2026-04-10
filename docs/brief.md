@@ -28,6 +28,10 @@ La mejor forma de construirlo con ese stack es esta:
 **Supabase Postgres** como sistema de registro: usuarios, sesiones, mensajes, tool calls, memoria y auditoría.
 **OpenRouter** como router principal de modelos para flexibilidad y fallback, con soporte directo para OpenAI/Anthropic cuando convenga por costo, latencia o fiabilidad.
 
+**Integraciones tipo Google Calendar o GitHub** no sustituyen Supabase como login por defecto: el usuario inicia sesión en la app (p. ej. email/contraseña) y **conecta** cada servicio desde Ajustes mediante OAuth; los permisos quedan asociados a su cuenta en la aplicación. La **disponibilidad o reserva con terceros** (ej. proponer un hueco para una reunión) se hace a través de la propia app (enlace con token), sin obligar al visitante a autenticarse con Google.
+
+En el **chat web**, las respuestas del asistente se muestran con formato enriquecido (Markdown: negritas, listas, enlaces). Las horas de calendario respetan la **zona horaria del perfil** (configurable en onboarding y en Ajustes).
+
 ## Arquitectura propuesta
 
 ```text

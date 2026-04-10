@@ -44,6 +44,12 @@ npm install
 
 Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya modificado), revisa el mensaje de error; en la mayoría de proyectos nuevos el script aplica de una vez.
 
+5. **Enlaces de reserva pública (Google Calendar):** en el mismo **SQL Editor**, ejecuta también el contenido de:
+
+   `packages/db/supabase/migrations/00002_calendar_booking_links.sql`
+
+   Sin esta tabla, **Ajustes → Generar enlace de reserva pública** devolverá error (`calendar_booking_links` no encontrada).
+
 ---
 
 ## Paso 4 — Configurar autenticación (email)
@@ -54,8 +60,9 @@ Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya 
    - **Redirect URLs**: añade al menos:
      - `http://localhost:3000/auth/callback`
      - `http://localhost:3000/**` (o la variante que permita tu versión del dashboard para desarrollo)
+   - Si accedes por **túnel ngrok** (p. ej. `https://xxxx.ngrok-free.dev`), añade también esa base con comodín, por ejemplo `https://xxxx.ngrok-free.dev/**` (o el patrón que permita tu proyecto en Supabase). Sin eso, el login puede fallar o no redirigir aunque la UI cargue.
 
-Así el flujo de login/signup y el intercambio de código en `/auth/callback` funcionan en local.
+Así el flujo de login/signup y el intercambio de código en `/auth/callback` funcionan en local y detrás de ngrok.
 
 ---
 
@@ -65,8 +72,16 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
 
 1. Copia el ejemplo:
 
+   Desde la **raíz** del repo:
+
    ```bash
-   cp .env.example apps/web/.env.local
+   cp apps/web/.env.example apps/web/.env.local
+   ```
+
+   O desde `apps/web`:
+
+   ```bash
+   cp .env.example .env.local
    ```
 
    *(Si ya tienes `.env.local` en la raíz, mueve o copia ese archivo a `apps/web/.env.local`.)*
@@ -78,12 +93,16 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto Supabase |
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave `anon` |
    | `SUPABASE_SERVICE_ROLE_KEY` | Clave `service_role` (solo servidor; la usa la API del agente y Telegram contra Postgres) |
+   | `NEXT_PUBLIC_SITE_URL` | URL pública base **sin barra final** (OAuth redirect y enlaces de reserva). Ej.: `http://localhost:3000` o `https://tu-dominio.com` |
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |
+   | `ENCRYPTION_KEY` | 64 caracteres hexadecimales (32 bytes) para cifrar tokens de integraciones en base de datos. Generar: `openssl rand -hex 32` |
+   | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(Opcional)* OAuth GitHub; redirect `{NEXT_PUBLIC_SITE_URL}/api/integrations/github/callback` |
+   | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | *(Opcional)* OAuth Google Calendar; redirect `{NEXT_PUBLIC_SITE_URL}/api/integrations/google/callback` |
    | `TELEGRAM_BOT_TOKEN` | *(Opcional)* Token del bot |
    | `TELEGRAM_WEBHOOK_SECRET` | *(Opcional)* Secreto que Telegram enviará en cabecera; debe coincidir con el configurado al registrar el webhook |
-   | `OAUTH_ENCRYPTION_KEY` | Reservado para cifrado de tokens OAuth en el futuro; puedes dejar un placeholder hasta integrar proveedores |
+   | `TELEGRAM_WEBHOOK_BASE_URL` | *(Opcional)* URL HTTPS pública para `setWebhook` (p. ej. ngrok); a veces innecesaria si el proxy envía `x-forwarded-host` |
 
-Referencia de nombres: [.env.example](.env.example).
+Referencia de nombres: [apps/web/.env.example](apps/web/.env.example).
 
 ---
 
@@ -102,6 +121,8 @@ Flujo esperado:
 1. **Registro** en `/signup` o **login** en `/login`.
 2. **Onboarding** (perfil, agente, herramientas, revisión).
 3. **Chat** en `/chat` y **ajustes** en `/settings`.
+
+En **Ajustes**, configura la **zona horaria** para que los eventos del calendario y las etiquetas de hora coincidan con tu región (el valor por defecto en base de datos puede ser `UTC` si no lo cambiaste en onboarding).
 
 ---
 
@@ -127,11 +148,13 @@ Telegram **exige HTTPS** para webhooks. En local:
    ngrok http 3000
    ```
 
-   Usa la URL HTTPS que te dé ngrok (p. ej. `https://abc123.ngrok-free.app`).
+   Usa la URL HTTPS que te dé ngrok (p. ej. `https://abc123.ngrok-free.app` o `https://abc123.ngrok-free.dev`; el proyecto ya permite ambos en `allowedDevOrigins` de Next).
 
 4. Con la app en marcha, visita en el navegador (sustituye la URL base):
 
    `https://TU_URL_NGROK/api/telegram/setup`
+
+   El middleware de la app **solo deja sin login** el webhook (`/api/telegram/webhook`); **`/api/telegram/setup` exige sesión**. Si ves la pantalla de login, entra primero con la **misma** URL base (p. ej. si usas ngrok, inicia sesión en `https://TU_URL_NGROK`, no solo en `localhost`).
 
    Eso llama a `setWebhook` de Telegram apuntando a `/api/telegram/webhook` y, si definiste secreto, lo asocia al webhook.
 
@@ -167,5 +190,6 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 - **Errores al guardar perfil o mensajes**: confirma que ejecutaste la migración SQL y que RLS no bloquea por falta de sesión (debes estar logueado con el mismo usuario).
 - **Chat sin respuesta / 500 en `/api/chat`**: `OPENROUTER_API_KEY`, cuota en OpenRouter o modelo en `model.ts`.
 - **Telegram no responde**: webhook debe ser HTTPS; token y secreto correctos; visita de nuevo `/api/telegram/setup` si cambias la URL pública.
+- **`/api/telegram/setup` me manda a login**: inicia sesión en el mismo origen (ngrok o localhost) y vuelve a abrir la URL; solo el path `/api/telegram/webhook` es público para Telegram.
 
 Si quieres, el siguiente paso natural es desplegar **Vercel** (o similar) para `apps/web`, definir las mismas variables de entorno en el panel del proveedor y usar la URL de producción en Supabase y en el webhook de Telegram.

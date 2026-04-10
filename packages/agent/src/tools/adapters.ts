@@ -1,22 +1,28 @@
+/**
+ * LangChain tool registration for GitHub and internal tools. Calendar tools live in
+ * `calendar-adapters.ts` (`addCalendarTools`).
+ *
+ * **Layers:** `catalog.ts` = definitions and policy (`risk`, integrations); adapters.ts (this file) =
+ * execution, Zod schemas, DB tool_call tracking, and confirmation branches.
+ *
+ * **Style:** handlers are registered with `if (isToolAvailable) { tools.push(tool(...)) }`.
+ * An equivalent pattern is a `Record<toolId, handler>` map plus one loop over `TOOL_CATALOG`;
+ * neither is inherently more robust — choose based on readability and file size. When this
+ * file grows, prefer shared helpers and split by domain (see `docs/architecture.md`).
+ */
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import type { DbClient } from "@agents/db";
-import type { UserToolSetting, UserIntegration } from "@agents/types";
 import { TOOL_CATALOG, toolRequiresConfirmation } from "./catalog";
+import { githubApi } from "./github-api";
+import { userWantsNewGithubRepository } from "./github-intent";
+import { userMessageAnchorsCalendarPeriodOnly } from "./calendar-period-intent";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
+import { addCalendarTools } from "./calendar-adapters";
+import type { ToolContext } from "./tool-context";
 
-interface ToolContext {
-  db: DbClient;
-  userId: string;
-  sessionId: string;
-  enabledTools: UserToolSetting[];
-  integrations: UserIntegration[];
-}
+export type { ToolContext } from "./tool-context";
 
-function isToolAvailable(
-  toolId: string,
-  ctx: ToolContext
-): boolean {
+function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   const setting = ctx.enabledTools.find((t) => t.tool_id === toolId);
   if (!setting?.enabled) return false;
 
@@ -26,12 +32,38 @@ function isToolAvailable(
       (i) => i.provider === def.requires_integration && i.status === "active"
     );
     if (!hasIntegration) return false;
+    // Fila en user_integrations no implica token usable (cifrado, expiración, etc.)
+    if (def.requires_integration === "github" && !ctx.githubToken) return false;
+    if (
+      def.requires_integration === "google_calendar" &&
+      !ctx.googleCalendarAccessToken
+    ) {
+      return false;
+    }
   }
+
+  if (
+    toolId === "github_create_issue" &&
+    ctx.lastUserMessage &&
+    userWantsNewGithubRepository(ctx.lastUserMessage)
+  ) {
+    return false;
+  }
+
+  if (
+    (toolId === "github_list_repos" || toolId === "github_list_issues") &&
+    userMessageAnchorsCalendarPeriodOnly(ctx.lastUserMessage)
+  ) {
+    return false;
+  }
+
   return true;
 }
 
 export function buildLangChainTools(ctx: ToolContext) {
   const tools = [];
+
+  // ── Internal tools ─────────────────────────────────────────
 
   if (isToolAvailable("get_user_preferences", ctx)) {
     tools.push(
@@ -48,7 +80,8 @@ export function buildLangChainTools(ctx: ToolContext) {
         },
         {
           name: "get_user_preferences",
-          description: "Returns the current user preferences and agent configuration.",
+          description:
+            "Returns the current user preferences and agent configuration.",
           schema: z.object({}),
         }
       )
@@ -61,27 +94,68 @@ export function buildLangChainTools(ctx: ToolContext) {
         async () => {
           const enabled = ctx.enabledTools
             .filter((t) => t.enabled)
-            .map((t) => t.tool_id);
+            .map((t) => t.tool_id)
+            .filter((id) => isToolAvailable(id, ctx));
           return JSON.stringify(enabled);
         },
         {
           name: "list_enabled_tools",
-          description: "Lists all tools the user has currently enabled.",
+          description:
+            "Lists tools that are enabled and can run in this session (integrations connected and tokens available).",
           schema: z.object({}),
         }
       )
     );
   }
 
+  // ── GitHub read tools ──────────────────────────────────────
+
   if (isToolAvailable("github_list_repos", ctx)) {
     tools.push(
       tool(
         async (input) => {
           const record = await createToolCall(
-            ctx.db, ctx.sessionId, "github_list_repos", input, false
+            ctx.db,
+            ctx.sessionId,
+            "github_list_repos",
+            input,
+            false
           );
-          const result = { message: "GitHub repos would be listed here (stub)", repos: [] };
-          await updateToolCallStatus(ctx.db, record.id, "executed", result);
+
+          if (!ctx.githubToken) {
+            const err = { error: "GitHub token not available" };
+            await updateToolCallStatus(ctx.db, record.id, "failed", err);
+            return JSON.stringify(err);
+          }
+
+          const { status, data } = await githubApi(
+            ctx.githubToken,
+            "GET",
+            `/user/repos?per_page=${input.per_page}&sort=updated`
+          );
+
+          if (status >= 400) {
+            const err = { error: "GitHub API error", status, details: data };
+            await updateToolCallStatus(ctx.db, record.id, "failed", err);
+            return JSON.stringify(err);
+          }
+
+          const repos = (data as Array<Record<string, unknown>>).map((r) => ({
+            full_name: r.full_name,
+            description: r.description,
+            html_url: r.html_url,
+            private: r.private,
+            language: r.language,
+            updated_at: r.updated_at,
+          }));
+
+          const result = { repos };
+          await updateToolCallStatus(
+            ctx.db,
+            record.id,
+            "executed",
+            result as unknown as Record<string, unknown>
+          );
           return JSON.stringify(result);
         },
         {
@@ -100,10 +174,49 @@ export function buildLangChainTools(ctx: ToolContext) {
       tool(
         async (input) => {
           const record = await createToolCall(
-            ctx.db, ctx.sessionId, "github_list_issues", input, false
+            ctx.db,
+            ctx.sessionId,
+            "github_list_issues",
+            input,
+            false
           );
-          const result = { message: `Issues for ${input.owner}/${input.repo} (stub)`, issues: [] };
-          await updateToolCallStatus(ctx.db, record.id, "executed", result);
+
+          if (!ctx.githubToken) {
+            const err = { error: "GitHub token not available" };
+            await updateToolCallStatus(ctx.db, record.id, "failed", err);
+            return JSON.stringify(err);
+          }
+
+          const { status, data } = await githubApi(
+            ctx.githubToken,
+            "GET",
+            `/repos/${input.owner}/${input.repo}/issues?state=${input.state}`
+          );
+
+          if (status >= 400) {
+            const err = { error: "GitHub API error", status, details: data };
+            await updateToolCallStatus(ctx.db, record.id, "failed", err);
+            return JSON.stringify(err);
+          }
+
+          const issues = (data as Array<Record<string, unknown>>).map((i) => ({
+            number: i.number,
+            title: i.title,
+            state: i.state,
+            html_url: i.html_url,
+            created_at: i.created_at,
+            labels: (i.labels as Array<Record<string, unknown>>)?.map(
+              (l) => l.name
+            ),
+          }));
+
+          const result = { issues };
+          await updateToolCallStatus(
+            ctx.db,
+            record.id,
+            "executed",
+            result as unknown as Record<string, unknown>
+          );
           return JSON.stringify(result);
         },
         {
@@ -112,8 +225,88 @@ export function buildLangChainTools(ctx: ToolContext) {
           schema: z.object({
             owner: z.string(),
             repo: z.string(),
-            state: z.enum(["open", "closed", "all"]).optional().default("open"),
+            state: z
+              .enum(["open", "closed", "all"])
+              .optional()
+              .default("open"),
           }),
+        }
+      )
+    );
+  }
+
+  // ── GitHub write tools (create_repo antes que create_issue: el modelo suele priorizar las primeras tools)
+  // ───────────────────────────────────────────────────────────
+
+  if (isToolAvailable("github_create_repo", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const needsConfirm = toolRequiresConfirmation("github_create_repo");
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "github_create_repo",
+            input,
+            needsConfirm
+          );
+
+          if (needsConfirm) {
+            return JSON.stringify({
+              pending_confirmation: true,
+              tool_call_id: record.id,
+              message: `Se necesita tu confirmación para crear el repositorio "${input.name}"${input.private ? " (privado)" : ""}.`,
+            });
+          }
+
+          if (!ctx.githubToken) {
+            const err = { error: "GitHub token not available" };
+            await updateToolCallStatus(ctx.db, record.id, "failed", err);
+            return JSON.stringify(err);
+          }
+
+          const { status, data } = await githubApi(
+            ctx.githubToken,
+            "POST",
+            "/user/repos",
+            {
+              name: input.name,
+              description: input.description,
+              private: input.private,
+            }
+          );
+
+          if (status >= 400) {
+            const err = { error: "GitHub API error", status, details: data };
+            await updateToolCallStatus(ctx.db, record.id, "failed", err);
+            return JSON.stringify(err);
+          }
+
+          const created = data as Record<string, unknown>;
+          const result = {
+            message: "Repository created",
+            html_url: created.html_url,
+            full_name: created.full_name,
+          };
+          await updateToolCallStatus(ctx.db, record.id, "executed", result);
+          return JSON.stringify(result);
+        },
+        {
+          name: "github_create_repo",
+          description:
+            "Creates a NEW repository under the user's GitHub account. Repo name only, not owner/repo.",
+          schema: z
+            .object({
+              name: z.string(),
+              description: z.string().optional().default(""),
+              private: z.boolean().optional(),
+              isPrivate: z.boolean().optional(),
+            })
+            .transform((v) => ({
+              name: v.name,
+              description: v.description ?? "",
+              private: Boolean(v.private ?? v.isPrivate),
+            })),
         }
       )
     );
@@ -125,22 +318,53 @@ export function buildLangChainTools(ctx: ToolContext) {
         async (input) => {
           const needsConfirm = toolRequiresConfirmation("github_create_issue");
           const record = await createToolCall(
-            ctx.db, ctx.sessionId, "github_create_issue", input, needsConfirm
+            ctx.db,
+            ctx.sessionId,
+            "github_create_issue",
+            input,
+            needsConfirm
           );
+
           if (needsConfirm) {
             return JSON.stringify({
               pending_confirmation: true,
               tool_call_id: record.id,
-              message: `I need your confirmation to create issue "${input.title}" in ${input.owner}/${input.repo}.`,
+              message: `Se necesita tu confirmación para crear el issue "${input.title}" en ${input.owner}/${input.repo}.`,
             });
           }
-          const result = { message: "Issue created (stub)", issue_url: "#" };
+
+          if (!ctx.githubToken) {
+            const err = { error: "GitHub token not available" };
+            await updateToolCallStatus(ctx.db, record.id, "failed", err);
+            return JSON.stringify(err);
+          }
+
+          const { status, data } = await githubApi(
+            ctx.githubToken,
+            "POST",
+            `/repos/${input.owner}/${input.repo}/issues`,
+            { title: input.title, body: input.body }
+          );
+
+          if (status >= 400) {
+            const err = { error: "GitHub API error", status, details: data };
+            await updateToolCallStatus(ctx.db, record.id, "failed", err);
+            return JSON.stringify(err);
+          }
+
+          const created = data as Record<string, unknown>;
+          const result = {
+            message: "Issue created",
+            issue_url: created.html_url,
+            number: created.number,
+          };
           await updateToolCallStatus(ctx.db, record.id, "executed", result);
           return JSON.stringify(result);
         },
         {
           name: "github_create_issue",
-          description: "Creates a new issue in a GitHub repository. Requires confirmation.",
+          description:
+            "Creates an issue inside an EXISTING repo only. Never use for creating a new repository — use github_create_repo.",
           schema: z.object({
             owner: z.string(),
             repo: z.string(),
@@ -151,6 +375,8 @@ export function buildLangChainTools(ctx: ToolContext) {
       )
     );
   }
+
+  addCalendarTools(ctx, tools);
 
   return tools;
 }

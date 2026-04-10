@@ -37,11 +37,53 @@ const AVAILABLE_TOOLS = [
     requiresIntegration: "github",
   },
   {
+    id: "github_create_repo",
+    name: "GitHub: crear repositorio",
+    description: "Crea un repositorio nuevo (requiere confirmación).",
+    risk: "high" as const,
+    requiresIntegration: "github",
+  },
+  {
     id: "github_create_issue",
     name: "GitHub: crear issue",
     description: "Crea un issue nuevo (requiere confirmación).",
     risk: "medium" as const,
     requiresIntegration: "github",
+  },
+  {
+    id: "calendar_list_calendars",
+    name: "Calendario: listar calendarios",
+    description: "Lista los calendarios de tu cuenta Google conectada.",
+    risk: "low" as const,
+    requiresIntegration: "google_calendar",
+  },
+  {
+    id: "calendar_list_events",
+    name: "Calendario: listar eventos",
+    description: "Lista eventos en un rango de fechas.",
+    risk: "low" as const,
+    requiresIntegration: "google_calendar",
+  },
+  {
+    id: "calendar_create_event",
+    name: "Calendario: crear evento",
+    description: "Crea un evento (requiere confirmación).",
+    risk: "high" as const,
+    requiresIntegration: "google_calendar",
+  },
+  {
+    id: "calendar_update_event",
+    name: "Calendario: actualizar evento",
+    description: "Modifica un evento existente (requiere confirmación).",
+    risk: "medium" as const,
+    requiresIntegration: "google_calendar",
+  },
+  {
+    id: "calendar_delete_event",
+    name: "Calendario: eliminar evento",
+    description: "Borra un evento (requiere confirmación).",
+    risk: "high" as const,
+    requiresIntegration: "google_calendar",
   },
 ];
 

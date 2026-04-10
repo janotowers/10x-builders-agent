@@ -5,7 +5,12 @@ const extraAllowedDevOrigins =
     .map((h) => h.trim())
     .filter(Boolean) ?? [];
 
-const allowedDevOrigins = ["*.ngrok-free.app", ...extraAllowedDevOrigins];
+/** ngrok free URLs use either .ngrok-free.app or .ngrok-free.dev — both must be allowed for dev + tunnel. */
+const allowedDevOrigins = [
+  "*.ngrok-free.app",
+  "*.ngrok-free.dev",
+  ...extraAllowedDevOrigins,
+];
 
 const nextConfig: NextConfig = {
   transpilePackages: ["@agents/agent", "@agents/db", "@agents/types"],

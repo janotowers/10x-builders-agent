@@ -70,7 +70,13 @@ export function OnboardingWizard({ userId, initialProfile, initialToolSettings }
       "list_enabled_tools",
       "github_list_repos",
       "github_list_issues",
+      "github_create_repo",
       "github_create_issue",
+      "calendar_list_calendars",
+      "calendar_list_events",
+      "calendar_create_event",
+      "calendar_update_event",
+      "calendar_delete_event",
     ];
 
     for (const toolId of TOOL_IDS) {
