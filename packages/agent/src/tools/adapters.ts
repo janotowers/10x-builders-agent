@@ -16,6 +16,7 @@ import { TOOL_CATALOG, toolRequiresConfirmation } from "./catalog";
 import { githubApi } from "./github-api";
 import { userWantsNewGithubRepository } from "./github-intent";
 import { userMessageAnchorsCalendarPeriodOnly } from "./calendar-period-intent";
+import { userMessageIsPresenceOrGreetingOnly } from "./chat-greeting-intent";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 import { addCalendarTools } from "./calendar-adapters";
 import type { ToolContext } from "./tool-context";
@@ -53,6 +54,22 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   if (
     (toolId === "github_list_repos" || toolId === "github_list_issues") &&
     userMessageAnchorsCalendarPeriodOnly(ctx.lastUserMessage)
+  ) {
+    return false;
+  }
+
+  const isGreeting = userMessageIsPresenceOrGreetingOnly(ctx.lastUserMessage);
+
+  if (
+    (toolId === "github_list_repos" || toolId === "github_list_issues") &&
+    isGreeting
+  ) {
+    return false;
+  }
+
+  if (
+    (toolId === "github_create_repo" || toolId === "github_create_issue") &&
+    isGreeting
   ) {
     return false;
   }

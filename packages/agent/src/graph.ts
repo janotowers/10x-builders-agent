@@ -59,6 +59,11 @@ const GITHUB_CREATE_TOOLS_ADDENDUM = `
 - github_create_issue sirve SOLO para abrir un ticket/issue dentro de un repositorio que YA EXISTE. No la uses para crear el repositorio en sí.
 - Títulos como "Nuevo repositorio X" en un pedido de crear proyecto en GitHub indican github_create_repo con name="X", no create_issue.`;
 
+const GITHUB_SOCIAL_ADDENDUM = `
+
+[Reglas GitHub — saludos y presencia]
+- Si el usuario solo saluda o pregunta si sigues ahí ("hola", "¿sigues ahí?", "estás ahí", "ping", "gracias", "¿qué tal?"), responde en texto natural. NO uses NINGUNA herramienta de GitHub (ni list_repos, ni list_issues, ni create_repo, ni create_issue). Un saludo no es una petición de datos ni una acción en GitHub.`;
+
 function appendGithubCreateToolRules(
   basePrompt: string,
   lcTools: Array<{ name?: string }>
@@ -70,6 +75,22 @@ function appendGithubCreateToolRules(
     return basePrompt;
   }
   return `${basePrompt.trimEnd()}${GITHUB_CREATE_TOOLS_ADDENDUM}`;
+}
+
+function appendGithubSocialRules(
+  basePrompt: string,
+  lcTools: Array<{ name?: string }>
+): string {
+  const names = new Set(
+    lcTools.map((t) => t.name).filter((n): n is string => Boolean(n))
+  );
+  const hasAnyGithub =
+    names.has("github_list_repos") ||
+    names.has("github_list_issues") ||
+    names.has("github_create_repo") ||
+    names.has("github_create_issue");
+  if (!hasAnyGithub) return basePrompt;
+  return `${basePrompt.trimEnd()}${GITHUB_SOCIAL_ADDENDUM}`;
 }
 
 const CALENDAR_TOOLS_ADDENDUM = `
@@ -132,12 +153,19 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
 
   const effectiveSystemPrompt = appendCalendarToolRules(
-    appendGithubCreateToolRules(
-      systemPrompt,
+    appendGithubSocialRules(
+      appendGithubCreateToolRules(
+        systemPrompt,
+        lcTools as Array<{ name?: string }>
+      ),
       lcTools as Array<{ name?: string }>
     ),
     lcTools as Array<{ name?: string }>
   );
+
+  // DEBUG: descomentar las siguientes 2 líneas para ver el system prompt completo en la terminal del servidor
+  // console.log("=== SYSTEM PROMPT ===\n", effectiveSystemPrompt, "\n=== END ===");
+  // console.log("=== TOOLS REGISTERED ===", lcTools.map((t) => t.name).join(", "), "=== END ===");
 
   const history = await getSessionMessages(db, sessionId, 30);
   const priorMessages: BaseMessage[] = history.map((m) => {
