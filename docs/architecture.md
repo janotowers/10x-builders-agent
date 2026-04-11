@@ -119,6 +119,13 @@ Los visitantes **no** hacen OAuth con Google. Las rutas bajo `/api/public/bookin
 
 **Cuándo refactorizar:** no es obligatorio cambiar de estilo solo por preferencia. Tiene sentido **extraer helpers compartidos** (confirmación, `tool_call`, errores) y **dividir por dominio** en más archivos cuando `adapters.ts` crezca o añadas muchas tools nuevas; volver a un mapa de handlers por dominio es una opción razonable si mejora la lectura.
 
+### Política del agente: system prompt vs. reglas en código
+
+- **System prompt** — Texto base del perfil (`profiles.agent_system_prompt`) más **addendums** concatenados en `packages/agent/src/graph.ts` (GitHub, Calendar, saludos, etc.). Cubre muchas variantes de lenguaje natural con instrucciones claras y, si hace falta, ejemplos. El modelo **podría** ignorar parte del texto.
+- **Reglas “duras” en código** — `isToolAvailable` en `adapters.ts` y heurísticas en módulos como `chat-greeting-intent.ts` o `calendar-period-intent.ts`: si una tool **no se registra** en LangChain ese turno, el modelo **no puede invocarla**, aunque el prompt diga lo contrario.
+- **Recomendación práctica:** ampliar primero el **prompt** (instrucciones del usuario en Ajustes + addendums) para el comportamiento general; usar **filtros en código** cuando haya errores repetidos, costo alto (OAuth, creación de recursos) o ambigüedad que el modelo no respete solo con texto.
+- **Trade-off:** muchos patrones regex o condiciones ad hoc implican **mantenimiento**; confiar solo en el prompt implica **menos garantías**. La combinación prompt + registro condicional de tools suele ser el equilibrio más fiable en producción.
+
 ## Modelo de datos
 
 Migraciones en `packages/db/supabase/migrations/`:
@@ -155,4 +162,4 @@ Migraciones en `packages/db/supabase/migrations/`:
 - **Ventana de listado:** `packages/agent/src/tools/calendar-list-window.ts` corrige rangos inválidos o solo pasados y orienta al modelo cuando falta período (`needs_period`).
 - **Instrucciones al modelo:** en `packages/agent/src/graph.ts`, el addendum de calendario fija interpretaciones como “esta semana” = semana calendario (lunes–domingo) en la zona del perfil, no “desde ahora + 7 días”.
 - **Evitar confusión con GitHub:** si el último mensaje del usuario parece solo una aclaración de período de calendario (`packages/agent/src/tools/calendar-period-intent.ts`), `packages/agent/src/tools/adapters.ts` puede ocultar temporalmente `github_list_repos` / `github_list_issues` para ese turno, de modo que no sustituyan a `calendar_list_events`.
-- **Saludos / presencia:** mensajes como «¿sigues ahí?» o «hola» sin pedir datos (`chat-greeting-intent.ts`) desactivan `github_list_repos` / `github_list_issues` ese turno; reglas equivalentes en el prompt (`graph.ts`).
+- **Saludos / presencia:** mensajes como «¿sigues ahí?» o «hola» sin pedir datos (`chat-greeting-intent.ts`) desactivan **todas** las tools de GitHub visibles ese turno (listado y creación); reglas equivalentes en el addendum `GITHUB_SOCIAL_ADDENDUM` en `graph.ts`.
