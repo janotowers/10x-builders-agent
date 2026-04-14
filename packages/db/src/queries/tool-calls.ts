@@ -50,3 +50,20 @@ export async function getPendingToolCall(db: DbClient, toolCallId: string) {
     .single();
   return data as ToolCall | null;
 }
+
+export async function findExistingPendingToolCall(
+  db: DbClient,
+  sessionId: string,
+  toolName: string
+) {
+  const { data } = await db
+    .from("tool_calls")
+    .select("*")
+    .eq("session_id", sessionId)
+    .eq("tool_name", toolName)
+    .eq("status", "pending_confirmation")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data as ToolCall | null) ?? null;
+}

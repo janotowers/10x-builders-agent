@@ -2,19 +2,11 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
-  getPendingToolCall,
-  updateToolCallStatus,
   decryptToken,
   getGoogleCalendarAccessToken,
-  getProfile,
+  getPendingToolCall,
 } from "@agents/db";
-import {
-  githubApi,
-  buildEventResource,
-  executeCalendarCreateEvent,
-  executeCalendarPatchEvent,
-  executeCalendarDeleteEvent,
-} from "@agents/agent";
+import { runAgent } from "@agents/agent";
 
 export async function POST(request: Request) {
   try {
@@ -46,193 +38,100 @@ export async function POST(request: Request) {
       );
     }
 
-    if (action === "reject") {
-      await updateToolCallStatus(db, toolCallId, "rejected");
-      return NextResponse.json({
-        ok: true,
-        message: "Acción cancelada.",
-      });
+    const { data: session } = await supabase
+      .from("agent_sessions")
+      .select("id, user_id")
+      .eq("id", toolCall.session_id)
+      .single();
+    if (!session || session.user_id !== user.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    await updateToolCallStatus(db, toolCallId, "approved");
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("agent_system_prompt, timezone")
+      .eq("id", user.id)
+      .single();
 
-    const args = toolCall.arguments_json;
-    let result: Record<string, unknown>;
-    const toolName = toolCall.tool_name;
+    const { data: toolSettings } = await supabase
+      .from("user_tool_settings")
+      .select("*")
+      .eq("user_id", user.id);
 
-    if (toolName === "github_create_issue" || toolName === "github_create_repo") {
-      const { data: integration } = await supabase
-        .from("user_integrations")
-        .select("encrypted_tokens")
-        .eq("user_id", user.id)
-        .eq("provider", "github")
-        .eq("status", "active")
-        .single();
+    const { data: integrations } = await supabase
+      .from("user_integrations")
+      .select("*")
+      .eq("user_id", user.id)
+      .eq("status", "active");
 
-      if (!integration?.encrypted_tokens) {
-        await updateToolCallStatus(db, toolCallId, "failed", {
-          error: "GitHub not connected",
-        });
-        return NextResponse.json(
-          { error: "GitHub integration not found" },
-          { status: 400 }
-        );
+    const githubIntegration = integrations?.find(
+      (i: Record<string, unknown>) =>
+        i.provider === "github" && i.status === "active"
+    );
+    let githubToken: string | undefined;
+    if (githubIntegration?.encrypted_tokens) {
+      try {
+        githubToken = decryptToken(githubIntegration.encrypted_tokens as string);
+      } catch (e) {
+        console.error("Failed to decrypt GitHub token:", e);
       }
-
-      const token = decryptToken(integration.encrypted_tokens as string);
-
-      switch (toolName) {
-        case "github_create_issue": {
-          const { status, data } = await githubApi(
-            token,
-            "POST",
-            `/repos/${args.owner}/${args.repo}/issues`,
-            { title: args.title, body: args.body ?? "" }
-          );
-          if (status >= 400) {
-            result = { error: "GitHub API error", status, details: data };
-            await updateToolCallStatus(db, toolCallId, "failed", result);
-            return NextResponse.json({ ok: false, result });
-          }
-          const created = data as Record<string, unknown>;
-          result = {
-            message: "Issue creado",
-            issue_url: created.html_url,
-            number: created.number,
-          };
-          break;
-        }
-        case "github_create_repo": {
-          const isPrivate = !!(args.private ?? args.isPrivate);
-          const { status, data } = await githubApi(token, "POST", "/user/repos", {
-            name: args.name,
-            description: args.description ?? "",
-            private: isPrivate,
-          });
-          if (status >= 400) {
-            result = { error: "GitHub API error", status, details: data };
-            await updateToolCallStatus(db, toolCallId, "failed", result);
-            return NextResponse.json({ ok: false, result });
-          }
-          const created = data as Record<string, unknown>;
-          result = {
-            message: "Repositorio creado",
-            html_url: created.html_url,
-            full_name: created.full_name,
-          };
-          break;
-        }
-        default:
-          result = { error: `Unknown tool: ${toolName}` };
-          await updateToolCallStatus(db, toolCallId, "failed", result);
-          return NextResponse.json({ ok: false, result });
-      }
-    } else if (
-      toolName === "calendar_create_event" ||
-      toolName === "calendar_update_event" ||
-      toolName === "calendar_delete_event"
-    ) {
-      const accessToken = await getGoogleCalendarAccessToken(db, user.id);
-      if (!accessToken) {
-        const err = { error: "Google Calendar not connected or token expired" };
-        await updateToolCallStatus(db, toolCallId, "failed", err);
-        return NextResponse.json(
-          { error: "Google Calendar no disponible" },
-          { status: 400 }
-        );
-      }
-
-      const profile = await getProfile(db, user.id);
-      const tz = profile.timezone ?? "UTC";
-      const calId = String(args.calendar_id ?? "primary");
-
-      switch (toolName) {
-        case "calendar_create_event": {
-          const body = buildEventResource({
-            summary: String(args.summary ?? ""),
-            start_datetime: String(args.start_datetime),
-            end_datetime: String(args.end_datetime),
-            timezone: tz,
-            description: String(args.description ?? ""),
-          });
-          const { status, data } = await executeCalendarCreateEvent(
-            accessToken,
-            calId,
-            body
-          );
-          if (status >= 400) {
-            result = { error: "Calendar API error", status, details: data };
-            await updateToolCallStatus(db, toolCallId, "failed", result);
-            return NextResponse.json({ ok: false, result });
-          }
-          const created = data as Record<string, unknown>;
-          result = {
-            message: "Evento creado",
-            htmlLink: created.htmlLink,
-            id: created.id,
-          };
-          break;
-        }
-        case "calendar_update_event": {
-          const patch: Record<string, unknown> = {};
-          if (args.summary !== undefined) patch.summary = args.summary;
-          if (args.description !== undefined) patch.description = args.description;
-          if (args.start_datetime && args.end_datetime) {
-            patch.start = {
-              dateTime: String(args.start_datetime),
-              timeZone: tz,
-            };
-            patch.end = {
-              dateTime: String(args.end_datetime),
-              timeZone: tz,
-            };
-          }
-          const { status, data } = await executeCalendarPatchEvent(
-            accessToken,
-            calId,
-            String(args.event_id),
-            patch
-          );
-          if (status >= 400) {
-            result = { error: "Calendar API error", status, details: data };
-            await updateToolCallStatus(db, toolCallId, "failed", result);
-            return NextResponse.json({ ok: false, result });
-          }
-          const updated = data as Record<string, unknown>;
-          result = {
-            message: "Evento actualizado",
-            htmlLink: updated.htmlLink,
-            id: updated.id,
-          };
-          break;
-        }
-        case "calendar_delete_event": {
-          const { status, data } = await executeCalendarDeleteEvent(
-            accessToken,
-            calId,
-            String(args.event_id)
-          );
-          if (status >= 400 && status !== 204) {
-            result = { error: "Calendar API error", status, details: data };
-            await updateToolCallStatus(db, toolCallId, "failed", result);
-            return NextResponse.json({ ok: false, result });
-          }
-          result = { message: "Evento eliminado" };
-          break;
-        }
-        default:
-          result = { error: `Unknown tool: ${toolName}` };
-          await updateToolCallStatus(db, toolCallId, "failed", result);
-          return NextResponse.json({ ok: false, result });
-      }
-    } else {
-      result = { error: `Unknown tool: ${toolName}` };
-      await updateToolCallStatus(db, toolCallId, "failed", result);
-      return NextResponse.json({ ok: false, result });
     }
 
-    await updateToolCallStatus(db, toolCallId, "executed", result);
-    return NextResponse.json({ ok: true, result });
+    const googleCalendarAccessToken =
+      (await getGoogleCalendarAccessToken(db, user.id)) ?? undefined;
+
+    // Retrieve the checkpointThreadId stored when the interrupt was created
+    const { data: pendingMsg } = await db
+      .from("agent_messages")
+      .select("structured_payload")
+      .eq("session_id", toolCall.session_id)
+      .not("structured_payload", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(5);
+    const spEntry = pendingMsg?.find(
+      (m) =>
+        (m.structured_payload as Record<string, unknown>)?.type ===
+        "pending_confirmation"
+    );
+    const storedCheckpointThreadId = (
+      spEntry?.structured_payload as {
+        pendingConfirmation?: { checkpointThreadId?: string };
+      }
+    )?.pendingConfirmation?.checkpointThreadId;
+
+    const result = await runAgent({
+      resumeDecision: action === "approve" ? "approve" : "reject",
+      checkpointThreadId: storedCheckpointThreadId,
+      userId: user.id,
+      sessionId: session.id,
+      systemPrompt:
+        (profile?.agent_system_prompt as string) ?? "Eres un asistente útil.",
+      db,
+      enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
+        id: t.id as string,
+        user_id: t.user_id as string,
+        tool_id: t.tool_id as string,
+        enabled: t.enabled as boolean,
+        config_json: (t.config_json as Record<string, unknown>) ?? {},
+      })),
+      integrations: (integrations ?? []).map((i: Record<string, unknown>) => ({
+        id: i.id as string,
+        user_id: i.user_id as string,
+        provider: i.provider as string,
+        scopes: (i.scopes as string[]) ?? [],
+        status: i.status as "active" | "revoked" | "expired",
+        created_at: i.created_at as string,
+      })),
+      githubToken,
+      userTimezone: (profile?.timezone as string) ?? undefined,
+      googleCalendarAccessToken,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      response: result.pendingConfirmation ? null : result.response,
+      pendingConfirmation: result.pendingConfirmation,
+    });
   } catch (error) {
     console.error("Confirm API error:", error);
     return NextResponse.json(

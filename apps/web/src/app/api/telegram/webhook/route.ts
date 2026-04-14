@@ -2,19 +2,10 @@ import { NextResponse } from "next/server";
 import {
   createServerClient,
   decryptToken,
-  updateToolCallStatus,
   getPendingToolCall,
   getGoogleCalendarAccessToken,
-  getProfile,
 } from "@agents/db";
-import {
-  runAgent,
-  githubApi,
-  buildEventResource,
-  executeCalendarCreateEvent,
-  executeCalendarPatchEvent,
-  executeCalendarDeleteEvent,
-} from "@agents/agent";
+import { runAgent } from "@agents/agent";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -82,184 +73,102 @@ async function answerCallbackQuery(callbackQueryId: string, text: string) {
   );
 }
 
-async function executeApprovedToolCall(
+async function resumeAgentFromCallback(
   db: ReturnType<typeof createServerClient>,
   toolCallId: string,
-  userId: string
+  action: "approve" | "reject"
 ) {
   const toolCall = await getPendingToolCall(db, toolCallId);
   if (!toolCall) return { ok: false, message: "Tool call not found" };
+  const { data: session } = await db
+    .from("agent_sessions")
+    .select("id, user_id")
+    .eq("id", toolCall.session_id)
+    .single();
+  if (!session) return { ok: false, message: "Session not found" };
 
-  await updateToolCallStatus(db, toolCallId, "approved");
+  const userId = session.user_id as string;
+  const { data: profile } = await db
+    .from("profiles")
+    .select("agent_system_prompt, timezone")
+    .eq("id", userId)
+    .single();
+  const { data: toolSettings } = await db
+    .from("user_tool_settings")
+    .select("*")
+    .eq("user_id", userId);
+  const { data: integrations } = await db
+    .from("user_integrations")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("status", "active");
 
-  const args = toolCall.arguments_json;
-  const toolName = toolCall.tool_name;
-
-  if (toolName === "github_create_issue" || toolName === "github_create_repo") {
-    const { data: integration } = await db
-      .from("user_integrations")
-      .select("encrypted_tokens")
-      .eq("user_id", userId)
-      .eq("provider", "github")
-      .eq("status", "active")
-      .single();
-
-    if (!integration?.encrypted_tokens) {
-      await updateToolCallStatus(db, toolCallId, "failed", {
-        error: "GitHub not connected",
-      });
-      return { ok: false, message: "GitHub no está conectado." };
+  const githubIntegration = integrations?.find(
+    (i: Record<string, unknown>) =>
+      i.provider === "github" && i.status === "active"
+  );
+  let githubToken: string | undefined;
+  if (githubIntegration?.encrypted_tokens) {
+    try {
+      githubToken = decryptToken(githubIntegration.encrypted_tokens as string);
+    } catch (e) {
+      console.error("Failed to decrypt GitHub token:", e);
     }
-
-    const token = decryptToken(integration.encrypted_tokens as string);
-
-    if (toolName === "github_create_issue") {
-      const { status, data } = await githubApi(
-        token,
-        "POST",
-        `/repos/${args.owner}/${args.repo}/issues`,
-        { title: args.title, body: args.body ?? "" }
-      );
-      if (status >= 400) {
-        const err = { error: "GitHub API error", status, details: data };
-        await updateToolCallStatus(db, toolCallId, "failed", err);
-        return { ok: false, message: `Error de GitHub (${status})` };
-      }
-      const created = data as Record<string, unknown>;
-      const result = {
-        message: "Issue creado",
-        issue_url: created.html_url,
-        number: created.number,
-      };
-      await updateToolCallStatus(db, toolCallId, "executed", result);
-      return { ok: true, message: `Issue creado: ${created.html_url}` };
-    }
-
-    const isPrivate = !!(args.private ?? args.isPrivate);
-    const { status, data } = await githubApi(token, "POST", "/user/repos", {
-      name: args.name,
-      description: args.description ?? "",
-      private: isPrivate,
-    });
-    if (status >= 400) {
-      const err = { error: "GitHub API error", status, details: data };
-      await updateToolCallStatus(db, toolCallId, "failed", err);
-      return { ok: false, message: `Error de GitHub (${status})` };
-    }
-    const created = data as Record<string, unknown>;
-    const result = {
-      message: "Repositorio creado",
-      html_url: created.html_url,
-      full_name: created.full_name,
-    };
-    await updateToolCallStatus(db, toolCallId, "executed", result);
-    return {
-      ok: true,
-      message: `Repositorio creado: ${created.html_url}`,
-    };
   }
+  const googleCalendarAccessToken =
+    (await getGoogleCalendarAccessToken(db, userId)) ?? undefined;
 
-  if (
-    toolName === "calendar_create_event" ||
-    toolName === "calendar_update_event" ||
-    toolName === "calendar_delete_event"
-  ) {
-    const accessToken = await getGoogleCalendarAccessToken(db, userId);
-    if (!accessToken) {
-      await updateToolCallStatus(db, toolCallId, "failed", {
-        error: "Google Calendar not connected",
-      });
-      return { ok: false, message: "Google Calendar no está conectado." };
+  const { data: pendingMsg } = await db
+    .from("agent_messages")
+    .select("structured_payload")
+    .eq("session_id", toolCall.session_id)
+    .not("structured_payload", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(5);
+  const spEntry = pendingMsg?.find(
+    (m) =>
+      (m.structured_payload as Record<string, unknown>)?.type ===
+      "pending_confirmation"
+  );
+  const storedCheckpointThreadId = (
+    spEntry?.structured_payload as {
+      pendingConfirmation?: { checkpointThreadId?: string };
     }
-    const profile = await getProfile(db, userId);
-    const tz = profile.timezone ?? "UTC";
-    const calId = String(args.calendar_id ?? "primary");
+  )?.pendingConfirmation?.checkpointThreadId;
 
-    if (toolName === "calendar_create_event") {
-      const body = buildEventResource({
-        summary: String(args.summary ?? ""),
-        start_datetime: String(args.start_datetime),
-        end_datetime: String(args.end_datetime),
-        timezone: tz,
-        description: String(args.description ?? ""),
-      });
-      const { status, data } = await executeCalendarCreateEvent(
-        accessToken,
-        calId,
-        body
-      );
-      if (status >= 400) {
-        const err = { error: "Calendar API error", status, details: data };
-        await updateToolCallStatus(db, toolCallId, "failed", err);
-        return { ok: false, message: `Error de Calendar (${status})` };
-      }
-      const created = data as Record<string, unknown>;
-      const result = {
-        message: "Evento creado",
-        htmlLink: created.htmlLink,
-        id: created.id,
-      };
-      await updateToolCallStatus(db, toolCallId, "executed", result);
-      return {
-        ok: true,
-        message: `Evento creado: ${created.htmlLink ?? ""}`,
-      };
-    }
-
-    if (toolName === "calendar_update_event") {
-      const patch: Record<string, unknown> = {};
-      if (args.summary !== undefined) patch.summary = args.summary;
-      if (args.description !== undefined) patch.description = args.description;
-      if (args.start_datetime && args.end_datetime) {
-        patch.start = {
-          dateTime: String(args.start_datetime),
-          timeZone: tz,
-        };
-        patch.end = {
-          dateTime: String(args.end_datetime),
-          timeZone: tz,
-        };
-      }
-      const { status, data } = await executeCalendarPatchEvent(
-        accessToken,
-        calId,
-        String(args.event_id),
-        patch
-      );
-      if (status >= 400) {
-        const err = { error: "Calendar API error", status, details: data };
-        await updateToolCallStatus(db, toolCallId, "failed", err);
-        return { ok: false, message: `Error de Calendar (${status})` };
-      }
-      const updated = data as Record<string, unknown>;
-      const result = {
-        message: "Evento actualizado",
-        htmlLink: updated.htmlLink,
-        id: updated.id,
-      };
-      await updateToolCallStatus(db, toolCallId, "executed", result);
-      return { ok: true, message: "Evento actualizado." };
-    }
-
-    const { status, data } = await executeCalendarDeleteEvent(
-      accessToken,
-      calId,
-      String(args.event_id)
-    );
-    if (status >= 400 && status !== 204) {
-      const err = { error: "Calendar API error", status, details: data };
-      await updateToolCallStatus(db, toolCallId, "failed", err);
-      return { ok: false, message: `Error de Calendar (${status})` };
-    }
-    const result = { message: "Evento eliminado" };
-    await updateToolCallStatus(db, toolCallId, "executed", result);
-    return { ok: true, message: "Evento eliminado." };
-  }
-
-  await updateToolCallStatus(db, toolCallId, "failed", {
-    error: `Unknown tool: ${toolName}`,
+  const result = await runAgent({
+    resumeDecision: action,
+    checkpointThreadId: storedCheckpointThreadId,
+    userId,
+    sessionId: session.id as string,
+    systemPrompt:
+      (profile?.agent_system_prompt as string) ?? "Eres un asistente útil.",
+    db,
+    enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
+      id: t.id as string,
+      user_id: t.user_id as string,
+      tool_id: t.tool_id as string,
+      enabled: t.enabled as boolean,
+      config_json: (t.config_json as Record<string, unknown>) ?? {},
+    })),
+    integrations: (integrations ?? []).map((i: Record<string, unknown>) => ({
+      id: i.id as string,
+      user_id: i.user_id as string,
+      provider: i.provider as string,
+      scopes: (i.scopes as string[]) ?? [],
+      status: i.status as "active" | "revoked" | "expired",
+      created_at: i.created_at as string,
+    })),
+    githubToken,
+    userTimezone: (profile?.timezone as string) ?? undefined,
+    googleCalendarAccessToken,
   });
-  return { ok: false, message: "Herramienta no reconocida." };
+
+  return {
+    ok: true,
+    message: result.pendingConfirmation ? null : result.response,
+    pendingConfirmation: result.pendingConfirmation,
+  };
 }
 
 export async function POST(request: Request) {
@@ -294,20 +203,37 @@ export async function POST(request: Request) {
     }
 
     if (action === "approve") {
-      const result = await executeApprovedToolCall(
-        db,
-        toolCallId,
-        telegramAccount.user_id
-      );
+      const result = await resumeAgentFromCallback(db, toolCallId, "approve");
       await answerCallbackQuery(
         cb.id,
         result.ok ? "Aprobado" : "Error"
       );
-      await sendTelegramMessage(cb.message.chat.id, result.message);
+      if (result.pendingConfirmation) {
+        const pc = result.pendingConfirmation;
+        await sendTelegramMessage(cb.message.chat.id, pc.message, {
+          inline_keyboard: [
+            [
+              {
+                text: "Aprobar",
+                callback_data: `approve:${pc.toolCallId}`,
+              },
+              {
+                text: "Cancelar",
+                callback_data: `reject:${pc.toolCallId}`,
+              },
+            ],
+          ],
+        });
+      } else {
+        await sendTelegramMessage(cb.message.chat.id, result.message ?? "Hecho.");
+      }
     } else if (action === "reject") {
-      await updateToolCallStatus(db, toolCallId, "rejected");
-      await answerCallbackQuery(cb.id, "Rechazado");
-      await sendTelegramMessage(cb.message.chat.id, "Acción cancelada.");
+      const result = await resumeAgentFromCallback(db, toolCallId, "reject");
+      await answerCallbackQuery(cb.id, result.ok ? "Rechazado" : "Error");
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ?? "Acción cancelada."
+      );
     }
 
     return NextResponse.json({ ok: true });

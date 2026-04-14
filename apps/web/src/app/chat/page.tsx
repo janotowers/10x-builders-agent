@@ -26,6 +26,15 @@ export default async function ChatPage() {
     .single();
 
   let sessionMessages: Array<{ role: string; content: string; created_at: string }> = [];
+  let initialPendingConfirmation:
+    | {
+        toolCallId: string;
+        toolName: string;
+        message: string;
+        args: Record<string, unknown>;
+        checkpointThreadId: string;
+      }
+    | null = null;
   if (messages?.id) {
     const { data } = await supabase
       .from("agent_messages")
@@ -34,6 +43,42 @@ export default async function ChatPage() {
       .order("created_at", { ascending: true })
       .limit(50);
     sessionMessages = data ?? [];
+
+    const { data: pendingMessages } = await supabase
+      .from("agent_messages")
+      .select("structured_payload")
+      .eq("session_id", messages.id)
+      .not("structured_payload", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    const pendingMsg = pendingMessages?.find(
+      (m) =>
+        (m.structured_payload as Record<string, unknown>)?.type ===
+        "pending_confirmation"
+    );
+    if (pendingMsg) {
+      const sp = pendingMsg.structured_payload as {
+        pendingConfirmation?: {
+          toolCallId: string;
+          toolName: string;
+          message: string;
+          args: Record<string, unknown>;
+          checkpointThreadId: string;
+        };
+      };
+      if (sp.pendingConfirmation) {
+        const { data: stillPending } = await supabase
+          .from("tool_calls")
+          .select("id")
+          .eq("id", sp.pendingConfirmation.toolCallId)
+          .eq("status", "pending_confirmation")
+          .maybeSingle();
+        if (stillPending) {
+          initialPendingConfirmation = sp.pendingConfirmation;
+        }
+      }
+    }
   }
 
   return (
@@ -68,6 +113,7 @@ export default async function ChatPage() {
       <ChatInterface
         agentName={profile.agent_name as string}
         initialMessages={sessionMessages}
+        initialPendingConfirmation={initialPendingConfirmation}
       />
     </div>
   );

@@ -19,6 +19,7 @@ interface PendingConfirmation {
 interface Props {
   agentName: string;
   initialMessages: Message[];
+  initialPendingConfirmation?: PendingConfirmation | null;
 }
 
 function formatConfirmFailureMessage(result: Record<string, unknown> | undefined): string {
@@ -37,12 +38,16 @@ function formatConfirmFailureMessage(result: Record<string, unknown> | undefined
   return base;
 }
 
-export function ChatInterface({ agentName, initialMessages }: Props) {
+export function ChatInterface({
+  agentName,
+  initialMessages,
+  initialPendingConfirmation = null,
+}: Props) {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(
-    null
+    initialPendingConfirmation
   );
   const [confirming, setConfirming] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -96,6 +101,7 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
   async function handleConfirm(action: "approve" | "reject") {
     if (!confirmation) return;
     setConfirming(true);
+    let keepPending: PendingConfirmation | null = null;
 
     try {
       const res = await fetch("/api/chat/confirm", {
@@ -109,20 +115,22 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
 
       const data = await res.json();
 
-      if (action === "approve" && data.ok) {
-        const resultText = data.result?.message
-          ? `${data.result.message}${data.result.html_url ? `: ${data.result.html_url}` : ""}${data.result.issue_url ? `: ${data.result.issue_url}` : ""}`
-          : "Acción ejecutada correctamente.";
+      if (data.ok && data.response) {
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: resultText },
+          { role: "assistant", content: data.response },
         ]);
-      } else if (action === "approve" && !data.ok) {
-        const msg = data.result
-          ? formatConfirmFailureMessage(data.result as Record<string, unknown>)
-          : typeof data.error === "string"
+      }
+
+      if (data.pendingConfirmation) {
+        keepPending = data.pendingConfirmation as PendingConfirmation;
+      }
+
+      if (!data.ok) {
+        const msg =
+          typeof data.error === "string"
             ? data.error
-            : "Error desconocido";
+            : formatConfirmFailureMessage(undefined);
         setMessages((prev) => [
           ...prev,
           {
@@ -130,7 +138,7 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
             content: `Error al ejecutar: ${msg}`,
           },
         ]);
-      } else {
+      } else if (action === "reject" && !data.response) {
         setMessages((prev) => [
           ...prev,
           { role: "assistant", content: "Acción cancelada." },
@@ -142,7 +150,7 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
         { role: "assistant", content: "Error al procesar la confirmación." },
       ]);
     } finally {
-      setConfirmation(null);
+      setConfirmation(keepPending);
       setConfirming(false);
     }
   }

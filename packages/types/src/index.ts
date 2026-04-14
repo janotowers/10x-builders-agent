@@ -88,4 +88,6 @@ export interface PendingConfirmation {
   toolName: string;
   message: string;
   args: Record<string, unknown>;
+  /** LangGraph checkpoint thread ID needed to resume the interrupted graph. */
+  checkpointThreadId: string;
 }

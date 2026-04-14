@@ -1,6 +1,6 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { TOOL_CATALOG, toolRequiresConfirmation } from "./catalog";
+import { TOOL_CATALOG } from "./catalog";
 import type { ToolContext } from "./tool-context";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 import {
@@ -218,21 +218,6 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
           end_datetime: string;
           description?: string;
         }) => {
-          const needsConfirm = toolRequiresConfirmation("calendar_create_event");
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "calendar_create_event",
-            input,
-            needsConfirm
-          );
-          if (needsConfirm) {
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Confirma crear el evento "${input.summary}" del ${input.start_datetime} al ${input.end_datetime}.`,
-            });
-          }
           const body = buildEventResource({
             summary: input.summary,
             start_datetime: input.start_datetime,
@@ -246,9 +231,11 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
             { method: "POST", body: JSON.stringify(body) }
           );
           if (status >= 400) {
-            const err = { error: "Calendar API error", status, details: data };
-            await updateToolCallStatus(ctx.db, record.id, "failed", err);
-            return JSON.stringify(err);
+            return JSON.stringify({
+              error: "Calendar API error",
+              status,
+              details: data,
+            });
           }
           const created = data as Record<string, unknown>;
           const result = {
@@ -256,12 +243,6 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
             htmlLink: created.htmlLink,
             id: created.id,
           };
-          await updateToolCallStatus(
-            ctx.db,
-            record.id,
-            "executed",
-            result as unknown as Record<string, unknown>
-          );
           return JSON.stringify(result);
         },
         {
@@ -291,21 +272,6 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
           end_datetime?: string;
           description?: string;
         }) => {
-          const needsConfirm = toolRequiresConfirmation("calendar_update_event");
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "calendar_update_event",
-            input,
-            needsConfirm
-          );
-          if (needsConfirm) {
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Confirma actualizar el evento ${input.event_id}.`,
-            });
-          }
           const patch: Record<string, unknown> = {};
           if (input.summary !== undefined) patch.summary = input.summary;
           if (input.description !== undefined) patch.description = input.description;
@@ -325,9 +291,11 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
             { method: "PATCH", body: JSON.stringify(patch) }
           );
           if (status >= 400) {
-            const err = { error: "Calendar API error", status, details: data };
-            await updateToolCallStatus(ctx.db, record.id, "failed", err);
-            return JSON.stringify(err);
+            return JSON.stringify({
+              error: "Calendar API error",
+              status,
+              details: data,
+            });
           }
           const updated = data as Record<string, unknown>;
           const result = {
@@ -335,12 +303,6 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
             htmlLink: updated.htmlLink,
             id: updated.id,
           };
-          await updateToolCallStatus(
-            ctx.db,
-            record.id,
-            "executed",
-            result as unknown as Record<string, unknown>
-          );
           return JSON.stringify(result);
         },
         {
@@ -363,38 +325,19 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
     tools.push(
       tool(
         async (input: { calendar_id: string; event_id: string }) => {
-          const needsConfirm = toolRequiresConfirmation("calendar_delete_event");
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "calendar_delete_event",
-            input,
-            needsConfirm
-          );
-          if (needsConfirm) {
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Confirma eliminar el evento ${input.event_id}.`,
-            });
-          }
           const { status, data } = await googleCalendarJson(
             token,
             `/calendars/${input.calendar_id === "primary" ? "primary" : encodeURIComponent(input.calendar_id)}/events/${encodeURIComponent(input.event_id)}`,
             { method: "DELETE" }
           );
           if (status >= 400 && status !== 204) {
-            const err = { error: "Calendar API error", status, details: data };
-            await updateToolCallStatus(ctx.db, record.id, "failed", err);
-            return JSON.stringify(err);
+            return JSON.stringify({
+              error: "Calendar API error",
+              status,
+              details: data,
+            });
           }
           const result = { message: "Event deleted" };
-          await updateToolCallStatus(
-            ctx.db,
-            record.id,
-            "executed",
-            result
-          );
           return JSON.stringify(result);
         },
         {

@@ -21,14 +21,14 @@ todos:
     content: Fix /api/chat/confirm to call runAgent({ resumeDecision }) instead of direct tool execution
     status: completed
   - id: chat-page
-    content: Fix chat/page.tsx to query pending tool_calls on load and pass to ChatInterface
+    content: Fix chat/page.tsx to read exact confirmation wording from agent_messages.structured_payload on load
     status: completed
   - id: chat-interface
     content: Update ChatInterface to accept and render initialPendingConfirmation on mount
-    status: in_progress
+    status: completed
   - id: telegram
     content: Fix Telegram webhook callback_query handler to call runAgent({ resumeDecision }) and send agent response
-    status: pending
+    status: completed
 isProject: false
 ---
 
@@ -177,20 +177,9 @@ The agent then sees the tool result and generates a proper continuation reply.
 
 ### 7. `apps/web/src/app/chat/page.tsx`
 
-After loading `sessionMessages`, also query:
+After loading `sessionMessages`, query `agent_messages` for the most recent `structured_payload` with `type: "pending_confirmation"`, then cross-check against `tool_calls` to confirm it is still pending. This preserves the exact confirmation wording that was generated at interrupt time (e.g. tool-specific messages with args), rather than reconstructing it generically.
 
-```typescript
-const { data: pendingToolCalls } = await supabase
-  .from("tool_calls")
-  .select("*")
-  .eq("session_id", currentSession.id)
-  .eq("status", "pending_confirmation")
-  .order("created_at", { ascending: false })
-  .limit(1);
-const initialPendingConfirmation = pendingToolCalls?.[0] ?? null;
-```
-
-Pass `initialPendingConfirmation` to `<ChatInterface>`.
+Pass the resolved `initialPendingConfirmation` to `<ChatInterface>`.
 
 ### 8. `apps/web/src/app/chat/chat-interface.tsx`
 
@@ -220,3 +209,56 @@ Keep as-is — these provide human-readable descriptions passed into the interru
 ## One-time migration
 
 `PostgresSaver.setup()` creates 3 LangGraph checkpoint tables in your Postgres DB on first run (idempotent). No SQL migration file is needed.
+
+## Implementation note: reading `__interrupt__` from `invoke()`
+
+`StateGraph.compile().invoke()` with default `streamMode: "values"` only returns channels defined on the graph state schema (`messages`, `sessionId`, etc.). The human-interrupt payload is written to the reserved channel `__interrupt__`, which is **not** part of that schema, so it was **omitted** from the return value. The UI then saw no assistant text (model often leaves `content` empty when emitting only tool calls) and no `pendingConfirmation` — it looked like “nothing happened”.
+
+**Fix:** run the graph with `streamMode: ["values", "updates"]`, iterate the stream, and read `payload.__interrupt__` from any `"updates"` chunk when an interrupt fires. Stream chunks may be either `[mode, payload]` or `[namespace, mode, payload]` — only handling the 2-tuple drops every event. After the stream finishes, read **`app.getState({ configurable: { thread_id } }).values`** for the authoritative `messages` (stream `"values"` alone is not reliable). See `packages/agent/src/graph.ts`.
+
+## Manual verification checklist
+
+Run each scenario after deploying the changes. Check both the final user-visible result **and** the DB state in `tool_calls` and `agent_messages`.
+
+### Web channel
+
+- [ ] **Web approve** — Trigger a risky tool (e.g. "Crea un repositorio test-hitl"). Confirmation card appears with the exact tool-specific message (not a generic fallback). Click **Aprobar**. Verify:
+  - Agent responds with a natural-language continuation (not raw JSON).
+  - `tool_calls` row transitions `pending_confirmation → approved → executed`.
+  - `agent_messages` has both the confirmation payload (`structured_payload.type = "pending_confirmation"`) and the final assistant reply.
+
+- [ ] **Web reject** — Same trigger but click **Cancelar**. Verify:
+  - Agent responds with "Acción cancelada" or equivalent.
+  - `tool_calls` row transitions `pending_confirmation → rejected`.
+  - The external API (GitHub / Calendar) was **never** called.
+
+- [ ] **Refresh while pending** — Trigger a risky tool, then refresh the browser **before** clicking approve/reject. Verify:
+  - Confirmation card re-appears with the **exact same wording** (read from `agent_messages.structured_payload`, not reconstructed).
+  - Approve/reject still works normally after refresh.
+
+- [ ] **Double-click idempotency** — Rapidly click **Aprobar** twice. Verify:
+  - Tool executes only once.
+  - No duplicate `tool_calls` rows with status `executed`.
+  - Second click either no-ops or returns the same result.
+
+### Telegram channel
+
+- [ ] **Telegram approve** — Send a message that triggers a risky tool via Telegram. Inline keyboard appears. Tap **Aprobar**. Verify:
+  - Bot replies with the agent's continuation message.
+  - `tool_calls` transitions to `executed`.
+
+- [ ] **Telegram reject** — Same trigger, tap **Cancelar**. Verify:
+  - Bot replies with cancellation message.
+  - `tool_calls` transitions to `rejected`.
+
+### Cross-channel edge cases
+
+- [ ] **Trigger on web, approve on web after server restart** — If using `MemorySaver` (no `DATABASE_URL`), confirm that the interrupt state is lost after restart and a clear error is returned. If using `PostgresSaver`, confirm resume works across restarts.
+
+- [ ] **Low-risk tool unaffected** — Trigger a low-risk tool (e.g. `github_list_repos`). Verify it executes immediately with no confirmation prompt.
+
+### Regression checks
+
+- [ ] All existing self-tests pass: `test:github-intent`, `test:calendar-window`, `test:calendar-display`, `test:calendar-period-intent`, `test:chat-greeting-intent`.
+- [ ] `npm run type-check --workspace=packages/agent` passes.
+- [ ] `npm run type-check --workspace=apps/web` passes.

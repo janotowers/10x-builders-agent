@@ -54,7 +54,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "github_create_repo",
     name: "github_create_repo",
     description:
-      "Creates a NEW empty GitHub repository under the authenticated user's account. Use when the user asks to create a repo, a new repository, or a project on GitHub. Pass only the repository name (e.g. my-app), not owner/repo.",
+      "Creates a NEW empty GitHub repository under the authenticated user's account. Only call when the user provided an explicit repository name (slug). If they asked to create a repo without naming it, do not call this tool — ask them for the name in natural language first. Pass only the repository name (e.g. my-app), not owner/repo.",
     risk: "high",
     requires_integration: "github",
     parameters_schema: {

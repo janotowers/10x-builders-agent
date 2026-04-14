@@ -12,7 +12,7 @@
  */
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { TOOL_CATALOG, toolRequiresConfirmation } from "./catalog";
+import { TOOL_CATALOG } from "./catalog";
 import { githubApi } from "./github-api";
 import { userWantsNewGithubRepository } from "./github-intent";
 import { userMessageAnchorsCalendarPeriodOnly } from "./calendar-period-intent";
@@ -259,26 +259,8 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const needsConfirm = toolRequiresConfirmation("github_create_repo");
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "github_create_repo",
-            input,
-            needsConfirm
-          );
-
-          if (needsConfirm) {
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Se necesita tu confirmación para crear el repositorio "${input.name}"${input.private ? " (privado)" : ""}.`,
-            });
-          }
-
           if (!ctx.githubToken) {
             const err = { error: "GitHub token not available" };
-            await updateToolCallStatus(ctx.db, record.id, "failed", err);
             return JSON.stringify(err);
           }
 
@@ -294,9 +276,11 @@ export function buildLangChainTools(ctx: ToolContext) {
           );
 
           if (status >= 400) {
-            const err = { error: "GitHub API error", status, details: data };
-            await updateToolCallStatus(ctx.db, record.id, "failed", err);
-            return JSON.stringify(err);
+            return JSON.stringify({
+              error: "GitHub API error",
+              status,
+              details: data,
+            });
           }
 
           const created = data as Record<string, unknown>;
@@ -305,7 +289,6 @@ export function buildLangChainTools(ctx: ToolContext) {
             html_url: created.html_url,
             full_name: created.full_name,
           };
-          await updateToolCallStatus(ctx.db, record.id, "executed", result);
           return JSON.stringify(result);
         },
         {
@@ -333,26 +316,8 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const needsConfirm = toolRequiresConfirmation("github_create_issue");
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "github_create_issue",
-            input,
-            needsConfirm
-          );
-
-          if (needsConfirm) {
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Se necesita tu confirmación para crear el issue "${input.title}" en ${input.owner}/${input.repo}.`,
-            });
-          }
-
           if (!ctx.githubToken) {
             const err = { error: "GitHub token not available" };
-            await updateToolCallStatus(ctx.db, record.id, "failed", err);
             return JSON.stringify(err);
           }
 
@@ -364,9 +329,11 @@ export function buildLangChainTools(ctx: ToolContext) {
           );
 
           if (status >= 400) {
-            const err = { error: "GitHub API error", status, details: data };
-            await updateToolCallStatus(ctx.db, record.id, "failed", err);
-            return JSON.stringify(err);
+            return JSON.stringify({
+              error: "GitHub API error",
+              status,
+              details: data,
+            });
           }
 
           const created = data as Record<string, unknown>;
@@ -375,7 +342,6 @@ export function buildLangChainTools(ctx: ToolContext) {
             issue_url: created.html_url,
             number: created.number,
           };
-          await updateToolCallStatus(ctx.db, record.id, "executed", result);
           return JSON.stringify(result);
         },
         {
