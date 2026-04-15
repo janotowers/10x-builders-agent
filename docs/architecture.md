@@ -100,18 +100,19 @@ Los visitantes **no** hacen OAuth con Google. Las rutas bajo `/api/public/bookin
 5. Se obtiene `githubToken` (descifrado) y `googleCalendarAccessToken` (con refresh si aplica).
 6. Se filtran las tools disponibles (allowlist + integración activa).
 7. Se invoca `runAgent()` con `userTimezone` desde `profiles.timezone`.
-8. Si una tool tiene riesgo medio/alto → `pendingConfirmation` estructurado; confirmación en web o Telegram.
+8. Si una tool tiene riesgo medio/alto → `interrupt()` en el grafo, `pendingConfirmation` persistido (incl. `checkpointThreadId` para resume); confirmación en web o Telegram vía `runAgent({ resumeDecision })`.
 
-## LangGraph: grafo simplificado
+## LangGraph: grafo y HITL
 
-- **StateGraph** con nodos `agent` y `tools`.
-- **MemorySaver** (thread_id = session_id).
-- Máximo 6 iteraciones de tool.
+- **StateGraph** con nodos `agent` y `tools`; máximo 6 iteraciones de tool.
+- **Checkpointer:** `PostgresSaver` si existe `DATABASE_URL` (URI Postgres directa); si no, `MemorySaver` en memoria del proceso.
+- **`thread_id`:** por mensaje nuevo se usa un id único por turno (`sessionId` + timestamp) para no mezclar checkpoints; el resume tras HITL reutiliza el `checkpointThreadId` guardado en `structured_payload`.
+- Detalle de implementación, streaming, `__interrupt__` y regresiones evitadas: **[docs/tools-design/hitl.md](tools-design/hitl.md)** (sección *Implementación actual*).
 
 ## Herramientas: catálogo, ejecución y estilo de registro
 
 - **`packages/agent/src/tools/catalog.ts`** — Definiciones de producto: `id`, descripción, `risk`, `requires_integration`, `parameters_schema`. No ejecuta llamadas externas.
-- **`packages/agent/src/tools/adapters.ts`** y módulos auxiliares (p. ej. `calendar-adapters.ts`, `github-api.ts`) — Ejecución real, esquemas Zod para LangChain, seguimiento en `tool_calls`, confirmación cuando `toolRequiresConfirmation` aplica, y `JSON.stringify` de resultados hacia el modelo.
+- **`packages/agent/src/tools/adapters.ts`** y módulos auxiliares (p. ej. `calendar-adapters.ts`, `github-api.ts`) — Ejecución real, esquemas Zod para LangChain, seguimiento en `tool_calls`, y `JSON.stringify` de resultados hacia el modelo. La confirmación humana (HITL) para riesgo medio/alto vive en **`graph.ts`** (`interrupt`), no en los adapters.
 
 **Estilo de registro en el código actual:** `buildLangChainTools` construye la lista con bloques `if (isToolAvailable(...)) { tools.push(tool(...)) }`. Es válido y equivalente en robustez a otras formas de organizar el mismo comportamiento.
 

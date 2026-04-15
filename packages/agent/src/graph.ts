@@ -68,6 +68,45 @@ export interface AgentOutput {
 
 const MAX_TOOL_ITERATIONS = 6;
 
+function normalizeMessageContentToString(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .filter(
+        (p): p is { type: string; text: string } =>
+          typeof p === "object" && p !== null && "text" in p
+      )
+      .map((p) => p.text)
+      .join("")
+      .trim();
+  }
+  return raw ? String(raw) : "";
+}
+
+/**
+ * Last AIMessage with non-empty text in the **current user turn** (after the latest HumanMessage).
+ * Avoids returning an older assistant reply from chat history when the latest model output is empty.
+ */
+function getLastAssistantText(messages: BaseMessage[]): string {
+  let lastHumanIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] instanceof HumanMessage) {
+      lastHumanIdx = i;
+      break;
+    }
+  }
+  if (lastHumanIdx < 0) return "";
+
+  for (let i = messages.length - 1; i > lastHumanIdx; i--) {
+    const m = messages[i];
+    if (m instanceof AIMessage) {
+      const text = normalizeMessageContentToString(m.content);
+      if (text.trim().length > 0) return text;
+    }
+  }
+  return "";
+}
+
 /** Inyectado cuando hay tools de creación en GitHub: el modelo suele confundir repo nuevo vs issue. */
 const GITHUB_CREATE_TOOLS_ADDENDUM = `
 
@@ -75,7 +114,8 @@ const GITHUB_CREATE_TOOLS_ADDENDUM = `
 - Si el usuario pide crear un NUEVO repositorio (crear repositorio, nuevo repo, crear repo, new repository, etc.), usa ÚNICAMENTE la herramienta github_create_repo. El parámetro "name" es solo el slug del repo (ej. mi-app), sin owner ni barra "/".
 - Si el usuario NO dijo un nombre concreto para el repositorio, NO llames a github_create_repo. Responde en texto y pregunta cómo quiere llamarlo (un solo slug corto). No inventes ni reutilices nombres de ejemplos anteriores.
 - github_create_issue sirve SOLO para abrir un ticket/issue dentro de un repositorio que YA EXISTE. No la uses para crear el repositorio en sí.
-- Títulos como "Nuevo repositorio X" en un pedido de crear proyecto en GitHub indican github_create_repo con name="X", no create_issue.`;
+- Títulos como "Nuevo repositorio X" en un pedido de crear proyecto en GitHub indican github_create_repo con name="X", no create_issue.
+- NUNCA uses github_create_repo en un turno de CALENDARIO. Si el usuario está creando/listando eventos, citas o agendas, NO llames a ninguna herramienta de GitHub aunque el mensaje contenga palabras que se parezcan a nombres de repos. Usa SOLO las herramientas calendar_*.`;
 
 const GITHUB_SOCIAL_ADDENDUM = `
 
@@ -115,6 +155,7 @@ const CALENDAR_TOOLS_ADDENDUM = `
 
 [Reglas Google Calendar — obligatorias]
 - Si el usuario pide eventos, citas, agenda o calendario, usa las herramientas calendar_* (p. ej. calendar_list_events con calendar_id "primary"). No uses herramientas GitHub para esas peticiones.
+- Al CREAR un evento (calendar_create_event), usa SIEMPRE calendar_id="primary" salvo que el usuario diga explícitamente en QUÉ calendario quiere crearlo ("en el calendario Lab10", "en mi calendario de trabajo"). El nombre del evento NO es el nombre del calendario — no confundas "curso Lab10" (título del evento) con el calendario llamado "Lab10".
 - github_create_repo / github_create_issue son solo para repositorios e issues en GitHub, nunca para citas o calendario.
 - Si NO dijo período ("mis eventos", "qué tengo", "mi calendario"): llama calendar_list_events SIN time_min ni time_max → recibirás needs_period; haz UNA pregunta corta (hoy / esta semana / desde-hasta / etc.). No adivines fechas ni listes eventos hasta tener rango.
 - Cuando tengas el período (explícito o acordado), convierte a time_min y time_max en ISO 8601 usando get_user_preferences.timezone (p. ej. America/Mexico_City). Pasa SIEMPRE ambos campos en la siguiente llamada.
@@ -172,10 +213,13 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
 
+  const now = new Date();
+  const dateContext = `\n\n[Contexto temporal — generado automáticamente]\nFecha y hora actual del servidor: ${now.toISOString()}\nZona del usuario: ${userTimezone ?? "UTC"}\nFecha local del usuario: ${now.toLocaleDateString("es-MX", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: userTimezone ?? "UTC" })}\nHora local: ${now.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", timeZone: userTimezone ?? "UTC" })}\nCuando el usuario dice "mañana", "hoy", "la próxima semana", etc., calcula las fechas ISO a partir de ESTA fecha. NUNCA uses fechas de 2023, 2024 ni 2025 salvo que el usuario las indique explícitamente.`;
+
   const effectiveSystemPrompt = appendCalendarToolRules(
     appendGithubSocialRules(
       appendGithubCreateToolRules(
-        systemPrompt,
+        systemPrompt + dateContext,
         lcTools as Array<{ name?: string }>
       ),
       lcTools as Array<{ name?: string }>
@@ -232,7 +276,24 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         return `Se necesita tu confirmación para crear el issue "${String(args.title ?? "")}" en ${String(args.owner ?? "")}/${String(args.repo ?? "")}.`;
       }
       if (toolName === "calendar_create_event") {
-        return `Confirma crear el evento "${String(args.summary ?? "")}" del ${String(args.start_datetime ?? "")} al ${String(args.end_datetime ?? "")}.`;
+        const fmt = (iso: unknown): string => {
+          try {
+            const d = new Date(String(iso));
+            if (isNaN(d.getTime())) return String(iso);
+            return d.toLocaleString("es-MX", {
+              weekday: "long",
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+              timeZone: userTimezone ?? "America/Mexico_City",
+            });
+          } catch {
+            return String(iso);
+          }
+        };
+        return `Confirma crear el evento "${String(args.summary ?? "")}" de ${fmt(args.start_datetime)} a ${fmt(args.end_datetime)}.`;
       }
       if (toolName === "calendar_update_event") {
         return `Confirma actualizar el evento ${String(args.event_id ?? "")}.`;
@@ -322,6 +383,31 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
             });
           }
         }
+      } else {
+        const unavailablePayload: Record<string, unknown> = {
+          error: "tool_not_available",
+          tool_name: tc.name,
+          message:
+            "Esta herramienta no está disponible (integración inactiva, herramienta deshabilitada o no cargada en el servidor). Di al usuario qué falta sin inventar datos — p. ej. conectar Google Calendar en Ajustes si pidió calendarios.",
+        };
+        try {
+          const record = await createToolCall(
+            db,
+            state.sessionId,
+            tc.name,
+            (tc.args as Record<string, unknown>) ?? {},
+            false
+          );
+          await updateToolCallStatus(db, record.id, "failed", unavailablePayload);
+        } catch (e) {
+          console.error("[agent] tool_not_available audit row failed:", e);
+        }
+        results.push(
+          new ToolMessage({
+            content: JSON.stringify(unavailablePayload),
+            tool_call_id: tc.id!,
+          })
+        );
       }
     }
 
@@ -465,26 +551,15 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   let responseText = "";
   if (!pending) {
-    const lastMessage = finalState.messages[finalState.messages.length - 1];
-    const raw = lastMessage?.content;
-    if (typeof raw === "string") {
-      responseText = raw;
-    } else if (Array.isArray(raw)) {
-      // Content parts array — extract text parts only
-      responseText = raw
-        .filter(
-          (p): p is { type: string; text: string } =>
-            typeof p === "object" && p !== null && "text" in p
-        )
-        .map((p) => p.text)
-        .join("")
-        .trim();
-    } else {
-      responseText = raw ? String(raw) : "";
-    }
+    responseText = getLastAssistantText(finalState.messages);
 
     if (!responseText && resumeDecision === "reject") {
       responseText = "Acción cancelada por el usuario.";
+    }
+
+    if (!responseText.trim()) {
+      responseText =
+        "No pude generar una respuesta en este turno. Revisa integraciones y herramientas en Ajustes e inténtalo de nuevo.";
     }
 
     if (responseText.trim().length > 0) {

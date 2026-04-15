@@ -57,7 +57,7 @@ The `pendingConfirmation` only lives in React state (not DB) and the tool is exe
 ```mermaid
 flowchart TD
   userMsg["User message"] --> runAgent
-  runAgent -->|"new message"| invoke["graph.invoke(messages, threadId=sessionId)"]
+  runAgent -->|"new message"| invoke["graph stream (threadId único por turno; ver §Implementación actual)"]
   invoke --> agentNode["agent node"]
   agentNode --> toolsNode["tools node"]
   toolsNode -->|"risk ≥ medium"| interruptCall["interrupt(payload)\nLangGraph saves state to Postgres"]
@@ -78,7 +78,7 @@ flowchart TD
 - `[packages/agent/package.json](packages/agent/package.json)` — add `@langchain/langgraph-checkpoint-postgres`
 - `[packages/agent/src/checkpointer.ts](packages/agent/src/checkpointer.ts)` — new: singleton `PostgresSaver` factory
 - `[packages/agent/src/graph.ts](packages/agent/src/graph.ts)` — core changes (interrupt, resume, Postgres checkpointer)
-- `[packages/agent/src/tools/withTracking.ts](packages/agent/src/tools/withTracking.ts)` — remove `pending_confirmation` JSON, keep DB tracking
+- Tool adapters (`adapters.ts`, `calendar-adapters.ts`) — HITL solo en `graph.ts`; sin ramas `pending_confirmation` en handlers
 - `[packages/db/src/queries/tool-calls.ts](packages/db/src/queries/tool-calls.ts)` — add `findExistingPendingToolCall` (idempotency)
 - `[apps/web/src/app/api/chat/confirm/route.ts](apps/web/src/app/api/chat/confirm/route.ts)` — call `runAgent({ resumeDecision })` instead of direct tool execution
 - `[apps/web/src/app/chat/page.tsx](apps/web/src/app/chat/page.tsx)` — query `tool_calls` for pending items on load
@@ -262,3 +262,36 @@ Run each scenario after deploying the changes. Check both the final user-visible
 - [ ] All existing self-tests pass: `test:github-intent`, `test:calendar-window`, `test:calendar-display`, `test:calendar-period-intent`, `test:chat-greeting-intent`.
 - [ ] `npm run type-check --workspace=packages/agent` passes.
 - [ ] `npm run type-check --workspace=apps/web` passes.
+
+---
+
+## Implementación actual (post-migración)
+
+Esta sección resume comportamiento que **no** estaba en el plan inicial pero se añadió al estabilizar HITL en producción.
+
+### `thread_id` del checkpointer vs sesión de chat
+
+- Cada invocación **nueva** a `runAgent` (sin `resumeDecision`) usa  
+  `configurable.thread_id = \`${sessionId}-${Date.now()}\``  
+  para no acumular mensajes viejos del checkpointer (reducer append) y evitar que el modelo reutilice nombres o contexto de turnos anteriores.
+- Al crear un interrupt, `pendingConfirmation` incluye **`checkpointThreadId`** (mismo string).  
+  **`/api/chat/confirm`** y el webhook de Telegram leen ese valor desde `agent_messages.structured_payload` y lo pasan como `checkpointThreadId` en `runAgent` para que `Command({ resume })` reabra el **mismo** hilo donde quedó pausado el grafo.
+
+### Respuesta visible al usuario (`response`)
+
+- Tras el stream se usa **`app.getState()`** para el estado autoritativo.
+- El texto devuelto no es solo `messages.at(-1)`: se toma el **último `AIMessage` con texto no vacío después del último `HumanMessage`** del turno (`getLastAssistantText`), para no mostrar respuestas vacías cuando el último mensaje es solo `tool_calls` o cuando hay bucle hasta `MAX_TOOL_ITERATIONS`.
+- Si el modelo aún devuelve vacío tras un rechazo HITL, hay fallback explícito; si sigue vacío, un mensaje genérico para no dejar la UI en blanco.
+
+### Tool invocada pero no registrada en el servidor
+
+Si el LLM pide una tool que **no** está en `lcTools` (integración sin token, tool deshabilitada, nombre desconocido), el `toolExecutorNode` emite un `ToolMessage` sintético con `error: "tool_not_available"` y **persiste** una fila en `tool_calls` con `status: failed` y ese payload (auditoría). Así en Supabase se ve el intento aunque el handler real no se ejecutara.
+
+### Google Calendar: fila `active` ≠ token usable
+
+`user_integrations.status = active` no implica que `getGoogleCalendarAccessToken` devuelva string: el access token expira; el refresh es **lazy** en cada petición que necesita el token (ventana ~5 min antes de expirar). Si el refresh falla o faltan datos cifrados, **no** se registran las tools `calendar_*` y el servidor escribe un **warning** en consola cuando la integración figura activa pero no hay token. La UI de Ajustes hoy solo distingue “hay fila de integración” / “no hay”; **no** muestra todavía un banner “reconectar Google” cuando el token es inválido (mejora de producto pendiente).
+
+### Variables de entorno
+
+- **`DATABASE_URL`**: URI directa Postgres (Supabase → Database → connection string). Si falta, se usa `MemorySaver` (checkpoints en memoria; el resume HITL no sobrevive al reinicio del proceso). Documentado también en `[apps/web/.env.example](apps/web/.env.example)`.
+- **`OPENROUTER_API_KEY`**, **`ENCRYPTION_KEY`**, OAuth Google/GitHub: sin ellos el refresh o el cifrado de tokens pueden fallar de forma independiente del diseño HITL.

@@ -79,7 +79,7 @@ async function resumeAgentFromCallback(
   action: "approve" | "reject"
 ) {
   const toolCall = await getPendingToolCall(db, toolCallId);
-  if (!toolCall) return { ok: false, message: "Tool call not found" };
+  if (!toolCall) return { ok: false, message: "Esta confirmación ya fue procesada o expiró. Envía el comando de nuevo si aún la necesitas." };
   const { data: session } = await db
     .from("agent_sessions")
     .select("id, user_id")
@@ -203,22 +203,20 @@ export async function POST(request: Request) {
     }
 
     if (action === "approve") {
+      await answerCallbackQuery(cb.id, "✅ Aprobado");
+      await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Procesando...");
       const result = await resumeAgentFromCallback(db, toolCallId, "approve");
-      await answerCallbackQuery(
-        cb.id,
-        result.ok ? "Aprobado" : "Error"
-      );
       if (result.pendingConfirmation) {
         const pc = result.pendingConfirmation;
         await sendTelegramMessage(cb.message.chat.id, pc.message, {
           inline_keyboard: [
             [
               {
-                text: "Aprobar",
+                text: "✅ Aprobar",
                 callback_data: `approve:${pc.toolCallId}`,
               },
               {
-                text: "Cancelar",
+                text: "❌ Cancelar",
                 callback_data: `reject:${pc.toolCallId}`,
               },
             ],
@@ -228,12 +226,12 @@ export async function POST(request: Request) {
         await sendTelegramMessage(cb.message.chat.id, result.message ?? "Hecho.");
       }
     } else if (action === "reject") {
+      await answerCallbackQuery(cb.id, "❌ Cancelado");
+      await sendTelegramMessage(cb.message.chat.id, "Acción cancelada.");
       const result = await resumeAgentFromCallback(db, toolCallId, "reject");
-      await answerCallbackQuery(cb.id, result.ok ? "Rechazado" : "Error");
-      await sendTelegramMessage(
-        cb.message.chat.id,
-        result.message ?? "Acción cancelada."
-      );
+      if (result.message) {
+        await sendTelegramMessage(cb.message.chat.id, result.message);
+      }
     }
 
     return NextResponse.json({ ok: true });
@@ -429,11 +427,11 @@ export async function POST(request: Request) {
         inline_keyboard: [
           [
             {
-              text: "Aprobar",
+              text: "✅ Aprobar",
               callback_data: `approve:${pc.toolCallId}`,
             },
             {
-              text: "Cancelar",
+              text: "❌ Cancelar",
               callback_data: `reject:${pc.toolCallId}`,
             },
           ],

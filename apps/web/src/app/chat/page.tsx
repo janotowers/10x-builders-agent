@@ -40,9 +40,9 @@ export default async function ChatPage() {
       .from("agent_messages")
       .select("role, content, created_at")
       .eq("session_id", messages.id)
-      .order("created_at", { ascending: true })
+      .order("created_at", { ascending: false })
       .limit(50);
-    sessionMessages = data ?? [];
+    sessionMessages = (data ?? []).reverse();
 
     const { data: pendingMessages } = await supabase
       .from("agent_messages")

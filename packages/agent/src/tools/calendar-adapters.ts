@@ -31,7 +31,17 @@ function tz(ctx: ToolContext): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
   const token = ctx.googleCalendarAccessToken;
-  if (!token) return;
+  if (!token) {
+    const hasCalendarIntegration = ctx.integrations.some(
+      (i) => i.provider === "google_calendar" && i.status === "active"
+    );
+    if (hasCalendarIntegration) {
+      console.warn(
+        "[agent] Google Calendar está activo en user_integrations pero no hay access token usable (revisa ENCRYPTION_KEY, expiración del token o reconecta en Ajustes). Las herramientas calendar_* no se registrarán."
+      );
+    }
+    return;
+  }
 
   if (calendarToolEnabled("calendar_list_calendars", ctx)) {
     tools.push(
@@ -218,6 +228,7 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
           end_datetime: string;
           description?: string;
         }) => {
+          const calId = input.calendar_id || "primary";
           const body = buildEventResource({
             summary: input.summary,
             start_datetime: input.start_datetime,
@@ -225,11 +236,13 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
             timezone: tz(ctx),
             description: input.description,
           });
+          console.log("[calendar_create_event] calendar_id:", calId, "| body:", JSON.stringify(body));
           const { status, data } = await googleCalendarJson(
             token,
-            `/calendars/${input.calendar_id === "primary" ? "primary" : encodeURIComponent(input.calendar_id)}/events`,
+            `/calendars/${calId === "primary" ? "primary" : encodeURIComponent(calId)}/events`,
             { method: "POST", body: JSON.stringify(body) }
           );
+          console.log("[calendar_create_event] API response:", status, JSON.stringify(data));
           if (status >= 400) {
             return JSON.stringify({
               error: "Calendar API error",

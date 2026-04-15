@@ -17,6 +17,7 @@ import { githubApi } from "./github-api";
 import { userWantsNewGithubRepository } from "./github-intent";
 import { userMessageAnchorsCalendarPeriodOnly } from "./calendar-period-intent";
 import { userMessageIsPresenceOrGreetingOnly } from "./chat-greeting-intent";
+import { userMessageIsCalendarRelated } from "./calendar-intent";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 import { addCalendarTools } from "./calendar-adapters";
 import type { ToolContext } from "./tool-context";
@@ -70,6 +71,14 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   if (
     (toolId === "github_create_repo" || toolId === "github_create_issue") &&
     isGreeting
+  ) {
+    return false;
+  }
+
+  if (
+    (toolId === "github_create_repo" || toolId === "github_create_issue") &&
+    ctx.lastUserMessage &&
+    userMessageIsCalendarRelated(ctx.lastUserMessage)
   ) {
     return false;
   }
