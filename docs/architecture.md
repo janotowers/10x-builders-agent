@@ -28,7 +28,7 @@ agents/
 │           │   ├── settings/   # Ajustes post-onboarding
 │           │   └── api/
 │           │       ├── chat/           # POST → runAgent
-│           │       ├── chat/confirm/   # POST → ejecuta tool aprobada
+│           │       ├── chat/confirm/   # POST → resume HITL (runAgent + resumeDecision)
 │           │       ├── integrations/
 │           │       │   ├── github/   # OAuth GitHub
 │           │       │   └── google/   # OAuth Google Calendar
@@ -143,11 +143,12 @@ Migraciones en `packages/db/supabase/migrations/`:
 ## Canales
 
 - **Web:** POST `/api/chat`, confirmación `POST /api/chat/confirm`.
-- **Telegram:** webhook, inline keyboards.
+- **Telegram:** webhook; teclado inline con `✅ Aprobar` / `❌ Cancelar`; al pulsar, feedback inmediato (`answerCallbackQuery` + mensaje corto al chat) antes de reanudar el grafo con `runAgent({ resumeDecision })`.
 - **Reserva pública:** `GET /book/[token]`, APIs bajo `/api/public/booking/`.
 
 ## UI de chat (web)
 
+- Al cargar `/chat`, el servidor trae de Supabase los **últimos 50** mensajes de la sesión web activa (`ORDER BY created_at DESC LIMIT 50`, luego se invierte el orden para mostrar cronológicamente de arriba abajo).
 - Los mensajes del **usuario** se muestran como texto plano.
 - Los mensajes del **asistente** se renderizan como **Markdown** (`react-markdown` en `apps/web/src/app/chat/chat-interface.tsx`), con estilos vía el plugin `@tailwindcss/typography` cargado en `apps/web/src/app/globals.css`. Los enlaces abren en nueva pestaña (`target="_blank"`, `rel="noopener noreferrer"`).
 

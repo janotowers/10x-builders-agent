@@ -194,6 +194,8 @@ In the `callback_query` handler (approve/reject):
 - Send `result.response` as a Telegram message (the agent's reply after tool execution)
 - Remove the direct `executeGitHubTool` call
 
+**UX Telegram (post-implementación):** los botones inline usan texto `✅ Aprobar` / `❌ Cancelar`. Al pulsar, primero se responde el callback (`answerCallbackQuery`) y se envía un mensaje corto al chat (`Acción aprobada. Procesando...` o `Acción cancelada.`) **antes** de `resumeAgentFromCallback`, para que el usuario vea feedback inmediato mientras el grafo termina.
+
 ### 10. `CONFIRMATION_MESSAGES` in `adapters.ts`
 
 Keep as-is — these provide human-readable descriptions passed into the interrupt payload.
@@ -243,11 +245,13 @@ Run each scenario after deploying the changes. Check both the final user-visible
 
 ### Telegram channel
 
-- [ ] **Telegram approve** — Send a message that triggers a risky tool via Telegram. Inline keyboard appears. Tap **Aprobar**. Verify:
+- [ ] **Telegram approve** — Send a message that triggers a risky tool via Telegram. Inline keyboard appears (`✅ Aprobar` / `❌ Cancelar`). Tap **Aprobar**. Verify:
+  - Toast del callback (p. ej. "✅ Aprobado") y mensaje inmediato "Acción aprobada. Procesando..." antes de la respuesta larga del agente.
   - Bot replies with the agent's continuation message.
   - `tool_calls` transitions to `executed`.
 
 - [ ] **Telegram reject** — Same trigger, tap **Cancelar**. Verify:
+  - Toast "❌ Cancelado" y mensaje "Acción cancelada." antes del resultado del agente (si aplica).
   - Bot replies with cancellation message.
   - `tool_calls` transitions to `rejected`.
 
@@ -295,3 +299,16 @@ Si el LLM pide una tool que **no** está en `lcTools` (integración sin token, t
 
 - **`DATABASE_URL`**: URI directa Postgres (Supabase → Database → connection string). Si falta, se usa `MemorySaver` (checkpoints en memoria; el resume HITL no sobrevive al reinicio del proceso). Documentado también en `[apps/web/.env.example](apps/web/.env.example)`.
 - **`OPENROUTER_API_KEY`**, **`ENCRYPTION_KEY`**, OAuth Google/GitHub: sin ellos el refresh o el cifrado de tokens pueden fallar de forma independiente del diseño HITL.
+
+### Chat web: carga de historial
+
+En `[apps/web/src/app/chat/page.tsx](apps/web/src/app/chat/page.tsx)` los mensajes se cargan con **`ORDER BY created_at DESC LIMIT 50`** y luego se invierte el arreglo para mostrarlos en orden cronológico. Así, tras un refresh, el usuario ve los **50 mensajes más recientes** de la sesión activa, no los 50 más antiguos (que podían ocultar el final de la conversación).
+
+### Calendario: texto de confirmación HITL y `calendar_id`
+
+- El mensaje de confirmación para `calendar_create_event` se arma en `graph.ts` con fechas legibles en la zona del perfil (no solo ISO crudo en la tarjeta).
+- El addendum de calendario instruye usar **`calendar_id: "primary"`** salvo que el usuario indique explícitamente otro calendario, para no confundir el título del evento (p. ej. "Lab10") con un calendario compartido del mismo nombre.
+
+### Enlaces `htmlLink` de Google Calendar
+
+Los enlaces que devuelve la API apuntan al calendario de la **cuenta Google** asociada al OAuth de la app. Si el usuario abre el enlace en un navegador con **otra** sesión de Google activa, puede parecer que el evento "no existe"; conviene abrir Calendar con la misma cuenta que conectó en Ajustes.
