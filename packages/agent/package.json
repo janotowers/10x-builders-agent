@@ -9,7 +9,8 @@
     "test:calendar-window": "tsx src/tools/calendar-list-window.selftest.ts",
     "test:calendar-display": "tsx src/tools/calendar-event-display.selftest.ts",
     "test:calendar-period-intent": "tsx src/tools/calendar-period-intent.selftest.ts",
-    "test:chat-greeting-intent": "tsx src/tools/chat-greeting-intent.selftest.ts"
+    "test:chat-greeting-intent": "tsx src/tools/chat-greeting-intent.selftest.ts",
+    "test:local-shell-intent": "tsx src/tools/local-shell-intent.selftest.ts"
   },
   "dependencies": {
     "@agents/db": "*",

@@ -93,15 +93,23 @@ Construir un agente que permita a un usuario **gestionar tareas y ejecutar accio
 
 **Env vars:** `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (además de `NEXT_PUBLIC_SITE_URL`, `ENCRYPTION_KEY`)
 
-#### 7.2 Outlook — pendiente
+#### 7.2 Bash en el servidor (opcional) ✓
+
+- [x] Tool `bash` en el catálogo (riesgo alto → confirmación HITL como el resto de acciones sensibles)
+- [x] Ejecución one-shot en el host del proceso Node (`bash -lc`), implementación en `packages/agent/src/tools/bashExec.ts`
+- [x] Activación por servidor: `BASH_TOOL_ENABLED=true`; directorio de trabajo opcional `BASH_TOOL_CWD`; documentado en `apps/web/.env.example`
+- [x] Toggle en onboarding y en Ajustes (misma allowlist que otras tools; no requiere OAuth)
+- [x] Diseño y guardrails: **[docs/tools-design/bash-tool.md](tools-design/bash-tool.md)**
+
+#### 7.3 Outlook — pendiente
 
 - [ ] Calendario Outlook / Microsoft Graph (misma estructura base que 7.1 cuando aplique)
 
-#### 7.3 Correo — pendiente
+#### 7.4 Correo — pendiente
 
 - [ ] Gmail / Outlook — lectura de bandeja, envío con confirmación
 
-#### 7.4 Documentos — pendiente
+#### 7.5 Documentos — pendiente
 
 - [ ] Búsqueda en Google Drive / Notion
 

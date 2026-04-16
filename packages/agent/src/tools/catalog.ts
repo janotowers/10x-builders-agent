@@ -169,6 +169,28 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       required: ["event_id"],
     },
   },
+  {
+    id: "bash",
+    name: "bash",
+    description:
+      "Runs a one-shot shell command on the server host via bash -lc. Dangerous: only use when the user explicitly asked to run a command and the deployment allows it. Requires human confirmation. The terminal field is a logical label for logs only, not a persistent PTY session.",
+    risk: "high",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        terminal: {
+          type: "string",
+          description:
+            "Logical label for correlation and logs (e.g. default). Not a real persistent terminal session.",
+        },
+        prompt: {
+          type: "string",
+          description: "Shell command string passed to bash -lc",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
 ];
 
 export function getToolRisk(toolId: string): ToolRisk {

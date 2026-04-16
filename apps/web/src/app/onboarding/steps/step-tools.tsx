@@ -85,6 +85,14 @@ const AVAILABLE_TOOLS = [
     risk: "high" as const,
     requiresIntegration: "google_calendar",
   },
+  {
+    id: "bash",
+    name: "Bash (servidor)",
+    description:
+      "Ejecuta un comando en el servidor donde corre la app (requiere confirmación y BASH_TOOL_ENABLED en el servidor).",
+    risk: "high" as const,
+    requiresIntegration: null,
+  },
 ];
 
 const RISK_LABELS = {

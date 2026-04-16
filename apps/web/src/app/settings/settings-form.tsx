@@ -47,6 +47,7 @@ const TOOL_IDS = [
   "calendar_create_event",
   "calendar_update_event",
   "calendar_delete_event",
+  "bash",
 ];
 
 export function SettingsForm({

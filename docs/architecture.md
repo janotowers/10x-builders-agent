@@ -42,7 +42,7 @@ agents/
 │           └── middleware.ts
 ├── packages/
 │   ├── agent/
-│   │   └── src/tools/   # catalog, adapters, github-api, calendar-api, github-intent, …
+│   │   └── src/tools/   # catalog, adapters, bashExec, github-api, calendar-api, …
 │   ├── db/
 │   │   ├── src/google-calendar-oauth.ts  # refresh + getGoogleCalendarAccessToken
 │   │   └── src/queries/booking-links.ts
@@ -65,7 +65,7 @@ agents/
 └──────────────────────────┬──────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│   LangGraph Runtime + tools (GitHub, Calendar, …)     │
+│   LangGraph Runtime + tools (GitHub, Calendar, bash→host…) │
 └──────────────────────────┬──────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────┐
@@ -76,7 +76,7 @@ agents/
 └──────────────────────────┬──────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│  External: GitHub API | Google Calendar API         │
+│  External: GitHub API | Google Calendar API | host OS (bash tool) │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -98,9 +98,13 @@ Los visitantes **no** hacen OAuth con Google. Las rutas bajo `/api/public/bookin
 3. Se carga o crea `agent_session` para el canal.
 4. Se cargan `profile`, `user_tool_settings` e `integrations`.
 5. Se obtiene `githubToken` (descifrado) y `googleCalendarAccessToken` (con refresh si aplica).
-6. Se filtran las tools disponibles (allowlist + integración activa).
+6. Se filtran las tools disponibles (allowlist + integración activa; la tool `bash` además exige `BASH_TOOL_ENABLED=true` en el servidor).
 7. Se invoca `runAgent()` con `userTimezone` desde `profiles.timezone`.
 8. Si una tool tiene riesgo medio/alto → `interrupt()` en el grafo, `pendingConfirmation` persistido (incl. `checkpointThreadId` para resume); confirmación en web o Telegram vía `runAgent({ resumeDecision })`.
+
+### Herramienta `bash` (host del servidor)
+
+No es una API externa ni OAuth: ejecuta un comando en el **mismo proceso/host** que sirve Next.js. Útil en desarrollo o despliegues self-hosted con control total del servidor; en serverless multi-instancia no hay terminal persistente (el campo `terminal` en la tool es solo etiqueta para logs). Variables: `BASH_TOOL_ENABLED`, opcionalmente `BASH_TOOL_CWD` (véase `apps/web/.env.example`). Detalle: **[docs/tools-design/bash-tool.md](tools-design/bash-tool.md)**.
 
 ## LangGraph: grafo y HITL
 
@@ -111,7 +115,7 @@ Los visitantes **no** hacen OAuth con Google. Las rutas bajo `/api/public/bookin
 
 ## Herramientas: catálogo, ejecución y estilo de registro
 
-- **`packages/agent/src/tools/catalog.ts`** — Definiciones de producto: `id`, descripción, `risk`, `requires_integration`, `parameters_schema`. No ejecuta llamadas externas.
+- **`packages/agent/src/tools/catalog.ts`** — Definiciones de producto: `id`, descripción, `risk`, `requires_integration`, `parameters_schema`. No ejecuta llamadas externas. La tool **`bash`** (riesgo alto, sin OAuth) ejecuta un comando one-shot en el host del proceso Node si `BASH_TOOL_ENABLED=true` y el usuario la tiene habilitada en Ajustes; ver `packages/agent/src/tools/bashExec.ts` y `docs/tools-design/bash-tool.md`.
 - **`packages/agent/src/tools/adapters.ts`** y módulos auxiliares (p. ej. `calendar-adapters.ts`, `github-api.ts`) — Ejecución real, esquemas Zod para LangChain, seguimiento en `tool_calls`, y `JSON.stringify` de resultados hacia el modelo. La confirmación humana (HITL) para riesgo medio/alto vive en **`graph.ts`** (`interrupt`), no en los adapters.
 
 **Estilo de registro en el código actual:** `buildLangChainTools` construye la lista con bloques `if (isToolAvailable(...)) { tools.push(tool(...)) }`. Es válido y equivalente en robustez a otras formas de organizar el mismo comportamiento.
@@ -164,4 +168,5 @@ Migraciones en `packages/db/supabase/migrations/`:
 - **Ventana de listado:** `packages/agent/src/tools/calendar-list-window.ts` corrige rangos inválidos o solo pasados y orienta al modelo cuando falta período (`needs_period`).
 - **Instrucciones al modelo:** en `packages/agent/src/graph.ts`, el addendum de calendario fija interpretaciones como “esta semana” = semana calendario (lunes–domingo) en la zona del perfil, no “desde ahora + 7 días”.
 - **Evitar confusión con GitHub:** si el último mensaje del usuario parece solo una aclaración de período de calendario (`packages/agent/src/tools/calendar-period-intent.ts`), `packages/agent/src/tools/adapters.ts` puede ocultar temporalmente `github_list_repos` / `github_list_issues` para ese turno, de modo que no sustituyan a `calendar_list_events`.
+- **Bash vs listado de repos:** si el mensaje indica archivos/carpeta del servidor (`local-shell-intent.ts`), se ocultan `github_list_repos` / `github_list_issues` ese turno para que el modelo use la tool `bash` (si está habilitada). El prompt incluye un addendum en `graph.ts` que lo refuerza.
 - **Saludos / presencia:** mensajes como «¿sigues ahí?» o «hola» sin pedir datos (`chat-greeting-intent.ts`) desactivan **todas** las tools de GitHub visibles ese turno (listado y creación); reglas equivalentes en el addendum `GITHUB_SOCIAL_ADDENDUM` en `graph.ts`.

@@ -151,6 +151,40 @@ function appendGithubSocialRules(
   return `${basePrompt.trimEnd()}${GITHUB_SOCIAL_ADDENDUM}`;
 }
 
+function buildBashAddendum(): string {
+  let shellLine: string;
+  try {
+    const { getActiveShellName } = require("./tools/bashExec") as {
+      getActiveShellName: () => string;
+    };
+    const shell = getActiveShellName();
+    shellLine =
+      shell === "powershell"
+        ? "- IMPORTANTE: El servidor corre en **Windows con PowerShell** (no se encontró bash). Usa sintaxis de PowerShell: Get-ChildItem (no ls -la), Get-Content (no cat). Los flags Unix como -la NO funcionan."
+        : `- El servidor usa **${shell}**. Usa sintaxis bash/Unix estándar (ls, cat, pwd, etc.).`;
+  } catch {
+    shellLine =
+      "- Usa sintaxis bash estándar (ls, cat, pwd, etc.).";
+  }
+  return `
+
+[Reglas herramienta bash — obligatorias]
+- Si el usuario pide archivos o carpetas del SERVIDOR (donde corre la app), "carpeta actual", "directorio actual", "listar archivos aquí" → usa SOLO la herramienta bash con el comando adecuado. NO uses github_list_repos: esa herramienta lista repositorios remotos en GitHub, no archivos del disco del servidor.
+- github_list_repos solo cuando pide explícitamente sus repositorios/proyectos en GitHub, "mis repos en GitHub", listado de repos remotos, etc.
+${shellLine}`;
+}
+
+function appendBashRules(
+  basePrompt: string,
+  lcTools: Array<{ name?: string }>
+): string {
+  const names = new Set(
+    lcTools.map((t) => t.name).filter((n): n is string => Boolean(n))
+  );
+  if (!names.has("bash")) return basePrompt;
+  return `${basePrompt.trimEnd()}${buildBashAddendum()}`;
+}
+
 const CALENDAR_TOOLS_ADDENDUM = `
 
 [Reglas Google Calendar — obligatorias]
@@ -218,8 +252,11 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const effectiveSystemPrompt = appendCalendarToolRules(
     appendGithubSocialRules(
-      appendGithubCreateToolRules(
-        systemPrompt + dateContext,
+      appendBashRules(
+        appendGithubCreateToolRules(
+          systemPrompt + dateContext,
+          lcTools as Array<{ name?: string }>
+        ),
         lcTools as Array<{ name?: string }>
       ),
       lcTools as Array<{ name?: string }>
@@ -300,6 +337,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       }
       if (toolName === "calendar_delete_event") {
         return `Confirma eliminar el evento ${String(args.event_id ?? "")}.`;
+      }
+      if (toolName === "bash") {
+        const term = String(args.terminal ?? "default");
+        const p = String(args.prompt ?? "");
+        const preview = p.length > 200 ? `${p.slice(0, 200)}…` : p;
+        return `Confirma ejecutar en el servidor (etiqueta: "${term}") el comando:\n${preview}`;
       }
       return `Confirma ejecutar la herramienta ${toolName}.`;
     }

@@ -18,8 +18,10 @@ import { userWantsNewGithubRepository } from "./github-intent";
 import { userMessageAnchorsCalendarPeriodOnly } from "./calendar-period-intent";
 import { userMessageIsPresenceOrGreetingOnly } from "./chat-greeting-intent";
 import { userMessageIsCalendarRelated } from "./calendar-intent";
+import { userMessageIsLocalShellOrFilesystemIntent } from "./local-shell-intent";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 import { addCalendarTools } from "./calendar-adapters";
+import { executeBashCommand, getActiveShellName } from "./bashExec";
 import type { ToolContext } from "./tool-context";
 
 export type { ToolContext } from "./tool-context";
@@ -27,6 +29,10 @@ export type { ToolContext } from "./tool-context";
 function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   const setting = ctx.enabledTools.find((t) => t.tool_id === toolId);
   if (!setting?.enabled) return false;
+
+  if (toolId === "bash" && process.env.BASH_TOOL_ENABLED !== "true") {
+    return false;
+  }
 
   const def = TOOL_CATALOG.find((t) => t.id === toolId);
   if (def?.requires_integration) {
@@ -55,6 +61,17 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   if (
     (toolId === "github_list_repos" || toolId === "github_list_issues") &&
     userMessageAnchorsCalendarPeriodOnly(ctx.lastUserMessage)
+  ) {
+    return false;
+  }
+
+  if (
+    (toolId === "github_list_repos" ||
+      toolId === "github_list_issues" ||
+      toolId === "github_create_repo" ||
+      toolId === "github_create_issue") &&
+    ctx.lastUserMessage &&
+    userMessageIsLocalShellOrFilesystemIntent(ctx.lastUserMessage)
   ) {
     return false;
   }
@@ -362,6 +379,33 @@ export function buildLangChainTools(ctx: ToolContext) {
             repo: z.string(),
             title: z.string(),
             body: z.string().optional().default(""),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("bash", ctx)) {
+    const shell = getActiveShellName();
+    const shellHint =
+      shell === "powershell"
+        ? "The server runs Windows PowerShell. Use PowerShell syntax (e.g. Get-ChildItem, Get-Content)."
+        : "The server shell is bash. Use standard Unix/bash syntax.";
+    tools.push(
+      tool(
+        async (input: { terminal?: string; prompt: string }) => {
+          const result = await executeBashCommand({
+            terminal: input.terminal?.trim() || "default",
+            prompt: input.prompt,
+          });
+          return JSON.stringify(result);
+        },
+        {
+          name: "bash",
+          description: `Runs a single shell command on the server host. Requires user confirmation. ${shellHint} Set terminal to a short label for logs; prompt is the command.`,
+          schema: z.object({
+            terminal: z.string().max(128).optional().default("default"),
+            prompt: z.string().min(1).max(32000),
           }),
         }
       )
