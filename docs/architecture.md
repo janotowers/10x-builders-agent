@@ -42,7 +42,7 @@ agents/
 │           └── middleware.ts
 ├── packages/
 │   ├── agent/
-│   │   └── src/tools/   # catalog, adapters, bashExec, github-api, calendar-api, …
+│   │   └── src/tools/   # catalog, adapters, bashExec, fileTools, github-api, calendar-api, …
 │   ├── db/
 │   │   ├── src/google-calendar-oauth.ts  # refresh + getGoogleCalendarAccessToken
 │   │   └── src/queries/booking-links.ts
@@ -76,7 +76,7 @@ agents/
 └──────────────────────────┬──────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────┐
-│  External: GitHub API | Google Calendar API | host OS (bash tool) │
+│  External: GitHub API | Google Calendar API | host OS (bash + file tools) │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -98,13 +98,17 @@ Los visitantes **no** hacen OAuth con Google. Las rutas bajo `/api/public/bookin
 3. Se carga o crea `agent_session` para el canal.
 4. Se cargan `profile`, `user_tool_settings` e `integrations`.
 5. Se obtiene `githubToken` (descifrado) y `googleCalendarAccessToken` (con refresh si aplica).
-6. Se filtran las tools disponibles (allowlist + integración activa; la tool `bash` además exige `BASH_TOOL_ENABLED=true` en el servidor).
+6. Se filtran las tools disponibles (allowlist + integración activa; la tool `bash` además exige `BASH_TOOL_ENABLED=true` en el servidor, y `read_file`/`write_file`/`edit_file` exigen `FILE_TOOLS_ENABLED=true` + `FILE_TOOLS_ROOT`).
 7. Se invoca `runAgent()` con `userTimezone` desde `profiles.timezone`.
 8. Si una tool tiene riesgo medio/alto → `interrupt()` en el grafo, `pendingConfirmation` persistido (incl. `checkpointThreadId` para resume); confirmación en web o Telegram vía `runAgent({ resumeDecision })`.
 
 ### Herramienta `bash` (host del servidor)
 
 No es una API externa ni OAuth: ejecuta un comando en el **mismo proceso/host** que sirve Next.js. Útil en desarrollo o despliegues self-hosted con control total del servidor; en serverless multi-instancia no hay terminal persistente (el campo `terminal` en la tool es solo etiqueta para logs). Variables: `BASH_TOOL_ENABLED`, opcionalmente `BASH_TOOL_CWD` (véase `apps/web/.env.example`). Detalle: **[docs/tools-design/bash-tool.md](tools-design/bash-tool.md)**.
+
+### Herramientas de archivos (`read_file`, `write_file`, `edit_file`)
+
+Manipulan archivos de texto dentro de una **raíz configurada** (`FILE_TOOLS_ROOT`, ruta absoluta). Todas las rutas que pasa el modelo son **relativas** a esa raíz; `resolveSafePath` en `packages/agent/src/tools/fileTools.ts` rechaza rutas absolutas, `..` que escapen, y null bytes. Activación fail-closed: si `FILE_TOOLS_ENABLED !== "true"` o falta `FILE_TOOLS_ROOT`, las tres tools no se registran. `read_file` es `low` (sin HITL); `write_file` es `medium` (crea o sobrescribe, con confirmación); `edit_file` es `high` (reemplazo literal único, con confirmación). Detalle: **[docs/tools-design/files.md](tools-design/files.md)**.
 
 ## LangGraph: grafo y HITL
 

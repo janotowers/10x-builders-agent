@@ -73,17 +73,48 @@ export function ChatInterface({
         body: JSON.stringify({ message: text }),
       });
 
-      const data = await res.json();
+      const data = (await res.json()) as {
+        response?: string | null;
+        pendingConfirmation?: PendingConfirmation | null;
+        error?: string;
+      };
 
-      if (data.response) {
+      if (!res.ok) {
+        const errText =
+          typeof data.error === "string"
+            ? data.error
+            : `Error HTTP ${res.status}`;
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: data.response },
+          { role: "assistant" as const, content: `Error: ${errText}` },
         ]);
+        return;
       }
 
       if (data.pendingConfirmation) {
         setConfirmation(data.pendingConfirmation);
+      }
+
+      // Usar typeof === 'string' (no truthiness): null/undefined no son respuesta; "" sí debe mostrarse.
+      const assistantText = data.response;
+      if (typeof assistantText === "string") {
+        const content =
+          assistantText.length > 0
+            ? assistantText
+            : "Respuesta vacía del asistente. Si esperabas una tarjeta de confirmación, revisa debajo del chat.";
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant" as const, content },
+        ]);
+      } else if (!data.pendingConfirmation) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant" as const,
+            content:
+              "Respuesta incompleta del servidor (sin texto). Recarga la página o revisa la consola del servidor.",
+          },
+        ]);
       }
     } catch {
       setMessages((prev) => [

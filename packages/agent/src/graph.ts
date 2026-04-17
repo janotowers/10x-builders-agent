@@ -185,6 +185,30 @@ function appendBashRules(
   return `${basePrompt.trimEnd()}${buildBashAddendum()}`;
 }
 
+const FILE_TOOLS_ADDENDUM = `
+
+[Reglas herramientas de archivos (read_file / write_file / edit_file) — obligatorias]
+- Llama DIRECTAMENTE a la herramienta apropiada (read_file / write_file / edit_file). NO pidas confirmación en texto ("¿confirmas?", "¿procedo?"): write_file y edit_file ya muestran una tarjeta de confirmación automática al usuario antes de escribir en disco. Tu trabajo es generar el tool_call correcto con los parámetros, no pedir permiso verbal.
+- Si el usuario pide el contenido de un archivo del proyecto o del workspace del servidor, usa read_file con el parámetro path RELATIVO a la raíz del workspace (FILE_TOOLS_ROOT), por ejemplo "docs/plan.md", ".cursor/rules/algo.md" o "packages/agent/package.json". Nunca pases rutas absolutas (C:\\\\..., /home/..., /etc/...): la herramienta las rechaza.
+- Un **título** o nombre para humanos (p. ej. "1_Agente (Chat en Cursor) - Project Rules and Guidelines") **no es** una ruta de archivo. Si el usuario solo da un título sin ruta, no inventes el path: explica que necesitas la ruta relativa dentro del repo, o usa la herramienta bash (si está disponible) para buscar el archivo en el directorio de trabajo del servidor (p. ej. PowerShell: Get-ChildItem -Recurse -File | Where-Object { $_.Name -like '*fragmento*' }) y luego read_file con la ruta relativa encontrada respecto a FILE_TOOLS_ROOT.
+- Para edit_file, old_string debe aparecer EXACTAMENTE UNA VEZ en el archivo; si puede haber varias coincidencias, incluye contexto literal alrededor (mismos espacios y saltos de línea) para hacerla única. Si falla con "multiple_matches" o "no_match", ajusta el fragmento y vuelve a intentar.
+- Tras read_file, resume el contenido al usuario; si el JSON devuelve ok:false (p. ej. not_found, invalid_path), explica el error y sugiere comprobar la ruta o permisos.`;
+
+function appendFileToolsRules(
+  basePrompt: string,
+  lcTools: Array<{ name?: string }>
+): string {
+  const names = new Set(
+    lcTools.map((t) => t.name).filter((n): n is string => Boolean(n))
+  );
+  const hasFileTools =
+    names.has("read_file") ||
+    names.has("write_file") ||
+    names.has("edit_file");
+  if (!hasFileTools) return basePrompt;
+  return `${basePrompt.trimEnd()}${FILE_TOOLS_ADDENDUM}`;
+}
+
 const CALENDAR_TOOLS_ADDENDUM = `
 
 [Reglas Google Calendar — obligatorias]
@@ -250,11 +274,16 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const now = new Date();
   const dateContext = `\n\n[Contexto temporal — generado automáticamente]\nFecha y hora actual del servidor: ${now.toISOString()}\nZona del usuario: ${userTimezone ?? "UTC"}\nFecha local del usuario: ${now.toLocaleDateString("es-MX", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: userTimezone ?? "UTC" })}\nHora local: ${now.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", timeZone: userTimezone ?? "UTC" })}\nCuando el usuario dice "mañana", "hoy", "la próxima semana", etc., calcula las fechas ISO a partir de ESTA fecha. NUNCA uses fechas de 2023, 2024 ni 2025 salvo que el usuario las indique explícitamente.`;
 
-  const effectiveSystemPrompt = appendCalendarToolRules(
-    appendGithubSocialRules(
-      appendBashRules(
-        appendGithubCreateToolRules(
-          systemPrompt + dateContext,
+  const ambiguityAddendum = `\n\n[Reglas de desambiguación — obligatorias]\n- Respuestas cortas del usuario como "sí", "ok", "dale", "va", "hazlo", "procede", "no", "cancela": interprétalas SIEMPRE en el contexto del ÚLTIMO turno TUYO inmediatamente anterior. Si tu último turno prometió una acción concreta en un dominio (archivos, calendario, github, bash) pero NO llamaste a la herramienta, ahora debes llamar a la herramienta DIRECTAMENTE con los parámetros ya acordados. No elijas otra acción de otro dominio sólo porque aparezca en el historial lejano.\n- Si no tienes una acción claramente pendiente en tu turno anterior, responde pidiendo clarificación al usuario (una sola pregunta corta) en vez de asumir. Nunca "adivines" creando eventos, archivos o repos para reusar datos de turnos viejos.\n- Nunca pidas confirmación en TEXTO para acciones que tienen herramienta con riesgo medio/alto: la herramienta ya disparará su propia tarjeta de confirmación. Genera el tool_call y deja que el sistema pida la aprobación.`;
+
+  const effectiveSystemPrompt = appendFileToolsRules(
+    appendCalendarToolRules(
+      appendGithubSocialRules(
+        appendBashRules(
+          appendGithubCreateToolRules(
+            systemPrompt + dateContext + ambiguityAddendum,
+            lcTools as Array<{ name?: string }>
+          ),
           lcTools as Array<{ name?: string }>
         ),
         lcTools as Array<{ name?: string }>
@@ -268,7 +297,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // console.log("=== SYSTEM PROMPT ===\n", effectiveSystemPrompt, "\n=== END ===");
   // console.log("=== TOOLS REGISTERED ===", lcTools.map((t) => t.name).join(", "), "=== END ===");
 
-  const history = await getSessionMessages(db, sessionId, 30);
+  // Limitamos el contexto histórico para reducir contaminación entre turnos
+  // (p. ej. un "sí" aislado que el modelo asocie a una acción vieja de otro dominio).
+  const history = await getSessionMessages(db, sessionId, 12);
   const priorMessages: BaseMessage[] = history.map((m) => {
     if (m.role === "user") return new HumanMessage(m.content);
     if (m.role === "assistant") return new AIMessage(m.content);
@@ -343,6 +374,20 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         const p = String(args.prompt ?? "");
         const preview = p.length > 200 ? `${p.slice(0, 200)}…` : p;
         return `Confirma ejecutar en el servidor (etiqueta: "${term}") el comando:\n${preview}`;
+      }
+      if (toolName === "write_file") {
+        const p = String(args.path ?? "");
+        const c = String(args.content ?? "");
+        const bytes = Buffer.byteLength(c, "utf8");
+        return `Confirma escribir (crear o sobrescribir) el archivo \`${p}\` en el workspace del servidor (${bytes} bytes).`;
+      }
+      if (toolName === "edit_file") {
+        const p = String(args.path ?? "");
+        const oldS = String(args.old_string ?? "");
+        const newS = String(args.new_string ?? "");
+        const short = (s: string) =>
+          s.length > 120 ? `${s.slice(0, 120)}…` : s;
+        return `Confirma editar el archivo \`${p}\`: reemplazar\n«${short(oldS)}»\npor\n«${short(newS)}».`;
       }
       return `Confirma ejecutar la herramienta ${toolName}.`;
     }

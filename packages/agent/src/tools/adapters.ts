@@ -19,9 +19,15 @@ import { userMessageAnchorsCalendarPeriodOnly } from "./calendar-period-intent";
 import { userMessageIsPresenceOrGreetingOnly } from "./chat-greeting-intent";
 import { userMessageIsCalendarRelated } from "./calendar-intent";
 import { userMessageIsLocalShellOrFilesystemIntent } from "./local-shell-intent";
+import { userMessageIsFileToolsIntent } from "./file-tools-intent";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 import { addCalendarTools } from "./calendar-adapters";
 import { executeBashCommand, getActiveShellName } from "./bashExec";
+import {
+  executeReadFile,
+  executeWriteFile,
+  executeEditFile,
+} from "./fileTools";
 import type { ToolContext } from "./tool-context";
 
 export type { ToolContext } from "./tool-context";
@@ -31,6 +37,16 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   if (!setting?.enabled) return false;
 
   if (toolId === "bash" && process.env.BASH_TOOL_ENABLED !== "true") {
+    return false;
+  }
+
+  if (
+    (toolId === "read_file" ||
+      toolId === "write_file" ||
+      toolId === "edit_file") &&
+    (process.env.FILE_TOOLS_ENABLED !== "true" ||
+      !process.env.FILE_TOOLS_ROOT?.trim())
+  ) {
     return false;
   }
 
@@ -96,6 +112,18 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
     (toolId === "github_create_repo" || toolId === "github_create_issue") &&
     ctx.lastUserMessage &&
     userMessageIsCalendarRelated(ctx.lastUserMessage)
+  ) {
+    return false;
+  }
+
+  // Si la petición del usuario es claramente sobre archivos del workspace,
+  // ocultamos calendarios y creación en GitHub para que no "salte" a otro carril.
+  if (
+    ctx.lastUserMessage &&
+    userMessageIsFileToolsIntent(ctx.lastUserMessage) &&
+    (toolId.startsWith("calendar_") ||
+      toolId === "github_create_repo" ||
+      toolId === "github_create_issue")
   ) {
     return false;
   }
@@ -406,6 +434,92 @@ export function buildLangChainTools(ctx: ToolContext) {
           schema: z.object({
             terminal: z.string().max(128).optional().default("default"),
             prompt: z.string().min(1).max(32000),
+          }),
+        }
+      )
+    );
+  }
+
+  // ── File manipulation tools ────────────────────────────────
+
+  if (isToolAvailable("read_file", ctx)) {
+    tools.push(
+      tool(
+        async (input: { path: string; offset?: number; limit?: number }) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "read_file",
+            input,
+            false
+          );
+          const result = await executeReadFile(input);
+          const out = JSON.stringify(result);
+          const asRecord = result as unknown as Record<string, unknown>;
+          if (
+            typeof result === "object" &&
+            result !== null &&
+            (result as { ok?: boolean }).ok === false
+          ) {
+            await updateToolCallStatus(ctx.db, record.id, "failed", asRecord);
+          } else {
+            await updateToolCallStatus(ctx.db, record.id, "executed", asRecord);
+          }
+          return out;
+        },
+        {
+          name: "read_file",
+          description:
+            "Reads a file from the server workspace (FILE_TOOLS_ROOT). Path must be RELATIVE (e.g. docs/x.md), not a free-form document title — if the user only names a document, find the path with bash or ask for the relative path. Optional offset/limit (lines). offset is 1-based; 0 is treated as 'from the start'.",
+          schema: z.object({
+            path: z.string().min(1),
+            offset: z.number().int().min(0).optional(),
+            limit: z.number().int().min(1).max(5000).optional(),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("write_file", ctx)) {
+    tools.push(
+      tool(
+        async (input: { path: string; content: string }) => {
+          const result = await executeWriteFile(input);
+          return JSON.stringify(result);
+        },
+        {
+          name: "write_file",
+          description:
+            "Creates or OVERWRITES a file in the server workspace (FILE_TOOLS_ROOT). Requires confirmation. Path must be RELATIVE.",
+          schema: z.object({
+            path: z.string().min(1),
+            content: z.string(),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("edit_file", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          path: string;
+          old_string: string;
+          new_string: string;
+        }) => {
+          const result = await executeEditFile(input);
+          return JSON.stringify(result);
+        },
+        {
+          name: "edit_file",
+          description:
+            "Replaces a single unique occurrence of old_string with new_string in an existing file inside FILE_TOOLS_ROOT. Requires confirmation.",
+          schema: z.object({
+            path: z.string().min(1),
+            old_string: z.string().min(1),
+            new_string: z.string(),
           }),
         }
       )

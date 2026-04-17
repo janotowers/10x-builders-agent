@@ -93,6 +93,30 @@ const AVAILABLE_TOOLS = [
     risk: "high" as const,
     requiresIntegration: null,
   },
+  {
+    id: "read_file",
+    name: "Leer archivo (workspace)",
+    description:
+      "Lee archivos dentro de FILE_TOOLS_ROOT (ruta relativa). Requiere FILE_TOOLS_ENABLED en el servidor.",
+    risk: "low" as const,
+    requiresIntegration: null,
+  },
+  {
+    id: "write_file",
+    name: "Escribir archivo (workspace)",
+    description:
+      "Crea o sobrescribe archivos dentro de FILE_TOOLS_ROOT (requiere confirmación).",
+    risk: "medium" as const,
+    requiresIntegration: null,
+  },
+  {
+    id: "edit_file",
+    name: "Editar archivo (workspace)",
+    description:
+      "Reemplaza una única ocurrencia de texto en un archivo existente (requiere confirmación).",
+    risk: "high" as const,
+    requiresIntegration: null,
+  },
 ];
 
 const RISK_LABELS = {

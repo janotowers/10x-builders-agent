@@ -101,15 +101,23 @@ Construir un agente que permita a un usuario **gestionar tareas y ejecutar accio
 - [x] Toggle en onboarding y en Ajustes (misma allowlist que otras tools; no requiere OAuth)
 - [x] Diseño y guardrails: **[docs/tools-design/bash-tool.md](tools-design/bash-tool.md)**
 
-#### 7.3 Outlook — pendiente
+#### 7.3 Archivos en el servidor (workspace) ✓
+
+- [x] Tools `read_file` (low), `write_file` (medium, HITL) y `edit_file` (high, HITL) en el catálogo
+- [x] Implementación en `packages/agent/src/tools/fileTools.ts` con `resolveSafePath` (sin escape de raíz, sin rutas absolutas, sin null bytes)
+- [x] Activación por servidor: `FILE_TOOLS_ENABLED=true` + `FILE_TOOLS_ROOT=<ruta absoluta>`; documentado en `apps/web/.env.example`
+- [x] Toggles en onboarding y Ajustes; mensajes de confirmación específicos en `graph.ts`
+- [x] Self-test `test:file-tools` (resolveSafePath) + diseño en **[docs/tools-design/files.md](tools-design/files.md)**
+
+#### 7.4 Outlook — pendiente
 
 - [ ] Calendario Outlook / Microsoft Graph (misma estructura base que 7.1 cuando aplique)
 
-#### 7.4 Correo — pendiente
+#### 7.5 Correo — pendiente
 
 - [ ] Gmail / Outlook — lectura de bandeja, envío con confirmación
 
-#### 7.5 Documentos — pendiente
+#### 7.6 Documentos — pendiente
 
 - [ ] Búsqueda en Google Drive / Notion
 

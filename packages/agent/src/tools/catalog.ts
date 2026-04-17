@@ -170,6 +170,79 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "read_file",
+    name: "read_file",
+    description:
+      "Reads a text file from the server's configured workspace (FILE_TOOLS_ROOT). Path MUST be RELATIVE to the workspace root (never absolute), e.g. docs/plan.md or .cursor/rules/foo.md — NOT a human document title alone (e.g. a long name in quotes is not a path unless it matches a real relative path). Supports optional 1-based offset and limit to read a slice. If the user only gave a title, ask for the relative path or find the file via bash then read_file. Fails if the file is missing, too large, or escapes the workspace.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description:
+            "Path relative to FILE_TOOLS_ROOT, e.g. 'notes/todo.md'. Absolute paths are rejected.",
+        },
+        offset: {
+          type: "number",
+          description: "1-based start line (optional).",
+        },
+        limit: {
+          type: "number",
+          description: "Max number of lines to return (optional).",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    id: "write_file",
+    name: "write_file",
+    description:
+      "Creates a new text file or OVERWRITES an existing one in the server's workspace (FILE_TOOLS_ROOT). Path must be RELATIVE. Requires human confirmation because it replaces whatever content was there. Use edit_file for partial changes.",
+    risk: "medium",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Target path relative to FILE_TOOLS_ROOT.",
+        },
+        content: {
+          type: "string",
+          description: "Full UTF-8 content to write (entire new file body).",
+        },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
+    id: "edit_file",
+    name: "edit_file",
+    description:
+      "Replaces a SINGLE occurrence of old_string with new_string in an existing file inside the workspace (FILE_TOOLS_ROOT). The old_string must match exactly ONCE (include enough context to be unique). Fails if not found or if it matches multiple times. Requires confirmation.",
+    risk: "high",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "File path relative to FILE_TOOLS_ROOT.",
+        },
+        old_string: {
+          type: "string",
+          description:
+            "Exact literal fragment to replace (must appear exactly once).",
+        },
+        new_string: {
+          type: "string",
+          description: "Replacement text (may be empty to delete).",
+        },
+      },
+      required: ["path", "old_string", "new_string"],
+    },
+  },
+  {
     id: "bash",
     name: "bash",
     description:

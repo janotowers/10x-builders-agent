@@ -78,6 +78,9 @@ export function OnboardingWizard({ userId, initialProfile, initialToolSettings }
       "calendar_update_event",
       "calendar_delete_event",
       "bash",
+      "read_file",
+      "write_file",
+      "edit_file",
     ];
 
     for (const toolId of TOOL_IDS) {
