@@ -90,6 +90,15 @@ SELECT cron.schedule(
 
 > Reemplaza `TU_DOMINIO` con tu dominio de producción y `TU_CRON_SECRET` con el valor de `CRON_SECRET`.
 
+### Desarrollo local
+
+`pg_cron` en Supabase solo puede llamar a URLs **públicas**. No alcanza `http://localhost:3000`. Opciones:
+
+- Exponer el dev server con **ngrok** (u otro túnel) y usar en el job `url := 'https://TU_SUBDOMINIO.ngrok-free.app/api/cron/scheduled-tasks'`.
+- O, cuando quieras probar sin cron, llamar el endpoint a mano con `curl` (ver más abajo) **después** de la hora en `next_run_at`.
+
+El servidor Next debe estar en marcha en el momento en que se dispare el POST.
+
 **Alternativa con Supabase Edge Functions:**
 Crea una Edge Function que haga el `fetch` al endpoint cada minuto usando `Deno.cron`.
 
@@ -128,8 +137,17 @@ El agente llamará a `schedule_task` con:
 
 ## Notificaciones Telegram
 
-Por defecto, cada ejecución envía el resultado al chat de Telegram vinculado.  
+Por defecto, cada ejecución envía el resultado al chat de Telegram vinculado. El mensaje empieza por **«📬 Resultado automático (tarea programada)»** para distinguirlo del mensaje anterior del bot («He programado…») cuando el usuario aprobó la tarea.
+
 Si el usuario **no tiene Telegram vinculado**, la ejecución continúa normalmente y se registra `notified=false` con motivo `no_telegram_link` en `scheduled_task_runs`. No se lanza error.
+
+## HITL en ejecución del cron
+
+El usuario aprueba la tarea **una sola vez** al programarla (la tarjeta de confirmación de `schedule_task` ya cubre el riesgo). Cuando el cron ejecuta la tarea, llama a `runAgent({ ..., autoApproveTools: true })`, lo que **omite el `interrupt()` de las herramientas internas**, incluso si son de riesgo medio/alto (`bash`, `write_file`, `edit_file`, `calendar_create_event`, etc.).
+
+Razón: una tarea programada que requiere reaprobación a la hora de ejecución no es realmente "programada" — si el usuario está dormido o lejos del teléfono, la tarea se pierde. Toda decisión de seguridad debe tomarse al programar, no al ejecutar.
+
+Para auditoría, las llamadas auto-aprobadas se registran igualmente en `tool_calls` con `requires_confirmation = false` y `status = approved` antes de ejecutarse.
 
 ## Pruebas manuales
 

@@ -21,6 +21,7 @@
     "@langchain/langgraph": "^0.2",
     "@langchain/langgraph-checkpoint-postgres": "^0.0.5",
     "@langchain/openai": "^0.4",
+    "croner": "^10.0.1",
     "zod": "^3"
   },
   "devDependencies": {

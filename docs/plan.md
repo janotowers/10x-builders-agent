@@ -109,15 +109,28 @@ Construir un agente que permita a un usuario **gestionar tareas y ejecutar accio
 - [x] Toggles en onboarding y Ajustes; mensajes de confirmación específicos en `graph.ts`
 - [x] Self-test `test:file-tools` (resolveSafePath) + diseño en **[docs/tools-design/files.md](tools-design/files.md)**
 
-#### 7.4 Outlook — pendiente
+#### 7.4 Tareas programadas (schedule_task) ✓
+
+- [x] Tool `schedule_task` (riesgo `medium`, HITL) en el catálogo y `adapters.ts` con validación de fechas/cron via **croner**
+- [x] Tablas `scheduled_tasks` y `scheduled_task_runs` en migración `00003_scheduled_tasks.sql` (RLS + índice de runner)
+- [x] Queries en `packages/db/src/queries/scheduled-tasks.ts`: crear, listar, lock atómico, run, reschedule/complete, Telegram chat_id
+- [x] Endpoint cron `/api/cron/scheduled-tasks` — auth `CRON_SECRET`, executa `runAgent`, notifica Telegram (fallback `notified=false`)
+- [x] `apps/web/src/lib/telegram/send-message.ts` — util compartido extraído del webhook
+- [x] Middleware exento de auth para `/api/cron/`; `CRON_SECRET` en `.env.example` y `.env.local`
+- [x] Toggle en onboarding y Ajustes; confirmación HITL legible; addendum `SCHEDULE_TASK_ADDENDUM` en `graph.ts`
+- [x] **HITL único al programar**: `runAgent({ autoApproveTools: true })` desde el cron evita pedir una segunda aprobación al usuario al ejecutar la tarea (ver `toolExecutorNode` y `AgentInput.autoApproveTools` en `graph.ts`). Las llamadas auto-aprobadas se registran en `tool_calls` con `requires_confirmation = false` y `status = approved` para auditoría.
+- [x] `agent_sessions.channel` extendido a `('web','telegram','cron')` en la misma migración 00003
+- [x] Diseño en **[docs/tools-design/scheduled-tasks.md](tools-design/scheduled-tasks.md)** + runbook en **[docs/tools-design/runbook-scheduled-tasks.md](tools-design/runbook-scheduled-tasks.md)**
+
+#### 7.5 Outlook — pendiente
 
 - [ ] Calendario Outlook / Microsoft Graph (misma estructura base que 7.1 cuando aplique)
 
-#### 7.5 Correo — pendiente
+#### 7.6 Correo — pendiente
 
 - [ ] Gmail / Outlook — lectura de bandeja, envío con confirmación
 
-#### 7.6 Documentos — pendiente
+#### 7.7 Documentos — pendiente
 
 - [ ] Búsqueda en Google Drive / Notion
 
@@ -128,6 +141,7 @@ Construir un agente que permita a un usuario **gestionar tareas y ejecutar accio
 - [ ] Historial de conversaciones múltiples (actualmente una sesión activa por canal)
 - [ ] Métricas de uso de tokens LLM por sesión/usuario
 - [x] Manejo de expiración y refresh de tokens OAuth (cubierto para Google Calendar; GitHub puede añadirse igual)
+- [x] **Contexto de fecha/hora en el sistema**: en cada turno se inyecta automáticamente en el system prompt la fecha y hora del servidor (ISO), la zona IANA del perfil del usuario (`profiles.timezone`, e.g. `America/Mexico_City`), y la hora local formateada en español. Permite responder "¿qué hora es?" y calcular fechas relativas ("mañana", "la próxima semana") sin herramientas. El timezone se pasa desde web (`/api/chat`) y Telegram (`webhook`) vía `userTimezone` a `runAgent`. **Si el perfil tiene `UTC` en lugar de la zona local, la hora que ve el modelo es incorrecta** — ajustarlo en Ajustes → Perfil o en `profiles.timezone` en Supabase.
 
 ### Fase 9: Producción
 

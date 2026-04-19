@@ -81,6 +81,7 @@ export function OnboardingWizard({ userId, initialProfile, initialToolSettings }
       "read_file",
       "write_file",
       "edit_file",
+      "schedule_task",
     ];
 
     for (const toolId of TOOL_IDS) {

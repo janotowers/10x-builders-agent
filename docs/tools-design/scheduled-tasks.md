@@ -4,19 +4,19 @@ overview: Agregar soporte de tareas programadas con un nuevo tool del agente, un
 todos:
   - id: db-schema-and-queries
     content: Diseñar migración para scheduled_tasks y scheduled_task_runs + queries de lectura/actualización atómica
-    status: pending
+    status: done
   - id: agent-tool
     content: Agregar tool schedule_task al catálogo, schema y adapter handler
-    status: pending
+    status: done
   - id: cron-endpoint
     content: Crear endpoint /api/cron/scheduled-tasks con auth CRON_SECRET y ejecución runAgent
-    status: pending
+    status: done
   - id: telegram-default-notify
     content: Reutilizar/extract util de envío Telegram y registrar fallback sin Telegram
-    status: pending
+    status: done
   - id: docs-and-env
     content: Actualizar .env.example y documentación de setup de Supabase Cron + pruebas manuales
-    status: pending
+    status: done
 isProject: false
 ---
 
@@ -111,3 +111,14 @@ flowchart TD
 - Crear tarea recurrente y validar recomputo de `next_run_at` tras ejecución.
 - Caso sin Telegram vinculado: ejecución exitosa + log de `notified=false` sin error global.
 
+## HITL en tareas programadas (decisión de diseño)
+
+El usuario ya aprueba la tarea **una sola vez al programarla** (porque `schedule_task` es de riesgo `medium` y dispara su propia tarjeta de confirmación). Si el `prompt` programado a su vez requiere herramientas riesgosas (p. ej. `bash`, `write_file`, `edit_file`, `calendar_create_event`), pedir una **segunda** aprobación al ejecutar rompe el propósito de "programado": el usuario podría no estar disponible a la hora de ejecución y la tarea se perdería en el timeout.
+
+Por eso el endpoint cron invoca `runAgent({ ..., autoApproveTools: true })`. Esta bandera:
+
+- Hace que `toolExecutorNode` en [`packages/agent/src/graph.ts`](../../packages/agent/src/graph.ts) **omita el `interrupt()`** y ejecute la herramienta directo.
+- Crea el registro en `tool_calls` con `requires_confirmation = false` y lo marca `approved` para auditoría.
+- Solo se activa desde el cron runner; la web y Telegram siguen disparando HITL como siempre.
+
+Implicación de seguridad: cualquier acción que el usuario quiera evitar en ejecución diferida debe filtrarse **al programar**, no al ejecutar. Si en el futuro se quiere ser más conservador (por ejemplo, mantener HITL solo para `bash` o `edit_file`), basta con aceptar una lista de tools auto-aprobadas en lugar del booleano global.

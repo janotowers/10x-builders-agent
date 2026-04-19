@@ -12,6 +12,7 @@
  */
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { Cron } from "croner";
 import { TOOL_CATALOG } from "./catalog";
 import { githubApi } from "./github-api";
 import { userWantsNewGithubRepository } from "./github-intent";
@@ -20,7 +21,11 @@ import { userMessageIsPresenceOrGreetingOnly } from "./chat-greeting-intent";
 import { userMessageIsCalendarRelated } from "./calendar-intent";
 import { userMessageIsLocalShellOrFilesystemIntent } from "./local-shell-intent";
 import { userMessageIsFileToolsIntent } from "./file-tools-intent";
-import { createToolCall, updateToolCallStatus } from "@agents/db";
+import {
+  createToolCall,
+  updateToolCallStatus,
+  createScheduledTask,
+} from "@agents/db";
 import { addCalendarTools } from "./calendar-adapters";
 import { executeBashCommand, getActiveShellName } from "./bashExec";
 import {
@@ -520,6 +525,102 @@ export function buildLangChainTools(ctx: ToolContext) {
             path: z.string().min(1),
             old_string: z.string().min(1),
             new_string: z.string(),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("schedule_task", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          prompt: string;
+          schedule_type: "one_time" | "recurring";
+          run_at?: string;
+          cron_expr?: string;
+          timezone?: string;
+        }) => {
+          const tz = input.timezone?.trim() || ctx.userTimezone || "UTC";
+
+          // Compute next_run_at
+          let nextRunAt: string;
+          if (input.schedule_type === "one_time") {
+            if (!input.run_at) {
+              return JSON.stringify({
+                ok: false,
+                error: "run_at es obligatorio para tareas de tipo one_time.",
+              });
+            }
+            const d = new Date(input.run_at);
+            if (isNaN(d.getTime())) {
+              return JSON.stringify({
+                ok: false,
+                error: "run_at no es una fecha ISO válida.",
+              });
+            }
+            nextRunAt = d.toISOString();
+          } else {
+            if (!input.cron_expr) {
+              return JSON.stringify({
+                ok: false,
+                error:
+                  "cron_expr es obligatorio para tareas recurrentes (p.ej. '0 9 * * 1').",
+              });
+            }
+            try {
+              const cron = new Cron(input.cron_expr, { timezone: tz });
+              const next = cron.nextRun();
+              if (!next) throw new Error("sin próxima ejecución");
+              nextRunAt = next.toISOString();
+            } catch {
+              return JSON.stringify({
+                ok: false,
+                error: `cron_expr inválida: "${input.cron_expr}". Usa formato estándar de 5 campos (minuto hora díaMes mes díaSemana).`,
+              });
+            }
+          }
+
+          const task = await createScheduledTask(ctx.db, {
+            userId: ctx.userId,
+            prompt: input.prompt,
+            scheduleType: input.schedule_type,
+            runAt: input.run_at,
+            cronExpr: input.cron_expr,
+            timezone: tz,
+            nextRunAt,
+          });
+
+          const humanDate = new Date(nextRunAt).toLocaleString("es-MX", {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            timeZone: tz,
+          });
+
+          return JSON.stringify({
+            ok: true,
+            task_id: task.id,
+            schedule_type: task.schedule_type,
+            next_run_at: nextRunAt,
+            human_date: humanDate,
+            timezone: tz,
+            prompt: task.prompt,
+          });
+        },
+        {
+          name: "schedule_task",
+          description:
+            "Programs a task (prompt) to run automatically at a future time (one_time) or on a recurring schedule. Result is sent to Telegram by default. Requires confirmation before scheduling.",
+          schema: z.object({
+            prompt: z.string().min(1),
+            schedule_type: z.enum(["one_time", "recurring"]),
+            run_at: z.string().optional(),
+            cron_expr: z.string().optional(),
+            timezone: z.string().optional(),
           }),
         }
       )

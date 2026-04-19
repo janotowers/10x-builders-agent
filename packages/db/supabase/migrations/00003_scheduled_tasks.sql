@@ -1,0 +1,79 @@
+-- ============================================================
+-- scheduled_tasks — tareas programadas del agente
+-- ============================================================
+create table public.scheduled_tasks (
+  id              uuid primary key default uuid_generate_v4(),
+  user_id         uuid not null references public.profiles(id) on delete cascade,
+  prompt          text not null,
+  schedule_type   text not null check (schedule_type in ('one_time', 'recurring')),
+  run_at          timestamptz,                  -- solo one_time
+  cron_expr       text,                         -- solo recurring (5 campos estándar)
+  timezone        text not null default 'UTC',
+  status          text not null default 'active'
+                    check (status in ('active', 'paused', 'completed', 'failed')),
+  last_run_at     timestamptz,
+  next_run_at     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+-- Índice para el runner cron: lee tareas vencidas activas cada minuto
+create index idx_scheduled_tasks_runner
+  on public.scheduled_tasks (status, next_run_at)
+  where status = 'active';
+
+alter table public.scheduled_tasks enable row level security;
+
+create policy "Users can manage own scheduled tasks"
+  on public.scheduled_tasks for all
+  using (auth.uid() = user_id);
+
+-- Service-role puede leer/escribir desde el cron endpoint (usa supabaseAdmin)
+create policy "Service role full access to scheduled_tasks"
+  on public.scheduled_tasks for all
+  using (auth.role() = 'service_role');
+
+-- ============================================================
+-- scheduled_task_runs — auditoría de ejecuciones
+-- ============================================================
+create table public.scheduled_task_runs (
+  id                 uuid primary key default uuid_generate_v4(),
+  task_id            uuid not null references public.scheduled_tasks(id) on delete cascade,
+  status             text not null default 'running'
+                       check (status in ('running', 'completed', 'failed')),
+  started_at         timestamptz not null default now(),
+  finished_at        timestamptz,
+  error              text,
+  agent_session_id   uuid references public.agent_sessions(id),
+  notified           boolean not null default false,
+  notification_error text
+);
+
+create index idx_scheduled_task_runs_task_id
+  on public.scheduled_task_runs (task_id, started_at desc);
+
+alter table public.scheduled_task_runs enable row level security;
+
+create policy "Users can view own task runs"
+  on public.scheduled_task_runs for select
+  using (
+    exists (
+      select 1 from public.scheduled_tasks t
+      where t.id = scheduled_task_runs.task_id
+        and t.user_id = auth.uid()
+    )
+  );
+
+create policy "Service role full access to scheduled_task_runs"
+  on public.scheduled_task_runs for all
+  using (auth.role() = 'service_role');
+
+-- ============================================================
+-- Extend agent_sessions.channel to allow 'cron' (used by /api/cron/scheduled-tasks)
+-- ============================================================
+alter table public.agent_sessions
+  drop constraint if exists agent_sessions_channel_check;
+
+alter table public.agent_sessions
+  add constraint agent_sessions_channel_check
+    check (channel in ('web', 'telegram', 'cron'));

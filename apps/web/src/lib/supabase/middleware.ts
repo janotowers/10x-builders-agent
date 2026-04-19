@@ -36,7 +36,8 @@ export async function updateSession(request: NextRequest) {
     publicPaths.some((p) => pathname.startsWith(p)) ||
     pathname.startsWith("/book/") ||
     pathname.startsWith("/api/public/") ||
-    pathname.startsWith("/api/telegram/webhook");
+    pathname.startsWith("/api/telegram/webhook") ||
+    pathname.startsWith("/api/cron/");
 
   if (!user && !isAnonymousOk) {
     const url = request.nextUrl.clone();

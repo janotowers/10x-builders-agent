@@ -7,6 +7,7 @@ export * from "./queries/integrations";
 export * from "./queries/telegram";
 export * from "./queries/tool-calls";
 export * from "./queries/booking-links";
+export * from "./queries/scheduled-tasks";
 export { encryptToken, decryptToken } from "./crypto";
 export {
   GOOGLE_CALENDAR_PROVIDER,

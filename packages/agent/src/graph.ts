@@ -41,6 +41,15 @@ const GraphState = Annotation.Root({
     reducer: (_prev, next) => next,
     default: () => null,
   }),
+  /**
+   * When true, tools that would normally trigger an HITL interrupt are executed
+   * directly. Used by the cron runner: the user already approved the
+   * `schedule_task` itself, so inner tools should not require a second approval.
+   */
+  autoApproveTools: Annotation<boolean>({
+    reducer: (_prev, next) => next,
+    default: () => false,
+  }),
 });
 
 export interface AgentInput {
@@ -58,6 +67,12 @@ export interface AgentInput {
   resumeDecision?: "approve" | "reject";
   /** Must match the thread_id used when the interrupt was created. */
   checkpointThreadId?: string;
+  /**
+   * When true, the agent skips HITL interrupts and executes risky tools directly.
+   * Intended for the cron runner of `schedule_task` (the user already approved
+   * the scheduling, so inner tools should not require a second confirmation).
+   */
+  autoApproveTools?: boolean;
 }
 
 export interface AgentOutput {
@@ -209,6 +224,47 @@ function appendFileToolsRules(
   return `${basePrompt.trimEnd()}${FILE_TOOLS_ADDENDUM}`;
 }
 
+const SCHEDULE_TASK_ADDENDUM = `
+
+[Reglas herramienta schedule_task — obligatorias]
+- Usa schedule_task cuando el usuario quiera que el agente haga algo en un momento futuro. Reconoce estas formas:
+  · Hora de hoy: "hoy a las 19:45", "a las 8 de la noche", "en 30 minutos", "dentro de una hora", "a las X de hoy".
+  · Fecha futura: "el viernes a las 9", "mañana a las 10 am", "el 25 de abril a las 9".
+  · Recurrente: "todos los lunes a las 9", "cada día a las 8 am", "cada semana".
+  · Verbos guía: "recuérdame", "programa", "avísame", "consulta X a las Y", "mándame X cada Z".
+- El campo 'prompt' es la instrucción que el agente ejecutará a esa hora (escríbela como si fuera un mensaje directo al agente). Sé MUY específico, incluyendo el comando exacto a ejecutar cuando aplique.
+  · Ejemplo Hacker News (preferir API JSON, no scraping HTML):
+    "Usa bash para correr: ids=$(curl -sS https://hacker-news.firebaseio.com/v0/topstories.json | head -c 300 | tr -d '[]' | tr ',' '\n' | head -10); for id in $ids; do curl -sS https://hacker-news.firebaseio.com/v0/item/$id.json | head -c 600; echo; done. Devuélveme los títulos y URLs de las 5 historias más relevantes en español."
+  · Ejemplo URL genérica:
+    "Usa bash para correr: curl -sS -L -A 'Mozilla/5.0' https://EJEMPLO.com/ | head -c 4000. Resume el contenido principal en español."
+- Siempre extrae o pregunta: qué debe hacer el agente (prompt), cuándo (fecha/hora o expresión recurrente), y timezone (usa la del perfil si no se especifica).
+- Para one_time: calcula run_at como ISO 8601 con offset de zona (p.ej. 2026-04-18T19:45:00-06:00). Usa la fecha local actual del usuario como referencia. NUNCA uses fechas pasadas.
+- Para recurring: usa expresiones cron de 5 campos estándar. Si el usuario dice "todos los lunes a las 9", usa "0 9 * * 1".
+- El resultado de la tarea se enviará por Telegram al usuario. Si el usuario no tiene Telegram vinculado, la ejecución se registra pero no hay notificación en tiempo real.
+- schedule_task es riesgo medio: la herramienta mostrará tarjeta de confirmación. Llama directamente a la herramienta sin pedir permiso en texto.
+- Si el prompt programado requiere acceder a una URL o ejecutar un comando (bash), inclúyelo literalmente en el campo prompt. El agente que se ejecute a esa hora decidirá qué herramientas usar.`;
+
+function appendScheduleTaskRules(
+  basePrompt: string,
+  lcTools: Array<{ name?: string }>
+): string {
+  const names = new Set(
+    lcTools.map((t) => t.name).filter((n): n is string => Boolean(n))
+  );
+  if (!names.has("schedule_task")) return basePrompt;
+  return `${basePrompt.trimEnd()}${SCHEDULE_TASK_ADDENDUM}`;
+}
+
+/** Injected when the cron runner executes a stored prompt (autoApproveTools). */
+const CRON_SCHEDULED_EXECUTION_ADDENDUM = `
+
+[Ejecución automática (tarea programada) — obligatorias]
+- Esta petición es la ejecución de una tarea que el usuario YA aprobó al programarla. No digas que no puedes programar acciones futuras ni que no puedes acceder a sitios web: ejecuta lo pedido ahora.
+- Si el mensaje pide datos de una URL o ejecutar un comando en terminal, usa SIEMPRE la herramienta bash (está habilitada en el servidor) y devuelve un resumen útil en texto.
+- No respondas con "no se pudo obtener" sin haber llamado primero a la herramienta bash. Si la primera llamada a bash devuelve poco texto o un error, REINTENTA con flags adicionales: curl -sS -L -A 'Mozilla/5.0' <URL> | head -c 8000. Si sigue fallando, reporta el exit code y el stderr literal del bash, no inventes la causa.
+- Para Hacker News, prefiere la API JSON: https://hacker-news.firebaseio.com/v0/topstories.json y https://hacker-news.firebaseio.com/v0/item/<id>.json (mucho más fácil de parsear que el HTML).
+- No vuelvas a llamar a schedule_task para lo mismo salvo que el mensaje lo pida explícitamente.`;
+
 const CALENDAR_TOOLS_ADDENDUM = `
 
 [Reglas Google Calendar — obligatorias]
@@ -276,12 +332,15 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const ambiguityAddendum = `\n\n[Reglas de desambiguación — obligatorias]\n- Respuestas cortas del usuario como "sí", "ok", "dale", "va", "hazlo", "procede", "no", "cancela": interprétalas SIEMPRE en el contexto del ÚLTIMO turno TUYO inmediatamente anterior. Si tu último turno prometió una acción concreta en un dominio (archivos, calendario, github, bash) pero NO llamaste a la herramienta, ahora debes llamar a la herramienta DIRECTAMENTE con los parámetros ya acordados. No elijas otra acción de otro dominio sólo porque aparezca en el historial lejano.\n- Si no tienes una acción claramente pendiente en tu turno anterior, responde pidiendo clarificación al usuario (una sola pregunta corta) en vez de asumir. Nunca "adivines" creando eventos, archivos o repos para reusar datos de turnos viejos.\n- Nunca pidas confirmación en TEXTO para acciones que tienen herramienta con riesgo medio/alto: la herramienta ya disparará su propia tarjeta de confirmación. Genera el tool_call y deja que el sistema pida la aprobación.`;
 
-  const effectiveSystemPrompt = appendFileToolsRules(
-    appendCalendarToolRules(
-      appendGithubSocialRules(
-        appendBashRules(
-          appendGithubCreateToolRules(
-            systemPrompt + dateContext + ambiguityAddendum,
+  let effectiveSystemPrompt = appendScheduleTaskRules(
+    appendFileToolsRules(
+      appendCalendarToolRules(
+        appendGithubSocialRules(
+          appendBashRules(
+            appendGithubCreateToolRules(
+              systemPrompt + dateContext + ambiguityAddendum,
+              lcTools as Array<{ name?: string }>
+            ),
             lcTools as Array<{ name?: string }>
           ),
           lcTools as Array<{ name?: string }>
@@ -292,6 +351,10 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     ),
     lcTools as Array<{ name?: string }>
   );
+  if (input.autoApproveTools) {
+    effectiveSystemPrompt =
+      effectiveSystemPrompt.trimEnd() + CRON_SCHEDULED_EXECUTION_ADDENDUM;
+  }
 
   // DEBUG: descomentar las siguientes 2 líneas para ver el system prompt completo en la terminal del servidor
   // console.log("=== SYSTEM PROMPT ===\n", effectiveSystemPrompt, "\n=== END ===");
@@ -389,6 +452,32 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           s.length > 120 ? `${s.slice(0, 120)}…` : s;
         return `Confirma editar el archivo \`${p}\`: reemplazar\n«${short(oldS)}»\npor\n«${short(newS)}».`;
       }
+      if (toolName === "schedule_task") {
+        const prompt = String(args.prompt ?? "");
+        const type = String(args.schedule_type ?? "");
+        const shortPrompt = prompt.length > 120 ? `${prompt.slice(0, 120)}…` : prompt;
+        if (type === "one_time") {
+          const when = args.run_at
+            ? (() => {
+                try {
+                  return new Date(String(args.run_at)).toLocaleString("es-MX", {
+                    weekday: "long",
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    timeZone: userTimezone ?? "UTC",
+                  });
+                } catch {
+                  return String(args.run_at);
+                }
+              })()
+            : "hora no especificada";
+          return `Confirma programar la siguiente tarea para el ${when}:\n«${shortPrompt}»`;
+        }
+        return `Confirma programar la tarea recurrente (${String(args.cron_expr ?? "")} ${String(args.timezone ?? "UTC")}):\n«${shortPrompt}»`;
+      }
       return `Confirma ejecutar la herramienta ${toolName}.`;
     }
 
@@ -400,40 +489,55 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         let trackedToolCallId: string | null = null;
 
         if (needsConfirmation) {
-          const existing = await findExistingPendingToolCall(
-            db,
-            state.sessionId,
-            tc.name
-          );
-          const toolCallRecord =
-            existing ??
-            (await createToolCall(
+          // Auto-approve mode: cron runner of a scheduled task.
+          // The user already approved the schedule_task itself; bothering them
+          // again at execution time defeats the purpose of "scheduled".
+          if (state.autoApproveTools) {
+            const toolCallRecord = await createToolCall(
               db,
               state.sessionId,
               tc.name,
               tc.args,
-              true
-            ));
-          trackedToolCallId = toolCallRecord.id;
-          const decision = interrupt({
-            tool_call_id: toolCallRecord.id,
-            tool_name: tc.name,
-            message: confirmationMessage(tc.name, tc.args),
-            args: tc.args,
-          }) as "approve" | "reject";
-          if (decision !== "approve") {
-            await updateToolCallStatus(db, toolCallRecord.id, "rejected");
-            results.push(
-              new ToolMessage({
-                content: JSON.stringify({
-                  message: "Acción cancelada por el usuario.",
-                }),
-                tool_call_id: tc.id!,
-              })
+              false
             );
-            continue;
+            trackedToolCallId = toolCallRecord.id;
+            await updateToolCallStatus(db, toolCallRecord.id, "approved");
+          } else {
+            const existing = await findExistingPendingToolCall(
+              db,
+              state.sessionId,
+              tc.name
+            );
+            const toolCallRecord =
+              existing ??
+              (await createToolCall(
+                db,
+                state.sessionId,
+                tc.name,
+                tc.args,
+                true
+              ));
+            trackedToolCallId = toolCallRecord.id;
+            const decision = interrupt({
+              tool_call_id: toolCallRecord.id,
+              tool_name: tc.name,
+              message: confirmationMessage(tc.name, tc.args),
+              args: tc.args,
+            }) as "approve" | "reject";
+            if (decision !== "approve") {
+              await updateToolCallStatus(db, toolCallRecord.id, "rejected");
+              results.push(
+                new ToolMessage({
+                  content: JSON.stringify({
+                    message: "Acción cancelada por el usuario.",
+                  }),
+                  tool_call_id: tc.id!,
+                })
+              );
+              continue;
+            }
+            await updateToolCallStatus(db, toolCallRecord.id, "approved");
           }
-          await updateToolCallStatus(db, toolCallRecord.id, "approved");
         }
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -551,6 +655,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         userId,
         systemPrompt,
         pendingConfirmation: null,
+        autoApproveTools: input.autoApproveTools ?? false,
       };
 
   /** Populated from stream "updates" chunks when interrupt() fires (not present on state schema). */

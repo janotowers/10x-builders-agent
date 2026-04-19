@@ -1,4 +1,4 @@
-export type Channel = "web" | "telegram";
+export type Channel = "web" | "telegram" | "cron";
 
 export type ToolRisk = "low" | "medium" | "high";
 

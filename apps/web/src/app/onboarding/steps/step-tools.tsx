@@ -117,6 +117,14 @@ const AVAILABLE_TOOLS = [
     risk: "high" as const,
     requiresIntegration: null,
   },
+  {
+    id: "schedule_task",
+    name: "Tareas programadas",
+    description:
+      "Programa al agente para ejecutar una acción en el futuro (una vez o de forma recurrente). El resultado se envía por Telegram.",
+    risk: "medium" as const,
+    requiresIntegration: null,
+  },
 ];
 
 const RISK_LABELS = {

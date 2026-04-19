@@ -243,6 +243,44 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "schedule_task",
+    name: "schedule_task",
+    description:
+      "Programs a task for the agent to execute automatically at a future time (one_time) or on a recurring schedule (recurring). The agent will run the given prompt at the scheduled time and send the result to Telegram by default. Requires human confirmation before scheduling.",
+    risk: "medium",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description:
+            "The exact instruction the agent should execute at the scheduled time. Write it as if you were sending it to the agent right now (e.g. 'List my open GitHub issues and summarize them').",
+        },
+        schedule_type: {
+          type: "string",
+          enum: ["one_time", "recurring"],
+          description: "Whether the task runs once or repeats.",
+        },
+        run_at: {
+          type: "string",
+          description:
+            "ISO 8601 datetime with timezone offset for one_time tasks (e.g. '2026-04-25T09:00:00-06:00'). Required when schedule_type is one_time.",
+        },
+        cron_expr: {
+          type: "string",
+          description:
+            "Standard 5-field cron expression for recurring tasks (e.g. '0 9 * * 1' = every Monday at 9 AM). Required when schedule_type is recurring.",
+        },
+        timezone: {
+          type: "string",
+          description:
+            "IANA timezone name (e.g. 'America/Mexico_City'). Defaults to the user's profile timezone.",
+        },
+      },
+      required: ["prompt", "schedule_type"],
+    },
+  },
+  {
     id: "bash",
     name: "bash",
     description:
