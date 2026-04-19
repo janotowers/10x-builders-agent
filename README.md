@@ -50,6 +50,12 @@ Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya 
 
    Sin esta tabla, **Ajustes → Generar enlace de reserva pública** devolverá error (`calendar_booking_links` no encontrada).
 
+6. **Tareas programadas (`schedule_task`):** si vas a usarlas, ejecuta también:
+
+   `packages/db/supabase/migrations/00003_scheduled_tasks.sql`
+
+   Configura `CRON_SECRET` en `apps/web/.env.local` y el job en Supabase según [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md).
+
 ---
 
 ## Paso 4 — Configurar autenticación (email)
@@ -93,6 +99,8 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto Supabase |
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave `anon` |
    | `SUPABASE_SERVICE_ROLE_KEY` | Clave `service_role` (solo servidor; la usa la API del agente y Telegram contra Postgres) |
+   | `DATABASE_URL` | *(Opcional)* URI Postgres directa para checkpoints de LangGraph; ver comentarios en `.env.example` |
+   | `CRON_SECRET` | *(Opcional)* Secreto compartido con el job `pg_cron` que llama a `POST /api/cron/scheduled-tasks` (herramienta `schedule_task`); debe coincidir con el `Bearer` del SQL en Supabase. Runbook: [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) |
    | `NEXT_PUBLIC_SITE_URL` | URL pública base **sin barra final** (OAuth redirect y enlaces de reserva). Ej.: `http://localhost:3000` o `https://tu-dominio.com` |
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |
    | `ENCRYPTION_KEY` | 64 caracteres hexadecimales (32 bytes) para cifrar tokens de integraciones en base de datos. Generar: `openssl rand -hex 32` |
@@ -181,6 +189,7 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 - [docs/brief.md](docs/brief.md) — visión y brief original.
 - [docs/architecture.md](docs/architecture.md) — arquitectura técnica del MVP.
 - [docs/plan.md](docs/plan.md) — fases y decisiones de implementación.
+- [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) — despliegue y prueba del cron de tareas programadas (`pg_cron`, ngrok, `CRON_SECRET`).
 
 ---
 

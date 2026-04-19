@@ -37,6 +37,8 @@ agents/
 │           │       ├── public/
 │           │       │   └── booking/[token]/ # GET/POST FreeBusy y reserva (sin auth)
 │           │       ├── auth/signout/
+│           │       ├── cron/
+│           │       │   └── scheduled-tasks/  # POST — runner pg_cron (CRON_SECRET)
 │           │       └── telegram/
 │           ├── lib/supabase/
 │           └── middleware.ts
@@ -72,7 +74,7 @@ agents/
 │    Supabase Postgres (RLS)                          │
 │  profiles | sessions | messages | tool_calls         │
 │  user_tool_settings | user_integrations | telegram   │
-│  calendar_booking_links                              │
+│  calendar_booking_links | scheduled_tasks | scheduled_task_runs │
 └──────────────────────────┬──────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────┐
@@ -110,6 +112,13 @@ No es una API externa ni OAuth: ejecuta un comando en el **mismo proceso/host** 
 
 Manipulan archivos de texto dentro de una **raíz configurada** (`FILE_TOOLS_ROOT`, ruta absoluta). Todas las rutas que pasa el modelo son **relativas** a esa raíz; `resolveSafePath` en `packages/agent/src/tools/fileTools.ts` rechaza rutas absolutas, `..` que escapen, y null bytes. Activación fail-closed: si `FILE_TOOLS_ENABLED !== "true"` o falta `FILE_TOOLS_ROOT`, las tres tools no se registran. `read_file` es `low` (sin HITL); `write_file` es `medium` (crea o sobrescribe, con confirmación); `edit_file` es `high` (reemplazo literal único, con confirmación). Detalle: **[docs/tools-design/files.md](tools-design/files.md)**.
 
+### Tareas programadas (`schedule_task` + cron)
+
+- La tool **`schedule_task`** (riesgo `medium`, HITL al **programar**) persiste filas en **`scheduled_tasks`** con `next_run_at` (one-time o recurrente vía `cron_expr` + zona IANA).
+- Un **runner externo** debe invocar periódicamente **`POST /api/cron/scheduled-tasks`** con cabecera **`Authorization: Bearer <CRON_SECRET>`** (variable en `apps/web`, no confundir con el webhook de Telegram). En producción suele configurarse **Supabase `pg_cron` + `pg_net`** (`net.http_post`) para llamar a la URL pública del despliegue; en local hace falta **HTTPS alcanzable** (p. ej. ngrok), porque el job corre en la nube de Supabase y no puede abrir `localhost`.
+- El handler en `apps/web/src/app/api/cron/scheduled-tasks/route.ts` usa **service role** contra Supabase, toma tareas vencidas, crea sesión **`agent_sessions.channel = cron`** y ejecuta **`runAgent({ ..., autoApproveTools: true })`**: el usuario ya aprobó al programar, así que las tools internas (p. ej. `bash`) no piden segunda confirmación. Auditoría en **`scheduled_task_runs`**; notificación por defecto por Telegram.
+- Detalle de diseño, HITL y operación: **[docs/tools-design/scheduled-tasks.md](tools-design/scheduled-tasks.md)** y **[docs/tools-design/runbook-scheduled-tasks.md](tools-design/runbook-scheduled-tasks.md)**.
+
 ## LangGraph: grafo y HITL
 
 - **StateGraph** con nodos `agent` y `tools`; máximo 6 iteraciones de tool.
@@ -141,6 +150,7 @@ Migraciones en `packages/db/supabase/migrations/`:
 
 - `00001_initial_schema.sql` — perfiles, integraciones, sesiones, mensajes, tools, telegram, etc.
 - `00002_calendar_booking_links.sql` — enlaces de reserva (`token`, `user_id`, `calendar_id`).
+- `00003_scheduled_tasks.sql` — `scheduled_tasks`, `scheduled_task_runs`; extensión del `CHECK` de `agent_sessions.channel` para incluir `cron`.
 
 ## Seguridad
 
@@ -152,6 +162,7 @@ Migraciones en `packages/db/supabase/migrations/`:
 
 - **Web:** POST `/api/chat`, confirmación `POST /api/chat/confirm`.
 - **Telegram:** webhook; teclado inline con `✅ Aprobar` / `❌ Cancelar`; al pulsar, feedback inmediato (`answerCallbackQuery` + mensaje corto al chat) antes de reanudar el grafo con `runAgent({ resumeDecision })`.
+- **Cron (tareas programadas):** `POST /api/cron/scheduled-tasks` — invocado por jobs programados (p. ej. Supabase `pg_cron`), no por el navegador; autenticación `CRON_SECRET`. Ver subsección *Tareas programadas* arriba.
 - **Reserva pública:** `GET /book/[token]`, APIs bajo `/api/public/booking/`.
 
 ## UI de chat (web)
