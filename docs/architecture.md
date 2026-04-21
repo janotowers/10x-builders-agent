@@ -12,6 +12,12 @@
 | Config compartida     | tsconfig                             | `packages/config`                    |
 | Modelo LLM            | OpenRouter (GPT-4o-mini por defecto) | vía `@langchain/openai` con base URL |
 
+### Proveedores de modelo (diseño previsto)
+
+**Estado actual del código:** el LLM se invoca solo vía **OpenRouter** (`OPENROUTER_API_KEY`, `OPENROUTER_MAX_TOKENS`, modelo por defecto `openai/gpt-4o-mini` en `packages/agent/src/model.ts`).
+
+**Diseño acordado (implementación pendiente):** soportar además **Google Gemini** directo (AI Studio o Vertex) con una fachada única y configuración por canal (interactivo vs cron), sin duplicar lógica en el grafo ni en las tools. Motivación, variables previstas, fallback y riesgos: **[docs/tools-design/model-providers.md](tools-design/model-providers.md)**.
+
 ## Estructura del monorepo
 
 ```
@@ -115,13 +121,17 @@ Manipulan archivos de texto dentro de una **raíz configurada** (`FILE_TOOLS_ROO
 ### Tareas programadas (`schedule_task` + cron)
 
 - La tool **`schedule_task`** (riesgo `medium`, HITL al **programar**) persiste filas en **`scheduled_tasks`** con `next_run_at` (one-time o recurrente vía `cron_expr` + zona IANA).
+- La tool **`manage_scheduled_tasks`** (riesgo `low`) permite **listar**, **pausar** y **reanudar** tareas del mismo usuario (`action=list|pause|resume`), sin borrar registros. Las acciones de cambio de estado validan ownership en DB por `task_id + user_id`.
+- Para peticiones ambiguas tipo “pausa la de Hacker News”, el prompt obliga un flujo de desambiguación: `list` primero, pregunta corta, y `pause/resume` solo tras selección explícita del usuario.
 - Un **runner externo** debe invocar periódicamente **`POST /api/cron/scheduled-tasks`** con cabecera **`Authorization: Bearer <CRON_SECRET>`** (variable en `apps/web`, no confundir con el webhook de Telegram). En producción suele configurarse **Supabase `pg_cron` + `pg_net`** (`net.http_post`) para llamar a la URL pública del despliegue; en local hace falta **HTTPS alcanzable** (p. ej. ngrok), porque el job corre en la nube de Supabase y no puede abrir `localhost`.
 - El handler en `apps/web/src/app/api/cron/scheduled-tasks/route.ts` usa **service role** contra Supabase, toma tareas vencidas, crea sesión **`agent_sessions.channel = cron`** y ejecuta **`runAgent({ ..., autoApproveTools: true })`**: el usuario ya aprobó al programar, así que las tools internas (p. ej. `bash`) no piden segunda confirmación. Auditoría en **`scheduled_task_runs`**; notificación por defecto por Telegram.
+- El modelo usa **temperatura por canal**: interacción Web/Telegram `~0.3` y cron `~0.1` (más determinista). El cap `maxTokens` es configurable con `OPENROUTER_MAX_TOKENS` (default `2048`) para evitar rechazos por crédito insuficiente. Se prevé separar proveedor y topes por canal cuando exista la fachada multi-proveedor (ver **[docs/tools-design/model-providers.md](tools-design/model-providers.md)**).
+- **Política de reintentos (migración `00004_scheduled_tasks_retry.sql`):** ante un run fallido el runner decide entre reintento acotado y auto-pausa. Errores "persistentes" (contiene `402`/`401`/`403`/`400`/`requires more credits`) se auto-pausan de inmediato para no quemar créditos. Errores transitorios reintentan hasta `MAX_CONSECUTIVE_FAILURES=3` con `RETRY_GAP_MINUTES=2` (acotado al próximo tick natural del cron si es recurrente). Alcanzado el cap → `status='paused'`, se persiste `last_failure_error` y se avisa al usuario por Telegram. Un run OK o un `manage_scheduled_tasks(action=resume)` resetea `consecutive_failures=0`.
 - Detalle de diseño, HITL y operación: **[docs/tools-design/scheduled-tasks.md](tools-design/scheduled-tasks.md)** y **[docs/tools-design/runbook-scheduled-tasks.md](tools-design/runbook-scheduled-tasks.md)**.
 
 ## LangGraph: grafo y HITL
 
-- **StateGraph** con nodos `agent` y `tools`; máximo 6 iteraciones de tool.
+- **StateGraph** con nodos `agent` y `tools`; máximo 8 iteraciones de tool.
 - **Checkpointer:** `PostgresSaver` si existe `DATABASE_URL` (URI Postgres directa); si no, `MemorySaver` en memoria del proceso.
 - **`thread_id`:** por mensaje nuevo se usa un id único por turno (`sessionId` + timestamp) para no mezclar checkpoints; el resume tras HITL reutiliza el `checkpointThreadId` guardado en `structured_payload`.
 - Detalle de implementación, streaming, `__interrupt__` y regresiones evitadas: **[docs/tools-design/hitl.md](tools-design/hitl.md)** (sección *Implementación actual*).
@@ -151,6 +161,7 @@ Migraciones en `packages/db/supabase/migrations/`:
 - `00001_initial_schema.sql` — perfiles, integraciones, sesiones, mensajes, tools, telegram, etc.
 - `00002_calendar_booking_links.sql` — enlaces de reserva (`token`, `user_id`, `calendar_id`).
 - `00003_scheduled_tasks.sql` — `scheduled_tasks`, `scheduled_task_runs`; extensión del `CHECK` de `agent_sessions.channel` para incluir `cron`.
+- `00004_scheduled_tasks_retry.sql` — añade `consecutive_failures` y `last_failure_error` a `scheduled_tasks` para soportar reintentos acotados + auto-pausa (ver sección *Tareas programadas*).
 
 ## Seguridad
 

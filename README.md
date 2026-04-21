@@ -50,11 +50,13 @@ Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya 
 
    Sin esta tabla, **Ajustes → Generar enlace de reserva pública** devolverá error (`calendar_booking_links` no encontrada).
 
-6. **Tareas programadas (`schedule_task`):** si vas a usarlas, ejecuta también:
+6. **Tareas programadas (`schedule_task` + `manage_scheduled_tasks`):** si vas a usarlas, ejecuta también (en orden):
 
-   `packages/db/supabase/migrations/00003_scheduled_tasks.sql`
+   - `packages/db/supabase/migrations/00003_scheduled_tasks.sql`
+   - `packages/db/supabase/migrations/00004_scheduled_tasks_retry.sql` (reintentos acotados + auto-pausa tras fallos consecutivos)
 
    Configura `CRON_SECRET` en `apps/web/.env.local` y el job en Supabase según [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md).
+   Con esto habilitas tanto **programar** tareas (`schedule_task`) como **listar/pausar/reanudar** tareas existentes (`manage_scheduled_tasks`) desde chat, más la política de reintentos (hasta 3 intentos con 2 min de gap antes de auto-pausar y avisar por Telegram).
 
 ---
 
@@ -103,6 +105,7 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `CRON_SECRET` | *(Opcional)* Secreto compartido con el job `pg_cron` que llama a `POST /api/cron/scheduled-tasks` (herramienta `schedule_task`); debe coincidir con el `Bearer` del SQL en Supabase. Runbook: [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) |
    | `NEXT_PUBLIC_SITE_URL` | URL pública base **sin barra final** (OAuth redirect y enlaces de reserva). Ej.: `http://localhost:3000` o `https://tu-dominio.com` |
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |
+   | `OPENROUTER_MAX_TOKENS` | *(Opcional)* Cap de `max_tokens` de salida por llamada. OpenRouter lo reserva contra tu saldo antes de ejecutar, así que con poco crédito conviene bajarlo. Default: `2048` |
    | `ENCRYPTION_KEY` | 64 caracteres hexadecimales (32 bytes) para cifrar tokens de integraciones en base de datos. Generar: `openssl rand -hex 32` |
    | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(Opcional)* OAuth GitHub; redirect `{NEXT_PUBLIC_SITE_URL}/api/integrations/github/callback` |
    | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | *(Opcional)* OAuth Google Calendar; redirect `{NEXT_PUBLIC_SITE_URL}/api/integrations/google/callback` |

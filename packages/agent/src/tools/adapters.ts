@@ -25,6 +25,8 @@ import {
   createToolCall,
   updateToolCallStatus,
   createScheduledTask,
+  listScheduledTasks,
+  setScheduledTaskStatus,
 } from "@agents/db";
 import { addCalendarTools } from "./calendar-adapters";
 import { executeBashCommand, getActiveShellName } from "./bashExec";
@@ -236,7 +238,8 @@ export function buildLangChainTools(ctx: ToolContext) {
         },
         {
           name: "github_list_repos",
-          description: "Lists the user's GitHub repositories.",
+          description:
+            "Lists ONLY the GitHub repositories owned by the authenticated user. Does NOT search GitHub for arbitrary projects, brands, companies or topics. Use ONLY when the user explicitly asks for THEIR own repos / proyectos en GitHub.",
           schema: z.object({
             per_page: z.number().max(30).optional().default(10),
           }),
@@ -621,6 +624,127 @@ export function buildLangChainTools(ctx: ToolContext) {
             run_at: z.string().optional(),
             cron_expr: z.string().optional(),
             timezone: z.string().optional(),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("manage_scheduled_tasks", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          action: "list" | "pause" | "resume";
+          task_id?: string;
+        }) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "manage_scheduled_tasks",
+            input,
+            false
+          );
+
+          try {
+            if (input.action === "list") {
+              const tasks = await listScheduledTasks(ctx.db, ctx.userId);
+              const tz = ctx.userTimezone || "UTC";
+              const summary = tasks.map((t) => {
+                const nextLocal = t.next_run_at
+                  ? new Date(t.next_run_at).toLocaleString("es-MX", {
+                      weekday: "short",
+                      year: "numeric",
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      timeZone: tz,
+                    })
+                  : null;
+                return {
+                  id: t.id,
+                  status: t.status,
+                  schedule_type: t.schedule_type,
+                  cron_expr: t.cron_expr,
+                  run_at: t.run_at,
+                  next_run_at: t.next_run_at,
+                  next_run_local: nextLocal,
+                  timezone: t.timezone,
+                  prompt: t.prompt.length > 240
+                    ? t.prompt.slice(0, 240) + "…"
+                    : t.prompt,
+                };
+              });
+              const result = { ok: true, count: summary.length, tasks: summary };
+              await updateToolCallStatus(
+                ctx.db,
+                record.id,
+                "executed",
+                result as unknown as Record<string, unknown>
+              );
+              return JSON.stringify(result);
+            }
+
+            // pause / resume
+            if (!input.task_id) {
+              const err = {
+                ok: false,
+                error:
+                  "task_id es obligatorio para pause/resume. Llama primero con action=\"list\" y pide al usuario que elija una.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", err);
+              return JSON.stringify(err);
+            }
+
+            const newStatus = input.action === "pause" ? "paused" : "active";
+            const updated = await setScheduledTaskStatus(ctx.db, {
+              taskId: input.task_id,
+              userId: ctx.userId,
+              newStatus,
+            });
+
+            if (!updated) {
+              const err = {
+                ok: false,
+                error:
+                  "No se encontró una tarea con ese id que pertenezca a este usuario, o la actualización falló. Verifica el id llamando con action=\"list\".",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", err);
+              return JSON.stringify(err);
+            }
+
+            const result = {
+              ok: true,
+              action: input.action,
+              task_id: updated.id,
+              status: updated.status,
+              schedule_type: updated.schedule_type,
+              next_run_at: updated.next_run_at,
+              prompt: updated.prompt.length > 240
+                ? updated.prompt.slice(0, 240) + "…"
+                : updated.prompt,
+            };
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              "executed",
+              result as unknown as Record<string, unknown>
+            );
+            return JSON.stringify(result);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const errOut = { ok: false, error: msg };
+            await updateToolCallStatus(ctx.db, record.id, "failed", errOut);
+            return JSON.stringify(errOut);
+          }
+        },
+        {
+          name: "manage_scheduled_tasks",
+          description:
+            "Lists (action=\"list\") the caller's own scheduled tasks (active+paused) or changes state by id (action=\"pause\" or \"resume\"). Scoped to the authenticated user; cannot touch other users' tasks. Does NOT delete. Pause/resume is reversible so there is no confirmation card — the model MUST disambiguate in natural language before calling pause/resume (see system prompt rules).",
+          schema: z.object({
+            action: z.enum(["list", "pause", "resume"]),
+            task_id: z.string().uuid().optional(),
           }),
         }
       )

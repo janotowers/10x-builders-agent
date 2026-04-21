@@ -120,6 +120,10 @@ Construir un agente que permita a un usuario **gestionar tareas y ejecutar accio
 - [x] Toggle en onboarding y Ajustes; confirmación HITL legible; addendum `SCHEDULE_TASK_ADDENDUM` en `graph.ts`
 - [x] **HITL único al programar**: `runAgent({ autoApproveTools: true })` desde el cron evita pedir una segunda aprobación al usuario al ejecutar la tarea (ver `toolExecutorNode` y `AgentInput.autoApproveTools` en `graph.ts`). Las llamadas auto-aprobadas se registran en `tool_calls` con `requires_confirmation = false` y `status = approved` para auditoría.
 - [x] `agent_sessions.channel` extendido a `('web','telegram','cron')` en la misma migración 00003
+- [x] Tool `manage_scheduled_tasks` (riesgo `low`, sin HITL) para `list`/`pause`/`resume` de tareas del propio usuario con validación de ownership en DB (`setScheduledTaskStatus(taskId, userId, newStatus)`).
+- [x] Desambiguación segura para pausar/reanudar sin UUID explícito: primero listar, luego UNA pregunta corta, y solo ejecutar `pause/resume` tras selección/confirmación del usuario (addendum en `graph.ts`).
+- [x] Temperatura por contexto en el modelo: interactivo (Web/Telegram) `~0.3`, cron (`autoApproveTools=true`) `~0.1` para más determinismo en ejecuciones programadas.
+- [x] Política de reintentos + auto-pausa (migración `00004_scheduled_tasks_retry.sql`): hasta `MAX_CONSECUTIVE_FAILURES=3` intentos con `RETRY_GAP_MINUTES=2`, salto directo a auto-pausa para errores persistentes (`402`/`401`/`403`/`400`), aviso por Telegram y reset del contador al completar con éxito o al reanudar manualmente.
 - [x] Diseño en **[docs/tools-design/scheduled-tasks.md](tools-design/scheduled-tasks.md)** + runbook en **[docs/tools-design/runbook-scheduled-tasks.md](tools-design/runbook-scheduled-tasks.md)**
 
 #### 7.5 Outlook — pendiente
@@ -136,6 +140,7 @@ Construir un agente que permita a un usuario **gestionar tareas y ejecutar accio
 
 ### Fase 8: Mejoras de agente
 
+- [ ] **Multi-proveedor LLM (diseño):** fachada `createChatModel` con elección por env entre OpenRouter y Google (AI Studio / Vertex), canales interactive vs cron, fallback opcional. Documento de diseño versionado: **[docs/tools-design/model-providers.md](tools-design/model-providers.md)**. Implementación pendiente (plan técnico en `.cursor/plans/` en la máquina de desarrollo).
 - [ ] Refactor incremental de `packages/agent/src/tools/adapters.ts` cuando el número de tools lo justifique: helpers compartidos, módulos por dominio; opcionalmente mapa `toolId → handler` (ver `docs/architecture.md` — Herramientas)
 - [ ] Streaming de respuestas (SSE / WebSocket) en vez de respuesta síncrona
 - [ ] Historial de conversaciones múltiples (actualmente una sesión activa por canal)

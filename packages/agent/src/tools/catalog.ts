@@ -23,7 +23,8 @@ export const TOOL_CATALOG: ToolDefinition[] = [
   {
     id: "github_list_repos",
     name: "github_list_repos",
-    description: "Lists the user's GitHub repositories.",
+    description:
+      "Lists ONLY the GitHub repositories owned by the authenticated user. Does NOT search GitHub for arbitrary projects, brands, companies or topics. Use ONLY when the user explicitly asks for THEIR own repos / proyectos en GitHub.",
     risk: "low",
     requires_integration: "github",
     parameters_schema: {
@@ -278,6 +279,30 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         },
       },
       required: ["prompt", "schedule_type"],
+    },
+  },
+  {
+    id: "manage_scheduled_tasks",
+    name: "manage_scheduled_tasks",
+    description:
+      "Lists the user's own scheduled tasks (action=list) or pauses/resumes one by id (action=pause|resume). Scoped to the authenticated user. Reversible state changes (pause and resume just flip the status), so it runs without a separate HITL confirmation card; the agent must still disambiguate in natural language before applying pause/resume. This tool does NOT delete tasks.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "pause", "resume"],
+          description:
+            "list = show tasks; pause = active→paused; resume = paused→active.",
+        },
+        task_id: {
+          type: "string",
+          description:
+            "UUID of the task to pause/resume. Required for pause/resume, ignored for list.",
+        },
+      },
+      required: ["action"],
     },
   },
   {

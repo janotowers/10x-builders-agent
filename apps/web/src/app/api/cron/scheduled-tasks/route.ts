@@ -20,6 +20,8 @@ import {
   createTaskRun,
   finishTaskRun,
   rescheduleOrComplete,
+  markTaskRetry,
+  markTaskPausedDueToFailures,
   getTelegramChatId,
   getOrCreateSession,
 } from "@agents/db";
@@ -32,6 +34,25 @@ import { Cron } from "croner";
 import type { ScheduledTask } from "@agents/db";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Retry policy
+// ─────────────────────────────────────────────────────────────────────────────
+// Política de reintentos tras fallo en una run:
+//   1. Si el error parece "persistente" (402 Payment Required, 401 Unauthorized,
+//      403 Forbidden, etc.) → auto-pausar ya: reintentar no cambia nada y solo
+//      gasta créditos LLM.
+//   2. En cualquier otro error → reintentar en ~RETRY_GAP_MINUTES minutos,
+//      hasta MAX_CONSECUTIVE_FAILURES intentos consecutivos. Si se supera →
+//      auto-pausar la tarea y notificar al usuario por Telegram.
+//   3. Un run OK resetea el contador (ver rescheduleOrComplete).
+//
+// Para recurring tasks: cap el próximo reintento al min(now+gap, próximo tick
+// natural del cron). Si el cron es "*/5 * * * *" (cada 5 min), el gap de 2 min
+// se respeta; si el cron es "0 9 * * *" (diario), el gap cuenta y el reintento
+// cae en +2 min aunque el cron natural sea mañana.
+const MAX_CONSECUTIVE_FAILURES = 3;
+const RETRY_GAP_MINUTES = 2;
 
 function isAuthorized(request: Request): boolean {
   const auth = request.headers.get("authorization") ?? "";
@@ -48,6 +69,48 @@ function computeNextRunAt(cronExpr: string, timezone: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Heurística ligera para detectar errores que no se van a resolver con un
+ * reintento en 2 minutos (auth, crédito, cuota, config). Si el error es de
+ * este tipo, pasamos directo a auto-pausa sin quemar 3 intentos.
+ *
+ * Intencionalmente conservadora: ante la duda tratamos el error como
+ * transitorio y reintentamos.
+ */
+function isPersistentError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  // OpenRouter / crédito
+  if (m.includes("402") || m.includes("requires more credits")) return true;
+  if (m.includes("insufficient_quota") || m.includes("quota exceeded"))
+    return true;
+  // Auth
+  if (m.includes("401") || m.includes("unauthorized")) return true;
+  if (m.includes("403") || m.includes("forbidden")) return true;
+  // Bad request (prompt/tool schema roto en la tarea)
+  if (m.includes("400 bad request")) return true;
+  return false;
+}
+
+/**
+ * Devuelve el ISO del próximo reintento, acotado por el siguiente tick natural
+ * del cron si la tarea es recurrente (así nunca reintentamos "después" de la
+ * próxima ejecución legítima).
+ */
+function computeNextRetryAt(task: ScheduledTask): string {
+  const gapMs = RETRY_GAP_MINUTES * 60_000;
+  const retryAt = new Date(Date.now() + gapMs);
+  if (task.schedule_type === "recurring" && task.cron_expr) {
+    const naturalNext = computeNextRunAt(task.cron_expr, task.timezone);
+    if (naturalNext) {
+      const natural = new Date(naturalNext);
+      if (natural.getTime() < retryAt.getTime()) {
+        return natural.toISOString();
+      }
+    }
+  }
+  return retryAt.toISOString();
 }
 
 interface TaskResult {
@@ -177,13 +240,66 @@ async function runTask(
         notified: false,
         notificationError: notificationError,
       });
-      // On failure, keep task active so it can retry next minute
-      await db
-        .from("scheduled_tasks")
-        .update({ status: "active", updated_at: new Date().toISOString() })
-        .eq("id", task.id);
+
+      // Política de retry/auto-pausa
+      const currentFailures = task.consecutive_failures ?? 0;
+      const persistent = isPersistentError(errMsg);
+      const wouldExceedCap = currentFailures + 1 >= MAX_CONSECUTIVE_FAILURES;
+      const shouldAutoPause = persistent || wouldExceedCap;
+
+      if (shouldAutoPause) {
+        const failures = currentFailures + 1;
+        await markTaskPausedDueToFailures(db, {
+          taskId: task.id,
+          errorMsg: errMsg,
+          failures,
+        });
+
+        // Notificar al usuario por Telegram para que no se entere por logs
+        const chatId = await getTelegramChatId(db, task.user_id);
+        if (chatId) {
+          const reason = persistent
+            ? `un error que no se resolverá reintentando (${errMsg.slice(0, 200)})`
+            : `${failures} fallos consecutivos. Último error: ${errMsg.slice(0, 200)}`;
+          const msg = truncateTelegramText(
+            `⏸️ Tarea programada pausada\n\nPausé automáticamente la tarea por ${reason}.\n\nPrompt:\n«${task.prompt.slice(0, 500)}»\n\nCuando lo arregles, pídeme "reanuda la tarea" y la reactivo.`
+          );
+          try {
+            await sendTelegramMessage(chatId, msg);
+          } catch (notifyErr) {
+            console.error(
+              "[cron] failed to notify auto-pause via Telegram:",
+              notifyErr
+            );
+          }
+        }
+
+        return {
+          task_id: task.id,
+          status: "error",
+          error: `auto-paused: ${errMsg}`,
+        };
+      }
+
+      // Retry transitorio: agendamos el siguiente intento en ~RETRY_GAP_MINUTES
+      const nextRetryAt = computeNextRetryAt(task);
+      await markTaskRetry(db, {
+        taskId: task.id,
+        nextRetryAt,
+        errorMsg: errMsg,
+        currentFailures,
+      });
     } catch (finishErr) {
       console.error("[cron] failed to update run record:", finishErr);
+      // Último recurso: dejar la tarea no activa para no generar retry storm
+      try {
+        await db
+          .from("scheduled_tasks")
+          .update({ status: "paused", updated_at: new Date().toISOString() })
+          .eq("id", task.id);
+      } catch {
+        // swallow
+      }
     }
 
     return { task_id: task.id, status: "error", error: errMsg };

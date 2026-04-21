@@ -102,9 +102,12 @@ El servidor Next debe estar en marcha en el momento en que se dispare el POST.
 **Alternativa con Supabase Edge Functions:**
 Crea una Edge Function que haga el `fetch` al endpoint cada minuto usando `Deno.cron`.
 
-### 4. Habilitar el tool para el usuario
+### 4. Habilitar los tools para el usuario
 
-El tool `schedule_task` tiene riesgo `medium`, por lo que requiere que el usuario lo habilite en Ajustes → Herramientas.
+En Ajustes → Herramientas, habilita para el usuario:
+
+- `schedule_task` (riesgo `medium`) — necesario para que el agente pueda crear tareas programadas.
+- `manage_scheduled_tasks` (riesgo `low`) — necesario para que el usuario pueda **listar**, **pausar** o **reanudar** sus tareas desde el chat. Si no está habilitado, el agente solo sabrá crear tareas pero no podrá mostrarlas ni pausarlas.
 
 ## Uso desde el chat
 
@@ -125,6 +128,46 @@ El agente llamará a `schedule_task` con:
 - `schedule_type: "recurring"`
 - `cron_expr: "0 8 * * 1"`
 - `timezone: "America/Bogota"` (si está configurado en el perfil)
+
+### Listar, pausar y reanudar tareas (`manage_scheduled_tasks`)
+
+Ejemplos conversacionales una vez que el tool `manage_scheduled_tasks` esté habilitado:
+
+```
+Muéstrame mis tareas programadas
+```
+Responde con la lista de tareas `active` + `paused` del usuario, incluyendo
+id, schedule_type, `cron_expr` / `run_at`, y el próximo `next_run_local` en
+la zona horaria del perfil.
+
+```
+Pausa la tarea de Hacker News
+```
+
+Flujo esperado (sin auto-match silencioso):
+1. Si el agente no tiene un `task_id` UUID, llama primero a
+   `manage_scheduled_tasks(action=list)`.
+2. Si hay varias tareas que podrían encajar, ofrece opciones numeradas y
+   pregunta cuál.
+3. Si hay una sola coincidencia clara, hace UNA pregunta corta de
+   confirmación ("¿Pauso esta tarea? …resumen…") y espera "sí" antes de
+   actuar.
+4. Solo después de la confirmación explícita ejecuta
+   `manage_scheduled_tasks(action=pause, task_id=<UUID>)` y responde con el
+   nuevo estado.
+
+```
+Reanuda la tarea 450b5f0c
+```
+Si el fragmento es suficiente para identificar la tarea, el agente puede
+listar primero para obtener el UUID completo y después llamar `resume`.
+
+Nota: `manage_scheduled_tasks` **no** dispara tarjeta HITL porque el cambio
+es reversible (pause ↔ resume) y está aislado a tareas del mismo usuario
+(validado por `user_id` en la query). Toda la protección está en el prompt
+(`MANAGE_SCHEDULED_TASKS_ADDENDUM` en
+[`packages/agent/src/graph.ts`](../../packages/agent/src/graph.ts)) que
+exige confirmación en lenguaje natural antes de pausar/reanudar.
 
 ### Referencia de expresiones cron
 | Expresión | Significado |
@@ -148,6 +191,58 @@ El usuario aprueba la tarea **una sola vez** al programarla (la tarjeta de confi
 Razón: una tarea programada que requiere reaprobación a la hora de ejecución no es realmente "programada" — si el usuario está dormido o lejos del teléfono, la tarea se pierde. Toda decisión de seguridad debe tomarse al programar, no al ejecutar.
 
 Para auditoría, las llamadas auto-aprobadas se registran igualmente en `tool_calls` con `requires_confirmation = false` y `status = approved` antes de ejecutarse.
+
+## Temperatura del modelo por canal
+
+`createChatModel()` en [`packages/agent/src/model.ts`](../../packages/agent/src/model.ts) acepta `temperature`. `graph.ts` selecciona:
+
+- `temperature = 0.3` para ejecuciones interactivas (Web / Telegram).
+- `temperature = 0.1` para ejecuciones **cron** (`autoApproveTools=true`).
+
+Motivación: en cron no hay "siguiente turno" para recuperarse — el texto que el modelo genere se envía tal cual a Telegram. Con temperatura alta el modelo tiende a producir frases tipo *"intentaré un enfoque diferente, un momento por favor"* como si fuese a retomar después, cuando en realidad el turno ya terminó. Bajándola a 0.1 se reducen esas salidas narrativas y el modelo prefiere devolver resúmenes concretos (aunque sean parciales). En chat interactivo seguimos en 0.3 para que las respuestas suenen naturales.
+
+El cap `maxTokens` se lee de `OPENROUTER_MAX_TOKENS` (default `2048`) para evitar el rechazo `402 This request requires more credits` de OpenRouter cuando el saldo es bajo.
+
+## Retries y auto-pausa de tareas que fallan
+
+Tras la migración
+[`00004_scheduled_tasks_retry.sql`](../../packages/db/supabase/migrations/00004_scheduled_tasks_retry.sql)
+las tareas programadas llevan dos campos extra:
+
+| Columna                | Uso                                                                   |
+| ---------------------- | --------------------------------------------------------------------- |
+| `consecutive_failures` | Nº de runs fallidos seguidos. Se resetea a 0 en OK o al reanudar.     |
+| `last_failure_error`   | Texto del último error (expuesto al usuario cuando se auto-pausa).    |
+
+**Política (hardcoded en el runner, fácil de ajustar):**
+
+- `MAX_CONSECUTIVE_FAILURES = 3` intentos seguidos.
+- `RETRY_GAP_MINUTES = 2` minutos entre reintentos.
+
+**Flujo cuando una run falla:**
+
+1. Si el error parece persistente (contiene `402`, `requires more credits`,
+   `401`, `403`, `400 bad request`, `insufficient_quota`) → auto-pausa
+   inmediata, sin quemar los 3 intentos. Reintentar no va a arreglar crédito
+   o credenciales.
+2. Si es transitorio y `consecutive_failures + 1 < 3` → agenda
+   `next_run_at = now + 2 min` y sigue `active`. Para recurrentes, acota al
+   mínimo entre `now + 2 min` y el siguiente tick natural del cron, para no
+   reintentar "después" del próximo turno legítimo.
+3. Si el contador llega al cap → pasa a `paused` y manda por Telegram un
+   aviso con el último error y el prompt afectado ("⏸️ Tarea programada
+   pausada…"). El usuario puede inspeccionar `scheduled_tasks.last_failure_error` y luego pedir
+   "reanuda la tarea" en chat.
+
+**Efecto en `scheduled_task_runs`:** antes una tarea con error persistente
+generaba un run fallido por minuto (p. ej. un `402` de OpenRouter). Con esta
+política, genera como máximo 1 run (si es persistente) o 3 runs espaciados
+~2 min (si es transitorio) y luego se auto-pausa hasta intervención
+humana.
+
+**Resetear una tarea pausada:** pedirle al agente "reanuda la tarea X" o el
+UUID; `manage_scheduled_tasks(action=resume)` pone la tarea en `active` y
+resetea `consecutive_failures` a 0 (borrón y cuenta nueva).
 
 ## Pruebas manuales
 

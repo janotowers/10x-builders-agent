@@ -122,3 +122,102 @@ Por eso el endpoint cron invoca `runAgent({ ..., autoApproveTools: true })`. Est
 - Solo se activa desde el cron runner; la web y Telegram siguen disparando HITL como siempre.
 
 Implicación de seguridad: cualquier acción que el usuario quiera evitar en ejecución diferida debe filtrarse **al programar**, no al ejecutar. Si en el futuro se quiere ser más conservador (por ejemplo, mantener HITL solo para `bash` o `edit_file`), basta con aceptar una lista de tools auto-aprobadas en lugar del booleano global.
+
+## Gestión de tareas programadas (`manage_scheduled_tasks`)
+
+Una vez que el usuario programa varias tareas, necesita poder revisarlas y
+pausar/reanudar sin entrar a Supabase. Para eso existe la tool
+`manage_scheduled_tasks` (riesgo `low`) en
+[`packages/agent/src/tools/catalog.ts`](../../packages/agent/src/tools/catalog.ts)
+y su handler en
+[`packages/agent/src/tools/adapters.ts`](../../packages/agent/src/tools/adapters.ts).
+
+Acciones soportadas:
+
+- `action="list"` — devuelve las tareas con status `active` o `paused` del
+  usuario autenticado, ordenadas por `next_run_at`. Incluye `id`, `status`,
+  `schedule_type`, `cron_expr` o `run_at`, `next_run_at` (ISO) y
+  `next_run_local` formateado en la zona horaria del usuario.
+- `action="pause"` / `action="resume"` — cambian `status` entre `active` y
+  `paused`. Requieren `task_id` (UUID). La DB valida que la tarea pertenezca al
+  `user_id` actual (`setScheduledTaskStatus` en
+  [`packages/db/src/queries/scheduled-tasks.ts`](../../packages/db/src/queries/scheduled-tasks.ts)),
+  por lo que un usuario no puede tocar tareas de otro aunque adivine el id.
+
+Esta tool **no** borra tareas: lo más destructivo es pasar a `paused` (y se
+puede deshacer). Por eso no dispara tarjeta HITL. A cambio, el system prompt
+(`MANAGE_SCHEDULED_TASKS_ADDENDUM` en `graph.ts`) fuerza al agente a
+desambiguar en lenguaje natural antes de ejecutar `pause`/`resume`:
+
+1. Si el usuario da una descripción difusa ("pausa la de Hacker News") y no un
+   UUID, el agente llama primero a `list`.
+2. Si hay 0 coincidencias, responde que no encontró nada y se detiene.
+3. Si hay 1 coincidencia clara, hace UNA pregunta corta de confirmación en
+   texto y espera la respuesta antes de actuar.
+4. Si hay varias coincidencias, ofrece una lista numerada (con id corto) y
+   pide que el usuario elija.
+
+Ejemplos de uso esperados:
+
+- "Muéstrame mis tareas programadas" → `list` y resumen en tabla.
+- "Pausa la tarea de Hacker News" con 1 coincidencia → `list` → pregunta
+  "¿Pauso esta tarea recurrente …?" → tras "sí" del usuario, `pause(task_id)`.
+- "Reanuda la tarea `450b5f0c`" → `resume(task_id)` directo si el id basta
+  para identificarla.
+
+## Temperatura del modelo por canal
+
+Las ejecuciones cron (`autoApproveTools=true`) usan `temperature=0.1` y las
+interactivas Web/Telegram `0.3` (ver
+[`packages/agent/src/model.ts`](../../packages/agent/src/model.ts) y el uso en
+`graph.ts`).
+
+Rationale: en cron no hay siguiente turno y el mensaje del agente se manda
+directo a Telegram; bajar la temperatura reduce salidas narrativas tipo
+"intentaré un enfoque diferente, un momento…" que empujaban al agente a
+prometer un reintento que nunca ocurría. En chat interactivo preferimos
+mantener `0.3` para respuestas más naturales al usuario. El cap de
+`maxTokens` se lee de `OPENROUTER_MAX_TOKENS` (default `2048`) para no
+rebotar contra OpenRouter cuando hay poco saldo.
+
+## Política de reintentos y auto-pausa
+
+Migración asociada:
+[`00004_scheduled_tasks_retry.sql`](../../packages/db/supabase/migrations/00004_scheduled_tasks_retry.sql).
+Añade dos columnas a `scheduled_tasks`:
+
+- `consecutive_failures int default 0` — se incrementa en cada run fallido y
+  se resetea a 0 cuando una run completa OK o el usuario reanuda la tarea.
+- `last_failure_error text` — mensaje del último error.
+
+Implementada en
+[`apps/web/src/app/api/cron/scheduled-tasks/route.ts`](../../apps/web/src/app/api/cron/scheduled-tasks/route.ts)
+con dos constantes (`MAX_CONSECUTIVE_FAILURES=3`, `RETRY_GAP_MINUTES=2`).
+
+Flujo cuando una run falla:
+
+1. Se clasifica el error:
+   - **Persistente** (contiene `402`, `requires more credits`,
+     `insufficient_quota`, `401`, `403`, `400 bad request`): reintentar no va
+     a resolverlo y solo gasta créditos. Pasamos directo a auto-pausa.
+   - **Transitorio** (cualquier otro): entra al ciclo de reintentos.
+2. Si `consecutive_failures + 1 < MAX_CONSECUTIVE_FAILURES` y el error es
+   transitorio → agenda `next_run_at = now + RETRY_GAP_MINUTES` y mantiene
+   `status='active'`. Para tareas recurrentes, el `next_run_at` se acota al
+   mínimo entre `now + gap` y el siguiente tick natural del `cron_expr`, para
+   no reintentar "después" del siguiente turno legítimo.
+3. Si se alcanza el cap o el error es persistente → `status='paused'`,
+   guarda `last_failure_error` y envía un mensaje por Telegram al usuario:
+
+   > ⏸️ Tarea programada pausada. Pausé automáticamente la tarea por
+   > {motivo}. Prompt: «…». Cuando lo arregles, pídeme "reanuda la tarea".
+
+4. Un run OK resetea `consecutive_failures=0` y limpia `last_failure_error`
+   vía `rescheduleOrComplete`.
+5. Cuando el usuario reanuda manualmente con `manage_scheduled_tasks`
+   (`action=resume`), también se resetea `consecutive_failures=0` para dar a
+   la tarea un "borrón y cuenta nueva" tras el fix.
+
+Esto reemplaza el comportamiento anterior en el que un fallo persistente
+dejaba la tarea en `active` sin mover `next_run_at`, generando un run fallido
+cada minuto (un "retry storm" visible en `scheduled_task_runs`).

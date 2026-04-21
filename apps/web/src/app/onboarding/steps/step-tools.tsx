@@ -125,6 +125,14 @@ const AVAILABLE_TOOLS = [
     risk: "medium" as const,
     requiresIntegration: null,
   },
+  {
+    id: "manage_scheduled_tasks",
+    name: "Gestionar tareas programadas",
+    description:
+      "Lista, pausa y reanuda tus tareas programadas existentes (por id de tarea).",
+    risk: "low" as const,
+    requiresIntegration: null,
+  },
 ];
 
 const RISK_LABELS = {

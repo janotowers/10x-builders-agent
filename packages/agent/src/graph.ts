@@ -24,9 +24,14 @@ import type {
   UserIntegration,
   PendingConfirmation,
 } from "@agents/types";
-import { createChatModel } from "./model";
+import {
+  createChatModel,
+  DEFAULT_CRON_TEMPERATURE,
+  DEFAULT_INTERACTIVE_TEMPERATURE,
+} from "./model";
 import { buildLangChainTools } from "./tools/adapters";
 import { toolRequiresConfirmation } from "./tools/catalog";
+import { userMessageIsScheduleIntent } from "./tools/schedule-intent";
 import { getCheckpointer } from "./checkpointer";
 
 const GraphState = Annotation.Root({
@@ -81,7 +86,15 @@ export interface AgentOutput {
   pendingConfirmation: PendingConfirmation | null;
 }
 
-const MAX_TOOL_ITERATIONS = 6;
+const MAX_TOOL_ITERATIONS = 8;
+/** System prompt inyectado cuando forzamos una última respuesta de texto
+ *  tras tocar el tope de iteraciones sin producir texto. */
+const FORCED_TEXT_WRAPUP_INSTRUCTION =
+  "Has alcanzado el límite de llamadas a herramientas en este turno. " +
+  "NO puedes llamar más herramientas. " +
+  "Produce AHORA un texto final en español resumiendo lo que aprendiste de los tool_results anteriores. " +
+  "Si la información es parcial, dilo explícitamente y entrega lo que sí tengas. " +
+  "Si ninguna llamada devolvió datos útiles, reporta los exitCode/stderr literales que viste y pide al usuario que simplifique su petición.";
 
 function normalizeMessageContentToString(raw: unknown): string {
   if (typeof raw === "string") return raw;
@@ -135,7 +148,11 @@ const GITHUB_CREATE_TOOLS_ADDENDUM = `
 const GITHUB_SOCIAL_ADDENDUM = `
 
 [Reglas GitHub — saludos y presencia]
-- Si el usuario solo saluda o pregunta si sigues ahí ("hola", "¿sigues ahí?", "estás ahí", "ping", "gracias", "¿qué tal?"), responde en texto natural. NO uses NINGUNA herramienta de GitHub (ni list_repos, ni list_issues, ni create_repo, ni create_issue). Un saludo no es una petición de datos ni una acción en GitHub.`;
+- Si el usuario solo saluda o pregunta si sigues ahí ("hola", "¿sigues ahí?", "estás ahí", "ping", "gracias", "¿qué tal?"), responde en texto natural. NO uses NINGUNA herramienta de GitHub (ni list_repos, ni list_issues, ni create_repo, ni create_issue). Un saludo no es una petición de datos ni una acción en GitHub.
+
+[Reglas GitHub — alcance estricto de las herramientas]
+- github_list_repos lista SOLO los repos de la cuenta vinculada del usuario. NO es un buscador de GitHub ni de la web. NO la uses cuando el usuario pida información sobre marcas, empresas, productos, personas, conceptos, noticias o cualquier tema externo (p. ej. "busca info sobre X", "qué es X"). Aunque el mensaje contenga el verbo "buscar", si X no es claramente un repo GitHub del usuario, NO llames a github_list_repos.
+- Si el usuario pide información sobre algo externo y NO hay otra herramienta que cubra esa necesidad (calendario, archivos, etc.), o bien usa la herramienta bash con curl para consultar la web (ver reglas de bash), o, si no puedes/no sabes, di claramente "no tengo esa información" en vez de inventar contenido.`;
 
 function appendGithubCreateToolRules(
   basePrompt: string,
@@ -186,6 +203,20 @@ function buildBashAddendum(): string {
 [Reglas herramienta bash — obligatorias]
 - Si el usuario pide archivos o carpetas del SERVIDOR (donde corre la app), "carpeta actual", "directorio actual", "listar archivos aquí" → usa SOLO la herramienta bash con el comando adecuado. NO uses github_list_repos: esa herramienta lista repositorios remotos en GitHub, no archivos del disco del servidor.
 - github_list_repos solo cuando pide explícitamente sus repositorios/proyectos en GitHub, "mis repos en GitHub", listado de repos remotos, etc.
+
+[Reglas bash — información actual y web]
+- Si el usuario pide información ACTUAL (noticias del día, eventos en curso, "qué pasa con X hoy", "últimas noticias sobre X", "qué es X" para algo que probablemente no estaba en tu corpus), NO digas "no tengo acceso a internet" ni "no tengo datos en tiempo real": usa la herramienta bash con curl para descargar una fuente relevante y resúmela.
+- Patrón base para descargar una URL (silencia stderr para evitar ruido de SIGPIPE de head): \`curl -sS -L --max-time 20 -A 'Mozilla/5.0' '<URL>' 2>/dev/null | head -c 8000\`. Si el stdout viene vacío o muy corto, ESO es la señal de fallo, no el stderr.
+- Fuentes recomendadas según el tipo de pregunta:
+  · NOTICIAS / actualidad ("últimas noticias sobre X", "qué pasó hoy con X"): Google News RSS, devuelve XML con <item><title>...</title><link>...</link>: \`curl -sS -L --max-time 20 'https://news.google.com/rss/search?q=<consulta+codificada>&hl=es&gl=MX&ceid=MX:es' 2>/dev/null | head -c 12000\`. Extrae los primeros 5-10 <title> e indica fuente con <source> si aparece.
+  · DEFINICIÓN / "qué es X": Wikipedia REST API (en español): \`curl -sS -L --max-time 15 'https://es.wikipedia.org/api/rest_v1/page/summary/<TermaCapitalizadoConGuionesBajos>' 2>/dev/null\`. Si trae \`"type":"disambiguation"\` o 404, prueba en inglés (\`en.wikipedia.org\`) o reintenta con otra capitalización. Si Wikipedia no la conoce, dilo: probablemente es una marca/empresa pequeña.
+  · HACKER NEWS: API JSON oficial — \`https://hacker-news.firebaseio.com/v0/topstories.json\` (lista de IDs) y \`https://hacker-news.firebaseio.com/v0/item/<id>.json\` (cada historia).
+  · NO uses la versión HTML de DuckDuckGo (\`duckduckgo.com/html\`): devuelve solo el cascarón sin resultados.
+- IMPORTANTE — interpretación del resultado de bash:
+  · \`exitCode: 0\` y stdout con contenido útil → procesa y responde.
+  · stderr contiene \`curl: (23) Failure writing output to destination\` pero hay stdout → NO es un fallo real, es \`head -c\` cortando el pipe; usa el stdout que sí llegó.
+  · stdout vacío y exitCode != 0 → reporta exitCode y stderr literales y prueba otra fuente o admite que no obtuviste resultados; NO inventes contenido.
+  · No respondas frases tipo "no pude recuperar la información" si tienes stdout no vacío: si tienes texto, RESÚMELO aunque sea parcial.
 ${shellLine}`;
 }
 
@@ -241,7 +272,9 @@ const SCHEDULE_TASK_ADDENDUM = `
 - Para one_time: calcula run_at como ISO 8601 con offset de zona (p.ej. 2026-04-18T19:45:00-06:00). Usa la fecha local actual del usuario como referencia. NUNCA uses fechas pasadas.
 - Para recurring: usa expresiones cron de 5 campos estándar. Si el usuario dice "todos los lunes a las 9", usa "0 9 * * 1".
 - El resultado de la tarea se enviará por Telegram al usuario. Si el usuario no tiene Telegram vinculado, la ejecución se registra pero no hay notificación en tiempo real.
-- schedule_task es riesgo medio: la herramienta mostrará tarjeta de confirmación. Llama directamente a la herramienta sin pedir permiso en texto.
+- schedule_task es riesgo medio: la herramienta mostrará tarjeta de confirmación al usuario. NO pidas permiso en texto antes de llamarla.
+- PROHIBIDO ANUNCIAR SIN ACTUAR: si vas a programar una tarea, **llama a schedule_task en el MISMO turno**, no escribas frases tipo "Voy a programar...", "Voy a proceder a programar...", "Programaré la siguiente tarea..." sin emitir el tool_call. El usuario solo ve "Acción programada" después de tu llamada al tool — si solo describes la intención y no llamas a la herramienta, la tarea NUNCA se programa y el usuario espera en vano.
+- Si todavía te falta algún dato esencial (hora exacta o el qué), pregunta UNA cosa corta y NO escribas "Voy a programar"; si tienes todos los datos, llama directamente a schedule_task sin frases preparatorias.
 - Si el prompt programado requiere acceder a una URL o ejecutar un comando (bash), inclúyelo literalmente en el campo prompt. El agente que se ejecute a esa hora decidirá qué herramientas usar.`;
 
 function appendScheduleTaskRules(
@@ -255,14 +288,47 @@ function appendScheduleTaskRules(
   return `${basePrompt.trimEnd()}${SCHEDULE_TASK_ADDENDUM}`;
 }
 
+const MANAGE_SCHEDULED_TASKS_ADDENDUM = `
+
+[Reglas herramienta manage_scheduled_tasks — obligatorias]
+- Úsala SOLO cuando el usuario pida ver, pausar o reanudar sus tareas programadas. Acciones disponibles: "list", "pause", "resume". No existe una acción de borrado aquí.
+- action="list": llámala directamente cuando el usuario pida "mis tareas programadas", "qué tengo agendado", "lista de tareas", etc. Después, resume en texto los campos más útiles (id corto, status, schedule_type, cron_expr/run_at, next_run_local, y una vista corta del prompt). Si no hay tareas, dilo claramente.
+- action="pause" | "resume": requieren task_id UUID. NUNCA lo adivines ni lo construyas a partir del texto del usuario.
+- DESAMBIGUACIÓN OBLIGATORIA: si el usuario dice "pausa la tarea de Hacker News" o "reanuda la recurrente" sin darte un UUID:
+  1) Llama primero a manage_scheduled_tasks con action="list".
+  2) Si hay 0 tareas que encajen con la descripción → díselo y detente.
+  3) Si hay UNA sola tarea claramente coincidente → haz UNA pregunta corta de confirmación ("¿Pauso esta tarea? …resumen breve…") y espera la respuesta del usuario antes de llamar pause/resume. NO pauses automáticamente solo porque haya una sola coincidencia: el usuario te lo debe confirmar.
+  4) Si hay varias tareas que podrían encajar → ofrece las opciones numeradas con su id corto y pregunta cuál. Espera a que el usuario elija antes de llamar pause/resume.
+- Tras una acción pause/resume, responde con una confirmación breve que incluya: acción aplicada, id (primeros 8 chars), nuevo status y next_run_at en hora local. Si la DB respondió ok:false (p. ej. task_id no encontrado), explícalo y sugiere volver a listar.
+- Esta herramienta NO muestra tarjeta HITL (los cambios son reversibles y están limitados a tareas del mismo usuario). Por eso la regla 3 es crítica: sin confirmación en texto del usuario, no ejecutes pause/resume.`;
+
+function appendManageScheduledTasksRules(
+  basePrompt: string,
+  lcTools: Array<{ name?: string }>
+): string {
+  const names = new Set(
+    lcTools.map((t) => t.name).filter((n): n is string => Boolean(n))
+  );
+  if (!names.has("manage_scheduled_tasks")) return basePrompt;
+  return `${basePrompt.trimEnd()}${MANAGE_SCHEDULED_TASKS_ADDENDUM}`;
+}
+
 /** Injected when the cron runner executes a stored prompt (autoApproveTools). */
 const CRON_SCHEDULED_EXECUTION_ADDENDUM = `
 
-[Ejecución automática (tarea programada) — obligatorias]
+══════════════════════════════════════════════════════
+[ATAJO CRON — ESTE TURNO ES EL ÚLTIMO MENSAJE QUE VE EL USUARIO]
+══════════════════════════════════════════════════════
+- Tu respuesta de texto en este turno se envía DIRECTAMENTE por Telegram al usuario, SIN siguiente turno. No hay forma de "continuar después", no hay forma de "reintentar más tarde": si prometes algo, debes hacerlo AHORA en este mismo turno antes de cerrar.
+- ESTÁ PROHIBIDO cerrar el turno con cualquiera de estas frases (o variantes): "Un momento, por favor", "Intentaré un enfoque diferente", "Intentaré de nuevo", "Lo intento más tarde", "Voy a probar otra cosa", "Permíteme reintentarlo". Si escribes algo así sin un nuevo tool_call inmediatamente después, el usuario solo ve la promesa y nunca el resultado.
+- Si necesitas otro intento: emite OTRO tool_call en este mismo turno (tienes hasta 6 iteraciones de tool en este grafo). Solo cuando hayas agotado 2-3 intentos reales, escribe la respuesta final con un resumen honesto del error (exitCode + stderr LITERAL del bash, no narrativa inventada).
+- Si tienes algo de stdout aunque sea parcial, RESÚMELO en vez de decir "no se pudo": titulares incompletos > mensaje vacío.
+
+[Ejecución automática (tarea programada) — reglas]
 - Esta petición es la ejecución de una tarea que el usuario YA aprobó al programarla. No digas que no puedes programar acciones futuras ni que no puedes acceder a sitios web: ejecuta lo pedido ahora.
 - Si el mensaje pide datos de una URL o ejecutar un comando en terminal, usa SIEMPRE la herramienta bash (está habilitada en el servidor) y devuelve un resumen útil en texto.
-- No respondas con "no se pudo obtener" sin haber llamado primero a la herramienta bash. Si la primera llamada a bash devuelve poco texto o un error, REINTENTA con flags adicionales: curl -sS -L -A 'Mozilla/5.0' <URL> | head -c 8000. Si sigue fallando, reporta el exit code y el stderr literal del bash, no inventes la causa.
-- Para Hacker News, prefiere la API JSON: https://hacker-news.firebaseio.com/v0/topstories.json y https://hacker-news.firebaseio.com/v0/item/<id>.json (mucho más fácil de parsear que el HTML).
+- Si la primera llamada a bash devuelve poco texto o un error, REINTENTA con flags adicionales: \`curl -sS -L --max-time 20 -A 'Mozilla/5.0' '<URL>' 2>/dev/null | head -c 8000\`. El stderr \`curl: (23) Failure writing output\` NO es un error real, es SIGPIPE de \`head -c\`; si tienes stdout, úsalo.
+- Para Hacker News, prefiere la API JSON: https://hacker-news.firebaseio.com/v0/topstories.json y https://hacker-news.firebaseio.com/v0/item/<id>.json. Si una llamada a /item/<id>.json falla, ignora ese item y sigue con los demás; no abandones todo por uno.
 - No vuelvas a llamar a schedule_task para lo mismo salvo que el mensaje lo pida explícitamente.`;
 
 const CALENDAR_TOOLS_ADDENDUM = `
@@ -312,7 +378,14 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     checkpointThreadId,
   } = input;
 
-  const model = createChatModel();
+  // Temperatura por canal: cron (autoApproveTools) pide 0.1 para reducir
+  // respuestas de tipo "intentaré luego" o narrativa creativa cuando el modelo
+  // no tiene el dato. Interactivo se queda en ~0.3 para conversaciones
+  // naturales en Web/Telegram.
+  const modelTemperature = input.autoApproveTools
+    ? DEFAULT_CRON_TEMPERATURE
+    : DEFAULT_INTERACTIVE_TEMPERATURE;
+  const model = createChatModel({ temperature: modelTemperature });
   const lcTools = buildLangChainTools({
     db,
     userId,
@@ -332,13 +405,16 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const ambiguityAddendum = `\n\n[Reglas de desambiguación — obligatorias]\n- Respuestas cortas del usuario como "sí", "ok", "dale", "va", "hazlo", "procede", "no", "cancela": interprétalas SIEMPRE en el contexto del ÚLTIMO turno TUYO inmediatamente anterior. Si tu último turno prometió una acción concreta en un dominio (archivos, calendario, github, bash) pero NO llamaste a la herramienta, ahora debes llamar a la herramienta DIRECTAMENTE con los parámetros ya acordados. No elijas otra acción de otro dominio sólo porque aparezca en el historial lejano.\n- Si no tienes una acción claramente pendiente en tu turno anterior, responde pidiendo clarificación al usuario (una sola pregunta corta) en vez de asumir. Nunca "adivines" creando eventos, archivos o repos para reusar datos de turnos viejos.\n- Nunca pidas confirmación en TEXTO para acciones que tienen herramienta con riesgo medio/alto: la herramienta ya disparará su propia tarjeta de confirmación. Genera el tool_call y deja que el sistema pida la aprobación.`;
 
-  let effectiveSystemPrompt = appendScheduleTaskRules(
-    appendFileToolsRules(
-      appendCalendarToolRules(
-        appendGithubSocialRules(
-          appendBashRules(
-            appendGithubCreateToolRules(
-              systemPrompt + dateContext + ambiguityAddendum,
+  let effectiveSystemPrompt = appendManageScheduledTasksRules(
+    appendScheduleTaskRules(
+      appendFileToolsRules(
+        appendCalendarToolRules(
+          appendGithubSocialRules(
+            appendBashRules(
+              appendGithubCreateToolRules(
+                systemPrompt + dateContext + ambiguityAddendum,
+                lcTools as Array<{ name?: string }>
+              ),
               lcTools as Array<{ name?: string }>
             ),
             lcTools as Array<{ name?: string }>
@@ -356,18 +432,52 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       effectiveSystemPrompt.trimEnd() + CRON_SCHEDULED_EXECUTION_ADDENDUM;
   }
 
+  // Override agresivo cuando se detecta intención clara de programar y la
+  // herramienta schedule_task está disponible: el modelo tiende a anunciar
+  // "Voy a programar..." sin emitir el tool_call. Esta nota va al final del
+  // system prompt para que pese más que las reglas generales.
+  const toolNamesAvailable = new Set(
+    (lcTools as Array<{ name?: string }>)
+      .map((t) => t.name)
+      .filter((n): n is string => Boolean(n))
+  );
+  if (
+    !input.autoApproveTools &&
+    !resumeDecision &&
+    message &&
+    toolNamesAvailable.has("schedule_task") &&
+    userMessageIsScheduleIntent(message)
+  ) {
+    effectiveSystemPrompt =
+      effectiveSystemPrompt.trimEnd() +
+      `
+
+[ATAJO — ESTE TURNO]
+- El último mensaje del usuario es claramente una petición para PROGRAMAR una tarea ("${message.replace(/\n/g, " ").slice(0, 200)}").
+- DEBES emitir un tool_call a schedule_task en este MISMO turno con los datos disponibles. PROHIBIDO escribir texto del tipo "Voy a programar...", "Voy a proceder...", "Programaré...". Si lo haces sin emitir el tool_call, el sistema no programa nada y el usuario no recibe nada.
+- Si te falta UN dato esencial (hora exacta o cuál es el qué), haz UNA sola pregunta corta y NADA más; no anuncies que vas a programar.
+- "cada N minutos/horas/días" → schedule_type="recurring" con cron_expr (p.ej. "*/5 * * * *" para cada 5 min).
+- "en N minutos" o "hoy a las HH:MM" → schedule_type="one_time" con run_at en ISO 8601 con offset de la zona del usuario.`;
+  }
+
   // DEBUG: descomentar las siguientes 2 líneas para ver el system prompt completo en la terminal del servidor
   // console.log("=== SYSTEM PROMPT ===\n", effectiveSystemPrompt, "\n=== END ===");
   // console.log("=== TOOLS REGISTERED ===", lcTools.map((t) => t.name).join(", "), "=== END ===");
 
   // Limitamos el contexto histórico para reducir contaminación entre turnos
   // (p. ej. un "sí" aislado que el modelo asocie a una acción vieja de otro dominio).
-  const history = await getSessionMessages(db, sessionId, 12);
-  const priorMessages: BaseMessage[] = history.map((m) => {
-    if (m.role === "user") return new HumanMessage(m.content);
-    if (m.role === "assistant") return new AIMessage(m.content);
-    return new HumanMessage(m.content);
-  });
+  // EN MODO CRON (autoApproveTools=true) NO cargamos historia: la sesión "cron"
+  // se reutiliza para todas las ejecuciones del usuario, así que tras 3-4 runs
+  // la historia está llena de prompts/respuestas repetidas (incluyendo posibles
+  // "Un momento, por favor" antiguos) que confunden al modelo y lo hacen
+  // imitar el patrón fallido. Cada ejecución cron debe arrancar limpia.
+  const priorMessages: BaseMessage[] = input.autoApproveTools
+    ? []
+    : (await getSessionMessages(db, sessionId, 12)).map((m) => {
+        if (m.role === "user") return new HumanMessage(m.content);
+        if (m.role === "assistant") return new AIMessage(m.content);
+        return new HumanMessage(m.content);
+      });
 
   if (!resumeDecision) {
     if (!message) {
@@ -748,6 +858,29 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
     if (!responseText && resumeDecision === "reject") {
       responseText = "Acción cancelada por el usuario.";
+    }
+
+    // Si el grafo terminó sin texto pero SÍ hubo llamadas a herramientas,
+    // probablemente tocamos MAX_TOOL_ITERATIONS con un tool_call pendiente.
+    // En ese caso forzamos una última invocación del modelo SIN herramientas
+    // para que produzca un resumen final con lo que ya aprendió. Esto evita
+    // el fallback genérico "No pude generar una respuesta" cuando el agente
+    // sí trabajó, solo que se quedó sin iteraciones para cerrar.
+    if (!responseText.trim() && toolCallNames.length > 0) {
+      try {
+        const wrapupResponse = await model.invoke([
+          new SystemMessage(FORCED_TEXT_WRAPUP_INSTRUCTION),
+          ...finalState.messages,
+        ]);
+        const wrapupText = normalizeMessageContentToString(
+          (wrapupResponse as AIMessage).content
+        );
+        if (wrapupText.trim().length > 0) {
+          responseText = wrapupText;
+        }
+      } catch (err) {
+        console.error("[agent] forced wrap-up invocation failed:", err);
+      }
     }
 
     if (!responseText.trim()) {

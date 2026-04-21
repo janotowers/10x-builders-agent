@@ -13,6 +13,15 @@ export interface ScheduledTask {
   next_run_at: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * Número de ejecuciones fallidas consecutivas desde la última exitosa.
+   * Se resetea a 0 cuando una run completa OK o el usuario reanuda la tarea.
+   * Requiere migración 00004_scheduled_tasks_retry.sql (si la migración no
+   * está aplicada, el campo llega como undefined y el runner lo trata como 0).
+   */
+  consecutive_failures?: number;
+  /** Mensaje del último error (útil para exponer motivo al auto-pausar). */
+  last_failure_error?: string | null;
 }
 
 export interface ScheduledTaskRun {
@@ -158,7 +167,8 @@ export async function finishTaskRun(
 
 /**
  * Reactiva una tarea recurrente actualizando next_run_at, o marca
- * una tarea one_time como completed.
+ * una tarea one_time como completed. Resetea `consecutive_failures` y
+ * `last_failure_error` porque este camino solo se llama tras un run exitoso.
  */
 export async function rescheduleOrComplete(
   db: DbClient,
@@ -174,6 +184,8 @@ export async function rescheduleOrComplete(
         last_run_at: now,
         next_run_at: nextRunAt,
         updated_at: now,
+        consecutive_failures: 0,
+        last_failure_error: null,
       })
       .eq("id", task.id);
     if (error) throw error;
@@ -185,10 +197,120 @@ export async function rescheduleOrComplete(
         last_run_at: now,
         next_run_at: null,
         updated_at: now,
+        consecutive_failures: 0,
+        last_failure_error: null,
       })
       .eq("id", task.id);
     if (error) throw error;
   }
+}
+
+/**
+ * Registra un fallo recuperable: incrementa `consecutive_failures`, guarda el
+ * último error y agenda `next_run_at` al momento de reintento, manteniendo la
+ * tarea `active` para que el siguiente tick del cron la retome.
+ *
+ * No cuenta con RETURNING atómico sobre incremento en PostgREST, por lo que
+ * hacemos un read-modify-write. Es aceptable porque `markTaskRunning` actúa
+ * como lock optimista (la tarea está `paused` temporalmente mientras se
+ * ejecuta el run), así que nadie más toca esta fila en este instante.
+ */
+export async function markTaskRetry(
+  db: DbClient,
+  params: {
+    taskId: string;
+    nextRetryAt: string;
+    errorMsg: string;
+    currentFailures: number;
+  }
+): Promise<number> {
+  const now = new Date().toISOString();
+  const nextFailures = params.currentFailures + 1;
+  const { error } = await db
+    .from("scheduled_tasks")
+    .update({
+      status: "active",
+      next_run_at: params.nextRetryAt,
+      consecutive_failures: nextFailures,
+      last_failure_error: params.errorMsg.slice(0, 2000),
+      updated_at: now,
+    })
+    .eq("id", params.taskId);
+  if (error) throw error;
+  return nextFailures;
+}
+
+/**
+ * Auto-pausa una tarea tras superar el máximo de fallos consecutivos.
+ * Deja `consecutive_failures` y `last_failure_error` con el último valor para
+ * que la UI/agente pueda explicarle al usuario por qué se pausó.
+ */
+export async function markTaskPausedDueToFailures(
+  db: DbClient,
+  params: { taskId: string; errorMsg: string; failures: number }
+) {
+  const now = new Date().toISOString();
+  const { error } = await db
+    .from("scheduled_tasks")
+    .update({
+      status: "paused",
+      consecutive_failures: params.failures,
+      last_failure_error: params.errorMsg.slice(0, 2000),
+      updated_at: now,
+    })
+    .eq("id", params.taskId);
+  if (error) throw error;
+}
+
+/**
+ * Cambia el status de una tarea programada, validando que pertenezca al usuario.
+ * Devuelve la fila actualizada o null si no existe, no pertenece al usuario, o
+ * la transición solicitada no era aplicable (p. ej. ya está en ese status).
+ *
+ * Transiciones permitidas por esta función:
+ *   active  → paused     (pausar)
+ *   paused  → active     (reanudar; recalcula next_run_at en el caller si aplica)
+ *   active|paused → completed  (cancelar/finalizar)
+ *
+ * Nota: no tocamos next_run_at aquí. Para reanudar una tarea recurrente cuyo
+ * next_run_at quedó muy atrás, el runner cron lo verá como "debido" y lo
+ * reagendará tras la primera ejecución; para reanudar una one_time con run_at
+ * futuro, el cron lo ejecutará cuando toque.
+ */
+export async function setScheduledTaskStatus(
+  db: DbClient,
+  params: {
+    taskId: string;
+    userId: string;
+    newStatus: "active" | "paused" | "completed";
+  }
+): Promise<ScheduledTask | null> {
+  const now = new Date().toISOString();
+  // Cuando el usuario reanuda una tarea (paused → active), reseteamos el
+  // contador de fallos y el último error: damos a la tarea un "borrón y cuenta
+  // nueva" para que la política de auto-pausa no la vuelva a pausar
+  // inmediatamente si el primer run post-resume falla.
+  const update: Record<string, unknown> = {
+    status: params.newStatus,
+    updated_at: now,
+  };
+  if (params.newStatus === "active") {
+    update.consecutive_failures = 0;
+    update.last_failure_error = null;
+  }
+
+  const { data, error } = await db
+    .from("scheduled_tasks")
+    .update(update)
+    .eq("id", params.taskId)
+    .eq("user_id", params.userId)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error("setScheduledTaskStatus error:", error);
+    return null;
+  }
+  return (data as ScheduledTask | null) ?? null;
 }
 
 /** Obtiene el chat_id de Telegram vinculado a un user_id, o null. */
