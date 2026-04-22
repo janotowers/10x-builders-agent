@@ -744,7 +744,16 @@ export function buildLangChainTools(ctx: ToolContext) {
             "Lists (action=\"list\") the caller's own scheduled tasks (active+paused) or changes state by id (action=\"pause\" or \"resume\"). Scoped to the authenticated user; cannot touch other users' tasks. Does NOT delete. Pause/resume is reversible so there is no confirmation card — the model MUST disambiguate in natural language before calling pause/resume (see system prompt rules).",
           schema: z.object({
             action: z.enum(["list", "pause", "resume"]),
-            task_id: z.string().uuid().optional(),
+            // Varios modelos (especialmente vía OpenRouter/responses API)
+            // emiten campos opcionales como "" o null en vez de omitirlos.
+            // Aceptamos ambas formas y normalizamos a undefined antes de
+            // validar el UUID para que action="list" nunca falle el schema
+            // cuando el LLM envía task_id="".
+            task_id: z
+              .union([z.string(), z.null()])
+              .optional()
+              .transform((v) => (v === "" || v == null ? undefined : v))
+              .pipe(z.string().uuid().optional()),
           }),
         }
       )

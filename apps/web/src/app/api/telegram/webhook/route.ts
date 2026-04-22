@@ -6,7 +6,10 @@ import {
   getGoogleCalendarAccessToken,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
-import { sendTelegramMessage } from "@/lib/telegram/send-message";
+import {
+  sendTelegramMessage,
+  withTypingHeartbeat,
+} from "@/lib/telegram/send-message";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -183,7 +186,9 @@ export async function POST(request: Request) {
     if (action === "approve") {
       await answerCallbackQuery(cb.id, "✅ Aprobado");
       await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Procesando...");
-      const result = await resumeAgentFromCallback(db, toolCallId, "approve");
+      const result = await withTypingHeartbeat(cb.message.chat.id, () =>
+        resumeAgentFromCallback(db, toolCallId, "approve")
+      );
       if (result.pendingConfirmation) {
         const pc = result.pendingConfirmation;
         await sendTelegramMessage(cb.message.chat.id, pc.message, {
@@ -368,36 +373,38 @@ export async function POST(request: Request) {
     (await getGoogleCalendarAccessToken(db, userId)) ?? undefined;
 
   try {
-    const result = await runAgent({
-      message: text,
-      userId,
-      sessionId: session.id,
-      systemPrompt:
-        profile?.agent_system_prompt ?? "Eres un asistente útil.",
-      db,
-      enabledTools: (toolSettings ?? []).map(
-        (t: Record<string, unknown>) => ({
-          id: t.id as string,
-          user_id: t.user_id as string,
-          tool_id: t.tool_id as string,
-          enabled: t.enabled as boolean,
-          config_json: (t.config_json as Record<string, unknown>) ?? {},
-        })
-      ),
-      integrations: (integrations ?? []).map(
-        (i: Record<string, unknown>) => ({
-          id: i.id as string,
-          user_id: i.user_id as string,
-          provider: i.provider as string,
-          scopes: (i.scopes as string[]) ?? [],
-          status: i.status as "active" | "revoked" | "expired",
-          created_at: i.created_at as string,
-        })
-      ),
-      githubToken,
-      userTimezone: profile?.timezone as string | undefined,
-      googleCalendarAccessToken,
-    });
+    const result = await withTypingHeartbeat(chatId, () =>
+      runAgent({
+        message: text,
+        userId,
+        sessionId: session.id,
+        systemPrompt:
+          profile?.agent_system_prompt ?? "Eres un asistente útil.",
+        db,
+        enabledTools: (toolSettings ?? []).map(
+          (t: Record<string, unknown>) => ({
+            id: t.id as string,
+            user_id: t.user_id as string,
+            tool_id: t.tool_id as string,
+            enabled: t.enabled as boolean,
+            config_json: (t.config_json as Record<string, unknown>) ?? {},
+          })
+        ),
+        integrations: (integrations ?? []).map(
+          (i: Record<string, unknown>) => ({
+            id: i.id as string,
+            user_id: i.user_id as string,
+            provider: i.provider as string,
+            scopes: (i.scopes as string[]) ?? [],
+            status: i.status as "active" | "revoked" | "expired",
+            created_at: i.created_at as string,
+          })
+        ),
+        githubToken,
+        userTimezone: profile?.timezone as string | undefined,
+        googleCalendarAccessToken,
+      })
+    );
 
     if (result.pendingConfirmation) {
       const pc = result.pendingConfirmation;
