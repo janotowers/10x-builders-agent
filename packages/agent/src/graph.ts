@@ -1,6 +1,5 @@
 import {
   StateGraph,
-  Annotation,
   interrupt,
   Command,
   type StreamMode,
@@ -26,6 +25,7 @@ import type {
 } from "@agents/types";
 import {
   createChatModel,
+  createCompactionModel,
   DEFAULT_CRON_TEMPERATURE,
   DEFAULT_INTERACTIVE_TEMPERATURE,
 } from "./model";
@@ -33,29 +33,8 @@ import { buildLangChainTools } from "./tools/adapters";
 import { toolRequiresConfirmation } from "./tools/catalog";
 import { userMessageIsScheduleIntent } from "./tools/schedule-intent";
 import { getCheckpointer } from "./checkpointer";
-
-const GraphState = Annotation.Root({
-  messages: Annotation<BaseMessage[]>({
-    reducer: (prev, next) => [...prev, ...next],
-    default: () => [],
-  }),
-  sessionId: Annotation<string>(),
-  userId: Annotation<string>(),
-  systemPrompt: Annotation<string>(),
-  pendingConfirmation: Annotation<PendingConfirmation | null>({
-    reducer: (_prev, next) => next,
-    default: () => null,
-  }),
-  /**
-   * When true, tools that would normally trigger an HITL interrupt are executed
-   * directly. Used by the cron runner: the user already approved the
-   * `schedule_task` itself, so inner tools should not require a second approval.
-   */
-  autoApproveTools: Annotation<boolean>({
-    reducer: (_prev, next) => next,
-    default: () => false,
-  }),
-});
+import { GraphState, type GraphStateType } from "./state";
+import { createCompactionNode } from "./nodes/compaction_node";
 
 export interface AgentInput {
   message?: string;
@@ -489,15 +468,23 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const toolCallNames: string[] = [];
 
   async function agentNode(
-    state: typeof GraphState.State
-  ): Promise<Partial<typeof GraphState.State>> {
+    state: GraphStateType
+  ): Promise<Partial<GraphStateType>> {
     const response = await modelWithTools.invoke(state.messages);
-    return { messages: [response] };
+    // Incrementamos iterationCount SÓLO cuando el modelo pidió herramientas.
+    // El reducer aditivo hace el resto. Necesario para que shouldContinue
+    // respete MAX_TOOL_ITERATIONS aunque el compaction_node haya borrado
+    // AIMessages viejos con tool_calls.
+    const asAI = response as AIMessage;
+    const hasToolCalls = Boolean(asAI.tool_calls?.length);
+    return hasToolCalls
+      ? { messages: [response], iterationCount: 1 }
+      : { messages: [response] };
   }
 
   async function toolExecutorNode(
-    state: typeof GraphState.State
-  ): Promise<Partial<typeof GraphState.State>> {
+    state: GraphStateType
+  ): Promise<Partial<GraphStateType>> {
     const lastMsg = state.messages[state.messages.length - 1];
     if (!(lastMsg instanceof AIMessage) || !lastMsg.tool_calls?.length) {
       return {};
@@ -716,27 +703,32 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     return { messages: results };
   }
 
-  function shouldContinue(state: typeof GraphState.State): string {
+  function shouldContinue(state: GraphStateType): string {
     const lastMsg = state.messages[state.messages.length - 1];
     if (lastMsg instanceof AIMessage && lastMsg.tool_calls?.length) {
-      const iterations = state.messages.filter(
-        (m) => m instanceof AIMessage && (m as AIMessage).tool_calls?.length
-      ).length;
-      if (iterations >= MAX_TOOL_ITERATIONS) return "end";
+      // Usamos el contador propio del estado (reducer aditivo en agentNode)
+      // en lugar de derivar de messages: así el guard sigue aplicando aunque
+      // compaction_node haya limpiado AIMessages con tool_calls viejos.
+      if ((state.iterationCount ?? 0) >= MAX_TOOL_ITERATIONS) return "end";
       return "tools";
     }
     return "end";
   }
 
+  const compactionModel = createCompactionModel();
+  const compactionNode = createCompactionNode({ compactionModel });
+
   const graph = new StateGraph(GraphState)
+    .addNode("compaction", compactionNode)
     .addNode("agent", agentNode)
     .addNode("tools", toolExecutorNode)
-    .addEdge("__start__", "agent")
+    .addEdge("__start__", "compaction")
+    .addEdge("compaction", "agent")
     .addConditionalEdges("agent", shouldContinue, {
       tools: "tools",
       end: "__end__",
     })
-    .addEdge("tools", "agent");
+    .addEdge("tools", "compaction");
 
   const checkpointer = await getCheckpointer();
   const app = graph.compile({ checkpointer });
@@ -766,6 +758,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         systemPrompt,
         pendingConfirmation: null,
         autoApproveTools: input.autoApproveTools ?? false,
+        compactionCount: 0,
+        iterationCount: 0,
       };
 
   /** Populated from stream "updates" chunks when interrupt() fires (not present on state schema). */
@@ -811,7 +805,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   }
 
   const snapshot = await app.getState({ configurable: { thread_id: threadId } });
-  const finalState = snapshot.values as typeof GraphState.State;
+  const finalState = snapshot.values as GraphStateType;
   if (!finalState) {
     throw new Error("LangGraph checkpoint has no state values");
   }

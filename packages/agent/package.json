@@ -12,7 +12,8 @@
     "test:chat-greeting-intent": "tsx src/tools/chat-greeting-intent.selftest.ts",
     "test:local-shell-intent": "tsx src/tools/local-shell-intent.selftest.ts",
     "test:file-tools": "tsx src/tools/fileTools.selftest.ts",
-    "test:file-tools-intent": "tsx src/tools/file-tools-intent.selftest.ts"
+    "test:file-tools-intent": "tsx src/tools/file-tools-intent.selftest.ts",
+    "test:compaction-node": "tsx src/nodes/compaction_node.selftest.ts"
   },
   "dependencies": {
     "@agents/db": "*",

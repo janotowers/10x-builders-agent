@@ -63,3 +63,28 @@ export function createChatModel(options: CreateChatModelOptions = {}) {
     apiKey,
   });
 }
+
+/**
+ * Factory dedicada para el `compaction_node`. Usa Claude 3.5 Haiku vía el
+ * mismo endpoint de OpenRouter (sin credencial ni SDK nuevos). Se mantiene
+ * separada de `createChatModel()` para no acoplar las dos decisiones: si el
+ * modelo principal del agente cambia (gpt-4o-mini → otro), el compactador
+ * sigue siendo Haiku, que es suficiente para la tarea mecánica de resumir.
+ */
+export function createCompactionModel() {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
+
+  return new ChatOpenAI({
+    modelName: "anthropic/claude-3-5-haiku",
+    temperature: 0,
+    maxTokens: 2048,
+    configuration: {
+      baseURL: "https://openrouter.ai/api/v1",
+      defaultHeaders: {
+        "HTTP-Referer": "https://agents.local",
+      },
+    },
+    apiKey,
+  });
+}
