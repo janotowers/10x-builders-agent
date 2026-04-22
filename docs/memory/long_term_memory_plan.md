@@ -132,7 +132,7 @@ flowchart TD
 
     subgraph flush [Post-message — fire & forget]
         CR[chat/route.ts] -->|"after runAgent()"| MF[memory_flush.ts]
-        MF --> LLM[Gemini 2.5 Flash via OpenRouter]
+        MF --> LLM[Claude Haiku via OpenRouter]
         LLM -->|"{ type, content }[]"| EMB[embeddings.ts]
         EMB --> DB[(memories table)]
     end
@@ -204,7 +204,7 @@ Exported function `flushSessionMemory({ db, userId, sessionId })`:
 
 1. Load messages with `getSessionMessages(db, sessionId, 200)`
 2. Format as transcript string
-3. Call `ChatOpenAI` with model `anthropic/claude-haiku-3-5` (via OpenRouter) and a structured extraction prompt
+3. Call `ChatOpenAI` with **`anthropic/claude-3-5-haiku`** (OpenRouter), alineado con `createCompactionModel` en `packages/agent/src/model.ts`, salvo que el producto decida otro modelo barato para extracción
 4. Parse response as `{ type: 'episodic'|'semantic'|'procedural', content: string }[]`
 5. For each item: `generateEmbedding(content)` then `saveMemory(...)`
 6. Silent on parse failures (conservative — emit nothing if JSON is malformed)
@@ -245,6 +245,10 @@ Extraction prompt (conservative):
 
 - No `await` — does not block the response.
 
-## What is NOT touched
+## What is NOT touched (intent)
 
-`compaction_node.ts`, `agent_node`, `toolExecutorNode`, HITL interrupt logic, `getCheckpointer`, `iterationCount`, `GraphState` shape, all existing DB queries.
+No reescribir desde cero **`compaction_node`**, **`agent_node`**, **`toolExecutorNode`**, la lógica de **`interrupt()` / HITL**, ni **`getCheckpointer`**. La memoria larga debe colgarse como **procesos y nodos adicionales** (flush post-sesión, inyección al inicio) sin romper ese núcleo.
+
+**Aclaraciones respecto al estado del grafo:** el plan asume que `memory_injection` solo enriquece **`systemPrompt`** (y quizá campos nuevos mínimos si hiciera falta). Cualquier cambio a **`GraphState`** (p. ej. añadir campos) debe ser **acotado y documentado**; no es lo mismo que “tocar compaction”. El campo **`iterationCount`** ya existe en el estado actual por decisión de la memoria de corto plazo (ver `docs/memory/short_memory_plan.md` — nota sobre `iterationCount`); el trabajo de memoria larga **no debe** revertir ese mecanismo.
+
+**DB:** se añaden migraciones/consultas para `memories`; el resto de queries existentes solo se extiende donde el diseño lo requiera.

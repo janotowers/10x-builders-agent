@@ -140,6 +140,7 @@ Construir un agente que permita a un usuario **gestionar tareas y ejecutar accio
 
 ### Fase 8: Mejoras de agente
 
+- [x] **Memoria de corto plazo (compaction):** nodo `compaction` en el grafo LangGraph (`__start__` → compaction → agent; tools → compaction → agent), `GraphState` en `packages/agent/src/state.ts` con `messagesStateReducer` (soporta `RemoveMessage`), microcompact de tool results viejos, compactación LLM con Haiku vía OpenRouter por encima de umbral configurable, circuit breaker y `iterationCount` en estado para preservar `MAX_TOOL_ITERATIONS` tras borrado de mensajes. Diseño y detalle: **[docs/memory/short_memory_plan.md](memory/short_memory_plan.md)**. Memoria larga planificada (no implementada aún): **[docs/memory/long_term_memory_plan.md](memory/long_term_memory_plan.md)**.
 - [ ] **Multi-proveedor LLM (diseño):** fachada `createChatModel` con elección por env entre OpenRouter y Google (AI Studio / Vertex), canales interactive vs cron, fallback opcional. Documento de diseño versionado: **[docs/tools-design/model-providers.md](tools-design/model-providers.md)**. Implementación pendiente (plan técnico en `.cursor/plans/` en la máquina de desarrollo).
 - [ ] Refactor incremental de `packages/agent/src/tools/adapters.ts` cuando el número de tools lo justifique: helpers compartidos, módulos por dominio; opcionalmente mapa `toolId → handler` (ver `docs/architecture.md` — Herramientas)
 - [ ] Streaming de respuestas (SSE / WebSocket) en vez de respuesta síncrona

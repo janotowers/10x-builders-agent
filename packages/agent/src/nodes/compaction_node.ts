@@ -43,7 +43,7 @@ export const COMPACTION_WINDOW_TOKENS = resolveWindowTokens();
  * compactar. El umbral en tokens efectivo es
  * `floor(COMPACTION_WINDOW_TOKENS * COMPACTION_THRESHOLD)` (ver `needsLLMCompaction`).
  */
-export const COMPACTION_THRESHOLD = 0.001;
+export const COMPACTION_THRESHOLD = 0.80;
 
 /** Cantidad de `ToolMessage` recientes que la etapa 1 (microcompact) NUNCA
  *  limpia. Sirve para que el modelo vea los resultados operativos más

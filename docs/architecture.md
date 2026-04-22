@@ -129,11 +129,14 @@ Manipulan archivos de texto dentro de una **raíz configurada** (`FILE_TOOLS_ROO
 - **Política de reintentos (migración `00004_scheduled_tasks_retry.sql`):** ante un run fallido el runner decide entre reintento acotado y auto-pausa. Errores "persistentes" (contiene `402`/`401`/`403`/`400`/`requires more credits`) se auto-pausan de inmediato para no quemar créditos. Errores transitorios reintentan hasta `MAX_CONSECUTIVE_FAILURES=3` con `RETRY_GAP_MINUTES=2` (acotado al próximo tick natural del cron si es recurrente). Alcanzado el cap → `status='paused'`, se persiste `last_failure_error` y se avisa al usuario por Telegram. Un run OK o un `manage_scheduled_tasks(action=resume)` resetea `consecutive_failures=0`.
 - Detalle de diseño, HITL y operación: **[docs/tools-design/scheduled-tasks.md](tools-design/scheduled-tasks.md)** y **[docs/tools-design/runbook-scheduled-tasks.md](tools-design/runbook-scheduled-tasks.md)**.
 
-## LangGraph: grafo y HITL
+## LangGraph: grafo, compaction (memoria corta) y HITL
 
-- **StateGraph** con nodos `agent` y `tools`; máximo 8 iteraciones de tool.
+- **StateGraph** con nodos **`compaction`**, **`agent`** y **`tools`**. Flujo: `__start__` → `compaction` → `agent` → (condicional) → `tools` o `__end__`; tras ejecutar tools, **`tools` → `compaction` → `agent`**. Así, cada lote de `ToolMessage` pasa por compaction antes del siguiente turno del modelo principal.
+- **Memoria de corto plazo (compaction):** `packages/agent/src/nodes/compaction_node.ts` — (1) *microcompact*: ofusca resultados de tools antiguos (`[tool result cleared]`) conservando los últimos N intactos; (2) *LLM compaction*: si la ventana estimada supera el umbral (default 80%), resume con **Haiku** vía OpenRouter (`createCompactionModel` en `model.ts`) y reinyecta un `SystemMessage` `[CONTEXTO COMPACTADO]`; circuit breaker tras fallos consecutivos del compactador. Estado centralizado en `packages/agent/src/state.ts`: `messages` con **`messagesStateReducer`** (LangGraph) para soportar `RemoveMessage` y reemplazos por `id`, más `compactionCount` e **`iterationCount`**.
+- **Límite de iteraciones de tools:** hasta **8** (`MAX_TOOL_ITERATIONS` en `graph.ts`). El guard **`shouldContinue`** usa **`state.iterationCount`** (incrementado en `agent` cuando hay `tool_calls`), no el recuento de `AIMessage` en el historial, para que el límite siga aplicando aunque compaction borre mensajes viejos.
 - **Checkpointer:** `PostgresSaver` si existe `DATABASE_URL` (URI Postgres directa); si no, `MemorySaver` en memoria del proceso.
 - **`thread_id`:** por mensaje nuevo se usa un id único por turno (`sessionId` + timestamp) para no mezclar checkpoints; el resume tras HITL reutiliza el `checkpointThreadId` guardado en `structured_payload`.
+- **Diseño detallado de compaction:** **[docs/memory/short_memory_plan.md](memory/short_memory_plan.md)**. Plan de memoria larga (futuro): **[docs/memory/long_term_memory_plan.md](memory/long_term_memory_plan.md)**.
 - Detalle de implementación, streaming, `__interrupt__` y regresiones evitadas: **[docs/tools-design/hitl.md](tools-design/hitl.md)** (sección *Implementación actual*).
 
 ## Herramientas: catálogo, ejecución y estilo de registro
