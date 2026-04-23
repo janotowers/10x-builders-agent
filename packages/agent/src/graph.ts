@@ -122,7 +122,7 @@ function normalizeMessageContentToString(raw: unknown): string {
 
 /** Mismos defaults que `memory_injection_node` (solo para turn_summary / eco en log). */
 const MEM_LOG_RETRIEVE_TOP_K_DEFAULT = 8;
-const MEM_LOG_MATCH_THRESHOLD_DEFAULT = 0.35;
+const MEM_LOG_MATCH_THRESHOLD_DEFAULT = 0.5;
 
 function resolveMemoryLogRetrieveTopK(): number {
   const raw = process.env.MEMORY_RETRIEVE_TOP_K?.trim();
@@ -142,8 +142,13 @@ function resolveMemoryLogMatchThreshold(): number {
 
 /**
  * Parsea el bloque `[MEMORIA DEL USUARIO…]` en el system prompt final para
- * contar ítems (líneas `- ...`) y armar previews — opción A hacia v2, sin
- * leer memory.log.
+ * contar ítems y armar previews (opción A hacia v2, sin leer memory.log).
+ *
+ * Importante: `memory_injection_node` **antepone** el bloque al system existente
+ * con un separador fijo: `\n\n---\n\n` (ver `createMemoryInjectionNode`). Si
+ * recontáramos hasta el final del string, incluiríamos el prompt base con
+ * decenas de líneas `-` (reglas, contacto, listas) y el número "retrieved" sería
+ * absurdo. Solo analizamos el tramo **hasta** ese separador.
  */
 function extractMemoriaUserBlockStats(sysText: string): {
   injected: boolean;
@@ -160,12 +165,18 @@ function extractMemoriaUserBlockStats(sysText: string): {
       memoryItemPreviews: [],
     };
   }
-  const memorySection = sysText.slice(blockStart);
+  const afterHeader = sysText.slice(blockStart);
+  const sepIdx = afterHeader.indexOf("\n\n---\n\n");
+  const memorySection =
+    sepIdx >= 0 ? afterHeader.slice(0, sepIdx) : afterHeader;
+
   const memoryItemPreviews: string[] = [];
   for (const line of memorySection.split("\n")) {
-    const m = line.match(/^\s*-\s+(.+?)\s*$/);
+    const m = line.match(
+      /^\s*-\s+\((episodic|semantic|procedural)\)\s+(.+?)\s*$/
+    );
     if (m) {
-      const one = m[1].replace(/\s+/g, " ").trim();
+      const one = `(${m[1]}) ${m[2]}`.replace(/\s+/g, " ").trim();
       if (one.length > 0) {
         memoryItemPreviews.push(
           one.length > 120 ? `${one.slice(0, 120)}…` : one

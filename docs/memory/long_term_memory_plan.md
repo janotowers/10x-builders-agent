@@ -273,13 +273,13 @@ En ese caso se paga 1–3 s de latencia **una vez** (el primer turno tras el hue
 | `FLUSH_MIN_NEW_MESSAGES` | `3` | `MEMORY_FLUSH_MIN_NEW_MESSAGES` |
 | `CATCHUP_IDLE_MIN` | `20` | `MEMORY_CATCHUP_IDLE_MIN` |
 | `RETRIEVE_TOP_K` | `8` | `MEMORY_RETRIEVE_TOP_K` |
-| `MATCH_THRESHOLD` | `0.35` | `MEMORY_MATCH_THRESHOLD` |
+| `MATCH_THRESHOLD` | `0.50` | `MEMORY_MATCH_THRESHOLD` |
 | `EMBEDDING_MODEL` | `google/gemini-embedding-001` | `MEMORY_EMBEDDING_MODEL` |
 | `EMBEDDING_DIM` | `1536` | `MEMORY_EMBEDDING_DIM` |
 
 > `FLUSH_MIN_NEW_MESSAGES` actúa como **piso de eficiencia**: aunque las señales shift/count/idle se disparen, no se lanza `flushSessionMemory` si hay menos de 3 filas en `agent_messages` con `created_at > last_flushed_at` (menos de 3 mensajes sin flushear desde el watermark). Sirve para evitar pagar una llamada a Haiku en turnos tan cortos (1 user + 1 assistant = 2) que no producen recuerdos útiles. Con ≥ 3 hay al menos un ida-y-vuelta completo más arranque → suficiente contexto para extraer.
 
-> `MATCH_THRESHOLD` actúa como **piso de relevancia** en la recuperación: el RPC `match_memories` filtra `similarity >= threshold` antes del `LIMIT top_k`. Sin este piso, con pocas memorias en la base el agente recibía siempre las 8 mejores aunque fueran irrelevantes (cosenos ~ 0.1). Default `0.35` es conservador; subir a `0.45-0.5` para más precisión, bajar a `0.25` para más recall. Implementado en la migración `00006_match_memories_threshold.sql`.
+> `MATCH_THRESHOLD` actúa como **piso de relevancia** en la recuperación: el RPC `match_memories` filtra `similarity >= threshold` antes del `LIMIT top_k`. Sin este piso, con pocas memorias en la base el agente recibía siempre las 8 mejores aunque fueran irrelevantes (cosenos ~ 0.1). Default **0.50** (antes 0.35): más precisión, menos ruido; bajar a `0.35-0.45` para más recall. Migraciones `00006` (piso) y `00008` (default 0.50 en la RPC).
 
 ## Observabilidad (`packages/agent/logs/memory.log`)
 
@@ -378,7 +378,7 @@ Mapeo de campos y su origen:
 | USER INPUT | `input.message` | Trunca a 200 chars en no-verbose |
 | profile | `userTimezone`, `userEmail`, `userPhone` (de `AgentInput`) | `name`/`language` actualmente no se pasan → n/a |
 | short-term | `priorRaw` (rows crudas de `agent_messages`) | Breakdown por rol se calcula antes del mapeo a `BaseMessage` |
-| long-term | **Conteo heurístico**: parse del `[MEMORIA DEL USUARIO]` en el `SystemMessage` final | Injected=true si hay bloque; matchesCount = líneas `"- "` del bloque |
+| long-term | **Conteo en `runAgent`**: solo el tramo del bloque inyectado **hasta** el separador `\n\n---\n\n` que añade `memory_injection_node` antes del resto del system; cada ítem = línea `-(episodic\|semantic\|procedural) …` | No confundir con el número de filas en `memories` si el contador antiguo mezclaba el prompt entero; ver fix en `graph.ts` `extractMemoriaUserBlockStats` |
 | integrations | `input.integrations` filtrado por status=active | |
 | tool_settings | `input.enabledTools` filtrado por `enabled=true` | |
 | AGENT DECISION | `toolCallNames[]` + `pending` (`PENDING_HITL` vs `COMPLETED`) | |
@@ -411,8 +411,8 @@ USER INPUT:
 
 [LONG-TERM RETRIEVAL - INJECT]  (runs before the agent)
   query embedded:  model=google/gemini-embedding-001  dim=1536  latency=180ms
-  search params:   threshold=0.35  top_k=8
-  returned 3 memories (sim >= 0.35):
+  search params:   threshold=0.50  top_k=8
+  returned 3 memories (sim >= 0.50):
     - "le gusta el futbol, equipo: Atlas"        type=semantic  sim=0.42  uses=3
     - "trabaja en negocios de diseño"            type=semantic  sim=0.38  uses=7
     - "tiene reunión recurrente los jueves"      type=episodic  sim=0.36  uses=1

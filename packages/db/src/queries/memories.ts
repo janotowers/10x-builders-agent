@@ -87,8 +87,8 @@ export interface SearchMemoriesInput {
   limit?: number;
   /**
    * Similitud mínima (coseno ∈ [-1, 1]) para que un match cuente. El RPC
-   * filtra con `similarity >= threshold` antes del LIMIT. Default `0.35`
-   * (conservador; ver migración 00006). El caller puede ajustarlo vía
+   * filtra con `similarity >= threshold` antes del LIMIT. Default `0.5`
+   * (migraciones 00006/00008). El caller puede ajustarlo vía
    * `MEMORY_MATCH_THRESHOLD`.
    */
   matchThreshold?: number;
@@ -107,7 +107,7 @@ export async function searchMemories(
     p_user_id: input.userId,
     p_query_embedding: input.embedding,
     p_match_count: input.limit ?? 8,
-    p_match_threshold: input.matchThreshold ?? 0.35,
+    p_match_threshold: input.matchThreshold ?? 0.5,
   });
   if (error) throw error;
   return (data ?? []) as MemoryMatch[];

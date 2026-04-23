@@ -439,7 +439,7 @@ export function createTurnCollector(
     warnings: 0,
     memorySearchEnv: seed.memorySearchEnv ?? {
       topK: 8,
-      matchThreshold: 0.35,
+      matchThreshold: 0.5,
     },
     ...seed,
   };

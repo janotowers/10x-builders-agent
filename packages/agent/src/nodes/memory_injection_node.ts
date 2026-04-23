@@ -54,7 +54,7 @@ import { logMemoryInject } from "./memory_log";
 
 const TOPIC_SHIFT_THRESHOLD_DEFAULT = 0.55;
 const RETRIEVE_TOP_K_DEFAULT = 8;
-const MATCH_THRESHOLD_DEFAULT = 0.35;
+const MATCH_THRESHOLD_DEFAULT = 0.5;
 const MEMORY_BLOCK_MAX_CHARS = 1500;
 
 function resolveTopicShiftThreshold(): number {
