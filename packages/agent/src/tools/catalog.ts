@@ -24,7 +24,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "github_list_repos",
     name: "github_list_repos",
     description:
-      "Lists ONLY the GitHub repositories owned by the authenticated user. Does NOT search GitHub for arbitrary projects, brands, companies or topics. Use ONLY when the user explicitly asks for THEIR own repos / proyectos en GitHub.",
+      "Lists ONLY the GitHub repositories owned by the authenticated user. Do NOT use when the user is only asking you to change answer format (e.g. bullets, clarity, style, length) without requesting repository data. Does NOT search GitHub for arbitrary projects, brands, companies or topics. Use ONLY when the user explicitly asks to see or list THEIR own repos on GitHub.",
     risk: "low",
     requires_integration: "github",
     parameters_schema: {

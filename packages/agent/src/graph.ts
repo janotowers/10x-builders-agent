@@ -249,6 +249,7 @@ const GITHUB_SOCIAL_ADDENDUM = `
 
 [Reglas GitHub — alcance estricto de las herramientas]
 - github_list_repos lista SOLO los repos de la cuenta vinculada del usuario. NO es un buscador de GitHub ni de la web. NO la uses cuando el usuario pida información sobre marcas, empresas, productos, personas, conceptos, noticias o cualquier tema externo (p. ej. "busca info sobre X", "qué es X"). Aunque el mensaje contenga el verbo "buscar", si X no es claramente un repo GitHub del usuario, NO llames a github_list_repos.
+- **Preferencias de CÓMO responder (sin pedir datos):** si el usuario solo indica formato, estilo, tono, longitud, viñetas/bullets, "más claro", "puntualiza con lista", o cómo estructurar la respuesta, responde en **texto** y no uses ninguna herramienta de GitHub. Eso no es un pedido de "listar repositorios" aunque diga "lista" o "items".
 - Si el usuario pide información sobre algo externo y NO hay otra herramienta que cubra esa necesidad (calendario, archivos, etc.), o bien usa la herramienta bash con curl para consultar la web (ver reglas de bash), o, si no puedes/no sabes, di claramente "no tengo esa información" en vez de inventar contenido.`;
 
 function appendGithubCreateToolRules(

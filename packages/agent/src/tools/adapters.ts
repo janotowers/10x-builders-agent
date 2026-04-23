@@ -18,6 +18,7 @@ import { githubApi } from "./github-api";
 import { userWantsNewGithubRepository } from "./github-intent";
 import { userMessageAnchorsCalendarPeriodOnly } from "./calendar-period-intent";
 import { userMessageIsPresenceOrGreetingOnly } from "./chat-greeting-intent";
+import { userMessageIsResponseFormatOrStyleOnly } from "./response-style-intent";
 import { userMessageIsCalendarRelated } from "./calendar-intent";
 import { userMessageIsLocalShellOrFilesystemIntent } from "./local-shell-intent";
 import { userMessageIsFileToolsIntent } from "./file-tools-intent";
@@ -84,6 +85,13 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   if (
     (toolId === "github_list_repos" || toolId === "github_list_issues") &&
     userMessageAnchorsCalendarPeriodOnly(ctx.lastUserMessage)
+  ) {
+    return false;
+  }
+
+  if (
+    (toolId === "github_list_repos" || toolId === "github_list_issues") &&
+    userMessageIsResponseFormatOrStyleOnly(ctx.lastUserMessage)
   ) {
     return false;
   }
@@ -241,7 +249,7 @@ export function buildLangChainTools(ctx: ToolContext) {
         {
           name: "github_list_repos",
           description:
-            "Lists ONLY the GitHub repositories owned by the authenticated user. Does NOT search GitHub for arbitrary projects, brands, companies or topics. Use ONLY when the user explicitly asks for THEIR own repos / proyectos en GitHub.",
+            "Lists ONLY the GitHub repositories owned by the authenticated user. Do NOT use when the user is only setting preferences for how you should answer (bullets, tone, format, length, language style) with no request for repo data. Does NOT search GitHub for arbitrary projects, brands, companies or topics. Use ONLY when the user explicitly asks to see or list THEIR own repos on GitHub.",
           schema: z.object({
             per_page: z.number().max(30).optional().default(10),
           }),
