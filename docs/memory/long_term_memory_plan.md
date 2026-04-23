@@ -463,6 +463,16 @@ USER INPUT:
 
 La ganancia principal de v2 es tener en un solo lugar el **tokenómetro del prompt** (desglose por bloque) y los **sim scores por memoria**, muy útiles para afinar `MATCH_THRESHOLD` y entender por qué el modelo eligió una acción. Hoy esos datos están en `memory.log` y pueden cruzarse por timestamp, así que v1 Lite es funcionalmente suficiente para la mayoría de debugging.
 
+### Backlog — evitar hechos casi duplicados al extraer (no implementado)
+
+**Situación hoy.** Cuando el agente “aprende” algo de la conversación y lo guarda en memoria larga, el sistema **evita repeticiones exactas** del mismo texto (normalizado: mayúsculas, espacios, etc.). Pero si en dos conversaciones el usuario expresa **la misma idea con palabras distintas** —por ejemplo, “es fan del Barcelona” y “sigue al Barça con pasión”— el sistema **puede guardar las dos** como entradas separadas. Eso no rompe nada, pero en el tiempo la base de recuerdos puede llenarse de **casi el mismo dato** varias veces. El asistente entonces inyecta variaciones redundantes o pierde aire de contexto en memoria poco añadida.
+
+**Para qué serviría la mejora.** Reducir ruido y dar sensación de “memoria coherente”: menos filas inútiles, resúmenes de perfil más limpios y menos riesgo de que el usuario perciba al agente como que **no unifica** lo que ya sabe. El esfuerzo y el umbral adecuado conviene **validarlos con uso real** (si en la práctica casi nunca pasa, puede no compensar añadir lógica).
+
+**Enfoque tentativo (detalle técnico).** Tras el hash actual, **antes** de insertar un recuerdo **nuevo** a nivel de texto, comprobar si en la base ya hay algo **muy parecido en significado** usando el **mismo vector** (embedding) del candidato: por ejemplo, una búsqueda vía `match_memories` con un **umbral alto** (p. ej. `≥ 0.80`) y pocos resultados. Si el mejor match lo supera, **omitir el insert** o, en una versión más rica, **actualizar** la memoria existente (texto o embedding) en lugar de duplicar. Coste aproximado: **un viaje a la base de datos por ítem** a guardar, sin un segundo pago al modelo de embeddings. Constantes, nombre de variable de entorno (si aplica) y si se prefiere “skip” o “merge” se definirán al implementar.
+
+**Nota:** el umbral de “¿me lo inyecto al leer?” (`MEMORY_MATCH_THRESHOLD`, hoy del orden de **0.5**) y el de “¿es un duplicado al guardar?” (pensado **más alto**, p. ej. 0.8) **no son lo mismo**; responden a preguntas distintas y no deben mezclarse en configuración ni en la documentación.
+
 ## Archivos a crear
 
 ### 1. Migración SQL
