@@ -24,6 +24,7 @@ import type {
   PendingConfirmation,
 } from "@agents/types";
 import {
+  CHAT_MODEL_ID,
   createChatModel,
   createCompactionModel,
   DEFAULT_CRON_TEMPERATURE,
@@ -35,6 +36,12 @@ import { userMessageIsScheduleIntent } from "./tools/schedule-intent";
 import { getCheckpointer } from "./checkpointer";
 import { GraphState, type GraphStateType } from "./state";
 import { createCompactionNode } from "./nodes/compaction_node";
+import { createMemoryInjectionNode } from "./nodes/memory_injection_node";
+import {
+  approxTokensFromChars,
+  writeTurnSummary,
+  type TurnSummaryInput,
+} from "./turn_log";
 
 export interface AgentInput {
   message?: string;
@@ -47,6 +54,20 @@ export interface AgentInput {
   githubToken?: string;
   /** Profile timezone for interpreting/creating calendar events. */
   userTimezone?: string;
+  /**
+   * Profile email (from `profiles.email`). Canonical; when present, the agent
+   * knows it without asking the user. Not extracted to long-term memory.
+   * Pass `null`/`undefined` if the profile has no email set.
+   */
+  userEmail?: string | null;
+  /** Profile phone (from `profiles.phone`). Same policy as `userEmail`. */
+  userPhone?: string | null;
+  /**
+   * Canal de origen del turno. Sólo informativo (para logs / dashboard
+   * ejecutivo). No altera la lógica de runAgent. Si no se provee, se
+   * infiere: `autoApproveTools=true` → "cron"; de lo contrario "web".
+   */
+  channel?: "web" | "telegram" | "cron";
   googleCalendarAccessToken?: string;
   resumeDecision?: "approve" | "reject";
   /** Must match the thread_id used when the interrupt was created. */
@@ -63,6 +84,15 @@ export interface AgentOutput {
   response: string;
   toolCalls: string[];
   pendingConfirmation: PendingConfirmation | null;
+  /**
+   * Señal de memoria larga producida por `memory_injection_node`: `true` si
+   * detectó cambio de tema (topic shift) en este turno. El caller decide si
+   * dispara `flushSessionMemory` (fire-and-forget) fuera de este runAgent.
+   *
+   * En turnos de cron (`autoApproveTools=true`) o de resume HITL el nodo
+   * hace no-op y este campo siempre queda en `false`.
+   */
+  memoryFlushPending: boolean;
 }
 
 const MAX_TOOL_ITERATIONS = 8;
@@ -88,6 +118,94 @@ function normalizeMessageContentToString(raw: unknown): string {
       .trim();
   }
   return raw ? String(raw) : "";
+}
+
+/** Mismos defaults que `memory_injection_node` (solo para turn_summary / eco en log). */
+const MEM_LOG_RETRIEVE_TOP_K_DEFAULT = 8;
+const MEM_LOG_MATCH_THRESHOLD_DEFAULT = 0.35;
+
+function resolveMemoryLogRetrieveTopK(): number {
+  const raw = process.env.MEMORY_RETRIEVE_TOP_K?.trim();
+  if (!raw) return MEM_LOG_RETRIEVE_TOP_K_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return MEM_LOG_RETRIEVE_TOP_K_DEFAULT;
+  return Math.floor(n);
+}
+
+function resolveMemoryLogMatchThreshold(): number {
+  const raw = process.env.MEMORY_MATCH_THRESHOLD?.trim();
+  if (!raw) return MEM_LOG_MATCH_THRESHOLD_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return MEM_LOG_MATCH_THRESHOLD_DEFAULT;
+  return n;
+}
+
+/**
+ * Parsea el bloque `[MEMORIA DEL USUARIO…]` en el system prompt final para
+ * contar ítems (líneas `- ...`) y armar previews — opción A hacia v2, sin
+ * leer memory.log.
+ */
+function extractMemoriaUserBlockStats(sysText: string): {
+  injected: boolean;
+  matchesCount: number;
+  memoryBlockChars: number;
+  memoryItemPreviews: string[];
+} {
+  const blockStart = sysText.indexOf("[MEMORIA DEL USUARIO");
+  if (blockStart < 0) {
+    return {
+      injected: false,
+      matchesCount: 0,
+      memoryBlockChars: 0,
+      memoryItemPreviews: [],
+    };
+  }
+  const memorySection = sysText.slice(blockStart);
+  const memoryItemPreviews: string[] = [];
+  for (const line of memorySection.split("\n")) {
+    const m = line.match(/^\s*-\s+(.+?)\s*$/);
+    if (m) {
+      const one = m[1].replace(/\s+/g, " ").trim();
+      if (one.length > 0) {
+        memoryItemPreviews.push(
+          one.length > 120 ? `${one.slice(0, 120)}…` : one
+        );
+      }
+    }
+  }
+  return {
+    injected: memoryItemPreviews.length > 0,
+    matchesCount: memoryItemPreviews.length,
+    memoryBlockChars: memorySection.length,
+    memoryItemPreviews,
+  };
+}
+
+function buildPromptSnapshotFromMessages(
+  messages: BaseMessage[] | undefined
+): TurnSummaryInput["promptSnapshot"] | undefined {
+  if (!messages || messages.length === 0) return undefined;
+  const first = messages[0];
+  if (!(first instanceof SystemMessage)) return undefined;
+  const sysText = normalizeMessageContentToString(first.content);
+  const mstats = extractMemoriaUserBlockStats(sysText);
+  const sysLen = sysText.length;
+  let nonSysChars = 0;
+  for (let i = 1; i < messages.length; i++) {
+    nonSysChars += normalizeMessageContentToString(messages[i].content).length;
+  }
+  const total = sysLen + nonSysChars;
+  return {
+    systemChars: sysLen,
+    systemApproxTokens: approxTokensFromChars(sysLen),
+    nonSystemMessageCount: Math.max(0, messages.length - 1),
+    nonSystemChars: nonSysChars,
+    nonSystemApproxTokens: approxTokensFromChars(nonSysChars),
+    totalWindowChars: total,
+    totalWindowApproxTokens: approxTokensFromChars(total),
+    memoryBlockChars: mstats.memoryBlockChars,
+    memoryItemPreviews: mstats.memoryItemPreviews,
+  };
 }
 
 /**
@@ -342,6 +460,7 @@ function appendCalendarToolRules(
 }
 
 export async function runAgent(input: AgentInput): Promise<AgentOutput> {
+  const turnStartedAt = new Date();
   const {
     message,
     userId,
@@ -352,6 +471,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     integrations,
     githubToken,
     userTimezone,
+    userEmail,
+    userPhone,
+    channel,
     googleCalendarAccessToken,
     resumeDecision,
     checkpointThreadId,
@@ -382,6 +504,21 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const now = new Date();
   const dateContext = `\n\n[Contexto temporal — generado automáticamente]\nFecha y hora actual del servidor: ${now.toISOString()}\nZona del usuario: ${userTimezone ?? "UTC"}\nFecha local del usuario: ${now.toLocaleDateString("es-MX", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: userTimezone ?? "UTC" })}\nHora local: ${now.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", timeZone: userTimezone ?? "UTC" })}\nCuando el usuario dice "mañana", "hoy", "la próxima semana", etc., calcula las fechas ISO a partir de ESTA fecha. NUNCA uses fechas de 2023, 2024 ni 2025 salvo que el usuario las indique explícitamente.`;
 
+  // Bloque de datos canónicos del perfil del usuario (email/phone).
+  // Solo se incluye cuando hay al menos un dato; si los campos están vacíos
+  // el agente pedirá al usuario en el momento o no los conocerá.
+  const userProfileLines: string[] = [];
+  if (userEmail && userEmail.trim()) {
+    userProfileLines.push(`- Email del usuario: ${userEmail.trim()}`);
+  }
+  if (userPhone && userPhone.trim()) {
+    userProfileLines.push(`- Teléfono del usuario: ${userPhone.trim()}`);
+  }
+  const userProfileBlock =
+    userProfileLines.length > 0
+      ? `\n\n[Datos de contacto del usuario — NO los pidas, ya los conoces]\n${userProfileLines.join("\n")}\n- Estos datos son canónicos (vienen del perfil). Úsalos directamente cuando el usuario pida "pásale mi email a X" o equivalente. No los confundas con emails/teléfonos de terceros que el usuario pueda haber mencionado.`
+      : "";
+
   const ambiguityAddendum = `\n\n[Reglas de desambiguación — obligatorias]\n- Respuestas cortas del usuario como "sí", "ok", "dale", "va", "hazlo", "procede", "no", "cancela": interprétalas SIEMPRE en el contexto del ÚLTIMO turno TUYO inmediatamente anterior. Si tu último turno prometió una acción concreta en un dominio (archivos, calendario, github, bash) pero NO llamaste a la herramienta, ahora debes llamar a la herramienta DIRECTAMENTE con los parámetros ya acordados. No elijas otra acción de otro dominio sólo porque aparezca en el historial lejano.\n- Si no tienes una acción claramente pendiente en tu turno anterior, responde pidiendo clarificación al usuario (una sola pregunta corta) en vez de asumir. Nunca "adivines" creando eventos, archivos o repos para reusar datos de turnos viejos.\n- Nunca pidas confirmación en TEXTO para acciones que tienen herramienta con riesgo medio/alto: la herramienta ya disparará su propia tarjeta de confirmación. Genera el tool_call y deja que el sistema pida la aprobación.`;
 
   let effectiveSystemPrompt = appendManageScheduledTasksRules(
@@ -391,7 +528,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           appendGithubSocialRules(
             appendBashRules(
               appendGithubCreateToolRules(
-                systemPrompt + dateContext + ambiguityAddendum,
+                systemPrompt + userProfileBlock + dateContext + ambiguityAddendum,
                 lcTools as Array<{ name?: string }>
               ),
               lcTools as Array<{ name?: string }>
@@ -450,13 +587,18 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // la historia está llena de prompts/respuestas repetidas (incluyendo posibles
   // "Un momento, por favor" antiguos) que confunden al modelo y lo hacen
   // imitar el patrón fallido. Cada ejecución cron debe arrancar limpia.
-  const priorMessages: BaseMessage[] = input.autoApproveTools
+  const priorRaw = input.autoApproveTools
     ? []
-    : (await getSessionMessages(db, sessionId, 12)).map((m) => {
-        if (m.role === "user") return new HumanMessage(m.content);
-        if (m.role === "assistant") return new AIMessage(m.content);
-        return new HumanMessage(m.content);
-      });
+    : await getSessionMessages(db, sessionId, 12);
+  const priorMessages: BaseMessage[] = priorRaw.map((m) => {
+    if (m.role === "user") return new HumanMessage(m.content);
+    if (m.role === "assistant") return new AIMessage(m.content);
+    return new HumanMessage(m.content);
+  });
+  // Breakdown por rol para el dashboard (v1 Lite).
+  const priorUserCount = priorRaw.filter((m) => m.role === "user").length;
+  const priorAssistantCount = priorRaw.filter((m) => m.role === "assistant").length;
+  const priorToolCount = priorRaw.filter((m) => m.role === "tool").length;
 
   if (!resumeDecision) {
     if (!message) {
@@ -717,12 +859,22 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const compactionModel = createCompactionModel();
   const compactionNode = createCompactionNode({ compactionModel });
+  // Long-term memory: nodo al inicio del grafo. En resume HITL y en cron
+  // (autoApproveTools=true) se comporta como no-op — no toca SystemMessage
+  // ni llama a OpenRouter. Ver `memory_injection_node.ts`.
+  const memoryInjectionNode = createMemoryInjectionNode({
+    db,
+    userId,
+    isResume: Boolean(resumeDecision),
+  });
 
   const graph = new StateGraph(GraphState)
+    .addNode("memory_injection", memoryInjectionNode)
     .addNode("compaction", compactionNode)
     .addNode("agent", agentNode)
     .addNode("tools", toolExecutorNode)
-    .addEdge("__start__", "compaction")
+    .addEdge("__start__", "memory_injection")
+    .addEdge("memory_injection", "compaction")
     .addEdge("compaction", "agent")
     .addConditionalEdges("agent", shouldContinue, {
       tools: "tools",
@@ -760,6 +912,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         autoApproveTools: input.autoApproveTools ?? false,
         compactionCount: 0,
         iterationCount: 0,
+        memoryFlushPending: false,
       };
 
   /** Populated from stream "updates" chunks when interrupt() fires (not present on state schema). */
@@ -887,9 +1040,102 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     }
   }
 
+  // ───────────────────────────────────────────────────────────
+  // Dashboard ejecutivo (turn_summary.log) — v1 Lite.
+  // Emite UN bloque consolidado por turno. Campos finos (sim score
+  // por memoria, etapas de compaction) quedan en `memory.log` y
+  // `compaction.log` respectivamente; aquí pintamos `n/a` y referenciamos.
+  // Fire-and-forget: no bloquea la respuesta al usuario.
+  // ───────────────────────────────────────────────────────────
+  const resolvedChannel: "web" | "telegram" | "cron" = channel
+    ? channel
+    : input.autoApproveTools
+    ? "cron"
+    : "web";
+
+  // Memoria inyectada + snapshot del prompt (opción A hacia v2): derivado
+  // del SystemMessage y ventana de mensajes final, sin leer archivos de log.
+  const firstMsg = finalState.messages?.[0];
+  const memFromSystem =
+    firstMsg instanceof SystemMessage
+      ? extractMemoriaUserBlockStats(
+          normalizeMessageContentToString(firstMsg.content)
+        )
+      : {
+          injected: false,
+          matchesCount: 0,
+          memoryBlockChars: 0,
+          memoryItemPreviews: [] as string[],
+        };
+
+  const memTopK = resolveMemoryLogRetrieveTopK();
+  const memThresh = resolveMemoryLogMatchThreshold();
+
+  let retrieval: TurnSummaryInput["longTermRetrieval"];
+  if (input.autoApproveTools) {
+    retrieval = { skipped: true, reason: "cron (autoApproveTools=true)" };
+  } else if (resumeDecision) {
+    retrieval = { skipped: true, reason: `resume HITL (${resumeDecision})` };
+  } else {
+    retrieval = {
+      skipped: false,
+      injected: memFromSystem.injected,
+      matchesCount: memFromSystem.matchesCount,
+    };
+  }
+
+  const agentStatus: "completed" | "pending_hitl" | "error" = pending
+    ? "pending_hitl"
+    : "completed";
+
+  const turnSummary: TurnSummaryInput = {
+    startedAt: turnStartedAt,
+    elapsedMs: Date.now() - turnStartedAt.getTime(),
+    userId,
+    userEmail: userEmail ?? null,
+    sessionId,
+    channel: resolvedChannel,
+    threadId,
+    userInput: message ?? null,
+    profile: {
+      timezone: userTimezone ?? null,
+      email: userEmail ?? null,
+      phone: userPhone ?? null,
+    },
+    shortTerm: input.autoApproveTools
+      ? { loadedCount: 0 }
+      : {
+          loadedCount: priorMessages.length,
+          userCount: priorUserCount,
+          assistantCount: priorAssistantCount,
+          toolCount: priorToolCount,
+        },
+    integrationsActive: (integrations ?? [])
+      .filter((i) => i.status === "active")
+      .map((i) => i.provider),
+    toolsEnabled: {
+      enabled: (enabledTools ?? [])
+        .filter((t) => t.enabled)
+        .map((t) => t.tool_id),
+    },
+    longTermRetrieval: retrieval,
+    memorySearchEnv: { topK: memTopK, matchThreshold: memThresh },
+    promptSnapshot: buildPromptSnapshotFromMessages(finalState.messages),
+    agentDecision: {
+      model: CHAT_MODEL_ID,
+      toolsCalled: toolCallNames,
+      status: agentStatus,
+    },
+    // flushEval queda undefined: el bloque PRE/POST vive en memory.log como
+    // evento TRIGGER — cruzable por timestamp con este turno.
+  };
+  // Fire-and-forget (no await): no bloqueamos el response.
+  void writeTurnSummary(turnSummary);
+
   return {
     response: responseText,
     toolCalls: toolCallNames,
     pendingConfirmation: pending,
+    memoryFlushPending: Boolean(finalState.memoryFlushPending),
   };
 }

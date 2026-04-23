@@ -154,12 +154,14 @@ export function buildLangChainTools(ctx: ToolContext) {
             timezone: profile.timezone,
             language: profile.language,
             agent_name: profile.agent_name,
+            email: profile.email ?? null,
+            phone: profile.phone ?? null,
           });
         },
         {
           name: "get_user_preferences",
           description:
-            "Returns the current user preferences and agent configuration.",
+            "Returns the current user preferences and agent configuration, including canonical contact fields (email, phone) when set. Prefer this over asking the user when you need their own email or phone.",
           schema: z.object({}),
         }
       )

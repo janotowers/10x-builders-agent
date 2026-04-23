@@ -26,6 +26,9 @@ export const DEFAULT_CRON_TEMPERATURE = 0.1;
  */
 export const DEFAULT_MAX_TOKENS = 2048;
 
+/** Modelo principal del agente (OpenRouter). Exportado para logs / turn_summary. */
+export const CHAT_MODEL_ID = "openai/gpt-4o-mini";
+
 /** Resuelve maxTokens: variable de entorno > default. */
 function resolveMaxTokens(): number {
   const raw = process.env.OPENROUTER_MAX_TOKENS?.trim();
@@ -47,7 +50,7 @@ export function createChatModel(options: CreateChatModelOptions = {}) {
   const temperature = options.temperature ?? DEFAULT_INTERACTIVE_TEMPERATURE;
 
   return new ChatOpenAI({
-    modelName: "openai/gpt-4o-mini",
+    modelName: CHAT_MODEL_ID,
     temperature,
     // Capamos max_tokens de salida para evitar rechazos de OpenRouter por
     // saldo insuficiente (si no lo fijamos, el SDK pide el máximo del modelo

@@ -70,6 +70,8 @@ export function SettingsForm({
   const [saved, setSaved] = useState(false);
 
   const [name, setName] = useState((profile?.name as string) ?? "");
+  const [email, setEmail] = useState((profile?.email as string | null) ?? "");
+  const [phone, setPhone] = useState((profile?.phone as string | null) ?? "");
   const browserTz = typeof window !== "undefined"
     ? Intl.DateTimeFormat().resolvedOptions().timeZone
     : "UTC";
@@ -111,6 +113,8 @@ export function SettingsForm({
     await supabase.from("profiles").update({
       name,
       timezone,
+      email: email.trim() === "" ? null : email.trim(),
+      phone: phone.trim() === "" ? null : phone.trim(),
       agent_name: agentName,
       agent_system_prompt: systemPrompt.slice(0, 500),
       updated_at: new Date().toISOString(),
@@ -209,6 +213,32 @@ export function SettingsForm({
             onChange={(e) => setName(e.target.value)}
             className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
           />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Email</label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="tu@correo.com"
+            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          />
+          <p className="text-xs text-neutral-400 mt-1">
+            El agente lo conocerá sin preguntártelo. Útil para &quot;pásale mi email a X&quot;.
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Teléfono</label>
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="+52 55 1234 5678"
+            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          />
+          <p className="text-xs text-neutral-400 mt-1">
+            Igual que el email: canónico y disponible sin preguntar.
+          </p>
         </div>
         <div>
           <label className="block text-sm font-medium mb-1">Zona horaria</label>

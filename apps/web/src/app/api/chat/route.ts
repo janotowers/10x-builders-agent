@@ -6,6 +6,7 @@ import {
   getGoogleCalendarAccessToken,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
+import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 
 export async function POST(request: Request) {
   try {
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
 
     const { data: profile } = await supabase
       .from("profiles")
-      .select("agent_system_prompt, agent_name, timezone")
+      .select("agent_system_prompt, agent_name, timezone, email, phone")
       .eq("id", user.id)
       .single();
 
@@ -92,6 +93,17 @@ export async function POST(request: Request) {
     const googleCalendarAccessToken =
       (await getGoogleCalendarAccessToken(db, user.id)) ?? undefined;
 
+    // Catch-up de memoria larga ANTES de runAgent: si la sesión está fría
+    // (idle ≥ CATCHUP_IDLE_MIN) o hay otra sesión del usuario sin flushear,
+    // consolida esos hechos ahora para que la inyección del turno los vea.
+    // Se absorbe su latencia aquí UNA vez (primer turno tras el hueco).
+    await maybeCatchUpFlush({
+      db,
+      userId: user.id,
+      sessionId: session.id,
+      channel: "web",
+    });
+
     const result = await runAgent({
       message,
       userId: user.id,
@@ -116,8 +128,23 @@ export async function POST(request: Request) {
       })),
       githubToken,
       userTimezone: (profile?.timezone as string) ?? undefined,
+      userEmail: (profile?.email as string | null) ?? null,
+      userPhone: (profile?.phone as string | null) ?? null,
+      channel: "web",
       googleCalendarAccessToken,
     });
+
+    // Flush POST fire-and-forget: solo si el turno cerró (sin pendingConfirmation).
+    // Un turno con HITL pendiente no "terminó" todavía; el flush se lanzará
+    // cuando el usuario apruebe/rechace y el resume devuelva sin pending.
+    if (!result.pendingConfirmation) {
+      fireAndForgetFlush({
+        db,
+        userId: user.id,
+        sessionId: session.id,
+        memoryFlushPending: result.memoryFlushPending,
+      });
+    }
 
     return NextResponse.json({
       response: result.pendingConfirmation ? null : result.response,

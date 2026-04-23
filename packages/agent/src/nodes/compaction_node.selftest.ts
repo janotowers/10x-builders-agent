@@ -35,6 +35,7 @@ function baseState(messages: BaseMessage[], overrides: Partial<GraphStateType> =
     autoApproveTools: false,
     compactionCount: 0,
     iterationCount: 0,
+    memoryFlushPending: false,
     ...overrides,
   } as GraphStateType;
 }

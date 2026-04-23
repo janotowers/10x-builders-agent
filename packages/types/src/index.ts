@@ -10,6 +10,12 @@ export interface Profile {
   agent_name: string;
   agent_system_prompt: string;
   onboarding_completed: boolean;
+  /** Canonical email del usuario. Inyectado al SystemMessage cuando existe;
+   *  el prompt de extracción de memoria larga lo excluye explícitamente
+   *  para que no se duplique en `memories`. Nullable: puede no estar fijado. */
+  email: string | null;
+  /** Canonical teléfono del usuario. Misma política que `email`. */
+  phone: string | null;
   created_at: string;
   updated_at: string;
 }

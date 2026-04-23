@@ -59,6 +59,22 @@ export const GraphState = Annotation.Root({
     reducer: (prev, next) => (prev ?? 0) + (next ?? 0),
     default: () => 0,
   }),
+  /**
+   * Señal de memoria larga: el nodo `memory_injection` la pone en `true`
+   * cuando detecta cambio de tema (cosine similarity del userInput actual vs
+   * `last_user_input_embedding` persistido por debajo de `TOPIC_SHIFT_THRESHOLD`).
+   *
+   * NO dispara el flush por sí misma — `flushSessionMemory` corre FUERA del
+   * grafo, desde los endpoints de Web/Telegram tras `runAgent`. Este campo
+   * viaja en el snapshot final del checkpointer para que `runAgent` lo
+   * devuelva en `AgentOutput` y el endpoint decida si lanza el fire-and-forget.
+   *
+   * Ver `docs/memory/long_term_memory_plan.md` (sección Triggers).
+   */
+  memoryFlushPending: Annotation<boolean>({
+    reducer: (_prev, next) => next,
+    default: () => false,
+  }),
 });
 
 export type GraphStateType = typeof GraphState.State;

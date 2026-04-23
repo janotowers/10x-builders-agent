@@ -177,6 +177,9 @@ async function runTask(
       integrations,
       githubToken,
       userTimezone: profile.timezone,
+      userEmail: profile.email,
+      userPhone: profile.phone,
+      channel: "cron",
       googleCalendarAccessToken,
       autoApproveTools: true,
     });

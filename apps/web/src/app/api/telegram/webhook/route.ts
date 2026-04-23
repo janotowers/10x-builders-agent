@@ -10,6 +10,7 @@ import {
   sendTelegramMessage,
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
+import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -71,7 +72,7 @@ async function resumeAgentFromCallback(
   const userId = session.user_id as string;
   const { data: profile } = await db
     .from("profiles")
-    .select("agent_system_prompt, timezone")
+    .select("agent_system_prompt, timezone, email, phone")
     .eq("id", userId)
     .single();
   const { data: toolSettings } = await db
@@ -142,6 +143,9 @@ async function resumeAgentFromCallback(
     })),
     githubToken,
     userTimezone: (profile?.timezone as string) ?? undefined,
+    userEmail: (profile?.email as string | null) ?? null,
+    userPhone: (profile?.phone as string | null) ?? null,
+    channel: "telegram",
     googleCalendarAccessToken,
   });
 
@@ -338,7 +342,7 @@ export async function POST(request: Request) {
   // Load profile, tools, integrations
   const { data: profile } = await db
     .from("profiles")
-    .select("agent_system_prompt, timezone")
+    .select("agent_system_prompt, timezone, email, phone")
     .eq("id", userId)
     .single();
 
@@ -372,6 +376,16 @@ export async function POST(request: Request) {
   const googleCalendarAccessToken =
     (await getGoogleCalendarAccessToken(db, userId)) ?? undefined;
 
+  // Catch-up de memoria larga ANTES de runAgent. Ver comentario equivalente
+  // en `apps/web/src/app/api/chat/route.ts`. En callbacks (resume HITL) NO
+  // se ejecuta — ese branch sale mucho antes.
+  await maybeCatchUpFlush({
+    db,
+    userId,
+    sessionId: session.id,
+    channel: "telegram",
+  });
+
   try {
     const result = await withTypingHeartbeat(chatId, () =>
       runAgent({
@@ -402,6 +416,9 @@ export async function POST(request: Request) {
         ),
         githubToken,
         userTimezone: profile?.timezone as string | undefined,
+        userEmail: (profile?.email as string | null) ?? null,
+        userPhone: (profile?.phone as string | null) ?? null,
+        channel: "telegram",
         googleCalendarAccessToken,
       })
     );
@@ -424,6 +441,14 @@ export async function POST(request: Request) {
       });
     } else {
       await sendTelegramMessage(chatId, result.response);
+      // Flush POST fire-and-forget: solo si el turno cerró limpio.
+      // Callbacks (resume HITL) no entran aquí — ese branch retorna antes.
+      fireAndForgetFlush({
+        db,
+        userId,
+        sessionId: session.id,
+        memoryFlushPending: result.memoryFlushPending,
+      });
     }
   } catch (error) {
     console.error("Telegram agent error:", error);

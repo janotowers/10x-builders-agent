@@ -206,6 +206,39 @@ flowchart TB
 
 APIs externas llamadas: `Haiku` (`anthropic/claude-3-5-haiku` vía OpenRouter, extracción) y `generateEmbedding` (`google/gemini-embedding-001` vía OpenRouter, 1536 dims).
 
+### D. Composición del SystemMessage que ve el modelo
+
+El `SystemMessage` que llega al LLM principal se ensambla en `runAgent` y `memory_injection_node` a partir de **varios bloques** con orígenes distintos. Entender esta composición es clave para debug y para entender por qué el agente "sabe" o "no sabe" algo.
+
+| Bloque | Origen | Cuándo se incluye | Tamaño típico |
+|---|---|---|---|
+| `agent_base_prompt` | `profiles.agent_system_prompt` (editable por el usuario desde `/settings`) | Siempre | 100–500 tokens |
+| `user_profile_block` | `profiles.email` y `profiles.phone` del turno actual | Solo si al menos uno tiene valor | 20–60 tokens |
+| `date_context` | Runtime (`new Date()` + `userTimezone`) | Siempre | ~80 tokens |
+| `ambiguityAddendum` + reglas de tools | Constantes por tool habilitada (calendar, github, bash, etc.) | Según tools activas | 500–2000 tokens |
+| `[MEMORIA DEL USUARIO]` | `memories` (vía `memory_injection_node` → RPC `match_memories`) | Solo si hay matches ≥ `MATCH_THRESHOLD` | 0–800 tokens |
+| `[ATAJO — ESTE TURNO]` / `[ATAJO CRON]` | Heurísticas en `runAgent` | Condicional (intent de schedule, cron) | 150–400 tokens |
+
+**Orden de concatenación** (dentro de `runAgent`, antes de pasar al grafo):
+
+```
+systemPrompt                              ← agent_base_prompt
+  + userProfileBlock                      ← email/phone si existen
+  + dateContext
+  + ambiguityAddendum
+  + (reglas de tools: github_create, bash, calendar, file_tools, schedule_task, manage_scheduled_tasks…)
+  + (CRON_SCHEDULED_EXECUTION_ADDENDUM)   ← solo en cron
+  + (atajo schedule_task)                 ← solo si detectó intent
+```
+
+Luego el nodo `memory_injection_node` **reescribe** este `SystemMessage` añadiendo al final el bloque `[MEMORIA DEL USUARIO]` con los hechos recuperados de `memories` (si los hay). Ese reescrito es lo que finalmente llega al modelo, junto con los 12 mensajes de historial (`agent_messages`), las schemas de tools habilitadas y el `HumanMessage` del turno.
+
+**Notas sobre persistencia y RAM**:
+
+- `runAgent` es esencialmente *stateless* entre requests: cada turno **reconstruye** el contexto desde DB (`profiles`, `agent_messages`, `memories`, `user_integrations`, `user_tool_settings`). No hay estado vivo en proceso entre dos peticiones HTTP.
+- Los **checkpoints de LangGraph** (HITL pendiente, estado interno del grafo) se persisten vía `PostgresSaver` (paquete `@langchain/langgraph-checkpoint-postgres`) en tablas **propias** (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`), **no** en una columna de `agent_sessions`. El vínculo entre checkpoint y turno es el `thread_id` (que `runAgent` construye como `${sessionId}-${Date.now()}` en turnos normales, y reusa en resume HITL). Si `DATABASE_URL` no está disponible, el checkpointer cae a `MemorySaver` (RAM, solo dev).
+- Los campos de `profiles.email` y `profiles.phone` (migración `00007`) son la **fuente canónica** de contacto del usuario. El prompt de extracción de memoria larga los excluye explícitamente para **evitar duplicados** en `memories`; en cambio, contactos de **terceros** (email del contador, teléfono de un socio, etc.) sí pueden entrar como `semantic` si el usuario los comparte deliberadamente.
+
 ## Triggers de extracción (flushSessionMemory)
 
 **Default — POST fire-and-forget**, disparado tras `runAgent` en `chat/route.ts` y `telegram/webhook/route.ts` **solo si** `pendingConfirmation` es `null` (un turno con HITL pendiente no cerró todavía). Se dispara si **cualquiera** de estas señales se cumple:
@@ -240,10 +273,195 @@ En ese caso se paga 1–3 s de latencia **una vez** (el primer turno tras el hue
 | `FLUSH_MIN_NEW_MESSAGES` | `3` | `MEMORY_FLUSH_MIN_NEW_MESSAGES` |
 | `CATCHUP_IDLE_MIN` | `20` | `MEMORY_CATCHUP_IDLE_MIN` |
 | `RETRIEVE_TOP_K` | `8` | `MEMORY_RETRIEVE_TOP_K` |
+| `MATCH_THRESHOLD` | `0.35` | `MEMORY_MATCH_THRESHOLD` |
 | `EMBEDDING_MODEL` | `google/gemini-embedding-001` | `MEMORY_EMBEDDING_MODEL` |
 | `EMBEDDING_DIM` | `1536` | `MEMORY_EMBEDDING_DIM` |
 
 > `FLUSH_MIN_NEW_MESSAGES` actúa como **piso de eficiencia**: aunque las señales shift/count/idle se disparen, no se lanza `flushSessionMemory` si hay menos de 3 filas en `agent_messages` con `created_at > last_flushed_at` (menos de 3 mensajes sin flushear desde el watermark). Sirve para evitar pagar una llamada a Haiku en turnos tan cortos (1 user + 1 assistant = 2) que no producen recuerdos útiles. Con ≥ 3 hay al menos un ida-y-vuelta completo más arranque → suficiente contexto para extraer.
+
+> `MATCH_THRESHOLD` actúa como **piso de relevancia** en la recuperación: el RPC `match_memories` filtra `similarity >= threshold` antes del `LIMIT top_k`. Sin este piso, con pocas memorias en la base el agente recibía siempre las 8 mejores aunque fueran irrelevantes (cosenos ~ 0.1). Default `0.35` es conservador; subir a `0.45-0.5` para más precisión, bajar a `0.25` para más recall. Implementado en la migración `00006_match_memories_threshold.sql`.
+
+## Observabilidad (`packages/agent/logs/memory.log`)
+
+Análogo a `compaction.log`, el sistema emite un log estructurado por bloques separados con `═` para cada evento del pipeline. El módulo vive en `packages/agent/src/nodes/memory_log.ts` y se llama desde los tres puntos de integración (`memory_injection_node`, `trigger.ts`, `memory_flush.ts`).
+
+### Eventos
+
+| EVENT | Origen | Cuándo |
+|---|---|---|
+| `INJECT` | `memory_injection_node` | Cada turno: muestra user input, embedding, topic-shift (cosine + threshold + shift bool), retrieval (top-K, threshold, matches con similarity + retrieval_count), e inyección (si reescribió o no el SystemMessage). |
+| `TRIGGER` | `trigger.ts` | PRE (`maybeCatchUpFlush`) y POST (`fireAndForgetFlush`) de cada turno con mensaje del usuario: muestra decisión (`fire` / `skip` / `sibling_flush`), razón, señales (shift, unflushed count, idle minutes) y thresholds. |
+| `FLUSH` | `memory_flush.ts` | Corrida completa: mensajes cargados (con cap y cold-start flag), latencia de Haiku, preview del raw, items válidos/descartados, items guardados (INSERTED / DEDUPED) y avance de watermark. |
+| `SKIP`  | `memory_flush.ts` | Early return antes de correr Haiku (session_not_found, cron_channel, below_min, haiku_error, parse_error). |
+
+### Configuración (env vars)
+
+| Variable | Default | Efecto |
+|---|---|---|
+| `MEMORY_LOG_FILE` | `packages/agent/logs/memory.log` | Ruta del archivo. `off` / `0` / `false` desactiva. |
+| `MEMORY_LOG_VERBOSE` | `off` | Si `1`/`true`/`on`: incluye el `memoryBlock` completo en INJECT y el transcript enviado a Haiku en FLUSH. |
+| `MEMORY_LOG_PREVIEW_CHARS` | `120` | Corte de previews de una línea. |
+| `MEMORY_LOG_TRANSCRIPT_CHARS` | `3000` | Corte del transcript en VERBOSE. |
+
+El I/O es `appendFile` asíncrono con try/catch silencioso (no rompe el turno si falla). En modo no-verbose el overhead por turno es despreciable (una escritura de ~1-3 KB al archivo local).
+
+## Observabilidad ejecutiva (`packages/agent/logs/turn_summary.log`)
+
+### Propósito
+
+`turn_summary.log` es un **dashboard ejecutivo por turno**: un único bloque que consolida la información clave de todas las piezas (profile, short-term, compaction, long-term retrieval, decisión del agente) en un formato legible a simple vista. No reemplaza a `memory.log` ni a `compaction.log` — los complementa:
+
+| Quieres ver… | Ve a… |
+|---|---|
+| "Resumen de este turno, una mirada rápida" | `turn_summary.log` |
+| "Qué memorias se recuperaron con qué similarity score" | `memory.log` bloque `INJECT` |
+| "Qué decidió el trigger y por qué (señales)" | `memory.log` bloque `TRIGGER` |
+| "Qué se extrajo en el flush, cuántas se dedup-earon" | `memory.log` bloque `FLUSH` |
+| "Etapas de compactación de corto plazo (microcompact, LLM)" | `compaction.log` |
+
+Cada turno emite exactamente un bloque en `turn_summary.log`, crosreferenciable por timestamp con los eventos de `memory.log`/`compaction.log` del mismo turno.
+
+### Configuración (env vars)
+
+| Variable | Default | Efecto |
+|---|---|---|
+| `TURN_LOG_FILE` | `packages/agent/logs/turn_summary.log` | Ruta del archivo. `off`/`0`/`false` desactiva. |
+| `TURN_LOG_DISABLED` | `off` | `1`/`true`/`on` apaga el log sin tocar código. |
+| `TURN_LOG_VERBOSE` | `off` | `1`/`true`/`on` no trunca el `USER INPUT` (default corta a 200 chars). |
+
+I/O `appendFile` asíncrono con try/catch silencioso, fire-and-forget desde `runAgent`. Overhead despreciable.
+
+### v1 Lite — implementado
+
+Recolectamos sólo la información accesible **desde `runAgent`** (sin tocar nodos del grafo ni `GraphState`). Los campos que requerirían instrumentación interna de nodos quedan marcados como **n/a** con redirección al log detallado.
+
+**Opción A (acercamiento a v2, sin parsear archivos):** además de lo anterior, cada bloque incluye (1) fila **`mem search (env)`** con la resolución de `MEMORY_RETRIEVE_TOP_K` y `MEMORY_MATCH_THRESHOLD` (misma lógica que `memory_injection_node`); (2) sección **`[PROMPT SNAPSHOT]`** con caracteres y tokens aproximados (`≈ chars÷4`) del primer `SystemMessage`, del resto de la ventana y del sub-bloque `[MEMORIA DEL USUARIO…]`, más **previews** en una línea por ítem `- …`; (3) **`model`** en `[AGENT DECISION]` (`CHAT_MODEL_ID`). Sigue sin incluir etapas de compaction ni `sim` por memoria (eso sigue en `compaction.log` / `memory.log`).
+
+Formato del bloque:
+
+```
+================================================================
+ TURN 2026-04-23T14:05:12.301Z   elapsed=2.30s
+ user=ale@ejemplo.com (7f3a-…)  session=a1b2-…  channel=web
+ thread=a1b2-…-1745421912301
+----------------------------------------------------------------
+USER INPUT:
+  "pásale mi email a Julia"
+
+[CONTEXT BUILDERS]  (fuentes consultadas en DB)
+  profile           tz=America/Mexico_City  email=ale@ejemplo.com  phone=+52 33…
+  short-term        loaded 12 msgs from agent_messages (6 user / 4 assistant / 2 tool)
+                    (stages de compaction → compaction.log para este turno)
+  long-term         retrieved=3  injected=true  (detalle → memory.log bloque INJECT)
+  integrations      google_calendar, gmail
+  tool_settings     8 tools enabled: get_user_preferences, calendar_list_events, …
+
+[AGENT DECISION]
+  tools_called      send_email
+  status            PENDING_HITL
+
+[LONG-TERM FLUSH EVAL - POST-turn]
+  flush_eval        n/a (ver memory.log bloque TRIGGER tras el turno)
+
+================================================================
+ END TURN   outcome=pending_hitl   warnings=0
+================================================================
+```
+
+Mapeo de campos y su origen:
+
+| Campo | Origen | Notas |
+|---|---|---|
+| timestamp, elapsed | `new Date()` al entrar / salir de `runAgent` | |
+| user, session, channel | `AgentInput` (routes los pasan) | `channel` se infiere a "cron" si `autoApproveTools=true`, sino "web" |
+| thread | `threadId` construido por `runAgent` | En resume HITL reusa el del interrupt |
+| USER INPUT | `input.message` | Trunca a 200 chars en no-verbose |
+| profile | `userTimezone`, `userEmail`, `userPhone` (de `AgentInput`) | `name`/`language` actualmente no se pasan → n/a |
+| short-term | `priorRaw` (rows crudas de `agent_messages`) | Breakdown por rol se calcula antes del mapeo a `BaseMessage` |
+| long-term | **Conteo heurístico**: parse del `[MEMORIA DEL USUARIO]` en el `SystemMessage` final | Injected=true si hay bloque; matchesCount = líneas `"- "` del bloque |
+| integrations | `input.integrations` filtrado por status=active | |
+| tool_settings | `input.enabledTools` filtrado por `enabled=true` | |
+| AGENT DECISION | `toolCallNames[]` + `pending` (`PENDING_HITL` vs `COMPLETED`) | |
+| FLUSH EVAL | **n/a en v1 Lite** — la decisión vive en `memory.log` bloque `TRIGGER` | |
+
+### v2 Enriquecida — futuro (no implementado)
+
+La versión v2 incluye el detalle fino por memoria, compaction por etapa, breakdown de tokens del prompt ensamblado y la evaluación de flush en el mismo bloque. Requiere instrumentación **dentro** de los nodos (propagar un `turnCollector` a través de `GraphState`) y un pequeño cambio de orquestación en routes para que `trigger.ts` sume su sección antes del cierre del bloque.
+
+**Diseño de referencia (copiar cuando se implemente v2):**
+
+```
+================================================================
+ TURN 2026-04-23T14:05:12.301Z   elapsed=2.30s
+ user=ale@ejemplo.com  user_id=7f3a...e2  session=a1b2...  channel=telegram
+ thread=a1b2...-1745421912301   turn_number=14
+----------------------------------------------------------------
+USER INPUT:
+  "pásale mi email a Julia"
+
+[CONTEXT BUILDERS]  (fuentes consultadas en DB)
+  profile         profiles row        -> name=Alejandro Torres, tz=America/Mexico_City,
+                                         lang=es, email=ale@ejemplo.com, phone=+52 33...
+  short-term      agent_messages(12)  -> last 12 msgs loaded (6 user / 4 assistant / 2 tool)
+  compaction      stage1 (microcompact): cleared 2 old tool results
+                  stage2 (LLM summary): SKIPPED (8.4k / 96k tokens -> below threshold)
+  long-term                           -> retrieval block below
+  integrations    user_integrations   -> google_calendar=active, gmail=active
+  tool settings   user_tool_settings  -> 8 tools enabled / 14 total
+
+[LONG-TERM RETRIEVAL - INJECT]  (runs before the agent)
+  query embedded:  model=google/gemini-embedding-001  dim=1536  latency=180ms
+  search params:   threshold=0.35  top_k=8
+  returned 3 memories (sim >= 0.35):
+    - "le gusta el futbol, equipo: Atlas"        type=semantic  sim=0.42  uses=3
+    - "trabaja en negocios de diseño"            type=semantic  sim=0.38  uses=7
+    - "tiene reunión recurrente los jueves"      type=episodic  sim=0.36  uses=1
+  injection:       SystemMessage rewritten with [MEMORIA DEL USUARIO] block (3 items)
+
+[PROMPT ASSEMBLED]  (what the model actually sees)
+  system message                                                    total: 2.10k tokens
+    - agent_base_prompt     (from profiles.agent_system_prompt)         0.40k
+    - user_profile_block    (from profiles: name/tz/lang/email/phone)   0.12k
+    - long_term_memories    (3 items retrieved this turn)               0.35k
+    - date_context          (runtime-generated current date/time)       0.05k
+    - (tool call guidance, HITL rules, etc. from base prompt)           1.18k
+  conversation history      (12 msgs from agent_messages)           total: 1.80k tokens
+  tool schemas              (8 enabled tools, names+params)         total: 2.30k tokens
+  user input                (current turn HumanMessage)             total: 0.02k tokens
+  ----------------------------------------------------------------
+  TOTAL INPUT TO MODEL                                                  6.22k tokens
+
+[AGENT DECISION]
+  model:           openai/gpt-4o-mini
+  tools called:    send_email(to=julia@..., subject=..., body=...)
+  risk level:      high -> requires_confirmation=true
+  status:          PENDING HITL (tool_calls.status=pending_confirmation)
+  output tokens:   142   cost_est: $0.0008
+
+[LONG-TERM FLUSH EVAL - POST-turn]
+  topic_shift:     true   (cos=0.31 < threshold=0.40 vs previous user input)
+  unflushed msgs:  5      (min=3)
+  idle_min:        0.2    (backstop=45, catchup=20)
+  decision:        FIRE   reason=topic_shift+count_met
+  flush (async):   saved=2  deduped=1  embed_failed=0  latency=1.40s  haiku_latency=0.9s
+  watermark:       last_flushed_at moved: 14:01:05 -> 14:05:12
+                   last_flushed_message_id: msg-abc -> msg-xyz
+
+================================================================
+ END TURN   outcome=pending_hitl   warnings=0
+================================================================
+```
+
+**Cambios requeridos para implementar v2** (tentativo, a revisar cuando se aborde):
+
+- Añadir `turnCollector` a `GraphState` (shape reducido: `{ compaction: {...}, retrieval: {...}, promptTokens: {...}, agent: {...} }`).
+- `compaction_node` emite su sub-bloque (`stage1`, `stage2`, decisión, tokens) al collector.
+- `memory_injection_node` emite detalle por memoria (sim, type, uses), latency del embedding, parámetros (`threshold`, `top_k`).
+- `agentNode` captura model id, output tokens, cost estimado y el full tool_calls con args.
+- Route.ts: antes de escribir el bloque, consulta a `trigger.ts` el shape de la decisión PRE/POST (puede hacerse en dry-run para no ejecutar el flush dos veces) y la añade al collector.
+- `turn_log.ts` aprende a renderizar el formato enriquecido cuando el collector trae los campos finos; si faltan, cae a v1 Lite.
+
+La ganancia principal de v2 es tener en un solo lugar el **tokenómetro del prompt** (desglose por bloque) y los **sim scores por memoria**, muy útiles para afinar `MATCH_THRESHOLD` y entender por qué el modelo eligió una acción. Hoy esos datos están en `memory.log` y pueden cruzarse por timestamp, así que v1 Lite es funcionalmente suficiente para la mayoría de debugging.
 
 ## Archivos a crear
 
