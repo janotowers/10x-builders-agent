@@ -418,11 +418,11 @@ USER INPUT:
     - "tiene reunión recurrente los jueves"      type=episodic  sim=0.36  uses=1
   injection:       SystemMessage rewritten with [MEMORIA DEL USUARIO] block (3 items)
 
-[PROMPT ASSEMBLED]  (what the model actually sees)
+[PROMPT ASSEMBLED]  (what the model actually sees)  — *los `0.XXk` en el desglose son ~miles de tokens estimados, no el `MATCH_THRESHOLD` de recuperación*
   system message                                                    total: 2.10k tokens
     - agent_base_prompt     (from profiles.agent_system_prompt)         0.40k
     - user_profile_block    (from profiles: name/tz/lang/email/phone)   0.12k
-    - long_term_memories    (3 items retrieved this turn)               0.35k
+    - long_term_memories    (3 items retrieved this turn)               ~0.35k
     - date_context          (runtime-generated current date/time)       0.05k
     - (tool call guidance, HITL rules, etc. from base prompt)           1.18k
   conversation history      (12 msgs from agent_messages)           total: 1.80k tokens
