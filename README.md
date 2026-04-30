@@ -192,6 +192,7 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 - [docs/brief.md](docs/brief.md) — visión y brief original.
 - [docs/architecture.md](docs/architecture.md) — arquitectura técnica del MVP.
 - [docs/plan.md](docs/plan.md) — fases y decisiones de implementación.
+- [docs/business-brain-evolution-roadmap.md](docs/business-brain-evolution-roadmap.md) — evolución hacia Business Brain (Skills, Heartbeat, contexto por cuenta); roadmap producto + ingeniería.
 - [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) — despliegue y prueba del cron de tareas programadas (`pg_cron`, ngrok, `CRON_SECRET`).
 
 ---
