@@ -24,3 +24,28 @@ export {
   approxTokensFromChars,
 } from "./turn_log";
 export type { TurnSummaryInput } from "./turn_log";
+
+// Skills (V1-A): registry plumbing only. V1-B will wire selectSkillForTurn
+// into runAgent. Until then this surface is consumed by tests.
+export {
+  parseSkillFile,
+  parseSkillSource,
+  SkillParseError,
+  estimateTokens as estimateSkillBodyTokens,
+  MAX_SKILL_BODY_TOKENS,
+  MAX_DESCRIPTION_CHARS,
+  MAX_NAME_CHARS,
+  loadGlobalSkillRegistry,
+  buildRegistryFromRecords,
+  resolveSkill,
+  SkillResolveError,
+  FrontmatterError,
+} from "./skills";
+export type {
+  SkillMetadata,
+  SkillRecord,
+  SkillRegistry,
+  ResolvedSkill,
+  SkillScope,
+  LoadRegistryOptions,
+} from "./skills";

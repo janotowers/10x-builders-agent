@@ -13,7 +13,10 @@
     "test:local-shell-intent": "tsx src/tools/local-shell-intent.selftest.ts",
     "test:file-tools": "tsx src/tools/fileTools.selftest.ts",
     "test:file-tools-intent": "tsx src/tools/file-tools-intent.selftest.ts",
-    "test:compaction-node": "tsx src/nodes/compaction_node.selftest.ts"
+    "test:compaction-node": "tsx src/nodes/compaction_node.selftest.ts",
+    "test:skills-parse": "tsx src/skills/parse.selftest.ts",
+    "test:skills-resolve": "tsx src/skills/resolve.selftest.ts",
+    "test:skills-registry": "tsx src/skills/registry.selftest.ts"
   },
   "dependencies": {
     "@agents/db": "*",
