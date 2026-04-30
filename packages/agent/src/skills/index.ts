@@ -1,10 +1,9 @@
 /**
- * Public surface of the skills module (V1-A).
+ * Public surface of the skills module.
  *
- * V1-B will plug `selectSkillForTurn` and `resolveSkill` into `runAgent`
- * to inject the playbook into the system prompt and intersect tools at
- * `buildLangChainTools` time. Until then, this module is plumbing only:
- * loading SKILL.md files, validating frontmatter, and resolving composites.
+ * V1-A delivered the registry plumbing (parse, resolve, load). V1-B added
+ * the pre-graph selector (`selectSkillForTurn`) and the runAgent runtime
+ * helpers (`getGlobalSkillRegistry`, `buildPlaybookInjection`).
  */
 export type {
   SkillMetadata,
@@ -33,3 +32,21 @@ export {
 export { resolveSkill, SkillResolveError } from "./resolve";
 
 export { FrontmatterError } from "./frontmatter";
+
+export {
+  selectSkillForTurn,
+  parseSelectorJson,
+  NO_SKILL_ID,
+  type SkillSelection,
+  type SelectionNoneReason,
+  type SelectorChatModel,
+  type SelectSkillInput,
+} from "./select";
+
+export {
+  getGlobalSkillRegistry,
+  resetGlobalSkillRegistryForTests,
+  buildPlaybookInjection,
+  defaultSkillsRoot,
+  type GetSkillRegistryOptions,
+} from "./runtime";

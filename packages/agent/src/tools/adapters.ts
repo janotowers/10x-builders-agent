@@ -36,6 +36,7 @@ import {
   executeWriteFile,
   executeEditFile,
 } from "./fileTools";
+import { executeBigQueryQuery } from "./bigquery-adapter";
 import type { ToolContext } from "./tool-context";
 
 export type { ToolContext } from "./tool-context";
@@ -43,6 +44,18 @@ export type { ToolContext } from "./tool-context";
 function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   const setting = ctx.enabledTools.find((t) => t.tool_id === toolId);
   if (!setting?.enabled) return false;
+
+  // Skill-aware narrowing (V1-B): when the pre-graph selector picked a skill
+  // for this turn, the tool list is intersected with that skill's
+  // `allowed_tools`. When no skill is active, this check is a no-op and the
+  // filtering below behaves exactly as it did before V1-B.
+  if (
+    Array.isArray(ctx.activeSkillAllowedTools) &&
+    ctx.activeSkillAllowedTools.length > 0 &&
+    !ctx.activeSkillAllowedTools.includes(toolId)
+  ) {
+    return false;
+  }
 
   if (toolId === "bash" && process.env.BASH_TOOL_ENABLED !== "true") {
     return false;
@@ -171,6 +184,48 @@ export function buildLangChainTools(ctx: ToolContext) {
           description:
             "Returns the current user preferences and agent configuration, including canonical contact fields (email, phone) when set. Prefer this over asking the user when you need their own email or phone.",
           schema: z.object({}),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("bigquery_run_query", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "bigquery_run_query",
+            input,
+            false
+          );
+          const result = await executeBigQueryQuery({
+            sql: input.sql,
+            projectId: input.project_id,
+            location: input.location,
+            maxResults: input.max_results,
+          });
+          const status: "executed" | "failed" =
+            result.status === "ok" ? "executed" : "failed";
+          await updateToolCallStatus(
+            ctx.db,
+            record.id,
+            status,
+            result as unknown as Record<string, unknown>
+          );
+          return JSON.stringify(result);
+        },
+        {
+          name: "bigquery_run_query",
+          description:
+            "Executes a single READ-ONLY SQL query (SELECT or WITH...SELECT) against BigQuery and returns up to max_results rows. Validator rejects DDL/DML/scripting and multiple statements. If BigQuery is not yet configured in this environment the tool returns status='not_configured' with instructions instead of executing — explain that to the user and stop.",
+          schema: z.object({
+            sql: z.string().min(1),
+            project_id: z.string().min(1).optional(),
+            location: z.string().min(1).optional(),
+            max_results: z.number().int().positive().max(1000).optional(),
+          }),
         }
       )
     );

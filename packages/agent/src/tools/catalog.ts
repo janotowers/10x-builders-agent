@@ -306,6 +306,39 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "bigquery_run_query",
+    name: "bigquery_run_query",
+    description:
+      "Executes a single READ-ONLY SQL query (SELECT or WITH...SELECT) against Google BigQuery and returns up to max_results rows. The validator rejects any DDL/DML, multiple statements, or scripting blocks. Use this when the user asks for counts, KPIs, trends, or any business metric that lives in the warehouse. Returns a tagged result; if the deployment has not configured BigQuery yet, the tool returns status='not_configured' with instructions instead of executing.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        sql: {
+          type: "string",
+          description:
+            "Standard BigQuery SQL. Must be a single SELECT or `WITH ... SELECT` statement. Comments are stripped before validation.",
+        },
+        project_id: {
+          type: "string",
+          description:
+            "Optional GCP project id override. Defaults to BIGQUERY_PROJECT_ID env.",
+        },
+        location: {
+          type: "string",
+          description:
+            "Optional BigQuery location (e.g. 'US', 'EU'). Defaults to BIGQUERY_LOCATION env.",
+        },
+        max_results: {
+          type: "number",
+          description:
+            "Maximum rows to return (default 100, hard cap 1000). Use to keep results compact for the assistant.",
+        },
+      },
+      required: ["sql"],
+    },
+  },
+  {
     id: "bash",
     name: "bash",
     description:

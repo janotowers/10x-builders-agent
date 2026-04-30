@@ -91,3 +91,38 @@ export function createCompactionModel() {
     apiKey,
   });
 }
+
+/**
+ * Default model id for skill selection. Same family as the compaction model
+ * (small + cheap is enough — selection only sees skill name + description and
+ * the latest user message). Override with the `SKILL_SELECTOR_MODEL_ID` env
+ * when you want to test a different slug.
+ */
+export const DEFAULT_SKILL_SELECTOR_MODEL_ID = "anthropic/claude-3-5-haiku";
+
+/**
+ * Factory for the pre-graph skill selector (V1-B). Tiny prompt, strict JSON
+ * output; deterministic temperature so the same input picks the same skill
+ * and tests are stable.
+ */
+export function createSkillSelectorModel() {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
+
+  const modelName =
+    process.env.SKILL_SELECTOR_MODEL_ID?.trim() ||
+    DEFAULT_SKILL_SELECTOR_MODEL_ID;
+
+  return new ChatOpenAI({
+    modelName,
+    temperature: 0,
+    maxTokens: 128,
+    configuration: {
+      baseURL: "https://openrouter.ai/api/v1",
+      defaultHeaders: {
+        "HTTP-Referer": "https://agents.local",
+      },
+    },
+    apiKey,
+  });
+}

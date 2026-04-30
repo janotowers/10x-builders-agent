@@ -12,4 +12,16 @@ export interface ToolContext {
   /** IANA timezone from profile (e.g. America/Mexico_City). */
   userTimezone?: string;
   googleCalendarAccessToken?: string;
+  /**
+   * Set by `runAgent` (V1-B+) when the pre-graph skill selector picks an
+   * active skill: the resolved skill's `allowed_tools` list. When defined
+   * and non-empty, `isToolAvailable()` *intersects* the existing rules
+   * with this allowlist (a tool is available only if it would otherwise
+   * be available AND its id is in this list).
+   *
+   * When `undefined` (the common case — no skill active, or `none` was
+   * returned by the selector), tool filtering falls through to today's
+   * rules unchanged.
+   */
+  activeSkillAllowedTools?: readonly string[];
 }

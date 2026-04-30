@@ -27,10 +27,17 @@ import {
   CHAT_MODEL_ID,
   createChatModel,
   createCompactionModel,
+  createSkillSelectorModel,
   DEFAULT_CRON_TEMPERATURE,
   DEFAULT_INTERACTIVE_TEMPERATURE,
 } from "./model";
 import { buildLangChainTools } from "./tools/adapters";
+import {
+  getGlobalSkillRegistry,
+  buildPlaybookInjection,
+} from "./skills/runtime";
+import { selectSkillForTurn } from "./skills/select";
+import type { ResolvedSkill } from "./skills/types";
 import { toolRequiresConfirmation } from "./tools/catalog";
 import { userMessageIsScheduleIntent } from "./tools/schedule-intent";
 import { getCheckpointer } from "./checkpointer";
@@ -499,6 +506,38 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     ? DEFAULT_CRON_TEMPERATURE
     : DEFAULT_INTERACTIVE_TEMPERATURE;
   const model = createChatModel({ temperature: modelTemperature });
+
+  // ── V1-B pre-graph: skill selection ────────────────────────────────
+  // Run BEFORE buildLangChainTools so that `isToolAvailable()` can
+  // intersect the tool list with the active skill's `allowed_tools`.
+  // Skipped on resume (the user is approving an in-flight tool call;
+  // narrowing the tool set mid-flight would be confusing) and when the
+  // turn has no user message.
+  let activeSkill: ResolvedSkill | undefined;
+  if (!resumeDecision && message && message.trim() !== "") {
+    try {
+      const registry = await getGlobalSkillRegistry();
+      if (registry.list().length > 0) {
+        const selectorModel = createSkillSelectorModel();
+        const selection = await selectSkillForTurn({
+          userMessage: message,
+          registry,
+          model: selectorModel,
+          channel,
+        });
+        if (selection.kind === "active") {
+          activeSkill = selection.resolved;
+        }
+      }
+    } catch (err) {
+      // Skill selection is best-effort: a failure here must NOT take down
+      // the turn. The agent simply runs without a skill.
+      console.warn(
+        `[skills] selection failed; continuing without a skill: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   const lcTools = buildLangChainTools({
     db,
     userId,
@@ -509,6 +548,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     userTimezone,
     googleCalendarAccessToken,
     lastUserMessage: message ?? "",
+    activeSkillAllowedTools: activeSkill?.allowedTools,
   });
 
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
@@ -533,6 +573,16 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const ambiguityAddendum = `\n\n[Reglas de desambiguación — obligatorias]\n- Respuestas cortas del usuario como "sí", "ok", "dale", "va", "hazlo", "procede", "no", "cancela": interprétalas SIEMPRE en el contexto del ÚLTIMO turno TUYO inmediatamente anterior. Si tu último turno prometió una acción concreta en un dominio (archivos, calendario, github, bash) pero NO llamaste a la herramienta, ahora debes llamar a la herramienta DIRECTAMENTE con los parámetros ya acordados. No elijas otra acción de otro dominio sólo porque aparezca en el historial lejano.\n- Si no tienes una acción claramente pendiente en tu turno anterior, responde pidiendo clarificación al usuario (una sola pregunta corta) en vez de asumir. Nunca "adivines" creando eventos, archivos o repos para reusar datos de turnos viejos.\n- Nunca pidas confirmación en TEXTO para acciones que tienen herramienta con riesgo medio/alto: la herramienta ya disparará su propia tarjeta de confirmación. Genera el tool_call y deja que el sistema pida la aprobación.`;
 
+  // V1-B: when a skill is active, prepend the playbook BEFORE the
+  // tool-specific addendum chain. The chain layers tool guidance on top of
+  // domain context — that ordering matters because tool rules sometimes
+  // *override* generic phrasing the skill might use.
+  const baseSystemPrompt =
+    systemPrompt + userProfileBlock + dateContext + ambiguityAddendum;
+  const baseWithSkill = activeSkill
+    ? baseSystemPrompt + buildPlaybookInjection(activeSkill)
+    : baseSystemPrompt;
+
   let effectiveSystemPrompt = appendManageScheduledTasksRules(
     appendScheduleTaskRules(
       appendFileToolsRules(
@@ -540,7 +590,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           appendGithubSocialRules(
             appendBashRules(
               appendGithubCreateToolRules(
-                systemPrompt + userProfileBlock + dateContext + ambiguityAddendum,
+                baseWithSkill,
                 lcTools as Array<{ name?: string }>
               ),
               lcTools as Array<{ name?: string }>

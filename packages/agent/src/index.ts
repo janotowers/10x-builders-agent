@@ -25,8 +25,9 @@ export {
 } from "./turn_log";
 export type { TurnSummaryInput } from "./turn_log";
 
-// Skills (V1-A): registry plumbing only. V1-B will wire selectSkillForTurn
-// into runAgent. Until then this surface is consumed by tests.
+// Skills (V1-A registry + V1-B selector/runtime). The registry surface is
+// consumed by tests; the runtime surface is what `runAgent` uses internally
+// and what V1-E will reuse for the Settings UI ("toggle skills").
 export {
   parseSkillFile,
   parseSkillSource,
@@ -40,6 +41,13 @@ export {
   resolveSkill,
   SkillResolveError,
   FrontmatterError,
+  selectSkillForTurn,
+  parseSelectorJson,
+  NO_SKILL_ID,
+  getGlobalSkillRegistry,
+  resetGlobalSkillRegistryForTests,
+  buildPlaybookInjection,
+  defaultSkillsRoot,
 } from "./skills";
 export type {
   SkillMetadata,
@@ -48,4 +56,9 @@ export type {
   ResolvedSkill,
   SkillScope,
   LoadRegistryOptions,
+  SkillSelection,
+  SelectionNoneReason,
+  SelectorChatModel,
+  SelectSkillInput,
+  GetSkillRegistryOptions,
 } from "./skills";
