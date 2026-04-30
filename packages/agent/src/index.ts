@@ -62,3 +62,12 @@ export type {
   SelectSkillInput,
   GetSkillRegistryOptions,
 } from "./skills";
+
+export {
+  readSkillReference,
+  MAX_REFERENCE_BYTES,
+} from "./tools/skill-references";
+export type {
+  ReadSkillReferenceArgs,
+  ReadSkillReferenceResult,
+} from "./tools/skill-references";

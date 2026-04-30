@@ -306,10 +306,28 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "read_skill_reference",
+    name: "read_skill_reference",
+    description:
+      "Reads one reference file (.md) from the currently-active skill's `references/` directory and returns its content. Used for progressive disclosure: the SKILL.md body stays small and references are loaded on demand. Pass only the filename stem (no extension). Risk low (read-only, scoped to the skill's references directory).",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description:
+            "Filename stem (no extension). Lowercase letters, digits, hyphens. E.g. 'schema', 'joins', 'fewshots-leads'.",
+        },
+      },
+      required: ["name"],
+    },
+  },
+  {
     id: "bigquery_run_query",
     name: "bigquery_run_query",
     description:
-      "Executes a single READ-ONLY SQL query (SELECT or WITH...SELECT) against Google BigQuery and returns up to max_results rows. The validator rejects any DDL/DML, multiple statements, or scripting blocks. Use this when the user asks for counts, KPIs, trends, or any business metric that lives in the warehouse. Returns a tagged result; if the deployment has not configured BigQuery yet, the tool returns status='not_configured' with instructions instead of executing.",
+      "Executes a single READ-ONLY SQL query (SELECT or WITH...SELECT) against Google BigQuery and returns up to max_results rows. The validator rejects any DDL/DML, multiple statements, or scripting blocks. Supports named parameters via `params` (e.g. `WHERE u.organization_id = @organization_id` plus `params: { organization_id: '...' }`); ALWAYS prefer parameters over inlining values. Use this tool when the user asks for counts, KPIs, trends, or any business metric in the warehouse. Returns a tagged result; if the deployment has not configured BigQuery yet, returns status='not_configured' with instructions instead of executing.",
     risk: "low",
     parameters_schema: {
       type: "object",
@@ -317,7 +335,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         sql: {
           type: "string",
           description:
-            "Standard BigQuery SQL. Must be a single SELECT or `WITH ... SELECT` statement. Comments are stripped before validation.",
+            "Standard BigQuery SQL. Must be a single SELECT or `WITH ... SELECT` statement. Use `@name` placeholders for any value derived from user input or business context, and pass the actual values via `params`.",
         },
         project_id: {
           type: "string",
@@ -333,6 +351,11 @@ export const TOOL_CATALOG: ToolDefinition[] = [
           type: "number",
           description:
             "Maximum rows to return (default 100, hard cap 1000). Use to keep results compact for the assistant.",
+        },
+        params: {
+          type: "object",
+          description:
+            "Named query parameters. Keys are parameter names (without '@'); values are string|number|boolean. Map to BigQuery types as: string→STRING, integer→INT64, float→FLOAT64, boolean→BOOL.",
         },
       },
       required: ["sql"],

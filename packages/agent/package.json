@@ -19,7 +19,9 @@
     "test:skills-registry": "tsx src/skills/registry.selftest.ts",
     "test:skills-select": "tsx src/skills/select.selftest.ts",
     "test:bigquery-sql": "tsx src/tools/bigquery-sql.selftest.ts",
-    "test:skill-aware-tools": "tsx src/tools/skill-aware.selftest.ts"
+    "test:bigquery-params": "tsx src/tools/bigquery-params.selftest.ts",
+    "test:skill-aware-tools": "tsx src/tools/skill-aware.selftest.ts",
+    "test:skill-references": "tsx src/tools/skill-references.selftest.ts"
   },
   "dependencies": {
     "@agents/db": "*",

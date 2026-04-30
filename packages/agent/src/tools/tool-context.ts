@@ -24,4 +24,16 @@ export interface ToolContext {
    * rules unchanged.
    */
   activeSkillAllowedTools?: readonly string[];
+  /**
+   * Slug of the currently-active skill (if any). Used by
+   * `read_skill_reference` to scope its reads to the right
+   * `skills/global/<slug>/references/` directory. `undefined` when no
+   * skill is active for the turn.
+   */
+  activeSkillName?: string;
+  /**
+   * Absolute path to the workspace root used to resolve skill references.
+   * Defaults to `defaultSkillsRoot()` when omitted; tests can override.
+   */
+  skillsRoot?: string;
 }

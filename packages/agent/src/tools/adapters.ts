@@ -37,6 +37,8 @@ import {
   executeEditFile,
 } from "./fileTools";
 import { executeBigQueryQuery } from "./bigquery-adapter";
+import { readSkillReference } from "./skill-references";
+import { defaultSkillsRoot } from "../skills/runtime";
 import type { ToolContext } from "./tool-context";
 
 export type { ToolContext } from "./tool-context";
@@ -189,6 +191,44 @@ export function buildLangChainTools(ctx: ToolContext) {
     );
   }
 
+  if (isToolAvailable("read_skill_reference", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "read_skill_reference",
+            input,
+            false
+          );
+          const result = await readSkillReference({
+            name: input.name,
+            activeSkillName: ctx.activeSkillName,
+            skillsRoot: ctx.skillsRoot ?? defaultSkillsRoot(),
+          });
+          const status: "executed" | "failed" =
+            result.status === "ok" ? "executed" : "failed";
+          await updateToolCallStatus(
+            ctx.db,
+            record.id,
+            status,
+            result as unknown as Record<string, unknown>
+          );
+          return JSON.stringify(result);
+        },
+        {
+          name: "read_skill_reference",
+          description:
+            "Reads ONE reference file from the currently-active skill's `references/` directory and returns its content. Use this when the active skill's body points you to a reference (e.g. 'see references/schema.md for the full table list'). Pass only the filename stem (without extension), e.g. `schema`, `joins`, `glossary`, `fewshots-leads`. Returns `status='no_active_skill'` if no skill is selected for this turn (do NOT call it then). Returns `status='not_found'` if the file does not exist (do NOT retry; the SKILL.md body lists what is available).",
+          schema: z.object({
+            name: z.string().min(1).max(64),
+          }),
+        }
+      )
+    );
+  }
+
   if (isToolAvailable("bigquery_run_query", ctx)) {
     tools.push(
       tool(
@@ -205,6 +245,7 @@ export function buildLangChainTools(ctx: ToolContext) {
             projectId: input.project_id,
             location: input.location,
             maxResults: input.max_results,
+            params: input.params,
           });
           const status: "executed" | "failed" =
             result.status === "ok" ? "executed" : "failed";
@@ -225,6 +266,9 @@ export function buildLangChainTools(ctx: ToolContext) {
             project_id: z.string().min(1).optional(),
             location: z.string().min(1).optional(),
             max_results: z.number().int().positive().max(1000).optional(),
+            params: z
+              .record(z.union([z.string(), z.number(), z.boolean()]))
+              .optional(),
           }),
         }
       )

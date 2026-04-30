@@ -1,110 +1,191 @@
 ---
 name: company-data
-description: Answer business questions backed by warehouse data via BigQuery. Use when the user asks for counts, KPIs, trends, conversions, distributions, leaderboards, anomalies, or any quantitative metric that lives in the company warehouse (e.g. leads, deals, listings, accounts). Do NOT use for personal calendar lookups, GitHub queries, file operations, or chitchat.
+description: Answer business questions backed by Ungga's BigQuery warehouse (real estate operational data — usuarios, propiedades, leads, citas, deals, mensajes, números de Gu). Use when the user asks for counts, KPIs, trends, conversions, distributions, leaderboards, anomalies, funnel analyses, or any quantitative metric about real estate operations. Do NOT use for personal calendar lookups, GitHub queries, file operations, or chitchat.
 scope: business
 allowed_tools:
   - get_user_preferences
+  - read_skill_reference
   - bigquery_run_query
 includes: []
 guardrails: |
-  Read-only: only SELECT and WITH ... SELECT queries. The validator rejects DDL/DML.
-  Always respect the user's timezone (from get_user_preferences) when interpreting "today", "this month", etc.
+  Read-only: only SELECT and WITH...SELECT queries. The bigquery_run_query validator rejects DDL/DML.
+  Mandatory tenant filter — see "Tenant filter" below. NEVER query without applying it (unless [Contexto de tenant] explicitly says you are in MODO ADMIN UNGGA).
+  Always pass values via `params` (e.g. `@organization_id`), never inline them in the SQL string.
   If bigquery_run_query returns status="not_configured", stop and tell the user the warehouse is not connected yet — do NOT invent numbers.
 ---
 
-# Company data (warehouse)
+# Company data (Ungga warehouse)
 
-You answer **quantitative business questions** by running BigQuery from a
-single, well-formed SQL query and presenting the result as a short, readable
-summary. You are **not** a SQL chatbot: the user asks a business question;
-you turn it into one query, run it, and answer in their language.
+You answer **quantitative business questions** for a real estate firm by
+running ONE BigQuery query and presenting the result as a short, readable
+summary in the user's language. You are not a SQL chatbot — the user asks
+a business question; you turn it into one query, run it, answer.
 
-## Procedure (plan → validate → execute → summarize)
+## How to work (plan → load refs → validate → execute → summarize)
 
-1. **Clarify the question** if needed. If the user says "leads in March"
-   without a year, infer the most recent past March in the user's timezone
-   (use `get_user_preferences`) and *say so* in the answer. If two
-   interpretations are equally plausible, ask one short question.
-2. **Plan the query.** Pick the smallest table you need; aggregate with the
-   right granularity (day / week / month); apply the user's timezone when
-   bucketing by date; cap rows with `LIMIT` when the answer is a list.
-3. **Validate the SQL** against the rules in `## SQL rules` below before
-   submitting. The tool's validator will reject anything dangerous, but a
-   clean handoff avoids round-trips.
-4. **Execute** with `bigquery_run_query`. Pass `max_results` only when you
-   need more than the default 100 rows (rare for summaries).
-5. **Read the result.**
-   - `status: "ok"` → use the rows. `truncated: true` means there are more
-     rows than were returned; mention that in the answer.
-   - `status: "not_configured"` → tell the user the warehouse is not
-     connected yet ("La conexión a BigQuery aún no está configurada en
-     este entorno"). Do not retry with different parameters; do not invent
-     data.
-   - `status: "validation_error"` → fix the SQL (most often: removed a
-     stray `;` mid-statement, took out a DDL keyword) and retry once.
-   - `status: "execution_error"` → quote the error message in the user's
-     language, suggest the most likely fix (table name typo, missing
-     project), and stop. Do not retry blindly.
-6. **Summarize**, using the template under `## Output template`. Always
-   include the actual query in a fenced block at the end so the user can
-   audit or reuse it.
+1. **Read the user's question** and identify the **dominio** (one of:
+   `users`, `properties`, `leads`, `appointments`, `deals`, `messages`).
+   If you are uncertain about which tables/columns/joins to use, **load
+   the relevant references** with `read_skill_reference` (see "Reference
+   index" below). Do not guess schema or write multi-line JOIN logic from
+   memory; the references exist precisely so you don't have to.
+2. **Apply the tenant filter** as instructed in `[Contexto de tenant]`
+   above (in the system prompt). For agencias regulares this is
+   non-negotiable; for MODO ADMIN UNGGA it is opt-in per the user's
+   request.
+3. **Plan the query.** Pick the smallest set of tables you need; aggregate
+   with the right granularity (day / week / month); apply the user's
+   timezone for date bucketing (`America/Mexico_City` por defecto).
+4. **Use parameters, not string interpolation.** Pass tenant id, dates,
+   and any value derived from the user's question via `params: { ... }`
+   and reference them in SQL as `@name`.
+5. **Validate the SQL** mentally against the rules in `## SQL rules`
+   below before submitting. The tool's validator will reject anything
+   dangerous, but a clean handoff avoids round-trips.
+6. **Execute** with `bigquery_run_query`. Cap rows with `max_results` if
+   you need a list; default 100 is enough for most summaries.
+7. **Read the result** and react to its `status`:
+   - `ok` → use the rows. `truncated: true` means there were more.
+   - `not_configured` → tell the user *"La conexión a BigQuery aún no
+     está configurada en este entorno"*. Do not retry; do not invent.
+   - `validation_error` → fix the SQL (most common: stray `;` between
+     statements, a forbidden keyword smuggled in a string). Retry once.
+   - `execution_error` → quote the error in the user's language, suggest
+     the most likely fix (table name typo, missing column, type mismatch).
+     Stop. Do not retry blindly.
+8. **Summarize** using the template in `## Output template` below.
+   Always include the SQL you ran in a fenced block at the end so the
+   user can audit or reuse it.
+
+## Tenant filter
+
+The system prompt above includes a `[Contexto de tenant]` block. Read it
+on every turn. It will be one of:
+
+- **Modo OBLIGATORIO** (usuario es una inmobiliaria): every query MUST
+  filter by `organization_id`. Typical pattern: join against
+  `firestore_users.users_light u` and add `WHERE u.organization_id = @organization_id`,
+  passing the value via `params`. The block tells you the value to use.
+  If the natural question doesn't have a way to filter by organization
+  (e.g. "cuántos leads en TODA la plataforma"), refuse: *"no tengo
+  permitido consultar datos cross-tenant"*.
+- **Modo ADMIN UNGGA** (staff de Ungga): the filter is OPT-IN. Apply it
+  only when the user names a specific inmobiliaria. If the user gives
+  only a name, do an approximate match against
+  `firestore_users.users_light.org_name` and CONFIRM with the user
+  before executing the metric query.
+- If the block is missing, default to OBLIGATORIO mode and refuse
+  cross-tenant queries.
+
+## Reference index — load on demand
+
+| Reference | Use when |
+|---|---|
+| `schema` | You need exact table/column names or types — load on every non-trivial query |
+| `glossary` | The user uses business terms (cliente, MAU, leads atendidos, Gu activado, inmobiliaria, etc.) |
+| `joins` | The query involves more than one table — load to get correct ON clauses, normalization, and fallbacks |
+| `conventions` | Always for date bucketing, timezone, canonical filters (e.g. exclude test users) |
+| `fewshots-users` | Question is about user accounts: counts, snapshots, Gu activation |
+| `fewshots-properties` | Inventory questions: published/recent properties, leads per property, **funnel decay analyses (advanced)** |
+| `fewshots-leads` | Leads creados / atendidos / interactuaron in a period |
+| `fewshots-appointments` | Citas: counts by status, today/yesterday lists, by month |
+| `fewshots-deals` | Deals counts and listings by month |
+| `fewshots-messages` | Conversations, message counts, last messages, message-to-lead matching |
+
+Each `fewshots-<dominio>` file has two sections: **Basic patterns** (the
+common 80%) and **Advanced analyses** (period comparisons, funnel decay,
+attribution — load only when the user asks for that kind of investigation).
 
 ## SQL rules
 
 - **One** statement. No `;` between sub-queries — use CTEs (`WITH … SELECT`).
-- **Read-only**: SELECT or WITH only. Never INSERT/UPDATE/DELETE/MERGE/CREATE/DROP/TRUNCATE/ALTER, even in a comment.
-- **Fully qualify** tables: `` `<project>.<dataset>.<table>` `` (backticks),
-  not bare names. The default project is set via env; the user may override
-  with `project_id`.
-- **Filter by date in the user's timezone.** Use
-  `DATE(<ts>, '<IANA tz from get_user_preferences>')` when grouping by day.
-- **Aggregate** before returning. The tool caps results at 100 rows by
-  default; do not return raw event tables.
-- Prefer `COUNT(DISTINCT id)` over `COUNT(*)` when the table has duplicates.
-- Avoid `SELECT *` in summaries — pick the columns you actually need.
+- **Read-only**: SELECT or WITH only. Never INSERT/UPDATE/DELETE/MERGE/CREATE/DROP/TRUNCATE/ALTER/MERGE — even in a comment (the validator strips comments before checking).
+- **Fully qualify** tables: `` `ungga-full.<dataset>.<table>` `` (backticks).
+- **Filter dates in the user's timezone.** Use `DATE(<ts>, 'America/Mexico_City')` when bucketing by day. See `references/conventions.md`.
+- **Aggregate** before returning. Avoid `SELECT *` on operational tables.
+- **Use `COUNT(DISTINCT pk)`** when joins can multiply rows (1→N).
+- Never query the `*_raw_light` tables; always use the `*_light` views.
+- **Always parameterize** values from user input, business context (organization_id), or business rules. Never inline.
 
-## Gotchas
+## Quick patterns (inline; load fewshots-* for full ones)
 
-- The validator strips comments before checking — do not try to "hide" a
-  forbidden keyword behind `--` or `/* … */`. It will not work, and even
-  if it did the result would be invalid SQL.
-- Tables that use soft deletes typically need an explicit
-  `WHERE deleted_at IS NULL`. If you see a `deleted_at` column in the
-  schema, include the filter unless the user explicitly asked for "all
-  rows including deleted".
-- Periods like "this month" / "last week" are **timezone-sensitive**. The
-  agent runs in UTC by default; the user's profile holds the IANA name.
-  Always read the timezone from `get_user_preferences` before bucketing.
-- BigQuery returns `bytesProcessed` in the response; the tool surfaces it
-  as `bytesProcessed`. Mention it only if the user is asking about cost
-  or query weight — otherwise it is noise.
+### Pattern A — count of an entity in a period (with tenant filter)
 
-## Defaults (not menus)
+```sql
+WITH user_ids AS (
+  SELECT u.document_id AS user_id
+  FROM `ungga-full.firestore_users.users_light` u
+  WHERE (u.is_test IS NULL OR u.is_test = FALSE)
+    AND u.organization_id = @organization_id
+)
+SELECT COUNT(DISTINCT d.document_id) AS deals_creados
+FROM `ungga-full.firestore_deals.deals_light` d
+JOIN user_ids u ON REPLACE(d.asesor, 'users/', '') = u.user_id
+WHERE DATE(d.created_time, 'America/Mexico_City') >= @start_date
+  AND DATE(d.created_time, 'America/Mexico_City') <  @end_date;
+```
 
-- **Date bucket**: `DATE(<ts>, <user_tz>)` for daily, `DATE_TRUNC(DATE(<ts>, <user_tz>), MONTH)` for monthly.
-- **Period**: when the user says "el mes pasado" / "last month",
-  default to the calendar month before the current one in their timezone.
-- **Row cap**: 100 rows for top-N lists; do not raise unless the user
-  explicitly asks for "all".
+### Pattern B — list with single-row-per-PK guarantee
+
+```sql
+SELECT
+  p.document_id,
+  p.address,
+  p.city,
+  p.price_display,
+  p.public_url
+FROM `ungga-full.firestore_properties.properties_light` p
+JOIN `ungga-full.firestore_users.users_light` u
+  ON REPLACE(p.user_owner, 'users/', '') = u.document_id
+WHERE u.organization_id = @organization_id
+  AND p.ad_status = 'Publicado'
+QUALIFY ROW_NUMBER() OVER (PARTITION BY p.document_id ORDER BY p.created_time DESC) = 1
+ORDER BY p.created_time DESC
+LIMIT 50;
+```
+
+### Pattern C — messages-to-leads via document_name (preferred join)
+
+```sql
+WITH gu_scope AS (
+  SELECT g.phone_number AS gu_phone
+  FROM `ungga-full.firestore_gu_numbers.gu_numbers_light` g
+  JOIN `ungga-full.firestore_users.users_light` u
+    ON REPLACE(g.user_owner, 'users/', '') = u.document_id
+  WHERE u.organization_id = @organization_id
+)
+SELECT
+  REGEXP_EXTRACT(m.document_name, r'/leads/([^/]+)/wsp_messeges/') AS lead_id_from_doc,
+  m.message_time,
+  m.author,
+  m.message
+FROM `ungga-full.firestore_messages.messages_light` m
+JOIN gu_scope g ON m.document_id = g.gu_phone
+WHERE DATE(m.message_time, 'America/Mexico_City') >= @start_date
+ORDER BY m.message_time DESC
+LIMIT 100;
+```
+
+(For matching the extracted `lead_id_from_doc` to `mongo_data.leads_light.lead_id` directly, see `references/joins.md`.)
 
 ## Output template
 
 When `status: "ok"`:
 
 ```markdown
-**<one-line answer that already includes the headline number>**
+**<one-line answer including the headline number>**
 
 | <colA> | <colB> | <colC> |
 |---|---|---|
 | … | … | … |
 
-<2-4 sentences of context: which period, which segment, any caveats —
-e.g. "incluye solo leads no eliminados", "los datos de hoy están parciales">
+<2-4 sentences of context: which period, segment, caveats — e.g. "incluye solo
+leads no eliminados", "los datos de hoy están parciales">
 
 ```sql
-<the exact SQL you ran>
+<the exact SQL you ran, with @params shown literally>
 ```
 ```
 
-For non-`ok` statuses, skip the table and the SQL block; explain in
-plain language why the answer is not available and what would unblock it.
+For non-`ok` statuses, skip the table and SQL block; explain in plain
+language why the answer is not available and what would unblock it.

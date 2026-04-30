@@ -377,6 +377,18 @@ Document these as guidance for whoever writes the first global skills (not deliv
 | B5 | **Catalog:** `bigquery_run_query(sql, project_id?, location?, max_results?)` in [`packages/agent/src/tools/catalog.ts`](../packages/agent/src/tools/catalog.ts) with `risk: 'low'` (read-only) + `requires_integration: 'google_bigquery'` (or env-only via `BIGQUERY_PROJECT_ID`/`GOOGLE_APPLICATION_CREDENTIALS`). Validate SQL is a single `SELECT` (or `WITH … SELECT`) and reject DDL/DML. New `packages/agent/src/tools/bigquery-adapter.ts`. |
 | B6 | **Skill:** `skills/global/company-data/SKILL.md` with plan-validate-execute body (read schema → draft SQL → validate → run → format). `allowed_tools: [bigquery_run_query, get_user_preferences]`. |
 | B7 | Tests: select returns `none` for greetings; selects `company-data` for *“conteo de leads de marzo”*; tool list narrows when active; tool list **does not narrow** on `none`; resume bypasses selection. |
+| **B+1** | **Progressive disclosure** for skills: new tool `read_skill_reference(name)` reads a single `.md` from `skills/global/<active>/references/`. Slug-validated, path-traversal-safe, soft size cap (`MAX_REFERENCE_BYTES`). Active-skill name flows from `runAgent` to the tool via a new `ToolContext.activeSkillName` field. |
+| **B+2** | **`bigquery_run_query` parameterized queries**: tool now accepts `params: Record<string, string \| number \| boolean>` mapped to BigQuery `queryParameters` (`STRING` / `INT64` / `FLOAT64` / `BOOL`). Skills MUST parameterize values from user input or business context (`organization_id`, dates, etc.) instead of inlining them. |
+| **B+3** | **`company-data` skill rewritten** as a thin orchestrator (~9 KB, ~2k tokens) plus 10 `references/` files: `schema.md`, `glossary.md`, `joins.md`, `conventions.md`, and `fewshots-{users,properties,leads,appointments,deals,messages}.md`. Each fewshots file is split into **Basic patterns** (the 80%) and **Advanced analyses** (period comparisons, funnel decay, attribution, lead-time, response rate). |
+| **B+4** | Mini-unblock for QA: `bigquery_run_query` and `read_skill_reference` added to Settings TOOL_IDS so the user can flip them on; `runAgent` logs `[skills] active=<id>` per turn. |
+
+#### Progressive-disclosure rationale
+
+The Ungga BigQuery domain knowledge (DDL of 7 `_light` views, join hints, vocabulary, ~25 few-shots) is ~13–15k tokens of curated material — well over the 5k-token skill body cap. Rather than splitting this into many narrow skills (which Anthropic explicitly discourages), `company-data` follows the Anthropic-recommended **progressive-disclosure** pattern: a small SKILL.md acts as an **index + procedure**, and the agent loads exactly the references it needs per question via `read_skill_reference`. Average turn now consumes only the SKILL.md (~2k tokens) plus 1–3 reference files (~3–5k tokens each), instead of carrying everything every turn.
+
+#### Tenant filter — design (matures in V1-C)
+
+The skill's body delegates the *“is this OBLIGATORIO or ADMIN UNGGA mode?”* decision to a `[Contexto de tenant]` block injected by `runAgent`. In V1-B the block is **not yet emitted** (no Business Brain table) so the skill defaults to **OBLIGATORIO with a placeholder** — calls fail closed if `organization_id` is unknown. V1-C wires the actual injector once `profiles.business_brain` and `profiles.is_ungga_admin` exist (see below).
 
 **Global set (initial — mixed business + personal + shared):**
 
@@ -408,7 +420,9 @@ Following OpenClaw’s spirit (`AGENTS.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`
     "last_run_at": null
   },
   "bigquery": {
+    "organization_id": null,
     "project_id": null,
+    "location": null,
     "dataset_allowlist": []
   }
 }
@@ -416,13 +430,24 @@ Following OpenClaw’s spirit (`AGENTS.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`
 
 The slot list is fixed (typed in TS); unknown top-level keys are dropped at write time. Free-form prose is allowed **inside** each slot.
 
+> **`bigquery.organization_id`** is the canonical tenant identifier — same column used in Ungga's BigQuery `users_light` view. **Domain schema knowledge stays in the repo** (under `skills/global/company-data/references/`) because it is shared product knowledge; only the per-account *binding* (which `organization_id`, optional dataset allowlist) lives in `business_brain`.
+
+#### Cross-tenant access — `profiles.is_ungga_admin`
+
+Ungga staff (you) need to query data **across** all tenants for support and product analytics; agencies should only see their own. The model decides which mode to use from a small *“tenant context”* block injected by `runAgent` into the system prompt:
+
+- `is_ungga_admin = false` (default): block reads *“MODO OBLIGATORIO. Toda consulta DEBE filtrar por `organization_id = '<id>'`. Pásalo via `params`.”*
+- `is_ungga_admin = true`: block reads *“MODO ADMIN UNGGA. El filtro es opt-in. Aplícalo solo si el usuario nombra una inmobiliaria. Si el usuario solo da un nombre, resuélvelo a `organization_id` por LIKE en `org_name` y CONFIRMA antes de ejecutar la métrica.”*
+
+The skill's body and references read the block on every turn; if the block is missing, the skill defaults to OBLIGATORIO and refuses cross-tenant queries — fail-closed.
+
 | Step | Action |
 |------|--------|
-| C1 | Migration: `alter table profiles add column business_brain jsonb default '{}'::jsonb not null` (idempotent shape via `coalesce` in TS reads). RLS already covers `profiles`. |
-| C2 | TS schema (Zod) for `business_brain` with the slots above; helper `getBusinessBrain(db, userId)` that fills missing slots with defaults |
+| C1 | Migration: `alter table profiles add column business_brain jsonb default '{}'::jsonb not null, add column is_ungga_admin boolean default false not null;` (idempotent shape via `coalesce` in TS reads). RLS already covers `profiles`. |
+| C2 | TS schema (Zod) for `business_brain` with the slots above; helper `getBusinessBrain(db, userId)` that fills missing slots with defaults; helper `isUnggaAdmin(db, userId)` |
 | C3 | Bundled **`heartbeat/default-checklist.md`** in repo for **lazy seeding** when user clicks **Enable Heartbeat** / **Reset to default** (no broad migration write) |
-| C4 | System-prompt assembly: a new `appendBusinessBrainBlock()` helper inserted into the existing chain in `runAgent` (before skill playbook), gated to non-empty content |
-| C5 | Settings UI (V1-E hands off here): edit identity/voice/context/operating_rules/heartbeat fields, plus checklist markdown editor + enable + interval |
+| C4 | System-prompt assembly: a new `appendBusinessBrainBlock()` helper **plus** `appendTenantContextBlock()` helper inserted into the existing chain in `runAgent` (before skill playbook), gated to non-empty content. The tenant block branches on `is_ungga_admin` and emits the OBLIGATORIO / ADMIN UNGGA wording above. |
+| C5 | Settings UI (V1-E hands off here): edit identity/voice/context/operating_rules/heartbeat fields, plus checklist markdown editor + enable + interval; **`organization_id` and `dataset_allowlist`** under a "BigQuery binding" subsection (read-only display of `is_ungga_admin`, only writable via SQL by Ungga staff). |
 
 ### V1-D — Heartbeat cron (**DB-backed checklist**)
 

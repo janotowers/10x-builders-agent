@@ -527,7 +527,18 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         });
         if (selection.kind === "active") {
           activeSkill = selection.resolved;
+          console.log(
+            `[skills] active=${selection.skillId} session=${sessionId} channel=${channel ?? "web"}`
+          );
+        } else {
+          console.log(
+            `[skills] active=none reason=${selection.reason} session=${sessionId} channel=${channel ?? "web"}`
+          );
         }
+      } else {
+        console.log(
+          `[skills] active=none reason=empty_registry session=${sessionId}`
+        );
       }
     } catch (err) {
       // Skill selection is best-effort: a failure here must NOT take down
@@ -549,6 +560,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     googleCalendarAccessToken,
     lastUserMessage: message ?? "",
     activeSkillAllowedTools: activeSkill?.allowedTools,
+    activeSkillName: activeSkill?.rootName,
   });
 
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;

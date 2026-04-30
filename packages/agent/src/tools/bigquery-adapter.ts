@@ -35,11 +35,30 @@ const BQ_SCOPE = "https://www.googleapis.com/auth/bigquery.readonly";
 /** Tokens are valid for 1h; refresh slightly earlier to dodge clock skew. */
 const TOKEN_TTL_SAFETY_MARGIN_SEC = 60;
 
+/**
+ * Allowed types for parameterized queries (`@name` placeholders in SQL).
+ * Mapping to BigQuery `parameterType.type`:
+ *   - string  → STRING
+ *   - number  → INT64 if integer, FLOAT64 otherwise
+ *   - boolean → BOOL
+ * For DATE/TIMESTAMP literals, callers can pass a string and use the
+ * appropriate cast in the SQL (e.g. `DATE(@day)`).
+ */
+export type BigQueryParamValue = string | number | boolean;
+
 export interface BigQueryRunArgs {
   readonly sql: string;
   readonly projectId?: string;
   readonly location?: string;
   readonly maxResults?: number;
+  /**
+   * Named parameters injected via BigQuery's parameterized-query mechanism.
+   * Keys are the parameter names (without the `@`); values must be
+   * primitives. The skill should USE parameters for any value derived from
+   * user input or business_brain (e.g. `organization_id`) — never inline
+   * them as string literals.
+   */
+  readonly params?: Readonly<Record<string, BigQueryParamValue>>;
 }
 
 export type BigQueryRunResult =
@@ -133,6 +152,20 @@ export async function executeBigQueryQuery(
   };
   if (location) requestBody.location = location;
 
+  if (args.params && Object.keys(args.params).length > 0) {
+    let queryParameters: Array<Record<string, unknown>>;
+    try {
+      queryParameters = buildBigQueryParameters(args.params);
+    } catch (err) {
+      return {
+        status: "validation_error",
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    requestBody.parameterMode = "NAMED";
+    requestBody.queryParameters = queryParameters;
+  }
+
   let response: Response;
   try {
     response = await fetch(
@@ -190,6 +223,61 @@ export async function executeBigQueryQuery(
     bytesProcessed: parseNumericString(payload.totalBytesProcessed),
     cacheHit: payload.cacheHit ?? false,
   };
+}
+
+/* ──────────────────── query parameters helpers ─────────────────────── */
+
+const PARAM_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Soft cap on the count of named parameters per query (BigQuery limit is 10k). */
+const MAX_QUERY_PARAMS = 64;
+
+function buildBigQueryParameters(
+  params: Readonly<Record<string, BigQueryParamValue>>
+): Array<Record<string, unknown>> {
+  const names = Object.keys(params);
+  if (names.length > MAX_QUERY_PARAMS) {
+    throw new Error(
+      `too many query parameters: ${names.length} (max ${MAX_QUERY_PARAMS})`
+    );
+  }
+  return names.map((name) => {
+    if (!PARAM_NAME_REGEX.test(name)) {
+      throw new Error(
+        `invalid query parameter name '${name}': must match ${PARAM_NAME_REGEX} (no '@' prefix)`
+      );
+    }
+    const raw = params[name];
+    if (typeof raw === "string") {
+      return {
+        name,
+        parameterType: { type: "STRING" },
+        parameterValue: { value: raw },
+      };
+    }
+    if (typeof raw === "boolean") {
+      return {
+        name,
+        parameterType: { type: "BOOL" },
+        parameterValue: { value: String(raw) },
+      };
+    }
+    if (typeof raw === "number") {
+      if (!Number.isFinite(raw)) {
+        throw new Error(
+          `invalid query parameter '${name}': non-finite numbers are not supported`
+        );
+      }
+      const isInt = Number.isInteger(raw);
+      return {
+        name,
+        parameterType: { type: isInt ? "INT64" : "FLOAT64" },
+        parameterValue: { value: String(raw) },
+      };
+    }
+    throw new Error(
+      `invalid query parameter '${name}': value must be string|number|boolean, got ${typeof raw}`
+    );
+  });
 }
 
 /* ─────────────────────────── auth + helpers ──────────────────────────── */

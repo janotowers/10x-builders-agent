@@ -168,4 +168,24 @@ passed += 1;
 expectErr("SELECT '" + "x".repeat(MAX_SQL_BYTES) + "'", /limit/, "oversize sql");
 passed += 1;
 
+// ── Parameterized queries pass through ─────────────────────────
+
+expectOk(
+  "SELECT * FROM `proj.ds.users` WHERE organization_id = @organization_id",
+  "named parameter @organization_id"
+);
+passed += 1;
+
+expectOk(
+  "SELECT id FROM `proj.ds.t` WHERE created_at >= @from AND created_at < @to LIMIT @lim",
+  "multiple named parameters"
+);
+passed += 1;
+
+expectOk(
+  "WITH x AS (SELECT * FROM `proj.ds.t` WHERE id = @id) SELECT COUNT(*) FROM x",
+  "parameter inside CTE"
+);
+passed += 1;
+
 console.log("tools/bigquery-sql.selftest: all", passed, "cases passed");

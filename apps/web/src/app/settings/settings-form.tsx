@@ -53,6 +53,8 @@ const TOOL_IDS = [
   "edit_file",
   "schedule_task",
   "manage_scheduled_tasks",
+  "bigquery_run_query",
+  "read_skill_reference",
 ];
 
 export function SettingsForm({
