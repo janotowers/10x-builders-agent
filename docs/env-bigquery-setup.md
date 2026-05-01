@@ -72,5 +72,7 @@ En **Ajustes** activa la herramienta `bigquery_run_query` (y `read_skill_referen
 | `not_configured` mencionando credenciales | Falta tanto `GOOGLE_APPLICATION_CREDENTIALS` como `GOOGLE_APPLICATION_CREDENTIALS_JSON`, o la ruta al archivo es inválida. |
 | `execution_error` / 403 tras autenticar | La cuenta de servicio no tiene permisos sobre el dataset o el proyecto. |
 | El modelo dice «inmobiliaria no configurada» | Usuario regular sin `business_brain.identity.organization_id` en Supabase. |
+| Log `[skills] active=none reason=empty_registry` | El cargador no encontró `skills/global/`. En la primera vuelta deberías ver `[skills] registry loaded root=… count=…`. Si el `root` no apunta al repo, fija `SKILLS_ROOT_DIR=C:\ruta\al\repo` en `.env.local` y reinicia. |
+| Skill activa pero el modelo elige `github_*` u otra herramienta | La skill no incluye en `allowed_tools` la combinación necesaria, o no se está inyectando `[Contexto de tenant]`. Revisa la sección `[SKILL SELECTION]` y `[TENANT CONTEXT]` en `packages/agent/logs/turn_summary.log`. |
 
 Tras cambiar `.env.local`, **reinicia** el servidor de desarrollo.

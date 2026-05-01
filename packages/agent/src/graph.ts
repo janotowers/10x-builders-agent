@@ -36,6 +36,7 @@ import { buildLangChainTools } from "./tools/adapters";
 import {
   getGlobalSkillRegistry,
   buildPlaybookInjection,
+  getCachedSkillsRegistryRoot,
 } from "./skills/runtime";
 import { selectSkillForTurn } from "./skills/select";
 import type { ResolvedSkill } from "./skills/types";
@@ -528,10 +529,15 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // narrowing the tool set mid-flight would be confusing) and when the
   // turn has no user message.
   let activeSkill: ResolvedSkill | undefined;
+  // Snapshot of the selector outcome for the executive turn log. Stays
+  // `undefined` when the selector did not run (resume HITL / empty turn).
+  let skillSelectionSnapshot: TurnSummaryInput["skillSelection"];
   if (!resumeDecision && message && message.trim() !== "") {
     try {
       const registry = await getGlobalSkillRegistry();
-      if (registry.list().length > 0) {
+      const registrySize = registry.list().length;
+      const registryRoot = getCachedSkillsRegistryRoot() ?? undefined;
+      if (registrySize > 0) {
         const selectorModel = createSkillSelectorModel();
         const selection = await selectSkillForTurn({
           userMessage: message,
@@ -544,15 +550,34 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           console.log(
             `[skills] active=${selection.skillId} session=${sessionId} channel=${channel ?? "web"}`
           );
+          skillSelectionSnapshot = {
+            active: selection.skillId,
+            allowedTools: selection.resolved.allowedTools,
+            requiresTenantContext: selection.resolved.requiresTenantContext,
+            registryRoot,
+            registrySize,
+          };
         } else {
           console.log(
             `[skills] active=none reason=${selection.reason} session=${sessionId} channel=${channel ?? "web"}`
           );
+          skillSelectionSnapshot = {
+            active: "none",
+            reason: selection.reason,
+            registryRoot,
+            registrySize,
+          };
         }
       } else {
         console.log(
-          `[skills] active=none reason=empty_registry session=${sessionId}`
+          `[skills] active=none reason=empty_registry session=${sessionId} root=${registryRoot ?? "(unresolved)"}`
         );
+        skillSelectionSnapshot = {
+          active: "none",
+          reason: "empty_registry",
+          registryRoot,
+          registrySize,
+        };
       }
     } catch (err) {
       // Skill selection is best-effort: a failure here must NOT take down
@@ -560,6 +585,10 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       console.warn(
         `[skills] selection failed; continuing without a skill: ${err instanceof Error ? err.message : String(err)}`
       );
+      skillSelectionSnapshot = {
+        active: "none",
+        reason: "selection_threw",
+      };
     }
   }
 
@@ -613,15 +642,44 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // `requires_tenant_context: true` Y hay business brain o admin flag —
   // así, conversaciones sin skill o con skills que no tocan datos
   // multi-tenant no pagan el costo del bloque.
+  const envBigqueryProject =
+    process.env.BIGQUERY_PROJECT_ID?.trim() || undefined;
+  const envBigqueryLocation =
+    process.env.BIGQUERY_LOCATION?.trim() || undefined;
   const tenantContextWired = appendTenantContextBlock(baseWithSkill, {
     requiresTenantContext: activeSkill?.requiresTenantContext ?? false,
     businessBrain: input.businessBrain ?? {},
     isUnggaAdmin: input.isUnggaAdmin ?? false,
     userMessage: message,
-    defaultProjectId: process.env.BIGQUERY_PROJECT_ID?.trim() || undefined,
-    defaultLocation: process.env.BIGQUERY_LOCATION?.trim() || undefined,
+    defaultProjectId: envBigqueryProject,
+    defaultLocation: envBigqueryLocation,
   });
   const baseWithTenant = tenantContextWired.prompt;
+  // Snapshot of the tenant context for the executive turn log. Captures
+  // both the "did not run" path (skill didn't request it) and the actual
+  // values that ended up in the system prompt.
+  const businessBrainBigquery = (input.businessBrain ?? {}).bigquery;
+  const tenantContextSnapshot: TurnSummaryInput["tenantContext"] =
+    tenantContextWired.result
+      ? {
+          applied: true,
+          mode: tenantContextWired.result.mode,
+          organizationId: tenantContextWired.result.organizationId,
+          mentionedOrgName: tenantContextWired.result.mentionedOrgName,
+          bigqueryProject:
+            businessBrainBigquery?.project_id ?? envBigqueryProject,
+          bigqueryLocation:
+            businessBrainBigquery?.location ?? envBigqueryLocation,
+        }
+      : {
+          applied: false,
+          reason:
+            activeSkill === undefined
+              ? "no active skill"
+              : activeSkill.requiresTenantContext
+                ? "skill requested it but block returned empty"
+                : "skill does not require tenant context",
+        };
   if (tenantContextWired.result) {
     console.log(
       `[tenant-context] mode=${tenantContextWired.result.mode}` +
@@ -1234,6 +1292,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     },
     longTermRetrieval: retrieval,
     memorySearchEnv: { topK: memTopK, matchThreshold: memThresh },
+    skillSelection: skillSelectionSnapshot,
+    tenantContext: tenantContextSnapshot,
     promptSnapshot: buildPromptSnapshotFromMessages(finalState.messages),
     agentDecision: {
       model: CHAT_MODEL_ID,

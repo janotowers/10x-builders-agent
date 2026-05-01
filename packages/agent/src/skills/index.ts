@@ -46,6 +46,7 @@ export {
 export {
   getGlobalSkillRegistry,
   resetGlobalSkillRegistryForTests,
+  getCachedSkillsRegistryRoot,
   buildPlaybookInjection,
   defaultSkillsRoot,
   type GetSkillRegistryOptions,

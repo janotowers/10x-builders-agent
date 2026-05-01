@@ -115,6 +115,44 @@ export interface TurnSummaryInput {
     totalKnown?: number;
   };
 
+  /**
+   * Selección de skill para el turno (V1-B). Si la selección no se
+   * ejecutó (resume HITL, mensaje vacío, etc.) déjalo `undefined`.
+   */
+  skillSelection?: {
+    /** Slug de la skill activa, o `none` cuando ninguna aplicó. */
+    active: string | "none";
+    /** Razón de `none` (`empty_registry`, `model_returned_none`, etc.). */
+    reason?: string;
+    /** Tools restringidas por la skill (solo cuando hay skill activa). */
+    allowedTools?: readonly string[];
+    /** `requires_tenant_context` del frontmatter (solo cuando hay skill). */
+    requiresTenantContext?: boolean;
+    /** Path raíz del registro (para diagnosticar `empty_registry`). */
+    registryRoot?: string;
+    /** Tamaño del registro al momento del turno. */
+    registrySize?: number;
+  };
+
+  /**
+   * Bloque `[Contexto de tenant]` (V1-C-α). `applied=false` cuando la
+   * skill activa no lo requiere o el caller decidió omitirlo.
+   */
+  tenantContext?: {
+    applied: boolean;
+    mode?:
+      | "obligatorio"
+      | "obligatorio_no_configurado"
+      | "admin_cross_tenant"
+      | "admin_organizacion_mencionada";
+    organizationId?: string;
+    mentionedOrgName?: string;
+    bigqueryProject?: string;
+    bigqueryLocation?: string;
+    /** Descripción legible si `applied=false` (p.ej. "skill no requiere"). */
+    reason?: string;
+  };
+
   /** Resultado del retrieval de largo plazo (INJECT). Si no aplica
    *  (cron, resume HITL) dejar `skipped` con la razón. */
   longTermRetrieval?:
@@ -292,6 +330,73 @@ function formatAgentDecisionLines(a: TurnSummaryInput["agentDecision"]): string[
   return lines;
 }
 
+function formatSkillSelectionLines(
+  s: TurnSummaryInput["skillSelection"]
+): string[] {
+  if (!s) {
+    return [
+      "[SKILL SELECTION]",
+      row("active", "n/a (resume HITL, cron sin mensaje, o turno vacío)"),
+    ];
+  }
+  const lines: string[] = ["[SKILL SELECTION]"];
+  if (s.active === "none") {
+    lines.push(row("active", `none  (reason=${s.reason ?? "unknown"})`));
+  } else {
+    lines.push(row("active", s.active));
+    if (typeof s.requiresTenantContext === "boolean") {
+      lines.push(
+        row("requires_tenant", s.requiresTenantContext ? "true" : "false")
+      );
+    }
+    if (s.allowedTools && s.allowedTools.length > 0) {
+      lines.push(row("allowed_tools", s.allowedTools.join(", ")));
+    }
+  }
+  if (s.registryRoot) {
+    lines.push(
+      row(
+        "registry",
+        `root=${s.registryRoot}` +
+          (typeof s.registrySize === "number" ? `  size=${s.registrySize}` : "")
+      )
+    );
+  } else if (typeof s.registrySize === "number") {
+    lines.push(row("registry", `size=${s.registrySize}`));
+  }
+  return lines;
+}
+
+function formatTenantContextLines(
+  t: TurnSummaryInput["tenantContext"]
+): string[] {
+  if (!t) {
+    return ["[TENANT CONTEXT]", row("applied", "n/a")];
+  }
+  const lines: string[] = ["[TENANT CONTEXT]"];
+  if (!t.applied) {
+    lines.push(row("applied", `false  (${t.reason ?? "skill no requiere"})`));
+    return lines;
+  }
+  lines.push(row("applied", "true"));
+  if (t.mode) lines.push(row("mode", t.mode));
+  if (t.organizationId) lines.push(row("organization_id", t.organizationId));
+  if (t.mentionedOrgName) {
+    lines.push(row("mentioned_org", `"${t.mentionedOrgName}"`));
+  }
+  if (t.bigqueryProject || t.bigqueryLocation) {
+    lines.push(
+      row(
+        "bigquery",
+        `project=${t.bigqueryProject ?? "(none)"}  location=${
+          t.bigqueryLocation ?? "(none)"
+        }`
+      )
+    );
+  }
+  return lines;
+}
+
 function formatFlushEvalLines(f: TurnSummaryInput["flushEval"]): string[] {
   if (!f) {
     return [
@@ -378,6 +483,16 @@ function buildBlock(input: TurnSummaryInput): string {
   );
   lines.push(row("integrations", integrations));
   lines.push(row("tool_settings", tools));
+
+  lines.push("");
+  for (const line of formatSkillSelectionLines(input.skillSelection)) {
+    lines.push(line);
+  }
+
+  lines.push("");
+  for (const line of formatTenantContextLines(input.tenantContext)) {
+    lines.push(line);
+  }
 
   lines.push("");
   for (const line of formatPromptSnapshotSection(input.promptSnapshot)) {

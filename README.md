@@ -122,6 +122,8 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `BIGQUERY_LOCATION` | *(Opcional)* Ubicación del job (`US`, `EU`, región concreta). Mejora determinismo con datasets multi-región. |
    | `GOOGLE_APPLICATION_CREDENTIALS` | *(Opcional)* Ruta **absoluta** al JSON de cuenta de servicio con lectura BigQuery. Recomendado en local. |
    | `GOOGLE_APPLICATION_CREDENTIALS_JSON` | *(Opcional)* Mismo JSON en **una línea**; alternativa a la ruta (típico en serverless). |
+   | `SKILLS_ROOT_DIR` | *(Opcional)* Ruta absoluta al monorepo cuando el auto-detector no encuentre `skills/global/` (caso típico: bundlers que reescriben `import.meta.url`). Default: auto. |
+   | `CHECKPOINTER_DNS_ORDER` | *(Opcional)* `ipv4first` (default) \| `verbatim` \| `ipv6first` \| `off`. Fuerza el orden de resolución DNS al conectar al pooler de Supabase. Útil en redes que no rutean IPv6 a AWS y producen `ETIMEDOUT` al puerto 6543/5432. |
 
 Referencia de nombres: [apps/web/.env.example](apps/web/.env.example). Guía detallada (plantilla para `.env.local`, permisos IAM, encadenamiento con `business_brain`): [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md).
 
@@ -228,5 +230,7 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 - **Telegram no responde**: webhook debe ser HTTPS; token y secreto correctos; visita de nuevo `/api/telegram/setup` si cambias la URL pública.
 - **`/api/telegram/setup` me manda a login**: inicia sesión en el mismo origen (ngrok o localhost) y vuelve a abrir la URL; solo el path `/api/telegram/webhook` es público para Telegram.
 - **BigQuery devuelve `not_configured`**: revisa `BIGQUERY_PROJECT_ID` y credenciales en **`apps/web/.env.local`**, reinicia `npm run dev`, y la guía [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md).
+- **Skill `company-data` nunca se activa (`[skills] active=none reason=empty_registry`)**: el agente no encontró `skills/global/`. Revisa el log de arranque `[skills] registry loaded root=… count=…`. Si el `root` no apunta al repo, define `SKILLS_ROOT_DIR=C:\ruta\al\repo` en `.env.local` y reinicia.
+- **`[checkpointer] PostgresSaver failed to connect ETIMEDOUT … :6543`**: red local sin ruta IPv6 al pooler de Supabase. La app aplica `ipv4first` por defecto; si sigue fallando, ejecuta `powershell -ExecutionPolicy Bypass -File scripts\diagnose-supabase.ps1` para confirmar y prueba el host IPv4 del pooler (Supavisor) en `DATABASE_URL`.
 
 Si quieres, el siguiente paso natural es desplegar **Vercel** (o similar) para `apps/web`, definir las mismas variables de entorno en el panel del proveedor y usar la URL de producción en Supabase y en el webhook de Telegram.

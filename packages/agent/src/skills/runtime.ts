@@ -9,23 +9,64 @@
  * every subsequent turn. Use `resetGlobalSkillRegistryForTests()` to
  * force a reload from inside selftests.
  */
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadGlobalSkillRegistry } from "./registry";
 import type { ResolvedSkill, SkillRegistry } from "./types";
 
 let cached: Promise<SkillRegistry> | null = null;
 let cachedRoot: string | null = null;
+let lastResolvedRootLogged: string | null = null;
 
 /**
  * Resolve the path of the repo root (or wherever the `skills/` directory
- * lives). The default walks up from this file's location to the workspace
- * root; tests override `rootDirOverride` to point at a temp directory.
+ * lives). The default tries, in order:
+ *
+ *   1. `SKILLS_ROOT_DIR` env (absolute or relative to `process.cwd()`).
+ *   2. Walk up from this file's URL using `import.meta.url` (works under
+ *      tsx/ts-node and ESM-bundled Next/Turbopack).
+ *   3. Walk up from `__dirname` (only defined under CommonJS).
+ *   4. Walk up from `process.cwd()` looking for a `skills/global` folder
+ *      (handles cases where Next/Turbopack rewrote the file URL).
+ *
+ * The first candidate that contains `skills/global` wins. Tests override
+ * `rootDirOverride` to point at a temp directory.
  */
 export function defaultSkillsRoot(): string {
-  // packages/agent/src/skills -> packages/agent/src -> packages/agent ->
-  // packages -> <repo root>. We need <repo root> because the loader expects
-  // <root>/skills/global/<slug>/SKILL.md.
-  return join(__dirname, "..", "..", "..", "..");
+  const envRoot = process.env.SKILLS_ROOT_DIR?.trim();
+  if (envRoot) {
+    return isAbsolute(envRoot) ? envRoot : resolve(process.cwd(), envRoot);
+  }
+
+  const candidates: string[] = [];
+
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    candidates.push(join(here, "..", "..", "..", ".."));
+  } catch {
+    // import.meta.url unavailable (CJS host); fall through.
+  }
+
+  if (typeof __dirname === "string" && __dirname.length > 0) {
+    candidates.push(join(__dirname, "..", "..", "..", ".."));
+  }
+
+  let cwd = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    candidates.push(cwd);
+    const parent = dirname(cwd);
+    if (parent === cwd) break;
+    cwd = parent;
+  }
+
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, "skills", "global"))) {
+      return candidate;
+    }
+  }
+
+  return candidates[0] ?? process.cwd();
 }
 
 export interface GetSkillRegistryOptions {
@@ -53,12 +94,23 @@ export async function getGlobalSkillRegistry(
           `[skills] failed to parse skill at ${err.sourcePath}: ${err.message}`
         );
       },
-    }).catch((err) => {
-      // Bust the cache on hard failure so a subsequent turn can retry.
-      cached = null;
-      cachedRoot = null;
-      throw err;
-    });
+    })
+      .then((reg) => {
+        if (lastResolvedRootLogged !== root) {
+          lastResolvedRootLogged = root;
+          console.log(
+            `[skills] registry loaded root=${root} count=${reg.size}`
+          );
+        }
+        return reg;
+      })
+      .catch((err) => {
+        // Bust the cache on hard failure so a subsequent turn can retry.
+        cached = null;
+        cachedRoot = null;
+        lastResolvedRootLogged = null;
+        throw err;
+      });
   }
   return cached;
 }
@@ -67,6 +119,16 @@ export async function getGlobalSkillRegistry(
 export function resetGlobalSkillRegistryForTests(): void {
   cached = null;
   cachedRoot = null;
+  lastResolvedRootLogged = null;
+}
+
+/**
+ * Last `rootDir` used by `getGlobalSkillRegistry`. Useful for diagnostics
+ * (turn log, health endpoints) so we can tell whether the loader pointed
+ * at the right directory. Returns `null` until the first registry load.
+ */
+export function getCachedSkillsRegistryRoot(): string | null {
+  return cachedRoot;
 }
 
 /**
