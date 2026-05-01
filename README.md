@@ -58,6 +58,12 @@ Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya 
    Configura `CRON_SECRET` en `apps/web/.env.local` y el job en Supabase según [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md).
    Con esto habilitas tanto **programar** tareas (`schedule_task`) como **listar/pausar/reanudar** tareas existentes (`manage_scheduled_tasks`) desde chat, más la política de reintentos (hasta 3 intentos con 2 min de gap antes de auto-pausar y avisar por Telegram).
 
+7. **Business Brain + columnas de tenant (Skills `company-data`, bloque `[Contexto de tenant]`):** ejecuta en el **SQL Editor** el contenido de:
+
+   `packages/db/supabase/migrations/00009_business_brain.sql`
+
+   Añade `profiles.business_brain` (JSONB) y asegura `profiles.is_ungga_admin`. Después, rellena `business_brain.identity.organization_id` (y opcionalmente `bigquery`) por usuario vía SQL o la UI cuando exista (ver [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md)).
+
 ---
 
 ## Paso 4 — Configurar autenticación (email)
@@ -112,8 +118,24 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `TELEGRAM_BOT_TOKEN` | *(Opcional)* Token del bot |
    | `TELEGRAM_WEBHOOK_SECRET` | *(Opcional)* Secreto que Telegram enviará en cabecera; debe coincidir con el configurado al registrar el webhook |
    | `TELEGRAM_WEBHOOK_BASE_URL` | *(Opcional)* URL HTTPS pública para `setWebhook` (p. ej. ngrok); a veces innecesaria si el proxy envía `x-forwarded-host` |
+   | `BIGQUERY_PROJECT_ID` | *(Opcional)* Proyecto GCP por defecto para `bigquery_run_query` (p. ej. `ungga-full`). Sin esto, la herramienta responde `not_configured`. |
+   | `BIGQUERY_LOCATION` | *(Opcional)* Ubicación del job (`US`, `EU`, región concreta). Mejora determinismo con datasets multi-región. |
+   | `GOOGLE_APPLICATION_CREDENTIALS` | *(Opcional)* Ruta **absoluta** al JSON de cuenta de servicio con lectura BigQuery. Recomendado en local. |
+   | `GOOGLE_APPLICATION_CREDENTIALS_JSON` | *(Opcional)* Mismo JSON en **una línea**; alternativa a la ruta (típico en serverless). |
 
-Referencia de nombres: [apps/web/.env.example](apps/web/.env.example).
+Referencia de nombres: [apps/web/.env.example](apps/web/.env.example). Guía detallada (plantilla para `.env.local`, permisos IAM, encadenamiento con `business_brain`): [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md).
+
+---
+
+## BigQuery y skill `company-data` (opcional)
+
+Para preguntas de negocio contra el almacén BigQuery de Ungga:
+
+1. Variables en **`apps/web/.env.local`** — ver tabla arriba y [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md).
+2. Herramienta **`bigquery_run_query`** habilitada en Ajustes para tu usuario.
+3. Migración **`00009_business_brain.sql`** aplicada en Supabase y, para usuarios **no** admin, `business_brain.identity.organization_id` relleno con el id real de la inmobiliaria en BigQuery (`users_light.organization_id`).
+
+Sin (1), el modelo recibe `not_configured`. Sin (3), el bloque `[Contexto de tenant]` puede quedar en modo “inmobiliaria no configurada” para usuarios regulares.
 
 ---
 
@@ -193,6 +215,7 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 - [docs/architecture.md](docs/architecture.md) — arquitectura técnica del MVP.
 - [docs/plan.md](docs/plan.md) — fases y decisiones de implementación.
 - [docs/business-brain-evolution-roadmap.md](docs/business-brain-evolution-roadmap.md) — evolución hacia Business Brain (Skills, Heartbeat, contexto por cuenta); roadmap producto + ingeniería.
+- [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md) — variables `BIGQUERY_*` y credenciales GCP para `bigquery_run_query` en local y producción.
 - [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) — despliegue y prueba del cron de tareas programadas (`pg_cron`, ngrok, `CRON_SECRET`).
 
 ---
@@ -204,5 +227,6 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 - **Chat sin respuesta / 500 en `/api/chat`**: `OPENROUTER_API_KEY`, cuota en OpenRouter o modelo en `model.ts`.
 - **Telegram no responde**: webhook debe ser HTTPS; token y secreto correctos; visita de nuevo `/api/telegram/setup` si cambias la URL pública.
 - **`/api/telegram/setup` me manda a login**: inicia sesión en el mismo origen (ngrok o localhost) y vuelve a abrir la URL; solo el path `/api/telegram/webhook` es público para Telegram.
+- **BigQuery devuelve `not_configured`**: revisa `BIGQUERY_PROJECT_ID` y credenciales en **`apps/web/.env.local`**, reinicia `npm run dev`, y la guía [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md).
 
 Si quieres, el siguiente paso natural es desplegar **Vercel** (o similar) para `apps/web`, definir las mismas variables de entorno en el panel del proveedor y usar la URL de producción en Supabase y en el webhook de Telegram.
