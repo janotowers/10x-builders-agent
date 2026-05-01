@@ -49,7 +49,9 @@ export async function POST(request: Request) {
 
     const { data: profile } = await supabase
       .from("profiles")
-      .select("agent_system_prompt, timezone, email, phone")
+      .select(
+        "agent_system_prompt, timezone, email, phone, business_brain, is_ungga_admin"
+      )
       .eq("id", user.id)
       .single();
 
@@ -126,6 +128,9 @@ export async function POST(request: Request) {
       userTimezone: (profile?.timezone as string) ?? undefined,
       userEmail: (profile?.email as string | null) ?? null,
       userPhone: (profile?.phone as string | null) ?? null,
+      businessBrain:
+        (profile?.business_brain as Record<string, unknown> | null) ?? {},
+      isUnggaAdmin: (profile?.is_ungga_admin as boolean | null) ?? false,
       channel: "web",
       googleCalendarAccessToken,
     });

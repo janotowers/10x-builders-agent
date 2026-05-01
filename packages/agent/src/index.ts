@@ -71,3 +71,14 @@ export type {
   ReadSkillReferenceArgs,
   ReadSkillReferenceResult,
 } from "./tools/skill-references";
+
+// Business Brain — V1-C-α: tenant context block injection.
+export {
+  buildTenantContextBlock,
+  appendTenantContextBlock,
+} from "./business-brain/tenant-context";
+export type {
+  BuildTenantContextArgs,
+  TenantContextMode,
+  TenantContextResult,
+} from "./business-brain/tenant-context";

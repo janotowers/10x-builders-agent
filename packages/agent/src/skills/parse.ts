@@ -61,6 +61,7 @@ const FrontmatterSchema = z
     allowed_tools: z.array(z.string().min(1)).default([]),
     includes: z.array(z.string().min(1)).default([]),
     guardrails: z.string().min(1).optional(),
+    requires_tenant_context: z.boolean().default(false),
   })
   .strict();
 
@@ -186,6 +187,7 @@ function parseSkillSourceImpl(
     allowedTools: Object.freeze([...result.data.allowed_tools]),
     includes: Object.freeze([...result.data.includes]),
     guardrails: result.data.guardrails ?? null,
+    requiresTenantContext: result.data.requires_tenant_context,
     sourcePath,
   };
 

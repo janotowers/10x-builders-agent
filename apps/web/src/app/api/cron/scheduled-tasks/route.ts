@@ -179,6 +179,8 @@ async function runTask(
       userTimezone: profile.timezone,
       userEmail: profile.email,
       userPhone: profile.phone,
+      businessBrain: profile.business_brain ?? {},
+      isUnggaAdmin: profile.is_ungga_admin ?? false,
       channel: "cron",
       googleCalendarAccessToken,
       autoApproveTools: true,

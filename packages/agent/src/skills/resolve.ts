@@ -63,6 +63,7 @@ export async function resolveSkill(
   const allowedTools: string[] = [];
   const seenTools = new Set<string>();
   const sections: string[] = [];
+  let requiresTenantContext = false;
 
   for (const slug of order) {
     const rec = registry.get(slug);
@@ -78,6 +79,9 @@ export async function resolveSkill(
         seenTools.add(tool);
         allowedTools.push(tool);
       }
+    }
+    if (rec.metadata.requiresTenantContext) {
+      requiresTenantContext = true;
     }
     const body = (await rec.loadBody()).trim();
     if (body) {
@@ -106,6 +110,7 @@ export async function resolveSkill(
     body: merged,
     allowedTools: Object.freeze(allowedTools),
     estimatedTokens: tokens,
+    requiresTenantContext,
   };
 }
 

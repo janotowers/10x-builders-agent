@@ -22,6 +22,7 @@ import type {
   UserToolSetting,
   UserIntegration,
   PendingConfirmation,
+  BusinessBrain,
 } from "@agents/types";
 import {
   CHAT_MODEL_ID,
@@ -38,6 +39,7 @@ import {
 } from "./skills/runtime";
 import { selectSkillForTurn } from "./skills/select";
 import type { ResolvedSkill } from "./skills/types";
+import { appendTenantContextBlock } from "./business-brain/tenant-context";
 import { toolRequiresConfirmation } from "./tools/catalog";
 import { userMessageIsScheduleIntent } from "./tools/schedule-intent";
 import { getCheckpointer } from "./checkpointer";
@@ -85,6 +87,18 @@ export interface AgentInput {
    * the scheduling, so inner tools should not require a second confirmation).
    */
   autoApproveTools?: boolean;
+  /**
+   * V1-C-α: Business Brain del perfil. Se materializa en el bloque
+   * `[Contexto de tenant]` cuando la skill activa pide
+   * `requires_tenant_context: true`. Si no se provee, se asume `{}` (modo
+   * "no configurado" para usuarios regulares).
+   */
+  businessBrain?: BusinessBrain;
+  /**
+   * V1-C-α: TRUE para staff Ungga (cross-tenant). Cambia el modo del
+   * bloque de contexto de OBLIGATORIO → ADMIN UNGGA.
+   */
+  isUnggaAdmin?: boolean;
 }
 
 export interface AgentOutput {
@@ -595,6 +609,32 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     ? baseSystemPrompt + buildPlaybookInjection(activeSkill)
     : baseSystemPrompt;
 
+  // V1-C-α: tenant context block. Solo se inyecta si la skill activa pide
+  // `requires_tenant_context: true` Y hay business brain o admin flag —
+  // así, conversaciones sin skill o con skills que no tocan datos
+  // multi-tenant no pagan el costo del bloque.
+  const tenantContextWired = appendTenantContextBlock(baseWithSkill, {
+    requiresTenantContext: activeSkill?.requiresTenantContext ?? false,
+    businessBrain: input.businessBrain ?? {},
+    isUnggaAdmin: input.isUnggaAdmin ?? false,
+    userMessage: message,
+    defaultProjectId: process.env.BIGQUERY_PROJECT_ID?.trim() || undefined,
+    defaultLocation: process.env.BIGQUERY_LOCATION?.trim() || undefined,
+  });
+  const baseWithTenant = tenantContextWired.prompt;
+  if (tenantContextWired.result) {
+    console.log(
+      `[tenant-context] mode=${tenantContextWired.result.mode}` +
+        (tenantContextWired.result.organizationId
+          ? ` org_id=${tenantContextWired.result.organizationId}`
+          : "") +
+        (tenantContextWired.result.mentionedOrgName
+          ? ` mentioned="${tenantContextWired.result.mentionedOrgName}"`
+          : "") +
+        ` skill=${activeSkill?.rootName ?? "none"} session=${sessionId}`
+    );
+  }
+
   let effectiveSystemPrompt = appendManageScheduledTasksRules(
     appendScheduleTaskRules(
       appendFileToolsRules(
@@ -602,7 +642,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           appendGithubSocialRules(
             appendBashRules(
               appendGithubCreateToolRules(
-                baseWithSkill,
+                baseWithTenant,
                 lcTools as Array<{ name?: string }>
               ),
               lcTools as Array<{ name?: string }>

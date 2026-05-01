@@ -386,9 +386,9 @@ Document these as guidance for whoever writes the first global skills (not deliv
 
 The Ungga BigQuery domain knowledge (DDL of 7 `_light` views, join hints, vocabulary, ~25 few-shots) is ~13–15k tokens of curated material — well over the 5k-token skill body cap. Rather than splitting this into many narrow skills (which Anthropic explicitly discourages), `company-data` follows the Anthropic-recommended **progressive-disclosure** pattern: a small SKILL.md acts as an **index + procedure**, and the agent loads exactly the references it needs per question via `read_skill_reference`. Average turn now consumes only the SKILL.md (~2k tokens) plus 1–3 reference files (~3–5k tokens each), instead of carrying everything every turn.
 
-#### Tenant filter — design (matures in V1-C)
+#### Tenant filter — design (delivered in V1-C-α)
 
-The skill's body delegates the *“is this OBLIGATORIO or ADMIN UNGGA mode?”* decision to a `[Contexto de tenant]` block injected by `runAgent`. In V1-B the block is **not yet emitted** (no Business Brain table) so the skill defaults to **OBLIGATORIO with a placeholder** — calls fail closed if `organization_id` is unknown. V1-C wires the actual injector once `profiles.business_brain` and `profiles.is_ungga_admin` exist (see below).
+The skill's body delegates the *“is this OBLIGATORIO or ADMIN UNGGA mode?”* decision to a `[Contexto de tenant]` block injected by `runAgent` whenever the active skill declares `requires_tenant_context: true`. As of V1-C-α (2026-04-30) the block is wired end-to-end against `profiles.business_brain` and `profiles.is_ungga_admin` and exposes four modes (see § V1-C-α below). Skills without that flag don't pay the prompt cost.
 
 **Global set (initial — mixed business + personal + shared):**
 
@@ -441,13 +441,39 @@ Ungga staff (you) need to query data **across** all tenants for support and prod
 
 The skill's body and references read the block on every turn; if the block is missing, the skill defaults to OBLIGATORIO and refuses cross-tenant queries — fail-closed.
 
+V1-C ships in two sprints: **V1-C-α** (foundation: DB column + tenant context block injected to the system prompt) and **V1-C-β** (Settings UI for org binding + read-only flags).
+
+#### V1-C-α — foundation (DELIVERED 2026-04-30)
+
+The *Business Brain* lives as a `JSONB` column on `profiles`. Its first user is `runAgent`, which reads it pre-graph and (when the active skill declares `requires_tenant_context: true`) injects a `[Contexto de tenant]` block into the system prompt. The block has three modes:
+
+| Mode | When | What it tells the model |
+|------|------|-------------------------|
+| `obligatorio` | Regular user with `business_brain.identity.organization_id` set | TODO query MUST filter by `u.organization_id = @organization_id`; never disclose data of other agencies. |
+| `obligatorio_no_configurado` | Regular user with empty/missing identity | Halt: ask the user to configure their inmobiliaria in Settings before any BQ query. |
+| `admin_cross_tenant` | `is_ungga_admin = true`, no agency named in the turn | Default cross-tenant; ambiguous → ask `"¿de qué inmobiliaria(s) o de todas?"`. |
+| `admin_organizacion_mencionada` | `is_ungga_admin = true`, agency named in the turn | Resolve `org_name → organization_id` with the helper in `references/conventions.md`; if multiple matches, list and confirm. |
+
+| Step | Action | Status |
+|------|--------|--------|
+| C-α-1 | SQL migration `00009_business_brain.sql`: `alter table profiles add column business_brain jsonb not null default '{}'::jsonb, add column is_ungga_admin boolean not null default false;` (idempotent — `is_ungga_admin` already added manually by Ungga before V1-C; the migration re-asserts it). | DONE |
+| C-α-2 | Types `BusinessBrain`, `BusinessBrainIdentity`, `BusinessBrainBigQuery`, `BusinessBrainHeartbeat` in `@agents/types`; all slots optional. `Profile` now exposes `business_brain` and `is_ungga_admin`. | DONE |
+| C-α-3 | DB helpers `getBusinessBrain(db, userId)` (tolerant: returns `{}` if column/row missing) and `updateBusinessBrain(db, userId, patch)` with deep-merge level-2. | DONE |
+| C-α-4 | Module `packages/agent/src/business-brain/tenant-context.ts` with `buildTenantContextBlock` + `appendTenantContextBlock`; tagged-result API (`mode`, `organizationId`, `mentionedOrgName`). 14-case selftest covering the 3 modes + edge-cases (no identity, defaults from env, false-positive guards on word "inmobiliaria"). | DONE |
+| C-α-5 | Skill frontmatter contract extended: optional boolean `requires_tenant_context` (default `false`). The frontmatter parser now recognizes bare `true`/`false` as actual booleans. `ResolvedSkill.requiresTenantContext` ORs across composed includes. `company-data` SKILL.md flips it to `true`. | DONE |
+| C-α-6 | `runAgent` wires it: reads `profile.business_brain` + `profile.is_ungga_admin` (loaded by every entry route — chat, confirm, telegram, cron) and concatenates the block to `effectiveSystemPrompt` only when the active skill demands it. Discrete log `[tenant-context] mode=… org_id=… skill=… session=…` per turn. Defaults `BIGQUERY_PROJECT_ID` / `BIGQUERY_LOCATION` from env when the per-tenant `bigquery` slot is empty. | DONE |
+| C-α-7 | All `runAgent` callers updated to load and forward `business_brain` + `is_ungga_admin`: `/api/chat`, `/api/chat/confirm`, `/api/cron/scheduled-tasks`, `/api/telegram/webhook` (both interactive and HITL-resume paths). | DONE |
+
+**Verification:** workspace `type-check` clean; **18 agent selftests, 195 cases pass** (+14 new for `tenant-context`, +2 new for `parse` covering the boolean frontmatter). End-to-end: in MODO OBLIGATORIO with empty BB the agent refuses BQ queries and points the user to Settings; in ADMIN UNGGA mode it switches between cross-tenant and helper-resolved depending on whether the turn names an agency.
+
+#### V1-C-β — Settings UI for the Business Brain (NEXT)
+
 | Step | Action |
 |------|--------|
-| C1 | Migration: `alter table profiles add column business_brain jsonb default '{}'::jsonb not null, add column is_ungga_admin boolean default false not null;` (idempotent shape via `coalesce` in TS reads). RLS already covers `profiles`. |
-| C2 | TS schema (Zod) for `business_brain` with the slots above; helper `getBusinessBrain(db, userId)` that fills missing slots with defaults; helper `isUnggaAdmin(db, userId)` |
-| C3 | Bundled **`heartbeat/default-checklist.md`** in repo for **lazy seeding** when user clicks **Enable Heartbeat** / **Reset to default** (no broad migration write) |
-| C4 | System-prompt assembly: a new `appendBusinessBrainBlock()` helper **plus** `appendTenantContextBlock()` helper inserted into the existing chain in `runAgent` (before skill playbook), gated to non-empty content. The tenant block branches on `is_ungga_admin` and emits the OBLIGATORIO / ADMIN UNGGA wording above. |
-| C5 | Settings UI (V1-E hands off here): edit identity/voice/context/operating_rules/heartbeat fields, plus checklist markdown editor + enable + interval; **`organization_id` and `dataset_allowlist`** under a "BigQuery binding" subsection (read-only display of `is_ungga_admin`, only writable via SQL by Ungga staff). |
+| C-β-1 | Bundled **`heartbeat/default-checklist.md`** in repo for **lazy seeding** when user clicks **Enable Heartbeat** / **Reset to default** (no broad migration write). |
+| C-β-2 | Settings UI for `business_brain.identity` (`organization_id`, `org_name`, `country`) and `business_brain.bigquery` (`project_id`, `location`, optional `dataset_allowlist`). Organization fields are required before the agent runs any BQ query in MODO OBLIGATORIO. |
+| C-β-3 | Read-only display of `is_ungga_admin` in Settings; only Ungga staff can flip it via SQL or a forthcoming admin-only endpoint (out of scope for V1-C). |
+| C-β-4 | Optional: a "Test connection" button that runs `bigquery_run_query` with a trivial `SELECT 1` to confirm the binding before the user starts asking real questions. |
 
 ### V1-D — Heartbeat cron (**DB-backed checklist**)
 
@@ -483,7 +509,7 @@ The skill's body and references read the block on every turn; if the block is mi
 |-----------|--------|-----------------|
 | **M1** | V1-A | Playbooks + **composites** load reliably |
 | **M2** | V1-B | Chat + **BigQuery-backed** answers via skill |
-| **M3** | V1-C | Org context + Heartbeat prefs in UI/DB |
+| **M3** | V1-C | Org context (DB column + tenant block in V1-C-α; Settings UI in V1-C-β) + Heartbeat prefs in UI/DB |
 | **M4** | V1-D | **Checklist-driven** runs logged; not just “briefing” |
 | **M5** | V1-E | Users **see and toggle** skills and Heartbeat |
 

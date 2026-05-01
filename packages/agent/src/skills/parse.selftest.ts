@@ -90,6 +90,26 @@ function testDefaults(): void {
   assert.deepEqual([...rec.metadata.allowedTools], []);
   assert.deepEqual([...rec.metadata.includes], []);
   assert.equal(rec.metadata.guardrails, null);
+  // V1-C-α: requires_tenant_context defaults to false.
+  assert.equal(rec.metadata.requiresTenantContext, false);
+}
+
+function testRequiresTenantContextTrue(): void {
+  const src = makeFront("requires_tenant_context: true");
+  const rec = parseSkillSource(src, FIXTURE_PATH);
+  assert.equal(rec.metadata.requiresTenantContext, true);
+}
+
+function testRequiresTenantContextRejectsString(): void {
+  expectThrows(
+    () =>
+      parseSkillSource(
+        makeFront('requires_tenant_context: "yes"'),
+        FIXTURE_PATH
+      ),
+    /requires_tenant_context/,
+    "requires_tenant_context rejects string"
+  );
 }
 
 function testInlineArray(): void {
@@ -252,6 +272,8 @@ function testRelativePath(): void {
 async function main(): Promise<void> {
   testHappyPath();
   testDefaults();
+  testRequiresTenantContextTrue();
+  testRequiresTenantContextRejectsString();
   testInlineArray();
   await testLazyBody();
   testInvalidNameRegex();
@@ -268,7 +290,7 @@ async function main(): Promise<void> {
   testCRLF();
   testCommentsSkipped();
   testRelativePath();
-  console.log("skills/parse.selftest: all 18 cases passed");
+  console.log("skills/parse.selftest: all 20 cases passed");
 }
 
 main().catch((e) => {

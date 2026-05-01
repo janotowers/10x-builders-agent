@@ -23,6 +23,14 @@ export interface SkillMetadata {
   readonly allowedTools: readonly string[];
   readonly includes: readonly string[];
   readonly guardrails: string | null;
+  /**
+   * V1-C-α: cuando `true`, `runAgent` materializa el bloque
+   * `[Contexto de tenant]` y lo concatena al system prompt para esta
+   * skill. Frontmatter optativo (`requires_tenant_context: true|false`);
+   * por defecto `false` — solo skills que tocan datos por-tenant lo
+   * necesitan (e.g. `company-data`).
+   */
+  readonly requiresTenantContext: boolean;
   /** Absolute path to the SKILL.md file the metadata was read from. */
   readonly sourcePath: string;
 }
@@ -55,6 +63,10 @@ export interface ResolvedSkill {
   readonly allowedTools: readonly string[];
   /** Estimated tokens in `body` (chars / 4 heuristic, matching compaction_node). */
   readonly estimatedTokens: number;
+  /** V1-C-α: TRUE si CUALQUIERA de las skills compuestas pide tenant context.
+   *  El root manda; un include con `requires_tenant_context: true` también
+   *  lo activa, porque el include puede ser la skill que toque BigQuery. */
+  readonly requiresTenantContext: boolean;
 }
 
 /**

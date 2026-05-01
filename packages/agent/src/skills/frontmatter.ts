@@ -62,11 +62,16 @@ export function splitFrontmatter(raw: string): SplitResult {
   return { frontmatter, body, hasFrontmatter: true };
 }
 
-type RawValue = string | string[];
+type RawValue = string | string[] | boolean;
 
 /**
  * Parse the YAML-ish frontmatter block into a flat record. The caller
  * (`parse.ts`) is responsible for schema validation via Zod.
+ *
+ * Scalar coercion: bare `true` / `false` (unquoted) are returned as
+ * actual booleans so Zod fields declared as `z.boolean()` can read them
+ * without an extra `z.preprocess`. Quoted forms (`"true"`, `'false'`)
+ * are kept as strings, matching YAML 1.2 semantics.
  */
 export function parseFrontmatterBlock(
   source: string
@@ -146,7 +151,7 @@ function stripInlineComment(s: string): string {
   return s;
 }
 
-function parseScalar(raw: string, lineNo: number): string {
+function parseScalar(raw: string, lineNo: number): string | boolean {
   if (raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2) {
     return raw
       .slice(1, -1)
@@ -160,6 +165,10 @@ function parseScalar(raw: string, lineNo: number): string {
   if (raw.startsWith('"') || raw.startsWith("'")) {
     throw new FrontmatterError("unterminated quoted string", lineNo);
   }
+  // Bare booleans (YAML 1.2 lowercase form). Quoted forms above stayed
+  // strings, so authors who really need a literal "true" still can.
+  if (raw === "true") return true;
+  if (raw === "false") return false;
   return raw;
 }
 
@@ -186,7 +195,7 @@ function parseInlineArray(raw: string, lineNo: number): string[] {
       inDouble = !inDouble;
       buf += ch;
     } else if (ch === "," && !inSingle && !inDouble) {
-      items.push(parseScalar(buf.trim(), lineNo));
+      items.push(scalarAsString(parseScalar(buf.trim(), lineNo)));
       buf = "";
     } else {
       buf += ch;
@@ -196,8 +205,15 @@ function parseInlineArray(raw: string, lineNo: number): string[] {
     throw new FrontmatterError("unterminated quoted string in array", lineNo);
   }
   const last = buf.trim();
-  if (last !== "") items.push(parseScalar(last, lineNo));
+  if (last !== "") items.push(scalarAsString(parseScalar(last, lineNo)));
   return items;
+}
+
+/** Coerce a parsed scalar back to string for array contexts. Bare booleans
+ *  inside arrays are uncommon and ambiguous; we render them as "true"/"false"
+ *  so Zod schemas declared as `array(z.string())` don't throw. */
+function scalarAsString(s: string | boolean): string {
+  return typeof s === "boolean" ? String(s) : s;
 }
 
 interface BlockSlice {
@@ -243,7 +259,7 @@ function parseBlockArray(lines: string[], startLineNo: number): string[] {
       );
     }
     const item = line === "-" ? "" : line.slice(2).trim();
-    items.push(parseScalar(item, startLineNo + k));
+    items.push(scalarAsString(parseScalar(item, startLineNo + k)));
   }
   return items;
 }
