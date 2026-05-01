@@ -24,7 +24,7 @@ PK: `document_id` STRING.
 | `country_user` | STRING | País del usuario. |
 | `created_time` | TIMESTAMP | Fecha de alta de la cuenta. |
 | `is_test` | BOOL | **Excluir** de métricas: `WHERE (is_test IS NULL OR is_test = FALSE)`. |
-| `gga` | BOOL | Flag interno; no usar en métricas externas. |
+| `gga` | BOOL | **MarketMeet flag** — `gga = TRUE` ⇒ el usuario pertenece al sub-producto MarketMeet. Útil para segmentar reportes (no es un flag interno aislado). |
 | `uid` | STRING | ID alterno. |
 | `web` | STRING | Sitio web (no PII). |
 | `asked_properties` | INT64 | Contador propio del producto. |
@@ -154,8 +154,8 @@ PK: `document_id` STRING — **es el `phone_number` del Gu** (no un id arbitrari
 
 | Column | Type | Notes |
 |---|---|---|
-| `document_id` | STRING | Igual al `phone_number` del Gu en `gu_numbers_light`. |
-| `document_name` | STRING (PII parcial) | **Ruta Firestore** que codifica la conversación. Formato: `projects/ungga-full/databases/(default)/documents/leads/<lead_id>/wsp_messeges/<gu_phone>`. **Extraer `lead_id` con `REGEXP_EXTRACT(document_name, r'/leads/([^/]+)/wsp_messeges/')`** — esto matchea directamente `leads_light.lead_id`. |
-| `author` | STRING | Tipos: `'gu'` (sistema), `'user'` (humano), MSISDN, o etiqueta. Comparar con `LOWER(TRIM(author))`. Para empates con `gu_numbers`, normalizar como teléfono. |
+| `document_id` | STRING | Igual al `phone_number` del Gu en `gu_numbers_light`. Para empatar mensajes con un Gu específico: `m.document_id = g.phone_number` (sin REPLACE). |
+| `document_name` | STRING (PII parcial) | **Ruta Firestore** que codifica la conversación. **Coexisten dos formatos**:<br/>• **Formato viejo (dominante en histórico)**: `…/leads/<lead_phone><gu_phone><user_phone>/wsp_messeges/<msg_id>` — los teléfonos van concatenados como dígitos puros (en MX 13+13+13=39 dígitos; en otros países la longitud es distinta).<br/>• **Formato nuevo**: `…/leads/<lead_id>/wsp_messeges/<gu_phone>` — `<lead_id>` es la PK alfanumérica de `mongo_data.leads_light`.<br/>**Extracción country-agnostic**: `REGEXP_EXTRACT(document_name, r'/leads/([^/]+)/wsp_messeges/')` devuelve el "lead path id" (39 dígitos en formato viejo, lead_id en formato nuevo). El JOIN robusto contra `leads_light` cubre AMBOS formatos via `lead_id` directo o `STARTS_WITH(path, normalized_phone)` — ver `joins.md`. **Nunca uses `SUBSTR(...,1,13)`**: esa heurística asume teléfonos MX (13 dígitos) y se rompe en otros países. |
+| `author` | STRING | **Definiciones canónicas** (ver `glossary.md`):<br/>• `LOWER(TRIM(author)) = 'gu'` ⇒ mensaje saliente del bot.<br/>• `LOWER(TRIM(author)) = 'user'` ⇒ mensaje entrante del lead (humano).<br/>• Otros valores (MSISDN, etiquetas) son raros — para conteos de tráfico humano siempre usa `= 'user'`, no `<> 'gu'`. |
 | `message` | STRING | Contenido. |
 | `message_time` | TIMESTAMP | Marca de tiempo del mensaje. |

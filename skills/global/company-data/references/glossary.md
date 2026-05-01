@@ -14,53 +14,97 @@ definición de aquí** y no inventes una propia.
 - **Asesor** = un usuario individual dentro de una inmobiliaria.
   Equivalente operativo a "agente" o "broker".
 - **Super-admin** = `users_light.role_user = 'super-admin'`. En la práctica
-  representa a la inmobiliaria como entidad (cuenta dueña).
+  representa a la inmobiliaria como entidad (cuenta dueña de la organización).
+- **MarketMeet** = sub-producto identificado por la columna `users_light.gga`.
+  `gga = TRUE` ⇒ el usuario es de MarketMeet. Útil cuando el usuario admin
+  pregunta *"cuántos usuarios de MarketMeet…"*.
 
 ## Activación de Gu
 
-- **Cliente con Gu activado** = un usuario cuyo registro de
-  `firestore_gu_numbers.gu_numbers_light` cumple `is_active_gu = TRUE`.
-- **Cliente con Gu pausado** = `is_active_gu = TRUE AND bypass_bot = TRUE`.
-- **Gu operando** (heurística "mensual"): `is_active_gu = TRUE AND
-  bypass_bot = FALSE`. (Esto es el "MAU" de Gu: clientes para los que
-  Gu efectivamente atiende leads.)
+- **Cliente con Gu activado / Gu habilitado** = un usuario cuyo último
+  registro en `firestore_gu_numbers.gu_numbers_light` (ordenado por
+  `asign_date DESC`) cumple `is_active_gu = TRUE`. **Importante**: hay
+  N filas por usuario; usa siempre el **último estado** vía
+  `ARRAY_AGG(STRUCT(...) ORDER BY asign_date DESC LIMIT 1)[OFFSET(0)]`.
+- **Gu pausado** = último estado `is_active_gu = TRUE AND COALESCE(bypass_bot, FALSE) = TRUE`.
+- **Gu activo** (operando, no pausado) = último estado
+  `is_active_gu = TRUE AND COALESCE(bypass_bot, FALSE) = FALSE`.
+- **Gu inactivo** = último estado `is_active_gu = FALSE OR is_active_gu IS NULL`.
 
-## Leads
+## Definiciones canónicas para mensajes / leads
 
-- **Lead** = registro en `mongo_data.leads_light`.
-- **Lead "no eliminado"** = `is_deleted IS NULL OR is_deleted = FALSE`
-  (en `leads_light` el campo puede no existir; si la consulta no lo usa,
-  asumir todo lead presente está vivo a menos que el cliente lo borre).
-- **Lead nuevo en período** = `created_at` dentro del período.
-- **Lead atendido** = lead con al menos un mensaje en `messages_light`
-  ligado por `document_name` → `leads_light.lead_id`.
-- **Lead que interactuó** = lead con al menos un mensaje del autor
-  humano (no `'gu'`) en el período.
-- **Owner del lead** = el asesor dueño, vía `owner_firebase_id` →
-  `users_light.document_id`.
+> **Estas definiciones son las que debes seguir para cualquier query**.
+> Reemplazan heurísticas anteriores como `author <> 'gu'`, que toleran
+> ruido (MSISDNs, etiquetas raras) y dan números inflados.
+
+- **Mensaje del lead (humano)** = `LOWER(TRIM(author)) = 'user'`.
+- **Mensaje de Gu** = `LOWER(TRIM(author)) = 'gu'`.
+
+- **Lead atendido en período** = lead con **≥ 1 mensaje del lead**
+  (`author = 'user'`) en el período. Captura cualquier conversación que
+  haya recibido al menos una respuesta del humano (incluyendo el mensaje
+  inicial pre-establecido que arranca el chat de WhatsApp).
+
+- **Lead que interactuó en período** = lead con **> 1 mensaje del lead**
+  (`COUNTIF(author = 'user') > 1`) en el período. Es estrictamente más
+  restrictivo: implica conversación bidireccional sostenida.
+
+- **Lead atendido sin interacción** = atendido pero no llegó a interactuar
+  (exactamente 1 mensaje del lead en el período).
+
+- **Lead nuevo en período** = `created_at` (normalizado, ver
+  `conventions.md`) cae dentro del período.
+
+- **Lead viejo (en contexto de un período)** = `created_at` previo al
+  inicio del período, o `created_at` NULL.
+
+## MAU canónica de Gu
+
+- **MAU de Gu** = usuarios que cumplen **ambas** condiciones para el mes:
+  1. Su último estado de Gu **al cierre del mes** es activo y no pausado:
+     `last_gu.is_active_gu = TRUE AND COALESCE(last_gu.bypass_bot, FALSE) = FALSE`.
+  2. Tienen **≥ 1 lead nuevo creado en el mes**.
+
+  El conteo final es `COUNT(DISTINCT user_id)` que cumpla ambas. Esta es
+  la definición que usa el equipo para el reporte MAU; **no la
+  reemplaces** por "usuarios con mensajes Gu en el mes" — es una
+  aproximación que da números distintos.
+
+## 4-bucket categorización de usuarios
+
+Para un período (snapshot al cierre del mes / hoy), cada usuario cae en
+**uno** de estos 4 buckets exclusivos. Útil para el reporte de adopción:
+
+1. `solo_cuenta` — sin inventario.
+2. `cuenta_inventario_sin_gu` — con ≥ 1 propiedad (creada antes del cutoff)
+   pero sin Gu habilitado al cutoff.
+3. `cuenta_inventario_con_gu_activo` — con inventario + último Gu
+   `is_active_gu = TRUE AND bypass_bot = FALSE`.
+4. `cuenta_inventario_con_gu_pausado` — con inventario + último Gu
+   `is_active_gu = TRUE AND bypass_bot = TRUE`.
+
+Todos los conteos derivados del bucketing **deben** apoyarse en
+`fewshots-users.md` Advanced para no reinventar la lógica.
 
 ## Citas (appointments)
 
-- **Cita** = `mongo_data.appointments_light`.
+- **Cita** = registro en `mongo_data.appointments_light`.
 - **Cita solicitada** = caso especial cuando `appointment_status` y
-  `owner_appointment_status` son ambos NULL/''. Reportar ese estado como
-  `"Cita solicitada"`.
+  `owner_appointment_status` están **NULL, vacío, o el string literal
+  `'null'` / `'"null"'`** (artefactos de migración Mongo). Reportar ese
+  estado como `'Cita solicitada'` (ver `conventions.md` para el
+  normalizer canónico).
 - **Cita finalizada** = `finished = 'true'` (texto, no boolean).
 - **Cita reagendada** = `rescheduled = 'true'`.
+- **Cita agendada por Gu** = cita cuyo asesor (`user_owner`) tenía Gu
+  habilitado y NO pausado (`is_active_gu = TRUE AND bypass_bot = FALSE`)
+  al momento de la cita (`a.date` parseado a TIMESTAMP). El query típico
+  vive en `fewshots-appointments.md` Advanced.
 
 ## Deals
 
 - **Deal** = oportunidad creada en `firestore_deals.deals_light`.
   Un deal **no es** un cierre — es una etapa avanzada del lead.
-
-## Mensajes
-
-- **Mensaje saliente / de Gu** = `LOWER(TRIM(author)) = 'gu'`.
-- **Mensaje entrante / del lead** = author distinto de `'gu'` y distinto
-  de los teléfonos del owner / Gu (filtrar lo que coincida con
-  `gu_numbers_light.phone_number` o `users_light.phone_number`).
-- **Conversación** = todos los mensajes con el mismo `lead_id`
-  (extraído del `document_name`). Una conversación es 1:1 lead↔Gu.
 
 ## Inventario
 
@@ -81,6 +125,8 @@ definición de aquí** y no inventes una propia.
 - **Esta semana** = lunes 00:00 CDMX a domingo 23:59 CDMX.
 - **Este mes / mes en curso** = del primer día del mes (CDMX) al fin de mes (CDMX).
 - **Cierre / cerrar el día** = corte 23:59:59 CDMX del día indicado.
+- **Cierre del mes** = el último día del mes (`DATE_SUB(DATE_ADD(month_start, INTERVAL 1 MONTH), INTERVAL 1 DAY)`)
+  evaluado en CDMX. Para "estado al cierre de mes", el cutoff es ese último día.
 
 > Para todas las comparaciones temporales, usa `DATE(<ts>, 'America/Mexico_City')`
 > y compara contra `@start_date` / `@end_date` parametrizadas. Ver
@@ -88,12 +134,13 @@ definición de aquí** y no inventes una propia.
 
 ## Términos compuestos / KPIs comunes
 
-- **MAU de Gu** ≈ usuarios distintos con `is_active_gu = TRUE AND
-  bypass_bot = FALSE` que tuvieron al menos un mensaje saliente
-  (`author = 'gu'`) en el mes.
-- **Funnel** (en orden): lead creado → lead interactuó → cita →
-  deal. Cada paso filtrado por la `users_light` del tenant.
-- **Tasa de respuesta de Gu** = `COUNT(mensajes con author='gu') /
-  COUNT(mensajes con author del lead)` en el período, por lead.
-- **Top inmobiliarias** (solo modo admin Ungga) = ranking por una
+- **Funnel** (en orden): lead nuevo → atendido → interactuó → cita →
+  deal. Cada paso filtrado por la `users_light` del tenant en MODO
+  OBLIGATORIO; sin filtro en MODO ADMIN UNGGA.
+- **Tasa de respuesta de Gu** = `COUNTIF(author='gu') / COUNTIF(author='user')`
+  en el período, por lead.
+- **Top inmobiliarias** (solo modo ADMIN UNGGA) = ranking por una
   métrica del funnel agrupado por `organization_id`.
+- **Solicitudes de visita** = registros nuevos en `appointments_light`
+  con `appointment_id IS NOT NULL` en el período (filtra por
+  `created_time` parseado).

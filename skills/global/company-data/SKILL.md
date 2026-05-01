@@ -81,20 +81,22 @@ on every turn. It will be one of:
 
 | Reference | Use when |
 |---|---|
-| `schema` | You need exact table/column names or types — load on every non-trivial query |
-| `glossary` | The user uses business terms (cliente, MAU, leads atendidos, Gu activado, inmobiliaria, etc.) |
-| `joins` | The query involves more than one table — load to get correct ON clauses, normalization, and fallbacks |
-| `conventions` | Always for date bucketing, timezone, canonical filters (e.g. exclude test users) |
-| `fewshots-users` | Question is about user accounts: counts, snapshots, Gu activation |
-| `fewshots-properties` | Inventory questions: published/recent properties, leads per property, **funnel decay analyses (advanced)** |
-| `fewshots-leads` | Leads creados / atendidos / interactuaron in a period |
-| `fewshots-appointments` | Citas: counts by status, today/yesterday lists, by month |
-| `fewshots-deals` | Deals counts and listings by month |
-| `fewshots-messages` | Conversations, message counts, last messages, message-to-lead matching |
+| `schema` | You need exact table/column names or types — load on every non-trivial query. Includes the **dual `document_name` format** (legacy concatenated phones vs new `lead_id`) and the canonical `author` values. |
+| `glossary` | The user uses business terms (cliente, MAU, leads atendidos/interactuaron, Gu activado, inmobiliaria, MarketMeet, "Cita solicitada", funnel, etc.). Holds **canonical definitions** — these override your prior assumptions. |
+| `joins` | The query involves more than one table. Includes the **country-agnostic pattern** for messages ↔ leads (`STARTS_WITH(lead_path, normalized_phone)` or `lead_path = lead_id`) — load before any messages query. |
+| `conventions` | Always for date bucketing, timezone, canonical filters (test users, status normalizer "Cita solicitada"), and the **`org_name → organization_id` helper** for ADMIN UNGGA. |
+| `fewshots-users` | User accounts: counts, snapshots, Gu activation, **4-bucket categorization, MAU canónica, snapshot mensual de Gu**. |
+| `fewshots-properties` | Inventory questions: published/recent properties, leads per property, **funnel decay analyses (anchor/substitute/archived)**. |
+| `fewshots-leads` | Leads creados / atendidos / interactuaron en período; **funnel canónico**; solicitudes de visita. |
+| `fewshots-appointments` | Citas: counts by status (con normalizer), today/yesterday lists, by month; **citas agendadas por Gu**. |
+| `fewshots-deals` | Deals counts and listings by month; conversión leads→deals; lead-time. |
+| `fewshots-messages` | Conversations, message counts, last messages, **lookup por teléfono específico (country-agnostic)**, tasa de respuesta. |
 
-Each `fewshots-<dominio>` file has two sections: **Basic patterns** (the
-common 80%) and **Advanced analyses** (period comparisons, funnel decay,
-attribution — load only when the user asks for that kind of investigation).
+Each `fewshots-<dominio>` file has three sections:
+
+- **Basic patterns** — the common 80% (with `WHERE u.organization_id = @organization_id`).
+- **Advanced analyses** — period comparisons, funnels, attribution (load only when the user asks for investigation-level questions).
+- **Cross-tenant (modo ADMIN UNGGA)** — patterns que NO llevan filtro de tenant o lo resuelven via `org_name → organization_id`. Carga esta subsección cuando el `[Contexto de tenant]` indique MODO ADMIN UNGGA y la pregunta sea cross-tenant o nombre una inmobiliaria.
 
 ## SQL rules
 
@@ -144,7 +146,15 @@ ORDER BY p.created_time DESC
 LIMIT 50;
 ```
 
-### Pattern C — messages-to-leads via document_name (preferred join)
+### Pattern C — messages scoped by tenant (no join to leads_light needed)
+
+> Para listados de mensajes por inmobiliaria sin necesidad de devolver
+> datos del lead, basta anclar por los Gu de la inmobiliaria. El
+> `lead_path` es el identificador único de cada conversación (independiente
+> del país y del formato del `document_name`). Si necesitas joinear a
+> `leads_light` para devolver `name`/`phone_number`/`portal`, usa el
+> patrón **country-agnostic** (`STARTS_WITH(lead_path, normalized_phone)`
+> o `lead_path = lead_id`) — descrito en `references/joins.md`.
 
 ```sql
 WITH gu_scope AS (
@@ -155,7 +165,7 @@ WITH gu_scope AS (
   WHERE u.organization_id = @organization_id
 )
 SELECT
-  REGEXP_EXTRACT(m.document_name, r'/leads/([^/]+)/wsp_messeges/') AS lead_id_from_doc,
+  REGEXP_EXTRACT(m.document_name, r'/leads/([^/]+)/wsp_messeges/') AS lead_path,
   m.message_time,
   m.author,
   m.message
@@ -166,7 +176,9 @@ ORDER BY m.message_time DESC
 LIMIT 100;
 ```
 
-(For matching the extracted `lead_id_from_doc` to `mongo_data.leads_light.lead_id` directly, see `references/joins.md`.)
+> ⚠️  **No uses** el patrón `SUBSTR(REGEXP_EXTRACT(..., r'leads/(\d{39})/'), 1, 13)`
+> que aparece en queries históricos. Asume teléfonos MX de 13 dígitos y se
+> rompe en otros países (ver `references/joins.md`, sección "Anti-patrón").
 
 ## Output template
 

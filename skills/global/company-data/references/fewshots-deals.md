@@ -1,5 +1,13 @@
 # Few-shots — Deals
 
+> **Modo**: estos patrones están escritos para **MODO OBLIGATORIO**
+> (con `WHERE u.organization_id = @organization_id`). Para **MODO
+> ADMIN UNGGA**: si la pregunta no nombra inmobiliaria, **quita el
+> CTE `user_ids` filtrado y el WHERE de organization_id** para
+> agregar cross-tenant. Si nombra una inmobiliaria, **reemplaza el
+> filtro** con el helper `org_name → organization_id` de
+> `conventions.md`.
+
 ## Basic patterns
 
 ### B1. Deals creados en un período
@@ -178,4 +186,54 @@ JOIN user_ids u ON REPLACE(d.asesor, 'users/', '') = u.user_id
 JOIN leads_norm ln ON REPLACE(d.lead_uid, 'leads/', '') = ln.lead_id
 WHERE DATE(d.created_time, 'America/Mexico_City') >= @start_date
   AND DATE(d.created_time, 'America/Mexico_City') <  @end_date;
+```
+
+## Cross-tenant (modo ADMIN UNGGA)
+
+### X1. Listado rico de deals de una inmobiliaria por NOMBRE (deal + lead + propiedad)
+
+> Combina con el helper `org_name → organization_id` de `conventions.md`.
+> El `QUALIFY` evita filas duplicadas si un deal tuviera múltiples
+> matches en algún join.
+
+```sql
+WITH org AS (
+  SELECT u.organization_id, u.document_id AS org_user_id
+  FROM `ungga-full.firestore_users.users_light` u
+  WHERE (u.is_test IS NULL OR u.is_test = FALSE)
+    AND u.role_user = 'super-admin'
+    AND REPLACE(REPLACE(LOWER(TRIM(u.org_name)), ' ', ''), 'inmobiliaria', '') LIKE
+        CONCAT('%', REPLACE(REPLACE(LOWER(TRIM(@org_needle)), ' ', ''), 'inmobiliaria', ''), '%')
+),
+deals_periodo AS (
+  SELECT d.*
+  FROM `ungga-full.firestore_deals.deals_light` d
+  JOIN org o ON REPLACE(d.asesor,'users/','') = o.org_user_id
+  WHERE DATE(d.created_time, 'America/Mexico_City') >= @start_date
+    AND DATE(d.created_time, 'America/Mexico_City') <  @end_date
+)
+SELECT
+  d.created_time AS deal_created_time,
+  REGEXP_REPLACE(SAFE_CAST(l.phone_number AS STRING), r'[^0-9]+', '') AS lead_phone_number,
+  l.name AS lead_name,
+  l.lead_id,
+  d.document_id AS deal_id,
+  d.client_type,
+  d.monetization_type_display,
+  d.portal,
+  d.house_type,
+  d.property_uid,
+  p.address,
+  p.city,
+  p.monetization_type_display AS property_monetization_type_display,
+  p.price_display,
+  p.currency_display,
+  p.public_url AS property_public_url
+FROM deals_periodo d
+LEFT JOIN `ungga-full.mongo_data.leads_light` l
+  ON REPLACE(d.lead_uid,'leads/','') = l.lead_id
+LEFT JOIN `ungga-full.firestore_properties.properties_light` p
+  ON REPLACE(d.property_uid,'properties/','') = p.document_id
+QUALIFY ROW_NUMBER() OVER (PARTITION BY d.document_id) = 1
+ORDER BY d.created_time DESC;
 ```
