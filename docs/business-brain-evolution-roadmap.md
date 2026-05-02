@@ -14,8 +14,9 @@ Canonical roadmap for evolving the assistant (Skills, Heartbeat, Business Brain)
 | **V1-B** | **Pre-graph skill selection in `runAgent`** (no new graph node); default to **one dominant skill per turn** or `none`; inject playbook into `effectiveSystemPrompt`; pre-filter `lcTools` before `bindTools`; BigQuery atomic tool + `company-data` skill |
 | **V1-C** | `business_brain` JSONB with **named slots** (identity / voice / context / operating_rules / heartbeat / bigquery); Heartbeat config (`enabled`, `interval_minutes` default 30, optional `model_id`); per-account checklist markdown; bundled default for lazy seeding |
 | **V1-D** | Add `'heartbeat'` to `agent_sessions.channel` CHECK; `heartbeat_runs` table; `POST /api/cron/heartbeat`; `runAgent({ channel: 'heartbeat' })` with cheap LLM (`HEARTBEAT_MODEL_ID`, e.g. MiniMax) and read-only allowlist; per-tick session row; no memory flush |
-| **V1-E** | Settings: skill toggles (`user_skill_settings`), Heartbeat UI, digest history |
-| **V2** | `account_skills` versioning, draft/active, admin UI + test harness |
+| **V1-E** | Settings: Heartbeat UI, digest history, and skill catalog visibility grouped by `scope` |
+| **V1.5** | Visible **Skill Registry** + `user_skill_settings` toggles/config per account; tenant-configurable `brand-kit`; staged document/file skills behind attachment tools |
+| **V2** | `account_skills` versioning, draft/active, admin UI + test harness for custom per-account playbooks |
 | **V3** | `organizations` + memberships + RLS; optional dynamic multi-skill router/subagents |
 
 ---
@@ -39,7 +40,11 @@ These are decisions taken after a final repo + best-practices review. Each has a
 | **Heartbeat output** | Always written to `heartbeat_runs.payload`. **Telegram digest is optional** (only sent if user has Telegram linked). UI shows the same data from `heartbeat_runs`. | Many users won’t have Telegram; UI must be self-sufficient. |
 | **Default checklist seeding** | **Lazy on “Enable Heartbeat”** in Settings (copy `heartbeat/default-checklist.md` content into the user’s `business_brain.heartbeat.checklist_markdown`). No blanket migration. | Opt-in, no migration churn, easy to re-seed via “Reset to default”. |
 | **BigQuery auth** | **Single platform service account** (env-mounted credentials) **+ per-account `business_brain.bigquery.{ project_id, dataset_allowlist }`**. Read-only role; `bigquery_run_query` validates SQL is `SELECT`. | Simplest viable V1. If your security model needs per-customer SA isolation, switch to “per-account SA JSON in `user_integrations`” without changing tool surface. The skill stays the same. |
-| **Skills toggles UI** | All global skills **enabled by default** in V1; toggles in Settings (`user_skill_settings`) ship in **V1-E**. | Lets V1-A → V1-D land without UI dependency; toggles arrive while the engine is in production. |
+| **Skills registry visibility** | Keep the canonical runtime registry **file-based** in `skills/global/*/SKILL.md`, but expose a **user-visible catalog** in Settings before adding custom DB-authored skills. | Users need to understand and control which playbooks exist. The repo remains the source of truth for standard skills; UI reads metadata and account settings. |
+| **Skills toggles UI** | Global skills can ship enabled by default, then Settings stores per-account overrides in `user_skill_settings` (`enabled`, optional `config_json`). Group by `scope`: Business, Personal, Shared. | Mirrors tools, supports gradual rollout, and lets a user disable entire areas (for example personal skills) without changing the global catalog. |
+| **Tenant-configurable skills** | Prefer **global skills + per-account config** before free-form `account_skills`. Example: `brand-kit` is a global skill whose colors, tone, logo URLs, and examples live in `business_brain.brand` or `user_skill_settings.config_json`. | Gives useful personalization in V1.5 without opening the security and debugging surface of arbitrary per-user skill bodies. |
+| **Document/file skills** | Stage `pdf`, `xlsx`, `docx`, and `pptx` behind multi-tenant attachment tools and private storage. Do not expose them as reliable file-producing skills until upload, parsing, generation, and download are implemented. | File skills need a complete file lifecycle, not only instructions. Supabase Storage + signed URLs gives tenant isolation; local computer files require upload or a connector. |
+| **Skill scripts / sandbox** | Still no arbitrary executable scripts from skill folders in V1/V1.5. Document manipulation runs only through closed backend tools or workers. | Keeps user-uploaded files, generated files, and server credentials away from untrusted skill-defined code. A sandbox can arrive later if the product needs it. |
 
 If any of these defaults conflict with constraints we haven’t surfaced (security review, GCP topology, model availability, etc.), call them out before V1-A starts so we update this section.
 
@@ -133,14 +138,25 @@ Pure **Supabase dashboard** editing is acceptable only for **pilot/dev**; the pl
 
 ---
 
-### 4) Skills selected and enabled in the UI like tools?
+### 4) Skills registry, catalog, and per-account toggles
 
 **Recommended: mirror the tools pattern for consistency and safety.**
 
-- **Registry:** All **global** skills ship in the repo; metadata is always known server-side.
-- **Per account:** Add **`user_skill_settings`** (or equivalent)—`user_id`, `skill_id`, `enabled`, optional `config_json`—analogous to [`user_tool_settings`](../packages/db/supabase/migrations/00001_initial_schema.sql).  
-- **Enforcement:** At skill-selection and tool-build time, only **enabled** skills are candidates; intersect with tool allowlist as today.  
-- **V1 nuance:** Implementation can ship **all global skills enabled by default** (no UI) for speed, then add **toggles in Settings** in the same release train once stable—plan lists **V1-E** for UI.
+- **Registry:** All **global** skills ship in the repo; metadata is always known
+  server-side from `skills/global/<slug>/SKILL.md`.
+- **Visible catalog:** Settings should show the available skills with name,
+  description, `scope`, required integrations/tools, status, and any account
+  configuration summary. This is the user-facing registry view.
+- **Per account:** Add **`user_skill_settings`** (or equivalent)—`user_id`,
+  `skill_id`, `enabled`, optional `config_json`—analogous to
+  [`user_tool_settings`](../packages/db/supabase/migrations/00001_initial_schema.sql).
+- **Enforcement:** At skill-selection and tool-build time, only **enabled**
+  skills are candidates; intersect with tool allowlist as today.
+- **V1.5 nuance:** This is a middle step before full `account_skills`: global
+  skills remain versioned in Git, but users can enable/disable and configure
+  them per account. Example: `brand-kit` reads account colors, typography, logo
+  URLs, and voice examples from `business_brain.brand` or
+  `user_skill_settings.config_json`.
 
 ---
 
@@ -180,9 +196,14 @@ includes=a,b`), and fail closed on conflicts, cycles, or token cap overflows.
 | Kind | Meaning in this roadmap | Where it lives (typical) |
 |------|-------------------------|---------------------------|
 | **Global (standard / system)** | Playbooks **shipped with the product**, same catalog for every deployment—maintained by you (engineering), versioned in **Git** (`skills/global/.../SKILL.md`). Every account *can* use them subject to **toggles** and **tool** access. | Repo files; metadata loaded at startup |
-| **Account / company skills** | Playbooks **specific to one business** (`user_id` ≈ company today). **V2+:** stored in Supabase (`account_skills` or equivalent), draft/active, edited in UI. **V1:** only global repo skills + **toggles** per account; company-specific text can temporarily live in `business_brain` prose or custom sections until DB skills ship. |
+| **Configured global skills** | Standard repo skills with **per-account settings**. Example: `brand-kit` is the same product skill for everyone, but each account supplies colors, tone, logo references, and examples. | Repo skill + `user_skill_settings.config_json` and/or `business_brain` |
+| **Account / company skills** | Playbooks **specific to one business** (`user_id` ≈ company today). **V2+:** stored in Supabase (`account_skills` or equivalent), draft/active, edited in UI. **V1/V1.5:** only global repo skills + toggles/config per account; company-specific text can temporarily live in `business_brain` prose or custom sections until DB skills ship. |
 
-So: **“global” = standard system skills**; **“user-specific / company-specific” = that organization’s custom playbooks**, which in V1 are limited (Brain fields + optional markdown in profile) and expand in **V2** with full CRUD and versioning.
+So: **“global” = standard system skills**; **“configured global” = standard
+skill plus account-specific values**; **“user-specific / company-specific” =
+that organization’s custom playbooks**, which in V1/V1.5 are limited (Brain
+fields, toggles/config, optional markdown in profile) and expand in **V2** with
+full CRUD and versioning.
 
 ---
 
@@ -207,16 +228,63 @@ So: **“global” = standard system skills**; **“user-specific / company-spec
 **Real estate professionals (and similar roles) need help with both their work and their personal life.** The system already supports the personal layer (calendar, scheduled tasks, memory, files), so Skills must be designed for **both** from day one — not only “company” playbooks.
 
 - **Scope field on each skill:** `SKILL.md` frontmatter adds **`scope: business | personal | shared`** (default `shared`). It is **descriptive** (filtering, UI grouping, analytics) — it does **not** route or hard-gate selection by itself; the selector reads `description` as today.
-- **Balanced default catalog (V1-B):** ship a mix, e.g.
-  - **Business:** `company-data` (BigQuery), `lead-follow-up-draft`, `listing-summary`, `client-meeting-prep`.
-  - **Personal:** `personal-day-briefing`, `errand-planner`, `family-reminders`, `travel-prep`.
-  - **Shared:** `daily-briefing` (mixes both buckets), `summarize-thread`, `compose-message`.
+- **Balanced default catalog (V1.5 target):** ship at least 1–3 useful skills
+  per bucket before broad rollout:
+  - **Business:** `company-data` (BigQuery), `client-meeting-prep`,
+    `lead-follow-up-draft`.
+  - **Personal:** `personal-day-briefing`, `errand-planner`, `travel-prep`,
+    `family-reminders`.
+  - **Shared:** `compose-message`, `doc-coauthoring`, `brand-kit`.
+  - **Document/file skills (staged):** `pdf`, `xlsx`, `docx`, `pptx`. These
+    are high-value shared/business capabilities, but should be activated only
+    when attachment storage, parsing/generation tools, and signed downloads are
+    in place.
 - **Per-account toggles (V1-E):** Settings groups skills by **scope**; users can disable e.g. all `personal` if they only want a work assistant, or vice versa.
 - **Heartbeat default checklist:** seed example mixes both — e.g. *“2 client follow-ups due, today’s calendar (work + personal), errands due, expense receipts to file”*. Users edit freely.
 - **Memory:** the existing long-term memory pipeline already extracts personal facts (preferences, family, contacts) into `memories` — no change required; personal skills consume that data the same way business skills do.
 - **Framing:** “Business Brain” is the **umbrella** for everything the user needs from their assistant — including personal life. The brand stays; the scope is wider than the agency entity.
 
 **Doc-wide convention:** prefer “**user / account**” when describing whose data flows through the system; reserve “**business / agency / company**” for sections that are explicitly about the professional/business slice.
+
+---
+
+### 9) File attachments and document skills
+
+Document-oriented skills (`pdf`, `xlsx`, `docx`, `pptx`) are useful early, but
+they require a complete multi-tenant file lifecycle before the assistant can
+promise reliable file operations.
+
+**Recommended architecture:**
+
+- **Web product source of truth:** private **Supabase Storage** for files the
+  user uploads to chat and files the assistant generates.
+- **Metadata:** tables such as `user_files` and/or `message_attachments` store
+  `user_id`, bucket, path, MIME type, original filename, size, source
+  (`upload` / `generated`), message/session references, and lifecycle state.
+- **Access:** RLS on metadata, private buckets, and short-lived signed URLs for
+  downloads. Avoid public permanent URLs for user documents.
+- **Paths:** include account/user identifiers and generated file IDs, e.g.
+  `users/<user_id>/uploads/<file_id>/original.pdf` and
+  `users/<user_id>/generated/<file_id>/report.xlsx`.
+- **Quotas and cleanup:** enforce file size limits, per-account quotas, and
+  cleanup for temporary generated artifacts.
+- **Hybrid local story:** a web app cannot freely read a user's computer. Local
+  files enter the product through upload, a future local connector, or external
+  integrations such as Google Drive/OneDrive/Dropbox. The existing workspace
+  `read_file` / `write_file` tools are for the server workspace and should not
+  be treated as end-user document storage.
+
+**Tooling implication:** skills stay as playbooks; backend tools perform the
+actual file work. Initial read tools can include `list_attachments`,
+`read_attachment_text`, `extract_pdf_text`, and `inspect_spreadsheet`. Creation
+tools can include `create_spreadsheet`, `create_document`,
+`create_presentation`, and `save_generated_file`. See
+[`docs/tools-design/file-attachments-and-document-skills.md`](tools-design/file-attachments-and-document-skills.md)
+for the implementation sequence.
+
+**Sandbox policy:** do **not** run arbitrary scripts from skill folders in
+V1/V1.5. Use closed tools or controlled workers with specific libraries
+(`exceljs`, `pdf-lib`, `pptxgenjs`, etc.) and explicit input/output contracts.
 
 ---
 
@@ -231,8 +299,14 @@ So: **“global” = standard system skills**; **“user-specific / company-spec
 **What changes (high level):**
 
 - **User/account context** on the profile (org or personal info, voice, markets, operating notes).
-- **Skills** — global first, per-account toggles; **one dominant skill per turn** by default; internal subdomain references for progressive disclosure; **explicit composite** playbooks supported; **business + personal** scopes.
+- **Skills** — global first, visible registry + per-account toggles/config;
+  **one dominant skill per turn** by default; internal subdomain references for
+  progressive disclosure; **explicit composite** playbooks supported; **business
+  + personal** scopes.
 - **Atomic BigQuery tools** + a **company-data skill** for one-shot and multi-step analyses; **simple requests bypass skills** and call tools directly.
+- **Attachments + document skills** — private multi-tenant storage, signed
+  downloads, and closed backend tools before enabling `pdf`/`xlsx`/`docx`/`pptx`
+  workflows broadly.
 - **Heartbeat** checklist **stored per account in Supabase** (markdown, same *idea* as OpenClaw’s HEARTBEAT.md); covers **work and personal** review items; **separate** from user **`schedule_task`** but similar cron plumbing.
 - **Settings UI** for Brain fields, Heartbeat, skill toggles (grouped by scope), and run history (staged).
 
@@ -249,6 +323,8 @@ So: **“global” = standard system skills**; **“user-specific / company-spec
 | **Business Brain** | Umbrella for everything one user needs from their assistant — **work and personal**: context + playbooks + memory + periodic checklist. The brand stays even when the content is personal. |
 | **Skill** | A named playbook (optional **composite**); loaded **on demand**; limits which **tools** apply when active. Has a **`scope`** (business / personal / shared). V1 normally activates one dominant skill per turn. |
 | **Skill scope** | Descriptive label on each `SKILL.md`: `business`, `personal`, or `shared`. Used for **filtering and UI grouping**, not as a hard router. |
+| **Skill registry** | Canonical catalog of standard skills loaded from `skills/global/*/SKILL.md`; Settings exposes a user-visible catalog backed by per-account settings. |
+| **Configured global skill** | A repo skill whose behavior is personalized by account config (for example `brand-kit` using `business_brain.brand`). |
 | **Skill internal subdomain** | A reference file or section inside one skill for a narrower area of the same domain (e.g. `company-data/references/fewshots-leads.md`). Use this before splitting into micro-skills when shared guardrails still apply. |
 | **Composite skill** | A named skill that intentionally combines other playbooks via `includes` or explicit markdown sections. Use for recurring workflows, not arbitrary one-off combinations. |
 | **No-skill turn** | A turn where the pre-graph selection step returns **`none`**: no playbook is appended, the agent uses today’s tool rules. Best for one-shot tool uses (single BigQuery query, calendar lookup, chitchat). |
@@ -256,6 +332,7 @@ So: **“global” = standard system skills**; **“user-specific / company-spec
 | **Heartbeat checklist (concept)** | Same role as OpenClaw’s **`HEARTBEAT.md`**: periodic review items (briefing, leads, inbox, …); **here it is per-user data in Supabase**, not one workspace file for all. |
 | **Global skill** | **Standard** playbook shipped in the repo for all customers (with per-account enable/disable). |
 | **Account / company skill** | **Custom** playbook for one business; **V2+** in DB; V1 = Brain text + global skills only. |
+| **Attachment/document skill** | Skill for uploaded or generated documents (`pdf`, `xlsx`, `docx`, `pptx`); requires private storage, attachment metadata, and closed file tools before broad activation. |
 | **LangGraph** | Existing orchestration for the agent loop; **its topology stays unchanged in V1**. We add a pre-graph step in `runAgent` for skill selection. |
 | **Pre-graph** | Code that runs in `runAgent` **before** the LangGraph compiles (system-prompt build, tool listing, model binding). V1 puts skill selection here. |
 | **Tool** | Atomic capability (e.g. **one BigQuery execute**); small catalog, composed by skills. |
@@ -542,8 +619,29 @@ The *Business Brain* lives as a `JSONB` column on `profiles`. Its first user is 
 
 ### V1-E — **UI visibility** (same release train or immediately after)
 
-- **Skills:** toggles like tools (`user_skill_settings` + [`apps/web/src/app/settings/settings-form.tsx`](../apps/web/src/app/settings/settings-form.tsx)). **Group skills by `scope`** in the UI: **Business**, **Personal**, **Shared**, so users can quickly enable/disable a whole bucket.
+- **Skills:** visible skill catalog + toggles like tools
+  (`user_skill_settings` + [`apps/web/src/app/settings/settings-form.tsx`](../apps/web/src/app/settings/settings-form.tsx)).
+  **Group skills by `scope`** in the UI: **Business**, **Personal**, **Shared**,
+  so users can quickly enable/disable a whole bucket. Show required
+  integrations/tools and whether a skill is fully available, staged, or disabled
+  pending file/tool support.
 - **Heartbeat:** **on/off**, **interval** (minutes, default 30), optional **model override**, **textarea/markdown** checklist editor (default seed mixes **work + personal** items), **history** from `heartbeat_runs`.
+
+---
+
+### V1.5 — Registry, configured skills, and document/file foundation
+
+**Outcome:** users can see and control the global skill catalog, configure
+tenant-specific skill behavior, and safely start attachment/document workflows.
+
+| Step | Action |
+|------|--------|
+| 1.5-1 | Add/read `user_skill_settings` with `enabled` and `config_json`; default global skills to enabled unless explicitly disabled. |
+| 1.5-2 | Settings catalog groups skills by `scope` and shows required tools/integrations plus availability state (`available`, `staged`, `disabled`). |
+| 1.5-3 | Seed the balanced global catalog: business (`company-data`, `client-meeting-prep`, `lead-follow-up-draft`), personal (`personal-day-briefing`, `errand-planner`, `travel-prep`, `family-reminders`), shared (`compose-message`, `doc-coauthoring`, `brand-kit`). |
+| 1.5-4 | Add `brand-kit` as a configured global skill reading tenant brand values from `business_brain.brand` and/or skill `config_json`; defer asset upload UI until storage exists. |
+| 1.5-5 | Design and migrate private attachment storage metadata (`user_files` / `message_attachments`) with RLS and signed URL flow. |
+| 1.5-6 | Add closed file tools for attachment listing/text extraction and generated-file save; activate `pdf`/`xlsx` read workflows first, then `docx`/`pptx` generation workflows. |
 
 ---
 
@@ -555,13 +653,16 @@ The *Business Brain* lives as a `JSONB` column on `profiles`. Its first user is 
 | **M2** | V1-B | Chat + **BigQuery-backed** answers via skill |
 | **M3** | V1-C | Org context (DB column + tenant block in V1-C-α; Settings UI in V1-C-β) + Heartbeat prefs in UI/DB |
 | **M4** | V1-D | **Checklist-driven** runs logged; not just “briefing” |
-| **M5** | V1-E | Users **see and toggle** skills and Heartbeat |
+| **M5** | V1-E / V1.5 | Users **see and toggle** skills and Heartbeat; configured global skills and document/file foundations begin |
 
 ---
 
 ## V2 — Custom skills lifecycle
 
-DB `account_skills`, draft/active, test harness, UI editor.
+DB `account_skills`, draft/active, test harness, UI editor. This is for
+custom playbooks authored per account. It follows V1.5 configured global skills;
+do not jump straight to arbitrary DB-authored skill bodies until the registry,
+toggles, logs, permission checks, and attachment tools are stable.
 
 ---
 

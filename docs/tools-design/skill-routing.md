@@ -17,6 +17,8 @@ LangGraph loop:
 
 1. Loads recent session messages (`priorRaw`) for short-term context.
 2. Loads the global skill registry (`skills/global/*/SKILL.md` metadata).
+   In V1.5 this registry also feeds a user-visible Settings catalog; the
+   runtime still treats the repo metadata as the canonical standard catalog.
 3. Runs a small, deterministic **skill selector** model
    (`createSkillSelectorModel`, default `anthropic/claude-3-5-haiku` via
    OpenRouter).
@@ -40,6 +42,12 @@ The current contract is intentionally **single-label**: one dominant skill per
 turn, or `none`. Composite skills are still possible, but they are explicit
 playbooks that resolve to one active context block. Dynamic multi-skill output
 such as `skills: ["company-data", "presentation"]` is a future design, not V1.
+
+Before selection, the candidate list should eventually be filtered by
+per-account skill settings (`user_skill_settings.enabled`) and by hard runtime
+availability (for example, document skills that require attachment tools should
+not be candidates until those tools/storage paths exist). The selector should
+only choose from skills the account can actually use.
 
 ---
 
@@ -94,7 +102,17 @@ The near-term strategy is intentionally incremental:
    named workflow such as `business-report` can include `company-data` plus
    report-formatting guidance. The selector still chooses one active skill, but
    the resolved playbook expands intentionally.
-4. **Defer free-form multi-skill selection.** Letting the selector return
+4. **Use configured global skills before custom DB-authored skills.** A skill
+   such as `brand-kit` can be global and versioned in Git while reading
+   account-specific values from `business_brain.brand` or
+   `user_skill_settings.config_json`. This gives tenant-specific behavior
+   without letting arbitrary per-account skill bodies into the runtime yet.
+5. **Stage document/file skills behind attachment tools.** Skills such as
+   `pdf`, `xlsx`, `docx`, and `pptx` should not be selected unless the account
+   has the necessary storage, attachment, and file-operation tools enabled.
+   Their descriptions should say when to use them, but runtime availability
+   should still be enforced outside the model.
+6. **Defer free-form multi-skill selection.** Letting the selector return
    arrays like `["company-data", "presentation"]` requires conflict handling,
    token caps, tool-union rules, tenant-context propagation, permission
    checks, and richer logs. It should wait until real usage proves that
@@ -110,9 +128,63 @@ we need for multi-tenant data access.
 |-----------|----------|------------|
 | Dominant skill | One procedure owns the turn; shared guardrails are important. | The task is pure chitchat or a one-shot tool lookup that needs no playbook. |
 | Internal references | A domain has multiple sub-areas with the same tools/safety rules. | Sub-areas have different permissions, side effects, or conflicting instructions. |
+| Configured global skill | The playbook is standard but values vary by account, e.g. brand voice/colors/assets. | The entire procedure is truly custom for one account and needs versioned editing. |
 | Explicit composite | A recurring named workflow truly combines multiple coherent playbooks. | The combination is one-off or can be handled by a single domain skill. |
+| Document/file skill | The user asks to read, inspect, create, or modify an uploaded/generated file and the required file tools exist. | The file only lives on the user's computer and has not been uploaded or connected. |
 | Subagent | Work needs isolation, long research, parallelism, a different model/tool set, or should not contaminate the main thread. | A simple inline procedure with the same context and tools is enough. |
 | Dynamic multi-skill | Future option for repeated complex requests that cannot be modeled above. | V1/V2 data-sensitive workflows where tenant/tool scoping must stay simple. |
+
+---
+
+## Registry, toggles, and visibility
+
+The skill registry should become visible to users, but the runtime still needs a
+server-owned source of truth.
+
+| Layer | Role |
+|-------|------|
+| Global registry | Repo files under `skills/global/<slug>/SKILL.md`; standard catalog, versioned in Git, loaded by the server. |
+| Visible catalog | Settings view showing name, description, `scope`, required tools/integrations, availability, enabled state, and optional config summary. |
+| Account settings | `user_skill_settings` rows with `enabled` and optional `config_json`, analogous to `user_tool_settings`. |
+| Custom account skills | Future V2 `account_skills` with draft/active/versioning/test harness. |
+
+Selection should use the **effective candidate set**, not the raw global list:
+
+1. Start with global registry metadata.
+2. Apply hard runtime gates (for example missing storage/file tools).
+3. Apply account settings (`enabled=false` removes a skill).
+4. Send the remaining skill names/descriptions plus structured
+   `routingContext` to the selector.
+5. Resolve the selected skill and bind only its allowed tools.
+
+This keeps the selector prompt small and avoids asking the model to pick skills
+that cannot run safely.
+
+---
+
+## Document/file skills and routing
+
+Document skills are high value, but they add one more routing constraint: the
+file must be available to the backend. The web app cannot read arbitrary local
+files from a user's computer; files must be uploaded, connected through a future
+storage integration, or created by the assistant.
+
+For routing:
+
+- `pdf`, `xlsx`, `docx`, and `pptx` should be **global shared skills** by
+  default because they can serve both business and personal workflows.
+- Their `description` should mention concrete triggers: file extensions,
+  "spreadsheet", "deck", "slides", "Word document", "PDF contract", etc.
+- Their `allowed_tools` should use attachment/document tools, not the existing
+  server-workspace `read_file` / `write_file` tools.
+- They should be hidden, disabled, or marked `staged` in Settings until the
+  attachment lifecycle exists.
+- If a user asks about a file that is only on their local machine, the assistant
+  should ask them to upload it or connect a storage integration; it should not
+  pretend it can read local paths from the browser environment.
+
+See [`docs/tools-design/file-attachments-and-document-skills.md`](file-attachments-and-document-skills.md)
+for the proposed storage and tool architecture.
 
 ---
 
@@ -236,10 +308,13 @@ context into a general **conversation-state router**:
    - `lastToolNames`
    - `recentTurnSummary`
 3. Add domain-specific extractors for new skills as they appear.
-4. Keep the selector prompt small and deterministic.
-5. Keep hard safety checks in the tool adapters, especially for tenant filters.
-6. Treat regex heuristics as fallback or bootstrapping only.
-7. Keep selection single-label until explicit composite skills and internal
+4. Filter selector candidates by account skill settings and runtime
+   availability before calling the selector.
+5. Keep the selector prompt small and deterministic.
+6. Keep hard safety checks in the tool adapters, especially for tenant filters,
+   attachment ownership, and generated-file writes.
+7. Treat regex heuristics as fallback or bootstrapping only.
+8. Keep selection single-label until explicit composite skills and internal
    references have been exhausted as simpler mechanisms.
 
 This keeps the strongest part of the current implementation (tool scoping,
@@ -256,6 +331,9 @@ Revisit a main-model skill-loading architecture if any of these become true:
 - Follow-up handling remains brittle even with structured routing context.
 - We need skills that are mostly conversational/procedural and do not require
   strict pre-bound tool scoping.
+- Document/file skills become mostly generic and safe enough that dynamic
+  skill-loading would simplify the user experience without weakening storage
+  isolation.
 - We repeatedly need more than one independently authored skill in the same
   turn, and explicit composites become too rigid.
 - We implement a safe dynamic skill loader that can inject tenant context and
