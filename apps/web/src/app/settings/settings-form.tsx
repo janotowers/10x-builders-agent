@@ -8,12 +8,26 @@ interface Props {
   userId: string;
   profile: Record<string, unknown> | null;
   toolSettings: Array<{ tool_id: string; enabled: boolean }>;
+  skillSettings: Array<{
+    skill_id: string;
+    enabled: boolean;
+    config_json?: Record<string, unknown>;
+  }>;
+  skillCatalog: SkillCatalogItem[];
   telegramLinked: boolean;
   githubConnected: boolean;
   googleCalendarConnected: boolean;
   /** Query `google_calendar` tras OAuth (connected | error). */
   googleOAuthStatus?: string;
   googleOAuthReason?: string;
+}
+
+interface SkillCatalogItem {
+  name: string;
+  description: string;
+  scope: "business" | "personal" | "shared";
+  allowedTools: string[];
+  requiresTenantContext: boolean;
 }
 
 const TIMEZONES = [
@@ -57,10 +71,24 @@ const TOOL_IDS = [
   "read_skill_reference",
 ];
 
+const SKILL_SCOPE_LABELS: Record<SkillCatalogItem["scope"], string> = {
+  business: "Negocio",
+  personal: "Personal",
+  shared: "Compartidas",
+};
+
+const SKILL_SCOPE_ORDER: SkillCatalogItem["scope"][] = [
+  "business",
+  "personal",
+  "shared",
+];
+
 export function SettingsForm({
   userId,
   profile,
   toolSettings,
+  skillSettings,
+  skillCatalog,
   telegramLinked,
   githubConnected,
   googleCalendarConnected,
@@ -86,6 +114,14 @@ export function SettingsForm({
   const [enabledTools, setEnabledTools] = useState<string[]>(
     toolSettings.filter((t) => t.enabled).map((t) => t.tool_id)
   );
+  const [enabledSkills, setEnabledSkills] = useState<string[]>(() => {
+    const settingsBySkill = new Map(
+      skillSettings.map((s) => [s.skill_id, s.enabled])
+    );
+    return skillCatalog
+      .filter((skill) => settingsBySkill.get(skill.name) !== false)
+      .map((skill) => skill.name);
+  });
   const [linkCode, setLinkCode] = useState<string | null>(null);
   const [ghConnected, setGhConnected] = useState(githubConnected);
   const [gCalConnected, setGCalConnected] = useState(googleCalendarConnected);
@@ -106,6 +142,12 @@ export function SettingsForm({
   function toggleTool(id: string) {
     setEnabledTools((prev) =>
       prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]
+    );
+  }
+
+  function toggleSkill(id: string) {
+    setEnabledSkills((prev) =>
+      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
     );
   }
 
@@ -131,6 +173,20 @@ export function SettingsForm({
           config_json: {},
         },
         { onConflict: "user_id,tool_id" }
+      );
+    }
+
+    for (const skill of skillCatalog) {
+      await supabase.from("user_skill_settings").upsert(
+        {
+          user_id: userId,
+          skill_id: skill.name,
+          enabled: enabledSkills.includes(skill.name),
+          config_json:
+            skillSettings.find((s) => s.skill_id === skill.name)
+              ?.config_json ?? {},
+        },
+        { onConflict: "user_id,skill_id" }
       );
     }
 
@@ -306,6 +362,71 @@ export function SettingsForm({
             </label>
           ))}
         </div>
+      </section>
+
+      {/* Skills */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-base font-semibold">Skills</h2>
+          <p className="mt-1 text-sm text-neutral-500">
+            Playbooks que el agente puede activar según la intención del turno.
+            Si desactivas uno, no será candidato para el selector.
+          </p>
+        </div>
+        {skillCatalog.length === 0 ? (
+          <p className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-500 dark:border-neutral-800">
+            No se encontró ningún skill global en el registry.
+          </p>
+        ) : (
+          <div className="space-y-5">
+            {SKILL_SCOPE_ORDER.map((scope) => {
+              const skills = skillCatalog.filter((s) => s.scope === scope);
+              if (skills.length === 0) return null;
+              return (
+                <div key={scope} className="space-y-2">
+                  <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                    {SKILL_SCOPE_LABELS[scope]}
+                  </h3>
+                  <div className="space-y-2">
+                    {skills.map((skill) => (
+                      <label
+                        key={skill.name}
+                        className="block rounded-md border border-neutral-200 p-3 text-sm dark:border-neutral-800"
+                      >
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={enabledSkills.includes(skill.name)}
+                            onChange={() => toggleSkill(skill.name)}
+                            className="mt-1 rounded border-neutral-300"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">{skill.name}</span>
+                              {skill.requiresTenantContext && (
+                                <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                                  tenant
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-1 text-xs text-neutral-500">
+                              {skill.description}
+                            </p>
+                            {skill.allowedTools.length > 0 && (
+                              <p className="mt-2 text-[11px] text-neutral-400">
+                                Tools: {skill.allowedTools.join(", ")}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {/* Google Calendar */}

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SettingsForm } from "./settings-form";
+import { getGlobalSkillRegistry } from "@agents/agent";
 
 type Search = { google_calendar?: string; reason?: string };
 
@@ -24,6 +25,31 @@ export default async function SettingsPage({
     .from("user_tool_settings")
     .select("*")
     .eq("user_id", user.id);
+
+  const { data: skillSettings } = await supabase
+    .from("user_skill_settings")
+    .select("*")
+    .eq("user_id", user.id);
+
+  let skillCatalog: Array<{
+    name: string;
+    description: string;
+    scope: "business" | "personal" | "shared";
+    allowedTools: string[];
+    requiresTenantContext: boolean;
+  }> = [];
+  try {
+    const registry = await getGlobalSkillRegistry();
+    skillCatalog = registry.list().map((s) => ({
+      name: s.name,
+      description: s.description,
+      scope: s.scope,
+      allowedTools: [...s.allowedTools],
+      requiresTenantContext: s.requiresTenantContext,
+    }));
+  } catch (err) {
+    console.warn("[settings] failed to load skill registry:", err);
+  }
 
   const { data: telegramAccount } = await supabase
     .from("telegram_accounts")
@@ -65,6 +91,8 @@ export default async function SettingsPage({
           userId={user.id}
           profile={profile}
           toolSettings={toolSettings ?? []}
+          skillSettings={skillSettings ?? []}
+          skillCatalog={skillCatalog}
           telegramLinked={!!telegramAccount}
           githubConnected={!!githubIntegration}
           googleCalendarConnected={!!googleCalendarIntegration}

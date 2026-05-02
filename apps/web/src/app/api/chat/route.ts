@@ -38,6 +38,11 @@ export async function POST(request: Request) {
       .select("*")
       .eq("user_id", user.id);
 
+    const { data: skillSettings } = await supabase
+      .from("user_skill_settings")
+      .select("*")
+      .eq("user_id", user.id);
+
     const { data: integrations } = await supabase
       .from("user_integrations")
       .select("*")
@@ -119,6 +124,13 @@ export async function POST(request: Request) {
         tool_id: t.tool_id as string,
         enabled: t.enabled as boolean,
         config_json: (t.config_json as Record<string, unknown>) ?? {},
+      })),
+      enabledSkills: (skillSettings ?? []).map((s: Record<string, unknown>) => ({
+        id: s.id as string,
+        user_id: s.user_id as string,
+        skill_id: s.skill_id as string,
+        enabled: s.enabled as boolean,
+        config_json: (s.config_json as Record<string, unknown>) ?? {},
       })),
       integrations: (integrations ?? []).map((i: Record<string, unknown>) => ({
         id: i.id as string,

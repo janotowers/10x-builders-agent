@@ -111,6 +111,14 @@ export interface UserToolSetting {
   config_json: Record<string, unknown>;
 }
 
+export interface UserSkillSetting {
+  id: string;
+  user_id: string;
+  skill_id: string;
+  enabled: boolean;
+  config_json: Record<string, unknown>;
+}
+
 export interface AgentSession {
   id: string;
   user_id: string;

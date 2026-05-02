@@ -13,6 +13,7 @@ import {
   decryptToken,
   getProfile,
   getUserToolSettings,
+  getUserSkillSettings,
   getUserIntegrations,
   getGoogleCalendarAccessToken,
   getDueTasks,
@@ -138,6 +139,7 @@ async function runTask(
     // Load user context
     const profile = await getProfile(db, task.user_id);
     const toolSettings = await getUserToolSettings(db, task.user_id);
+    const skillSettings = await getUserSkillSettings(db, task.user_id);
     const integrations = await getUserIntegrations(db, task.user_id);
 
     const githubIntegration = integrations.find(
@@ -174,6 +176,7 @@ async function runTask(
       systemPrompt: profile.agent_system_prompt,
       db,
       enabledTools: toolSettings,
+      enabledSkills: skillSettings,
       integrations,
       githubToken,
       userTimezone: profile.timezone,

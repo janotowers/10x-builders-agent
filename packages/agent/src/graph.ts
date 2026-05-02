@@ -20,6 +20,7 @@ import {
 } from "@agents/db";
 import type {
   UserToolSetting,
+  UserSkillSetting,
   UserIntegration,
   PendingConfirmation,
   BusinessBrain,
@@ -70,6 +71,7 @@ export interface AgentInput {
   systemPrompt: string;
   db: DbClient;
   enabledTools: UserToolSetting[];
+  enabledSkills?: UserSkillSetting[];
   integrations: UserIntegration[];
   githubToken?: string;
   /** Profile timezone for interpreting/creating calendar events. */
@@ -141,6 +143,51 @@ const FORCED_TEXT_WRAPUP_INSTRUCTION =
   "Produce AHORA un texto final en español resumiendo lo que aprendiste de los tool_results anteriores. " +
   "Si la información es parcial, dilo explícitamente y entrega lo que sí tengas. " +
   "Si ninguna llamada devolvió datos útiles, reporta los exitCode/stderr literales que viste y pide al usuario que simplifique su petición.";
+
+function buildEnabledSkillCandidateSlugs(
+  allSlugs: readonly string[],
+  settings: readonly UserSkillSetting[] | undefined
+): readonly string[] {
+  if (!settings || settings.length === 0) return allSlugs;
+
+  const bySkill = new Map(settings.map((s) => [s.skill_id, s.enabled]));
+  return allSlugs.filter((slug) => bySkill.get(slug) !== false);
+}
+
+function skillCandidateIsEnabled(
+  skillId: string,
+  candidateSlugs: readonly string[]
+): boolean {
+  return candidateSlugs.includes(skillId);
+}
+
+function shouldRequireCompanyDataQueryForTurn(args: {
+  readonly activeSkill: ResolvedSkill | undefined;
+  readonly message: string | undefined;
+  readonly toolNamesAvailable: Set<string>;
+  readonly toolCallNames: readonly string[];
+}): boolean {
+  if (args.activeSkill?.rootName !== "company-data") return false;
+  if (!args.toolNamesAvailable.has("bigquery_run_query")) return false;
+  if (args.toolCallNames.includes("bigquery_run_query")) return false;
+
+  const text = (args.message ?? "").toLowerCase();
+  if (!text.trim()) return false;
+
+  const hasMetricHint =
+    /\b(leads?|usuarios?|propiedades?|citas?|deals?|mensajes?|kpis?|total|cu[aá]nt[oa]s?|conteo|cantidad|promedio|conversi[oó]n|tasa|funnel)\b/i.test(
+      text
+    );
+  const hasPeriodHint =
+    /\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|hoy|ayer|semana|mes|a[nñ]o|trimestre|q[1-4]|202[0-9])\b/i.test(
+      text
+    );
+  const isShortFollowUp = /^\s*(y\s+)?(en\s+)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|hoy|ayer|este\s+mes|mes\s+pasado)\??\s*$/i.test(
+    text
+  );
+
+  return isShortFollowUp || hasMetricHint || hasPeriodHint;
+}
 
 function normalizeMessageContentToString(raw: unknown): string {
   if (typeof raw === "string") return raw;
@@ -573,13 +620,19 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   if (!resumeDecision && message && message.trim() !== "") {
     try {
       const registry = await getGlobalSkillRegistry();
-      const registrySize = registry.list().length;
+      const registryList = registry.list();
+      const registrySize = registryList.length;
       const registryRoot = getCachedSkillsRegistryRoot() ?? undefined;
       if (registrySize > 0) {
+        const candidateSlugs = buildEnabledSkillCandidateSlugs(
+          registryList.map((s) => s.name),
+          input.enabledSkills
+        );
         const selectorModel = createSkillSelectorModel();
         const selection = await selectSkillForTurn({
           userMessage: message,
           registry,
+          candidateSlugs,
           model: selectorModel,
           channel,
           routingContext,
@@ -601,35 +654,59 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           shouldRouteFromContinuity(routingContext)
         ) {
           const skillId = routingContext.lastActiveSkill ?? "company-data";
-          activeSkill = await resolveSkill(skillId, registry);
-          console.log(
-            `[skills] active=${skillId} reason=routing_context session=${sessionId} channel=${channel ?? "web"}`
-          );
-          skillSelectionSnapshot = {
-            active: skillId,
-            reason: "routing_context",
-            allowedTools: activeSkill.allowedTools,
-            requiresTenantContext: activeSkill.requiresTenantContext,
-            registryRoot,
-            registrySize,
-          };
+          if (!skillCandidateIsEnabled(skillId, candidateSlugs)) {
+            console.log(
+              `[skills] active=none reason=skill_disabled skill=${skillId} session=${sessionId} channel=${channel ?? "web"}`
+            );
+            skillSelectionSnapshot = {
+              active: "none",
+              reason: "skill_disabled",
+              registryRoot,
+              registrySize,
+            };
+          } else {
+            activeSkill = await resolveSkill(skillId, registry);
+            console.log(
+              `[skills] active=${skillId} reason=routing_context session=${sessionId} channel=${channel ?? "web"}`
+            );
+            skillSelectionSnapshot = {
+              active: skillId,
+              reason: "routing_context",
+              allowedTools: activeSkill.allowedTools,
+              requiresTenantContext: activeSkill.requiresTenantContext,
+              registryRoot,
+              registrySize,
+            };
+          }
         } else if (
           !input.autoApproveTools &&
           isShortMonthPeriodFollowUp(message) &&
           recentMessagesSuggestCompanyData(priorRaw)
         ) {
-          activeSkill = await resolveSkill("company-data", registry);
-          console.log(
-            `[skills] active=company-data reason=follow_up_month session=${sessionId} channel=${channel ?? "web"}`
-          );
-          skillSelectionSnapshot = {
-            active: "company-data",
-            reason: "follow_up_month",
-            allowedTools: activeSkill.allowedTools,
-            requiresTenantContext: activeSkill.requiresTenantContext,
-            registryRoot,
-            registrySize,
-          };
+          if (!skillCandidateIsEnabled("company-data", candidateSlugs)) {
+            console.log(
+              `[skills] active=none reason=skill_disabled skill=company-data session=${sessionId} channel=${channel ?? "web"}`
+            );
+            skillSelectionSnapshot = {
+              active: "none",
+              reason: "skill_disabled",
+              registryRoot,
+              registrySize,
+            };
+          } else {
+            activeSkill = await resolveSkill("company-data", registry);
+            console.log(
+              `[skills] active=company-data reason=follow_up_month session=${sessionId} channel=${channel ?? "web"}`
+            );
+            skillSelectionSnapshot = {
+              active: "company-data",
+              reason: "follow_up_month",
+              allowedTools: activeSkill.allowedTools,
+              requiresTenantContext: activeSkill.requiresTenantContext,
+              registryRoot,
+              registrySize,
+            };
+          }
         } else {
           console.log(
             `[skills] active=none reason=${selection.reason} session=${sessionId} channel=${channel ?? "web"}`
@@ -818,6 +895,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       .map((t) => t.name)
       .filter((n): n is string => Boolean(n))
   );
+  const companyDataQueryCorrection = `[CORRECCIÓN INTERNA — COMPANY-DATA]\nLa skill company-data está activa y este turno pide una métrica o período de datos de negocio. Tu respuesta anterior intentó cerrar sin llamar a bigquery_run_query. Eso no está permitido aunque el historial contenga un número previo.\n\nAhora emite exactamente el/los tool_call(s) bigquery_run_query necesarios para el MENSAJE ACTUAL del usuario: "${(message ?? "").replace(/\n/g, " ").slice(0, 200)}". Si el mensaje actual nombra un solo período, consulta SOLO ese período. No respondas texto final hasta recibir el resultado de BigQuery.`;
   if (
     !input.autoApproveTools &&
     !resumeDecision &&
@@ -898,6 +976,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const toolCallNames: string[] = [];
   let bigQueryExecutionErrorCount = 0;
+  let companyDataQueryCorrectionCount = 0;
 
   async function agentNode(
     state: GraphStateType
@@ -909,6 +988,21 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     // AIMessages viejos con tool_calls.
     const asAI = response as AIMessage;
     const hasToolCalls = Boolean(asAI.tool_calls?.length);
+    if (
+      !hasToolCalls &&
+      companyDataQueryCorrectionCount < 1 &&
+      shouldRequireCompanyDataQueryForTurn({
+        activeSkill,
+        message,
+        toolNamesAvailable,
+        toolCallNames,
+      })
+    ) {
+      companyDataQueryCorrectionCount += 1;
+      return {
+        messages: [response, new HumanMessage(companyDataQueryCorrection)],
+      };
+    }
     return hasToolCalls
       ? { messages: [response], iterationCount: 1 }
       : { messages: [response] };
@@ -1194,6 +1288,14 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       if ((state.iterationCount ?? 0) >= MAX_TOOL_ITERATIONS) return "end";
       return "tools";
     }
+    if (
+      lastMsg instanceof HumanMessage &&
+      normalizeMessageContentToString(lastMsg.content).startsWith(
+        "[CORRECCIÓN INTERNA — COMPANY-DATA]"
+      )
+    ) {
+      return "agent";
+    }
     return "end";
   }
 
@@ -1217,6 +1319,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     .addEdge("memory_injection", "compaction")
     .addEdge("compaction", "agent")
     .addConditionalEdges("agent", shouldContinue, {
+      agent: "agent",
       tools: "tools",
       end: "__end__",
     })
