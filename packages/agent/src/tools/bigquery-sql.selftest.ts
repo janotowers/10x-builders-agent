@@ -80,6 +80,12 @@ expectOk(
 );
 passed += 1;
 
+expectOk(
+  "SELECT REPLACE(user_owner, 'users/', '') AS user_id FROM `proj.ds.properties`",
+  "REPLACE() scalar function is allowed"
+);
+passed += 1;
+
 // ── Reject DDL ─────────────────────────────────────────────────
 
 expectErr("CREATE TABLE foo (a INT64)", /CREATE/, "CREATE TABLE");

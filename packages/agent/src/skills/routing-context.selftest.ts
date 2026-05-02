@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import type { AgentMessage } from "@agents/types";
+import {
+  deriveSkillRoutingContext,
+  formatRoutingContextForSelector,
+  shouldRouteFromContinuity,
+} from "./routing-context";
+
+function msg(role: AgentMessage["role"], content: string): AgentMessage {
+  return {
+    id: randomUUID(),
+    session_id: "s",
+    role,
+    content,
+    created_at: new Date().toISOString(),
+  };
+}
+
+function run(): void {
+  const ctx = deriveSkillRoutingContext(
+    [
+      msg("user", "cuantos leads tuvimos en abril?"),
+      msg("assistant", "Total de leads en abril: 510"),
+    ],
+    "y en febrero?",
+    { identity: { org_name: "Alebrixe" } }
+  );
+
+  assert.equal(ctx.isContinuation, true);
+  assert.equal(ctx.lastActiveSkill, "company-data");
+  assert.equal(ctx.lastDomain, "leads");
+  assert.equal(ctx.lastMetric, "count");
+  assert.equal(ctx.lastPeriod, "febrero 2026");
+  assert.equal(ctx.lastTenantName, "Alebrixe");
+  assert.equal(ctx.confidence, "high");
+  assert.equal(shouldRouteFromContinuity(ctx), true);
+  assert.match(formatRoutingContextForSelector(ctx), /"lastDomain": "leads"/);
+
+  const nonBusiness = deriveSkillRoutingContext(
+    [
+      msg("user", "que tengo en el calendario en abril?"),
+      msg("assistant", "Tienes una cita el martes."),
+    ],
+    "y en febrero?",
+    {}
+  );
+  assert.equal(nonBusiness.lastActiveSkill, undefined);
+  assert.equal(shouldRouteFromContinuity(nonBusiness), false);
+
+  console.log("routing-context.selftest.ts: ok");
+}
+
+run();

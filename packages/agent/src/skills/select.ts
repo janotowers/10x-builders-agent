@@ -2,13 +2,15 @@
  * Pre-graph skill selection (V1-B).
  *
  * The selector runs **once per turn**, before the LangGraph compiles, with
- * three inputs:
+ * four inputs:
  *
  *   1. The latest user message (a short greeting should yield `none`).
  *   2. The metadata-only registry filtered by the candidate set the caller
  *      derived from `user_skill_settings` (when the table exists; in V1-B
  *      we pass the full global registry).
  *   3. The channel string ("web" | "telegram" | "cron" | "heartbeat").
+ *   4. Optional structured routing context derived from recent turns, so short
+ *      continuations like "y en febrero?" are not classified in isolation.
  *
  * The selector returns either `{ skillId: <slug> }` or `{ skillId: 'none' }`.
  * `'none'` is the **default** — the prompt explicitly tells the side model
@@ -26,6 +28,10 @@ import type {
   SkillMetadata,
   SkillRegistry,
 } from "./types";
+import {
+  formatRoutingContextForSelector,
+  type SkillRoutingContext,
+} from "./routing-context";
 
 export const NO_SKILL_ID = "none" as const;
 
@@ -60,6 +66,8 @@ export interface SelectSkillInput {
   readonly candidateSlugs?: readonly string[];
   /** Channel string for the current turn (informational; biases prompt). */
   readonly channel?: string;
+  /** Structured continuity context derived from recent turns. */
+  readonly routingContext?: SkillRoutingContext;
   /** Pluggable model. Callers in production pass `createSkillSelectorModel()`. */
   readonly model: SelectorChatModel;
   /**
@@ -85,6 +93,11 @@ const SYSTEM_PROMPT = [
   "  questions, greetings, format tweaks, or single-tool lookups.",
   "- Pick a skill only when the description's `Use when ...` clause clearly",
   "  matches the user's intent.",
+  "- If the latest message is a short follow-up, use the structured",
+  "  continuity context to resolve the omitted domain/metric/period.",
+  "- When `routingContext.lastActiveSkill` is set with medium/high confidence",
+  "  and the latest message is a continuation, prefer that skill unless the",
+  "  latest message clearly changes topic.",
   "- Output STRICT JSON: {\"skill\": \"<name-or-none>\"} on a single line.",
   "  No prose, no code fences, no extra fields.",
   "- Always use lowercase JSON keys and string values.",
@@ -118,7 +131,10 @@ export async function selectSkillForTurn(
     .map((m) => `- ${m.name}: ${oneLine(m.description)}`)
     .join("\n");
   const channelLine = channel ? `\nChannel: ${channel}` : "";
-  const userBlock = `Skills:\n${skillsBlock}${channelLine}\n\nUser message:\n${oneLine(message)}`;
+  const routingBlock = input.routingContext
+    ? `\n\nRouting context (structured continuity, derived from recent turns):\n${formatRoutingContextForSelector(input.routingContext)}`
+    : "";
+  const userBlock = `Skills:\n${skillsBlock}${channelLine}${routingBlock}\n\nUser message:\n${oneLine(message)}`;
 
   let raw: string;
   try {

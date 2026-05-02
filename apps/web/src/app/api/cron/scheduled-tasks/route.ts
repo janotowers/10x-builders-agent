@@ -177,6 +177,7 @@ async function runTask(
       integrations,
       githubToken,
       userTimezone: profile.timezone,
+      userName: profile.name,
       userEmail: profile.email,
       userPhone: profile.phone,
       businessBrain: profile.business_brain ?? {},

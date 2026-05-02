@@ -36,12 +36,84 @@ import {
   executeWriteFile,
   executeEditFile,
 } from "./fileTools";
-import { executeBigQueryQuery } from "./bigquery-adapter";
+import {
+  executeBigQueryQuery,
+  type BigQueryParamValue,
+  type BigQueryRunArgs,
+  type BigQueryRunResult,
+} from "./bigquery-adapter";
 import { readSkillReference } from "./skill-references";
 import { defaultSkillsRoot } from "../skills/runtime";
 import type { ToolContext } from "./tool-context";
 
 export type { ToolContext } from "./tool-context";
+
+type BigQueryToolInput = {
+  sql: string;
+  project_id?: string;
+  location?: string;
+  max_results?: number;
+  params?: Record<string, BigQueryParamValue>;
+};
+
+/**
+ * Tenant hardening for `bigquery_run_query`.
+ *
+ * The company-data skill requires the tenant filter to be parameterized
+ * (`u.organization_id = @organization_id` with `params.organization_id`).
+ * LLMs sometimes inline the literal tenant id after reading the system
+ * prompt. That is technically read-only, but it weakens auditability and
+ * trains the wrong pattern. We reject that exact literal and let the model
+ * retry with the parameterized form.
+ *
+ * If the model already used `@organization_id` but forgot `params`, we can
+ * safely fill it from the trusted server-side Business Brain context.
+ */
+export function prepareBigQueryRunArgs(
+  input: BigQueryToolInput,
+  ctx: Pick<ToolContext, "tenantOrganizationId">
+): BigQueryRunArgs | BigQueryRunResult {
+  const tenantOrgId = ctx.tenantOrganizationId?.trim();
+  if (!tenantOrgId) {
+    return {
+      sql: input.sql,
+      projectId: input.project_id,
+      location: input.location,
+      maxResults: input.max_results,
+      params: input.params,
+    };
+  }
+
+  if (sqlContainsLiteral(input.sql, tenantOrgId)) {
+    return {
+      status: "validation_error",
+      error:
+        "tenant organization_id must be passed as a named parameter: use `u.organization_id = @organization_id` and `params: { organization_id: ... }` instead of inlining the literal value.",
+    };
+  }
+
+  const params = { ...(input.params ?? {}) };
+  if (sqlUsesNamedParam(input.sql, "organization_id") && params.organization_id == null) {
+    params.organization_id = tenantOrgId;
+  }
+
+  return {
+    sql: input.sql,
+    projectId: input.project_id,
+    location: input.location,
+    maxResults: input.max_results,
+    params,
+  };
+}
+
+function sqlUsesNamedParam(sql: string, name: string): boolean {
+  return new RegExp(`@${name}(?![A-Za-z0-9_])`, "i").test(sql);
+}
+
+function sqlContainsLiteral(sql: string, literal: string): boolean {
+  const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(['"])${escaped}\\1`).test(sql);
+}
 
 function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   const setting = ctx.enabledTools.find((t) => t.tool_id === toolId);
@@ -240,13 +312,11 @@ export function buildLangChainTools(ctx: ToolContext) {
             input,
             false
           );
-          const result = await executeBigQueryQuery({
-            sql: input.sql,
-            projectId: input.project_id,
-            location: input.location,
-            maxResults: input.max_results,
-            params: input.params,
-          });
+          const prepared = prepareBigQueryRunArgs(input, ctx);
+          const result =
+            "status" in prepared
+              ? prepared
+              : await executeBigQueryQuery(prepared);
           const status: "executed" | "failed" =
             result.status === "ok" ? "executed" : "failed";
           await updateToolCallStatus(

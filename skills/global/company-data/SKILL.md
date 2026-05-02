@@ -11,7 +11,7 @@ requires_tenant_context: true
 guardrails: |
   Read-only: only SELECT and WITH...SELECT queries. The bigquery_run_query validator rejects DDL/DML.
   Mandatory tenant filter — see "Tenant filter" below. NEVER query without applying it (unless [Contexto de tenant] explicitly says you are in MODO ADMIN UNGGA).
-  Always pass values via `params` (e.g. `@organization_id`), never inline them in the SQL string.
+  Always pass values via `params` (e.g. `@organization_id`), never inline them in the SQL string. The tool may reject literal tenant ids and ask you to retry with params.
   If bigquery_run_query returns status="not_configured", stop and tell the user the warehouse is not connected yet — do NOT invent numbers.
 ---
 
@@ -26,6 +26,11 @@ a business question; you turn it into one query, run it, answer.
 
 1. **Read the user's question** and identify the **dominio** (one of:
    `users`, `properties`, `leads`, `appointments`, `deals`, `messages`).
+   For `leads creados` / lead-count questions by period, use the inline
+   canonical pattern `## Quick patterns → A0` below or load
+   `read_skill_reference("fewshots-leads")` before writing SQL. Never invent
+   a `firestore_leads.leads_light` table; leads live in
+   `mongo_data.leads_light`.
    If you are uncertain about which tables/columns/joins to use, **load
    the relevant references** with `read_skill_reference` (see "Reference
    index" below). Do not guess schema or write multi-line JOIN logic from
@@ -39,7 +44,10 @@ a business question; you turn it into one query, run it, answer.
    timezone for date bucketing (`America/Mexico_City` por defecto).
 4. **Use parameters, not string interpolation.** Pass tenant id, dates,
    and any value derived from the user's question via `params: { ... }`
-   and reference them in SQL as `@name`.
+   and reference them in SQL as `@name`. For tenant filters this means
+   `u.organization_id = @organization_id` plus
+   `params: { "organization_id": "<value from [Contexto de tenant]>" }`;
+   do not paste the literal `organization_id` into the SQL.
 5. **Validate the SQL** mentally against the rules in `## SQL rules`
    below before submitting. The tool's validator will reject anything
    dangerous, but a clean handoff avoids round-trips.
@@ -53,7 +61,8 @@ a business question; you turn it into one query, run it, answer.
      statements, a forbidden keyword smuggled in a string). Retry once.
    - `execution_error` → quote the error in the user's language, suggest
      the most likely fix (table name typo, missing column, type mismatch).
-     Stop. Do not retry blindly.
+     Stop unless you can make ONE concrete correction from a reference you
+     just loaded. Never chain multiple BigQuery retries after syntax errors.
 8. **Summarize** using the template in `## Output template` below.
    Always include the SQL you ran in a fenced block at the end so the
    user can audit or reuse it.
@@ -112,7 +121,27 @@ Each `fewshots-<dominio>` file has three sections:
 
 ## Quick patterns (inline; load fewshots-* for full ones)
 
-### Pattern A — count of an entity in a period (with tenant filter)
+### Pattern A0 — leads creados en un período (canonical fast path)
+
+Use this exact shape for questions like "cuántos leads tuvimos en abril" or
+"y en febrero?". Do not use `firestore_leads.leads_light` (it does not exist).
+If you need variants, load `fewshots-leads`.
+
+```sql
+WITH user_ids AS (
+  SELECT u.document_id AS user_id
+  FROM `ungga-full.firestore_users.users_light` u
+  WHERE (u.is_test IS NULL OR u.is_test = FALSE)
+    AND u.organization_id = @organization_id
+)
+SELECT COUNT(DISTINCT l.lead_id) AS leads_creados
+FROM `ungga-full.mongo_data.leads_light` l
+JOIN user_ids u ON REPLACE(l.owner_firebase_id, 'users/', '') = u.user_id
+WHERE DATE(l.created_at, 'America/Mexico_City') >= @start_date
+  AND DATE(l.created_at, 'America/Mexico_City') <  @end_date;
+```
+
+### Pattern A — deals creados en un período (with tenant filter)
 
 ```sql
 WITH user_ids AS (

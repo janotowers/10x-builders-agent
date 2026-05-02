@@ -17,6 +17,16 @@
 
 ## Basic patterns
 
+> **Tabla canónica de leads**: usa siempre
+> `ungga-full.mongo_data.leads_light`. No existe
+> `firestore_leads.leads_light`.
+>
+> **Fecha de creación**: en el schema actual `created_at` está expuesto como
+> `TIMESTAMP`; para conteos simples por período usa
+> `DATE(l.created_at, 'America/Mexico_City')`. Sólo usa la normalización
+> compleja de `conventions.md` si BigQuery devuelve un error de tipo o si el
+> análisis realmente necesita tolerar formatos históricos mixtos.
+
 ### B1. Leads creados en un período
 
 ```sql
@@ -25,24 +35,12 @@ WITH user_ids AS (
   FROM `ungga-full.firestore_users.users_light` u
   WHERE (u.is_test IS NULL OR u.is_test = FALSE)
     AND u.organization_id = @organization_id
-),
-leads_norm AS (
-  SELECT
-    l.lead_id,
-    l.owner_firebase_id,
-    COALESCE(
-      SAFE_CAST(l.created_at AS TIMESTAMP),
-      SAFE.TIMESTAMP(CAST(l.created_at AS STRING)),
-      SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%E*S', CAST(l.created_at AS STRING), 'America/Mexico_City'),
-      TIMESTAMP_SECONDS(SAFE_CAST(CAST(l.created_at AS STRING) AS INT64))
-    ) AS created_at_norm
-  FROM `ungga-full.mongo_data.leads_light` l
 )
 SELECT COUNT(DISTINCT l.lead_id) AS leads_creados
-FROM leads_norm l
+FROM `ungga-full.mongo_data.leads_light` l
 JOIN user_ids u ON REPLACE(l.owner_firebase_id, 'users/', '') = u.user_id
-WHERE DATE(l.created_at_norm, 'America/Mexico_City') >= @start_date
-  AND DATE(l.created_at_norm, 'America/Mexico_City') <  @end_date;
+WHERE DATE(l.created_at, 'America/Mexico_City') >= @start_date
+  AND DATE(l.created_at, 'America/Mexico_City') <  @end_date;
 ```
 
 ### B2. Leads creados por día (serie temporal)
@@ -53,26 +51,14 @@ WITH user_ids AS (
   FROM `ungga-full.firestore_users.users_light` u
   WHERE (u.is_test IS NULL OR u.is_test = FALSE)
     AND u.organization_id = @organization_id
-),
-leads_norm AS (
-  SELECT
-    l.lead_id,
-    l.owner_firebase_id,
-    COALESCE(
-      SAFE_CAST(l.created_at AS TIMESTAMP),
-      SAFE.TIMESTAMP(CAST(l.created_at AS STRING)),
-      SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%E*S', CAST(l.created_at AS STRING), 'America/Mexico_City'),
-      TIMESTAMP_SECONDS(SAFE_CAST(CAST(l.created_at AS STRING) AS INT64))
-    ) AS created_at_norm
-  FROM `ungga-full.mongo_data.leads_light` l
 )
 SELECT
-  DATE(l.created_at_norm, 'America/Mexico_City') AS dia,
-  COUNT(DISTINCT l.lead_id)                       AS leads
-FROM leads_norm l
+  DATE(l.created_at, 'America/Mexico_City') AS dia,
+  COUNT(DISTINCT l.lead_id)                 AS leads
+FROM `ungga-full.mongo_data.leads_light` l
 JOIN user_ids u ON REPLACE(l.owner_firebase_id, 'users/', '') = u.user_id
-WHERE DATE(l.created_at_norm, 'America/Mexico_City') >= @start_date
-  AND DATE(l.created_at_norm, 'America/Mexico_City') <  @end_date
+WHERE DATE(l.created_at, 'America/Mexico_City') >= @start_date
+  AND DATE(l.created_at, 'America/Mexico_City') <  @end_date
 GROUP BY dia
 ORDER BY dia;
 ```

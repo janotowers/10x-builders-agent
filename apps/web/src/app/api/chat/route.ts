@@ -28,7 +28,7 @@ export async function POST(request: Request) {
     const { data: profile } = await supabase
       .from("profiles")
       .select(
-        "agent_system_prompt, agent_name, timezone, email, phone, business_brain, is_ungga_admin"
+        "name, agent_system_prompt, agent_name, timezone, email, phone, business_brain, is_ungga_admin"
       )
       .eq("id", user.id)
       .single();
@@ -130,6 +130,7 @@ export async function POST(request: Request) {
       })),
       githubToken,
       userTimezone: (profile?.timezone as string) ?? undefined,
+      userName: (profile?.name as string | null) ?? null,
       userEmail: (profile?.email as string | null) ?? null,
       userPhone: (profile?.phone as string | null) ?? null,
       businessBrain:

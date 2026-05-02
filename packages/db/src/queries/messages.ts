@@ -26,8 +26,11 @@ export async function getSessionMessages(
     .from("agent_messages")
     .select("*")
     .eq("session_id", sessionId)
-    .order("created_at", { ascending: true })
+    // Fetch the most recent rows first; applying `limit` to ascending order
+    // would return the oldest messages and lose the immediate conversation
+    // context ("and in March" after "leads in April").
+    .order("created_at", { ascending: false })
     .limit(limit);
   if (error) throw error;
-  return (data ?? []) as AgentMessage[];
+  return ((data ?? []) as AgentMessage[]).reverse();
 }

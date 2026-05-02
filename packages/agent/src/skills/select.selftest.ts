@@ -243,6 +243,33 @@ async function testPromptIncludesChannelWhenProvided(): Promise<void> {
   assert.ok(/Channel:\s*telegram/.test(promptText));
 }
 
+async function testPromptIncludesRoutingContextWhenProvided(): Promise<void> {
+  const a = mkSkill("company-data", "Warehouse questions. Use when KPIs.");
+  const reg = buildRegistryFromRecords([a]);
+  const model = stubModel(['{"skill":"company-data"}']);
+  await selectSkillForTurn({
+    userMessage: "y en febrero?",
+    registry: reg,
+    model,
+    routingContext: {
+      currentMessage: "y en febrero?",
+      isContinuation: true,
+      lastActiveSkill: "company-data",
+      lastDomain: "leads",
+      lastMetric: "count",
+      lastPeriod: "abril 2026",
+      lastTenantName: "Alebrixe",
+      recentTurnSummary: "Recent leads turn for abril 2026",
+      evidence: ["user: cuantos leads tuvimos en abril?"],
+      confidence: "high",
+    },
+  });
+  const promptText = String(model.calls[0]?.[1]?.content ?? "");
+  assert.ok(promptText.includes("Routing context"));
+  assert.ok(promptText.includes('"lastActiveSkill": "company-data"'));
+  assert.ok(promptText.includes('"lastDomain": "leads"'));
+}
+
 async function main(): Promise<void> {
   testParseStrictJson();
   testParseToleratesFences();
@@ -257,7 +284,8 @@ async function main(): Promise<void> {
   await testModelErrorFallsBackToNone();
   await testCandidateFilterRespected();
   await testPromptIncludesChannelWhenProvided();
-  console.log("skills/select.selftest: all 13 cases passed");
+  await testPromptIncludesRoutingContextWhenProvided();
+  console.log("skills/select.selftest: all 14 cases passed");
 }
 
 main().catch((e) => {

@@ -1,6 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SkillRoutingContext } from "./skills/routing-context";
 
 /**
  * Log ejecutivo tipo "dashboard" — un bloque consolidado por cada turno de
@@ -133,6 +134,9 @@ export interface TurnSummaryInput {
     /** Tamaño del registro al momento del turno. */
     registrySize?: number;
   };
+
+  /** Structured continuity context passed to the skill selector. */
+  routingContext?: SkillRoutingContext;
 
   /**
    * Bloque `[Contexto de tenant]` (V1-C-α). `applied=false` cuando la
@@ -344,6 +348,9 @@ function formatSkillSelectionLines(
     lines.push(row("active", `none  (reason=${s.reason ?? "unknown"})`));
   } else {
     lines.push(row("active", s.active));
+    if (s.reason) {
+      lines.push(row("selection_reason", s.reason));
+    }
     if (typeof s.requiresTenantContext === "boolean") {
       lines.push(
         row("requires_tenant", s.requiresTenantContext ? "true" : "false")
@@ -363,6 +370,34 @@ function formatSkillSelectionLines(
     );
   } else if (typeof s.registrySize === "number") {
     lines.push(row("registry", `size=${s.registrySize}`));
+  }
+  return lines;
+}
+
+function formatRoutingContextLines(
+  ctx: TurnSummaryInput["routingContext"]
+): string[] {
+  const lines: string[] = ["[ROUTING CONTEXT]"];
+  if (!ctx) {
+    lines.push(row("context", "n/a"));
+    return lines;
+  }
+  lines.push(row("continuation", ctx.isContinuation ? "true" : "false"));
+  lines.push(row("confidence", ctx.confidence));
+  const parts = [
+    ctx.lastActiveSkill ? `skill=${ctx.lastActiveSkill}` : undefined,
+    ctx.lastDomain ? `domain=${ctx.lastDomain}` : undefined,
+    ctx.lastMetric ? `metric=${ctx.lastMetric}` : undefined,
+    ctx.lastPeriod ? `period=${ctx.lastPeriod}` : undefined,
+    ctx.lastTenantName ? `tenant=${ctx.lastTenantName}` : undefined,
+  ].filter((p): p is string => Boolean(p));
+  lines.push(row("state", parts.length > 0 ? parts.join("  ") : "(none)"));
+  if (ctx.recentTurnSummary) {
+    lines.push(row("summary", ctx.recentTurnSummary));
+  }
+  const maxEvidence = isVerbose() ? 4 : 2;
+  for (const item of (ctx.evidence ?? []).slice(0, maxEvidence)) {
+    lines.push(`      · ${truncate(item, 160)}`);
   }
   return lines;
 }
@@ -486,6 +521,11 @@ function buildBlock(input: TurnSummaryInput): string {
 
   lines.push("");
   for (const line of formatSkillSelectionLines(input.skillSelection)) {
+    lines.push(line);
+  }
+
+  lines.push("");
+  for (const line of formatRoutingContextLines(input.routingContext)) {
     lines.push(line);
   }
 

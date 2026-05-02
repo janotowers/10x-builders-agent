@@ -39,6 +39,16 @@ import {
   getCachedSkillsRegistryRoot,
 } from "./skills/runtime";
 import { selectSkillForTurn } from "./skills/select";
+import {
+  isShortMonthPeriodFollowUp,
+  recentMessagesSuggestCompanyData,
+} from "./skills/month-followup";
+import {
+  deriveSkillRoutingContext,
+  shouldRouteFromContinuity,
+} from "./skills/routing-context";
+import { sanitizeCompanyDataHistory } from "./skills/sanitize-history";
+import { resolveSkill } from "./skills/resolve";
 import type { ResolvedSkill } from "./skills/types";
 import { appendTenantContextBlock } from "./business-brain/tenant-context";
 import { toolRequiresConfirmation } from "./tools/catalog";
@@ -64,6 +74,11 @@ export interface AgentInput {
   githubToken?: string;
   /** Profile timezone for interpreting/creating calendar events. */
   userTimezone?: string;
+  /**
+   * Profile display name (`profiles.name`). Canonical; when present, the
+   * agent knows who the user is without asking or relying on long-term memory.
+   */
+  userName?: string | null;
   /**
    * Profile email (from `profiles.email`). Canonical; when present, the agent
    * knows it without asking the user. Not extracted to long-term memory.
@@ -140,6 +155,19 @@ function normalizeMessageContentToString(raw: unknown): string {
       .trim();
   }
   return raw ? String(raw) : "";
+}
+
+function trimTrailingUnansweredToolCall(messages: BaseMessage[]): BaseMessage[] {
+  const trimmed = [...messages];
+  while (trimmed.length > 0) {
+    const last = trimmed[trimmed.length - 1];
+    if (last instanceof AIMessage && last.tool_calls?.length) {
+      trimmed.pop();
+      continue;
+    }
+    break;
+  }
+  return trimmed;
 }
 
 /** Mismos defaults que `memory_injection_node` (solo para turn_summary / eco en log). */
@@ -505,6 +533,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     integrations,
     githubToken,
     userTimezone,
+    userName,
     userEmail,
     userPhone,
     channel,
@@ -521,6 +550,15 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     ? DEFAULT_CRON_TEMPERATURE
     : DEFAULT_INTERACTIVE_TEMPERATURE;
   const model = createChatModel({ temperature: modelTemperature });
+
+  const priorRaw = input.autoApproveTools
+    ? []
+    : await getSessionMessages(db, sessionId, 12);
+  const routingContext = deriveSkillRoutingContext(
+    priorRaw,
+    message,
+    input.businessBrain
+  );
 
   // ── V1-B pre-graph: skill selection ────────────────────────────────
   // Run BEFORE buildLangChainTools so that `isToolAvailable()` can
@@ -544,6 +582,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           registry,
           model: selectorModel,
           channel,
+          routingContext,
         });
         if (selection.kind === "active") {
           activeSkill = selection.resolved;
@@ -554,6 +593,40 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
             active: selection.skillId,
             allowedTools: selection.resolved.allowedTools,
             requiresTenantContext: selection.resolved.requiresTenantContext,
+            registryRoot,
+            registrySize,
+          };
+        } else if (
+          !input.autoApproveTools &&
+          shouldRouteFromContinuity(routingContext)
+        ) {
+          const skillId = routingContext.lastActiveSkill ?? "company-data";
+          activeSkill = await resolveSkill(skillId, registry);
+          console.log(
+            `[skills] active=${skillId} reason=routing_context session=${sessionId} channel=${channel ?? "web"}`
+          );
+          skillSelectionSnapshot = {
+            active: skillId,
+            reason: "routing_context",
+            allowedTools: activeSkill.allowedTools,
+            requiresTenantContext: activeSkill.requiresTenantContext,
+            registryRoot,
+            registrySize,
+          };
+        } else if (
+          !input.autoApproveTools &&
+          isShortMonthPeriodFollowUp(message) &&
+          recentMessagesSuggestCompanyData(priorRaw)
+        ) {
+          activeSkill = await resolveSkill("company-data", registry);
+          console.log(
+            `[skills] active=company-data reason=follow_up_month session=${sessionId} channel=${channel ?? "web"}`
+          );
+          skillSelectionSnapshot = {
+            active: "company-data",
+            reason: "follow_up_month",
+            allowedTools: activeSkill.allowedTools,
+            requiresTenantContext: activeSkill.requiresTenantContext,
             registryRoot,
             registrySize,
           };
@@ -604,6 +677,10 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     lastUserMessage: message ?? "",
     activeSkillAllowedTools: activeSkill?.allowedTools,
     activeSkillName: activeSkill?.rootName,
+    tenantOrganizationId:
+      activeSkill?.requiresTenantContext && !input.isUnggaAdmin
+        ? input.businessBrain?.identity?.organization_id?.trim() || undefined
+        : undefined,
   });
 
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
@@ -615,11 +692,23 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // Solo se incluye cuando hay al menos un dato; si los campos están vacíos
   // el agente pedirá al usuario en el momento o no los conocerá.
   const userProfileLines: string[] = [];
+  if (userName && userName.trim()) {
+    userProfileLines.push(`- Nombre del usuario: ${userName.trim()}`);
+  }
   if (userEmail && userEmail.trim()) {
     userProfileLines.push(`- Email del usuario: ${userEmail.trim()}`);
   }
   if (userPhone && userPhone.trim()) {
     userProfileLines.push(`- Teléfono del usuario: ${userPhone.trim()}`);
+  }
+  const businessBrainIdentity = (input.businessBrain ?? {}).identity;
+  const orgName = businessBrainIdentity?.org_name?.trim();
+  const orgId = businessBrainIdentity?.organization_id?.trim();
+  if (orgName) {
+    userProfileLines.push(`- Inmobiliaria del usuario: ${orgName}`);
+  }
+  if (orgId) {
+    userProfileLines.push(`- organization_id de la inmobiliaria: ${orgId}`);
   }
   const userProfileBlock =
     userProfileLines.length > 0
@@ -748,6 +837,26 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 - "en N minutos" o "hoy a las HH:MM" → schedule_type="one_time" con run_at en ISO 8601 con offset de la zona del usuario.`;
   }
 
+  if (
+    !input.autoApproveTools &&
+    !resumeDecision &&
+    activeSkill?.rootName === "company-data" &&
+    message &&
+    toolNamesAvailable.has("bigquery_run_query")
+  ) {
+    effectiveSystemPrompt =
+      effectiveSystemPrompt.trimEnd() +
+      `
+
+[ATAJO — COMPANY-DATA ESTE TURNO]
+- REGLA #1 — UN SOLO PERÍODO POR TURNO. El mensaje actual del usuario es: "${message.replace(/\n/g, " ").slice(0, 200)}". Cuenta los meses/períodos nombrados explícitamente en ESE texto. Si nombra UN solo mes, debes emitir EXACTAMENTE UN tool_call de \`bigquery_run_query\` y devolver UN solo número en la respuesta final. NO emitas tool_calls paralelos para meses adicionales aunque el historial muestre que en turnos pasados hayas devuelto varios meses. Está prohibido contestar con bloques tipo "Total de leads en X" + "Total de leads en Y" cuando el usuario sólo preguntó por X.
+- REGLA #2 — Antes de emitir tool_calls, escribe mentalmente la lista de períodos del MENSAJE ACTUAL. Si la lista tiene 1 elemento, sólo 1 tool_call. Si la lista tiene 2+ elementos (p. ej. "compárame abril vs marzo"), entonces 2 tool_calls está permitido.
+- REGLA #3 — IGNORA respuestas previas del asistente que mezclaron meses extra a los preguntados: son bugs antiguos. No copies su formato. Cualquier mensaje anterior marcado como "[respuesta histórica descartada — …]" debe tratarse como inexistente.
+- El selector activó la skill \`company-data\`. Debes resolver este turno con al menos un tool_call a \`bigquery_run_query\` antes de responder. No contestes métricas usando respuestas previas del historial ni memoria.
+- Si el usuario usa una continuación breve ("y en marzo", "y en abril", "¿y ese mes?"), interpreta el dominio y métrica desde el turno anterior inmediato, pero calcula el nuevo período desde el texto actual y consulta SOLO ese período.
+- Si el texto actual menciona explícitamente un mes/período, ese período gana sobre cualquier período anterior.`;
+  }
+
   // DEBUG: descomentar las siguientes 2 líneas para ver el system prompt completo en la terminal del servidor
   // console.log("=== SYSTEM PROMPT ===\n", effectiveSystemPrompt, "\n=== END ===");
   // console.log("=== TOOLS REGISTERED ===", lcTools.map((t) => t.name).join(", "), "=== END ===");
@@ -759,10 +868,18 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // la historia está llena de prompts/respuestas repetidas (incluyendo posibles
   // "Un momento, por favor" antiguos) que confunden al modelo y lo hacen
   // imitar el patrón fallido. Cada ejecución cron debe arrancar limpia.
-  const priorRaw = input.autoApproveTools
-    ? []
-    : await getSessionMessages(db, sessionId, 12);
-  const priorMessages: BaseMessage[] = priorRaw.map((m) => {
+  //
+  // Cuando la skill activa es company-data, además sanitizamos en la VISTA del
+  // modelo (no en DB) las respuestas de assistant que mezclaron varios meses
+  // cuando el usuario sólo preguntó por uno. Sin esto el modelo imita el
+  // patrón "respondí dos meses la última vez" y vuelve a hacer múltiples
+  // tool_calls de bigquery_run_query en este turno aunque el [ATAJO] lo
+  // prohíba expresamente. Ver `skills/sanitize-history.ts`.
+  const priorRawForModel =
+    activeSkill?.rootName === "company-data"
+      ? sanitizeCompanyDataHistory(priorRaw)
+      : priorRaw;
+  const priorMessages: BaseMessage[] = priorRawForModel.map((m) => {
     if (m.role === "user") return new HumanMessage(m.content);
     if (m.role === "assistant") return new AIMessage(m.content);
     return new HumanMessage(m.content);
@@ -780,6 +897,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   }
 
   const toolCallNames: string[] = [];
+  let bigQueryExecutionErrorCount = 0;
 
   async function agentNode(
     state: GraphStateType
@@ -951,12 +1069,62 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           }
         }
 
+        if (
+          activeSkill?.rootName === "company-data" &&
+          tc.name === "bigquery_run_query" &&
+          bigQueryExecutionErrorCount >= 2
+        ) {
+          const retryLimitPayload = {
+            status: "validation_error",
+            error:
+              "BigQuery retry limit reached for this turn after repeated execution_error results. Stop retrying tools, explain the SQL problem briefly, and ask the user to let the developer inspect the generated query/reference pattern.",
+          };
+          try {
+            const record = await createToolCall(
+              db,
+              state.sessionId,
+              tc.name,
+              (tc.args as Record<string, unknown>) ?? {},
+              false
+            );
+            await updateToolCallStatus(
+              db,
+              record.id,
+              "failed",
+              retryLimitPayload
+            );
+          } catch (e) {
+            console.error("[agent] bigquery retry-limit audit row failed:", e);
+          }
+          results.push(
+            new ToolMessage({
+              content: JSON.stringify(retryLimitPayload),
+              tool_call_id: tc.id!,
+            })
+          );
+          continue;
+        }
+
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const result = await (matchingTool as any).invoke(tc.args);
         const resultStr = String(result);
         results.push(
           new ToolMessage({ content: resultStr, tool_call_id: tc.id! })
         );
+
+        if (
+          activeSkill?.rootName === "company-data" &&
+          tc.name === "bigquery_run_query"
+        ) {
+          try {
+            const parsed = JSON.parse(resultStr) as Record<string, unknown>;
+            if (parsed.status === "execution_error") {
+              bigQueryExecutionErrorCount += 1;
+            }
+          } catch {
+            // Non-JSON tool output is handled by the normal audit path below.
+          }
+        }
 
         if (trackedToolCallId) {
           try {
@@ -1189,7 +1357,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       try {
         const wrapupResponse = await model.invoke([
           new SystemMessage(FORCED_TEXT_WRAPUP_INSTRUCTION),
-          ...finalState.messages,
+          ...trimTrailingUnansweredToolCall(finalState.messages),
         ]);
         const wrapupText = normalizeMessageContentToString(
           (wrapupResponse as AIMessage).content
@@ -1292,6 +1460,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     },
     longTermRetrieval: retrieval,
     memorySearchEnv: { topK: memTopK, matchThreshold: memThresh },
+    routingContext,
     skillSelection: skillSelectionSnapshot,
     tenantContext: tenantContextSnapshot,
     promptSnapshot: buildPromptSnapshotFromMessages(finalState.messages),

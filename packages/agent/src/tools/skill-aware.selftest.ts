@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import type { DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration } from "@agents/types";
-import { buildLangChainTools, type ToolContext } from "./adapters";
+import {
+  buildLangChainTools,
+  prepareBigQueryRunArgs,
+  type ToolContext,
+} from "./adapters";
 
 const ALL_TOOL_IDS = [
   "get_user_preferences",
@@ -128,6 +132,37 @@ function testActiveSkillDoesNotBypassExistingFilters(): void {
   assert.ok(got.includes("get_user_preferences"));
 }
 
+// ── Test 7: tenant BigQuery helper rejects literal organization_id so the
+//    model retries with @organization_id + params.
+function testBigQueryRejectsLiteralTenantId(): void {
+  const result = prepareBigQueryRunArgs(
+    {
+      sql: "SELECT COUNT(*) FROM `proj.ds.users` u WHERE u.organization_id = 'users/abc'",
+    },
+    { tenantOrganizationId: "users/abc" }
+  );
+  assert.ok("status" in result);
+  assert.equal(result.status, "validation_error");
+  assert.match(result.error, /named parameter/i);
+}
+
+// ── Test 8: if SQL already uses @organization_id but the model forgot
+//    params, the trusted server-side tenant context fills it in.
+function testBigQueryFillsMissingTenantParam(): void {
+  const result = prepareBigQueryRunArgs(
+    {
+      sql: "SELECT COUNT(*) FROM `proj.ds.users` u WHERE u.organization_id = @organization_id",
+      params: { start_date: "2026-04-01" },
+    },
+    { tenantOrganizationId: "users/abc" }
+  );
+  assert.ok(!("status" in result));
+  assert.deepEqual(result.params, {
+    start_date: "2026-04-01",
+    organization_id: "users/abc",
+  });
+}
+
 function main(): void {
   testNoSkillDoesNotNarrow();
   testEmptyAllowlistDoesNotNarrow();
@@ -135,7 +170,9 @@ function main(): void {
   testAllowlistDoesNotResurrectDisabledTools();
   testAllowlistWithUnknownIdIsHarmless();
   testActiveSkillDoesNotBypassExistingFilters();
-  console.log("tools/skill-aware.selftest: all 6 cases passed");
+  testBigQueryRejectsLiteralTenantId();
+  testBigQueryFillsMissingTenantParam();
+  console.log("tools/skill-aware.selftest: all 8 cases passed");
 }
 
 main();

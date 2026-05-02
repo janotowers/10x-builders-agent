@@ -32,6 +32,12 @@ export interface ToolContext {
    */
   activeSkillName?: string;
   /**
+   * Tenant organization id resolved from Business Brain for the active turn.
+   * Used by tenant-aware tools (currently BigQuery) to enforce parameterized
+   * tenant filters instead of letting the model inline this value in SQL.
+   */
+  tenantOrganizationId?: string;
+  /**
    * Absolute path to the workspace root used to resolve skill references.
    * Defaults to `defaultSkillsRoot()` when omitted; tests can override.
    */

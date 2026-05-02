@@ -107,7 +107,7 @@ Los visitantes **no** hacen OAuth con Google. Las rutas bajo `/api/public/bookin
 4. Se cargan `profile`, `user_tool_settings` e `integrations`.
 5. Se obtiene `githubToken` (descifrado) y `googleCalendarAccessToken` (con refresh si aplica).
 6. Se filtran las tools disponibles (allowlist + integración activa; la tool `bash` además exige `BASH_TOOL_ENABLED=true` en el servidor, y `read_file`/`write_file`/`edit_file` exigen `FILE_TOOLS_ENABLED=true` + `FILE_TOOLS_ROOT`).
-7. Se invoca `runAgent()` con `userTimezone` desde `profiles.timezone`.
+7. Se invoca `runAgent()` con `userTimezone` desde `profiles.timezone`. El runtime puede seleccionar una skill pre-graph antes de compilar el loop; el racional y trade-offs frente al enfoque Claude Code están documentados en [`docs/tools-design/skill-routing.md`](tools-design/skill-routing.md).
 8. Si una tool tiene riesgo medio/alto → `interrupt()` en el grafo, `pendingConfirmation` persistido (incl. `checkpointThreadId` para resume); confirmación en web o Telegram vía `runAgent({ resumeDecision })`.
 
 ### Herramienta `bash` (host del servidor)

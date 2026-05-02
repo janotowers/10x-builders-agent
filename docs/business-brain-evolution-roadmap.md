@@ -10,13 +10,13 @@ Canonical roadmap for evolving the assistant (Skills, Heartbeat, Business Brain)
 
 | Phase | Focus |
 |-------|--------|
-| **V1-A** | Skill **directory** model (`SKILL.md` + optional `references/`, `assets/`); Anthropic-style frontmatter (name regex, `description` with “what + when”, body ≤ 5k tokens); composite `includes` opt-in; `scope` (business / personal / shared) |
-| **V1-B** | **Pre-graph skill selection in `runAgent`** (no new graph node); inject playbook into `effectiveSystemPrompt`; pre-filter `lcTools` before `bindTools`; `none` path is first-class; BigQuery atomic tool + `company-data` skill |
+| **V1-A** | Skill **directory** model (`SKILL.md` + optional `references/`, `assets/`); Anthropic-style frontmatter (name regex, `description` with “what + when”, body ≤ 5k tokens); progressive disclosure through internal domain references; composite `includes` opt-in; `scope` (business / personal / shared) |
+| **V1-B** | **Pre-graph skill selection in `runAgent`** (no new graph node); default to **one dominant skill per turn** or `none`; inject playbook into `effectiveSystemPrompt`; pre-filter `lcTools` before `bindTools`; BigQuery atomic tool + `company-data` skill |
 | **V1-C** | `business_brain` JSONB with **named slots** (identity / voice / context / operating_rules / heartbeat / bigquery); Heartbeat config (`enabled`, `interval_minutes` default 30, optional `model_id`); per-account checklist markdown; bundled default for lazy seeding |
 | **V1-D** | Add `'heartbeat'` to `agent_sessions.channel` CHECK; `heartbeat_runs` table; `POST /api/cron/heartbeat`; `runAgent({ channel: 'heartbeat' })` with cheap LLM (`HEARTBEAT_MODEL_ID`, e.g. MiniMax) and read-only allowlist; per-tick session row; no memory flush |
 | **V1-E** | Settings: skill toggles (`user_skill_settings`), Heartbeat UI, digest history |
 | **V2** | `account_skills` versioning, draft/active, admin UI + test harness |
-| **V3** | `organizations` + memberships + RLS; optional router/subagents |
+| **V3** | `organizations` + memberships + RLS; optional dynamic multi-skill router/subagents |
 
 ---
 
@@ -26,11 +26,13 @@ These are decisions taken after a final repo + best-practices review. Each has a
 
 | Decision | Default for V1 | Why |
 |----------|---------------|-----|
-| **Skill selection placement** | **Pre-graph**, inside `runAgent`, alongside the existing `effectiveSystemPrompt` build. **No new LangGraph node.** | `runAgent` already calls `buildLangChainTools` and `model.bindTools(lcTools)` **before** the graph compiles ([`packages/agent/src/graph.ts`](../packages/agent/src/graph.ts) ~L502). Filtering tools post-bind is invasive; selecting pre-graph keeps the change small, lets us pre-filter `lcTools`, and pre-append the playbook into the initial `SystemMessage`. The `agent ↔ tools` loop stays untouched. |
+| **Skill selection placement** | **Pre-graph**, inside `runAgent`, alongside the existing `effectiveSystemPrompt` build. **No new LangGraph node.** See the detailed rationale and Claude Code comparison in [`docs/tools-design/skill-routing.md`](tools-design/skill-routing.md). | `runAgent` already calls `buildLangChainTools` and `model.bindTools(lcTools)` **before** the graph compiles ([`packages/agent/src/graph.ts`](../packages/agent/src/graph.ts) ~L502). Filtering tools post-bind is invasive; selecting pre-graph keeps the change small, lets us pre-filter `lcTools`, and pre-append the playbook into the initial `SystemMessage`. The `agent ↔ tools` loop stays untouched. |
 | **Channel as canonical dispatch** | Add `'heartbeat'` to `agent_sessions.channel` CHECK; gate memory injection / flush / model selection on `state.channel`, not on `autoApproveTools`. | `autoApproveTools` should mean only “skip HITL because user pre-approved at scheduling time” — overloading it for cron-vs-interactive logic is fragile. The DB already has a `channel` column; reuse it. |
 | **Skill contract** | Anthropic Skills convention: directory `skills/global/<slug>/`, frontmatter (`name`, `description`, optional `scope`, `allowed_tools`, `includes`), body **≤ 500 lines / ≤ 5k tokens**, optional `references/` and `assets/`. | Aligns with [Anthropic Skills overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview) and [best practices](https://agentskills.io/skill-creation/best-practices). Keeps room for progressive disclosure later (extra `.md` files the agent can read on demand) without changing the contract. |
 | **Scripts in skills** | **Not supported in V1.** Optional `scripts/` directory is reserved for **V2+** when we have a sandbox. | Anthropic loads only script *output* into context via a code-execution sandbox we don’t have today. Allowing executable code from skill folders in V1 is a security risk and out of scope. |
-| **Composite skills (`includes`)** | Supported but **opt-in**; default authoring style is one **coherent** SKILL.md per task. | Anthropic explicitly warns against narrow skills that compose into bigger ones (overhead + conflicting instructions). `morning-operations`-style aggregation stays valid as the exception, not the rule. |
+| **Dominant skill default** | V1 selects **one dominant skill per turn** (or `none`). Multi-skill composition is explicit, not automatic. | Keeps tool scoping, tenant context, logs, and failure analysis simple. Most turns belong to one coherent procedure; dynamic multi-skill should arrive only after we have enough real multi-domain cases. |
+| **Internal skill subdomains** | Prefer one coherent skill with **internal references** before splitting into many micro-skills. For example, `company-data` owns the BigQuery safety rules and points to `references/fewshots-leads.md`, `references/fewshots-messages.md`, etc. | Matches Anthropic progressive disclosure: the selector chooses the domain skill once, then the agent loads only the relevant subdomain reference. Avoids duplicating critical rules like tenant filters across many skills. |
+| **Composite skills (`includes`)** | Supported but **opt-in**; use for named, intentional workflows that combine coherent skills. Prefer explicit composites before a free-form multi-skill selector. | Anthropic supports composing capabilities, but arbitrary combinations increase prompt size, conflicting instructions, and permission complexity. `morning-operations`-style aggregation stays valid as the exception, not the rule. |
 | **Selector model** | Same family as the compaction model (Haiku via OpenRouter); env override `SKILL_SELECTOR_MODEL_ID` if needed. | Avoids adding a third model dependency in V1. Selection only sees `name + description`, so a small model is enough. |
 | **Heartbeat model** | Cheap LLM via env `HEARTBEAT_MODEL_ID` (default a MiniMax-class slug); independent from selector and compaction models. | Low marginal cost is the whole point of cheap-model heartbeat. |
 | **Heartbeat session lifecycle** | **One `agent_sessions` row per tick** with `channel='heartbeat'`. Mirrors how cron creates per-task sessions. | Clean audit trail; trivial to query latest run; no lifetime management. |
@@ -91,6 +93,26 @@ The name **“HEARTBEAT.md”** remains useful as a **format/concept** (markdown
 - **Simple user request:** The same skill is selected; the model may issue **one** BigQuery tool call and answer. **Complex request:** Same skill; model uses **several** tool rounds (BigQuery + calendar + `get_user_preferences`, etc.) as allowed by **`allowed_tools` on that skill**.  
 You do **not** need separate “micro-skills” for every query shape—**one data skill** with a rich procedure is enough for V1; split later only if selection quality suffers.
 
+**Internal subdomains for `company-data`:** this skill should remain the
+dominant BigQuery skill and grow through **references**, not through many
+first-class skills like `leads-data`, `messages-data`, `appointments-data`,
+etc. The shared invariants (tenant filter, parameterized SQL, read-only SQL,
+timezone, output auditability, PII caution) belong in one place. Subdomain
+files should hold query patterns and examples:
+
+- `references/fewshots-leads.md` for lead counts, attended/interacted leads,
+  funnel and visit requests.
+- `references/fewshots-messages.md` plus `references/joins.md` for response
+  rates, conversations, country-agnostic phone/lead joins.
+- `references/fewshots-appointments.md`, `fewshots-properties.md`,
+  `fewshots-deals.md`, etc. for their own patterns.
+
+This is the Anthropic-style progressive-disclosure model: selector chooses
+`company-data`; the main agent loads only the reference(s) relevant to the
+question. It lowers token cost and cross-domain confusion without weakening
+the safety rules. It does **not** replace runtime guardrails for tenant
+filters or "one period per turn"; those remain enforced in prompts/tools.
+
 **Ordering:** BigQuery is a **priority early skill** (together with minimal OAuth/service account integration in `user_integrations` or env—implementation detail to design with your GCP setup).
 
 ---
@@ -124,13 +146,30 @@ Pure **Supabase dashboard** editing is acceptable only for **pilot/dev**; the pl
 
 ### 5) Composite skills (integrate atomic skills)
 
-**Yes — plan explicitly supports composite playbooks.**
+**Yes — plan explicitly supports composite playbooks, but they should be
+explicit and rare in V1.**
 
 - **Atomic skill:** One focused procedure + `allowed_tools` subset (e.g. “BigQuery query discipline”).  
 - **Composite skill:** Aggregates multiple atomic playbooks **without** a second agent. Options (can combine):  
   - **Frontmatter `includes: [slug-a, slug-b]`** — loader merges bodies **in order** and **unions** `allowed_tools` (with dedupe and a **max token** cap); **detect cycles** in metadata.  
   - **Single markdown file** with sections that *reference* named procedures (purely textual, no automatic include).  
 - **Runtime:** Still **one skill selection** → one injected context block (expanded composite); the **primary agent** and **one tool loop** orchestrate steps—**not** “skill A calls skill B” as separate LangGraph nodes in V1.
+
+**Recommended sequencing:**
+
+1. Prefer **one dominant skill** with internal references when the user intent
+   is inside one domain (e.g. all warehouse/BigQuery questions stay in
+   `company-data`).
+2. Add an **explicit composite skill** only for a named workflow that reliably
+   needs multiple coherent playbooks, e.g. `business-report` combining
+   `company-data` analysis with report/presentation formatting.
+3. Defer **dynamic multi-skill selection** (`skills: ["company-data",
+   "presentation"]`) until V3+ or until real usage shows repeated complex
+   requests that cannot be modeled as a dominant skill or explicit composite.
+
+Composite resolution must OR safety requirements (`requires_tenant_context`),
+union allowed tools carefully, preserve deterministic logs (`active=<composite>
+includes=a,b`), and fail closed on conflicts, cycles, or token cap overflows.
 
 ---
 
@@ -192,7 +231,7 @@ So: **“global” = standard system skills**; **“user-specific / company-spec
 **What changes (high level):**
 
 - **User/account context** on the profile (org or personal info, voice, markets, operating notes).
-- **Skills** — global first, per-account toggles; **composite** playbooks supported; **business + personal** scopes.
+- **Skills** — global first, per-account toggles; **one dominant skill per turn** by default; internal subdomain references for progressive disclosure; **explicit composite** playbooks supported; **business + personal** scopes.
 - **Atomic BigQuery tools** + a **company-data skill** for one-shot and multi-step analyses; **simple requests bypass skills** and call tools directly.
 - **Heartbeat** checklist **stored per account in Supabase** (markdown, same *idea* as OpenClaw’s HEARTBEAT.md); covers **work and personal** review items; **separate** from user **`schedule_task`** but similar cron plumbing.
 - **Settings UI** for Brain fields, Heartbeat, skill toggles (grouped by scope), and run history (staged).
@@ -208,8 +247,10 @@ So: **“global” = standard system skills**; **“user-specific / company-spec
 | Term | In plain language |
 |------|-------------------|
 | **Business Brain** | Umbrella for everything one user needs from their assistant — **work and personal**: context + playbooks + memory + periodic checklist. The brand stays even when the content is personal. |
-| **Skill** | A named playbook (optional **composite**); loaded **on demand**; limits which **tools** apply when active. Has a **`scope`** (business / personal / shared). |
+| **Skill** | A named playbook (optional **composite**); loaded **on demand**; limits which **tools** apply when active. Has a **`scope`** (business / personal / shared). V1 normally activates one dominant skill per turn. |
 | **Skill scope** | Descriptive label on each `SKILL.md`: `business`, `personal`, or `shared`. Used for **filtering and UI grouping**, not as a hard router. |
+| **Skill internal subdomain** | A reference file or section inside one skill for a narrower area of the same domain (e.g. `company-data/references/fewshots-leads.md`). Use this before splitting into micro-skills when shared guardrails still apply. |
+| **Composite skill** | A named skill that intentionally combines other playbooks via `includes` or explicit markdown sections. Use for recurring workflows, not arbitrary one-off combinations. |
 | **No-skill turn** | A turn where the pre-graph selection step returns **`none`**: no playbook is appended, the agent uses today’s tool rules. Best for one-shot tool uses (single BigQuery query, calendar lookup, chitchat). |
 | **Heartbeat** | **System** schedule that runs through **this account’s checklist** (markdown in DB); outputs digests; **not** the same as user `schedule_task`. |
 | **Heartbeat checklist (concept)** | Same role as OpenClaw’s **`HEARTBEAT.md`**: periodic review items (briefing, leads, inbox, …); **here it is per-user data in Supabase**, not one workspace file for all. |
@@ -307,9 +348,9 @@ The application is **already multi-user**. V1 continues **one profile = one busi
 | **Per-account Heartbeat checklist** in **Supabase** + `heartbeat_runs`; cron route | Heartbeat actions without approval (later) |
 | **Distinct from** `scheduled_tasks` | Merging Heartbeat rows into `scheduled_tasks` |
 | `business_brain` JSONB; staged **Settings UI** | Full org table + RBAC (V3) |
-| Optional **`user_skill_settings`** (or all-on until UI lands) | Router / subagents (V3) |
+| Optional **`user_skill_settings`** (or all-on until UI lands) | Dynamic multi-skill router / subagents (V3+) |
 
-**Flow:** Message or heartbeat tick → user/account context → **checklist or user message** → skill metadata → **select skill or `none`** (respect enabled toggles) → if active: resolve composite + inject playbook + narrow tools; if `none`: pass-through → agent → tools.
+**Flow:** Message or heartbeat tick → user/account context → **checklist or user message** → skill metadata → **select one dominant skill or `none`** (respect enabled toggles) → if active: resolve explicit composite if any + inject playbook + narrow tools; if `none`: pass-through → agent → tools.
 
 ---
 
@@ -319,7 +360,7 @@ Work **V1-A → V1-D**; **V1-E** UI can trail slightly.
 
 ### V1-A — Skill files, registry, **composite**
 
-**Outcome:** Playbooks as **directories** (Anthropic Skills convention); **metadata-first**; **lazy** bodies; **`includes`** merges with cycle checks and token cap.
+**Outcome:** Playbooks as **directories** (Anthropic Skills convention); **metadata-first**; **lazy** bodies; internal references for domain-level progressive disclosure; **`includes`** merges with cycle checks and token cap.
 
 #### Directory layout
 
@@ -361,6 +402,7 @@ Document these as guidance for whoever writes the first global skills (not deliv
 - **Gotchas section** with project-specific facts the model would otherwise get wrong (e.g. *“`leads.deleted_at IS NULL` filter is mandatory”*).
 - **Templates** for output shape (markdown report skeleton, table layout).
 - **Plan-validate-execute** for fragile flows — perfect fit for `company-data`: *(1) read schema, (2) draft SQL, (3) validate against schema, (4) execute, (5) summarize.*
+- **One coherent domain skill before micro-skills** — if several tasks share the same safety rules and tools, keep them under one skill and split by `references/` subdomain first. For BigQuery, `company-data` owns tenant/SQL invariants while `fewshots-leads`, `fewshots-messages`, etc. carry query patterns.
 - **Defaults, not menus** — pick one tool/library per skill; mention alternatives only as escape hatches.
 - **Match specificity to fragility** — be prescriptive on destructive/financial steps, looser on style.
 
@@ -370,7 +412,7 @@ Document these as guidance for whoever writes the first global skills (not deliv
 
 | Step | Action |
 |------|--------|
-| B1 | New module `packages/agent/src/skills/select.ts` exporting `selectSkillForTurn({ userId, message, registry, channel, db })` returning `{ skillId } \| { skillId: 'none' }`. **Inputs to the side model:** the latest `HumanMessage`, the **metadata-only** registry filtered by `user_skill_settings` (when the table exists), and `channel`. **Output:** `none` whenever confidence is low — that is the **default**. |
+| B1 | New module `packages/agent/src/skills/select.ts` exporting `selectSkillForTurn({ userId, message, registry, channel, db })` returning `{ skillId } \| { skillId: 'none' }`. **Inputs to the side model:** the latest `HumanMessage`, the **metadata-only** registry filtered by `user_skill_settings` (when the table exists), and `channel`. **Output:** one dominant skill or `none`; `none` whenever confidence is low — that is the **default**. Dynamic multi-skill arrays are deferred. |
 | B2 | Wire into [`packages/agent/src/graph.ts`](../packages/agent/src/graph.ts) **`runAgent`** between `effectiveSystemPrompt` build and `buildLangChainTools` / `bindTools`. Skip on `resumeDecision`. Optionally skip on `channel === 'heartbeat'` (heartbeat ships its own checklist as the procedure). |
 | B3 | If a skill is active, lazy-load its body (and resolve `includes`), append a delimited block (`\n\n---\n\n## Playbook activo: <name>\n…`) to `effectiveSystemPrompt` **before** the existing `appendXyzRules()` chain. On `none`, no append. |
 | B4 | Extend [`packages/agent/src/tools/adapters.ts`](../packages/agent/src/tools/adapters.ts) `isToolAvailable()` so that **when a skill is active** an extra check `allowed_tools.includes(toolId)` is added; **on `none`** it falls through to today’s rules unchanged. The intersect happens **at build time** — the bound model only ever sees the narrowed set. |
@@ -525,7 +567,8 @@ DB `account_skills`, draft/active, test harness, UI editor.
 
 ## V3 — Shared workspace, roles, routing
 
-`organizations`, memberships, optional router/subagents; shared skills and integrations.
+`organizations`, memberships, optional dynamic multi-skill router and subagents;
+shared skills and integrations.
 
 ---
 

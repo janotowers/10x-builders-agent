@@ -36,7 +36,6 @@ const FORBIDDEN_KEYWORDS = [
   "UPDATE",
   "DELETE",
   "MERGE",
-  "REPLACE",
   // Permission / data export
   "GRANT",
   "REVOKE",
