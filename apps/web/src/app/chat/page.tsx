@@ -2,6 +2,15 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ChatInterface } from "./chat-interface";
 
+type RecentToolCall = {
+  id: string;
+  tool_name: string;
+  status: string;
+  requires_confirmation: boolean;
+  created_at: string;
+  finished_at: string | null;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -56,6 +65,7 @@ export default async function ChatPage() {
     .single();
 
   let sessionMessages: Array<{ role: string; content: string; created_at: string }> = [];
+  let recentToolCalls: RecentToolCall[] = [];
   let initialPendingConfirmation:
     | {
         toolCallId: string;
@@ -73,6 +83,14 @@ export default async function ChatPage() {
       .order("created_at", { ascending: false })
       .limit(50);
     sessionMessages = (data ?? []).reverse();
+
+    const { data: toolCalls } = await supabase
+      .from("tool_calls")
+      .select("id, tool_name, status, requires_confirmation, created_at, finished_at")
+      .eq("session_id", messages.id)
+      .order("created_at", { ascending: false })
+      .limit(80);
+    recentToolCalls = (toolCalls ?? []) as RecentToolCall[];
 
     const { data: pendingMessages } = await supabase
       .from("agent_messages")
@@ -112,48 +130,15 @@ export default async function ChatPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-blue-600 text-sm font-bold text-white">
-            {agentAvatarUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={agentAvatarUrl} alt="Avatar del colaborador IA" className="h-full w-full object-cover" />
-            ) : (
-              agentEmoji || (profile.agent_name as string)?.[0]?.toUpperCase() || "A"
-            )}
-          </div>
-          <div>
-            <h1 className="text-sm font-semibold">{profile.agent_name as string}</h1>
-            <p className="text-xs text-neutral-500">Chat web</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <a
-            href="/settings"
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
-            Ajustes
-          </a>
-          <form action="/api/auth/signout" method="POST">
-            <button
-              type="submit"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Salir
-            </button>
-          </form>
-        </div>
-      </header>
-      <ChatInterface
-        agentName={profile.agent_name as string}
-        agentAvatarUrl={agentAvatarUrl}
-        agentEmoji={agentEmoji}
-        userAvatarUrl={userAvatarUrl}
-        userName={(profile.name as string) ?? ""}
-        initialMessages={sessionMessages}
-        initialPendingConfirmation={initialPendingConfirmation}
-      />
-    </div>
+    <ChatInterface
+      agentName={profile.agent_name as string}
+      agentAvatarUrl={agentAvatarUrl}
+      agentEmoji={agentEmoji}
+      userAvatarUrl={userAvatarUrl}
+      userName={(profile.name as string) ?? ""}
+      initialMessages={sessionMessages}
+      initialToolCalls={recentToolCalls}
+      initialPendingConfirmation={initialPendingConfirmation}
+    />
   );
 }

@@ -1,6 +1,6 @@
 ---
 name: memory-curate
-description: Manage the user's own long-term memories (what the agent remembers about them between sessions). Use when the user asks "what do you remember about me", "olvida lo de X", "borra los recuerdos de Y", "recuerdas algo sobre Z", or any request to LIST, SEARCH, ARCHIVE, RESTORE, or DELETE saved facts. Do not use for short-term conversation history, ephemeral context, or business data (CRM, calendar, files); those are not stored as long-term memories.
+description: Manage the user's own long-term memories (what the agent remembers about them between sessions). Use ONLY when the user explicitly asks to LIST, SEARCH, ARCHIVE, RESTORE or DELETE saved facts ("qué recuerdas de mí", "olvida lo de X", "borra los recuerdos de Y", "muéstrame mis recuerdos"). Do NOT use for simple identity questions whose answer is already in the user profile or system prompt ("¿cómo me llamo?", "¿cuál es mi email?", "¿cuál es mi teléfono?", "¿cuál es mi zona horaria?"); those are answered directly without tools. Do not use for short-term conversation history, ephemeral context, or business data (CRM, calendar, files).
 scope: personal
 allowed_tools:
   - list_user_memories
@@ -17,6 +17,8 @@ guardrails: |
   Distinguish "archive" (reversible soft-delete; stops being injected) from "delete" (permanent). Prefer archive unless the user explicitly asks for permanent deletion.
   If the user asks "what do you know about me" without further qualifiers, list ACTIVE memories first and offer to also include archived/all on request.
   This skill operates ONLY on the authenticated user's own memories. The tools enforce ownership; do not try to address another user's memories.
+  Never expose raw memory UUIDs to the user in normal conversation. Only show the full id when the user is performing an explicit cleanup action (archive/delete) and needs to recognize which item is which. For "what do you remember" or topic-based recall, present a clean Spanish summary by content/type, without UUIDs unless the user asks for them.
+  If the user's question can be answered from the user profile already in the system prompt (name, email, phone, timezone, language), answer directly without calling any memory tool, and stay silent about internal memory storage.
 ---
 
 # Memory Curate
@@ -41,10 +43,11 @@ The tools `archive_user_memory` and `delete_user_memory` are also surfaced via t
 
 ## Mandatory workflow
 
-For ANY request that touches memory, follow this order:
+For ANY request that EXPLICITLY touches stored memories (list, search, archive, restore, delete), follow this order:
 
+0. **Identity short-circuit.** If the user's question is about basic profile data already provided in the system prompt (name, email, phone, timezone, language, the agent's own identity, etc.), answer it directly from that profile. Do NOT call `list_user_memories` or `search_user_memories`, do NOT mention "recuerdos", and do NOT show UUIDs. The user is asking a normal question, not asking to inspect saved memories.
 1. **Surface what's relevant.** Call `list_user_memories` (when the user gave a clear filter such as a type or "show me everything") or `search_user_memories` (when they mention a topic). Never invoke archive/delete without first showing the user what would change.
-2. **Disambiguate.** Show the items with their full `id` (UUID), `type`, and full `content`. If you want readability, you may also show a short prefix, but never lose the full id because write tools require it. If you found 0 items, say "No encontré recuerdos activos sobre <tema/persona>." and stop. Do not answer from general memories, long-term memory injection, or conversation history as a substitute for the missing match. If the topic looks like a business lead/customer, you may add: "Si quieres información operativa del lead, puedo buscarla con el flujo correspondiente." If you found many, ask which one(s).
+2. **Disambiguate.** Show the items by `type` and `content` in plain Spanish. Keep a mental link from each displayed item to its full UUID, but do NOT print UUIDs in normal recall responses; only include them when the user is selecting items to archive/delete and needs to identify them precisely. If you found 0 items, say "No encontré recuerdos activos sobre <tema/persona>." and stop. Do not answer from general memories, long-term memory injection, or conversation history as a substitute for the missing match. If the topic looks like a business lead/customer, you may add: "Si quieres información operativa del lead, puedo buscarla con el flujo correspondiente." If you found many, ask which one(s).
 3. **Confirm intent verbally.** Even before the HITL card appears, repeat in plain Spanish what is about to happen. Examples:
    - "¿Quieres que archive este recuerdo? (Lo conservo pero deja de aparecer.)"
    - "¿Estás seguro de borrarlo definitivamente? Esta acción no se puede deshacer."
