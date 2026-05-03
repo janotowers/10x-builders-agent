@@ -2,6 +2,24 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ChatInterface } from "./chat-interface";
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+async function signedProfileAssetUrl(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  path: unknown
+): Promise<string> {
+  if (typeof path !== "string" || !path) return "";
+  if (path.startsWith("http")) return path;
+  const { data } = await supabase.storage
+    .from("profile-assets")
+    .createSignedUrl(path, 60 * 60);
+  return data?.signedUrl ?? "";
+}
+
 export default async function ChatPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -14,6 +32,18 @@ export default async function ChatPage() {
     .single();
 
   if (!profile?.onboarding_completed) redirect("/onboarding");
+  const businessBrain = asRecord(profile.business_brain);
+  const agentIdentity = asRecord(businessBrain.agent_identity);
+  const agentEmoji =
+    typeof agentIdentity.emoji === "string" ? agentIdentity.emoji : "";
+  const agentAvatarUrl = await signedProfileAssetUrl(
+    supabase,
+    agentIdentity.avatar_path || agentIdentity.avatar_url
+  );
+  const userAvatarUrl = await signedProfileAssetUrl(
+    supabase,
+    profile.avatar_path || profile.avatar_url
+  );
 
   const { data: messages } = await supabase
     .from("agent_sessions")
@@ -85,8 +115,13 @@ export default async function ChatPage() {
     <div className="flex min-h-screen flex-col">
       <header className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
-            {(profile.agent_name as string)?.[0]?.toUpperCase() ?? "A"}
+          <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-blue-600 text-sm font-bold text-white">
+            {agentAvatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={agentAvatarUrl} alt="Avatar del colaborador IA" className="h-full w-full object-cover" />
+            ) : (
+              agentEmoji || (profile.agent_name as string)?.[0]?.toUpperCase() || "A"
+            )}
           </div>
           <div>
             <h1 className="text-sm font-semibold">{profile.agent_name as string}</h1>
@@ -112,6 +147,10 @@ export default async function ChatPage() {
       </header>
       <ChatInterface
         agentName={profile.agent_name as string}
+        agentAvatarUrl={agentAvatarUrl}
+        agentEmoji={agentEmoji}
+        userAvatarUrl={userAvatarUrl}
+        userName={(profile.name as string) ?? ""}
         initialMessages={sessionMessages}
         initialPendingConfirmation={initialPendingConfirmation}
       />

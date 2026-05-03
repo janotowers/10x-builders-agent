@@ -99,6 +99,8 @@ export function createCompactionModel() {
  * when you want to test a different slug.
  */
 export const DEFAULT_SKILL_SELECTOR_MODEL_ID = "anthropic/claude-3-5-haiku";
+export const DEFAULT_BUSINESS_BRAIN_REVIEWER_MODEL_ID =
+  "anthropic/claude-3-5-haiku";
 
 /**
  * Factory for the pre-graph skill selector (V1-B). Tiny prompt, strict JSON
@@ -117,6 +119,32 @@ export function createSkillSelectorModel() {
     modelName,
     temperature: 0,
     maxTokens: 128,
+    configuration: {
+      baseURL: "https://openrouter.ai/api/v1",
+      defaultHeaders: {
+        "HTTP-Referer": "https://agents.local",
+      },
+    },
+    apiKey,
+  });
+}
+
+/**
+ * Factory for the Settings-side Business Brain reviewer. It rewrites short
+ * user-authored preferences into structured, system-compatible copy.
+ */
+export function createBusinessBrainReviewerModel() {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
+
+  const modelName =
+    process.env.BUSINESS_BRAIN_REVIEWER_MODEL_ID?.trim() ||
+    DEFAULT_BUSINESS_BRAIN_REVIEWER_MODEL_ID;
+
+  return new ChatOpenAI({
+    modelName,
+    temperature: 0,
+    maxTokens: 700,
     configuration: {
       baseURL: "https://openrouter.ai/api/v1",
       defaultHeaders: {

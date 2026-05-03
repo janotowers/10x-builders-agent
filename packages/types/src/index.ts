@@ -16,6 +16,10 @@ export interface Profile {
   email: string | null;
   /** Canonical teléfono del usuario. Misma política que `email`. */
   phone: string | null;
+  /** Ruta privada en Supabase Storage para el avatar del usuario. */
+  avatar_path?: string | null;
+  /** URL opcional/cacheada para superficies que usen assets públicos o firmados. */
+  avatar_url?: string | null;
   /**
    * V1-C-α: contenedor por-tenant del agente (JSONB en Supabase). Lo lee
    * `runAgent` y lo materializa en el bloque `[Contexto de tenant]` cuando
@@ -64,6 +68,56 @@ export interface BusinessBrainBigQuery {
   dataset_allowlist?: string[];
 }
 
+export interface BusinessBrainAgentIdentity {
+  /** Nombre visible del agente. En transición puede duplicar `profiles.agent_name`. */
+  name?: string;
+  /** Rol corto que el usuario espera del agente. */
+  role?: string;
+  /** Firma visual opcional para futuras superficies de UI. */
+  emoji?: string;
+  /** Ruta privada en Supabase Storage para el avatar del colaborador IA. */
+  avatar_path?: string;
+  /** URL opcional/cacheada para superficies que usen assets públicos o firmados. */
+  avatar_url?: string;
+  /** Descripción breve de quién es el agente para este perfil. */
+  short_description?: string;
+}
+
+export interface BusinessBrainSoul {
+  /** Voz general del agente: directa, cálida, ejecutiva, etc. */
+  voice?: string;
+  /** Tono emocional o nivel de formalidad. */
+  tone?: string;
+  /** Preferencias de estilo: bullets, ejemplos, español mexicano, etc. */
+  style?: string;
+  /** Preferencia de longitud: breve, detallada, solo cuando haga falta, etc. */
+  brevity?: string;
+}
+
+export interface BusinessBrainBusinessContext {
+  /** Tipo de cuenta/negocio: inmobiliaria, personal, mixto, etc. */
+  kind?: string;
+  /** Mercados principales, e.g. ["MX-CDMX"]. */
+  markets?: string[];
+  /** Notas libres compactas sobre el negocio o contexto de trabajo. */
+  notes?: string;
+}
+
+export interface BusinessBrainOperatingPreferences {
+  /** Preferencias editables; no pueden sobrescribir reglas duras del sistema. */
+  text?: string;
+}
+
+export interface BusinessBrainWarehouseSource
+  extends BusinessBrainIdentity,
+    BusinessBrainBigQuery {
+  provider?: "bigquery";
+}
+
+export interface BusinessBrainDataSources {
+  warehouse?: BusinessBrainWarehouseSource;
+}
+
 /**
  * Configuración del Heartbeat (V2). Por ahora reservado: el agente lo lee
  * pero no lo usa — el ciclo Heartbeat aún no está cableado.
@@ -72,8 +126,12 @@ export interface BusinessBrainHeartbeat {
   enabled?: boolean;
   /** Cron expr (5 campos) o intervalo en minutos. */
   cron_expr?: string;
+  /** Intervalo simple en minutos para V1-D/V2. */
+  interval_minutes?: number;
   /** Markdown plano con el checklist por-tenant que el Heartbeat ejecutará. */
   checklist_md?: string;
+  /** Nombre usado en el roadmap/UI; alias compatible de `checklist_md`. */
+  checklist_markdown?: string;
 }
 
 /**
@@ -87,10 +145,22 @@ export interface BusinessBrainHeartbeat {
  * cuando V1-D añada `context`, `operating_rules`, etc.
  */
 export interface BusinessBrain {
+  /** V1 nueva: identidad del agente, separada de la identidad del negocio. */
+  agent_identity?: BusinessBrainAgentIdentity;
+  /** V1 nueva: persona, tono, voz y estilo. */
+  soul?: BusinessBrainSoul;
+  /** V1 nueva: contexto de negocio/trabajo, no reglas operativas duras. */
+  business_context?: BusinessBrainBusinessContext;
+  /** V1 nueva: preferencias compatibles con seguridad/tools/HITL/tenant. */
+  operating_preferences?: BusinessBrainOperatingPreferences;
+  /** V1 nueva: fuentes de datos por cuenta. */
+  data_sources?: BusinessBrainDataSources;
+  /** Legacy V1-C-α: identidad del tenant. Preferir `data_sources.warehouse`. */
   identity?: BusinessBrainIdentity;
+  /** Legacy V1-C-α: config BigQuery. Preferir `data_sources.warehouse`. */
   bigquery?: BusinessBrainBigQuery;
   heartbeat?: BusinessBrainHeartbeat;
-  /** Bolsa libre para slots futuros (`context`, `operating_rules`, etc.). */
+  /** Bolsa libre para slots futuros (`brand`, `review`, etc.). */
   [k: string]: unknown;
 }
 

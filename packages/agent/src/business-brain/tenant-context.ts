@@ -36,6 +36,7 @@
  *    inmobiliaria en Settings antes de correr ningún query.
  */
 import type { BusinessBrain } from "@agents/types";
+import { getBusinessBrainWarehouse } from "./schema";
 
 export interface BuildTenantContextArgs {
   /** Business Brain del perfil (puede venir vacío `{}`). */
@@ -110,7 +111,7 @@ function extractMentionedOrgName(message: string | undefined): string | undefine
 }
 
 function formatBigqueryLine(
-  bq: BusinessBrain["bigquery"],
+  bq: ReturnType<typeof getBusinessBrainWarehouse>,
   defaults: { defaultProjectId?: string; defaultLocation?: string }
 ): string {
   const project =
@@ -132,8 +133,7 @@ export function buildTenantContextBlock(
   args: BuildTenantContextArgs
 ): TenantContextResult {
   const { businessBrain, isUnggaAdmin, userMessage } = args;
-  const bq = businessBrain.bigquery;
-  const identity = businessBrain.identity;
+  const warehouse = getBusinessBrainWarehouse(businessBrain);
 
   // ── Caso ADMIN UNGGA ────────────────────────────────────────────────
   if (isUnggaAdmin) {
@@ -146,7 +146,7 @@ export function buildTenantContextBlock(
         `- Inmobiliaria mencionada en el turno: "${mentioned}". Resuélvela a su \`organization_id\` con el helper \`org_name → organization_id\` de \`references/conventions.md\` y aplica \`u.organization_id = (resultado del helper)\` en TODOS los queries de este turno.`,
         "- Si el helper devuelve más de una coincidencia, enuméralas y pide confirmación al usuario antes de correr la métrica.",
         "- Si el helper no encuentra ninguna, díselo al usuario y NO inventes el id.",
-        formatBigqueryLine(bq, args),
+        formatBigqueryLine(warehouse, args),
         "- Pasa parámetros literales (fechas, organization_id, etc.) como `@params` en `bigquery_run_query`, no los concatenes en el SQL.",
       ];
       return {
@@ -159,7 +159,7 @@ export function buildTenantContextBlock(
     const lines: string[] = [
       "[Contexto de tenant — generado automáticamente]",
       "- MODO: ADMIN UNGGA (usuario interno de Ungga con visibilidad cross-tenant).",
-      formatBigqueryLine(bq, args),
+      formatBigqueryLine(warehouse, args),
       "- Reglas para queries BigQuery:",
       "  · Por defecto, los queries son cross-tenant (sin filtro de `organization_id`). Usa los patrones de la subsección \"Cross-tenant\" en cada `fewshots-*.md`.",
       "  · Si el usuario nombra una inmobiliaria (\"Garios\", \"Inmobiliaria Ruz\", etc.), aplica el helper `org_name → organization_id` de `references/conventions.md` y filtra por ese `organization_id`. Si el helper devuelve más de una coincidencia, enuméralas y pide confirmación antes de correr la métrica.",
@@ -173,15 +173,15 @@ export function buildTenantContextBlock(
   }
 
   // ── Caso usuario regular ────────────────────────────────────────────
-  const orgId = identity?.organization_id?.trim();
-  const orgName = identity?.org_name?.trim();
+  const orgId = warehouse?.organization_id?.trim();
+  const orgName = warehouse?.org_name?.trim();
 
   if (!orgId) {
     const lines: string[] = [
       "[Contexto de tenant — generado automáticamente]",
       "- MODO: OBLIGATORIO (usuario de inmobiliaria) — **inmobiliaria NO configurada todavía**.",
       "- Esta cuenta aún no tiene un `organization_id` registrado en su Business Brain. NO corras consultas a BigQuery: pídele al usuario que vaya a Ajustes → Inmobiliaria y registre su `organization_id` y nombre. Solo después puedes consultar datos.",
-      formatBigqueryLine(bq, args),
+      formatBigqueryLine(warehouse, args),
     ];
     return {
       block: lines.join("\n"),
@@ -194,7 +194,7 @@ export function buildTenantContextBlock(
     "[Contexto de tenant — generado automáticamente]",
     "- MODO: OBLIGATORIO (usuario de inmobiliaria).",
     `- \`organization_id\` del usuario: ${orgLabel}.`,
-    formatBigqueryLine(bq, args),
+    formatBigqueryLine(warehouse, args),
     "- Reglas no negociables para queries BigQuery:",
     "  · TODO query DEBE filtrar por `u.organization_id = @organization_id` (o joinear vía un CTE `user_ids` que lo aplique).",
     "  · NO devolver ni mencionar datos de otras inmobiliarias, aunque el usuario lo pida directamente.",

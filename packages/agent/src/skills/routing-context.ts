@@ -1,4 +1,5 @@
 import type { AgentMessage, BusinessBrain } from "@agents/types";
+import { getBusinessBrainWarehouse } from "../business-brain/schema";
 
 export interface SkillRoutingContext {
   currentMessage: string;
@@ -54,7 +55,8 @@ export function deriveSkillRoutingContext(
 ): SkillRoutingContext {
   const current = currentMessage?.trim() ?? "";
   const currentNorm = normalize(current);
-  const lastTenantName = businessBrain?.identity?.org_name?.trim() || undefined;
+  const lastTenantName =
+    getBusinessBrainWarehouse(businessBrain)?.org_name?.trim() || undefined;
 
   const evidence: string[] = [];
   let lastDomain: string | undefined;

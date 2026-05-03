@@ -55,6 +55,8 @@ import { sanitizeCompanyDataHistory } from "./skills/sanitize-history";
 import { resolveSkill } from "./skills/resolve";
 import type { ResolvedSkill } from "./skills/types";
 import { appendTenantContextBlock } from "./business-brain/tenant-context";
+import { appendBusinessBrainContextBlock } from "./business-brain/compiler";
+import { getBusinessBrainWarehouse } from "./business-brain/schema";
 import { toolRequiresConfirmation } from "./tools/catalog";
 import { userMessageIsScheduleIntent } from "./tools/schedule-intent";
 import { getCheckpointer } from "./checkpointer";
@@ -834,6 +836,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     }
   }
 
+  const businessBrainWarehouse = getBusinessBrainWarehouse(input.businessBrain);
   const lcTools = buildLangChainTools({
     db,
     userId,
@@ -849,7 +852,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     activeSkillReferenceNames: activeSkill?.composedFrom,
     tenantOrganizationId:
       activeSkill?.requiresTenantContext && !input.isUnggaAdmin
-        ? input.businessBrain?.identity?.organization_id?.trim() || undefined
+        ? businessBrainWarehouse?.organization_id?.trim() || undefined
         : undefined,
   });
 
@@ -871,9 +874,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   if (userPhone && userPhone.trim()) {
     userProfileLines.push(`- Teléfono del usuario: ${userPhone.trim()}`);
   }
-  const businessBrainIdentity = (input.businessBrain ?? {}).identity;
-  const orgName = businessBrainIdentity?.org_name?.trim();
-  const orgId = businessBrainIdentity?.organization_id?.trim();
+  const orgName = businessBrainWarehouse?.org_name?.trim();
+  const orgId = businessBrainWarehouse?.organization_id?.trim();
   if (orgName) {
     userProfileLines.push(`- Inmobiliaria del usuario: ${orgName}`);
   }
@@ -893,9 +895,14 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // *override* generic phrasing the skill might use.
   const baseSystemPrompt =
     systemPrompt + userProfileBlock + dateContext + ambiguityAddendum;
+  const baseWithBrain = appendBusinessBrainContextBlock(
+    baseSystemPrompt,
+    input.businessBrain ?? {},
+    { agentName: systemPrompt ? undefined : input.businessBrain?.agent_identity?.name }
+  );
   const baseWithSkill = activeSkill
-    ? baseSystemPrompt + buildPlaybookInjection(activeSkill)
-    : baseSystemPrompt;
+    ? baseWithBrain + buildPlaybookInjection(activeSkill)
+    : baseWithBrain;
 
   // V1-C-α: tenant context block. Solo se inyecta si la skill activa pide
   // `requires_tenant_context: true` Y hay business brain o admin flag —
@@ -917,7 +924,6 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // Snapshot of the tenant context for the executive turn log. Captures
   // both the "did not run" path (skill didn't request it) and the actual
   // values that ended up in the system prompt.
-  const businessBrainBigquery = (input.businessBrain ?? {}).bigquery;
   const tenantContextSnapshot: TurnSummaryInput["tenantContext"] =
     tenantContextWired.result
       ? {
@@ -926,9 +932,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           organizationId: tenantContextWired.result.organizationId,
           mentionedOrgName: tenantContextWired.result.mentionedOrgName,
           bigqueryProject:
-            businessBrainBigquery?.project_id ?? envBigqueryProject,
+            businessBrainWarehouse?.project_id ?? envBigqueryProject,
           bigqueryLocation:
-            businessBrainBigquery?.location ?? envBigqueryLocation,
+            businessBrainWarehouse?.location ?? envBigqueryLocation,
         }
       : {
           applied: false,

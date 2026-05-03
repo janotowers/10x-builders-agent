@@ -28,7 +28,9 @@
     "test:bigquery-params": "tsx src/tools/bigquery-params.selftest.ts",
     "test:skill-aware-tools": "tsx src/tools/skill-aware.selftest.ts",
     "test:skill-references": "tsx src/tools/skill-references.selftest.ts",
-    "test:tenant-context": "tsx src/business-brain/tenant-context.selftest.ts"
+    "test:tenant-context": "tsx src/business-brain/tenant-context.selftest.ts",
+    "test:business-brain-compiler": "tsx src/business-brain/compiler.selftest.ts",
+    "test:business-brain-reviewer": "tsx src/business-brain/reviewer.selftest.ts"
   },
   "dependencies": {
     "@agents/db": "*",

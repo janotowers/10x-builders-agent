@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+import type { BusinessBrain, BusinessBrainWarehouseSource } from "@agents/types";
 
 interface Props {
   userId: string;
@@ -28,6 +29,33 @@ interface SkillCatalogItem {
   scope: "business" | "personal" | "shared";
   allowedTools: string[];
   requiresTenantContext: boolean;
+}
+
+type ReviewSlot =
+  | "agent_identity.role"
+  | "agent_identity.short_description"
+  | "soul.voice"
+  | "soul.tone"
+  | "soul.style"
+  | "soul.brevity"
+  | "business_context.notes"
+  | "operating_preferences.text";
+
+interface SectionReviewResult {
+  severity: "ok" | "warning" | "blocked";
+  normalized_fields: Partial<Record<ReviewSlot, string>>;
+  warnings: string[];
+  moved_suggestions: Array<{ target_slot: string; text: string }>;
+  rejected_items: Array<{ text: string; reason: string }>;
+  used_llm: boolean;
+}
+
+type ReviewSection = "identity" | "soul" | "context" | "operating";
+
+interface SectionReviewState {
+  loading?: boolean;
+  error?: string;
+  result?: SectionReviewResult;
 }
 
 const TIMEZONES = [
@@ -87,6 +115,101 @@ const SKILL_SCOPE_ORDER: SkillCatalogItem["scope"][] = [
   "shared",
 ];
 
+const DEFAULT_AGENT_NAME = "Gu";
+const DEFAULT_AGENT_ROLE =
+  "Colaborador IA operativo y comercial que ayuda a organizar prioridades, analizar información y ejecutar tareas con las herramientas disponibles.";
+const DEFAULT_AGENT_DESCRIPTION =
+  "Gu actúa como un copiloto práctico para el trabajo diario: entiende el contexto del usuario y del negocio, responde con claridad, propone próximos pasos y usa memoria, skills y herramientas cuando aportan valor, respetando permisos, confirmaciones y límites de datos.";
+const PROFILE_ASSETS_BUCKET = "profile-assets";
+const REVIEW_SLOT_LABELS: Record<ReviewSlot, string> = {
+  "agent_identity.role": "Rol del colaborador IA",
+  "agent_identity.short_description": "Descripción breve",
+  "soul.voice": "Voz",
+  "soul.tone": "Tono",
+  "soul.style": "Estilo",
+  "soul.brevity": "Brevedad",
+  "business_context.notes": "Notas de contexto",
+  "operating_preferences.text": "Preferencias operativas",
+};
+const REVIEW_TARGET_LABELS: Record<string, string> = {
+  ...REVIEW_SLOT_LABELS,
+  soul: "Alma",
+  "business_context.notes": "Contexto del negocio",
+};
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function readBusinessBrain(profile: Record<string, unknown> | null): BusinessBrain {
+  const raw = profile?.business_brain;
+  return raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as BusinessBrain)
+    : {};
+}
+
+function readWarehouse(brain: BusinessBrain): BusinessBrainWarehouseSource {
+  const dataSources = asRecord(brain.data_sources);
+  const warehouse = asRecord(dataSources.warehouse);
+  const identity = asRecord(brain.identity);
+  const bigquery = asRecord(brain.bigquery);
+  return {
+    provider: "bigquery",
+    organization_id:
+      readString(warehouse.organization_id) || readString(identity.organization_id),
+    org_name: readString(warehouse.org_name) || readString(identity.org_name),
+    country: readString(warehouse.country) || readString(identity.country),
+    project_id: readString(warehouse.project_id) || readString(bigquery.project_id),
+    location: readString(warehouse.location) || readString(bigquery.location),
+    dataset_allowlist:
+      readStringArray(warehouse.dataset_allowlist).length > 0
+        ? readStringArray(warehouse.dataset_allowlist)
+        : readStringArray(bigquery.dataset_allowlist),
+  };
+}
+
+function splitCsv(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function charCount(value: string, max: number) {
+  return (
+    <p className="mt-1 text-right text-xs text-neutral-400">
+      {value.length}/{max}
+    </p>
+  );
+}
+
+function assetExt(file: File): string {
+  const fromName = file.name.split(".").pop()?.toLowerCase();
+  if (fromName && ["png", "jpg", "jpeg", "webp", "gif"].includes(fromName)) {
+    return fromName;
+  }
+  if (file.type === "image/png") return "png";
+  if (file.type === "image/webp") return "webp";
+  if (file.type === "image/gif") return "gif";
+  return "jpg";
+}
+
+function normalizeForCompare(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 export function SettingsForm({
   userId,
   profile,
@@ -102,6 +225,7 @@ export function SettingsForm({
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [name, setName] = useState((profile?.name as string) ?? "");
   const [email, setEmail] = useState((profile?.email as string | null) ?? "");
@@ -111,7 +235,12 @@ export function SettingsForm({
     : "UTC";
   const profileTz = (profile?.timezone as string) || "";
   const [timezone, setTimezone] = useState(profileTz || browserTz);
-  const [agentName, setAgentName] = useState((profile?.agent_name as string) ?? "Agente");
+  const profileAgentName = (profile?.agent_name as string | undefined) ?? "";
+  const [agentName, setAgentName] = useState(
+    profileAgentName.trim() && profileAgentName !== "Agente"
+      ? profileAgentName
+      : DEFAULT_AGENT_NAME
+  );
   const [systemPrompt, setSystemPrompt] = useState(
     (profile?.agent_system_prompt as string) ?? ""
   );
@@ -133,6 +262,101 @@ export function SettingsForm({
   const [disconnectingGCal, setDisconnectingGCal] = useState(false);
   const [bookingBusy, setBookingBusy] = useState(false);
   const [bookingUrl, setBookingUrl] = useState<string | null>(null);
+  const initialBrain = readBusinessBrain(profile);
+  const initialWarehouse = readWarehouse(initialBrain);
+  const [agentRole, setAgentRole] = useState(
+    initialBrain.agent_identity?.role ?? DEFAULT_AGENT_ROLE
+  );
+  const [agentDescription, setAgentDescription] = useState(
+    initialBrain.agent_identity?.short_description ?? DEFAULT_AGENT_DESCRIPTION
+  );
+  const [agentEmoji, setAgentEmoji] = useState(
+    initialBrain.agent_identity?.emoji ?? ""
+  );
+  const [agentAvatarPath, setAgentAvatarPath] = useState(
+    initialBrain.agent_identity?.avatar_path ?? ""
+  );
+  const [agentAvatarUrl, setAgentAvatarUrl] = useState(
+    initialBrain.agent_identity?.avatar_url ?? ""
+  );
+  const [userAvatarPath, setUserAvatarPath] = useState(
+    (profile?.avatar_path as string | null) ?? ""
+  );
+  const [userAvatarUrl, setUserAvatarUrl] = useState(
+    (profile?.avatar_url as string | null) ?? ""
+  );
+  const [uploadingAgentAvatar, setUploadingAgentAvatar] = useState(false);
+  const [uploadingUserAvatar, setUploadingUserAvatar] = useState(false);
+  const [assetError, setAssetError] = useState<string | null>(null);
+  const [soulVoice, setSoulVoice] = useState(initialBrain.soul?.voice ?? "");
+  const [soulTone, setSoulTone] = useState(initialBrain.soul?.tone ?? "");
+  const [soulStyle, setSoulStyle] = useState(initialBrain.soul?.style ?? "");
+  const [soulBrevity, setSoulBrevity] = useState(
+    initialBrain.soul?.brevity ?? ""
+  );
+  const [businessKind, setBusinessKind] = useState(
+    initialBrain.business_context?.kind ?? ""
+  );
+  const [businessMarkets, setBusinessMarkets] = useState(
+    (initialBrain.business_context?.markets ?? []).join(", ")
+  );
+  const [businessNotes, setBusinessNotes] = useState(
+    initialBrain.business_context?.notes ?? ""
+  );
+  const [operatingPreferences, setOperatingPreferences] = useState(
+    initialBrain.operating_preferences?.text ?? ""
+  );
+  const [warehouseOrgName, setWarehouseOrgName] = useState(
+    initialWarehouse.org_name ?? ""
+  );
+  const [warehouseOrgId, setWarehouseOrgId] = useState(
+    initialWarehouse.organization_id ?? ""
+  );
+  const [warehouseCountry, setWarehouseCountry] = useState(
+    initialWarehouse.country ?? ""
+  );
+  const [warehouseProject, setWarehouseProject] = useState(
+    initialWarehouse.project_id ?? ""
+  );
+  const [warehouseLocation, setWarehouseLocation] = useState(
+    initialWarehouse.location ?? ""
+  );
+  const [warehouseDatasets, setWarehouseDatasets] = useState(
+    (initialWarehouse.dataset_allowlist ?? []).join(", ")
+  );
+  const isUnggaAdmin = Boolean(profile?.is_ungga_admin);
+  const [sectionReviews, setSectionReviews] = useState<
+    Partial<Record<ReviewSection, SectionReviewState>>
+  >({});
+  const [approvingSection, setApprovingSection] = useState<ReviewSection | null>(
+    null
+  );
+  const [correctedSections, setCorrectedSections] = useState<
+    Partial<Record<ReviewSection, boolean>>
+  >({});
+  const [savedSectionFields, setSavedSectionFields] = useState<
+    Record<ReviewSection, Partial<Record<ReviewSlot, string>>>
+  >({
+    identity: {
+      "agent_identity.role": initialBrain.agent_identity?.role ?? DEFAULT_AGENT_ROLE,
+      "agent_identity.short_description":
+        initialBrain.agent_identity?.short_description ??
+        DEFAULT_AGENT_DESCRIPTION,
+    },
+    soul: {
+      "soul.voice": initialBrain.soul?.voice ?? "",
+      "soul.tone": initialBrain.soul?.tone ?? "",
+      "soul.style": initialBrain.soul?.style ?? "",
+      "soul.brevity": initialBrain.soul?.brevity ?? "",
+    },
+    context: {
+      "business_context.notes": initialBrain.business_context?.notes ?? "",
+    },
+    operating: {
+      "operating_preferences.text":
+        initialBrain.operating_preferences?.text ?? "",
+    },
+  });
 
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -142,6 +366,23 @@ export function SettingsForm({
   useEffect(() => {
     setGCalConnected(googleCalendarConnected);
   }, [googleCalendarConnected]);
+
+  useEffect(() => {
+    async function signExistingAssets() {
+      const paths = [
+        { path: agentAvatarPath, setUrl: setAgentAvatarUrl },
+        { path: userAvatarPath, setUrl: setUserAvatarUrl },
+      ];
+      for (const item of paths) {
+        if (!item.path || item.path.startsWith("http")) continue;
+        const { data } = await supabase.storage
+          .from(PROFILE_ASSETS_BUCKET)
+          .createSignedUrl(item.path, 60 * 60);
+        if (data?.signedUrl) item.setUrl(data.signedUrl);
+      }
+    }
+    void signExistingAssets();
+  }, [agentAvatarPath, userAvatarPath]);
 
   function toggleTool(id: string) {
     setEnabledTools((prev) =>
@@ -155,49 +396,302 @@ export function SettingsForm({
     );
   }
 
+  async function reviewSection(
+    section: ReviewSection,
+    fields: Partial<Record<ReviewSlot, string>>
+  ) {
+    setSectionReviews((prev) => ({
+      ...prev,
+      [section]: { ...(prev[section] ?? {}), loading: true, error: undefined },
+    }));
+    try {
+      const res = await fetch("/api/business-brain/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ section, fields }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "No se pudo revisar");
+      setSectionReviews((prev) => ({
+        ...prev,
+        [section]: { loading: false, result: json.result as SectionReviewResult },
+      }));
+      setCorrectedSections((prev) => ({ ...prev, [section]: false }));
+    } catch (err) {
+      setSectionReviews((prev) => ({
+        ...prev,
+        [section]: {
+          loading: false,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      }));
+    }
+  }
+
+  function applySectionCorrection(section: ReviewSection) {
+    const fields = sectionReviews[section]?.result?.normalized_fields ?? {};
+    if (fields["agent_identity.role"] !== undefined) {
+      setAgentRole(fields["agent_identity.role"]);
+    }
+    if (fields["agent_identity.short_description"] !== undefined) {
+      setAgentDescription(fields["agent_identity.short_description"]);
+    }
+    if (fields["soul.voice"] !== undefined) setSoulVoice(fields["soul.voice"]);
+    if (fields["soul.tone"] !== undefined) setSoulTone(fields["soul.tone"]);
+    if (fields["soul.style"] !== undefined) setSoulStyle(fields["soul.style"]);
+    if (fields["soul.brevity"] !== undefined) {
+      setSoulBrevity(fields["soul.brevity"]);
+    }
+    if (fields["business_context.notes"] !== undefined) {
+      setBusinessNotes(fields["business_context.notes"]);
+    }
+    if (fields["operating_preferences.text"] !== undefined) {
+      setOperatingPreferences(fields["operating_preferences.text"]);
+    }
+    setCorrectedSections((prev) => ({ ...prev, [section]: true }));
+  }
+
+  async function applySectionReview(section: ReviewSection) {
+    setApprovingSection(section);
+    setSaveError(null);
+    try {
+      await saveBusinessBrain();
+      setSaved(true);
+      setSavedSectionFields((prev) => ({
+        ...prev,
+        [section]: {
+          ...currentSectionFields(section),
+        },
+      }));
+      setCorrectedSections((prev) => ({ ...prev, [section]: false }));
+      setTimeout(() => setSaved(false), 2000);
+      router.refresh();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setApprovingSection(null);
+    }
+  }
+
+  function currentSectionFields(
+    section: ReviewSection
+  ): Partial<Record<ReviewSlot, string>> {
+    if (section === "identity") {
+      return {
+        "agent_identity.role": agentRole,
+        "agent_identity.short_description": agentDescription,
+      };
+    }
+    if (section === "soul") {
+      return {
+        "soul.voice": soulVoice,
+        "soul.tone": soulTone,
+        "soul.style": soulStyle,
+        "soul.brevity": soulBrevity,
+      };
+    }
+    if (section === "context") {
+      return { "business_context.notes": businessNotes };
+    }
+    return { "operating_preferences.text": operatingPreferences };
+  }
+
+  async function uploadProfileAsset(kind: "agent" | "user", file: File) {
+    setAssetError(null);
+    if (!file.type.startsWith("image/")) {
+      setAssetError("El archivo debe ser una imagen.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setAssetError("La imagen debe pesar máximo 5 MB.");
+      return;
+    }
+    const setUploading =
+      kind === "agent" ? setUploadingAgentAvatar : setUploadingUserAvatar;
+    setUploading(true);
+    try {
+      const path = `${userId}/${kind}-avatar-${Date.now()}.${assetExt(file)}`;
+      const { error } = await supabase.storage
+        .from(PROFILE_ASSETS_BUCKET)
+        .upload(path, file, { upsert: true, contentType: file.type });
+      if (error) throw error;
+      const { data } = await supabase.storage
+        .from(PROFILE_ASSETS_BUCKET)
+        .createSignedUrl(path, 60 * 60);
+      const signedUrl = data?.signedUrl ?? "";
+      if (kind === "agent") {
+        setAgentAvatarPath(path);
+        setAgentAvatarUrl(signedUrl);
+        await fetch("/api/business-brain", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            patch: {
+              agent_identity: {
+                name: agentName.trim(),
+                role: agentRole.trim(),
+                emoji: agentEmoji.trim(),
+                short_description: agentDescription.trim(),
+                avatar_path: path,
+                avatar_url: "",
+              },
+            },
+          }),
+        });
+      } else {
+        setUserAvatarPath(path);
+        setUserAvatarUrl(signedUrl);
+        const { error: profileError } = await supabase
+          .from("profiles")
+          .update({
+            avatar_path: path,
+            avatar_url: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", userId);
+        if (profileError) throw profileError;
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setAssetError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function buildBusinessBrainPatch(
+    overrides: Partial<{
+      agentRole: string;
+      agentDescription: string;
+      soulVoice: string;
+      soulTone: string;
+      soulStyle: string;
+      soulBrevity: string;
+      businessNotes: string;
+      operatingPreferences: string;
+    }> = {}
+  ): Partial<BusinessBrain> {
+    return {
+      agent_identity: {
+        name: agentName.trim(),
+        role: (overrides.agentRole ?? agentRole).trim(),
+        emoji: agentEmoji.trim(),
+        avatar_path: agentAvatarPath.trim(),
+        avatar_url: "",
+        short_description: (
+          overrides.agentDescription ?? agentDescription
+        ).trim(),
+      },
+      soul: {
+        voice: (overrides.soulVoice ?? soulVoice).trim(),
+        tone: (overrides.soulTone ?? soulTone).trim(),
+        style: (overrides.soulStyle ?? soulStyle).trim(),
+        brevity: (overrides.soulBrevity ?? soulBrevity).trim(),
+      },
+      business_context: {
+        kind: businessKind.trim(),
+        markets: splitCsv(businessMarkets),
+        notes: (overrides.businessNotes ?? businessNotes).trim(),
+      },
+      operating_preferences: {
+        text: (
+          overrides.operatingPreferences ?? operatingPreferences
+        ).trim(),
+      },
+      data_sources: {
+        warehouse: {
+          provider: "bigquery",
+          org_name: warehouseOrgName.trim(),
+          organization_id: warehouseOrgId.trim(),
+          country: warehouseCountry.trim(),
+          project_id: warehouseProject.trim(),
+          location: warehouseLocation.trim(),
+          dataset_allowlist: splitCsv(warehouseDatasets),
+        },
+      },
+    };
+  }
+
+  async function saveBusinessBrain(
+    overrides?: Partial<{
+      agentRole: string;
+      agentDescription: string;
+      soulVoice: string;
+      soulTone: string;
+      soulStyle: string;
+      soulBrevity: string;
+      businessNotes: string;
+      operatingPreferences: string;
+    }>
+  ) {
+    const res = await fetch("/api/business-brain", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch: buildBusinessBrainPatch(overrides) }),
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw new Error(json.error ?? "No se pudo guardar Business Brain");
+    }
+  }
+
   async function handleSave() {
     setSaving(true);
+    setSaveError(null);
+    try {
+      if (!agentName.trim() || !agentRole.trim() || !agentDescription.trim()) {
+        throw new Error("Nombre, rol y descripción breve del colaborador IA son obligatorios.");
+      }
 
-    await supabase.from("profiles").update({
-      name,
-      timezone,
-      email: email.trim() === "" ? null : email.trim(),
-      phone: phone.trim() === "" ? null : phone.trim(),
-      agent_name: agentName,
-      agent_system_prompt: systemPrompt.slice(0, 500),
-      updated_at: new Date().toISOString(),
-    }).eq("id", userId);
+      await supabase.from("profiles").update({
+        name,
+        timezone,
+        email: email.trim() === "" ? null : email.trim(),
+        phone: phone.trim() === "" ? null : phone.trim(),
+        avatar_path: userAvatarPath.trim() === "" ? null : userAvatarPath.trim(),
+        avatar_url: null,
+        agent_name: agentName,
+        agent_system_prompt: systemPrompt.slice(0, 500),
+        updated_at: new Date().toISOString(),
+      }).eq("id", userId);
 
-    for (const toolId of TOOL_IDS) {
-      await supabase.from("user_tool_settings").upsert(
-        {
-          user_id: userId,
-          tool_id: toolId,
-          enabled: enabledTools.includes(toolId),
-          config_json: {},
-        },
-        { onConflict: "user_id,tool_id" }
-      );
+      await saveBusinessBrain();
+
+      for (const toolId of TOOL_IDS) {
+        await supabase.from("user_tool_settings").upsert(
+          {
+            user_id: userId,
+            tool_id: toolId,
+            enabled: enabledTools.includes(toolId),
+            config_json: {},
+          },
+          { onConflict: "user_id,tool_id" }
+        );
+      }
+
+      for (const skill of skillCatalog) {
+        await supabase.from("user_skill_settings").upsert(
+          {
+            user_id: userId,
+            skill_id: skill.name,
+            enabled: enabledSkills.includes(skill.name),
+            config_json:
+              skillSettings.find((s) => s.skill_id === skill.name)
+                ?.config_json ?? {},
+          },
+          { onConflict: "user_id,skill_id" }
+        );
+      }
+
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+      router.refresh();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
     }
-
-    for (const skill of skillCatalog) {
-      await supabase.from("user_skill_settings").upsert(
-        {
-          user_id: userId,
-          skill_id: skill.name,
-          enabled: enabledSkills.includes(skill.name),
-          config_json:
-            skillSettings.find((s) => s.skill_id === skill.name)
-              ?.config_json ?? {},
-        },
-        { onConflict: "user_id,skill_id" }
-      );
-    }
-
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-    router.refresh();
   }
 
   async function disconnectGoogleCalendar() {
@@ -249,6 +743,153 @@ export function SettingsForm({
     setLinkCode(code);
   }
 
+  function sectionReviewControls(
+    section: ReviewSection,
+    label: string,
+    fields: Partial<Record<ReviewSlot, string>>
+  ) {
+    const state = sectionReviews[section];
+    const hasText = Object.values(fields).some((value) => value?.trim());
+    const savedFields = savedSectionFields[section] ?? {};
+    const hasChanges = Object.entries(fields).some(
+      ([slot, value]) =>
+        normalizeForCompare(value ?? "") !==
+        normalizeForCompare(savedFields[slot as ReviewSlot] ?? "")
+    );
+    const canReview = hasText && hasChanges;
+    const okNoSuggestions =
+      state?.result?.severity === "ok" &&
+      state.result.warnings.length === 0 &&
+      state.result.moved_suggestions.length === 0 &&
+      state.result.rejected_items.length === 0;
+    const hasWarnings = Boolean(state?.result && !okNoSuggestions);
+    const correctionApplied = correctedSections[section] === true;
+    return (
+      <div className="mt-2 space-y-2">
+        <button
+          type="button"
+          onClick={() => reviewSection(section, fields)}
+          disabled={state?.loading || !canReview}
+          className={`rounded-md px-2.5 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${
+            canReview
+              ? "border border-blue-600 bg-blue-600 text-white hover:bg-blue-700"
+              : "border border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+          }`}
+        >
+          {state?.loading
+            ? "Revisando..."
+            : hasWarnings
+              ? label.replace("Revisar", "Corregir")
+              : label}
+        </button>
+        {!hasChanges && (
+          <p className="text-xs text-neutral-400">
+            Sin cambios desde la última versión guardada.
+          </p>
+        )}
+        {state?.error && (
+          <p className="text-xs text-red-600 dark:text-red-400">{state.error}</p>
+        )}
+        {state?.result && (
+          <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3 text-xs dark:border-neutral-800 dark:bg-neutral-950">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="font-medium">
+                {okNoSuggestions
+                  ? "Ok. No hay sugerencias."
+                  : `Sugerencias (${state.result.severity})`}
+              </span>
+              {okNoSuggestions && hasChanges && (
+                <button
+                  type="button"
+                  onClick={() => void applySectionReview(section)}
+                  disabled={approvingSection === section}
+                  className="rounded-md bg-neutral-900 px-2 py-1 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+                >
+                  {approvingSection === section
+                    ? "Guardando..."
+                    : "Guardar sección"}
+                </button>
+              )}
+              {!okNoSuggestions && !correctionApplied && (
+                <button
+                  type="button"
+                  onClick={() => applySectionCorrection(section)}
+                  className="rounded-md bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700"
+                >
+                  {label.replace("Revisar", "Corregir")}
+                </button>
+              )}
+              {!okNoSuggestions && correctionApplied && (
+                <button
+                  type="button"
+                  onClick={() => void applySectionReview(section)}
+                  disabled={
+                    state.result.severity === "blocked" ||
+                    approvingSection === section
+                  }
+                  className="rounded-md bg-neutral-900 px-2 py-1 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+                >
+                  {approvingSection === section
+                    ? "Guardando..."
+                    : "Aprobar y guardar sección"}
+                </button>
+              )}
+            </div>
+            {!okNoSuggestions && (
+              <div className="space-y-2">
+                {Object.entries(state.result.normalized_fields).map(([slot, value]) => (
+                  <label key={slot} className="block">
+                    <span className="mb-1 block text-[11px] text-neutral-500">
+                      {REVIEW_SLOT_LABELS[slot as ReviewSlot] ?? slot}
+                    </span>
+                    <textarea
+                      readOnly
+                      value={value ?? ""}
+                      rows={2}
+                      className="w-full rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+            {!okNoSuggestions && !correctionApplied && (
+              <p className="mt-2 text-xs text-neutral-500">
+                Primero aplica la corrección sugerida. Después podrás aprobar y guardar la sección.
+              </p>
+            )}
+            {state.result.warnings.length > 0 && (
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-amber-700 dark:text-amber-300">
+                {state.result.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            )}
+            {state.result.moved_suggestions.length > 0 && (
+              <div className="mt-2 text-neutral-500">
+                Mover a otro campo:{" "}
+                {[...new Set(
+                  state.result.moved_suggestions.map(
+                    (item) =>
+                      REVIEW_TARGET_LABELS[item.target_slot] ?? item.target_slot
+                  )
+                )].join(", ")}
+              </div>
+            )}
+            {state.result.rejected_items.length > 0 && (
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-red-700 dark:text-red-300">
+                {state.result.rejected_items.map((item) => (
+                  <li key={`${item.text}-${item.reason}`}>
+                    {item.text}: {item.reason}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
       {googleOAuthStatus === "connected" && (
@@ -266,7 +907,33 @@ export function SettingsForm({
       )}
       {/* Profile */}
       <section className="space-y-4">
-        <h2 className="text-base font-semibold">Perfil</h2>
+        <h2 className="text-base font-semibold">Perfil de usuario</h2>
+        <div>
+          <label className="block text-sm font-medium mb-1">Foto / avatar</label>
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-neutral-200 text-sm font-semibold text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+              {userAvatarUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={userAvatarUrl} alt="Avatar del usuario" className="h-full w-full object-cover" />
+              ) : (
+                (name || email || "U").slice(0, 1).toUpperCase()
+              )}
+            </div>
+            <label className="cursor-pointer rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900">
+              {uploadingUserAvatar ? "Subiendo..." : "Subir imagen"}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void uploadProfileAsset("user", file);
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
+          </div>
+        </div>
         <div>
           <label className="block text-sm font-medium mb-1">Nombre</label>
           <input
@@ -324,30 +991,325 @@ export function SettingsForm({
         </div>
       </section>
 
-      {/* Agent */}
-      <section className="space-y-4">
-        <h2 className="text-base font-semibold">Agente</h2>
+      {/* Agent / Business Brain */}
+      <section className="space-y-5">
         <div>
-          <label className="block text-sm font-medium mb-1">Nombre del agente</label>
-          <input
-            type="text"
-            value={agentName}
-            onChange={(e) => setAgentName(e.target.value)}
-            maxLength={50}
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-          />
+          <h2 className="text-base font-semibold">Perfil de IA</h2>
+          <p className="mt-1 text-sm text-neutral-500">
+            Define identidad, voz, contexto y preferencias. Las reglas de
+            seguridad, aprobaciones humanas, herramientas habilitadas y
+            separación de datos entre cuentas siempre tienen prioridad.
+          </p>
         </div>
-        <div>
-          <label className="block text-sm font-medium mb-1">Instrucciones</label>
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <div className="grid gap-4 md:grid-cols-[auto_1fr]">
+            <div>
+              <label className="block text-sm font-medium mb-1">Avatar</label>
+              <div className="flex items-center gap-3">
+                <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-full bg-blue-600 text-lg font-bold text-white">
+                  {agentAvatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={agentAvatarUrl} alt="Avatar del colaborador IA" className="h-full w-full object-cover" />
+                  ) : (
+                    agentEmoji || agentName.slice(0, 1).toUpperCase() || "G"
+                  )}
+                </div>
+                <label className="cursor-pointer rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900">
+                  {uploadingAgentAvatar ? "Subiendo..." : "Subir imagen"}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void uploadProfileAsset("agent", file);
+                      e.currentTarget.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-[1fr_120px]">
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Nombre del colaborador IA <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={agentName}
+                  onChange={(e) => setAgentName(e.target.value)}
+                  placeholder="p. ej. Gu, Lobi, Vera"
+                  required
+                  maxLength={50}
+                  className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Emoji</label>
+                <input
+                  type="text"
+                  value={agentEmoji}
+                  onChange={(e) => setAgentEmoji(e.target.value.slice(0, 8))}
+                  placeholder="✨"
+                  maxLength={8}
+                  className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                />
+              </div>
+            </div>
+          </div>
+          {assetError && (
+            <p className="mt-2 text-xs text-red-600 dark:text-red-400">{assetError}</p>
+          )}
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Rol <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              value={agentRole}
+              onChange={(e) => setAgentRole(e.target.value.slice(0, 220))}
+              placeholder={DEFAULT_AGENT_ROLE}
+              rows={4}
+              required
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            />
+            {charCount(agentRole, 220)}
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Descripción breve <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              value={agentDescription}
+              onChange={(e) => setAgentDescription(e.target.value.slice(0, 400))}
+              rows={4}
+              placeholder={DEFAULT_AGENT_DESCRIPTION}
+              required
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            />
+            {charCount(agentDescription, 400)}
+          </div>
+          </div>
+          {sectionReviewControls("identity", "Revisar identidad", {
+            "agent_identity.role": agentRole,
+            "agent_identity.short_description": agentDescription,
+          })}
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <h3 className="text-sm font-semibold">Alma</h3>
+          <p className="mt-1 text-xs text-neutral-500">
+            Estos campos solo afectan estilo, tono y forma de respuesta.
+          </p>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium mb-1">Voz</label>
+              <textarea
+                value={soulVoice}
+                onChange={(e) => setSoulVoice(e.target.value.slice(0, 300))}
+                placeholder="Directa, cálida, orientada a negocio"
+                rows={3}
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              {charCount(soulVoice, 300)}
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Tono</label>
+              <textarea
+                value={soulTone}
+                onChange={(e) => setSoulTone(e.target.value.slice(0, 300))}
+                placeholder="Profesional, cercano, sin sonar corporativo"
+                rows={3}
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              {charCount(soulTone, 300)}
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Estilo</label>
+              <textarea
+                value={soulStyle}
+                onChange={(e) => setSoulStyle(e.target.value.slice(0, 300))}
+                placeholder="Respuestas escaneables, bullets cuando ayuden"
+                rows={3}
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              {charCount(soulStyle, 300)}
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Brevedad</label>
+              <textarea
+                value={soulBrevity}
+                onChange={(e) => setSoulBrevity(e.target.value.slice(0, 220))}
+                placeholder="Breve por defecto; profundidad cuando se pida"
+                rows={3}
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              {charCount(soulBrevity, 220)}
+            </div>
+          </div>
+          {sectionReviewControls("soul", "Revisar Alma", {
+            "soul.voice": soulVoice,
+            "soul.tone": soulTone,
+            "soul.style": soulStyle,
+            "soul.brevity": soulBrevity,
+          })}
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <h3 className="text-sm font-semibold">Contexto del negocio</h3>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium mb-1">Tipo</label>
+              <input
+                type="text"
+                value={businessKind}
+                onChange={(e) => setBusinessKind(e.target.value)}
+                placeholder="inmobiliaria, personal, mixto"
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Mercados</label>
+              <input
+                type="text"
+                value={businessMarkets}
+                onChange={(e) => setBusinessMarkets(e.target.value)}
+                placeholder="MX-CDMX, MX-QRO"
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+            </div>
+          </div>
+          <div className="mt-4">
+            <label className="block text-sm font-medium mb-1">Notas de contexto</label>
+            <textarea
+              value={businessNotes}
+              onChange={(e) => setBusinessNotes(e.target.value.slice(0, 800))}
+              rows={4}
+              placeholder="Cómo opera el negocio, prioridades comerciales, criterios estables."
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            />
+            {charCount(businessNotes, 800)}
+          </div>
+          {sectionReviewControls("context", "Revisar contexto", {
+            "business_context.notes": businessNotes,
+          })}
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <h3 className="text-sm font-semibold">Preferencias operativas</h3>
+          <p className="mt-1 text-xs text-neutral-500">
+            Preferencias editables. No pueden desactivar aprobaciones humanas,
+            permisos o reglas de separación de datos entre cuentas.
+          </p>
+          <textarea
+            value={operatingPreferences}
+            onChange={(e) => setOperatingPreferences(e.target.value.slice(0, 800))}
+            rows={4}
+            placeholder="p. ej. prioriza leads calientes y pregunta una sola aclaración cuando falte información."
+            className="mt-3 w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          />
+          {charCount(operatingPreferences, 800)}
+          {sectionReviewControls("operating", "Revisar preferencias", {
+            "operating_preferences.text": operatingPreferences,
+          })}
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <h3 className="text-sm font-semibold">Fuente de datos principal</h3>
+          <p className="mt-1 text-xs text-neutral-500">
+            Binding de esta cuenta hacia el warehouse. La tool y la skill siguen
+            viviendo en sus registries.
+          </p>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium mb-1">Inmobiliaria</label>
+              <input
+                type="text"
+                value={warehouseOrgName}
+                onChange={(e) => setWarehouseOrgName(e.target.value)}
+                placeholder="Inmobiliaria Garios"
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">organization_id</label>
+              <input
+                type="text"
+                value={warehouseOrgId}
+                onChange={(e) => setWarehouseOrgId(e.target.value)}
+                placeholder="id real en BigQuery"
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              <p className="mt-1 text-xs text-neutral-400">
+                Requerido para métricas, BigQuery y skills de datos de negocio.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">País</label>
+              <input
+                type="text"
+                value={warehouseCountry}
+                onChange={(e) => setWarehouseCountry(e.target.value.toUpperCase())}
+                placeholder="MX"
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+            </div>
+          </div>
+          <details className="mt-4 rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+            <summary className="cursor-pointer text-sm font-medium">
+              Configuración avanzada de datos{isUnggaAdmin ? " (admin)" : ""}
+            </summary>
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="block text-sm font-medium mb-1">BigQuery project</label>
+                <input
+                  type="text"
+                  value={warehouseProject}
+                  onChange={(e) => setWarehouseProject(e.target.value)}
+                  placeholder="ungga-full"
+                  className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Location</label>
+                <input
+                  type="text"
+                  value={warehouseLocation}
+                  onChange={(e) => setWarehouseLocation(e.target.value)}
+                  placeholder="US"
+                  className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium mb-1">Dataset allowlist</label>
+                <input
+                  type="text"
+                  value={warehouseDatasets}
+                  onChange={(e) => setWarehouseDatasets(e.target.value)}
+                  placeholder="firestore_users, mongo_data"
+                  className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                />
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <details className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <summary className="cursor-pointer text-sm font-semibold">
+            Instrucciones legacy
+          </summary>
+          <p className="mt-2 text-xs text-neutral-500">
+            Fallback temporal mientras el Perfil de IA se estabiliza.
+          </p>
           <textarea
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value.slice(0, 500))}
             rows={4}
             maxLength={500}
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            className="mt-3 w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
           />
           <p className="text-xs text-neutral-400 text-right mt-1">{systemPrompt.length}/500</p>
-        </div>
+        </details>
       </section>
 
       {/* Tools */}
@@ -554,6 +1516,11 @@ export function SettingsForm({
         </button>
         {saved && (
           <span className="text-sm text-green-600">Guardado correctamente.</span>
+        )}
+        {saveError && (
+          <span className="text-sm text-red-600 dark:text-red-400">
+            {saveError}
+          </span>
         )}
       </div>
     </div>

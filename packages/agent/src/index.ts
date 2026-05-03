@@ -77,8 +77,32 @@ export {
   buildTenantContextBlock,
   appendTenantContextBlock,
 } from "./business-brain/tenant-context";
+export {
+  getBusinessBrainWarehouse,
+  buildWarehouseCompatibilityPatch,
+  truncateBusinessBrainText,
+  BUSINESS_BRAIN_SLOT_DESCRIPTIONS,
+  BUSINESS_BRAIN_TEXT_LIMITS,
+} from "./business-brain/schema";
+export {
+  buildBusinessBrainContextBlock,
+  appendBusinessBrainContextBlock,
+} from "./business-brain/compiler";
+export {
+  reviewBusinessBrainSlot,
+  reviewBusinessBrainFields,
+  runDeterministicReview,
+} from "./business-brain/reviewer";
 export type {
   BuildTenantContextArgs,
   TenantContextMode,
   TenantContextResult,
 } from "./business-brain/tenant-context";
+export type { BusinessBrainReviewSlot } from "./business-brain/schema";
+export type {
+  BusinessBrainReviewResult,
+  BusinessBrainSectionReviewResult,
+  BusinessBrainReviewSeverity,
+  BusinessBrainMovedSuggestion,
+  BusinessBrainRejectedItem,
+} from "./business-brain/reviewer";

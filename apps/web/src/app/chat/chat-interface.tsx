@@ -18,8 +18,42 @@ interface PendingConfirmation {
 
 interface Props {
   agentName: string;
+  agentAvatarUrl?: string;
+  agentEmoji?: string;
+  userAvatarUrl?: string;
+  userName?: string;
   initialMessages: Message[];
   initialPendingConfirmation?: PendingConfirmation | null;
+}
+
+function ChatAvatar({
+  imageUrl,
+  fallback,
+  label,
+  tone,
+}: {
+  imageUrl?: string;
+  fallback: string;
+  label: string;
+  tone: "agent" | "user";
+}) {
+  return (
+    <div
+      className={`mt-1 flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full text-xs font-bold ${
+        tone === "agent"
+          ? "bg-blue-600 text-white"
+          : "bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+      }`}
+      title={label}
+    >
+      {imageUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={imageUrl} alt={label} className="h-full w-full object-cover" />
+      ) : (
+        fallback
+      )}
+    </div>
+  );
 }
 
 function formatConfirmFailureMessage(result: Record<string, unknown> | undefined): string {
@@ -40,6 +74,10 @@ function formatConfirmFailureMessage(result: Record<string, unknown> | undefined
 
 export function ChatInterface({
   agentName,
+  agentAvatarUrl,
+  agentEmoji,
+  userAvatarUrl,
+  userName,
   initialMessages,
   initialPendingConfirmation = null,
 }: Props) {
@@ -202,8 +240,16 @@ export function ChatInterface({
           {messages.map((msg, i) => (
             <div
               key={i}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+              className={`flex items-start gap-2 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
+              {msg.role !== "user" && (
+                <ChatAvatar
+                  imageUrl={agentAvatarUrl}
+                  fallback={agentEmoji || agentName.slice(0, 1).toUpperCase() || "A"}
+                  label={`Avatar de ${agentName}`}
+                  tone="agent"
+                />
+              )}
               <div
                 className={`max-w-[80%] rounded-lg px-4 py-2.5 text-sm leading-relaxed ${
                   msg.role === "user"
@@ -229,12 +275,26 @@ export function ChatInterface({
                   <p className="whitespace-pre-wrap">{msg.content}</p>
                 )}
               </div>
+              {msg.role === "user" && (
+                <ChatAvatar
+                  imageUrl={userAvatarUrl}
+                  fallback={(userName || "U").slice(0, 1).toUpperCase()}
+                  label="Avatar del usuario"
+                  tone="user"
+                />
+              )}
             </div>
           ))}
 
           {/* Confirmation prompt */}
           {confirmation && (
-            <div className="flex justify-start">
+            <div className="flex items-start justify-start gap-2">
+              <ChatAvatar
+                imageUrl={agentAvatarUrl}
+                fallback={agentEmoji || agentName.slice(0, 1).toUpperCase() || "A"}
+                label={`Avatar de ${agentName}`}
+                tone="agent"
+              />
               <div className="max-w-[80%] rounded-lg border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm dark:border-yellow-700 dark:bg-yellow-950/30">
                 <p className="mb-3 text-neutral-900 dark:text-neutral-100">
                   {confirmation.message}
@@ -260,7 +320,13 @@ export function ChatInterface({
           )}
 
           {loading && (
-            <div className="flex justify-start">
+            <div className="flex items-start justify-start gap-2">
+              <ChatAvatar
+                imageUrl={agentAvatarUrl}
+                fallback={agentEmoji || agentName.slice(0, 1).toUpperCase() || "A"}
+                label={`Avatar de ${agentName}`}
+                tone="agent"
+              />
               <div className="rounded-lg bg-neutral-100 px-4 py-2.5 text-sm dark:bg-neutral-800">
                 <span className="animate-pulse">Pensando...</span>
               </div>

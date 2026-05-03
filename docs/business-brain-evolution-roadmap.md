@@ -551,6 +551,8 @@ The slot list is fixed (typed in TS); unknown top-level keys are dropped at writ
 
 > **`bigquery.organization_id`** is the canonical tenant identifier — same column used in Ungga's BigQuery `users_light` view. **Domain schema knowledge stays in the repo** (under `skills/global/company-data/references/`) because it is shared product knowledge; only the per-account *binding* (which `organization_id`, optional dataset allowlist) lives in `business_brain`.
 
+**2026-05-03 UI/compiler update:** `Business Brain` remains the product term, but the runtime now distinguishes product/system layers from account-specific brain slots. Tools/skills registries stay in code/tables; user-editable brain data is stored in structured slots (`agent_identity`, `soul`, `business_context`, `operating_preferences`, `data_sources.warehouse`, `heartbeat`). `data_sources.warehouse` is the forward shape for BigQuery bindings; legacy `identity`/`bigquery` remains readable during transition. Settings uses a reviewer flow for text slots: deterministic rules + a small system-aware LLM can normalize copy, flag conflicts with HITL/permissions/tenant isolation/tools, and let the user approve the suggested text before saving.
+
 #### Cross-tenant access — `profiles.is_ungga_admin`
 
 Ungga staff (you) need to query data **across** all tenants for support and product analytics; agencies should only see their own. The model decides which mode to use from a small *“tenant context”* block injected by `runAgent` into the system prompt:
