@@ -6,7 +6,8 @@ allowed_tools:
   - get_user_preferences
   - read_skill_reference
   - bigquery_run_query
-includes: []
+includes:
+  - business-data-core
 requires_tenant_context: true
 guardrails: |
   Read-only: only SELECT and WITH...SELECT queries. The bigquery_run_query validator rejects DDL/DML.

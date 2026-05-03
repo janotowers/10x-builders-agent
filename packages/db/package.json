@@ -4,13 +4,16 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test:messages": "tsx src/queries/messages.selftest.ts",
+    "test:memories": "tsx src/queries/memories.selftest.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",
     "@agents/types": "*"
   },
   "devDependencies": {
+    "tsx": "^4.19.0",
     "typescript": "^5"
   }
 }

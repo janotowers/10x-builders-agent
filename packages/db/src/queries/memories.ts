@@ -19,6 +19,30 @@ export interface MemoryRow {
   retrieval_count: number;
   created_at: string;
   last_retrieved_at: string | null;
+  archived_at: string | null;
+}
+
+/** Subset de columnas que la UI/agente realmente necesitan (excluye
+ *  embedding bruto, hash y campos de modelo). */
+export interface MemorySummary {
+  id: string;
+  type: MemoryType;
+  content: string;
+  retrieval_count: number;
+  created_at: string;
+  last_retrieved_at: string | null;
+  archived_at: string | null;
+}
+
+export type MemoryAuditAction = "archive" | "restore" | "delete" | "update";
+
+export interface MemoryAuditLogRow {
+  id: string;
+  user_id: string;
+  memory_id: string | null;
+  action: MemoryAuditAction;
+  details: Record<string, unknown> | null;
+  performed_at: string;
 }
 
 export interface MemoryMatch {
@@ -141,4 +165,193 @@ export async function incrementRetrievalCount(
         .eq("id", row.id)
     )
   );
+}
+
+/* ──────────────────── Capa 2 — curación manual ─────────────────────── */
+/* Ver `docs/memory/memory_curation_plan.md` (Capa 2). Estas queries dan
+ * soporte tanto a la UI (`/memory`) como a la skill `memory-curate`. */
+
+export interface ListMemoriesInput {
+  userId: string;
+  /** Filtra por tipo si se especifica. */
+  type?: MemoryType;
+  /** "active" → archived_at IS NULL, "archived" → archived_at IS NOT NULL,
+   *  "all" → sin filtro. Default: "active". */
+  status?: "active" | "archived" | "all";
+  /** Substring (ILIKE %q%) sobre `content`. */
+  q?: string;
+  /** Default 50, hard cap 200. */
+  limit?: number;
+  /** Default 0. */
+  offset?: number;
+  /**
+   * Columna de ordenación. `archived_at` solo aplica cuando `status` es
+   * `archived` o `all`; si `status` es `active`, se usa `created_at`.
+   */
+  sortBy?: "created_at" | "archived_at";
+  /** Default `desc` (más reciente primero para fechas). */
+  sortDir?: "asc" | "desc";
+}
+
+export interface ListMemoriesResult {
+  rows: MemorySummary[];
+  total: number;
+}
+
+const LIST_MEMORIES_HARD_CAP = 200;
+
+/**
+ * Lista paginada de memorias del usuario para curación. Pensada para
+ * RLS: el caller debe usar un cliente con la auth del usuario o pasar
+ * un `user_id` que ya validó. Devuelve solo columnas seguras (no
+ * embeddings ni hash).
+ */
+export async function listMemories(
+  db: DbClient,
+  input: ListMemoriesInput
+): Promise<ListMemoriesResult> {
+  const limit = Math.min(
+    Math.max(1, Math.floor(input.limit ?? 50)),
+    LIST_MEMORIES_HARD_CAP
+  );
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const status = input.status ?? "active";
+  const ascending = (input.sortDir ?? "desc") === "asc";
+  const requestedSort = input.sortBy ?? "created_at";
+  const orderColumn: "created_at" | "archived_at" =
+    requestedSort === "archived_at" && status !== "active"
+      ? "archived_at"
+      : "created_at";
+
+  let query = db
+    .from("memories")
+    .select(
+      "id, type, content, retrieval_count, created_at, last_retrieved_at, archived_at",
+      { count: "exact" }
+    )
+    .eq("user_id", input.userId)
+    .order(orderColumn, { ascending })
+    .range(offset, offset + limit - 1);
+
+  if (status === "active") query = query.is("archived_at", null);
+  if (status === "archived") query = query.not("archived_at", "is", null);
+  if (input.type) query = query.eq("type", input.type);
+  if (input.q && input.q.trim().length > 0) {
+    // ILIKE-style con escape mínimo de '%' y '_'.
+    const safe = input.q.trim().replace(/[%_]/g, (c) => `\\${c}`);
+    query = query.ilike("content", `%${safe}%`);
+  }
+
+  const { data, error, count } = await query;
+  if (error) throw error;
+  return {
+    rows: (data ?? []) as MemorySummary[],
+    total: typeof count === "number" ? count : (data ?? []).length,
+  };
+}
+
+/** Recupera una memoria por id, validando ownership por user_id.
+ *  Devuelve null si no existe o no pertenece al usuario. */
+export async function getMemoryById(
+  db: DbClient,
+  input: { userId: string; memoryId: string }
+): Promise<MemorySummary | null> {
+  const { data, error } = await db
+    .from("memories")
+    .select(
+      "id, type, content, retrieval_count, created_at, last_retrieved_at, archived_at"
+    )
+    .eq("id", input.memoryId)
+    .eq("user_id", input.userId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as MemorySummary | null) ?? null;
+}
+
+/**
+ * Soft-delete reversible: marca `archived_at = NOW()`. Idempotente
+ * (ejecutar dos veces no rompe ni hace nada útil la segunda vez).
+ * Devuelve `true` si efectivamente archivó (cambió de NULL → fecha).
+ */
+export async function archiveMemory(
+  db: DbClient,
+  input: { userId: string; memoryId: string }
+): Promise<boolean> {
+  const nowIso = new Date().toISOString();
+  const { data, error } = await db
+    .from("memories")
+    .update({ archived_at: nowIso })
+    .eq("id", input.memoryId)
+    .eq("user_id", input.userId)
+    .is("archived_at", null)
+    .select("id");
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+/** Restaura: setea `archived_at = NULL`. Devuelve `true` si efectivamente
+ *  restauró (estaba archivada antes). */
+export async function restoreMemory(
+  db: DbClient,
+  input: { userId: string; memoryId: string }
+): Promise<boolean> {
+  const { data, error } = await db
+    .from("memories")
+    .update({ archived_at: null })
+    .eq("id", input.memoryId)
+    .eq("user_id", input.userId)
+    .not("archived_at", "is", null)
+    .select("id");
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+/** Hard-delete: borra el renglón definitivamente. Para que la auditoría
+ *  sobreviva, el caller DEBE haber llamado antes a `logMemoryAction`
+ *  con un snapshot del content. */
+export async function deleteMemory(
+  db: DbClient,
+  input: { userId: string; memoryId: string }
+): Promise<boolean> {
+  const { data, error } = await db
+    .from("memories")
+    .delete()
+    .eq("id", input.memoryId)
+    .eq("user_id", input.userId)
+    .select("id");
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+export interface LogMemoryActionInput {
+  userId: string;
+  /** null cuando la memoria ya fue borrada. */
+  memoryId: string | null;
+  action: MemoryAuditAction;
+  /** Snapshot del content / razón / canal (ui|agent) / etc. */
+  details?: Record<string, unknown> | null;
+}
+
+/** Inserta un renglón en `memory_audit_log`. No-op silencioso si la
+ *  tabla aún no existe (errores de catálogo se loguean y devuelven
+ *  null para no bloquear el flujo principal). */
+export async function logMemoryAction(
+  db: DbClient,
+  input: LogMemoryActionInput
+): Promise<MemoryAuditLogRow | null> {
+  const { data, error } = await db
+    .from("memory_audit_log")
+    .insert({
+      user_id: input.userId,
+      memory_id: input.memoryId,
+      action: input.action,
+      details: input.details ?? null,
+    })
+    .select("id, user_id, memory_id, action, details, performed_at")
+    .single();
+  if (error) {
+    console.warn("[memory_audit_log] insert failed:", error.message);
+    return null;
+  }
+  return data as MemoryAuditLogRow;
 }

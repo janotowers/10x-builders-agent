@@ -64,12 +64,12 @@ export interface FlushResult {
   watermarkAdvanced: boolean;
 }
 
-interface ExtractedMemory {
+export interface ExtractedMemory {
   type: MemoryType;
   content: string;
 }
 
-const EXTRACTION_SYSTEM_PROMPT = `Eres un extractor de memoria a largo plazo para un agente personal. Recibes un transcript de uno o varios turnos (user / assistant / tool). Tu trabajo es identificar SOLO hechos sobre EL USUARIO que aporten contexto en conversaciones futuras y que NO estén ya cubiertos por los datos estructurados de su perfil ni por las herramientas del agente.
+export const EXTRACTION_SYSTEM_PROMPT = `Eres un extractor de memoria a largo plazo para un agente personal. Recibes un transcript de uno o varios turnos (user / assistant / tool). Tu trabajo es identificar SOLO hechos sobre EL USUARIO que aporten contexto en conversaciones futuras y que NO estén ya cubiertos por los datos estructurados de su perfil ni por las herramientas del agente.
 
 Clasifica cada hecho en uno de tres tipos:
 - "episodic": algo concreto que hizo o le pasó al usuario, relevante a futuro (ej. "creó el repo mi-app el 20 de abril", "mudó su negocio a Guadalajara en enero").
@@ -81,9 +81,32 @@ REGLAS DURAS — no las violes:
 2. NO EXTRAIGAS datos de identidad/config PROPIOS del usuario que ya viven en el perfil del usuario o en el system prompt: su nombre, apellido, email propio, teléfono propio, timezone, idioma, formato de fecha, moneda. El agente ya los recibe cada turno. (Email y teléfono de TERCEROS sí se pueden extraer — ver Regla 3).
 3. NO EXTRAIGAS listas de recursos externos que el agente consulta con herramientas: NO extraigas los calendarios que tiene en Google, NO extraigas la lista de sus repos de GitHub, NO extraigas archivos, eventos concretos, issues ni PRs. Esas listas cambian y el agente las re-obtiene cuando las necesita. EXCEPCIÓN: sí puedes extraer como "semantic" datos de contacto ESTABLES de TERCEROS que el usuario comparte deliberadamente (ej. "el email de mi contador es juan@ejemplo.com", "el WhatsApp de mi hermana es +52 33 XXX"). No extraigas contactos mencionados de pasada sin intención de recordar.
 4. NO EXTRAIGAS comportamiento del AGENTE: "usa bash", "llama a la tool X", "busca en Wikipedia", "responde corto" — eso es el system prompt del agente, no una preferencia del usuario. Solo cuenta si el propio usuario expresó la preferencia ("quiero que me respondas corto").
-5. NO EXTRAIGAS saludos, agradecimientos, quejas, frases de relleno, ni nada temporal del turno actual ("ahora estoy probando", "hoy me falló X").
-6. NO sobregeneralices desde un solo dato. Si el usuario mencionó UN equipo, el hecho es "sigue al equipo X", no "prefiere equipos del país Y".
-7. Sé CONSERVADOR. Si dudas, NO lo incluyas. Devolver [] es una respuesta válida y preferible a inventar.
+5. NO EXTRAIGAS DATOS TRANSACCIONALES DE NEGOCIO sobre TERCEROS DEL FLUJO DE TRABAJO del usuario que aparezcan como input a una tarea. Específicamente:
+   - Nombres, teléfonos, emails o IDs de leads, prospectos, clientes, asistentes a citas o contrapartes de un deal.
+   - Direcciones, precios, IDs o atributos de propiedades, inventario, catálogo o eventos de negocio.
+   - Contenido de mensajes que el usuario está componiendo o pidiendo redactar (WhatsApps, emails, drafts, briefs).
+   - Estados de pipeline (etapas, fechas de seguimiento, montos por cerrar, status de un lead).
+   Estas entidades viven en sistemas externos (CRM, BigQuery, calendario) y el agente las consulta con tools cuando las necesita. Guardarlas en memoria larga las congela en el tiempo y contamina futuros turnos. La EXCEPCIÓN sigue siendo Regla 3: contactos personales estables (familia, amistades, médico, contador) que el usuario comparte deliberadamente como contexto, no como input a una tarea operativa. Test rápido: si la frase tiene la forma "el lead/cliente/propiedad X tiene Y" o "el nombre/teléfono/correo del lead/cliente es Z", NO la extraigas.
+6. NO EXTRAIGAS INPUTS DE TAREA. Si el [assistant] inmediato anterior le pidió al usuario un dato concreto (nombre, teléfono, email, fecha, dirección, monto, hora) y el [user] solo respondió con ese valor, ese intercambio es un PARÁMETRO DE UN TURNO, no un hecho durable sobre el usuario. NO lo extraigas, ni siquiera si la frase del usuario está bien formada ("su nombre es X", "el teléfono es 521…", "es para el viernes a las 3pm").
+7. NO EXTRAIGAS saludos, agradecimientos, quejas, frases de relleno, ni nada temporal del turno actual ("ahora estoy probando", "hoy me falló X").
+8. NO sobregeneralices desde un solo dato. Si el usuario mencionó UN equipo, el hecho es "sigue al equipo X", no "prefiere equipos del país Y".
+9. Sé CONSERVADOR. Si dudas, NO lo incluyas. Devolver [] es una respuesta válida y preferible a inventar.
+
+EJEMPLOS (dominio inmobiliario / asistente personal):
+
+SÍ extraer:
+- [user] "Soy asesor inmobiliario en Mazatlán, llevo 8 años" → {"type":"semantic","content":"Es asesor inmobiliario en Mazatlán con 8 años de experiencia"}
+- [user] "Siempre prefiero responder en tono amigable y firmar 'Saludos, Juan'" → {"type":"procedural","content":"Prefiere tono amigable y firma 'Saludos, Juan' en sus mensajes"}
+- [user] "El WhatsApp de mi contadora Lucía es +52 33 1234 5678" → {"type":"semantic","content":"Su contadora se llama Lucía, WhatsApp +52 33 1234 5678"}
+
+NO extraer (Regla 5 — datos transaccionales del CRM):
+- [user] "Ayúdame a escribir un WhatsApp para el lead Julieta Evelia, tel 521…" → []
+- [user] "La propiedad de Reforma 123 está en venta a 4.5M" → []
+- [user] "El cliente Pedro pidió cita el viernes" → []
+
+NO extraer (Regla 6 — inputs de tarea):
+- [assistant] "¿Cuál es el nombre del lead?" + [user] "El nombre es Julieta Evelia" → []
+- [assistant] "¿Su teléfono?" + [user] "5216688255676" → []
 
 FORMATO:
 - Cada hecho en 1 frase corta en español, máximo 180 caracteres, en presente o pasado.
@@ -94,7 +117,7 @@ FORMATO:
 /** Extrae JSON del texto devuelto por el modelo. Haiku ocasionalmente envuelve
  *  la respuesta en ```json ... ```; tolerante a ese caso. Si no hay match,
  *  devuelve null para que el caller decida (no avanzar watermark). */
-function extractJsonArray(text: string): unknown[] | null {
+export function extractJsonArray(text: string): unknown[] | null {
   const trimmed = text.trim();
   // Quitar code fences si los hay.
   const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -108,7 +131,7 @@ function extractJsonArray(text: string): unknown[] | null {
   }
 }
 
-function validateExtracted(items: unknown[]): ExtractedMemory[] {
+export function validateExtracted(items: unknown[]): ExtractedMemory[] {
   const out: ExtractedMemory[] = [];
   for (const item of items) {
     if (!item || typeof item !== "object") continue;
@@ -130,6 +153,46 @@ function validateExtracted(items: unknown[]): ExtractedMemory[] {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max)}…`;
+}
+
+/**
+ * Helper expuesto SOLO para tests/diagnóstico: corre la pipeline de
+ * extracción (system prompt + user prompt + parse + validate) sobre un
+ * transcript ya serializado. NO toca la DB, NO genera embeddings, NO
+ * actualiza watermark. Útil para selftests live (gated por env var) y
+ * para evaluar el efecto del prompt en un transcript sintético.
+ */
+export async function extractMemoriesFromTranscript(
+  transcript: string,
+  options?: { reason?: FlushReason }
+): Promise<{
+  rawText: string;
+  parsed: unknown[] | null;
+  items: ExtractedMemory[];
+}> {
+  const reason = options?.reason ?? "catchup";
+  const userPrompt = `TRANSCRIPT (reason=${reason}):\n\n${transcript}\n\n--- FIN ---\n\nDevuelve el array JSON.`;
+  const model = createCompactionModel();
+  const response = await model.invoke([
+    { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
+    { role: "user", content: userPrompt },
+  ]);
+  const raw = (response as { content: unknown }).content;
+  const rawText =
+    typeof raw === "string"
+      ? raw
+      : Array.isArray(raw)
+        ? raw
+            .map((p) =>
+              p && typeof p === "object" && "text" in p
+                ? String((p as { text: unknown }).text ?? "")
+                : ""
+            )
+            .join("")
+        : String(raw ?? "");
+  const parsed = extractJsonArray(rawText);
+  const items = parsed ? validateExtracted(parsed) : [];
+  return { rawText, parsed, items };
 }
 
 export async function flushSessionMemory(

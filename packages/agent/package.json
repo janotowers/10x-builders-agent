@@ -20,6 +20,8 @@
     "test:skills-runtime": "tsx src/skills/runtime.selftest.ts",
     "test:skills-select": "tsx src/skills/select.selftest.ts",
     "test:routing-context": "tsx src/skills/routing-context.selftest.ts",
+    "test:lead-followup-intent": "tsx src/skills/lead-followup-intent.selftest.ts",
+    "test:memory-flush": "tsx src/memory_flush.selftest.ts",
     "test:month-followup": "tsx src/skills/month-followup.selftest.ts",
     "test:sanitize-history": "tsx src/skills/sanitize-history.selftest.ts",
     "test:bigquery-sql": "tsx src/tools/bigquery-sql.selftest.ts",

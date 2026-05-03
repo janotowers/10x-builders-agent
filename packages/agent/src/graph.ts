@@ -17,6 +17,7 @@ import {
   createToolCall,
   findExistingPendingToolCall,
   updateToolCallStatus,
+  getMemoryById,
 } from "@agents/db";
 import type {
   UserToolSetting,
@@ -24,6 +25,7 @@ import type {
   UserIntegration,
   PendingConfirmation,
   BusinessBrain,
+  AgentMessage,
 } from "@agents/types";
 import {
   CHAT_MODEL_ID,
@@ -44,6 +46,7 @@ import {
   isShortMonthPeriodFollowUp,
   recentMessagesSuggestCompanyData,
 } from "./skills/month-followup";
+import { turnHasLeadIdentifier } from "./skills/lead-followup-intent";
 import {
   deriveSkillRoutingContext,
   shouldRouteFromContinuity,
@@ -135,6 +138,12 @@ export interface AgentOutput {
 }
 
 const MAX_TOOL_ITERATIONS = 8;
+const MEMORY_CURATE_TOOL_NAMES = new Set([
+  "list_user_memories",
+  "search_user_memories",
+  "archive_user_memory",
+  "delete_user_memory",
+]);
 /** System prompt inyectado cuando forzamos una última respuesta de texto
  *  tras tocar el tope de iteraciones sin producir texto. */
 const FORCED_TEXT_WRAPUP_INSTRUCTION =
@@ -187,6 +196,59 @@ function shouldRequireCompanyDataQueryForTurn(args: {
   );
 
   return isShortFollowUp || hasMetricHint || hasPeriodHint;
+}
+
+function shouldRequireLeadContextLookupForTurn(args: {
+  readonly activeSkill: ResolvedSkill | undefined;
+  readonly message: string | undefined;
+  readonly priorMessages: readonly AgentMessage[];
+  readonly toolNamesAvailable: Set<string>;
+  readonly toolCallNames: readonly string[];
+}): boolean {
+  if (args.activeSkill?.rootName !== "lead-follow-up-draft") return false;
+  if (!args.toolNamesAvailable.has("bigquery_run_query")) return false;
+  if (args.toolCallNames.includes("bigquery_run_query")) return false;
+  return turnHasLeadIdentifier({
+    message: args.message,
+    priorMessages: args.priorMessages,
+  });
+}
+
+function shouldRequireMemoryCurateToolForTurn(args: {
+  readonly activeSkill: ResolvedSkill | undefined;
+  readonly message: string | undefined;
+  readonly toolNamesAvailable: Set<string>;
+  readonly toolCallNames: readonly string[];
+}): boolean {
+  if (args.activeSkill?.rootName !== "memory-curate") return false;
+  if (!args.message?.trim()) return false;
+  const hasAnyMemoryTool = [...MEMORY_CURATE_TOOL_NAMES].some((name) =>
+    args.toolNamesAvailable.has(name)
+  );
+  if (!hasAnyMemoryTool) return false;
+  return !args.toolCallNames.some((name) => MEMORY_CURATE_TOOL_NAMES.has(name));
+}
+
+function isInternalCorrectionMessage(message: BaseMessage): boolean {
+  if (!(message instanceof HumanMessage)) return false;
+  const content = normalizeMessageContentToString(message.content);
+  return (
+    content.startsWith("[CORRECCIÓN INTERNA — COMPANY-DATA]") ||
+    content.startsWith("[CORRECCIÓN INTERNA — LEAD-FOLLOW-UP-DRAFT]") ||
+    content.startsWith("[CORRECCIÓN INTERNA — MEMORY-CURATE]")
+  );
+}
+
+function shouldAskLeadIdentifierBeforeDraft(args: {
+  readonly activeSkill: ResolvedSkill | undefined;
+  readonly message: string | undefined;
+  readonly priorMessages: readonly AgentMessage[];
+}): boolean {
+  if (args.activeSkill?.rootName !== "lead-follow-up-draft") return false;
+  return !turnHasLeadIdentifier({
+    message: args.message,
+    priorMessages: args.priorMessages,
+  });
 }
 
 function normalizeMessageContentToString(raw: unknown): string {
@@ -637,7 +699,27 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           channel,
           routingContext,
         });
-        if (selection.kind === "active") {
+        if (
+          selection.kind === "active" &&
+          !input.autoApproveTools &&
+          shouldRouteFromContinuity(routingContext) &&
+          routingContext.lastActiveSkill === "lead-follow-up-draft" &&
+          selection.skillId !== routingContext.lastActiveSkill &&
+          skillCandidateIsEnabled(routingContext.lastActiveSkill, candidateSlugs)
+        ) {
+          activeSkill = await resolveSkill(routingContext.lastActiveSkill, registry);
+          console.log(
+            `[skills] active=${routingContext.lastActiveSkill} reason=routing_context_override selected=${selection.skillId} session=${sessionId} channel=${channel ?? "web"}`
+          );
+          skillSelectionSnapshot = {
+            active: routingContext.lastActiveSkill,
+            reason: "routing_context_override",
+            allowedTools: activeSkill.allowedTools,
+            requiresTenantContext: activeSkill.requiresTenantContext,
+            registryRoot,
+            registrySize,
+          };
+        } else if (selection.kind === "active") {
           activeSkill = selection.resolved;
           console.log(
             `[skills] active=${selection.skillId} session=${sessionId} channel=${channel ?? "web"}`
@@ -754,6 +836,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     lastUserMessage: message ?? "",
     activeSkillAllowedTools: activeSkill?.allowedTools,
     activeSkillName: activeSkill?.rootName,
+    activeSkillReferenceNames: activeSkill?.composedFrom,
     tenantOrganizationId:
       activeSkill?.requiresTenantContext && !input.isUnggaAdmin
         ? input.businessBrain?.identity?.organization_id?.trim() || undefined
@@ -896,6 +979,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       .filter((n): n is string => Boolean(n))
   );
   const companyDataQueryCorrection = `[CORRECCIÓN INTERNA — COMPANY-DATA]\nLa skill company-data está activa y este turno pide una métrica o período de datos de negocio. Tu respuesta anterior intentó cerrar sin llamar a bigquery_run_query. Eso no está permitido aunque el historial contenga un número previo.\n\nAhora emite exactamente el/los tool_call(s) bigquery_run_query necesarios para el MENSAJE ACTUAL del usuario: "${(message ?? "").replace(/\n/g, " ").slice(0, 200)}". Si el mensaje actual nombra un solo período, consulta SOLO ese período. No respondas texto final hasta recibir el resultado de BigQuery.`;
+  const memoryCurateCorrection = `[CORRECCIÓN INTERNA — MEMORY-CURATE]\nLa skill memory-curate está activa para el mensaje actual del usuario: "${(message ?? "").replace(/\n/g, " ").slice(0, 200)}". Tu respuesta anterior intentó contestar o confirmar cambios usando historial conversacional. Eso no está permitido para recuerdos de largo plazo porque el estado activo puede haber cambiado.\n\nDebes emitir ahora un tool_call apropiado antes de responder:\n- Si el usuario pregunta qué recuerdas sobre un tema/persona, usa search_user_memories con ese tema.\n- Si pide listar recuerdos o qué recuerdas de él/ella en general, usa list_user_memories con status="active".\n- Si está confirmando archivar/borrar recuerdos mostrados inmediatamente antes, emite archive_user_memory/delete_user_memory usando los UUID completos previamente mostrados o vuelve a buscar/listar si no estás seguro.\nNo vuelvas a listar recuerdos desde historial ni memoria inyectada.`;
   if (
     !input.autoApproveTools &&
     !resumeDecision &&
@@ -933,6 +1017,26 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 - El selector activó la skill \`company-data\`. Debes resolver este turno con al menos un tool_call a \`bigquery_run_query\` antes de responder. No contestes métricas usando respuestas previas del historial ni memoria.
 - Si el usuario usa una continuación breve ("y en marzo", "y en abril", "¿y ese mes?"), interpreta el dominio y métrica desde el turno anterior inmediato, pero calcula el nuevo período desde el texto actual y consulta SOLO ese período.
 - Si el texto actual menciona explícitamente un mes/período, ese período gana sobre cualquier período anterior.`;
+  }
+
+  if (
+    !input.autoApproveTools &&
+    !resumeDecision &&
+    activeSkill?.rootName === "lead-follow-up-draft" &&
+    message &&
+    toolNamesAvailable.has("bigquery_run_query")
+  ) {
+    effectiveSystemPrompt =
+      effectiveSystemPrompt.trimEnd() +
+      `
+
+[ATAJO — LEAD-FOLLOW-UP-DRAFT ESTE TURNO]
+- El mensaje actual del usuario es: "${message.replace(/\n/g, " ").slice(0, 200)}".
+- REGLA #1 — IDENTIFICADOR EN SCOPE. Antes de redactar nada, decide si el usuario te dio un identificador del lead EN ESTE turno (nombre, teléfono, email o lead_id explícito), o si está respondiendo a una pregunta tuya inmediatamente anterior que pedía ese dato. Un nombre que viene de turnos viejos del historial NO está en scope; está prohibido reusar nombres del historial sin que el usuario lo haya re-confirmado en este turno.
+- REGLA #2 — SIN IDENTIFICADOR. Si no hay identificador en scope, NO redactes ningún mensaje, NO uses corchetes/placeholders y NO copies un texto previo del asistente. Pide al usuario UN dato concreto (nombre, teléfono o email) en una sola pregunta corta y termina el turno.
+- REGLA #3 — CON IDENTIFICADOR. Si hay identificador en scope, DEBES llamar primero a \`read_skill_reference\` con \`name="lead-context"\` y luego emitir UN tool_call a \`bigquery_run_query\` usando el SQL de esa referencia (con \`@organization_id\` del [Contexto de tenant] y el identificador del usuario). Está prohibido redactar antes de recibir el resultado.
+- REGLA #4 — DESAMBIGUACIÓN. Después de la query: 0 filas → di que no encontraste al lead y pide teléfono o email; 1 fila → redacta con esos datos (propiedad/desarrollo, última interacción, últimos mensajes); 2+ filas → pide al usuario que elija mostrando disambiguadores cortos (portal, last_interaction, propiedad). No redactes hasta que se resuelva.
+- REGLA #5 — Tu respuesta anterior pudo haber redactado un mensaje genérico desde el historial. Eso fue un error y no debe repetirse en este turno.`;
   }
 
   // DEBUG: descomentar las siguientes 2 líneas para ver el system prompt completo en la terminal del servidor
@@ -977,10 +1081,28 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const toolCallNames: string[] = [];
   let bigQueryExecutionErrorCount = 0;
   let companyDataQueryCorrectionCount = 0;
+  let leadContextQueryCorrectionCount = 0;
+  let memoryCurateCorrectionCount = 0;
+
+  const leadIdentifierRequest =
+    "Claro. Para redactarlo con contexto real, compárteme el nombre, teléfono o correo del lead.";
+  const leadContextCorrection = `[CORRECCIÓN INTERNA — LEAD-FOLLOW-UP-DRAFT]\nLa skill lead-follow-up-draft está activa y este turno trae un identificador del lead ("${(message ?? "").replace(/\n/g, " ").slice(0, 200)}"). Tu respuesta anterior intentó cerrar sin llamar a bigquery_run_query. Está prohibido redactar mensajes basándote en nombres del historial sin consultar la base.\n\nEmite ahora dos tool_calls en orden: 1) read_skill_reference con name="lead-context"; 2) bigquery_run_query usando el SQL de esa referencia, con @organization_id del [Contexto de tenant] y el identificador del usuario en @lead_name / @lead_phone / @lead_email según corresponda. NO simplifiques el SELECT final: debe incluir propiedad/desarrollo y recent_messages. Si la query encuentra solo nombre/lead_id pero no devuelve propiedad, recent_messages, last_message, last_interaction ni dialog_state, NO redactes un mensaje genérico; di que encontraste el lead pero falta contexto para personalizar y pide propiedad o última interacción.`;
 
   async function agentNode(
     state: GraphStateType
   ): Promise<Partial<GraphStateType>> {
+    if (
+      !input.autoApproveTools &&
+      !resumeDecision &&
+      shouldAskLeadIdentifierBeforeDraft({
+        activeSkill,
+        message,
+        priorMessages: priorRaw,
+      })
+    ) {
+      return { messages: [new AIMessage(leadIdentifierRequest)] };
+    }
+
     const response = await modelWithTools.invoke(state.messages);
     // Incrementamos iterationCount SÓLO cuando el modelo pidió herramientas.
     // El reducer aditivo hace el resto. Necesario para que shouldContinue
@@ -1003,6 +1125,37 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         messages: [response, new HumanMessage(companyDataQueryCorrection)],
       };
     }
+    if (
+      !hasToolCalls &&
+      leadContextQueryCorrectionCount < 1 &&
+      shouldRequireLeadContextLookupForTurn({
+        activeSkill,
+        message,
+        priorMessages: priorRaw,
+        toolNamesAvailable,
+        toolCallNames,
+      })
+    ) {
+      leadContextQueryCorrectionCount += 1;
+      return {
+        messages: [response, new HumanMessage(leadContextCorrection)],
+      };
+    }
+    if (
+      !hasToolCalls &&
+      memoryCurateCorrectionCount < 1 &&
+      shouldRequireMemoryCurateToolForTurn({
+        activeSkill,
+        message,
+        toolNamesAvailable,
+        toolCallNames,
+      })
+    ) {
+      memoryCurateCorrectionCount += 1;
+      return {
+        messages: [response, new HumanMessage(memoryCurateCorrection)],
+      };
+    }
     return hasToolCalls
       ? { messages: [response], iterationCount: 1 }
       : { messages: [response] };
@@ -1021,8 +1174,28 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
     function confirmationMessage(
       toolName: string,
-      args: Record<string, unknown>
+      args: Record<string, unknown>,
+      extras: { memoryContent?: string | null; memoryAlreadyArchived?: boolean } = {}
     ): string {
+      if (toolName === "archive_user_memory") {
+        const id = String(args.memory_id ?? "");
+        const content = extras.memoryContent?.trim();
+        const alreadyNote = extras.memoryAlreadyArchived
+          ? "\n(Este recuerdo ya estaba archivado; aprobar no cambia nada.)"
+          : "";
+        if (content) {
+          return `Confirma archivar este recuerdo (reversible):\n\n«${content}»\n\nID: ${id}${alreadyNote}`;
+        }
+        return `Confirma archivar este recuerdo (reversible):\nID: ${id}${alreadyNote}`;
+      }
+      if (toolName === "delete_user_memory") {
+        const id = String(args.memory_id ?? "");
+        const content = extras.memoryContent?.trim();
+        if (content) {
+          return `Confirma borrar definitivamente este recuerdo (irreversible):\n\n«${content}»\n\nID: ${id}`;
+        }
+        return `Confirma borrar definitivamente este recuerdo (irreversible):\nID: ${id}`;
+      }
       if (toolName === "github_create_repo") {
         return `Se necesita tu confirmación para crear el repositorio "${String(args.name ?? "")}"${args.private ? " (privado)" : ""}.`;
       }
@@ -1104,10 +1277,45 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       return `Confirma ejecutar la herramienta ${toolName}.`;
     }
 
+    function invalidMemoryMutationArgs(
+      toolName: string,
+      args: Record<string, unknown>
+    ): { status: "validation_error"; error: string } | null {
+      if (
+        toolName !== "archive_user_memory" &&
+        toolName !== "delete_user_memory"
+      ) {
+        return null;
+      }
+      const memoryId = String(args.memory_id ?? "");
+      const uuidRe =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      if (uuidRe.test(memoryId)) return null;
+      return {
+        status: "validation_error",
+        error:
+          "memory_id must be a full UUID returned by list_user_memories or search_user_memories. Do not invent ids or use shortened prefixes; list/search memories again and ask the user to choose from the real ids.",
+      };
+    }
+
     for (const tc of lastMsg.tool_calls) {
       const matchingTool = lcTools.find((t) => t.name === tc.name);
       toolCallNames.push(tc.name);
       if (matchingTool) {
+        const invalidMemoryArgs = invalidMemoryMutationArgs(
+          tc.name,
+          (tc.args as Record<string, unknown>) ?? {}
+        );
+        if (invalidMemoryArgs) {
+          results.push(
+            new ToolMessage({
+              content: JSON.stringify(invalidMemoryArgs),
+              tool_call_id: tc.id!,
+            })
+          );
+          continue;
+        }
+
         const needsConfirmation = toolRequiresConfirmation(tc.name);
         let trackedToolCallId: string | null = null;
 
@@ -1129,7 +1337,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
             const existing = await findExistingPendingToolCall(
               db,
               state.sessionId,
-              tc.name
+              tc.name,
+              (tc.args as Record<string, unknown>) ?? {}
             );
             const toolCallRecord =
               existing ??
@@ -1141,10 +1350,38 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 true
               ));
             trackedToolCallId = toolCallRecord.id;
+            let memoryContent: string | null = null;
+            let memoryAlreadyArchived = false;
+            if (
+              tc.name === "archive_user_memory" ||
+              tc.name === "delete_user_memory"
+            ) {
+              const rawId = (tc.args as Record<string, unknown>)?.memory_id;
+              if (typeof rawId === "string" && rawId.length > 0) {
+                try {
+                  const snapshot = await getMemoryById(db, {
+                    userId,
+                    memoryId: rawId,
+                  });
+                  if (snapshot) {
+                    memoryContent = snapshot.content ?? null;
+                    memoryAlreadyArchived = Boolean(snapshot.archived_at);
+                  }
+                } catch (e) {
+                  console.warn(
+                    "[agent] confirmation pre-fetch getMemoryById failed:",
+                    e
+                  );
+                }
+              }
+            }
             const decision = interrupt({
               tool_call_id: toolCallRecord.id,
               tool_name: tc.name,
-              message: confirmationMessage(tc.name, tc.args),
+              message: confirmationMessage(tc.name, tc.args, {
+                memoryContent,
+                memoryAlreadyArchived,
+              }),
               args: tc.args,
             }) as "approve" | "reject";
             if (decision !== "approve") {
@@ -1288,12 +1525,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       if ((state.iterationCount ?? 0) >= MAX_TOOL_ITERATIONS) return "end";
       return "tools";
     }
-    if (
-      lastMsg instanceof HumanMessage &&
-      normalizeMessageContentToString(lastMsg.content).startsWith(
-        "[CORRECCIÓN INTERNA — COMPANY-DATA]"
-      )
-    ) {
+    if (isInternalCorrectionMessage(lastMsg)) {
       return "agent";
     }
     return "end";

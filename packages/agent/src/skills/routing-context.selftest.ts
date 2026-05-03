@@ -48,6 +48,41 @@ function run(): void {
   assert.equal(nonBusiness.lastActiveSkill, undefined);
   assert.equal(shouldRouteFromContinuity(nonBusiness), false);
 
+  const leadFollowUp = deriveSkillRoutingContext(
+    [
+      msg("user", "Ayúdame a escribir un WhatsApp para darle seguimiento a un lead"),
+      msg(
+        "assistant",
+        "Claro, necesito un poco más de información: Nombre del lead, propiedad o desarrollo, última interacción y tono."
+      ),
+    ],
+    "Su nombre es Julieta Evelia",
+    {}
+  );
+  assert.equal(leadFollowUp.isContinuation, true);
+  assert.equal(leadFollowUp.lastActiveSkill, "lead-follow-up-draft");
+  assert.equal(leadFollowUp.confidence, "high");
+  assert.equal(shouldRouteFromContinuity(leadFollowUp), true);
+  assert.match(
+    formatRoutingContextForSelector(leadFollowUp),
+    /"lastActiveSkill": "lead-follow-up-draft"/
+  );
+
+  const leadFollowUpWithArticle = deriveSkillRoutingContext(
+    [
+      msg("user", "Ayúdame a escribir un WhatsApp para darle seguimiento a un lead"),
+      msg(
+        "assistant",
+        "Para poder ayudarte mejor, necesito que me proporciones el nombre del lead."
+      ),
+    ],
+    "El nombre es Julieta Evelia pero no recuerdo qué propiedad",
+    {}
+  );
+  assert.equal(leadFollowUpWithArticle.isContinuation, true);
+  assert.equal(leadFollowUpWithArticle.lastActiveSkill, "lead-follow-up-draft");
+  assert.equal(shouldRouteFromContinuity(leadFollowUpWithArticle), true);
+
   console.log("routing-context.selftest.ts: ok");
 }
 

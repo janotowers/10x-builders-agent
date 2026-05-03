@@ -54,7 +54,8 @@ export async function getPendingToolCall(db: DbClient, toolCallId: string) {
 export async function findExistingPendingToolCall(
   db: DbClient,
   sessionId: string,
-  toolName: string
+  toolName: string,
+  args?: Record<string, unknown>
 ) {
   const { data } = await db
     .from("tool_calls")
@@ -65,5 +66,9 @@ export async function findExistingPendingToolCall(
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  return (data as ToolCall | null) ?? null;
+  const row = (data as ToolCall | null) ?? null;
+  if (!row || !args) return row;
+  return JSON.stringify(row.arguments_json ?? {}) === JSON.stringify(args)
+    ? row
+    : null;
 }

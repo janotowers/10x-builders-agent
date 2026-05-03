@@ -1,9 +1,10 @@
 /**
  * Adapter for the `read_skill_reference` tool (V1-B+).
  *
- * Reads files from the active skill's `references/` directory only:
+ * Reads files from the active skill's `references/` directory, or from the
+ * references of skills composed via `includes`:
  *
- *   skills/global/<active-skill>/references/<name>.md
+ *   skills/global/<skill>/references/<name>.md
  *
  * This is the runtime side of the **progressive disclosure** pattern: the
  * SKILL.md body is small and points to reference files; the model loads a
@@ -41,6 +42,8 @@ export interface ReadSkillReferenceArgs {
   readonly name: string;
   /** Active skill slug (resolved by runAgent's selector). */
   readonly activeSkillName: string | undefined;
+  /** Active root plus included skill slugs that may provide references. */
+  readonly referenceSkillNames?: readonly string[];
   /** Absolute path to the workspace root. */
   readonly skillsRoot: string;
 }
@@ -67,6 +70,7 @@ export type ReadSkillReferenceResult =
       readonly message: string;
       readonly skill: string;
       readonly name: string;
+      readonly searchedSkills?: readonly string[];
     }
   | {
       readonly status: "read_error";
@@ -99,78 +103,100 @@ export async function readSkillReference(
     };
   }
 
-  const referencesDir = resolve(
-    args.skillsRoot,
-    "skills",
-    "global",
-    skill,
-    "references"
-  );
-  const target = resolve(referencesDir, `${name}.md`);
+  const searchSkills = buildReferenceSearchOrder(skill, args.referenceSkillNames);
+  for (const candidateSkill of searchSkills) {
+    const referencesDir = resolve(
+      args.skillsRoot,
+      "skills",
+      "global",
+      candidateSkill,
+      "references"
+    );
+    const target = resolve(referencesDir, `${name}.md`);
 
-  // Defense-in-depth: ensure the resolved path is still under the
-  // references/ directory after symlink resolution. We use the lexical
-  // prefix here; if a symlink points outside, fs.realpath would reveal
-  // it but we accept the small risk because we control the deployment
-  // (the repo doesn't have symlinks pointing outside skills/).
-  const expectedPrefix = referencesDir + sep;
-  if (target !== referencesDir && !target.startsWith(expectedPrefix)) {
-    return {
-      status: "invalid_name",
-      message: `Refusing to read outside references/ for skill '${skill}'.`,
-    };
-  }
-
-  let content: string;
-  try {
-    const stat = await fs.stat(target);
-    if (!stat.isFile()) {
+    // Defense-in-depth: ensure the resolved path is still under the
+    // references/ directory after symlink resolution. We use the lexical
+    // prefix here; if a symlink points outside, fs.realpath would reveal
+    // it but we accept the small risk because we control the deployment
+    // (the repo doesn't have symlinks pointing outside skills/).
+    const expectedPrefix = referencesDir + sep;
+    if (target !== referencesDir && !target.startsWith(expectedPrefix)) {
       return {
-        status: "not_found",
-        skill,
-        name,
-        message: `Reference '${name}.md' does not exist for skill '${skill}'.`,
+        status: "invalid_name",
+        message: `Refusing to read outside references/ for skill '${candidateSkill}'.`,
       };
     }
-    content = await fs.readFile(target, "utf8");
-  } catch (err) {
-    const isENOENT =
-      err instanceof Error &&
-      "code" in err &&
-      (err as { code?: string }).code === "ENOENT";
-    if (isENOENT) {
+
+    let content: string;
+    try {
+      const stat = await fs.stat(target);
+      if (!stat.isFile()) {
+        continue;
+      }
+      content = await fs.readFile(target, "utf8");
+    } catch (err) {
+      const isENOENT =
+        err instanceof Error &&
+        "code" in err &&
+        (err as { code?: string }).code === "ENOENT";
+      if (isENOENT) {
+        continue;
+      }
       return {
-        status: "not_found",
-        skill,
+        status: "read_error",
+        skill: candidateSkill,
         name,
-        message: `Reference '${name}.md' does not exist for skill '${skill}'. Available references are listed in the skill's body under the 'Reference index' section.`,
+        message:
+          err instanceof Error
+            ? err.message
+            : "Unknown error while reading the reference file.",
       };
     }
+
+    const bytes = Buffer.byteLength(content, "utf8");
+    let truncated = false;
+    let body = content;
+    if (bytes > MAX_REFERENCE_BYTES) {
+      truncated = true;
+      body = body.slice(0, MAX_REFERENCE_BYTES);
+    }
+
     return {
-      status: "read_error",
-      skill,
+      status: "ok",
+      skill: candidateSkill,
       name,
-      message:
-        err instanceof Error
-          ? err.message
-          : "Unknown error while reading the reference file.",
+      bytes,
+      truncated,
+      content: body,
     };
-  }
-
-  const bytes = Buffer.byteLength(content, "utf8");
-  let truncated = false;
-  let body = content;
-  if (bytes > MAX_REFERENCE_BYTES) {
-    truncated = true;
-    body = body.slice(0, MAX_REFERENCE_BYTES);
   }
 
   return {
-    status: "ok",
+    status: "not_found",
     skill,
     name,
-    bytes,
-    truncated,
-    content: body,
+    searchedSkills: searchSkills,
+    message: `Reference '${name}.md' does not exist for active skill '${skill}' or included skills (${searchSkills.join(", ")}). Available references are listed in the active skill's body under the 'Reference index' section.`,
   };
+}
+
+function buildReferenceSearchOrder(
+  activeSkillName: string,
+  referenceSkillNames: readonly string[] | undefined
+): readonly string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: string | undefined) => {
+    const slug = value?.trim();
+    if (!slug || seen.has(slug)) return;
+    seen.add(slug);
+    out.push(slug);
+  };
+
+  // Specialized references in the active root override shared references.
+  push(activeSkillName);
+  for (const slug of referenceSkillNames ?? []) {
+    push(slug);
+  }
+  return out;
 }

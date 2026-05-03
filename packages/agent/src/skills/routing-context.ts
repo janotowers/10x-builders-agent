@@ -42,6 +42,10 @@ const COUNT_RE =
   /\b(cuantos|cuantas|cuanto|cuanta|total|conteo|numero|cantidad|count)\b/;
 const CONTINUATION_RE =
   /^(?:y\s+)?(?:(?:en|para|de)\s+)?(?:ese\s+)?(?:mes|periodo|trimestre|año|ano|semana|dia|día|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s*[?!.]*)?$/;
+const LEAD_FOLLOW_UP_CONTEXT_RE =
+  /\b(?:whatsapp|mensaje|seguimiento|follow[-\s]?up|lead|prospecto|prospecta|cliente potencial|nombre del lead|propiedad o desarrollo|ultima interaccion|accion deseada)\b/;
+const SHORT_DETAIL_REPLY_RE =
+  /^(?:(?:su|el|la)\s+)?(?:nombre|se llama|propiedad|desarrollo|tono|formal|amigable|casual|ultima interaccion|accion deseada)\b|^(?:quiero|busca|le interesa|prefiere|fue|vino|pregunto|pregunt[oó]|consult[oó])\b/;
 
 export function deriveSkillRoutingContext(
   messages: readonly AgentMessage[],
@@ -50,7 +54,6 @@ export function deriveSkillRoutingContext(
 ): SkillRoutingContext {
   const current = currentMessage?.trim() ?? "";
   const currentNorm = normalize(current);
-  const isContinuation = currentNorm.length > 0 && CONTINUATION_RE.test(currentNorm);
   const lastTenantName = businessBrain?.identity?.org_name?.trim() || undefined;
 
   const evidence: string[] = [];
@@ -58,34 +61,48 @@ export function deriveSkillRoutingContext(
   let lastMetric: string | undefined;
   let lastPeriod: string | undefined;
   let recentTurnSummary: string | undefined;
+  let recentConversationSkill: string | undefined;
 
   for (const msg of [...messages].reverse()) {
     if (msg.role !== "user" && msg.role !== "assistant") continue;
     const norm = normalize(msg.content);
+    if (!recentConversationSkill) {
+      recentConversationSkill = detectConversationSkill(norm);
+    }
     const domain = detectDomain(norm);
     const metric = detectMetric(norm);
     const period = detectPeriod(norm);
-    if (!domain && !metric && !period) continue;
+    if (!domain && !metric && !period && !recentConversationSkill) continue;
 
     if (!lastDomain && domain) lastDomain = domain;
     if (!lastMetric && metric) lastMetric = metric;
     if (!lastPeriod && period) lastPeriod = period;
     evidence.push(`${msg.role}: ${truncateOneLine(msg.content, 120)}`);
 
-    if (!recentTurnSummary && domain) {
+    if (!recentTurnSummary && recentConversationSkill) {
+      recentTurnSummary = `Recent ${recentConversationSkill} turn`;
+    } else if (!recentTurnSummary && domain) {
       recentTurnSummary = `Recent ${domain} turn` + (period ? ` for ${period}` : "");
     }
-    if (lastDomain && lastMetric && lastPeriod) break;
+    if (recentConversationSkill || (lastDomain && lastMetric && lastPeriod)) break;
   }
 
   const currentDomain = detectDomain(currentNorm);
   const currentMetric = detectMetric(currentNorm);
   const currentPeriod = detectPeriod(currentNorm);
+  const currentConversationSkill = detectConversationSkill(currentNorm);
+  const isContinuation =
+    currentNorm.length > 0 &&
+    (CONTINUATION_RE.test(currentNorm) ||
+      (Boolean(recentConversationSkill) && isShortDetailReply(currentNorm)));
   if (currentDomain) lastDomain = currentDomain;
   if (currentMetric) lastMetric = currentMetric;
   if (currentPeriod) lastPeriod = currentPeriod;
 
-  const lastActiveSkill = lastDomain ? "company-data" : undefined;
+  const lastActiveSkill =
+    currentConversationSkill ??
+    recentConversationSkill ??
+    (lastDomain && lastMetric ? "company-data" : undefined);
   const confidence = scoreConfidence({
     isContinuation,
     lastActiveSkill,
@@ -112,8 +129,9 @@ export function deriveSkillRoutingContext(
 export function shouldRouteFromContinuity(ctx: SkillRoutingContext): boolean {
   return (
     ctx.isContinuation &&
-    ctx.lastActiveSkill === "company-data" &&
-    ctx.confidence === "high"
+    Boolean(ctx.lastActiveSkill) &&
+    (ctx.confidence === "high" ||
+      (ctx.lastActiveSkill !== "company-data" && ctx.confidence === "medium"))
   );
 }
 
@@ -147,6 +165,13 @@ function scoreConfidence(input: {
   evidenceCount: number;
 }): SkillRoutingContext["confidence"] {
   if (!input.lastActiveSkill) return "none";
+  if (
+    input.lastActiveSkill !== "company-data" &&
+    input.isContinuation &&
+    input.evidenceCount >= 1
+  ) {
+    return "high";
+  }
   let score = 0;
   if (input.isContinuation) score += 2;
   if (input.lastDomain) score += 2;
@@ -163,6 +188,15 @@ function detectDomain(norm: string): string | undefined {
     return undefined;
   }
   return DOMAIN_PATTERNS.find((p) => p.re.test(norm))?.domain;
+}
+
+function detectConversationSkill(norm: string): string | undefined {
+  if (LEAD_FOLLOW_UP_CONTEXT_RE.test(norm)) return "lead-follow-up-draft";
+  return undefined;
+}
+
+function isShortDetailReply(norm: string): boolean {
+  return norm.length <= 180 && SHORT_DETAIL_REPLY_RE.test(norm);
 }
 
 function detectMetric(norm: string): string | undefined {

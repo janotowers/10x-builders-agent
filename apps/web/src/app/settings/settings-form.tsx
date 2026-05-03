@@ -69,6 +69,10 @@ const TOOL_IDS = [
   "manage_scheduled_tasks",
   "bigquery_run_query",
   "read_skill_reference",
+  "list_user_memories",
+  "search_user_memories",
+  "archive_user_memory",
+  "delete_user_memory",
 ];
 
 const SKILL_SCOPE_LABELS: Record<SkillCatalogItem["scope"], string> = {

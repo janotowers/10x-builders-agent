@@ -28,7 +28,15 @@ import {
   createScheduledTask,
   listScheduledTasks,
   setScheduledTaskStatus,
+  listMemories,
+  searchMemories,
+  archiveMemory,
+  deleteMemory,
+  getMemoryById,
+  logMemoryAction,
 } from "@agents/db";
+import type { MemoryType } from "@agents/db";
+import { generateEmbedding } from "../embeddings";
 import { addCalendarTools } from "./calendar-adapters";
 import { executeBashCommand, getActiveShellName } from "./bashExec";
 import {
@@ -113,6 +121,78 @@ function sqlUsesNamedParam(sql: string, name: string): boolean {
 function sqlContainsLiteral(sql: string, literal: string): boolean {
   const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(['"])${escaped}\\1`).test(sql);
+}
+
+const MEMORY_SEARCH_STOPWORDS = new Set([
+  "que",
+  "qué",
+  "sabes",
+  "saber",
+  "sobre",
+  "recuerdas",
+  "recuerdo",
+  "recuerdos",
+  "memoria",
+  "memorias",
+  "de",
+  "del",
+  "la",
+  "el",
+  "los",
+  "las",
+  "mi",
+  "mis",
+  "me",
+  "acerca",
+]);
+
+function normalizeMemorySearchText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function memorySearchTerms(query: string): string[] {
+  const normalized = normalizeMemorySearchText(query);
+  return normalized
+    .split(" ")
+    .filter((term) => term.length >= 3 && !MEMORY_SEARCH_STOPWORDS.has(term));
+}
+
+function looksLikeNamedEntityQuery(query: string, terms: string[]): boolean {
+  if (terms.length === 0) return false;
+  const rawTokens = query
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 3);
+  const capitalizedTokens = rawTokens.filter((token) =>
+    /^\p{Lu}/u.test(token)
+  );
+  // One capitalized non-stopword ("Alebrixe") or a two-token proper name
+  // ("Julieta Evelia") should not return generic semantic neighbors.
+  return capitalizedTokens.length > 0 && capitalizedTokens.length >= Math.min(2, terms.length);
+}
+
+function memoryContentMatchesAllTerms(content: string, terms: string[]): boolean {
+  const normalized = normalizeMemorySearchText(content);
+  return terms.every((term) => normalized.includes(term));
+}
+
+const MEMORY_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function invalidMemoryIdResult(memoryId: string): string | null {
+  if (MEMORY_ID_RE.test(memoryId)) return null;
+  return JSON.stringify({
+    status: "validation_error",
+    message:
+      "memory_id must be a full UUID returned by list_user_memories or search_user_memories. Do not invent ids or use shortened prefixes.",
+    memory_id: memoryId,
+  });
 }
 
 function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
@@ -277,6 +357,7 @@ export function buildLangChainTools(ctx: ToolContext) {
           const result = await readSkillReference({
             name: input.name,
             activeSkillName: ctx.activeSkillName,
+            referenceSkillNames: ctx.activeSkillReferenceNames,
             skillsRoot: ctx.skillsRoot ?? defaultSkillsRoot(),
           });
           const status: "executed" | "failed" =
@@ -292,7 +373,7 @@ export function buildLangChainTools(ctx: ToolContext) {
         {
           name: "read_skill_reference",
           description:
-            "Reads ONE reference file from the currently-active skill's `references/` directory and returns its content. Use this when the active skill's body points you to a reference (e.g. 'see references/schema.md for the full table list'). Pass only the filename stem (without extension), e.g. `schema`, `joins`, `glossary`, `fewshots-leads`. Returns `status='no_active_skill'` if no skill is selected for this turn (do NOT call it then). Returns `status='not_found'` if the file does not exist (do NOT retry; the SKILL.md body lists what is available).",
+            "Reads ONE reference file from the currently-active skill or one of its included skills and returns its content. Use this when the active skill's body points you to a reference (e.g. 'see references/schema.md for the full table list'). Pass only the filename stem (without extension), e.g. `schema`, `joins`, `glossary`, `fewshots-leads`. Returns `status='no_active_skill'` if no skill is selected for this turn (do NOT call it then). Returns `status='not_found'` if the file does not exist in the active skill or included skills (do NOT retry; the SKILL.md body lists what is available).",
           schema: z.object({
             name: z.string().min(1).max(64),
           }),
@@ -360,6 +441,261 @@ export function buildLangChainTools(ctx: ToolContext) {
           description:
             "Lists tools that are enabled and can run in this session (integrations connected and tokens available).",
           schema: z.object({}),
+        }
+      )
+    );
+  }
+
+  // ── Long-term memory curation (skill `memory-curate`) ──────
+  // Read tools (list/search) ejecutan directo. Write tools (archive/delete)
+  // tienen risk medium/high → el grafo dispara HITL antes de invocarlas;
+  // cuando el handler corre, ya hay aprobación del usuario.
+
+  if (isToolAvailable("list_user_memories", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "list_user_memories",
+            input,
+            false
+          );
+          try {
+            const limit = Math.min(
+              Math.max(1, Math.floor(input.limit ?? 25)),
+              100
+            );
+            const result = await listMemories(ctx.db, {
+              userId: ctx.userId,
+              type: input.type,
+              status: input.status ?? "active",
+              q: input.q,
+              limit,
+              offset: input.offset ?? 0,
+            });
+            const payload = {
+              status: "ok" as const,
+              total: result.total,
+              count: result.rows.length,
+              rows: result.rows.map((r) => ({
+                id: r.id,
+                type: r.type,
+                content: r.content,
+                created_at: r.created_at,
+                last_retrieved_at: r.last_retrieved_at,
+                retrieval_count: r.retrieval_count,
+                archived_at: r.archived_at,
+              })),
+            };
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              "executed",
+              payload as unknown as Record<string, unknown>
+            );
+            return JSON.stringify(payload);
+          } catch (err) {
+            const error = {
+              status: "error" as const,
+              message: err instanceof Error ? err.message : String(err),
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", error);
+            return JSON.stringify(error);
+          }
+        },
+        {
+          name: "list_user_memories",
+          description:
+            "Lists the user's own long-term memories. Default status='active'. Use to triage what's saved before deciding what to forget. Read-only.",
+          schema: z.object({
+            type: z
+              .enum(["episodic", "semantic", "procedural"])
+              .optional() as z.ZodOptional<z.ZodEnum<[MemoryType, ...MemoryType[]]>>,
+            status: z.enum(["active", "archived", "all"]).optional(),
+            q: z.string().min(1).max(200).optional(),
+            limit: z.number().int().positive().max(100).optional(),
+            offset: z.number().int().min(0).optional(),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("search_user_memories", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "search_user_memories",
+            input,
+            false
+          );
+          try {
+            const limit = Math.min(
+              Math.max(1, Math.floor(input.limit ?? 8)),
+              20
+            );
+            const embedding = await generateEmbedding(input.query);
+            const matches = await searchMemories(ctx.db, {
+              userId: ctx.userId,
+              embedding,
+              limit,
+              matchThreshold: 0.3,
+            });
+            const terms = memorySearchTerms(input.query);
+            const requireLexicalMatch = looksLikeNamedEntityQuery(
+              input.query,
+              terms
+            );
+            const filteredMatches = requireLexicalMatch
+              ? matches.filter((m) => memoryContentMatchesAllTerms(m.content, terms))
+              : matches;
+            const payload = {
+              status: "ok" as const,
+              count: filteredMatches.length,
+              query: input.query,
+              require_lexical_match: requireLexicalMatch,
+              discarded_semantic_matches: matches.length - filteredMatches.length,
+              matches: filteredMatches.map((m) => ({
+                id: m.id,
+                type: m.type,
+                content: m.content,
+                similarity: m.similarity,
+                retrieval_count: m.retrieval_count,
+              })),
+            };
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              "executed",
+              payload as unknown as Record<string, unknown>
+            );
+            return JSON.stringify(payload);
+          } catch (err) {
+            const error = {
+              status: "error" as const,
+              message: err instanceof Error ? err.message : String(err),
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", error);
+            return JSON.stringify(error);
+          }
+        },
+        {
+          name: "search_user_memories",
+          description:
+            "Semantic search over the user's own memories. Use with a free-text query when the user asks about a topic and you want to surface related saved facts. Returns ranked matches (higher similarity = closer). Read-only.",
+          schema: z.object({
+            query: z.string().min(1).max(500),
+            limit: z.number().int().positive().max(20).optional(),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("archive_user_memory", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          // Nota: el grafo ya pidió confirmación HITL antes de llegar acá
+          // (risk='medium' → toolRequiresConfirmation=true).
+          const invalidId = invalidMemoryIdResult(input.memory_id);
+          if (invalidId) return invalidId;
+          const snapshot = await getMemoryById(ctx.db, {
+            userId: ctx.userId,
+            memoryId: input.memory_id,
+          });
+          if (!snapshot) {
+            return JSON.stringify({
+              status: "not_found",
+              message: "memory not found or not owned by user",
+            });
+          }
+          if (snapshot.archived_at) {
+            return JSON.stringify({
+              status: "already_archived",
+              memory: { id: snapshot.id, content: snapshot.content },
+            });
+          }
+          const archived = await archiveMemory(ctx.db, {
+            userId: ctx.userId,
+            memoryId: input.memory_id,
+          });
+          await logMemoryAction(ctx.db, {
+            userId: ctx.userId,
+            memoryId: input.memory_id,
+            action: "archive",
+            details: {
+              channel: "agent",
+              snapshot: { type: snapshot.type, content: snapshot.content },
+            },
+          });
+          return JSON.stringify({
+            status: "ok",
+            archived,
+            memory: { id: snapshot.id, content: snapshot.content },
+          });
+        },
+        {
+          name: "archive_user_memory",
+          description:
+            "Archives ONE memory (soft-delete reversible). Reversible from /memory UI or restore_user_memory. Requires confirmation (handled by HITL).",
+          schema: z.object({
+            memory_id: z.string().min(1),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("delete_user_memory", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const invalidId = invalidMemoryIdResult(input.memory_id);
+          if (invalidId) return invalidId;
+          const snapshot = await getMemoryById(ctx.db, {
+            userId: ctx.userId,
+            memoryId: input.memory_id,
+          });
+          if (!snapshot) {
+            return JSON.stringify({
+              status: "not_found",
+              message: "memory not found or not owned by user",
+            });
+          }
+          // Loguear ANTES del delete para preservar snapshot.
+          await logMemoryAction(ctx.db, {
+            userId: ctx.userId,
+            memoryId: null,
+            action: "delete",
+            details: {
+              channel: "agent",
+              deletedId: snapshot.id,
+              snapshot: { type: snapshot.type, content: snapshot.content },
+            },
+          });
+          const deleted = await deleteMemory(ctx.db, {
+            userId: ctx.userId,
+            memoryId: input.memory_id,
+          });
+          return JSON.stringify({
+            status: "ok",
+            deleted,
+            memory: { id: snapshot.id, content: snapshot.content },
+          });
+        },
+        {
+          name: "delete_user_memory",
+          description:
+            "PERMANENTLY DELETES one memory. NOT reversible. Prefer archive_user_memory unless the user explicitly asks for permanent deletion. Requires confirmation (handled by HITL).",
+          schema: z.object({
+            memory_id: z.string().min(1),
+          }),
         }
       )
     );

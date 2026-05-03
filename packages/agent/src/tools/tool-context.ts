@@ -32,6 +32,13 @@ export interface ToolContext {
    */
   activeSkillName?: string;
   /**
+   * Ordered skill slugs that can provide references for the active turn.
+   * Usually `ResolvedSkill.composedFrom`: included skills first, root last.
+   * `read_skill_reference` searches the active root first, then these
+   * composed skills, so specialized references can override shared ones.
+   */
+  activeSkillReferenceNames?: readonly string[];
+  /**
    * Tenant organization id resolved from Business Brain for the active turn.
    * Used by tenant-aware tools (currently BigQuery) to enforce parameterized
    * tenant filters instead of letting the model inline this value in SQL.

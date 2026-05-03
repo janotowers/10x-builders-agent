@@ -50,6 +50,71 @@ async function testHappyPath(): Promise<void> {
   );
 }
 
+async function testReadsFromIncludedSkill(): Promise<void> {
+  await withTempSkillsRoot(
+    async (root) => {
+      const sharedDir = join(
+        root,
+        "skills",
+        "global",
+        "business-data-core",
+        "references"
+      );
+      await fs.mkdir(sharedDir, { recursive: true });
+      await fs.writeFile(
+        join(sharedDir, "joins.md"),
+        "# Joins\n\nShared join guidance",
+        "utf8"
+      );
+    },
+    async (root) => {
+      const result = await readSkillReference({
+        name: "joins",
+        activeSkillName: "lead-follow-up-draft",
+        referenceSkillNames: ["business-data-core", "lead-follow-up-draft"],
+        skillsRoot: root,
+      });
+      assert.equal(result.status, "ok");
+      if (result.status === "ok") {
+        assert.equal(result.skill, "business-data-core");
+        assert.ok(result.content.includes("Shared join guidance"));
+      }
+    }
+  );
+}
+
+async function testActiveSkillOverridesIncludedSkill(): Promise<void> {
+  await withTempSkillsRoot(
+    async (root) => {
+      const activeDir = join(root, "skills", "global", "demo", "references");
+      const sharedDir = join(
+        root,
+        "skills",
+        "global",
+        "business-data-core",
+        "references"
+      );
+      await fs.mkdir(activeDir, { recursive: true });
+      await fs.mkdir(sharedDir, { recursive: true });
+      await fs.writeFile(join(activeDir, "schema.md"), "active schema", "utf8");
+      await fs.writeFile(join(sharedDir, "schema.md"), "shared schema", "utf8");
+    },
+    async (root) => {
+      const result = await readSkillReference({
+        name: "schema",
+        activeSkillName: "demo",
+        referenceSkillNames: ["business-data-core", "demo"],
+        skillsRoot: root,
+      });
+      assert.equal(result.status, "ok");
+      if (result.status === "ok") {
+        assert.equal(result.skill, "demo");
+        assert.equal(result.content, "active schema");
+      }
+    }
+  );
+}
+
 async function testNoActiveSkill(): Promise<void> {
   const result = await readSkillReference({
     name: "schema",
@@ -200,6 +265,8 @@ async function testRejectsBadActiveSkillSlug(): Promise<void> {
 
 async function main(): Promise<void> {
   await testHappyPath();
+  await testReadsFromIncludedSkill();
+  await testActiveSkillOverridesIncludedSkill();
   await testNoActiveSkill();
   await testNoActiveSkillEmptyString();
   await testInvalidNamePathTraversal();
@@ -208,7 +275,7 @@ async function main(): Promise<void> {
   await testTruncationAtSizeCap();
   await testRejectsDirectoryAsFile();
   await testRejectsBadActiveSkillSlug();
-  console.log("tools/skill-references.selftest: all 9 cases passed");
+  console.log("tools/skill-references.selftest: all 11 cases passed");
 }
 
 main().catch((e) => {

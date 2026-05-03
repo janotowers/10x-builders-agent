@@ -51,6 +51,8 @@ isProject: false
 
 Este documento describe el **diseño y la implementación** de la memoria de largo plazo. El bloque siguiente es el **prompt original** usado para generar un primer borrador; se conserva por contexto, pero si entra en conflicto con las secciones posteriores, **prevalece lo documentado bajo *Diseño vigente***. Esa es la misma convención que usa `docs/memory/short_memory_plan.md`.
 
+> **Plan complementario**: para curación de hechos ya guardados (UI + skill `memory-curate`), endurecimiento del extractor frente a datos transaccionales de negocio, y TTL/decay con HITL, ver [`memory_curation_plan.md`](./memory_curation_plan.md). Ese documento NO reemplaza este plan; aborda problemas detectados en producción tras la implementación inicial.
+
 ## Prompt original (referencia histórica)
 
 **Objetivo**

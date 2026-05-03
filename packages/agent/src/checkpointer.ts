@@ -22,6 +22,13 @@ let dnsOrderApplied = false;
  * first; if that fails it still falls back to AAAA. Production hosts
  * (Vercel, Cloud Run, etc.) tolerate this just fine.
  *
+ * NOTE: in current Supabase projects the *direct* host
+ * `db.<ref>.supabase.co` only resolves to AAAA (IPv4 is an add-on). For
+ * those, even `ipv4first` will not help because there is no A record. The
+ * fix is to switch `DATABASE_URL` to the **Supabase Pooler** host
+ * (`aws-0-<region>.pooler.supabase.com`), which serves IPv4. See
+ * `docs/setup/supabase_pooler.md`.
+ *
  * Configurable via `CHECKPOINTER_DNS_ORDER`:
  *   - `ipv4first` (default) — try IPv4 first, IPv6 second.
  *   - `verbatim`            — Node 18+ default; returns DNS order as-is.
@@ -67,6 +74,78 @@ function describeHost(connectionString: string): { host?: string; port?: number 
   }
 }
 
+/** Default per-attempt timeout for the initial PostgresSaver setup. The
+ *  default Node socket timeout for a hung TCP connect is ~30s; that turns
+ *  every cold turn into a 30s wait when Postgres is unreachable. We cap it
+ *  to a much smaller value and fall back to MemorySaver fast. Configurable
+ *  via `CHECKPOINTER_CONNECT_TIMEOUT_MS`. */
+function resolveConnectTimeoutMs(): number {
+  const raw = Number(process.env.CHECKPOINTER_CONNECT_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return 5000;
+}
+
+function isLikelySupabaseDirectHost(host: string | undefined): boolean {
+  if (!host) return false;
+  // Direct connection: `db.<ref>.supabase.co` (IPv6-only on most newer
+  // projects). Pooler hosts look like `aws-0-<region>.pooler.supabase.com`
+  // and are IPv4-friendly.
+  return /^db\.[a-z0-9-]+\.supabase\.co$/i.test(host);
+}
+
+function diagnoseConnectionError(
+  host: string | undefined,
+  errCode: string | undefined,
+  errAddress: string | undefined
+): string | null {
+  if (!errCode) return null;
+  if (errCode === "XX000" && host?.endsWith(".pooler.supabase.com")) {
+    return (
+      "[checkpointer] Supabase Pooler reached, but it rejected the tenant/user. " +
+      "Copy the exact 'Session pooler' connection string from Supabase Dashboard " +
+      "instead of inferring the region/host manually. The username must look like " +
+      "`postgres.<project-ref>` and the host/region must match the dashboard value."
+    );
+  }
+  const isTimeout = errCode === "ETIMEDOUT" || errCode === "ENETUNREACH";
+  const looksIPv6 =
+    typeof errAddress === "string" && errAddress.includes(":");
+  if (isTimeout && looksIPv6 && isLikelySupabaseDirectHost(host)) {
+    return (
+      "[checkpointer] Looks like the direct Supabase host only resolves to IPv6 " +
+      "(AAAA) and your network does not route IPv6 to AWS. Switch DATABASE_URL " +
+      "to the Supabase Session Pooler. From Supabase Dashboard → Project " +
+      "Settings → Database → Connection string, copy the 'Session Pooler' URL " +
+      "(host looks like `aws-0-<region>.pooler.supabase.com`, port `5432`, " +
+      "user `postgres.<ref>`). See `docs/setup/supabase_pooler.md`."
+    );
+  }
+  return null;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  if (timeoutMs <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const err: NodeJS.ErrnoException = Object.assign(
+        new Error(`${label} timed out after ${timeoutMs}ms`),
+        { code: "ETIMEDOUT" }
+      );
+      reject(err);
+    }, timeoutMs);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
 export async function getCheckpointer() {
   if (singleton) return singleton;
 
@@ -78,11 +157,16 @@ export async function getCheckpointer() {
 
   applyDnsResultOrder();
   const { host, port } = describeHost(connectionString);
+  const timeoutMs = resolveConnectTimeoutMs();
 
   try {
     const saver = PostgresSaver.fromConnString(connectionString);
     if (!setupPromise) {
-      setupPromise = saver.setup();
+      setupPromise = withTimeout(
+        saver.setup(),
+        timeoutMs,
+        "PostgresSaver.setup"
+      );
     }
     await setupPromise;
     singleton = saver;
@@ -94,14 +178,18 @@ export async function getCheckpointer() {
     const errCode = (e as NodeJS.ErrnoException)?.code;
     const errAddress = (e as NodeJS.ErrnoException & { address?: string })
       ?.address;
+    const hint = diagnoseConnectionError(host, errCode, errAddress);
     console.error(
       `[checkpointer] PostgresSaver failed to connect host=${host ?? "?"} port=${port ?? "?"}` +
         (errCode ? ` code=${errCode}` : "") +
         (errAddress ? ` address=${errAddress}` : "") +
+        ` (timeout=${timeoutMs}ms)` +
         " — falling back to MemorySaver for this process lifetime. Error:",
       e
     );
+    if (hint) console.error(hint);
     postgresFailed = true;
+    setupPromise = null;
     singleton = new MemorySaver();
     return singleton;
   }

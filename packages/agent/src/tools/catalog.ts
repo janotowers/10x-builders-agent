@@ -362,6 +362,98 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "list_user_memories",
+    name: "list_user_memories",
+    description:
+      "Lists the user's own long-term memories saved by the agent (semantic / episodic / procedural). Always scoped to the authenticated user. Read-only; safe to call without confirmation. Use when the user asks 'what do you remember about me', 'show me my memories', or wants to triage what's saved before deciding what to forget.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        type: {
+          type: "string",
+          enum: ["episodic", "semantic", "procedural"],
+          description: "Optional filter by memory type.",
+        },
+        status: {
+          type: "string",
+          enum: ["active", "archived", "all"],
+          description:
+            "Active = inyectables hoy; archived = soft-deleted; all = ambos. Default 'active'.",
+        },
+        q: {
+          type: "string",
+          description: "Optional substring to filter by content (ILIKE).",
+        },
+        limit: {
+          type: "number",
+          description: "Default 25, hard cap 100 for chat output.",
+        },
+        offset: {
+          type: "number",
+          description: "Pagination offset (default 0).",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    id: "search_user_memories",
+    name: "search_user_memories",
+    description:
+      "Semantic search over the user's own long-term memories using the embedding of a query string. Use when the user asks loosely ('what do you know about my work', 'recuerdas algo sobre tenis'). Read-only; no confirmation. Returns ranked matches with similarity scores.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "Free-text query. The tool will embed it and search nearest memories.",
+        },
+        limit: {
+          type: "number",
+          description: "Default 8, hard cap 20.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    id: "archive_user_memory",
+    name: "archive_user_memory",
+    description:
+      "Archives ONE of the user's own long-term memories (soft-delete reversible). The memory stops being injected into future turns but is preserved and can be restored from the UI or with restore_user_memory. Requires explicit human confirmation before executing.",
+    risk: "medium",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        memory_id: {
+          type: "string",
+          description: "UUID of the memory to archive (from list/search).",
+        },
+      },
+      required: ["memory_id"],
+    },
+  },
+  {
+    id: "delete_user_memory",
+    name: "delete_user_memory",
+    description:
+      "PERMANENTLY DELETES one of the user's own long-term memories. NOT reversible. Prefer archive_user_memory in most cases. Requires explicit human confirmation before executing.",
+    risk: "high",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        memory_id: {
+          type: "string",
+          description: "UUID of the memory to delete (from list/search).",
+        },
+      },
+      required: ["memory_id"],
+    },
+  },
+  {
     id: "bash",
     name: "bash",
     description:
