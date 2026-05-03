@@ -62,6 +62,7 @@ const FrontmatterSchema = z
     includes: z.array(z.string().min(1)).default([]),
     guardrails: z.string().min(1).optional(),
     requires_tenant_context: z.boolean().default(false),
+    memory_extraction: z.enum(["default", "ephemeral"]).default("default"),
   })
   .strict();
 
@@ -188,6 +189,7 @@ function parseSkillSourceImpl(
     includes: Object.freeze([...result.data.includes]),
     guardrails: result.data.guardrails ?? null,
     requiresTenantContext: result.data.requires_tenant_context,
+    memoryExtraction: result.data.memory_extraction,
     sourcePath,
   };
 

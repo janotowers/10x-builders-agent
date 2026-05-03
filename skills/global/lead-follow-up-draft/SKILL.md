@@ -9,6 +9,7 @@ allowed_tools:
 includes:
   - business-data-core
 requires_tenant_context: true
+memory_extraction: ephemeral
 guardrails: |
   Do not send messages automatically. Draft only.
   Do not invent property availability, prices, discounts, financing terms, or commitments.

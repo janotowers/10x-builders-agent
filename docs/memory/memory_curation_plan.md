@@ -4,26 +4,45 @@ overview: "Refinar la memoria de largo plazo en dos frentes complementarios: (1)
 todos:
   - id: extractor-hardening
     content: Añadir reglas duras al EXTRACTION_SYSTEM_PROMPT (memory_flush.ts) para descartar datos operacionales del CRM (leads, propiedades, mensajes, citas, deals) y artefactos de tarea ("redacta WhatsApp para X"). Cubrir con selftest.
-    status: pending
+    status: completed
   - id: extractor-routing-veto
     content: Añadir veto opcional por skill activo — si el turno corrió bajo skills marcados como "ephemeral_business_data" (lead-follow-up-draft, compose-message, client-meeting-prep, etc.), el extractor NO procesa ese tramo. Implementar como flag a nivel SKILL.md (ej. `memory_extraction: ephemeral`).
-    status: pending
+    status: completed
   - id: memory-list-ui
     content: Vista "Mis recuerdos" en apps/web — listar memorias del usuario (type, content, created_at, retrieval_count), filtros por tipo, búsqueda por substring, acciones soft-delete (archive) y hard-delete con confirmación.
-    status: pending
+    status: completed
   - id: memory-list-api
     content: Endpoints GET /api/memories (lista paginada del user actual) y POST /api/memories/:id/archive y DELETE /api/memories/:id en apps/web. Auth obligatoria (sesión Supabase).
-    status: pending
+    status: completed
   - id: memory-curate-skill
-    content: Skill `memory-curate` (global) que permita al usuario gestionar recuerdos en lenguaje natural ("olvida lo de Julieta Evelia", "qué recuerdas de mí", "borra los recuerdos de tipo episodic"). Tools nuevas list_memories, search_memories, archive_memory, delete_memory — todas write con HITL.
-    status: pending
+    content: Skill `memory-curate` (global) con tools `list_user_memories`, `search_user_memories`, `archive_user_memory`, `delete_user_memory` (writes con HITL). Incluye guards en graph, modal HITL con texto del recuerdo, y skill doc con recap sin reintentos duplicados.
+    status: completed
   - id: memory-ttl-job
     content: (Opcional, fase posterior) Job/cron que detecta "recuerdos sospechosos" (retrieval_count=0 tras N días, o coincidencia con regex de datos operacionales). NO borra automáticamente — encola un evento que el agente surface al usuario en el siguiente turno relevante para confirmar HITL.
     status: pending
   - id: memory-archive-column
     content: Migración SQL — agregar `archived_at TIMESTAMPTZ` a la tabla `memories` y filtrar por `archived_at IS NULL` en searchMemories. Esto habilita soft-delete reversible antes del hard-delete.
-    status: pending
+    status: completed
 isProject: false
+---
+
+## Estado implementación (2026-05)
+
+**En código (shipped):**
+
+- **Capa 2 (curación):** migración [`packages/db/supabase/migrations/00011_memories_archived.sql`](../../packages/db/supabase/migrations/00011_memories_archived.sql), queries en `@agents/db`, APIs en [`apps/web/src/app/api/memories/`](../../apps/web/src/app/api/memories/), página [`/memory`](../../apps/web/src/app/memory/page.tsx) con filtros, orden por fecha de creación o de archivo (`archived_at`) y ascendente/descendente.
+- **Skill y tools:** [`skills/global/memory-curate/SKILL.md`](../../skills/global/memory-curate/SKILL.md) con `list_user_memories`, `search_user_memories`, `archive_user_memory`, `delete_user_memory`; HITL enriquecido en [`packages/agent/src/graph.ts`](../../packages/agent/src/graph.ts) (contenido del recuerdo + UUID en el modal); `findExistingPendingToolCall` deduplica por args.
+- **Capa 1 (prompt):** reglas nuevas en [`packages/agent/src/memory_flush.ts`](../../packages/agent/src/memory_flush.ts) (`EXTRACTION_SYSTEM_PROMPT`); selftest [`packages/agent/src/memory_flush.selftest.ts`](../../packages/agent/src/memory_flush.selftest.ts).
+- **Capa 1 (veto por skill):** frontmatter `memory_extraction: ephemeral` en skills transaccionales (`company-data`, `lead-follow-up-draft`, `compose-message`, `client-meeting-prep`); `runAgent` persiste `activeSkill`/`memoryExtraction` en `agent_messages.structured_payload`; [`memory_flush.ts`](../../packages/agent/src/memory_flush.ts) filtra esos mensajes antes de llamar a Haiku.
+- **Infra:** Session Pooler para LangGraph checkpointer — [`docs/setup/supabase_pooler.md`](../setup/supabase_pooler.md) y [`packages/agent/src/checkpointer.ts`](../../packages/agent/src/checkpointer.ts) (timeouts, diagnósticos).
+
+**Pendiente u opcional (roadmap):**
+
+- **Capa 3 — TTL / cola de revisión con HITL:** fase posterior del propio plan (§ Capa 3). Se mantiene pendiente deliberadamente hasta tener más volumen real de memorias; no debe borrar ni archivar nada sin aprobación HITL del usuario.
+- **Producto:** archivar varias memorias en **un solo** HITL — explícitamente pospuesto; el flujo actual es un HITL por recuerdo.
+
+**Operaciones:** aplicar la migración en Supabase producción y usar `DATABASE_URL` del Session Pooler en el entorno desplegado (véase `docs/setup/supabase_pooler.md`).
+
 ---
 
 # Plan — Curación de memoria larga + endurecimiento del extractor
@@ -136,12 +155,12 @@ NO: "El nombre del lead es X" (input a una tarea)
 
 ### Veto a nivel skill (refuerzo defensivo)
 
-Algunas skills son por naturaleza **transaccionales**: `lead-follow-up-draft`,
-`compose-message`, `client-meeting-prep`, `errand-planner`, `family-reminders`
-(parcialmente). Aun con un prompt mejorado, conviene no mandar esos
-transcripts al extractor.
+Algunas skills son por naturaleza **transaccionales**: `company-data`,
+`lead-follow-up-draft`, `compose-message`, `client-meeting-prep` (y otras
+podrían sumarse en el futuro). Aun con un prompt mejorado, conviene no
+mandar esos transcripts al extractor.
 
-Propuesta:
+Implementación vigente:
 
 1. Añadir un campo opcional al frontmatter del SKILL.md:
 
@@ -149,17 +168,18 @@ Propuesta:
    memory_extraction: ephemeral   # o "default" (implícito si se omite)
    ```
 
-2. Persistir por turno qué skill estuvo activa (ya lo hacemos en
-   `agent_messages` o `agent_sessions` — verificar). Si no, agregar una
-   columna `active_skill_id` a `agent_messages`.
+2. Persistir por turno qué skill estuvo activa en
+   `agent_messages.structured_payload` (`activeSkill` +
+   `memoryExtraction`), sin migración de columnas.
 3. En `memory_flush`, antes de armar el transcript, **filtrar** los
-   mensajes cuyo `active_skill_id` esté marcado como `ephemeral`.
+   mensajes cuyo `structured_payload.memoryExtraction` esté marcado como
+   `ephemeral`.
    Si tras el filtro el set queda por debajo de `MEMORY_FLUSH_MIN_NEW_MESSAGES`,
    skip con `reason: "ephemeral_skills_only"`.
 
 Beneficio: aunque Haiku falle, ni siquiera ve el material problemático.
-Coste: un campo nuevo en SKILL.md y, si no existe, una columna en
-`agent_messages`.
+Coste: un campo nuevo en SKILL.md y metadata en `structured_payload`; no
+requiere migración.
 
 ### Selftests
 
@@ -337,8 +357,8 @@ si vale la pena dado el volumen real de memorias.
 2. **Capa 2, migración + UI básica** (1 PR mediano, 1–2 días):
    migración `archived_at`, endpoints REST, página `/memory` mínima
    con listar+archivar+borrar.
-3. **Capa 1, veto por skill** (1 PR pequeño, 0.5 día): si tras el paso
-   1 sigue colándose ruido, agregar el filtro por skill ephemeral.
+3. **Capa 1, veto por skill** (completado): filtrar en `memory_flush` los
+   turnos marcados como `memory_extraction: ephemeral`.
 4. **Capa 2, skill `memory-curate`** (1 PR mediano, 1–2 días):
    tools + skill + HITL.
 5. **Capa 3, TTL job** (evaluar después de N semanas con Capa 2 viva).

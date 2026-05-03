@@ -137,6 +137,16 @@ export interface AgentOutput {
   memoryFlushPending: boolean;
 }
 
+function buildMemoryExtractionPayload(
+  activeSkill: ResolvedSkill | undefined
+): Record<string, unknown> | undefined {
+  if (!activeSkill) return undefined;
+  return {
+    activeSkill: activeSkill.rootName,
+    memoryExtraction: activeSkill.memoryExtraction,
+  };
+}
+
 const MAX_TOOL_ITERATIONS = 8;
 const MEMORY_CURATE_TOOL_NAMES = new Set([
   "list_user_memories",
@@ -1075,7 +1085,16 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     if (!message) {
       throw new Error("message is required for non-resume agent calls");
     }
-    await addMessage(db, sessionId, "user", message);
+    const memoryExtractionPayload = buildMemoryExtractionPayload(activeSkill);
+    await addMessage(
+      db,
+      sessionId,
+      "user",
+      message,
+      memoryExtractionPayload
+        ? { structured_payload: memoryExtractionPayload }
+        : undefined
+    );
   }
 
   const toolCallNames: string[] = [];
@@ -1668,6 +1687,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         tool_call_id: payload.tool_call_id,
         structured_payload: {
           type: "pending_confirmation",
+          ...(buildMemoryExtractionPayload(activeSkill) ?? {}),
           pendingConfirmation: pending,
         },
       });
@@ -1711,7 +1731,16 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     }
 
     if (responseText.trim().length > 0) {
-      await addMessage(db, sessionId, "assistant", responseText);
+      const memoryExtractionPayload = buildMemoryExtractionPayload(activeSkill);
+      await addMessage(
+        db,
+        sessionId,
+        "assistant",
+        responseText,
+        memoryExtractionPayload
+          ? { structured_payload: memoryExtractionPayload }
+          : undefined
+      );
     }
   }
 

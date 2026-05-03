@@ -1,8 +1,10 @@
 # Propuesta — Endurecer EXTRACTION_SYSTEM_PROMPT (revisión previa)
 
-**Estado**: borrador para revisión. NO aplicado al código todavía.
+**Estado**: **Implementado en código.** Este documento queda como referencia de diseño; la versión viva del prompt está en el repo.
 
-**Archivo objetivo**: `packages/agent/src/memory_flush.ts`, constante
+**Implementación**: [`packages/agent/src/memory_flush.ts`](../../packages/agent/src/memory_flush.ts) — constante `EXTRACTION_SYSTEM_PROMPT`. Cobertura adicional en [`packages/agent/src/memory_flush.selftest.ts`](../../packages/agent/src/memory_flush.selftest.ts).
+
+**Archivo objetivo** (histórico): `packages/agent/src/memory_flush.ts`, constante
 `EXTRACTION_SYSTEM_PROMPT`.
 
 **Motivación**: ver `docs/memory/memory_curation_plan.md` § "Diagnóstico

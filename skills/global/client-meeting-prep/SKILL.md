@@ -7,6 +7,7 @@ allowed_tools:
   - calendar_list_events
 includes: []
 requires_tenant_context: false
+memory_extraction: ephemeral
 guardrails: |
   Do not invent client facts, property facts, prices, commitments, or legal advice.
   If the user needs account/lead data from the warehouse, ask for the needed context or suggest a separate company-data query.

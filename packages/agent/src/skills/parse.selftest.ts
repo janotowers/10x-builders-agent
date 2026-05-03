@@ -61,6 +61,7 @@ function testHappyPath(): void {
     "  - get_user_preferences",
     "  - calendar_list_events",
     "includes: []",
+    "memory_extraction: ephemeral",
     "guardrails: |",
     "  Read-only.",
     "  Never schedule sends.",
@@ -79,6 +80,7 @@ function testHappyPath(): void {
     ["get_user_preferences", "calendar_list_events"]
   );
   assert.deepEqual([...rec.metadata.includes], []);
+  assert.equal(rec.metadata.memoryExtraction, "ephemeral");
   assert.ok(rec.metadata.guardrails?.includes("Read-only"));
   assert.equal(rec.metadata.sourcePath, FIXTURE_PATH);
 }
@@ -92,6 +94,7 @@ function testDefaults(): void {
   assert.equal(rec.metadata.guardrails, null);
   // V1-C-α: requires_tenant_context defaults to false.
   assert.equal(rec.metadata.requiresTenantContext, false);
+  assert.equal(rec.metadata.memoryExtraction, "default");
 }
 
 function testRequiresTenantContextTrue(): void {
@@ -109,6 +112,14 @@ function testRequiresTenantContextRejectsString(): void {
       ),
     /requires_tenant_context/,
     "requires_tenant_context rejects string"
+  );
+}
+
+function testMemoryExtractionRejectsUnknownValue(): void {
+  expectThrows(
+    () => parseSkillSource(makeFront("memory_extraction: durable"), FIXTURE_PATH),
+    /memory_extraction/,
+    "memory_extraction rejects unknown value"
   );
 }
 
@@ -274,6 +285,7 @@ async function main(): Promise<void> {
   testDefaults();
   testRequiresTenantContextTrue();
   testRequiresTenantContextRejectsString();
+  testMemoryExtractionRejectsUnknownValue();
   testInlineArray();
   await testLazyBody();
   testInvalidNameRegex();
@@ -290,7 +302,7 @@ async function main(): Promise<void> {
   testCRLF();
   testCommentsSkipped();
   testRelativePath();
-  console.log("skills/parse.selftest: all 20 cases passed");
+  console.log("skills/parse.selftest: all 21 cases passed");
 }
 
 main().catch((e) => {

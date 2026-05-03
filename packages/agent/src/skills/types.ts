@@ -11,6 +11,7 @@
  */
 
 export type SkillScope = "business" | "personal" | "shared";
+export type MemoryExtractionMode = "default" | "ephemeral";
 
 /**
  * Validated, in-memory representation of a single SKILL.md frontmatter.
@@ -31,6 +32,12 @@ export interface SkillMetadata {
    * necesitan (e.g. `company-data`).
    */
   readonly requiresTenantContext: boolean;
+  /**
+   * Controls whether turns routed through this skill are eligible for
+   * long-term memory extraction. Transactional skills can mark their turns as
+   * `ephemeral` so `memory_flush` does not persist CRM/task inputs.
+   */
+  readonly memoryExtraction: MemoryExtractionMode;
   /** Absolute path to the SKILL.md file the metadata was read from. */
   readonly sourcePath: string;
 }
@@ -67,6 +74,8 @@ export interface ResolvedSkill {
    *  El root manda; un include con `requires_tenant_context: true` también
    *  lo activa, porque el include puede ser la skill que toque BigQuery. */
   readonly requiresTenantContext: boolean;
+  /** `ephemeral` if any composed skill opts out of memory extraction. */
+  readonly memoryExtraction: MemoryExtractionMode;
 }
 
 /**

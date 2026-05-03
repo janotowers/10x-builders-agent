@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import {
   EXTRACTION_SYSTEM_PROMPT,
   extractJsonArray,
+  filterEphemeralMessages,
+  getMessageMemoryExtractionMode,
   validateExtracted,
   extractMemoriesFromTranscript,
   type ExtractedMemory,
@@ -18,7 +20,8 @@ import {
  *      futuros refactors del prompt no pierdan estas guardas accidentalmente.
  *
  *   2. UNIT — pruebas puras de `extractJsonArray` y `validateExtracted`
- *      (parser tolerante a code fences + validador del shape).
+ *      (parser tolerante a code fences + validador del shape + filtro
+ *      `memory_extraction: ephemeral`).
  *
  *   3. LIVE — gated por `MEMORY_FLUSH_SELFTEST_LIVE=1`. Llama a Haiku con
  *      transcripts sintéticos del dominio real para verificar que las
@@ -100,6 +103,46 @@ function jsonHelperTests(): void {
       { type: "episodic", content: "con espacios" },
     ],
     "validate descarta inválidos y trimea content"
+  );
+}
+
+function ephemeralFilterTests(): void {
+  const messages = [
+    {
+      id: "1",
+      structured_payload: {
+        activeSkill: "lead-follow-up-draft",
+        memoryExtraction: "ephemeral",
+      },
+    },
+    {
+      id: "2",
+      structured_payload: {
+        activeSkill: "memory-curate",
+        memoryExtraction: "default",
+      },
+    },
+    {
+      id: "3",
+      structured_payload: {
+        type: "pending_confirmation",
+        memoryExtraction: "ephemeral",
+      },
+    },
+    { id: "4" },
+  ];
+
+  assert.equal(getMessageMemoryExtractionMode(messages[0]), "ephemeral");
+  assert.equal(getMessageMemoryExtractionMode(messages[1]), "default");
+  assert.equal(getMessageMemoryExtractionMode(messages[2]), "ephemeral");
+  assert.equal(getMessageMemoryExtractionMode(messages[3]), "default");
+
+  const { eligible, filtered } = filterEphemeralMessages(messages);
+  assert.equal(filtered, 2);
+  assert.deepEqual(
+    eligible.map((m) => m.id),
+    ["2", "4"],
+    "ephemeral messages are removed before transcript serialization"
   );
 }
 
@@ -242,6 +285,7 @@ async function liveTests(): Promise<void> {
 async function run(): Promise<void> {
   staticPromptTests();
   jsonHelperTests();
+  ephemeralFilterTests();
   await liveTests();
   console.log("memory_flush.selftest: ok");
 }

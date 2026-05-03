@@ -64,6 +64,7 @@ export async function resolveSkill(
   const seenTools = new Set<string>();
   const sections: string[] = [];
   let requiresTenantContext = false;
+  let memoryExtraction: "default" | "ephemeral" = "default";
 
   for (const slug of order) {
     const rec = registry.get(slug);
@@ -82,6 +83,9 @@ export async function resolveSkill(
     }
     if (rec.metadata.requiresTenantContext) {
       requiresTenantContext = true;
+    }
+    if (rec.metadata.memoryExtraction === "ephemeral") {
+      memoryExtraction = "ephemeral";
     }
     const body = (await rec.loadBody()).trim();
     if (body) {
@@ -111,6 +115,7 @@ export async function resolveSkill(
     allowedTools: Object.freeze(allowedTools),
     estimatedTokens: tokens,
     requiresTenantContext,
+    memoryExtraction,
   };
 }
 

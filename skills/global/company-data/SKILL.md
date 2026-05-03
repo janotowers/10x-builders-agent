@@ -9,6 +9,7 @@ allowed_tools:
 includes:
   - business-data-core
 requires_tenant_context: true
+memory_extraction: ephemeral
 guardrails: |
   Read-only: only SELECT and WITH...SELECT queries. The bigquery_run_query validator rejects DDL/DML.
   Mandatory tenant filter — see "Tenant filter" below. NEVER query without applying it (unless [Contexto de tenant] explicitly says you are in MODO ADMIN UNGGA).

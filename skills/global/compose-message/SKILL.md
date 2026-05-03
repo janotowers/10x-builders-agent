@@ -6,6 +6,7 @@ allowed_tools:
   - get_user_preferences
 includes: []
 requires_tenant_context: false
+memory_extraction: ephemeral
 guardrails: |
   Do not send messages automatically. Draft only unless a future tool explicitly handles sending with confirmation.
   Preserve the user's intent and avoid inventing facts, commitments, prices, dates, or claims not provided by the user.

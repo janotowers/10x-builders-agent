@@ -6,7 +6,11 @@ import { resolveSkill, SkillResolveError } from "./resolve";
 function mk(
   slug: string,
   body: string,
-  opts: { includes?: string[]; tools?: string[] } = {}
+  opts: {
+    includes?: string[];
+    tools?: string[];
+    memoryExtraction?: "default" | "ephemeral";
+  } = {}
 ) {
   const tools = opts.tools ?? [];
   const includes = opts.includes ?? [];
@@ -19,6 +23,7 @@ function mk(
     ...tools.map((t) => `  - ${t}`),
     "includes:",
     ...includes.map((i) => `  - ${i}`),
+    `memory_extraction: ${opts.memoryExtraction ?? "default"}`,
     "---",
     "",
     body,
@@ -36,6 +41,7 @@ async function testSingleSkillNoIncludes(): Promise<void> {
   assert.ok(resolved.body.includes("Alpha body content."));
   assert.ok(resolved.body.startsWith("## Skill: alpha"));
   assert.deepEqual([...resolved.allowedTools], ["t1", "t2"]);
+  assert.equal(resolved.memoryExtraction, "default");
   assert.ok(resolved.estimatedTokens > 0);
 }
 
@@ -148,6 +154,14 @@ async function testToolDedupOrder(): Promise<void> {
   assert.deepEqual([...resolved.allowedTools], ["x", "y", "z", "w"]);
 }
 
+async function testEphemeralComposesFromChild(): Promise<void> {
+  const child = mk("child", "Child.", { memoryExtraction: "ephemeral" });
+  const root = mk("root", "Root.", { includes: ["child"] });
+  const reg = buildRegistryFromRecords([root, child]);
+  const resolved = await resolveSkill("root", reg);
+  assert.equal(resolved.memoryExtraction, "ephemeral");
+}
+
 async function main(): Promise<void> {
   await testSingleSkillNoIncludes();
   await testCompositeChildBeforeRoot();
@@ -158,7 +172,8 @@ async function main(): Promise<void> {
   await testUnknownChild();
   await testComposedBodyCap();
   await testToolDedupOrder();
-  console.log("skills/resolve.selftest: all 9 cases passed");
+  await testEphemeralComposesFromChild();
+  console.log("skills/resolve.selftest: all 10 cases passed");
 }
 
 main().catch((e) => {

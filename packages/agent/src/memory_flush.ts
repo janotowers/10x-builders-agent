@@ -155,6 +155,27 @@ function truncate(s: string, max: number): string {
   return `${s.slice(0, max)}…`;
 }
 
+export function getMessageMemoryExtractionMode(message: {
+  structured_payload?: unknown;
+}): "default" | "ephemeral" {
+  const payload = message.structured_payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return "default";
+  }
+  return (payload as Record<string, unknown>).memoryExtraction === "ephemeral"
+    ? "ephemeral"
+    : "default";
+}
+
+export function filterEphemeralMessages<
+  T extends { structured_payload?: unknown },
+>(messages: readonly T[]): { eligible: T[]; filtered: number } {
+  const eligible = messages.filter(
+    (message) => getMessageMemoryExtractionMode(message) !== "ephemeral"
+  );
+  return { eligible, filtered: messages.length - eligible.length };
+}
+
 /**
  * Helper expuesto SOLO para tests/diagnóstico: corre la pipeline de
  * extracción (system prompt + user prompt + parse + validate) sobre un
@@ -242,7 +263,7 @@ export async function flushSessionMemory(
   const isColdStart = !state.lastFlushedAt;
   let query = db
     .from("agent_messages")
-    .select("id, role, content, created_at")
+    .select("id, role, content, created_at, structured_payload")
     .eq("session_id", sessionId);
   if (isColdStart) {
     query = query
@@ -261,9 +282,45 @@ export async function flushSessionMemory(
     role: "user" | "assistant" | "tool" | "system";
     content: string;
     created_at: string;
+    structured_payload?: Record<string, unknown> | null;
   }>;
   if (isColdStart) {
     messages = messages.slice().reverse();
+  }
+
+  const lastLoadedMessage = (messagesData ?? []).at(isColdStart ? 0 : -1) as
+    | { id: string; created_at: string }
+    | undefined;
+  const loadedMessageCount = messages.length;
+  const { eligible, filtered: ephemeralFilteredCount } =
+    filterEphemeralMessages(messages);
+  messages = eligible;
+
+  if (loadedMessageCount >= minNewMessages && messages.length === 0) {
+    let watermarkAdvanced = false;
+    if (lastLoadedMessage) {
+      try {
+        await updateFlushWatermark(db, sessionId, {
+          lastFlushedAt: lastLoadedMessage.created_at,
+          lastFlushedMessageId: lastLoadedMessage.id,
+        });
+        watermarkAdvanced = true;
+      } catch (err) {
+        console.error("[memory_flush] watermark update failed:", err);
+      }
+    }
+    void logMemorySkip({
+      sessionId,
+      userId,
+      reason: "ephemeral_skills_only",
+      note: `loaded=${loadedMessageCount} ephemeral_filtered=${ephemeralFilteredCount} watermark_advanced=${watermarkAdvanced}`,
+    }).catch(() => {});
+    return {
+      extracted: 0,
+      skipped: true,
+      reason: "ephemeral_skills_only",
+      watermarkAdvanced,
+    };
   }
 
   if (messages.length < minNewMessages) {
@@ -271,7 +328,7 @@ export async function flushSessionMemory(
       sessionId,
       userId,
       reason: `below_min(${messages.length}<${minNewMessages})`,
-      note: `cold_start=${isColdStart}`,
+      note: `cold_start=${isColdStart} loaded=${loadedMessageCount} ephemeral_filtered=${ephemeralFilteredCount}`,
     }).catch(() => {});
     return {
       extracted: 0,
@@ -428,7 +485,7 @@ export async function flushSessionMemory(
   // Avanzar watermark al último mensaje cargado. Esto incluye el caso de
   // lista vacía válida (el modelo dijo `[]` legítimamente) — no queremos
   // volver a procesar ese tramo.
-  const lastMessage = messages[messages.length - 1];
+  const lastMessage = lastLoadedMessage ?? messages[messages.length - 1];
   let watermarkAdvanced = true;
   let finalReason: string = reason;
   try {
