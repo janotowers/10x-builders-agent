@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { defaultSkillsRoot, loadGlobalSkillRegistry, TOOL_CATALOG } from "@agents/agent";
 import { createClient } from "@/lib/supabase/server";
 import { ChatInterface } from "./chat-interface";
 
@@ -36,10 +37,30 @@ type RecentLearning = {
   created_at: string;
 };
 
+type AvailableSkill = {
+  id: string;
+  scope: "business" | "personal" | "shared";
+};
+
+type AvailableTool = {
+  id: string;
+  requiresIntegration?: string | null;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 async function signedProfileAssetUrl(
@@ -68,6 +89,9 @@ export default async function ChatPage() {
   if (!profile?.onboarding_completed) redirect("/onboarding");
   const businessBrain = asRecord(profile.business_brain);
   const agentIdentity = asRecord(businessBrain.agent_identity);
+  const soul = asRecord(businessBrain.soul);
+  const businessContext = asRecord(businessBrain.business_context);
+  const operatingPreferences = asRecord(businessBrain.operating_preferences);
   const agentEmoji =
     typeof agentIdentity.emoji === "string" ? agentIdentity.emoji : "";
   const agentAvatarUrl = await signedProfileAssetUrl(
@@ -98,6 +122,8 @@ export default async function ChatPage() {
   }> = [];
   let recentToolCalls: RecentToolCall[] = [];
   let recentLearnings: RecentLearning[] = [];
+  let availableSkills: AvailableSkill[] = [];
+  let availableTools: AvailableTool[] = [];
   let initialPendingConfirmation:
     | {
         toolCallId: string;
@@ -181,6 +207,51 @@ export default async function ChatPage() {
     .limit(5);
   recentLearnings = (memories ?? []) as RecentLearning[];
 
+  const { data: toolSettings } = await supabase
+    .from("user_tool_settings")
+    .select("tool_id, enabled")
+    .eq("user_id", user.id);
+  const enabledToolIds = new Set(
+    (toolSettings ?? [])
+      .filter((row: Record<string, unknown>) => row.enabled === true)
+      .map((row: Record<string, unknown>) => row.tool_id)
+      .filter((toolId): toolId is string => typeof toolId === "string")
+  );
+  availableTools = TOOL_CATALOG.filter((tool) => enabledToolIds.has(tool.id)).map(
+    (tool) => ({
+      id: tool.id,
+      requiresIntegration: tool.requires_integration ?? null,
+    })
+  );
+
+  const { data: skillSettings } = await supabase
+    .from("user_skill_settings")
+    .select("skill_id, enabled")
+    .eq("user_id", user.id);
+  const skillEnabledById = new Map(
+    (skillSettings ?? [])
+      .filter((row: Record<string, unknown>) => typeof row.skill_id === "string")
+      .map((row: Record<string, unknown>) => [
+        row.skill_id as string,
+        row.enabled !== false,
+      ])
+  );
+
+  try {
+    const skillRegistry = await loadGlobalSkillRegistry(defaultSkillsRoot(), {
+      onParseError: () => {},
+    });
+    availableSkills = skillRegistry
+      .list()
+      .filter((skill) => skillEnabledById.get(skill.name) !== false)
+      .map((skill) => ({
+        id: skill.name,
+        scope: skill.scope,
+      }));
+  } catch {
+    availableSkills = [];
+  }
+
   return (
     <ChatInterface
       agentName={profile.agent_name as string}
@@ -188,6 +259,27 @@ export default async function ChatPage() {
       agentEmoji={agentEmoji}
       userAvatarUrl={userAvatarUrl}
       userName={(profile.name as string) ?? ""}
+      baseContext={{
+        identity: {
+          name: asString(agentIdentity.name) || (profile.agent_name as string),
+          role: asString(agentIdentity.role),
+          shortDescription: asString(agentIdentity.short_description),
+        },
+        soul: {
+          voice: asString(soul.voice),
+          tone: asString(soul.tone),
+          style: asString(soul.style),
+          brevity: asString(soul.brevity),
+        },
+        businessContext: {
+          kind: asString(businessContext.kind),
+          markets: asStringArray(businessContext.markets),
+          notes: asString(businessContext.notes),
+        },
+        operatingPreferences: asString(operatingPreferences.text),
+      }}
+      availableSkills={availableSkills}
+      availableTools={availableTools}
       initialMessages={sessionMessages}
       initialToolCalls={recentToolCalls}
       initialPendingConfirmation={initialPendingConfirmation}

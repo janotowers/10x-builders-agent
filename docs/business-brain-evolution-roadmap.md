@@ -411,6 +411,107 @@ flowchart TB
 
 ---
 
+## Skill selection and tool availability model
+
+This section is the canonical description of how V1 chooses playbooks and tools. It also explains what the Gu console should show when it says "context is prepared".
+
+### What is known before the user sends a turn
+
+Before the latest user message is routed, the system can know and display:
+
+- **Business Brain base context:** structured profile data from `profiles.business_brain` (`agent_identity`, `soul`, `business_context`, `operating_preferences`, and data-source metadata). This is compiled by [`packages/agent/src/business-brain/compiler.ts`](../packages/agent/src/business-brain/compiler.ts) and appended to the system prompt as a bounded, lower-priority context block.
+- **Skill registry:** metadata from `skills/global/*/SKILL.md` (name, description, scope, allowed tools, includes). Bodies are not loaded yet. Per-account `user_skill_settings` can disable candidates.
+- **Configured tools:** rows in `user_tool_settings` joined conceptually with [`packages/agent/src/tools/catalog.ts`](../packages/agent/src/tools/catalog.ts). These are candidate tools, not necessarily the final bound tool set for the next turn.
+- **Integrations and environment gates:** active `user_integrations` and server flags such as `BASH_TOOL_ENABLED`, `FILE_TOOLS_ENABLED`, and `FILE_TOOLS_ROOT`.
+
+The UI may show these as **base context**, **habilidades disponibles para seleccion**, and **herramientas configuradas**. It should not imply that every listed skill body or every listed tool is already loaded into the model.
+
+### Turn-time order
+
+The order inside `runAgent` is:
+
+1. Load recent session context and derive routing hints.
+2. Run pre-graph skill selection unless this is a resume/HITL continuation or there is no user message.
+3. Select **one dominant skill** or `none`.
+4. If a skill is active, resolve it, including any explicit `includes`.
+5. Build LangChain tools with `activeSkillAllowedTools` when a skill is active.
+6. Bind only the resulting tools to the model.
+7. Build the effective system prompt: base prompt, profile/contact data, temporal context, Business Brain, optional skill playbook, optional tenant context, and tool-specific addendums.
+8. Invoke the unchanged LangGraph loop.
+
+### If no skill is selected
+
+`none` is a valid and expected outcome. It is used for greetings, low-confidence routing, simple one-off tool use, or broad chat where a playbook would add more noise than value.
+
+When no skill is active:
+
+- No skill body/playbook is appended to the prompt.
+- `activeSkillAllowedTools` is `undefined`.
+- The skill-specific tool narrowing check in [`packages/agent/src/tools/adapters.ts`](../packages/agent/src/tools/adapters.ts) is a no-op.
+- The model can see any configured tool that passes the normal rules: user setting enabled, required integration active/token usable, required env flags present, message-intent filters, and risk/HITL rules.
+
+In short: **no skill means "use normal configured tool rules", not "no tools".**
+
+### If one skill is selected
+
+When the selector returns an active skill:
+
+- The skill body is lazy-loaded and appended as the active playbook.
+- If the skill is a composite, `includes` are resolved first and merged in deterministic order.
+- `allowed_tools` from the root and included skills are unioned and deduped.
+- The candidate tool set is intersected with that `allowed_tools` list.
+- Existing checks still apply after narrowing: disabled tools, missing integrations, missing env flags, intent-specific filters, and HITL behavior can still remove or constrain tools.
+
+This means a selected skill can **reduce** the available tools, but it does not bypass normal safety or integration rules.
+
+### If a request seems to need multiple skills
+
+V1 does **not** dynamically select an arbitrary array of skills. The selector picks one dominant skill or `none`.
+
+For multi-capability requests, use this decision rule:
+
+- **Same domain, many variants:** keep one coherent skill and use `references/` for progressive disclosure. Example: `company-data` owns BigQuery tenant/SQL invariants while `references/fewshots-leads.md`, `references/fewshots-messages.md`, and related files carry subdomain examples.
+- **Recurring workflow across domains:** create an explicit composite skill with `includes`, or write a single workflow skill that references the relevant procedures. Example: a lead-follow-up workflow may combine lead data lookup, draft messaging, and safety/HITL instructions.
+- **Rare one-off combination:** do not create a composite. Let the dominant skill or no-skill path handle it with configured tools.
+- **Repeated real demand for free-form combinations:** consider V3+ dynamic multi-skill routing/subagents, after logs show the static model is insufficient.
+
+### Why V1 avoids dynamic multi-skill routing
+
+This is intentional and aligns with Anthropic-style skill authoring guidance:
+
+- **Lower prompt cost:** only the selected playbook and any references it chooses are loaded.
+- **Clearer tool permissions:** the final tool set is easy to explain: configured tools, optionally narrowed by one active playbook.
+- **Fewer instruction conflicts:** unrelated skills may encode incompatible output shapes, assumptions, or safety rules.
+- **Better logs and debugging:** every turn has `active=<skill>` or `active=none`, plus a bounded set of allowed tools.
+- **Cleaner skill design:** if two skills compete constantly, that usually means their boundaries are wrong; merge them, move detail into references, or create a named workflow composite.
+
+### Anthropic-style authoring guidance applied here
+
+The repo follows these practical rules:
+
+- `description` must say **what the skill does and when to use it**, because selector quality depends on this field.
+- Keep `SKILL.md` small and procedural; move bulky domain examples, schemas, and few-shots to `references/`.
+- Prefer **progressive disclosure** over micro-skills when shared invariants apply.
+- Use `includes` for explicit, named workflows only, not for arbitrary automatic combinations.
+- Composite resolution must fail closed on missing skills, cycles, or token-budget overflow.
+
+### Product/UI language
+
+The Gu console should separate pre-turn context from turn evidence:
+
+- **Contexto base / Contexto preparado:** Business Brain fields, skill catalog candidates, and configured tools.
+- **Habilidades del turno:** the actual selected skill(s) after the user request (root plus included skills).
+- **Herramientas del turno:** tools actually called.
+- **Memoria del turno:** short-term and long-term memory actually applied for that completed turn.
+
+Avoid wording that says all skills/tools are "loaded" before a request. More accurate wording:
+
+- "Habilidades disponibles para seleccion" = metadata candidates.
+- "Herramientas configuradas" = enabled candidates before skill narrowing and runtime gates.
+- "Las herramientas del turno pueden reducirse segun la habilidad seleccionada, integraciones activas y reglas de seguridad."
+
+---
+
 ## Terminology — multi-user vs shared workspace
 
 The application is **already multi-user**. V1 continues **one profile = one business account**. **Shared workspace** (V3) adds org membership and shared resources.

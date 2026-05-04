@@ -3,6 +3,10 @@
 This document records why the agent currently uses a **pre-graph skill selector**
 instead of a Claude Code-style "main model loads skills directly" flow, what the
 trade-offs are, and how we intend to evolve it before adding many more skills.
+The canonical product/roadmap version of this model lives in
+[`docs/business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md)
+under **"Skill selection and tool availability model"**; this file is the deeper
+technical rationale.
 
 The context for this decision is the `company-data` skill and BigQuery: it is not
 only a formatting playbook. When it is active, the runtime also injects tenant
@@ -28,7 +32,11 @@ LangGraph loop:
    - filters/annotates tools through `buildLangChainTools`;
    - logs `[SKILL SELECTION]` and `[TENANT CONTEXT]` in
      `packages/agent/logs/turn_summary.log`.
-5. The main agent model (`openai/gpt-4o-mini` by default) receives the resulting
+5. If the selector returns `none`, no playbook is appended and the skill-aware
+   tool narrowing is skipped. The agent still receives configured tools that pass
+   normal availability checks (`user_tool_settings`, integrations, env flags,
+   intent filters, risk/HITL rules).
+6. The main agent model (`openai/gpt-4o-mini` by default) receives the resulting
    prompt and available tools, then decides which tool calls to make.
 
 So there are two separate model responsibilities:
@@ -159,6 +167,21 @@ Selection should use the **effective candidate set**, not the raw global list:
 
 This keeps the selector prompt small and avoids asking the model to pick skills
 that cannot run safely.
+
+### Tool availability semantics
+
+The runtime distinguishes three levels:
+
+1. **Configured tools:** tools enabled in `user_tool_settings`, visible in product
+   UI as candidates.
+2. **Bindable tools for this turn:** configured tools that pass integration/env
+   gates and message-specific availability filters.
+3. **Executed tools:** actual tool calls made by the model during the turn.
+
+When a skill is active, level 2 is also intersected with that skill's
+`allowed_tools` (including any explicit `includes`). When no skill is active,
+that intersection is not applied. Therefore `none` means "no playbook-specific
+narrowing", not "no tools".
 
 ---
 

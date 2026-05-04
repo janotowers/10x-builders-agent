@@ -22,6 +22,7 @@ El rediseño se trabajara por fases para no bloquear la mejora visual con la ins
 - Usar datos ya existentes de `agent_messages`, `tool_calls` y `memories`.
 - No mostrar razonamiento interno crudo; mostrar estados operativos curados.
 - Refuerzo por turno: correlacion `turn_id` en mensajes y tool calls; respuesta de `/api/chat` con `memoryUsed` (corto/largo plazo y previews legibles) y secciones de Flujo, Habilidades, Herramientas, Aprendizajes recientes.
+- La caja expandible de contexto base debe separar lo pre-turno de la evidencia del turno: Business Brain cargado, habilidades disponibles para seleccion y herramientas configuradas van en "Contexto preparado"; skill elegida, tools ejecutadas y memoria aplicada van en las tarjetas del turno. El modelo canonico esta documentado en `docs/business-brain-evolution-roadmap.md` ("Skill selection and tool availability model").
 - Evaluar una API dedicada "activity snapshot" agregada (hoy: datos de sesion + payload del turno en el propio flujo de chat); sin streaming todavia.
 - Preparar el panel para mostrar presencia del colaborador: voz, adjuntos, actividad proactiva y estado de heartbeat (Fase 4 / paralelo).
 
@@ -71,6 +72,7 @@ flowchart LR
 - La consola normal sera por usuario/cuenta autenticada.
 - La vista admin sera una fase separada con selector de cuenta y controles de auditoria.
 - La UI no expondra chain-of-thought; expondra actividad operativa comprensible.
+- La UI no debe insinuar que todas las habilidades o herramientas estan cargadas en el prompt antes de una solicitud. Debe distinguir: contexto base persistente, habilidades candidatas, herramientas configuradas, habilidad seleccionada del turno, herramientas ejecutadas y memoria aplicada.
 - La UI de producto debe leer de datos persistidos y seguros (`agent_messages`, `tool_calls`, `memories` o futuras tablas de eventos). Los logs (`turn_summary.log`, `memory.log`, `compaction.log`) son para debug/desarrollo, no para la experiencia normal del usuario.
 - Langfuse se considerara para trazas internas y debugging, no como reemplazo del panel de producto.
 - El logo de la cuenta/inmobiliaria aparecera como identificador de marca; mientras no exista logo propio, se usara Ungga como default.
@@ -79,7 +81,7 @@ flowchart LR
 ## Estado Actual
 
 - Completado (Fase 1): shell visual de `/chat`, header de marca/cuenta, avatar de colaborador, input con iconos de adjuntos/voz/envio, scroll independiente del chat y panel derecho; auto-scroll inicial del chat alineado al comportamiento esperado.
-- Completado (Fase 2 en producto): panel derecho con Flujo, Memoria del turno (corto/largo plazo, previews expandibles cuando el backend los envia), Habilidades del turno, Herramientas del turno, Aprendizajes recientes (ultimas memorias activas por cuenta); correlacion por `turn_id` en mensajes y `tool_calls`; UI sin exponer chain-of-thought.
+- Completado (Fase 2 en producto): panel derecho con Flujo, Contexto preparado expandible (Business Brain, habilidades disponibles para seleccion y herramientas configuradas), Memoria del turno (corto/largo plazo, previews expandibles cuando el backend los envia), Habilidades del turno, Herramientas del turno, Aprendizajes recientes (ultimas memorias activas por cuenta); correlacion por `turn_id` en mensajes y `tool_calls`; UI sin exponer chain-of-thought.
 - Plan Cursor export emparejado: `.cursor/plans/gu_console_ui_3b083b6d.plan.md` (misma vision por fases; YAML de todos alineado a entregado vs Fase 3 pendiente).
 - Pendiente Fase 2 (refinamiento): confirmaciones HITL mas ricas en panel, timeline de actividad de sesion mas alla del ultimo turno, mensajes anteriores/paginacion si el producto lo pide.
 - Pendiente Fase 3: eventos en vivo/streaming operativo (`agent_turn_events` o equivalente, SSE/stream desde API).

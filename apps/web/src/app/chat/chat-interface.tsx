@@ -58,12 +58,45 @@ interface RecentLearning {
   created_at: string;
 }
 
+interface AvailableSkill {
+  id: string;
+  scope: "business" | "personal" | "shared";
+}
+
+interface AvailableTool {
+  id: string;
+  requiresIntegration?: string | null;
+}
+
+interface BaseContext {
+  identity: {
+    name?: string;
+    role?: string;
+    shortDescription?: string;
+  };
+  soul: {
+    voice?: string;
+    tone?: string;
+    style?: string;
+    brevity?: string;
+  };
+  businessContext: {
+    kind?: string;
+    markets?: string[];
+    notes?: string;
+  };
+  operatingPreferences?: string;
+}
+
 interface Props {
   agentName: string;
   agentAvatarUrl?: string;
   agentEmoji?: string;
   userAvatarUrl?: string;
   userName?: string;
+  baseContext?: BaseContext;
+  availableSkills?: AvailableSkill[];
+  availableTools?: AvailableTool[];
   initialMessages: Message[];
   initialToolCalls?: RecentToolCall[];
   initialPendingConfirmation?: PendingConfirmation | null;
@@ -199,6 +232,20 @@ function formatShortTermPreviewTime(value: string | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function compactText(value: string | undefined, fallback = "No configurado"): string {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : fallback;
+}
+
+function FieldRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="font-semibold text-slate-800 dark:text-white">{label}</p>
+      <p>{value}</p>
+    </div>
+  );
 }
 
 function parseAppliedSkills(value: unknown): AppliedSkillDisplay[] {
@@ -548,6 +595,9 @@ export function ChatInterface({
   agentEmoji,
   userAvatarUrl,
   userName,
+  baseContext,
+  availableSkills = [],
+  availableTools = [],
   initialMessages,
   initialToolCalls = [],
   initialPendingConfirmation = null,
@@ -561,6 +611,7 @@ export function ChatInterface({
     initialPendingConfirmation
   );
   const [confirming, setConfirming] = useState(false);
+  const [contextExpanded, setContextExpanded] = useState(false);
   const [shortTermExpanded, setShortTermExpanded] = useState(false);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
@@ -610,6 +661,20 @@ export function ChatInterface({
     memoryThisTurn.length > 0
       ? `${shortTermMemoryCount} corto plazo · ${longTermMemoryCount} largo plazo`
       : null;
+  const baseContextName = compactText(baseContext?.identity.name, agentName);
+  const businessMarkets =
+    baseContext?.businessContext.markets &&
+    baseContext.businessContext.markets.length > 0
+      ? baseContext.businessContext.markets.join(", ")
+      : "No configurado";
+  const availableSkillNames =
+    availableSkills.length > 0
+      ? availableSkills.map((skill) => formatSkillForUserPanel(skill.id))
+      : [];
+  const availableToolNames =
+    availableTools.length > 0
+      ? availableTools.map((tool) => formatToolForUserPanel(tool.id))
+      : [];
 
   useLayoutEffect(() => {
     const viewport = messagesViewportRef.current;
@@ -1177,12 +1242,124 @@ export function ChatInterface({
               <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
                 <PanelSectionTitle icon="flow" title="Flujo actual" />
                 <div className="mt-4 space-y-1 text-sm">
-                  <div className="flex items-start gap-3 rounded-2xl px-3 py-2">
+                  <div className="rounded-2xl px-3 py-2 transition hover:bg-white/60 dark:hover:bg-white/[0.04]">
+                    <button
+                      type="button"
+                      aria-expanded={contextExpanded}
+                      onClick={() => setContextExpanded((current) => !current)}
+                      className="flex w-full items-start gap-3 text-left"
+                    >
                     <span className="mt-1.5 inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
                     <div className="min-w-0 flex-1">
-                      <p className="font-medium text-slate-800 dark:text-white">Contexto listo</p>
-                      <p className="text-xs text-slate-500 dark:text-white/60">Perfil, herramientas y memoria disponibles para el turno.</p>
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="font-medium text-slate-800 dark:text-white">
+                          Contexto preparado
+                        </p>
+                        <span className="shrink-0 text-xs font-semibold text-violet-700 dark:text-violet-200">
+                          {contextExpanded ? "Ocultar" : "Ver contexto"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-white/60">
+                        Configuración persistente que Gu tiene antes de cada solicitud.
+                      </p>
                     </div>
+                    </button>
+                    {contextExpanded && (
+                      <div className="mt-3 space-y-2 rounded-2xl bg-emerald-50/70 p-3 text-xs text-slate-600 ring-1 ring-emerald-100 dark:bg-emerald-400/10 dark:text-white/70 dark:ring-emerald-400/20">
+                        <FieldRow label="Identidad" value={baseContextName} />
+                        <FieldRow
+                          label="Rol"
+                          value={compactText(baseContext?.identity.role)}
+                        />
+                        <FieldRow
+                          label="Descripción"
+                          value={compactText(baseContext?.identity.shortDescription)}
+                        />
+                        <FieldRow
+                          label="Alma"
+                          value={[
+                            baseContext?.soul.voice
+                              ? `Voz: ${baseContext.soul.voice}`
+                              : "",
+                            baseContext?.soul.tone
+                              ? `Tono: ${baseContext.soul.tone}`
+                              : "",
+                            baseContext?.soul.style
+                              ? `Estilo: ${baseContext.soul.style}`
+                              : "",
+                            baseContext?.soul.brevity
+                              ? `Brevedad: ${baseContext.soul.brevity}`
+                              : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || "No configurado"}
+                        />
+                        <FieldRow
+                          label="Cuenta"
+                          value={userName ? `Configurado para ${userName}` : "Usuario actual"}
+                        />
+                        <FieldRow
+                          label="Contexto del negocio"
+                          value={[
+                            baseContext?.businessContext.kind
+                              ? `Tipo: ${baseContext.businessContext.kind}`
+                              : "",
+                            businessMarkets !== "No configurado"
+                              ? `Mercados: ${businessMarkets}`
+                              : "",
+                            baseContext?.businessContext.notes
+                              ? `Notas: ${baseContext.businessContext.notes}`
+                              : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || "No configurado"}
+                        />
+                        <FieldRow
+                          label="Preferencias operativas"
+                          value={compactText(baseContext?.operatingPreferences)}
+                        />
+                        <div>
+                          <p className="font-semibold text-slate-800 dark:text-white">
+                            Habilidades disponibles para selección
+                          </p>
+                          {availableSkillNames.length > 0 ? (
+                            <ul className="mt-1 list-disc space-y-1 pl-4">
+                              {availableSkillNames.map((skillName) => (
+                                <li key={skillName}>{skillName}</li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p>Catálogo no disponible en esta carga.</p>
+                          )}
+                          <p className="mt-1 text-[11px] text-slate-500 dark:text-white/50">
+                            No todas se cargan a la vez: el selector elige la más
+                            relevante después de leer tu solicitud.
+                          </p>
+                        </div>
+                        <div>
+                          <p className="font-semibold text-slate-800 dark:text-white">
+                            Herramientas configuradas
+                          </p>
+                          {availableToolNames.length > 0 ? (
+                            <ul className="mt-1 list-disc space-y-1 pl-4">
+                              {availableToolNames.map((toolName) => (
+                                <li key={toolName}>{toolName}</li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p>No hay herramientas habilitadas en Settings.</p>
+                          )}
+                          <p className="mt-1 text-[11px] text-slate-500 dark:text-white/50">
+                            La lista final del turno puede reducirse según la
+                            habilidad seleccionada, integraciones activas y reglas
+                            de seguridad. Las ejecutadas aparecen abajo.
+                          </p>
+                        </div>
+                        <p className="border-t border-emerald-100 pt-2 text-[11px] text-slate-500 dark:border-emerald-400/20 dark:text-white/50">
+                          Este resumen no muestra el system prompt crudo ni razonamiento privado; solo configuración de usuario que alimenta el contexto base.
+                        </p>
+                      </div>
+                    )}
                   </div>
                   <div
                     className={`flex items-start gap-3 rounded-2xl px-3 py-2 transition ${
