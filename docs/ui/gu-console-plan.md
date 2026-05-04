@@ -8,7 +8,7 @@ Convertir la web actual de chat, ajustes y memoria en una experiencia de escrito
 
 El rediseño se trabajara por fases para no bloquear la mejora visual con la instrumentacion avanzada.
 
-### Fase 1: UI Shell Y Chat Mejorado — en progreso avanzado
+### Fase 1: UI Shell Y Chat Mejorado — entregado
 
 - Crear una estructura visual consistente para la app web: sidebar, header, fondo, cards y lenguaje visual Ungga.
 - Redisenar `/chat` como pantalla principal de consola.
@@ -16,13 +16,14 @@ El rediseño se trabajara por fases para no bloquear la mejora visual con la ins
 - Integrar mejor el avatar o imagen de Gu que ya viene de `business_brain.agent_identity`.
 - Mantener el backend actual request/response para reducir riesgo.
 
-### Fase 2: Panel "Gu En Accion" Con Datos Existentes — iniciado
+### Fase 2: Panel "Gu En Accion" Con Datos Existentes — entregado (con refinamientos futuros)
 
 - Agregar un panel derecho en chat con estado del agente, confirmaciones pendientes, herramientas recientes y memorias relevantes.
 - Usar datos ya existentes de `agent_messages`, `tool_calls` y `memories`.
 - No mostrar razonamiento interno crudo; mostrar estados operativos curados.
-- Evaluar una API nueva de lectura para un "activity snapshot" por sesion, sin streaming todavia.
-- Preparar el panel para mostrar presencia del colaborador: voz, adjuntos, actividad proactiva y estado de heartbeat.
+- Refuerzo por turno: correlacion `turn_id` en mensajes y tool calls; respuesta de `/api/chat` con `memoryUsed` (corto/largo plazo y previews legibles) y secciones de Flujo, Habilidades, Herramientas, Aprendizajes recientes.
+- Evaluar una API dedicada "activity snapshot" agregada (hoy: datos de sesion + payload del turno en el propio flujo de chat); sin streaming todavia.
+- Preparar el panel para mostrar presencia del colaborador: voz, adjuntos, actividad proactiva y estado de heartbeat (Fase 4 / paralelo).
 
 ### Fase 3: Eventos En Vivo / Streaming Operativo
 
@@ -77,21 +78,13 @@ flowchart LR
 
 ## Estado Actual
 
-- Completado: primer shell visual de `/chat`, header de marca/cuenta, avatar de colaborador, input con iconos de adjuntos/voz/envio, scroll independiente del chat y panel derecho.
-- Completado: plan versionado en `docs/ui/gu-console-plan.md`.
-- Iniciado: Fase 2 con tarjeta de herramientas recientes basada en `tool_calls` de la sesion web activa.
-- Pendiente Fase 2: memoria activa del ultimo turno, confirmaciones HITL enriquecidas, timeline de actividad de la sesion y carga de mensajes anteriores.
-- Pendiente Fase 3: eventos en vivo/streaming operativo.
-- Pendiente paralelo: vista admin Ungga con selector de cuenta/usuario.
+- Completado (Fase 1): shell visual de `/chat`, header de marca/cuenta, avatar de colaborador, input con iconos de adjuntos/voz/envio, scroll independiente del chat y panel derecho; auto-scroll inicial del chat alineado al comportamiento esperado.
+- Completado (Fase 2 en producto): panel derecho con Flujo, Memoria del turno (corto/largo plazo, previews expandibles cuando el backend los envia), Habilidades del turno, Herramientas del turno, Aprendizajes recientes (ultimas memorias activas por cuenta); correlacion por `turn_id` en mensajes y `tool_calls`; UI sin exponer chain-of-thought.
+- Plan Cursor export emparejado: `.cursor/plans/gu_console_ui_3b083b6d.plan.md` (misma vision por fases; YAML de todos alineado a entregado vs Fase 3 pendiente).
+- Pendiente Fase 2 (refinamiento): confirmaciones HITL mas ricas en panel, timeline de actividad de sesion mas alla del ultimo turno, mensajes anteriores/paginacion si el producto lo pide.
+- Pendiente Fase 3: eventos en vivo/streaming operativo (`agent_turn_events` o equivalente, SSE/stream desde API).
+- Pendiente Fase 4 / paralelo: presencia multimodal (voz, adjuntos, heartbeat visible) y vista admin Ungga con selector de cuenta/usuario.
 
-## Primer Incremento Ejecutable
+## Historico — Primer Incremento
 
-Implementar solo Fase 1 primero:
-
-- App shell visual.
-- Chat desktop redisenado.
-- Panel derecho visual estatico o con estado basico.
-- Fix del scroll inicial.
-- Mantener APIs actuales.
-
-Esto deja una mejora visible rapida y prepara el terreno para datos reales en Fase 2.
+El primer entregable fue Fase 1 (shell + chat + panel basico + scroll). Esa base ya esta desplegada; las fases siguientes se documentan arriba.

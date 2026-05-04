@@ -126,6 +126,8 @@ filters or "one period per turn"; those remain enforced in prompts/tools.
 
 **Yes, it should land in the product—not only in the database.**
 
+The **Gu chat console** (layout consola `/chat`, panel derecho “Gu en acción”, memoria por turno y actividad operativa sin chain-of-thought) is tracked separately from this Skills/Heartbeat backlog: see [`docs/ui/gu-console-plan.md`](ui/gu-console-plan.md) and, if present, the Cursor plan export under `.cursor/plans/`. It complements the sections below; it does not replace the V1–V3 phases in the table at the top of this document.
+
 Suggested **staged** UI:
 
 | When | What |
