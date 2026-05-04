@@ -18,10 +18,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { message } = await request.json();
+    const body = (await request.json()) as {
+      message?: unknown;
+      turnId?: unknown;
+    };
+    const { message } = body;
     if (!message || typeof message !== "string") {
       return NextResponse.json({ error: "Message required" }, { status: 400 });
     }
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const requestTurnId =
+      typeof body.turnId === "string" && uuidRe.test(body.turnId)
+        ? body.turnId
+        : undefined;
 
     const db = createServerClient();
 
@@ -113,6 +123,7 @@ export async function POST(request: Request) {
 
     const result = await runAgent({
       message,
+      turnId: requestTurnId,
       userId: user.id,
       sessionId: session.id,
       systemPrompt:
@@ -166,6 +177,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       response: result.pendingConfirmation ? null : result.response,
+      turnId: result.turnId,
+      appliedSkills: result.appliedSkills,
       pendingConfirmation: result.pendingConfirmation,
       toolCalls: result.toolCalls,
     });

@@ -84,6 +84,7 @@ export interface TurnSummaryInput {
   userEmail?: string | null;
   sessionId: string;
   channel: "web" | "telegram" | "cron";
+  turnId?: string;
   threadId?: string;
 
   /** El texto crudo del usuario en este turno (truncado en no-verbose). */
@@ -495,6 +496,7 @@ function buildBlock(input: TurnSummaryInput): string {
   lines.push(` TURN ${ts}   elapsed=${elapsedSec}s`);
   lines.push(
     ` user=${userLabel}  session=${input.sessionId}  channel=${input.channel}` +
+      (input.turnId ? `\n turn=${input.turnId}` : "") +
       (input.threadId ? `\n thread=${input.threadId}` : "")
   );
   lines.push(

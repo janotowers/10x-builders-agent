@@ -119,6 +119,15 @@ export async function selectSkillForTurn(
     onDecision?.({ kind: "none", reason });
     return { kind: "none", reason };
   }
+  if (isProfileIdentityQuestion(message)) {
+    const reason: SelectionNoneReason = "model_returned_none";
+    onDecision?.({
+      kind: "none",
+      reason,
+      detail: "deterministic_identity_question_guard",
+    });
+    return { kind: "none", reason };
+  }
 
   const candidates = filterCandidates(registry, candidateSlugs);
   if (candidates.length === 0) {
@@ -206,6 +215,19 @@ function filterCandidates(
 
 function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").trim();
+}
+
+function isProfileIdentityQuestion(message: string): boolean {
+  const normalized = message
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[¿?¡!.,;:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /\b(?:como me llamo|cual es mi nombre|sabes mi nombre|quien soy)\b/.test(
+    normalized
+  );
 }
 
 function stringifyContent(content: unknown): string {

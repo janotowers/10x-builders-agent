@@ -6,12 +6,14 @@ export async function createToolCall(
   sessionId: string,
   toolName: string,
   args: Record<string, unknown>,
-  requiresConfirmation: boolean
+  requiresConfirmation: boolean,
+  turnId?: string | null
 ) {
   const { data, error } = await db
     .from("tool_calls")
     .insert({
       session_id: sessionId,
+      turn_id: turnId ?? null,
       tool_name: toolName,
       arguments_json: args,
       status: requiresConfirmation ? "pending_confirmation" : "approved",
@@ -55,17 +57,19 @@ export async function findExistingPendingToolCall(
   db: DbClient,
   sessionId: string,
   toolName: string,
-  args?: Record<string, unknown>
+  args?: Record<string, unknown>,
+  turnId?: string | null
 ) {
-  const { data } = await db
+  let query = db
     .from("tool_calls")
     .select("*")
     .eq("session_id", sessionId)
     .eq("tool_name", toolName)
     .eq("status", "pending_confirmation")
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  if (turnId) query = query.eq("turn_id", turnId);
+  const { data } = await query.maybeSingle();
   const row = (data as ToolCall | null) ?? null;
   if (!row || !args) return row;
   return JSON.stringify(row.arguments_json ?? {}) === JSON.stringify(args)

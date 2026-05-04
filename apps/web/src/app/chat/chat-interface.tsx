@@ -2,12 +2,19 @@
 
 import { useState, useRef, useLayoutEffect, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
+import {
+  formatSkillForUserPanel,
+  formatSkillRole,
+  type AppliedSkillDisplay,
+} from "@/lib/skill-display";
 import { formatToolForUserPanel } from "@/lib/tool-display";
 
 interface Message {
   role: string;
   content: string;
   created_at?: string;
+  turn_id?: string | null;
+  structured_payload?: Record<string, unknown> | null;
 }
 
 interface PendingConfirmation {
@@ -15,10 +22,13 @@ interface PendingConfirmation {
   toolName: string;
   message: string;
   args: Record<string, unknown>;
+  turnId?: string | null;
+  appliedSkills?: AppliedSkillDisplay[];
 }
 
 interface RecentToolCall {
   id: string;
+  turn_id?: string | null;
   tool_name: string;
   status: string;
   requires_confirmation: boolean;
@@ -110,24 +120,100 @@ function formatToolTime(value: string): string {
   });
 }
 
-/** Infer tools used for the last completed user→assistant exchange from timestamps.
- * Until we have explicit turn correlation IDs in DB, this window is the best UX signal.
+function parseAppliedSkills(value: unknown): AppliedSkillDisplay[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as Record<string, unknown>;
+      if (typeof row.id !== "string" || row.id.length === 0) return null;
+      return {
+        id: row.id,
+        role: row.role === "included" ? "included" : "primary",
+      } satisfies AppliedSkillDisplay;
+    })
+    .filter((item): item is AppliedSkillDisplay => Boolean(item));
+}
+
+function appliedSkillsFromMessage(message: Message | undefined): AppliedSkillDisplay[] {
+  const payload = message?.structured_payload;
+  if (!payload) return [];
+  const explicit = parseAppliedSkills(payload.appliedSkills);
+  if (explicit.length > 0) return explicit;
+  return typeof payload.activeSkill === "string"
+    ? [{ id: payload.activeSkill, role: "primary" }]
+    : [];
+}
+
+function skillsForLastCompletedTurn(
+  msgs: Message[],
+  preferredTurnId?: string | null,
+  preferredSkills?: AppliedSkillDisplay[]
+): AppliedSkillDisplay[] {
+  if (preferredSkills && preferredSkills.length > 0) return preferredSkills;
+  if (preferredTurnId) {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i]?.turn_id !== preferredTurnId) continue;
+      return appliedSkillsFromMessage(msgs[i]);
+    }
+  }
+
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const role = msgs[i]?.role;
+    if (role !== "assistant" && role !== "user") continue;
+    return appliedSkillsFromMessage(msgs[i]);
+  }
+  return [];
+}
+
+/** Prefer persisted turn correlation; timestamp matching only supports old rows.
  */
 function toolsForLastCompletedTurn(
   msgs: Message[],
-  calls: RecentToolCall[]
+  calls: RecentToolCall[],
+  preferredTurnId?: string | null
 ): RecentToolCall[] {
+  const sortByCreatedAt = (rows: RecentToolCall[]): RecentToolCall[] =>
+    [...rows].sort((a, b) => {
+      const ta = new Date(a.created_at).getTime();
+      const tb = new Date(b.created_at).getTime();
+      return ta - tb;
+    });
+
+  if (preferredTurnId) {
+    return sortByCreatedAt(calls.filter((c) => c.turn_id === preferredTurnId));
+  }
+
+  // Anchor to the most recent user message: that is the turn currently in
+  // focus. If it carries `turn_id`, filter strictly by it; this also lets
+  // us return [] (i.e. clear the panel) the moment a new user message is
+  // sent before any tools have been recorded for it.
   let lastUserIdx = -1;
-  let lastAssistantIdx = -1;
   for (let i = msgs.length - 1; i >= 0; i--) {
-    const role = msgs[i]?.role;
-    if (role === "assistant" && lastAssistantIdx < 0) lastAssistantIdx = i;
-    else if (role === "user" && lastAssistantIdx >= 0 && lastUserIdx < 0) {
+    if (msgs[i]?.role === "user") {
       lastUserIdx = i;
       break;
     }
   }
+
+  const lastUserTurnId = lastUserIdx >= 0 ? msgs[lastUserIdx]?.turn_id : null;
+  if (lastUserTurnId) {
+    return sortByCreatedAt(calls.filter((c) => c.turn_id === lastUserTurnId));
+  }
+
+  let lastAssistantIdx = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]?.role === "assistant") {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
   if (lastUserIdx < 0 || lastAssistantIdx < 0 || calls.length === 0) return [];
+
+  const turnId = msgs[lastAssistantIdx]?.turn_id;
+  if (turnId) {
+    return sortByCreatedAt(calls.filter((c) => c.turn_id === turnId));
+  }
 
   const userTs = msgs[lastUserIdx]?.created_at;
   const assistantTs = msgs[lastAssistantIdx]?.created_at;
@@ -147,11 +233,7 @@ function toolsForLastCompletedTurn(
     return t >= windowStartMs && t <= windowEndMs;
   });
 
-  return [...matches].sort((a, b) => {
-    const ta = new Date(a.created_at).getTime();
-    const tb = new Date(b.created_at).getTime();
-    return ta - tb;
-  });
+  return sortByCreatedAt(matches);
 }
 
 function mergeToolCalls(
@@ -198,6 +280,10 @@ function mergeToolCalls(
   return out.slice(0, maxTotal);
 }
 
+function createClientTurnId(): string {
+  return crypto.randomUUID();
+}
+
 export function ChatInterface({
   agentName,
   agentAvatarUrl,
@@ -233,8 +319,17 @@ export function ChatInterface({
       : "Listo para recibir nuevas peticiones y ejecutar tareas con contexto.";
 
   const toolsThisTurn = useMemo(
-    () => toolsForLastCompletedTurn(messages, toolCalls),
-    [messages, toolCalls]
+    () => toolsForLastCompletedTurn(messages, toolCalls, confirmation?.turnId),
+    [messages, toolCalls, confirmation?.turnId]
+  );
+  const skillsThisTurn = useMemo(
+    () =>
+      skillsForLastCompletedTurn(
+        messages,
+        confirmation?.turnId,
+        confirmation?.appliedSkills
+      ),
+    [messages, confirmation?.turnId, confirmation?.appliedSkills]
   );
 
   useLayoutEffect(() => {
@@ -251,11 +346,14 @@ export function ChatInterface({
     e.preventDefault();
     const text = input.trim();
     if (!text || loading) return;
+    const clientTurnId = createClientTurnId();
 
     const userMsg: Message = {
       role: "user",
       content: text,
       created_at: new Date().toISOString(),
+      turn_id: clientTurnId,
+      structured_payload: { appliedSkills: [] },
     };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
@@ -265,11 +363,13 @@ export function ChatInterface({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, turnId: clientTurnId }),
       });
 
       const data = (await res.json()) as {
         response?: string | null;
+        turnId?: string;
+        appliedSkills?: AppliedSkillDisplay[];
         pendingConfirmation?: PendingConfirmation | null;
         toolCalls?: string[];
         error?: string;
@@ -287,6 +387,8 @@ export function ChatInterface({
             role: "assistant" as const,
             content: `Error: ${errText}`,
             created_at: errIso,
+            turn_id: data.turnId ?? clientTurnId,
+            structured_payload: { appliedSkills: data.appliedSkills ?? [] },
           },
         ]);
         return;
@@ -307,7 +409,13 @@ export function ChatInterface({
             : "Respuesta vacía del asistente. Si esperabas una tarjeta de confirmación, revisa debajo del chat.";
         setMessages((prev) => [
           ...prev,
-          { role: "assistant" as const, content, created_at: assistantIso },
+          {
+            role: "assistant" as const,
+            content,
+            created_at: assistantIso,
+            turn_id: data.turnId ?? clientTurnId,
+            structured_payload: { appliedSkills: data.appliedSkills ?? [] },
+          },
         ]);
       } else if (!data.pendingConfirmation) {
         setMessages((prev) => [
@@ -317,6 +425,8 @@ export function ChatInterface({
             content:
               "Respuesta incompleta del servidor (sin texto). Recarga la página o revisa la consola del servidor.",
             created_at: assistantIso,
+            turn_id: data.turnId ?? clientTurnId,
+            structured_payload: { appliedSkills: data.appliedSkills ?? [] },
           },
         ]);
       }
@@ -324,6 +434,7 @@ export function ChatInterface({
       if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
         const optimistic = data.toolCalls.map((name, index) => ({
           id: `turn-${assistantIso}-${index}-${name}`,
+          turn_id: data.turnId ?? clientTurnId,
           tool_name: name,
           status: "executed",
           requires_confirmation: false,
@@ -340,6 +451,8 @@ export function ChatInterface({
           role: "assistant",
           content: "Error al procesar tu mensaje. Intenta de nuevo.",
           created_at: errIso,
+          turn_id: clientTurnId,
+          structured_payload: { appliedSkills: [] },
         },
       ]);
     } finally {
@@ -362,17 +475,32 @@ export function ChatInterface({
         }),
       });
 
-      const data = await res.json();
+      const data = (await res.json()) as {
+        ok?: boolean;
+        response?: string | null;
+        turnId?: string;
+        appliedSkills?: AppliedSkillDisplay[];
+        pendingConfirmation?: PendingConfirmation | null;
+        toolCalls?: string[];
+        error?: string;
+      };
 
       const assistantIso = new Date().toISOString();
 
-      if (data.ok && data.response) {
+      const responseText =
+        typeof data.response === "string" ? data.response : null;
+      if (data.ok && responseText && responseText.length > 0) {
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            content: data.response,
+            content: responseText,
             created_at: assistantIso,
+            turn_id: data.turnId ?? confirmation.turnId ?? null,
+            structured_payload: {
+              appliedSkills:
+                data.appliedSkills ?? confirmation.appliedSkills ?? [],
+            },
           },
         ]);
       }
@@ -392,6 +520,11 @@ export function ChatInterface({
             role: "assistant",
             content: `Error al ejecutar: ${msg}`,
             created_at: assistantIso,
+            turn_id: data.turnId ?? confirmation.turnId ?? null,
+            structured_payload: {
+              appliedSkills:
+                data.appliedSkills ?? confirmation.appliedSkills ?? [],
+            },
           },
         ]);
       } else if (action === "reject" && !data.response) {
@@ -401,8 +534,27 @@ export function ChatInterface({
             role: "assistant",
             content: "Acción cancelada.",
             created_at: assistantIso,
+            turn_id: data.turnId ?? confirmation.turnId ?? null,
+            structured_payload: {
+              appliedSkills:
+                data.appliedSkills ?? confirmation.appliedSkills ?? [],
+            },
           },
         ]);
+      }
+
+      if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
+        const turnId = data.turnId ?? confirmation.turnId ?? null;
+        const optimistic = data.toolCalls.map((name, index) => ({
+          id: `turn-${assistantIso}-${index}-${name}`,
+          turn_id: turnId,
+          tool_name: name,
+          status: "executed",
+          requires_confirmation: false,
+          created_at: assistantIso,
+          finished_at: assistantIso,
+        }));
+        setToolCalls((prev) => mergeToolCalls(prev, optimistic));
       }
     } catch {
       const errIso = new Date().toISOString();
@@ -684,43 +836,45 @@ export function ChatInterface({
             </section>
 
             <aside className="hidden min-h-0 flex-col gap-4 overflow-y-auto pr-1 xl:flex">
-              <section className="rounded-[2rem] border border-white/70 bg-[#32107a] text-white shadow-xl shadow-violet-950/10 dark:border-white/10">
-                <div className="relative px-6 pt-6">
-                  <div className="absolute right-4 top-4 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold">
-                    {agentStatus}
-                  </div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-violet-100">
-                    Colaborador en acción
-                  </p>
-                  <h2 className="mt-2 text-2xl font-bold">{agentName}</h2>
-                  <p className="mt-2 text-sm text-violet-100">
-                    {agentStatusDescription}
-                  </p>
-                </div>
-                <div className="mt-6 flex items-end justify-center px-6">
-                  <div className="flex h-52 w-52 items-center justify-center overflow-hidden rounded-[2.25rem] bg-white/10 ring-1 ring-white/20">
+              <section className="rounded-[2rem] border border-white/70 bg-[#32107a] p-5 text-white shadow-xl shadow-violet-950/10 dark:border-white/10">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[1.75rem] bg-white/10 ring-1 ring-white/20">
                     {agentAvatarUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={agentAvatarUrl} alt="Avatar grande de Gu" className="h-full w-full object-cover" />
+                      <img src={agentAvatarUrl} alt="Avatar de Gu" className="h-full w-full object-cover" />
                     ) : (
-                      <span className="text-6xl font-black">{agentInitial}</span>
+                      <span className="text-4xl font-black">{agentInitial}</span>
                     )}
                   </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-100">
+                        Colaborador en acción
+                      </p>
+                      <span className="shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold">
+                        {agentStatus}
+                      </span>
+                    </div>
+                    <h2 className="mt-2 truncate text-xl font-bold">{agentName}</h2>
+                    <p className="mt-1 line-clamp-2 text-sm leading-5 text-violet-100">
+                      {agentStatusDescription}
+                    </p>
+                  </div>
                 </div>
-                <div className="mt-6 grid grid-cols-3 border-t border-white/10 text-center text-xs">
-                  <div className="px-3 py-4">
-                    <p className="text-lg font-bold">
+                <div className="mt-4 grid grid-cols-3 rounded-2xl bg-white/10 text-center text-xs ring-1 ring-white/10">
+                  <div className="px-3 py-3">
+                    <p className="text-base font-bold">
                       {messages.length}
                       {messages.length >= 50 ? "+" : ""}
                     </p>
-                    <p className="text-violet-100">en pantalla</p>
+                    <p className="text-violet-100">mensajes</p>
                   </div>
-                  <div className="border-x border-white/10 px-3 py-4">
-                    <p className="text-lg font-bold">{confirmation ? "1" : "0"}</p>
+                  <div className="border-x border-white/10 px-3 py-3">
+                    <p className="text-base font-bold">{confirmation ? "1" : "0"}</p>
                     <p className="text-violet-100">pendientes</p>
                   </div>
-                  <div className="px-3 py-4">
-                    <p className="text-lg font-bold">{loading ? "on" : "ok"}</p>
+                  <div className="px-3 py-3">
+                    <p className="text-base font-bold">{loading ? "on" : "ok"}</p>
                     <p className="text-violet-100">estado</p>
                   </div>
                 </div>
@@ -798,10 +952,55 @@ export function ChatInterface({
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
+                      Habilidades aplicadas
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
+                      Playbooks que Gu cargó para resolver este turno.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
+                    {skillsThisTurn.length}
+                  </span>
+                </div>
+
+                <div className="mt-4 space-y-2">
+                  {skillsThisTurn.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-4 text-center text-xs text-slate-500 dark:border-white/10 dark:text-white/50">
+                      Sin habilidad especializada para este último mensaje.
+                    </div>
+                  ) : (
+                    skillsThisTurn.map((skill) => (
+                      <div
+                        key={`${skill.id}-${skill.role}`}
+                        className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-3 text-sm ring-1 ring-slate-100 dark:bg-white/5 dark:ring-white/10"
+                      >
+                        <span
+                          className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                            skill.role === "primary" ? "bg-violet-500" : "bg-sky-400"
+                          }`}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium text-slate-800 dark:text-white">
+                            {formatSkillForUserPanel(skill.id)}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
+                            {formatSkillRole(skill.role)}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
                       Herramientas del último turno
                     </h3>
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
-                      Lo que Gu usó para contestar tu último mensaje (inferido por tiempo hasta tener correlación exacta en servidor).
+                      Lo que Gu usó para contestar tu último mensaje.
                     </p>
                   </div>
                   <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">

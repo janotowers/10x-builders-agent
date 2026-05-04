@@ -6,7 +6,11 @@ export async function addMessage(
   sessionId: string,
   role: MessageRole,
   content: string,
-  extra?: { tool_call_id?: string; structured_payload?: Record<string, unknown> }
+  extra?: {
+    tool_call_id?: string;
+    structured_payload?: Record<string, unknown>;
+    turn_id?: string | null;
+  }
 ) {
   const { data, error } = await db
     .from("agent_messages")

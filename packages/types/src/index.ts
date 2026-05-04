@@ -205,6 +205,7 @@ export type MessageRole = "user" | "assistant" | "tool" | "system";
 export interface AgentMessage {
   id: string;
   session_id: string;
+  turn_id?: string | null;
   role: MessageRole;
   content: string;
   tool_call_id?: string;
@@ -215,6 +216,7 @@ export interface AgentMessage {
 export interface ToolCall {
   id: string;
   session_id: string;
+  turn_id?: string | null;
   tool_name: string;
   arguments_json: Record<string, unknown>;
   result_json?: Record<string, unknown>;
@@ -222,6 +224,11 @@ export interface ToolCall {
   requires_confirmation: boolean;
   created_at: string;
   finished_at?: string;
+}
+
+export interface AppliedSkill {
+  id: string;
+  role: "primary" | "included";
 }
 
 export interface TelegramAccount {
@@ -246,6 +253,10 @@ export interface PendingConfirmation {
   toolName: string;
   message: string;
   args: Record<string, unknown>;
+  /** Stable id that correlates all messages/tool calls for this user request. */
+  turnId?: string | null;
+  /** Skills from the repo playbook system that were loaded for this turn. */
+  appliedSkills?: AppliedSkill[];
   /** LangGraph checkpoint thread ID needed to resume the interrupted graph. */
   checkpointThreadId: string;
 }

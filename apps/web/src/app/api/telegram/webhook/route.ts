@@ -127,6 +127,7 @@ async function resumeAgentFromCallback(
   const result = await runAgent({
     resumeDecision: action,
     checkpointThreadId: storedCheckpointThreadId,
+    turnId: (toolCall.turn_id as string | null) ?? undefined,
     userId,
     sessionId: session.id as string,
     systemPrompt:

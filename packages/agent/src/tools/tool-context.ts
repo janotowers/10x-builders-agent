@@ -5,6 +5,8 @@ export interface ToolContext {
   db: DbClient;
   userId: string;
   sessionId: string;
+  /** Correlates all tool audit rows for the current user request. */
+  turnId?: string;
   enabledTools: UserToolSetting[];
   integrations: UserIntegration[];
   githubToken?: string;

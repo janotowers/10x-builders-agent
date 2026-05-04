@@ -4,6 +4,7 @@ import {
   Command,
   type StreamMode,
 } from "@langchain/langgraph";
+import { randomUUID } from "node:crypto";
 import {
   HumanMessage,
   AIMessage,
@@ -26,6 +27,7 @@ import type {
   PendingConfirmation,
   BusinessBrain,
   AgentMessage,
+  AppliedSkill,
 } from "@agents/types";
 import {
   CHAT_MODEL_ID,
@@ -71,6 +73,8 @@ import {
 
 export interface AgentInput {
   message?: string;
+  /** Correlates all persisted messages/tool calls created during this user turn. */
+  turnId?: string;
   userId: string;
   sessionId: string;
   systemPrompt: string;
@@ -126,7 +130,9 @@ export interface AgentInput {
 
 export interface AgentOutput {
   response: string;
+  turnId: string;
   toolCalls: string[];
+  appliedSkills: AppliedSkill[];
   pendingConfirmation: PendingConfirmation | null;
   /**
    * Señal de memoria larga producida por `memory_injection_node`: `true` si
@@ -143,10 +149,22 @@ function buildMemoryExtractionPayload(
   activeSkill: ResolvedSkill | undefined
 ): Record<string, unknown> | undefined {
   if (!activeSkill) return undefined;
+  const appliedSkills = buildAppliedSkills(activeSkill);
   return {
     activeSkill: activeSkill.rootName,
     memoryExtraction: activeSkill.memoryExtraction,
+    appliedSkills,
   };
+}
+
+function buildAppliedSkills(
+  activeSkill: ResolvedSkill | undefined
+): AppliedSkill[] {
+  if (!activeSkill) return [];
+  return activeSkill.composedFrom.map((id) => ({
+    id,
+    role: id === activeSkill.rootName ? "primary" : "included",
+  }));
 }
 
 const MAX_TOOL_ITERATIONS = 8;
@@ -646,6 +664,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const turnStartedAt = new Date();
   const {
     message,
+    turnId: inputTurnId,
     userId,
     sessionId,
     systemPrompt,
@@ -662,6 +681,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     resumeDecision,
     checkpointThreadId,
   } = input;
+  const turnId = inputTurnId ?? randomUUID();
 
   // Temperatura por canal: cron (autoApproveTools) pide 0.1 para reducir
   // respuestas de tipo "intentaré luego" o narrativa creativa cuando el modelo
@@ -841,6 +861,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     db,
     userId,
     sessionId,
+    turnId,
     enabledTools,
     integrations,
     githubToken,
@@ -1098,12 +1119,13 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       "user",
       message,
       memoryExtractionPayload
-        ? { structured_payload: memoryExtractionPayload }
-        : undefined
+        ? { structured_payload: memoryExtractionPayload, turn_id: turnId }
+        : { turn_id: turnId }
     );
   }
 
   const toolCallNames: string[] = [];
+  const appliedSkills = buildAppliedSkills(activeSkill);
   let bigQueryExecutionErrorCount = 0;
   let companyDataQueryCorrectionCount = 0;
   let leadContextQueryCorrectionCount = 0;
@@ -1354,7 +1376,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
               state.sessionId,
               tc.name,
               tc.args,
-              false
+              false,
+              turnId
             );
             trackedToolCallId = toolCallRecord.id;
             await updateToolCallStatus(db, toolCallRecord.id, "approved");
@@ -1363,7 +1386,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
               db,
               state.sessionId,
               tc.name,
-              (tc.args as Record<string, unknown>) ?? {}
+              (tc.args as Record<string, unknown>) ?? {},
+              turnId
             );
             const toolCallRecord =
               existing ??
@@ -1372,7 +1396,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 state.sessionId,
                 tc.name,
                 tc.args,
-                true
+                true,
+                turnId
               ));
             trackedToolCallId = toolCallRecord.id;
             let memoryContent: string | null = null;
@@ -1441,7 +1466,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
               state.sessionId,
               tc.name,
               (tc.args as Record<string, unknown>) ?? {},
-              false
+              false,
+              turnId
             );
             await updateToolCallStatus(
               db,
@@ -1523,7 +1549,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
             state.sessionId,
             tc.name,
             (tc.args as Record<string, unknown>) ?? {},
-            false
+            false,
+            turnId
           );
           await updateToolCallStatus(db, record.id, "failed", unavailablePayload);
         } catch (e) {
@@ -1687,10 +1714,13 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         toolName: payload.tool_name,
         message: payload.message,
         args: payload.args,
+        turnId,
+        appliedSkills,
         checkpointThreadId: threadId,
       };
       await addMessage(db, sessionId, "assistant", payload.message, {
         tool_call_id: payload.tool_call_id,
+        turn_id: turnId,
         structured_payload: {
           type: "pending_confirmation",
           ...(buildMemoryExtractionPayload(activeSkill) ?? {}),
@@ -1744,8 +1774,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         "assistant",
         responseText,
         memoryExtractionPayload
-          ? { structured_payload: memoryExtractionPayload }
-          : undefined
+          ? { structured_payload: memoryExtractionPayload, turn_id: turnId }
+          : { turn_id: turnId }
       );
     }
   }
@@ -1805,6 +1835,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     userEmail: userEmail ?? null,
     sessionId,
     channel: resolvedChannel,
+    turnId,
     threadId,
     userInput: message ?? null,
     profile: {
@@ -1847,7 +1878,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   return {
     response: responseText,
+    turnId,
     toolCalls: toolCallNames,
+    appliedSkills,
     pendingConfirmation: pending,
     memoryFlushPending: Boolean(finalState.memoryFlushPending),
   };

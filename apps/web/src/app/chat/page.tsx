@@ -4,11 +4,17 @@ import { ChatInterface } from "./chat-interface";
 
 type RecentToolCall = {
   id: string;
+  turn_id?: string | null;
   tool_name: string;
   status: string;
   requires_confirmation: boolean;
   created_at: string;
   finished_at: string | null;
+};
+
+type AppliedSkill = {
+  id: string;
+  role: "primary" | "included";
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -64,7 +70,13 @@ export default async function ChatPage() {
     .limit(1)
     .single();
 
-  let sessionMessages: Array<{ role: string; content: string; created_at: string }> = [];
+  let sessionMessages: Array<{
+    role: string;
+    content: string;
+    created_at: string;
+    turn_id?: string | null;
+    structured_payload?: Record<string, unknown> | null;
+  }> = [];
   let recentToolCalls: RecentToolCall[] = [];
   let initialPendingConfirmation:
     | {
@@ -72,13 +84,15 @@ export default async function ChatPage() {
         toolName: string;
         message: string;
         args: Record<string, unknown>;
+        turnId?: string | null;
+        appliedSkills?: AppliedSkill[];
         checkpointThreadId: string;
       }
     | null = null;
   if (messages?.id) {
     const { data } = await supabase
       .from("agent_messages")
-      .select("role, content, created_at")
+      .select("role, content, created_at, turn_id, structured_payload")
       .eq("session_id", messages.id)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -86,7 +100,7 @@ export default async function ChatPage() {
 
     const { data: toolCalls } = await supabase
       .from("tool_calls")
-      .select("id, tool_name, status, requires_confirmation, created_at, finished_at")
+      .select("id, turn_id, tool_name, status, requires_confirmation, created_at, finished_at")
       .eq("session_id", messages.id)
       .order("created_at", { ascending: false })
       .limit(80);
@@ -112,18 +126,25 @@ export default async function ChatPage() {
           toolName: string;
           message: string;
           args: Record<string, unknown>;
+          turnId?: string | null;
+          appliedSkills?: AppliedSkill[];
           checkpointThreadId: string;
         };
       };
       if (sp.pendingConfirmation) {
         const { data: stillPending } = await supabase
           .from("tool_calls")
-          .select("id")
+          .select("id, turn_id")
           .eq("id", sp.pendingConfirmation.toolCallId)
           .eq("status", "pending_confirmation")
           .maybeSingle();
         if (stillPending) {
-          initialPendingConfirmation = sp.pendingConfirmation;
+          initialPendingConfirmation = {
+            ...sp.pendingConfirmation,
+            turnId:
+              sp.pendingConfirmation.turnId ??
+              ((stillPending.turn_id as string | null) ?? null),
+          };
         }
       }
     }

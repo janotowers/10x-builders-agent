@@ -352,7 +352,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.sessionId,
             "read_skill_reference",
             input,
-            false
+            false,
+            ctx.turnId
           );
           const result = await readSkillReference({
             name: input.name,
@@ -391,7 +392,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.sessionId,
             "bigquery_run_query",
             input,
-            false
+            false,
+            ctx.turnId
           );
           const prepared = prepareBigQueryRunArgs(input, ctx);
           const result =
@@ -460,7 +462,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.sessionId,
             "list_user_memories",
             input,
-            false
+            false,
+            ctx.turnId
           );
           try {
             const limit = Math.min(
@@ -532,7 +535,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.sessionId,
             "search_user_memories",
             input,
-            false
+            false,
+            ctx.turnId
           );
           try {
             const limit = Math.min(
@@ -712,7 +716,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.sessionId,
             "github_list_repos",
             input,
-            false
+            false,
+            ctx.turnId
           );
 
           if (!ctx.githubToken) {
@@ -772,7 +777,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.sessionId,
             "github_list_issues",
             input,
-            false
+            false,
+            ctx.turnId
           );
 
           if (!ctx.githubToken) {
@@ -974,7 +980,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.sessionId,
             "read_file",
             input,
-            false
+            false,
+            ctx.turnId
           );
           const result = await executeReadFile(input);
           const out = JSON.stringify(result);
@@ -1157,7 +1164,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.sessionId,
             "manage_scheduled_tasks",
             input,
-            false
+            false,
+            ctx.turnId
           );
 
           try {

@@ -109,6 +109,7 @@ export async function POST(request: Request) {
     const result = await runAgent({
       resumeDecision: action === "approve" ? "approve" : "reject",
       checkpointThreadId: storedCheckpointThreadId,
+      turnId: (toolCall.turn_id as string | null) ?? undefined,
       userId: user.id,
       sessionId: session.id,
       systemPrompt:
@@ -151,6 +152,9 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       response: result.pendingConfirmation ? null : result.response,
+      turnId: result.turnId,
+      appliedSkills: result.appliedSkills,
+      toolCalls: result.toolCalls,
       pendingConfirmation: result.pendingConfirmation,
     });
   } catch (error) {

@@ -52,7 +52,8 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
             ctx.sessionId,
             "calendar_list_calendars",
             {},
-            false
+            false,
+            ctx.turnId
           );
           const { status, data } = await googleCalendarJson(
             token,
@@ -104,7 +105,8 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
             ctx.sessionId,
             "calendar_list_events",
             input,
-            false
+            false,
+            ctx.turnId
           );
           const profileTz = tz(ctx);
 
