@@ -88,6 +88,28 @@ interface BaseContext {
   operatingPreferences?: string;
 }
 
+type OperationalEventType =
+  | "turn_started"
+  | "context_prepared"
+  | "skill_selected"
+  | "tools_bound"
+  | "tool_started"
+  | "tool_completed"
+  | "confirmation_required"
+  | "memory_applied"
+  | "turn_completed"
+  | "turn_failed";
+
+interface OperationalEvent {
+  type: OperationalEventType;
+  turnId?: string;
+  at?: string;
+  message: string;
+  toolName?: string;
+  skillId?: string;
+  details?: Record<string, unknown>;
+}
+
 interface Props {
   agentName: string;
   agentAvatarUrl?: string;
@@ -178,6 +200,18 @@ function formatToolTime(value: string): string {
   });
 }
 
+function formatOperationalEventTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("es-MX", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function formatMemorySource(memory: AppliedMemoryDisplay): string {
   if (memory.source === "short_term") {
     return typeof memory.count === "number"
@@ -210,6 +244,35 @@ function formatLearningTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatOperationalEventType(type: OperationalEventType): string {
+  const labels: Record<OperationalEventType, string> = {
+    turn_started: "Inicio",
+    context_prepared: "Contexto",
+    skill_selected: "Habilidad",
+    tools_bound: "Herramientas",
+    tool_started: "Ejecutando",
+    tool_completed: "Herramienta",
+    confirmation_required: "Confirmación",
+    memory_applied: "Memoria",
+    turn_completed: "Cierre",
+    turn_failed: "Error",
+  };
+  return labels[type];
+}
+
+function operationalEventDotClass(type: OperationalEventType): string {
+  if (type === "turn_failed") return "bg-red-500";
+  if (type === "confirmation_required") return "bg-amber-500";
+  if (type === "turn_started") return "bg-violet-500";
+  if (type === "context_prepared") return "bg-emerald-500";
+  if (type === "skill_selected") return "bg-fuchsia-500";
+  if (type === "tools_bound") return "bg-indigo-500";
+  if (type === "tool_started") return "bg-violet-500";
+  if (type === "tool_completed" || type === "turn_completed") return "bg-emerald-500";
+  if (type === "memory_applied") return "bg-sky-400";
+  return "bg-slate-400 dark:bg-white/30";
 }
 
 function formatShortTermRole(role: string): string {
@@ -613,6 +676,7 @@ export function ChatInterface({
   const [confirming, setConfirming] = useState(false);
   const [contextExpanded, setContextExpanded] = useState(false);
   const [shortTermExpanded, setShortTermExpanded] = useState(false);
+  const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -675,6 +739,7 @@ export function ChatInterface({
     availableTools.length > 0
       ? availableTools.map((tool) => formatToolForUserPanel(tool.id))
       : [];
+  const visibleOperationalEvents = operationalEvents.slice(-8);
 
   useLayoutEffect(() => {
     const viewport = messagesViewportRef.current;
@@ -685,6 +750,19 @@ export function ChatInterface({
     });
     didInitialScrollRef.current = true;
   }, [messages.length, confirmation?.toolCallId, loading]);
+
+  function appendOperationalEvent(event: OperationalEvent) {
+    setOperationalEvents((prev) => {
+      const key = `${event.type}:${event.at ?? ""}:${event.message}:${event.toolName ?? ""}`;
+      const exists = prev.some(
+        (item) =>
+          `${item.type}:${item.at ?? ""}:${item.message}:${item.toolName ?? ""}` ===
+          key
+      );
+      if (exists) return prev;
+      return [...prev, event].slice(-40);
+    });
+  }
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -701,8 +779,23 @@ export function ChatInterface({
     };
     setMessages((prev) => [...prev, userMsg]);
     setShortTermExpanded(false);
+    setOperationalEvents([]);
     setInput("");
     setLoading(true);
+
+    const eventSource = new EventSource(
+      `/api/chat/events?turnId=${encodeURIComponent(clientTurnId)}`
+    );
+    eventSource.addEventListener("turn-event", (event) => {
+      try {
+        appendOperationalEvent(JSON.parse(event.data) as OperationalEvent);
+      } catch {
+        // Ignore malformed event payloads; they are non-critical UI hints.
+      }
+    });
+    eventSource.onerror = () => {
+      eventSource.close();
+    };
 
     try {
       const res = await fetch("/api/chat", {
@@ -811,6 +904,7 @@ export function ChatInterface({
         },
       ]);
     } finally {
+      eventSource.close();
       setLoading(false);
     }
   }
@@ -819,6 +913,22 @@ export function ChatInterface({
     if (!confirmation) return;
     setConfirming(true);
     let keepPending: PendingConfirmation | null = null;
+    const confirmTurnId = confirmation.turnId ?? null;
+    const eventSource = confirmTurnId
+      ? new EventSource(
+          `/api/chat/events?turnId=${encodeURIComponent(confirmTurnId)}`
+        )
+      : null;
+    eventSource?.addEventListener("turn-event", (event) => {
+      try {
+        appendOperationalEvent(JSON.parse(event.data) as OperationalEvent);
+      } catch {
+        // Ignore malformed event payloads; they are non-critical UI hints.
+      }
+    });
+    eventSource?.addEventListener("error", () => {
+      eventSource.close();
+    });
 
     try {
       const res = await fetch("/api/chat/confirm", {
@@ -926,6 +1036,7 @@ export function ChatInterface({
         },
       ]);
     } finally {
+      eventSource?.close();
       setConfirmation(keepPending);
       setConfirming(false);
     }
@@ -1372,7 +1483,7 @@ export function ChatInterface({
                       className={`relative mt-1.5 inline-flex h-2.5 w-2.5 shrink-0 items-center justify-center rounded-full ${
                         loading
                           ? "bg-violet-500 shadow-[0_0_0_4px_rgba(139,92,246,0.18)]"
-                          : "bg-slate-300 dark:bg-white/20"
+                            : "bg-slate-300 dark:bg-white/20"
                       }`}
                     >
                       {loading && (
@@ -1391,14 +1502,64 @@ export function ChatInterface({
                       </p>
                       <p className="text-xs text-slate-500 dark:text-white/60">
                         {loading
-                          ? "Gu está trabajando. En esta fase la UI muestra el resultado cuando termina el turno."
-                          : "Por ahora el backend responde al terminar el turno."}
+                          ? "Gu está procesando tu solicitud."
+                          : "Listo para actuar y dar resultados."}
                       </p>
                       {loading && (
                         <div className="mt-2 h-1 overflow-hidden rounded-full bg-violet-200/70 dark:bg-violet-400/20">
                           <div className="h-full w-1/2 animate-pulse rounded-full bg-violet-500" />
                         </div>
                       )}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl px-3 py-2">
+                    <div className="flex items-start gap-3">
+                      <span
+                        className={`mt-1.5 inline-flex h-2.5 w-2.5 shrink-0 rounded-full ${
+                          loading
+                            ? "bg-violet-500 shadow-[0_0_0_4px_rgba(139,92,246,0.18)]"
+                            : "bg-slate-300 dark:bg-white/20"
+                        }`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-slate-800 dark:text-white">
+                          Timeline operativo
+                        </p>
+                        <p className="text-xs text-slate-500 dark:text-white/60">
+                          Estados en vivo del turno, razonamiento interno no mostrado.
+                        </p>
+                        {visibleOperationalEvents.length > 0 ? (
+                          <div className="mt-2 space-y-2">
+                            {visibleOperationalEvents.map((event, index) => (
+                              <div
+                                key={`${event.type}-${event.at ?? index}-${index}`}
+                                className="rounded-2xl bg-white/70 px-3 py-2 text-xs ring-1 ring-slate-100 dark:bg-white/5 dark:ring-white/10"
+                              >
+                                <div className="mb-1 flex items-center justify-between gap-2">
+                                  <span className="inline-flex items-center gap-2 font-semibold text-slate-800 dark:text-white">
+                                    <span
+                                      className={`h-2 w-2 rounded-full ${operationalEventDotClass(event.type)}`}
+                                    />
+                                    {formatOperationalEventType(event.type)}
+                                  </span>
+                                  {event.at && (
+                                    <span className="shrink-0 text-[11px] text-slate-400 dark:text-white/40">
+                                      {formatOperationalEventTime(event.at)}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-slate-600 dark:text-white/70">
+                                  {event.message}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-xs text-slate-400 dark:text-white/40">
+                            Envía una solicitud para ver el flujo operativo.
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-start gap-3 rounded-2xl px-3 py-2">

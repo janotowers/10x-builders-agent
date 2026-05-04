@@ -1,7 +1,7 @@
 export { runAgent } from "./graph";
 export { TOOL_CATALOG } from "./tools/catalog";
 export { githubApi } from "./tools/github-api";
-export type { AgentInput, AgentOutput } from "./graph";
+export type { AgentInput, AgentOutput, AgentTurnEvent, AgentTurnEventType } from "./graph";
 export {
   calendarFreeBusyQuery,
   buildEventResource,

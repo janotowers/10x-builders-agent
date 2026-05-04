@@ -7,6 +7,7 @@ import {
   getPendingToolCall,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
+import { publishTurnEvent } from "@/lib/agent-turn-events";
 
 export async function POST(request: Request) {
   try {
@@ -147,6 +148,11 @@ export async function POST(request: Request) {
       isUnggaAdmin: (profile?.is_ungga_admin as boolean | null) ?? false,
       channel: "web",
       googleCalendarAccessToken,
+      onEvent: (event) => {
+        const eventTurnId =
+          event.turnId ?? ((toolCall.turn_id as string | null) ?? undefined);
+        if (eventTurnId) publishTurnEvent(eventTurnId, event);
+      },
     });
 
     return NextResponse.json({

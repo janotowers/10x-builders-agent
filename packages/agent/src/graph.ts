@@ -127,6 +127,30 @@ export interface AgentInput {
    * bloque de contexto de OBLIGATORIO → ADMIN UNGGA.
    */
   isUnggaAdmin?: boolean;
+  /** Emits curated operational events for product UI. Must not include chain-of-thought. */
+  onEvent?: (event: AgentTurnEvent) => void;
+}
+
+export type AgentTurnEventType =
+  | "turn_started"
+  | "context_prepared"
+  | "skill_selected"
+  | "tools_bound"
+  | "tool_started"
+  | "tool_completed"
+  | "confirmation_required"
+  | "memory_applied"
+  | "turn_completed"
+  | "turn_failed";
+
+export interface AgentTurnEvent {
+  type: AgentTurnEventType;
+  turnId?: string;
+  at?: string;
+  message: string;
+  toolName?: string;
+  skillId?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface AgentOutput {
@@ -730,6 +754,27 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     checkpointThreadId,
   } = input;
   const turnId = inputTurnId ?? randomUUID();
+  const emitEvent = (event: AgentTurnEvent): void => {
+    try {
+      input.onEvent?.({
+        ...event,
+        turnId: event.turnId ?? turnId,
+        at: event.at ?? new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn(
+        "[agent-events] subscriber failed:",
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+  };
+  emitEvent({
+    type: "turn_started",
+    message: resumeDecision
+      ? "Reanudando turno con confirmación humana."
+      : "Turno iniciado.",
+    details: { channel: channel ?? (input.autoApproveTools ? "cron" : "web") },
+  });
 
   // Temperatura por canal: cron (autoApproveTools) pide 0.1 para reducir
   // respuestas de tipo "intentaré luego" o narrativa creativa cuando el modelo
@@ -903,6 +948,21 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       };
     }
   }
+  emitEvent({
+    type: "skill_selected",
+    message: activeSkill
+      ? `Habilidad seleccionada: ${activeSkill.rootName}.`
+      : "Sin habilidad especializada para este turno.",
+    skillId: activeSkill?.rootName,
+    details: {
+      active: activeSkill?.rootName ?? "none",
+      reason:
+        skillSelectionSnapshot && "reason" in skillSelectionSnapshot
+          ? skillSelectionSnapshot.reason
+          : undefined,
+      composedFrom: activeSkill?.composedFrom,
+    },
+  });
 
   const businessBrainWarehouse = getBusinessBrainWarehouse(input.businessBrain);
   const lcTools = buildLangChainTools({
@@ -923,6 +983,20 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       activeSkill?.requiresTenantContext && !input.isUnggaAdmin
         ? businessBrainWarehouse?.organization_id?.trim() || undefined
         : undefined,
+  });
+  emitEvent({
+    type: "tools_bound",
+    message:
+      lcTools.length > 0
+        ? `${lcTools.length} herramientas disponibles para el turno.`
+        : "Sin herramientas enlazadas para este turno.",
+    details: {
+      count: lcTools.length,
+      tools: lcTools
+        .map((tool) => tool.name)
+        .filter((name): name is string => Boolean(name)),
+      narrowedBySkill: Boolean(activeSkill?.allowedTools?.length),
+    },
   });
 
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
@@ -1053,6 +1127,15 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     effectiveSystemPrompt =
       effectiveSystemPrompt.trimEnd() + CRON_SCHEDULED_EXECUTION_ADDENDUM;
   }
+  emitEvent({
+    type: "context_prepared",
+    message: "Contexto base, memoria corta y reglas operativas preparadas.",
+    details: {
+      priorMessages: priorRaw.length,
+      hasBusinessBrain: Boolean(input.businessBrain),
+      hasActiveSkill: Boolean(activeSkill),
+    },
+  });
 
   // Override agresivo cuando se detecta intención clara de programar y la
   // herramienta schedule_task está disponible: el modelo tiende a anunciar
@@ -1473,6 +1556,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 }
               }
             }
+            emitEvent({
+              type: "confirmation_required",
+              message: `Gu necesita aprobación para ejecutar ${tc.name}.`,
+              toolName: tc.name,
+              details: { toolCallId: toolCallRecord.id },
+            });
             const decision = interrupt({
               tool_call_id: toolCallRecord.id,
               tool_name: tc.name,
@@ -1535,6 +1624,11 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           continue;
         }
 
+        emitEvent({
+          type: "tool_started",
+          message: `Ejecutando herramienta: ${tc.name}.`,
+          toolName: tc.name,
+        });
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const result = await (matchingTool as any).invoke(tc.args);
         const resultStr = String(result);
@@ -1570,6 +1664,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 "failed",
                 parsed
               );
+              emitEvent({
+                type: "tool_completed",
+                message: `La herramienta ${tc.name} falló.`,
+                toolName: tc.name,
+                details: { status: "failed", toolCallId: trackedToolCallId },
+              });
             } else {
               await updateToolCallStatus(
                 db,
@@ -1577,12 +1677,31 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 "executed",
                 parsed
               );
+              emitEvent({
+                type: "tool_completed",
+                message: `La herramienta ${tc.name} terminó.`,
+                toolName: tc.name,
+                details: { status: "executed", toolCallId: trackedToolCallId },
+              });
             }
           } catch {
             await updateToolCallStatus(db, trackedToolCallId, "executed", {
               raw: resultStr,
             });
+            emitEvent({
+              type: "tool_completed",
+              message: `La herramienta ${tc.name} terminó.`,
+              toolName: tc.name,
+              details: { status: "executed", toolCallId: trackedToolCallId },
+            });
           }
+        } else {
+          emitEvent({
+            type: "tool_completed",
+            message: `La herramienta ${tc.name} terminó.`,
+            toolName: tc.name,
+            details: { status: "executed" },
+          });
         }
       } else {
         const unavailablePayload: Record<string, unknown> = {
@@ -1604,6 +1723,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         } catch (e) {
           console.error("[agent] tool_not_available audit row failed:", e);
         }
+        emitEvent({
+          type: "tool_completed",
+          message: `La herramienta ${tc.name} no está disponible.`,
+          toolName: tc.name,
+          details: { status: "failed", reason: "tool_not_available" },
+        });
         results.push(
           new ToolMessage({
             content: JSON.stringify(unavailablePayload),
@@ -1757,6 +1882,20 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     shortTermMessageCount: priorRawForModel.length,
     shortTermPreviews: buildShortTermMemoryPreviews(priorRawForModel),
     includeShortTerm: !input.autoApproveTools,
+  });
+  emitEvent({
+    type: "memory_applied",
+    message:
+      memoryUsed.length > 0
+        ? `${memoryUsed.length} bloques de memoria disponibles para este turno.`
+        : "Sin memoria específica registrada para este turno.",
+    details: {
+      count: memoryUsed.length,
+      shortTermCount: memoryUsed.filter((memory) => memory.source === "short_term")
+        .length,
+      longTermCount: memoryUsed.filter((memory) => memory.source === "long_term")
+        .length,
+    },
   });
 
   let pending: PendingConfirmation | null = null;
@@ -1935,6 +2074,17 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   };
   // Fire-and-forget (no await): no bloqueamos el response.
   void writeTurnSummary(turnSummary);
+  emitEvent({
+    type: "turn_completed",
+    message: pending
+      ? "Turno pausado esperando confirmación humana."
+      : "Turno completado.",
+    details: {
+      status: agentStatus,
+      elapsedMs: turnSummary.elapsedMs,
+      toolsCalled: toolCallNames,
+    },
+  });
 
   return {
     response: responseText,

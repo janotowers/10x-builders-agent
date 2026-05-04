@@ -31,6 +31,8 @@ El rediseño se trabajara por fases para no bloquear la mejora visual con la ins
 - Disenar una tabla o canal de eventos tipo `agent_turn_events` para registrar pasos del turno.
 - Exponer eventos por SSE o stream HTTP desde `/api/chat` o una ruta paralela.
 - Emitir eventos como memoria cargada, herramienta iniciada, herramienta completada, confirmacion requerida y turno terminado.
+- Primer incremento entregable/local: SSE en memoria por proceso usando `turn_id`, sin persistencia en DB, suficiente para desarrollo local o despliegue de una sola instancia y sin cambiar el contrato JSON final de `/api/chat`.
+- Evolucion para produccion multi-instancia: persistir eventos en `agent_turn_events` o publicarlos por Supabase Realtime/canal equivalente; el panel debe poder recuperar eventos recientes aunque el cliente se reconecte o el request sea atendido por otro proceso.
 - Evaluar Langfuse como observabilidad tecnica complementaria, no como UI final para el usuario.
 
 ### Fase 4: Interaccion Multimodal Y Presencia
@@ -84,7 +86,7 @@ flowchart LR
 - Completado (Fase 2 en producto): panel derecho con Flujo, Contexto preparado expandible (Business Brain, habilidades disponibles para seleccion y herramientas configuradas), Memoria del turno (corto/largo plazo, previews expandibles cuando el backend los envia), Habilidades del turno, Herramientas del turno, Aprendizajes recientes (ultimas memorias activas por cuenta); correlacion por `turn_id` en mensajes y `tool_calls`; UI sin exponer chain-of-thought.
 - Plan Cursor export emparejado: `.cursor/plans/gu_console_ui_3b083b6d.plan.md` (misma vision por fases; YAML de todos alineado a entregado vs Fase 3 pendiente).
 - Pendiente Fase 2 (refinamiento): confirmaciones HITL mas ricas en panel, timeline de actividad de sesion mas alla del ultimo turno, mensajes anteriores/paginacion si el producto lo pide.
-- Pendiente Fase 3: eventos en vivo/streaming operativo (`agent_turn_events` o equivalente, SSE/stream desde API).
+- Iniciado Fase 3: primer timeline operativo por SSE en memoria por proceso; pendiente persistencia/canal multi-instancia (`agent_turn_events`, Supabase Realtime o equivalente).
 - Pendiente Fase 4 / paralelo: presencia multimodal (voz, adjuntos, heartbeat visible) y vista admin Ungga con selector de cuenta/usuario.
 
 ## Historico — Primer Incremento

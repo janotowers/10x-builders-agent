@@ -510,6 +510,24 @@ Avoid wording that says all skills/tools are "loaded" before a request. More acc
 - "Herramientas configuradas" = enabled candidates before skill narrowing and runtime gates.
 - "Las herramientas del turno pueden reducirse segun la habilidad seleccionada, integraciones activas y reglas de seguridad."
 
+### Operational streaming status
+
+The first Gu console streaming increment uses **SSE in memory per process**, keyed by `turn_id`. `runAgent` emits curated product events (`turn_started`, `context_prepared`, `skill_selected`, `tools_bound`, `tool_started`, `tool_completed`, `confirmation_required`, `memory_applied`, `turn_completed`) while `/api/chat` still returns the final JSON response as before.
+
+This is intentionally a local/monoprocess bridge:
+
+- It improves perceived latency without streaming tokens or chain-of-thought.
+- It avoids DB writes in the hot path for the first UI iteration.
+- It is not a durable production event log.
+
+For production multi-instance deployments, evolve this to a persisted or shared channel:
+
+- `agent_turn_events` table keyed by `session_id`, `turn_id`, `event_type`, `payload`, `created_at`; or
+- Supabase Realtime / broadcast channel backed by a durable store; or
+- another shared event bus that lets the web client recover recent events after reconnects.
+
+Until that evolution lands, the UI should treat the live timeline as best-effort and keep `agent_messages`, `tool_calls`, `memories`, and final API payloads as the durable source of truth.
+
 ---
 
 ## Terminology — multi-user vs shared workspace
