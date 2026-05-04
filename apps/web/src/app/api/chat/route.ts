@@ -179,6 +179,7 @@ export async function POST(request: Request) {
       response: result.pendingConfirmation ? null : result.response,
       turnId: result.turnId,
       appliedSkills: result.appliedSkills,
+      memoryUsed: result.memoryUsed,
       pendingConfirmation: result.pendingConfirmation,
       toolCalls: result.toolCalls,
     });

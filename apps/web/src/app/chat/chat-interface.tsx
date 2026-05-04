@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useLayoutEffect, useMemo } from "react";
+import { useState, useRef, useLayoutEffect, useMemo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   formatSkillForUserPanel,
@@ -24,6 +24,21 @@ interface PendingConfirmation {
   args: Record<string, unknown>;
   turnId?: string | null;
   appliedSkills?: AppliedSkillDisplay[];
+  memoryUsed?: AppliedMemoryDisplay[];
+}
+
+interface AppliedMemoryDisplay {
+  source: "short_term" | "long_term";
+  type?: "episodic" | "semantic" | "procedural";
+  content: string;
+  count?: number;
+  previews?: ShortTermMemoryPreview[];
+}
+
+interface ShortTermMemoryPreview {
+  role: string;
+  content: string;
+  created_at?: string;
 }
 
 interface RecentToolCall {
@@ -36,6 +51,13 @@ interface RecentToolCall {
   finished_at?: string | null;
 }
 
+interface RecentLearning {
+  id: string;
+  type: "episodic" | "semantic" | "procedural";
+  content: string;
+  created_at: string;
+}
+
 interface Props {
   agentName: string;
   agentAvatarUrl?: string;
@@ -45,6 +67,7 @@ interface Props {
   initialMessages: Message[];
   initialToolCalls?: RecentToolCall[];
   initialPendingConfirmation?: PendingConfirmation | null;
+  initialRecentLearnings?: RecentLearning[];
 }
 
 function ChatAvatar({
@@ -114,7 +137,65 @@ function toolStatusClass(status: string): string {
 function formatToolTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString("es-MX", {
+  return date.toLocaleString("es-MX", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatMemorySource(memory: AppliedMemoryDisplay): string {
+  if (memory.source === "short_term") {
+    return typeof memory.count === "number"
+      ? `Corto plazo · ${memory.count} mensajes previos`
+      : "Corto plazo";
+  }
+  const labels: Record<NonNullable<AppliedMemoryDisplay["type"]>, string> = {
+    episodic: "Episódica",
+    semantic: "Semántica",
+    procedural: "Procedimiento",
+  };
+  return memory.type ? `Largo plazo · ${labels[memory.type]}` : "Largo plazo";
+}
+
+function formatMemoryType(type: RecentLearning["type"]): string {
+  const labels: Record<RecentLearning["type"], string> = {
+    episodic: "Episódica",
+    semantic: "Semántica",
+    procedural: "Procedimiento",
+  };
+  return labels[type];
+}
+
+function formatLearningTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("es-MX", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatShortTermRole(role: string): string {
+  const labels: Record<string, string> = {
+    user: "Tú",
+    assistant: "Gu",
+    tool: "Herramienta",
+    system: "Sistema",
+  };
+  return labels[role] ?? role;
+}
+
+function formatShortTermPreviewTime(value: string | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("es-MX", {
+    day: "2-digit",
+    month: "short",
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -135,6 +216,50 @@ function parseAppliedSkills(value: unknown): AppliedSkillDisplay[] {
     .filter((item): item is AppliedSkillDisplay => Boolean(item));
 }
 
+function parseAppliedMemory(value: unknown): AppliedMemoryDisplay[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): AppliedMemoryDisplay | null => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as Record<string, unknown>;
+      if (row.source !== "short_term" && row.source !== "long_term") return null;
+      if (typeof row.content !== "string" || row.content.length === 0) return null;
+      const type =
+        row.type === "episodic" ||
+        row.type === "semantic" ||
+        row.type === "procedural"
+          ? row.type
+          : undefined;
+      const memory: AppliedMemoryDisplay = {
+        source: row.source,
+        content: row.content,
+      };
+      if (type) memory.type = type;
+      if (typeof row.count === "number") memory.count = row.count;
+      if (Array.isArray(row.previews)) {
+        const previews = row.previews
+          .map((preview): ShortTermMemoryPreview | null => {
+            if (!preview || typeof preview !== "object") return null;
+            const p = preview as Record<string, unknown>;
+            if (typeof p.role !== "string") return null;
+            if (typeof p.content !== "string" || p.content.length === 0) return null;
+            return {
+              role: p.role,
+              content: p.content,
+              created_at:
+                typeof p.created_at === "string" ? p.created_at : undefined,
+            };
+          })
+          .filter((preview): preview is ShortTermMemoryPreview =>
+            Boolean(preview)
+          );
+        if (previews.length > 0) memory.previews = previews;
+      }
+      return memory;
+    })
+    .filter((item): item is AppliedMemoryDisplay => Boolean(item));
+}
+
 function appliedSkillsFromMessage(message: Message | undefined): AppliedSkillDisplay[] {
   const payload = message?.structured_payload;
   if (!payload) return [];
@@ -143,6 +268,10 @@ function appliedSkillsFromMessage(message: Message | undefined): AppliedSkillDis
   return typeof payload.activeSkill === "string"
     ? [{ id: payload.activeSkill, role: "primary" }]
     : [];
+}
+
+function memoryFromMessage(message: Message | undefined): AppliedMemoryDisplay[] {
+  return parseAppliedMemory(message?.structured_payload?.memoryUsed);
 }
 
 function skillsForLastCompletedTurn(
@@ -162,6 +291,27 @@ function skillsForLastCompletedTurn(
     const role = msgs[i]?.role;
     if (role !== "assistant" && role !== "user") continue;
     return appliedSkillsFromMessage(msgs[i]);
+  }
+  return [];
+}
+
+function memoryForLastCompletedTurn(
+  msgs: Message[],
+  preferredTurnId?: string | null,
+  preferredMemory?: AppliedMemoryDisplay[]
+): AppliedMemoryDisplay[] {
+  if (preferredMemory && preferredMemory.length > 0) return preferredMemory;
+  if (preferredTurnId) {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i]?.turn_id !== preferredTurnId) continue;
+      return memoryFromMessage(msgs[i]);
+    }
+  }
+
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const role = msgs[i]?.role;
+    if (role !== "assistant" && role !== "user") continue;
+    return memoryFromMessage(msgs[i]);
   }
   return [];
 }
@@ -284,6 +434,114 @@ function createClientTurnId(): string {
   return crypto.randomUUID();
 }
 
+type PanelIconName =
+  | "flow"
+  | "memory"
+  | "skills"
+  | "tools"
+  | "learnings"
+  | "presence";
+
+function PanelIcon({ name }: { name: PanelIconName }) {
+  const common = {
+    xmlns: "http://www.w3.org/2000/svg",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    className: "h-4 w-4",
+    "aria-hidden": true,
+  };
+
+  if (name === "memory") {
+    return (
+      <svg {...common}>
+        <path d="M8.5 6.5a3 3 0 0 0-3 3 3.5 3.5 0 0 0 1.1 6.8" />
+        <path d="M15.5 6.5a3 3 0 0 1 3 3 3.5 3.5 0 0 1-1.1 6.8" />
+        <path d="M8.5 6.5A3.5 3.5 0 0 1 12 3a3.5 3.5 0 0 1 3.5 3.5" />
+        <path d="M8 12h8" />
+        <path d="M9 16c.8 2 2 3 3 3s2.2-1 3-3" />
+        <path d="M12 3v16" />
+      </svg>
+    );
+  }
+
+  if (name === "skills") {
+    return (
+      <svg {...common}>
+        <path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z" />
+        <path d="M5 15l.9 2.1L8 18l-2.1.9L5 21l-.9-2.1L2 18l2.1-.9L5 15z" />
+        <path d="M19 14l.7 1.6L21 16l-1.3.4L19 18l-.7-1.6L17 16l1.3-.4L19 14z" />
+      </svg>
+    );
+  }
+
+  if (name === "tools") {
+    return (
+      <svg {...common}>
+        <path d="M14.7 6.3a4 4 0 0 0-5 5L4 17l3 3 5.7-5.7a4 4 0 0 0 5-5l-2.4 2.4-3-3 2.4-2.4z" />
+      </svg>
+    );
+  }
+
+  if (name === "presence") {
+    return (
+      <svg {...common}>
+        <path d="M3 12h4l2-6 4 12 2-6h6" />
+      </svg>
+    );
+  }
+
+  if (name === "learnings") {
+    return (
+      <svg {...common}>
+        <path d="M6 4h9a3 3 0 0 1 3 3v13H8a2 2 0 0 1-2-2V4z" />
+        <path d="M8 18h10" />
+        <path d="M10 8h4" />
+        <path d="M10 11h5" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg {...common}>
+      <path d="M4 6h8" />
+      <path d="M12 6l-2-2" />
+      <path d="M12 6l-2 2" />
+      <path d="M4 18h8" />
+      <path d="M12 18l-2-2" />
+      <path d="M12 18l-2 2" />
+      <path d="M16 12h4" />
+    </svg>
+  );
+}
+
+function PanelSectionTitle({
+  icon,
+  title,
+  children,
+}: {
+  icon: PanelIconName;
+  title: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 items-start gap-3">
+      <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-violet-100 text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
+        <PanelIcon name={icon} />
+      </span>
+      <div className="min-w-0">
+        <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
+          {title}
+        </h3>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function ChatInterface({
   agentName,
   agentAvatarUrl,
@@ -293,6 +551,7 @@ export function ChatInterface({
   initialMessages,
   initialToolCalls = [],
   initialPendingConfirmation = null,
+  initialRecentLearnings = [],
 }: Props) {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [toolCalls, setToolCalls] = useState<RecentToolCall[]>(initialToolCalls);
@@ -302,6 +561,7 @@ export function ChatInterface({
     initialPendingConfirmation
   );
   const [confirming, setConfirming] = useState(false);
+  const [shortTermExpanded, setShortTermExpanded] = useState(false);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -331,6 +591,25 @@ export function ChatInterface({
       ),
     [messages, confirmation?.turnId, confirmation?.appliedSkills]
   );
+  const memoryThisTurn = useMemo(
+    () =>
+      memoryForLastCompletedTurn(
+        messages,
+        confirmation?.turnId,
+        confirmation?.memoryUsed
+      ),
+    [messages, confirmation?.turnId, confirmation?.memoryUsed]
+  );
+  const shortTermMemoryCount = memoryThisTurn.filter(
+    (memory) => memory.source === "short_term"
+  ).length;
+  const longTermMemoryCount = memoryThisTurn.filter(
+    (memory) => memory.source === "long_term"
+  ).length;
+  const memorySummary =
+    memoryThisTurn.length > 0
+      ? `${shortTermMemoryCount} corto plazo · ${longTermMemoryCount} largo plazo`
+      : null;
 
   useLayoutEffect(() => {
     const viewport = messagesViewportRef.current;
@@ -353,9 +632,10 @@ export function ChatInterface({
       content: text,
       created_at: new Date().toISOString(),
       turn_id: clientTurnId,
-      structured_payload: { appliedSkills: [] },
+      structured_payload: { appliedSkills: [], memoryUsed: [] },
     };
     setMessages((prev) => [...prev, userMsg]);
+    setShortTermExpanded(false);
     setInput("");
     setLoading(true);
 
@@ -370,6 +650,7 @@ export function ChatInterface({
         response?: string | null;
         turnId?: string;
         appliedSkills?: AppliedSkillDisplay[];
+        memoryUsed?: AppliedMemoryDisplay[];
         pendingConfirmation?: PendingConfirmation | null;
         toolCalls?: string[];
         error?: string;
@@ -388,7 +669,10 @@ export function ChatInterface({
             content: `Error: ${errText}`,
             created_at: errIso,
             turn_id: data.turnId ?? clientTurnId,
-            structured_payload: { appliedSkills: data.appliedSkills ?? [] },
+            structured_payload: {
+              appliedSkills: data.appliedSkills ?? [],
+              memoryUsed: data.memoryUsed ?? [],
+            },
           },
         ]);
         return;
@@ -414,7 +698,10 @@ export function ChatInterface({
             content,
             created_at: assistantIso,
             turn_id: data.turnId ?? clientTurnId,
-            structured_payload: { appliedSkills: data.appliedSkills ?? [] },
+            structured_payload: {
+              appliedSkills: data.appliedSkills ?? [],
+              memoryUsed: data.memoryUsed ?? [],
+            },
           },
         ]);
       } else if (!data.pendingConfirmation) {
@@ -426,7 +713,10 @@ export function ChatInterface({
               "Respuesta incompleta del servidor (sin texto). Recarga la página o revisa la consola del servidor.",
             created_at: assistantIso,
             turn_id: data.turnId ?? clientTurnId,
-            structured_payload: { appliedSkills: data.appliedSkills ?? [] },
+            structured_payload: {
+              appliedSkills: data.appliedSkills ?? [],
+              memoryUsed: data.memoryUsed ?? [],
+            },
           },
         ]);
       }
@@ -452,7 +742,7 @@ export function ChatInterface({
           content: "Error al procesar tu mensaje. Intenta de nuevo.",
           created_at: errIso,
           turn_id: clientTurnId,
-          structured_payload: { appliedSkills: [] },
+          structured_payload: { appliedSkills: [], memoryUsed: [] },
         },
       ]);
     } finally {
@@ -480,6 +770,7 @@ export function ChatInterface({
         response?: string | null;
         turnId?: string;
         appliedSkills?: AppliedSkillDisplay[];
+        memoryUsed?: AppliedMemoryDisplay[];
         pendingConfirmation?: PendingConfirmation | null;
         toolCalls?: string[];
         error?: string;
@@ -500,6 +791,7 @@ export function ChatInterface({
             structured_payload: {
               appliedSkills:
                 data.appliedSkills ?? confirmation.appliedSkills ?? [],
+              memoryUsed: data.memoryUsed ?? confirmation.memoryUsed ?? [],
             },
           },
         ]);
@@ -524,6 +816,7 @@ export function ChatInterface({
             structured_payload: {
               appliedSkills:
                 data.appliedSkills ?? confirmation.appliedSkills ?? [],
+              memoryUsed: data.memoryUsed ?? confirmation.memoryUsed ?? [],
             },
           },
         ]);
@@ -538,6 +831,7 @@ export function ChatInterface({
             structured_payload: {
               appliedSkills:
                 data.appliedSkills ?? confirmation.appliedSkills ?? [],
+              memoryUsed: data.memoryUsed ?? confirmation.memoryUsed ?? [],
             },
           },
         ]);
@@ -581,8 +875,8 @@ export function ChatInterface({
 
       <div className="relative flex h-full">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col px-3 py-3 sm:px-5 sm:py-5">
-          <header className="mb-4 flex items-center justify-between gap-3 rounded-[2rem] border border-white/70 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-            <div className="flex min-w-0 items-center gap-3">
+          <header className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_460px] 2xl:grid-cols-[minmax(0,0.9fr)_520px]">
+            <div className="flex min-w-0 items-center gap-3 rounded-[2rem] border border-white/70 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
               <div className="flex h-12 w-20 shrink-0 items-center justify-center rounded-2xl border border-violet-100 bg-white px-3 shadow-sm dark:border-white/10 dark:bg-white/90">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -608,7 +902,7 @@ export function ChatInterface({
                 </h1>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-end gap-2 rounded-[2rem] border border-white/70 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
               <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200 sm:inline-flex">
                 {agentStatus}
               </span>
@@ -881,9 +1175,7 @@ export function ChatInterface({
               </section>
 
               <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
-                <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
-                  Flujo actual
-                </h3>
+                <PanelSectionTitle icon="flow" title="Flujo actual" />
                 <div className="mt-4 space-y-1 text-sm">
                   <div className="flex items-start gap-3 rounded-2xl px-3 py-2">
                     <span className="mt-1.5 inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
@@ -950,14 +1242,118 @@ export function ChatInterface({
 
               <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
                 <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
-                      Habilidades aplicadas
-                    </h3>
+                  <PanelSectionTitle icon="memory" title="Memoria del turno">
+                    <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
+                      Contexto que Gu recordó o cargó para responder.
+                    </p>
+                    {memorySummary && (
+                      <p className="mt-1 text-[11px] font-medium text-violet-700 dark:text-violet-200">
+                        {memorySummary}
+                      </p>
+                    )}
+                  </PanelSectionTitle>
+                  <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
+                    {memoryThisTurn.length}
+                  </span>
+                </div>
+
+                <div className="mt-4 space-y-2">
+                  {memoryThisTurn.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-4 text-center text-xs text-slate-500 dark:border-white/10 dark:text-white/50">
+                      {loading
+                        ? "Esperando memoria de este turno…"
+                        : "Sin memoria específica registrada para este turno."}
+                    </div>
+                  ) : (
+                    memoryThisTurn.map((memory, index) => (
+                      <div
+                        key={`${memory.source}-${memory.type ?? "context"}-${index}`}
+                        className="flex items-start gap-3 rounded-2xl bg-white/70 px-3 py-3 text-sm ring-1 ring-slate-100 dark:bg-white/5 dark:ring-white/10"
+                      >
+                        <span
+                          className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${
+                            memory.source === "long_term"
+                              ? "bg-emerald-500"
+                              : "bg-sky-400"
+                          }`}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <span
+                            className={`mb-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                              memory.source === "long_term"
+                                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-200"
+                                : "bg-sky-100 text-sky-700 dark:bg-sky-400/10 dark:text-sky-200"
+                            }`}
+                          >
+                            {formatMemorySource(memory)}
+                          </span>
+                          <p className="line-clamp-2 font-medium text-slate-800 dark:text-white">
+                            {memory.content}
+                          </p>
+                          {memory.source === "short_term" && (
+                            memory.previews && memory.previews.length > 0 ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setShortTermExpanded((current) => !current)
+                                    }
+                                    className="mt-2 text-xs font-semibold text-sky-700 hover:text-sky-900 dark:text-sky-200 dark:hover:text-sky-100"
+                                  >
+                                    {shortTermExpanded
+                                      ? "Ocultar mensajes"
+                                      : `Ver ${memory.previews.length} mensajes`}
+                                  </button>
+                                  {shortTermExpanded && (
+                                    <div className="mt-2 space-y-2 rounded-2xl bg-sky-50/70 p-3 dark:bg-sky-400/10">
+                                      <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-200">
+                                        Orden cronológico
+                                      </p>
+                                      {memory.previews.map((preview, previewIndex) => (
+                                        <div
+                                          key={`${preview.role}-${previewIndex}`}
+                                          className="rounded-xl bg-white/70 px-2.5 py-2 text-xs text-slate-600 ring-1 ring-sky-100 dark:bg-white/5 dark:text-white/70 dark:ring-white/10"
+                                        >
+                                          <div className="mb-1 flex items-center justify-between gap-2">
+                                            <span className="font-semibold text-slate-800 dark:text-white">
+                                              {formatShortTermRole(preview.role)}
+                                            </span>
+                                            {formatShortTermPreviewTime(
+                                              preview.created_at
+                                            ) && (
+                                              <span className="shrink-0 text-[11px] text-slate-400 dark:text-white/40">
+                                                {formatShortTermPreviewTime(
+                                                  preview.created_at
+                                                )}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <p>{preview.content}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              ) : (
+                                <p className="mt-2 text-xs text-slate-400 dark:text-white/40">
+                                  El detalle estará disponible en turnos nuevos.
+                                </p>
+                              )
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+                <div className="flex items-center justify-between gap-3">
+                  <PanelSectionTitle icon="skills" title="Habilidades del turno">
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
                       Playbooks que Gu cargó para resolver este turno.
                     </p>
-                  </div>
+                  </PanelSectionTitle>
                   <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
                     {skillsThisTurn.length}
                   </span>
@@ -966,7 +1362,7 @@ export function ChatInterface({
                 <div className="mt-4 space-y-2">
                   {skillsThisTurn.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-4 text-center text-xs text-slate-500 dark:border-white/10 dark:text-white/50">
-                      Sin habilidad especializada para este último mensaje.
+                      Sin habilidad especializada para este turno.
                     </div>
                   ) : (
                     skillsThisTurn.map((skill) => (
@@ -995,14 +1391,11 @@ export function ChatInterface({
 
               <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
                 <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
-                      Herramientas del último turno
-                    </h3>
+                  <PanelSectionTitle icon="tools" title="Herramientas del turno">
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
-                      Lo que Gu usó para contestar tu último mensaje.
+                      Acciones que Gu ejecutó para contestar este turno.
                     </p>
-                  </div>
+                  </PanelSectionTitle>
                   <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
                     {toolsThisTurn.length}
                   </span>
@@ -1013,7 +1406,7 @@ export function ChatInterface({
                     <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-5 text-center text-xs text-slate-500 dark:border-white/10 dark:text-white/50">
                       {loading
                         ? "Esperando herramientas de este turno…"
-                        : "Sin herramientas registradas para el último mensaje (o la respuesta fue solo con contexto)."}
+                        : "Sin herramientas registradas para este turno (o la respuesta fue solo con contexto)."}
                     </div>
                   ) : (
                     toolsThisTurn.map((tool) => (
@@ -1044,16 +1437,53 @@ export function ChatInterface({
                 </div>
               </section>
 
+              <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+                <div className="flex items-center justify-between gap-3">
+                  <PanelSectionTitle icon="learnings" title="Aprendizajes recientes">
+                    <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
+                      Últimas memorias que Gu ha guardado para ti.
+                    </p>
+                  </PanelSectionTitle>
+                  <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
+                    {initialRecentLearnings.length}
+                  </span>
+                </div>
+
+                <div className="mt-4 space-y-2">
+                  {initialRecentLearnings.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-4 text-center text-xs text-slate-500 dark:border-white/10 dark:text-white/50">
+                      Sin aprendizajes guardados recientemente.
+                    </div>
+                  ) : (
+                    initialRecentLearnings.map((learning) => (
+                      <div
+                        key={learning.id}
+                        className="rounded-2xl bg-white/70 px-3 py-3 text-sm ring-1 ring-slate-100 dark:bg-white/5 dark:ring-white/10"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-200">
+                            {formatMemoryType(learning.type)}
+                          </span>
+                          <span className="shrink-0 text-[11px] text-slate-400 dark:text-white/40">
+                            {formatLearningTime(learning.created_at)}
+                          </span>
+                        </div>
+                        <p className="mt-2 line-clamp-2 font-medium text-slate-800 dark:text-white">
+                          {learning.content}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+
               <section className="rounded-[2rem] border border-violet-100 bg-white/80 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
                 <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
-                      Presencia y heartbeat
-                    </h3>
+                  <PanelSectionTitle icon="presence" title="Presencia y heartbeat">
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
                       Cómo se sentirá hablar con Gu como un colaborador real.
                     </p>
-                  </div>
+                  </PanelSectionTitle>
                   <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
                     futuro
                   </span>
@@ -1075,18 +1505,6 @@ export function ChatInterface({
                     <p className="font-semibold">Estado en vivo</p>
                     <p className="mt-1 opacity-70">Indicadores visuales de pasos, tools y memoria.</p>
                   </div>
-                </div>
-              </section>
-
-              <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
-                <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
-                  Próximamente
-                </h3>
-                <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-violet-700 dark:text-violet-200">
-                  <span className="rounded-full bg-violet-100 px-3 py-1 dark:bg-violet-400/10">memoria activa</span>
-                  <span className="rounded-full bg-violet-100 px-3 py-1 dark:bg-violet-400/10">eventos en vivo</span>
-                  <span className="rounded-full bg-violet-100 px-3 py-1 dark:bg-violet-400/10">voz realtime</span>
-                  <span className="rounded-full bg-violet-100 px-3 py-1 dark:bg-violet-400/10">heartbeat</span>
                 </div>
               </section>
             </aside>

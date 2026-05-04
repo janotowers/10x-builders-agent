@@ -231,6 +231,19 @@ export interface AppliedSkill {
   role: "primary" | "included";
 }
 
+export interface AppliedMemory {
+  source: "short_term" | "long_term";
+  /** Long-term memory type when it comes from persisted memories. */
+  type?: "episodic" | "semantic" | "procedural";
+  content: string;
+  count?: number;
+  previews?: Array<{
+    role: MessageRole;
+    content: string;
+    created_at?: string;
+  }>;
+}
+
 export interface TelegramAccount {
   id: string;
   user_id: string;
@@ -257,6 +270,8 @@ export interface PendingConfirmation {
   turnId?: string | null;
   /** Skills from the repo playbook system that were loaded for this turn. */
   appliedSkills?: AppliedSkill[];
+  /** Memory context actually loaded for this turn. */
+  memoryUsed?: AppliedMemory[];
   /** LangGraph checkpoint thread ID needed to resume the interrupted graph. */
   checkpointThreadId: string;
 }

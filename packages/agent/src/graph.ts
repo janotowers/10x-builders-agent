@@ -28,6 +28,7 @@ import type {
   BusinessBrain,
   AgentMessage,
   AppliedSkill,
+  AppliedMemory,
 } from "@agents/types";
 import {
   CHAT_MODEL_ID,
@@ -133,6 +134,7 @@ export interface AgentOutput {
   turnId: string;
   toolCalls: string[];
   appliedSkills: AppliedSkill[];
+  memoryUsed: AppliedMemory[];
   pendingConfirmation: PendingConfirmation | null;
   /**
    * Señal de memoria larga producida por `memory_injection_node`: `true` si
@@ -164,6 +166,52 @@ function buildAppliedSkills(
   return activeSkill.composedFrom.map((id) => ({
     id,
     role: id === activeSkill.rootName ? "primary" : "included",
+  }));
+}
+
+function buildAppliedMemory(args: {
+  readonly memoryItemPreviews: readonly string[];
+  readonly shortTermMessageCount: number;
+  readonly shortTermPreviews: readonly AppliedMemoryShortTermPreview[];
+  readonly includeShortTerm: boolean;
+}): AppliedMemory[] {
+  const memoryUsed: AppliedMemory[] = [];
+
+  if (args.includeShortTerm && args.shortTermMessageCount > 0) {
+    memoryUsed.push({
+      source: "short_term",
+      content: "Conversación reciente en contexto",
+      count: args.shortTermMessageCount,
+      previews: [...args.shortTermPreviews],
+    });
+  }
+
+  for (const preview of args.memoryItemPreviews) {
+    const match = preview.match(/^\((episodic|semantic|procedural)\)\s+(.+)$/);
+    if (!match) continue;
+    memoryUsed.push({
+      source: "long_term",
+      type: match[1] as AppliedMemory["type"],
+      content: match[2].trim(),
+    });
+  }
+
+  return memoryUsed;
+}
+
+type AppliedMemoryShortTermPreview = NonNullable<AppliedMemory["previews"]>[number];
+
+function buildShortTermMemoryPreviews(
+  messages: readonly AgentMessage[],
+  limit = 12
+): AppliedMemoryShortTermPreview[] {
+  return messages.slice(-limit).map((message) => ({
+    role: message.role,
+    content:
+      message.content.length > 180
+        ? `${message.content.slice(0, 180).trim()}...`
+        : message.content,
+    created_at: message.created_at,
   }));
 }
 
@@ -1690,6 +1738,27 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     throw new Error("LangGraph checkpoint has no state values");
   }
 
+  // Memoria inyectada + snapshot del prompt (opción A hacia v2): derivado
+  // del SystemMessage y ventana de mensajes final, sin leer archivos de log.
+  const firstMsg = finalState.messages?.[0];
+  const memFromSystem =
+    firstMsg instanceof SystemMessage
+      ? extractMemoriaUserBlockStats(
+          normalizeMessageContentToString(firstMsg.content)
+        )
+      : {
+          injected: false,
+          matchesCount: 0,
+          memoryBlockChars: 0,
+          memoryItemPreviews: [] as string[],
+        };
+  const memoryUsed = buildAppliedMemory({
+    memoryItemPreviews: memFromSystem.memoryItemPreviews,
+    shortTermMessageCount: priorRawForModel.length,
+    shortTermPreviews: buildShortTermMemoryPreviews(priorRawForModel),
+    includeShortTerm: !input.autoApproveTools,
+  });
+
   let pending: PendingConfirmation | null = null;
   const interrupts =
     interruptsFromStream ??
@@ -1716,6 +1785,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         args: payload.args,
         turnId,
         appliedSkills,
+        memoryUsed,
         checkpointThreadId: threadId,
       };
       await addMessage(db, sessionId, "assistant", payload.message, {
@@ -1724,6 +1794,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         structured_payload: {
           type: "pending_confirmation",
           ...(buildMemoryExtractionPayload(activeSkill) ?? {}),
+          memoryUsed,
           pendingConfirmation: pending,
         },
       });
@@ -1768,13 +1839,17 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
     if (responseText.trim().length > 0) {
       const memoryExtractionPayload = buildMemoryExtractionPayload(activeSkill);
+      const structuredPayload =
+        memoryExtractionPayload || memoryUsed.length > 0
+          ? { ...(memoryExtractionPayload ?? {}), memoryUsed }
+          : undefined;
       await addMessage(
         db,
         sessionId,
         "assistant",
         responseText,
-        memoryExtractionPayload
-          ? { structured_payload: memoryExtractionPayload, turn_id: turnId }
+        structuredPayload
+          ? { structured_payload: structuredPayload, turn_id: turnId }
           : { turn_id: turnId }
       );
     }
@@ -1792,21 +1867,6 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     : input.autoApproveTools
     ? "cron"
     : "web";
-
-  // Memoria inyectada + snapshot del prompt (opción A hacia v2): derivado
-  // del SystemMessage y ventana de mensajes final, sin leer archivos de log.
-  const firstMsg = finalState.messages?.[0];
-  const memFromSystem =
-    firstMsg instanceof SystemMessage
-      ? extractMemoriaUserBlockStats(
-          normalizeMessageContentToString(firstMsg.content)
-        )
-      : {
-          injected: false,
-          matchesCount: 0,
-          memoryBlockChars: 0,
-          memoryItemPreviews: [] as string[],
-        };
 
   const memTopK = resolveMemoryLogRetrieveTopK();
   const memThresh = resolveMemoryLogMatchThreshold();
@@ -1881,6 +1941,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     turnId,
     toolCalls: toolCallNames,
     appliedSkills,
+    memoryUsed,
     pendingConfirmation: pending,
     memoryFlushPending: Boolean(finalState.memoryFlushPending),
   };

@@ -17,6 +17,25 @@ type AppliedSkill = {
   role: "primary" | "included";
 };
 
+type AppliedMemory = {
+  source: "short_term" | "long_term";
+  type?: "episodic" | "semantic" | "procedural";
+  content: string;
+  count?: number;
+  previews?: Array<{
+    role: string;
+    content: string;
+    created_at?: string;
+  }>;
+};
+
+type RecentLearning = {
+  id: string;
+  type: "episodic" | "semantic" | "procedural";
+  content: string;
+  created_at: string;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -78,6 +97,7 @@ export default async function ChatPage() {
     structured_payload?: Record<string, unknown> | null;
   }> = [];
   let recentToolCalls: RecentToolCall[] = [];
+  let recentLearnings: RecentLearning[] = [];
   let initialPendingConfirmation:
     | {
         toolCallId: string;
@@ -86,6 +106,7 @@ export default async function ChatPage() {
         args: Record<string, unknown>;
         turnId?: string | null;
         appliedSkills?: AppliedSkill[];
+        memoryUsed?: AppliedMemory[];
         checkpointThreadId: string;
       }
     | null = null;
@@ -128,6 +149,7 @@ export default async function ChatPage() {
           args: Record<string, unknown>;
           turnId?: string | null;
           appliedSkills?: AppliedSkill[];
+          memoryUsed?: AppliedMemory[];
           checkpointThreadId: string;
         };
       };
@@ -150,6 +172,15 @@ export default async function ChatPage() {
     }
   }
 
+  const { data: memories } = await supabase
+    .from("memories")
+    .select("id, type, content, created_at")
+    .eq("user_id", user.id)
+    .is("archived_at", null)
+    .order("created_at", { ascending: false })
+    .limit(5);
+  recentLearnings = (memories ?? []) as RecentLearning[];
+
   return (
     <ChatInterface
       agentName={profile.agent_name as string}
@@ -160,6 +191,7 @@ export default async function ChatPage() {
       initialMessages={sessionMessages}
       initialToolCalls={recentToolCalls}
       initialPendingConfirmation={initialPendingConfirmation}
+      initialRecentLearnings={recentLearnings}
     />
   );
 }
