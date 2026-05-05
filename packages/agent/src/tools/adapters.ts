@@ -64,6 +64,27 @@ type BigQueryToolInput = {
   params?: Record<string, BigQueryParamValue>;
 };
 
+const nullableOptional = <T extends z.ZodTypeAny>(schema: T) =>
+  schema.nullish().transform((value) => value ?? undefined);
+
+const emptyStringOptional = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess(
+    (value) => (value === null || value === "" ? undefined : value),
+    schema.optional()
+  );
+
+const optionalPositiveInt = (max: number) =>
+  z.preprocess(
+    (value) => (value === null || value === "" ? undefined : value),
+    z.coerce.number().int().positive().max(max).optional()
+  );
+
+const optionalNonNegativeInt = () =>
+  z.preprocess(
+    (value) => (value === null || value === "" ? undefined : value),
+    z.coerce.number().int().min(0).optional()
+  );
+
 /**
  * Tenant hardening for `bigquery_run_query`.
  *
@@ -209,6 +230,25 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
     !ctx.activeSkillAllowedTools.includes(toolId)
   ) {
     return false;
+  }
+
+  // Heartbeat channel is proactive and must stay read-only in V1.
+  // We fail closed with a strict allowlist instead of relying only on risk.
+  if (ctx.channel === "heartbeat") {
+    const HEARTBEAT_ALLOWED_TOOLS = new Set<string>([
+      "get_user_preferences",
+      "list_enabled_tools",
+      "read_skill_reference",
+      "bigquery_run_query",
+      "list_user_memories",
+      "search_user_memories",
+      "github_list_repos",
+      "github_list_issues",
+      "calendar_list_calendars",
+      "calendar_list_events",
+      "read_file",
+    ]);
+    if (!HEARTBEAT_ALLOWED_TOOLS.has(toolId)) return false;
   }
 
   if (toolId === "bash" && process.env.BASH_TOOL_ENABLED !== "true") {
@@ -416,12 +456,12 @@ export function buildLangChainTools(ctx: ToolContext) {
             "Executes a single READ-ONLY SQL query (SELECT or WITH...SELECT) against BigQuery and returns up to max_results rows. Validator rejects DDL/DML/scripting and multiple statements. If BigQuery is not yet configured in this environment the tool returns status='not_configured' with instructions instead of executing — explain that to the user and stop.",
           schema: z.object({
             sql: z.string().min(1),
-            project_id: z.string().min(1).optional(),
-            location: z.string().min(1).optional(),
-            max_results: z.number().int().positive().max(1000).optional(),
-            params: z
-              .record(z.union([z.string(), z.number(), z.boolean()]))
-              .optional(),
+            project_id: nullableOptional(z.string().min(1)),
+            location: nullableOptional(z.string().min(1)),
+            max_results: optionalPositiveInt(1000),
+            params: nullableOptional(
+              z.record(z.union([z.string(), z.number(), z.boolean()]))
+            ),
           }),
         }
       )
@@ -513,13 +553,15 @@ export function buildLangChainTools(ctx: ToolContext) {
           description:
             "Lists the user's own long-term memories. Default status='active'. Use to triage what's saved before deciding what to forget. Read-only.",
           schema: z.object({
-            type: z
-              .enum(["episodic", "semantic", "procedural"])
-              .optional() as z.ZodOptional<z.ZodEnum<[MemoryType, ...MemoryType[]]>>,
-            status: z.enum(["active", "archived", "all"]).optional(),
-            q: z.string().min(1).max(200).optional(),
-            limit: z.number().int().positive().max(100).optional(),
-            offset: z.number().int().min(0).optional(),
+            type: emptyStringOptional(
+              z.enum(["episodic", "semantic", "procedural"]) as z.ZodEnum<
+                [MemoryType, ...MemoryType[]]
+              >
+            ),
+            status: emptyStringOptional(z.enum(["active", "archived", "all"])),
+            q: emptyStringOptional(z.string().min(1).max(200)),
+            limit: optionalPositiveInt(100),
+            offset: optionalNonNegativeInt(),
           }),
         }
       )
@@ -594,7 +636,7 @@ export function buildLangChainTools(ctx: ToolContext) {
             "Semantic search over the user's own memories. Use with a free-text query when the user asks about a topic and you want to surface related saved facts. Returns ranked matches (higher similarity = closer). Read-only.",
           schema: z.object({
             query: z.string().min(1).max(500),
-            limit: z.number().int().positive().max(20).optional(),
+            limit: optionalPositiveInt(20),
           }),
         }
       )
@@ -1003,8 +1045,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             "Reads a file from the server workspace (FILE_TOOLS_ROOT). Path must be RELATIVE (e.g. docs/x.md), not a free-form document title — if the user only names a document, find the path with bash or ask for the relative path. Optional offset/limit (lines). offset is 1-based; 0 is treated as 'from the start'.",
           schema: z.object({
             path: z.string().min(1),
-            offset: z.number().int().min(0).optional(),
-            limit: z.number().int().min(1).max(5000).optional(),
+            offset: optionalNonNegativeInt(),
+            limit: optionalPositiveInt(5000),
           }),
         }
       )
@@ -1061,6 +1103,7 @@ export function buildLangChainTools(ctx: ToolContext) {
       tool(
         async (input: {
           prompt: string;
+          display_title?: string;
           schedule_type: "one_time" | "recurring";
           run_at?: string;
           cron_expr?: string;
@@ -1109,6 +1152,8 @@ export function buildLangChainTools(ctx: ToolContext) {
           const task = await createScheduledTask(ctx.db, {
             userId: ctx.userId,
             prompt: input.prompt,
+            userRequest: ctx.lastUserMessage?.trim() || null,
+            displayTitle: input.display_title?.trim() || null,
             scheduleType: input.schedule_type,
             runAt: input.run_at,
             cronExpr: input.cron_expr,
@@ -1134,6 +1179,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             human_date: humanDate,
             timezone: tz,
             prompt: task.prompt,
+            user_request: task.user_request,
+            display_title: task.display_title,
           });
         },
         {
@@ -1142,6 +1189,14 @@ export function buildLangChainTools(ctx: ToolContext) {
             "Programs a task (prompt) to run automatically at a future time (one_time) or on a recurring schedule. Result is sent to Telegram by default. Requires confirmation before scheduling.",
           schema: z.object({
             prompt: z.string().min(1),
+            display_title: z
+              .string()
+              .min(1)
+              .max(120)
+              .optional()
+              .describe(
+                "Short human-friendly title for UI lists, e.g. 'Revisar leads los lunes'. Optional; do not include schedule mechanics unless useful."
+              ),
             schedule_type: z.enum(["one_time", "recurring"]),
             run_at: z.string().optional(),
             cron_expr: z.string().optional(),

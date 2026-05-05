@@ -81,8 +81,8 @@ export interface SessionFlushState {
    * recomputar embeddings.
    */
   lastUserInputEmbedding: number[] | null;
-  /** Canal de la sesión (web/telegram/cron). */
-  channel: "web" | "telegram" | "cron";
+  /** Canal de la sesión (web/telegram/cron/heartbeat). */
+  channel: "web" | "telegram" | "cron" | "heartbeat";
 }
 
 export async function getFlushState(
@@ -156,7 +156,7 @@ export async function findStaleSiblingSession(
   excludeSessionId: string
 ): Promise<{
   id: string;
-  channel: "web" | "telegram" | "cron";
+  channel: "web" | "telegram" | "cron" | "heartbeat";
   lastFlushedAt: string | null;
   lastMessageAt: string | null;
 } | null> {
@@ -177,7 +177,7 @@ export async function findStaleSiblingSession(
     if (!lastFlush || new Date(lastMsg) > new Date(lastFlush)) {
       return {
         id: row.id as string,
-        channel: row.channel as "web" | "telegram" | "cron",
+        channel: row.channel as "web" | "telegram" | "cron" | "heartbeat",
         lastFlushedAt: lastFlush,
         lastMessageAt: lastMsg,
       };

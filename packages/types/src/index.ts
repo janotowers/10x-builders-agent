@@ -1,4 +1,4 @@
-export type Channel = "web" | "telegram" | "cron";
+export type Channel = "web" | "telegram" | "cron" | "heartbeat";
 
 export type ToolRisk = "low" | "medium" | "high";
 
@@ -132,6 +132,8 @@ export interface BusinessBrainHeartbeat {
   checklist_md?: string;
   /** Nombre usado en el roadmap/UI; alias compatible de `checklist_md`. */
   checklist_markdown?: string;
+  /** Marca de última corrida de heartbeat por perfil. */
+  last_run_at?: string;
 }
 
 /**
@@ -198,6 +200,17 @@ export interface AgentSession {
   budget_tokens_limit: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface HeartbeatRun {
+  id: string;
+  user_id: string;
+  session_id?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+  status: "running" | "completed" | "error";
+  payload: Record<string, unknown>;
+  error?: string | null;
 }
 
 export type MessageRole = "user" | "assistant" | "tool" | "system";

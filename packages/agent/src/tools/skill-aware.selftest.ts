@@ -46,6 +46,7 @@ function baseCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     db: fakeDb,
     userId: "user-1",
     sessionId: "session-1",
+    channel: "web",
     enabledTools: makeEnabledTools(),
     integrations: makeIntegrations(),
     lastUserMessage: "Cuántos leads tuvimos en marzo?",

@@ -4,6 +4,8 @@ export interface ScheduledTask {
   id: string;
   user_id: string;
   prompt: string;
+  user_request?: string | null;
+  display_title?: string | null;
   schedule_type: "one_time" | "recurring";
   run_at: string | null;
   cron_expr: string | null;
@@ -42,6 +44,8 @@ export async function createScheduledTask(
   params: {
     userId: string;
     prompt: string;
+    userRequest?: string | null;
+    displayTitle?: string | null;
     scheduleType: "one_time" | "recurring";
     runAt?: string;
     cronExpr?: string;
@@ -54,6 +58,8 @@ export async function createScheduledTask(
     .insert({
       user_id: params.userId,
       prompt: params.prompt,
+      user_request: params.userRequest ?? null,
+      display_title: params.displayTitle ?? null,
       schedule_type: params.scheduleType,
       run_at: params.runAt ?? null,
       cron_expr: params.cronExpr ?? null,

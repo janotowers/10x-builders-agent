@@ -15,6 +15,13 @@ import {
 import { eventDisplayFields } from "./calendar-event-display";
 
 function calendarToolEnabled(toolId: string, ctx: ToolContext): boolean {
+  if (
+    ctx.channel === "heartbeat" &&
+    toolId !== "calendar_list_calendars" &&
+    toolId !== "calendar_list_events"
+  ) {
+    return false;
+  }
   const setting = ctx.enabledTools.find((t) => t.tool_id === toolId);
   if (!setting?.enabled) return false;
   const def = TOOL_CATALOG.find((t) => t.id === toolId);
@@ -27,6 +34,22 @@ function calendarToolEnabled(toolId: string, ctx: ToolContext): boolean {
 function tz(ctx: ToolContext): string {
   return ctx.userTimezone ?? "UTC";
 }
+
+const nullableOptional = <T extends z.ZodTypeAny>(schema: T) =>
+  schema.nullish().transform((value) => value ?? undefined);
+
+const nullableBooleanDefault = (defaultValue: boolean) =>
+  z.preprocess(
+    (value) => (value === null || value === "" ? undefined : value),
+    z.boolean().default(defaultValue)
+  );
+
+const calendarIdSchema = z
+  .preprocess(
+    (value) => (value === null || value === "" ? undefined : value),
+    z.string().default("primary")
+  )
+  .describe("Calendar id, usually primary");
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
@@ -192,25 +215,14 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
           description:
             "Lists events in a date range. You MUST pass BOTH time_min and time_max (ISO 8601) after the user chose a period (or you derived it: today, this week, etc.) using their profile timezone. If the user was vague and gave no period, OMIT both — the tool returns needs_period and you must ask them. historical=true only for explicit past/history requests; otherwise past-only ranges are coerced to the next 7 days. Use start_display/end_display in the response JSON for local times.",
           schema: z.object({
-            calendar_id: z
-              .string()
-              .default("primary")
-              .describe("Calendar id, usually primary"),
-            time_min: z
-              .string()
-              .optional()
-              .describe(
-                "ISO 8601 inclusive start. Required together with time_max to query; omit BOTH if you need to ask the user for a period."
-              ),
-            time_max: z
-              .string()
-              .optional()
-              .describe(
-                "ISO 8601 exclusive or end bound. Required together with time_min; omit BOTH to receive needs_period."
-              ),
-            historical: z
-              .boolean()
-              .default(false)
+            calendar_id: calendarIdSchema,
+            time_min: nullableOptional(z.string()).describe(
+              "ISO 8601 inclusive start. Required together with time_max to query; omit BOTH if you need to ask the user for a period."
+            ),
+            time_max: nullableOptional(z.string()).describe(
+              "ISO 8601 exclusive or end bound. Required together with time_min; omit BOTH to receive needs_period."
+            ),
+            historical: nullableBooleanDefault(false)
               .describe(
                 "True only if the user clearly asked for old/past calendar history. Default false."
               ),
@@ -265,11 +277,15 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
           description:
             "Creates a calendar event in Google Calendar. Requires user confirmation.",
           schema: z.object({
-            calendar_id: z.string().default("primary"),
+            calendar_id: calendarIdSchema,
             summary: z.string(),
             start_datetime: z.string(),
             end_datetime: z.string(),
-            description: z.string().optional().default(""),
+            description: z
+              .preprocess(
+                (value) => (value === null ? undefined : value),
+                z.string().default("")
+              ),
           }),
         }
       )
@@ -324,12 +340,12 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
           name: "calendar_update_event",
           description: "Updates an existing Google Calendar event. Requires confirmation.",
           schema: z.object({
-            calendar_id: z.string().default("primary"),
+            calendar_id: calendarIdSchema,
             event_id: z.string(),
-            summary: z.string().optional(),
-            start_datetime: z.string().optional(),
-            end_datetime: z.string().optional(),
-            description: z.string().optional(),
+            summary: nullableOptional(z.string()),
+            start_datetime: nullableOptional(z.string()),
+            end_datetime: nullableOptional(z.string()),
+            description: nullableOptional(z.string()),
           }),
         }
       )
@@ -359,7 +375,7 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
           name: "calendar_delete_event",
           description: "Deletes a Google Calendar event. Requires confirmation.",
           schema: z.object({
-            calendar_id: z.string().default("primary"),
+            calendar_id: calendarIdSchema,
             event_id: z.string(),
           }),
         }

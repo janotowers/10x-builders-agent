@@ -143,12 +143,12 @@ export function createMemoryInjectionNode(deps: MemoryInjectionDeps) {
   return async function memoryInjectionNode(
     state: GraphStateType
   ): Promise<Partial<GraphStateType>> {
-    // --- Guard 1: cron ---
+    // --- Guard 1: cron / heartbeat ---
     // La sesión `channel = 'cron'` ejecuta prompts deterministas ya aprobados
     // por el usuario al programarlos; inyectar memoria del usuario podría
     // contaminar el prompt con hechos que no aplican a esa ejecución
     // programada (y además gastamos embeddings innecesariamente).
-    if (state.autoApproveTools) {
+    if (state.autoApproveTools || state.channel === "heartbeat") {
       void logMemoryInject({
         sessionId: state.sessionId,
         userId,

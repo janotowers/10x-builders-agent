@@ -24,7 +24,9 @@ Supabase Cron ──► POST /api/cron/scheduled-tasks
 |---------|------|-------------|
 | `id` | uuid | PK |
 | `user_id` | uuid | FK → profiles |
-| `prompt` | text | Instrucción que se enviará al agente |
+| `prompt` | text | Instrucción ejecutable que se enviará al agente |
+| `user_request` | text | Texto original del usuario cuando se programó la tarea (migración `00015`) |
+| `display_title` | text | Título corto amigable para UI (migración `00015`) |
 | `schedule_type` | text | `one_time` o `recurring` |
 | `run_at` | timestamptz | Para one_time: cuándo ejecutar |
 | `cron_expr` | text | Para recurring: expresión cron de 5 campos |
@@ -68,11 +70,21 @@ Agrega a tu `.env.local`:
 CRON_SECRET=un-token-secreto-largo-y-aleatorio
 ```
 
-### 3. Configurar Supabase Cron
+### 3. Configurar el runner cron
 
-En el panel de Supabase → **Database → Extensions**, activa `pg_cron`.
+`scheduled-tasks` y `heartbeat` usan el mismo patrón operativo: un scheduler externo hace `POST` a un endpoint público de Next.js con `Authorization: Bearer <CRON_SECRET>`. El endpoint valida el secreto, toma los registros vencidos y ejecuta el agente con el canal correspondiente.
 
-Luego en **Database → Cron Jobs**, crea un nuevo job:
+En despliegues GCP, la opción recomendada es **Cloud Scheduler**:
+
+- `POST https://TU_DOMINIO/api/cron/scheduled-tasks` cada minuto.
+- `POST https://TU_DOMINIO/api/cron/heartbeat` cada 1-5 minutos.
+- Header: `Authorization: Bearer TU_CRON_SECRET`.
+- Header: `Content-Type: application/json`.
+- Body: `{}`.
+
+Si prefieres operar desde Supabase, también puedes usar **Supabase Cron** (`pg_cron + pg_net`). En el panel de Supabase → **Database → Extensions**, activa `pg_cron` y `pg_net`.
+
+Luego en **Database → Cron Jobs**, crea un job para tareas programadas:
 
 ```sql
 SELECT cron.schedule(
@@ -90,17 +102,35 @@ SELECT cron.schedule(
 
 > Reemplaza `TU_DOMINIO` con tu dominio de producción y `TU_CRON_SECRET` con el valor de `CRON_SECRET`.
 
+Para Heartbeat, crea un segundo job equivalente:
+
+```sql
+SELECT cron.schedule(
+  'run-heartbeat',
+  '*/5 * * * *',                    -- cada 5 minutos; el handler decide usuarios vencidos
+  $$
+    SELECT net.http_post(
+      url := 'https://TU_DOMINIO/api/cron/heartbeat',
+      headers := '{"Authorization": "Bearer TU_CRON_SECRET", "Content-Type": "application/json"}'::jsonb,
+      body := '{}'::jsonb
+    );
+  $$
+);
+```
+
+> El intervalo por usuario de Heartbeat vive en `profiles.business_brain.heartbeat.interval_minutes`. El scheduler solo hace un tick global; el endpoint decide qué usuarios están vencidos usando `last_run_at + interval_minutes`.
+
 ### Desarrollo local
 
-`pg_cron` en Supabase solo puede llamar a URLs **públicas**. No alcanza `http://localhost:3000`. Opciones:
+Los schedulers en la nube no pueden llamar `http://localhost:3000`. Opciones:
 
-- Exponer el dev server con **ngrok** (u otro túnel) y usar en el job `url := 'https://TU_SUBDOMINIO.ngrok-free.app/api/cron/scheduled-tasks'`.
+- Exponer el dev server con **ngrok** (u otro túnel) y usar la URL pública en el job, por ejemplo `https://TU_SUBDOMINIO.ngrok-free.app/api/cron/scheduled-tasks` o `/api/cron/heartbeat`.
 - O, cuando quieras probar sin cron, llamar el endpoint a mano con `curl` (ver más abajo) **después** de la hora en `next_run_at`.
 
 El servidor Next debe estar en marcha en el momento en que se dispare el POST.
 
 **Alternativa con Supabase Edge Functions:**
-Crea una Edge Function que haga el `fetch` al endpoint cada minuto usando `Deno.cron`.
+Crea una Edge Function que haga el `fetch` al endpoint cada minuto usando `Deno.cron`. Mantén la misma separación de endpoints y el mismo `CRON_SECRET`.
 
 ### 4. Habilitar los tools para el usuario
 
@@ -168,6 +198,15 @@ es reversible (pause ↔ resume) y está aislado a tareas del mismo usuario
 (`MANAGE_SCHEDULED_TASKS_ADDENDUM` en
 [`packages/agent/src/graph.ts`](../../packages/agent/src/graph.ts)) que
 exige confirmación en lenguaje natural antes de pausar/reanudar.
+
+### Visibilidad en producto
+
+Las tareas programadas tienen dos superficies:
+
+- **Settings:** lista de tareas `active` y `paused`, próxima corrida, último error y controles de pausar/reanudar.
+- **Panel "Gu en acción":** resumen operativo de automatizaciones programadas por el usuario: próxima tarea, conteo activas/pausadas y último fallo si aplica.
+
+Esto se mantiene separado de Heartbeat: Heartbeat es actividad proactiva del sistema desde `heartbeat_runs`; scheduled tasks son instrucciones explícitas del usuario en `scheduled_tasks` con auditoría en `scheduled_task_runs`.
 
 ### Referencia de expresiones cron
 | Expresión | Significado |

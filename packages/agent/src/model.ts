@@ -10,12 +10,18 @@ export interface CreateChatModelOptions {
    *   tiende a producir cuando le baja la confianza.
    */
   temperature?: number;
+  /** Optional model id override per channel (e.g. heartbeat). */
+  modelName?: string;
+  /** Optional max tokens override per channel. */
+  maxTokens?: number;
 }
 
 /** Temperatura por defecto para interacciones normales (Web/Telegram). */
 export const DEFAULT_INTERACTIVE_TEMPERATURE = 0.3;
 /** Temperatura para el cron runner: más determinista y menos "narrativo". */
 export const DEFAULT_CRON_TEMPERATURE = 0.1;
+/** Temperatura para heartbeat: igual de determinista que cron. */
+export const DEFAULT_HEARTBEAT_TEMPERATURE = 0.1;
 
 /**
  * Default para max_tokens de salida cuando no hay `OPENROUTER_MAX_TOKENS` en el
@@ -48,15 +54,17 @@ export function createChatModel(options: CreateChatModelOptions = {}) {
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
 
   const temperature = options.temperature ?? DEFAULT_INTERACTIVE_TEMPERATURE;
+  const modelName = options.modelName ?? CHAT_MODEL_ID;
+  const maxTokens = options.maxTokens ?? resolveMaxTokens();
 
   return new ChatOpenAI({
-    modelName: CHAT_MODEL_ID,
+    modelName,
     temperature,
     // Capamos max_tokens de salida para evitar rechazos de OpenRouter por
     // saldo insuficiente (si no lo fijamos, el SDK pide el máximo del modelo
     // ≈16k y una cuenta con pocos créditos lo rechaza con 402).
     // Configurable por `OPENROUTER_MAX_TOKENS`; default 2048.
-    maxTokens: resolveMaxTokens(),
+    maxTokens,
     configuration: {
       baseURL: "https://openrouter.ai/api/v1",
       defaultHeaders: {

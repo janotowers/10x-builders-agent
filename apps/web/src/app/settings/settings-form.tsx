@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
-import type { BusinessBrain, BusinessBrainWarehouseSource } from "@agents/types";
+import type {
+  BusinessBrain,
+  BusinessBrainWarehouseSource,
+  HeartbeatRun,
+} from "@agents/types";
 
 interface Props {
   userId: string;
@@ -18,9 +22,27 @@ interface Props {
   telegramLinked: boolean;
   githubConnected: boolean;
   googleCalendarConnected: boolean;
+  heartbeatRuns: HeartbeatRun[];
+  scheduledTasks: ScheduledTaskItem[];
   /** Query `google_calendar` tras OAuth (connected | error). */
   googleOAuthStatus?: string;
   googleOAuthReason?: string;
+}
+
+interface ScheduledTaskItem {
+  id: string;
+  prompt: string;
+  user_request?: string | null;
+  display_title?: string | null;
+  schedule_type: "one_time" | "recurring";
+  run_at: string | null;
+  cron_expr: string | null;
+  timezone: string;
+  status: "active" | "paused" | "completed" | "failed";
+  last_run_at: string | null;
+  next_run_at: string | null;
+  consecutive_failures?: number;
+  last_failure_error?: string | null;
 }
 
 interface SkillCatalogItem {
@@ -120,6 +142,13 @@ const DEFAULT_AGENT_ROLE =
   "Colaborador IA operativo y comercial que ayuda a organizar prioridades, analizar información y ejecutar tareas con las herramientas disponibles.";
 const DEFAULT_AGENT_DESCRIPTION =
   "Gu actúa como un copiloto práctico para el trabajo diario: entiende el contexto del usuario y del negocio, responde con claridad, propone próximos pasos y usa memoria, skills y herramientas cuando aportan valor, respetando permisos, confirmaciones y límites de datos.";
+const DEFAULT_HEARTBEAT_INTERVAL_MINUTES = 30;
+const DEFAULT_HEARTBEAT_CHECKLIST = `# Heartbeat checklist
+- Revisa agenda de hoy y próximos compromisos.
+- Resume pendientes clave, decisiones abiertas y riesgos accionables del día.
+- Detecta bloqueos operativos solo si hay algo concreto que impide avanzar, requiere intervención o tiene urgencia clara.
+- No clasifiques preferencias generales, datos de perfil, estilo de comunicación o contexto del negocio como bloqueos.
+- Si no hay bloqueos reales, dilo explícitamente y no rellenes la sección con información incidental.`;
 const PROFILE_ASSETS_BUCKET = "profile-assets";
 const REVIEW_SLOT_LABELS: Record<ReviewSlot, string> = {
   "agent_identity.role": "Rol del colaborador IA",
@@ -180,6 +209,28 @@ function readWarehouse(brain: BusinessBrain): BusinessBrainWarehouseSource {
   };
 }
 
+function readHeartbeat(brain: BusinessBrain): {
+  enabled: boolean;
+  intervalMinutes: number;
+  checklistMarkdown: string;
+} {
+  const heartbeat = asRecord(brain.heartbeat);
+  const intervalRaw = heartbeat.interval_minutes;
+  const intervalMinutes =
+    typeof intervalRaw === "number" && Number.isFinite(intervalRaw)
+      ? Math.max(5, Math.min(24 * 60, Math.floor(intervalRaw)))
+      : DEFAULT_HEARTBEAT_INTERVAL_MINUTES;
+  const checklistMarkdown =
+    readString(heartbeat.checklist_markdown) ||
+    readString(heartbeat.checklist_md) ||
+    DEFAULT_HEARTBEAT_CHECKLIST;
+  return {
+    enabled: heartbeat.enabled === true,
+    intervalMinutes,
+    checklistMarkdown,
+  };
+}
+
 function splitCsv(value: string): string[] {
   return value
     .split(",")
@@ -210,6 +261,73 @@ function normalizeForCompare(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function formatRunDate(value?: string | null): string {
+  if (!value) return "Sin fecha";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString("es-MX", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function readHeartbeatPayload(run: HeartbeatRun): Record<string, unknown> {
+  if (typeof run.payload === "string") {
+    try {
+      const parsed = JSON.parse(run.payload);
+      return asRecord(parsed);
+    } catch {
+      return {};
+    }
+  }
+  return asRecord(run.payload);
+}
+
+function heartbeatRunSummary(run: HeartbeatRun): string {
+  if (run.error) return run.error;
+  const payload = readHeartbeatPayload(run);
+  const response = readString(payload.response).trim();
+  if (!response) return "Sin resumen guardado.";
+  return response.length > 260 ? `${response.slice(0, 260).trim()}...` : response;
+}
+
+function heartbeatToolCalls(run: HeartbeatRun): string[] {
+  const payload = readHeartbeatPayload(run);
+  const toolCalls = payload.toolCalls;
+  return Array.isArray(toolCalls)
+    ? toolCalls.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function heartbeatStatusLabel(status: HeartbeatRun["status"]): string {
+  const labels: Record<HeartbeatRun["status"], string> = {
+    running: "En curso",
+    completed: "Completado",
+    error: "Con error",
+  };
+  return labels[status];
+}
+
+function scheduledTaskTiming(task: ScheduledTaskItem): string {
+  if (task.schedule_type === "recurring") {
+    return task.cron_expr
+      ? `Recurrente · ${task.cron_expr} · ${task.timezone}`
+      : `Recurrente · ${task.timezone}`;
+  }
+  return task.run_at ? `Una vez · ${formatRunDate(task.run_at)}` : "Una vez";
+}
+
+function scheduledTaskNextRun(task: ScheduledTaskItem): string {
+  if (task.next_run_at) return formatRunDate(task.next_run_at);
+  return task.status === "paused" ? "Pausada" : "Sin próxima corrida";
+}
+
+function scheduledTaskDisplayText(task: ScheduledTaskItem): string {
+  return task.display_title?.trim() || task.user_request?.trim() || task.prompt;
+}
+
 export function SettingsForm({
   userId,
   profile,
@@ -219,6 +337,8 @@ export function SettingsForm({
   telegramLinked,
   githubConnected,
   googleCalendarConnected,
+  heartbeatRuns = [],
+  scheduledTasks = [],
   googleOAuthStatus,
   googleOAuthReason,
 }: Props) {
@@ -264,6 +384,7 @@ export function SettingsForm({
   const [bookingUrl, setBookingUrl] = useState<string | null>(null);
   const initialBrain = readBusinessBrain(profile);
   const initialWarehouse = readWarehouse(initialBrain);
+  const initialHeartbeat = readHeartbeat(initialBrain);
   const [agentRole, setAgentRole] = useState(
     initialBrain.agent_identity?.role ?? DEFAULT_AGENT_ROLE
   );
@@ -324,6 +445,18 @@ export function SettingsForm({
   const [warehouseDatasets, setWarehouseDatasets] = useState(
     (initialWarehouse.dataset_allowlist ?? []).join(", ")
   );
+  const [heartbeatEnabled, setHeartbeatEnabled] = useState(
+    initialHeartbeat.enabled
+  );
+  const [heartbeatIntervalMinutes, setHeartbeatIntervalMinutes] = useState(
+    initialHeartbeat.intervalMinutes
+  );
+  const [heartbeatChecklist, setHeartbeatChecklist] = useState(
+    initialHeartbeat.checklistMarkdown
+  );
+  const latestHeartbeatRun = heartbeatRuns[0];
+  const [scheduledTaskRows, setScheduledTaskRows] = useState(scheduledTasks);
+  const [updatingTaskId, setUpdatingTaskId] = useState<string | null>(null);
   const isUnggaAdmin = Boolean(profile?.is_ungga_admin);
   const [sectionReviews, setSectionReviews] = useState<
     Partial<Record<ReviewSection, SectionReviewState>>
@@ -572,6 +705,10 @@ export function SettingsForm({
       operatingPreferences: string;
     }> = {}
   ): Partial<BusinessBrain> {
+    const normalizedHeartbeatInterval = Math.max(
+      5,
+      Math.min(24 * 60, Math.floor(heartbeatIntervalMinutes || 0))
+    );
     return {
       agent_identity: {
         name: agentName.trim(),
@@ -610,6 +747,11 @@ export function SettingsForm({
           dataset_allowlist: splitCsv(warehouseDatasets),
         },
       },
+      heartbeat: {
+        enabled: heartbeatEnabled,
+        interval_minutes: normalizedHeartbeatInterval,
+        checklist_markdown: heartbeatChecklist.trim(),
+      },
     };
   }
 
@@ -636,12 +778,56 @@ export function SettingsForm({
     }
   }
 
+  async function updateScheduledTaskStatus(
+    taskId: string,
+    action: "pause" | "resume"
+  ) {
+    setUpdatingTaskId(taskId);
+    setSaveError(null);
+    try {
+      const res = await fetch(`/api/scheduled-tasks/${taskId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(json.error ?? "No se pudo actualizar la tarea");
+      }
+      const updated = json.task as ScheduledTaskItem;
+      setScheduledTaskRows((rows) =>
+        rows.map((task) => (task.id === taskId ? updated : task))
+      );
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+      router.refresh();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdatingTaskId(null);
+    }
+  }
+
   async function handleSave() {
     setSaving(true);
     setSaveError(null);
     try {
       if (!agentName.trim() || !agentRole.trim() || !agentDescription.trim()) {
         throw new Error("Nombre, rol y descripción breve del colaborador IA son obligatorios.");
+      }
+      if (heartbeatEnabled && !heartbeatChecklist.trim()) {
+        throw new Error(
+          "El checklist de Heartbeat no puede estar vacío cuando Heartbeat está habilitado."
+        );
+      }
+      if (
+        !Number.isFinite(heartbeatIntervalMinutes) ||
+        heartbeatIntervalMinutes < 5 ||
+        heartbeatIntervalMinutes > 24 * 60
+      ) {
+        throw new Error(
+          "El intervalo de Heartbeat debe estar entre 5 y 1440 minutos."
+        );
       }
 
       await supabase.from("profiles").update({
@@ -1292,6 +1478,236 @@ export function SettingsForm({
               </div>
             </div>
           </details>
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <h3 className="text-sm font-semibold">Heartbeat proactivo</h3>
+          <p className="mt-1 text-xs text-neutral-500">
+            Configura la rutina periódica de Gu cuando no hay un mensaje manual.
+            En esta etapa se ejecuta en modo seguro (solo lectura).
+          </p>
+          <div className="mt-4 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-950">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="font-medium text-neutral-800 dark:text-neutral-100">
+                  Última corrida
+                </p>
+                <p className="text-neutral-500">
+                  {latestHeartbeatRun
+                    ? `${formatRunDate(latestHeartbeatRun.started_at)} · ${latestHeartbeatRun.status}`
+                    : "Aún no hay corridas registradas."}
+                </p>
+              </div>
+              {latestHeartbeatRun ? (
+                <span
+                  className={`rounded-full px-2 py-1 text-[11px] font-medium ${
+                    latestHeartbeatRun.status === "completed"
+                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                      : latestHeartbeatRun.status === "error"
+                      ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
+                      : "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                  }`}
+                >
+                  {heartbeatStatusLabel(latestHeartbeatRun.status)}
+                </span>
+              ) : null}
+            </div>
+            {latestHeartbeatRun ? (
+              <p className="mt-2 whitespace-pre-line text-neutral-600 dark:text-neutral-300">
+                {heartbeatRunSummary(latestHeartbeatRun)}
+              </p>
+            ) : null}
+          </div>
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-800">
+            <div>
+              <p className="text-sm font-medium">Habilitar Heartbeat</p>
+              <p className="text-xs text-neutral-500">
+                Activa corridas periódicas usando este checklist.
+              </p>
+            </div>
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={heartbeatEnabled}
+                onChange={(e) => setHeartbeatEnabled(e.target.checked)}
+                className="rounded border-neutral-300"
+              />
+              {heartbeatEnabled ? "Activo" : "Inactivo"}
+            </label>
+          </div>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                Intervalo (minutos)
+              </label>
+              <input
+                type="number"
+                min={5}
+                max={1440}
+                step={1}
+                value={heartbeatIntervalMinutes}
+                onChange={(e) =>
+                  setHeartbeatIntervalMinutes(Math.floor(Number(e.target.value) || 0))
+                }
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              <p className="mt-1 text-xs text-neutral-400">
+                Rango recomendado para V1: 5 a 1440 minutos.
+              </p>
+            </div>
+            <div className="flex items-end justify-start md:justify-end">
+              <button
+                type="button"
+                onClick={() => setHeartbeatChecklist(DEFAULT_HEARTBEAT_CHECKLIST)}
+                className="rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+              >
+                Reset checklist a default
+              </button>
+            </div>
+          </div>
+          <div className="mt-4">
+            <label className="block text-sm font-medium mb-1">
+              Checklist markdown
+            </label>
+            <textarea
+              value={heartbeatChecklist}
+              onChange={(e) => setHeartbeatChecklist(e.target.value.slice(0, 6000))}
+              rows={8}
+              placeholder={DEFAULT_HEARTBEAT_CHECKLIST}
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-mono dark:border-neutral-700 dark:bg-neutral-900"
+            />
+            {charCount(heartbeatChecklist, 6000)}
+          </div>
+          {heartbeatRuns.length > 0 ? (
+            <details className="mt-4 rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-800">
+              <summary className="cursor-pointer text-sm font-medium">
+                Historial reciente de Heartbeat
+              </summary>
+              <div className="mt-3 space-y-3">
+                {heartbeatRuns.map((run) => {
+                  const tools = heartbeatToolCalls(run);
+                  return (
+                    <div
+                      key={run.id}
+                      className="rounded-md border border-neutral-200 p-3 text-xs dark:border-neutral-800"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-medium">
+                          {formatRunDate(run.started_at)}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] ${
+                            run.status === "completed"
+                              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                              : run.status === "error"
+                              ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
+                              : "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                          }`}
+                        >
+                          {heartbeatStatusLabel(run.status)}
+                        </span>
+                      </div>
+                      <p className="mt-2 whitespace-pre-line text-neutral-600 dark:text-neutral-300">
+                        {heartbeatRunSummary(run)}
+                      </p>
+                      {tools.length > 0 ? (
+                        <p className="mt-2 text-neutral-400">
+                          Tools: {tools.join(", ")}
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </details>
+          ) : null}
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold">Tareas programadas</h3>
+              <p className="mt-1 text-xs text-neutral-500">
+                Automatizaciones que tú pediste a Gu. Se ejecutan por cron y son
+                distintas del Heartbeat proactivo.
+              </p>
+            </div>
+            <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
+              {scheduledTaskRows.filter((task) => task.status === "active").length} activas
+            </span>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {scheduledTaskRows.length === 0 ? (
+              <div className="rounded-md border border-dashed border-neutral-200 px-3 py-4 text-center text-xs text-neutral-500 dark:border-neutral-800">
+                No hay tareas programadas activas o pausadas. Puedes pedirle a Gu
+                en chat que programe una tarea.
+              </div>
+            ) : (
+              scheduledTaskRows.map((task) => (
+                <div
+                  key={task.id}
+                  className="rounded-md border border-neutral-200 p-3 text-sm dark:border-neutral-800"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            task.status === "active"
+                              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                              : "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                          }`}
+                        >
+                          {task.status === "active" ? "Activa" : "Pausada"}
+                        </span>
+                        <span className="text-xs text-neutral-400">
+                          {scheduledTaskTiming(task)}
+                        </span>
+                      </div>
+                      <p className="mt-2 line-clamp-2 font-medium text-neutral-800 dark:text-neutral-100">
+                        {scheduledTaskDisplayText(task)}
+                      </p>
+                      {scheduledTaskDisplayText(task) !== task.prompt ? (
+                        <p className="mt-1 line-clamp-2 text-xs text-neutral-400">
+                          Instrucción programada: {task.prompt}
+                        </p>
+                      ) : null}
+                      <p className="mt-1 text-xs text-neutral-500">
+                        Próxima corrida: {scheduledTaskNextRun(task)}
+                        {typeof task.consecutive_failures === "number" &&
+                        task.consecutive_failures > 0
+                          ? ` · ${task.consecutive_failures} fallo(s) consecutivo(s)`
+                          : ""}
+                      </p>
+                      {task.last_failure_error ? (
+                        <p className="mt-2 rounded-md bg-red-50 px-2 py-1 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+                          Último error: {task.last_failure_error}
+                        </p>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={updatingTaskId === task.id}
+                      onClick={() =>
+                        updateScheduledTaskStatus(
+                          task.id,
+                          task.status === "active" ? "pause" : "resume"
+                        )
+                      }
+                      className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:hover:bg-neutral-900"
+                    >
+                      {updatingTaskId === task.id
+                        ? "Actualizando..."
+                        : task.status === "active"
+                        ? "Pausar"
+                        : "Reanudar"}
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
 
         <details className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">

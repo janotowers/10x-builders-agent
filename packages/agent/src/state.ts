@@ -1,6 +1,6 @@
 import { Annotation, messagesStateReducer } from "@langchain/langgraph";
 import type { BaseMessage } from "@langchain/core/messages";
-import type { PendingConfirmation } from "@agents/types";
+import type { Channel, PendingConfirmation } from "@agents/types";
 
 /**
  * GraphState centralizado. Se extrajo del `graph.ts` inline original para que
@@ -39,6 +39,11 @@ export const GraphState = Annotation.Root({
   autoApproveTools: Annotation<boolean>({
     reducer: (_prev, next) => next,
     default: () => false,
+  }),
+  /** Runtime channel for this turn (web/telegram/cron/heartbeat). */
+  channel: Annotation<Channel>({
+    reducer: (_prev, next) => next,
+    default: () => "web",
   }),
   /**
    * Fallos consecutivos del LLM de compaction. Reducer de reemplazo: el nodo

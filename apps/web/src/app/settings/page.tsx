@@ -73,6 +73,20 @@ export default async function SettingsPage({
     .eq("status", "active")
     .maybeSingle();
 
+  const { data: heartbeatRuns } = await supabase
+    .from("heartbeat_runs")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("started_at", { ascending: false })
+    .limit(5);
+
+  const { data: scheduledTasks } = await supabase
+    .from("scheduled_tasks")
+    .select("*")
+    .eq("user_id", user.id)
+    .in("status", ["active", "paused"])
+    .order("next_run_at", { ascending: true, nullsFirst: false });
+
   return (
     <div className="min-h-screen">
       <header className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
@@ -104,6 +118,8 @@ export default async function SettingsPage({
           telegramLinked={!!telegramAccount}
           githubConnected={!!githubIntegration}
           googleCalendarConnected={!!googleCalendarIntegration}
+          heartbeatRuns={heartbeatRuns ?? []}
+          scheduledTasks={scheduledTasks ?? []}
           googleOAuthStatus={sp.google_calendar}
           googleOAuthReason={sp.reason}
         />

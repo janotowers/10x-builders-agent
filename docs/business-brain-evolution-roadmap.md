@@ -67,7 +67,7 @@ If any of these defaults conflict with constraints we haven’t surfaced (securi
 | **What is stored** | A **stored prompt** per row in `scheduled_tasks` | **Per-account checklist** (markdown) **+ schedule flags** in **`profiles`/JSONB**; **run logs** in `heartbeat_runs` |
 | **Purpose** | “Run **this exact instruction** at this time” (e.g. fetch HN every Monday) | “Every day at 8:00, work through the **standard review checklist** for this business” |
 | **Safety default** | User already confirmed scheduling; inner run may use `autoApproveTools` | V1 remains **draft / read-heavy**; strict tool allowlist; **no** auto-contact clients or silent writes |
-| **Infrastructure** | `POST /api/cron/scheduled-tasks` | `POST /api/cron/heartbeat` (same **secret + cron** pattern; different handler and tables) |
+| **Infrastructure** | `POST /api/cron/scheduled-tasks` | `POST /api/cron/heartbeat` (same **external scheduler + `CRON_SECRET`** pattern; different handler and tables) |
 
 They are **complementary:** scheduled tasks are great for **user-initiated automations**; Heartbeat is for **consistent operational rhythm** from a shared playbook. Both may call `runAgent`; they should not share one row type, or you lose clear semantics and auditing.
 
@@ -528,6 +528,8 @@ For production multi-instance deployments, evolve this to a persisted or shared 
 
 Until that evolution lands, the UI should treat the live timeline as best-effort and keep `agent_messages`, `tool_calls`, `memories`, and final API payloads as the durable source of truth.
 
+**Turn correlation in the database (delivered in repo, 2026-05):** Migration [`packages/db/supabase/migrations/00013_agent_turn_correlation.sql`](../packages/db/supabase/migrations/00013_agent_turn_correlation.sql) adds nullable `turn_id` (UUID) to `agent_messages` and `tool_calls`, with `(session_id, turn_id, created_at)` indexes. Application code writes `turn_id` on new rows (see `runAgent` / chat persistence); the Gu console groups tools and memory by turn using the same id. Historical rows may remain `NULL` (UI falls back to timestamp heuristics). **Deployed:** this migration has been applied on active Ungga Supabase environments; new sandboxes or forks still apply migrations from the repo as usual.
+
 ---
 
 ## Terminology — multi-user vs shared workspace
@@ -721,9 +723,11 @@ The *Business Brain* lives as a `JSONB` column on `profiles`. Its first user is 
 
 ### V1-D — Heartbeat cron (**DB-backed checklist**)
 
+**Status (repo, 2026-05): backend + settings MVP implemented** — `heartbeat_runs`, `/api/cron/heartbeat`, `agent_sessions.channel='heartbeat'`, safe tool allowlist, model overrides, and editable settings in `business_brain.heartbeat` are in place. The remaining operational step is configuring the external scheduler that calls the endpoint in each environment.
+
 **Outcome:** Periodic run **per `user_id`** using **that row’s checklist**; auditable; **cost-conscious** (small model + configurable interval); safe tools; no memory flush spam.
 
-**Scheduling:** Existing pg_cron + pg_net pattern (see [`packages/db/supabase/migrations/00007_pg_cron_scheduled_tasks.sql`](../packages/db/supabase/migrations/00007_pg_cron_scheduled_tasks.sql)) hits `POST /api/cron/heartbeat` every 1–5 minutes. The handler selects profiles where **`business_brain.heartbeat.enabled`** is true and **`now() >= coalesce(last_run_at, '-infinity') + interval_minutes`**. Interval and on/off are **per account**; default **30 minutes**.
+**Scheduling:** Use the same external-scheduler pattern as scheduled tasks: a trusted job calls `POST /api/cron/heartbeat` with `Authorization: Bearer <CRON_SECRET>` every 1-5 minutes. In GCP deployments, prefer **Cloud Scheduler**; Supabase `pg_cron + pg_net` remains a valid alternative. For local testing, expose the dev server with ngrok or call the endpoint manually. The handler selects profiles where **`business_brain.heartbeat.enabled`** is true and **`now() >= coalesce(last_run_at, '-infinity') + interval_minutes`**. Interval and on/off are **per account**; default **30 minutes**.
 
 | Step | Action |
 |------|--------|
@@ -946,3 +950,4 @@ The `[MEMORIA …]` block is added by the `memory_injection` node by **swapping 
 
 - [architecture.md](architecture.md) — current system architecture
 - [memory/long_term_memory_plan.md](memory/long_term_memory_plan.md) — long-term memory (note: frontmatter todos there may be stale; code + migrations are source of truth)
+- [heartbeat/implementation-plan.md](heartbeat/implementation-plan.md) — execution checklist and status tracker for Heartbeat rollout

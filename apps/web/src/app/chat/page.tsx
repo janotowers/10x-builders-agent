@@ -47,6 +47,47 @@ type AvailableTool = {
   requiresIntegration?: string | null;
 };
 
+type HeartbeatStatus = {
+  enabled: boolean;
+  intervalMinutes: number;
+  runs?: Array<{
+    status: "running" | "completed" | "error";
+    startedAt: string;
+    finishedAt?: string | null;
+    summary: string;
+  }>;
+  lastRun?: {
+    status: "running" | "completed" | "error";
+    startedAt: string;
+    finishedAt?: string | null;
+    summary: string;
+  } | null;
+};
+
+type ScheduledTaskSummary = {
+  activeCount: number;
+  pausedCount: number;
+  tasks?: Array<{
+    id: string;
+    prompt: string;
+    userRequest?: string | null;
+    displayTitle?: string | null;
+    scheduleType: "one_time" | "recurring";
+    nextRunAt: string | null;
+    status: "active" | "paused" | "completed" | "failed";
+  }>;
+  nextTask?: {
+    id: string;
+    prompt: string;
+    userRequest?: string | null;
+    displayTitle?: string | null;
+    scheduleType: "one_time" | "recurring";
+    nextRunAt: string | null;
+    status: "active" | "paused" | "completed" | "failed";
+  } | null;
+  lastFailure?: string | null;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -61,6 +102,25 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function readHeartbeatPayload(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      return asRecord(JSON.parse(value));
+    } catch {
+      return {};
+    }
+  }
+  return asRecord(value);
+}
+
+function summarizeHeartbeatPayload(value: unknown): string {
+  const payload = readHeartbeatPayload(value);
+  const response = asString(payload.response).trim();
+  if (response) return response;
+  const error = asString(payload.error).trim();
+  return error || "Sin resumen guardado.";
 }
 
 async function signedProfileAssetUrl(
@@ -124,6 +184,28 @@ export default async function ChatPage() {
   let recentLearnings: RecentLearning[] = [];
   let availableSkills: AvailableSkill[] = [];
   let availableTools: AvailableTool[] = [];
+  let heartbeatStatus: HeartbeatStatus = {
+    enabled: asRecord(businessBrain.heartbeat).enabled === true,
+    intervalMinutes:
+      typeof asRecord(businessBrain.heartbeat).interval_minutes === "number"
+        ? Math.max(
+            5,
+            Math.min(
+              24 * 60,
+              Math.floor(asRecord(businessBrain.heartbeat).interval_minutes as number)
+            )
+          )
+        : 30,
+    runs: [],
+    lastRun: null,
+  };
+  let scheduledTaskSummary: ScheduledTaskSummary = {
+    activeCount: 0,
+    pausedCount: 0,
+    tasks: [],
+    nextTask: null,
+    lastFailure: null,
+  };
   let initialPendingConfirmation:
     | {
         toolCallId: string;
@@ -207,6 +289,89 @@ export default async function ChatPage() {
     .limit(5);
   recentLearnings = (memories ?? []) as RecentLearning[];
 
+  const { data: heartbeatRuns } = await supabase
+    .from("heartbeat_runs")
+    .select("status, started_at, finished_at, payload, error")
+    .eq("user_id", user.id)
+    .order("started_at", { ascending: false })
+    .limit(15);
+  const heartbeatRunRows = (heartbeatRuns ?? []) as Array<{
+    status?: string;
+    started_at?: string;
+    finished_at?: string | null;
+    payload?: unknown;
+    error?: string | null;
+  }>;
+  const normalizedHeartbeatRuns = heartbeatRunRows
+    .filter(
+      (run) =>
+        run.started_at &&
+        (run.status === "running" ||
+          run.status === "completed" ||
+          run.status === "error")
+    )
+    .map((run) => ({
+      status: run.status as "running" | "completed" | "error",
+      startedAt: run.started_at!,
+      finishedAt: run.finished_at ?? null,
+      summary: run.error ?? summarizeHeartbeatPayload(run.payload),
+    }));
+  heartbeatStatus = {
+    ...heartbeatStatus,
+    runs: normalizedHeartbeatRuns,
+    lastRun: normalizedHeartbeatRuns[0] ?? null,
+  };
+
+  const { data: scheduledTasks } = await supabase
+    .from("scheduled_tasks")
+    .select(
+      "id, prompt, user_request, display_title, schedule_type, status, next_run_at, last_failure_error, updated_at"
+    )
+    .eq("user_id", user.id)
+    .in("status", ["active", "paused"])
+    .order("next_run_at", { ascending: true, nullsFirst: false })
+    .limit(50);
+  const taskRows = (scheduledTasks ?? []) as Array<Record<string, unknown>>;
+  const activeTasks = taskRows.filter((task) => task.status === "active");
+  const pausedTasks = taskRows.filter((task) => task.status === "paused");
+  const normalizedScheduledTasks = taskRows
+    .filter(
+      (task) =>
+        typeof task.id === "string" &&
+        typeof task.prompt === "string" &&
+        (task.schedule_type === "one_time" ||
+          task.schedule_type === "recurring") &&
+        (task.status === "active" || task.status === "paused")
+    )
+    .map((task) => ({
+      id: task.id as string,
+      prompt: task.prompt as string,
+      userRequest:
+        typeof task.user_request === "string" ? task.user_request : null,
+      displayTitle:
+        typeof task.display_title === "string" ? task.display_title : null,
+      scheduleType: task.schedule_type as "one_time" | "recurring",
+      nextRunAt:
+        typeof task.next_run_at === "string" ? task.next_run_at : null,
+      status: task.status as "active" | "paused",
+    }));
+  const nextTask = normalizedScheduledTasks.find(
+    (task) => task.status === "active" && task.nextRunAt
+  );
+  const lastFailureTask = taskRows.find(
+    (task) => typeof task.last_failure_error === "string" && task.last_failure_error
+  );
+  scheduledTaskSummary = {
+    activeCount: activeTasks.length,
+    pausedCount: pausedTasks.length,
+    tasks: normalizedScheduledTasks,
+    nextTask: nextTask ?? null,
+    lastFailure:
+      typeof lastFailureTask?.last_failure_error === "string"
+        ? lastFailureTask.last_failure_error
+        : null,
+  };
+
   const { data: toolSettings } = await supabase
     .from("user_tool_settings")
     .select("tool_id, enabled")
@@ -284,6 +449,8 @@ export default async function ChatPage() {
       initialToolCalls={recentToolCalls}
       initialPendingConfirmation={initialPendingConfirmation}
       initialRecentLearnings={recentLearnings}
+      heartbeatStatus={heartbeatStatus}
+      scheduledTaskSummary={scheduledTaskSummary}
     />
   );
 }

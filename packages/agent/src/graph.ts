@@ -36,6 +36,7 @@ import {
   createCompactionModel,
   createSkillSelectorModel,
   DEFAULT_CRON_TEMPERATURE,
+  DEFAULT_HEARTBEAT_TEMPERATURE,
   DEFAULT_INTERACTIVE_TEMPERATURE,
 } from "./model";
 import { buildLangChainTools } from "./tools/adapters";
@@ -104,7 +105,7 @@ export interface AgentInput {
    * ejecutivo). No altera la lógica de runAgent. Si no se provee, se
    * infiere: `autoApproveTools=true` → "cron"; de lo contrario "web".
    */
-  channel?: "web" | "telegram" | "cron";
+  channel?: "web" | "telegram" | "cron" | "heartbeat";
   googleCalendarAccessToken?: string;
   resumeDecision?: "approve" | "reject";
   /** Must match the thread_id used when the interrupt was created. */
@@ -776,14 +777,29 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     details: { channel: channel ?? (input.autoApproveTools ? "cron" : "web") },
   });
 
-  // Temperatura por canal: cron (autoApproveTools) pide 0.1 para reducir
-  // respuestas de tipo "intentaré luego" o narrativa creativa cuando el modelo
-  // no tiene el dato. Interactivo se queda en ~0.3 para conversaciones
-  // naturales en Web/Telegram.
-  const modelTemperature = input.autoApproveTools
-    ? DEFAULT_CRON_TEMPERATURE
-    : DEFAULT_INTERACTIVE_TEMPERATURE;
-  const model = createChatModel({ temperature: modelTemperature });
+  const resolvedChannelForRuntime: "web" | "telegram" | "cron" | "heartbeat" =
+    channel ? channel : input.autoApproveTools ? "cron" : "web";
+  // Temperatura/modelo por canal:
+  // - web/telegram: conversacional (~0.3)
+  // - cron/heartbeat: determinista (~0.1)
+  const modelTemperature =
+    resolvedChannelForRuntime === "cron"
+      ? DEFAULT_CRON_TEMPERATURE
+      : resolvedChannelForRuntime === "heartbeat"
+      ? DEFAULT_HEARTBEAT_TEMPERATURE
+      : DEFAULT_INTERACTIVE_TEMPERATURE;
+  const heartbeatModelName = process.env.HEARTBEAT_MODEL_ID?.trim() || undefined;
+  const heartbeatMaxTokensRaw = process.env.HEARTBEAT_MAX_TOKENS?.trim();
+  const heartbeatMaxTokens =
+    heartbeatMaxTokensRaw && Number.isFinite(Number(heartbeatMaxTokensRaw))
+      ? Math.max(128, Math.floor(Number(heartbeatMaxTokensRaw)))
+      : undefined;
+  const model = createChatModel({
+    temperature: modelTemperature,
+    modelName:
+      resolvedChannelForRuntime === "heartbeat" ? heartbeatModelName : undefined,
+    maxTokens: resolvedChannelForRuntime === "heartbeat" ? heartbeatMaxTokens : undefined,
+  });
 
   const priorRaw = input.autoApproveTools
     ? []
@@ -804,7 +820,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // Snapshot of the selector outcome for the executive turn log. Stays
   // `undefined` when the selector did not run (resume HITL / empty turn).
   let skillSelectionSnapshot: TurnSummaryInput["skillSelection"];
-  if (!resumeDecision && message && message.trim() !== "") {
+  if (
+    resolvedChannelForRuntime !== "heartbeat" &&
+    !resumeDecision &&
+    message &&
+    message.trim() !== ""
+  ) {
     try {
       const registry = await getGlobalSkillRegistry();
       const registryList = registry.list();
@@ -979,6 +1000,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     activeSkillAllowedTools: activeSkill?.allowedTools,
     activeSkillName: activeSkill?.rootName,
     activeSkillReferenceNames: activeSkill?.composedFrom,
+    channel: resolvedChannelForRuntime,
     tenantOrganizationId:
       activeSkill?.requiresTenantContext && !input.isUnggaAdmin
         ? businessBrainWarehouse?.organization_id?.trim() || undefined
@@ -1629,8 +1651,43 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           message: `Ejecutando herramienta: ${tc.name}.`,
           toolName: tc.name,
         });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const result = await (matchingTool as any).invoke(tc.args);
+        let result: unknown;
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          result = await (matchingTool as any).invoke(tc.args);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          const payload = {
+            status: "validation_error",
+            error: message,
+            tool: tc.name,
+            hint:
+              "Tool input did not match the expected schema. Retry with only documented fields and omit unknown or null values.",
+          };
+          console.warn(
+            `[agent] tool invocation failed name=${tc.name} error=${message}`
+          );
+          try {
+            const record = await createToolCall(
+              db,
+              state.sessionId,
+              tc.name,
+              (tc.args as Record<string, unknown>) ?? {},
+              false,
+              turnId
+            );
+            await updateToolCallStatus(db, record.id, "failed", payload);
+          } catch (auditErr) {
+            console.error("[agent] failed to audit tool validation error:", auditErr);
+          }
+          results.push(
+            new ToolMessage({
+              content: JSON.stringify(payload),
+              tool_call_id: tc.id!,
+            })
+          );
+          continue;
+        }
         const resultStr = String(result);
         results.push(
           new ToolMessage({ content: resultStr, tool_call_id: tc.id! })
@@ -1810,6 +1867,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         systemPrompt,
         pendingConfirmation: null,
         autoApproveTools: input.autoApproveTools ?? false,
+        channel: resolvedChannelForRuntime,
         compactionCount: 0,
         iterationCount: 0,
         memoryFlushPending: false,
@@ -2001,11 +2059,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // `compaction.log` respectivamente; aquí pintamos `n/a` y referenciamos.
   // Fire-and-forget: no bloquea la respuesta al usuario.
   // ───────────────────────────────────────────────────────────
-  const resolvedChannel: "web" | "telegram" | "cron" = channel
-    ? channel
-    : input.autoApproveTools
-    ? "cron"
-    : "web";
+  const resolvedChannel: "web" | "telegram" | "cron" | "heartbeat" =
+    resolvedChannelForRuntime;
 
   const memTopK = resolveMemoryLogRetrieveTopK();
   const memThresh = resolveMemoryLogMatchThreshold();

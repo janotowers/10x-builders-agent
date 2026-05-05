@@ -68,6 +68,47 @@ interface AvailableTool {
   requiresIntegration?: string | null;
 }
 
+interface HeartbeatStatus {
+  enabled: boolean;
+  intervalMinutes: number;
+  runs?: Array<{
+    status: "running" | "completed" | "error";
+    startedAt: string;
+    finishedAt?: string | null;
+    summary: string;
+  }>;
+  lastRun?: {
+    status: "running" | "completed" | "error";
+    startedAt: string;
+    finishedAt?: string | null;
+    summary: string;
+  } | null;
+}
+
+interface ScheduledTaskSummary {
+  activeCount: number;
+  pausedCount: number;
+  tasks?: Array<{
+    id: string;
+    prompt: string;
+    userRequest?: string | null;
+    displayTitle?: string | null;
+    scheduleType: "one_time" | "recurring";
+    nextRunAt: string | null;
+    status: "active" | "paused" | "completed" | "failed";
+  }>;
+  nextTask?: {
+    id: string;
+    prompt: string;
+    userRequest?: string | null;
+    displayTitle?: string | null;
+    scheduleType: "one_time" | "recurring";
+    nextRunAt: string | null;
+    status: "active" | "paused" | "completed" | "failed";
+  } | null;
+  lastFailure?: string | null;
+}
+
 interface BaseContext {
   identity: {
     name?: string;
@@ -123,6 +164,8 @@ interface Props {
   initialToolCalls?: RecentToolCall[];
   initialPendingConfirmation?: PendingConfirmation | null;
   initialRecentLearnings?: RecentLearning[];
+  heartbeatStatus?: HeartbeatStatus;
+  scheduledTaskSummary?: ScheduledTaskSummary;
 }
 
 function ChatAvatar({
@@ -300,6 +343,108 @@ function formatShortTermPreviewTime(value: string | undefined): string {
 function compactText(value: string | undefined, fallback = "No configurado"): string {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : fallback;
+}
+
+function truncatePanelText(value: string, max = 150): string {
+  const trimmed = value.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max).trim()}…` : trimmed;
+}
+
+function displayScheduledTaskText(task: {
+  prompt: string;
+  userRequest?: string | null;
+  displayTitle?: string | null;
+}): string {
+  return task.displayTitle?.trim() || task.userRequest?.trim() || task.prompt;
+}
+
+function formatHeartbeatStatus(status: "running" | "completed" | "error"): string {
+  const labels = {
+    running: "En curso",
+    completed: "Completado",
+    error: "Con error",
+  } as const;
+  return labels[status] ?? String(status);
+}
+
+function formatScheduledTaskStatus(
+  status: "active" | "paused" | "completed" | "failed"
+): string {
+  const labels = {
+    active: "Activa",
+    paused: "Pausada",
+    completed: "Completada",
+    failed: "Con error",
+  } as const;
+  return labels[status] ?? String(status);
+}
+
+function scheduledTaskStatusClass(
+  status: "active" | "paused" | "completed" | "failed"
+): string {
+  const classes = {
+    active:
+      "bg-violet-100 text-violet-800 dark:bg-white/10 dark:text-violet-100",
+    paused:
+      "bg-amber-100 text-amber-800 dark:bg-amber-400/10 dark:text-amber-100",
+    completed:
+      "bg-emerald-100 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-100",
+    failed:
+      "bg-red-100 text-red-800 dark:bg-red-400/10 dark:text-red-100",
+  } as const;
+  return classes[status];
+}
+
+function stripMarkdown(value: string): string {
+  return value
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function heartbeatDigestItems(
+  summary: string,
+  options?: { limit?: number }
+): string[] {
+  const clean = stripMarkdown(summary);
+  if (!clean) return [];
+  const lines = clean
+    .split(/\n+/)
+    .map((line) => line.replace(/^[-*]\s+/, "").trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !/^Operational Digest$/i.test(line));
+  const limit = options?.limit;
+  if (typeof limit === "number") {
+    return lines.slice(0, limit);
+  }
+  return lines;
+}
+
+function HeartbeatDigestBulletList({
+  items,
+  lineClamp,
+}: {
+  items: string[];
+  lineClamp?: number;
+}) {
+  if (items.length === 0) {
+    return <p className="opacity-80">Sin resumen guardado.</p>;
+  }
+  return (
+    <ul className="space-y-1 opacity-85">
+      {items.map((item, index) => (
+        <li key={index} className="flex gap-2">
+          <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500/70" />
+          <span className="min-w-0 break-words">
+            {typeof lineClamp === "number"
+              ? truncatePanelText(item, lineClamp)
+              : item}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function FieldRow({ label, value }: { label: string; value: string }) {
@@ -567,7 +712,7 @@ function PanelIcon({ name }: { name: PanelIconName }) {
 
   if (name === "memory") {
     return (
-      <svg {...common}>
+      <svg {...common} className="h-5 w-5" strokeWidth={2}>
         <path d="M8.5 6.5a3 3 0 0 0-3 3 3.5 3.5 0 0 0 1.1 6.8" />
         <path d="M15.5 6.5a3 3 0 0 1 3 3 3.5 3.5 0 0 1-1.1 6.8" />
         <path d="M8.5 6.5A3.5 3.5 0 0 1 12 3a3.5 3.5 0 0 1 3.5 3.5" />
@@ -580,17 +725,16 @@ function PanelIcon({ name }: { name: PanelIconName }) {
 
   if (name === "skills") {
     return (
-      <svg {...common}>
-        <path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z" />
-        <path d="M5 15l.9 2.1L8 18l-2.1.9L5 21l-.9-2.1L2 18l2.1-.9L5 15z" />
-        <path d="M19 14l.7 1.6L21 16l-1.3.4L19 18l-.7-1.6L17 16l1.3-.4L19 14z" />
+      <svg {...common} className="h-5 w-5" strokeWidth={2}>
+        <path d="M3.9 8.6a4 4 0 0 1 4.7-4.7 4 4 0 0 1 6.8 0 4 4 0 0 1 4.7 4.7 4 4 0 0 1 0 6.8 4 4 0 0 1-4.7 4.7 4 4 0 0 1-6.8 0 4 4 0 0 1-4.7-4.7 4 4 0 0 1 0-6.8Z" />
+        <path d="m9 12 2 2 4-4" />
       </svg>
     );
   }
 
   if (name === "tools") {
     return (
-      <svg {...common}>
+      <svg {...common} className="h-5 w-5" strokeWidth={2}>
         <path d="M14.7 6.3a4 4 0 0 0-5 5L4 17l3 3 5.7-5.7a4 4 0 0 0 5-5l-2.4 2.4-3-3 2.4-2.4z" />
       </svg>
     );
@@ -606,7 +750,7 @@ function PanelIcon({ name }: { name: PanelIconName }) {
 
   if (name === "learnings") {
     return (
-      <svg {...common}>
+      <svg {...common} className="h-5 w-5" strokeWidth={2}>
         <path d="M6 4h9a3 3 0 0 1 3 3v13H8a2 2 0 0 1-2-2V4z" />
         <path d="M8 18h10" />
         <path d="M10 8h4" />
@@ -615,17 +759,21 @@ function PanelIcon({ name }: { name: PanelIconName }) {
     );
   }
 
-  return (
-    <svg {...common}>
-      <path d="M4 6h8" />
-      <path d="M12 6l-2-2" />
-      <path d="M12 6l-2 2" />
-      <path d="M4 18h8" />
-      <path d="M12 18l-2-2" />
-      <path d="M12 18l-2 2" />
-      <path d="M16 12h4" />
-    </svg>
-  );
+  if (name === "flow") {
+    return (
+      <svg {...common} className="h-5 w-5" strokeWidth={2}>
+        <path d="M10 6h11" />
+        <path d="M10 12h11" />
+        <path d="M10 18h11" />
+        <path d="M3 6l2 2 4-4" />
+        <path d="M3 12l2 2 4-4" />
+        <path d="M3 18l2 2 4-4" />
+      </svg>
+    );
+  }
+
+  const _exhaustive: never = name;
+  return _exhaustive;
 }
 
 function PanelSectionTitle({
@@ -665,6 +813,8 @@ export function ChatInterface({
   initialToolCalls = [],
   initialPendingConfirmation = null,
   initialRecentLearnings = [],
+  heartbeatStatus,
+  scheduledTaskSummary,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [toolCalls, setToolCalls] = useState<RecentToolCall[]>(initialToolCalls);
@@ -676,6 +826,8 @@ export function ChatInterface({
   const [confirming, setConfirming] = useState(false);
   const [contextExpanded, setContextExpanded] = useState(false);
   const [shortTermExpanded, setShortTermExpanded] = useState(false);
+  const [heartbeatHistoryExpanded, setHeartbeatHistoryExpanded] = useState(false);
+  const [scheduledTasksExpanded, setScheduledTasksExpanded] = useState(false);
   const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
@@ -692,6 +844,12 @@ export function ChatInterface({
     : loading
       ? "Gu está procesando tu solicitud y preparando la siguiente respuesta."
       : "Listo para recibir nuevas peticiones y ejecutar tareas con contexto.";
+  const heartbeatDigest = heartbeatDigestItems(
+    heartbeatStatus?.lastRun?.summary ?? "",
+    { limit: 4 }
+  );
+  const heartbeatRuns = heartbeatStatus?.runs ?? [];
+  const scheduledTasks = scheduledTaskSummary?.tasks ?? [];
 
   const toolsThisTurn = useMemo(
     () => toolsForLastCompletedTurn(messages, toolCalls, confirmation?.turnId),
@@ -1817,31 +1975,183 @@ export function ChatInterface({
 
               <section className="rounded-[2rem] border border-violet-100 bg-white/80 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
                 <div className="flex items-start justify-between gap-4">
-                  <PanelSectionTitle icon="presence" title="Presencia y heartbeat">
+                  <PanelSectionTitle icon="presence" title="Actividad proactiva">
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
-                      Cómo se sentirá hablar con Gu como un colaborador real.
+                      Actividad proactiva y automatizaciones fuera del turno actual.
                     </p>
                   </PanelSectionTitle>
-                  <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
-                    futuro
+                  <span
+                    className={`relative inline-flex h-8 w-8 items-center justify-center rounded-full ${
+                      heartbeatStatus?.enabled
+                        ? "bg-fuchsia-100 text-fuchsia-600 dark:bg-fuchsia-400/10 dark:text-fuchsia-200"
+                        : "bg-slate-100 text-slate-400 dark:bg-white/10 dark:text-white/40"
+                    }`}
+                    title={heartbeatStatus?.enabled ? "Heartbeat activo" : "Heartbeat inactivo"}
+                  >
+                    {heartbeatStatus?.enabled ? (
+                      <span className="absolute inline-flex h-8 w-8 animate-ping rounded-full bg-fuchsia-400/25" />
+                    ) : null}
+                    <span
+                      className={`relative text-base leading-none ${
+                        heartbeatStatus?.enabled ? "animate-pulse" : ""
+                      }`}
+                    >
+                      ♥
+                    </span>
                   </span>
                 </div>
-                <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
-                  <div className="rounded-2xl bg-violet-50 p-3 text-violet-900 dark:bg-violet-400/10 dark:text-violet-100">
-                    <p className="font-semibold">Voz en vivo</p>
-                    <p className="mt-1 opacity-70">Conversación por voz en tiempo real, como una llamada.</p>
-                  </div>
+                <div className="mt-4 space-y-3 text-xs">
                   <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-900 dark:bg-emerald-400/10 dark:text-emerald-100">
-                    <p className="font-semibold">Heartbeat</p>
-                    <p className="mt-1 opacity-70">Trabajo proactivo de Gu cuando nadie le está hablando.</p>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold">Heartbeat proactivo</p>
+                        <p className="mt-1 opacity-70">
+                          {heartbeatStatus?.enabled
+                            ? `Activo · cada ${heartbeatStatus.intervalMinutes} min`
+                            : "Inactivo en Settings"}
+                        </p>
+                      </div>
+                      {heartbeatStatus?.lastRun ? (
+                        <span className="rounded-full bg-white/70 px-2 py-0.5 font-semibold text-emerald-800 dark:bg-white/10 dark:text-emerald-100">
+                          {formatHeartbeatStatus(heartbeatStatus.lastRun.status)}
+                        </span>
+                      ) : null}
+                    </div>
+                    {heartbeatStatus?.lastRun ? (
+                      <div className="mt-2 rounded-xl bg-white/55 p-2 dark:bg-white/10">
+                        <div className="max-h-36 overflow-y-auto">
+                          <p className="mb-1 font-semibold opacity-80">
+                            {formatLearningTime(heartbeatStatus.lastRun.startedAt)}
+                          </p>
+                          <HeartbeatDigestBulletList
+                            items={heartbeatDigest}
+                            lineClamp={180}
+                          />
+                        </div>
+                        {heartbeatRuns.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setHeartbeatHistoryExpanded((expanded) => !expanded)
+                            }
+                            className="mt-2 text-[11px] font-semibold text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-100"
+                          >
+                            {heartbeatHistoryExpanded
+                              ? "Ocultar historial"
+                              : `Ver últimos ${heartbeatRuns.length} heartbeats`}
+                          </button>
+                        ) : null}
+                        {heartbeatHistoryExpanded ? (
+                          <div className="mt-2 max-h-64 space-y-2 overflow-y-auto border-t border-emerald-200/70 pt-2 dark:border-white/10">
+                            {heartbeatRuns.map((run, runIndex) => {
+                              const runDigest = heartbeatDigestItems(run.summary);
+                              return (
+                                <div
+                                  key={`${run.startedAt}-${run.status}-${runIndex}`}
+                                  className="rounded-lg bg-white/55 p-2 dark:bg-white/10"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-semibold opacity-80">
+                                      {formatLearningTime(run.startedAt)}
+                                    </span>
+                                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-white/10 dark:text-emerald-100">
+                                      {formatHeartbeatStatus(run.status)}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 max-h-28 overflow-y-scroll pr-1">
+                                    <HeartbeatDigestBulletList items={runDigest} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p className="mt-2 opacity-80">Aún no hay corridas registradas.</p>
+                    )}
                   </div>
                   <div className="rounded-2xl bg-violet-50 p-3 text-violet-900 dark:bg-violet-400/10 dark:text-violet-100">
-                    <p className="font-semibold">Avisos autónomos</p>
-                    <p className="mt-1 opacity-70">Notificaciones cuando Gu termina algo o detecta un evento.</p>
-                  </div>
-                  <div className="rounded-2xl bg-violet-50 p-3 text-violet-900 dark:bg-violet-400/10 dark:text-violet-100">
-                    <p className="font-semibold">Estado en vivo</p>
-                    <p className="mt-1 opacity-70">Indicadores visuales de pasos, tools y memoria.</p>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold">Tareas programadas</p>
+                        <p className="mt-1 opacity-70">
+                          Programadas por ti, ejecutadas por Gu.
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-white/70 px-2 py-0.5 font-semibold text-violet-800 dark:bg-white/10 dark:text-violet-100">
+                        {scheduledTaskSummary?.activeCount ?? 0} activas
+                      </span>
+                    </div>
+                    <p className="mt-2 opacity-80">
+                      {scheduledTaskSummary?.nextTask
+                        ? `Próxima: ${formatLearningTime(scheduledTaskSummary.nextTask.nextRunAt ?? "")} · ${truncatePanelText(displayScheduledTaskText(scheduledTaskSummary.nextTask))}`
+                        : "Sin próximas tareas activas."}
+                    </p>
+                    {scheduledTaskSummary?.pausedCount ? (
+                      <p className="mt-1 opacity-70">
+                        {scheduledTaskSummary.pausedCount} pausada(s).
+                      </p>
+                    ) : null}
+                    {scheduledTaskSummary?.lastFailure ? (
+                      <p className="mt-1 text-red-700 dark:text-red-200">
+                        Último fallo: {truncatePanelText(scheduledTaskSummary.lastFailure, 120)}
+                      </p>
+                    ) : null}
+                    {scheduledTasks.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setScheduledTasksExpanded((expanded) => !expanded)
+                        }
+                        className="mt-2 text-[11px] font-semibold text-violet-700 underline-offset-2 hover:underline dark:text-violet-100"
+                      >
+                        {scheduledTasksExpanded
+                          ? "Ocultar tareas"
+                          : `Ver ${
+                              scheduledTasks.length === 1
+                                ? "la tarea activa o pausada"
+                                : `las ${scheduledTasks.length} tareas activas y pausadas`
+                            }`}
+                      </button>
+                    ) : null}
+                    {scheduledTasksExpanded ? (
+                      <div className="mt-2 max-h-64 space-y-2 overflow-y-auto border-t border-violet-200/70 pt-2 dark:border-white/10">
+                        {scheduledTasks.map((task) => {
+                          const taskDisplayText = displayScheduledTaskText(task);
+                          const taskTimingText = task.nextRunAt
+                            ? `Próxima: ${formatLearningTime(task.nextRunAt)}`
+                            : task.status === "paused"
+                              ? "Pausada sin próxima ejecución."
+                              : "Sin próxima ejecución definida.";
+                          return (
+                            <div
+                              key={task.id}
+                              className="rounded-lg bg-white/55 p-2 dark:bg-white/10"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="font-semibold">{taskTimingText}</p>
+                                <span
+                                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${scheduledTaskStatusClass(task.status)}`}
+                                >
+                                  {formatScheduledTaskStatus(task.status)}
+                                </span>
+                              </div>
+                              <div className="mt-2 max-h-24 overflow-y-scroll pr-1">
+                                <p className="break-words font-medium">
+                                  {taskDisplayText}
+                                </p>
+                                {taskDisplayText !== task.prompt ? (
+                                  <p className="mt-2 break-words text-[11px] opacity-60">
+                                    Instrucción programada: {task.prompt}
+                                  </p>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </section>

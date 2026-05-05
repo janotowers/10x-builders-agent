@@ -1,5 +1,5 @@
 import type { DbClient } from "@agents/db";
-import type { UserToolSetting, UserIntegration } from "@agents/types";
+import type { Channel, UserToolSetting, UserIntegration } from "@agents/types";
 
 export interface ToolContext {
   db: DbClient;
@@ -51,4 +51,6 @@ export interface ToolContext {
    * Defaults to `defaultSkillsRoot()` when omitted; tests can override.
    */
   skillsRoot?: string;
+  /** Session channel ("web", "telegram", "cron", "heartbeat"). */
+  channel: Channel;
 }

@@ -55,7 +55,7 @@ Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya 
    - `packages/db/supabase/migrations/00003_scheduled_tasks.sql`
    - `packages/db/supabase/migrations/00004_scheduled_tasks_retry.sql` (reintentos acotados + auto-pausa tras fallos consecutivos)
 
-   Configura `CRON_SECRET` en `apps/web/.env.local` y el job en Supabase según [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md).
+   Configura `CRON_SECRET` en `apps/web/.env.local` y un runner externo (GCP Cloud Scheduler o Supabase Cron) según [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md).
    Con esto habilitas tanto **programar** tareas (`schedule_task`) como **listar/pausar/reanudar** tareas existentes (`manage_scheduled_tasks`) desde chat, más la política de reintentos (hasta 3 intentos con 2 min de gap antes de auto-pausar y avisar por Telegram).
 
 7. **Business Brain + columnas de tenant (Skills `company-data`, bloque `[Contexto de tenant]`):** ejecuta en el **SQL Editor** el contenido de:
@@ -108,7 +108,7 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave `anon` |
    | `SUPABASE_SERVICE_ROLE_KEY` | Clave `service_role` (solo servidor; la usa la API del agente y Telegram contra Postgres) |
    | `DATABASE_URL` | *(Opcional)* URI Postgres directa para checkpoints de LangGraph; ver comentarios en `.env.example` |
-   | `CRON_SECRET` | *(Opcional)* Secreto compartido con el job `pg_cron` que llama a `POST /api/cron/scheduled-tasks` (herramienta `schedule_task`); debe coincidir con el `Bearer` del SQL en Supabase. Runbook: [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) |
+   | `CRON_SECRET` | *(Opcional)* Secreto compartido con el runner externo que llama a `POST /api/cron/scheduled-tasks` y `POST /api/cron/heartbeat`; debe coincidir con el header `Authorization: Bearer <CRON_SECRET>`. Runbook: [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) |
    | `NEXT_PUBLIC_SITE_URL` | URL pública base **sin barra final** (OAuth redirect y enlaces de reserva). Ej.: `http://localhost:3000` o `https://tu-dominio.com` |
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |
    | `OPENROUTER_MAX_TOKENS` | *(Opcional)* Cap de `max_tokens` de salida por llamada. OpenRouter lo reserva contra tu saldo antes de ejecutar, así que con poco crédito conviene bajarlo. Default: `2048` |
