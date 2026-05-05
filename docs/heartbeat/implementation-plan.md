@@ -2,9 +2,9 @@
 
 Execution plan to deliver proactive Heartbeat end-to-end and keep status updated as implementation progresses.
 
-Last updated: 2026-05-05 (PR-5 in progress)
+Last updated: 2026-05-05 (PR-5 delivered; PR-6 optional backlog)
 Owner: Agent team (web + agent + db)
-Status: In progress (PR-5 started)
+Status: Core shipped (Phases 1–5 complete); Phase 6 remains optional hardening
 
 ---
 
@@ -211,6 +211,7 @@ When implementation starts, update this file in each PR:
 - 2026-05-05: PR-5 started. Added Settings visibility for latest heartbeat run and recent `heartbeat_runs` history, and tightened the default checklist/prompt so generic preferences are not classified as operational blockers.
 - 2026-05-05: PR-5 expanded to the Gu panel: Heartbeat is shown as proactive presence, while scheduled tasks are shown separately as user-programmed automations.
 - 2026-05-05: Refined the Gu panel copy to "Actividad proactiva", added a heartbeat-style pulse indicator, localized statuses, and removed redundant live-status copy from that block.
+- 2026-05-05: PR-5 UX polish: expandable heartbeat history renders full digest bullets (no join/truncate), compact scroll regions per run; scheduled tasks list shows full titles/prompts with scroll and status-colored badges (paused vs active).
 
 ### Decisions log
 
