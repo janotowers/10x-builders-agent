@@ -1489,21 +1489,43 @@ export function ChatInterface({
                     </p>
                   </div>
                 </div>
-                <div className="mt-4 grid grid-cols-3 rounded-2xl bg-white/10 text-center text-xs ring-1 ring-white/10">
-                  <div className="px-3 py-3">
-                    <p className="text-base font-bold">
-                      {messages.length}
-                      {messages.length >= 50 ? "+" : ""}
+                <div className="mt-4 grid grid-cols-3 items-stretch rounded-2xl bg-white/10 text-center text-xs ring-1 ring-white/10">
+                  <div className="flex flex-col items-center px-3 py-3">
+                    <div className="inline-flex flex-col items-center">
+                      <div className="flex min-h-10 items-center justify-center gap-1.5 font-bold">
+                        <span className="relative inline-flex size-10 shrink-0 items-center justify-center">
+                          {heartbeatStatus?.enabled ? (
+                            <span className="absolute inline-flex size-8 animate-ping rounded-full bg-fuchsia-400/[0.13]" />
+                          ) : null}
+                          <span
+                            className={`relative text-[1.625rem] leading-none ${
+                              heartbeatStatus?.enabled
+                                ? "animate-pulse text-fuchsia-300 drop-shadow-[0_0_6px_rgba(244,114,182,0.28)]"
+                                : "text-white/45"
+                            }`}
+                            aria-hidden="true"
+                          >
+                            ♥
+                          </span>
+                        </span>
+                        <span className="text-base leading-tight">Heartbeat</span>
+                      </div>
+                      <p className="mt-0.5 text-center text-violet-100">
+                        {heartbeatStatus?.enabled ? "Activo" : "Inactivo"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-center border-x border-white/10 px-3 py-3">
+                    <p className="flex min-h-10 items-center justify-center text-base font-bold leading-none">
+                      {scheduledTaskSummary?.activeCount ?? 0}
                     </p>
-                    <p className="text-violet-100">mensajes</p>
+                    <p className="mt-0.5 text-violet-100">Programadas</p>
                   </div>
-                  <div className="border-x border-white/10 px-3 py-3">
-                    <p className="text-base font-bold">{confirmation ? "1" : "0"}</p>
-                    <p className="text-violet-100">pendientes</p>
-                  </div>
-                  <div className="px-3 py-3">
-                    <p className="text-base font-bold">{loading ? "on" : "ok"}</p>
-                    <p className="text-violet-100">estado</p>
+                  <div className="flex flex-col items-center px-3 py-3">
+                    <p className="flex min-h-10 items-center justify-center text-base font-bold leading-none">
+                      {confirmation ? "1" : "0"}
+                    </p>
+                    <p className="mt-0.5 text-violet-100">Por aprobar</p>
                   </div>
                 </div>
               </section>
