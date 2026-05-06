@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useRef, useLayoutEffect, useMemo, type ReactNode } from "react";
+import {
+  useState,
+  useRef,
+  useLayoutEffect,
+  useEffect,
+  useMemo,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import {
   formatSkillForUserPanel,
@@ -10,6 +17,7 @@ import {
 import { formatToolForUserPanel } from "@/lib/tool-display";
 
 interface Message {
+  id?: string;
   role: string;
   content: string;
   created_at?: string;
@@ -45,6 +53,8 @@ interface RecentToolCall {
   id: string;
   turn_id?: string | null;
   tool_name: string;
+  arguments_json?: Record<string, unknown> | null;
+  result_json?: Record<string, unknown> | null;
   status: string;
   requires_confirmation: boolean;
   created_at: string;
@@ -85,9 +95,17 @@ interface HeartbeatStatus {
   } | null;
 }
 
+type ScheduledTaskDisplayStatus =
+  | "active"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "running";
+
 interface ScheduledTaskSummary {
   activeCount: number;
   pausedCount: number;
+  runningCount?: number;
   tasks?: Array<{
     id: string;
     prompt: string;
@@ -95,7 +113,7 @@ interface ScheduledTaskSummary {
     displayTitle?: string | null;
     scheduleType: "one_time" | "recurring";
     nextRunAt: string | null;
-    status: "active" | "paused" | "completed" | "failed";
+    status: ScheduledTaskDisplayStatus;
   }>;
   nextTask?: {
     id: string;
@@ -104,7 +122,7 @@ interface ScheduledTaskSummary {
     displayTitle?: string | null;
     scheduleType: "one_time" | "recurring";
     nextRunAt: string | null;
-    status: "active" | "paused" | "completed" | "failed";
+    status: ScheduledTaskDisplayStatus;
   } | null;
   lastFailure?: string | null;
 }
@@ -225,6 +243,66 @@ function formatToolStatus(status: string): string {
   return labels[status] ?? status;
 }
 
+function toolDetailText(tool: RecentToolCall): string {
+  const args = tool.arguments_json;
+  if (!args) return "";
+  if (tool.tool_name === "bash") {
+    const terminal =
+      typeof args.terminal === "string" && args.terminal.trim()
+        ? args.terminal.trim()
+        : "";
+    const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+    const prefix = terminal ? `terminal: ${terminal} · ` : "";
+    return prompt ? `${prefix}${prompt}` : "";
+  }
+  const entries = Object.entries(args)
+    .filter(([, value]) => typeof value === "string" || typeof value === "number")
+    .slice(0, 3)
+    .map(([key, value]) => `${key}: ${String(value)}`);
+  return entries.join(" · ");
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function utf8ByteLength(value: string): number {
+  if (!value) return 0;
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(value).length;
+  }
+  return value.length;
+}
+
+function toolResultSummary(tool: RecentToolCall): string {
+  const result = tool.result_json;
+  if (!result) return "";
+  if (tool.tool_name === "bash") {
+    const exitCode =
+      typeof result.exitCode === "number" ? result.exitCode : null;
+    const stdout = typeof result.stdout === "string" ? result.stdout : "";
+    const stderr = typeof result.stderr === "string" ? result.stderr : "";
+    const errorMsg = typeof result.error === "string" ? result.error : "";
+    const stdoutBytes = utf8ByteLength(stdout);
+    const parts: string[] = [];
+    if (exitCode !== null) parts.push(`exitCode ${exitCode}`);
+    if (stdoutBytes > 0) parts.push(`stdout ${formatBytes(stdoutBytes)}`);
+    else parts.push("stdout vacío");
+    if (errorMsg) parts.push(`error: ${errorMsg.slice(0, 120)}`);
+    else if (stderr.trim() && exitCode !== 0)
+      parts.push(`stderr: ${stderr.trim().slice(0, 120)}`);
+    return parts.join(" · ");
+  }
+  const status = typeof result.status === "string" ? result.status : "";
+  const ok = result.ok;
+  if (status) return `status ${status}`;
+  if (typeof ok === "boolean") return ok ? "ok" : "ok:false";
+  return "";
+}
+
 function toolStatusClass(status: string): string {
   if (status === "executed") return "bg-emerald-500";
   if (status === "failed" || status === "rejected") return "bg-red-500";
@@ -238,6 +316,16 @@ function formatToolTime(value: string): string {
   return date.toLocaleString("es-MX", {
     day: "2-digit",
     month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatBubbleTime(value: string | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("es-MX", {
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -358,6 +446,43 @@ function displayScheduledTaskText(task: {
   return task.displayTitle?.trim() || task.userRequest?.trim() || task.prompt;
 }
 
+function formatScheduledTaskFailureForUser(error: string): string {
+  const normalized = error.trim();
+  const lower = normalized.toLowerCase();
+  if (
+    lower.includes("connection error") ||
+    lower.includes("not queryable") ||
+    lower.includes("fetch failed") ||
+    lower.includes("econnreset") ||
+    lower.includes("etimedout")
+  ) {
+    return "Fallo técnico transitorio de conexión. La tarea sigue activa y se reintentará automáticamente.";
+  }
+  return truncatePanelText(normalized, 120);
+}
+
+function formatScheduledTaskRunLabel(task: {
+  nextRunAt: string | null;
+  status: ScheduledTaskDisplayStatus;
+}): string {
+  if (task.status === "running") return "Ejecutándose ahora";
+  if (task.status === "completed") return "Completada";
+  if (task.status === "failed") return "Con error";
+  if (task.nextRunAt) {
+    const next = new Date(task.nextRunAt);
+    const isPast = !Number.isNaN(next.getTime()) && next.getTime() <= Date.now();
+    const label = isPast
+      ? task.status === "active"
+        ? "Pendiente desde"
+        : "Fecha pasada"
+      : "Próxima";
+    return `${label}: ${formatLearningTime(task.nextRunAt)}`;
+  }
+  return task.status === "paused"
+    ? "Pausada sin próxima ejecución."
+    : "Sin próxima ejecución definida.";
+}
+
 function formatHeartbeatStatus(status: "running" | "completed" | "error"): string {
   const labels = {
     running: "En curso",
@@ -368,21 +493,36 @@ function formatHeartbeatStatus(status: "running" | "completed" | "error"): strin
 }
 
 function formatScheduledTaskStatus(
-  status: "active" | "paused" | "completed" | "failed"
+  status: ScheduledTaskDisplayStatus
 ): string {
-  const labels = {
+  const labels: Record<ScheduledTaskDisplayStatus, string> = {
     active: "Activa",
     paused: "Pausada",
     completed: "Completada",
     failed: "Con error",
-  } as const;
+    running: "Ejecutándose",
+  };
   return labels[status] ?? String(status);
 }
 
-function scheduledTaskStatusClass(
-  status: "active" | "paused" | "completed" | "failed"
+function formatScheduledTaskScheduleType(
+  scheduleType: "one_time" | "recurring"
 ): string {
-  const classes = {
+  return scheduleType === "one_time" ? "Única vez" : "Recurrente";
+}
+
+function scheduledTaskScheduleTypeClass(
+  scheduleType: "one_time" | "recurring"
+): string {
+  return scheduleType === "one_time"
+    ? "bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-white/80"
+    : "bg-sky-100 text-sky-800 dark:bg-sky-400/15 dark:text-sky-100";
+}
+
+function scheduledTaskStatusClass(
+  status: ScheduledTaskDisplayStatus
+): string {
+  const classes: Record<ScheduledTaskDisplayStatus, string> = {
     active:
       "bg-violet-100 text-violet-800 dark:bg-white/10 dark:text-violet-100",
     paused:
@@ -391,7 +531,9 @@ function scheduledTaskStatusClass(
       "bg-emerald-100 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-100",
     failed:
       "bg-red-100 text-red-800 dark:bg-red-400/10 dark:text-red-100",
-  } as const;
+    running:
+      "bg-sky-100 text-sky-800 dark:bg-sky-400/15 dark:text-sky-100 animate-pulse",
+  };
   return classes[status];
 }
 
@@ -527,6 +669,27 @@ function appliedSkillsFromMessage(message: Message | undefined): AppliedSkillDis
 
 function memoryFromMessage(message: Message | undefined): AppliedMemoryDisplay[] {
   return parseAppliedMemory(message?.structured_payload?.memoryUsed);
+}
+
+function messageSource(message: Message | undefined): "scheduled_task" | "heartbeat" | null {
+  const source = message?.structured_payload?.source;
+  if (source === "scheduled_task" || source === "heartbeat") return source;
+  return null;
+}
+
+function messageSourceLabel(message: Message | undefined): string | null {
+  const source = messageSource(message);
+  if (source === "scheduled_task") return "Tarea programada";
+  if (source === "heartbeat") return "Heartbeat proactivo";
+  return null;
+}
+
+function defaultSelectedTurnId(messages: Message[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const turnId = messages[i]?.turn_id;
+    if (turnId) return turnId;
+  }
+  return null;
 }
 
 function skillsForLastCompletedTurn(
@@ -685,6 +848,30 @@ function mergeToolCalls(
   return out.slice(0, maxTotal);
 }
 
+function messageDedupKey(message: Message): string {
+  return (
+    message.id ??
+    `${message.turn_id ?? "no-turn"}:${message.role}:${message.created_at ?? ""}:${message.content}`
+  );
+}
+
+function mergeMessages(prev: Message[], additions: Message[], maxTotal = 120): Message[] {
+  const seen = new Set<string>();
+  const merged = [...prev, ...additions]
+    .sort((a, b) => {
+      const aTime = new Date(a.created_at ?? "").getTime();
+      const bTime = new Date(b.created_at ?? "").getTime();
+      return (Number.isNaN(aTime) ? 0 : aTime) - (Number.isNaN(bTime) ? 0 : bTime);
+    })
+    .filter((message) => {
+      const key = messageDedupKey(message);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  return merged.slice(-maxTotal);
+}
+
 function createClientTurnId(): string {
   return crypto.randomUUID();
 }
@@ -813,11 +1000,17 @@ export function ChatInterface({
   initialToolCalls = [],
   initialPendingConfirmation = null,
   initialRecentLearnings = [],
-  heartbeatStatus,
-  scheduledTaskSummary,
+  heartbeatStatus: initialHeartbeatStatus,
+  scheduledTaskSummary: initialScheduledTaskSummary,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [toolCalls, setToolCalls] = useState<RecentToolCall[]>(initialToolCalls);
+  const [heartbeatStatus, setHeartbeatStatus] = useState<HeartbeatStatus | undefined>(
+    initialHeartbeatStatus
+  );
+  const [scheduledTaskSummary, setScheduledTaskSummary] = useState<
+    ScheduledTaskSummary | undefined
+  >(initialScheduledTaskSummary);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(
@@ -829,9 +1022,17 @@ export function ChatInterface({
   const [heartbeatHistoryExpanded, setHeartbeatHistoryExpanded] = useState(false);
   const [scheduledTasksExpanded, setScheduledTasksExpanded] = useState(false);
   const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(() =>
+    defaultSelectedTurnId(initialMessages)
+  );
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const syncAfterRef = useRef<string | null>(
+    initialMessages.at(-1)?.created_at ?? null
+  );
+  const messagesRef = useRef<Message[]>(initialMessages);
+  const loadingRef = useRef(false);
   const agentInitial =
     agentEmoji || agentName.slice(0, 1).toUpperCase() || "G";
   const agentStatus = confirmation
@@ -845,33 +1046,38 @@ export function ChatInterface({
       ? "Gu está procesando tu solicitud y preparando la siguiente respuesta."
       : "Listo para recibir nuevas peticiones y ejecutar tareas con contexto.";
   const heartbeatDigest = heartbeatDigestItems(
-    heartbeatStatus?.lastRun?.summary ?? "",
-    { limit: 4 }
+    heartbeatStatus?.lastRun?.summary ?? ""
   );
   const heartbeatRuns = heartbeatStatus?.runs ?? [];
+  const previousHeartbeatRuns = heartbeatRuns.slice(1);
   const scheduledTasks = scheduledTaskSummary?.tasks ?? [];
+  const inspectedTurnId = confirmation?.turnId ?? selectedTurnId;
+  const inspectedMessage = inspectedTurnId
+    ? [...messages].reverse().find((message) => message.turn_id === inspectedTurnId)
+    : undefined;
+  const inspectedSourceLabel = messageSourceLabel(inspectedMessage);
 
   const toolsThisTurn = useMemo(
-    () => toolsForLastCompletedTurn(messages, toolCalls, confirmation?.turnId),
-    [messages, toolCalls, confirmation?.turnId]
+    () => toolsForLastCompletedTurn(messages, toolCalls, inspectedTurnId),
+    [messages, toolCalls, inspectedTurnId]
   );
   const skillsThisTurn = useMemo(
     () =>
       skillsForLastCompletedTurn(
         messages,
-        confirmation?.turnId,
+        inspectedTurnId,
         confirmation?.appliedSkills
       ),
-    [messages, confirmation?.turnId, confirmation?.appliedSkills]
+    [messages, inspectedTurnId, confirmation?.appliedSkills]
   );
   const memoryThisTurn = useMemo(
     () =>
       memoryForLastCompletedTurn(
         messages,
-        confirmation?.turnId,
+        inspectedTurnId,
         confirmation?.memoryUsed
       ),
-    [messages, confirmation?.turnId, confirmation?.memoryUsed]
+    [messages, inspectedTurnId, confirmation?.memoryUsed]
   );
   const shortTermMemoryCount = memoryThisTurn.filter(
     (memory) => memory.source === "short_term"
@@ -897,7 +1103,9 @@ export function ChatInterface({
     availableTools.length > 0
       ? availableTools.map((tool) => formatToolForUserPanel(tool.id))
       : [];
-  const visibleOperationalEvents = operationalEvents.slice(-8);
+  const visibleOperationalEvents = operationalEvents
+    .filter((event) => !inspectedTurnId || event.turnId === inspectedTurnId)
+    .slice(-8);
 
   useLayoutEffect(() => {
     const viewport = messagesViewportRef.current;
@@ -908,6 +1116,78 @@ export function ChatInterface({
     });
     didInitialScrollRef.current = true;
   }, [messages.length, confirmation?.toolCallId, loading]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+
+    async function syncAutomatedActivity() {
+      if (cancelled || inFlight || document.visibilityState !== "visible") return;
+      inFlight = true;
+      try {
+        const params = new URLSearchParams();
+        const after = syncAfterRef.current;
+        if (after) params.set("after", after);
+        const res = await fetch(`/api/chat/sync?${params.toString()}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          messages?: Message[];
+          toolCalls?: RecentToolCall[];
+          heartbeatStatus?: HeartbeatStatus;
+          scheduledTaskSummary?: ScheduledTaskSummary;
+        };
+        if (cancelled) return;
+        if (Array.isArray(data.messages) && data.messages.length > 0) {
+          const existingKeys = new Set(messagesRef.current.map(messageDedupKey));
+          const newMessages = data.messages.filter(
+            (message) => !existingKeys.has(messageDedupKey(message))
+          );
+          const newest = newMessages.filter((message) => message.turn_id).at(-1);
+          const newestCreatedAt = data.messages
+            .map((message) => message.created_at)
+            .filter((value): value is string => typeof value === "string")
+            .at(-1);
+          if (newestCreatedAt) syncAfterRef.current = newestCreatedAt;
+          if (newMessages.length > 0) {
+            setMessages((prev) => mergeMessages(prev, newMessages));
+          }
+          // If the user is waiting for a web response, automated cron/heartbeat
+          // messages should appear in the timeline but should not steal the
+          // right-panel focus from the active user turn.
+          if (newest?.turn_id && !loadingRef.current) {
+            setSelectedTurnId(newest.turn_id);
+          }
+        }
+        if (Array.isArray(data.toolCalls)) {
+          setToolCalls((prev) => mergeToolCalls(prev, data.toolCalls ?? []));
+        }
+        if (data.heartbeatStatus) setHeartbeatStatus(data.heartbeatStatus);
+        if (data.scheduledTaskSummary) {
+          setScheduledTaskSummary(data.scheduledTaskSummary);
+        }
+      } catch {
+        // Polling is best-effort; the next tick will retry.
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    const interval = window.setInterval(syncAutomatedActivity, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   function appendOperationalEvent(event: OperationalEvent) {
     setOperationalEvents((prev) => {
@@ -936,6 +1216,7 @@ export function ChatInterface({
       structured_payload: { appliedSkills: [], memoryUsed: [] },
     };
     setMessages((prev) => [...prev, userMsg]);
+    setSelectedTurnId(clientTurnId);
     setShortTermExpanded(false);
     setOperationalEvents([]);
     setInput("");
@@ -991,11 +1272,13 @@ export function ChatInterface({
             },
           },
         ]);
+        setSelectedTurnId(data.turnId ?? clientTurnId);
         return;
       }
 
       if (data.pendingConfirmation) {
         setConfirmation(data.pendingConfirmation);
+        setSelectedTurnId(data.pendingConfirmation.turnId ?? data.turnId ?? clientTurnId);
       }
 
       const assistantIso = new Date().toISOString();
@@ -1020,6 +1303,7 @@ export function ChatInterface({
             },
           },
         ]);
+        setSelectedTurnId(data.turnId ?? clientTurnId);
       } else if (!data.pendingConfirmation) {
         setMessages((prev) => [
           ...prev,
@@ -1035,6 +1319,7 @@ export function ChatInterface({
             },
           },
         ]);
+        setSelectedTurnId(data.turnId ?? clientTurnId);
       }
 
       if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
@@ -1061,6 +1346,7 @@ export function ChatInterface({
           structured_payload: { appliedSkills: [], memoryUsed: [] },
         },
       ]);
+      setSelectedTurnId(clientTurnId);
     } finally {
       eventSource.close();
       setLoading(false);
@@ -1128,6 +1414,7 @@ export function ChatInterface({
             },
           },
         ]);
+        setSelectedTurnId(data.turnId ?? confirmation.turnId ?? null);
       }
 
       if (data.pendingConfirmation) {
@@ -1153,6 +1440,7 @@ export function ChatInterface({
             },
           },
         ]);
+        setSelectedTurnId(data.turnId ?? confirmation.turnId ?? null);
       } else if (action === "reject" && !data.response) {
         setMessages((prev) => [
           ...prev,
@@ -1168,6 +1456,7 @@ export function ChatInterface({
             },
           },
         ]);
+        setSelectedTurnId(data.turnId ?? confirmation.turnId ?? null);
       }
 
       if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
@@ -1191,8 +1480,10 @@ export function ChatInterface({
           role: "assistant",
           content: "Error al procesar la confirmación.",
           created_at: errIso,
+          turn_id: confirmation.turnId ?? null,
         },
       ]);
+      setSelectedTurnId(confirmation.turnId ?? null);
     } finally {
       eventSource?.close();
       setConfirmation(keepPending);
@@ -1285,10 +1576,27 @@ export function ChatInterface({
               <p className="mt-2">Estoy listo para ayudarte a organizar, decidir y ejecutar tareas.</p>
             </div>
           )}
-          {messages.map((msg, i) => (
+          {messages.map((msg, i) => {
+            const sourceLabel = messageSourceLabel(msg);
+            return (
             <div
               key={i}
-              className={`flex items-start gap-2 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+              role={msg.turn_id ? "button" : undefined}
+              tabIndex={msg.turn_id ? 0 : undefined}
+              title={msg.turn_id ? "Ver contexto de este turno" : undefined}
+              onClick={() => {
+                if (msg.turn_id) setSelectedTurnId(msg.turn_id);
+              }}
+              onKeyDown={(event) => {
+                if (!msg.turn_id) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setSelectedTurnId(msg.turn_id);
+                }
+              }}
+              className={`flex items-start gap-2 rounded-[1.75rem] outline-none transition ${
+                msg.turn_id ? "cursor-pointer" : ""
+              } ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
               {msg.role !== "user" && (
                 <ChatAvatar
@@ -1305,6 +1613,11 @@ export function ChatInterface({
                     : "border border-slate-200/70 bg-white text-slate-900 dark:border-white/10 dark:bg-white/10 dark:text-white"
                 }`}
               >
+                {sourceLabel ? (
+                  <div className="mb-2 inline-flex rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-violet-700 dark:bg-violet-400/10 dark:text-violet-100">
+                    {sourceLabel}
+                  </div>
+                ) : null}
                 {msg.role === "assistant" ? (
                   <div className="prose prose-sm max-w-none prose-p:my-1 prose-li:my-0.5 prose-ol:my-1 prose-ul:my-1 prose-a:text-violet-700 prose-a:underline dark:prose-invert dark:prose-a:text-violet-200">
                     <ReactMarkdown
@@ -1322,6 +1635,17 @@ export function ChatInterface({
                 ) : (
                   <p className="whitespace-pre-wrap">{msg.content}</p>
                 )}
+                {msg.created_at ? (
+                  <p
+                    className={`mt-1.5 text-right text-[10px] tabular-nums ${
+                      msg.role === "user"
+                        ? "text-white/70"
+                        : "text-slate-400 dark:text-white/40"
+                    }`}
+                  >
+                    {formatBubbleTime(msg.created_at)}
+                  </p>
+                ) : null}
               </div>
               {msg.role === "user" && (
                 <ChatAvatar
@@ -1332,7 +1656,8 @@ export function ChatInterface({
                 />
               )}
             </div>
-          ))}
+            );
+          })}
 
           {/* Confirmation prompt */}
           {confirmation && (
@@ -1531,7 +1856,13 @@ export function ChatInterface({
               </section>
 
               <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
-                <PanelSectionTitle icon="flow" title="Flujo actual" />
+                <PanelSectionTitle icon="flow" title="Flujo actual">
+                  <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
+                    {inspectedSourceLabel
+                      ? `Contexto del turno seleccionado · ${inspectedSourceLabel}.`
+                      : "Contexto del turno seleccionado en el chat."}
+                  </p>
+                </PanelSectionTitle>
                 <div className="mt-4 space-y-1 text-sm">
                   <div className="rounded-2xl px-3 py-2 transition hover:bg-white/60 dark:hover:bg-white/[0.04]">
                     <button
@@ -1736,7 +2067,9 @@ export function ChatInterface({
                           </div>
                         ) : (
                           <p className="mt-2 text-xs text-slate-400 dark:text-white/40">
-                            Envía una solicitud para ver el flujo operativo.
+                            {inspectedSourceLabel
+                              ? "El replay detallado del flujo no está persistido aún; revisa herramientas, memoria y habilidades de este turno abajo."
+                              : "Envía una solicitud para ver el flujo operativo."}
                           </p>
                         )}
                       </div>
@@ -1927,30 +2260,49 @@ export function ChatInterface({
                         : "Sin herramientas registradas para este turno (o la respuesta fue solo con contexto)."}
                     </div>
                   ) : (
-                    toolsThisTurn.map((tool) => (
-                      <div
-                        key={tool.id}
-                        className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-3 text-sm ring-1 ring-slate-100 dark:bg-white/5 dark:ring-white/10"
-                      >
-                        <span
-                          className={`h-2.5 w-2.5 shrink-0 rounded-full ${toolStatusClass(tool.status)}`}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-start justify-between gap-3">
-                            <p className="truncate font-medium text-slate-800 dark:text-white">
-                              {formatToolForUserPanel(tool.tool_name)}
+                    toolsThisTurn.map((tool, index) => {
+                      const detail = toolDetailText(tool);
+                      const resultSummary = toolResultSummary(tool);
+                      return (
+                        <div
+                          key={tool.id}
+                          className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-3 text-sm ring-1 ring-slate-100 dark:bg-white/5 dark:ring-white/10"
+                        >
+                          <span
+                            className={`h-2.5 w-2.5 shrink-0 rounded-full ${toolStatusClass(tool.status)}`}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-3">
+                              <p className="truncate font-medium text-slate-800 dark:text-white">
+                                {toolsThisTurn.length > 1
+                                  ? `${index + 1}. ${formatToolForUserPanel(tool.tool_name)}`
+                                  : formatToolForUserPanel(tool.tool_name)}
+                              </p>
+                              <span className="shrink-0 text-[11px] text-slate-400 dark:text-white/40">
+                                {formatToolTime(tool.created_at)}
+                              </span>
+                            </div>
+                            {detail ? (
+                              <p className="mt-1 line-clamp-2 break-words text-[11px] text-slate-500 dark:text-white/55">
+                                {detail}
+                              </p>
+                            ) : null}
+                            {resultSummary ? (
+                              <p className="mt-1 break-words text-[11px] text-slate-500 dark:text-white/55">
+                                <span className="font-semibold text-slate-600 dark:text-white/70">
+                                  Resultado:
+                                </span>{" "}
+                                {resultSummary}
+                              </p>
+                            ) : null}
+                            <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
+                              {formatToolStatus(tool.status)}
+                              {tool.requires_confirmation ? " · HITL" : ""}
                             </p>
-                            <span className="shrink-0 text-[11px] text-slate-400 dark:text-white/40">
-                              {formatToolTime(tool.created_at)}
-                            </span>
                           </div>
-                          <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
-                            {formatToolStatus(tool.status)}
-                            {tool.requires_confirmation ? " · HITL" : ""}
-                          </p>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </section>
@@ -2041,16 +2393,13 @@ export function ChatInterface({
                     </div>
                     {heartbeatStatus?.lastRun ? (
                       <div className="mt-2 rounded-xl bg-white/55 p-2 dark:bg-white/10">
-                        <div className="max-h-36 overflow-y-auto">
+                        <div className="max-h-44 overflow-y-auto pr-1">
                           <p className="mb-1 font-semibold opacity-80">
                             {formatLearningTime(heartbeatStatus.lastRun.startedAt)}
                           </p>
-                          <HeartbeatDigestBulletList
-                            items={heartbeatDigest}
-                            lineClamp={180}
-                          />
+                          <HeartbeatDigestBulletList items={heartbeatDigest} />
                         </div>
-                        {heartbeatRuns.length > 1 ? (
+                        {previousHeartbeatRuns.length > 0 ? (
                           <button
                             type="button"
                             onClick={() =>
@@ -2060,12 +2409,12 @@ export function ChatInterface({
                           >
                             {heartbeatHistoryExpanded
                               ? "Ocultar historial"
-                              : `Ver últimos ${heartbeatRuns.length} heartbeats`}
+                              : `Ver ${previousHeartbeatRuns.length === 1 ? "heartbeat anterior" : `los ${previousHeartbeatRuns.length} heartbeats anteriores`}`}
                           </button>
                         ) : null}
                         {heartbeatHistoryExpanded ? (
                           <div className="mt-2 max-h-64 space-y-2 overflow-y-auto border-t border-emerald-200/70 pt-2 dark:border-white/10">
-                            {heartbeatRuns.map((run, runIndex) => {
+                            {previousHeartbeatRuns.map((run, runIndex) => {
                               const runDigest = heartbeatDigestItems(run.summary);
                               return (
                                 <div
@@ -2105,11 +2454,30 @@ export function ChatInterface({
                         {scheduledTaskSummary?.activeCount ?? 0} activas
                       </span>
                     </div>
-                    <p className="mt-2 opacity-80">
-                      {scheduledTaskSummary?.nextTask
-                        ? `Próxima: ${formatLearningTime(scheduledTaskSummary.nextTask.nextRunAt ?? "")} · ${truncatePanelText(displayScheduledTaskText(scheduledTaskSummary.nextTask))}`
-                        : "Sin próximas tareas activas."}
-                    </p>
+                    <div className="mt-2 space-y-1.5 opacity-80">
+                      {scheduledTaskSummary?.nextTask ? (
+                        <div className="flex items-start justify-between gap-x-2 gap-y-1.5">
+                          <p className="min-w-0 flex-1 text-[13px] leading-snug">
+                            {formatScheduledTaskRunLabel(scheduledTaskSummary.nextTask)}{" "}
+                            ·{" "}
+                            {truncatePanelText(
+                              displayScheduledTaskText(scheduledTaskSummary.nextTask)
+                            )}
+                          </p>
+                          <span
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${scheduledTaskScheduleTypeClass(
+                              scheduledTaskSummary.nextTask.scheduleType
+                            )}`}
+                          >
+                            {formatScheduledTaskScheduleType(
+                              scheduledTaskSummary.nextTask.scheduleType
+                            )}
+                          </span>
+                        </div>
+                      ) : (
+                        <p>Sin próximas tareas activas.</p>
+                      )}
+                    </div>
                     {scheduledTaskSummary?.pausedCount ? (
                       <p className="mt-1 opacity-70">
                         {scheduledTaskSummary.pausedCount} pausada(s).
@@ -2117,7 +2485,10 @@ export function ChatInterface({
                     ) : null}
                     {scheduledTaskSummary?.lastFailure ? (
                       <p className="mt-1 text-red-700 dark:text-red-200">
-                        Último fallo: {truncatePanelText(scheduledTaskSummary.lastFailure, 120)}
+                        Último fallo:{" "}
+                        {formatScheduledTaskFailureForUser(
+                          scheduledTaskSummary.lastFailure
+                        )}
                       </p>
                     ) : null}
                     {scheduledTasks.length > 0 ? (
@@ -2130,34 +2501,37 @@ export function ChatInterface({
                       >
                         {scheduledTasksExpanded
                           ? "Ocultar tareas"
-                          : `Ver ${
-                              scheduledTasks.length === 1
-                                ? "la tarea activa o pausada"
-                                : `las ${scheduledTasks.length} tareas activas y pausadas`
-                            }`}
+                          : "Ver todas (activas y pausadas)"}
                       </button>
                     ) : null}
                     {scheduledTasksExpanded ? (
                       <div className="mt-2 max-h-64 space-y-2 overflow-y-auto border-t border-violet-200/70 pt-2 dark:border-white/10">
                         {scheduledTasks.map((task) => {
                           const taskDisplayText = displayScheduledTaskText(task);
-                          const taskTimingText = task.nextRunAt
-                            ? `Próxima: ${formatLearningTime(task.nextRunAt)}`
-                            : task.status === "paused"
-                              ? "Pausada sin próxima ejecución."
-                              : "Sin próxima ejecución definida.";
+                          const taskTimingText = formatScheduledTaskRunLabel(task);
                           return (
                             <div
                               key={task.id}
                               className="rounded-lg bg-white/55 p-2 dark:bg-white/10"
                             >
-                              <div className="flex items-center justify-between gap-2">
-                                <p className="font-semibold">{taskTimingText}</p>
-                                <span
-                                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${scheduledTaskStatusClass(task.status)}`}
-                                >
-                                  {formatScheduledTaskStatus(task.status)}
-                                </span>
+                              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
+                                <p className="min-w-0 flex-1 font-semibold">{taskTimingText}</p>
+                                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                                  <span
+                                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${scheduledTaskScheduleTypeClass(
+                                      task.scheduleType
+                                    )}`}
+                                  >
+                                    {formatScheduledTaskScheduleType(
+                                      task.scheduleType
+                                    )}
+                                  </span>
+                                  <span
+                                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${scheduledTaskStatusClass(task.status)}`}
+                                  >
+                                    {formatScheduledTaskStatus(task.status)}
+                                  </span>
+                                </div>
                               </div>
                               <div className="mt-2 max-h-24 overflow-y-scroll pr-1">
                                 <p className="break-words font-medium">

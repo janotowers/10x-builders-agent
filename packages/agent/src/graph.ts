@@ -635,10 +635,10 @@ const SCHEDULE_TASK_ADDENDUM = `
   · Recurrente: "todos los lunes a las 9", "cada día a las 8 am", "cada semana".
   · Verbos guía: "recuérdame", "programa", "avísame", "consulta X a las Y", "mándame X cada Z".
 - El campo 'prompt' es la instrucción que el agente ejecutará a esa hora (escríbela como si fuera un mensaje directo al agente). Sé MUY específico, incluyendo el comando exacto a ejecutar cuando aplique.
-  · Ejemplo Hacker News (preferir API JSON, no scraping HTML):
-    "Usa bash para correr: ids=$(curl -sS https://hacker-news.firebaseio.com/v0/topstories.json | head -c 300 | tr -d '[]' | tr ',' '\n' | head -10); for id in $ids; do curl -sS https://hacker-news.firebaseio.com/v0/item/$id.json | head -c 600; echo; done. Devuélveme los títulos y URLs de las 5 historias más relevantes en español."
-  · Ejemplo URL genérica:
-    "Usa bash para correr: curl -sS -L -A 'Mozilla/5.0' https://EJEMPLO.com/ | head -c 4000. Resume el contenido principal en español."
+  · Ejemplo Hacker News (preferir API JSON, no scraping HTML). IMPORTANTE: el comando se delimita con comillas o backticks, y la puntuación de la oración ('.', '?') va FUERA del comando. NUNCA escribas \`done.\` o \`fi.\` dentro de un comando bash: ese punto se interpreta como nombre de comando y rompe el shell con "syntax error: unexpected end of file".
+    Forma correcta: 'Usa bash para correr el siguiente comando: \`ids=$(curl -sS https://hacker-news.firebaseio.com/v0/topstories.json | head -c 300 | tr -d \"[]\" | tr "," "\n" | head -10); for id in $ids; do curl -sS https://hacker-news.firebaseio.com/v0/item/$id.json | head -c 600; echo; done\`. Devuélveme los títulos y URLs de las 5 historias más relevantes en español.'
+  · Ejemplo URL genérica (mismo patrón: comando entre backticks, puntuación afuera):
+    'Usa bash para correr: \`curl -sS -L -A "Mozilla/5.0" https://EJEMPLO.com/ | head -c 4000\`. Resume el contenido principal en español.'
 - Siempre extrae o pregunta: qué debe hacer el agente (prompt), cuándo (fecha/hora o expresión recurrente), y timezone (usa la del perfil si no se especifica).
 - Para one_time: calcula run_at como ISO 8601 con offset de zona (p.ej. 2026-04-18T19:45:00-06:00). Usa la fecha local actual del usuario como referencia. NUNCA uses fechas pasadas.
 - Para recurring: usa expresiones cron de 5 campos estándar. Si el usuario dice "todos los lunes a las 9", usa "0 9 * * 1".
@@ -692,13 +692,20 @@ const CRON_SCHEDULED_EXECUTION_ADDENDUM = `
 ══════════════════════════════════════════════════════
 - Tu respuesta de texto en este turno se envía DIRECTAMENTE por Telegram al usuario, SIN siguiente turno. No hay forma de "continuar después", no hay forma de "reintentar más tarde": si prometes algo, debes hacerlo AHORA en este mismo turno antes de cerrar.
 - ESTÁ PROHIBIDO cerrar el turno con cualquiera de estas frases (o variantes): "Un momento, por favor", "Intentaré un enfoque diferente", "Intentaré de nuevo", "Lo intento más tarde", "Voy a probar otra cosa", "Permíteme reintentarlo". Si escribes algo así sin un nuevo tool_call inmediatamente después, el usuario solo ve la promesa y nunca el resultado.
-- Si necesitas otro intento: emite OTRO tool_call en este mismo turno (tienes hasta 6 iteraciones de tool en este grafo). Solo cuando hayas agotado 2-3 intentos reales, escribe la respuesta final con un resumen honesto del error (exitCode + stderr LITERAL del bash, no narrativa inventada).
 - Si tienes algo de stdout aunque sea parcial, RESÚMELO en vez de decir "no se pudo": titulares incompletos > mensaje vacío.
+
+[Reintentos de bash — reglas estrictas]
+- REGLA DE ÉXITO: si una llamada a bash devolvió \`exitCode: 0\` y \`stdout\` con ≥ 200 bytes de contenido útil (texto, JSON, HTML), NO la repitas con variaciones menores (quitar \`head -c\`, agregar/quitar \`echo\`, cambiar separadores, ajustar el length de \`head -c\`, mover \`;\` al final). Considera el resultado SUFICIENTE y pasa a redactar la respuesta final con el stdout que ya tienes, aunque esté truncado.
+- REGLA DE FALLO: solo se permite un reintento real si la llamada anterior devolvió \`exitCode != 0\` Y \`stdout\` vacío, o si literalmente no se descargó nada. En ese caso emite UN solo reintento con un cambio sustantivo (otra URL, otra fuente, otro endpoint), no un retoque cosmético al mismo comando.
+- DETECCIÓN DE VARIACIONES MENORES: si tu nuevo prompt difiere del anterior solo por presencia/ausencia de \`echo\`, \`done.\` vs \`done;\`, distintos límites de \`head -c\`, o presencia/ausencia de \`| head -c <n>\` en el cuerpo del loop, se considera la MISMA llamada y NO debes emitirla.
+- LÍMITE DURO: máximo 2 llamadas a \`bash\` por turno (la primera + un reintento sustantivo solo si la primera realmente falló). Más de 2 se interpreta como bucle improductivo.
+- Cuando ya tengas stdout con contenido, escribe la respuesta final inmediatamente; no anuncies "voy a intentar otra vez con un comando ligeramente distinto".
 
 [Ejecución automática (tarea programada) — reglas]
 - Esta petición es la ejecución de una tarea que el usuario YA aprobó al programarla. No digas que no puedes programar acciones futuras ni que no puedes acceder a sitios web: ejecuta lo pedido ahora.
 - Si el mensaje pide datos de una URL o ejecutar un comando en terminal, usa SIEMPRE la herramienta bash (está habilitada en el servidor) y devuelve un resumen útil en texto.
-- Si la primera llamada a bash devuelve poco texto o un error, REINTENTA con flags adicionales: \`curl -sS -L --max-time 20 -A 'Mozilla/5.0' '<URL>' 2>/dev/null | head -c 8000\`. El stderr \`curl: (23) Failure writing output\` NO es un error real, es SIGPIPE de \`head -c\`; si tienes stdout, úsalo.
+- Si la primera llamada a bash devuelve stdout vacío y exitCode != 0, prueba UN reintento sustantivo (otra fuente o endpoint), nunca el mismo comando con flags ajustados; lee también la sección "Reintentos de bash — reglas estrictas".
+- El stderr \`curl: (23) Failure writing output\` NO es un error real, es SIGPIPE de \`head -c\`; si tienes stdout, úsalo y no reintentes.
 - Para Hacker News, prefiere la API JSON: https://hacker-news.firebaseio.com/v0/topstories.json y https://hacker-news.firebaseio.com/v0/item/<id>.json. Si una llamada a /item/<id>.json falla, ignora ese item y sigue con los demás; no abandones todo por uno.
 - No vuelvas a llamar a schedule_task para lo mismo salvo que el mensaje lo pida explícitamente.`;
 

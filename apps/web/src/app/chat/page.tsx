@@ -7,11 +7,15 @@ type RecentToolCall = {
   id: string;
   turn_id?: string | null;
   tool_name: string;
+  arguments_json?: Record<string, unknown> | null;
+  result_json?: Record<string, unknown> | null;
   status: string;
   requires_confirmation: boolean;
   created_at: string;
   finished_at: string | null;
 };
+
+type SessionChannel = "web" | "cron" | "heartbeat";
 
 type AppliedSkill = {
   id: string;
@@ -64,9 +68,17 @@ type HeartbeatStatus = {
   } | null;
 };
 
+type ScheduledTaskDisplayStatus =
+  | "active"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "running";
+
 type ScheduledTaskSummary = {
   activeCount: number;
   pausedCount: number;
+  runningCount?: number;
   tasks?: Array<{
     id: string;
     prompt: string;
@@ -74,7 +86,7 @@ type ScheduledTaskSummary = {
     displayTitle?: string | null;
     scheduleType: "one_time" | "recurring";
     nextRunAt: string | null;
-    status: "active" | "paused" | "completed" | "failed";
+    status: ScheduledTaskDisplayStatus;
   }>;
   nextTask?: {
     id: string;
@@ -83,7 +95,7 @@ type ScheduledTaskSummary = {
     displayTitle?: string | null;
     scheduleType: "one_time" | "recurring";
     nextRunAt: string | null;
-    status: "active" | "paused" | "completed" | "failed";
+    status: ScheduledTaskDisplayStatus;
   } | null;
   lastFailure?: string | null;
 };
@@ -163,17 +175,33 @@ export default async function ChatPage() {
     profile.avatar_path || profile.avatar_url
   );
 
-  const { data: messages } = await supabase
+  const { data: sessionRows } = await supabase
     .from("agent_sessions")
-    .select("id")
+    .select("id, channel")
     .eq("user_id", user.id)
-    .eq("channel", "web")
+    .in("channel", ["web", "cron", "heartbeat"])
     .eq("status", "active")
     .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
+    .limit(10);
+
+  const activeSessions = ((sessionRows ?? []) as Array<{
+    id?: unknown;
+    channel?: unknown;
+  }>).filter(
+    (session): session is { id: string; channel: SessionChannel } =>
+      typeof session.id === "string" &&
+      (session.channel === "web" ||
+        session.channel === "cron" ||
+        session.channel === "heartbeat")
+  );
+  const sessionIds = activeSessions.map((session) => session.id);
+  const channelBySessionId = new Map(
+    activeSessions.map((session) => [session.id, session.channel])
+  );
+  const webSession = activeSessions.find((session) => session.channel === "web");
 
   let sessionMessages: Array<{
+    id?: string;
     role: string;
     content: string;
     created_at: string;
@@ -218,27 +246,64 @@ export default async function ChatPage() {
         checkpointThreadId: string;
       }
     | null = null;
-  if (messages?.id) {
+  if (sessionIds.length > 0) {
     const { data } = await supabase
       .from("agent_messages")
-      .select("role, content, created_at, turn_id, structured_payload")
-      .eq("session_id", messages.id)
+      .select("id, session_id, role, content, created_at, turn_id, structured_payload")
+      .in("session_id", sessionIds)
       .order("created_at", { ascending: false })
-      .limit(50);
-    sessionMessages = (data ?? []).reverse();
+      .limit(100);
+    sessionMessages = (data ?? [])
+      .filter((message: Record<string, unknown>) => {
+        const channel = channelBySessionId.get(String(message.session_id));
+        // Automated turns persist their internal prompt as a user message. The
+        // chat timeline should show what Gu emitted to the user, not the runner
+        // prompt that triggered it.
+        return channel === "web" || message.role === "assistant";
+      })
+      .map((message: Record<string, unknown>) => {
+        const channel = channelBySessionId.get(String(message.session_id));
+        const payload = asRecord(message.structured_payload);
+        const automatedSource =
+          channel === "cron"
+            ? "scheduled_task"
+            : channel === "heartbeat"
+              ? "heartbeat"
+              : null;
+        return {
+          id: typeof message.id === "string" ? message.id : undefined,
+          role: String(message.role ?? ""),
+          content: String(message.content ?? ""),
+          created_at: String(message.created_at ?? ""),
+          turn_id:
+            typeof message.turn_id === "string" ? message.turn_id : null,
+          structured_payload: automatedSource
+            ? {
+                ...payload,
+                source: automatedSource,
+                channel,
+              }
+            : Object.keys(payload).length > 0
+              ? payload
+              : null,
+        };
+      })
+      .reverse();
 
     const { data: toolCalls } = await supabase
       .from("tool_calls")
-      .select("id, turn_id, tool_name, status, requires_confirmation, created_at, finished_at")
-      .eq("session_id", messages.id)
+      .select("id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at")
+      .in("session_id", sessionIds)
       .order("created_at", { ascending: false })
       .limit(80);
     recentToolCalls = (toolCalls ?? []) as RecentToolCall[];
+  }
 
+  if (webSession?.id) {
     const { data: pendingMessages } = await supabase
       .from("agent_messages")
       .select("structured_payload")
-      .eq("session_id", messages.id)
+      .eq("session_id", webSession.id)
       .not("structured_payload", "is", null)
       .order("created_at", { ascending: false })
       .limit(5);
@@ -332,8 +397,37 @@ export default async function ChatPage() {
     .order("next_run_at", { ascending: true, nullsFirst: false })
     .limit(50);
   const taskRows = (scheduledTasks ?? []) as Array<Record<string, unknown>>;
-  const activeTasks = taskRows.filter((task) => task.status === "active");
-  const pausedTasks = taskRows.filter((task) => task.status === "paused");
+  const taskIds = taskRows
+    .map((task) => task.id)
+    .filter((id): id is string => typeof id === "string");
+  // The cron lock flips status='paused' transiently while a run is in flight;
+  // detect those tasks via a currently-running task_run so the UI shows
+  // "Ejecutándose ahora" instead of "Pausada".
+  let runningTaskIds = new Set<string>();
+  if (taskIds.length > 0) {
+    const { data: activeRuns } = await supabase
+      .from("scheduled_task_runs")
+      .select("task_id")
+      .in("task_id", taskIds)
+      .eq("status", "running");
+    runningTaskIds = new Set(
+      ((activeRuns ?? []) as Array<{ task_id?: unknown }>)
+        .map((row) => row.task_id)
+        .filter((id): id is string => typeof id === "string")
+    );
+  }
+  const resolveDisplayStatus = (task: Record<string, unknown>): ScheduledTaskDisplayStatus => {
+    if (typeof task.id === "string" && runningTaskIds.has(task.id)) {
+      return "running";
+    }
+    return task.status as ScheduledTaskDisplayStatus;
+  };
+  const activeTasks = taskRows.filter(
+    (task) => resolveDisplayStatus(task) === "active"
+  );
+  const pausedTasks = taskRows.filter(
+    (task) => resolveDisplayStatus(task) === "paused"
+  );
   const normalizedScheduledTasks = taskRows
     .filter(
       (task) =>
@@ -353,10 +447,11 @@ export default async function ChatPage() {
       scheduleType: task.schedule_type as "one_time" | "recurring",
       nextRunAt:
         typeof task.next_run_at === "string" ? task.next_run_at : null,
-      status: task.status as "active" | "paused",
+      status: resolveDisplayStatus(task),
     }));
   const nextTask = normalizedScheduledTasks.find(
-    (task) => task.status === "active" && task.nextRunAt
+    (task) =>
+      (task.status === "active" || task.status === "running") && task.nextRunAt
   );
   const lastFailureTask = taskRows.find(
     (task) => typeof task.last_failure_error === "string" && task.last_failure_error
@@ -364,6 +459,7 @@ export default async function ChatPage() {
   scheduledTaskSummary = {
     activeCount: activeTasks.length,
     pausedCount: pausedTasks.length,
+    runningCount: runningTaskIds.size,
     tasks: normalizedScheduledTasks,
     nextTask: nextTask ?? null,
     lastFailure:

@@ -290,7 +290,7 @@ function heartbeatRunSummary(run: HeartbeatRun): string {
   const payload = readHeartbeatPayload(run);
   const response = readString(payload.response).trim();
   if (!response) return "Sin resumen guardado.";
-  return response.length > 260 ? `${response.slice(0, 260).trim()}...` : response;
+  return response;
 }
 
 function heartbeatToolCalls(run: HeartbeatRun): string[] {
@@ -320,8 +320,31 @@ function scheduledTaskTiming(task: ScheduledTaskItem): string {
 }
 
 function scheduledTaskNextRun(task: ScheduledTaskItem): string {
-  if (task.next_run_at) return formatRunDate(task.next_run_at);
+  if (task.status === "completed") return "Completada";
+  if (task.status === "failed") return "Con error";
+  if (task.next_run_at) {
+    const next = new Date(task.next_run_at);
+    if (!Number.isNaN(next.getTime()) && next.getTime() <= Date.now()) {
+      return task.status === "active"
+        ? `Pendiente desde: ${formatRunDate(task.next_run_at)}`
+        : `Fecha pasada: ${formatRunDate(task.next_run_at)}`;
+    }
+    return `Próxima: ${formatRunDate(task.next_run_at)}`;
+  }
   return task.status === "paused" ? "Pausada" : "Sin próxima corrida";
+}
+
+function isPastOneTimeTask(task: ScheduledTaskItem): boolean {
+  if (task.schedule_type !== "one_time") return false;
+  const scheduledAt = task.next_run_at ?? task.run_at;
+  if (!scheduledAt) return true;
+  const date = new Date(scheduledAt);
+  return Number.isNaN(date.getTime()) || date.getTime() <= Date.now();
+}
+
+function canResumeScheduledTask(task: ScheduledTaskItem): boolean {
+  if (task.status !== "paused") return false;
+  return !isPastOneTimeTask(task);
 }
 
 function scheduledTaskDisplayText(task: ScheduledTaskItem): string {
@@ -1494,7 +1517,7 @@ export function SettingsForm({
                 </p>
                 <p className="text-neutral-500">
                   {latestHeartbeatRun
-                    ? `${formatRunDate(latestHeartbeatRun.started_at)} · ${latestHeartbeatRun.status}`
+                    ? `${formatRunDate(latestHeartbeatRun.started_at)} · ${heartbeatStatusLabel(latestHeartbeatRun.status)}`
                     : "Aún no hay corridas registradas."}
                 </p>
               </div>
@@ -1513,7 +1536,7 @@ export function SettingsForm({
               ) : null}
             </div>
             {latestHeartbeatRun ? (
-              <p className="mt-2 whitespace-pre-line text-neutral-600 dark:text-neutral-300">
+              <p className="mt-2 max-h-72 overflow-y-auto whitespace-pre-line pr-2 text-neutral-600 dark:text-neutral-300">
                 {heartbeatRunSummary(latestHeartbeatRun)}
               </p>
             ) : null}
@@ -1576,6 +1599,10 @@ export function SettingsForm({
               placeholder={DEFAULT_HEARTBEAT_CHECKLIST}
               className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-mono dark:border-neutral-700 dark:bg-neutral-900"
             />
+            <p className="mt-1 text-xs text-neutral-400">
+              Este markdown es la fuente real que usa el runner de Heartbeat. Al guardar,
+              se persiste en tu Business Brain y se inyecta completo en cada corrida.
+            </p>
             {charCount(heartbeatChecklist, 6000)}
           </div>
           {heartbeatRuns.length > 0 ? (
@@ -1607,7 +1634,7 @@ export function SettingsForm({
                           {heartbeatStatusLabel(run.status)}
                         </span>
                       </div>
-                      <p className="mt-2 whitespace-pre-line text-neutral-600 dark:text-neutral-300">
+                      <p className="mt-2 max-h-48 overflow-y-auto whitespace-pre-line pr-2 text-neutral-600 dark:text-neutral-300">
                         {heartbeatRunSummary(run)}
                       </p>
                       {tools.length > 0 ? (
@@ -1674,7 +1701,7 @@ export function SettingsForm({
                         </p>
                       ) : null}
                       <p className="mt-1 text-xs text-neutral-500">
-                        Próxima corrida: {scheduledTaskNextRun(task)}
+                        {scheduledTaskNextRun(task)}
                         {typeof task.consecutive_failures === "number" &&
                         task.consecutive_failures > 0
                           ? ` · ${task.consecutive_failures} fallo(s) consecutivo(s)`
@@ -1688,7 +1715,10 @@ export function SettingsForm({
                     </div>
                     <button
                       type="button"
-                      disabled={updatingTaskId === task.id}
+                      disabled={
+                        updatingTaskId === task.id ||
+                        (task.status === "paused" && !canResumeScheduledTask(task))
+                      }
                       onClick={() =>
                         updateScheduledTaskStatus(
                           task.id,
@@ -1701,7 +1731,9 @@ export function SettingsForm({
                         ? "Actualizando..."
                         : task.status === "active"
                         ? "Pausar"
-                        : "Reanudar"}
+                        : canResumeScheduledTask(task)
+                        ? "Reanudar"
+                        : "Fecha pasada"}
                     </button>
                   </div>
                 </div>

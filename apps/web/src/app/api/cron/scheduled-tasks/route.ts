@@ -114,6 +114,22 @@ function computeNextRetryAt(task: ScheduledTask): string {
   return retryAt.toISOString();
 }
 
+function sanitizeScheduledTaskPromptForExecution(prompt: string): string {
+  const sanitized = prompt
+    // Legacy scheduled tasks may contain command examples created before we
+    // fixed the prompt wording, e.g. "... echo; done. Devuélveme ...". The
+    // period belongs to the Spanish sentence, but the model often copies it
+    // into bash as `done.`, which is a syntax error. Convert only obvious
+    // control-word sentence punctuation into shell-safe separators.
+    .replace(/\b(done|fi|esac)\.\s+(?=(Devu[eé]lveme|Resume|Dame|Env[ií]a|M[aá]ndame)\b)/gi, "$1; ")
+    .replace(/\b(done|fi|esac)\.\s*$/gi, "$1");
+
+  if (sanitized === prompt) return prompt;
+  return `${sanitized}
+
+Nota de ejecución: si usas bash, no copies puntuación de la oración dentro del comando. En particular, usa "done" o "done;" pero nunca "done.".`;
+}
+
 interface TaskResult {
   task_id: string;
   status: "ok" | "skipped" | "error";
@@ -170,7 +186,7 @@ async function runTask(
     // this exact task when scheduling it (schedule_task is itself HITL),
     // so inner risky tools (bash/write_file/etc.) execute without a second approval.
     const result = await runAgent({
-      message: task.prompt,
+      message: sanitizeScheduledTaskPromptForExecution(task.prompt),
       userId: task.user_id,
       sessionId: session.id,
       systemPrompt: profile.agent_system_prompt,

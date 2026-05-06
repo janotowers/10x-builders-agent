@@ -26,6 +26,7 @@ import {
   createToolCall,
   updateToolCallStatus,
   createScheduledTask,
+  getScheduledTaskForUser,
   listScheduledTasks,
   setScheduledTaskStatus,
   listMemories,
@@ -84,6 +85,56 @@ const optionalNonNegativeInt = () =>
     (value) => (value === null || value === "" ? undefined : value),
     z.coerce.number().int().min(0).optional()
   );
+
+/**
+ * Normaliza un comando de shell para detectar duplicados "casi idénticos"
+ * (mismas URLs y verbos, sólo cambian detalles cosméticos como `head -c <n>`,
+ * presencia/ausencia de `echo` o whitespace).
+ *
+ * Estrategia: minúsculas, colapsa whitespace, normaliza `head -c <n>` y
+ * palabras-ruido típicas. IMPORTANTE: no colapsamos `done.` y `done;` porque
+ * el primero es un error de sintaxis y el segundo es la corrección — son
+ * comandos semánticamente distintos.
+ */
+export function normalizeBashPromptForDedup(prompt: string): string {
+  const lowered = prompt.toLowerCase();
+  return lowered
+    .replace(/\bhead\s+-c\s+\d+/g, "head -c N")
+    .replace(/\btail\s+-c\s+\d+/g, "tail -c N")
+    .replace(/\b(echo;?\s*)+/g, " ")
+    .replace(/2>\s*\/dev\/null/g, "")
+    .replace(/[\s]+/g, " ")
+    .trim();
+}
+
+/**
+ * Detecta errores de sintaxis obvios en un comando bash antes de ejecutarlo,
+ * principalmente los que el LLM produce por copiar puntuación de un ejemplo
+ * en español (p. ej. `... done.` con punto final), porque bash interpreta
+ * `done.` como un comando llamado `done.` y nunca cierra el `for`/`while`,
+ * resultando en "syntax error: unexpected end of file".
+ *
+ * Devuelve un mensaje en español apto para mostrar al modelo, o `null` si
+ * no se detectó nada raro.
+ */
+export function detectObviousBashSyntaxIssue(prompt: string): string | null {
+  const trimmed = prompt.trim();
+  if (!trimmed) return null;
+  // Trailing `done.` / `fi.` / `esac.` (Spanish-period leak from a sentence).
+  if (/\b(done|fi|esac)\.\s*$/i.test(trimmed)) {
+    return 'El comando termina en "done.", "fi." o "esac." con un punto. En bash el punto se interpreta como nombre de comando y deja el bloque sin cerrar (syntax error: unexpected end of file). Quita el punto final o sustitúyelo por ";".';
+  }
+  // Stand-alone `done.` / `fi.` / `esac.` mid-command (e.g. `done. echo ...`).
+  if (/\b(done|fi|esac)\.[\s;]/i.test(trimmed)) {
+    return 'Hay un "done.", "fi." o "esac." con punto en medio del comando. Bash trata el punto como parte del nombre y rompe la sintaxis. Quita el punto o reemplázalo por ";".';
+  }
+  // Unbalanced single quotes (rough check: odd count of "'" outside of "\"").
+  const singleQuotes = (trimmed.match(/'/g) ?? []).length;
+  if (singleQuotes % 2 === 1) {
+    return "Hay un número impar de comillas simples (') en el comando. Verifica que cada comilla simple abierta esté cerrada.";
+  }
+  return null;
+}
 
 /**
  * Tenant hardening for `bigquery_run_query`.
@@ -990,14 +1041,125 @@ export function buildLangChainTools(ctx: ToolContext) {
       shell === "powershell"
         ? "The server runs Windows PowerShell. Use PowerShell syntax (e.g. Get-ChildItem, Get-Content)."
         : "The server shell is bash. Use standard Unix/bash syntax.";
+    // Per-turn de-duplication and adaptive rate-limit for bash calls.
+    //
+    // Why a wrapper? The cron channel runs without a human in the loop and
+    // historically has fallen into either:
+    //   (a) Retrying the same curl with tiny cosmetic variations even when
+    //       the first call already returned enough stdout. (Cap-based fix.)
+    //   (b) Failing genuinely (e.g. syntax errors copied from the prompt
+    //       example) and needing a few real retries to land on a valid
+    //       command. (We must NOT block these.)
+    //
+    // Adaptive policy:
+    //   - At most one *successful* bash call per turn. Once we've seen a call
+    //     with `exitCode === 0` AND stdout ≥ 200 bytes, every subsequent
+    //     bash call is short-circuited to a synthetic result instructing the
+    //     model to use the data it already has.
+    //   - When all calls so far failed (exitCode != 0 or empty stdout), we
+    //     allow up to MAX_FAILED_ATTEMPTS *substantively different* calls so
+    //     the model can recover from prompt-syntax bugs and similar issues.
+    //   - Cosmetic duplicates (after normalization) are always blocked,
+    //     regardless of cap.
+    //   - We also pre-flight obvious syntax errors (e.g. trailing `done.`)
+    //     and surface them as a synthetic stderr so the model gets a clear
+    //     hint *without* spawning the shell.
+    const turnState = {
+      successfulCalls: 0,
+      failedAttempts: 0,
+      seen: new Map<
+        string,
+        { exitCode: number; stdoutBytes: number; resultJson: string }
+      >(),
+    };
+    const isCronChannel = ctx.channel === "cron";
+    const MAX_FAILED_ATTEMPTS = isCronChannel ? 3 : 6;
+    const SUCCESS_STDOUT_BYTES = 200;
+
     tools.push(
       tool(
         async (input: { terminal?: string; prompt: string }) => {
+          const promptText = input.prompt ?? "";
+          const terminal = input.terminal?.trim() || "default";
+          const normalizedKey = normalizeBashPromptForDedup(promptText);
+          const previous = turnState.seen.get(normalizedKey);
+
+          // 1) Cosmetic duplicate: short-circuit with the previous result.
+          if (previous) {
+            const synthetic = {
+              terminal,
+              stdout: "",
+              stderr: "",
+              exitCode: previous.exitCode,
+              shell: getActiveShellName(),
+              error: `[bash-runtime] Misma instrucción ya ejecutada en este turno (exitCode=${previous.exitCode}, stdout=${previous.stdoutBytes} bytes). No se repite. Si la primera tuvo stdout suficiente, redacta la respuesta final con esos datos; si fue insuficiente, prueba una fuente o endpoint distintos en lugar de variar este mismo comando.`,
+              previousResult: JSON.parse(previous.resultJson),
+            };
+            return JSON.stringify(synthetic);
+          }
+
+          // 2) Already had a successful call: stop further bash work.
+          if (turnState.successfulCalls > 0) {
+            const synthetic = {
+              terminal,
+              stdout: "",
+              stderr: "",
+              exitCode: -1,
+              shell: getActiveShellName(),
+              error: `[bash-runtime] Ya tienes una llamada bash exitosa en este turno con stdout útil. No se ejecutarán más comandos: redacta la respuesta final con esos datos.`,
+            };
+            return JSON.stringify(synthetic);
+          }
+
+          // 3) Cap on failed attempts (only when nothing has worked yet).
+          if (turnState.failedAttempts >= MAX_FAILED_ATTEMPTS) {
+            const synthetic = {
+              terminal,
+              stdout: "",
+              stderr: "",
+              exitCode: -1,
+              shell: getActiveShellName(),
+              error: `[bash-runtime] Se agotaron los ${MAX_FAILED_ATTEMPTS} intentos de bash sin obtener stdout útil. Responde explicando honestamente que no fue posible recuperar la información en este turno; no inventes contenido.`,
+            };
+            return JSON.stringify(synthetic);
+          }
+
+          // 4) Pre-flight syntax check for the most common LLM mistakes.
+          //    Importante: NO guardamos esto en `seen` — el modelo debe poder
+          //    reintentar con la corrección sin que el dedup lo bloquee.
+          const syntaxIssue = detectObviousBashSyntaxIssue(promptText);
+          if (syntaxIssue) {
+            turnState.failedAttempts += 1;
+            const synthetic = {
+              terminal,
+              stdout: "",
+              stderr: `bash pre-flight: ${syntaxIssue}`,
+              exitCode: 2,
+              shell: getActiveShellName(),
+              error: `[bash-runtime] No se ejecutó: ${syntaxIssue} Reescribe el comando sin esos errores y reintenta.`,
+            };
+            return JSON.stringify(synthetic);
+          }
+
           const result = await executeBashCommand({
-            terminal: input.terminal?.trim() || "default",
-            prompt: input.prompt,
+            terminal,
+            prompt: promptText,
           });
-          return JSON.stringify(result);
+          const resultJson = JSON.stringify(result);
+          const stdoutBytes = (result.stdout ?? "").length;
+          const isSuccess =
+            result.exitCode === 0 && stdoutBytes >= SUCCESS_STDOUT_BYTES;
+          if (isSuccess) {
+            turnState.successfulCalls += 1;
+          } else {
+            turnState.failedAttempts += 1;
+          }
+          turnState.seen.set(normalizedKey, {
+            exitCode: result.exitCode,
+            stdoutBytes,
+            resultJson,
+          });
+          return resultJson;
         },
         {
           name: "bash",
@@ -1275,10 +1437,64 @@ export function buildLangChainTools(ctx: ToolContext) {
             }
 
             const newStatus = input.action === "pause" ? "paused" : "active";
+            let nextRunAt: string | null | undefined;
+            if (input.action === "resume") {
+              const task = await getScheduledTaskForUser(
+                ctx.db,
+                input.task_id,
+                ctx.userId
+              );
+              if (!task || task.status !== "paused") {
+                const err = {
+                  ok: false,
+                  error:
+                    "No se encontró una tarea pausada con ese id. Vuelve a listar las tareas antes de reanudar.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", err);
+                return JSON.stringify(err);
+              }
+              if (task.schedule_type === "one_time") {
+                const scheduledAt = task.next_run_at ?? task.run_at;
+                if (!scheduledAt || new Date(scheduledAt).getTime() <= Date.now()) {
+                  const err = {
+                    ok: false,
+                    error:
+                      "Esta tarea de una sola vez ya tiene fecha pasada. Pide al usuario programar una nueva tarea si quiere ejecutarla otra vez.",
+                  };
+                  await updateToolCallStatus(ctx.db, record.id, "failed", err);
+                  return JSON.stringify(err);
+                }
+                nextRunAt = scheduledAt;
+              } else {
+                if (!task.cron_expr) {
+                  const err = {
+                    ok: false,
+                    error: "La tarea recurrente no tiene cron_expr configurado.",
+                  };
+                  await updateToolCallStatus(ctx.db, record.id, "failed", err);
+                  return JSON.stringify(err);
+                }
+                try {
+                  const cron = new Cron(task.cron_expr, { timezone: task.timezone });
+                  const next = cron.nextRun();
+                  if (!next) throw new Error("sin próxima ejecución");
+                  nextRunAt = next.toISOString();
+                } catch {
+                  const err = {
+                    ok: false,
+                    error:
+                      "No se pudo calcular la próxima ejecución recurrente. Revisa el cron_expr de la tarea.",
+                  };
+                  await updateToolCallStatus(ctx.db, record.id, "failed", err);
+                  return JSON.stringify(err);
+                }
+              }
+            }
             const updated = await setScheduledTaskStatus(ctx.db, {
               taskId: input.task_id,
               userId: ctx.userId,
               newStatus,
+              nextRunAt,
             });
 
             if (!updated) {

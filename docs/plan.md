@@ -126,7 +126,8 @@ Construir un agente IA que permita a un usuario **gestionar tareas y ejecutar ac
 - Desambiguación segura para pausar/reanudar sin UUID explícito: primero listar, luego UNA pregunta corta, y solo ejecutar `pause/resume` tras selección/confirmación del usuario (addendum en `graph.ts`).
 - Temperatura por contexto en el modelo: interactivo (Web/Telegram) `~0.3`, cron (`autoApproveTools=true`) `~0.1` para más determinismo en ejecuciones programadas.
 - Política de reintentos + auto-pausa (migración `00004_scheduled_tasks_retry.sql`): hasta `MAX_CONSECUTIVE_FAILURES=3` intentos con `RETRY_GAP_MINUTES=2`, salto directo a auto-pausa para errores persistentes (`402`/`401`/`403`/`400`), aviso por Telegram y reset del contador al completar con éxito o al reanudar manualmente.
-- Visibilidad en producto: Settings lista tareas activas/pausadas con acciones de pausa/reanudar; panel derecho muestra conteo, próxima ejecución y lista expandible en "Actividad proactiva".
+- Visibilidad en producto: Settings lista tareas activas/pausadas con acciones de pausa/reanudar; panel derecho muestra conteo, próxima ejecución (texto primero, etiqueta recurrente/única vez a la derecha) y lista expandible en "Actividad proactiva".
+- Guardrails en ejecución programada: saneo ligero del prompt persistido antes de `runAgent` en cron (evita copiar puntuación española dentro de comandos bash) y política adaptativa en la tool **`bash`** para el canal **`cron`** (pre-chequeo de sintaxis, deduplicación de variaciones cosméticas, límites de reintento cuando no hay éxito). Ver `apps/web/src/app/api/cron/scheduled-tasks/route.ts` y `packages/agent/src/tools/adapters.ts`.
 - Diseño en **[docs/tools-design/scheduled-tasks.md](tools-design/scheduled-tasks.md)** + runbook en **[docs/tools-design/runbook-scheduled-tasks.md](tools-design/runbook-scheduled-tasks.md)**
 
 #### 7.5 Skills / playbooks ✓
@@ -176,7 +177,8 @@ Construir un agente IA que permita a un usuario **gestionar tareas y ejecutar ac
 - Shell visual de `/chat` con panel derecho "Colaborador en acción".
 - Mini-dashboard superior con métricas reales: Heartbeat Activo/Inactivo, tareas programadas activas y confirmaciones por aprobar.
 - Panel operativo con Flujo actual, Contexto preparado, Memoria del turno, Habilidades del turno, Herramientas del turno, Aprendizajes recientes y Actividad proactiva.
-- "Actividad proactiva" separa Heartbeat (actividad del sistema) de scheduled tasks (trabajo programado por el usuario), con historiales/listas expandibles.
+- "Actividad proactiva" separa Heartbeat (actividad del sistema) de scheduled tasks (trabajo programado por el usuario), con historiales/listas expandibles; en tareas programadas se distinguen metadatos (tipo recurrente/única vez), estado "ejecutándose" mientras hay un `scheduled_task_runs` activo, y mensajes de fallo legibles para errores transitorios de conexión a DB.
+- Timeline de chat unificado (mensajes web + salidas de cron/heartbeat), correlación por `turn_id` en panel, `GET /api/chat/sync` para refresco ligero y UX que no roba el foco del panel durante una respuesta web en curso cuando llegan mensajes automatizados.
 - Documentación de producto/UI en **[docs/ui/gu-console-plan.md](ui/gu-console-plan.md)**.
 
 ### Fase 10: Producción

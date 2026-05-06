@@ -88,6 +88,21 @@ export async function listScheduledTasks(
   return (data ?? []) as ScheduledTask[];
 }
 
+export async function getScheduledTaskForUser(
+  db: DbClient,
+  taskId: string,
+  userId: string
+): Promise<ScheduledTask | null> {
+  const { data, error } = await db
+    .from("scheduled_tasks")
+    .select("*")
+    .eq("id", taskId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as ScheduledTask | null) ?? null;
+}
+
 /**
  * Lee las tareas activas cuyo next_run_at ya venció (≤ now).
  * Llamado desde el cron endpoint (service-role o supabaseAdmin).
@@ -275,13 +290,11 @@ export async function markTaskPausedDueToFailures(
  *
  * Transiciones permitidas por esta función:
  *   active  → paused     (pausar)
- *   paused  → active     (reanudar; recalcula next_run_at en el caller si aplica)
+ *   paused  → active     (reanudar; el caller debe recalcular next_run_at si aplica)
  *   active|paused → completed  (cancelar/finalizar)
  *
- * Nota: no tocamos next_run_at aquí. Para reanudar una tarea recurrente cuyo
- * next_run_at quedó muy atrás, el runner cron lo verá como "debido" y lo
- * reagendará tras la primera ejecución; para reanudar una one_time con run_at
- * futuro, el cron lo ejecutará cuando toque.
+ * Nota: esta función no decide reglas de calendario. El caller puede pasar
+ * `nextRunAt` al reanudar recurrentes para evitar reactivar fechas vencidas.
  */
 export async function setScheduledTaskStatus(
   db: DbClient,
@@ -289,6 +302,7 @@ export async function setScheduledTaskStatus(
     taskId: string;
     userId: string;
     newStatus: "active" | "paused" | "completed";
+    nextRunAt?: string | null;
   }
 ): Promise<ScheduledTask | null> {
   const now = new Date().toISOString();
@@ -304,14 +318,23 @@ export async function setScheduledTaskStatus(
     update.consecutive_failures = 0;
     update.last_failure_error = null;
   }
+  if ("nextRunAt" in params) {
+    update.next_run_at = params.nextRunAt;
+  }
 
-  const { data, error } = await db
+  let query = db
     .from("scheduled_tasks")
     .update(update)
     .eq("id", params.taskId)
-    .eq("user_id", params.userId)
-    .select()
-    .maybeSingle();
+    .eq("user_id", params.userId);
+  if (params.newStatus === "paused") {
+    query = query.eq("status", "active");
+  } else if (params.newStatus === "active") {
+    query = query.eq("status", "paused");
+  } else {
+    query = query.in("status", ["active", "paused"]);
+  }
+  const { data, error } = await query.select().maybeSingle();
   if (error) {
     console.error("setScheduledTaskStatus error:", error);
     return null;
