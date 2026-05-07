@@ -109,7 +109,13 @@ export interface InjectLogInput {
   /** Input del usuario en este turno. Null si no había HumanMessage. */
   userInput: string | null;
   /** `"skipped_cron" | "skipped_resume" | "skipped_no_input" | "ok"`. */
-  outcome: "ok" | "skipped_cron" | "skipped_resume" | "skipped_no_input" | "embedding_failed";
+  outcome:
+    | "ok"
+    | "skipped_cron"
+    | "skipped_resume"
+    | "skipped_no_input"
+    | "embedding_failed"
+    | "retrieval_failed";
   embedding?: {
     model: string;
     dim: number;
@@ -129,8 +135,8 @@ export interface InjectLogInput {
     matches: Array<{
       type: string;
       content: string;
-      similarity: number;
-      retrievalCount: number;
+      similarity?: number;
+      retrievalCount?: number;
     }>;
   };
   injection?: {
@@ -179,8 +185,12 @@ export async function logMemoryInject(input: InjectLogInput): Promise<void> {
       `RETRIEVAL: top_k=${input.retrieval.topK} threshold=${input.retrieval.threshold.toFixed(3)} returned=${input.retrieval.returned} latency_ms=${input.retrieval.latencyMs}`
     );
     for (const m of input.retrieval.matches) {
+      const sim =
+        typeof m.similarity === "number" ? m.similarity.toFixed(3) : "n/a";
+      const rc =
+        typeof m.retrievalCount === "number" ? String(m.retrievalCount) : "n/a";
       lines.push(
-        `  - [${m.type} sim=${m.similarity.toFixed(3)} rc=${m.retrievalCount}] "${previewOneLine(m.content)}"`
+        `  - [${m.type} sim=${sim} rc=${rc}] "${previewOneLine(m.content)}"`
       );
     }
   }

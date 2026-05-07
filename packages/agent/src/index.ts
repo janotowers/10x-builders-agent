@@ -10,6 +10,7 @@ export {
   executeCalendarDeleteEvent,
 } from "./tools/calendar-api";
 export { flushSessionMemory } from "./memory_flush";
+export { normalizeToolApprovalPolicy } from "./tools/adapters";
 export type {
   FlushInput,
   FlushResult,

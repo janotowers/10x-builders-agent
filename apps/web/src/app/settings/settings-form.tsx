@@ -34,6 +34,7 @@ interface ScheduledTaskItem {
   prompt: string;
   user_request?: string | null;
   display_title?: string | null;
+  skill_id?: string | null;
   schedule_type: "one_time" | "recurring";
   run_at: string | null;
   cron_expr: string | null;
@@ -349,6 +350,11 @@ function canResumeScheduledTask(task: ScheduledTaskItem): boolean {
 
 function scheduledTaskDisplayText(task: ScheduledTaskItem): string {
   return task.display_title?.trim() || task.user_request?.trim() || task.prompt;
+}
+
+function scheduledTaskSkillLabel(task: ScheduledTaskItem): string | null {
+  if (!task.skill_id) return null;
+  return `Skill: ${task.skill_id.replace(/[-_]+/g, " ")}`;
 }
 
 export function SettingsForm({
@@ -803,8 +809,14 @@ export function SettingsForm({
 
   async function updateScheduledTaskStatus(
     taskId: string,
-    action: "pause" | "resume"
+    action: "pause" | "resume" | "cancel"
   ) {
+    if (
+      action === "cancel" &&
+      !window.confirm("¿Cancelar esta tarea programada? Dejará de aparecer en tareas activas o pausadas.")
+    ) {
+      return;
+    }
     setUpdatingTaskId(taskId);
     setSaveError(null);
     try {
@@ -819,7 +831,9 @@ export function SettingsForm({
       }
       const updated = json.task as ScheduledTaskItem;
       setScheduledTaskRows((rows) =>
-        rows.map((task) => (task.id === taskId ? updated : task))
+        action === "cancel"
+          ? rows.filter((task) => task.id !== taskId)
+          : rows.map((task) => (task.id === taskId ? updated : task))
       );
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -1695,6 +1709,11 @@ export function SettingsForm({
                       <p className="mt-2 line-clamp-2 font-medium text-neutral-800 dark:text-neutral-100">
                         {scheduledTaskDisplayText(task)}
                       </p>
+                      {scheduledTaskSkillLabel(task) ? (
+                        <p className="mt-1 text-xs text-neutral-500">
+                          {scheduledTaskSkillLabel(task)}
+                        </p>
+                      ) : null}
                       {scheduledTaskDisplayText(task) !== task.prompt ? (
                         <p className="mt-1 line-clamp-2 text-xs text-neutral-400">
                           Instrucción programada: {task.prompt}
@@ -1713,28 +1732,38 @@ export function SettingsForm({
                         </p>
                       ) : null}
                     </div>
-                    <button
-                      type="button"
-                      disabled={
-                        updatingTaskId === task.id ||
-                        (task.status === "paused" && !canResumeScheduledTask(task))
-                      }
-                      onClick={() =>
-                        updateScheduledTaskStatus(
-                          task.id,
-                          task.status === "active" ? "pause" : "resume"
-                        )
-                      }
-                      className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:hover:bg-neutral-900"
-                    >
-                      {updatingTaskId === task.id
-                        ? "Actualizando..."
-                        : task.status === "active"
-                        ? "Pausar"
-                        : canResumeScheduledTask(task)
-                        ? "Reanudar"
-                        : "Fecha pasada"}
-                    </button>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={
+                          updatingTaskId === task.id ||
+                          (task.status === "paused" && !canResumeScheduledTask(task))
+                        }
+                        onClick={() =>
+                          updateScheduledTaskStatus(
+                            task.id,
+                            task.status === "active" ? "pause" : "resume"
+                          )
+                        }
+                        className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:hover:bg-neutral-900"
+                      >
+                        {updatingTaskId === task.id
+                          ? "Actualizando..."
+                          : task.status === "active"
+                          ? "Pausar"
+                          : canResumeScheduledTask(task)
+                          ? "Reanudar"
+                          : "Fecha pasada"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={updatingTaskId === task.id}
+                        onClick={() => updateScheduledTaskStatus(task.id, "cancel")}
+                        className="rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950"
+                      >
+                        Cancelar tarea
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))

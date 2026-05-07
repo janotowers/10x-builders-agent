@@ -120,7 +120,7 @@ Construir un agente IA que permita a un usuario **gestionar tareas y ejecutar ac
 - `apps/web/src/lib/telegram/send-message.ts` — util compartido extraído del webhook
 - Middleware exento de auth para `/api/cron/`; `CRON_SECRET` en `.env.example` y `.env.local`
 - Toggle en onboarding y Ajustes; confirmación HITL legible; addendum `SCHEDULE_TASK_ADDENDUM` en `graph.ts`
-- **HITL único al programar**: `runAgent({ autoApproveTools: true })` desde el cron evita pedir una segunda aprobación al usuario al ejecutar la tarea (ver `toolExecutorNode` y `AgentInput.autoApproveTools` en `graph.ts`). Las llamadas auto-aprobadas se registran en `tool_calls` con `requires_confirmation = false` y `status = approved` para auditoría.
+- **HITL único al programar**: `runAgent({ autoApproveTools: true })` desde el cron evita pedir una segunda aprobación al usuario al ejecutar la tarea (ver `toolExecutorNode` y `AgentInput.autoApproveTools` en `graph.ts`). Las llamadas auto-aprobadas se registran en `tool_calls` con `requires_confirmation = false` y `status = approved` para auditoría. Las ejecuciones programadas no cargan memoria corta ni memoria larga automática: el prompt persistido debe ser self-contained, y `schedule_task` no se registra en canal `cron` para evitar que una tarea se reprograme a sí misma.
 - `agent_sessions.channel` extendido inicialmente a `('web','telegram','cron')` en la migración 00003; luego `00014_heartbeat_runs.sql` agrega `heartbeat`
 - Tool `manage_scheduled_tasks` (riesgo `low`, sin HITL) para `list`/`pause`/`resume` de tareas del propio usuario con validación de ownership en DB (`setScheduledTaskStatus(taskId, userId, newStatus)`).
 - Desambiguación segura para pausar/reanudar sin UUID explícito: primero listar, luego UNA pregunta corta, y solo ejecutar `pause/resume` tras selección/confirmación del usuario (addendum en `graph.ts`).
@@ -145,7 +145,7 @@ Construir un agente IA que permita a un usuario **gestionar tareas y ejecutar ac
 - Checklist default versionado en `heartbeat/default-checklist.md`.
 - Migración `00014_heartbeat_runs.sql`: canal `agent_sessions.channel='heartbeat'` y tabla `heartbeat_runs` con RLS/índices.
 - Endpoint cron `POST /api/cron/heartbeat` con `CRON_SECRET`, selección de usuarios vencidos, ejecución de `runAgent({ channel: "heartbeat" })`, persistencia del resultado y actualización de `last_run_at`.
-- Guardrails de runtime: modelo/costo por Heartbeat (`HEARTBEAT_MODEL_ID`, `HEARTBEAT_MAX_TOKENS`), baja temperatura, skip de memory injection y allowlist de tools de solo lectura.
+- Guardrails de runtime: modelo/costo por Heartbeat (`HEARTBEAT_MODEL_ID`, `HEARTBEAT_MAX_TOKENS`), baja temperatura, sin memoria corta de sesión, memoria persistente curada (`procedural`/`semantic`) con límites estrictos, y allowlist de tools de solo lectura.
 - Settings permite activar/desactivar, configurar intervalo/checklist, resetear default y ver historial reciente.
 - Panel derecho muestra Heartbeat en mini-dashboard y en "Actividad proactiva" con historial expandible.
 

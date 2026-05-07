@@ -6,6 +6,7 @@ import {
 import type { DbClient } from "@agents/db";
 import {
   getFlushState,
+  listMemories,
   searchMemories,
   incrementRetrievalCount,
   updateLastUserInputEmbedding,
@@ -56,6 +57,7 @@ const TOPIC_SHIFT_THRESHOLD_DEFAULT = 0.55;
 const RETRIEVE_TOP_K_DEFAULT = 8;
 const MATCH_THRESHOLD_DEFAULT = 0.5;
 const MEMORY_BLOCK_MAX_CHARS = 1500;
+const HEARTBEAT_PERSISTENT_MEMORY_LIMIT = 8;
 
 function resolveTopicShiftThreshold(): number {
   const raw = process.env.MEMORY_TOPIC_SHIFT_THRESHOLD?.trim();
@@ -134,6 +136,67 @@ function buildMemoryBlock(
   return lines.join("\n");
 }
 
+async function getHeartbeatPersistentMemoryMatches(
+  db: DbClient,
+  userId: string
+): Promise<Array<{ id: string; type: string; content: string }>> {
+  const [procedural, semantic] = await Promise.all([
+    listMemories(db, {
+      userId,
+      status: "active",
+      type: "procedural",
+      limit: 4,
+      sortBy: "created_at",
+      sortDir: "desc",
+    }),
+    listMemories(db, {
+      userId,
+      status: "active",
+      type: "semantic",
+      limit: 4,
+      sortBy: "created_at",
+      sortDir: "desc",
+    }),
+  ]);
+
+  return [...procedural.rows, ...semantic.rows]
+    .sort((a, b) => {
+      const aTime = new Date(a.created_at).getTime();
+      const bTime = new Date(b.created_at).getTime();
+      return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+    })
+    .slice(0, HEARTBEAT_PERSISTENT_MEMORY_LIMIT)
+    .map((memory) => ({
+      id: memory.id,
+      type: memory.type,
+      content: memory.content,
+    }));
+}
+
+function injectMemoryBlock(
+  state: GraphStateType,
+  memoryBlock: string
+): { updates: BaseMessage[]; rewrote: boolean; firstSystemIdx: number } {
+  const firstSystemIdx = (state.messages ?? []).findIndex(
+    (m) => m instanceof SystemMessage
+  );
+  const updates: BaseMessage[] = [];
+  let rewrote = false;
+  if (firstSystemIdx >= 0) {
+    const current = state.messages[firstSystemIdx];
+    const currentContent = contentToString(current.content);
+    if (!currentContent.startsWith("[MEMORIA DEL USUARIO")) {
+      const newContent = `${memoryBlock}\n\n---\n\n${currentContent}`;
+      const rewritten = current.id
+        ? new SystemMessage({ id: current.id, content: newContent })
+        : new SystemMessage(newContent);
+      updates.push(rewritten);
+      rewrote = true;
+    }
+  }
+  return { updates, rewrote, firstSystemIdx };
+}
+
 export function createMemoryInjectionNode(deps: MemoryInjectionDeps) {
   const { db, userId, isResume } = deps;
   const topicShiftThreshold = resolveTopicShiftThreshold();
@@ -143,12 +206,12 @@ export function createMemoryInjectionNode(deps: MemoryInjectionDeps) {
   return async function memoryInjectionNode(
     state: GraphStateType
   ): Promise<Partial<GraphStateType>> {
-    // --- Guard 1: cron / heartbeat ---
+    // --- Guard 1: cron ---
     // La sesión `channel = 'cron'` ejecuta prompts deterministas ya aprobados
     // por el usuario al programarlos; inyectar memoria del usuario podría
     // contaminar el prompt con hechos que no aplican a esa ejecución
     // programada (y además gastamos embeddings innecesariamente).
-    if (state.autoApproveTools || state.channel === "heartbeat") {
+    if (state.autoApproveTools) {
       void logMemoryInject({
         sessionId: state.sessionId,
         userId,
@@ -157,6 +220,85 @@ export function createMemoryInjectionNode(deps: MemoryInjectionDeps) {
         memoryFlushPending: false,
       }).catch(() => {});
       return {};
+    }
+
+    // --- Guard 1b: heartbeat ---
+    // El heartbeat no usa short-term ni retrieval semántico contra el prompt
+    // técnico del tick. Le damos sólo un set pequeño de recuerdos persistentes
+    // curados por tipo: procedimientos/preferencias y hechos estables recientes.
+    if (state.channel === "heartbeat") {
+      try {
+        const matches = await getHeartbeatPersistentMemoryMatches(db, userId);
+        const memoryBlock = buildMemoryBlock(matches);
+        if (!memoryBlock) {
+          void logMemoryInject({
+            sessionId: state.sessionId,
+            userId,
+            userInput: null,
+            outcome: "ok",
+            retrieval: {
+              topK: HEARTBEAT_PERSISTENT_MEMORY_LIMIT,
+              threshold: 0,
+              returned: 0,
+              latencyMs: 0,
+              matches: [],
+            },
+            injection: {
+              rewrittenSystemMessage: false,
+              blockChars: 0,
+              firstSystemIdx: -1,
+            },
+            memoryFlushPending: false,
+          }).catch(() => {});
+          return {};
+        }
+
+        const injected = injectMemoryBlock(state, memoryBlock);
+        incrementRetrievalCount(
+          db,
+          matches.map((m) => m.id)
+        ).catch((err) =>
+          console.error(
+            "[memory_injection] heartbeat incrementRetrievalCount failed:",
+            err
+          )
+        );
+        void logMemoryInject({
+          sessionId: state.sessionId,
+          userId,
+          userInput: null,
+          outcome: "ok",
+          retrieval: {
+            topK: HEARTBEAT_PERSISTENT_MEMORY_LIMIT,
+            threshold: 0,
+            returned: matches.length,
+            latencyMs: 0,
+            matches: matches.map((memory) => ({
+              id: memory.id,
+              type: memory.type,
+              content: memory.content,
+            })),
+          },
+          injection: {
+            rewrittenSystemMessage: injected.rewrote,
+            blockChars: memoryBlock.length,
+            firstSystemIdx: injected.firstSystemIdx,
+            memoryBlock,
+          },
+          memoryFlushPending: false,
+        }).catch(() => {});
+        return injected.updates.length > 0 ? { messages: injected.updates } : {};
+      } catch (err) {
+        console.error("[memory_injection] heartbeat curated memory failed:", err);
+        void logMemoryInject({
+          sessionId: state.sessionId,
+          userId,
+          userInput: null,
+          outcome: "retrieval_failed",
+          memoryFlushPending: false,
+        }).catch(() => {});
+        return {};
+      }
     }
 
     // --- Guard 2: resume HITL ---
@@ -293,27 +435,7 @@ export function createMemoryInjectionNode(deps: MemoryInjectionDeps) {
 
     // --- Construir bloque de memoria e inyectarlo en el primer SystemMessage ---
     const memoryBlock = buildMemoryBlock(matches);
-    const firstSystemIdx = (state.messages ?? []).findIndex(
-      (m) => m instanceof SystemMessage
-    );
-    const updates: BaseMessage[] = [];
-    let rewrote = false;
-    if (firstSystemIdx >= 0) {
-      const current = state.messages[firstSystemIdx];
-      const currentContent = contentToString(current.content);
-      // Si ya inyectamos antes en este checkpoint (raro fuera de resume, pero
-      // defensivo), no duplicamos el bloque.
-      if (!currentContent.startsWith("[MEMORIA DEL USUARIO")) {
-        const newContent = `${memoryBlock}\n\n---\n\n${currentContent}`;
-        // Emitimos un SystemMessage con el MISMO id: messagesStateReducer
-        // hace swap in-place, así compaction sigue encontrándolo en keepIds.
-        const rewritten = current.id
-          ? new SystemMessage({ id: current.id, content: newContent })
-          : new SystemMessage(newContent);
-        updates.push(rewritten);
-        rewrote = true;
-      }
-    }
+    const injected = injectMemoryBlock(state, memoryBlock);
 
     // --- Incrementar retrieval_count de las memorias efectivamente usadas ---
     // Fire-and-forget: si falla, el turno sigue; la próxima retrieval las
@@ -354,16 +476,16 @@ export function createMemoryInjectionNode(deps: MemoryInjectionDeps) {
         })),
       },
       injection: {
-        rewrittenSystemMessage: rewrote,
+        rewrittenSystemMessage: injected.rewrote,
         blockChars: memoryBlock.length,
-        firstSystemIdx,
+        firstSystemIdx: injected.firstSystemIdx,
         memoryBlock,
       },
       memoryFlushPending: topicShift,
     }).catch(() => {});
 
     return {
-      ...(updates.length > 0 ? { messages: updates } : {}),
+      ...(injected.updates.length > 0 ? { messages: injected.updates } : {}),
       memoryFlushPending: topicShift,
     };
   };

@@ -15,6 +15,16 @@ import {
 import { eventDisplayFields } from "./calendar-event-display";
 
 function calendarToolEnabled(toolId: string, ctx: ToolContext): boolean {
+  if (ctx.toolApprovalPolicy?.[toolId] === "deny") {
+    return false;
+  }
+  if (
+    Array.isArray(ctx.activeSkillAllowedTools) &&
+    ctx.activeSkillAllowedTools.length > 0 &&
+    !ctx.activeSkillAllowedTools.includes(toolId)
+  ) {
+    return false;
+  }
   if (
     ctx.channel === "heartbeat" &&
     toolId !== "calendar_list_calendars" &&

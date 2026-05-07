@@ -29,6 +29,7 @@ import type {
   AgentMessage,
   AppliedSkill,
   AppliedMemory,
+  ToolApprovalPolicy,
 } from "@agents/types";
 import {
   CHAT_MODEL_ID,
@@ -39,7 +40,10 @@ import {
   DEFAULT_HEARTBEAT_TEMPERATURE,
   DEFAULT_INTERACTIVE_TEMPERATURE,
 } from "./model";
-import { buildLangChainTools } from "./tools/adapters";
+import {
+  buildLangChainTools,
+  resolveToolApprovalMode,
+} from "./tools/adapters";
 import {
   getGlobalSkillRegistry,
   buildPlaybookInjection,
@@ -116,6 +120,13 @@ export interface AgentInput {
    * the scheduling, so inner tools should not require a second confirmation).
    */
   autoApproveTools?: boolean;
+  /**
+   * Per-tool/per-operation policy for automated turns. When present it takes
+   * precedence over the coarse `autoApproveTools` boolean.
+   */
+  toolApprovalPolicy?: ToolApprovalPolicy;
+  /** Force a specific skill for this run (e.g. persisted scheduled task skill). */
+  forcedSkillId?: string | null;
   /**
    * V1-C-α: Business Brain del perfil. Se materializa en el bloque
    * `[Contexto de tenant]` cuando la skill activa pide
@@ -808,9 +819,11 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     maxTokens: resolvedChannelForRuntime === "heartbeat" ? heartbeatMaxTokens : undefined,
   });
 
-  const priorRaw = input.autoApproveTools
-    ? []
-    : await getSessionMessages(db, sessionId, 12);
+  const shouldLoadShortTerm =
+    !input.autoApproveTools && resolvedChannelForRuntime !== "heartbeat";
+  const priorRaw = shouldLoadShortTerm
+    ? await getSessionMessages(db, sessionId, 12)
+    : [];
   const routingContext = deriveSkillRoutingContext(
     priorRaw,
     message,
@@ -827,7 +840,33 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // Snapshot of the selector outcome for the executive turn log. Stays
   // `undefined` when the selector did not run (resume HITL / empty turn).
   let skillSelectionSnapshot: TurnSummaryInput["skillSelection"];
-  if (
+  if (input.forcedSkillId && !resumeDecision) {
+    try {
+      const registry = await getGlobalSkillRegistry();
+      const registrySize = registry.list().length;
+      const registryRoot = getCachedSkillsRegistryRoot() ?? undefined;
+      activeSkill = await resolveSkill(input.forcedSkillId, registry);
+      console.log(
+        `[skills] active=${activeSkill.rootName} reason=forced session=${sessionId} channel=${channel ?? "web"}`
+      );
+      skillSelectionSnapshot = {
+        active: activeSkill.rootName,
+        reason: "forced",
+        allowedTools: activeSkill.allowedTools,
+        requiresTenantContext: activeSkill.requiresTenantContext,
+        registryRoot,
+        registrySize,
+      };
+    } catch (err) {
+      console.warn(
+        `[skills] forced skill failed; continuing without a skill: ${err instanceof Error ? err.message : String(err)}`
+      );
+      skillSelectionSnapshot = {
+        active: "none",
+        reason: "forced_skill_failed",
+      };
+    }
+  } else if (
     resolvedChannelForRuntime !== "heartbeat" &&
     !resumeDecision &&
     message &&
@@ -1008,10 +1047,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     activeSkillName: activeSkill?.rootName,
     activeSkillReferenceNames: activeSkill?.composedFrom,
     channel: resolvedChannelForRuntime,
+    enabledSkills: input.enabledSkills,
     tenantOrganizationId:
       activeSkill?.requiresTenantContext && !input.isUnggaAdmin
         ? businessBrainWarehouse?.organization_id?.trim() || undefined
         : undefined,
+    toolApprovalPolicy: input.toolApprovalPolicy,
   });
   emitEvent({
     type: "tools_bound",
@@ -1384,6 +1425,20 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       args: Record<string, unknown>,
       extras: { memoryContent?: string | null; memoryAlreadyArchived?: boolean } = {}
     ): string {
+      const short = (s: string, max = 140) =>
+        s.length > max ? `${s.slice(0, max).trim()}…` : s;
+      const recurringScheduleLabel = (
+        cronExpr: unknown,
+        timezone: unknown
+      ): string => {
+        const cron = String(cronExpr ?? "").trim();
+        const tz = String(timezone ?? userTimezone ?? "UTC");
+        const everyMinutes = cron.match(/^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$/);
+        if (everyMinutes) return `cada ${everyMinutes[1]} minutos`;
+        const hourly = cron.match(/^(\d+)\s+\*\s+\*\s+\*\s+\*$/);
+        if (hourly) return `cada hora, al minuto ${hourly[1]}`;
+        return `${cron || "frecuencia recurrente"} (${tz})`;
+      };
       if (toolName === "archive_user_memory") {
         const id = String(args.memory_id ?? "");
         const content = extras.memoryContent?.trim();
@@ -1451,14 +1506,13 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         const p = String(args.path ?? "");
         const oldS = String(args.old_string ?? "");
         const newS = String(args.new_string ?? "");
-        const short = (s: string) =>
-          s.length > 120 ? `${s.slice(0, 120)}…` : s;
         return `Confirma editar el archivo \`${p}\`: reemplazar\n«${short(oldS)}»\npor\n«${short(newS)}».`;
       }
       if (toolName === "schedule_task") {
         const prompt = String(args.prompt ?? "");
         const type = String(args.schedule_type ?? "");
-        const shortPrompt = prompt.length > 120 ? `${prompt.slice(0, 120)}…` : prompt;
+        const title = String(args.display_title ?? "").trim();
+        const taskLine = title || short(prompt);
         if (type === "one_time") {
           const when = args.run_at
             ? (() => {
@@ -1477,9 +1531,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 }
               })()
             : "hora no especificada";
-          return `Confirma programar la siguiente tarea para el ${when}:\n«${shortPrompt}»`;
+          return `Programar tarea para ${when}.\n\nTarea: «${taskLine}»`;
         }
-        return `Confirma programar la tarea recurrente (${String(args.cron_expr ?? "")} ${String(args.timezone ?? "UTC")}):\n«${shortPrompt}»`;
+        return `Programar tarea recurrente ${recurringScheduleLabel(args.cron_expr, args.timezone)}.\n\nTarea: «${taskLine}»`;
       }
       return `Confirma ejecutar la herramienta ${toolName}.`;
     }
@@ -1505,6 +1559,60 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       };
     }
 
+    async function existingScheduleTaskResult(
+      args: Record<string, unknown>
+    ): Promise<Record<string, unknown> | null> {
+      const prompt = typeof args.prompt === "string" ? args.prompt : "";
+      const scheduleType =
+        args.schedule_type === "one_time" || args.schedule_type === "recurring"
+          ? args.schedule_type
+          : null;
+      if (!prompt || !scheduleType) return null;
+
+      let query = db
+        .from("scheduled_tasks")
+        .select(
+          "id, prompt, display_title, skill_id, schedule_type, run_at, cron_expr, timezone, next_run_at, status"
+        )
+        .eq("user_id", userId)
+        .eq("prompt", prompt)
+        .eq("schedule_type", scheduleType)
+        .in("status", ["active", "paused"])
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (scheduleType === "recurring") {
+        const cronExpr =
+          typeof args.cron_expr === "string" ? args.cron_expr.trim() : "";
+        const timezone =
+          (typeof args.timezone === "string" && args.timezone.trim()) ||
+          userTimezone ||
+          "UTC";
+        if (!cronExpr) return null;
+        query = query.eq("cron_expr", cronExpr).eq("timezone", timezone);
+      } else {
+        const runAt = typeof args.run_at === "string" ? args.run_at : "";
+        const runAtTime = new Date(runAt).getTime();
+        if (!Number.isFinite(runAtTime)) return null;
+        query = query.eq("run_at", new Date(runAtTime).toISOString());
+      }
+
+      const { data, error } = await query.maybeSingle();
+      if (error || !data) return null;
+      const row = data as Record<string, unknown>;
+      return {
+        ok: true,
+        already_scheduled: true,
+        task_id: row.id,
+        schedule_type: row.schedule_type,
+        next_run_at: row.next_run_at,
+        timezone: row.timezone,
+        prompt: row.prompt,
+        display_title: row.display_title ?? null,
+        skill_id: row.skill_id ?? null,
+      };
+    }
+
     for (const tc of lastMsg.tool_calls) {
       const matchingTool = lcTools.find((t) => t.name === tc.name);
       toolCallNames.push(tc.name);
@@ -1524,18 +1632,71 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         }
 
         const needsConfirmation = toolRequiresConfirmation(tc.name);
+        const toolArgs = (tc.args as Record<string, unknown>) ?? {};
+        const approvalMode = resolveToolApprovalMode({
+          toolName: tc.name,
+          toolArgs,
+          requiresConfirmation: needsConfirmation,
+          autoApproveTools: state.autoApproveTools,
+          policy: input.toolApprovalPolicy,
+        });
         let trackedToolCallId: string | null = null;
 
-        if (needsConfirmation) {
+        if (
+          resumeDecision === "approve" &&
+          tc.name === "schedule_task" &&
+          (needsConfirmation || approvalMode === "request_approval")
+        ) {
+          const existingSchedule = await existingScheduleTaskResult(toolArgs);
+          if (existingSchedule) {
+            results.push(
+              new ToolMessage({
+                content: JSON.stringify(existingSchedule),
+                tool_call_id: tc.id!,
+              })
+            );
+            continue;
+          }
+        }
+
+        if (approvalMode === "deny") {
+          const deniedPayload = {
+            status: "denied",
+            error: `La herramienta ${tc.name} no está permitida por la política de esta automatización.`,
+            tool: tc.name,
+          };
+          try {
+            const record = await createToolCall(
+              db,
+              state.sessionId,
+              tc.name,
+              toolArgs,
+              false,
+              turnId
+            );
+            await updateToolCallStatus(db, record.id, "failed", deniedPayload);
+          } catch (auditErr) {
+            console.error("[agent] failed to audit denied tool:", auditErr);
+          }
+          results.push(
+            new ToolMessage({
+              content: JSON.stringify(deniedPayload),
+              tool_call_id: tc.id!,
+            })
+          );
+          continue;
+        }
+
+        if (needsConfirmation || approvalMode === "request_approval") {
           // Auto-approve mode: cron runner of a scheduled task.
           // The user already approved the schedule_task itself; bothering them
           // again at execution time defeats the purpose of "scheduled".
-          if (state.autoApproveTools) {
+          if (approvalMode === "auto_execute") {
             const toolCallRecord = await createToolCall(
               db,
               state.sessionId,
               tc.name,
-              tc.args,
+              toolArgs,
               false,
               turnId
             );
@@ -1546,7 +1707,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
               db,
               state.sessionId,
               tc.name,
-              (tc.args as Record<string, unknown>) ?? {},
+              toolArgs,
               turnId
             );
             const toolCallRecord =
@@ -1555,7 +1716,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 db,
                 state.sessionId,
                 tc.name,
-                tc.args,
+                toolArgs,
                 true,
                 turnId
               ));
@@ -1598,7 +1759,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 memoryContent,
                 memoryAlreadyArchived,
               }),
-              args: tc.args,
+              args: toolArgs,
             }) as "approve" | "reject";
             if (decision !== "approve") {
               await updateToolCallStatus(db, toolCallRecord.id, "rejected");
@@ -1946,7 +2107,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     memoryItemPreviews: memFromSystem.memoryItemPreviews,
     shortTermMessageCount: priorRawForModel.length,
     shortTermPreviews: buildShortTermMemoryPreviews(priorRawForModel),
-    includeShortTerm: !input.autoApproveTools,
+    includeShortTerm: shouldLoadShortTerm,
   });
   emitEvent({
     type: "memory_applied",
@@ -2104,7 +2265,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       email: userEmail ?? null,
       phone: userPhone ?? null,
     },
-    shortTerm: input.autoApproveTools
+    shortTerm: !shouldLoadShortTerm
       ? { loadedCount: 0 }
       : {
           loadedCount: priorMessages.length,

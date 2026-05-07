@@ -1,6 +1,6 @@
 ---
 name: Long-Term Memory System
-overview: "Añadir memoria a largo plazo al agente mediante dos procesos independientes: una inyección de recuerdos al inicio de cada turno (memory_injection_node) y una extracción de recuerdos post-turno (flushSessionMemory) gobernada por señales de cierre (cambio de tema, cuenta y idle) con watermark y deduplicación. Embeddings vía OpenRouter (google/gemini-embedding-001, 1536 dims). Cobertura Web + Telegram; cron excluido. No se toca compaction, agent_node, toolExecutorNode, HITL ni checkpointer."
+overview: "Añadir memoria a largo plazo al agente mediante dos procesos independientes: una inyección de recuerdos al inicio de cada turno (memory_injection_node) y una extracción de recuerdos post-turno (flushSessionMemory) gobernada por señales de cierre (cambio de tema, cuenta y idle) con watermark y deduplicación. Embeddings vía OpenRouter (google/gemini-embedding-001, 1536 dims). Cobertura Web + Telegram; cron excluido. Heartbeat usa una excepción curada: sin short-term ni búsqueda semántica por input, pero puede inyectar un set limitado de memorias activas semantic/procedural. No se toca compaction, agent_node, toolExecutorNode, HITL ni checkpointer."
 todos:
   - id: sql-migration
     content: Crear migración SQL para tabla `memories` (con content_hash, embedding_model, embedding_dim) y columnas nuevas en `agent_sessions` (last_flushed_at, last_flushed_message_id, last_user_input_embedding, last_message_at). RLS y función RPC `match_memories`.
@@ -87,7 +87,8 @@ Al validar el prompt contra `graph.ts`, `state.ts`, `compaction_node.ts`, `chat/
 4. Sesiones web/Telegram nunca se cierran explícitamente (no existe transición `status = 'closed'`). El patrón correcto es **flush perezoso con watermark**, no “al cerrar sesión”.
 5. OpenRouter **sí** expone `/v1/embeddings`. Se usa `google/gemini-embedding-001` a 1536 dims (MRL) por su MTEB multilingual líder y su coste marginal en este volumen.
 6. Cron (`autoApproveTools=true`) queda **excluido** de inyección y extracción: su sesión es determinista y compartida entre ejecuciones; contaminaría la memoria con hechos del sistema y rompería la decisión existente de arrancar sin historia (`graph.ts`, líneas 446–459).
-7. Resume HITL (`resumeDecision` presente) **no** debe re-inyectar ni contar como nuevo turno: reutiliza el `checkpointThreadId` y retoma el grafo desde el interrupt. El nodo de inyección detecta ese caso y hace no-op.
+7. Heartbeat (`channel='heartbeat'`) no usa short-term ni retrieval semántico basado en el texto técnico del tick. Como excepción de producto, puede inyectar un set pequeño y curado de memorias activas `procedural`/`semantic` para proactividad estable; no genera embeddings ni actualiza topic-shift.
+8. Resume HITL (`resumeDecision` presente) **no** debe re-inyectar ni contar como nuevo turno: reutiliza el `checkpointThreadId` y retoma el grafo desde el interrupt. El nodo de inyección detecta ese caso y hace no-op.
 
 ---
 
@@ -150,6 +151,7 @@ Tabla complementaria (quién hace qué por canal):
 | Telegram callbacks (resume HITL) | no | no (guard resume) | no |
 | `chat/confirm/route.ts` (resume HITL) | no | no (guard resume) | no |
 | Cron (`autoApproveTools=true`) | no | no (guard cron) | no |
+| Heartbeat (`channel='heartbeat'`) | no | sí, set curado `procedural`/`semantic` sin embeddings | no |
 
 ### B. Topología del grafo (dentro de `runAgent`)
 
@@ -218,7 +220,7 @@ El `SystemMessage` que llega al LLM principal se ensambla en `runAgent` y `memor
 | `user_profile_block` | `profiles.email` y `profiles.phone` del turno actual | Solo si al menos uno tiene valor | 20–60 tokens |
 | `date_context` | Runtime (`new Date()` + `userTimezone`) | Siempre | ~80 tokens |
 | `ambiguityAddendum` + reglas de tools | Constantes por tool habilitada (calendar, github, bash, etc.) | Según tools activas | 500–2000 tokens |
-| `[MEMORIA DEL USUARIO]` | `memories` (vía `memory_injection_node` → RPC `match_memories`) | Solo si hay matches ≥ `MATCH_THRESHOLD` | 0–800 tokens |
+| `[MEMORIA DEL USUARIO]` | `memories` (Web/Telegram: `memory_injection_node` → RPC `match_memories`; Heartbeat: set curado `procedural`/`semantic` sin embeddings) | Web/Telegram: matches ≥ `MATCH_THRESHOLD`; Heartbeat: hasta 8 recuerdos activos curados | 0–800 tokens |
 | `[ATAJO — ESTE TURNO]` / `[ATAJO CRON]` | Heurísticas en `runAgent` | Condicional (intent de schedule, cron) | 150–400 tokens |
 
 **Orden de concatenación** (dentro de `runAgent`, antes de pasar al grafo):
@@ -621,8 +623,9 @@ Factory `createMemoryInjectionNode({ db, userId })` → nodo asíncrono de LangG
 Lógica:
 
 1. **Guard cron**: si `state.autoApproveTools` → `return {}`.
-2. **Guard resume HITL**: si el último mensaje no es un `HumanMessage` nuevo (detectable porque `state.messages` no trae input de este turno — es decir, no hay un `HumanMessage` posterior al último `SystemMessage` o a la última `ToolMessage`) → `return {}`.
-3. Localizar el **último** `HumanMessage` en `state.messages`. Si no existe → `return {}`.
+2. **Camino Heartbeat**: si `state.channel === "heartbeat"`, no generar embedding ni llamar `match_memories`; listar memorias activas `procedural` y `semantic`, acotadas por conteo/tamaño, y reescribir el primer `SystemMessage` con el bloque curado. No marcar `memoryFlushPending`.
+3. **Guard resume HITL**: si el último mensaje no es un `HumanMessage` nuevo (detectable porque `state.messages` no trae input de este turno — es decir, no hay un `HumanMessage` posterior al último `SystemMessage` o a la última `ToolMessage`) → `return {}`.
+4. Localizar el **último** `HumanMessage` en `state.messages`. Si no existe → `return {}`.
 4. Llamar `generateEmbedding(userInput)` (una sola vez por turno).
 5. Leer `last_user_input_embedding` y `last_flushed_at` vía `getFlushState`.
 6. Calcular `topicShift`:
@@ -752,6 +755,7 @@ Mismo patrón que el de Web:
 
 - `apps/web/src/app/api/chat/confirm/route.ts`: es un resume HITL. El flush se dispara desde el endpoint que originó el turno, cuando ese turno realmente cierre.
 - `apps/web/src/app/api/cron/scheduled-tasks/route.ts`: el cron no inyecta ni extrae memoria. Sesiones `channel = 'cron'` quedan fuera del pipeline.
+- `apps/web/src/app/api/cron/heartbeat/route.ts`: Heartbeat no extrae memoria ni carga short-term; sólo puede inyectar contexto persistente curado (`procedural`/`semantic`) desde `memory_injection_node`.
 
 ## Nota de despliegue (serverless / Vercel)
 
@@ -774,6 +778,7 @@ No se reescribe ni altera la lógica de `compaction_node`, `agent_node`, `toolEx
 
 - Inyección: en un turno normal, el primer `SystemMessage` visto por `agent_node` contiene el bloque `[MEMORIA DEL USUARIO]` cuando hay recuerdos relevantes, y su contenido original se preserva íntegro.
 - Inyección en cron (`autoApproveTools=true`): no corre (no genera embedding, no toca DB, no modifica el `SystemMessage`).
+- Inyección en Heartbeat (`channel='heartbeat'`): no genera embedding ni usa similitud semántica contra el checklist; puede inyectar hasta un set pequeño de memorias activas `procedural`/`semantic` y no dispara flush.
 - Inyección en resume HITL: no corre (no duplica embedding ni incrementa `retrieval_count`).
 - Extracción: solo corre cuando hay ≥ `FLUSH_MIN_NEW_MESSAGES` sin flushear y al menos una señal (shift / count / idle). No corre si hay `pendingConfirmation`.
 - Watermark: tras un flush exitoso, `last_flushed_at` y `last_flushed_message_id` avanzan; tras un fallo (parse o embedding), no avanzan.

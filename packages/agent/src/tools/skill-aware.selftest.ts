@@ -133,7 +133,21 @@ function testActiveSkillDoesNotBypassExistingFilters(): void {
   assert.ok(got.includes("get_user_preferences"));
 }
 
-// ── Test 7: tenant BigQuery helper rejects literal organization_id so the
+// ── Test 7: heartbeat is read-only and must not expose raw warehouse queries.
+function testHeartbeatDoesNotExposeBigQuery(): void {
+  const ctx = baseCtx({
+    channel: "heartbeat",
+    lastUserMessage:
+      "Heartbeat tick: review the checklist below and produce a concise operational digest.",
+  });
+  const got = names(buildLangChainTools(ctx));
+  assert.ok(!got.includes("bigquery_run_query"));
+  assert.ok(got.includes("get_user_preferences"));
+  assert.ok(got.includes("list_enabled_tools"));
+  assert.ok(!got.includes("schedule_task"));
+}
+
+// ── Test 8: tenant BigQuery helper rejects literal organization_id so the
 //    model retries with @organization_id + params.
 function testBigQueryRejectsLiteralTenantId(): void {
   const result = prepareBigQueryRunArgs(
@@ -147,7 +161,7 @@ function testBigQueryRejectsLiteralTenantId(): void {
   assert.match(result.error, /named parameter/i);
 }
 
-// ── Test 8: if SQL already uses @organization_id but the model forgot
+// ── Test 9: if SQL already uses @organization_id but the model forgot
 //    params, the trusted server-side tenant context fills it in.
 function testBigQueryFillsMissingTenantParam(): void {
   const result = prepareBigQueryRunArgs(
@@ -171,9 +185,10 @@ function main(): void {
   testAllowlistDoesNotResurrectDisabledTools();
   testAllowlistWithUnknownIdIsHarmless();
   testActiveSkillDoesNotBypassExistingFilters();
+  testHeartbeatDoesNotExposeBigQuery();
   testBigQueryRejectsLiteralTenantId();
   testBigQueryFillsMissingTenantParam();
-  console.log("tools/skill-aware.selftest: all 8 cases passed");
+  console.log("tools/skill-aware.selftest: all 9 cases passed");
 }
 
 main();

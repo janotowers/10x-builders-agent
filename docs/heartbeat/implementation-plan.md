@@ -2,7 +2,7 @@
 
 Execution plan to deliver proactive Heartbeat end-to-end and keep status updated as implementation progresses.
 
-Last updated: 2026-05-05 (PR-5 delivered; PR-6 optional backlog)
+Last updated: 2026-05-06 (memory policy clarified; PR-6 optional backlog)
 Owner: Agent team (web + agent + db)
 Status: Core shipped (Phases 1–5 complete); Phase 6 remains optional hardening
 
@@ -19,6 +19,7 @@ Definition of done:
 - Runs are persisted in `heartbeat_runs` and visible to users.
 - Heartbeat tool execution is restricted to read-only allowlisted tools.
 - Runtime and model settings are cost-controlled and channel-aware.
+- Heartbeat does not reuse prior heartbeat ticks as short-term memory; it may use a small curated persistent-memory block for proactive context.
 
 ---
 
@@ -110,7 +111,10 @@ Tasks:
   - [x] low temperature and bounded output tokens.
 - [x] Enforce heartbeat tool allowlist in tool availability checks.
 - [x] Explicitly block risky tools on heartbeat (`bash`, writes, creates/sends, scheduling mutation).
-- [x] Keep memory policies channel-aware per roadmap intent (cron/heartbeat behavior consistent).
+- [x] Keep memory policies channel-aware per roadmap intent:
+  - [x] no short-term session history for heartbeat ticks.
+  - [x] no semantic retrieval against the technical heartbeat prompt.
+  - [x] optional curated persistent context from active `procedural`/`semantic` memories, bounded by count/size.
 
 Exit criteria:
 
@@ -212,7 +216,9 @@ When implementation starts, update this file in each PR:
 - 2026-05-05: PR-5 expanded to the Gu panel: Heartbeat is shown as proactive presence, while scheduled tasks are shown separately as user-programmed automations.
 - 2026-05-05: Refined the Gu panel copy to "Actividad proactiva", added a heartbeat-style pulse indicator, localized statuses, and removed redundant live-status copy from that block.
 - 2026-05-05: PR-5 UX polish: expandable heartbeat history renders full digest bullets (no join/truncate), compact scroll regions per run; scheduled tasks list shows full titles/prompts with scroll and status-colored badges (paused vs active).
+- 2026-05-06: Heartbeat memory policy refined. The runner no longer loads short-term session history (avoids repeated tick context), and long-term context is curated by type (`procedural`/`semantic`) with strict limits instead of semantic retrieval against the checklist prompt.
 
 ### Decisions log
 
 - 2026-05-05: Heartbeat remains distinct from `scheduled_tasks`; both reuse cron infrastructure but have different data models and product semantics.
+- 2026-05-06: Heartbeat may use persistent user context, but not via generic semantic retrieval on the tick prompt. It uses a small curated set of active procedural/semantic memories so the digest can reflect stable preferences without treating repeated heartbeat runs as conversation history.

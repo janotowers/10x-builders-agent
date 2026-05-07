@@ -1,5 +1,10 @@
 import { redirect } from "next/navigation";
 import { defaultSkillsRoot, loadGlobalSkillRegistry, TOOL_CATALOG } from "@agents/agent";
+import {
+  findExistingScheduledTaskForConfirmation,
+  isScheduleTaskConfirmation,
+} from "@/lib/scheduled-task-confirmation";
+import { sortScheduledTasksForDisplay } from "@/lib/scheduled-task-display-order";
 import { createClient } from "@/lib/supabase/server";
 import { ChatInterface } from "./chat-interface";
 
@@ -84,6 +89,7 @@ type ScheduledTaskSummary = {
     prompt: string;
     userRequest?: string | null;
     displayTitle?: string | null;
+    skillId?: string | null;
     scheduleType: "one_time" | "recurring";
     nextRunAt: string | null;
     status: ScheduledTaskDisplayStatus;
@@ -93,6 +99,7 @@ type ScheduledTaskSummary = {
     prompt: string;
     userRequest?: string | null;
     displayTitle?: string | null;
+    skillId?: string | null;
     scheduleType: "one_time" | "recurring";
     nextRunAt: string | null;
     status: ScheduledTaskDisplayStatus;
@@ -333,7 +340,18 @@ export default async function ChatPage() {
           .eq("id", sp.pendingConfirmation.toolCallId)
           .eq("status", "pending_confirmation")
           .maybeSingle();
-        if (stillPending) {
+        const scheduleConfirmation = {
+          toolName: sp.pendingConfirmation.toolName,
+          args: sp.pendingConfirmation.args,
+        };
+        const alreadyScheduled = isScheduleTaskConfirmation(scheduleConfirmation)
+          ? await findExistingScheduledTaskForConfirmation(supabase, {
+              userId: user.id,
+              args: scheduleConfirmation.args,
+              fallbackTimezone: (profile?.timezone as string | null) ?? null,
+            })
+          : null;
+        if (stillPending && !alreadyScheduled) {
           initialPendingConfirmation = {
             ...sp.pendingConfirmation,
             turnId:
@@ -387,15 +405,39 @@ export default async function ChatPage() {
     lastRun: normalizedHeartbeatRuns[0] ?? null,
   };
 
-  const { data: scheduledTasks } = await supabase
+  const scheduledTasksResult = await supabase
     .from("scheduled_tasks")
     .select(
-      "id, prompt, user_request, display_title, schedule_type, status, next_run_at, last_failure_error, updated_at"
+      "id, prompt, user_request, display_title, skill_id, schedule_type, status, next_run_at, last_failure_error, updated_at"
     )
     .eq("user_id", user.id)
     .in("status", ["active", "paused"])
     .order("next_run_at", { ascending: true, nullsFirst: false })
     .limit(50);
+  let scheduledTasks = scheduledTasksResult.data as
+    | Array<Record<string, unknown>>
+    | null;
+  let scheduledTasksError = scheduledTasksResult.error;
+  if (scheduledTasksError) {
+    console.warn(
+      "[chat] scheduled_tasks query with skill columns failed; retrying legacy projection:",
+      scheduledTasksError.message
+    );
+    const fallback = await supabase
+      .from("scheduled_tasks")
+      .select(
+        "id, prompt, user_request, display_title, schedule_type, status, next_run_at, last_failure_error, updated_at"
+      )
+      .eq("user_id", user.id)
+      .in("status", ["active", "paused"])
+      .order("next_run_at", { ascending: true, nullsFirst: false })
+      .limit(50);
+    scheduledTasks = fallback.data as Array<Record<string, unknown>> | null;
+    scheduledTasksError = fallback.error;
+  }
+  if (scheduledTasksError) {
+    console.error("[chat] scheduled_tasks query failed:", scheduledTasksError);
+  }
   const taskRows = (scheduledTasks ?? []) as Array<Record<string, unknown>>;
   const taskIds = taskRows
     .map((task) => task.id)
@@ -444,12 +486,15 @@ export default async function ChatPage() {
         typeof task.user_request === "string" ? task.user_request : null,
       displayTitle:
         typeof task.display_title === "string" ? task.display_title : null,
+      skillId: typeof task.skill_id === "string" ? task.skill_id : null,
       scheduleType: task.schedule_type as "one_time" | "recurring",
       nextRunAt:
         typeof task.next_run_at === "string" ? task.next_run_at : null,
       status: resolveDisplayStatus(task),
     }));
-  const nextTask = normalizedScheduledTasks.find(
+  const orderedScheduledTasks =
+    sortScheduledTasksForDisplay(normalizedScheduledTasks);
+  const nextTask = orderedScheduledTasks.find(
     (task) =>
       (task.status === "active" || task.status === "running") && task.nextRunAt
   );
@@ -460,7 +505,7 @@ export default async function ChatPage() {
     activeCount: activeTasks.length,
     pausedCount: pausedTasks.length,
     runningCount: runningTaskIds.size,
-    tasks: normalizedScheduledTasks,
+    tasks: orderedScheduledTasks,
     nextTask: nextTask ?? null,
     lastFailure:
       typeof lastFailureTask?.last_failure_error === "string"

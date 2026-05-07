@@ -1,4 +1,5 @@
 import type { DbClient } from "../client";
+import type { ToolApprovalPolicy } from "@agents/types";
 
 export interface ScheduledTask {
   id: string;
@@ -6,6 +7,9 @@ export interface ScheduledTask {
   prompt: string;
   user_request?: string | null;
   display_title?: string | null;
+  skill_id?: string | null;
+  tool_approval_policy?: ToolApprovalPolicy | null;
+  approval_policy_version?: number;
   schedule_type: "one_time" | "recurring";
   run_at: string | null;
   cron_expr: string | null;
@@ -46,6 +50,8 @@ export async function createScheduledTask(
     prompt: string;
     userRequest?: string | null;
     displayTitle?: string | null;
+    skillId?: string | null;
+    toolApprovalPolicy?: ToolApprovalPolicy | null;
     scheduleType: "one_time" | "recurring";
     runAt?: string;
     cronExpr?: string;
@@ -60,6 +66,8 @@ export async function createScheduledTask(
       prompt: params.prompt,
       user_request: params.userRequest ?? null,
       display_title: params.displayTitle ?? null,
+      skill_id: params.skillId ?? null,
+      tool_approval_policy: params.toolApprovalPolicy ?? {},
       schedule_type: params.scheduleType,
       run_at: params.runAt ?? null,
       cron_expr: params.cronExpr ?? null,

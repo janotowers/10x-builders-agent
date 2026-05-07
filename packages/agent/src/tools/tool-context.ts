@@ -1,5 +1,11 @@
 import type { DbClient } from "@agents/db";
-import type { Channel, UserToolSetting, UserIntegration } from "@agents/types";
+import type {
+  Channel,
+  ToolApprovalPolicy,
+  UserToolSetting,
+  UserIntegration,
+  UserSkillSetting,
+} from "@agents/types";
 
 export interface ToolContext {
   db: DbClient;
@@ -8,6 +14,7 @@ export interface ToolContext {
   /** Correlates all tool audit rows for the current user request. */
   turnId?: string;
   enabledTools: UserToolSetting[];
+  enabledSkills?: UserSkillSetting[];
   integrations: UserIntegration[];
   githubToken?: string;
   lastUserMessage?: string;
@@ -53,4 +60,6 @@ export interface ToolContext {
   skillsRoot?: string;
   /** Session channel ("web", "telegram", "cron", "heartbeat"). */
   channel: Channel;
+  /** Optional per-tool/per-operation approval policy for automated turns. */
+  toolApprovalPolicy?: ToolApprovalPolicy;
 }

@@ -33,6 +33,7 @@ import {
 } from "@/lib/telegram/send-message";
 import { Cron } from "croner";
 import type { ScheduledTask } from "@agents/db";
+import { normalizeToolApprovalPolicy } from "@agents/agent";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 
@@ -115,7 +116,7 @@ function computeNextRetryAt(task: ScheduledTask): string {
 }
 
 function sanitizeScheduledTaskPromptForExecution(prompt: string): string {
-  const sanitized = prompt
+  const cleaned = prompt
     // Legacy scheduled tasks may contain command examples created before we
     // fixed the prompt wording, e.g. "... echo; done. Devuélveme ...". The
     // period belongs to the Spanish sentence, but the model often copies it
@@ -124,10 +125,12 @@ function sanitizeScheduledTaskPromptForExecution(prompt: string): string {
     .replace(/\b(done|fi|esac)\.\s+(?=(Devu[eé]lveme|Resume|Dame|Env[ií]a|M[aá]ndame)\b)/gi, "$1; ")
     .replace(/\b(done|fi|esac)\.\s*$/gi, "$1");
 
-  if (sanitized === prompt) return prompt;
-  return `${sanitized}
+  const executionGuard = `Esta es la ejecución automática de una tarea ya programada. NO vuelvas a llamar schedule_task ni reagendes nada; ejecuta lo solicitado AHORA y devuelve el resultado en este mismo turno.`;
+  const bashHint = cleaned !== prompt
+    ? ` Si usas bash, no copies puntuación de la oración dentro del comando ("done" o "done;", nunca "done.").`
+    : "";
 
-Nota de ejecución: si usas bash, no copies puntuación de la oración dentro del comando. En particular, usa "done" o "done;" pero nunca "done.".`;
+  return `${cleaned}\n\nNota de ejecución: ${executionGuard}${bashHint}`;
 }
 
 interface TaskResult {
@@ -204,6 +207,10 @@ async function runTask(
       channel: "cron",
       googleCalendarAccessToken,
       autoApproveTools: true,
+      forcedSkillId: task.skill_id ?? null,
+      toolApprovalPolicy: normalizeToolApprovalPolicy(
+        task.tool_approval_policy
+      ),
     });
 
     const chatId = await getTelegramChatId(db, task.user_id);

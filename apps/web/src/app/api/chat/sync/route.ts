@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { sortScheduledTasksForDisplay } from "@/lib/scheduled-task-display-order";
 import { createClient } from "@/lib/supabase/server";
 
 type SessionChannel = "web" | "cron" | "heartbeat";
@@ -150,15 +151,39 @@ export async function GET(request: Request) {
           : summarizeHeartbeatPayload(run.payload),
     }));
 
-  const { data: scheduledTasks } = await supabase
+  const scheduledTasksResult = await supabase
     .from("scheduled_tasks")
     .select(
-      "id, prompt, user_request, display_title, schedule_type, status, next_run_at, last_failure_error"
+      "id, prompt, user_request, display_title, skill_id, schedule_type, status, next_run_at, last_failure_error"
     )
     .eq("user_id", user.id)
     .in("status", ["active", "paused"])
     .order("next_run_at", { ascending: true, nullsFirst: false })
     .limit(50);
+  let scheduledTasks = scheduledTasksResult.data as
+    | Array<Record<string, unknown>>
+    | null;
+  let scheduledTasksError = scheduledTasksResult.error;
+  if (scheduledTasksError) {
+    console.warn(
+      "[chat-sync] scheduled_tasks query with skill columns failed; retrying legacy projection:",
+      scheduledTasksError.message
+    );
+    const fallback = await supabase
+      .from("scheduled_tasks")
+      .select(
+        "id, prompt, user_request, display_title, schedule_type, status, next_run_at, last_failure_error"
+      )
+      .eq("user_id", user.id)
+      .in("status", ["active", "paused"])
+      .order("next_run_at", { ascending: true, nullsFirst: false })
+      .limit(50);
+    scheduledTasks = fallback.data as Array<Record<string, unknown>> | null;
+    scheduledTasksError = fallback.error;
+  }
+  if (scheduledTasksError) {
+    console.error("[chat-sync] scheduled_tasks query failed:", scheduledTasksError);
+  }
   const taskRows = (scheduledTasks ?? []) as Array<Record<string, unknown>>;
   const taskIds = taskRows
     .map((task) => task.id)
@@ -205,11 +230,14 @@ export async function GET(request: Request) {
         typeof task.user_request === "string" ? task.user_request : null,
       displayTitle:
         typeof task.display_title === "string" ? task.display_title : null,
+      skillId: typeof task.skill_id === "string" ? task.skill_id : null,
       scheduleType: task.schedule_type as "one_time" | "recurring",
       nextRunAt:
         typeof task.next_run_at === "string" ? task.next_run_at : null,
       status: resolveDisplayStatus(task),
     }));
+  const orderedScheduledTasks =
+    sortScheduledTasksForDisplay(normalizedScheduledTasks);
   const lastFailureTask = taskRows.find(
     (task) => typeof task.last_failure_error === "string" && task.last_failure_error
   );
@@ -230,9 +258,9 @@ export async function GET(request: Request) {
       activeCount: activeTasks.length,
       pausedCount: pausedTasks.length,
       runningCount: runningTaskIds.size,
-      tasks: normalizedScheduledTasks,
+      tasks: orderedScheduledTasks,
       nextTask:
-        normalizedScheduledTasks.find(
+        orderedScheduledTasks.find(
           (task) =>
             (task.status === "active" || task.status === "running") &&
             task.nextRunAt

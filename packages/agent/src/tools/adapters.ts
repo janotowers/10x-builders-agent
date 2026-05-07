@@ -13,7 +13,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { Cron } from "croner";
-import { TOOL_CATALOG } from "./catalog";
+import { TOOL_CATALOG, getToolRisk } from "./catalog";
 import { githubApi } from "./github-api";
 import { userWantsNewGithubRepository } from "./github-intent";
 import { userMessageAnchorsCalendarPeriodOnly } from "./calendar-period-intent";
@@ -54,6 +54,20 @@ import {
 import { readSkillReference } from "./skill-references";
 import { defaultSkillsRoot } from "../skills/runtime";
 import type { ToolContext } from "./tool-context";
+import type {
+  ToolApprovalMode,
+  ToolApprovalPolicy,
+  UserSkillSetting,
+} from "@agents/types";
+import {
+  createSkillSelectorModel,
+} from "../model";
+import {
+  getGlobalSkillRegistry,
+} from "../skills/runtime";
+import { selectSkillForTurn } from "../skills/select";
+import { resolveSkill } from "../skills/resolve";
+import type { ResolvedSkill } from "../skills/types";
 
 export type { ToolContext } from "./tool-context";
 
@@ -134,6 +148,123 @@ export function detectObviousBashSyntaxIssue(prompt: string): string | null {
     return "Hay un número impar de comillas simples (') en el comando. Verifica que cada comilla simple abierta esté cerrada.";
   }
   return null;
+}
+
+export function normalizeToolApprovalPolicy(
+  value: unknown
+): ToolApprovalPolicy | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const out: ToolApprovalPolicy = {};
+  for (const [key, mode] of Object.entries(value)) {
+    if (
+      typeof key === "string" &&
+      (mode === "auto_execute" ||
+        mode === "request_approval" ||
+        mode === "deny")
+    ) {
+      out[key] = mode;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+export function toolOperationPolicyKey(
+  toolName: string,
+  args: Record<string, unknown>
+): string {
+  if (toolName === "manage_scheduled_tasks") {
+    const action = typeof args.action === "string" ? args.action.trim() : "";
+    if (action) return `${toolName}:${action}`;
+  }
+  return toolName;
+}
+
+export function resolveToolApprovalMode(args: {
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  requiresConfirmation: boolean;
+  autoApproveTools?: boolean;
+  policy?: ToolApprovalPolicy;
+}): ToolApprovalMode {
+  const operationKey = toolOperationPolicyKey(args.toolName, args.toolArgs);
+  const explicit = args.policy?.[operationKey] ?? args.policy?.[args.toolName];
+  if (explicit) return explicit;
+  if (args.autoApproveTools && args.requiresConfirmation) return "auto_execute";
+  return args.requiresConfirmation ? "request_approval" : "auto_execute";
+}
+
+function buildEnabledSkillCandidateSlugs(
+  allSkillIds: readonly string[],
+  settings?: readonly UserSkillSetting[]
+): string[] {
+  if (!settings || settings.length === 0) return [...allSkillIds];
+  const enabledById = new Map(
+    settings.map((setting) => [setting.skill_id, setting.enabled !== false])
+  );
+  return allSkillIds.filter((skillId) => enabledById.get(skillId) !== false);
+}
+
+function buildScheduledTaskToolPolicy(
+  skill: ResolvedSkill | undefined
+): ToolApprovalPolicy | undefined {
+  if (!skill) return undefined;
+  const allowed = new Set(skill.allowedTools);
+  const policy: ToolApprovalPolicy = {};
+
+  for (const toolDef of TOOL_CATALOG) {
+    if (!allowed.has(toolDef.id)) {
+      policy[toolDef.id] = "deny";
+      continue;
+    }
+    if (toolDef.id === "manage_scheduled_tasks") {
+      policy["manage_scheduled_tasks:list"] = "auto_execute";
+      policy["manage_scheduled_tasks:pause"] = "request_approval";
+      policy["manage_scheduled_tasks:resume"] = "request_approval";
+      continue;
+    }
+    policy[toolDef.id] =
+      getToolRisk(toolDef.id) === "low" ? "auto_execute" : "request_approval";
+  }
+  return policy;
+}
+
+async function inferScheduledTaskAutomationBinding(args: {
+  prompt: string;
+  enabledSkills?: readonly UserSkillSetting[];
+}): Promise<{
+  skillId: string | null;
+  toolApprovalPolicy: ToolApprovalPolicy | null;
+}> {
+  try {
+    const registry = await getGlobalSkillRegistry();
+    const candidateSlugs = buildEnabledSkillCandidateSlugs(
+      registry.list().map((skill) => skill.name),
+      args.enabledSkills
+    );
+    const selection = await selectSkillForTurn({
+      userMessage: args.prompt,
+      registry,
+      candidateSlugs,
+      channel: "cron",
+      model: createSkillSelectorModel(),
+    });
+    if (selection.kind !== "active") {
+      return { skillId: null, toolApprovalPolicy: null };
+    }
+    const resolved = await resolveSkill(selection.skillId, registry);
+    return {
+      skillId: resolved.rootName,
+      toolApprovalPolicy: buildScheduledTaskToolPolicy(resolved) ?? null,
+    };
+  } catch (err) {
+    console.warn(
+      "[scheduled-tasks] skill binding failed; task will run without forced skill:",
+      err instanceof Error ? err.message : String(err)
+    );
+    return { skillId: null, toolApprovalPolicy: null };
+  }
 }
 
 /**
@@ -271,6 +402,10 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   const setting = ctx.enabledTools.find((t) => t.tool_id === toolId);
   if (!setting?.enabled) return false;
 
+  if (ctx.toolApprovalPolicy?.[toolId] === "deny") {
+    return false;
+  }
+
   // Skill-aware narrowing (V1-B): when the pre-graph selector picked a skill
   // for this turn, the tool list is intersected with that skill's
   // `allowed_tools`. When no skill is active, this check is a no-op and the
@@ -283,6 +418,15 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
     return false;
   }
 
+  // Cron channel: a scheduled task should never schedule itself again or
+  // mutate other scheduled tasks. Listing remains safe (read-only).
+  if (
+    ctx.channel === "cron" &&
+    (toolId === "schedule_task")
+  ) {
+    return false;
+  }
+
   // Heartbeat channel is proactive and must stay read-only in V1.
   // We fail closed with a strict allowlist instead of relying only on risk.
   if (ctx.channel === "heartbeat") {
@@ -290,7 +434,6 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
       "get_user_preferences",
       "list_enabled_tools",
       "read_skill_reference",
-      "bigquery_run_query",
       "list_user_memories",
       "search_user_memories",
       "github_list_repos",
@@ -299,6 +442,9 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
       "calendar_list_events",
       "read_file",
     ]);
+    // BigQuery requires a domain skill and tenant-aware references. Heartbeat
+    // skips skill selection, so allowing the raw tool lets the model invent
+    // generic warehouse SQL from memory context.
     if (!HEARTBEAT_ALLOWED_TOOLS.has(toolId)) return false;
   }
 
@@ -1311,11 +1457,18 @@ export function buildLangChainTools(ctx: ToolContext) {
             }
           }
 
+          const automationBinding = await inferScheduledTaskAutomationBinding({
+            prompt: input.prompt,
+            enabledSkills: ctx.enabledSkills,
+          });
+
           const task = await createScheduledTask(ctx.db, {
             userId: ctx.userId,
             prompt: input.prompt,
             userRequest: ctx.lastUserMessage?.trim() || null,
             displayTitle: input.display_title?.trim() || null,
+            skillId: automationBinding.skillId,
+            toolApprovalPolicy: automationBinding.toolApprovalPolicy,
             scheduleType: input.schedule_type,
             runAt: input.run_at,
             cronExpr: input.cron_expr,
@@ -1343,6 +1496,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             prompt: task.prompt,
             user_request: task.user_request,
             display_title: task.display_title,
+            skill_id: task.skill_id ?? null,
+            tool_approval_policy: task.tool_approval_policy ?? null,
           });
         },
         {

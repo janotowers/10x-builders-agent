@@ -5,9 +5,14 @@ import {
   decryptToken,
   getGoogleCalendarAccessToken,
   getPendingToolCall,
+  updateToolCallStatus,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
 import { publishTurnEvent } from "@/lib/agent-turn-events";
+import {
+  findExistingScheduledTaskForConfirmation,
+  isScheduleTaskConfirmation,
+} from "@/lib/scheduled-task-confirmation";
 
 export async function POST(request: Request) {
   try {
@@ -55,6 +60,41 @@ export async function POST(request: Request) {
       )
       .eq("id", user.id)
       .single();
+
+    const toolArgs =
+      toolCall.arguments_json &&
+      typeof toolCall.arguments_json === "object" &&
+      !Array.isArray(toolCall.arguments_json)
+        ? (toolCall.arguments_json as Record<string, unknown>)
+        : null;
+    if (
+      action === "approve" &&
+      toolCall.tool_name === "schedule_task" &&
+      toolArgs
+    ) {
+      const existingTask = await findExistingScheduledTaskForConfirmation(db, {
+        userId: user.id,
+        args: toolArgs,
+        fallbackTimezone: (profile?.timezone as string | null) ?? null,
+      });
+      if (existingTask) {
+        await updateToolCallStatus(db, toolCall.id as string, "executed", {
+          ok: true,
+          already_scheduled: true,
+          task_id: existingTask.id,
+          next_run_at: existingTask.next_run_at,
+        });
+        return NextResponse.json({
+          ok: true,
+          response: "Listo, esa tarea ya estaba programada.",
+          turnId: (toolCall.turn_id as string | null) ?? undefined,
+          appliedSkills: [],
+          memoryUsed: [],
+          toolCalls: ["schedule_task"],
+          pendingConfirmation: null,
+        });
+      }
+    }
 
     const { data: toolSettings } = await supabase
       .from("user_tool_settings")
@@ -155,14 +195,43 @@ export async function POST(request: Request) {
       },
     });
 
+    let pendingConfirmation = result.pendingConfirmation;
+    if (
+      pendingConfirmation &&
+      isScheduleTaskConfirmation({
+        toolName: pendingConfirmation.toolName,
+        args: pendingConfirmation.args,
+      })
+    ) {
+      const existingTask = await findExistingScheduledTaskForConfirmation(db, {
+        userId: user.id,
+        args: pendingConfirmation.args,
+        fallbackTimezone: (profile?.timezone as string | null) ?? null,
+      });
+      if (existingTask) {
+        await updateToolCallStatus(
+          db,
+          pendingConfirmation.toolCallId,
+          "executed",
+          {
+            ok: true,
+            already_scheduled: true,
+            task_id: existingTask.id,
+            next_run_at: existingTask.next_run_at,
+          }
+        );
+        pendingConfirmation = null;
+      }
+    }
+
     return NextResponse.json({
       ok: true,
-      response: result.pendingConfirmation ? null : result.response,
+      response: pendingConfirmation ? null : result.response,
       turnId: result.turnId,
       appliedSkills: result.appliedSkills,
       memoryUsed: result.memoryUsed,
       toolCalls: result.toolCalls,
-      pendingConfirmation: result.pendingConfirmation,
+      pendingConfirmation,
     });
   } catch (error) {
     console.error("Confirm API error:", error);

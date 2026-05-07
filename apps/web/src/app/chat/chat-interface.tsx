@@ -111,6 +111,7 @@ interface ScheduledTaskSummary {
     prompt: string;
     userRequest?: string | null;
     displayTitle?: string | null;
+    skillId?: string | null;
     scheduleType: "one_time" | "recurring";
     nextRunAt: string | null;
     status: ScheduledTaskDisplayStatus;
@@ -120,6 +121,7 @@ interface ScheduledTaskSummary {
     prompt: string;
     userRequest?: string | null;
     displayTitle?: string | null;
+    skillId?: string | null;
     scheduleType: "one_time" | "recurring";
     nextRunAt: string | null;
     status: ScheduledTaskDisplayStatus;
@@ -310,6 +312,30 @@ function toolStatusClass(status: string): string {
   return "bg-violet-500";
 }
 
+function scheduleConfirmationMatchesTask(
+  confirmation: PendingConfirmation | null,
+  tasks: ScheduledTaskSummary["tasks"]
+): boolean {
+  if (!confirmation || confirmation.toolName !== "schedule_task") return false;
+  const prompt =
+    typeof confirmation.args.prompt === "string" ? confirmation.args.prompt : "";
+  const scheduleType = confirmation.args.schedule_type;
+  if (
+    !prompt ||
+    (scheduleType !== "one_time" && scheduleType !== "recurring")
+  ) {
+    return false;
+  }
+  return (tasks ?? []).some(
+    (task) =>
+      task.prompt === prompt &&
+      task.scheduleType === scheduleType &&
+      (task.status === "active" ||
+        task.status === "running" ||
+        task.status === "paused")
+  );
+}
+
 function formatToolTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -446,6 +472,11 @@ function displayScheduledTaskText(task: {
   return task.displayTitle?.trim() || task.userRequest?.trim() || task.prompt;
 }
 
+function formatScheduledTaskSkillLabel(skillId?: string | null): string {
+  if (!skillId) return "";
+  return `Habilidad: ${formatSkillForUserPanel(skillId)}`;
+}
+
 function formatScheduledTaskFailureForUser(error: string): string {
   const normalized = error.trim();
   const lower = normalized.toLowerCase();
@@ -545,6 +576,10 @@ function stripMarkdown(value: string): string {
     .trim();
 }
 
+/** Main H1-equivalent titles we hide from the bullet strip so the panel does not repeat the digest name. */
+const HEARTBEAT_DIGEST_TITLE_LINE =
+  /^(Operational Digest|Operational summary|Operative summary|Resumen operativo|Digest operativo|Pulso operativo|Pulso del día|Resumen del día)$/i;
+
 function heartbeatDigestItems(
   summary: string,
   options?: { limit?: number }
@@ -555,7 +590,7 @@ function heartbeatDigestItems(
     .split(/\n+/)
     .map((line) => line.replace(/^[-*]\s+/, "").trim())
     .filter((line) => line.length > 0)
-    .filter((line) => !/^Operational Digest$/i.test(line));
+    .filter((line) => !HEARTBEAT_DIGEST_TITLE_LINE.test(line));
   const limit = options?.limit;
   if (typeof limit === "number") {
     return lines.slice(0, limit);
@@ -1022,8 +1057,10 @@ export function ChatInterface({
   const [heartbeatHistoryExpanded, setHeartbeatHistoryExpanded] = useState(false);
   const [scheduledTasksExpanded, setScheduledTasksExpanded] = useState(false);
   const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
-  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(() =>
-    defaultSelectedTurnId(initialMessages)
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(
+    () =>
+      initialPendingConfirmation?.turnId ??
+      defaultSelectedTurnId(initialMessages)
   );
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
@@ -1051,7 +1088,7 @@ export function ChatInterface({
   const heartbeatRuns = heartbeatStatus?.runs ?? [];
   const previousHeartbeatRuns = heartbeatRuns.slice(1);
   const scheduledTasks = scheduledTaskSummary?.tasks ?? [];
-  const inspectedTurnId = confirmation?.turnId ?? selectedTurnId;
+  const inspectedTurnId = selectedTurnId ?? confirmation?.turnId ?? null;
   const inspectedMessage = inspectedTurnId
     ? [...messages].reverse().find((message) => message.turn_id === inspectedTurnId)
     : undefined;
@@ -1106,6 +1143,13 @@ export function ChatInterface({
   const visibleOperationalEvents = operationalEvents
     .filter((event) => !inspectedTurnId || event.turnId === inspectedTurnId)
     .slice(-8);
+
+  useEffect(() => {
+    if (scheduleConfirmationMatchesTask(confirmation, scheduledTasks)) {
+      setConfirmation(null);
+      setConfirming(false);
+    }
+  }, [confirmation, scheduledTasks]);
 
   useLayoutEffect(() => {
     const viewport = messagesViewportRef.current;
@@ -1836,7 +1880,7 @@ export function ChatInterface({
                         <span className="text-base leading-tight">Heartbeat</span>
                       </div>
                       <p className="mt-0.5 text-center text-violet-100">
-                        {heartbeatStatus?.enabled ? "Activo" : "Inactivo"}
+                        {heartbeatStatus?.enabled ? "Activo" : "Desactivado"}
                       </p>
                     </div>
                   </div>
@@ -2382,7 +2426,7 @@ export function ChatInterface({
                         <p className="mt-1 opacity-70">
                           {heartbeatStatus?.enabled
                             ? `Activo · cada ${heartbeatStatus.intervalMinutes} min`
-                            : "Inactivo en Settings"}
+                            : "Desactivado actualmente"}
                         </p>
                       </div>
                       {heartbeatStatus?.lastRun ? (
@@ -2477,6 +2521,13 @@ export function ChatInterface({
                       ) : (
                         <p>Sin próximas tareas activas.</p>
                       )}
+                      {scheduledTaskSummary?.nextTask?.skillId ? (
+                        <p className="text-[11px] opacity-70">
+                          {formatScheduledTaskSkillLabel(
+                            scheduledTaskSummary.nextTask.skillId
+                          )}
+                        </p>
+                      ) : null}
                     </div>
                     {scheduledTaskSummary?.pausedCount ? (
                       <p className="mt-1 opacity-70">
@@ -2537,6 +2588,11 @@ export function ChatInterface({
                                 <p className="break-words font-medium">
                                   {taskDisplayText}
                                 </p>
+                                {task.skillId ? (
+                                  <p className="mt-1 text-[11px] opacity-70">
+                                    {formatScheduledTaskSkillLabel(task.skillId)}
+                                  </p>
+                                ) : null}
                                 {taskDisplayText !== task.prompt ? (
                                   <p className="mt-2 break-words text-[11px] opacity-60">
                                     Instrucción programada: {task.prompt}

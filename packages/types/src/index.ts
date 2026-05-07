@@ -2,6 +2,15 @@ export type Channel = "web" | "telegram" | "cron" | "heartbeat";
 
 export type ToolRisk = "low" | "medium" | "high";
 
+export type ToolApprovalMode = "auto_execute" | "request_approval" | "deny";
+
+/**
+ * Per-automation approval policy. Keys can be either a tool id
+ * (`calendar_list_events`) or a tool operation key
+ * (`manage_scheduled_tasks:list`).
+ */
+export type ToolApprovalPolicy = Record<string, ToolApprovalMode>;
+
 export interface Profile {
   id: string;
   name: string;

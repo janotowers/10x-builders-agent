@@ -34,9 +34,9 @@ export async function PATCH(
   const { id } = await params;
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const action = body.action;
-  if (action !== "pause" && action !== "resume") {
+  if (action !== "pause" && action !== "resume" && action !== "cancel") {
     return NextResponse.json(
-      { error: "action must be pause or resume" },
+      { error: "action must be pause, resume or cancel" },
       { status: 400 }
     );
   }
@@ -83,7 +83,8 @@ export async function PATCH(
   const updated = await setScheduledTaskStatus(db, {
     taskId: id,
     userId: user.id,
-    newStatus: action === "pause" ? "paused" : "active",
+    newStatus:
+      action === "pause" ? "paused" : action === "resume" ? "active" : "completed",
     nextRunAt,
   });
 
