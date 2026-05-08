@@ -9,10 +9,49 @@ This capability is scoped to the `heartbeat` channel and to skills marked `heart
 Some checks are boolean-like and time-sensitive:
 
 - Is there a calendar event inside the reminder window?
+- Is there a calendar event already in progress?
 - Is there a Google Task due inside the reminder window?
 - In the future: is there a lead, approval, inventory, or system state that crosses a configured threshold?
 
 Those reads should be reliable and visible. A deterministic prefetcher performs the read server-side, records it as a tool call, then injects the resulting signal into the Heartbeat prompt so the model only has to explain the action, not discover the fact.
+
+### Calendar event semantics: upcoming + in progress
+
+The `calendar_events` prefetcher emits a signal in two cases:
+
+1. The event starts inside the lookahead window (with a 60-second backward grace for the "just started" case).
+2. The event already started but has not ended yet (in progress).
+
+Case (2) is included on purpose. Without it the prefetcher's count and the LLM-issued `calendar_list_events` disagreed: Google returns events that overlap the requested time window, so the model would surface in-progress meetings while the deterministic block reported zero. That mismatch produced misleading copy ("starts in less than 60 minutes" for a meeting that had already begun) and a confusing `Determinístico 0 / IA N` row in **Herramientas del turno**.
+
+In-progress signals carry two fields callers and the prompt formatter rely on:
+
+- `details.is_in_progress = "yes"` when the event has already started and not yet ended.
+- `details.starts_in_minutes` is signed: positive for upcoming starts, **negative** for in-progress events (minutes elapsed since start). `signal.minutesAhead` stays clamped to `>= 0` to preserve the existing sort/threshold contract.
+
+The prompt block prefixes in-progress bullets with `(in progress)` and the deterministic fallback response uses dedicated copy so the LLM (and the fallback path) never describe an in-progress meeting as upcoming.
+
+### Suppression: do not repeat the same meeting every tick
+
+In-progress events are useful once, but can become noisy if Heartbeat runs every few minutes while the user is already in the meeting. The `calendar_events` prefetcher therefore suppresses repeat signals for the same event occurrence when a recent deterministic Heartbeat already surfaced it.
+
+The occurrence key is:
+
+- Google event `id` + event start boundary (`start.dateTime` or `start.date`) when `id` is present.
+- Event summary + start boundary as a fallback for events without an id.
+
+The lookup is intentionally lightweight and uses existing state:
+
+- Query recent `tool_calls` in the same heartbeat session.
+- Filter `tool_name = 'calendar_list_events'`, `executor_kind = 'deterministic'`, `status = 'executed'`.
+- Read emitted events from prior `result_json.events`.
+- No new table or migration.
+
+Suppressed items are still written to the new row under `result_json.suppressed_events` with `suppression_reason = 'same_event_occurrence_already_emitted_recently'` for debugging, but they are not returned as active `signals` and do not trigger the deterministic fallback.
+
+To keep the LLM from re-mentioning those items through a fresh tool call, `runHeartbeatPrefetchers()` injects a hidden `[SUPPRESSED HEARTBEAT SIGNALS - DO NOT REPEAT]` block. The model must treat those items as already surfaced and answer the compact no-action response if nothing else crossed a threshold.
+
+This policy is conservative: if an event was already mentioned as upcoming, it should not be mentioned again later merely because it is now in progress. New occurrences of recurring events are unaffected because their start boundary changes.
 
 ## Runtime Flow
 
@@ -23,7 +62,7 @@ Those reads should be reliable and visible. A deterministic prefetcher performs 
 5. For each registered kind, the runner checks integration availability and runs the prefetcher once.
 6. The prefetcher result is persisted in `tool_calls` with `executor_kind = 'deterministic'`.
 7. The same generated `turn_id` is passed to `runAgent()`, so deterministic and LLM-issued tool calls show together in the chat panel.
-8. If any deterministic signal crossed a threshold, a compact signal block is injected into the Heartbeat prompt.
+8. If any deterministic signal crossed a threshold, a compact signal block is injected into the Heartbeat prompt. If signals were detected but suppressed as repeats, a hidden do-not-repeat block is injected instead.
 9. If the model still collapses to `Pulso OK`, the route falls back to a deterministic response generated from the prefetch output.
 
 ## Skill Contract
@@ -118,3 +157,21 @@ The actual fetched data lives in `tool_calls.result_json`.
 - Not every Heartbeat tool needs a prefetcher.
 - Prefetchers should be used for threshold-like signals where reliability, latency, or observability matters.
 - Write actions remain out of scope for Heartbeat unless explicitly approved through a future HITL design.
+
+## Considered Alternative: Suppress the LLM's Redundant Read (deferred)
+
+Today a Heartbeat tick can produce **two** rows of `calendar_list_events` for the same window: one deterministic prefetch and one issued by the LLM after seeing the prompt. After the in-progress alignment above, both reads agree on what counts as a signal, but the second call still costs an extra Google API request and an additional tool-roundtrip in the LLM step.
+
+A future optimisation ("Option B" in design notes) would:
+
+1. After `runHeartbeatPrefetchers` returns with `status=executed` for a given `kind`, hide the equivalent LLM tool from the heartbeat tool set for that tick (e.g. via a flag in `ToolContext` consumed by `calendarToolEnabled`).
+2. Enrich the deterministic prompt block with the **full** event list (not only signals that crossed the threshold), labelled as authoritative for the configured window.
+
+Trade-offs:
+
+- Pro: removes one Google API call and one LLM tool roundtrip per tick per user; eliminates the duplicated `Determinístico` + `IA` row for the same tool.
+- Pro: a single source of truth for what the tick "saw".
+- Con: loses the model's flexibility to query a different window than the prefetch ran with. Mitigation: only suppress when the prefetch window covers what the active skill requested.
+- Con: another conditional path in the tool gate; needs targeted tests for skills without prefetcher coverage and for prefetcher failures (we should NOT hide the tool when the deterministic read failed).
+
+Defer until the doubled API cost or latency becomes a measurable problem (more users, shorter intervals, quota pressure on Google Calendar). When implemented, this section should move from "considered alternative" to "behaviour", and the suppression rule should live next to `calendarToolEnabled` in `packages/agent/src/tools/calendar-adapters.ts` so it stays close to the tool gate it modifies.

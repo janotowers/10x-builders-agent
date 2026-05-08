@@ -76,6 +76,14 @@ export interface HeartbeatPrefetchOutput {
   result: Record<string, unknown>;
   status: "executed" | "failed";
   signals: HeartbeatPrefetchSignal[];
+  /**
+   * Signals detected but intentionally not surfaced again because a recent
+   * deterministic Heartbeat already emitted the same occurrence.
+   *
+   * These are injected as hidden guidance for the LLM ("do not repeat"), but
+   * they do not count as active signals and must not trigger fallback output.
+   */
+  suppressedSignals?: HeartbeatPrefetchSignal[];
   /** Optional human-readable headline (used in fallback responses). */
   fallbackHeadline?: string;
 }

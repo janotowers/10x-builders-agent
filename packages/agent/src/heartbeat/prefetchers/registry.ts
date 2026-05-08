@@ -112,6 +112,19 @@ function sourceMatchesKind(
   return false;
 }
 
+function isSignalInProgress(signal: HeartbeatPrefetchSignal): boolean {
+  if (signal.details.is_in_progress === "yes") return true;
+  const startsInMinutes = signal.details.starts_in_minutes;
+  return typeof startsInMinutes === "number" && startsInMinutes < 0;
+}
+
+function startsInMinutesNumber(
+  signal: HeartbeatPrefetchSignal
+): number | null {
+  const value = signal.details.starts_in_minutes;
+  return typeof value === "number" ? value : null;
+}
+
 function formatPromptBullet(
   kind: HeartbeatSignalKind,
   signal: HeartbeatPrefetchSignal
@@ -120,41 +133,125 @@ function formatPromptBullet(
     .filter(([, value]) => value !== undefined && value !== "")
     .map(([key, value]) => `${key}=${String(value)}`);
   const prefix = kind === "calendar_tasks" ? "task" : "event";
-  return `- [${prefix}] ${signal.title} | ${detailParts.join(" | ")}`;
+  // Prefix in-progress events explicitly so the model never describes them
+  // as "starting in N minutes" when they are already running.
+  const stateTag = isSignalInProgress(signal) ? " (in progress)" : "";
+  return `- [${prefix}${stateTag}] ${signal.title} | ${detailParts.join(" | ")}`;
+}
+
+function formatSuppressedPromptBullet(
+  kind: HeartbeatSignalKind,
+  signal: HeartbeatPrefetchSignal
+): string {
+  const prefix = kind === "calendar_tasks" ? "task" : "event";
+  const stateTag = isSignalInProgress(signal) ? " (in progress)" : "";
+  const start = signal.details.start;
+  return `- [${prefix}${stateTag}] ${signal.title}${start ? ` | start=${String(start)}` : ""}`;
 }
 
 function buildPromptBlock(outputs: HeartbeatPrefetchOutput[]): string {
   const lines: string[] = [];
   let emittedHeader = false;
+  let emittedSuppressedHeader = false;
   for (const output of outputs) {
-    if (output.signals.length === 0) continue;
-    if (!emittedHeader) {
-      lines.push("[DETERMINISTIC HEARTBEAT SIGNALS]");
-      lines.push(
-        "These items already crossed their reminder threshold. They were read deterministically from the user's data sources before this prompt. Do not answer Pulso OK while this block is non-empty; explain the action they imply."
-      );
-      emittedHeader = true;
+    const kind =
+      output.toolName === "calendar_list_tasks"
+        ? "calendar_tasks"
+        : "calendar_events";
+    if (output.signals.length > 0) {
+      if (!emittedHeader) {
+        lines.push("[DETERMINISTIC HEARTBEAT SIGNALS]");
+        lines.push(
+          "These items already crossed their reminder threshold or are happening right now. They were read deterministically from the user's data sources before this prompt. Items tagged `(in progress)` already started; report them as ongoing, never as upcoming. For every active signal you mention, include its concrete title and local time; never collapse multiple signals into a generic sentence such as \"there are meetings in progress\". Do not answer Pulso OK while this block is non-empty; explain the action they imply."
+        );
+        emittedHeader = true;
+      }
+      for (const signal of output.signals) {
+        lines.push(formatPromptBullet(kind as HeartbeatSignalKind, signal));
+      }
     }
-    for (const signal of output.signals) {
-      const kind =
-        output.toolName === "calendar_list_tasks"
-          ? "calendar_tasks"
-          : "calendar_events";
-      lines.push(formatPromptBullet(kind as HeartbeatSignalKind, signal));
+    if ((output.suppressedSignals?.length ?? 0) > 0) {
+      if (!emittedSuppressedHeader) {
+        lines.push("[SUPPRESSED HEARTBEAT SIGNALS - DO NOT REPEAT]");
+        lines.push(
+          "The following items were detected deterministically but were already surfaced in a recent heartbeat. Do not mention them again and do not call tools just to restate them. If there are no active signals above and no new threshold crossings, answer with the compact Pulso OK/no-action response."
+        );
+        emittedSuppressedHeader = true;
+      }
+      for (const signal of output.suppressedSignals ?? []) {
+        lines.push(
+          formatSuppressedPromptBullet(kind as HeartbeatSignalKind, signal)
+        );
+      }
     }
   }
   return lines.join("\n");
+}
+
+interface CollectedFallbackSignal {
+  kind: "event" | "task";
+  title: string;
+  when: string;
+  inProgress: boolean;
+  startsInMinutes: number | null;
+}
+
+function fallbackEventLine(
+  signal: CollectedFallbackSignal,
+  spanish: boolean
+): string {
+  if (!signal.inProgress) {
+    return spanish
+      ? `**Señal:** "${signal.title}" comienza ${signal.when}.`
+      : `**Signal:** "${signal.title}" starts ${signal.when}.`;
+  }
+  const minutesElapsed =
+    signal.startsInMinutes !== null
+      ? Math.max(0, -signal.startsInMinutes)
+      : null;
+  if (minutesElapsed !== null && minutesElapsed > 0) {
+    return spanish
+      ? `**Señal:** "${signal.title}" está en curso desde hace ${minutesElapsed} min (comenzó ${signal.when}).`
+      : `**Signal:** "${signal.title}" has been in progress for ${minutesElapsed} min (started ${signal.when}).`;
+  }
+  return spanish
+    ? `**Señal:** "${signal.title}" está en curso (comenzó ${signal.when}).`
+    : `**Signal:** "${signal.title}" is in progress (started ${signal.when}).`;
+}
+
+function fallbackEventReason(
+  signal: CollectedFallbackSignal,
+  spanish: boolean
+): string {
+  if (signal.inProgress) {
+    return spanish
+      ? "**Por qué importa ahora:** la reunión ya empezó; es momento de unirse o de cerrarla si no aplica."
+      : "**Why it matters now:** the meeting already started; join now or close it if it no longer applies.";
+  }
+  return spanish
+    ? "**Por qué importa ahora:** está dentro de la ventana de recordatorio configurada."
+    : "**Why it matters now:** it is inside the configured reminder window.";
+}
+
+function fallbackEventAction(
+  signal: CollectedFallbackSignal,
+  spanish: boolean
+): string {
+  if (signal.inProgress) {
+    return spanish
+      ? "**Acción recomendada:** únete ahora o termina el contexto previo para incorporarte."
+      : "**Recommended action:** join now or wrap up the previous context so you can step in.";
+  }
+  return spanish
+    ? "**Acción recomendada:** revisa si necesitas preparar algo o cerrar el pendiente antes del momento."
+    : "**Recommended action:** check whether you need anything prepared or to close the pending item before the deadline.";
 }
 
 function buildFallbackResponse(
   outputs: HeartbeatPrefetchOutput[],
   userLanguage: string
 ): string {
-  const collected: Array<{
-    kind: "event" | "task";
-    title: string;
-    when: string;
-  }> = [];
+  const collected: CollectedFallbackSignal[] = [];
   for (const output of outputs) {
     const kind = output.toolName === "calendar_list_tasks" ? "task" : "event";
     for (const signal of output.signals) {
@@ -162,6 +259,8 @@ function buildFallbackResponse(
         kind,
         title: signal.title,
         when: signal.whenDisplay,
+        inProgress: kind === "event" && isSignalInProgress(signal),
+        startsInMinutes: startsInMinutesNumber(signal),
       });
     }
   }
@@ -171,28 +270,26 @@ function buildFallbackResponse(
   const lines: string[] = spanish ? ["### Pulso"] : ["### Pulse"];
   for (const c of collected) {
     if (c.kind === "event") {
-      lines.push(
-        spanish
-          ? `**Señal:** "${c.title}" comienza ${c.when}.`
-          : `**Signal:** "${c.title}" starts ${c.when}.`
-      );
+      lines.push(fallbackEventLine(c, spanish));
+      lines.push(fallbackEventReason(c, spanish));
+      lines.push(fallbackEventAction(c, spanish));
     } else {
       lines.push(
         spanish
           ? `**Señal:** la tarea "${c.title}" vence ${c.when}.`
           : `**Signal:** task "${c.title}" is due ${c.when}.`
       );
+      lines.push(
+        spanish
+          ? "**Por qué importa ahora:** está dentro de la ventana de recordatorio configurada."
+          : "**Why it matters now:** it is inside the configured reminder window."
+      );
+      lines.push(
+        spanish
+          ? "**Acción recomendada:** revisa si necesitas preparar algo o cerrar el pendiente antes del momento."
+          : "**Recommended action:** check whether you need anything prepared or to close the pending item before the deadline."
+      );
     }
-    lines.push(
-      spanish
-        ? "**Por qué importa ahora:** está dentro de la ventana de recordatorio configurada."
-        : "**Why it matters now:** it is inside the configured reminder window."
-    );
-    lines.push(
-      spanish
-        ? "**Acción recomendada:** revisa si necesitas preparar algo o cerrar el pendiente antes del momento."
-        : "**Recommended action:** check whether you need anything prepared or to close the pending item before the deadline."
-    );
   }
   return lines.join("\n");
 }

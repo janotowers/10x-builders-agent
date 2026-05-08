@@ -172,6 +172,7 @@ function buildHeartbeatPrompt(
     "Hard stop: if no checklist item crosses its threshold, the entire response must be only a compact OK/no-action message in the user's language, e.g. Spanish: `### Pulso OK\\nTodo en orden. Sin acción requerida.`",
     "When using the no-action response, do not include any event names, scheduled task names, IDs, links, timestamps, evidence, or intermediate findings.",
     "Never combine a no-action response with informational sections. If you listed meetings, tasks, leads, metrics, or evidence, that means an item crossed the threshold and the output must explain the concrete action.",
+    "When the prompt contains `[DETERMINISTIC HEARTBEAT SIGNALS]`, mention each active signal concretely by title and local time. Do not use only generic summaries like \"hay reuniones en progreso\" or \"hay tareas próximas\"; name the event/task so the user knows exactly what changed. Respect `[SUPPRESSED HEARTBEAT SIGNALS - DO NOT REPEAT]`: those were already surfaced recently and must not be repeated.",
     checklistWarnings.length > 0
       ? `Checklist validation warnings (do not show verbatim unless useful): ${checklistWarnings.join(" | ")}`
       : "",

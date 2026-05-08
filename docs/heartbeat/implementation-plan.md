@@ -2,7 +2,7 @@
 
 Execution plan to deliver proactive Heartbeat end-to-end and keep status updated as implementation progresses.
 
-Last updated: 2026-05-07 (deterministic prefetchers documented)
+Last updated: 2026-05-07 (calendar prefetcher aligned with LLM tool semantics: in-progress events surfaced)
 Owner: Agent team (web + agent + db)
 Status: Core shipped (Phases 1–5 complete); deterministic prefetchers shipped; Phase 6 remains optional hardening
 
@@ -257,6 +257,8 @@ When implementation starts, update this file in each PR:
 - 2026-05-06: Heartbeat memory policy refined. The runner no longer loads short-term session history (avoids repeated tick context), and long-term context is curated by type (`procedural`/`semantic`) with strict limits instead of semantic retrieval against the checklist prompt.
 - 2026-05-07: Added deterministic Heartbeat prefetchers for `heartbeat: native` skills. Skills can declare `heartbeat_signals`, checklist items can provide structured reminder windows, and the runner records pre-read signals as `tool_calls.executor_kind='deterministic'`.
 - 2026-05-07: Unified Heartbeat signal observability into "Herramientas del turno": deterministic prefetchers and LLM-issued tool calls share the same `turn_id` and are differentiated with `Determinístico` / `IA` badges. The separate "Señales del pulso" panel was removed.
+- 2026-05-07: Aligned `calendar_events` prefetcher semantics with the LLM-issued `calendar_list_events`. The prefetcher now also emits signals for events already in progress (started before `now`, not yet ended), so its count no longer disagrees with what the model sees. New `details.is_in_progress` flag and signed `details.starts_in_minutes` carry the state through the prompt block and the deterministic fallback so neither path describes an in-progress meeting as upcoming. Suppressing the LLM's redundant `calendar_list_events` is documented as a deferred Option B in [`deterministic-prefetchers.md`](deterministic-prefetchers.md#considered-alternative-suppress-the-llms-redundant-read-deferred).
+- 2026-05-07: Added repeat suppression for `calendar_events`: the prefetcher checks recent deterministic `tool_calls` for the same event occurrence and suppresses repeated upcoming/in-progress mentions. Suppressed items remain in `result_json.suppressed_events` for debugging and are injected as a hidden do-not-repeat block so the LLM does not re-surface them. Heartbeat prompt instructions now require concrete event/task titles and local times for active deterministic signals.
 
 ### Decisions log
 
