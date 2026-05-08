@@ -10,6 +10,7 @@ export * from "./queries/tool-calls";
 export * from "./queries/booking-links";
 export * from "./queries/scheduled-tasks";
 export * from "./queries/heartbeat-runs";
+export * from "./queries/heartbeat-checklist-templates";
 export * from "./queries/memories";
 export { encryptToken, decryptToken } from "./crypto";
 export {

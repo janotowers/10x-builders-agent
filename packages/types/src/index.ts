@@ -141,6 +141,15 @@ export interface BusinessBrainHeartbeat {
   checklist_md?: string;
   /** Nombre usado en el roadmap/UI; alias compatible de `checklist_md`. */
   checklist_markdown?: string;
+  /** Template/propuesta usada como base del checklist activo, si aplica. */
+  checklist_template_id?: string;
+  /** Metadata opcional de generación/validación del checklist. */
+  checklist_metadata?: {
+    generated_from?: string;
+    generated_at?: string;
+    validation_warnings?: string[];
+    detected_skills?: string[];
+  };
   /** Marca de última corrida de heartbeat por perfil. */
   last_run_at?: string;
 }
@@ -222,6 +231,20 @@ export interface HeartbeatRun {
   error?: string | null;
 }
 
+export interface HeartbeatChecklistTemplateRow {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string;
+  markdown: string;
+  status: "draft" | "validated";
+  validation_warnings: string[];
+  detected_skills: string[];
+  source_template_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type MessageRole = "user" | "assistant" | "tool" | "system";
 
 export interface AgentMessage {
@@ -246,6 +269,13 @@ export interface ToolCall {
   requires_confirmation: boolean;
   created_at: string;
   finished_at?: string;
+  /**
+   * `agent` (default) — issued by the LLM during a turn.
+   * `deterministic` — system-issued read (e.g. a Heartbeat prefetcher) that
+   *   ran outside the LLM loop but should be visible to the user as part of
+   *   the turn's tool history.
+   */
+  executor_kind?: "agent" | "deterministic";
 }
 
 export interface AppliedSkill {

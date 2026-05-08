@@ -117,6 +117,24 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "calendar_list_tasks",
+    name: "calendar_list_tasks",
+    description:
+      "Lists Google Tasks that can appear in Google Calendar; read-only. This is distinct from internal scheduled_tasks.",
+    risk: "low",
+    requires_integration: "google_calendar",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        due_min: { type: "string", description: "ISO 8601 inclusive lower bound for task due date/time." },
+        due_max: { type: "string", description: "ISO 8601 exclusive upper bound for task due date/time." },
+        tasklist_id: { type: "string", description: "Optional Google Tasks tasklist id; defaults to all tasklists." },
+        show_completed: { type: "boolean", description: "Whether to include completed tasks. Default false." },
+      },
+      required: [],
+    },
+  },
+  {
     id: "calendar_create_event",
     name: "calendar_create_event",
     description:

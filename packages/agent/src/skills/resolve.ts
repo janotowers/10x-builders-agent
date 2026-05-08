@@ -22,7 +22,12 @@
  * the registry argument.
  */
 import { estimateTokens, MAX_SKILL_BODY_TOKENS } from "./parse";
-import type { ResolvedSkill, SkillRegistry } from "./types";
+import type {
+  HeartbeatSkillMode,
+  HeartbeatSkillSignal,
+  ResolvedSkill,
+  SkillRegistry,
+} from "./types";
 
 export class SkillResolveError extends Error {
   constructor(
@@ -63,8 +68,11 @@ export async function resolveSkill(
   const allowedTools: string[] = [];
   const seenTools = new Set<string>();
   const sections: string[] = [];
+  const heartbeatSignals: HeartbeatSkillSignal[] = [];
+  const seenSignalKeys = new Set<string>();
   let requiresTenantContext = false;
   let memoryExtraction: "default" | "ephemeral" = "default";
+  let heartbeatMode: HeartbeatSkillMode = "compatible";
 
   for (const slug of order) {
     const rec = registry.get(slug);
@@ -86,6 +94,20 @@ export async function resolveSkill(
     }
     if (rec.metadata.memoryExtraction === "ephemeral") {
       memoryExtraction = "ephemeral";
+    }
+    if (rec.metadata.heartbeatMode === "blocked") {
+      heartbeatMode = "blocked";
+    } else if (
+      heartbeatMode !== "blocked" &&
+      rec.metadata.heartbeatMode === "native"
+    ) {
+      heartbeatMode = "native";
+    }
+    for (const signal of rec.metadata.heartbeatSignals) {
+      const key = `${signal.kind}:${signal.id}`;
+      if (seenSignalKeys.has(key)) continue;
+      seenSignalKeys.add(key);
+      heartbeatSignals.push(signal);
     }
     const body = (await rec.loadBody()).trim();
     if (body) {
@@ -116,6 +138,8 @@ export async function resolveSkill(
     estimatedTokens: tokens,
     requiresTenantContext,
     memoryExtraction,
+    heartbeatMode,
+    heartbeatSignals: Object.freeze(heartbeatSignals),
   };
 }
 

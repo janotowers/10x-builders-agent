@@ -9,6 +9,7 @@ allowed_tools:
   - schedule_task
 includes: []
 requires_tenant_context: false
+heartbeat: blocked
 guardrails: |
   Read-only by default. Do not create, update, or delete anything unless the user explicitly asks for it.
   `schedule_task` is allowed only when the user explicitly asks to program or schedule the brief (e.g. "programa un brief diario", "agenda el brief cada mañana"); never schedule on your own initiative.

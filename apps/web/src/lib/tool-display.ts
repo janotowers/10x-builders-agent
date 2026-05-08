@@ -12,6 +12,7 @@ const TOOL_LABELS_ES: Record<string, string> = {
   github_create_issue: "Crear un issue en GitHub",
   calendar_list_calendars: "Listar tus calendarios de Google",
   calendar_list_events: "Consultar eventos en tu Google Calendar",
+  calendar_list_tasks: "Consultar tareas en tu Google Calendar",
   calendar_create_event: "Crear un evento en el calendario",
   calendar_update_event: "Actualizar un evento del calendario",
   calendar_delete_event: "Eliminar un evento del calendario",

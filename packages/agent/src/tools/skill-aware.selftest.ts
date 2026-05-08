@@ -17,6 +17,7 @@ const ALL_TOOL_IDS = [
   "github_create_issue",
   "calendar_list_calendars",
   "calendar_list_events",
+  "calendar_list_tasks",
   "calendar_create_event",
   "calendar_update_event",
   "calendar_delete_event",

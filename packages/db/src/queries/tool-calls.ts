@@ -7,7 +7,8 @@ export async function createToolCall(
   toolName: string,
   args: Record<string, unknown>,
   requiresConfirmation: boolean,
-  turnId?: string | null
+  turnId?: string | null,
+  options?: { executorKind?: "agent" | "deterministic" }
 ) {
   const { data, error } = await db
     .from("tool_calls")
@@ -18,6 +19,7 @@ export async function createToolCall(
       arguments_json: args,
       status: requiresConfirmation ? "pending_confirmation" : "approved",
       requires_confirmation: requiresConfirmation,
+      executor_kind: options?.executorKind ?? "agent",
     })
     .select()
     .single();
@@ -75,4 +77,43 @@ export async function findExistingPendingToolCall(
   return JSON.stringify(row.arguments_json ?? {}) === JSON.stringify(args)
     ? row
     : null;
+}
+
+/**
+ * Persist a system-issued tool read (e.g. a Heartbeat prefetcher) directly
+ * with its terminal status. Skips the agent's two-step `pending → executed`
+ * lifecycle because the read already happened deterministically before any
+ * LLM call. Returns the row so callers can correlate with prompt content.
+ */
+export async function recordDeterministicToolCall(
+  db: DbClient,
+  params: {
+    sessionId: string;
+    turnId?: string | null;
+    toolName: string;
+    args: Record<string, unknown>;
+    status: "executed" | "failed";
+    result?: Record<string, unknown>;
+  }
+): Promise<ToolCall> {
+  const finishedAt = new Date().toISOString();
+  const insert: Record<string, unknown> = {
+    session_id: params.sessionId,
+    turn_id: params.turnId ?? null,
+    tool_name: params.toolName,
+    arguments_json: params.args,
+    status: params.status,
+    requires_confirmation: false,
+    executor_kind: "deterministic",
+    finished_at: finishedAt,
+  };
+  if (params.result) insert.result_json = params.result;
+
+  const { data, error } = await db
+    .from("tool_calls")
+    .insert(insert)
+    .select()
+    .single();
+  if (error) throw error;
+  return data as ToolCall;
 }

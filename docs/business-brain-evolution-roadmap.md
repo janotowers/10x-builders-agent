@@ -38,7 +38,7 @@ These are decisions taken after a final repo + best-practices review. Each has a
 | **Heartbeat model** | Cheap LLM via env `HEARTBEAT_MODEL_ID` (default a MiniMax-class slug); independent from selector and compaction models. | Low marginal cost is the whole point of cheap-model heartbeat. |
 | **Heartbeat session lifecycle** | **One `agent_sessions` row per tick** with `channel='heartbeat'`. Mirrors how cron creates per-task sessions. | Clean audit trail; trivial to query latest run; no lifetime management. |
 | **Heartbeat output** | Always written to `heartbeat_runs.payload`. **Telegram digest is optional** (only sent if user has Telegram linked). UI shows the same data from `heartbeat_runs`. | Many users won’t have Telegram; UI must be self-sufficient. |
-| **Default checklist seeding** | **Lazy on “Enable Heartbeat”** in Settings (copy `heartbeat/default-checklist.md` content into the user’s `business_brain.heartbeat.checklist_markdown`). No blanket migration. | Opt-in, no migration churn, easy to re-seed via “Reset to default”. |
+| **Default checklist seeding** | **Lazy on “Enable Heartbeat”** / “Reset to default” in Settings using the canonical `HEARTBEAT_CHECKLIST_TEMPLATES` in `packages/agent/src/heartbeat/checklist.ts`. No blanket migration. `heartbeat/default-checklist.md` is legacy reference only. | Opt-in, no migration churn, easy to re-seed via “Reset to default”, and avoids two sources of truth. |
 | **BigQuery auth** | **Single platform service account** (env-mounted credentials) **+ per-account `business_brain.bigquery.{ project_id, dataset_allowlist }`**. Read-only role; `bigquery_run_query` validates SQL is `SELECT`. | Simplest viable V1. If your security model needs per-customer SA isolation, switch to “per-account SA JSON in `user_integrations`” without changing tool surface. The skill stays the same. |
 | **Skills registry visibility** | Keep the canonical runtime registry **file-based** in `skills/global/*/SKILL.md`, but expose a **user-visible catalog** in Settings before adding custom DB-authored skills. | Users need to understand and control which playbooks exist. The repo remains the source of truth for standard skills; UI reads metadata and account settings. |
 | **Skills toggles UI** | Global skills can ship enabled by default, then Settings stores per-account overrides in `user_skill_settings` (`enabled`, optional `config_json`). Group by `scope`: Business, Personal, Shared. | Mirrors tools, supports gradual rollout, and lets a user disable entire areas (for example personal skills) without changing the global catalog. |
@@ -80,7 +80,7 @@ OpenClaw’s **`HEARTBEAT.md` in the agent workspace** fits a **single-tenant or
 | Layer | Role |
 |-------|------|
 | **Supabase (source of truth)** | Each account stores its own checklist as **markdown text**, e.g. `profiles.heartbeat_checklist` **or** `business_brain->heartbeat->checklist_markdown` (pick one shape and document it). RLS already scopes by `user_id`. |
-| **Bundled default (optional, not shared state)** | A **`heartbeat/default-checklist.md`** (or similar) **in the repo** is only a **template**: used to **seed** the DB on first “Enable Heartbeat” / “Reset to default”, or copied in a migration for new profiles. At **run time**, the cron handler **always reads checklist + schedule flags from the DB** for that `user_id`. |
+| **Bundled defaults (optional, not shared state)** | Canonical built-in templates live in **`packages/agent/src/heartbeat/checklist.ts`** as `HEARTBEAT_CHECKLIST_TEMPLATES` and are used to seed/reset the DB from Settings. `heartbeat/default-checklist.md` is legacy reference only. At **run time**, the cron handler **always reads checklist + schedule flags from the DB** for that `user_id`. |
 | **UI** | Settings screen edits the **same** field the cron uses—no drift between “file on disk” and production data. |
 
 **Why DB-first:** personalization per agency, auditing, no deploy to change one copy’s checklist, matches how **`scheduled_tasks`** already store **per-user** prompts.
@@ -716,7 +716,7 @@ The *Business Brain* lives as a `JSONB` column on `profiles`. Its first user is 
 
 | Step | Action |
 |------|--------|
-| C-β-1 | Bundled **`heartbeat/default-checklist.md`** in repo for **lazy seeding** when user clicks **Enable Heartbeat** / **Reset to default** (no broad migration write). |
+| C-β-1 | Built-in `HEARTBEAT_CHECKLIST_TEMPLATES` in `packages/agent/src/heartbeat/checklist.ts` for **lazy seeding** when user clicks **Enable Heartbeat** / **Reset to default** (no broad migration write). `heartbeat/default-checklist.md` remains only as legacy reference. |
 | C-β-2 | Settings UI for `business_brain.identity` (`organization_id`, `org_name`, `country`) and `business_brain.bigquery` (`project_id`, `location`, optional `dataset_allowlist`). Organization fields are required before the agent runs any BQ query in MODO OBLIGATORIO. |
 | C-β-3 | Read-only display of `is_ungga_admin` in Settings; only Ungga staff can flip it via SQL or a forthcoming admin-only endpoint (out of scope for V1-C). |
 | C-β-4 | Optional: a "Test connection" button that runs `bigquery_run_query` with a trivial `SELECT 1` to confirm the binding before the user starts asking real questions. |
@@ -923,7 +923,7 @@ The `[MEMORIA …]` block is added by the `memory_injection` node by **swapping 
 | Tool gate (skill-aware + heartbeat allowlist) | [`packages/agent/src/tools/adapters.ts`](../packages/agent/src/tools/adapters.ts) `isToolAvailable()` |
 | Tools / BQ | [`packages/agent/src/tools/catalog.ts`](../packages/agent/src/tools/catalog.ts), `adapters.ts`, new `bigquery-adapter.ts` |
 | Brain block in system prompt | new `appendBusinessBrainBlock()` in `runAgent` (or sibling helper) before the existing addendum chain |
-| Heartbeat checklist + brain | **Supabase** `profiles.business_brain` JSONB per `user_id`; bundled `heartbeat/default-checklist.md` in repo used **only** for lazy seeding on Enable |
+| Heartbeat checklist + brain | **Supabase** `profiles.business_brain` JSONB per `user_id`; built-in `HEARTBEAT_CHECKLIST_TEMPLATES` in `packages/agent/src/heartbeat/checklist.ts` used for lazy seeding/reset |
 | Heartbeat cron + cheap model | `apps/web/src/app/api/cron/heartbeat/route.ts` (parallels `api/cron/scheduled-tasks/route.ts`); model factory in [`packages/agent/src/model.ts`](../packages/agent/src/model.ts) takes a `channel` and returns the right model (`HEARTBEAT_MODEL_ID` env for heartbeat, `SKILL_SELECTOR_MODEL_ID` for selection) |
 | Channel dispatch | extend `GraphState` to carry `channel`; replace `state.autoApproveTools` checks with `state.channel`-based checks for memory injection / flush gates |
 | DB migrations | `agent_sessions.channel` CHECK update, `heartbeat_runs`, `user_skill_settings`, `profiles.business_brain jsonb` |

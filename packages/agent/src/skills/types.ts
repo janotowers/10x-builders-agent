@@ -12,6 +12,29 @@
 
 export type SkillScope = "business" | "personal" | "shared";
 export type MemoryExtractionMode = "default" | "ephemeral";
+export type HeartbeatSkillMode = "native" | "compatible" | "blocked";
+
+/**
+ * A structured signal a heartbeat-native skill wants the runner to evaluate
+ * deterministically (in a server-side prefetcher) before invoking the LLM.
+ *
+ * The `kind` enumerates the data-source family. The runner looks up a
+ * registered prefetcher for that kind, runs it, persists the result as a
+ * `tool_calls` row marked `executor_kind=deterministic`, and injects a short
+ * summary into the heartbeat prompt so the LLM cannot ignore the signal.
+ *
+ * `reminder_window_minutes` is the default lookahead window. Checklist items
+ * may override it (e.g. a 30 vs 60 minute reminder) at parse time; the
+ * runner picks the largest applicable window for the actual fetch.
+ */
+export type HeartbeatSignalKind = "calendar_events" | "calendar_tasks";
+
+export interface HeartbeatSkillSignal {
+  readonly id: string;
+  readonly kind: HeartbeatSignalKind;
+  readonly reminderWindowMinutes: number;
+  readonly description: string | null;
+}
 
 /**
  * Validated, in-memory representation of a single SKILL.md frontmatter.
@@ -38,6 +61,18 @@ export interface SkillMetadata {
    * `ephemeral` so `memory_flush` does not persist CRM/task inputs.
    */
   readonly memoryExtraction: MemoryExtractionMode;
+  /**
+   * Whether this skill is intended for proactive Heartbeat use.
+   * - native: built for frequent exception-first monitoring.
+   * - compatible: can be used if tools/output fit the checklist.
+   * - blocked: should not be selected for Heartbeat even if referenced.
+   */
+  readonly heartbeatMode: HeartbeatSkillMode;
+  /**
+   * Structured signals this skill expects the Heartbeat runner to evaluate
+   * deterministically before the LLM. Empty for non-monitoring skills.
+   */
+  readonly heartbeatSignals: readonly HeartbeatSkillSignal[];
   /** Absolute path to the SKILL.md file the metadata was read from. */
   readonly sourcePath: string;
 }
@@ -76,6 +111,13 @@ export interface ResolvedSkill {
   readonly requiresTenantContext: boolean;
   /** `ephemeral` if any composed skill opts out of memory extraction. */
   readonly memoryExtraction: MemoryExtractionMode;
+  /** Aggregate Heartbeat compatibility across the composed skill. */
+  readonly heartbeatMode: HeartbeatSkillMode;
+  /**
+   * Union of `heartbeat_signals` declared across composed skills, deduped by
+   * `${kind}:${id}`. Order preserves authoring order (root last).
+   */
+  readonly heartbeatSignals: readonly HeartbeatSkillSignal[];
 }
 
 /**

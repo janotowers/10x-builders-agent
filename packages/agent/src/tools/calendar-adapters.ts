@@ -14,6 +14,9 @@ import {
 } from "./calendar-list-window";
 import { eventDisplayFields } from "./calendar-event-display";
 
+const GOOGLE_TASKS_READONLY_SCOPE =
+  "https://www.googleapis.com/auth/tasks.readonly";
+
 function calendarToolEnabled(toolId: string, ctx: ToolContext): boolean {
   if (ctx.toolApprovalPolicy?.[toolId] === "deny") {
     return false;
@@ -28,7 +31,8 @@ function calendarToolEnabled(toolId: string, ctx: ToolContext): boolean {
   if (
     ctx.channel === "heartbeat" &&
     toolId !== "calendar_list_calendars" &&
-    toolId !== "calendar_list_events"
+    toolId !== "calendar_list_events" &&
+    toolId !== "calendar_list_tasks"
   ) {
     return false;
   }
@@ -36,9 +40,14 @@ function calendarToolEnabled(toolId: string, ctx: ToolContext): boolean {
   if (!setting?.enabled) return false;
   const def = TOOL_CATALOG.find((t) => t.id === toolId);
   if (def?.requires_integration !== "google_calendar") return false;
-  return ctx.integrations.some(
+  const integration = ctx.integrations.find(
     (i) => i.provider === "google_calendar" && i.status === "active"
   );
+  if (!integration) return false;
+  if (toolId === "calendar_list_tasks") {
+    return integration.scopes.includes(GOOGLE_TASKS_READONLY_SCOPE);
+  }
+  return true;
 }
 
 function tz(ctx: ToolContext): string {
@@ -60,6 +69,59 @@ const calendarIdSchema = z
     z.string().default("primary")
   )
   .describe("Calendar id, usually primary");
+
+const optionalIsoDateTime = (description: string) =>
+  nullableOptional(z.string()).describe(description);
+
+type GoogleTaskList = {
+  id?: unknown;
+  title?: unknown;
+};
+
+type GoogleTask = {
+  id?: unknown;
+  title?: unknown;
+  notes?: unknown;
+  status?: unknown;
+  due?: unknown;
+  updated?: unknown;
+  selfLink?: unknown;
+  webViewLink?: unknown;
+};
+
+function googleTaskDueMs(task: GoogleTask): number | null {
+  if (typeof task.due !== "string" || !task.due.trim()) return null;
+  const ms = Date.parse(task.due);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function formatGoogleTaskDue(due: unknown, profileTimeZone: string): string {
+  if (typeof due !== "string" || !due.trim()) return "";
+  const instant = new Date(due);
+  if (Number.isNaN(instant.getTime())) return due;
+  try {
+    return new Intl.DateTimeFormat("es-MX", {
+      timeZone: profileTimeZone,
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(instant);
+  } catch {
+    return due;
+  }
+}
+
+function taskListsPath(): string {
+  return "https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=100";
+}
+
+function tasksPath(tasklistId: string, query: string): string {
+  return `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(tasklistId)}/tasks${query}`;
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
@@ -236,6 +298,149 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
               .describe(
                 "True only if the user clearly asked for old/past calendar history. Default false."
               ),
+          }),
+        }
+      )
+    );
+  }
+
+  if (calendarToolEnabled("calendar_list_tasks", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          due_min?: string;
+          due_max?: string;
+          tasklist_id?: string;
+          show_completed?: boolean;
+        }) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "calendar_list_tasks",
+            input,
+            false,
+            ctx.turnId
+          );
+          const profileTz = tz(ctx);
+          const dueMin = input.due_min?.trim();
+          const dueMax = input.due_max?.trim();
+          const showCompleted = input.show_completed === true;
+
+          const listIds: string[] = [];
+          const taskLists: Array<{ id: string; title: string }> = [];
+          if (input.tasklist_id?.trim()) {
+            listIds.push(input.tasklist_id.trim());
+          } else {
+            const { status, data } = await googleCalendarJson(
+              token,
+              taskListsPath()
+            );
+            if (status >= 400) {
+              const err = { error: "Google Tasks API error", status, details: data };
+              await updateToolCallStatus(ctx.db, record.id, "failed", err);
+              return JSON.stringify(err);
+            }
+            const items = (data as { items?: GoogleTaskList[] }).items ?? [];
+            for (const list of items) {
+              if (typeof list.id !== "string" || !list.id.trim()) continue;
+              listIds.push(list.id);
+              taskLists.push({
+                id: list.id,
+                title:
+                  typeof list.title === "string" && list.title.trim()
+                    ? list.title
+                    : list.id,
+              });
+            }
+          }
+
+          const tasks: Array<Record<string, unknown>> = [];
+          for (const tasklistId of listIds) {
+            const query = new URLSearchParams({
+              maxResults: "100",
+              showDeleted: "false",
+              showHidden: "false",
+              showCompleted: String(showCompleted),
+            });
+            if (dueMin) query.set("dueMin", dueMin);
+            if (dueMax) query.set("dueMax", dueMax);
+            const { status, data } = await googleCalendarJson(
+              token,
+              tasksPath(tasklistId, `?${query.toString()}`)
+            );
+            if (status >= 400) {
+              const err = {
+                error: "Google Tasks API error",
+                status,
+                tasklist_id: tasklistId,
+                details: data,
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", err);
+              return JSON.stringify(err);
+            }
+            const items = (data as { items?: GoogleTask[] }).items ?? [];
+            const listTitle =
+              taskLists.find((list) => list.id === tasklistId)?.title ?? tasklistId;
+            for (const task of items) {
+              const dueMs = googleTaskDueMs(task);
+              tasks.push({
+                id: task.id,
+                title: task.title,
+                notes: task.notes,
+                status: task.status,
+                due: task.due,
+                due_display: formatGoogleTaskDue(task.due, profileTz),
+                updated: task.updated,
+                tasklist_id: tasklistId,
+                tasklist_title: listTitle,
+                webViewLink: task.webViewLink ?? task.selfLink,
+                due_sort_ms: dueMs,
+              });
+            }
+          }
+
+          tasks.sort((a, b) => {
+            const aMs = typeof a.due_sort_ms === "number" ? a.due_sort_ms : Infinity;
+            const bMs = typeof b.due_sort_ms === "number" ? b.due_sort_ms : Infinity;
+            return aMs - bMs;
+          });
+
+          const result: Record<string, unknown> = {
+            tasks: tasks.map(({ due_sort_ms: _dueSortMs, ...task }) => task),
+            tasklists: input.tasklist_id?.trim() ? [] : taskLists,
+            applied_window: {
+              due_min: dueMin ?? null,
+              due_max: dueMax ?? null,
+              profile_timezone: profileTz,
+            },
+            display_hint:
+              "Muestra al usuario due_display cuando exista. Estas son Google Tasks, no tareas programadas internas de Gu.",
+          };
+          await updateToolCallStatus(
+            ctx.db,
+            record.id,
+            "executed",
+            result as unknown as Record<string, unknown>
+          );
+          return JSON.stringify(result);
+        },
+        {
+          name: "calendar_list_tasks",
+          description:
+            "Lists Google Tasks, including tasks that show inside Google Calendar. Pass due_min and due_max (ISO 8601) for time-bounded checks. Read-only; distinct from internal scheduled tasks.",
+          schema: z.object({
+            due_min: optionalIsoDateTime(
+              "ISO 8601 inclusive lower bound for task due date/time."
+            ),
+            due_max: optionalIsoDateTime(
+              "ISO 8601 exclusive upper bound for task due date/time."
+            ),
+            tasklist_id: nullableOptional(z.string()).describe(
+              "Optional Google Tasks tasklist id. Omit to search all tasklists."
+            ),
+            show_completed: nullableBooleanDefault(false).describe(
+              "Whether to include completed tasks. Default false."
+            ),
           }),
         }
       )

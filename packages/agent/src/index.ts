@@ -4,11 +4,14 @@ export { githubApi } from "./tools/github-api";
 export type { AgentInput, AgentOutput, AgentTurnEvent, AgentTurnEventType } from "./graph";
 export {
   calendarFreeBusyQuery,
+  calendarEventsPath,
   buildEventResource,
   executeCalendarCreateEvent,
   executeCalendarPatchEvent,
   executeCalendarDeleteEvent,
+  googleCalendarJson,
 } from "./tools/calendar-api";
+export { eventDisplayFields } from "./tools/calendar-event-display";
 export { flushSessionMemory } from "./memory_flush";
 export { normalizeToolApprovalPolicy } from "./tools/adapters";
 export type {
@@ -56,6 +59,7 @@ export type {
   SkillRegistry,
   ResolvedSkill,
   SkillScope,
+  HeartbeatSkillMode,
   LoadRegistryOptions,
   SkillSelection,
   SelectionNoneReason,
@@ -72,6 +76,37 @@ export type {
   ReadSkillReferenceArgs,
   ReadSkillReferenceResult,
 } from "./tools/skill-references";
+
+export {
+  HEARTBEAT_CHECKLIST_TEMPLATES,
+  extractReminderWindowMinutes,
+  formatHeartbeatChecklist,
+  generateHeartbeatChecklistProposal,
+  getHeartbeatChecklistTemplate,
+  normalizeHeartbeatChecklist,
+  parseHeartbeatChecklist,
+  validateHeartbeatChecklist,
+  formatHeartbeatSkillSelectionBlock,
+  isHeartbeatSafeResolvedSkill,
+  selectHeartbeatSkillsForChecklist,
+  runHeartbeatPrefetchers,
+  calendarEventsPrefetcher,
+  calendarTasksPrefetcher,
+} from "./heartbeat";
+export type {
+  HeartbeatChecklistItem,
+  HeartbeatChecklistSource,
+  HeartbeatChecklistTemplate,
+  HeartbeatSkillSelectionItem,
+  HeartbeatSkillSelectionResult,
+  HeartbeatSkillSelectionStatus,
+  HeartbeatPrefetcher,
+  HeartbeatPrefetchEnv,
+  HeartbeatPrefetchInput,
+  HeartbeatPrefetchOutput,
+  HeartbeatPrefetchSignal,
+  HeartbeatPrefetchRunResult,
+} from "./heartbeat";
 
 // Business Brain — V1-C-α: tenant context block injection.
 export {

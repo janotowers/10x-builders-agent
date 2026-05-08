@@ -11,6 +11,9 @@ export type {
   SkillRegistry,
   ResolvedSkill,
   SkillScope,
+  HeartbeatSkillMode,
+  HeartbeatSkillSignal,
+  HeartbeatSignalKind,
 } from "./types";
 
 export {

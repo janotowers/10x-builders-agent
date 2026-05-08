@@ -299,7 +299,9 @@ export default async function ChatPage() {
 
     const { data: toolCalls } = await supabase
       .from("tool_calls")
-      .select("id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at")
+      .select(
+        "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind"
+      )
       .in("session_id", sessionIds)
       .order("created_at", { ascending: false })
       .limit(80);
@@ -398,6 +400,7 @@ export default async function ChatPage() {
       startedAt: run.started_at!,
       finishedAt: run.finished_at ?? null,
       summary: run.error ?? summarizeHeartbeatPayload(run.payload),
+      details: readHeartbeatPayload(run.payload),
     }));
   heartbeatStatus = {
     ...heartbeatStatus,

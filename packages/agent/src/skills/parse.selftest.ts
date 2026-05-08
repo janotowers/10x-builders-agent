@@ -81,6 +81,7 @@ function testHappyPath(): void {
   );
   assert.deepEqual([...rec.metadata.includes], []);
   assert.equal(rec.metadata.memoryExtraction, "ephemeral");
+  assert.equal(rec.metadata.heartbeatMode, "compatible");
   assert.ok(rec.metadata.guardrails?.includes("Read-only"));
   assert.equal(rec.metadata.sourcePath, FIXTURE_PATH);
 }
@@ -95,6 +96,20 @@ function testDefaults(): void {
   // V1-C-α: requires_tenant_context defaults to false.
   assert.equal(rec.metadata.requiresTenantContext, false);
   assert.equal(rec.metadata.memoryExtraction, "default");
+  assert.equal(rec.metadata.heartbeatMode, "compatible");
+}
+
+function testHeartbeatModeNative(): void {
+  const rec = parseSkillSource(makeFront("heartbeat: native"), FIXTURE_PATH);
+  assert.equal(rec.metadata.heartbeatMode, "native");
+}
+
+function testHeartbeatModeRejectsUnknownValue(): void {
+  expectThrows(
+    () => parseSkillSource(makeFront("heartbeat: noisy"), FIXTURE_PATH),
+    /heartbeat/,
+    "heartbeat rejects unknown value"
+  );
 }
 
 function testRequiresTenantContextTrue(): void {
@@ -286,6 +301,8 @@ async function main(): Promise<void> {
   testRequiresTenantContextTrue();
   testRequiresTenantContextRejectsString();
   testMemoryExtractionRejectsUnknownValue();
+  testHeartbeatModeNative();
+  testHeartbeatModeRejectsUnknownValue();
   testInlineArray();
   await testLazyBody();
   testInvalidNameRegex();
@@ -302,7 +319,7 @@ async function main(): Promise<void> {
   testCRLF();
   testCommentsSkipped();
   testRelativePath();
-  console.log("skills/parse.selftest: all 21 cases passed");
+  console.log("skills/parse.selftest: all 23 cases passed");
 }
 
 main().catch((e) => {

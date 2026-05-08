@@ -10,6 +10,7 @@ function mk(
     includes?: string[];
     tools?: string[];
     memoryExtraction?: "default" | "ephemeral";
+    heartbeat?: "native" | "compatible" | "blocked";
   } = {}
 ) {
   const tools = opts.tools ?? [];
@@ -24,6 +25,7 @@ function mk(
     "includes:",
     ...includes.map((i) => `  - ${i}`),
     `memory_extraction: ${opts.memoryExtraction ?? "default"}`,
+    `heartbeat: ${opts.heartbeat ?? "compatible"}`,
     "---",
     "",
     body,
@@ -42,6 +44,7 @@ async function testSingleSkillNoIncludes(): Promise<void> {
   assert.ok(resolved.body.startsWith("## Skill: alpha"));
   assert.deepEqual([...resolved.allowedTools], ["t1", "t2"]);
   assert.equal(resolved.memoryExtraction, "default");
+  assert.equal(resolved.heartbeatMode, "compatible");
   assert.ok(resolved.estimatedTokens > 0);
 }
 
@@ -162,6 +165,84 @@ async function testEphemeralComposesFromChild(): Promise<void> {
   assert.equal(resolved.memoryExtraction, "ephemeral");
 }
 
+async function testHeartbeatModeComposesFromChild(): Promise<void> {
+  const child = mk("child", "Child.", { heartbeat: "native" });
+  const root = mk("root", "Root.", { includes: ["child"] });
+  const reg = buildRegistryFromRecords([root, child]);
+  const resolved = await resolveSkill("root", reg);
+  assert.equal(resolved.heartbeatMode, "native");
+}
+
+async function testHeartbeatBlockedWins(): Promise<void> {
+  const child = mk("child", "Child.", { heartbeat: "native" });
+  const root = mk("root", "Root.", {
+    includes: ["child"],
+    heartbeat: "blocked",
+  });
+  const reg = buildRegistryFromRecords([root, child]);
+  const resolved = await resolveSkill("root", reg);
+  assert.equal(resolved.heartbeatMode, "blocked");
+}
+
+async function testHeartbeatSignalsAggregateAndDedupe(): Promise<void> {
+  const childSrc = [
+    "---",
+    "name: child-watch",
+    "description: Child skill aggregates calendar tasks signal.",
+    "scope: shared",
+    "heartbeat: native",
+    "heartbeat_signals:",
+    "  - id: task-window",
+    "    kind: calendar_tasks",
+    "    reminder_window_minutes: 30",
+    "---",
+    "",
+    "Child body.",
+    "",
+  ].join("\n");
+  const rootSrc = [
+    "---",
+    "name: root-watch",
+    "description: Root skill aggregates calendar events plus the child task signal.",
+    "scope: shared",
+    "heartbeat: native",
+    "includes:",
+    "  - child-watch",
+    "heartbeat_signals:",
+    "  - id: meeting-window",
+    "    kind: calendar_events",
+    "    reminder_window_minutes: 60",
+    "  - id: task-window",
+    "    kind: calendar_tasks",
+    "    reminder_window_minutes: 90",
+    "---",
+    "",
+    "Root body.",
+    "",
+  ].join("\n");
+  const child = parseSkillSource(
+    childSrc,
+    "/r/skills/global/child-watch/SKILL.md"
+  );
+  const root = parseSkillSource(
+    rootSrc,
+    "/r/skills/global/root-watch/SKILL.md"
+  );
+  const reg = buildRegistryFromRecords([root, child]);
+  const resolved = await resolveSkill("root-watch", reg);
+  assert.equal(resolved.heartbeatSignals.length, 2);
+  const taskSignal = resolved.heartbeatSignals.find(
+    (s) => s.kind === "calendar_tasks"
+  );
+  // Child's signal is visited first and wins because the dedup key is `${kind}:${id}`.
+  assert.equal(taskSignal?.reminderWindowMinutes, 30);
+  assert.equal(
+    resolved.heartbeatSignals.find((s) => s.kind === "calendar_events")
+      ?.reminderWindowMinutes,
+    60
+  );
+}
+
 async function main(): Promise<void> {
   await testSingleSkillNoIncludes();
   await testCompositeChildBeforeRoot();
@@ -173,7 +254,10 @@ async function main(): Promise<void> {
   await testComposedBodyCap();
   await testToolDedupOrder();
   await testEphemeralComposesFromChild();
-  console.log("skills/resolve.selftest: all 10 cases passed");
+  await testHeartbeatModeComposesFromChild();
+  await testHeartbeatBlockedWins();
+  await testHeartbeatSignalsAggregateAndDedupe();
+  console.log("skills/resolve.selftest: all 13 cases passed");
 }
 
 main().catch((e) => {

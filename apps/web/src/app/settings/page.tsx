@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SettingsForm } from "./settings-form";
 import { getGlobalSkillRegistry } from "@agents/agent";
+import { listHeartbeatChecklistTemplates } from "@agents/db";
 
 type Search = { google_calendar?: string; reason?: string };
 
@@ -87,6 +88,14 @@ export default async function SettingsPage({
     .in("status", ["active", "paused"])
     .order("next_run_at", { ascending: true, nullsFirst: false });
 
+  const heartbeatChecklistTemplates = await listHeartbeatChecklistTemplates(
+    supabase,
+    user.id
+  ).catch((err) => {
+    console.warn("[settings] failed to load heartbeat checklist templates:", err);
+    return [];
+  });
+
   return (
     <div className="min-h-screen">
       <header className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
@@ -120,6 +129,7 @@ export default async function SettingsPage({
           googleCalendarConnected={!!googleCalendarIntegration}
           heartbeatRuns={heartbeatRuns ?? []}
           scheduledTasks={scheduledTasks ?? []}
+          heartbeatChecklistTemplates={heartbeatChecklistTemplates}
           googleOAuthStatus={sp.google_calendar}
           googleOAuthReason={sp.reason}
         />

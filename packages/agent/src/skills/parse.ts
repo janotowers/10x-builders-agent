@@ -14,7 +14,14 @@ import {
   parseFrontmatterBlock,
   splitFrontmatter,
 } from "./frontmatter";
-import type { SkillMetadata, SkillRecord } from "./types";
+import type {
+  HeartbeatSignalKind,
+  HeartbeatSkillSignal,
+  SkillMetadata,
+  SkillRecord,
+} from "./types";
+
+const HEARTBEAT_SIGNAL_KINDS = ["calendar_events", "calendar_tasks"] as const;
 
 /** Hard cap on SKILL.md body size (estimated tokens, chars/4 heuristic). */
 export const MAX_SKILL_BODY_TOKENS = 5000;
@@ -63,6 +70,32 @@ const FrontmatterSchema = z
     guardrails: z.string().min(1).optional(),
     requires_tenant_context: z.boolean().default(false),
     memory_extraction: z.enum(["default", "ephemeral"]).default("default"),
+    heartbeat: z.enum(["native", "compatible", "blocked"]).default("compatible"),
+    heartbeat_signals: z
+      .array(
+        z
+          .object({
+            id: z
+              .string()
+              .min(1, "heartbeat_signals[].id is required")
+              .regex(
+                /^[a-z0-9][a-z0-9-]*$/,
+                "heartbeat_signals[].id must match ^[a-z0-9][a-z0-9-]*$"
+              ),
+            kind: z.enum(HEARTBEAT_SIGNAL_KINDS),
+            reminder_window_minutes: z
+              .preprocess((value) => {
+                if (typeof value === "string") {
+                  const parsed = Number.parseInt(value.trim(), 10);
+                  return Number.isFinite(parsed) ? parsed : value;
+                }
+                return value;
+              }, z.number().int("reminder_window_minutes must be an integer").positive("reminder_window_minutes must be > 0").max(24 * 60, "reminder_window_minutes must be <= 1440 (24h)")),
+            description: z.string().min(1).optional(),
+          })
+          .strict()
+      )
+      .default([]),
   })
   .strict();
 
@@ -181,6 +214,15 @@ function parseSkillSourceImpl(
     );
   }
 
+  const heartbeatSignals: HeartbeatSkillSignal[] = result.data.heartbeat_signals.map(
+    (signal): HeartbeatSkillSignal => ({
+      id: signal.id,
+      kind: signal.kind as HeartbeatSignalKind,
+      reminderWindowMinutes: signal.reminder_window_minutes,
+      description: signal.description ?? null,
+    })
+  );
+
   const metadata: SkillMetadata = {
     name: result.data.name,
     description: result.data.description,
@@ -190,6 +232,8 @@ function parseSkillSourceImpl(
     guardrails: result.data.guardrails ?? null,
     requiresTenantContext: result.data.requires_tenant_context,
     memoryExtraction: result.data.memory_extraction,
+    heartbeatMode: result.data.heartbeat,
+    heartbeatSignals: Object.freeze(heartbeatSignals),
     sourcePath,
   };
 

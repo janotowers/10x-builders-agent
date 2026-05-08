@@ -3,10 +3,20 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+import { TOOL_CATALOG } from "@agents/agent/src/tools/catalog";
+import {
+  HEARTBEAT_CHECKLIST_TEMPLATES,
+  generateHeartbeatChecklistProposal,
+  normalizeHeartbeatChecklist,
+  validateHeartbeatChecklist,
+} from "@agents/agent/src/heartbeat/checklist";
+import type { HeartbeatChecklistTemplate } from "@agents/agent/src/heartbeat/checklist";
 import type {
   BusinessBrain,
   BusinessBrainWarehouseSource,
+  HeartbeatChecklistTemplateRow,
   HeartbeatRun,
+  ToolRisk,
 } from "@agents/types";
 
 interface Props {
@@ -24,6 +34,7 @@ interface Props {
   googleCalendarConnected: boolean;
   heartbeatRuns: HeartbeatRun[];
   scheduledTasks: ScheduledTaskItem[];
+  heartbeatChecklistTemplates: HeartbeatChecklistTemplateRow[];
   /** Query `google_calendar` tras OAuth (connected | error). */
   googleOAuthStatus?: string;
   googleOAuthReason?: string;
@@ -53,6 +64,11 @@ interface SkillCatalogItem {
   allowedTools: string[];
   requiresTenantContext: boolean;
 }
+
+type HeartbeatTemplateOption = HeartbeatChecklistTemplate & {
+  kind: "system" | "user";
+  sourceTemplateId?: string | null;
+};
 
 type ReviewSlot =
   | "agent_identity.role"
@@ -126,6 +142,51 @@ const TOOL_IDS = [
   "delete_user_memory",
 ];
 
+const TOOL_DEF_BY_ID = new Map(TOOL_CATALOG.map((d) => [d.id, d]));
+
+const TOOL_RISK_META: Record<
+  ToolRisk,
+  { label: string; hint: string }
+> = {
+  low: {
+    label: "Bajo",
+    hint: "Lectura o alcance acotado.",
+  },
+  medium: {
+    label: "Medio",
+    hint: "Puede modificar datos; suele pedir confirmación.",
+  },
+  high: {
+    label: "Alto",
+    hint: "Ejecución sensible o efectos amplios.",
+  },
+};
+
+function toolRiskForSettings(id: string): ToolRisk {
+  return TOOL_DEF_BY_ID.get(id)?.risk ?? "high";
+}
+
+const TOOL_RISK_ROW_CLASSES: Record<ToolRisk, string> = {
+  low: "border-emerald-200 bg-emerald-50/90 dark:border-emerald-900 dark:bg-emerald-950/35",
+  medium:
+    "border-amber-200 bg-amber-50/90 dark:border-amber-900 dark:bg-amber-950/35",
+  high: "border-red-200 bg-red-50/90 dark:border-red-900 dark:bg-red-950/40",
+};
+
+const TOOL_RISK_BADGE_CLASSES: Record<ToolRisk, string> = {
+  low: "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200",
+  medium: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
+  high: "bg-red-100 text-red-900 dark:bg-red-950 dark:text-red-200",
+};
+
+function toolRiskRowClasses(risk: ToolRisk): string {
+  return TOOL_RISK_ROW_CLASSES[risk];
+}
+
+function toolRiskBadgeClasses(risk: ToolRisk): string {
+  return TOOL_RISK_BADGE_CLASSES[risk];
+}
+
 const SKILL_SCOPE_LABELS: Record<SkillCatalogItem["scope"], string> = {
   business: "Negocio",
   personal: "Personal",
@@ -144,12 +205,11 @@ const DEFAULT_AGENT_ROLE =
 const DEFAULT_AGENT_DESCRIPTION =
   "Gu actúa como un copiloto práctico para el trabajo diario: entiende el contexto del usuario y del negocio, responde con claridad, propone próximos pasos y usa memoria, skills y herramientas cuando aportan valor, respetando permisos, confirmaciones y límites de datos.";
 const DEFAULT_HEARTBEAT_INTERVAL_MINUTES = 30;
-const DEFAULT_HEARTBEAT_CHECKLIST = `# Heartbeat checklist
-- Revisa agenda de hoy y próximos compromisos.
-- Resume pendientes clave, decisiones abiertas y riesgos accionables del día.
-- Detecta bloqueos operativos solo si hay algo concreto que impide avanzar, requiere intervención o tiene urgencia clara.
-- No clasifiques preferencias generales, datos de perfil, estilo de comunicación o contexto del negocio como bloqueos.
-- Si no hay bloqueos reales, dilo explícitamente y no rellenes la sección con información incidental.`;
+const DEFAULT_HEARTBEAT_CHECKLIST =
+  HEARTBEAT_CHECKLIST_TEMPLATES.find(
+    (template) => template.id === "hybrid-founder-operator"
+  )?.markdown ?? `# Heartbeat checklist
+- Detecta conflictos, cambios o huecos de preparación en agenda y próximos compromisos dentro de las siguientes 24 horas. Umbral: solo si hay evento próximo, conflicto, preparación faltante o decisión pendiente. Avisar cuando: hay una acción práctica que el usuario debe tomar antes del siguiente compromiso.`;
 const PROFILE_ASSETS_BUCKET = "profile-assets";
 const REVIEW_SLOT_LABELS: Record<ReviewSlot, string> = {
   "agent_identity.role": "Rol del colaborador IA",
@@ -214,6 +274,7 @@ function readHeartbeat(brain: BusinessBrain): {
   enabled: boolean;
   intervalMinutes: number;
   checklistMarkdown: string;
+  checklistTemplateId: string;
 } {
   const heartbeat = asRecord(brain.heartbeat);
   const intervalRaw = heartbeat.interval_minutes;
@@ -229,6 +290,7 @@ function readHeartbeat(brain: BusinessBrain): {
     enabled: heartbeat.enabled === true,
     intervalMinutes,
     checklistMarkdown,
+    checklistTemplateId: readString(heartbeat.checklist_template_id),
   };
 }
 
@@ -302,6 +364,41 @@ function heartbeatToolCalls(run: HeartbeatRun): string[] {
     : [];
 }
 
+function heartbeatAppliedSkills(run: HeartbeatRun): string[] {
+  const payload = readHeartbeatPayload(run);
+  const skills = payload.appliedHeartbeatSkills;
+  return Array.isArray(skills)
+    ? skills.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function heartbeatChecklistSelectionLabels(run: HeartbeatRun): string[] {
+  const payload = readHeartbeatPayload(run);
+  const selections = payload.heartbeatSkillSelection;
+  if (!Array.isArray(selections)) return [];
+  return selections
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const record = item as Record<string, unknown>;
+      const itemId = typeof record.itemId === "string" ? record.itemId : "item";
+      const status = typeof record.status === "string" ? record.status : "unknown";
+      const skillIds = Array.isArray(record.skillIds)
+        ? record.skillIds.filter((v): v is string => typeof v === "string")
+        : [];
+      const blocked = Array.isArray(record.blockedSkillIds)
+        ? record.blockedSkillIds.filter((v): v is string => typeof v === "string")
+        : [];
+      const suffix =
+        skillIds.length > 0
+          ? `skills: ${skillIds.join(", ")}`
+          : blocked.length > 0
+            ? `bloqueado: ${blocked.join(", ")}`
+            : "sin skill";
+      return `${itemId} · ${status} · ${suffix}`;
+    })
+    .filter((item): item is string => Boolean(item));
+}
+
 function heartbeatStatusLabel(status: HeartbeatRun["status"]): string {
   const labels: Record<HeartbeatRun["status"], string> = {
     running: "En curso",
@@ -368,6 +465,7 @@ export function SettingsForm({
   googleCalendarConnected,
   heartbeatRuns = [],
   scheduledTasks = [],
+  heartbeatChecklistTemplates = [],
   googleOAuthStatus,
   googleOAuthReason,
 }: Props) {
@@ -483,6 +581,29 @@ export function SettingsForm({
   const [heartbeatChecklist, setHeartbeatChecklist] = useState(
     initialHeartbeat.checklistMarkdown
   );
+  const [activeHeartbeatChecklist, setActiveHeartbeatChecklist] = useState(
+    initialHeartbeat.checklistMarkdown
+  );
+  const [activeHeartbeatTemplateId, setActiveHeartbeatTemplateId] = useState(
+    initialHeartbeat.checklistTemplateId || "hybrid-founder-operator"
+  );
+  const [userHeartbeatTemplates, setUserHeartbeatTemplates] = useState(
+    heartbeatChecklistTemplates
+  );
+  const [heartbeatTemplateId, setHeartbeatTemplateId] = useState(
+    initialHeartbeat.checklistTemplateId || "hybrid-founder-operator"
+  );
+  const [heartbeatTemplateName, setHeartbeatTemplateName] = useState("");
+  const [heartbeatTemplateMessage, setHeartbeatTemplateMessage] = useState<
+    string | null
+  >(null);
+  const [savingHeartbeatTemplate, setSavingHeartbeatTemplate] = useState(false);
+  const [deletingHeartbeatTemplate, setDeletingHeartbeatTemplate] = useState(false);
+  const [activatingHeartbeatChecklist, setActivatingHeartbeatChecklist] =
+    useState(false);
+  const [heartbeatChecklistIntent, setHeartbeatChecklistIntent] = useState("");
+  const [heartbeatChecklistProposal, setHeartbeatChecklistProposal] =
+    useState<ReturnType<typeof generateHeartbeatChecklistProposal> | null>(null);
   const latestHeartbeatRun = heartbeatRuns[0];
   const [scheduledTaskRows, setScheduledTaskRows] = useState(scheduledTasks);
   const [updatingTaskId, setUpdatingTaskId] = useState<string | null>(null);
@@ -524,6 +645,33 @@ export function SettingsForm({
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
+  const heartbeatTemplateOptions: HeartbeatTemplateOption[] = [
+    ...HEARTBEAT_CHECKLIST_TEMPLATES.map((template) => ({
+      ...template,
+      kind: "system" as const,
+    })),
+    ...userHeartbeatTemplates.map((template) => ({
+      id: template.id,
+      name: template.name,
+      description: template.description,
+      markdown: template.markdown,
+      kind: "user" as const,
+      sourceTemplateId: template.source_template_id ?? null,
+    })),
+  ];
+  const defaultHeartbeatTemplate = heartbeatTemplateOptions.find(
+    (template) => template.id === "hybrid-founder-operator"
+  );
+  const selectedHeartbeatTemplate =
+    heartbeatTemplateOptions.find((template) => template.id === heartbeatTemplateId) ??
+    defaultHeartbeatTemplate ??
+    heartbeatTemplateOptions[0];
+  const heartbeatChecklistChangedFromTemplate =
+    !!selectedHeartbeatTemplate &&
+    heartbeatChecklist.trim() !== selectedHeartbeatTemplate.markdown.trim();
+  const heartbeatChecklistValidation = validateHeartbeatChecklist(heartbeatChecklist);
+  const activeHeartbeatChecklistValidation =
+    validateHeartbeatChecklist(activeHeartbeatChecklist);
 
   useEffect(() => {
     setGCalConnected(googleCalendarConnected);
@@ -556,6 +704,134 @@ export function SettingsForm({
     setEnabledSkills((prev) =>
       prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
     );
+  }
+
+  function applyHeartbeatTemplate(template: HeartbeatTemplateOption | undefined) {
+    if (!template) return;
+    setHeartbeatTemplateId(template.id);
+    setHeartbeatChecklist(template.markdown);
+    setHeartbeatTemplateName("");
+    setHeartbeatTemplateMessage(null);
+  }
+
+  async function saveHeartbeatTemplate() {
+    setSavingHeartbeatTemplate(true);
+    setHeartbeatTemplateMessage(null);
+    try {
+      const validation = validateHeartbeatChecklist(heartbeatChecklist);
+      if (validation.warnings.length > 0) {
+        throw new Error("Primero valida y ajusta el checklist hasta que no tenga sugerencias.");
+      }
+      const res = await fetch("/api/heartbeat-checklist-templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: heartbeatTemplateName.trim(),
+          description: selectedHeartbeatTemplate
+            ? `Derivado de ${selectedHeartbeatTemplate.name}`
+            : "",
+          markdown: heartbeatChecklist.trim(),
+          source_template_id: selectedHeartbeatTemplate?.id ?? null,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.error ?? "No se pudo guardar el template");
+      }
+      const template = json.template as HeartbeatChecklistTemplateRow;
+      setUserHeartbeatTemplates((prev) => [template, ...prev]);
+      setHeartbeatTemplateId(template.id);
+      setHeartbeatTemplateName("");
+      setHeartbeatTemplateMessage(
+        "Template guardado. Cuando quieras, úsalo como checklist para Heartbeat."
+      );
+      router.refresh();
+    } catch (err) {
+      setHeartbeatTemplateMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingHeartbeatTemplate(false);
+    }
+  }
+
+  async function deleteSelectedHeartbeatTemplate() {
+    if (!selectedHeartbeatTemplate || selectedHeartbeatTemplate.kind !== "user") return;
+    setDeletingHeartbeatTemplate(true);
+    setHeartbeatTemplateMessage(null);
+    try {
+      const res = await fetch(
+        `/api/heartbeat-checklist-templates/${selectedHeartbeatTemplate.id}`,
+        { method: "DELETE" }
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error ?? "No se pudo eliminar el template");
+      setUserHeartbeatTemplates((prev) =>
+        prev.filter((template) => template.id !== selectedHeartbeatTemplate.id)
+      );
+      const fallback =
+        HEARTBEAT_CHECKLIST_TEMPLATES.find(
+          (template) => template.id === "hybrid-founder-operator"
+        ) ?? HEARTBEAT_CHECKLIST_TEMPLATES[0];
+      if (fallback) applyHeartbeatTemplate({ ...fallback, kind: "system" });
+      setHeartbeatTemplateMessage("Template eliminado.");
+      router.refresh();
+    } catch (err) {
+      setHeartbeatTemplateMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingHeartbeatTemplate(false);
+    }
+  }
+
+  async function useHeartbeatChecklistAsActive() {
+    setActivatingHeartbeatChecklist(true);
+    setHeartbeatTemplateMessage(null);
+    try {
+      const validation = validateHeartbeatChecklist(heartbeatChecklist);
+      if (validation.items.length === 0 || validation.warnings.length > 0) {
+        throw new Error(
+          "Antes de usarlo como checklist, valida y ajusta hasta que no haya sugerencias."
+        );
+      }
+      const normalizedHeartbeatInterval = Math.max(
+        5,
+        Math.min(24 * 60, Math.floor(heartbeatIntervalMinutes || 0))
+      );
+      const res = await fetch("/api/business-brain", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          patch: {
+            heartbeat: {
+              enabled: heartbeatEnabled,
+              interval_minutes: normalizedHeartbeatInterval,
+              checklist_markdown: heartbeatChecklist.trim(),
+              checklist_template_id: heartbeatTemplateId,
+              checklist_metadata: {
+                validation_warnings: validation.warnings,
+                detected_skills: [
+                  ...new Set(
+                    validation.items.flatMap((item) => item.candidateSkills)
+                  ),
+                ],
+              },
+            },
+          },
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "No se pudo actualizar el checklist");
+      setActiveHeartbeatChecklist(heartbeatChecklist.trim());
+      setActiveHeartbeatTemplateId(heartbeatTemplateId);
+      setSaved(true);
+      setHeartbeatTemplateMessage(
+        "Checklist actualizado. Usa el toggle de Heartbeat para activarlo o desactivarlo."
+      );
+      setTimeout(() => setSaved(false), 2000);
+      router.refresh();
+    } catch (err) {
+      setHeartbeatTemplateMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActivatingHeartbeatChecklist(false);
+    }
   }
 
   async function reviewSection(
@@ -779,7 +1055,24 @@ export function SettingsForm({
       heartbeat: {
         enabled: heartbeatEnabled,
         interval_minutes: normalizedHeartbeatInterval,
-        checklist_markdown: heartbeatChecklist.trim(),
+        checklist_markdown: activeHeartbeatChecklist.trim(),
+        checklist_template_id: activeHeartbeatTemplateId,
+        checklist_metadata: {
+          generated_from: heartbeatChecklistProposal
+            ? heartbeatChecklistIntent.trim()
+            : undefined,
+          generated_at: heartbeatChecklistProposal
+            ? new Date().toISOString()
+            : undefined,
+          validation_warnings: activeHeartbeatChecklistValidation.warnings,
+          detected_skills: [
+            ...new Set(
+              activeHeartbeatChecklistValidation.items.flatMap(
+                (item) => item.candidateSkills
+              )
+            ),
+          ],
+        },
       },
     };
   }
@@ -852,9 +1145,25 @@ export function SettingsForm({
       if (!agentName.trim() || !agentRole.trim() || !agentDescription.trim()) {
         throw new Error("Nombre, rol y descripción breve del colaborador IA son obligatorios.");
       }
-      if (heartbeatEnabled && !heartbeatChecklist.trim()) {
+      if (heartbeatEnabled && !activeHeartbeatChecklist.trim()) {
         throw new Error(
-          "El checklist de Heartbeat no puede estar vacío cuando Heartbeat está habilitado."
+          "El checklist activo de Heartbeat no puede estar vacío cuando Heartbeat está habilitado."
+        );
+      }
+      if (
+        heartbeatEnabled &&
+        activeHeartbeatChecklistValidation.items.length === 0
+      ) {
+        throw new Error(
+          "El checklist activo de Heartbeat necesita al menos un item en formato bullet o numerado."
+        );
+      }
+      if (
+        heartbeatEnabled &&
+        activeHeartbeatChecklistValidation.warnings.length > 0
+      ) {
+        throw new Error(
+          "Antes de activar Heartbeat, el checklist guardado no debe tener sugerencias pendientes."
         );
       }
       if (
@@ -1592,15 +1901,170 @@ export function SettingsForm({
                 Rango recomendado para V1: 5 a 1440 minutos.
               </p>
             </div>
-            <div className="flex items-end justify-start md:justify-end">
+            <div className="flex flex-wrap items-end justify-start gap-2 md:justify-end">
+              {heartbeatChecklistChangedFromTemplate ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setHeartbeatChecklist(
+                        normalizeHeartbeatChecklist(heartbeatChecklist)
+                      )
+                    }
+                    className="rounded-md border border-emerald-300 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-950"
+                  >
+                    Validar y ajustar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      selectedHeartbeatTemplate &&
+                      setHeartbeatChecklist(selectedHeartbeatTemplate.markdown)
+                    }
+                    className="rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+                  >
+                    {selectedHeartbeatTemplate?.kind === "user"
+                      ? "Restaurar último guardado"
+                      : "Restaurar template original"}
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+          <div className="mt-4 rounded-md border border-violet-100 bg-violet-50 p-3 text-xs dark:border-violet-900 dark:bg-violet-950/40">
+            <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-start">
+              <div className="min-w-0 flex-1">
+                <label className="block text-sm font-medium mb-1">
+                  Templates de checklist
+                </label>
+                <select
+                  value={heartbeatTemplateId}
+                  onChange={(e) => {
+                    const template = heartbeatTemplateOptions.find(
+                      (item) => item.id === e.target.value
+                    );
+                    applyHeartbeatTemplate(template);
+                  }}
+                  className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                >
+                  {heartbeatTemplateOptions.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.kind === "user" ? "Usuario · " : "Sistema · "}
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-neutral-500 dark:text-neutral-400">
+                  {selectedHeartbeatTemplate?.description}
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={() => setHeartbeatChecklist(DEFAULT_HEARTBEAT_CHECKLIST)}
-                className="rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+                onClick={useHeartbeatChecklistAsActive}
+                disabled={
+                  activatingHeartbeatChecklist ||
+                  heartbeatChecklistValidation.items.length === 0 ||
+                  heartbeatChecklistValidation.warnings.length > 0
+                }
+                className="rounded-md border border-violet-300 px-3 py-2 text-sm font-medium text-violet-800 hover:bg-violet-100 md:mt-6 dark:border-violet-700 dark:text-violet-100 dark:hover:bg-violet-900"
               >
-                Reset checklist a default
+                {activatingHeartbeatChecklist
+                  ? "Actualizando..."
+                  : "Usar como checklist"}
               </button>
             </div>
+            <div className="mt-3 flex flex-wrap items-end gap-2">
+              <div className="min-w-48 flex-1">
+                <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                  Nombre para guardar cambios
+                </label>
+                <input
+                  value={heartbeatTemplateName}
+                  onChange={(e) => setHeartbeatTemplateName(e.target.value.slice(0, 120))}
+                  placeholder="Mi checklist operativo"
+                  className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={saveHeartbeatTemplate}
+                disabled={
+                  savingHeartbeatTemplate ||
+                  !heartbeatChecklistChangedFromTemplate ||
+                  !heartbeatTemplateName.trim() ||
+                  heartbeatChecklistValidation.warnings.length > 0
+                }
+                className="rounded-md border border-emerald-300 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-950"
+              >
+                {savingHeartbeatTemplate
+                  ? "Guardando..."
+                  : "Guardar como nuevo template"}
+              </button>
+              {selectedHeartbeatTemplate?.kind === "user" ? (
+                <button
+                  type="button"
+                  onClick={deleteSelectedHeartbeatTemplate}
+                  disabled={deletingHeartbeatTemplate}
+                  className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950"
+                >
+                  {deletingHeartbeatTemplate ? "Eliminando..." : "Eliminar template"}
+                </button>
+              ) : null}
+            </div>
+            {heartbeatTemplateMessage ? (
+              <p className="mt-2 text-neutral-600 dark:text-neutral-300">
+                {heartbeatTemplateMessage}
+              </p>
+            ) : null}
+          </div>
+          <div className="mt-4 rounded-md border border-neutral-200 p-3 text-xs dark:border-neutral-800">
+            <label className="block text-sm font-medium mb-1">
+              Generar propuesta desde lenguaje natural
+            </label>
+            <textarea
+              value={heartbeatChecklistIntent}
+              onChange={(e) => setHeartbeatChecklistIntent(e.target.value.slice(0, 1000))}
+              rows={3}
+              placeholder="Describe qué quieres que Gu vigile de forma proactiva. Ej. agenda personal + leads calientes + visitas por confirmar."
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setHeartbeatChecklistProposal(
+                    generateHeartbeatChecklistProposal(heartbeatChecklistIntent)
+                  )
+                }
+                disabled={!heartbeatChecklistIntent.trim()}
+                className="rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:hover:bg-neutral-900"
+              >
+                Generar propuesta
+              </button>
+              {heartbeatChecklistProposal ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setHeartbeatChecklist(heartbeatChecklistProposal.markdown)
+                  }
+                  className="rounded-md border border-emerald-300 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-950"
+                >
+                  Copiar propuesta al checklist
+                </button>
+              ) : null}
+            </div>
+            {heartbeatChecklistProposal ? (
+              <div className="mt-3 rounded-md bg-neutral-50 p-3 dark:bg-neutral-950">
+                <p className="font-medium">Propuesta validada (no se activa hasta guardar):</p>
+                <pre className="mt-2 max-h-56 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] text-neutral-600 dark:text-neutral-300">
+                  {heartbeatChecklistProposal.markdown}
+                </pre>
+                <p className="mt-2 text-neutral-500">
+                  Skills detectados/gaps a revisar:{" "}
+                  {heartbeatChecklistProposal.missingSkills.join(", ") || "ninguno"}
+                </p>
+              </div>
+            ) : null}
           </div>
           <div className="mt-4">
             <label className="block text-sm font-medium mb-1">
@@ -1608,15 +2072,35 @@ export function SettingsForm({
             </label>
             <textarea
               value={heartbeatChecklist}
-              onChange={(e) => setHeartbeatChecklist(e.target.value.slice(0, 6000))}
+              onChange={(e) => {
+                setHeartbeatChecklist(e.target.value.slice(0, 6000));
+                setHeartbeatTemplateMessage(null);
+              }}
               rows={8}
               placeholder={DEFAULT_HEARTBEAT_CHECKLIST}
               className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-mono dark:border-neutral-700 dark:bg-neutral-900"
             />
             <p className="mt-1 text-xs text-neutral-400">
-              Este markdown es la fuente real que usa el runner de Heartbeat. Al guardar,
-              se persiste en tu Business Brain y se inyecta completo en cada corrida.
+              Este markdown es un borrador. No reemplaza el checklist hasta pulsar «Usar como checklist»;
+              el guardado general conserva el checklist vigente en tu perfil.
             </p>
+            {heartbeatChecklistValidation.warnings.length > 0 ? (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                <p className="font-medium">Sugerencias de mejores prácticas:</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  {heartbeatChecklistValidation.warnings.slice(0, 5).map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-300">
+                No hay sugerencias. Checklist con {heartbeatChecklistValidation.items.length} item(s) operativos detectados.
+                {heartbeatChecklistChangedFromTemplate
+                  ? " Ya puedes guardarlo como nuevo template o aplicarlo con «Usar como checklist»."
+                  : ""}
+              </p>
+            )}
             {charCount(heartbeatChecklist, 6000)}
           </div>
           {heartbeatRuns.length > 0 ? (
@@ -1627,6 +2111,8 @@ export function SettingsForm({
               <div className="mt-3 space-y-3">
                 {heartbeatRuns.map((run) => {
                   const tools = heartbeatToolCalls(run);
+                  const heartbeatSkills = heartbeatAppliedSkills(run);
+                  const checklistSelections = heartbeatChecklistSelectionLabels(run);
                   return (
                     <div
                       key={run.id}
@@ -1655,6 +2141,23 @@ export function SettingsForm({
                         <p className="mt-2 text-neutral-400">
                           Tools: {tools.join(", ")}
                         </p>
+                      ) : null}
+                      {heartbeatSkills.length > 0 ? (
+                        <p className="mt-2 text-neutral-400">
+                          Skills Heartbeat: {heartbeatSkills.join(", ")}
+                        </p>
+                      ) : null}
+                      {checklistSelections.length > 0 ? (
+                        <details className="mt-2 rounded-md bg-neutral-50 px-2 py-1 dark:bg-neutral-950">
+                          <summary className="cursor-pointer text-neutral-500">
+                            Items evaluados ({checklistSelections.length})
+                          </summary>
+                          <ul className="mt-1 list-disc space-y-1 pl-4 text-neutral-500">
+                            {checklistSelections.map((selection) => (
+                              <li key={selection}>{selection}</li>
+                            ))}
+                          </ul>
+                        </details>
                       ) : null}
                     </div>
                   );
@@ -1791,19 +2294,68 @@ export function SettingsForm({
 
       {/* Tools */}
       <section className="space-y-4">
-        <h2 className="text-base font-semibold">Herramientas</h2>
-        <div className="space-y-2">
-          {TOOL_IDS.map((id) => (
-            <label key={id} className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={enabledTools.includes(id)}
-                onChange={() => toggleTool(id)}
-                className="rounded border-neutral-300"
-              />
-              {id}
-            </label>
+        <div>
+          <h2 className="text-base font-semibold">Herramientas</h2>
+          <p className="mt-1 text-sm text-neutral-500">
+            El color indica el nivel de riesgo operativo declarado para cada tool.
+            Las reglas del producto (confirmaciones, permisos, integraciones) siguen aplicándose siempre.
+          </p>
+        </div>
+        <div
+          className="flex flex-wrap gap-2 rounded-md border border-neutral-200 bg-neutral-50/80 px-3 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-950/40"
+          aria-label="Leyenda de riesgo de herramientas"
+        >
+          {(["low", "medium", "high"] as const).map((risk) => (
+            <span
+              key={risk}
+              className={`inline-flex items-center gap-2 rounded-md border px-2 py-1 ${toolRiskRowClasses(risk)}`}
+            >
+              <span
+                className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${toolRiskBadgeClasses(risk)}`}
+              >
+                {TOOL_RISK_META[risk].label}
+              </span>
+              <span className="text-neutral-600 dark:text-neutral-400">
+                {TOOL_RISK_META[risk].hint}
+              </span>
+            </span>
           ))}
+        </div>
+        <div className="space-y-2">
+          {TOOL_IDS.map((id) => {
+            const def = TOOL_DEF_BY_ID.get(id);
+            const risk = toolRiskForSettings(id);
+            return (
+              <label
+                key={id}
+                className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm transition-colors hover:opacity-95 ${toolRiskRowClasses(risk)}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={enabledTools.includes(id)}
+                  onChange={() => toggleTool(id)}
+                  className="mt-1 rounded border-neutral-300"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${toolRiskBadgeClasses(risk)}`}
+                    >
+                      {TOOL_RISK_META[risk].label}
+                    </span>
+                    <code className="text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
+                      {id}
+                    </code>
+                  </span>
+                  {def?.description ? (
+                    <p className="mt-1 text-xs leading-snug text-neutral-600 dark:text-neutral-400">
+                      {def.description}
+                    </p>
+                  ) : null}
+                </span>
+              </label>
+            );
+          })}
         </div>
       </section>
 

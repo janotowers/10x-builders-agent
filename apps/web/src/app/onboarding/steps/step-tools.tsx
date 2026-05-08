@@ -65,6 +65,13 @@ const AVAILABLE_TOOLS = [
     requiresIntegration: "google_calendar",
   },
   {
+    id: "calendar_list_tasks",
+    name: "Calendario: listar tareas",
+    description: "Lista tareas de Google Tasks que aparecen o vencen en Calendar.",
+    risk: "low" as const,
+    requiresIntegration: "google_calendar",
+  },
+  {
     id: "calendar_create_event",
     name: "Calendario: crear evento",
     description: "Crea un evento (requiere confirmación).",

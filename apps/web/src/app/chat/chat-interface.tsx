@@ -59,6 +59,13 @@ interface RecentToolCall {
   requires_confirmation: boolean;
   created_at: string;
   finished_at?: string | null;
+  /**
+   * `agent` (default) — the LLM issued this call during a turn.
+   * `deterministic` — the system issued the read (e.g. a Heartbeat
+   *   prefetcher) before the LLM and persisted it under the same turn_id.
+   * Drives the `IA` / `Determinístico` badge in the tools panel.
+   */
+  executor_kind?: "agent" | "deterministic" | null;
 }
 
 interface RecentLearning {
@@ -86,12 +93,14 @@ interface HeartbeatStatus {
     startedAt: string;
     finishedAt?: string | null;
     summary: string;
+    details?: Record<string, unknown>;
   }>;
   lastRun?: {
     status: "running" | "completed" | "error";
     startedAt: string;
     finishedAt?: string | null;
     summary: string;
+    details?: Record<string, unknown>;
   } | null;
 }
 
@@ -245,6 +254,21 @@ function formatToolStatus(status: string): string {
   return labels[status] ?? status;
 }
 
+function formatToolExecutor(
+  kind?: "agent" | "deterministic" | null
+): { label: string; tone: "agent" | "deterministic" } {
+  if (kind === "deterministic") {
+    return { label: "Determinístico", tone: "deterministic" };
+  }
+  return { label: "IA", tone: "agent" };
+}
+
+function toolExecutorBadgeClass(tone: "agent" | "deterministic"): string {
+  return tone === "deterministic"
+    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-200"
+    : "bg-violet-100 text-violet-700 dark:bg-violet-400/10 dark:text-violet-200";
+}
+
 function toolDetailText(tool: RecentToolCall): string {
   const args = tool.arguments_json;
   if (!args) return "";
@@ -297,6 +321,14 @@ function toolResultSummary(tool: RecentToolCall): string {
     else if (stderr.trim() && exitCode !== 0)
       parts.push(`stderr: ${stderr.trim().slice(0, 120)}`);
     return parts.join(" · ");
+  }
+  if (tool.tool_name === "calendar_list_events") {
+    const events = Array.isArray(result.events) ? result.events : [];
+    return `${events.length} evento${events.length === 1 ? "" : "s"}`;
+  }
+  if (tool.tool_name === "calendar_list_tasks") {
+    const tasks = Array.isArray(result.tasks) ? result.tasks : [];
+    return `${tasks.length} tarea${tasks.length === 1 ? "" : "s"}`;
   }
   const status = typeof result.status === "string" ? result.status : "";
   const ok = result.ok;
@@ -578,7 +610,7 @@ function stripMarkdown(value: string): string {
 
 /** Main H1-equivalent titles we hide from the bullet strip so the panel does not repeat the digest name. */
 const HEARTBEAT_DIGEST_TITLE_LINE =
-  /^(Operational Digest|Operational summary|Operative summary|Resumen operativo|Digest operativo|Pulso operativo|Pulso del día|Resumen del día)$/i;
+  /^(Operational Digest|Operational summary|Operative summary|Resumen operativo|Digest operativo|Pulso|Pulse|Operational pulse|Pulso operativo|Pulso del día|Resumen del día)$/i;
 
 function heartbeatDigestItems(
   summary: string,
@@ -622,6 +654,56 @@ function HeartbeatDigestBulletList({
       ))}
     </ul>
   );
+}
+
+function heartbeatAppliedSkillsFromDetails(
+  details?: Record<string, unknown>
+): string[] {
+  const skills = details?.appliedHeartbeatSkills;
+  return Array.isArray(skills)
+    ? skills.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function heartbeatAppliedSkillDisplaysFromDetails(
+  details?: Record<string, unknown>
+): AppliedSkillDisplay[] {
+  const explicit = parseAppliedSkills(details?.appliedSkills);
+  if (explicit.length > 0) return explicit;
+  return heartbeatAppliedSkillsFromDetails(details).map((id) => ({
+    id,
+    role: "primary",
+  }));
+}
+
+function heartbeatRunForMessage(
+  message: Message | undefined,
+  heartbeatStatus?: HeartbeatStatus
+): HeartbeatStatus["lastRun"] | null {
+  if (!message || messageSource(message) !== "heartbeat") return null;
+  const runs = heartbeatStatus?.runs ?? [];
+  const messageTime = message.created_at
+    ? new Date(message.created_at).getTime()
+    : Number.NaN;
+  const bySummary = runs.find(
+    (run) => run.summary.trim() === message.content.trim()
+  );
+  if (bySummary) return bySummary;
+  if (Number.isNaN(messageTime)) return null;
+  return (
+    runs.find((run) => {
+      const started = new Date(run.startedAt).getTime();
+      if (Number.isNaN(started)) return false;
+      return Math.abs(messageTime - started) < 2 * 60 * 1000;
+    }) ?? null
+  );
+}
+
+function heartbeatItemCountFromDetails(
+  details?: Record<string, unknown>
+): number {
+  const selections = details?.heartbeatSkillSelection;
+  return Array.isArray(selections) ? selections.length : 0;
 }
 
 function FieldRow({ label, value }: { label: string; value: string }) {
@@ -1093,19 +1175,33 @@ export function ChatInterface({
     ? [...messages].reverse().find((message) => message.turn_id === inspectedTurnId)
     : undefined;
   const inspectedSourceLabel = messageSourceLabel(inspectedMessage);
+  const inspectedHeartbeatRun = heartbeatRunForMessage(
+    inspectedMessage,
+    heartbeatStatus
+  );
 
   const toolsThisTurn = useMemo(
     () => toolsForLastCompletedTurn(messages, toolCalls, inspectedTurnId),
     [messages, toolCalls, inspectedTurnId]
   );
   const skillsThisTurn = useMemo(
-    () =>
-      skillsForLastCompletedTurn(
+    () => {
+      const skills = skillsForLastCompletedTurn(
         messages,
         inspectedTurnId,
         confirmation?.appliedSkills
-      ),
-    [messages, inspectedTurnId, confirmation?.appliedSkills]
+      );
+      if (skills.length > 0) return skills;
+      return heartbeatAppliedSkillDisplaysFromDetails(
+        inspectedHeartbeatRun?.details
+      );
+    },
+    [
+      messages,
+      inspectedTurnId,
+      confirmation?.appliedSkills,
+      inspectedHeartbeatRun?.details,
+    ]
   );
   const memoryThisTurn = useMemo(
     () =>
@@ -2307,6 +2403,7 @@ export function ChatInterface({
                     toolsThisTurn.map((tool, index) => {
                       const detail = toolDetailText(tool);
                       const resultSummary = toolResultSummary(tool);
+                      const executor = formatToolExecutor(tool.executor_kind);
                       return (
                         <div
                           key={tool.id}
@@ -2317,11 +2414,23 @@ export function ChatInterface({
                           />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-start justify-between gap-3">
-                              <p className="truncate font-medium text-slate-800 dark:text-white">
-                                {toolsThisTurn.length > 1
-                                  ? `${index + 1}. ${formatToolForUserPanel(tool.tool_name)}`
-                                  : formatToolForUserPanel(tool.tool_name)}
-                              </p>
+                              <div className="flex min-w-0 flex-1 items-center gap-2">
+                                <p className="truncate font-medium text-slate-800 dark:text-white">
+                                  {toolsThisTurn.length > 1
+                                    ? `${index + 1}. ${formatToolForUserPanel(tool.tool_name)}`
+                                    : formatToolForUserPanel(tool.tool_name)}
+                                </p>
+                                <span
+                                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${toolExecutorBadgeClass(executor.tone)}`}
+                                  title={
+                                    executor.tone === "deterministic"
+                                      ? "Lectura determinística iniciada por el sistema (no por el modelo)."
+                                      : "Llamada emitida por el modelo durante el turno."
+                                  }
+                                >
+                                  {executor.label}
+                                </span>
+                              </div>
                               <span className="shrink-0 text-[11px] text-slate-400 dark:text-white/40">
                                 {formatToolTime(tool.created_at)}
                               </span>
@@ -2441,6 +2550,23 @@ export function ChatInterface({
                           <p className="mb-1 font-semibold opacity-80">
                             {formatLearningTime(heartbeatStatus.lastRun.startedAt)}
                           </p>
+                          {heartbeatItemCountFromDetails(
+                            heartbeatStatus.lastRun.details
+                          ) > 0 ? (
+                            <p className="mb-1 text-[11px] opacity-70">
+                              {heartbeatItemCountFromDetails(
+                                heartbeatStatus.lastRun.details
+                              )}{" "}
+                              item(s) evaluados
+                              {heartbeatAppliedSkillsFromDetails(
+                                heartbeatStatus.lastRun.details
+                              ).length > 0
+                                ? ` · skills: ${heartbeatAppliedSkillsFromDetails(
+                                    heartbeatStatus.lastRun.details
+                                  ).join(", ")}`
+                                : ""}
+                            </p>
+                          ) : null}
                           <HeartbeatDigestBulletList items={heartbeatDigest} />
                         </div>
                         {previousHeartbeatRuns.length > 0 ? (

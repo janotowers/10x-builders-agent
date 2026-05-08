@@ -62,7 +62,9 @@ export function splitFrontmatter(raw: string): SplitResult {
   return { frontmatter, body, hasFrontmatter: true };
 }
 
-type RawValue = string | string[] | boolean;
+type RawScalar = string | boolean;
+type RawObject = Record<string, RawScalar>;
+type RawValue = RawScalar | string[] | RawObject[];
 
 /**
  * Parse the YAML-ish frontmatter block into a flat record. The caller
@@ -72,6 +74,10 @@ type RawValue = string | string[] | boolean;
  * actual booleans so Zod fields declared as `z.boolean()` can read them
  * without an extra `z.preprocess`. Quoted forms (`"true"`, `'false'`)
  * are kept as strings, matching YAML 1.2 semantics.
+ *
+ * Block arrays may contain either plain string items OR mapping items
+ * (each list item is a small object with one field per indented line).
+ * Numeric coercion is left to Zod (use `z.coerce.number()`).
  */
 export function parseFrontmatterBlock(
   source: string
@@ -247,19 +253,88 @@ function readIndentedBlock(lines: string[], startIdx: number): BlockSlice {
   return { lines: collected, nextIndex: j };
 }
 
-function parseBlockArray(lines: string[], startLineNo: number): string[] {
-  const items: string[] = [];
-  for (let k = 0; k < lines.length; k += 1) {
-    const line = (lines[k] ?? "").trimEnd();
-    if (line === "") continue;
+function parseBlockArray(
+  lines: string[],
+  startLineNo: number
+): string[] | RawObject[] {
+  // Two valid shapes are accepted:
+  //   1. Plain string list:    `- foo`
+  //   2. Mapping list:         `- key: value` followed by indented `key: value` lines
+  // Mixing the two within the same key is rejected to keep callers' types
+  // unambiguous.
+  const stringItems: string[] = [];
+  const objectItems: RawObject[] = [];
+  let mode: "scalar" | "object" | "unknown" = "unknown";
+  let k = 0;
+  while (k < lines.length) {
+    const rawLine = lines[k] ?? "";
+    const line = rawLine.trimEnd();
+    if (line === "") {
+      k += 1;
+      continue;
+    }
     if (!line.startsWith("- ") && line !== "-") {
       throw new FrontmatterError(
         "expected list item starting with '- ' in block array",
         startLineNo + k
       );
     }
-    const item = line === "-" ? "" : line.slice(2).trim();
-    items.push(scalarAsString(parseScalar(item, startLineNo + k)));
+    const head = line === "-" ? "" : line.slice(2);
+    const colonIdx = head.indexOf(":");
+    const looksLikeMapping =
+      colonIdx > 0 &&
+      /^[a-z_][a-z0-9_]*$/i.test(head.slice(0, colonIdx).trim());
+
+    if (!looksLikeMapping) {
+      if (mode === "object") {
+        throw new FrontmatterError(
+          "cannot mix scalar list items with object list items in the same array",
+          startLineNo + k
+        );
+      }
+      mode = "scalar";
+      stringItems.push(scalarAsString(parseScalar(head.trim(), startLineNo + k)));
+      k += 1;
+      continue;
+    }
+
+    if (mode === "scalar") {
+      throw new FrontmatterError(
+        "cannot mix scalar list items with object list items in the same array",
+        startLineNo + k
+      );
+    }
+    mode = "object";
+
+    const record: RawObject = {};
+    const firstKey = head.slice(0, colonIdx).trim();
+    const firstRest = head.slice(colonIdx + 1).trim();
+    if (firstRest !== "") {
+      record[firstKey] = parseScalar(firstRest, startLineNo + k);
+    }
+    k += 1;
+    while (k < lines.length) {
+      const cont = lines[k] ?? "";
+      if (cont.trim() === "") {
+        k += 1;
+        continue;
+      }
+      if (!cont.startsWith(" ") && !cont.startsWith("\t")) break;
+      const trimmed = cont.trim();
+      const ci = trimmed.indexOf(":");
+      if (ci <= 0 || !/^[a-z_][a-z0-9_]*$/i.test(trimmed.slice(0, ci).trim())) {
+        throw new FrontmatterError(
+          "expected 'key: value' inside list item",
+          startLineNo + k
+        );
+      }
+      const fieldKey = trimmed.slice(0, ci).trim();
+      const fieldRest = trimmed.slice(ci + 1).trim();
+      record[fieldKey] = parseScalar(fieldRest, startLineNo + k);
+      k += 1;
+    }
+    objectItems.push(record);
   }
-  return items;
+
+  return mode === "object" ? objectItems : stringItems;
 }

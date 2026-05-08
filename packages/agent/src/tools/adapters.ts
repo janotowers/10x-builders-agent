@@ -440,11 +440,19 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
       "github_list_issues",
       "calendar_list_calendars",
       "calendar_list_events",
+      "calendar_list_tasks",
+      "manage_scheduled_tasks",
       "read_file",
     ]);
     // BigQuery requires a domain skill and tenant-aware references. Heartbeat
-    // skips skill selection, so allowing the raw tool lets the model invent
-    // generic warehouse SQL from memory context.
+    // can use it only after a heartbeat-safe tenant skill was injected.
+    if (
+      toolId === "bigquery_run_query" &&
+      ctx.activeSkillAllowedTools?.includes("bigquery_run_query") &&
+      ctx.tenantOrganizationId
+    ) {
+      return true;
+    }
     if (!HEARTBEAT_ALLOWED_TOOLS.has(toolId)) return false;
   }
 
@@ -1462,10 +1470,38 @@ export function buildLangChainTools(ctx: ToolContext) {
             enabledSkills: ctx.enabledSkills,
           });
 
+          // `ctx.lastUserMessage` queda vacío en el resume HITL (la ruta
+          // `/api/chat/confirm` no recibe el mensaje original). Para no perder
+          // el texto que originó la confirmación, lo recuperamos de
+          // `agent_messages` por `turn_id`. Best-effort: si la query falla,
+          // dejamos `null` y la fila queda como antes.
+          let userRequest: string | null =
+            ctx.lastUserMessage?.trim() || null;
+          if (!userRequest && ctx.turnId) {
+            try {
+              const { data } = await ctx.db
+                .from("agent_messages")
+                .select("content")
+                .eq("session_id", ctx.sessionId)
+                .eq("turn_id", ctx.turnId)
+                .eq("role", "user")
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              const content = (data?.content as string | undefined)?.trim();
+              if (content) userRequest = content;
+            } catch (err) {
+              console.warn(
+                "[schedule_task] failed to recover user_request from agent_messages:",
+                err instanceof Error ? err.message : String(err)
+              );
+            }
+          }
+
           const task = await createScheduledTask(ctx.db, {
             userId: ctx.userId,
             prompt: input.prompt,
-            userRequest: ctx.lastUserMessage?.trim() || null,
+            userRequest,
             displayTitle: input.display_title?.trim() || null,
             skillId: automationBinding.skillId,
             toolApprovalPolicy: automationBinding.toolApprovalPolicy,
@@ -1581,6 +1617,16 @@ export function buildLangChainTools(ctx: ToolContext) {
             }
 
             // pause / resume
+            if (ctx.channel === "heartbeat") {
+              const err = {
+                ok: false,
+                error:
+                  "Heartbeat solo puede listar tareas programadas; pause/resume requiere una acción manual o programada fuera del Heartbeat.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", err);
+              return JSON.stringify(err);
+            }
+
             if (!input.task_id) {
               const err = {
                 ok: false,

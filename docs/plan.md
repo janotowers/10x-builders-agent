@@ -142,10 +142,11 @@ Construir un agente IA que permita a un usuario **gestionar tareas y ejecutar ac
 #### 7.6 Heartbeat proactivo ✓
 
 - Configuración por cuenta en `profiles.business_brain.heartbeat`: `enabled`, `interval_minutes`, `checklist_markdown`, `last_run_at`.
-- Checklist default versionado en `heartbeat/default-checklist.md`.
+- Templates canónicas de checklist versionadas en `packages/agent/src/heartbeat/checklist.ts` (`HEARTBEAT_CHECKLIST_TEMPLATES`). `heartbeat/default-checklist.md` queda como referencia legacy.
 - Migración `00014_heartbeat_runs.sql`: canal `agent_sessions.channel='heartbeat'` y tabla `heartbeat_runs` con RLS/índices.
 - Endpoint cron `POST /api/cron/heartbeat` con `CRON_SECRET`, selección de usuarios vencidos, ejecución de `runAgent({ channel: "heartbeat" })`, persistencia del resultado y actualización de `last_run_at`.
 - Guardrails de runtime: modelo/costo por Heartbeat (`HEARTBEAT_MODEL_ID`, `HEARTBEAT_MAX_TOKENS`), baja temperatura, sin memoria corta de sesión, memoria persistente curada (`procedural`/`semantic`) con límites estrictos, y allowlist de tools de solo lectura.
+- Prelecturas determinísticas para señales de umbral declaradas por skills `heartbeat: native` (`heartbeat_signals`): se ejecutan antes del LLM, se persisten como `tool_calls.executor_kind='deterministic'`, comparten `turn_id` con el turno del agente, y se muestran en "Herramientas del turno" con badge `Determinístico`. Detalle en **[docs/heartbeat/deterministic-prefetchers.md](heartbeat/deterministic-prefetchers.md)**.
 - Settings permite activar/desactivar, configurar intervalo/checklist, resetear default y ver historial reciente.
 - Panel derecho muestra Heartbeat en mini-dashboard y en "Actividad proactiva" con historial expandible.
 

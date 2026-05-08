@@ -1,4 +1,13 @@
-# Heartbeat checklist
+# Heartbeat checklist (legacy reference)
+
+> Deprecated as a runtime source.
+>
+> The canonical built-in Heartbeat templates now live in
+> `packages/agent/src/heartbeat/checklist.ts` as `HEARTBEAT_CHECKLIST_TEMPLATES`.
+> Settings uses those templates for the user-facing reset/template flow. Keep
+> this file only as historical context for the original MVP checklist.
+
+## Original MVP checklist
 
 - Revisa agenda de hoy y próximos compromisos.
 - Resume pendientes clave, decisiones abiertas y riesgos accionables del día.

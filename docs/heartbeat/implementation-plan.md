@@ -2,9 +2,9 @@
 
 Execution plan to deliver proactive Heartbeat end-to-end and keep status updated as implementation progresses.
 
-Last updated: 2026-05-06 (memory policy clarified; PR-6 optional backlog)
+Last updated: 2026-05-07 (deterministic prefetchers documented)
 Owner: Agent team (web + agent + db)
-Status: Core shipped (Phases 1–5 complete); Phase 6 remains optional hardening
+Status: Core shipped (Phases 1–5 complete); deterministic prefetchers shipped; Phase 6 remains optional hardening
 
 ---
 
@@ -20,6 +20,7 @@ Definition of done:
 - Heartbeat tool execution is restricted to read-only allowlisted tools.
 - Runtime and model settings are cost-controlled and channel-aware.
 - Heartbeat does not reuse prior heartbeat ticks as short-term memory; it may use a small curated persistent-memory block for proactive context.
+- Threshold-like signals can be pre-read deterministically, persisted as `tool_calls`, and shown in the same tools panel as LLM-issued calls.
 
 ---
 
@@ -33,12 +34,14 @@ In scope (V1):
 - Checklist-driven execution using `business_brain.heartbeat`.
 - Settings UI for heartbeat toggle, interval, checklist markdown.
 - Basic run history in Settings.
+- Deterministic prefetchers for heartbeat-native skill signals.
 
 Out of scope (later):
 
 - Multi-instance durable turn-events stream for full timeline replay.
 - Voice and multimodal presence.
 - Autonomous write actions without explicit approvals.
+- General-purpose prefetching outside the `heartbeat` channel.
 
 ---
 
@@ -183,6 +186,40 @@ Exit criteria:
 
 ---
 
+## Phase 5b - Deterministic prefetchers and unified observability
+
+Objective: make threshold-like Heartbeat reads reliable and visible without creating a separate "signals" UI path.
+
+Tasks:
+
+- [x] Extend skill frontmatter with `heartbeat_signals` for `heartbeat: native` skills.
+- [x] Add structured `reminderWindowMinutes` parsing to checklist items (`Ventana_minutos` / inferred windows).
+- [x] Add Heartbeat prefetcher registry keyed by signal `kind`.
+- [x] Implement first prefetchers:
+  - [x] `calendar_events` using Google Calendar Events.
+  - [x] `calendar_tasks` using Google Tasks.
+- [x] Persist deterministic reads to `tool_calls` with `executor_kind = 'deterministic'`.
+- [x] Pre-generate one `turn_id` per Heartbeat run so deterministic and LLM-issued tools share the same turn.
+- [x] Inject prompt-ready deterministic signal block before the LLM call.
+- [x] Keep deterministic fallback response when the LLM incorrectly returns `Pulso OK`.
+- [x] Remove the separate "Señales del pulso" panel.
+- [x] Show deterministic reads inside "Herramientas del turno" with a `Determinístico` badge.
+- [x] Document the contract in [`docs/heartbeat/deterministic-prefetchers.md`](deterministic-prefetchers.md).
+
+Exit criteria:
+
+- A Heartbeat tick with a meeting/task inside the reminder window records `calendar_list_events` / `calendar_list_tasks` as deterministic `tool_calls`.
+- The chat panel shows those calls under "Herramientas del turno", not in a Heartbeat-only box.
+- The user can distinguish `IA` vs `Determinístico` execution from the badge.
+- Type-check and relevant selftests pass.
+
+Operational note:
+
+- Environments must apply migration `00018_tool_calls_executor_kind.sql`.
+- Existing users must reconnect Google Calendar to grant `https://www.googleapis.com/auth/tasks.readonly` before deterministic Google Tasks reads are available.
+
+---
+
 ## Delivery slices (PR sequence)
 
 1. PR-1: DB migrations + channel/type plumbing.
@@ -190,7 +227,8 @@ Exit criteria:
 3. PR-3: tool/model guardrails for heartbeat channel.
 4. PR-4: Settings heartbeat controls + default checklist seed.
 5. PR-5: heartbeat history/presence UI.
-6. PR-6: optional Telegram digest + hardening/tests.
+6. PR-5b: deterministic prefetchers + unified tool-call observability.
+7. PR-6: optional Telegram digest + hardening/tests.
 
 ---
 
@@ -217,8 +255,12 @@ When implementation starts, update this file in each PR:
 - 2026-05-05: Refined the Gu panel copy to "Actividad proactiva", added a heartbeat-style pulse indicator, localized statuses, and removed redundant live-status copy from that block.
 - 2026-05-05: PR-5 UX polish: expandable heartbeat history renders full digest bullets (no join/truncate), compact scroll regions per run; scheduled tasks list shows full titles/prompts with scroll and status-colored badges (paused vs active).
 - 2026-05-06: Heartbeat memory policy refined. The runner no longer loads short-term session history (avoids repeated tick context), and long-term context is curated by type (`procedural`/`semantic`) with strict limits instead of semantic retrieval against the checklist prompt.
+- 2026-05-07: Added deterministic Heartbeat prefetchers for `heartbeat: native` skills. Skills can declare `heartbeat_signals`, checklist items can provide structured reminder windows, and the runner records pre-read signals as `tool_calls.executor_kind='deterministic'`.
+- 2026-05-07: Unified Heartbeat signal observability into "Herramientas del turno": deterministic prefetchers and LLM-issued tool calls share the same `turn_id` and are differentiated with `Determinístico` / `IA` badges. The separate "Señales del pulso" panel was removed.
 
 ### Decisions log
 
 - 2026-05-05: Heartbeat remains distinct from `scheduled_tasks`; both reuse cron infrastructure but have different data models and product semantics.
 - 2026-05-06: Heartbeat may use persistent user context, but not via generic semantic retrieval on the tick prompt. It uses a small curated set of active procedural/semantic memories so the digest can reflect stable preferences without treating repeated heartbeat runs as conversation history.
+- 2026-05-07: Deterministic prefetching is a Heartbeat-only runner capability, not a general replacement for LLM tool use. It should be reserved for threshold-like signals where reliability and observability matter.
+- 2026-05-07: `heartbeat/default-checklist.md` is legacy documentation only. The canonical built-in templates now live in `packages/agent/src/heartbeat/checklist.ts` as `HEARTBEAT_CHECKLIST_TEMPLATES`.
