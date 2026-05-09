@@ -16,7 +16,7 @@ Canonical roadmap for evolving the assistant (Skills, Heartbeat, Business Brain)
 | **V1-D** | Add `'heartbeat'` to `agent_sessions.channel` CHECK; `heartbeat_runs` table; `POST /api/cron/heartbeat`; `runAgent({ channel: 'heartbeat' })` with cheap LLM (`HEARTBEAT_MODEL_ID`, e.g. MiniMax) and read-only allowlist; per-tick session row; no memory flush |
 | **V1-E** | Settings: Heartbeat UI, digest history, and skill catalog visibility grouped by `scope` |
 | **V1.5** | Visible **Skill Registry** + `user_skill_settings` toggles/config per account; tenant-configurable `brand-kit`; staged document/file skills behind attachment tools |
-| **V2** | `account_skills` versioning, draft/active, admin UI + test harness for custom per-account playbooks |
+| **V2** | `account_skills` versioning, draft/active, admin UI + test harness for custom per-account playbooks across `scope: business | personal | shared` |
 | **V3** | `organizations` + memberships + RLS; optional dynamic multi-skill router/subagents |
 
 ---
@@ -41,8 +41,8 @@ These are decisions taken after a final repo + best-practices review. Each has a
 | **Default checklist seeding** | **Lazy on “Enable Heartbeat”** / “Reset to default” in Settings using the canonical `HEARTBEAT_CHECKLIST_TEMPLATES` in `packages/agent/src/heartbeat/checklist.ts`. No blanket migration. `heartbeat/default-checklist.md` is legacy reference only. | Opt-in, no migration churn, easy to re-seed via “Reset to default”, and avoids two sources of truth. |
 | **BigQuery auth** | **Single platform service account** (env-mounted credentials) **+ per-account `business_brain.bigquery.{ project_id, dataset_allowlist }`**. Read-only role; `bigquery_run_query` validates SQL is `SELECT`. | Simplest viable V1. If your security model needs per-customer SA isolation, switch to “per-account SA JSON in `user_integrations`” without changing tool surface. The skill stays the same. |
 | **Skills registry visibility** | Keep the canonical runtime registry **file-based** in `skills/global/*/SKILL.md`, but expose a **user-visible catalog** in Settings before adding custom DB-authored skills. | Users need to understand and control which playbooks exist. The repo remains the source of truth for standard skills; UI reads metadata and account settings. |
-| **Skills toggles UI** | Global skills can ship enabled by default, then Settings stores per-account overrides in `user_skill_settings` (`enabled`, optional `config_json`). Group by `scope`: Business, Personal, Shared. | Mirrors tools, supports gradual rollout, and lets a user disable entire areas (for example personal skills) without changing the global catalog. |
-| **Tenant-configurable skills** | Prefer **global skills + per-account config** before free-form `account_skills`. Example: `brand-kit` is a global skill whose colors, tone, logo URLs, and examples live in `business_brain.brand` or `user_skill_settings.config_json`. | Gives useful personalization in V1.5 without opening the security and debugging surface of arbitrary per-user skill bodies. |
+| **Skills toggles UI** | Global skills can ship enabled by default, then Settings stores per-account overrides in `user_skill_settings` (`enabled`, optional `config_json`). Group by `scope`: Business, Personal, Shared. | Mirrors tools, supports gradual rollout, and lets a user disable entire areas (for example personal skills) without changing the global catalog. This is configuration of global skills, not custom skill bodies. |
+| **Tenant-configurable skills** | Prefer **global skills + per-account config** before free-form `account_skills`. Example: `brand-kit` is a global skill whose colors, tone, logo URLs, and examples live in `business_brain.brand` or `user_skill_settings.config_json`. | Gives useful personalization in V1.5 without opening the security and debugging surface of arbitrary per-user skill bodies. V2 `account_skills` should not be limited to business playbooks; it should support personal and shared procedures as first-class scopes. |
 | **Document/file skills** | Stage `pdf`, `xlsx`, `docx`, and `pptx` behind multi-tenant attachment tools and private storage. Do not expose them as reliable file-producing skills until upload, parsing, generation, and download are implemented. | File skills need a complete file lifecycle, not only instructions. Supabase Storage + signed URLs gives tenant isolation; local computer files require upload or a connector. |
 | **Skill scripts / sandbox** | Still no arbitrary executable scripts from skill folders in V1/V1.5. Document manipulation runs only through closed backend tools or workers. | Keeps user-uploaded files, generated files, and server credentials away from untrusted skill-defined code. A sandbox can arrive later if the product needs it. |
 
@@ -191,7 +191,7 @@ includes=a,b`), and fail closed on conflicts, cycles, or token cap overflows.
 
 ---
 
-### 6) “Global” vs user-specific (company) skills
+### 6) “Global” vs account-specific skills (business, personal, shared)
 
 **Yes — that is exactly how we use the terms.**
 
@@ -199,13 +199,15 @@ includes=a,b`), and fail closed on conflicts, cycles, or token cap overflows.
 |------|-------------------------|---------------------------|
 | **Global (standard / system)** | Playbooks **shipped with the product**, same catalog for every deployment—maintained by you (engineering), versioned in **Git** (`skills/global/.../SKILL.md`). Every account *can* use them subject to **toggles** and **tool** access. | Repo files; metadata loaded at startup |
 | **Configured global skills** | Standard repo skills with **per-account settings**. Example: `brand-kit` is the same product skill for everyone, but each account supplies colors, tone, logo references, and examples. | Repo skill + `user_skill_settings.config_json` and/or `business_brain` |
-| **Account / company skills** | Playbooks **specific to one business** (`user_id` ≈ company today). **V2+:** stored in Supabase (`account_skills` or equivalent), draft/active, edited in UI. **V1/V1.5:** only global repo skills + toggles/config per account; company-specific text can temporarily live in `business_brain` prose or custom sections until DB skills ship. |
+| **Account skills** | Playbooks **specific to one account**. They may be `business` (e.g. brokerage-specific lead follow-up), `personal` (e.g. school pickup / family checklist / travel routine), or `shared` (usable across both contexts). **V2+:** stored in Supabase (`account_skills` or equivalent), draft/active, edited in UI, with `scope` preserved. **V1/V1.5:** only global repo skills + toggles/config per account; account-specific text can temporarily live in `business_brain` prose or custom sections until DB skills ship. |
 
 So: **“global” = standard system skills**; **“configured global” = standard
-skill plus account-specific values**; **“user-specific / company-specific” =
-that organization’s custom playbooks**, which in V1/V1.5 are limited (Brain
-fields, toggles/config, optional markdown in profile) and expand in **V2** with
-full CRUD and versioning.
+skill plus account-specific values**; **“account-specific” = that user/account's
+custom playbooks**, which in V1/V1.5 are limited (Brain fields, toggles/config,
+optional markdown in profile) and expand in **V2** with full CRUD and versioning.
+Do not treat V2 custom skills as business-only: the product goal is a personal
+and business collaborator, so custom personal procedures must fit the same
+model with explicit scope, permissions, and tool access.
 
 ---
 
@@ -640,6 +642,8 @@ The skill's body delegates the *“is this OBLIGATORIO or ADMIN UNGGA mode?”* 
 - Optional **composite** e.g. `morning-operations` = `daily-briefing` + `company-data` snapshot + `personal-day-briefing` highlights.
 
 Exact slugs and bodies are designed at implementation time; the goal here is a **balanced default** so a new user gets value on **both** life slices from day one.
+
+**V2 account-skill implication:** the same `scope` split must carry into custom skills. A future `account_skills` row should be able to represent not only a brokerage-specific procedure, but also a user-specific personal routine (school pickup, family travel, health appointment prep, daily personal closeout) or a shared routine that mixes personal and business context. The storage/permissions layer should decide visibility and allowed tools; the architecture should not assume custom skills are only organizational playbooks.
 
 ### V1-C — Business Brain + **Heartbeat checklist in DB**
 

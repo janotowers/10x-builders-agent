@@ -1,10 +1,18 @@
 # Evaluación de G Brain y plan de integración con Ungga / Gu OS
 
 > **Estado:** propuesta para revisión
-> **Versión:** 1.4 (introduce el modelo arquitectural de **7 capas / 4 dominios**, reconcilia la terminología `procedural` con `memories.type='procedural'` existente, agrega lightweight hooks en v1 para Ingestion + Skill Mining sin cambiar el plan de 8 semanas)
+> **Versión:** 1.4.1 (mantiene el modelo arquitectural de **7 capas / 4 dominios** de v1.4 y aclara que las futuras `account_skills` deben contemplar procedimientos personales propios, no solo playbooks de negocio)
 > **Audiencia:** Janot (arquitecto/dueño)
 > **Decide:** si arrancamos la "Brain Layer" como capa nueva paralela a `memories`, siguiendo Opción B (portar 5 ideas de G Brain sin importar su código)
 > **No decide:** si en el futuro lejano se integra G Brain como microservicio (Opción C) — eso queda como puerta abierta
+
+### Cambios v1.4.1 vs v1.4
+
+> Marcadores `[v1.4.1]` en notas nuevas. Esta ronda no cambia el plan MVP ni agrega schema. Solo alinea el plan con la guía narrativa `docs/manuals/gu-os-understanding.md` y con el roadmap de Business Brain: las skills propias futuras (`account_skills`) no deben asumirse solo de negocio/organización; también deben poder ser `personal` y `shared`.
+
+- Principio 1.5.7: nueva nota **"personal playbooks no son memoria procedural"** — aclara que rutinas personales ejecutables (recoger hijos, preparación médica, viajes, cierre personal del día) deben modelarse como skills personales futuras, no como `memories.type='procedural'`.
+- Sección 12.3: nueva **Scope note** — `Operational/Playbook Mining` sigue enfocado en comportamiento de negocio, pero eso no excluye una extensión hermana futura `Personal Pattern -> Personal Skill`.
+- Sección 12.3: nueva sub-sección **"Extensión futura separada: Personal Pattern -> Personal Skill"** — documenta fuentes, métricas, riesgos, destino y gobernanza para no mezclar mining operacional de brokerage con rutinas personales del usuario.
 
 ### Cambios v1.4 vs v1.3
 
@@ -347,6 +355,18 @@ Ungga ya tiene su sistema de memoria personal del usuario en `memories` (migraci
 | 6 | **Semantic-personal** (sobre el usuario) | `memories.type='semantic'` | "Es asesor inmobiliario en Mazatlán con 8 años de experiencia" |
 | 7 | **Episodic-personal** (evento del usuario) | `memories.type='episodic'` | "Mudó su negocio a Guadalajara en enero" |
 | 8 | **Personal-procedural** (preferencias del usuario sobre el agente) | `memories.type='procedural'` | "Prefiere respuestas en bullets cortos y firma 'Saludos, Juan'" |
+
+#### Nota v1.4.1 — personal playbooks no son memoria procedural
+
+La aclaración anterior NO significa que el producto deba ignorar procedimientos personales propios del usuario. Gu OS busca ayudar al profesional que mezcla operación inmobiliaria y vida personal; por tanto, en V2+ debe existir espacio para **account skills personales** (por ejemplo, checklist para recoger hijos, preparación de citas médicas, rutinas de viaje, cierre personal del día).
+
+La regla de destino es:
+
+- Preferencias sobre **cómo el agente debe responder/trabajar contigo** → `memories.type='procedural'`.
+- Procedimientos personales **ejecutables** con pasos, triggers y tools → `account_skills` futuro (o SKILL.md explícito), no `memories`.
+- Patrones personales sugeridos por observación futura → candidato + HITL → skill personal; nunca auto-promoción directa desde memoria.
+
+Esto mantiene intacta la separación central: `memories` captura facts/preferencias personales; Skills capturan procedimientos ejecutables.
 
 #### Regla de no-colisión `procedural` (CRÍTICA)
 
@@ -1625,6 +1645,8 @@ Cuando se active un connector nuevo, el primer pull obligatoriamente corre en sa
 
 > *Capas 5 → 6 del modelo de 7 capas (sec [1.4](#14-modelo-de-capas-7-capas-4-dominios)) — la flecha de promoción `Pattern → Skill` mediada por HITL. NO se construye en MVP. Esta sección documenta el problema, el pipeline propuesto, los anti-patrones críticos, y advierte explícitamente sobre por qué la fase `patterns` del Dream Cycle de G Brain NO resuelve esto.*
 
+> **Scope note `[v1.4.1]`:** esta sección describe mining de **Operational/Playbook Knowledge del negocio**. No pretende excluir skills personales propias del usuario. Esas deberán existir en el modelo V2+ de `account_skills` como `scope: personal` o `scope: shared`, pero el miner de esta sección se mantiene enfocado en comportamiento operacional del negocio porque sus fuentes, métricas de outcome y riesgos son distintos.
+
 #### El problema: cómo aprender cómo opera el negocio (no solo qué sabe el negocio)
 
 Las capas 2-4 (Memory + Graph + Signal) capturan **conocimiento del negocio sobre entidades y eventos**: quién es Julieta, qué propiedades vio, cuándo, con quién. Eso es valioso pero **no captura cómo opera el negocio bien o mal**: qué secuencia de follow-up convierte mejor, qué objections aparecen recurrentemente y cómo los mejores agentes las manejan, qué timing de touchpoint correlaciona con cierre.
@@ -1759,6 +1781,20 @@ Lo que realmente hace, citando el comentario del archivo y el prompt al LLM:
   2. Acuerdo sobre métrica primaria de "outcome" (deal cerrado, lead retenido, etc.)
   3. UI de HITL review diseñada
 - En el ínterim, los skills siguen siendo **explicit only** (humano escribe SKILL.md directamente). Ese path sigue funcionando perfectamente.
+
+#### Extensión futura separada: Personal Pattern → Personal Skill
+
+Es razonable que Gu OS eventualmente sugiera skills personales propias del usuario (por ejemplo, rutina de recoger hijos, preparación de una cita médica, checklist de viaje familiar, cierre personal del día). Pero ese flujo debe tratarse como una extensión hermana, no como parte del miner operacional de brokerage:
+
+| Dimensión | Operational/Playbook Mining | Personal Pattern Mining futuro |
+|---|---|---|
+| Fuente principal | Sesiones operacionales, deals, outcomes, signals de negocio | Rutinas personales, calendario, preferencias explícitas, patrones de tareas personales |
+| Métrica de calidad | Conversión, follow-up, retención de lead, eficiencia operacional | Utilidad percibida por el usuario, reducción de olvidos, consistencia de rutina |
+| Riesgo principal | Codificar mala práctica de negocio o sesgos | Invadir privacidad o automatizar vida personal sin consentimiento |
+| Destino | `brain_skill_candidates` → business/shared Skill | `account_skills` futuro con `scope='personal'` o `shared` |
+| Gobernanza | HITL obligatorio | HITL obligatorio, opt-in todavía más explícito |
+
+Regla: una rutina personal observada nunca debe guardarse como `memories.type='procedural'` si lo que realmente se quiere es un procedimiento ejecutable. Debe convertirse, con aprobación humana, en una skill personal.
 
 ---
 

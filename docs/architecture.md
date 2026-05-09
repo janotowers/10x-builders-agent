@@ -1,5 +1,7 @@
 # Arquitectura Técnica — Agente Personal MVP
 
+> **Nota:** este documento es el overview tecnico corto del stack actual. Para una **guia narrativa** (menos tecnica, con foco en Skills y el mapa mental del sistema), ver [`docs/manuals/gu-os-understanding.md`](manuals/gu-os-understanding.md). Para el **manual tecnico** integrador, ver [`docs/manuals/architecture-manual.md`](manuals/architecture-manual.md).
+
 ## Stack
 
 | Capa                  | Tecnología                           | Paquete                              |
