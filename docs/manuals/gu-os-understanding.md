@@ -45,6 +45,29 @@ Imagina al agente como una persona en un puesto de trabajo:
 | **Heartbeat (pulso)** | “Cada X minutos revisa esta lista y avisa si algo se sale de lo normal”. | Ronda de vigilancia con lista de chequeo. |
 | **Brain Layer (futuro)** | Memoria **del negocio** estructurada (entidades, relaciones, señales, playbooks promovidos con humano en el medio). | Memoria cognitiva organizacional; no reemplaza ni el chat ni el warehouse. |
 
+### Mapa oficial por capas
+
+Una forma compacta de entender Gu OS es verlo como un sistema operativo de trabajo, no como una wiki personal ni como un kit local para programadores. Otros enfoques de agentes hablan de memoria, skills, hooks, subagentes o plugins; esas ideas sirven como inspiración, pero en Gu OS se reinterpretan desde las prioridades del producto: **multiusuario, datos privados, trazabilidad, permisos y operación real**.
+
+Versión estática en PNG (mismo contenido con un poco más de detalle visual, útil fuera del Preview de Cursor): [`gu-os-operational-stack-aligned.png`](../assets/gu-os-operational-stack-aligned.png).
+
+Para una vista complementaria más orientada a negocio/producto, ver [`gu-os-business-architecture-view.md`](gu-os-business-architecture-view.md).
+
+```mermaid
+flowchart TD
+  CH[Canales<br/>web - Telegram - cron] --> WF[Workflow<br/>LangGraph + HITL + Heartbeat]
+  WF --> CTX[Contexto<br/>perfil + sesión + Business Brain]
+  CTX --> SK[Skills<br/>recetarios + scope + includes]
+  SK --> TL[Tools<br/>acciones atómicas y permisos]
+  TL --> DT[Datos<br/>warehouse + calendario + Supabase]
+  DT --> BR[Brain Layer futura<br/>memoria + grafo + señales + patrones]
+  BR -.candidatos aprobados.-> SK
+```
+
+La regla importante: **cada capa tiene un destino distinto**. Las preferencias personales no son datos de negocio; los leads no son memoria personal; una señal débil no es todavía un hecho; y un patrón de trabajo aprobado debe convertirse en skill, no esconderse en texto libre. Esta separación evita que el sistema se vuelva una mezcla confusa de notas, prompts y automatizaciones.
+
+Gu OS sí toma ideas útiles de sistemas de conocimiento personal y de agent development kits: recetarios bajo demanda, referencias progresivas, health checks, artefactos y mantenimiento del conocimiento. Pero no copia su forma literal. En un producto con clientes, permisos y operación inmobiliaria, la pregunta no es “¿podemos guardar o automatizar esto?”, sino “¿en qué capa vive, con qué evidencia, con qué permisos y con qué revisión humana si puede cambiar la realidad?”.
+
 ### Turno no es lo mismo que sesión
 
 Esta distinción importa mucho:
@@ -67,11 +90,11 @@ flowchart LR
 
   subgraph Gu_OS
     IN[Entrada Web / Telegram]
-    CTX[Contexto: conversación + perfil + negocio]
-    SK[¿Hay recetario activo? Skill]
-    LM[Modelo: entiende y decide]
-    TL[Herramientas si hace falta]
-    APR[¿Necesita tu OK?]
+    CTX[Contexto<br/>conversación + perfil + negocio]
+    SK[Recetario activo<br/>Skill]
+    LM[Modelo<br/>entiende y decide]
+    TL[Herramientas<br/>si hace falta]
+    APR[Necesita tu OK]
     OUT[Respuesta]
   end
 

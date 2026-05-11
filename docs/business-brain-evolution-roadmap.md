@@ -50,6 +50,193 @@ If any of these defaults conflict with constraints we haven’t surfaced (securi
 
 ---
 
+## External inspiration without Frankenstein architecture
+
+This roadmap intentionally borrows useful patterns from agent and knowledge-base
+systems, but it does **not** copy their taxonomies verbatim. Gu OS is a
+multi-user product with private customer data, tenant boundaries, HITL approvals,
+and operational workflows. Any external idea must pass this test before entering
+the roadmap:
+
+| Question | Required answer |
+|----------|-----------------|
+| **Source** | Where did the idea come from? |
+| **Problem solved** | What Gu OS problem does it address? |
+| **Existing equivalent** | Which Gu OS component already covers part of it? |
+| **Difference** | Why is the external term not exactly the same thing? |
+| **Status** | `today`, `planned`, `optional V3+`, or `rejected for now` |
+| **Invariant preserved** | Which product safety rule remains non-negotiable? |
+
+Non-negotiable invariants:
+
+- Tenant safety and RLS must remain runtime-enforced, not prompt-only.
+- Risky actions require HITL unless a specific operation has earned autonomy
+  with production evidence.
+- Skills are executable procedures; memory is not a dumping ground for
+  playbooks.
+- Business facts, personal preferences, warehouse rows, soft signals, and
+  approved workflows keep separate destinations.
+- External inspiration can rename nothing unless it removes confusion. If Gu OS
+  already has the concept, document the mapping instead of adding a new layer.
+
+### Inspiration 1: Claude Code-style Agent Development Kit
+
+**Source:** user-provided post/image describing
+`CLAUDE.md + Skills + Hooks + Subagents + Plugins` as five layers of an agent
+development kit.
+
+**Why consider it:** the model is excellent for explaining agent capability
+packaging: rules, on-demand expertise, deterministic guardrails, isolated
+delegation, and distribution across a team.
+
+**Gu OS mapping:**
+
+| ADK term | Gu OS equivalent | Status | Notes |
+|----------|-------------------|--------|-------|
+| `CLAUDE.md` / memory layer | Base system prompt, profile data, `business_brain`, short-term memory, long-term `memories`, future Brain Layer | Today + planned | Gu OS deliberately splits memory into personal, account context, warehouse data, and future operational Brain Layer. One always-loaded markdown constitution would be too blunt for a multi-user product. |
+| Skills | `skills/global/*/SKILL.md`, `scope`, `allowed_tools`, `includes`, `references/`, selector metadata | Today | This is the closest match. Gu OS already follows the useful part: progressive disclosure and on-demand playbooks. |
+| Hooks | HITL, tool risk levels, tool adapters, `toolApprovalPolicy`, deterministic Heartbeat prefetchers, turn events | Partial today; optional V3+ | Gu OS does not have a general lifecycle-hook framework. If added, hooks should be server-side and engineering-owned, not arbitrary customer scripts. |
+| Subagents | Signal Detector plan, long research/document analysis, future QA/eval workers, optional dynamic multi-skill routing | Planned/selective; optional V3+ generalization | Use only when isolation, parallelism, or a different model/tool set is materially useful. Do not replace the primary LangGraph turn loop. |
+| Plugins | Future capability packs | Optional V3+ | Useful as packaging, not as a third-party marketplace until sandboxing, permissions, versioning, and observability are mature. |
+
+#### Capability packs (optional V3+)
+
+A **capability pack** would be an internal, versioned bundle of Gu OS
+capabilities. It is inspired by the plugin/distribution layer above, but scoped
+to this product rather than npm-style arbitrary agent plugins.
+
+Possible contents:
+
+- global skills and reference docs;
+- required tools and integration gates;
+- Heartbeat checklist templates;
+- Settings UI schema/config defaults;
+- document templates or output formats;
+- eval fixtures or test harnesses;
+- optional future subagents/workers.
+
+Examples:
+
+- `real-estate-core`: `company-data`, lead follow-up, visit confirmation,
+  inventory matchmaking, default Heartbeat checks.
+- `calendar-ops`: daily briefing, meeting readiness, task/calendar prefetchers.
+- `document-workbench`: uploaded-file skills, report generation, signed
+  downloads.
+- `personal-life`: personal day briefing, family reminders, travel prep, errands.
+
+This is **not** a V1 requirement and not a marketplace commitment. It becomes
+valuable once the global skill catalog, account settings, attachment tools, and
+organizations/memberships exist.
+
+#### Lifecycle hooks (optional, cautious)
+
+Claude Code hooks are attractive because deterministic events can enforce
+quality without asking an LLM to remember every rule. Gu OS already has several
+nearby concepts:
+
+- `tool_calls` audit rows;
+- `executor_kind='deterministic'` for Heartbeat prefetchers;
+- risk levels and HITL interrupts;
+- `toolApprovalPolicy` for scheduled tasks;
+- curated turn events such as `skill_selected`, `tool_started`, and
+  `tool_completed`;
+- RLS and adapter-level validation.
+
+If Gu OS adds lifecycle hooks later, they should start as **internal product
+extension points**, for example `beforeToolExecute`, `afterToolExecute`,
+`afterSkillSelected`, `beforeHeartbeatRun`, `afterTurnPersisted`, or
+`beforeBrainPromotion`. They should run trusted server code with explicit
+contracts. Customer-authored hook scripts should remain out of scope until
+there is sandboxing, permissions, quotas, observability, and rollback.
+
+### Inspiration 2: Karpathy-style Personal Knowledge OS
+
+**Source:** user-provided post/image attributed to Stanislav Beliaev, describing
+Andrej Karpathy's workflow for an LLM-maintained personal knowledge base:
+raw ingest, LLM compilation into a wiki, Obsidian as frontend, index-based
+querying, generated outputs, linting passes, self-improving loops, extra tools,
+and possible fine-tuning on synthetic data.
+
+**Why consider it:** it is a strong model for deep research workflows: capture
+evidence quickly, compile it into durable knowledge, maintain structure over
+time, and let each query improve the corpus.
+
+**Gu OS mapping:**
+
+| Knowledge OS idea | Gu OS equivalent | Status | Notes |
+|-------------------|------------------|--------|-------|
+| Raw data ingest | Future Ingestion Layer, source connectors, `source_id` / `source_meta`, uploads/connectors | Planned | Strong fit if modeled as evidence inbox with provenance and tenant ownership, not as a shared folder. |
+| LLM compiles wiki | Brain Layer `compiled_truth + timeline + versions` | Planned | Strong fit, but Gu OS compiles operational entity knowledge, not a free-form research wiki. Synthetic/destructive updates require HITL initially. |
+| Obsidian frontend | Gu console, Settings, future Brain review UI/dashboards | Rejected as primary UX | Obsidian is good for personal research. Gu OS needs operational dashboards, review queues, approvals, and actions. |
+| No RAG / no vector DB | Hybrid Brain search + structured queries + optional human-readable index pages | Rejected for now | Gu OS should keep retrieval and structured access. Index pages may help explain and navigate knowledge, but should not replace search in a multi-tenant app. |
+| Outputs filed back into wiki | Generated artifacts, reports, decks, charts, document skills, Brain timeline entries | Planned/optional | Useful when outputs have durable value and provenance. Not every answer should become memory. |
+| Self-improving loop | Dream Cycle, Brain maintenance runs, memory/skill curation | Planned | Good fit if split into mechanical autonomous checks and HITL-gated synthesis/promotions. |
+| Linting passes | Brain health checks: inconsistency, gaps, stale chunks, orphan pages, duplicate candidates, missing links | Planned | Strong fit. This should be framed as operational hygiene, not “make a prettier wiki.” |
+| CLI/search/web UI | Web product first; internal CLI/dev tooling optional | Optional | Customers need product UI. CLI can help engineering, migrations, evals, and operations. |
+| Fine-tuning on synthetic data | Eval fixtures, routing/extraction tests, synthetic regression sets | Rejected as product goal for now | Synthetic data is useful for evals. Putting customer knowledge into model weights is not a near-term Gu OS goal. |
+
+#### Ideas worth carrying forward
+
+1. **Raw Evidence Inbox:** new external information should first be captured as
+   evidence with provenance, owner, source metadata, and review state. It should
+   not jump directly into `memories` or `compiled_truth`.
+2. **Compiled Knowledge Pages:** the Brain Layer should keep the Karpathy/G Brain
+   insight that logs are not enough. Operational entities need current compiled
+   state plus append-only evidence.
+3. **Brain Health Checks:** maintenance should find contradictions, stale data,
+   missing links, duplicate pages, orphan pages, and unreviewed signal clusters.
+4. **Query-to-Knowledge Feedback:** a high-value answer, report, chart, or deck
+   can become an artifact or candidate memory, but only when it has durable
+   operational value and enough provenance.
+5. **Index Pages as a complement:** human-readable index pages can help the
+   model and users navigate a domain, but they should be generated from or linked
+   to structured Brain data rather than becoming the source of truth.
+
+#### Ideas not adopted as-is
+
+- Gu OS should not become an Obsidian clone. The governing principle from the
+  Brain Layer plan remains: **operational, not Obsidian**.
+- Gu OS should not remove retrieval just because a personal wiki can sometimes
+  fit into context or index files. Multi-tenant operational search needs
+  structured filters, permissions, hybrid retrieval, and auditability.
+- Gu OS should not train customer-specific facts into model weights. If synthetic
+  data is generated, use it first for evals, regression tests, skill QA, routing,
+  extraction, and safety review.
+
+### Subagents: selective recommendation
+
+Subagents are not a blanket architectural migration. Gu OS should keep the
+primary turn loop simple unless isolation materially improves quality, cost, or
+safety.
+
+Clear improvement:
+
+- **Signal Detector:** already justified by the Brain Layer plan. It can run as a
+  cheap, parallel detector after a turn, write provisional rows to
+  `brain_signals`, and avoid polluting the main answer with weak observations.
+  Signals still require clustering/review before promotion.
+
+Good future candidates:
+
+- document analysis that should not consume the main conversation context;
+- long research or report-building;
+- QA/eval of `account_skills` before activation;
+- security/tenant-policy review for proposed queries or generated workflows;
+- Brain maintenance tasks where a separate model can propose changes for HITL.
+
+Poor candidates:
+
+- normal chat turns;
+- simple single-tool lookups;
+- multi-skill composition that can be expressed as one coherent skill,
+  references, or an explicit composite;
+- anything that would silently bypass tool scoping, tenant context, or HITL.
+
+In short: **Signal Detector is a concrete planned improvement. A general
+subagent framework remains V3+ and evidence-driven.**
+
+---
+
 ## Clarifications — Heartbeat vs tasks, BigQuery, UI, skills toggles, composite skills
 
 ### 1) Heartbeat is not only “briefings”: checklist (e.g. HEARTBEAT.md) and relation to `schedule_task`
