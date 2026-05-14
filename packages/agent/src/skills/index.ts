@@ -19,6 +19,7 @@ export type {
 export {
   parseSkillFile,
   parseSkillSource,
+  parseAccountSkillSource,
   SkillParseError,
   estimateTokens,
   MAX_SKILL_BODY_TOKENS,
@@ -48,6 +49,7 @@ export {
 
 export {
   getGlobalSkillRegistry,
+  getSkillRegistryForUser,
   resetGlobalSkillRegistryForTests,
   getCachedSkillsRegistryRoot,
   buildPlaybookInjection,

@@ -471,6 +471,348 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       required: ["memory_id"],
     },
   },
+  // ============================================================
+  // Operational cases — case mutation tools
+  // Used by skills running under canal `case_runner` para mover el estado
+  // del caso e insertar eventos. Las ediciones del caso son `medium` para
+  // que el agente las haga sin HITL en cada paso (el HITL real está en las
+  // tools de juicio comercial: precio, contrato, publicación).
+  // ============================================================
+  {
+    id: "operational_case_update_state",
+    name: "operational_case_update_state",
+    description:
+      "Updates the active operational case (status, current_step, next_action_at, due_at, context_jsonb). Pass only the fields that change. Always include 'expected_version' from the [Caso operacional activo] block to avoid lost updates. Inserts a corresponding event_type='state_changed' in operational_case_events.",
+    risk: "medium",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        case_id: { type: "string", description: "UUID of the case (from [Caso operacional activo])." },
+        expected_version: {
+          type: "number",
+          description:
+            "Current version from the case context. The update is rejected (409) if this no longer matches.",
+        },
+        status: {
+          type: "string",
+          enum: ["active", "waiting_external", "paused", "completed", "failed"],
+        },
+        current_step: { type: "string" },
+        next_action_at: { type: "string", description: "ISO 8601 datetime." },
+        due_at: { type: "string", description: "ISO 8601 datetime." },
+        context_patch: {
+          type: "object",
+          description:
+            "Object merged shallowly into context_jsonb (does NOT replace existing keys not present here).",
+        },
+        external_contact: {
+          type: "object",
+          description:
+            "{ channel, chat_id, display_name, identifier } — set when binding the case to a Telegram chat for the first time.",
+        },
+        note: {
+          type: "string",
+          description:
+            "Optional one-line note explaining why; persisted in event payload as `reason`.",
+        },
+      },
+      required: ["case_id", "expected_version"],
+    },
+  },
+  {
+    id: "operational_case_add_event",
+    name: "operational_case_add_event",
+    description:
+      "Appends an audit event to the active operational case. Use when something noteworthy happened that does not change state (e.g. 'human_decision' pre-approving a price; 'reminder_sent' just sent). For state changes prefer operational_case_update_state which already records 'state_changed'.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        case_id: { type: "string" },
+        event_type: {
+          type: "string",
+          enum: [
+            "step_completed",
+            "reminder_sent",
+            "escalated",
+            "human_decision",
+            "external_response",
+            "error",
+          ],
+        },
+        actor: { type: "string", enum: ["system", "agent", "user", "external"] },
+        payload: {
+          type: "object",
+          description: "Free-form JSON describing the event.",
+        },
+      },
+      required: ["case_id", "event_type", "actor"],
+    },
+  },
+  {
+    id: "notify_user",
+    name: "notify_user",
+    description:
+      "Sends a notification to the inmobiliario (the human running the agent), choosing channel by their preferences (web/telegram, presence, urgency). Use to ask for a decision, deliver a finished package, or escalate. Does NOT message external contacts (use telegram_send_message_to_contact for that).",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Message body." },
+        kind: {
+          type: "string",
+          description:
+            "Short tag for logs/UI (e.g. 'case_reminder', 'package_ready', 'escalation').",
+        },
+        urgency: {
+          type: "string",
+          enum: ["low", "normal", "high"],
+          description:
+            "low/normal respect web presence; high ignores it and fans out to all preferred channels.",
+        },
+        case_id: {
+          type: "string",
+          description: "Optional: case this notification is about (for audit).",
+        },
+      },
+      required: ["text"],
+    },
+  },
+  // ============================================================
+  // Real estate — domain tools
+  // Comunicación, EasyBroker, BigQuery comparables, generación de
+  // documentos, watermarking, integración con Ungga.
+  // ============================================================
+  {
+    id: "telegram_send_message_to_contact",
+    name: "telegram_send_message_to_contact",
+    description:
+      "Sends a Telegram message to an EXTERNAL contact (the property owner, the lead) — NOT to the inmobiliario. The contact must have started a chat with the bot first (so we have their chat_id). Requires HITL confirmation. Use this to request documents, schedule the photo session, send reminders. For the inmobiliario use notify_user.",
+    risk: "high",
+    requires_integration: "telegram_bot",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "number", description: "Telegram chat_id of the external contact." },
+        text: { type: "string", description: "Message body (UTF-8, ≤ 4096 chars)." },
+        case_id: {
+          type: "string",
+          description:
+            "Operational case this message is part of. Used to bind the chat to the case if it is not bound yet, and to log a `reminder_sent` or equivalent event.",
+        },
+        purpose: {
+          type: "string",
+          description:
+            "Short tag for the audit event (e.g. 'request_documents', 'remind_documents', 'confirm_photo_session').",
+        },
+      },
+      required: ["chat_id", "text"],
+    },
+  },
+  {
+    id: "easybroker_search_listings",
+    name: "easybroker_search_listings",
+    description:
+      "Searches public/inactive listings in EasyBroker (read-only). Use for comparables and to verify the inmobiliaria's own published inventory. Requires the EASYBROKER_API_KEY env to be configured for the active tenant.",
+    risk: "low",
+    requires_integration: "easybroker",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        zona: { type: "string" },
+        operation: { type: "string", enum: ["sale", "rent"] },
+        property_type: { type: "string" },
+        min_price: { type: "number" },
+        max_price: { type: "number" },
+        min_area_m2: { type: "number" },
+        max_area_m2: { type: "number" },
+        page: { type: "number", description: "1-based page (default 1)." },
+        limit: {
+          type: "number",
+          description: "Page size (default 20, max 50).",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    id: "easybroker_search_closed_deals",
+    name: "easybroker_search_closed_deals",
+    description:
+      "Read-only search over EasyBroker deals marked as closed/sold/rented for the active tenant. Use to compute realized prices for comparables. Requires EASYBROKER_API_KEY.",
+    risk: "low",
+    requires_integration: "easybroker",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        zona: { type: "string" },
+        operation: { type: "string", enum: ["sale", "rent"] },
+        property_type: { type: "string" },
+        date_from: { type: "string" },
+        date_to: { type: "string" },
+        limit: { type: "number" },
+      },
+      required: [],
+    },
+  },
+  {
+    id: "bigquery_lookup_local_comparables",
+    name: "bigquery_lookup_local_comparables",
+    description:
+      "Queries the Ungga warehouse (BigQuery) for closed real estate deals matching a zone/area/operation, used as comparables. Read-only; tenant-filtered automatically. Returns aggregated stats (count, p25/p50/p75 price/m², median DOM) plus the underlying rows up to `limit`.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        zona: { type: "string", description: "Free-text zone or city name." },
+        operation: { type: "string", enum: ["sale", "rent"] },
+        property_type: { type: "string" },
+        min_area_m2: { type: "number" },
+        max_area_m2: { type: "number" },
+        months_back: {
+          type: "number",
+          description: "Lookback window (default 12, max 36).",
+        },
+        limit: { type: "number", description: "Max rows (default 25, cap 100)." },
+      },
+      required: [],
+    },
+  },
+  {
+    id: "generate_document_from_template",
+    name: "generate_document_from_template",
+    description:
+      "Renders a DOCX or PDF document by filling placeholders in a stored template. Templates live under `realestate_templates` (configured per tenant). Use for the commission contract, property report, listing description sheet. Requires HITL confirmation because the file is sent to a human.",
+    risk: "medium",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        template_slug: {
+          type: "string",
+          description:
+            "Slug of the template (e.g. 'commission_contract', 'listing_description'). Tenant-scoped.",
+        },
+        format: { type: "string", enum: ["docx", "pdf"], description: "Output format." },
+        data: {
+          type: "object",
+          description:
+            "Object with placeholder values matching the template's required fields.",
+        },
+        case_id: {
+          type: "string",
+          description: "Operational case this document belongs to (for audit).",
+        },
+      },
+      required: ["template_slug", "format", "data"],
+    },
+  },
+  {
+    id: "image_watermark",
+    name: "image_watermark",
+    description:
+      "Applies the active tenant's watermark PNG to one or more images. Returns paths or URLs to the watermarked outputs. Used to brand property photos before publishing. Requires that the tenant configured a watermark asset.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        input_paths: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Server-side paths or URLs of the source images (within FILE_TOOLS_ROOT or signed URLs).",
+        },
+        position: {
+          type: "string",
+          enum: ["bottom-right", "bottom-left", "top-right", "top-left", "center"],
+          description: "Where to place the watermark. Default 'bottom-right'.",
+        },
+        opacity: {
+          type: "number",
+          description: "0–1 (default 0.6).",
+        },
+        scale: {
+          type: "number",
+          description:
+            "Watermark width as a fraction of the photo width (0.05–0.5, default 0.18).",
+        },
+      },
+      required: ["input_paths"],
+    },
+  },
+  {
+    id: "easybroker_create_listing",
+    name: "easybroker_create_listing",
+    description:
+      "Creates a new listing in EasyBroker using the active tenant's API key. WRITE operation: requires HITL confirmation. After creation use easybroker_upload_images to attach photos.",
+    risk: "high",
+    requires_integration: "easybroker",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        operation: { type: "string", enum: ["sale", "rent"] },
+        property_type: { type: "string" },
+        price: { type: "number" },
+        currency: { type: "string", description: "ISO 4217 (e.g. 'MXN')." },
+        location: {
+          type: "object",
+          description:
+            "{ street, exterior_number, neighborhood, city, state, country, postal_code, latitude, longitude }",
+        },
+        area_m2: { type: "number" },
+        bedrooms: { type: "number" },
+        bathrooms: { type: "number" },
+        parking: { type: "number" },
+        custom_fields: {
+          type: "object",
+          description:
+            "Extra fields specific to the tenant's EasyBroker schema.",
+        },
+        case_id: { type: "string" },
+      },
+      required: ["title", "operation", "property_type", "price"],
+    },
+  },
+  {
+    id: "easybroker_upload_images",
+    name: "easybroker_upload_images",
+    description:
+      "Uploads images to an existing EasyBroker listing. WRITE: requires HITL.",
+    risk: "high",
+    requires_integration: "easybroker",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        listing_id: { type: "string" },
+        image_paths: { type: "array", items: { type: "string" } },
+      },
+      required: ["listing_id", "image_paths"],
+    },
+  },
+  {
+    id: "ungga_publish_listing",
+    name: "ungga_publish_listing",
+    description:
+      "Publishes a property to Ungga via the internal API (preferred) or Playwright CLI (fallback). WRITE: requires HITL. Returns ungga_listing_id when successful.",
+    risk: "high",
+    requires_integration: "ungga",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        operation: { type: "string" },
+        property_type: { type: "string" },
+        price: { type: "number" },
+        currency: { type: "string" },
+        location: { type: "object" },
+        image_urls: { type: "array", items: { type: "string" } },
+        case_id: { type: "string" },
+      },
+      required: ["title", "operation", "property_type", "price"],
+    },
+  },
   {
     id: "bash",
     name: "bash",

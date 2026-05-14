@@ -19,6 +19,9 @@ import {
   findExistingPendingToolCall,
   updateToolCallStatus,
   getMemoryById,
+  getOperationalCase,
+  getOperationalCaseTypeById,
+  getRecentOperationalCaseEvents,
 } from "@agents/db";
 import type {
   UserToolSetting,
@@ -46,6 +49,7 @@ import {
 } from "./tools/adapters";
 import {
   getGlobalSkillRegistry,
+  getSkillRegistryForUser,
   buildPlaybookInjection,
   getCachedSkillsRegistryRoot,
 } from "./skills/runtime";
@@ -109,7 +113,7 @@ export interface AgentInput {
    * ejecutivo). No altera la lógica de runAgent. Si no se provee, se
    * infiere: `autoApproveTools=true` → "cron"; de lo contrario "web".
    */
-  channel?: "web" | "telegram" | "cron" | "heartbeat";
+  channel?: "web" | "telegram" | "cron" | "heartbeat" | "case_runner";
   googleCalendarAccessToken?: string;
   resumeDecision?: "approve" | "reject";
   /** Must match the thread_id used when the interrupt was created. */
@@ -127,6 +131,17 @@ export interface AgentInput {
   toolApprovalPolicy?: ToolApprovalPolicy;
   /** Force a specific skill for this run (e.g. persisted scheduled task skill). */
   forcedSkillId?: string | null;
+  /**
+   * Operational case binding. Cuando se provee, runAgent:
+   *   1. Lee operational_cases + últimos eventos y los inyecta en el system
+   *      prompt como "[Caso operacional]".
+   *   2. Hace BINDING DIRECTO al `default_skill_slug` del case_type (salta
+   *      el selector libre). Si la skill no existe, hace fallback al
+   *      selector normal con un warning.
+   * Pensado para el cron `/api/cron/operational-cases` que invoca el agente
+   * en canal `case_runner`.
+   */
+  caseId?: string | null;
   /**
    * V1-C-α: Business Brain del perfil. Se materializa en el bloque
    * `[Contexto de tenant]` cuando la skill activa pide
@@ -203,6 +218,136 @@ function buildAppliedSkills(
     id,
     role: id === activeSkill.rootName ? "primary" : "included",
   }));
+}
+
+/**
+ * Build the "[Caso operacional]" block that gets concatenated to the system
+ * prompt when runAgent is invoked with `caseId`. The format is intentionally
+ * compact (frequently small JSON-ish blobs) so it does not push the model
+ * out of the system-prompt budget.
+ *
+ * The block contains:
+ *   - case_type, status, current_step, due_at, version
+ *   - external_contact_jsonb (so the agent knows who to message)
+ *   - context_jsonb summary
+ *   - last 15 events with type/actor/created_at and a one-line payload
+ *
+ * Hard constraint: this block MUST give the agent enough info to act without
+ * asking the user "what was this case about?". The cron is invoking the
+ * agent without an explicit user message; the agent must read this block,
+ * read the active skill (binding directo), decide next action, act.
+ */
+interface BuildOperationalCaseContextBlockArgs {
+  caseRow: import("@agents/types").OperationalCase;
+  caseTypeRow: import("@agents/types").OperationalCaseType | null;
+  events: import("@agents/types").OperationalCaseEvent[];
+}
+
+function buildOperationalCaseContextBlock(
+  args: BuildOperationalCaseContextBlockArgs
+): string {
+  const { caseRow, caseTypeRow, events } = args;
+  const lines: string[] = [];
+  lines.push("");
+  lines.push("");
+  lines.push("---");
+  lines.push("");
+  lines.push("## [Caso operacional activo]");
+  lines.push("");
+  lines.push(
+    "Este turno fue invocado en el contexto de un caso operacional persistente. NO le preguntes al usuario qué hacer: lee este bloque, aplica la skill activa (binding directo), decide la siguiente acción y, si necesitas decisión humana, usa la tool `notify_user` o pide HITL en el tool call de riesgo. Cuando avances un paso, actualiza el caso usando la tool correspondiente."
+  );
+  lines.push("");
+  lines.push("### Identidad del caso");
+  lines.push(`- case_id: ${caseRow.id}`);
+  lines.push(`- case_type: ${caseRow.case_type}`);
+  if (caseTypeRow?.display_name) {
+    lines.push(`- display_name: ${caseTypeRow.display_name}`);
+  }
+  lines.push(`- status: ${caseRow.status}`);
+  if (caseRow.current_step) {
+    lines.push(`- current_step: ${caseRow.current_step}`);
+  }
+  if (caseRow.due_at) {
+    lines.push(`- due_at: ${caseRow.due_at}`);
+  }
+  if (caseRow.next_action_at) {
+    lines.push(`- next_action_at: ${caseRow.next_action_at}`);
+  }
+  lines.push(`- version: ${caseRow.version}`);
+
+  if (
+    caseRow.external_contact_jsonb &&
+    Object.keys(caseRow.external_contact_jsonb).length > 0
+  ) {
+    lines.push("");
+    lines.push("### Contacto externo");
+    lines.push(
+      "```json\n" +
+        JSON.stringify(caseRow.external_contact_jsonb, null, 2) +
+        "\n```"
+    );
+  }
+
+  if (
+    caseRow.context_jsonb &&
+    Object.keys(caseRow.context_jsonb).length > 0
+  ) {
+    lines.push("");
+    lines.push("### Contexto del caso");
+    lines.push(
+      "```json\n" + JSON.stringify(caseRow.context_jsonb, null, 2) + "\n```"
+    );
+  }
+
+  if (events.length > 0) {
+    lines.push("");
+    lines.push("### Últimos eventos (más reciente al final)");
+    for (const ev of events) {
+      const summary = summarizeEventPayload(ev.payload_jsonb);
+      lines.push(
+        `- ${ev.created_at} · ${ev.actor} · ${ev.event_type}${summary ? ` · ${summary}` : ""}`
+      );
+    }
+  }
+
+  if (caseTypeRow?.default_reminder_policy_jsonb) {
+    const policy = caseTypeRow.default_reminder_policy_jsonb;
+    if (
+      (policy.remind_after_h && policy.remind_after_h.length > 0) ||
+      typeof policy.escalate_after_h === "number"
+    ) {
+      lines.push("");
+      lines.push("### Política de recordatorios (default del case_type)");
+      if (policy.remind_after_h && policy.remind_after_h.length > 0) {
+        lines.push(
+          `- Recordatorios al externo a las horas: ${policy.remind_after_h.join(", ")}`
+        );
+      }
+      if (typeof policy.escalate_after_h === "number") {
+        lines.push(`- Escalar al humano interno tras: ${policy.escalate_after_h} h`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+function summarizeEventPayload(payload: Record<string, unknown>): string {
+  if (!payload || Object.keys(payload).length === 0) return "";
+  const keys = Object.keys(payload).slice(0, 4);
+  const parts: string[] = [];
+  for (const k of keys) {
+    const v = payload[k];
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string") {
+      parts.push(`${k}=${v.length > 60 ? v.slice(0, 57) + "..." : v}`);
+    } else if (typeof v === "number" || typeof v === "boolean") {
+      parts.push(`${k}=${v}`);
+    } else {
+      parts.push(`${k}=<json>`);
+    }
+  }
+  return parts.join(" ");
 }
 
 function buildAppliedMemory(args: {
@@ -795,8 +940,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     details: { channel: channel ?? (input.autoApproveTools ? "cron" : "web") },
   });
 
-  const resolvedChannelForRuntime: "web" | "telegram" | "cron" | "heartbeat" =
-    channel ? channel : input.autoApproveTools ? "cron" : "web";
+  const resolvedChannelForRuntime:
+    | "web"
+    | "telegram"
+    | "cron"
+    | "heartbeat"
+    | "case_runner" = channel ? channel : input.autoApproveTools ? "cron" : "web";
   // Temperatura/modelo por canal:
   // - web/telegram: conversacional (~0.3)
   // - cron/heartbeat: determinista (~0.1)
@@ -830,6 +979,61 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     input.businessBrain
   );
 
+  // ── Operational case binding ────────────────────────────────────────
+  // Si el caller pasó `caseId`, cargamos el caso + eventos recientes y
+  // forzamos la skill del case_type (binding directo, salta el selector).
+  // El bloque de contexto "[Caso operacional]" se construye aquí y se
+  // concatena al system prompt más abajo.
+  let operationalCaseContextBlock = "";
+  let resolvedForcedSkillId = input.forcedSkillId ?? null;
+  if (input.caseId) {
+    try {
+      const opCase = await getOperationalCase(db, input.caseId);
+      if (!opCase) {
+        console.warn(
+          `[ops-case] caseId=${input.caseId} not found; ignoring binding`
+        );
+      } else if (opCase.user_id !== input.userId) {
+        console.warn(
+          `[ops-case] caseId=${input.caseId} belongs to ${opCase.user_id}, not turn user ${input.userId}; ignoring binding`
+        );
+      } else {
+        const caseType = await getOperationalCaseTypeById(
+          db,
+          opCase.case_type_id
+        );
+        const recentEvents = await getRecentOperationalCaseEvents(
+          db,
+          opCase.id,
+          15
+        );
+        operationalCaseContextBlock = buildOperationalCaseContextBlock({
+          caseRow: opCase,
+          caseTypeRow: caseType,
+          events: recentEvents,
+        });
+        if (caseType?.default_skill_slug) {
+          if (
+            resolvedForcedSkillId &&
+            resolvedForcedSkillId !== caseType.default_skill_slug
+          ) {
+            console.warn(
+              `[ops-case] forcedSkillId=${resolvedForcedSkillId} overridden by case binding ${caseType.default_skill_slug}`
+            );
+          }
+          resolvedForcedSkillId = caseType.default_skill_slug;
+          console.log(
+            `[ops-case] caseId=${opCase.id} type=${opCase.case_type} step=${opCase.current_step ?? "(none)"} → forcing skill=${caseType.default_skill_slug}`
+          );
+        }
+      }
+    } catch (err) {
+      console.error(
+        `[ops-case] failed to load case ${input.caseId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   // ── V1-B pre-graph: skill selection ────────────────────────────────
   // Run BEFORE buildLangChainTools so that `isToolAvailable()` can
   // intersect the tool list with the active skill's `allowed_tools`.
@@ -840,14 +1044,14 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // Snapshot of the selector outcome for the executive turn log. Stays
   // `undefined` when the selector did not run (resume HITL / empty turn).
   let skillSelectionSnapshot: TurnSummaryInput["skillSelection"];
-  if (input.forcedSkillId && !resumeDecision) {
+  if (resolvedForcedSkillId && !resumeDecision) {
     try {
-      const registry = await getGlobalSkillRegistry();
+      const registry = await getSkillRegistryForUser(input.db, input.userId);
       const registrySize = registry.list().length;
       const registryRoot = getCachedSkillsRegistryRoot() ?? undefined;
-      activeSkill = await resolveSkill(input.forcedSkillId, registry);
+      activeSkill = await resolveSkill(resolvedForcedSkillId, registry);
       console.log(
-        `[skills] active=${activeSkill.rootName} reason=forced session=${sessionId} channel=${channel ?? "web"}`
+        `[skills] active=${activeSkill.rootName} reason=${input.caseId ? "case_binding" : "forced"} session=${sessionId} channel=${channel ?? "web"}`
       );
       skillSelectionSnapshot = {
         active: activeSkill.rootName,
@@ -873,7 +1077,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     message.trim() !== ""
   ) {
     try {
-      const registry = await getGlobalSkillRegistry();
+      const registry = await getSkillRegistryForUser(input.db, input.userId);
       const registryList = registry.list();
       const registrySize = registryList.length;
       const registryRoot = getCachedSkillsRegistryRoot() ?? undefined;
@@ -1116,6 +1320,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const baseWithSkill = activeSkill
     ? baseWithBrain + buildPlaybookInjection(activeSkill)
     : baseWithBrain;
+  const baseWithCase = operationalCaseContextBlock
+    ? baseWithSkill + operationalCaseContextBlock
+    : baseWithSkill;
 
   // V1-C-α: tenant context block. Solo se inyecta si la skill activa pide
   // `requires_tenant_context: true` Y hay business brain o admin flag —
@@ -1125,7 +1332,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     process.env.BIGQUERY_PROJECT_ID?.trim() || undefined;
   const envBigqueryLocation =
     process.env.BIGQUERY_LOCATION?.trim() || undefined;
-  const tenantContextWired = appendTenantContextBlock(baseWithSkill, {
+  const tenantContextWired = appendTenantContextBlock(baseWithCase, {
     requiresTenantContext: activeSkill?.requiresTenantContext ?? false,
     businessBrain: input.businessBrain ?? {},
     isUnggaAdmin: input.isUnggaAdmin ?? false,
@@ -2227,7 +2434,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // `compaction.log` respectivamente; aquí pintamos `n/a` y referenciamos.
   // Fire-and-forget: no bloquea la respuesta al usuario.
   // ───────────────────────────────────────────────────────────
-  const resolvedChannel: "web" | "telegram" | "cron" | "heartbeat" =
+  const resolvedChannel: TurnSummaryInput["channel"] =
     resolvedChannelForRuntime;
 
   const memTopK = resolveMemoryLogRetrieveTopK();

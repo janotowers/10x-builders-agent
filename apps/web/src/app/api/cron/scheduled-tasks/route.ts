@@ -32,6 +32,7 @@ import {
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
 import { Cron } from "croner";
+import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import type { ScheduledTask } from "@agents/db";
 import { normalizeToolApprovalPolicy } from "@agents/agent";
 
@@ -343,6 +344,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  ensureAgentToolDepsWired();
   const db = createServerClient();
 
   let dueTasks: ScheduledTask[] = [];

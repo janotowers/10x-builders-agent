@@ -1,0 +1,123 @@
+openapi: 3.0.3
+info:
+  title: Ungga Internal API for Gu OS
+  version: 0.0.1
+  description: |
+    Endpoint propuesto en el backend de Ungga para que Gu OS publique
+    propiedades sin pasar por el front. Autenticación Bearer.
+
+servers:
+  - url: https://staging.ungga.com
+    description: Staging
+  - url: https://app.ungga.com
+    description: Production
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Location:
+      type: object
+      properties:
+        street: { type: string }
+        exterior_number: { type: string }
+        interior_number: { type: string }
+        neighborhood: { type: string }
+        city: { type: string }
+        state: { type: string }
+        country: { type: string, example: "MX" }
+        postal_code: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+    Image:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+        alt: { type: string }
+        primary: { type: boolean }
+    CreateListingRequest:
+      type: object
+      required: [external_ref, title, operation, property_type, price]
+      properties:
+        external_ref: { type: string }
+        title: { type: string }
+        description: { type: string }
+        operation: { type: string, enum: [sale, rent] }
+        property_type: { type: string }
+        price: { type: number }
+        currency: { type: string, default: "MXN" }
+        location: { $ref: "#/components/schemas/Location" }
+        area_total_m2: { type: number }
+        area_construida_m2: { type: number }
+        bedrooms: { type: number }
+        bathrooms: { type: number }
+        parking_spots: { type: number }
+        amenities:
+          type: array
+          items: { type: string }
+        images:
+          type: array
+          items: { $ref: "#/components/schemas/Image" }
+    CreateListingResponse:
+      type: object
+      required: [ungga_listing_id, status]
+      properties:
+        ungga_listing_id: { type: string }
+        public_url: { type: string, format: uri }
+        status: { type: string, enum: [published, draft] }
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        details: { type: object, additionalProperties: true }
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/internal/listings:
+    post:
+      summary: Crear listing en Ungga desde Gu OS.
+      operationId: createListingForGuOS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateListingRequest"
+      responses:
+        "201":
+          description: Listing creado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateListingResponse"
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

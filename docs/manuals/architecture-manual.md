@@ -502,6 +502,34 @@ Runtime:
 5. Se intersectan tools disponibles con `allowed_tools`.
 6. Si `requires_tenant_context`, se inyecta el bloque de tenant.
 
+### Account skills (V1 Opción B)
+
+Además del catálogo global en `skills/global/*`, una cuenta de usuario puede
+tener **skills propias** persistidas en la tabla `account_skills` (ver
+migración `00020_account_skills.sql`):
+
+- Una fila por skill, con `body_md` (contenido completo del SKILL.md
+  incluyendo frontmatter), `metadata_jsonb` (cache parseada),
+  `status` (`draft|active|archived`) y `version`.
+- El runtime compone el registry con `getSkillRegistryForUser(db, userId)`:
+  `account_skills(status='active') ∪ skills/global/*`. **En colisión por
+  slug, gana la account.**
+- Validación Zod idéntica a la de skills globales; `parseAccountSkillSource`
+  rechaza al guardar si el frontmatter está mal.
+- UI mínima en `/settings/account-skills` (textarea + frontmatter).
+
+Casos de uso:
+
+- Una inmobiliaria customiza `property-optioning-coach` con su propia
+  voz/recordatorios sin tocar el catálogo global.
+- Un usuario crea una skill nueva específica de su flujo, sin que pase por
+  el repo.
+
+Evoluciones futuras (versionado completo, draft/review/active/archived con
+rollback, organization-level skills): ver
+[`docs/operational-cases/future-considerations.md`](../operational-cases/future-considerations.md)
+sección 6.
+
 ### Skills de usuario vs organizacion
 
 Hoy:
@@ -719,6 +747,108 @@ Documentos:
 
 ---
 
+## 13b. Casos operacionales (subsistema)
+
+### Explicacion clara
+
+Algunas operaciones del negocio NO son ni un turno de chat ni un pulso de
+Heartbeat: son procedimientos **multi-día con esperas humanas externas**
+(ej. "opcionar una propiedad" implica pedir documentos al dueño, esperar
+respuesta, hacer comparables, preparar contrato, coordinar fotos,
+publicar). El subsistema de **casos operacionales** es la primitiva
+persistente para este tipo de workflows.
+
+El cron del subsistema escanea casos vencidos, los entrega al agente con
+binding directo a la skill correspondiente, y el agente decide la siguiente
+acción. La historia completa vive append-only en eventos.
+
+### Detalle tecnico
+
+Tablas (migración `00019_operational_cases.sql`):
+
+- `operational_case_types`: catálogo de tipos (`case_type`,
+  `default_skill_slug`, `default_reminder_policy_jsonb`).
+- `operational_cases`: instancias vivas (status, current_step,
+  next_action_at, due_at, context_jsonb, version para optimistic locking,
+  external_contact_jsonb).
+- `operational_case_events`: timeline append-only (triggers SQL bloquean
+  UPDATE/DELETE).
+
+Runtime:
+
+- Cron `/api/cron/operational-cases` (`CRON_SECRET`, concurrencia
+  configurable vía `OPERATIONAL_CASES_CONCURRENCY`).
+- Lock optimista por `version` (no bloqueo de fila): otro worker que
+  encuentre `version` distinta, salta.
+- `runAgent({ caseId, channel: 'case_runner' })` carga el caso y los
+  últimos eventos en el bloque `[Caso operacional activo]` del system
+  prompt. Si el `case_type` tiene `default_skill_slug`, hace **binding
+  directo** (salta el selector libre).
+
+Webhook entrante:
+
+- `/api/telegram/webhook` detecta si el `chat_id` es contacto externo de un
+  caso `waiting_external` y, en ese caso, inserta evento
+  `external_response` y mueve `next_action_at = now()` para que el cron lo
+  procese inmediatamente.
+
+Comunicación con el humano interno (`notify_user`):
+
+- Helper en `apps/web/src/lib/notify/index.ts`.
+- Lee `user_notification_preferences.channels_priority_jsonb` y elige
+  canal por preferencia + presencia + urgencia.
+
+Tools del subsistema (en `packages/agent/src/tools/operational-cases-adapters.ts`):
+
+- `operational_case_update_state` (`medium`, requiere `expected_version`).
+- `operational_case_add_event` (`low`).
+- `notify_user` (`low`).
+
+Tools del dominio inmobiliario (en `packages/agent/src/tools/realestate-adapters.ts`):
+
+- `telegram_send_message_to_contact` (`high`, HITL): mensajes outbound al
+  dueño.
+- `easybroker_search_*`, `easybroker_create_listing`, `easybroker_upload_images`
+  (stubs HTTP que se activan con `EASYBROKER_API_KEY`).
+- `bigquery_lookup_local_comparables` (stub: necesita confirmar tablas
+  warehouse).
+- `generate_document_from_template` (stub: necesita plantillas por tenant).
+- `image_watermark` (stub: necesita asset PNG por tenant).
+- `ungga_publish_listing` (POST a `UNGGA_INTERNAL_API_BASE/v1/internal/listings`
+  con Bearer `UNGGA_INTERNAL_API_TOKEN`; `not_configured` si faltan).
+
+Skill compuesta de referencia:
+
+- `skills/global/property-optioning-coach/SKILL.md` + 7 atómicas
+  (`request-property-documents`, `extract-property-characteristics`,
+  `perform-comparable-analysis`, `prepare-listing-price`,
+  `prepare-commission-contract`, `coordinate-photo-session`,
+  `publish-listing-package`).
+
+Documentos:
+
+- [`docs/operational-cases/plan.md`](../operational-cases/plan.md): plan de
+  implementación.
+- [`docs/operational-cases/architecture.md`](../operational-cases/architecture.md):
+  detalle técnico del subsistema.
+- [`docs/operational-cases/future-considerations.md`](../operational-cases/future-considerations.md):
+  cuándo justificar subagentes, escalar el selector, migrar a Temporal,
+  browser automation, WhatsApp Cloud API.
+
+POCs (en `tools/`):
+
+- `pocs/ungga-cli/`: Playwright contra `app.ungga.com` (staging).
+- `pocs/ungga-api/`: cliente y OpenAPI del endpoint interno propuesto.
+
+Estado:
+
+- Subsistema base: **Hoy** (migraciones, cron, runtime, webhook, tools).
+- EasyBroker write/read: **Stub** (requiere API key).
+- Templates DOCX/PDF y watermark: **Stub** (requiere assets).
+- Ungga API: **Stub** (requiere endpoint en su backend).
+
+---
+
 ## 14. Brain Layer futura
 
 ### Explicacion clara
@@ -880,6 +1010,11 @@ El agente no debe mezclar usuarios, organizaciones ni permisos. Hay tres mecanis
 | Que ejecuto realmente | `tool_calls` | Supabase |
 | Que tarea futura existe | `scheduled_tasks` | Supabase |
 | Que pulso proactivo corrio | `heartbeat_runs` | Supabase |
+| Que skill propia tiene la cuenta | `account_skills` | Supabase |
+| Que canal prefiere para notificaciones | `user_notification_preferences` | Supabase |
+| Que casos operacionales estan vivos | `operational_cases` | Supabase |
+| Que paso/historico tiene un caso | `operational_case_events` (append-only) | Supabase |
+| Que tipos de procedimiento existen | `operational_case_types` | Supabase |
 | Que memoria operacional del negocio existira | `brain_*` | Previsto |
 
 ---
@@ -912,6 +1047,12 @@ El agente no debe mezclar usuarios, organizaciones ni permisos. Hay tres mecanis
 
 **Operational/Playbook Knowledge:** conocimiento sobre como opera mejor el negocio; debe terminar en skills, no en `memories`.
 
+**Caso operacional:** instancia de un procedimiento multi-día con esperas humanas (ej. "opcionar propiedad"). Vive en `operational_cases`, su historia en `operational_case_events`, su tipo en `operational_case_types`. El cron `/api/cron/operational-cases` lo procesa cuando vence.
+
+**Account skill:** skill propia de una cuenta de usuario, persistida en `account_skills`. En el registry, prevalece sobre la skill global del mismo slug.
+
+**Binding directo de skill:** cuando hay `case_id` activo y el `case_type` define `default_skill_slug`, el agente la carga sin pasar por el selector libre. Reduce el riesgo de "el modelo elige otra skill por confusión".
+
 ---
 
 ## 20. Documentos relacionados
@@ -932,6 +1073,9 @@ El agente no debe mezclar usuarios, organizaciones ni permisos. Hay tres mecanis
 | BigQuery env/setup | [`docs/env-bigquery-setup.md`](../env-bigquery-setup.md) |
 | Roadmap Business Brain / Skills / Heartbeat | [`docs/business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) |
 | Brain Layer futura | [`docs/brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) |
+| Casos operacionales (plan) | [`docs/operational-cases/plan.md`](../operational-cases/plan.md) |
+| Casos operacionales (arquitectura) | [`docs/operational-cases/architecture.md`](../operational-cases/architecture.md) |
+| Casos operacionales (consideraciones futuras) | [`docs/operational-cases/future-considerations.md`](../operational-cases/future-considerations.md) |
 
 ---
 
@@ -963,5 +1107,6 @@ Cuando haya duda sobre donde guardar o ejecutar algo, usar este filtro:
 7. **Es como debe operar el agente?** Skill.
 8. **Es una accion/lectura concreta?** Tool.
 9. **Debe ocurrir despues o periodicamente?** Scheduled task o Heartbeat, segun si es instruccion puntual del usuario o checklist proactiva del sistema.
+10. **Es un procedimiento multi-día con esperas humanas externas?** Caso operacional (`operational_cases`), con su skill atada por `case_type`.
 
 Si no encaja con claridad, no lo metas en el destino mas flexible. Documenta la duda, pide HITL o difiere el diseno.

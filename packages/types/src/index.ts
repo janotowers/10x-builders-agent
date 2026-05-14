@@ -1,4 +1,4 @@
-export type Channel = "web" | "telegram" | "cron" | "heartbeat";
+export type Channel = "web" | "telegram" | "cron" | "heartbeat" | "case_runner";
 
 export type ToolRisk = "low" | "medium" | "high";
 
@@ -311,6 +311,151 @@ export interface ToolDefinition {
   risk: ToolRisk;
   requires_integration?: string;
   parameters_schema: Record<string, unknown>;
+}
+
+// ============================================================
+// Operational cases (subsistema de casos operacionales)
+// Ver docs/operational-cases/architecture.md.
+// ============================================================
+
+export type OperationalCaseStatus =
+  | "active"
+  | "waiting_external"
+  | "paused"
+  | "completed"
+  | "failed";
+
+export type OperationalCaseEventType =
+  | "step_completed"
+  | "reminder_sent"
+  | "escalated"
+  | "human_decision"
+  | "external_response"
+  | "state_changed"
+  | "error";
+
+export type OperationalCaseEventActor = "system" | "agent" | "user" | "external";
+
+export interface OperationalCaseExternalContact {
+  channel?: "telegram" | "whatsapp" | "email";
+  chat_id?: number;
+  display_name?: string;
+  identifier?: string;
+}
+
+export interface OperationalCase {
+  id: string;
+  user_id: string;
+  case_type_id: string;
+  /** Slug denormalizado del caso de uso. La fuente de verdad es `case_type_id`. */
+  case_type: string;
+  status: OperationalCaseStatus;
+  current_step: string | null;
+  assigned_to_user_id: string | null;
+  external_contact_jsonb: OperationalCaseExternalContact;
+  next_action_at: string | null;
+  due_at: string | null;
+  context_jsonb: Record<string, unknown>;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperationalCaseEvent {
+  id: string;
+  case_id: string;
+  event_type: OperationalCaseEventType;
+  actor: OperationalCaseEventActor;
+  payload_jsonb: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface OperationalCaseReminderPolicy {
+  /** Horas tras las cuales mandar recordatorio si seguimos en `waiting_external`. */
+  remind_after_h?: number[];
+  /** Horas para escalar al humano interno (no al externo). */
+  escalate_after_h?: number;
+}
+
+export type OperationalCaseTypeVisibility = "global" | "private" | "shared";
+
+export type OperationalCaseTypeStatus = "draft" | "active" | "archived";
+
+export type OperationalCaseIntakeFieldType =
+  | "text"
+  | "textarea"
+  | "number"
+  | "select";
+
+export interface OperationalCaseIntakeField {
+  name: string;
+  label: string;
+  type: OperationalCaseIntakeFieldType;
+  required?: boolean;
+  placeholder?: string;
+  help_text?: string;
+  options?: string[];
+}
+
+export interface OperationalCaseType {
+  id: string;
+  case_type: string;
+  user_id?: string | null;
+  display_name: string;
+  default_skill_slug: string;
+  default_reminder_policy_jsonb: OperationalCaseReminderPolicy;
+  visibility?: OperationalCaseTypeVisibility;
+  status?: OperationalCaseTypeStatus;
+  intake_schema_jsonb?: OperationalCaseIntakeField[];
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
+// Account skills (V1 Opción B)
+// ============================================================
+
+export type AccountSkillStatus = "draft" | "active" | "archived";
+
+export interface AccountSkillMetadata {
+  name?: string;
+  description?: string;
+  scope?: "business" | "personal" | "shared";
+  allowed_tools?: string[];
+  includes?: string[];
+  requires_tenant_context?: boolean;
+  memory_extraction?: "default" | "ephemeral" | "skip";
+  [k: string]: unknown;
+}
+
+export interface AccountSkill {
+  id: string;
+  user_id: string;
+  slug: string;
+  body_md: string;
+  metadata_jsonb: AccountSkillMetadata;
+  status: AccountSkillStatus;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
+// User notification preferences
+// ============================================================
+
+export type NotificationChannel = "web" | "telegram" | "email" | "whatsapp";
+
+export interface UserNotificationPreferences {
+  user_id: string;
+  channels_priority_jsonb: NotificationChannel[];
+  case_reminder_overrides_jsonb: {
+    by_case_type?: Record<string, OperationalCaseReminderPolicy>;
+    by_case_id?: Record<string, OperationalCaseReminderPolicy>;
+  };
+  created_at: string;
+  updated_at: string;
 }
 
 export interface PendingConfirmation {

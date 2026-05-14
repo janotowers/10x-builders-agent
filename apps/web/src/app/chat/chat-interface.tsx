@@ -1678,6 +1678,12 @@ export function ChatInterface({
                 Memoria
               </a>
               <a
+                href="/operational-cases"
+                className="hidden rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10 lg:inline-flex"
+              >
+                Casos
+              </a>
+              <a
                 href="/settings"
                 className="rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
               >

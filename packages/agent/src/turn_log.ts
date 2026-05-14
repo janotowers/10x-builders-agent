@@ -83,7 +83,7 @@ export interface TurnSummaryInput {
   userId: string;
   userEmail?: string | null;
   sessionId: string;
-  channel: "web" | "telegram" | "cron" | "heartbeat";
+  channel: "web" | "telegram" | "cron" | "heartbeat" | "case_runner";
   turnId?: string;
   threadId?: string;
 

@@ -26,6 +26,12 @@ export default async function MemoryPage() {
           <h1 className="text-lg font-semibold">Mis recuerdos</h1>
           <div className="flex gap-2">
             <a
+              href="/operational-cases"
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            >
+              Casos
+            </a>
+            <a
               href="/settings"
               className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
             >

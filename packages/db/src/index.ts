@@ -12,6 +12,9 @@ export * from "./queries/scheduled-tasks";
 export * from "./queries/heartbeat-runs";
 export * from "./queries/heartbeat-checklist-templates";
 export * from "./queries/memories";
+export * from "./queries/operational-cases";
+export * from "./queries/account-skills";
+export * from "./queries/notification-preferences";
 export { encryptToken, decryptToken } from "./crypto";
 export {
   GOOGLE_CALENDAR_PROVIDER,

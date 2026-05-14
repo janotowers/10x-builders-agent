@@ -13,9 +13,11 @@ import {
   findExistingScheduledTaskForConfirmation,
   isScheduleTaskConfirmation,
 } from "@/lib/scheduled-task-confirmation";
+import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 
 export async function POST(request: Request) {
   try {
+    ensureAgentToolDepsWired();
     const supabase = await createClient();
     const {
       data: { user },

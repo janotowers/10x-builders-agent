@@ -12,8 +12,11 @@
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadGlobalSkillRegistry } from "./registry";
-import type { ResolvedSkill, SkillRegistry } from "./types";
+import { buildRegistryFromRecords, loadGlobalSkillRegistry } from "./registry";
+import { parseAccountSkillSource, SkillParseError } from "./parse";
+import type { ResolvedSkill, SkillRecord, SkillRegistry } from "./types";
+import type { DbClient } from "@agents/db";
+import { listActiveAccountSkillsForUser } from "@agents/db";
 
 let cached: Promise<SkillRegistry> | null = null;
 let cachedRoot: string | null = null;
@@ -129,6 +132,59 @@ export function resetGlobalSkillRegistryForTests(): void {
  */
 export function getCachedSkillsRegistryRoot(): string | null {
   return cachedRoot;
+}
+
+/**
+ * Compose the global skill registry with a user's `account_skills` (V1
+ * Opción B). Account skills with the same `name` shadow globals — this is
+ * how a customer customises a global behaviour without losing the base.
+ *
+ * Errors parsing a single account skill are logged and the skill is dropped
+ * (same policy as the global loader); other account skills still load.
+ *
+ * Cost: one DB read per call. Callers (cron heartbeat / case runner / web
+ * turn) typically call this once per turn, so it is acceptable.
+ */
+export async function getSkillRegistryForUser(
+  db: DbClient,
+  userId: string,
+  options: GetSkillRegistryOptions = {}
+): Promise<SkillRegistry> {
+  const globalRegistry = await getGlobalSkillRegistry(options);
+  let accountSkills: Awaited<
+    ReturnType<typeof listActiveAccountSkillsForUser>
+  > = [];
+  try {
+    accountSkills = await listActiveAccountSkillsForUser(db, userId);
+  } catch (err) {
+    console.warn(
+      `[skills] could not load account_skills for user=${userId}: ${(err as Error).message ?? err}`
+    );
+    return globalRegistry;
+  }
+  if (accountSkills.length === 0) return globalRegistry;
+
+  const merged = new Map<string, SkillRecord>();
+  for (const meta of globalRegistry.list()) {
+    const rec = globalRegistry.get(meta.name);
+    if (rec) merged.set(meta.name, rec);
+  }
+  for (const acc of accountSkills) {
+    try {
+      const record = parseAccountSkillSource(acc.body_md, acc.slug, acc.user_id);
+      // Account wins over global on slug collision.
+      merged.set(record.metadata.name, record);
+    } catch (err) {
+      if (err instanceof SkillParseError) {
+        console.warn(
+          `[skills] dropping account_skill ${acc.slug} for user=${userId}: ${err.message}`
+        );
+        continue;
+      }
+      throw err;
+    }
+  }
+  return buildRegistryFromRecords(Array.from(merged.values()));
 }
 
 /**

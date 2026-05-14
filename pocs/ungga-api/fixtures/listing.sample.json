@@ -1,0 +1,29 @@
+{
+  "external_ref": "guos:case:00000000-0000-0000-0000-000000000000",
+  "title": "POC publish - DELETE ME",
+  "description": "Listado generado por POC para validar el endpoint interno de Ungga.",
+  "operation": "sale",
+  "property_type": "departamento",
+  "price": 4500000,
+  "currency": "MXN",
+  "location": {
+    "street": "POC",
+    "exterior_number": "1",
+    "neighborhood": "POC Neighborhood",
+    "city": "Ciudad de México",
+    "state": "CDMX",
+    "country": "MX",
+    "postal_code": "00000",
+    "latitude": 19.43,
+    "longitude": -99.13
+  },
+  "area_total_m2": 80,
+  "area_construida_m2": 80,
+  "bedrooms": 2,
+  "bathrooms": 2,
+  "parking_spots": 1,
+  "amenities": ["roof garden", "gimnasio"],
+  "images": [
+    { "url": "https://placehold.co/1200x800.jpg", "alt": "fachada", "primary": true }
+  ]
+}

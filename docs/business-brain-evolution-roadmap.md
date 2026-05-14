@@ -16,8 +16,10 @@ Canonical roadmap for evolving the assistant (Skills, Heartbeat, Business Brain)
 | **V1-D** | Add `'heartbeat'` to `agent_sessions.channel` CHECK; `heartbeat_runs` table; `POST /api/cron/heartbeat`; `runAgent({ channel: 'heartbeat' })` with cheap LLM (`HEARTBEAT_MODEL_ID`, e.g. MiniMax) and read-only allowlist; per-tick session row; no memory flush |
 | **V1-E** | Settings: Heartbeat UI, digest history, and skill catalog visibility grouped by `scope` |
 | **V1.5** | Visible **Skill Registry** + `user_skill_settings` toggles/config per account; tenant-configurable `brand-kit`; staged document/file skills behind attachment tools |
-| **V2** | `account_skills` versioning, draft/active, admin UI + test harness for custom per-account playbooks across `scope: business | personal | shared` |
-| **V3** | `organizations` + memberships + RLS; optional dynamic multi-skill router/subagents |
+| **V1.6 (NEW, in progress)** | **`account_skills` V1 (Opción B mínima)**: tabla `account_skills(slug, body_md, metadata_jsonb, status, version)` + RLS por `user_id`; runtime compone `account_skills(active) ∪ skills/global/*` con override por slug; UI mínima en Ajustes (textarea + frontmatter + Zod). Sin draft/review/archived/rollback ni shared per-org. |
+| **V1.7 (NEW, in progress)** | **Subsistema `operational_cases`**: cron `/api/cron/operational-cases`, lock optimista por `version`, binding directo de skill por `case_type`, `notify_user` multi-canal con `user_notification_preferences`, webhook entrante que asocia respuestas externas (Telegram). Pilot end-to-end: `property-optioning-coach` para Alebrixe. |
+| **V2** | `account_skills` versioning completo (draft/active/archived, rollback, QA pre-publicación, editor con preview), admin UI + test harness para playbooks custom across `scope: business | personal | shared` |
+| **V3** | `organizations` + memberships + RLS; `account_skills` shareables a nivel de organización; optional dynamic multi-skill router/subagents |
 
 ---
 
@@ -963,6 +965,59 @@ tenant-specific skill behavior, and safely start attachment/document workflows.
 
 ---
 
+### V1.6 — `account_skills` V1 (Opción B mínima)
+
+**Outcome:** una cuenta puede tener skills propias persistidas en DB que
+prevalecen sobre las globales del mismo slug, sin necesidad de versionado
+completo ni admin UI compleja. Suficiente para que el piloto Alebrixe tenga
+su propia `property-optioning-coach` sin contaminar el catálogo global.
+
+| Step | Action |
+|------|--------|
+| 1.6-1 | Migración `00020_account_skills.sql`: tabla `account_skills(id, user_id, slug, body_md, metadata_jsonb, status, version, created_at, updated_at)` con RLS por `user_id` + uniqueness `(user_id, slug)`. |
+| 1.6-2 | Tipos `AccountSkill` en `packages/types`; queries CRUD en `packages/db/src/queries/account-skills.ts`. |
+| 1.6-3 | `parseAccountSkillSource(body_md)` reusa el parser/validador Zod de skills globales (sin enforcement de slug por directorio). |
+| 1.6-4 | `getSkillRegistryForUser(db, userId)` en `packages/agent/src/skills/runtime.ts` compone `account_skills(status='active') ∪ globalRegistry`; en colisión por slug, **gana la account**. |
+| 1.6-5 | API `/api/account-skills` (list/upsert) y `/api/account-skills/[slug]` (archive). |
+| 1.6-6 | UI mínima `/settings/account-skills`: lista, edición con textarea, validación inline, archivar. |
+
+**Out of V1.6 (queda para V2):** draft/review/active/archived con rollback,
+QA pre-publicación, editor con preview, compartir entre cuentas de la
+misma organización, embeddings para selector escalado.
+
+---
+
+### V1.7 — Subsistema de Casos operacionales + piloto Alebrixe
+
+**Outcome:** Gu OS soporta procedimientos multi-día con esperas humanas
+externas. El piloto end-to-end es "opcionar propiedad" para Alebrixe.
+
+| Step | Action |
+|------|--------|
+| 1.7-1 | Migración `00019_operational_cases.sql`: `operational_case_types`, `operational_cases` (con `version` para optimistic locking, `next_action_at`, `due_at`, `external_contact_jsonb`), `operational_case_events` (append-only via triggers). Extensión de `agent_sessions.channel` con `case_runner`. |
+| 1.7-2 | Migración `00021_user_notification_preferences.sql` + helper `notify(user_id, payload, urgency)` en `apps/web/src/lib/notify/index.ts`. |
+| 1.7-3 | Cron `/api/cron/operational-cases` con `CRON_SECRET`, lock optimista por `version`, concurrencia configurable. |
+| 1.7-4 | Adaptación de `runAgent` para aceptar `caseId`: inyecta bloque `[Caso operacional activo]` (state + últimos eventos) en system prompt; binding directo de skill cuando `case_type` define `default_skill_slug`. |
+| 1.7-5 | Webhook `/api/telegram/webhook` enriquecido: detecta contactos externos asociados a un caso `waiting_external` y dispara procesamiento inmediato. |
+| 1.7-6 | Tools del subsistema: `operational_case_update_state` (con `expected_version`), `operational_case_add_event`, `notify_user`. |
+| 1.7-7 | Tools del dominio inmobiliario (la mayoría stubs activables por env var): `telegram_send_message_to_contact` (HITL), `easybroker_*` (search/create/upload), `bigquery_lookup_local_comparables`, `generate_document_from_template`, `image_watermark`, `ungga_publish_listing`. |
+| 1.7-8 | Skills: composite `property-optioning-coach` + atómicas (`request-property-documents`, `extract-property-characteristics`, `perform-comparable-analysis`, `prepare-listing-price`, `prepare-commission-contract`, `coordinate-photo-session`, `publish-listing-package`). Inicialmente globales para desarrollo; al activar el piloto real se mueven a `account_skills` de Alebrixe. |
+| 1.7-9 | CI: `scripts/validate-skill-tool-refs.mjs` (`npm run validate:skills`, `prebuild`) rechaza build si una skill referencia tools que no existen en el catálogo. |
+| 1.7-10 | POC paralelo: `pocs/ungga-cli/` (Playwright contra staging) y `pocs/ungga-api/` (cliente + OpenAPI del endpoint interno propuesto). Decisión final tras medir latencia/fragilidad/mantenibilidad. |
+
+**Out of V1.7 (queda para futuro):** WhatsApp Cloud API outbound,
+conectores a portales sin API (Inmuebles24), motor durable tipo
+Temporal/Inngest, multi-agente. Ver
+[`docs/operational-cases/future-considerations.md`](operational-cases/future-considerations.md).
+
+**Documentos:**
+
+- [`docs/operational-cases/plan.md`](operational-cases/plan.md)
+- [`docs/operational-cases/architecture.md`](operational-cases/architecture.md)
+- [`docs/operational-cases/future-considerations.md`](operational-cases/future-considerations.md)
+
+---
+
 ## V1 — milestones
 
 | Milestone | Phases | Business signal |
@@ -972,15 +1027,23 @@ tenant-specific skill behavior, and safely start attachment/document workflows.
 | **M3** | V1-C | Org context (DB column + tenant block in V1-C-α; Settings UI in V1-C-β) + Heartbeat prefs in UI/DB |
 | **M4** | V1-D | **Checklist-driven** runs logged; not just “briefing” |
 | **M5** | V1-E / V1.5 | Users **see and toggle** skills and Heartbeat; configured global skills and document/file foundations begin |
+| **M6** | V1.6 | Cuentas pueden tener `account_skills` propias que prevalecen sobre las globales del mismo slug |
+| **M7** | V1.7 | El primer caso operacional end-to-end (`property_optioning` para Alebrixe) corre con cron, binding directo de skill, HITL y notificaciones multi-canal |
 
 ---
 
 ## V2 — Custom skills lifecycle
 
-DB `account_skills`, draft/active, test harness, UI editor. This is for
-custom playbooks authored per account. It follows V1.5 configured global skills;
-do not jump straight to arbitrary DB-authored skill bodies until the registry,
-toggles, logs, permission checks, and attachment tools are stable.
+> **Update:** la base mínima (`account_skills` V1) ya está implementada en
+> V1.6. V2 añade el ciclo de vida completo encima de esa base: draft/active/
+> archived con rollback, QA pre-publicación, test harness, editor con
+> preview en UI. No se rompe la API actual; se extiende `status` y se
+> agrega versionado granular.
+
+DB `account_skills` con versionado completo, draft/active/archived,
+rollback, test harness, UI editor con preview. Esto es para
+playbooks custom autoridados per cuenta. Sigue a V1.5 (configured global
+skills) y V1.6 (account_skills mínimo).
 
 ---
 
@@ -1142,3 +1205,6 @@ The `[MEMORIA …]` block is added by the `memory_injection` node by **swapping 
 - [architecture.md](architecture.md) — current system architecture
 - [memory/long_term_memory_plan.md](memory/long_term_memory_plan.md) — long-term memory (note: frontmatter todos there may be stale; code + migrations are source of truth)
 - [heartbeat/implementation-plan.md](heartbeat/implementation-plan.md) — execution checklist and status tracker for Heartbeat rollout
+- [operational-cases/plan.md](operational-cases/plan.md) — plan del subsistema de Casos operacionales y piloto Alebrixe (V1.7)
+- [operational-cases/architecture.md](operational-cases/architecture.md) — arquitectura técnica del subsistema
+- [operational-cases/future-considerations.md](operational-cases/future-considerations.md) — cuándo justificar subagentes, escalar selector, migrar a Temporal, browser automation, WhatsApp, evoluciones de `account_skills`

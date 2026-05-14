@@ -4,6 +4,8 @@ import {
   decryptToken,
   getPendingToolCall,
   getGoogleCalendarAccessToken,
+  associateExternalResponseWithCase,
+  findOperationalCaseByExternalChatId,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
 import {
@@ -11,6 +13,7 @@ import {
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
+import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -180,6 +183,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  ensureAgentToolDepsWired();
   const update: TelegramUpdate = await request.json();
   const db = createServerClient();
 
@@ -306,6 +310,44 @@ export async function POST(request: Request) {
       "¡Cuenta vinculada correctamente! Ya puedes chatear conmigo."
     );
     return NextResponse.json({ ok: true });
+  }
+
+  // ── Operational case external responder ────────────────────────────
+  // Si este chat_id es el contacto externo de un caso esperando respuesta
+  // (waiting_external), no es un usuario de Gu OS sino, p.ej., el dueño de
+  // una propiedad. Asociamos su mensaje al caso y disparamos procesamiento
+  // en el siguiente tick del cron — sin pasar por el flujo /link.
+  try {
+    const matchedCase = await findOperationalCaseByExternalChatId(
+      db,
+      "telegram",
+      chatId
+    );
+    if (matchedCase) {
+      await associateExternalResponseWithCase(db, {
+        caseId: matchedCase.id,
+        channel: "telegram",
+        chatId,
+        payload: {
+          message_id: message.message_id,
+          from: message.from,
+          text,
+          received_at: new Date().toISOString(),
+        },
+      });
+      // Acuse de recibo cortés al externo. El procesamiento real lo hace el
+      // próximo tick del cron (≤ 1 minuto típicamente) o, si exponemos un
+      // disparador inline más adelante, inmediatamente.
+      await sendTelegramMessage(
+        chatId,
+        "Recibí tu mensaje, gracias. Lo paso al asesor y te confirmamos el siguiente paso pronto."
+      );
+      return NextResponse.json({ ok: true, routed: "operational_case", case_id: matchedCase.id });
+    }
+  } catch (err) {
+    console.error("[telegram-webhook] external case routing failed:", err);
+    // Continuamos al flujo normal: si era un usuario, no lo bloqueamos por
+    // un fallo aquí.
   }
 
   // Resolve user from telegram_user_id

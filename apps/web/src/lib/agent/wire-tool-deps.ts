@@ -1,0 +1,33 @@
+/**
+ * Wires the dependencies that `packages/agent/src/tools/adapters.ts`
+ * cannot import directly (they live in `apps/web` because they touch
+ * Next.js / fetch that targets local routes).
+ *
+ * Idempotent: safe to call from every route handler that invokes runAgent.
+ * The first call sets the deps; subsequent calls overwrite with the same
+ * values (or with newer implementations during a hot reload in dev).
+ */
+import { setBuildLangChainToolsDeps } from "@agents/agent";
+import { sendTelegramMessage } from "@/lib/telegram/send-message";
+import { notify, type NotifyResult } from "@/lib/notify";
+import type { DbClient } from "@agents/db";
+
+let wired = false;
+
+export function ensureAgentToolDepsWired(): void {
+  if (wired) return;
+  wired = true;
+  setBuildLangChainToolsDeps({
+    notifyUser: async (
+      db: DbClient,
+      userId: string,
+      payload: { text: string; kind?: string; data?: Record<string, unknown> },
+      urgency?: "low" | "normal" | "high"
+    ): Promise<NotifyResult> => {
+      return notify(db, userId, payload, urgency ?? "normal");
+    },
+    sendTelegramMessage: async (chatId: number, text: string) => {
+      await sendTelegramMessage(chatId, text, undefined, { throwOnError: true });
+    },
+  });
+}

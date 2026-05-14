@@ -195,7 +195,7 @@ Si **no hay** filas de configuración, el comportamiento actual del runtime es t
 
 **Qué todavía no existe como motor de primera clase:** tablas tipo “esta organización tiene sus propios archivos SKILL.md en base de datos” como fuente de verdad del texto completo. Eso está en el roadmap como **V2 `account_skills`** (borradores, versiones, QA). Hoy la forma de “personalizar sin abrir Git” es **skill global + datos en `business_brain` o `config_json`**, no reescribir todo el manual a mano en la UI.
 
-Esto responde una duda importante: **`account_skills` todavía no está implementado como tabla/runtime de skills propias por cuenta u organización**. Lo que sí está implementado es el sistema de skills globales en archivos, selección pre-grafo, `includes`, `scope`, y `user_skill_settings` para activar/desactivar/configurar por usuario.
+> **Update — `account_skills` V1 ya implementado (Opción B mínima).** Existe la tabla `account_skills` (slug, body_md, metadata_jsonb, status, version) con RLS por `user_id`. El runtime de skills (`getSkillRegistryForUser`) compone `account_skills(status='active') ∪ skills/global/*` y, en colisión por slug, **gana la account**. Hay UI mínima en Ajustes (`/settings/account-skills`) con textarea + frontmatter y validación Zod idéntica a la de skills globales. Lo que **todavía** queda fuera del V1: versionado completo con rollback, draft/review/active/archived, compartir entre cuentas de la misma organización, editor con preview y QA pre-publicación. Esa evolución está documentada en [`docs/operational-cases/future-considerations.md`](../operational-cases/future-considerations.md) sección 6.
 
 ### 5.4 Matriz mental: catálogo vs ámbito (`scope`)
 
@@ -360,6 +360,63 @@ Esto es distinto a una tool normal:
 
 ---
 
+## 7b. Casos operacionales (procedimientos multi-día con esperas humanas)
+
+Hay un tercer modo, distinto al chat normal y al pulso/Heartbeat:
+**procedimientos que duran días o semanas y dependen de personas externas
+que tienen que responder**. El ejemplo canónico de Alebrixe es **opcionar
+una propiedad**:
+
+1. Hablas con el dueño y le pides documentos.
+2. Esperas (puede tardar días).
+3. Cuando llega el predial, lo procesas, haces análisis comparativo con
+   propiedades similares, propones precio.
+4. Esperas que el dueño confirme.
+5. Generas un contrato de comisión con plantilla, lo mandas firmar.
+6. Coordinas sesión de fotos.
+7. Subes el paquete a portales (EasyBroker, Ungga; otros como Inmuebles24
+   se entregan listos para subida manual).
+
+Esto **no cabe** ni en un turno de chat (porque hay esperas de días) ni en
+Heartbeat (porque cada caso es una instancia con estado propio, no una
+checklist global). Para eso existe el subsistema de **casos operacionales**.
+
+**Idea simple:** cada caso es un **expediente vivo** (`operational_cases`)
+con un tipo (`case_type`, p.ej. `property_optioning`), un estado
+(`active|waiting_external|paused|completed|failed`), un paso actual y un
+contexto JSON. Su **historia completa** se guarda en
+`operational_case_events` (append-only: nada se borra ni edita). Un cron
+escanea casos vencidos y se los entrega al agente atando directamente la
+skill correcta (sin pasar por el selector libre).
+
+¿Cómo se cierra el bucle con el dueño? Hoy por **Telegram**: si un dueño
+responde al bot, el webhook detecta a qué caso pertenece esa conversación,
+escribe el evento `external_response` y dispara procesamiento inmediato.
+Mañana puede ser WhatsApp con la misma forma del subsistema (el conector
+está aislado en una tool).
+
+¿Cómo se entera el inmobiliario de que algo necesita su atención? Por
+`notify_user`, que elige canal según preferencia del usuario (web cuando
+está activo; Telegram cuando no). Y para acciones de juicio comercial
+(precio mínimo, comparables seleccionados, contrato final) **siempre pide
+HITL**: el agente prepara, el humano aprueba.
+
+Este subsistema convive con Heartbeat y tareas programadas; cada uno
+resuelve un problema distinto:
+
+| Modo | Cuándo aplica | Quién decide cuándo correr | Estado vive en |
+|---|---|---|---|
+| **Chat / turno** | "ahora respóndeme X" | El usuario al escribir | `agent_messages` |
+| **Tarea programada** | "haz Y exactamente a las 9 del lunes" | El usuario al programarla | `scheduled_tasks` |
+| **Heartbeat** | "cada hora revisa esta checklist" | El sistema, por intervalo | `heartbeat_runs` |
+| **Caso operacional** | "este expediente avanza según vence o cuando responda el externo" | El cron por `next_action_at` o el webhook | `operational_cases` + `operational_case_events` |
+
+Para la guía técnica completa: ver
+[`docs/operational-cases/architecture.md`](../operational-cases/architecture.md)
+y [`docs/operational-cases/plan.md`](../operational-cases/plan.md).
+
+---
+
 ## 8. Organización, `super-admin`, `vendedor` y el `organization_id`
 
 **Fuera de Gu OS** tu sistema operativo ya distingue roles (`super-admin`, `vendedor`) y agrupa usuarios con `organization_id` / `org_name` en tablas como `users_light` en Firebase/BigQuery.
@@ -383,7 +440,7 @@ Personal interna (Ungga) puede tener modo especial para ver varias organizacione
 
 ## 10. Preguntas abiertas (normales a esta altura)
 
-- **¿Cuándo las skills serán “de la organización” compartidas por varios usuarios sin duplicar config?** Depende de **organizaciones + membresías** en base de datos (roadmap V3) y de **`account_skills`** (V2) para textos propios. Hoy no hay runtime completo de `account_skills`.
+- **¿Cuándo las skills serán “de la organización” compartidas por varios usuarios sin duplicar config?** Depende de **organizaciones + membresías** en base de datos (roadmap V3). Para texto propio por cuenta ya hay `account_skills` V1 (mínimo viable: tabla + UI + override en runtime); compartir entre cuentas de la misma organización sigue siendo V3.
 - **¿Las skills propias V2 deben ser solo de negocio?** No. Deben admitir por diseño `business`, `personal` y `shared`, porque el usuario real mezcla trabajo inmobiliario con vida personal. La diferencia debe estar en permisos, fuentes de datos y visibilidad, no en prohibir skills personales propias.
 - **¿Un mismo usuario podrá estar en varias organizaciones?** Hoy el producto piensa **una** organización por usuario en el binding de negocio; multi-org es decisión futura.
 - **¿La Brain Layer reemplaza al warehouse?** No: el warehouse sigue siendo la **verdad tabular**; la Brain Layer suma **capa cognitiva y operacional** (páginas, relaciones, señales, playbooks promovidos).

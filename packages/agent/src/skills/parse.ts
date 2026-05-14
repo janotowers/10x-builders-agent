@@ -148,11 +148,41 @@ export function parseSkillSource(
   return parseSkillSourceImpl(raw, sourcePath, /* keepBody */ true);
 }
 
+/**
+ * Parse a SKILL.md body that lives in the database (account_skills) instead
+ * of on disk. Skips the "directory name must match slug" validation because
+ * there is no real directory; uses a synthetic `account-skill://...` source
+ * path for diagnostics.
+ *
+ * Used by the runtime to compose the per-user skill registry.
+ */
+export function parseAccountSkillSource(
+  raw: string,
+  expectedSlug: string,
+  ownerUserId: string
+): SkillRecord {
+  const sourcePath = `account-skill://${ownerUserId}/${expectedSlug}/SKILL.md`;
+  return parseSkillSourceImpl(raw, sourcePath, /* keepBody */ true, {
+    enforceDirectorySlug: false,
+    expectedSlug,
+  });
+}
+
+interface ParseImplOptions {
+  /** If false, skip the check that dirname(sourcePath) must equal the slug. */
+  enforceDirectorySlug?: boolean;
+  /** If provided, ensure the parsed `name` matches this slug. */
+  expectedSlug?: string;
+}
+
 function parseSkillSourceImpl(
   raw: string,
   sourcePath: string,
-  keepBody: boolean
+  keepBody: boolean,
+  opts: ParseImplOptions = {}
 ): SkillRecord {
+  const enforceDirectorySlug = opts.enforceDirectorySlug ?? true;
+  const expectedSlug = opts.expectedSlug;
   const split = (() => {
     try {
       return splitFrontmatter(raw);
@@ -198,10 +228,17 @@ function parseSkillSourceImpl(
     );
   }
 
-  const dirSlug = path.basename(path.dirname(sourcePath));
-  if (dirSlug !== result.data.name) {
+  if (enforceDirectorySlug) {
+    const dirSlug = path.basename(path.dirname(sourcePath));
+    if (dirSlug !== result.data.name) {
+      throw new SkillParseError(
+        `frontmatter name '${result.data.name}' must match directory '${dirSlug}'`,
+        sourcePath
+      );
+    }
+  } else if (expectedSlug !== undefined && expectedSlug !== result.data.name) {
     throw new SkillParseError(
-      `frontmatter name '${result.data.name}' must match directory '${dirSlug}'`,
+      `frontmatter name '${result.data.name}' must match expected slug '${expectedSlug}'`,
       sourcePath
     );
   }

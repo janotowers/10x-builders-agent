@@ -10,7 +10,9 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
-    "type-check": "turbo run type-check"
+    "type-check": "turbo run type-check",
+    "validate:skills": "node scripts/validate-skill-tool-refs.mjs",
+    "prebuild": "node scripts/validate-skill-tool-refs.mjs"
   },
   "devDependencies": {
     "turbo": "^2"

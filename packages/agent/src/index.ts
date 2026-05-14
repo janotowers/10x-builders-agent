@@ -13,7 +13,12 @@ export {
 } from "./tools/calendar-api";
 export { eventDisplayFields } from "./tools/calendar-event-display";
 export { flushSessionMemory } from "./memory_flush";
-export { normalizeToolApprovalPolicy } from "./tools/adapters";
+export {
+  normalizeToolApprovalPolicy,
+  setBuildLangChainToolsDeps,
+  getBuildLangChainToolsDeps,
+  type BuildLangChainToolsDeps,
+} from "./tools/adapters";
 export type {
   FlushInput,
   FlushResult,
@@ -35,6 +40,7 @@ export type { TurnSummaryInput } from "./turn_log";
 export {
   parseSkillFile,
   parseSkillSource,
+  parseAccountSkillSource,
   SkillParseError,
   estimateTokens as estimateSkillBodyTokens,
   MAX_SKILL_BODY_TOKENS,
@@ -49,6 +55,7 @@ export {
   parseSelectorJson,
   NO_SKILL_ID,
   getGlobalSkillRegistry,
+  getSkillRegistryForUser,
   resetGlobalSkillRegistryForTests,
   buildPlaybookInjection,
   defaultSkillsRoot,

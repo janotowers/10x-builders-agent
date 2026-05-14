@@ -36,6 +36,7 @@ import type {
   ResolvedSkill,
 } from "@agents/agent";
 import type { BusinessBrain, Profile } from "@agents/types";
+import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 const DEFAULT_HEARTBEAT_INTERVAL_MINUTES = 30;
@@ -542,6 +543,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  ensureAgentToolDepsWired();
   const db = createServerClient();
 
   let dueUsers: DueHeartbeatUser[] = [];

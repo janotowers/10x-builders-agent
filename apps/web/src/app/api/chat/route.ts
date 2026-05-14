@@ -8,9 +8,11 @@ import {
 import { runAgent } from "@agents/agent";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { publishTurnEvent } from "@/lib/agent-turn-events";
+import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 
 export async function POST(request: Request) {
   try {
+    ensureAgentToolDepsWired();
     const supabase = await createClient();
     const {
       data: { user },

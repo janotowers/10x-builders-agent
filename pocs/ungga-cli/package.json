@@ -1,0 +1,16 @@
+{
+  "name": "poc-ungga-cli",
+  "private": true,
+  "version": "0.0.1",
+  "description": "POC: medir viabilidad de automatizar Ungga vía Playwright contra staging.",
+  "type": "module",
+  "scripts": {
+    "poc:login": "node src/login.mjs",
+    "poc:create": "node src/create-listing.mjs",
+    "poc:report": "node src/report.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0",
+    "dotenv": "^16.4.7"
+  }
+}

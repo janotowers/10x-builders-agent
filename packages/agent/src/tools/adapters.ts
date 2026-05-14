@@ -39,6 +39,11 @@ import {
 import type { MemoryType } from "@agents/db";
 import { generateEmbedding } from "../embeddings";
 import { addCalendarTools } from "./calendar-adapters";
+import { addOperationalCaseTools } from "./operational-cases-adapters";
+import {
+  addRealEstateTools,
+  type RealEstateToolDeps,
+} from "./realestate-adapters";
 import { executeBashCommand, getActiveShellName } from "./bashExec";
 import {
   executeReadFile,
@@ -1757,5 +1762,45 @@ export function buildLangChainTools(ctx: ToolContext) {
 
   addCalendarTools(ctx, tools);
 
+  // Operational cases tools (operational_case_update_state,
+  // operational_case_add_event, notify_user). Visibles cuando la skill
+  // activa las allowliste o cuando el caller las habilita por user_tool_settings.
+  // Las deps las inyecta el wiring de runAgent (ver buildLangChainTools deps).
+  if (toolWiringDeps) {
+    addOperationalCaseTools(ctx, tools, {
+      notifyUser: toolWiringDeps.notifyUser,
+    });
+    addRealEstateTools(ctx, tools, {
+      sendTelegramMessage: toolWiringDeps.sendTelegramMessage,
+    });
+  }
+
   return tools;
+}
+
+/**
+ * Dependencias inyectables para tools que requieren funciones que viven en
+ * `apps/web` (no podemos hacer import directo desde packages/agent porque
+ * romperíamos la dirección de dependencias). El caller de buildLangChainTools
+ * registra estas deps via setBuildLangChainToolsDeps() ANTES de la primera
+ * invocación de runAgent.
+ *
+ * Si no se registran, las tools que las requieren responden
+ * `{ status: "not_configured" }` con un hint en vez de fallar el turno.
+ */
+export interface BuildLangChainToolsDeps {
+  notifyUser: import("./operational-cases-adapters").NotifyUserFn;
+  sendTelegramMessage: NonNullable<RealEstateToolDeps["sendTelegramMessage"]>;
+}
+
+let toolWiringDeps: BuildLangChainToolsDeps | null = null;
+
+export function setBuildLangChainToolsDeps(
+  deps: BuildLangChainToolsDeps | null
+): void {
+  toolWiringDeps = deps;
+}
+
+export function getBuildLangChainToolsDeps(): BuildLangChainToolsDeps | null {
+  return toolWiringDeps;
 }
