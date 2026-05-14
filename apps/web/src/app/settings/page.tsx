@@ -106,7 +106,7 @@ export default async function SettingsPage({
               href="/operational-cases"
               className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
             >
-              Casos
+              Casos operacionales
             </a>
             <a
               href="/settings/operational-case-types"

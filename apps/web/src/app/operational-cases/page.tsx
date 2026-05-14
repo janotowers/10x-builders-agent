@@ -262,9 +262,9 @@ export default async function OperationalCasesPage({
 
           {cases.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-              Aún no hay casos en operación para esta cuenta. Inicia uno desde
-              el panel lateral; eso crea una instancia concreta a partir de un
-              caso de uso.
+              Aún no hay casos en operación para esta cuenta. Pon un caso en
+              operación desde el panel lateral; eso crea una instancia concreta
+              a partir de un caso de uso.
             </div>
           ) : (
             <div className="grid gap-3">

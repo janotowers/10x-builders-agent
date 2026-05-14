@@ -175,7 +175,7 @@ ${fieldLines || "- Sin campos iniciales configurados."}
 
 ## Criterio de operación
 
-Usa esta habilidad cuando exista un caso operativo de este tipo. Lee el contexto del caso, identifica el paso actual, decide la siguiente acción y registra avances mediante las herramientas operativas disponibles.
+Usa esta habilidad cuando exista un caso en operación de este tipo. Lee el contexto del caso, identifica el paso actual, decide la siguiente acción y registra avances mediante las herramientas operativas disponibles.
 `;
 }
 
@@ -461,7 +461,7 @@ export function OperationalCaseTypesClient({
 
             <label className="block text-sm">
               <span className="font-medium">
-                Campos iniciales para iniciar el caso
+                Campos iniciales al poner en operación
               </span>
               <textarea
                 value={fieldListText}
@@ -470,8 +470,8 @@ export function OperationalCaseTypesClient({
                 className="mt-1 min-h-20 w-full rounded border border-gray-300 px-3 py-2 text-sm"
               />
               <p className="mt-1 text-xs leading-relaxed text-gray-500">
-                Esto genera el formulario inicial que aparecerá en Casos al
-                iniciar un caso operativo.
+                Esto genera el formulario inicial que verás en Casos
+                operacionales al poner un caso de uso en operación.
               </p>
             </label>
 

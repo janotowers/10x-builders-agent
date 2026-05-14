@@ -29,8 +29,9 @@ export default async function OperationalCaseTypesPage() {
           </p>
           <h1 className="text-2xl font-bold">Casos de uso</h1>
           <p className="mt-1 max-w-2xl text-sm text-gray-500">
-            Configura plantillas operativas. Luego aparecen en Casos para
-            iniciar casos en operación con formularios dinámicos.
+            Configura plantillas operativas. Luego las usarás en Casos
+            operacionales para poner casos de uso en operación con formularios
+            dinámicos.
           </p>
         </div>
         <div className="flex gap-2">
@@ -38,7 +39,7 @@ export default async function OperationalCaseTypesPage() {
             href="/operational-cases"
             className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
           >
-            Casos
+            Casos operacionales
           </a>
           <a
             href="/settings"
