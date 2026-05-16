@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import { TOOL_CATALOG } from "@agents/agent/src/tools/catalog";
@@ -641,9 +641,13 @@ export function SettingsForm({
     },
   });
 
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  const supabase = useMemo(
+    () =>
+      createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      ),
+    []
   );
   const heartbeatTemplateOptions: HeartbeatTemplateOption[] = [
     ...HEARTBEAT_CHECKLIST_TEMPLATES.map((template) => ({
@@ -692,7 +696,7 @@ export function SettingsForm({
       }
     }
     void signExistingAssets();
-  }, [agentAvatarPath, userAvatarPath]);
+  }, [agentAvatarPath, userAvatarPath, supabase]);
 
   function toggleTool(id: string) {
     setEnabledTools((prev) =>

@@ -1169,7 +1169,10 @@ export function ChatInterface({
   );
   const heartbeatRuns = heartbeatStatus?.runs ?? [];
   const previousHeartbeatRuns = heartbeatRuns.slice(1);
-  const scheduledTasks = scheduledTaskSummary?.tasks ?? [];
+  const scheduledTasks = useMemo(
+    () => scheduledTaskSummary?.tasks ?? [],
+    [scheduledTaskSummary?.tasks]
+  );
   const inspectedTurnId = selectedTurnId ?? confirmation?.turnId ?? null;
   const inspectedMessage = inspectedTurnId
     ? [...messages].reverse().find((message) => message.turn_id === inspectedTurnId)

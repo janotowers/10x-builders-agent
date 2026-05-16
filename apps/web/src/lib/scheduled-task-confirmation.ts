@@ -1,6 +1,6 @@
-type Queryable = {
-  from(table: string): any;
-};
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+type Queryable = Pick<SupabaseClient, "from">;
 
 function normalizeScheduleType(value: unknown): "one_time" | "recurring" | null {
   return value === "one_time" || value === "recurring" ? value : null;
