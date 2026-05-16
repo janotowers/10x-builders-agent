@@ -138,6 +138,64 @@ function formatDate(value: string | null): string {
   }).format(new Date(value));
 }
 
+function casesEnOperacionLabel(count: number): string {
+  if (count === 1) return "1 caso en operación";
+  return `${count} casos en operación`;
+}
+
+const STEP_LABELS: Record<string, string> = {
+  intake: "Captura inicial",
+};
+
+function stepLabel(step: string | null | undefined): string {
+  if (!step) return "Sin definir";
+  return STEP_LABELS[step] ?? step;
+}
+
+function skillKindLabel(kind: string): string {
+  if (kind === "composite") return "compuesta";
+  if (kind === "atomic") return "atómica";
+  return kind;
+}
+
+function skillSourceLabel(source: string): string {
+  if (source === "account") return "cuenta";
+  if (source === "global") return "producto";
+  return source;
+}
+
+function skillScopeLabel(scope: string): string {
+  if (scope === "business") return "negocio";
+  if (scope === "personal") return "personal";
+  if (scope === "shared") return "compartido";
+  return scope;
+}
+
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  step_completed: "Paso completado",
+  reminder_sent: "Recordatorio enviado",
+  escalated: "Escalado",
+  human_decision: "Decisión humana",
+  external_response: "Respuesta externa",
+  state_changed: "Cambio de estado",
+  error: "Error",
+};
+
+const ACTOR_LABELS: Record<string, string> = {
+  system: "sistema",
+  agent: "agente",
+  user: "usuario",
+  external: "externo",
+};
+
+function eventTypeLabel(value: string): string {
+  return EVENT_TYPE_LABELS[value] ?? value;
+}
+
+function actorLabel(value: string): string {
+  return ACTOR_LABELS[value] ?? value;
+}
+
 function toShortJson(value: Record<string, unknown>): string {
   const text = JSON.stringify(value, null, 2);
   return text.length > 1400 ? `${text.slice(0, 1400)}\n...` : text;
@@ -255,7 +313,7 @@ export default async function OperationalCasesPage({
                 </p>
               </div>
               <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                {cases.length} casos en operación
+                {casesEnOperacionLabel(cases.length)}
               </span>
             </div>
           </div>
@@ -307,7 +365,7 @@ export default async function OperationalCasesPage({
                           )}
                         </h3>
                         <p className="mt-1 text-xs text-neutral-500">
-                          Paso: {opCase.current_step ?? "sin paso"} · Próxima
+                          Paso: {stepLabel(opCase.current_step)} · Próxima
                           acción: {formatDate(opCase.next_action_at)}
                         </p>
                       </div>
@@ -323,21 +381,22 @@ export default async function OperationalCasesPage({
                         {skillSlug}
                       </span>
                       <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                        {info.kind}
+                        {skillKindLabel(info.kind)}
                       </span>
                       <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                        {info.source}
+                        {skillSourceLabel(info.source)}
                       </span>
                       {!info.exists ? (
                         <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-700">
-                          skill no encontrada
+                          habilidad no encontrada
                         </span>
                       ) : null}
                     </div>
 
                     {latest ? (
                       <p className="mt-3 text-xs text-neutral-500">
-                        Último evento: {latest.event_type} · {latest.actor} ·{" "}
+                        Último evento: {eventTypeLabel(latest.event_type)} ·{" "}
+                        {actorLabel(latest.actor)} ·{" "}
                         {formatDate(latest.created_at)}
                       </p>
                     ) : null}
@@ -413,7 +472,7 @@ function CaseDetail({
           label="Caso de uso"
           value={type?.display_name ?? opCase.case_type}
         />
-        <Info label="Paso actual" value={opCase.current_step ?? "sin paso"} />
+        <Info label="Paso actual" value={stepLabel(opCase.current_step)} />
         <Info label="Próxima acción" value={formatDate(opCase.next_action_at)} />
         <Info label="Vencimiento" value={formatDate(opCase.due_at)} />
         <Info label="Versión" value={`v${opCase.version}`} />
@@ -428,20 +487,20 @@ function CaseDetail({
 
       <div className="mt-4 rounded-xl border border-neutral-200 p-3 dark:border-neutral-800">
         <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          Skill asociada por caso de uso
+          Habilidad del caso de uso
         </div>
         <div className="mt-2 flex flex-wrap gap-2 text-xs">
           <span className="rounded bg-violet-50 px-2 py-1 font-mono text-violet-700 dark:bg-violet-950 dark:text-violet-300">
             {skillSlug}
           </span>
           <span className="rounded bg-neutral-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-            {skillInfo.kind}
+            {skillKindLabel(skillInfo.kind)}
           </span>
           <span className="rounded bg-neutral-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-            {skillInfo.source}
+            {skillSourceLabel(skillInfo.source)}
           </span>
           <span className="rounded bg-neutral-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-            scope: {skillInfo.scope}
+            Ámbito: {skillScopeLabel(skillInfo.scope)}
           </span>
         </div>
         {skillInfo.includes.length > 0 ? (
@@ -459,7 +518,10 @@ function CaseDetail({
       </div>
 
       <div className="mt-4">
-        <h3 className="text-sm font-semibold">Timeline append-only</h3>
+        <h3 className="text-sm font-semibold">Historial de eventos</h3>
+        <p className="mt-1 text-xs text-neutral-500">
+          Solo lectura: el registro no se edita, solo crece con nuevos eventos.
+        </p>
         {events.length === 0 ? (
           <p className="mt-2 text-sm text-neutral-500">Sin eventos todavía.</p>
         ) : (
@@ -471,9 +533,10 @@ function CaseDetail({
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="font-semibold">
-                    {event.event_type}{" "}
+                    {eventTypeLabel(event.event_type)}
                     <span className="text-xs font-normal text-neutral-500">
-                      por {event.actor}
+                      {" "}
+                      · {actorLabel(event.actor)}
                     </span>
                   </div>
                   <div className="text-xs text-neutral-500">

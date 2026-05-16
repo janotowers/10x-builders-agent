@@ -14,10 +14,16 @@ import { z } from "zod";
 import {
   createToolCall,
   updateToolCallStatus,
+  createOperationalCase,
   getOperationalCase,
+  getOperationalCaseTypeForUser,
   insertOperationalCaseEvent,
   updateOperationalCase,
 } from "@agents/db";
+import type {
+  OperationalCaseExternalContact,
+  OperationalCaseIntakeField,
+} from "@agents/types";
 import type { ToolContext } from "./tool-context";
 
 const STATUS_VALUES = [
@@ -59,6 +65,132 @@ export function addOperationalCaseTools(
   tools: any[],
   deps: NotifyDeps
 ): void {
+  if (toolEnabled("operational_case_create", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          case_type: string;
+          context: Record<string, unknown>;
+          external_contact?: Record<string, unknown>;
+          next_action_at?: string;
+          due_at?: string;
+        }) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "operational_case_create",
+            input as unknown as Record<string, unknown>,
+            true,
+            ctx.turnId
+          );
+
+          const caseType = await getOperationalCaseTypeForUser(
+            ctx.db,
+            ctx.userId,
+            input.case_type
+          );
+          if (!caseType) {
+            const out = {
+              ok: false,
+              error: "case_type_not_found_or_forbidden",
+              hint: "The case_type slug is not visible to this user. Check the operational_case_types catalog.",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+          if (caseType.status === "archived") {
+            const out = {
+              ok: false,
+              error: "case_type_archived",
+              hint: "This case_type is archived; ask the user to pick another or unarchive it from settings.",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+
+          const intakeSchema = (caseType.intake_schema_jsonb ?? []) as
+            | OperationalCaseIntakeField[]
+            | undefined;
+          const requiredFields =
+            intakeSchema?.filter((field) => field?.required) ?? [];
+          const missing = requiredFields
+            .filter((field) => {
+              const value = input.context?.[field.name];
+              return (
+                value === undefined ||
+                value === null ||
+                (typeof value === "string" && value.trim() === "")
+              );
+            })
+            .map((field) => ({ name: field.name, label: field.label }));
+          if (missing.length > 0) {
+            const out = {
+              ok: false,
+              error: "missing_required_intake_fields",
+              missing,
+              hint: "Ask the user for these fields conversationally before retrying. Field names match keys expected in `context`.",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+
+          const externalContact = (input.external_contact ?? undefined) as
+            | OperationalCaseExternalContact
+            | undefined;
+
+          const created = await createOperationalCase(ctx.db, {
+            userId: ctx.userId,
+            caseTypeId: caseType.id,
+            caseType: caseType.case_type,
+            status: "active",
+            currentStep: "intake",
+            externalContact,
+            nextActionAt: input.next_action_at ?? new Date().toISOString(),
+            dueAt: input.due_at ?? null,
+            context: input.context ?? {},
+          });
+
+          await insertOperationalCaseEvent(ctx.db, {
+            caseId: created.id,
+            eventType: "step_completed",
+            actor: "agent",
+            payload: {
+              kind: "case_created",
+              source: "agent_conversation",
+              case_type: created.case_type,
+              current_step: created.current_step,
+            },
+          });
+
+          const out = {
+            ok: true,
+            case_id: created.id,
+            case_type: created.case_type,
+            version: created.version,
+            status: created.status,
+            current_step: created.current_step,
+            next_action_at: created.next_action_at,
+            hint: "Case created at current_step='intake'. Inform the inmobiliario via notify_user; do NOT message the external contact yet — that is the responsibility of the next operational step.",
+          };
+          await updateToolCallStatus(ctx.db, record.id, "executed", out);
+          return JSON.stringify(out);
+        },
+        {
+          name: "operational_case_create",
+          description:
+            "Creates a new operational case for the calling user from a known case_type. Validates required fields against intake_schema_jsonb. Starts at current_step='intake'.",
+          schema: z.object({
+            case_type: z.string().min(1),
+            context: z.record(z.string(), z.any()),
+            external_contact: z.record(z.string(), z.any()).optional(),
+            next_action_at: z.string().optional(),
+            due_at: z.string().optional(),
+          }),
+        }
+      )
+    );
+  }
+
   if (toolEnabled("operational_case_update_state", ctx)) {
     tools.push(
       tool(

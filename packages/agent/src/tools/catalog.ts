@@ -479,6 +479,43 @@ export const TOOL_CATALOG: ToolDefinition[] = [
   // tools de juicio comercial: precio, contrato, publicación).
   // ============================================================
   {
+    id: "operational_case_create",
+    name: "operational_case_create",
+    description:
+      "Creates a new operational case (instance) for the calling user from a known case_type. Use ONLY when the user asks to start a new long-running workflow conversationally (e.g. 'help me option a property') and there is no case_id already in scope. The created case starts at current_step='intake' and status='active' so the next cron tick or follow-up turn can route it. Validates that the case_type belongs to the user (private) or is global, and that all required fields from intake_schema_jsonb are present in `context`. Does NOT send any external message; downstream skills are responsible for the first contact.",
+    risk: "medium",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        case_type: {
+          type: "string",
+          description:
+            "Slug of the operational_case_type (e.g. 'property_optioning'). Must be visible to the user.",
+        },
+        context: {
+          type: "object",
+          description:
+            "Initial context_jsonb. Must include every field declared as required in the case_type's intake_schema_jsonb.",
+        },
+        external_contact: {
+          type: "object",
+          description:
+            "Optional external contact for the case (e.g. { channel: 'telegram', chat_id: 12345, display_name: '...' }). Required by downstream skills that message externally; pass it now if the user already gave you the data.",
+        },
+        next_action_at: {
+          type: "string",
+          description:
+            "ISO 8601 datetime for the first cron tick. Defaults to now() so the first operational step runs as soon as possible.",
+        },
+        due_at: {
+          type: "string",
+          description: "Optional ISO 8601 hard deadline for the whole workflow.",
+        },
+      },
+      required: ["case_type", "context"],
+    },
+  },
+  {
     id: "operational_case_update_state",
     name: "operational_case_update_state",
     description:

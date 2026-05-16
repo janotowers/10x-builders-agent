@@ -4,6 +4,7 @@ import {
   createServerClient,
   listOperationalCaseTypesForUser,
 } from "@agents/db";
+import { getSkillRegistryForUser } from "@agents/agent";
 import { OperationalCaseTypesClient } from "./operational-case-types-client";
 
 export const dynamic = "force-dynamic";
@@ -16,12 +17,30 @@ export default async function OperationalCaseTypesPage() {
   if (!user) redirect("/login");
 
   const db = createServerClient();
-  const caseTypes = await listOperationalCaseTypesForUser(db, user.id, {
-    includeArchived: true,
-  });
+  const [caseTypes, registry] = await Promise.all([
+    listOperationalCaseTypesForUser(db, user.id, {
+      includeArchived: true,
+    }),
+    getSkillRegistryForUser(db, user.id).catch((err) => {
+      console.warn(
+        "[operational-case-types] failed to load skill registry:",
+        err
+      );
+      return null;
+    }),
+  ]);
+  const skillSummaries =
+    registry?.list().map((skill) => ({
+      slug: skill.name,
+      description: skill.description,
+      scope: skill.scope,
+      allowedTools: [...skill.allowedTools],
+      includes: [...skill.includes],
+      kind: skill.includes.length > 0 ? "composite" : "atomic",
+    })) ?? [];
 
   return (
-    <main className="mx-auto max-w-5xl space-y-6 p-6">
+    <main className="mx-auto max-w-6xl space-y-6 p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-700 dark:text-violet-300">
@@ -50,7 +69,10 @@ export default async function OperationalCaseTypesPage() {
         </div>
       </header>
 
-      <OperationalCaseTypesClient initialCaseTypes={caseTypes} />
+      <OperationalCaseTypesClient
+        initialCaseTypes={caseTypes}
+        initialSkillSummaries={skillSummaries}
+      />
     </main>
   );
 }

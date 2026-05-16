@@ -6,6 +6,7 @@ allowed_tools:
   - get_user_preferences
   - read_skill_reference
   - notify_user
+  - operational_case_create
   - operational_case_update_state
   - operational_case_add_event
   - telegram_send_message_to_contact
@@ -49,10 +50,35 @@ Esta skill orquesta el procedimiento end-to-end "opcionar propiedad" para
 una inmobiliaria. Se aplica cuando el caso operacional es de tipo
 `property_optioning`. Combina siete sub-skills atómicas (vía `includes`).
 
+## Transición desde `intake`
+
+- El caso nace con `current_step=intake` (formulario web o recién creado vía
+  `operational_case_create`).
+- Valida `context_jsonb` contra el `intake_schema_jsonb` del case_type. Si
+  falta un campo **required**, no avances: `notify_user` al inmobiliario o
+  pregunta en chat según el canal.
+- Cuando los required estén cubiertos y tengas datos para continuar, mueve el
+  caso a `awaiting_documents` con `operational_case_update_state` (siempre
+  `expected_version`) y deja listo el siguiente tick del cron; la siguiente
+  acción operativa es `request-property-documents`.
+
+## Camino conversacional (sin `case_id` en contexto)
+
+- Si el usuario pide iniciar "opcionar propiedad" por chat/Telegram y no hay
+  caso en el prompt, pregunta los campos **required** del intake_schema (p. ej.
+  `property_title`), y opcionales que el usuario pueda dar (`owner_name`,
+  `telegram_chat_id` en `external_contact` si aplica).
+- Cuando tengas los required, llama `operational_case_create` con `case_type:
+  property_optioning`, `context` y `external_contact` si el usuario lo
+  proporcionó. No envíes mensaje al externo en este paso.
+- Usa el `case_id` y `version` devueltos y aplica la misma transición desde
+  `intake` descrita arriba.
+
 ## Mapa de pasos (`current_step`)
 
 | Step | Sub-skill principal | Tools clave |
 |---|---|---|
+| `intake` | Esta skill compuesta | `operational_case_create` (solo creación), `operational_case_update_state`, `notify_user` |
 | `awaiting_documents` | `request-property-documents` | `telegram_send_message_to_contact`, `notify_user` |
 | `documents_received` | `extract-property-characteristics` | `notify_user` |
 | `comparables_in_progress` | `perform-comparable-analysis` | `easybroker_search_*`, `bigquery_lookup_local_comparables` |
@@ -63,11 +89,11 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
 
 ## Workflow (alto nivel)
 
-1. **Lee el bloque `[Caso operacional activo]`** que viene en el system prompt
-   y obtén `case_id`, `current_step`, `version`, `external_contact_jsonb`
-   y `context_jsonb`. Si falta `case_id`, este turno NO es del cron — pide
-   al usuario que abra o seleccione el caso.
-2. **Para el `current_step`** elige la sub-skill correspondiente del mapa
+1. **Lee el bloque `[Caso operacional activo]`** si está en el system prompt:
+   obtén `case_id`, `current_step`, `version`, `external_contact_jsonb` y
+   `context_jsonb`. Si **no** hay bloque (turno conversacional), ejecuta la
+   sección **Camino conversacional** hasta tener `case_id`, luego continúa.
+2. **Para el `current_step`** elige la sub-skill o rama correspondiente del mapa
    anterior y lee su SKILL.md (vía `read_skill_reference` si quieres ver
    detalles que no quepan aquí).
 3. **Re-sincroniza antes de actuar**: si `status=waiting_external`, revisa

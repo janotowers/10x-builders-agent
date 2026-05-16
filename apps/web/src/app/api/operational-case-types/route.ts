@@ -8,6 +8,7 @@ import {
 import type {
   OperationalCaseIntakeField,
   OperationalCaseIntakeFieldType,
+  OperationalCaseReminderPolicy,
   OperationalCaseTypeStatus,
   OperationalCaseTypeVisibility,
 } from "@agents/types";
@@ -72,6 +73,28 @@ function normalizeIntakeSchema(value: unknown): OperationalCaseIntakeField[] {
     .filter((field) => field.name && field.label);
 }
 
+function normalizeReminderPolicy(value: unknown): OperationalCaseReminderPolicy {
+  if (!isRecord(value)) return {};
+  const remindAfter = Array.isArray(value.remind_after_h)
+    ? value.remind_after_h
+        .map((item) => (typeof item === "number" ? item : Number(item)))
+        .filter((item) => Number.isFinite(item) && item > 0)
+    : undefined;
+  const escalateAfter =
+    typeof value.escalate_after_h === "number"
+      ? value.escalate_after_h
+      : Number(value.escalate_after_h);
+
+  return {
+    ...(remindAfter && remindAfter.length > 0
+      ? { remind_after_h: remindAfter }
+      : {}),
+    ...(Number.isFinite(escalateAfter) && escalateAfter > 0
+      ? { escalate_after_h: escalateAfter }
+      : {}),
+  };
+}
+
 export async function GET() {
   try {
     const supabase = await createClient();
@@ -119,6 +142,9 @@ export async function POST(request: Request) {
     const visibility: Exclude<OperationalCaseTypeVisibility, "global"> =
       "private";
     const intakeSchema = normalizeIntakeSchema(body.intake_schema_jsonb);
+    const reminderPolicy = normalizeReminderPolicy(
+      body.default_reminder_policy_jsonb
+    );
 
     if (!caseType || !/^[a-z0-9][a-z0-9_]*$/.test(caseType)) {
       return NextResponse.json(
@@ -155,6 +181,7 @@ export async function POST(request: Request) {
       status,
       visibility,
       intakeSchema,
+      reminderPolicy,
     });
 
     return NextResponse.json({ ok: true, caseType: caseTypeRow });
