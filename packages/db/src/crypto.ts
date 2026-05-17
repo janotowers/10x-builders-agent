@@ -30,3 +30,19 @@ export function decryptToken(stored: string): string {
   decipher.setAuthTag(Buffer.from(tagHex, "hex"));
   return decipher.update(ctHex, "hex", "utf8") + decipher.final("utf8");
 }
+
+/**
+ * Convenience helpers para guardar/leer objetos JSON cifrados. Usado por
+ * `account_tool_secrets.encrypted_secret_jsonb` y futuras tablas que
+ * necesiten almacenar payloads heterogéneos cifrados sin esquema fijo.
+ *
+ * NO devuelve `unknown` para no forzar a cada call site a aserciones;
+ * cada provider conoce la forma esperada y debería validarla al leer.
+ */
+export function encryptJson(value: unknown): string {
+  return encryptToken(JSON.stringify(value));
+}
+
+export function decryptJson<T = unknown>(stored: string): T {
+  return JSON.parse(decryptToken(stored)) as T;
+}

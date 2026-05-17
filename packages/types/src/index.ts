@@ -442,6 +442,73 @@ export interface AccountSkill {
 }
 
 // ============================================================
+// Global tool requests
+// ============================================================
+
+export type GlobalToolRequestKind =
+  | "incorporate_to_catalog"
+  | "enable_account_config"
+  | "provide_tenant_asset";
+
+export type GlobalToolRequestStatus =
+  | "requested"
+  | "in_review"
+  | "in_progress"
+  | "shipped"
+  | "rejected";
+
+export interface GlobalToolRequest {
+  id: string;
+  user_id: string;
+  case_type_id: string | null;
+  tool_id: string;
+  request_kind: GlobalToolRequestKind;
+  business_context: string | null;
+  status: GlobalToolRequestStatus;
+  admin_notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
+// Account tool secrets (Phase 2: per-account credenciales para tools)
+// Ver migración 00024_account_tool_secrets.sql y
+// packages/db/src/queries/account-tool-secrets.ts.
+// ============================================================
+
+/**
+ * Estado de la conexión por cuenta a un proveedor externo (EasyBroker,
+ * Ungga, etc.).
+ *
+ *  - `pending_test`: credencial guardada, todavía no se valida contra la API.
+ *  - `active`: la última validación fue exitosa.
+ *  - `invalid`: la última validación falló; revisar `last_error`.
+ *  - `disconnected`: el usuario desconectó explícitamente.
+ */
+export type AccountToolSecretStatus =
+  | "pending_test"
+  | "active"
+  | "invalid"
+  | "disconnected";
+
+/**
+ * Vista pública (no sensible) de una credencial por cuenta. Es lo que se
+ * devuelve a la UI; los secretos cifrados nunca salen del server.
+ */
+export interface AccountToolSecretPublic {
+  id: string;
+  user_id: string;
+  provider: string;
+  config_jsonb: Record<string, unknown>;
+  status: AccountToolSecretStatus;
+  last_checked_at: string | null;
+  last_used_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
 // User notification preferences
 // ============================================================
 

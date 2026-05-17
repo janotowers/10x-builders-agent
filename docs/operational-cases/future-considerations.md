@@ -227,3 +227,53 @@ Para evitar scope creep:
 - **No multi-tenancy a nivel `organizations`** (queda como V3+).
 - **No editor visual de skills WYSIWYG** (textarea + validación es suficiente para V1).
 - **No selector de skills sofisticado** (el actual basta a esta escala; ver sección 2).
+
+---
+
+## 9. Tools configurables por cuenta
+
+V1 mantiene los adapters en código para las herramientas comunes y críticas. Para tools muy específicas de una cuenta, el diseño recomendado no es agregar código custom por cliente, sino exponer primitives genéricas y configurarlas desde Supabase.
+
+**Principio:** el repo contiene adapters genéricos seguros; la cuenta guarda configuración, secretos, schemas y política HITL.
+
+Primitives reutilizables:
+
+| Tool genérica | Uso |
+|---|---|
+| `custom_http_request` | Llamar APIs privadas con método, URL base, auth y schema controlado. |
+| `custom_query_runner` | Ejecutar queries parametrizadas contra fuentes permitidas por cuenta. |
+| `template_renderer` | Renderizar documentos desde templates versionados por cuenta. |
+| `webhook_call` | Disparar webhooks simples con payload validado. |
+
+Modelo de datos sugerido:
+
+| Tabla | Campos principales |
+|---|---|
+| `account_tool_configs` | `id`, `user_id`/`organization_id`, `tool_id`, `display_name`, `primitive`, `status`, `risk`, `requires_hitl`, `input_schema_jsonb`, `response_mapping_jsonb`, `timeouts_jsonb`, `created_at`, `updated_at`. |
+| `account_tool_secrets` | `tool_config_id`, `secret_ref` o `encrypted_secret`, `kind`, `rotated_at`. Separada para minimizar exposición accidental. |
+| `account_tool_test_runs` | `tool_config_id`, `status`, `input_jsonb`, `result_jsonb`, `error`, `created_at`. Sirve para readiness y auditoría. |
+
+Readiness debería evaluar:
+
+- La configuración existe y está `active`.
+- El schema de entrada es válido y tiene límites razonables.
+- Secretos requeridos existen y no están vencidos.
+- El risk/HITL coincide con la operación: write/send/publish nunca auto-run sin confirmación explícita.
+- El último test run fue exitoso o, si no existe, la UI lo marca como “requiere prueba”.
+
+Reglas de seguridad:
+
+- Nunca permitir URL libre generada por el modelo; la base URL y rutas permitidas vienen de configuración revisada.
+- Validar payload con `input_schema_jsonb` antes de ejecutar.
+- Redactar secretos en logs, eventos, tool calls y errores.
+- Rate limits por tool y por cuenta.
+- Para `custom_query_runner`, solo queries parametrizadas y allowlist de datasets/tablas.
+- Para `custom_http_request`, bloquear redes privadas salvo allowlist explícita.
+
+Estrategia de adopción:
+
+1. Mantener `TOOL_CATALOG` como fuente de verdad para tools globales.
+2. Agregar un segundo catálogo runtime para `account_tool_configs`.
+3. Hacer que `tool-readiness` combine ambos catálogos.
+4. Permitir que `allowed_tools` referencie `account:<tool_id>` o slugs namespaced equivalentes.
+5. Añadir UI de configuración/prueba antes de permitir que una skill activa use esa tool.

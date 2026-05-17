@@ -2,12 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AccountSkill,
+  OperationalCase,
+  OperationalCaseEvent,
   OperationalCaseIntakeField,
   OperationalCaseReminderPolicy,
   OperationalCaseType,
   OperationalCaseTypeStatus,
   OperationalCaseTypeVisibility,
+  ToolCall,
 } from "@agents/types";
+import { AccountToolConnectionForm } from "@/components/account-tool-connection-form";
 
 const DEFAULT_INTAKE_SCHEMA: OperationalCaseIntakeField[] = [
   {
@@ -69,6 +74,99 @@ type AuthoringProgressEvent = {
   error?: string;
   details?: string;
   ts?: number;
+};
+
+type ToolReadinessStatus =
+  | "ready"
+  | "needs_config"
+  | "stub"
+  | "missing"
+  | "unknown";
+type ToolReadinessCategory =
+  | "product_integration"
+  | "account_config"
+  | "tenant_asset"
+  | "technical_stub"
+  | "skill_definition"
+  | "ready";
+type ToolReadinessActionKind =
+  | "connect_integration"
+  | "configure_account"
+  | "request_global"
+  | "edit_skill"
+  | "none";
+
+type ToolReadinessRequestKind =
+  | "incorporate_to_catalog"
+  | "enable_account_config"
+  | "provide_tenant_asset";
+
+type ToolAccountSecretStatus =
+  | "pending_test"
+  | "active"
+  | "invalid"
+  | "disconnected";
+
+type ToolReadinessToolItem = {
+  tool_id: string;
+  status: ToolReadinessStatus;
+  category: ToolReadinessCategory;
+  blocking: boolean;
+  action_kind: ToolReadinessActionKind;
+  action_label: string | null;
+  action_available: boolean;
+  action_message: string;
+  action_url: string | null;
+  action_anchor: string | null;
+  request_kind: ToolReadinessRequestKind | null;
+  /** Si la tool admite conexión per-account, qué provider corresponde. */
+  account_provider: string | null;
+  account_secret_status: ToolAccountSecretStatus | null;
+  exists_in_catalog: boolean;
+  adapter_available: boolean;
+  risk?: string;
+  requires_integration?: string;
+  notes: string[];
+};
+
+type ToolReadinessResult = {
+  summary: "ready" | "has_stubs" | "needs_config";
+  skill: {
+    root: string;
+    composedFrom: string[];
+    allowedTools: string[];
+  };
+  tools: ToolReadinessToolItem[];
+};
+
+type ToolReadinessRequestStatus =
+  | "requested"
+  | "in_review"
+  | "in_progress"
+  | "shipped"
+  | "rejected";
+
+type ToolReadinessRequestRecord = {
+  id: string;
+  tool_id: string;
+  request_kind: ToolReadinessRequestKind;
+  status: ToolReadinessRequestStatus;
+  created_at: string;
+};
+
+type OperationalCaseTestResult = {
+  case: OperationalCase | null;
+  events: OperationalCaseEvent[];
+  toolCalls: ToolCall[];
+};
+
+type EditingSnapshot = {
+  editing: EditingCaseType;
+  schemaText: string;
+  procedureText: string;
+  fieldListText: string;
+  createPrivateSkill: boolean;
+  generatedSkillBody: string;
 };
 
 function caseTypeToEditing(row: OperationalCaseType): EditingCaseType {
@@ -334,6 +432,239 @@ function fallbackAuthoringMessage(elapsedMs: number) {
   return "Preparando contexto y ejecutando skill-authoring.";
 }
 
+function toolReadinessLabel(status: ToolReadinessStatus) {
+  if (status === "ready") return "Lista";
+  if (status === "needs_config") return "Configurar";
+  if (status === "stub") return "Stub";
+  if (status === "missing") return "Falta";
+  return "Desconocida";
+}
+
+function toolReadinessClass(status: ToolReadinessStatus) {
+  if (status === "ready") return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  if (status === "needs_config") return "border-amber-200 bg-amber-50 text-amber-800";
+  if (status === "stub") return "border-sky-200 bg-sky-50 text-sky-800";
+  if (status === "missing") return "border-red-200 bg-red-50 text-red-800";
+  return "border-neutral-200 bg-neutral-50 text-neutral-700";
+}
+
+function toolReadinessSummaryLabel(summary?: ToolReadinessResult["summary"]) {
+  if (summary === "ready") return "Preparación completa";
+  if (summary === "has_stubs") return "Pendientes técnicos";
+  if (summary === "needs_config") return "Preparación incompleta";
+  return "Sin diagnóstico";
+}
+
+function toolReadinessCounts(result: ToolReadinessResult | null) {
+  const counts = {
+    ready: 0,
+    needs_config: 0,
+    stub: 0,
+    missing: 0,
+    unknown: 0,
+    blocking: 0,
+  };
+  for (const tool of result?.tools ?? []) {
+    counts[tool.status] += 1;
+    if (tool.blocking) counts.blocking += 1;
+  }
+  return counts;
+}
+
+function toolReadinessCategoryLabel(category: ToolReadinessCategory) {
+  if (category === "product_integration") return "Integración del producto";
+  if (category === "account_config") return "Configuración de cuenta";
+  if (category === "tenant_asset") return "Recurso de cuenta";
+  if (category === "technical_stub") return "Pendiente técnico";
+  if (category === "skill_definition") return "Definición de skill";
+  return "Lista";
+}
+
+function readinessRequestStatusLabel(status: ToolReadinessRequestStatus) {
+  if (status === "requested") return "Solicitada";
+  if (status === "in_review") return "En revisión";
+  if (status === "in_progress") return "En desarrollo";
+  if (status === "shipped") return "Lista";
+  if (status === "rejected") return "No se incorporará";
+  return status;
+}
+
+function activationToolsDescription(params: {
+  toolReadiness: ToolReadinessResult | null;
+  toolsHaveBlocks: boolean;
+  toolsPass: boolean;
+}) {
+  if (params.toolsPass) {
+    return "Tools listas: readiness sin bloqueos críticos.";
+  }
+  if (params.toolsHaveBlocks) {
+    return "Tools pendientes: resuelve las herramientas bloqueantes antes de activar.";
+  }
+  if (!params.toolReadiness) {
+    return "Tools pendientes: revisa preparación operativa para detectar bloqueos.";
+  }
+  return "Tools pendientes: hay advertencias no bloqueantes por revisar antes de operar en producción.";
+}
+
+function readinessActionUrl(item: ToolReadinessToolItem): string | null {
+  if (!item.action_url) return null;
+  if (item.action_anchor) {
+    return `${item.action_url}#${item.action_anchor}`;
+  }
+  return item.action_url;
+}
+
+function renderReadinessActions(params: {
+  item: ToolReadinessToolItem;
+  row: OperationalCaseType;
+  expanded: boolean;
+  existingRequest: ToolReadinessRequestRecord | undefined;
+  submitting: boolean;
+  onEditSkill: () => void;
+  onToggleExpand: () => void;
+  onRequestGlobal: () => void;
+}) {
+  const { item, expanded, existingRequest, submitting } = params;
+  const detailsToggle = (
+    <button
+      type="button"
+      onClick={params.onToggleExpand}
+      aria-expanded={expanded}
+      className="rounded border border-current/40 bg-white/70 px-2 py-1 text-[11px] font-semibold hover:bg-white"
+    >
+      {expanded ? "Ocultar detalles" : "Detalles"}
+    </button>
+  );
+
+  if (item.action_kind === "edit_skill") {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={params.onEditSkill}
+          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
+        >
+          {item.action_label ?? "Editar skill"}
+        </button>
+        {detailsToggle}
+      </div>
+    );
+  }
+
+  // configure_account con provider per-cuenta → expandimos el form inline.
+  // El botón principal hace el toggle del bloque expandido, donde el form
+  // se renderiza junto al action_message.
+  if (
+    item.action_kind === "configure_account" &&
+    item.account_provider
+  ) {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={params.onToggleExpand}
+          aria-expanded={expanded}
+          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
+        >
+          {expanded
+            ? "Cerrar"
+            : (item.action_label ?? `Conectar ${item.account_provider}`)}
+        </button>
+        {!expanded && detailsToggle}
+      </div>
+    );
+  }
+
+  if (
+    (item.action_kind === "connect_integration" ||
+      item.action_kind === "configure_account") &&
+    readinessActionUrl(item)
+  ) {
+    const href = readinessActionUrl(item)!;
+    const sameOrigin = href.startsWith("/");
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <a
+          href={href}
+          target={sameOrigin ? undefined : "_blank"}
+          rel={sameOrigin ? undefined : "noopener noreferrer"}
+          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
+        >
+          {item.action_label ?? "Conectar"}
+        </a>
+        {detailsToggle}
+      </div>
+    );
+  }
+
+  if (item.action_kind === "request_global" && item.request_kind) {
+    if (existingRequest) {
+      return (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <span className="rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800">
+            Solicitud {readinessRequestStatusLabel(existingRequest.status)}
+          </span>
+          {detailsToggle}
+        </div>
+      );
+    }
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={params.onRequestGlobal}
+          disabled={submitting}
+          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800 disabled:opacity-60"
+        >
+          {submitting ? "Enviando..." : (item.action_label ?? "Solicitar incorporación")}
+        </button>
+        {detailsToggle}
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return "Sin fecha";
+  return new Intl.DateTimeFormat("es-MX", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function activationStatusBadge(
+  status: "ready" | "pending" | "attention",
+  label: string
+) {
+  const className =
+    status === "ready"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+      : status === "attention"
+        ? "border-amber-200 bg-amber-50 text-amber-800"
+        : "border-neutral-200 bg-neutral-50 text-neutral-600";
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${className}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function serializeEditingSnapshot(snapshot: EditingSnapshot | null) {
+  if (!snapshot) return "";
+  return JSON.stringify({
+    editing: snapshot.editing,
+    schemaText: snapshot.schemaText,
+    procedureText: snapshot.procedureText,
+    fieldListText: snapshot.fieldListText,
+    createPrivateSkill: snapshot.createPrivateSkill,
+    generatedSkillBody: snapshot.generatedSkillBody,
+  });
+}
+
 export function OperationalCaseTypesClient({
   initialCaseTypes,
   initialSkillSummaries,
@@ -351,6 +682,7 @@ export function OperationalCaseTypesClient({
   const [fieldListText, setFieldListText] = useState("");
   const [createPrivateSkill, setCreatePrivateSkill] = useState(true);
   const [generatedSkillBody, setGeneratedSkillBody] = useState("");
+  const [accountSkills, setAccountSkills] = useState<AccountSkill[]>([]);
   const [authoringResult, setAuthoringResult] =
     useState<SkillAuthoringResult | null>(null);
   const [authoring, setAuthoring] = useState(false);
@@ -363,11 +695,34 @@ export function OperationalCaseTypesClient({
   >([]);
   const [showAuthoringLog, setShowAuthoringLog] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [toolReadiness, setToolReadiness] =
+    useState<ToolReadinessResult | null>(null);
+  const [toolReadinessError, setToolReadinessError] = useState<string | null>(
+    null
+  );
+  const [expandedReadinessTools, setExpandedReadinessTools] = useState<
+    Set<string>
+  >(new Set());
+  const [toolRequests, setToolRequests] = useState<ToolReadinessRequestRecord[]>(
+    []
+  );
+  const [toolRequestSubmitting, setToolRequestSubmitting] = useState<
+    string | null
+  >(null);
+  const [toolRequestError, setToolRequestError] = useState<string | null>(null);
+  const [toolReadinessLoading, setToolReadinessLoading] = useState(false);
+  const [testCaseResult, setTestCaseResult] =
+    useState<OperationalCaseTestResult | null>(null);
+  const [testCaseLoading, setTestCaseLoading] = useState(false);
+  const [testCaseRunning, setTestCaseRunning] = useState(false);
+  const [editingBaseline, setEditingBaseline] =
+    useState<EditingSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const authoringRequestSeq = useRef(0);
   const authoringAbortRef = useRef<AbortController | null>(null);
   const authoringLogRef = useRef<HTMLUListElement | null>(null);
+  const editorPanelRef = useRef<HTMLElement | null>(null);
 
   const sortedCaseTypes = useMemo(
     () =>
@@ -382,10 +737,52 @@ export function OperationalCaseTypesClient({
     () => new Map(initialSkillSummaries.map((skill) => [skill.slug, skill])),
     [initialSkillSummaries]
   );
+  const accountSkillMap = useMemo(
+    () => new Map(accountSkills.map((skill) => [skill.slug, skill])),
+    [accountSkills]
+  );
   const authoringHasFail = authoringHasStatus(authoringResult, "FAIL");
   const authoringHasWarn = authoringHasStatus(authoringResult, "WARN");
   const saveBlockedByAuthoring =
     createPrivateSkill && generatedSkillBody.trim().length > 0 && authoringHasFail;
+  const selectedSavedSkillBody = selectedCaseType
+    ? accountSkillMap.get(selectedCaseType.default_skill_slug)?.body_md ?? ""
+    : "";
+  const selectedIsPrivate =
+    selectedCaseType !== null && scopeLabel(selectedCaseType) !== "global";
+  const selectedIsActive = (selectedCaseType?.status ?? "active") === "active";
+  const skillLooksValid =
+    (generatedSkillBody.trim().length > 0 ||
+      selectedSavedSkillBody.trim().length > 0) &&
+    !authoringHasFail &&
+    (!authoringResult || !authoringHasWarn);
+  const readinessCounts = toolReadinessCounts(toolReadiness);
+  const toolsPass =
+    Boolean(toolReadiness) && readinessCounts.blocking === 0;
+  const toolsHaveBlocks = readinessCounts.blocking > 0;
+  const shouldReviewTools = selectedIsPrivate && !toolReadiness && !toolReadinessLoading;
+  const canCreateTestCase =
+    selectedIsPrivate &&
+    selectedIsActive &&
+    Boolean(toolReadiness) &&
+    !toolsHaveBlocks;
+  const testPassed =
+    testCaseResult?.case?.context_jsonb?.controlled_test_status ===
+    "passed_safe_checks";
+  const currentEditingSnapshot = editing
+    ? {
+        editing,
+        schemaText,
+        procedureText,
+        fieldListText,
+        createPrivateSkill,
+        generatedSkillBody,
+      }
+    : null;
+  const editingHasChanges =
+    Boolean(editing?.isNew) ||
+    serializeEditingSnapshot(currentEditingSnapshot) !==
+      serializeEditingSnapshot(editingBaseline);
 
   useEffect(() => {
     if (!authoring || !authoringStartedAt) return undefined;
@@ -407,17 +804,32 @@ export function OperationalCaseTypesClient({
     let cancelled = false;
     async function refreshCaseTypes() {
       try {
-        const res = await fetch("/api/operational-case-types", {
-          cache: "no-store",
-        });
-        const data = (await res.json()) as
+        const [caseTypesRes, accountSkillsRes] = await Promise.all([
+          fetch("/api/operational-case-types", {
+            cache: "no-store",
+          }),
+          fetch("/api/account-skills", {
+            cache: "no-store",
+          }),
+        ]);
+        const caseTypesData = (await caseTypesRes.json()) as
           | { ok: true; caseTypes: OperationalCaseType[] }
           | { error: string };
-        if (cancelled || !res.ok || !("ok" in data)) return;
-        setCaseTypes(data.caseTypes);
+        const accountSkillsData = (await accountSkillsRes.json()) as
+          | { ok: true; skills: AccountSkill[] }
+          | { error: string };
+        if (cancelled) return;
+        if (caseTypesRes.ok && "ok" in caseTypesData) {
+          setCaseTypes(caseTypesData.caseTypes);
+        }
+        if (accountSkillsRes.ok && "ok" in accountSkillsData) {
+          setAccountSkills(accountSkillsData.skills);
+        }
         setSelectedCaseType((current) => {
           if (!current) return current;
-          return data.caseTypes.find((row) => row.id === current.id) ?? null;
+          return caseTypesRes.ok && "ok" in caseTypesData
+            ? caseTypesData.caseTypes.find((row) => row.id === current.id) ?? null
+            : current;
         });
       } catch (err) {
         console.warn("[operational-case-types] refresh failed:", err);
@@ -429,21 +841,270 @@ export function OperationalCaseTypesClient({
     };
   }, []);
 
-  function startEdit(row: OperationalCaseType) {
+  async function loadAccountSkillsFromApi() {
+    const res = await fetch("/api/account-skills", { cache: "no-store" });
+    const data = (await res.json()) as
+      | { ok: true; skills: AccountSkill[] }
+      | { error: string };
+    if (!res.ok || !("ok" in data)) return [];
+    setAccountSkills(data.skills);
+    return data.skills;
+  }
+
+  async function refreshToolReadiness(row: OperationalCaseType) {
+    if (scopeLabel(row) === "global") {
+      setToolReadiness(null);
+      setToolReadinessError(null);
+      setExpandedReadinessTools(new Set());
+      setToolRequests([]);
+      setToolRequestError(null);
+      setToolRequestSubmitting(null);
+      return;
+    }
+    setToolReadinessLoading(true);
+    setToolReadinessError(null);
+    setExpandedReadinessTools(new Set());
+    setToolRequests([]);
+    setToolRequestError(null);
+    setToolRequestSubmitting(null);
+    try {
+      const res = await fetch(
+        `/api/tool-readiness?case_type_id=${encodeURIComponent(row.id)}`,
+        { cache: "no-store" }
+      );
+      const data = (await res.json()) as
+        | ({ ok: true } & ToolReadinessResult)
+        | { error: string };
+      if (!res.ok || !("ok" in data)) {
+        setToolReadiness(null);
+        setToolReadinessError(
+          "error" in data ? data.error : "No se pudo revisar la preparación operativa."
+        );
+        return;
+      }
+      setToolReadiness({
+        summary: data.summary,
+        skill: data.skill,
+        tools: data.tools,
+      });
+      void refreshToolRequests(row);
+    } catch (err) {
+      console.warn("[operational-case-types] tool readiness failed:", err);
+      setToolReadiness(null);
+      setToolReadinessError((err as Error).message ?? String(err));
+    } finally {
+      setToolReadinessLoading(false);
+    }
+  }
+
+  async function refreshToolRequests(row: OperationalCaseType) {
+    try {
+      const res = await fetch(
+        `/api/global-tool-requests?case_type_id=${encodeURIComponent(row.id)}&status=requested,in_review,in_progress`,
+        { cache: "no-store" }
+      );
+      const data = (await res.json()) as
+        | { ok: true; requests: ToolReadinessRequestRecord[] }
+        | { error: string };
+      if (!res.ok || !("ok" in data)) {
+        setToolRequests([]);
+        return;
+      }
+      setToolRequests(data.requests ?? []);
+    } catch (err) {
+      console.warn("[operational-case-types] tool requests load failed:", err);
+      setToolRequests([]);
+    }
+  }
+
+  async function createToolRequest(
+    row: OperationalCaseType,
+    tool: ToolReadinessToolItem
+  ) {
+    if (!tool.request_kind) return;
+    setToolRequestSubmitting(tool.tool_id);
+    setToolRequestError(null);
+    try {
+      const res = await fetch("/api/global-tool-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tool_id: tool.tool_id,
+          request_kind: tool.request_kind,
+          case_type_id: row.id,
+        }),
+      });
+      const data = (await res.json()) as
+        | { ok: true; request: ToolReadinessRequestRecord; duplicate: boolean }
+        | { error: string };
+      if (!res.ok || !("ok" in data)) {
+        setToolRequestError(
+          "error" in data ? data.error : "No se pudo crear la solicitud."
+        );
+        return;
+      }
+      setToolRequests((prev) => {
+        const without = prev.filter(
+          (item) =>
+            item.tool_id !== data.request.tool_id || item.id === data.request.id
+        );
+        return [data.request, ...without];
+      });
+    } catch (err) {
+      setToolRequestError((err as Error).message ?? String(err));
+    } finally {
+      setToolRequestSubmitting(null);
+    }
+  }
+
+  async function refreshTestCase(row: OperationalCaseType) {
+    if (scopeLabel(row) === "global") {
+      setTestCaseResult(null);
+      return;
+    }
+    setTestCaseLoading(true);
+    try {
+      const res = await fetch(
+        `/api/operational-case-tests?case_type_id=${encodeURIComponent(row.id)}`,
+        { cache: "no-store" }
+      );
+      const data = (await res.json()) as
+        | ({ ok: true } & OperationalCaseTestResult)
+        | { error: string };
+      if (!res.ok || !("ok" in data)) {
+        setTestCaseResult(null);
+        return;
+      }
+      setTestCaseResult({
+        case: data.case,
+        events: data.events ?? [],
+        toolCalls: data.toolCalls ?? [],
+      });
+    } catch (err) {
+      console.warn("[operational-case-types] test case load failed:", err);
+      setTestCaseResult(null);
+    } finally {
+      setTestCaseLoading(false);
+    }
+  }
+
+  async function createTestCase() {
+    if (!selectedCaseType) return;
+    setTestCaseLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/operational-case-tests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_type_id: selectedCaseType.id }),
+      });
+      const data = (await res.json()) as
+        | ({ ok: true } & OperationalCaseTestResult)
+        | { error: string };
+      if (!res.ok || !("ok" in data)) {
+        setError("error" in data ? data.error : "test_case_create_failed");
+        return;
+      }
+      setTestCaseResult({
+        case: data.case,
+        events: data.events ?? [],
+        toolCalls: data.toolCalls ?? [],
+      });
+    } catch (err) {
+      setError((err as Error).message ?? String(err));
+    } finally {
+      setTestCaseLoading(false);
+    }
+  }
+
+  async function runControlledTest() {
+    const caseId = testCaseResult?.case?.id;
+    if (!caseId) return;
+    setTestCaseRunning(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/operational-case-tests/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_id: caseId }),
+      });
+      const data = (await res.json()) as
+        | ({ ok: true } & OperationalCaseTestResult)
+        | { error: string };
+      if (!res.ok || !("ok" in data)) {
+        setError("error" in data ? data.error : "controlled_test_failed");
+        return;
+      }
+      setTestCaseResult({
+        case: data.case,
+        events: data.events ?? [],
+        toolCalls: data.toolCalls ?? [],
+      });
+    } catch (err) {
+      setError((err as Error).message ?? String(err));
+    } finally {
+      setTestCaseRunning(false);
+    }
+  }
+
+  function scrollEditorPanelToTop() {
+    window.requestAnimationFrame(() => {
+      editorPanelRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }
+
+  async function startEdit(row: OperationalCaseType) {
     const value = caseTypeToEditing(row);
     const editableDescription = descriptionForEditing(value.description);
+    let savedSkillBody =
+      accountSkillMap.get(value.default_skill_slug)?.body_md ?? "";
+    if (!savedSkillBody) {
+      try {
+        const skills = await loadAccountSkillsFromApi();
+        savedSkillBody =
+          skills.find((skill) => skill.slug === value.default_skill_slug)
+            ?.body_md ?? "";
+      } catch (err) {
+        console.warn("[operational-case-types] account skill load failed:", err);
+      }
+    }
     setSelectedCaseType(row);
-    setEditing({ ...value, description: editableDescription });
-    setSchemaText(JSON.stringify(value.intake_schema_jsonb, null, 2));
+    const nextEditing = { ...value, description: editableDescription };
+    const nextSchemaText = JSON.stringify(value.intake_schema_jsonb, null, 2);
+    const nextFieldListText = value.intake_schema_jsonb
+      .map((field) => field.label)
+      .join("\n");
+    const nextCreatePrivateSkill = Boolean(savedSkillBody);
+    setEditing(nextEditing);
+    setSchemaText(nextSchemaText);
     setProcedureText(editableDescription);
-    setFieldListText(
-      value.intake_schema_jsonb.map((field) => field.label).join("\n")
-    );
-    setCreatePrivateSkill(false);
-    setGeneratedSkillBody("");
+    setFieldListText(nextFieldListText);
+    setCreatePrivateSkill(nextCreatePrivateSkill);
+    setGeneratedSkillBody(savedSkillBody);
+    setEditingBaseline({
+      editing: nextEditing,
+      schemaText: nextSchemaText,
+      procedureText: editableDescription,
+      fieldListText: nextFieldListText,
+      createPrivateSkill: nextCreatePrivateSkill,
+      generatedSkillBody: savedSkillBody,
+    });
     setAuthoringResult(null);
-    setShowAdvanced(false);
+    setShowAdvanced(Boolean(savedSkillBody));
+    setToolReadiness(null);
+    setToolReadinessError(null);
+    setExpandedReadinessTools(new Set());
+    setToolRequests([]);
+    setToolRequestError(null);
+    setToolRequestSubmitting(null);
+    setTestCaseResult(null);
+    void refreshToolReadiness(row);
+    void refreshTestCase(row);
     setError(null);
+    scrollEditorPanelToTop();
   }
 
   function viewCaseType(row: OperationalCaseType) {
@@ -455,6 +1116,18 @@ export function OperationalCaseTypesClient({
     setGeneratedSkillBody("");
     setAuthoringResult(null);
     setShowAdvanced(false);
+    setToolReadiness(null);
+    setToolReadinessError(null);
+    setExpandedReadinessTools(new Set());
+    setToolRequests([]);
+    setToolRequestError(null);
+    setToolRequestSubmitting(null);
+    setTestCaseResult(null);
+    setEditingBaseline(null);
+    if (scopeLabel(row) !== "global") {
+      void refreshToolReadiness(row);
+      void refreshTestCase(row);
+    }
     setError(null);
   }
 
@@ -471,37 +1144,74 @@ export function OperationalCaseTypesClient({
       allowedTools: existingSkill?.allowedTools,
       includes: existingSkill?.includes,
     });
-    setSelectedCaseType(row);
-    setEditing({
+    const nextEditing = {
       ...value,
       description: editableDescription,
-      visibility: "private",
+      visibility: "private" as const,
       isNew: true,
-    });
-    setSchemaText(JSON.stringify(value.intake_schema_jsonb, null, 2));
+    };
+    const nextSchemaText = JSON.stringify(value.intake_schema_jsonb, null, 2);
+    const nextFieldListText = value.intake_schema_jsonb
+      .map((field) => field.label)
+      .join("\n");
+    setSelectedCaseType(row);
+    setEditing(nextEditing);
+    setSchemaText(nextSchemaText);
     setProcedureText(editableDescription);
-    setFieldListText(
-      value.intake_schema_jsonb.map((field) => field.label).join("\n")
-    );
+    setFieldListText(nextFieldListText);
     setCreatePrivateSkill(true);
     setGeneratedSkillBody(skillBody);
+    setEditingBaseline({
+      editing: nextEditing,
+      schemaText: nextSchemaText,
+      procedureText: editableDescription,
+      fieldListText: nextFieldListText,
+      createPrivateSkill: true,
+      generatedSkillBody: skillBody,
+    });
     setAuthoringResult(null);
     setShowAdvanced(false);
+    setToolReadiness(null);
+    setToolReadinessError(null);
+    setExpandedReadinessTools(new Set());
+    setToolRequests([]);
+    setToolRequestError(null);
+    setToolRequestSubmitting(null);
+    setTestCaseResult(null);
     setError(null);
+    scrollEditorPanelToTop();
   }
 
   function startNew() {
     const value = newCaseType();
     setSelectedCaseType(null);
     setEditing(value);
-    setSchemaText(JSON.stringify(value.intake_schema_jsonb, null, 2));
+    const nextSchemaText = JSON.stringify(value.intake_schema_jsonb, null, 2);
+    const nextFieldListText = "Título\nNotas iniciales";
+    setSchemaText(nextSchemaText);
     setProcedureText("");
-    setFieldListText("Título\nNotas iniciales");
+    setFieldListText(nextFieldListText);
     setCreatePrivateSkill(true);
     setGeneratedSkillBody("");
+    setEditingBaseline({
+      editing: value,
+      schemaText: nextSchemaText,
+      procedureText: "",
+      fieldListText: nextFieldListText,
+      createPrivateSkill: true,
+      generatedSkillBody: "",
+    });
     setAuthoringResult(null);
     setShowAdvanced(false);
+    setToolReadiness(null);
+    setToolReadinessError(null);
+    setExpandedReadinessTools(new Set());
+    setToolRequests([]);
+    setToolRequestError(null);
+    setToolRequestSubmitting(null);
+    setTestCaseResult(null);
     setError(null);
+    scrollEditorPanelToTop();
   }
 
   function generateDraft() {
@@ -779,6 +1489,16 @@ export function OperationalCaseTypesClient({
         return [data.caseType, ...without];
       });
       setSelectedCaseType(data.caseType);
+      setToolReadiness(null);
+      setToolReadinessError(null);
+      setExpandedReadinessTools(new Set());
+    setToolRequests([]);
+    setToolRequestError(null);
+    setToolRequestSubmitting(null);
+      setTestCaseResult(null);
+      void refreshToolReadiness(data.caseType);
+      void refreshTestCase(data.caseType);
+      setEditingBaseline(null);
       setEditing(null);
     } catch (err) {
       setError((err as Error).message ?? String(err));
@@ -936,6 +1656,378 @@ export function OperationalCaseTypesClient({
           ) : null}
         </div>
 
+        {!isGlobal ? (
+          <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  Preparación operativa
+                </div>
+                <p className="mt-1 text-xs text-neutral-500">
+                  Revisa si las herramientas de la habilidad privada existen,
+                  tienen adapter y están configuradas antes de probarla.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => refreshToolReadiness(row)}
+                disabled={toolReadinessLoading}
+                className={`shrink-0 rounded px-2 py-1 text-xs font-semibold disabled:opacity-60 ${
+                  shouldReviewTools
+                    ? "bg-violet-700 text-white hover:bg-violet-800"
+                    : "border border-neutral-300 hover:bg-neutral-50"
+                }`}
+              >
+                {toolReadinessLoading
+                  ? "Revisando..."
+                  : toolReadiness
+                    ? "Volver a revisar"
+                    : "Revisar"}
+              </button>
+            </div>
+            <div className="text-sm font-semibold">
+              {toolReadinessSummaryLabel(toolReadiness?.summary)}
+            </div>
+            {toolReadiness ? (
+              <div className="flex flex-wrap gap-1.5 text-[11px]">
+                <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-800">
+                  {readinessCounts.ready} listas
+                </span>
+                {readinessCounts.needs_config > 0 ? (
+                  <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">
+                    {readinessCounts.needs_config} por configurar
+                  </span>
+                ) : null}
+                {readinessCounts.stub > 0 ? (
+                  <span className="rounded bg-sky-50 px-1.5 py-0.5 text-sky-800">
+                    {readinessCounts.stub} stubs
+                  </span>
+                ) : null}
+                {readinessCounts.missing + readinessCounts.unknown > 0 ? (
+                  <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-800">
+                    {readinessCounts.missing + readinessCounts.unknown} pendientes técnicos
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {toolsHaveBlocks ? (
+              <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                Resuelve las tools bloqueantes antes de crear una prueba
+                end-to-end. Los stubs no bloqueantes pueden quedar como
+                advertencia para una prueba parcial.
+              </p>
+            ) : null}
+            {toolReadinessError ? (
+              <p className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+                No se pudo revisar la preparación operativa: {toolReadinessError}
+              </p>
+            ) : toolReadiness?.tools.length ? (
+              <ul className="space-y-2">
+                {toolReadiness.tools.map((item) => {
+                  const expanded = expandedReadinessTools.has(item.tool_id);
+                  const existingRequest = toolRequests.find(
+                    (req) => req.tool_id === item.tool_id
+                  );
+                  const submitting = toolRequestSubmitting === item.tool_id;
+                  return (
+                    <li
+                      key={item.tool_id}
+                      className={`rounded border p-2 ${toolReadinessClass(item.status)}`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono text-xs">{item.tool_id}</span>
+                        <span className="rounded bg-white/70 px-1.5 py-0.5 text-[11px] font-semibold">
+                          {toolReadinessLabel(item.status)}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11px]">
+                        Riesgo: {item.risk ?? "n/d"}
+                        {item.requires_integration
+                          ? ` · integración: ${item.requires_integration}`
+                          : ""}
+                        {` · ${toolReadinessCategoryLabel(item.category)}`}
+                      </div>
+                      {item.blocking ? (
+                        <p className="mt-1 text-xs font-semibold">
+                          Bloquea la prueba end-to-end.
+                        </p>
+                      ) : item.status !== "ready" ? (
+                        <p className="mt-1 text-xs font-semibold">
+                          No bloquea la prueba segura, pero debe resolverse antes
+                          de operación real.
+                        </p>
+                      ) : null}
+                      {item.notes.length > 0 ? (
+                        <p className="mt-1 text-xs">{item.notes.join(" ")}</p>
+                      ) : null}
+                      {renderReadinessActions({
+                        item,
+                        row,
+                        expanded,
+                        existingRequest,
+                        submitting,
+                        onEditSkill: () => startEdit(row),
+                        onToggleExpand: () =>
+                          setExpandedReadinessTools((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(item.tool_id)) {
+                              next.delete(item.tool_id);
+                            } else {
+                              next.add(item.tool_id);
+                            }
+                            return next;
+                          }),
+                        onRequestGlobal: () => createToolRequest(row, item),
+                      })}
+                      {expanded ? (
+                        <div className="mt-2 space-y-2">
+                          {item.action_message ? (
+                            <p className="rounded border border-white/70 bg-white/70 p-2 text-[11px] leading-snug">
+                              {item.action_message}
+                            </p>
+                          ) : null}
+                          {item.account_provider &&
+                          item.action_kind === "configure_account" ? (
+                            <div className="rounded border border-white/70 bg-white/85 p-3">
+                              <AccountToolConnectionForm
+                                provider={item.account_provider}
+                                compact
+                                onChanged={() => {
+                                  void refreshToolReadiness(row);
+                                }}
+                              />
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
+                {toolRequestError ? (
+                  <li className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+                    {toolRequestError}
+                  </li>
+                ) : null}
+              </ul>
+            ) : toolReadiness ? (
+              <p className="rounded border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800">
+                No se requieren herramientas para esta habilidad. Puedes seguir
+                con el caso de prueba.
+              </p>
+            ) : (
+              <p className="text-xs text-neutral-500">
+                {toolReadinessLoading
+                  ? "Calculando herramientas requeridas..."
+                  : "Pendiente: revisa herramientas antes de crear un caso de prueba."}
+              </p>
+            )}
+          </div>
+        ) : null}
+
+        {!isGlobal ? (
+          <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                Caso de prueba
+              </div>
+              <p className="mt-1 text-xs text-neutral-500">
+                Crea un caso marcado como prueba para validar esta plantilla sin
+                mezclarlo con la operación real.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={createTestCase}
+                disabled={!canCreateTestCase || testCaseLoading}
+                className={`rounded px-3 py-2 text-xs font-semibold disabled:opacity-60 ${
+                  canCreateTestCase && !testCaseResult?.case
+                    ? "bg-violet-700 text-white hover:bg-violet-800"
+                    : "border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50"
+                }`}
+              >
+                {testCaseLoading ? "Creando..." : "Crear caso de prueba"}
+              </button>
+              <button
+                type="button"
+                onClick={runControlledTest}
+                disabled={
+                  !testCaseResult?.case || testCaseRunning || toolsHaveBlocks
+                }
+                className="rounded border border-violet-300 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60"
+                title={
+                  toolsHaveBlocks
+                    ? "Resuelve las tools bloqueantes antes de ejecutar la prueba end-to-end."
+                    : undefined
+                }
+              >
+                {testCaseRunning ? "Ejecutando..." : "Ejecutar prueba controlada"}
+              </button>
+            </div>
+            {toolsHaveBlocks && testCaseResult?.case ? (
+              <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                Hay un caso de prueba creado previamente, pero la ejecución
+                quedó bloqueada hasta resolver las tools marcadas como
+                bloqueantes en Preparación operativa.
+              </p>
+            ) : null}
+            {testCaseResult?.case ? (
+              <div className="rounded border border-neutral-200 bg-neutral-50 p-2 text-xs dark:border-neutral-800 dark:bg-neutral-950">
+                <div className="font-semibold">
+                  {String(
+                    testCaseResult.case.context_jsonb?.title ??
+                      testCaseResult.case.id
+                  )}
+                </div>
+                <div className="mt-1 text-neutral-500">
+                  Estado: {testCaseResult.case.status} · Paso:{" "}
+                  {testCaseResult.case.current_step ?? "sin paso"} · Creado:{" "}
+                  {formatDateTime(testCaseResult.case.created_at)}
+                </div>
+                <a
+                  href={`/operational-cases?case=${testCaseResult.case.id}`}
+                  className="mt-1 inline-block font-semibold text-violet-700 hover:underline"
+                >
+                  Abrir en Casos operacionales
+                </a>
+              </div>
+            ) : (
+              <p className="text-xs text-neutral-500">
+                {testCaseLoading
+                  ? "Buscando el caso de prueba más reciente..."
+                  : !toolReadiness
+                    ? "Primero revisa la preparación operativa."
+                    : toolsHaveBlocks
+                      ? "Resuelve las tools bloqueantes antes de crear una prueba end-to-end."
+                      : "Aún no hay caso de prueba para esta plantilla."}
+              </p>
+            )}
+          </div>
+        ) : null}
+
+        {!isGlobal && testCaseResult?.case ? (
+          <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Resultado de prueba
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-neutral-600">
+                Timeline
+              </div>
+              {testCaseResult.events.length > 0 ? (
+                <ul className="mt-2 space-y-2">
+                  {testCaseResult.events.map((event) => (
+                    <li
+                      key={event.id}
+                      className="rounded border border-neutral-200 bg-white p-2 text-xs dark:border-neutral-800 dark:bg-neutral-900"
+                    >
+                      <div className="font-semibold">
+                        {event.event_type} · {event.actor}
+                      </div>
+                      <div className="text-neutral-500">
+                        {formatDateTime(event.created_at)}
+                      </div>
+                      <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 p-2 font-mono text-[11px] dark:bg-neutral-950">
+                        {JSON.stringify(event.payload_jsonb, null, 2)}
+                      </pre>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-xs text-neutral-500">
+                  Sin eventos registrados todavía.
+                </p>
+              )}
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-neutral-600">
+                Tool calls
+              </div>
+              {testCaseResult.toolCalls.length > 0 ? (
+                <ul className="mt-2 space-y-2">
+                  {testCaseResult.toolCalls.map((call) => (
+                    <li
+                      key={call.id}
+                      className="rounded border border-neutral-200 bg-white p-2 text-xs dark:border-neutral-800 dark:bg-neutral-900"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono">{call.tool_name}</span>
+                        <span>{call.status}</span>
+                      </div>
+                      <div className="text-neutral-500">
+                        {formatDateTime(call.created_at)}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-xs text-neutral-500">
+                  Sin llamadas de tools. Las tools de envío/escritura/publicación
+                  no se ejecutan automáticamente en esta prueba inicial.
+                </p>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {!isGlobal ? (
+          <div className="space-y-2 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Checks de activación
+            </div>
+            <ul className="space-y-2 text-xs">
+              <li className="flex items-start gap-2">
+                {activationStatusBadge(
+                  skillLooksValid ? "ready" : "pending",
+                  skillLooksValid ? "✓ Listo" : "Pendiente"
+                )}
+                <span>Skill válida: parser/rúbrica sin bloqueos.</span>
+              </li>
+              <li className="flex items-start gap-2">
+                {activationStatusBadge(
+                  toolsPass ? "ready" : toolsHaveBlocks ? "attention" : "pending",
+                  toolsPass
+                    ? "✓ Listo"
+                    : toolsHaveBlocks
+                      ? "Resolver bloqueos"
+                      : "Pendiente"
+                )}
+                <span>
+                  {activationToolsDescription({
+                    toolReadiness,
+                    toolsHaveBlocks,
+                    toolsPass,
+                  })}
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                {activationStatusBadge(
+                  testPassed ? "ready" : "pending",
+                  testPassed ? "✓ Listo" : "Pendiente"
+                )}
+                <span>
+                  Prueba end-to-end pasada: caso de prueba avanzó por el flujo
+                  seguro inicial.
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                {activationStatusBadge(
+                  selectedIsActive && skillLooksValid && toolsPass && testPassed
+                    ? "ready"
+                    : "pending",
+                  selectedIsActive && skillLooksValid && toolsPass && testPassed
+                    ? "✓ Listo"
+                    : "Pendiente"
+                )}
+                <span>
+                  Activo para operación: listo para usarse normalmente desde
+                  Casos operacionales.
+                </span>
+              </li>
+            </ul>
+          </div>
+        ) : null}
+
         <div className="flex justify-end gap-2">
           {isGlobal ? (
             <button
@@ -951,7 +2043,7 @@ export function OperationalCaseTypesClient({
               onClick={() => startEdit(row)}
               className="rounded bg-violet-700 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-800"
             >
-              Editar caso de uso
+              Editar configuración
             </button>
           )}
         </div>
@@ -982,7 +2074,7 @@ export function OperationalCaseTypesClient({
               <button
                 key={row.id}
                 type="button"
-                onClick={() => (isGlobal ? viewCaseType(row) : startEdit(row))}
+                onClick={() => viewCaseType(row)}
                 aria-current={selected ? "true" : undefined}
                 className={`w-full border-l-4 p-4 text-left text-sm transition-colors ${
                   selected
@@ -1026,7 +2118,10 @@ export function OperationalCaseTypesClient({
         </div>
       </div>
 
-      <aside className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <aside
+        ref={editorPanelRef}
+        className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+      >
         {editing ? (
           <div className="space-y-3">
             <div>
@@ -1210,7 +2305,7 @@ export function OperationalCaseTypesClient({
                 Generar borrador básico
               </button>
               <p className="text-xs leading-relaxed text-gray-500">
-                Fallback local con heurísticas simples si solo quieres una
+                Fallback local con heurísticas simples si necesitas una
                 estructura inicial rápida o si la generación asistida falla.
               </p>
             </div>
@@ -1247,8 +2342,8 @@ export function OperationalCaseTypesClient({
               <span>
                 Crear o actualizar habilidad privada de la cuenta al guardar.
                 <span className="block text-xs text-gray-500">
-                  V1 genera una habilidad básica; luego podremos reemplazar esta
-                  heurística por una generación con Gu.
+                  Si ya existe una habilidad privada con este slug, se carga en
+                  la caja Habilidad y se actualiza al guardar.
                 </span>
               </span>
             </label>
@@ -1305,7 +2400,7 @@ export function OperationalCaseTypesClient({
             >
               <summary className="cursor-pointer text-sm font-semibold">
                 {showAdvanced ? "Ocultar avanzado" : "Mostrar avanzado"}:
-                formulario JSON y habilidad generada
+                formulario JSON y habilidad
               </summary>
               <p className="mt-2 text-xs leading-relaxed text-gray-500">
                 Usa esta sección para revisar o ajustar la definición exacta que
@@ -1321,14 +2416,16 @@ export function OperationalCaseTypesClient({
                 />
               </label>
               <label className="mt-3 block text-sm">
-                <span className="font-medium">Borrador de habilidad</span>
+                <span className="font-medium">Habilidad</span>
                 <textarea
                   value={generatedSkillBody}
                   onChange={(event) => setGeneratedSkillBody(event.target.value)}
                   className="mt-1 h-64 w-full rounded border border-gray-300 p-2 font-mono text-xs"
-                  placeholder="Pulsa 'Generar borrador' para crear una habilidad privada básica."
+                  placeholder="La habilidad guardada o generada aparecerá aquí."
                 />
                 <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                  Muestra el SKILL.md privado guardado para esta cuenta o el
+                  contenido recién generado antes de guardar.{" "}
                   `includes` lista skills reutilizadas por esta habilidad
                   compuesta. `allowed_tools` lista herramientas directas de esta
                   habilidad; si todo se delega a skills incluidas, puede quedar
@@ -1391,7 +2488,10 @@ export function OperationalCaseTypesClient({
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setEditing(null)}
+                onClick={() => {
+                  setEditing(null);
+                  setEditingBaseline(null);
+                }}
                 className="rounded border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
               >
                 Cancelar
@@ -1399,10 +2499,14 @@ export function OperationalCaseTypesClient({
               <button
                 type="button"
                 onClick={save}
-                disabled={saving || saveBlockedByAuthoring}
+                disabled={saving || saveBlockedByAuthoring || !editingHasChanges}
                 className="rounded bg-violet-700 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-50"
               >
-                {saving ? "Guardando..." : "Guardar"}
+                {saving
+                  ? "Guardando..."
+                  : editingHasChanges
+                    ? "Guardar"
+                    : "Sin cambios"}
               </button>
             </div>
           </div>

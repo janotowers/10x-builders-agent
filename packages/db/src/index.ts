@@ -15,7 +15,9 @@ export * from "./queries/memories";
 export * from "./queries/operational-cases";
 export * from "./queries/account-skills";
 export * from "./queries/notification-preferences";
-export { encryptToken, decryptToken } from "./crypto";
+export * from "./queries/global-tool-requests";
+export * from "./queries/account-tool-secrets";
+export { encryptToken, decryptToken, encryptJson, decryptJson } from "./crypto";
 export {
   GOOGLE_CALENDAR_PROVIDER,
   GOOGLE_CALENDAR_SCOPES,

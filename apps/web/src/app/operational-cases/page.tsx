@@ -253,6 +253,10 @@ export default async function OperationalCasesPage({
 
   const caseTypeMap = typeById(caseTypes);
   const accountSkillSlugs = new Set(accountSkills.map((s) => s.slug));
+  const testCaseCount = cases.filter(
+    (opCase) => opCase.context_jsonb?.test_mode === true
+  ).length;
+  const realCaseCount = cases.length - testCaseCount;
 
   function skillInfo(slug: string) {
     const metadata = registry?.get(slug)?.metadata ?? null;
@@ -313,7 +317,8 @@ export default async function OperationalCasesPage({
                 </p>
               </div>
               <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                {casesEnOperacionLabel(cases.length)}
+                {casesEnOperacionLabel(realCaseCount)}
+                {testCaseCount > 0 ? ` · ${testCaseCount} prueba` : ""}
               </span>
             </div>
           </div>
@@ -332,6 +337,7 @@ export default async function OperationalCasesPage({
                 const info = skillInfo(skillSlug);
                 const latest = latestEvents.get(opCase.id);
                 const selected = selectedCase?.id === opCase.id;
+                const isTestCase = opCase.context_jsonb?.test_mode === true;
 
                 return (
                   <a
@@ -354,6 +360,11 @@ export default async function OperationalCasesPage({
                           <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
                             {type?.display_name ?? opCase.case_type}
                           </span>
+                          {isTestCase ? (
+                            <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
+                              Prueba
+                            </span>
+                          ) : null}
                         </div>
                         <h3 className="mt-2 truncate font-semibold">
                           {String(
@@ -465,6 +476,11 @@ function CaseDetail({
         >
           {STATUS_LABELS[opCase.status]}
         </span>
+        {opCase.context_jsonb?.test_mode === true ? (
+          <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-700">
+            Caso de prueba
+          </span>
+        ) : null}
       </div>
 
       <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">

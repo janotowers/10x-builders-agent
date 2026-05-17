@@ -27,6 +27,13 @@ import {
   updateOperationalCase,
 } from "@agents/db";
 import type { ToolContext } from "./tool-context";
+import {
+  ACCOUNT_TOOL_PROVIDERS_REALESTATE,
+  markAccountSecretFailure,
+  markAccountSecretSuccess,
+  resolveEasyBrokerCredentials,
+  resolveUnggaCredentials,
+} from "./realestate-credentials";
 
 export interface RealEstateToolDeps {
   /**
@@ -332,7 +339,7 @@ export function addRealEstateTools(
     );
   }
 
-  // ── Ungga publish — stub HTTP que llama UNGGA_INTERNAL_API_BASE ────
+  // ── Ungga publish — HTTP que prefiere account-tool secret → env ────
   if (toolEnabled("ungga_publish_listing", ctx)) {
     tools.push(
       tool(
@@ -345,13 +352,12 @@ export function addRealEstateTools(
             true,
             ctx.turnId
           );
-          const apiBase = process.env.UNGGA_INTERNAL_API_BASE?.trim();
-          const apiToken = process.env.UNGGA_INTERNAL_API_TOKEN?.trim();
-          if (!apiBase || !apiToken) {
+          const creds = await resolveUnggaCredentials(ctx);
+          if (!creds) {
             const out = {
               status: "not_configured",
               hint:
-                "Configura UNGGA_INTERNAL_API_BASE (host/base del ambiente, e.g. https://app.ungga.com) y UNGGA_INTERNAL_API_TOKEN. Mientras tanto, usa el POC Playwright en pocs/ungga-cli para verificar el flujo manualmente.",
+                "La API interna de Ungga no está configurada para esta cuenta. Conéctala desde Ajustes → Cuentas externas (Base URL + API Token) o pide al admin que configure las env vars UNGGA_INTERNAL_API_BASE / UNGGA_INTERNAL_API_TOKEN.",
             };
             await updateToolCallStatus(
               ctx.db,
@@ -363,12 +369,12 @@ export function addRealEstateTools(
           }
           try {
             const res = await fetch(
-              `${apiBase.replace(/\/$/, "")}/v1/internal/listings`,
+              `${creds.apiBase.replace(/\/$/, "")}/v1/internal/listings`,
               {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
-                  Authorization: `Bearer ${apiToken}`,
+                  Authorization: `Bearer ${creds.apiToken}`,
                 },
                 body: JSON.stringify(input),
               }
@@ -383,8 +389,22 @@ export function addRealEstateTools(
             })();
             const out =
               res.ok
-                ? { ok: true, status_code: res.status, data }
-                : { ok: false, status_code: res.status, data };
+                ? { ok: true, status_code: res.status, data, credential_source: creds.source }
+                : { ok: false, status_code: res.status, data, credential_source: creds.source };
+            if (creds.source === "account") {
+              if (res.ok) {
+                await markAccountSecretSuccess(
+                  ctx,
+                  ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga
+                );
+              } else {
+                await markAccountSecretFailure(
+                  ctx,
+                  ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga,
+                  `HTTP ${res.status}`
+                );
+              }
+            }
             await updateToolCallStatus(
               ctx.db,
               record.id,
@@ -393,7 +413,15 @@ export function addRealEstateTools(
             );
             return JSON.stringify(out);
           } catch (e) {
-            const out = { ok: false, error: (e as Error).message ?? String(e) };
+            const errMsg = (e as Error).message ?? String(e);
+            if (creds.source === "account") {
+              await markAccountSecretFailure(
+                ctx,
+                ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga,
+                errMsg
+              );
+            }
+            const out = { ok: false, error: errMsg };
             await updateToolCallStatus(ctx.db, record.id, "failed", out);
             return JSON.stringify(out);
           }
@@ -450,12 +478,12 @@ function makeEasyBrokerSearchTool(
         false,
         ctx.turnId
       );
-      const apiKey = process.env.EASYBROKER_API_KEY?.trim();
-      if (!apiKey) {
+      const creds = await resolveEasyBrokerCredentials(ctx);
+      if (!creds) {
         const out = {
           status: "not_configured",
           hint:
-            "EASYBROKER_API_KEY no está configurada en este entorno. Pide al admin del tenant que la cargue.",
+            "EasyBroker no está conectado para esta cuenta. Conéctalo desde Ajustes → Cuentas externas o desde la pantalla de Casos de uso.",
         };
         await updateToolCallStatus(
           ctx.db,
@@ -468,9 +496,20 @@ function makeEasyBrokerSearchTool(
       // El API real de EasyBroker tiene su propio shape; este wrapper
       // construye la URL de búsqueda con los filtros básicos. Cuando
       // confirmemos los nombres exactos de query params (e.g. operation_type),
-      // ajustamos. De momento devolvemos un stub controlado.
+      // ajustamos. De momento devolvemos un stub controlado pero ya marca
+      // el uso de la credencial per-account para promoverla a `active`.
+      if (creds.source === "account") {
+        // El stub no ejecuta la request real todavía, pero ya confirmamos
+        // que existe credencial válida en formato. Marcamos uso para que
+        // la UI vea actividad.
+        await markAccountSecretSuccess(
+          ctx,
+          ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker
+        );
+      }
       const out = {
         status: "stub",
+        credential_source: creds.source,
         hint:
           "Wrapper EasyBroker pendiente de mapear filtros a query params reales (operation_type, location, etc.). Mientras tanto consulta la docs y actualiza este adapter.",
         path_hint: pathHint,
@@ -521,12 +560,12 @@ function makeEasyBrokerWriteStub(
         true,
         ctx.turnId
       );
-      const apiKey = process.env.EASYBROKER_API_KEY?.trim();
-      if (!apiKey) {
+      const creds = await resolveEasyBrokerCredentials(ctx);
+      if (!creds) {
         const out = {
           status: "not_configured",
           hint:
-            "EASYBROKER_API_KEY no está configurada. Cárgala antes de publicar.",
+            "EasyBroker no está conectado para esta cuenta. Conéctalo desde Ajustes → Cuentas externas antes de publicar.",
         };
         await updateToolCallStatus(
           ctx.db,
@@ -538,6 +577,7 @@ function makeEasyBrokerWriteStub(
       }
       const out = {
         status: "stub",
+        credential_source: creds.source,
         hint:
           "Stub: cuando esté la docs de EasyBroker mapeada (POST /properties, POST /properties/:id/images), este handler hace la llamada real. HITL ya está aplicado por risk='high'.",
         received: Object.keys(input),

@@ -18,6 +18,8 @@ import type {
   HeartbeatRun,
   ToolRisk,
 } from "@agents/types";
+import { ACCOUNT_TOOL_PROVIDERS } from "@/lib/account-tool-providers";
+import { AccountToolConnectionForm } from "@/components/account-tool-connection-form";
 
 interface Props {
   userId: string;
@@ -1442,7 +1444,7 @@ export function SettingsForm({
         </div>
       )}
       {/* Profile */}
-      <section className="space-y-4">
+      <section id="google-calendar" className="space-y-4">
         <h2 className="text-base font-semibold">Perfil de usuario</h2>
         <div>
           <label className="block text-sm font-medium mb-1">Foto / avatar</label>
@@ -2297,7 +2299,7 @@ export function SettingsForm({
       </section>
 
       {/* Tools */}
-      <section className="space-y-4">
+      <section id="github" className="space-y-4">
         <div>
           <h2 className="text-base font-semibold">Herramientas</h2>
           <p className="mt-1 text-sm text-neutral-500">
@@ -2364,7 +2366,7 @@ export function SettingsForm({
       </section>
 
       {/* Skills */}
-      <section className="space-y-4">
+      <section id="telegram" className="space-y-4">
         <div>
           <h2 className="text-base font-semibold">Skills</h2>
           <p className="mt-1 text-sm text-neutral-500">
@@ -2428,9 +2430,20 @@ export function SettingsForm({
         )}
       </section>
 
+      {/* Conexiones */}
+      <section id="connections" className="space-y-1">
+        <h2 className="text-base font-semibold">Conexiones</h2>
+        <p className="text-xs text-neutral-500">
+          Administra las cuentas y servicios externos que el agente puede usar.
+          Algunas conexiones se autorizan con OAuth o vínculo de cuenta
+          (Google, GitHub, Telegram); otras usan credenciales API cifradas por
+          cuenta (EasyBroker, Ungga).
+        </p>
+      </section>
+
       {/* Google Calendar */}
       <section className="space-y-4">
-        <h2 className="text-base font-semibold">Google Calendar</h2>
+        <h3 className="text-sm font-semibold">Google Calendar</h3>
         {gCalConnected ? (
           <div className="space-y-3">
             <p className="text-sm text-green-600">Calendario de Google conectado.</p>
@@ -2479,7 +2492,7 @@ export function SettingsForm({
 
       {/* GitHub */}
       <section className="space-y-4">
-        <h2 className="text-base font-semibold">GitHub</h2>
+        <h3 className="text-sm font-semibold">GitHub</h3>
         {ghConnected ? (
           <div className="space-y-2">
             <p className="text-sm text-green-600">Cuenta de GitHub conectada.</p>
@@ -2508,7 +2521,7 @@ export function SettingsForm({
 
       {/* Telegram */}
       <section className="space-y-4">
-        <h2 className="text-base font-semibold">Telegram</h2>
+        <h3 className="text-sm font-semibold">Telegram</h3>
         {telegramLinked ? (
           <p className="text-sm text-green-600">Cuenta de Telegram vinculada.</p>
         ) : (
@@ -2536,6 +2549,28 @@ export function SettingsForm({
             )}
           </div>
         )}
+      </section>
+
+      {/* Credenciales por cuenta (per-account secrets para EasyBroker, Ungga, …) */}
+      <section id="external-accounts" className="space-y-4">
+        <header className="space-y-1">
+          <h3 className="text-sm font-semibold">Credenciales por cuenta</h3>
+          <p className="text-xs text-neutral-500">
+            Estas conexiones también son externas; la diferencia es que usan
+            API keys/tokens propios de tu cuenta en vez de OAuth. Los secretos
+            se cifran antes de guardarse y no se comparten con otros usuarios.
+          </p>
+        </header>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {ACCOUNT_TOOL_PROVIDERS.map((spec) => (
+            <div
+              key={spec.id}
+              className="rounded-md border border-neutral-200 p-4 dark:border-neutral-800"
+            >
+              <AccountToolConnectionForm provider={spec.id} />
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* Save */}
