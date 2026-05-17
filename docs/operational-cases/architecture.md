@@ -263,7 +263,30 @@ flowchart LR
 
 ---
 
-## 10. Convenciones operativas
+## 10. Tool readiness y provisioning (credenciales por cuenta)
+
+Antes de activar o probar un **tipo de caso privado** con skill propia, la UI puede
+diagnosticar si las tools declaradas en metadata (`allowed_tools` + `includes`)
+están listas: catálogo, adapter, integración OAuth/vínculo, y **secretos por
+cuenta** cuando aplica.
+
+| Pieza | Rol |
+|---|---|
+| `GET /api/tool-readiness?case_type_id=…` | Resuelve sólo metadata de skills (no compone el body completo) y devuelve por tool: estado, categoría, si bloquea prueba controlada, acción sugerida y, para EasyBroker/Ungga, `account_provider` (`easybroker`, `ungga_api`). |
+| `account_tool_secrets` | Migración `00024_account_tool_secrets.sql`. Una fila por `(user_id, provider)`: `config_jsonb` público para la UI, secretos cifrados en columna dedicada. Estados `pending_test` → `active` / `invalid` tras `POST …/test`. |
+| `GET/PUT/DELETE /api/account-tool-secrets` | CRUD sin exponer secretos en GET; PUT valida contra `apps/web/src/lib/account-tool-providers.ts`. |
+| `POST /api/account-tool-secrets/[provider]/test` | Ping barato a la API externa; actualiza `status` y puede cerrar solicitudes abiertas en `global_tool_requests` para tools cubiertas por ese provider. |
+| `global_tool_requests` | Migración `00023_global_tool_requests.sql`. Backlog cuando falta capacidad global o recurso de tenant; `GET/POST /api/global-tool-requests`. |
+| UI Casos de uso | **Preparación operativa**: revisar lista, expandir tool, conectar EasyBroker/Ungga inline (mismo form que Ajustes). **Checks de activación**: checklist alineada con bloqueos de readiness. |
+| UI Ajustes | **Conexiones** agrupa OAuth/vínculo (Google, GitHub, Telegram) y **Credenciales por cuenta** (API keys/tokens cifrados). |
+
+Los adapters en `realestate-adapters.ts` **priorizan** secretos por cuenta y
+**caen** a variables de entorno solo para despliegues legacy
+(`EASYBROKER_API_KEY`, `UNGGA_INTERNAL_API_*`). Detalle: `realestate-credentials.ts`.
+
+---
+
+## 11. Convenciones operativas
 
 | Convención | Detalle |
 |---|---|
@@ -275,7 +298,7 @@ flowchart LR
 
 ---
 
-## 11. Métricas y observabilidad mínimas
+## 12. Métricas y observabilidad mínimas
 
 Para evitar casos zombie y degradación silenciosa:
 

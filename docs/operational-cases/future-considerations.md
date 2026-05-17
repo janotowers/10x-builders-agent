@@ -236,6 +236,17 @@ V1 mantiene los adapters en código para las herramientas comunes y críticas. P
 
 **Principio:** el repo contiene adapters genéricos seguros; la cuenta guarda configuración, secretos, schemas y política HITL.
 
+**Implementación parcial en el repo (2026-05):** ya existe `account_tool_secrets`
+(migración `00024_account_tool_secrets.sql`) como tabla genérica **una fila por
+`(user_id, provider)`** con `config_jsonb` + secretos cifrados, más catálogo en
+código (`apps/web/src/lib/account-tool-providers.ts`), API REST bajo
+`/api/account-tool-secrets`, pruebas de conexión y wiring en readiness/UI.
+Esto cubre providers concretos (p. ej. `easybroker`, `ungga_api`) **antes** del
+modelo más rico con `account_tool_configs` + primitives y `account_tool_test_runs`
+descrito abajo. Cuando se evolucione a primitives genéricas, conviene migrar o
+convivir: el contrato de readiness (`/api/tool-readiness`) ya está pensado para
+combinar catálogo global + estado por cuenta.
+
 Primitives reutilizables:
 
 | Tool genérica | Uso |

@@ -229,7 +229,7 @@ Para no quedar bloqueado, te listo qué necesito antes de implementar cada bloqu
 |---|---|
 | Subsistema base | Aprobación del esquema final (puedo proponer borrador SQL antes de implementar). |
 | `telegram_send_message_to_contact` | Confirmación si los dueños deben iniciar contacto con el bot vía link `t.me/...`, o ya tienes flujo distinto. |
-| `easybroker_*` | API key sandbox + producción de Alebrixe; documentación oficial; lista de endpoints permitidos. |
+| `easybroker_*` | En producto: el usuario puede cargar API key por cuenta (Ajustes → Conexiones → Credenciales por cuenta, o desde preparación operativa en Casos de uso) y pasar prueba de conexión. Además, para el piloto: API key sandbox/producción de Alebrixe según proceda, documentación oficial y lista de endpoints permitidos cuando el adapter deje de ser stub. |
 | `generate_document_from_template` | Plantilla DOCX actual de Alebrixe + lista de placeholders/campos. |
 | `image_watermark` | PNG con transparencia del watermark de Alebrixe + reglas (esquina, opacidad, tamaño). |
 | `bigquery_lookup_local_comparables` | Confirmación de qué tablas en warehouse tienen propiedades cerradas con zona/precio/m². |

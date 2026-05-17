@@ -809,13 +809,25 @@ Tools del dominio inmobiliario (en `packages/agent/src/tools/realestate-adapters
 - `telegram_send_message_to_contact` (`high`, HITL): mensajes outbound al
   dueño.
 - `easybroker_search_*`, `easybroker_create_listing`, `easybroker_upload_images`
-  (stubs HTTP que se activan con `EASYBROKER_API_KEY`).
+  (**stubs** hoy en la lógica de negocio/HTTP real; la credencial se obtiene con
+  **prioridad** desde `account_tool_secrets` del usuario, provider `easybroker`,
+  con fallback legacy a `EASYBROKER_API_KEY` en el entorno). Captura y prueba en
+  UI: Ajustes → Conexiones → Credenciales por cuenta, o formulario inline en
+  Casos de uso → preparación operativa; API `apps/web/src/app/api/account-tool-secrets/`.
 - `bigquery_lookup_local_comparables` (stub: necesita confirmar tablas
   warehouse).
 - `generate_document_from_template` (stub: necesita plantillas por tenant).
 - `image_watermark` (stub: necesita asset PNG por tenant).
-- `ungga_publish_listing` (POST a `UNGGA_INTERNAL_API_BASE/v1/internal/listings`
-  con Bearer `UNGGA_INTERNAL_API_TOKEN`; `not_configured` si faltan).
+- `ungga_publish_listing` (POST a `{api_base}/v1/internal/listings` con Bearer
+  token; credencial con prioridad desde `account_tool_secrets`, provider
+  `ungga_api`, campos `config_jsonb.api_base` + token cifrado; fallback a
+  `UNGGA_INTERNAL_API_BASE` / `UNGGA_INTERNAL_API_TOKEN`; `not_configured` si
+  faltan ambos).
+
+**Readiness y backlog de tools:** `GET /api/tool-readiness?case_type_id=…` (sin
+componer el body completo de la skill; sólo metadata). Solicitudes cuando falta
+capacidad global: tabla `global_tool_requests` + `POST/GET /api/global-tool-requests`.
+Detalle arquitectónico: [`docs/operational-cases/architecture.md`](../operational-cases/architecture.md) §10.
 
 Skill compuesta de referencia:
 
@@ -843,9 +855,12 @@ POCs (en `tools/`):
 Estado:
 
 - Subsistema base: **Hoy** (migraciones, cron, runtime, webhook, tools).
-- EasyBroker write/read: **Stub** (requiere API key).
+- Credenciales EasyBroker/Ungga por cuenta: **Hoy** (tabla + API + UI + prueba
+  de conexión); adapters siguen **stub** en comportamiento de negocio hasta
+  mapear endpoints reales.
 - Templates DOCX/PDF y watermark: **Stub** (requiere assets).
-- Ungga API: **Stub** (requiere endpoint en su backend).
+- Ungga API en runtime: parcialmente cableada (HTTP real si hay credencial);
+  producto Ungga debe exponer/pegar endpoint estable en cada entorno.
 
 ---
 
