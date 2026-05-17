@@ -58,7 +58,7 @@ export const ACCOUNT_TOOL_PROVIDERS: AccountToolProviderSpec[] = [
     displayName: "EasyBroker",
     description:
       "Consultar propiedades, leads y mensajes del CRM EasyBroker de tu cuenta.",
-    credentialsHelpUrl: "https://www.easybroker.com/api/docs",
+    credentialsHelpUrl: "https://dev.easybroker.com/docs/autenticaci%C3%B3n",
     configFields: [
       {
         name: "account_label",
@@ -76,7 +76,7 @@ export const ACCOUNT_TOOL_PROVIDERS: AccountToolProviderSpec[] = [
         type: "password",
         required: true,
         placeholder: "ab1...",
-        help: "Genera o copia tu API Key desde EasyBroker → Configuración → API.",
+        help: "Obtén tu API Key en EasyBroker → Configuraciones → API para programadores. Debes ser administrador.",
       },
     ],
     appliesToTools: [

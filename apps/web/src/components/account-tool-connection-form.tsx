@@ -101,29 +101,24 @@ export function AccountToolConnectionForm({
   const status = state?.secret?.status ?? null;
   const lastError = state?.secret?.last_error ?? null;
   const lastChecked = state?.secret?.last_checked_at ?? null;
+  const secretDraftEmpty = Object.values(secretDraft).every(
+    (v) => !v.trim().length
+  );
+  const canTest = hasSecret && !testingBusy;
+  const testIsPrimary =
+    hasSecret && (status === "pending_test" || status === "invalid");
+  const saveLabel = hasSecret ? "Actualizar credenciales" : "Guardar";
 
   async function handleSave() {
     if (!state) return;
     setFeedback(null);
     setSavingBusy(true);
     try {
-      // Si ya hay secret guardado y el usuario no escribió un secret nuevo,
-      // sólo actualizamos config. Para no sobreescribir secret con "", el
-      // PUT exige los secret fields obligatorios — el server validará.
-      const onlyConfig =
-        hasSecret &&
-        Object.values(secretDraft).every((v) => !v.trim().length);
+      // Si ya hay secret guardado y el usuario no escribió uno nuevo,
+      // sólo actualizamos config preservando el secret cifrado en server.
+      const onlyConfig = hasSecret && secretDraftEmpty;
       const payload = onlyConfig
-        ? {
-            config: configDraft,
-            // Reescribimos vacío en estos campos para que el server detecte
-            // que NO queremos reemplazar el secret. Pero la API actual
-            // requeriría los campos para una nueva fila — para esta phase,
-            // simplemente forzamos al usuario a reingresar secret si quiere
-            // editar config. Si quiere actualizar sólo config, también
-            // exigimos secret. Mejor mensaje explícito:
-            secret: secretDraft,
-          }
+        ? { config: configDraft, preserve_secret: true }
         : { config: configDraft, secret: secretDraft };
 
       // Validar localmente que los campos requeridos estén llenos cuando
@@ -169,7 +164,9 @@ export function AccountToolConnectionForm({
       });
       setFeedback({
         kind: "ok",
-        message: "Credenciales guardadas. Ahora prueba la conexión.",
+        message: onlyConfig
+          ? "Configuración actualizada."
+          : "Credenciales guardadas. Ahora prueba la conexión.",
       });
       onChanged?.(body.secret ?? null);
     } catch (e) {
@@ -345,22 +342,45 @@ export function AccountToolConnectionForm({
       )}
 
       <div className="flex flex-wrap items-center gap-2 pt-1">
-        <button
-          type="button"
-          onClick={() => void handleSave()}
-          disabled={savingBusy}
-          className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-        >
-          {savingBusy ? "Guardando…" : hasSecret ? "Actualizar" : "Guardar"}
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleTest()}
-          disabled={!hasSecret || testingBusy}
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-        >
-          {testingBusy ? "Probando…" : "Probar conexión"}
-        </button>
+        {testIsPrimary ? (
+          <>
+            <button
+              type="button"
+              onClick={() => void handleTest()}
+              disabled={!canTest}
+              className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {testingBusy ? "Probando…" : "Probar conexión"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={savingBusy}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            >
+              {savingBusy ? "Guardando…" : saveLabel}
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={savingBusy}
+              className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {savingBusy ? "Guardando…" : saveLabel}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleTest()}
+              disabled={!canTest}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm font-medium hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            >
+              {testingBusy ? "Probando…" : "Probar conexión"}
+            </button>
+          </>
+        )}
         {hasSecret && (
           <button
             type="button"

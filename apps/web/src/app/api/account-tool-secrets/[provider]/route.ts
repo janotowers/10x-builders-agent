@@ -23,6 +23,7 @@ import {
   deleteAccountToolSecret,
   getAccountToolSecretPublic,
   softDisconnectAccountToolSecret,
+  updateAccountToolSecretConfig,
   upsertAccountToolSecret,
 } from "@agents/db";
 import {
@@ -90,6 +91,53 @@ export async function PUT(
     if (!isRecord(body)) {
       return NextResponse.json({ error: "Invalid body" }, { status: 400 });
     }
+    const preserveSecret = body.preserve_secret === true;
+    if (preserveSecret) {
+      const rawConfig = isRecord(body.config) ? body.config : {};
+      for (const field of spec.configFields) {
+        const value = rawConfig[field.name];
+        if (
+          field.required &&
+          (value === undefined || value === null || value === "")
+        ) {
+          return NextResponse.json(
+            { error: `config.${field.name} es requerido` },
+            { status: 400 }
+          );
+        }
+        if (value !== undefined && value !== null && typeof value !== "string") {
+          return NextResponse.json(
+            { error: `config.${field.name} debe ser string` },
+            { status: 400 }
+          );
+        }
+      }
+      const config: Record<string, unknown> = {};
+      for (const field of spec.configFields) {
+        const value = rawConfig[field.name];
+        if (typeof value === "string" && value.trim()) {
+          config[field.name] = value.trim();
+        }
+      }
+      const db = createServerClient();
+      const existing = await getAccountToolSecretPublic(db, {
+        userId: user.id,
+        provider,
+      });
+      if (!existing) {
+        return NextResponse.json(
+          { error: "No hay credenciales existentes que conservar." },
+          { status: 404 }
+        );
+      }
+      const saved = await updateAccountToolSecretConfig(db, {
+        userId: user.id,
+        provider,
+        config,
+      });
+      return NextResponse.json({ ok: true, secret: saved });
+    }
+
     const validation = validateAccountToolPayload(spec, body);
     if (!validation.ok) {
       return NextResponse.json({ error: validation.error }, { status: 400 });

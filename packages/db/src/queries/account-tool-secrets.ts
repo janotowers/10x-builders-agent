@@ -65,6 +65,25 @@ export interface UpsertAccountToolSecretInput {
   status?: AccountToolSecretStatus;
 }
 
+export async function updateAccountToolSecretConfig(
+  db: DbClient,
+  params: {
+    userId: string;
+    provider: string;
+    config: Record<string, unknown>;
+  }
+): Promise<AccountToolSecretPublic | null> {
+  const { data, error } = await db
+    .from("account_tool_secrets")
+    .update({ config_jsonb: params.config ?? {} })
+    .eq("user_id", params.userId)
+    .eq("provider", params.provider)
+    .select(PUBLIC_COLUMNS)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as AccountToolSecretPublic | null) ?? null;
+}
+
 export async function upsertAccountToolSecret(
   db: DbClient,
   input: UpsertAccountToolSecretInput

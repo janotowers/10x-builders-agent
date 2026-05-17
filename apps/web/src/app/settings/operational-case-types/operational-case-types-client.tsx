@@ -481,7 +481,7 @@ function toolReadinessCategoryLabel(category: ToolReadinessCategory) {
 }
 
 function readinessRequestStatusLabel(status: ToolReadinessRequestStatus) {
-  if (status === "requested") return "Solicitada";
+  if (status === "requested") return "realizada";
   if (status === "in_review") return "En revisión";
   if (status === "in_progress") return "En desarrollo";
   if (status === "shipped") return "Lista";
@@ -512,6 +512,16 @@ function readinessActionUrl(item: ToolReadinessToolItem): string | null {
     return `${item.action_url}#${item.action_anchor}`;
   }
   return item.action_url;
+}
+
+function readinessRequestActionLabel(item: ToolReadinessToolItem) {
+  if (item.status === "stub" && item.category === "technical_stub") {
+    return "Solicitar prioridad";
+  }
+  if (item.status === "stub" && item.category === "tenant_asset") {
+    return "Solicitar recurso";
+  }
+  return item.action_label ?? "Solicitar incorporación";
 }
 
 function renderReadinessActions(params: {
@@ -603,6 +613,9 @@ function renderReadinessActions(params: {
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <span className="rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800">
             Solicitud {readinessRequestStatusLabel(existingRequest.status)}
+            {existingRequest.status === "requested"
+              ? " (registrada para Ungga)"
+              : ""}
           </span>
           {detailsToggle}
         </div>
@@ -616,7 +629,7 @@ function renderReadinessActions(params: {
           disabled={submitting}
           className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800 disabled:opacity-60"
         >
-          {submitting ? "Enviando..." : (item.action_label ?? "Solicitar incorporación")}
+          {submitting ? "Enviando..." : readinessRequestActionLabel(item)}
         </button>
         {detailsToggle}
       </div>

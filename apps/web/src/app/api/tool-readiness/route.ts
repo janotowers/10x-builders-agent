@@ -113,6 +113,10 @@ const EASYBROKER_TOOLS = new Set([
   "easybroker_create_listing",
   "easybroker_upload_images",
 ]);
+const EASYBROKER_WRITE_TOOLS = new Set([
+  "easybroker_create_listing",
+  "easybroker_upload_images",
+]);
 const UNGGA_TOOLS = new Set(["ungga_publish_listing"]);
 const TENANT_ASSET_TOOLS = new Set([
   "generate_document_from_template",
@@ -422,8 +426,15 @@ function classifyTool(params: {
     };
   }
   if (STUB_TOOLS.has(params.toolId)) {
-    notes.push("Adapter disponible, pero todavía funciona como stub o requiere mapeo/configuración tenant.");
     const isTenantAsset = TENANT_ASSET_TOOLS.has(params.toolId);
+    const isEasyBrokerWrite = EASYBROKER_WRITE_TOOLS.has(params.toolId);
+    notes.push(
+      isTenantAsset
+        ? "Requiere un recurso o configuración específica de esta cuenta."
+        : isEasyBrokerWrite
+          ? "Pendiente de Ungga: falta completar el adapter de escritura. Cuando esté listo, esta acción requerirá aprobación HITL del usuario antes de ejecutarse."
+          : "Pendiente de Ungga: el usuario ya no puede resolver esto desde configuración; falta completar el adapter/mapeo en producto."
+    );
     return {
       tool_id: params.toolId,
       status: "stub",
@@ -432,11 +443,13 @@ function classifyTool(params: {
       action_kind: "request_global",
       action_label: isTenantAsset
         ? "Solicitar configuración del recurso"
-        : "Solicitar implementación del adapter",
+        : "Solicitar prioridad a Ungga",
       action_available: true,
       action_message: isTenantAsset
         ? "Esta tool necesita templates/assets por cuenta (ej. plantilla de documento o watermark). La prueba puede validar pasos seguros, pero operación real requiere que el equipo configure ese recurso para tu cuenta."
-        : "Esta tool todavía opera como stub técnico. La prueba puede validar pasos seguros, pero operación real requiere que el equipo complete el adapter/mapeo.",
+        : isEasyBrokerWrite
+          ? "La conexión EasyBroker ya puede estar lista, pero esta operación de escritura todavía funciona como stub técnico. No requiere otra configuración del usuario: requiere que Ungga implemente el adapter real. Cuando esté implementada, el agente preparará la acción y pedirá aprobación HITL antes de crear o subir contenido."
+          : "La conexión o el catálogo ya existen, pero esta operación todavía funciona como stub técnico. No requiere otra configuración del usuario: requiere que el equipo de Ungga complete el adapter/mapeo en el producto. Si esta capacidad es importante para tu caso de uso, puedes solicitar prioridad.",
       action_url: null,
       action_anchor: null,
       request_kind: isTenantAsset
