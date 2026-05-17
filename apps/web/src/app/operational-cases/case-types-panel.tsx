@@ -20,9 +20,16 @@ function skillKindLabel(kind: string) {
 export function CaseTypesPanel({
   caseTypes,
   skillInfo,
+  globalCounterpartBySlug = {},
 }: {
   caseTypes: OperationalCaseType[];
   skillInfo: Record<string, SkillInfo>;
+  /**
+   * Si el case_type mostrado es una versión de cuenta, este map contiene la
+   * versión de producto que oculta. Sirve para indicar al usuario que está
+   * viendo una personalización, no una duplicación.
+   */
+  globalCounterpartBySlug?: Record<string, OperationalCaseType>;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -40,13 +47,26 @@ export function CaseTypesPanel({
           };
           const isExpanded = expanded[type.id] ?? false;
           const shouldToggle = (type.description?.length ?? 0) > 140;
+          const customizesProduct = Boolean(
+            type.user_id && globalCounterpartBySlug[type.case_type]
+          );
 
           return (
             <div
               key={type.id}
               className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800"
             >
-              <div className="font-semibold">{type.display_name}</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">{type.display_name}</span>
+                {customizesProduct ? (
+                  <span
+                    className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700"
+                    title="Esta versión de cuenta personaliza el caso de uso de producto con el mismo identificador. Cuando ambos existen, la versión de cuenta es la que se usa."
+                  >
+                    Personaliza versión de producto
+                  </span>
+                ) : null}
+              </div>
               <div className="mt-2 grid gap-1.5 text-xs text-neutral-600 dark:text-neutral-300">
                 <div>
                   <span className="font-medium">Identificador técnico:</span>{" "}

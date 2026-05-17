@@ -205,6 +205,38 @@ function typeById(types: OperationalCaseType[]) {
   return new Map(types.map((t) => [t.id, t]));
 }
 
+/**
+ * Dedupe de case types por `case_type`. Si el usuario ya creó/personalizó una
+ * versión privada del mismo slug, esa gana sobre la versión de producto. La
+ * versión global "perdida" se devuelve aparte para poder mostrar en UI que la
+ * versión de cuenta personaliza la de producto.
+ */
+function dedupeCaseTypes(types: OperationalCaseType[]): {
+  visible: OperationalCaseType[];
+  globalCounterpartBySlug: Map<string, OperationalCaseType>;
+} {
+  const bySlug = new Map<string, OperationalCaseType[]>();
+  for (const t of types) {
+    const arr = bySlug.get(t.case_type) ?? [];
+    arr.push(t);
+    bySlug.set(t.case_type, arr);
+  }
+  const visible: OperationalCaseType[] = [];
+  const globalCounterpartBySlug = new Map<string, OperationalCaseType>();
+  for (const [, arr] of bySlug) {
+    const account = arr.find((t) => t.user_id !== null);
+    const global = arr.find((t) => t.user_id === null);
+    if (account) {
+      visible.push(account);
+      if (global) globalCounterpartBySlug.set(account.case_type, global);
+    } else if (global) {
+      visible.push(global);
+    }
+  }
+  visible.sort((a, b) => a.display_name.localeCompare(b.display_name, "es"));
+  return { visible, globalCounterpartBySlug };
+}
+
 function latestEventByCase(events: OperationalCaseEvent[]) {
   const map = new Map<string, OperationalCaseEvent>();
   for (const event of events) map.set(event.case_id, event);
@@ -251,6 +283,16 @@ export default async function OperationalCasesPage({
     ).flat()
   );
 
+  // Importante: la lista cruda puede contener duplicados por slug cuando el
+  // usuario tiene una versión privada del mismo case_type que la global. Esto
+  // es legítimo a nivel de datos (la tabla lo permite por diseño) pero a nivel
+  // de UI sólo queremos mostrar uno: la versión de cuenta gana.
+  const { visible: visibleCaseTypes, globalCounterpartBySlug } =
+    dedupeCaseTypes(caseTypes);
+  // El typeById sigue construyéndose con TODOS los rows (no sólo los visibles)
+  // porque las instancias en `operational_cases` pueden apuntar al case_type_id
+  // global aunque exista uno privado del mismo slug, y necesitamos resolver el
+  // nombre.
   const caseTypeMap = typeById(caseTypes);
   const accountSkillSlugs = new Set(accountSkills.map((s) => s.slug));
   const testCaseCount = cases.filter(
@@ -269,7 +311,10 @@ export default async function OperationalCasesPage({
     };
   }
   const skillInfoBySlug = Object.fromEntries(
-    caseTypes.map((type) => [type.default_skill_slug, skillInfo(type.default_skill_slug)])
+    visibleCaseTypes.map((type) => [
+      type.default_skill_slug,
+      skillInfo(type.default_skill_slug),
+    ])
   );
 
   return (
@@ -434,11 +479,12 @@ export default async function OperationalCasesPage({
         <aside className="space-y-4">
           <CreateCasePanel
             action={createOperationalCaseAction}
-            caseTypes={caseTypes}
+            caseTypes={visibleCaseTypes}
           />
           <CaseTypesPanel
-            caseTypes={caseTypes}
+            caseTypes={visibleCaseTypes}
             skillInfo={skillInfoBySlug}
+            globalCounterpartBySlug={Object.fromEntries(globalCounterpartBySlug)}
           />
         </aside>
       </main>

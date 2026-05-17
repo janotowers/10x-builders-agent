@@ -126,8 +126,15 @@ export function CreateCasePanel({
         Poner caso de uso en operación
       </h2>
       <p className="mt-1 text-sm text-neutral-500">
-        Elige un caso de uso y captura su información inicial. El formulario se
-        genera desde el schema del caso de uso.
+        Crea una instancia concreta del caso de uso. Estos datos pertenecen a
+        este caso específico (no se guardan en el caso de uso como plantilla).
+      </p>
+      <p className="mt-2 text-xs leading-relaxed text-neutral-500">
+        Vía recomendada para el día a día: arrancar el caso por chat o
+        Telegram (por ejemplo &ldquo;necesito opcionar una propiedad&rdquo;) y
+        el agente pide los datos en conversación. Esta pantalla sirve para
+        validar el flujo o crear un caso manualmente cuando el canal
+        conversacional no está disponible.
       </p>
       <form
         ref={formRef}
