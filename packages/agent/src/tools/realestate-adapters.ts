@@ -596,7 +596,45 @@ function makeEasyBrokerWriteStub(
         toolId === "easybroker_create_listing"
           ? "Creates an EasyBroker listing (write, HITL)."
           : "Uploads images to an EasyBroker listing (write, HITL).",
-      schema: z.record(z.string(), z.any()),
+      schema:
+        toolId === "easybroker_create_listing"
+          ? z.object({
+              title: z.string().min(1),
+              description: z.string().optional(),
+              operation: z.enum(["sale", "rent"]),
+              property_type: z.string().min(1),
+              price: z.number().nonnegative(),
+              currency: z.string().optional(),
+              location: z
+                .object({
+                  street: z.string().optional(),
+                  exterior_number: z.string().optional(),
+                  neighborhood: z.string().optional(),
+                  city: z.string().optional(),
+                  state: z.string().optional(),
+                  country: z.string().optional(),
+                  postal_code: z.string().optional(),
+                  latitude: z.number().optional(),
+                  longitude: z.number().optional(),
+                })
+                .optional(),
+              area_m2: z.number().nonnegative().optional(),
+              bedrooms: z.number().nonnegative().optional(),
+              bathrooms: z.number().nonnegative().optional(),
+              parking: z.number().nonnegative().optional(),
+              case_id: z.string().optional(),
+              custom_fields_json: z
+                .string()
+                .optional()
+                .describe(
+                  "Optional JSON string with tenant-specific EasyBroker fields."
+                ),
+            })
+          : z.object({
+              listing_id: z.string().min(1),
+              image_paths: z.array(z.string().min(1)).min(1),
+              case_id: z.string().optional(),
+            }),
     }
   );
 }

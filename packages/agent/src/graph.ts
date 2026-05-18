@@ -59,6 +59,7 @@ import {
   recentMessagesSuggestCompanyData,
 } from "./skills/month-followup";
 import { turnHasLeadIdentifier } from "./skills/lead-followup-intent";
+import { isPropertyOptioningIntent } from "./skills/property-optioning-intent";
 import {
   deriveSkillRoutingContext,
   shouldRouteFromContinuity,
@@ -1086,6 +1087,23 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           registryList.map((s) => s.name),
           input.enabledSkills
         );
+        if (
+          isPropertyOptioningIntent(message) &&
+          skillCandidateIsEnabled("property-optioning-coach", candidateSlugs)
+        ) {
+          activeSkill = await resolveSkill("property-optioning-coach", registry);
+          console.log(
+            `[skills] active=property-optioning-coach reason=deterministic_property_optioning session=${sessionId} channel=${channel ?? "web"}`
+          );
+          skillSelectionSnapshot = {
+            active: "property-optioning-coach",
+            reason: "deterministic_property_optioning",
+            allowedTools: activeSkill.allowedTools,
+            requiresTenantContext: activeSkill.requiresTenantContext,
+            registryRoot,
+            registrySize,
+          };
+        } else {
         const selectorModel = createSkillSelectorModel();
         const selection = await selectSkillForTurn({
           userMessage: message,
@@ -1195,6 +1213,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
             registryRoot,
             registrySize,
           };
+        }
         }
       } else {
         console.log(
