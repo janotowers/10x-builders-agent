@@ -147,7 +147,17 @@ export function addOperationalCaseTools(
             externalContact,
             nextActionAt: input.next_action_at ?? new Date().toISOString(),
             dueAt: input.due_at ?? null,
-            context: input.context ?? {},
+            // Marcamos created_from para distinguir en /operational-cases
+            // los casos creados por el flujo conversacional (chat/telegram)
+            // de los creados desde el formulario web ("Poner en operación").
+            // El web formula explícitamente `created_from='web_operational_cases_ui'`;
+            // aquí marcamos `agent_conversation`. NO sobreescribimos si el
+            // caller ya proveyó un valor (defensa por si en el futuro alguien
+            // llama esta tool desde otro contexto y quiere su propio tag).
+            context: {
+              created_from: "agent_conversation",
+              ...(input.context ?? {}),
+            },
           });
 
           await insertOperationalCaseEvent(ctx.db, {

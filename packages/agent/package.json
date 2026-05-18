@@ -19,6 +19,7 @@
     "test:skills-registry": "tsx src/skills/registry.selftest.ts",
     "test:skills-runtime": "tsx src/skills/runtime.selftest.ts",
     "test:skills-select": "tsx src/skills/select.selftest.ts",
+    "test:operational-skills": "tsx src/skills/operational-skills.selftest.ts",
     "test:routing-context": "tsx src/skills/routing-context.selftest.ts",
     "test:lead-followup-intent": "tsx src/skills/lead-followup-intent.selftest.ts",
     "test:memory-flush": "tsx src/memory_flush.selftest.ts",

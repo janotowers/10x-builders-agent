@@ -1,6 +1,18 @@
 ---
 name: property-optioning-coach
-description: End-to-end coach for the "opcionar propiedad" workflow used by real estate agencies. Use when the case_type is `property_optioning`. Walks the inmobiliario through capturing the property, building comparables, agreeing the listing price, signing the commission contract, coordinating photos, and assembling the final publication package. Composite skill — orchestrates atomic sub-skills via includes.
+description: |
+  Coach end-to-end del flujo "opcionar propiedad" para inmobiliarios.
+  Composite skill que orquesta sub-skills vía includes.
+  Use when the user (inmobiliario) wants to start or continue capturing a
+  property to list, including intents en español como: "necesito opcionar
+  una propiedad / una casa / un depto", "conseguir la exclusiva",
+  "firmar contrato de comisión", "nueva captación", "pedir documentos al
+  dueño", "preparar precio de salida", "hacer análisis de comparables",
+  "coordinar sesión de fotos", "publicar la propiedad en EasyBroker", o
+  cualquier continuación de una conversación donde el usuario ya está
+  capturando una propiedad. También úsala cuando el cron la dispare vía
+  case binding porque el case_type es `property_optioning` (verás un
+  bloque [Caso operacional activo] en el system prompt).
 scope: business
 allowed_tools:
   - get_user_preferences

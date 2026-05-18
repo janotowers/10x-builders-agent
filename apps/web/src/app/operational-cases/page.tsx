@@ -410,6 +410,15 @@ export default async function OperationalCasesPage({
                               Prueba
                             </span>
                           ) : null}
+                          {opCase.context_jsonb?.created_from ===
+                          "agent_conversation" ? (
+                            <span
+                              className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700"
+                              title="Este caso lo creó el agente a partir de una conversación (chat o Telegram), no del formulario web."
+                            >
+                              Conversacional
+                            </span>
+                          ) : null}
                         </div>
                         <h3 className="mt-2 truncate font-semibold">
                           {String(
@@ -525,6 +534,14 @@ function CaseDetail({
         {opCase.context_jsonb?.test_mode === true ? (
           <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-700">
             Caso de prueba
+          </span>
+        ) : null}
+        {opCase.context_jsonb?.created_from === "agent_conversation" ? (
+          <span
+            className="rounded-full bg-violet-50 px-2 py-0.5 text-xs font-semibold text-violet-700"
+            title="Este caso lo creó el agente a partir de una conversación (chat o Telegram), no del formulario web."
+          >
+            Conversacional
           </span>
         ) : null}
       </div>
