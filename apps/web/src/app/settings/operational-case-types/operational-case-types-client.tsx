@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AccountSkill,
   OperationalCase,
+  OperationalCaseActivationPolicy,
   OperationalCaseEvent,
   OperationalCaseFlowSkill,
   OperationalCaseFlowStep,
@@ -34,6 +35,39 @@ const DEFAULT_INTAKE_SCHEMA: OperationalCaseIntakeField[] = [
   },
 ];
 
+const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
+  safe_test: {
+    description:
+      "Crea un caso con valores sintéticos del intake para validar el arranque seguro del flujo sin mezclarlo con operación real.",
+    run_button_label: "Ejecutar prueba segura inicial",
+    synthetic_data_copy:
+      "Este caso se creó con valores de prueba derivados del formulario inicial; no usa datos reales ni ejecuta envíos, escrituras o publicaciones.",
+    success_copy:
+      "Prueba segura inicial pasada: el caso de prueba validó intake y avanzó al primer paso operativo sin ejecutar acciones externas.",
+    timeline_note:
+      "Prueba segura inicial: valida intake y deja pendiente la siguiente acción. Tools de envío/escritura/publicación no se ejecutan automáticamente y requieren confirmación humana.",
+    next_action:
+      "Revisar readiness de tools de envío/escritura/publicación antes de operación real completa.",
+    start_step: "intake",
+    success_step: "awaiting_documents",
+  },
+  activation_checks: {
+    skill_valid_copy: "Skill válida: parser/rúbrica sin bloqueos.",
+    readiness_ready_copy: "Tools listas: readiness sin bloqueos críticos.",
+    readiness_blocked_copy:
+      "Tools pendientes: resuelve las herramientas bloqueantes antes de activar.",
+    safe_test_success_copy:
+      "Prueba segura inicial pasada: el caso de prueba validó intake y avanzó al primer paso operativo sin ejecutar acciones externas.",
+    conversational_safe_copy:
+      "Uso conversacional seguro: puede iniciarse desde chat/Telegram en modo controlado, sin envíos/publicaciones automáticas.",
+    real_operation_complete_copy:
+      "Operación real completa: sin stubs técnicos pendientes.",
+    real_operation_pending_copy:
+      "Operación real completa: pendiente; quedan {stub_count} stubs/capacidades por resolver antes de operar sin restricciones.",
+    real_operation_requires_no_stubs: true,
+  },
+};
+
 type EditingCaseType = {
   case_type: string;
   display_name: string;
@@ -43,6 +77,7 @@ type EditingCaseType = {
   visibility: Exclude<OperationalCaseTypeVisibility, "global">;
   intake_schema_jsonb: OperationalCaseIntakeField[];
   operational_flow_jsonb: OperationalCaseFlowStep[];
+  activation_policy_jsonb: OperationalCaseActivationPolicy;
   default_reminder_policy_jsonb: OperationalCaseReminderPolicy;
   isNew: boolean;
 };
@@ -65,6 +100,7 @@ type SkillAuthoringResult = {
   }>;
   suggestedEvals: Record<string, unknown>;
   operationalFlow?: OperationalCaseFlowStep[];
+  activationPolicy?: OperationalCaseActivationPolicy;
   activationRecommendation: string;
   attemptsUsed?: number;
   elapsedMs?: number;
@@ -200,6 +236,7 @@ type EditingSnapshot = {
   editing: EditingCaseType;
   schemaText: string;
   flowText: string;
+  activationPolicyText: string;
   procedureText: string;
   fieldListText: string;
   createPrivateSkill: boolean;
@@ -223,6 +260,7 @@ function caseTypeToEditing(row: OperationalCaseType): EditingCaseType {
     operational_flow_jsonb: Array.isArray(row.operational_flow_jsonb)
       ? row.operational_flow_jsonb
       : [],
+    activation_policy_jsonb: row.activation_policy_jsonb ?? {},
     default_reminder_policy_jsonb: row.default_reminder_policy_jsonb ?? {},
     isNew: false,
   };
@@ -238,6 +276,7 @@ function newCaseType(): EditingCaseType {
     visibility: "private",
     intake_schema_jsonb: DEFAULT_INTAKE_SCHEMA,
     operational_flow_jsonb: [],
+    activation_policy_jsonb: DEFAULT_ACTIVATION_POLICY,
     default_reminder_policy_jsonb: {},
     isNew: true,
   };
@@ -342,6 +381,29 @@ function normalizeOperationalFlow(value: unknown): OperationalCaseFlowStep[] {
       };
     })
     .filter(isPresent);
+}
+
+function mergeActivationPolicy(
+  value: OperationalCaseActivationPolicy | null | undefined
+): Required<OperationalCaseActivationPolicy> {
+  return {
+    safe_test: {
+      ...DEFAULT_ACTIVATION_POLICY.safe_test,
+      ...(value?.safe_test ?? {}),
+    },
+    activation_checks: {
+      ...DEFAULT_ACTIVATION_POLICY.activation_checks,
+      ...(value?.activation_checks ?? {}),
+    },
+  };
+}
+
+function formatPolicyCopy(template: string | undefined, values: Record<string, string>) {
+  let result = template ?? "";
+  for (const [key, value] of Object.entries(values)) {
+    result = result.replaceAll(`{${key}}`, value);
+  }
+  return result;
 }
 
 function fallbackOperationalFlow(params: {
@@ -668,12 +730,13 @@ function activationToolsDescription(params: {
   toolReadiness: ToolReadinessResult | null;
   toolsHaveBlocks: boolean;
   toolsPass: boolean;
+  policy: Required<OperationalCaseActivationPolicy>;
 }) {
   if (params.toolsPass) {
-    return "Tools listas: readiness sin bloqueos críticos.";
+    return params.policy.activation_checks.readiness_ready_copy;
   }
   if (params.toolsHaveBlocks) {
-    return "Tools pendientes: resuelve las herramientas bloqueantes antes de activar.";
+    return params.policy.activation_checks.readiness_blocked_copy;
   }
   if (!params.toolReadiness) {
     return "Tools pendientes: revisa preparación operativa para detectar bloqueos.";
@@ -684,14 +747,18 @@ function activationToolsDescription(params: {
 function operationCompletenessDescription(params: {
   readinessCounts: ReturnType<typeof toolReadinessCounts>;
   toolsPass: boolean;
+  policy: Required<OperationalCaseActivationPolicy>;
 }) {
   if (!params.toolsPass) {
-    return "Operación real completa: pendiente hasta resolver bloqueos críticos.";
+    return params.policy.activation_checks.readiness_blocked_copy;
   }
   if (params.readinessCounts.stub > 0) {
-    return `Operación real completa: pendiente; quedan ${params.readinessCounts.stub} stubs/capacidades por resolver antes de operar sin restricciones.`;
+    return formatPolicyCopy(
+      params.policy.activation_checks.real_operation_pending_copy,
+      { stub_count: String(params.readinessCounts.stub) }
+    );
   }
-  return "Operación real completa: sin stubs técnicos pendientes.";
+  return params.policy.activation_checks.real_operation_complete_copy;
 }
 
 function readinessActionUrl(item: ToolReadinessToolItem): string | null {
@@ -1009,6 +1076,7 @@ function serializeEditingSnapshot(snapshot: EditingSnapshot | null) {
     editing: snapshot.editing,
     schemaText: snapshot.schemaText,
     flowText: snapshot.flowText,
+    activationPolicyText: snapshot.activationPolicyText,
     procedureText: snapshot.procedureText,
     fieldListText: snapshot.fieldListText,
     createPrivateSkill: snapshot.createPrivateSkill,
@@ -1030,6 +1098,7 @@ export function OperationalCaseTypesClient({
   const [editing, setEditing] = useState<EditingCaseType | null>(null);
   const [schemaText, setSchemaText] = useState("");
   const [flowText, setFlowText] = useState("");
+  const [activationPolicyText, setActivationPolicyText] = useState("");
   const [procedureText, setProcedureText] = useState("");
   const [fieldListText, setFieldListText] = useState("");
   const [createPrivateSkill, setCreatePrivateSkill] = useState(true);
@@ -1126,6 +1195,7 @@ export function OperationalCaseTypesClient({
         editing,
         schemaText,
         flowText,
+        activationPolicyText,
         procedureText,
         fieldListText,
         createPrivateSkill,
@@ -1216,6 +1286,18 @@ export function OperationalCaseTypesClient({
     return Array.isArray(globalCounterpart?.operational_flow_jsonb)
       ? globalCounterpart.operational_flow_jsonb
       : [];
+  }
+
+  function effectiveActivationPolicyForRow(row: OperationalCaseType) {
+    if (row.activation_policy_jsonb) {
+      return mergeActivationPolicy(row.activation_policy_jsonb);
+    }
+    if (scopeLabel(row) === "global") return mergeActivationPolicy(null);
+    const globalCounterpart = caseTypes.find(
+      (candidate) =>
+        candidate.case_type === row.case_type && scopeLabel(candidate) === "global"
+    );
+    return mergeActivationPolicy(globalCounterpart?.activation_policy_jsonb);
   }
 
   async function refreshToolReadiness(row: OperationalCaseType) {
@@ -1447,6 +1529,11 @@ export function OperationalCaseTypesClient({
     const nextEditing = { ...value, description: editableDescription };
     const nextSchemaText = JSON.stringify(value.intake_schema_jsonb, null, 2);
     const nextFlowText = JSON.stringify(value.operational_flow_jsonb, null, 2);
+    const nextActivationPolicyText = JSON.stringify(
+      mergeActivationPolicy(value.activation_policy_jsonb),
+      null,
+      2
+    );
     const nextFieldListText = value.intake_schema_jsonb
       .map((field) => field.label)
       .join("\n");
@@ -1454,6 +1541,7 @@ export function OperationalCaseTypesClient({
     setEditing(nextEditing);
     setSchemaText(nextSchemaText);
     setFlowText(nextFlowText);
+    setActivationPolicyText(nextActivationPolicyText);
     setProcedureText(editableDescription);
     setFieldListText(nextFieldListText);
     setCreatePrivateSkill(nextCreatePrivateSkill);
@@ -1462,6 +1550,7 @@ export function OperationalCaseTypesClient({
       editing: nextEditing,
       schemaText: nextSchemaText,
       flowText: nextFlowText,
+      activationPolicyText: nextActivationPolicyText,
       procedureText: editableDescription,
       fieldListText: nextFieldListText,
       createPrivateSkill: nextCreatePrivateSkill,
@@ -1487,6 +1576,7 @@ export function OperationalCaseTypesClient({
     setEditing(null);
     setSchemaText("");
     setFlowText("");
+    setActivationPolicyText("");
     setProcedureText("");
     setFieldListText("");
     setGeneratedSkillBody("");
@@ -1528,6 +1618,11 @@ export function OperationalCaseTypesClient({
     };
     const nextSchemaText = JSON.stringify(value.intake_schema_jsonb, null, 2);
     const nextFlowText = JSON.stringify(value.operational_flow_jsonb, null, 2);
+    const nextActivationPolicyText = JSON.stringify(
+      mergeActivationPolicy(value.activation_policy_jsonb),
+      null,
+      2
+    );
     const nextFieldListText = value.intake_schema_jsonb
       .map((field) => field.label)
       .join("\n");
@@ -1535,6 +1630,7 @@ export function OperationalCaseTypesClient({
     setEditing(nextEditing);
     setSchemaText(nextSchemaText);
     setFlowText(nextFlowText);
+    setActivationPolicyText(nextActivationPolicyText);
     setProcedureText(editableDescription);
     setFieldListText(nextFieldListText);
     setCreatePrivateSkill(true);
@@ -1543,6 +1639,7 @@ export function OperationalCaseTypesClient({
       editing: nextEditing,
       schemaText: nextSchemaText,
       flowText: nextFlowText,
+      activationPolicyText: nextActivationPolicyText,
       procedureText: editableDescription,
       fieldListText: nextFieldListText,
       createPrivateSkill: true,
@@ -1567,9 +1664,15 @@ export function OperationalCaseTypesClient({
     setEditing(value);
     const nextSchemaText = JSON.stringify(value.intake_schema_jsonb, null, 2);
     const nextFlowText = JSON.stringify(value.operational_flow_jsonb, null, 2);
+    const nextActivationPolicyText = JSON.stringify(
+      mergeActivationPolicy(value.activation_policy_jsonb),
+      null,
+      2
+    );
     const nextFieldListText = "Título\nNotas iniciales";
     setSchemaText(nextSchemaText);
     setFlowText(nextFlowText);
+    setActivationPolicyText(nextActivationPolicyText);
     setProcedureText("");
     setFieldListText(nextFieldListText);
     setCreatePrivateSkill(true);
@@ -1578,6 +1681,7 @@ export function OperationalCaseTypesClient({
       editing: value,
       schemaText: nextSchemaText,
       flowText: nextFlowText,
+      activationPolicyText: nextActivationPolicyText,
       procedureText: "",
       fieldListText: nextFieldListText,
       createPrivateSkill: true,
@@ -1675,6 +1779,15 @@ export function OperationalCaseTypesClient({
       );
       setFlowText(JSON.stringify(normalized, null, 2));
     }
+    if (data.activationPolicy) {
+      const normalizedPolicy = mergeActivationPolicy(data.activationPolicy);
+      setEditing((current) =>
+        current
+          ? { ...current, activation_policy_jsonb: normalizedPolicy }
+          : current
+      );
+      setActivationPolicyText(JSON.stringify(normalizedPolicy, null, 2));
+    }
     setCreatePrivateSkill(true);
     setShowAdvanced(true);
   }
@@ -1704,6 +1817,7 @@ export function OperationalCaseTypesClient({
           fieldList: fieldListText,
           intakeSchema: editing.intake_schema_jsonb,
           operationalFlow: editing.operational_flow_jsonb,
+          activationPolicy: editing.activation_policy_jsonb,
           skillSlug: editing.default_skill_slug,
           baseSkillSlug: selectedCaseType?.default_skill_slug ?? editing.default_skill_slug,
         }),
@@ -1833,6 +1947,15 @@ export function OperationalCaseTypesClient({
         setError(`operational_flow_jsonb inválido: ${(err as Error).message}`);
         return;
       }
+      let activationPolicy: OperationalCaseActivationPolicy;
+      try {
+        activationPolicy = mergeActivationPolicy(
+          JSON.parse(activationPolicyText || "{}") as OperationalCaseActivationPolicy
+        );
+      } catch (err) {
+        setError(`activation_policy_jsonb inválido: ${(err as Error).message}`);
+        return;
+      }
 
       if (createPrivateSkill) {
         const skillBody =
@@ -1877,6 +2000,7 @@ export function OperationalCaseTypesClient({
           ...editing,
           intake_schema_jsonb: intakeSchema,
           operational_flow_jsonb: operationalFlow,
+          activation_policy_jsonb: activationPolicy,
           default_reminder_policy_jsonb: editing.default_reminder_policy_jsonb,
         }),
       });
@@ -1919,6 +2043,7 @@ export function OperationalCaseTypesClient({
       ? row.intake_schema_jsonb
       : [];
     const effectiveFlow = effectiveOperationalFlowForRow(row);
+    const activationPolicy = effectiveActivationPolicyForRow(row);
     const flowInherited =
       effectiveFlow.length > 0 &&
       (!Array.isArray(row.operational_flow_jsonb) ||
@@ -2334,8 +2459,7 @@ export function OperationalCaseTypesClient({
                 Caso de prueba
               </div>
               <p className="mt-1 text-xs text-neutral-500">
-                Crea un caso con valores sintéticos del intake para validar el
-                arranque seguro del flujo sin mezclarlo con operación real.
+                {activationPolicy.safe_test.description}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -2364,7 +2488,9 @@ export function OperationalCaseTypesClient({
                     : undefined
                 }
               >
-                {testCaseRunning ? "Ejecutando..." : "Ejecutar prueba segura inicial"}
+                {testCaseRunning
+                  ? "Ejecutando..."
+                  : activationPolicy.safe_test.run_button_label}
               </button>
             </div>
             {toolsHaveBlocks && testCaseResult?.case ? (
@@ -2394,9 +2520,7 @@ export function OperationalCaseTypesClient({
                   Abrir en Casos operacionales
                 </a>
                 <p className="mt-2 text-neutral-500">
-                  Este caso se creó con valores de prueba derivados del
-                  formulario inicial; no usa datos reales ni ejecuta envíos,
-                  escrituras o publicaciones.
+                  {activationPolicy.safe_test.synthetic_data_copy}
                 </p>
               </div>
             ) : (
@@ -2516,7 +2640,7 @@ export function OperationalCaseTypesClient({
                   skillLooksValid ? "ready" : "pending",
                   skillLooksValid ? "✓ Listo" : "Pendiente"
                 )}
-                <span>Skill válida: parser/rúbrica sin bloqueos.</span>
+                <span>{activationPolicy.activation_checks.skill_valid_copy}</span>
               </li>
               <li className="flex items-start gap-2">
                 {activationStatusBadge(
@@ -2532,6 +2656,7 @@ export function OperationalCaseTypesClient({
                     toolReadiness,
                     toolsHaveBlocks,
                     toolsPass,
+                    policy: activationPolicy,
                   })}
                 </span>
               </li>
@@ -2541,9 +2666,7 @@ export function OperationalCaseTypesClient({
                   testPassed ? "✓ Listo" : "Pendiente"
                 )}
                 <span>
-                  Prueba segura inicial pasada: el caso de prueba validó intake
-                  y avanzó al primer paso operativo sin ejecutar acciones
-                  externas.
+                  {activationPolicy.activation_checks.safe_test_success_copy}
                 </span>
               </li>
               <li className="flex items-start gap-2">
@@ -2556,8 +2679,7 @@ export function OperationalCaseTypesClient({
                     : "Pendiente"
                 )}
                 <span>
-                  Uso conversacional seguro: puede iniciarse desde chat/Telegram
-                  en modo controlado, sin envíos/publicaciones automáticas.
+                  {activationPolicy.activation_checks.conversational_safe_copy}
                 </span>
               </li>
               <li className="flex items-start gap-2">
@@ -2571,6 +2693,7 @@ export function OperationalCaseTypesClient({
                   {operationCompletenessDescription({
                     readinessCounts,
                     toolsPass,
+                    policy: activationPolicy,
                   })}
                 </span>
               </li>
@@ -2954,8 +3077,8 @@ export function OperationalCaseTypesClient({
               </summary>
               <p className="mt-2 text-xs leading-relaxed text-gray-500">
                 Usa esta sección para revisar o ajustar la definición exacta que
-                guardará el sistema. El formulario JSON, el flujo operativo y la
-                habilidad se validan al guardar.
+                guardará el sistema. El formulario JSON, el flujo operativo, la
+                política de activación y la habilidad se validan al guardar.
               </p>
               <label className="mt-3 block text-sm">
                 <span className="font-medium">Formulario inicial JSON</span>
@@ -2964,6 +3087,34 @@ export function OperationalCaseTypesClient({
                   onChange={(event) => setSchemaText(event.target.value)}
                   className="mt-1 h-56 w-full rounded border border-gray-300 p-2 font-mono text-xs"
                 />
+              </label>
+              <label className="mt-3 block text-sm">
+                <span className="font-medium">
+                  Política de activación JSON
+                </span>
+                <textarea
+                  value={activationPolicyText}
+                  onChange={(event) => {
+                    setActivationPolicyText(event.target.value);
+                    try {
+                      const normalized = mergeActivationPolicy(
+                        JSON.parse(event.target.value || "{}") as OperationalCaseActivationPolicy
+                      );
+                      setEditing((current) =>
+                        current
+                          ? { ...current, activation_policy_jsonb: normalized }
+                          : current
+                      );
+                    } catch {
+                      // Mientras el usuario edita JSON parcial, esperamos a guardar.
+                    }
+                  }}
+                  className="mt-1 h-56 w-full rounded border border-gray-300 p-2 font-mono text-xs"
+                />
+                <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                  Controla copy/reglas de prueba segura inicial y checks de
+                  activación para este caso de uso sin tocar código.
+                </p>
               </label>
               <label className="mt-3 block text-sm">
                 <span className="font-medium">

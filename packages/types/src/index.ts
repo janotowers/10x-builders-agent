@@ -418,6 +418,33 @@ export interface OperationalCaseFlowStep {
   step_tools?: OperationalCaseFlowTool[];
 }
 
+export interface OperationalCaseSafeTestPolicy {
+  description?: string;
+  run_button_label?: string;
+  synthetic_data_copy?: string;
+  success_copy?: string;
+  timeline_note?: string;
+  next_action?: string;
+  start_step?: string;
+  success_step?: string;
+}
+
+export interface OperationalCaseActivationChecksPolicy {
+  skill_valid_copy?: string;
+  readiness_ready_copy?: string;
+  readiness_blocked_copy?: string;
+  safe_test_success_copy?: string;
+  conversational_safe_copy?: string;
+  real_operation_complete_copy?: string;
+  real_operation_pending_copy?: string;
+  real_operation_requires_no_stubs?: boolean;
+}
+
+export interface OperationalCaseActivationPolicy {
+  safe_test?: OperationalCaseSafeTestPolicy;
+  activation_checks?: OperationalCaseActivationChecksPolicy;
+}
+
 export interface OperationalCaseType {
   id: string;
   case_type: string;
@@ -429,6 +456,7 @@ export interface OperationalCaseType {
   status?: OperationalCaseTypeStatus;
   intake_schema_jsonb?: OperationalCaseIntakeField[];
   operational_flow_jsonb?: OperationalCaseFlowStep[];
+  activation_policy_jsonb?: OperationalCaseActivationPolicy;
   description: string | null;
   created_at: string;
   updated_at: string;

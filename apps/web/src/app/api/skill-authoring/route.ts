@@ -21,6 +21,7 @@ type SkillAuthoringRequest = {
   fieldList?: unknown;
   intakeSchema?: unknown;
   operationalFlow?: unknown;
+  activationPolicy?: unknown;
   skillSlug?: unknown;
   baseSkillSlug?: unknown;
 };
@@ -626,6 +627,9 @@ export async function POST(request: Request) {
     const skillSlug = cleanText(body.skillSlug);
     const baseSkillSlug = cleanText(body.baseSkillSlug) || skillSlug;
     const existingOperationalFlow = normalizeOperationalFlow(body.operationalFlow);
+    const existingActivationPolicy = isRecord(body.activationPolicy)
+      ? body.activationPolicy
+      : {};
     const baseSkillBody = await readGlobalSkillBody(baseSkillSlug);
 
     if (!displayName && !description) {
@@ -685,7 +689,7 @@ export async function POST(request: Request) {
       "Usa la skill `skill-authoring` para proponer un SKILL.md optimizado para Gu OS.",
       "FORMATO DE SALIDA OBLIGATORIO (no añadas texto fuera de las etiquetas):",
       "<metadata>",
-      `{"suggestedEvals":{"positive":["..."],"nearMiss":["..."],"heartbeat":["..."]},"operationalFlow":[{"step_key":"intake","step_label":"Captura inicial","step_description":"...","step_skills":[],"step_tools":[{"tool_id":"operational_case_create","tool_label":"Crear caso operacional","tool_description":"..."}]}],"notes":"<opcional, ≤300 chars, solo si es concreta>"}`,
+      `{"suggestedEvals":{"positive":["..."],"nearMiss":["..."],"heartbeat":["..."]},"operationalFlow":[{"step_key":"intake","step_label":"Captura inicial","step_description":"...","step_skills":[],"step_tools":[{"tool_id":"operational_case_create","tool_label":"Crear caso operacional","tool_description":"..."}]}],"activationPolicy":{"safe_test":{"description":"...","run_button_label":"Ejecutar prueba segura inicial","synthetic_data_copy":"...","success_copy":"...","timeline_note":"...","next_action":"...","start_step":"intake","success_step":"<primer paso operativo>"},"activation_checks":{"skill_valid_copy":"...","readiness_ready_copy":"...","readiness_blocked_copy":"...","safe_test_success_copy":"...","conversational_safe_copy":"...","real_operation_complete_copy":"...","real_operation_pending_copy":"... {stub_count} ...","real_operation_requires_no_stubs":true}},"notes":"<opcional, ≤300 chars, solo si es concreta>"}`,
       "</metadata>",
       "<skill-draft>",
       "...el SKILL.md completo aquí, tal cual, sin escapar nada, sin ```fences```...",
@@ -701,6 +705,9 @@ export async function POST(request: Request) {
       "- `step_skills` es array de `{skill_slug, skill_label, skill_description, skill_tools}`; `skill_tools` es array de `{tool_id, tool_label, tool_description}`.",
       "- Usa `step_tools` sólo para tools del paso no asociadas claramente a una skill específica (ej. `operational_case_create`, `operational_case_update_state`).",
       "- Todo `tool_id` en operationalFlow debe existir en TOOL_CATALOG y estar contemplado por `allowed_tools` del SKILL.md root o de sus includes.",
+      "- Incluye `activationPolicy` SIEMPRE que estés generando/mejorando un caso operacional. No hardcodees referencias a property_optioning salvo que sea ese caso.",
+      "- `activationPolicy.safe_test` define copy y pasos para la prueba segura inicial. `success_step` debe ser el primer paso operativo posterior a intake si aplica.",
+      "- `activationPolicy.activation_checks` define copy de checks. Usa `{stub_count}` literalmente donde quieras insertar el conteo de stubs pendientes.",
       "Nunca metas el SKILL.md dentro del JSON: va exclusivamente en <skill-draft>.",
       "",
       "Reglas no negociables para el skillDraft:",
@@ -724,6 +731,7 @@ export async function POST(request: Request) {
           fieldList,
           intakeSchema: body.intakeSchema ?? null,
           existingOperationalFlow,
+          existingActivationPolicy,
           baseSkillSlug,
           hasBaseSkillBody: Boolean(baseSkillBody),
         },
@@ -952,6 +960,9 @@ export async function POST(request: Request) {
                 ? parsed.suggestedEvals
                 : {},
               operationalFlow,
+              activationPolicy: isRecord(parsed.activationPolicy)
+                ? parsed.activationPolicy
+                : {},
               activationRecommendation,
               parserValid: Boolean(parsedSkill),
               metadataTruncated,

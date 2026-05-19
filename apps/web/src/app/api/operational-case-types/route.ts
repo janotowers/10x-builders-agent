@@ -6,6 +6,7 @@ import {
   upsertOperationalCaseTypeForUser,
 } from "@agents/db";
 import type {
+  OperationalCaseActivationPolicy,
   OperationalCaseFlowSkill,
   OperationalCaseFlowStep,
   OperationalCaseFlowTool,
@@ -153,6 +154,44 @@ function normalizeOperationalFlow(value: unknown): OperationalCaseFlowStep[] {
     .filter((step) => step.step_key && step.step_label);
 }
 
+function normalizeActivationPolicy(value: unknown): OperationalCaseActivationPolicy {
+  if (!isRecord(value)) return {};
+  const safeTest = isRecord(value.safe_test) ? value.safe_test : {};
+  const activationChecks = isRecord(value.activation_checks)
+    ? value.activation_checks
+    : {};
+  return {
+    safe_test: {
+      description: cleanText(safeTest.description) || undefined,
+      run_button_label: cleanText(safeTest.run_button_label) || undefined,
+      synthetic_data_copy: cleanText(safeTest.synthetic_data_copy) || undefined,
+      success_copy: cleanText(safeTest.success_copy) || undefined,
+      timeline_note: cleanText(safeTest.timeline_note) || undefined,
+      next_action: cleanText(safeTest.next_action) || undefined,
+      start_step: cleanSlug(safeTest.start_step).replace(/-/g, "_") || undefined,
+      success_step:
+        cleanSlug(safeTest.success_step).replace(/-/g, "_") || undefined,
+    },
+    activation_checks: {
+      skill_valid_copy: cleanText(activationChecks.skill_valid_copy) || undefined,
+      readiness_ready_copy:
+        cleanText(activationChecks.readiness_ready_copy) || undefined,
+      readiness_blocked_copy:
+        cleanText(activationChecks.readiness_blocked_copy) || undefined,
+      safe_test_success_copy:
+        cleanText(activationChecks.safe_test_success_copy) || undefined,
+      conversational_safe_copy:
+        cleanText(activationChecks.conversational_safe_copy) || undefined,
+      real_operation_complete_copy:
+        cleanText(activationChecks.real_operation_complete_copy) || undefined,
+      real_operation_pending_copy:
+        cleanText(activationChecks.real_operation_pending_copy) || undefined,
+      real_operation_requires_no_stubs:
+        activationChecks.real_operation_requires_no_stubs === false ? false : true,
+    },
+  };
+}
+
 export async function GET() {
   try {
     const supabase = await createClient();
@@ -201,6 +240,7 @@ export async function POST(request: Request) {
       "private";
     const intakeSchema = normalizeIntakeSchema(body.intake_schema_jsonb);
     const operationalFlow = normalizeOperationalFlow(body.operational_flow_jsonb);
+    const activationPolicy = normalizeActivationPolicy(body.activation_policy_jsonb);
     const reminderPolicy = normalizeReminderPolicy(
       body.default_reminder_policy_jsonb
     );
@@ -241,6 +281,7 @@ export async function POST(request: Request) {
       visibility,
       intakeSchema,
       operationalFlow,
+      activationPolicy,
       reminderPolicy,
     });
 

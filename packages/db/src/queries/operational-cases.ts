@@ -16,6 +16,7 @@ import type {
   OperationalCaseEventActor,
   OperationalCaseEventType,
   OperationalCaseExternalContact,
+  OperationalCaseActivationPolicy,
   OperationalCaseFlowStep,
   OperationalCaseIntakeField,
   OperationalCaseReminderPolicy,
@@ -121,6 +122,7 @@ export interface UpsertOperationalCaseTypeInput {
   intakeSchema?: OperationalCaseIntakeField[];
   reminderPolicy?: OperationalCaseReminderPolicy;
   operationalFlow?: OperationalCaseFlowStep[];
+  activationPolicy?: OperationalCaseActivationPolicy;
 }
 
 export async function upsertOperationalCaseTypeForUser(
@@ -147,6 +149,7 @@ export async function upsertOperationalCaseTypeForUser(
     status: input.status ?? "draft",
     intake_schema_jsonb: input.intakeSchema ?? [],
     operational_flow_jsonb: input.operationalFlow ?? [],
+    activation_policy_jsonb: input.activationPolicy ?? {},
     updated_at: now,
   };
 
