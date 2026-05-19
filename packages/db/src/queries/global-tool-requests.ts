@@ -127,3 +127,27 @@ export async function findExistingOpenToolRequest(
   if (error) throw error;
   return (data as GlobalToolRequest | null) ?? null;
 }
+
+export async function updateGlobalToolRequestStatus(
+  db: DbClient,
+  params: {
+    id: string;
+    userId: string;
+    status: GlobalToolRequestStatus;
+    adminNotes?: string | null;
+  }
+): Promise<GlobalToolRequest | null> {
+  const { data, error } = await db
+    .from("global_tool_requests")
+    .update({
+      status: params.status,
+      admin_notes: params.adminNotes ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.id)
+    .eq("user_id", params.userId)
+    .select("*")
+    .maybeSingle();
+  if (error) throw error;
+  return (data as GlobalToolRequest | null) ?? null;
+}

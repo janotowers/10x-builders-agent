@@ -21,6 +21,7 @@ import {
   createServerClient,
   findExistingOpenToolRequest,
   listGlobalToolRequests,
+  updateGlobalToolRequestStatus,
 } from "@agents/db";
 import type {
   GlobalToolRequestKind,
@@ -145,6 +146,47 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, request: created, duplicate: false });
   } catch (err) {
     console.error("[POST /api/global-tool-requests] failed:", err);
+    return NextResponse.json({ error: "Internal error" }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = (await request.json().catch(() => ({}))) as unknown;
+    if (!isRecord(body)) {
+      return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    }
+
+    const id = cleanText(body.id);
+    const statusRaw = cleanText(body.status);
+    if (!id) {
+      return NextResponse.json({ error: "id required" }, { status: 400 });
+    }
+    if (!STATUS_VALUES.includes(statusRaw as GlobalToolRequestStatus)) {
+      return NextResponse.json({ error: "invalid status" }, { status: 400 });
+    }
+
+    const db = createServerClient();
+    const requestRow = await updateGlobalToolRequestStatus(db, {
+      id,
+      userId: user.id,
+      status: statusRaw as GlobalToolRequestStatus,
+      adminNotes: cleanText(body.admin_notes) || null,
+    });
+    if (!requestRow) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true, request: requestRow });
+  } catch (err) {
+    console.error("[PATCH /api/global-tool-requests] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
 }

@@ -115,6 +115,12 @@ export default async function SettingsPage({
               Casos de uso
             </a>
             <a
+              href="/settings/tool-requests"
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            >
+              Solicitudes
+            </a>
+            <a
               href="/memory"
               className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
             >
