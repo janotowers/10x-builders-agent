@@ -1,10 +1,10 @@
 /**
  * LangChain adapters para tools del dominio inmobiliario:
  *   - telegram_send_message_to_contact (real)
- *   - easybroker_search_listings, easybroker_search_closed_deals (stub HTTP)
+ *   - easybroker_search_listings, easybroker_search_closed_deals (real, read-only)
  *   - easybroker_create_listing, easybroker_upload_images (stub HTTP, write)
  *   - bigquery_lookup_local_comparables (real, sobre bigquery_run_query)
- *   - generate_document_from_template (stub: necesita templates por tenant)
+ *   - generate_document_from_template (real: DOCX desde account_assets)
  *   - image_watermark (stub: necesita asset por tenant)
  *   - ungga_publish_listing (stub: depende del POC API)
  *
@@ -18,9 +18,12 @@
  * `packages/agent/`). El layer caller (graph.ts wiring) provee la callback.
  */
 import { tool } from "@langchain/core/tools";
+import Docxtemplater from "docxtemplater";
+import PizZip from "pizzip";
 import { z } from "zod";
 import {
   createToolCall,
+  listAccountAssets,
   updateToolCallStatus,
   getOperationalCase,
   insertOperationalCaseEvent,
@@ -34,6 +37,7 @@ import {
   resolveEasyBrokerCredentials,
   resolveUnggaCredentials,
 } from "./realestate-credentials";
+import type { EasyBrokerCredentials } from "./realestate-credentials";
 
 export interface RealEstateToolDeps {
   /**
@@ -150,18 +154,12 @@ export function addRealEstateTools(
     );
   }
 
-  // ── EasyBroker (read) — stub HTTP que respeta EASYBROKER_API_KEY ────
+  // ── EasyBroker (read) — búsqueda real read-only ────────────────────
   if (toolEnabled("easybroker_search_listings", ctx)) {
-    tools.push(makeEasyBrokerSearchTool(ctx, "easybroker_search_listings", "/properties"));
+    tools.push(makeEasyBrokerSearchTool(ctx, "easybroker_search_listings"));
   }
   if (toolEnabled("easybroker_search_closed_deals", ctx)) {
-    tools.push(
-      makeEasyBrokerSearchTool(
-        ctx,
-        "easybroker_search_closed_deals",
-        "/properties?status=closed"
-      )
-    );
+    tools.push(makeEasyBrokerSearchTool(ctx, "easybroker_search_closed_deals"));
   }
 
   // ── EasyBroker (write) — stubs que requieren HITL ───────────────────
@@ -239,12 +237,13 @@ export function addRealEstateTools(
     );
   }
 
-  // ── Generate document — stub que indica plantilla faltante ─────────
+  // ── Generate document — render DOCX desde plantilla por cuenta ─────
   if (toolEnabled("generate_document_from_template", ctx)) {
     tools.push(
       tool(
         async (input: {
           template_slug: string;
+          asset_key?: string;
           format: "docx" | "pdf";
           data: Record<string, unknown>;
           case_id?: string;
@@ -257,28 +256,41 @@ export function addRealEstateTools(
             true,
             ctx.turnId
           );
-          const out = {
-            status: "not_configured",
-            hint:
-              "La tabla `realestate_templates(tenant, slug, body, fields_schema)` aún no está poblada para este tenant. Necesito la plantilla DOCX (con placeholders {{nombre}}, etc.) y el listado de campos. Cuando esté, este handler renderiza con `docx`/`pdf-lib` y devuelve la URL del archivo.",
-            requested_template: input.template_slug,
-            requested_format: input.format,
-            received_fields: Object.keys(input.data),
-          };
-          await updateToolCallStatus(
-            ctx.db,
-            record.id,
-            "executed",
-            out as unknown as Record<string, unknown>
-          );
-          return JSON.stringify(out);
+          try {
+            const out = await renderDocumentFromTemplate(ctx, input);
+            await updateToolCallStatus(ctx.db, record.id, "executed", out);
+            if (input.case_id && out.ok) {
+              await insertOperationalCaseEvent(ctx.db, {
+                caseId: input.case_id,
+                eventType: "state_changed",
+                actor: "agent",
+                payload: {
+                  tool: "generate_document_from_template",
+                  output_bucket: out.output_bucket,
+                  output_path: out.output_path,
+                  template_asset_key: out.template_asset_key,
+                  format: out.format,
+                },
+              });
+            }
+            return JSON.stringify(out);
+          } catch (e) {
+            const out = {
+              ok: false,
+              status: "failed",
+              error: e instanceof Error ? e.message : String(e),
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
         },
         {
           name: "generate_document_from_template",
           description:
-            "Renders a DOCX/PDF document from a stored tenant-scoped template.",
+            "Renders a DOCX document from a tenant-scoped template stored in account_assets.",
           schema: z.object({
             template_slug: z.string().min(1),
+            asset_key: z.string().min(1).optional(),
             format: z.enum(["docx", "pdf"]),
             data: z.record(z.string(), z.any()),
             case_id: z.string().min(1).optional(),
@@ -450,6 +462,159 @@ export function addRealEstateTools(
 // Helpers
 // ============================================================
 
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+type GenerateDocumentInput = {
+  template_slug: string;
+  asset_key?: string;
+  format: "docx" | "pdf";
+  data: Record<string, unknown>;
+  case_id?: string;
+};
+
+async function renderDocumentFromTemplate(
+  ctx: ToolContext,
+  input: GenerateDocumentInput
+): Promise<Record<string, unknown>> {
+  if (input.format !== "docx") {
+    return {
+      ok: false,
+      status: "unsupported_format",
+      requested_format: input.format,
+      supported_formats: ["docx"],
+      hint:
+        "La primera versión del renderer genera DOCX desde la plantilla cargada. La conversión PDF queda para una fase posterior con LibreOffice/API de conversión.",
+    };
+  }
+
+  const templateAsset = await resolveDocumentTemplateAsset(ctx, input);
+  if (!templateAsset) {
+    return {
+      ok: false,
+      status: "not_configured",
+      requested_template: input.template_slug,
+      requested_asset_key: input.asset_key ?? null,
+      hint:
+        "No encontré una plantilla DOCX en account_assets para esta cuenta. Sube la plantilla desde Preparación operativa o pasa asset_key explícito.",
+    };
+  }
+
+  const { data: templateBlob, error: downloadError } = await ctx.db.storage
+    .from(templateAsset.storage_bucket)
+    .download(templateAsset.storage_path);
+  if (downloadError) {
+    throw new Error(`No se pudo descargar la plantilla: ${downloadError.message}`);
+  }
+  if (!templateBlob) {
+    throw new Error("No se pudo descargar la plantilla: respuesta vacía.");
+  }
+
+  const templateBuffer = Buffer.from(await templateBlob.arrayBuffer());
+  const zip = new PizZip(templateBuffer);
+  const doc = new Docxtemplater(zip, {
+    paragraphLoop: true,
+    linebreaks: true,
+    delimiters: { start: "{{", end: "}}" },
+  });
+  doc.render(normalizeTemplateData(input.data));
+  const rendered = doc.getZip().generate({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+  }) as Buffer;
+
+  const outputPath = `${ctx.userId}/generated-documents/${safeSegment(
+    input.template_slug
+  )}/${Date.now()}-${safeSegment(input.case_id ?? "document")}.docx`;
+  const { error: uploadError } = await ctx.db.storage
+    .from(templateAsset.storage_bucket)
+    .upload(outputPath, rendered, {
+      contentType: DOCX_MIME,
+      upsert: true,
+    });
+  if (uploadError) {
+    throw new Error(`No se pudo guardar el documento generado: ${uploadError.message}`);
+  }
+
+  return {
+    ok: true,
+    status: "rendered",
+    format: "docx",
+    template_slug: input.template_slug,
+    template_asset_key: templateAsset.asset_key,
+    template_bucket: templateAsset.storage_bucket,
+    template_path: templateAsset.storage_path,
+    output_bucket: templateAsset.storage_bucket,
+    output_path: outputPath,
+    output_content_type: DOCX_MIME,
+    received_fields: Object.keys(input.data),
+  };
+}
+
+async function resolveDocumentTemplateAsset(
+  ctx: ToolContext,
+  input: GenerateDocumentInput
+) {
+  const candidateKeys = Array.from(
+    new Set(
+      [
+        input.asset_key,
+        input.template_slug,
+        `${input.template_slug}_template`,
+        "commission_contract_template",
+      ]
+        .map((item) => item?.trim())
+        .filter((item): item is string => Boolean(item))
+    )
+  );
+  const directMatches = await listAccountAssets(ctx.db, {
+    userId: ctx.userId,
+    assetKeys: candidateKeys,
+  });
+  for (const key of candidateKeys) {
+    const match = directMatches.find((asset) => asset.asset_key === key);
+    if (match) return match;
+  }
+
+  const accountAssets = await listAccountAssets(ctx.db, { userId: ctx.userId });
+  return (
+    accountAssets.find(
+      (asset) =>
+        asset.source_tool_id === "generate_document_from_template" &&
+        asset.content_type === DOCX_MIME
+    ) ??
+    accountAssets.find(
+      (asset) =>
+        asset.asset_key.includes("template") && asset.content_type === DOCX_MIME
+    ) ??
+    null
+  );
+}
+
+function normalizeTemplateData(data: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(data).map(([key, value]) => [key, templateValue(value)])
+  );
+}
+
+function templateValue(value: unknown): unknown {
+  if (value == null) return "";
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(templateValue).join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return value;
+}
+
+function safeSegment(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "document";
+}
+
 function toolEnabled(toolId: string, ctx: ToolContext): boolean {
   if (
     ctx.activeSkillAllowedTools &&
@@ -463,18 +628,220 @@ function toolEnabled(toolId: string, ctx: ToolContext): boolean {
   return true;
 }
 
-function makeEasyBrokerSearchTool(
+type EasyBrokerSearchInput = {
+  zona?: string;
+  operation?: "sale" | "rent";
+  property_type?: string;
+  min_price?: number;
+  max_price?: number;
+  min_area_m2?: number;
+  max_area_m2?: number;
+  date_from?: string;
+  date_to?: string;
+  page?: number;
+  limit?: number;
+};
+
+type EasyBrokerRawProperty = {
+  public_id?: string;
+  title?: string;
+  url?: string;
+  location?: string | Record<string, unknown>;
+  property_type?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  parking_spaces?: number;
+  lot_size?: number;
+  construction_size?: number;
+  updated_at?: string;
+  operations?: Array<{
+    type?: string;
+    amount?: number;
+    formatted_amount?: string;
+    currency?: string;
+    unit?: string;
+  }>;
+  title_image_full?: string;
+  title_image_thumb?: string;
+  show_prices?: boolean;
+};
+
+async function searchEasyBrokerProperties(
   ctx: ToolContext,
   toolId: "easybroker_search_listings" | "easybroker_search_closed_deals",
-  pathHint: string
+  input: EasyBrokerSearchInput,
+  creds: EasyBrokerCredentials
+): Promise<Record<string, unknown>> {
+  const isHistoricalReference = toolId === "easybroker_search_closed_deals";
+  const statuses = isHistoricalReference ? ["sold", "rented"] : ["published"];
+  const url = easyBrokerPropertiesUrl(input, statuses);
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      "X-Authorization": creds.apiKey,
+    },
+  });
+  const payload = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    throw new Error(
+      `EasyBroker respondió ${res.status}: ${errorMessageFromPayload(payload)}`
+    );
+  }
+
+  const rawContent = Array.isArray(payload.content) ? payload.content : [];
+  const normalized = rawContent
+    .map((item) => normalizeEasyBrokerProperty(item as EasyBrokerRawProperty))
+    .filter((item) => easyBrokerPropertyMatchesInput(item, input));
+
+  return {
+    ok: true,
+    status: "success",
+    source: "easybroker",
+    tool: toolId,
+    credential_source: creds.source,
+    query: {
+      ...input,
+      statuses,
+      server_filters:
+        "EasyBroker aplica page/limit, property_type y statuses. Zona/precio/m2/operación se normalizan y filtran en Gu OS cuando el endpoint no expone esos filtros directamente.",
+    },
+    pagination: payload.pagination ?? null,
+    count: normalized.length,
+    results: normalized,
+    caveat: isHistoricalReference
+      ? "Estas propiedades están marcadas como sold/rented en EasyBroker. El precio puede ser el publicado o capturado en la propiedad; no se garantiza que sea el precio final real de cierre."
+      : "Estas son propiedades activas/publicadas similares para referencia de mercado actual.",
+  };
+}
+
+function easyBrokerPropertiesUrl(input: EasyBrokerSearchInput, statuses: string[]) {
+  const base = process.env.EASYBROKER_API_BASE?.trim() || "https://api.easybroker.com";
+  const url = new URL("/v1/properties", base.replace(/\/$/, ""));
+  url.searchParams.set("page", String(input.page ?? 1));
+  url.searchParams.set("limit", String(Math.min(input.limit ?? 20, 50)));
+  for (const status of statuses) {
+    url.searchParams.append("search[statuses][]", status);
+  }
+  if (input.property_type?.trim()) {
+    url.searchParams.append("search[property_types][]", input.property_type.trim());
+  }
+  return url;
+}
+
+function normalizeEasyBrokerProperty(item: EasyBrokerRawProperty) {
+  const operation = selectEasyBrokerOperation(item.operations);
+  const areaM2 = numericOrNull(item.construction_size) ?? numericOrNull(item.lot_size);
+  const price = numericOrNull(operation?.amount);
+  return {
+    source: "easybroker",
+    id: item.public_id ?? null,
+    title: item.title ?? null,
+    url: item.url ?? null,
+    location: normalizeEasyBrokerLocation(item.location),
+    property_type: item.property_type ?? null,
+    operation: operation?.type === "rental" ? "rent" : operation?.type ?? null,
+    price,
+    formatted_price: operation?.formatted_amount ?? null,
+    currency: operation?.currency ?? null,
+    area_m2: areaM2,
+    price_per_m2: price && areaM2 ? Math.round(price / areaM2) : null,
+    bedrooms: numericOrNull(item.bedrooms),
+    bathrooms: numericOrNull(item.bathrooms),
+    parking_spaces: numericOrNull(item.parking_spaces),
+    updated_at: item.updated_at ?? null,
+    image_url: item.title_image_full ?? item.title_image_thumb ?? null,
+    show_prices: item.show_prices ?? null,
+  };
+}
+
+function selectEasyBrokerOperation(operations: EasyBrokerRawProperty["operations"]) {
+  if (!Array.isArray(operations) || operations.length === 0) return null;
+  return operations.find((operation) => operation.amount) ?? operations[0] ?? null;
+}
+
+function normalizeEasyBrokerLocation(location: EasyBrokerRawProperty["location"]) {
+  if (!location) return null;
+  if (typeof location === "string") return location;
+  return [
+    location.city_area,
+    location.city,
+    location.region,
+    location.street,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(", ");
+}
+
+function easyBrokerPropertyMatchesInput(
+  property: ReturnType<typeof normalizeEasyBrokerProperty>,
+  input: EasyBrokerSearchInput
+) {
+  if (input.zona?.trim()) {
+    const haystack = `${property.location ?? ""} ${property.title ?? ""}`.toLowerCase();
+    const tokens = input.zona
+      .toLowerCase()
+      .split(/[,\s]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3);
+    if (tokens.length > 0 && !tokens.some((token) => haystack.includes(token))) {
+      return false;
+    }
+  }
+  if (input.operation && property.operation && property.operation !== input.operation) {
+    return false;
+  }
+  if (input.min_price != null && property.price != null && property.price < input.min_price) {
+    return false;
+  }
+  if (input.max_price != null && property.price != null && property.price > input.max_price) {
+    return false;
+  }
+  if (
+    input.min_area_m2 != null &&
+    property.area_m2 != null &&
+    property.area_m2 < input.min_area_m2
+  ) {
+    return false;
+  }
+  if (
+    input.max_area_m2 != null &&
+    property.area_m2 != null &&
+    property.area_m2 > input.max_area_m2
+  ) {
+    return false;
+  }
+  if (input.date_from && property.updated_at && property.updated_at < input.date_from) {
+    return false;
+  }
+  if (input.date_to && property.updated_at && property.updated_at > input.date_to) {
+    return false;
+  }
+  return true;
+}
+
+function numericOrNull(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function errorMessageFromPayload(payload: Record<string, unknown>) {
+  const error = payload.error ?? payload.message ?? payload.errors;
+  if (typeof error === "string") return error;
+  if (error) return JSON.stringify(error);
+  return "error sin detalle";
+}
+
+function makeEasyBrokerSearchTool(
+  ctx: ToolContext,
+  toolId: "easybroker_search_listings" | "easybroker_search_closed_deals"
 ) {
   return tool(
-    async (input: Record<string, unknown>) => {
+    async (input: EasyBrokerSearchInput) => {
       const record = await createToolCall(
         ctx.db,
         ctx.sessionId,
         toolId,
-        input,
+        input as unknown as Record<string, unknown>,
         false,
         ctx.turnId
       );
@@ -493,42 +860,38 @@ function makeEasyBrokerSearchTool(
         );
         return JSON.stringify(out);
       }
-      // El API real de EasyBroker tiene su propio shape; este wrapper
-      // construye la URL de búsqueda con los filtros básicos. Cuando
-      // confirmemos los nombres exactos de query params (e.g. operation_type),
-      // ajustamos. De momento devolvemos un stub controlado pero ya marca
-      // el uso de la credencial per-account para promoverla a `active`.
-      if (creds.source === "account") {
-        // El stub no ejecuta la request real todavía, pero ya confirmamos
-        // que existe credencial válida en formato. Marcamos uso para que
-        // la UI vea actividad.
+      try {
+        const out = await searchEasyBrokerProperties(ctx, toolId, input, creds);
         await markAccountSecretSuccess(
           ctx,
           ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker
         );
+        await updateToolCallStatus(ctx.db, record.id, "executed", out);
+        return JSON.stringify(out);
+      } catch (e) {
+        const errorMessage = e instanceof Error ? e.message : String(e);
+        if (creds.source === "account") {
+          await markAccountSecretFailure(
+            ctx,
+            ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker,
+            errorMessage
+          );
+        }
+        const out = {
+          ok: false,
+          status: "failed",
+          error: errorMessage,
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
       }
-      const out = {
-        status: "stub",
-        credential_source: creds.source,
-        hint:
-          "Wrapper EasyBroker pendiente de mapear filtros a query params reales (operation_type, location, etc.). Mientras tanto consulta la docs y actualiza este adapter.",
-        path_hint: pathHint,
-        received_filters: input,
-      };
-      await updateToolCallStatus(
-        ctx.db,
-        record.id,
-        "executed",
-        out as unknown as Record<string, unknown>
-      );
-      return JSON.stringify(out);
     },
     {
       name: toolId,
       description:
         toolId === "easybroker_search_listings"
-          ? "Searches EasyBroker listings (read-only)."
-          : "Searches EasyBroker closed/sold deals (read-only).",
+          ? "Searches active/published EasyBroker listings for market comparables (read-only)."
+          : "Searches EasyBroker properties marked sold/rented for historical reference (read-only; not guaranteed final closing prices).",
       schema: z.object({
         zona: z.string().optional(),
         operation: z.enum(["sale", "rent"]).optional(),

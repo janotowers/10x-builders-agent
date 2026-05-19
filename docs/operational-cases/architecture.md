@@ -274,6 +274,7 @@ cuenta** cuando aplica.
 |---|---|
 | `GET /api/tool-readiness?case_type_id=…` | Resuelve sólo metadata de skills (no compone el body completo) y devuelve por tool: estado, categoría, si bloquea prueba controlada, acción sugerida y, para EasyBroker/Ungga, `account_provider` (`easybroker`, `ungga_api`). |
 | `account_tool_secrets` | Migración `00024_account_tool_secrets.sql`. Una fila por `(user_id, provider)`: `config_jsonb` público para la UI, secretos cifrados en columna dedicada. Estados `pending_test` → `active` / `invalid` tras `POST …/test`. |
+| `account_assets` | Assets privados por cuenta requeridos por `operational_flow_jsonb.required_assets` (plantillas, watermarks, logos, etc.). El archivo vive en Supabase Storage y la tabla guarda metadata/ruta. |
 | `GET/PUT/DELETE /api/account-tool-secrets` | CRUD sin exponer secretos en GET; PUT valida contra `apps/web/src/lib/account-tool-providers.ts`. |
 | `POST /api/account-tool-secrets/[provider]/test` | Ping barato a la API externa; actualiza `status` y puede cerrar solicitudes abiertas en `global_tool_requests` para tools cubiertas por ese provider. |
 | `global_tool_requests` | Migración `00023_global_tool_requests.sql`. Backlog cuando falta capacidad global o recurso de tenant; `GET/POST /api/global-tool-requests`. |
@@ -283,6 +284,35 @@ cuenta** cuando aplica.
 Los adapters en `realestate-adapters.ts` **priorizan** secretos por cuenta y
 **caen** a variables de entorno solo para despliegues legacy
 (`EASYBROKER_API_KEY`, `UNGGA_INTERNAL_API_*`). Detalle: `realestate-credentials.ts`.
+
+### 10.1 Doctrina de personalización: global code, account configuration
+
+La regla base es: **las tools runtime viven como código global y reusable; la
+personalización del cliente vive en datos/configuración por cuenta**.
+
+Orden recomendado antes de escribir código nuevo:
+
+1. **Configuración/assets por cuenta**: plantillas DOCX, watermarks, logos,
+   API keys, tokens, preferencias simples. Se modelan en tablas como
+   `account_assets` o `account_tool_secrets`.
+2. **Flow/policy por caso de uso**: `operational_flow_jsonb`,
+   `activation_policy_jsonb` y `required_assets` declaran qué pasos,
+   mensajes, pruebas y recursos requiere cada caso sin cambiar código.
+3. **Skills por cuenta**: cuando cambia el playbook operativo de un cliente,
+   se usa `account_skills`. La skill instruye y acota tools, pero no ejecuta
+   código arbitrario.
+4. **Tool global nueva**: se agrega código en el repo sólo cuando aparece una
+   capacidad reusable para varias cuentas o casos (ej. render DOCX desde una
+   plantilla, aplicar watermark, crear listing en un API externo).
+5. **Código específico por usuario/cuenta**: evitarlo en V1. Si algún día es
+   indispensable, debe vivir en un modelo explícito de sandbox/plugin con
+   aislamiento, versionado, permisos, observabilidad y límites de recursos; no
+   mezclado directamente en el runtime global.
+
+Ejemplo: `generate_document_from_template` es una tool global. El contrato de
+Alebrixe no es código: es un asset privado de esa cuenta. El mismo renderer
+puede servir a otra cuenta si esa cuenta sube su propia plantilla y su flow
+declara el `asset_key` correspondiente.
 
 ---
 

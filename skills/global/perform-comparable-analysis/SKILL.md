@@ -1,6 +1,6 @@
 ---
 name: perform-comparable-analysis
-description: Construye un análisis de comparables (~3-8 propiedades) para una propiedad capturada, combinando EasyBroker (públicas y cerradas) con la base de operaciones cerradas en BigQuery. Usado como sub-skill de property-optioning-coach durante el step `comparables_in_progress`.
+description: Construye un análisis de comparables (~3-8 propiedades) para una propiedad capturada, combinando EasyBroker (activas/publicadas y vendidas/rentadas como referencia histórica) con la base de operaciones cerradas en BigQuery. Usado como sub-skill de property-optioning-coach durante el step `comparables_in_progress`.
 scope: business
 allowed_tools:
   - bigquery_run_query
@@ -70,9 +70,14 @@ Producir un objeto `context_jsonb.comparables_analysis`:
    - `months_back = 12` (subir a 24 si los resultados < 5).
 
 2. Llama:
-   - `easybroker_search_listings(filters)` para activas en el mercado.
-   - `easybroker_search_closed_deals(filters)` para cerradas/vendidas.
-   - `bigquery_lookup_local_comparables(filters)` para warehouse propio.
+   - `easybroker_search_listings(filters)` para activas/publicadas en el mercado
+     actual.
+   - `easybroker_search_closed_deals(filters)` para propiedades marcadas como
+     vendidas/rentadas en EasyBroker. Úsalas como referencia histórica; no
+     asumas que el precio expuesto es el precio final real de cierre salvo que
+     la cuenta lo capture así.
+   - `bigquery_lookup_local_comparables(filters)` para warehouse propio y
+     precios reales internos cuando exista esa fuente confiable.
 
 3. Si alguna devuelve `status: "not_configured"`:
    - Reporta al inmobiliario via `notify_user` qué fuente falla y qué necesita

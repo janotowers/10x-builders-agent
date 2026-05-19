@@ -290,6 +290,14 @@ type OperationalFlowToolDraft = {
   tool_id: string;
   tool_label?: string;
   tool_description?: string;
+  required_assets?: Array<{
+    asset_key: string;
+    label: string;
+    description?: string;
+    accept?: string[];
+    max_size_mb?: number;
+    required?: boolean;
+  }>;
 };
 
 type OperationalFlowSkillDraft = {
@@ -330,10 +338,38 @@ function normalizeFlowTool(value: unknown): OperationalFlowToolDraft | null {
   if (!isRecord(value)) return null;
   const toolId = cleanText(value.tool_id);
   if (!toolId) return null;
+  const requiredAssets = Array.isArray(value.required_assets)
+    ? value.required_assets
+        .map((item) => {
+          if (!isRecord(item)) return null;
+          const assetKey = cleanText(item.asset_key);
+          const label = cleanText(item.label);
+          if (!assetKey || !label) return null;
+          return {
+            asset_key: assetKey,
+            label,
+            description: cleanText(item.description) || undefined,
+            accept: Array.isArray(item.accept)
+              ? item.accept
+                  .filter((entry): entry is string => typeof entry === "string")
+                  .map((entry) => entry.trim())
+                  .filter(Boolean)
+              : undefined,
+            max_size_mb:
+              typeof item.max_size_mb === "number"
+                ? item.max_size_mb
+                : undefined,
+            required:
+              typeof item.required === "boolean" ? item.required : undefined,
+          };
+        })
+        .filter(isPresent)
+    : undefined;
   return {
     tool_id: toolId,
     tool_label: cleanText(value.tool_label) || undefined,
     tool_description: cleanText(value.tool_description) || undefined,
+    required_assets: requiredAssets?.length ? requiredAssets : undefined,
   };
 }
 
@@ -689,7 +725,7 @@ export async function POST(request: Request) {
       "Usa la skill `skill-authoring` para proponer un SKILL.md optimizado para Gu OS.",
       "FORMATO DE SALIDA OBLIGATORIO (no añadas texto fuera de las etiquetas):",
       "<metadata>",
-      `{"suggestedEvals":{"positive":["..."],"nearMiss":["..."],"heartbeat":["..."]},"operationalFlow":[{"step_key":"intake","step_label":"Captura inicial","step_description":"...","step_skills":[],"step_tools":[{"tool_id":"operational_case_create","tool_label":"Crear caso operacional","tool_description":"..."}]}],"activationPolicy":{"safe_test":{"description":"...","run_button_label":"Ejecutar prueba segura inicial","synthetic_data_copy":"...","success_copy":"...","timeline_note":"...","next_action":"...","start_step":"intake","success_step":"<primer paso operativo>"},"activation_checks":{"skill_valid_copy":"...","readiness_ready_copy":"...","readiness_blocked_copy":"...","safe_test_success_copy":"...","conversational_safe_copy":"...","real_operation_complete_copy":"...","real_operation_pending_copy":"... {stub_count} ...","real_operation_requires_no_stubs":true}},"notes":"<opcional, ≤300 chars, solo si es concreta>"}`,
+      `{"suggestedEvals":{"positive":["..."],"nearMiss":["..."],"heartbeat":["..."]},"operationalFlow":[{"step_key":"intake","step_label":"Captura inicial","step_description":"...","step_skills":[],"step_tools":[{"tool_id":"operational_case_create","tool_label":"Crear caso operacional","tool_description":"...","required_assets":[{"asset_key":"optional_stable_key","label":"Recurso requerido","description":"...","accept":["application/pdf"],"max_size_mb":15,"required":true}]}]}],"activationPolicy":{"safe_test":{"description":"...","run_button_label":"Ejecutar prueba segura inicial","synthetic_data_copy":"...","success_copy":"...","timeline_note":"...","next_action":"...","start_step":"intake","success_step":"<primer paso operativo>"},"activation_checks":{"skill_valid_copy":"...","readiness_ready_copy":"...","readiness_blocked_copy":"...","safe_test_success_copy":"...","conversational_safe_copy":"...","real_operation_complete_copy":"...","real_operation_pending_copy":"... {stub_count} ...","real_operation_requires_no_stubs":true}},"notes":"<opcional, ≤300 chars, solo si es concreta>"}`,
       "</metadata>",
       "<skill-draft>",
       "...el SKILL.md completo aquí, tal cual, sin escapar nada, sin ```fences```...",
@@ -702,7 +738,8 @@ export async function POST(request: Request) {
       "- Mantén `suggestedEvals` con máximo 3 elementos por lista; si no hay heartbeat, omite la clave.",
       "- Incluye `operationalFlow` SIEMPRE que estés generando/mejorando un caso operacional. Es un array JSON de pasos para UI/readiness/prueba, NO markdown.",
       "- Cada paso de `operationalFlow` usa esta forma exacta: `{step_key, step_label, step_description, step_skills, step_tools}`.",
-      "- `step_skills` es array de `{skill_slug, skill_label, skill_description, skill_tools}`; `skill_tools` es array de `{tool_id, tool_label, tool_description}`.",
+      "- `step_skills` es array de `{skill_slug, skill_label, skill_description, skill_tools}`; `skill_tools` es array de `{tool_id, tool_label, tool_description, required_assets?}`.",
+      "- Usa `required_assets` sólo cuando una tool necesita archivos/configuración por cuenta que el usuario puede subir (plantillas, logos, watermarks). Cada asset usa `{asset_key, label, description, accept, max_size_mb, required}` con `asset_key` estable y reutilizable.",
       "- Usa `step_tools` sólo para tools del paso no asociadas claramente a una skill específica (ej. `operational_case_create`, `operational_case_update_state`).",
       "- Todo `tool_id` en operationalFlow debe existir en TOOL_CATALOG y estar contemplado por `allowed_tools` del SKILL.md root o de sus includes.",
       "- Incluye `activationPolicy` SIEMPRE que estés generando/mejorando un caso operacional. No hardcodees referencias a property_optioning salvo que sea ese caso.",

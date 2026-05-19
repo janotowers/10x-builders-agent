@@ -401,6 +401,16 @@ export interface OperationalCaseFlowTool {
   tool_id: string;
   tool_label?: string;
   tool_description?: string;
+  required_assets?: OperationalCaseRequiredAsset[];
+}
+
+export interface OperationalCaseRequiredAsset {
+  asset_key: string;
+  label: string;
+  description?: string;
+  accept?: string[];
+  max_size_mb?: number;
+  required?: boolean;
 }
 
 export interface OperationalCaseFlowSkill {
@@ -516,6 +526,27 @@ export interface GlobalToolRequest {
   business_context: string | null;
   status: GlobalToolRequestStatus;
   admin_notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
+// Account assets
+// ============================================================
+
+export interface AccountAsset {
+  id: string;
+  user_id: string;
+  asset_key: string;
+  display_name: string;
+  description: string | null;
+  storage_bucket: string;
+  storage_path: string;
+  content_type: string | null;
+  file_size_bytes: number | null;
+  source_tool_id: string | null;
+  case_type_id: string | null;
+  metadata_jsonb: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }

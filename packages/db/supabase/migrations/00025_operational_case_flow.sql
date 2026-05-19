@@ -100,12 +100,12 @@ set operational_flow_jsonb = jsonb_build_array(
           jsonb_build_object(
             'tool_id', 'easybroker_search_listings',
             'tool_label', 'Buscar propiedades activas en EasyBroker',
-            'tool_description', 'Consulta propiedades similares publicadas actualmente.'
+            'tool_description', 'Consulta propiedades activas/publicadas similares para referencia de mercado actual.'
           ),
           jsonb_build_object(
             'tool_id', 'easybroker_search_closed_deals',
-            'tool_label', 'Buscar operaciones cerradas',
-            'tool_description', 'Consulta cierres históricos para comparar precios reales.'
+            'tool_label', 'Buscar vendidas/rentadas en EasyBroker',
+            'tool_description', 'Consulta propiedades marcadas como vendidas/rentadas para referencia histórica; el precio no necesariamente es el cierre real.'
           ),
           jsonb_build_object(
             'tool_id', 'bigquery_lookup_local_comparables',

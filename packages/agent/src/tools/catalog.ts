@@ -650,7 +650,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "easybroker_search_listings",
     name: "easybroker_search_listings",
     description:
-      "Searches public/inactive listings in EasyBroker (read-only). Use for comparables and to verify the inmobiliaria's own published inventory. Requires the EASYBROKER_API_KEY env to be configured for the active tenant.",
+      "Searches active/published EasyBroker listings (read-only) using property type/status server filters and normalized zona/operation/price/area filters. Use for current market comparables and published inventory.",
     risk: "low",
     requires_integration: "easybroker",
     parameters_schema: {
@@ -676,7 +676,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "easybroker_search_closed_deals",
     name: "easybroker_search_closed_deals",
     description:
-      "Read-only search over EasyBroker deals marked as closed/sold/rented for the active tenant. Use to compute realized prices for comparables. Requires EASYBROKER_API_KEY.",
+      "Read-only search over EasyBroker properties marked sold/rented. Use as historical reference for comparables, but do not assume the exposed price is the final closing price unless the account captures it that way.",
     risk: "low",
     requires_integration: "easybroker",
     parameters_schema: {
@@ -719,7 +719,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "generate_document_from_template",
     name: "generate_document_from_template",
     description:
-      "Renders a DOCX or PDF document by filling placeholders in a stored template. Templates live under `realestate_templates` (configured per tenant). Use for the commission contract, property report, listing description sheet. Requires HITL confirmation because the file is sent to a human.",
+      "Renders a DOCX document by filling {{placeholders}} in a tenant template stored in account_assets. Use for the commission contract, property report, or listing description sheet. Requires HITL confirmation because the file is sent to a human.",
     risk: "medium",
     parameters_schema: {
       type: "object",
@@ -727,9 +727,14 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         template_slug: {
           type: "string",
           description:
-            "Slug of the template (e.g. 'commission_contract', 'listing_description'). Tenant-scoped.",
+            "Slug of the template (e.g. 'commission_contract', 'listing_description'). Used to select the account asset and name the generated file.",
         },
-        format: { type: "string", enum: ["docx", "pdf"], description: "Output format." },
+        asset_key: {
+          type: "string",
+          description:
+            "Optional explicit account_assets.asset_key. If omitted, the tool tries template_slug, template_slug_template, then commission_contract_template.",
+        },
+        format: { type: "string", enum: ["docx", "pdf"], description: "Output format. Current renderer supports docx; pdf returns unsupported_format." },
         data: {
           type: "object",
           description:

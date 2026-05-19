@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AccountAsset,
   AccountSkill,
   OperationalCase,
   OperationalCaseActivationPolicy,
@@ -133,6 +134,7 @@ type ToolReadinessCategory =
 type ToolReadinessActionKind =
   | "connect_integration"
   | "configure_account"
+  | "upload_asset"
   | "request_global"
   | "edit_skill"
   | "none";
@@ -168,6 +170,18 @@ type ToolReadinessToolItem = {
   risk?: string;
   requires_integration?: string;
   notes: string[];
+  asset_requirements?: ToolAssetRequirementStatus[];
+};
+
+type ToolAssetRequirementStatus = {
+  asset_key: string;
+  label: string;
+  description?: string;
+  accept?: string[];
+  max_size_mb?: number;
+  required?: boolean;
+  configured: boolean;
+  asset: AccountAsset | null;
 };
 
 type ToolReadinessResult = {
@@ -313,6 +327,41 @@ function normalizeFlowTool(value: unknown): OperationalCaseFlowTool | null {
   const record = value as Record<string, unknown>;
   const toolId = typeof record.tool_id === "string" ? record.tool_id.trim() : "";
   if (!toolId) return null;
+  const requiredAssets = Array.isArray(record.required_assets)
+    ? record.required_assets
+        .map((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) {
+            return null;
+          }
+          const asset = item as Record<string, unknown>;
+          const assetKey =
+            typeof asset.asset_key === "string" ? asset.asset_key.trim() : "";
+          const label =
+            typeof asset.label === "string" ? asset.label.trim() : "";
+          if (!assetKey || !label) return null;
+          return {
+            asset_key: assetKey,
+            label,
+            description:
+              typeof asset.description === "string" && asset.description.trim()
+                ? asset.description.trim()
+                : undefined,
+            accept: Array.isArray(asset.accept)
+              ? asset.accept
+                  .filter((value): value is string => typeof value === "string")
+                  .map((value) => value.trim())
+                  .filter(Boolean)
+              : undefined,
+            max_size_mb:
+              typeof asset.max_size_mb === "number"
+                ? asset.max_size_mb
+                : undefined,
+            required:
+              typeof asset.required === "boolean" ? asset.required : undefined,
+          };
+        })
+        .filter(isPresent)
+    : undefined;
   return {
     tool_id: toolId,
     tool_label:
@@ -324,6 +373,7 @@ function normalizeFlowTool(value: unknown): OperationalCaseFlowTool | null {
       record.tool_description.trim()
         ? record.tool_description.trim()
         : undefined,
+    required_assets: requiredAssets?.length ? requiredAssets : undefined,
   };
 }
 
@@ -779,6 +829,122 @@ function readinessRequestActionLabel(item: ToolReadinessToolItem) {
   return item.action_label ?? "Solicitar incorporación";
 }
 
+function formatFileSize(bytes: number | null | undefined) {
+  if (!bytes) return "tamaño no registrado";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AccountAssetUploadPanel({
+  item,
+  row,
+  onUploaded,
+}: {
+  item: ToolReadinessToolItem;
+  row: OperationalCaseType;
+  onUploaded: () => void;
+}) {
+  const requirements = item.asset_requirements ?? [];
+  const [submittingKey, setSubmittingKey] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function uploadAsset(requirement: ToolAssetRequirementStatus, file: File) {
+    setMessage(null);
+    const maxSize = (requirement.max_size_mb ?? 15) * 1024 * 1024;
+    if (file.size > maxSize) {
+      setMessage(`El archivo supera el máximo de ${requirement.max_size_mb ?? 15} MB.`);
+      return;
+    }
+    setSubmittingKey(requirement.asset_key);
+    try {
+      const formData = new FormData();
+      formData.set("asset_key", requirement.asset_key);
+      formData.set("display_name", requirement.label);
+      formData.set("description", requirement.description ?? "");
+      formData.set("source_tool_id", item.tool_id);
+      formData.set("case_type_id", row.id);
+      formData.set("file", file);
+      const res = await fetch("/api/account-assets", {
+        method: "POST",
+        body: formData,
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error ?? "No se pudo subir el recurso.");
+      }
+      setMessage("Recurso guardado. Recalculando preparación operativa...");
+      onUploaded();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmittingKey(null);
+    }
+  }
+
+  if (requirements.length === 0) return null;
+  return (
+    <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+        Recursos de cuenta
+      </div>
+      {requirements.map((requirement) => (
+        <div
+          key={requirement.asset_key}
+          className="rounded border border-neutral-200 bg-white p-2 text-xs"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="font-semibold">{requirement.label}</div>
+              <div className="font-mono text-[11px] text-neutral-500">
+                {requirement.asset_key}
+              </div>
+            </div>
+            <span
+              className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+                requirement.configured
+                  ? "bg-emerald-50 text-emerald-800"
+                  : "bg-amber-50 text-amber-800"
+              }`}
+            >
+              {requirement.configured ? "Configurado" : "Pendiente"}
+            </span>
+          </div>
+          {requirement.description ? (
+            <p className="mt-1 text-neutral-500">{requirement.description}</p>
+          ) : null}
+          {requirement.asset ? (
+            <p className="mt-1 text-[11px] text-neutral-500">
+              Actual: {requirement.asset.content_type ?? "archivo"} ·{" "}
+              {formatFileSize(requirement.asset.file_size_bytes)}
+            </p>
+          ) : null}
+          <label className="mt-2 inline-flex cursor-pointer rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800">
+            {submittingKey === requirement.asset_key
+              ? "Subiendo..."
+              : requirement.configured
+                ? "Reemplazar recurso"
+                : "Subir recurso"}
+            <input
+              type="file"
+              className="hidden"
+              accept={requirement.accept?.join(",")}
+              disabled={Boolean(submittingKey)}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (file) void uploadAsset(requirement, file);
+              }}
+            />
+          </label>
+        </div>
+      ))}
+      {message ? <p className="text-[11px] text-neutral-600">{message}</p> : null}
+    </div>
+  );
+}
+
 function renderReadinessActions(params: {
   item: ToolReadinessToolItem;
   row: OperationalCaseType;
@@ -840,6 +1006,22 @@ function renderReadinessActions(params: {
     );
   }
 
+  if (item.action_kind === "upload_asset") {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={params.onToggleExpand}
+          aria-expanded={expanded}
+          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
+        >
+          {expanded ? "Cerrar" : (item.action_label ?? "Subir recurso")}
+        </button>
+        {!expanded && detailsToggle}
+      </div>
+    );
+  }
+
   if (
     (item.action_kind === "connect_integration" ||
       item.action_kind === "configure_account") &&
@@ -863,6 +1045,17 @@ function renderReadinessActions(params: {
   }
 
   if (item.action_kind === "request_global" && item.request_kind) {
+    const hasAssets = (item.asset_requirements?.length ?? 0) > 0;
+    const manageAssetsButton = hasAssets ? (
+      <button
+        type="button"
+        onClick={params.onToggleExpand}
+        aria-expanded={expanded}
+        className="rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
+      >
+        {expanded ? "Cerrar recursos" : "Gestionar recursos"}
+      </button>
+    ) : null;
     if (existingRequest) {
       return (
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -872,6 +1065,7 @@ function renderReadinessActions(params: {
               ? " (registrada para Ungga)"
               : ""}
           </span>
+          {manageAssetsButton}
           {detailsToggle}
         </div>
       );
@@ -886,7 +1080,24 @@ function renderReadinessActions(params: {
         >
           {submitting ? "Enviando..." : readinessRequestActionLabel(item)}
         </button>
+        {manageAssetsButton}
         {detailsToggle}
+      </div>
+    );
+  }
+
+  if ((item.asset_requirements?.length ?? 0) > 0) {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={params.onToggleExpand}
+          aria-expanded={expanded}
+          className="rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
+        >
+          {expanded ? "Cerrar recursos" : "Gestionar recursos"}
+        </button>
+        {!expanded && detailsToggle}
       </div>
     );
   }
@@ -967,6 +1178,15 @@ function renderFlowToolReadiness(params: {
                 }}
               />
             </div>
+          ) : null}
+          {(item.asset_requirements?.length ?? 0) > 0 ? (
+            <AccountAssetUploadPanel
+              item={item}
+              row={row}
+              onUploaded={() => {
+                void params.refreshToolReadiness(row);
+              }}
+            />
           ) : null}
         </div>
       ) : null}

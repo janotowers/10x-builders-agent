@@ -4,6 +4,7 @@ import {
   createServerClient,
   getGlobalOperationalCaseTypeBySlug,
   getOperationalCaseTypeById,
+  listAccountAssets,
   listAccountToolSecretsPublic,
 } from "@agents/db";
 import {
@@ -12,6 +13,8 @@ import {
 } from "@agents/agent";
 import type {
   AccountToolSecretPublic,
+  AccountAsset,
+  OperationalCaseRequiredAsset,
   OperationalCaseFlowSkill,
   OperationalCaseFlowStep,
   OperationalCaseFlowTool,
@@ -32,6 +35,7 @@ type ReadinessCategory =
 type ReadinessActionKind =
   | "connect_integration"
   | "configure_account"
+  | "upload_asset"
   | "request_global"
   | "edit_skill"
   | "none";
@@ -69,6 +73,12 @@ type ToolReadinessItem = {
   risk?: string;
   requires_integration?: string;
   notes: string[];
+  asset_requirements?: ToolAssetRequirementStatus[];
+};
+
+type ToolAssetRequirementStatus = OperationalCaseRequiredAsset & {
+  configured: boolean;
+  asset: AccountAsset | null;
 };
 
 type ReadinessSkillGraph = {
@@ -103,10 +113,7 @@ const ADAPTER_TOOLS = new Set([
 
 const STUB_TOOLS = new Set([
   "bigquery_lookup_local_comparables",
-  "generate_document_from_template",
   "image_watermark",
-  "easybroker_search_listings",
-  "easybroker_search_closed_deals",
   "easybroker_create_listing",
   "easybroker_upload_images",
 ]);
@@ -186,12 +193,38 @@ function envConfigured(toolId: string) {
   return true;
 }
 
+function collectRequiredAssets(flow: OperationalCaseFlowStep[]) {
+  const byTool = new Map<string, OperationalCaseRequiredAsset[]>();
+  const addTool = (tool: OperationalCaseFlowTool) => {
+    const requirements = Array.isArray(tool.required_assets)
+      ? tool.required_assets.filter(
+          (item): item is OperationalCaseRequiredAsset =>
+            Boolean(item?.asset_key && item.label)
+        )
+      : [];
+    if (requirements.length === 0) return;
+    byTool.set(tool.tool_id, [
+      ...(byTool.get(tool.tool_id) ?? []),
+      ...requirements,
+    ]);
+  };
+  for (const step of flow) {
+    for (const tool of step.step_tools ?? []) addTool(tool);
+    for (const skill of step.step_skills ?? []) {
+      for (const tool of skill.skill_tools ?? []) addTool(tool);
+    }
+  }
+  return byTool;
+}
+
 function classifyTool(params: {
   toolId: string;
   def?: ToolDefinition;
   settings: UserToolSetting[];
   integrations: UserIntegration[];
   accountSecretsByProvider: Map<string, AccountToolSecretPublic>;
+  accountAssetsByKey: Map<string, AccountAsset>;
+  requiredAssets: OperationalCaseRequiredAsset[];
   telegramLinked: boolean;
 }): ToolReadinessItem {
   const notes: string[] = [];
@@ -211,6 +244,17 @@ function classifyTool(params: {
       ? (params.accountSecretsByProvider.get(accountProviderId) ?? null)
       : null;
   const accountSecretStatus = accountSecret?.status ?? null;
+  const assetRequirements = params.requiredAssets.map((requirement) => {
+    const asset = params.accountAssetsByKey.get(requirement.asset_key) ?? null;
+    return {
+      ...requirement,
+      configured: Boolean(asset),
+      asset,
+    } satisfies ToolAssetRequirementStatus;
+  });
+  const missingRequiredAssets = assetRequirements.filter(
+    (requirement) => requirement.required !== false && !requirement.configured
+  );
   // `active` significa que la última validación fue OK; los estados
   // intermedios (`pending_test`, `invalid`) se tratan más abajo como
   // needs_config con acciones específicas.
@@ -454,11 +498,48 @@ function classifyTool(params: {
       notes,
     };
   }
+  if (missingRequiredAssets.length > 0) {
+    notes.push(
+      `Faltan recursos de esta cuenta: ${missingRequiredAssets
+        .map((requirement) => requirement.label)
+        .join(", ")}.`
+    );
+    return {
+      tool_id: params.toolId,
+      status: "needs_config",
+      category: "tenant_asset",
+      blocking: true,
+      action_kind: "upload_asset",
+      action_label:
+        missingRequiredAssets.length === 1
+          ? `Subir ${missingRequiredAssets[0]?.label}`
+          : "Subir recursos",
+      action_available: true,
+      action_message:
+        "Esta tool requiere archivos de tu cuenta. Sube o reemplaza los recursos aquí mismo; quedarán guardados para este usuario y se podrán reutilizar en el flujo.",
+      action_url: null,
+      action_anchor: null,
+      request_kind: null,
+      account_provider: accountProviderId,
+      account_secret_status: accountSecretStatus,
+      exists_in_catalog: true,
+      adapter_available: true,
+      ...base,
+      notes,
+      asset_requirements: assetRequirements,
+    };
+  }
+  if (assetRequirements.length > 0) {
+    notes.push("Recursos de cuenta configurados.");
+  }
   if (STUB_TOOLS.has(params.toolId)) {
     const isTenantAsset = TENANT_ASSET_TOOLS.has(params.toolId);
+    const tenantAssetsConfigured = isTenantAsset && assetRequirements.length > 0;
     const isEasyBrokerWrite = EASYBROKER_WRITE_TOOLS.has(params.toolId);
     notes.push(
-      isTenantAsset
+      tenantAssetsConfigured
+        ? "Recursos de cuenta configurados; queda pendiente completar el adapter real de la tool."
+        : isTenantAsset
         ? "Requiere un recurso o configuración específica de esta cuenta."
         : isEasyBrokerWrite
           ? "Pendiente de Ungga: falta completar el adapter de escritura. Cuando esté listo, esta acción requerirá aprobación HITL del usuario antes de ejecutarse."
@@ -467,21 +548,23 @@ function classifyTool(params: {
     return {
       tool_id: params.toolId,
       status: "stub",
-      category: isTenantAsset ? "tenant_asset" : "technical_stub",
+      category: isTenantAsset && !tenantAssetsConfigured ? "tenant_asset" : "technical_stub",
       blocking: false,
       action_kind: "request_global",
-      action_label: isTenantAsset
+      action_label: isTenantAsset && !tenantAssetsConfigured
         ? "Solicitar configuración del recurso"
         : "Solicitar prioridad a Ungga",
       action_available: true,
-      action_message: isTenantAsset
+      action_message: tenantAssetsConfigured
+        ? "Los recursos de esta cuenta ya están cargados. Para operación real falta que Ungga conecte esta tool al handler final que use esos assets; mientras tanto no bloquea la prueba segura."
+        : isTenantAsset
         ? "Esta tool necesita templates/assets por cuenta (ej. plantilla de documento o watermark). La prueba puede validar pasos seguros, pero operación real requiere que el equipo configure ese recurso para tu cuenta."
         : isEasyBrokerWrite
           ? "La conexión EasyBroker ya puede estar lista, pero esta operación de escritura todavía funciona como stub técnico. No requiere otra configuración del usuario: requiere que Ungga implemente el adapter real. Cuando esté implementada, el agente preparará la acción y pedirá aprobación HITL antes de crear o subir contenido."
           : "La conexión o el catálogo ya existen, pero esta operación todavía funciona como stub técnico. No requiere otra configuración del usuario: requiere que el equipo de Ungga complete el adapter/mapeo en el producto. Si esta capacidad es importante para tu caso de uso, puedes solicitar prioridad.",
       action_url: null,
       action_anchor: null,
-      request_kind: isTenantAsset
+      request_kind: isTenantAsset && !tenantAssetsConfigured
         ? "provide_tenant_asset"
         : "incorporate_to_catalog",
       account_provider: accountProviderId,
@@ -490,6 +573,9 @@ function classifyTool(params: {
       adapter_available: true,
       ...base,
       notes,
+      asset_requirements: assetRequirements.length
+        ? assetRequirements
+        : undefined,
     };
   }
 
@@ -512,6 +598,7 @@ function classifyTool(params: {
     adapter_available: true,
     ...base,
     notes,
+    asset_requirements: assetRequirements.length ? assetRequirements : undefined,
   };
 }
 
@@ -806,12 +893,22 @@ export async function GET(request: Request) {
     const inheritedFlow = Array.isArray(globalCaseType?.operational_flow_jsonb)
       ? globalCaseType.operational_flow_jsonb
       : [];
+    const sourceFlow = ownFlow.length > 0 ? ownFlow : inheritedFlow;
+    const requiredAssetsByTool = collectRequiredAssets(sourceFlow);
+    const requiredAssetKeys = Array.from(
+      new Set(
+        Array.from(requiredAssetsByTool.values())
+          .flat()
+          .map((asset) => asset.asset_key)
+      )
+    );
 
     const [
       { data: toolSettings },
       { data: integrations },
       { data: telegramAccount },
       accountSecrets,
+      accountAssets,
       registry,
     ] = await Promise.all([
       supabase.from("user_tool_settings").select("*").eq("user_id", user.id),
@@ -822,6 +919,10 @@ export async function GET(request: Request) {
         .eq("user_id", user.id)
         .maybeSingle(),
       listAccountToolSecretsPublic(db, user.id),
+      listAccountAssets(db, {
+        userId: user.id,
+        assetKeys: requiredAssetKeys,
+      }),
       getSkillRegistryForUser(db, user.id),
     ]);
 
@@ -829,6 +930,10 @@ export async function GET(request: Request) {
     const accountSecretsByProvider = new Map<string, AccountToolSecretPublic>();
     for (const secret of accountSecrets) {
       accountSecretsByProvider.set(secret.provider, secret);
+    }
+    const accountAssetsByKey = new Map<string, AccountAsset>();
+    for (const asset of accountAssets) {
+      accountAssetsByKey.set(asset.asset_key, asset);
     }
 
     const resolved = resolveSkillToolsFromMetadata(
@@ -843,11 +948,12 @@ export async function GET(request: Request) {
         settings: (toolSettings ?? []) as UserToolSetting[],
         integrations: (integrations ?? []) as UserIntegration[],
         accountSecretsByProvider,
+        accountAssetsByKey,
+        requiredAssets: requiredAssetsByTool.get(toolId) ?? [],
         telegramLinked,
       })
     );
     const toolsById = new Map(tools.map((tool) => [tool.tool_id, tool]));
-    const sourceFlow = ownFlow.length > 0 ? ownFlow : inheritedFlow;
     const flow = enrichFlow({
       flow: sourceFlow,
       toolsById,
