@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   createOperationalCase,
   createServerClient,
+  getGlobalOperationalCaseTypeBySlug,
   getOperationalCase,
   getOperationalCaseTypeById,
   getRecentOperationalCaseEvents,
@@ -10,6 +11,7 @@ import {
 import type {
   OperationalCase,
   OperationalCaseEvent,
+  OperationalCaseFlowStep,
   OperationalCaseIntakeField,
   ToolCall,
 } from "@agents/types";
@@ -54,17 +56,73 @@ async function listToolCallsForCase(
 
 async function responseForCase(
   db: ReturnType<typeof createServerClient>,
-  opCase: OperationalCase
+  opCase: OperationalCase,
+  flow: OperationalCaseFlowStep[] = []
 ): Promise<{
   ok: true;
   case: OperationalCase;
   events: OperationalCaseEvent[];
   toolCalls: ToolCall[];
+  flowProgress: Array<{
+    step_key: string;
+    step_label: string;
+    status: "pending" | "in_progress" | "completed" | "blocked";
+    evidence: string[];
+  }>;
 }> {
   const fresh = (await getOperationalCase(db, opCase.id)) ?? opCase;
   const events = await getRecentOperationalCaseEvents(db, fresh.id, 80);
   const toolCalls = await listToolCallsForCase(db, fresh.id);
-  return { ok: true, case: fresh, events, toolCalls };
+  const flowProgress = flow.map((step) => {
+    const stepToolIds = new Set<string>();
+    for (const tool of step.step_tools ?? []) stepToolIds.add(tool.tool_id);
+    for (const skill of step.step_skills ?? []) {
+      for (const tool of skill.skill_tools ?? []) stepToolIds.add(tool.tool_id);
+    }
+    const toolEvidence = toolCalls.filter((call) => stepToolIds.has(call.tool_name));
+    const eventEvidence = events.filter((event) => {
+      const payload = event.payload_jsonb as Record<string, unknown> | null;
+      return (
+        payload?.current_step === step.step_key ||
+        payload?.step === step.step_key ||
+        payload?.step_key === step.step_key
+      );
+    });
+    const evidence = [
+      ...eventEvidence.map((event) => `event:${event.event_type}`),
+      ...toolEvidence.map((call) => `tool:${call.tool_name}:${call.status}`),
+    ];
+    const status: "pending" | "in_progress" | "completed" | "blocked" =
+      fresh.current_step === step.step_key
+        ? "in_progress"
+        : evidence.length > 0
+          ? "completed"
+          : "pending";
+    return {
+      step_key: step.step_key,
+      step_label: step.step_label,
+      status,
+      evidence,
+    };
+  });
+  return { ok: true, case: fresh, events, toolCalls, flowProgress };
+}
+
+async function effectiveFlowForCaseType(
+  db: ReturnType<typeof createServerClient>,
+  caseType: Awaited<ReturnType<typeof getOperationalCaseTypeById>>
+): Promise<OperationalCaseFlowStep[]> {
+  const ownFlow = Array.isArray(caseType?.operational_flow_jsonb)
+    ? caseType.operational_flow_jsonb
+    : [];
+  if (ownFlow.length > 0 || !caseType?.user_id) return ownFlow;
+  const globalCaseType = await getGlobalOperationalCaseTypeBySlug(
+    db,
+    caseType.case_type
+  );
+  return Array.isArray(globalCaseType?.operational_flow_jsonb)
+    ? globalCaseType.operational_flow_jsonb
+    : [];
 }
 
 export async function GET(request: Request) {
@@ -104,7 +162,9 @@ export async function GET(request: Request) {
       return NextResponse.json({ ok: true, case: null, events: [], toolCalls: [] });
     }
 
-    return NextResponse.json(await responseForCase(db, opCase));
+    const caseType = await getOperationalCaseTypeById(db, opCase.case_type_id);
+    const flow = await effectiveFlowForCaseType(db, caseType);
+    return NextResponse.json(await responseForCase(db, opCase, flow));
   } catch (err) {
     console.error("[GET /api/operational-case-tests] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
@@ -181,7 +241,8 @@ export async function POST(request: Request) {
       },
     });
 
-    return NextResponse.json(await responseForCase(db, opCase));
+    const flow = await effectiveFlowForCaseType(db, caseType);
+    return NextResponse.json(await responseForCase(db, opCase, flow));
   } catch (err) {
     console.error("[POST /api/operational-case-tests] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });

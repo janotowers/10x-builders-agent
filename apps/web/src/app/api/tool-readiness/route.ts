@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
+  getGlobalOperationalCaseTypeBySlug,
   getOperationalCaseTypeById,
   listAccountToolSecretsPublic,
 } from "@agents/db";
@@ -11,6 +12,9 @@ import {
 } from "@agents/agent";
 import type {
   AccountToolSecretPublic,
+  OperationalCaseFlowSkill,
+  OperationalCaseFlowStep,
+  OperationalCaseFlowTool,
   ToolDefinition,
   UserIntegration,
   UserToolSetting,
@@ -272,6 +276,31 @@ function classifyTool(params: {
       request_kind: null,
       account_provider: accountProviderId,
       account_secret_status: accountSecretStatus,
+      exists_in_catalog: true,
+      adapter_available: true,
+      ...base,
+      notes,
+    };
+  }
+  if (params.toolId === "ungga_publish_listing") {
+    notes.push(
+      "Pendiente de Ungga: implementar publicación vía CLI/browser automation. La API queda como alternativa futura."
+    );
+    return {
+      tool_id: params.toolId,
+      status: "stub",
+      category: "technical_stub",
+      blocking: false,
+      action_kind: "request_global",
+      action_label: "Solicitar prioridad",
+      action_available: true,
+      action_message:
+        "Publicar en Ungga se resolverá primero vía CLI/browser automation para validar el patrón en sitios sin API. No requiere conectar Ungga API para la prueba segura; queda pendiente para operación real.",
+      action_url: null,
+      action_anchor: null,
+      request_kind: "incorporate_to_catalog",
+      account_provider: null,
+      account_secret_status: null,
       exists_in_catalog: true,
       adapter_available: true,
       ...base,
@@ -634,6 +663,118 @@ function resolveSkillToolsFromMetadata(
   };
 }
 
+function labelFromSlug(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function fallbackOperationalFlow(
+  resolved: ReadinessSkillGraph,
+  registry: Awaited<ReturnType<typeof getSkillRegistryForUser>>
+): OperationalCaseFlowStep[] {
+  const root = registry.get(resolved.rootName);
+  const rootIncludes = root?.metadata.includes ?? [];
+  if (rootIncludes.length === 0) {
+    return [
+      {
+        step_key: "main",
+        step_label: "Flujo principal",
+        step_description:
+          "Flujo inferido desde la skill porque este caso de uso aún no tiene operational_flow_jsonb configurado.",
+        step_skills: [
+          {
+            skill_slug: resolved.rootName,
+            skill_label: labelFromSlug(resolved.rootName),
+            skill_description: root?.metadata.description,
+            skill_tools: resolved.allowedTools.map((toolId) => ({
+              tool_id: toolId,
+              tool_label: labelFromSlug(toolId),
+            })),
+          },
+        ],
+        step_tools: [],
+      },
+    ];
+  }
+
+  return rootIncludes.map((slug, index) => {
+    const record = registry.get(slug);
+    return {
+      step_key: `step_${index + 1}`,
+      step_label: labelFromSlug(slug),
+      step_description:
+        "Paso inferido desde la composición de skills. Configura operational_flow_jsonb para ajustar el procedimiento.",
+      step_skills: [
+        {
+          skill_slug: slug,
+          skill_label: labelFromSlug(slug),
+          skill_description: record?.metadata.description,
+          skill_tools:
+            record?.metadata.allowedTools.map((toolId) => ({
+              tool_id: toolId,
+              tool_label: labelFromSlug(toolId),
+            })) ?? [],
+        },
+      ],
+      step_tools: [],
+    } satisfies OperationalCaseFlowStep;
+  });
+}
+
+function enrichFlow(params: {
+  flow: OperationalCaseFlowStep[];
+  toolsById: Map<string, ReturnType<typeof classifyTool>>;
+  resolved: ReadinessSkillGraph;
+  registry: Awaited<ReturnType<typeof getSkillRegistryForUser>>;
+}) {
+  const sourceFlow =
+    params.flow.length > 0
+      ? params.flow
+      : fallbackOperationalFlow(params.resolved, params.registry);
+  const mapped = new Set<string>();
+
+  function enrichTool(tool: OperationalCaseFlowTool) {
+    mapped.add(tool.tool_id);
+    return {
+      ...tool,
+      readiness: params.toolsById.get(tool.tool_id) ?? null,
+    };
+  }
+
+  const flow = sourceFlow.map((step) => ({
+    ...step,
+    step_skills: (step.step_skills ?? []).map((skill: OperationalCaseFlowSkill) => ({
+      ...skill,
+      skill_tools: (skill.skill_tools ?? []).map(enrichTool),
+    })),
+    step_tools: (step.step_tools ?? []).map(enrichTool),
+  }));
+
+  const unmappedTools = params.resolved.allowedTools
+    .filter((toolId) => !mapped.has(toolId))
+    .map((toolId) => ({
+      tool_id: toolId,
+      tool_label: labelFromSlug(toolId),
+      readiness: params.toolsById.get(toolId) ?? null,
+    }));
+
+  if (unmappedTools.length > 0) {
+    flow.push({
+      step_key: "transversal_tools",
+      step_label: "Herramientas transversales / soporte",
+      step_description:
+        "Herramientas permitidas por la habilidad que no pertenecen a un paso específico (auditoría, contexto del usuario, referencias internas). El agente puede usarlas en cualquier paso.",
+      step_skills: [],
+      step_tools: unmappedTools,
+    });
+  }
+
+  return flow;
+}
+
 export async function GET(request: Request) {
   try {
     const supabase = await createClient();
@@ -655,6 +796,16 @@ export async function GET(request: Request) {
     if (!caseType || (caseType.user_id && caseType.user_id !== user.id)) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
+    const ownFlow = Array.isArray(caseType.operational_flow_jsonb)
+      ? caseType.operational_flow_jsonb
+      : [];
+    const globalCaseType =
+      ownFlow.length === 0 && caseType.user_id
+        ? await getGlobalOperationalCaseTypeBySlug(db, caseType.case_type)
+        : null;
+    const inheritedFlow = Array.isArray(globalCaseType?.operational_flow_jsonb)
+      ? globalCaseType.operational_flow_jsonb
+      : [];
 
     const [
       { data: toolSettings },
@@ -695,6 +846,14 @@ export async function GET(request: Request) {
         telegramLinked,
       })
     );
+    const toolsById = new Map(tools.map((tool) => [tool.tool_id, tool]));
+    const sourceFlow = ownFlow.length > 0 ? ownFlow : inheritedFlow;
+    const flow = enrichFlow({
+      flow: sourceFlow,
+      toolsById,
+      resolved,
+      registry,
+    });
 
     const hasBlocking = tools.some((tool) => tool.blocking);
     const hasStub = tools.some((tool) => tool.status === "stub");
@@ -719,6 +878,7 @@ export async function GET(request: Request) {
       },
       summary,
       tools,
+      flow,
     });
   } catch (err) {
     console.error("[GET /api/tool-readiness] failed:", err);

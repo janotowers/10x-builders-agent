@@ -16,6 +16,7 @@ import type {
   OperationalCaseEventActor,
   OperationalCaseEventType,
   OperationalCaseExternalContact,
+  OperationalCaseFlowStep,
   OperationalCaseIntakeField,
   OperationalCaseReminderPolicy,
   OperationalCaseStatus,
@@ -74,6 +75,20 @@ export async function getOperationalCaseTypeById(
   return (data as OperationalCaseType | null) ?? null;
 }
 
+export async function getGlobalOperationalCaseTypeBySlug(
+  db: DbClient,
+  caseType: string
+): Promise<OperationalCaseType | null> {
+  const { data, error } = await db
+    .from("operational_case_types")
+    .select("*")
+    .eq("case_type", caseType)
+    .is("user_id", null)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as OperationalCaseType | null) ?? null;
+}
+
 /**
  * Lookup por slug, considerando ownership. Si el usuario tiene un caso de uso
  * privado con ese slug, gana sobre el global. Devuelve null si no hay match
@@ -105,6 +120,7 @@ export interface UpsertOperationalCaseTypeInput {
   visibility?: Exclude<OperationalCaseTypeVisibility, "global">;
   intakeSchema?: OperationalCaseIntakeField[];
   reminderPolicy?: OperationalCaseReminderPolicy;
+  operationalFlow?: OperationalCaseFlowStep[];
 }
 
 export async function upsertOperationalCaseTypeForUser(
@@ -130,6 +146,7 @@ export async function upsertOperationalCaseTypeForUser(
     visibility: input.visibility ?? "private",
     status: input.status ?? "draft",
     intake_schema_jsonb: input.intakeSchema ?? [],
+    operational_flow_jsonb: input.operationalFlow ?? [],
     updated_at: now,
   };
 

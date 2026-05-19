@@ -5,6 +5,9 @@ import type {
   AccountSkill,
   OperationalCase,
   OperationalCaseEvent,
+  OperationalCaseFlowSkill,
+  OperationalCaseFlowStep,
+  OperationalCaseFlowTool,
   OperationalCaseIntakeField,
   OperationalCaseReminderPolicy,
   OperationalCaseType,
@@ -39,6 +42,7 @@ type EditingCaseType = {
   status: OperationalCaseTypeStatus;
   visibility: Exclude<OperationalCaseTypeVisibility, "global">;
   intake_schema_jsonb: OperationalCaseIntakeField[];
+  operational_flow_jsonb: OperationalCaseFlowStep[];
   default_reminder_policy_jsonb: OperationalCaseReminderPolicy;
   isNew: boolean;
 };
@@ -60,6 +64,7 @@ type SkillAuthoringResult = {
     note?: string;
   }>;
   suggestedEvals: Record<string, unknown>;
+  operationalFlow?: OperationalCaseFlowStep[];
   activationRecommendation: string;
   attemptsUsed?: number;
   elapsedMs?: number;
@@ -137,6 +142,23 @@ type ToolReadinessResult = {
     allowedTools: string[];
   };
   tools: ToolReadinessToolItem[];
+  flow?: ToolReadinessFlowStep[];
+};
+
+type ToolReadinessFlowTool = OperationalCaseFlowTool & {
+  readiness: ToolReadinessToolItem | null;
+};
+
+type ToolReadinessFlowSkill = Omit<OperationalCaseFlowSkill, "skill_tools"> & {
+  skill_tools: ToolReadinessFlowTool[];
+};
+
+type ToolReadinessFlowStep = Omit<
+  OperationalCaseFlowStep,
+  "step_skills" | "step_tools"
+> & {
+  step_skills: ToolReadinessFlowSkill[];
+  step_tools: ToolReadinessFlowTool[];
 };
 
 type ToolReadinessRequestStatus =
@@ -158,11 +180,26 @@ type OperationalCaseTestResult = {
   case: OperationalCase | null;
   events: OperationalCaseEvent[];
   toolCalls: ToolCall[];
+  flowProgress?: OperationalCaseFlowProgressStep[];
+};
+
+type OperationalCaseFlowProgressStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "blocked";
+
+type OperationalCaseFlowProgressStep = {
+  step_key: string;
+  step_label: string;
+  status: OperationalCaseFlowProgressStatus;
+  evidence: string[];
 };
 
 type EditingSnapshot = {
   editing: EditingCaseType;
   schemaText: string;
+  flowText: string;
   procedureText: string;
   fieldListText: string;
   createPrivateSkill: boolean;
@@ -183,6 +220,9 @@ function caseTypeToEditing(row: OperationalCaseType): EditingCaseType {
     intake_schema_jsonb: Array.isArray(row.intake_schema_jsonb)
       ? row.intake_schema_jsonb
       : [],
+    operational_flow_jsonb: Array.isArray(row.operational_flow_jsonb)
+      ? row.operational_flow_jsonb
+      : [],
     default_reminder_policy_jsonb: row.default_reminder_policy_jsonb ?? {},
     isNew: false,
   };
@@ -197,6 +237,7 @@ function newCaseType(): EditingCaseType {
     status: "active",
     visibility: "private",
     intake_schema_jsonb: DEFAULT_INTAKE_SCHEMA,
+    operational_flow_jsonb: [],
     default_reminder_policy_jsonb: {},
     isNew: true,
   };
@@ -218,6 +259,140 @@ function labelFromFieldName(value: string) {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function labelFromSlug(value: string) {
+  return labelFromFieldName(value.replace(/-/g, " "));
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value != null;
+}
+
+function normalizeFlowTool(value: unknown): OperationalCaseFlowTool | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const toolId = typeof record.tool_id === "string" ? record.tool_id.trim() : "";
+  if (!toolId) return null;
+  return {
+    tool_id: toolId,
+    tool_label:
+      typeof record.tool_label === "string" && record.tool_label.trim()
+        ? record.tool_label.trim()
+        : undefined,
+    tool_description:
+      typeof record.tool_description === "string" &&
+      record.tool_description.trim()
+        ? record.tool_description.trim()
+        : undefined,
+  };
+}
+
+function normalizeFlowSkill(value: unknown): OperationalCaseFlowSkill | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const skillSlug =
+    typeof record.skill_slug === "string" ? record.skill_slug.trim() : "";
+  if (!skillSlug) return null;
+  return {
+    skill_slug: skillSlug,
+    skill_label:
+      typeof record.skill_label === "string" && record.skill_label.trim()
+        ? record.skill_label.trim()
+        : undefined,
+    skill_description:
+      typeof record.skill_description === "string" &&
+      record.skill_description.trim()
+        ? record.skill_description.trim()
+        : undefined,
+    skill_tools: Array.isArray(record.skill_tools)
+      ? record.skill_tools.map(normalizeFlowTool).filter(isPresent)
+      : [],
+  };
+}
+
+function normalizeOperationalFlow(value: unknown): OperationalCaseFlowStep[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((step, index): OperationalCaseFlowStep | null => {
+      if (!step || typeof step !== "object" || Array.isArray(step)) return null;
+      const record = step as Record<string, unknown>;
+      const stepKey =
+        typeof record.step_key === "string" && record.step_key.trim()
+          ? toSlug(record.step_key, "_")
+          : `step_${index + 1}`;
+      const stepLabel =
+        typeof record.step_label === "string" && record.step_label.trim()
+          ? record.step_label.trim()
+          : labelFromSlug(stepKey);
+      return {
+        step_key: stepKey,
+        step_label: stepLabel,
+        step_description:
+          typeof record.step_description === "string" &&
+          record.step_description.trim()
+            ? record.step_description.trim()
+            : undefined,
+        step_skills: Array.isArray(record.step_skills)
+          ? record.step_skills.map(normalizeFlowSkill).filter(isPresent)
+          : [],
+        step_tools: Array.isArray(record.step_tools)
+          ? record.step_tools.map(normalizeFlowTool).filter(isPresent)
+          : [],
+      };
+    })
+    .filter(isPresent);
+}
+
+function fallbackOperationalFlow(params: {
+  defaultSkillSlug: string;
+  skill?: SkillSummary;
+}): OperationalCaseFlowStep[] {
+  const skill = params.skill;
+  const includedSkills = skill?.includes ?? [];
+  const rootTools =
+    skill?.allowedTools.map((tool) => ({
+      tool_id: tool,
+      tool_label: labelFromSlug(tool),
+      tool_description: "Herramienta permitida por la habilidad asociada.",
+    })) ?? [];
+
+  if (includedSkills.length === 0) {
+    return [
+      {
+        step_key: "main",
+        step_label: "Flujo principal",
+        step_description:
+          "Vista inferida desde la habilidad asociada porque este caso de uso aún no tiene flujo estructurado.",
+        step_skills: skill
+          ? [
+              {
+                skill_slug: params.defaultSkillSlug,
+                skill_label: labelFromSlug(params.defaultSkillSlug),
+                skill_description: skill.description,
+                skill_tools: rootTools,
+              },
+            ]
+          : [],
+        step_tools: skill ? [] : rootTools,
+      },
+    ];
+  }
+
+  return includedSkills.map((slug, index) => ({
+    step_key: `step_${index + 1}`,
+    step_label: labelFromSlug(slug),
+    step_description:
+      "Paso inferido desde una skill incluida. Revisa y ajusta el flujo estructurado antes de activar.",
+    step_skills: [
+      {
+        skill_slug: slug,
+        skill_label: labelFromSlug(slug),
+        skill_tools: [],
+      },
+    ],
+    step_tools: [],
+  }));
 }
 
 function inferFieldType(label: string): OperationalCaseIntakeField["type"] {
@@ -506,6 +681,19 @@ function activationToolsDescription(params: {
   return "Tools pendientes: hay advertencias no bloqueantes por revisar antes de operar en producción.";
 }
 
+function operationCompletenessDescription(params: {
+  readinessCounts: ReturnType<typeof toolReadinessCounts>;
+  toolsPass: boolean;
+}) {
+  if (!params.toolsPass) {
+    return "Operación real completa: pendiente hasta resolver bloqueos críticos.";
+  }
+  if (params.readinessCounts.stub > 0) {
+    return `Operación real completa: pendiente; quedan ${params.readinessCounts.stub} stubs/capacidades por resolver antes de operar sin restricciones.`;
+  }
+  return "Operación real completa: sin stubs técnicos pendientes.";
+}
+
 function readinessActionUrl(item: ToolReadinessToolItem): string | null {
   if (!item.action_url) return null;
   if (item.action_anchor) {
@@ -639,6 +827,155 @@ function renderReadinessActions(params: {
   return null;
 }
 
+function riskLabel(risk?: string) {
+  if (risk === "low") return "bajo";
+  if (risk === "medium") return "medio";
+  if (risk === "high") return "alto";
+  return risk ?? "n/d";
+}
+
+function renderFlowToolReadiness(params: {
+  item: ToolReadinessToolItem;
+  row: OperationalCaseType;
+  expanded: boolean;
+  existingRequest: ToolReadinessRequestRecord | undefined;
+  submitting: boolean;
+  onEditSkill: () => void;
+  onToggleExpand: () => void;
+  onRequestGlobal: () => void;
+  refreshToolReadiness: (row: OperationalCaseType) => Promise<void>;
+}) {
+  const { item, row, expanded, existingRequest, submitting } = params;
+  const metaParts = [`Riesgo: ${riskLabel(item.risk)}`];
+  if (item.requires_integration) {
+    metaParts.push(`Integración: ${item.requires_integration}`);
+  }
+  if (item.category !== "ready") {
+    metaParts.push(toolReadinessCategoryLabel(item.category));
+  }
+
+  return (
+    <div className={`rounded border p-2 ${toolReadinessClass(item.status)}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-mono text-xs">{item.tool_id}</span>
+        <span className="rounded bg-white/70 px-1.5 py-0.5 text-[11px] font-semibold">
+          Estado: {toolReadinessLabel(item.status)}
+        </span>
+      </div>
+      <div className="mt-1 text-[11px]">{metaParts.join(" · ")}</div>
+      {item.blocking ? (
+        <p className="mt-1 text-xs font-semibold">Bloquea la prueba end-to-end.</p>
+      ) : item.status !== "ready" ? (
+        <p className="mt-1 text-xs font-semibold">
+          No bloquea la prueba segura, pero debe resolverse antes de operación real.
+        </p>
+      ) : null}
+      {item.status !== "ready" && item.notes.length > 0 ? (
+        <p className="mt-1 text-xs">{item.notes.join(" ")}</p>
+      ) : null}
+      {renderReadinessActions({
+        item,
+        row,
+        expanded,
+        existingRequest,
+        submitting,
+        onEditSkill: params.onEditSkill,
+        onToggleExpand: params.onToggleExpand,
+        onRequestGlobal: params.onRequestGlobal,
+      })}
+      {expanded ? (
+        <div className="mt-2 space-y-2">
+          {item.action_message ? (
+            <p className="rounded border border-white/70 bg-white/70 p-2 text-[11px] leading-snug">
+              {item.action_message}
+            </p>
+          ) : null}
+          {item.account_provider && item.action_kind === "configure_account" ? (
+            <div className="rounded border border-white/70 bg-white/85 p-3">
+              <AccountToolConnectionForm
+                provider={item.account_provider}
+                compact
+                onChanged={() => {
+                  void params.refreshToolReadiness(row);
+                }}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function renderOperationalFlowPreview(flow: OperationalCaseFlowStep[]) {
+  if (flow.length === 0) {
+    return (
+      <p className="text-xs text-neutral-500">
+        Sin flujo estructurado; se usará una vista inferida desde la skill.
+      </p>
+    );
+  }
+  return (
+    <ol className="space-y-2">
+      {flow.map((step, index) => (
+        <li
+          key={`${step.step_key}-${index}`}
+          className="rounded border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-800 dark:bg-neutral-950"
+        >
+          <div className="font-semibold">
+            {index + 1}. {step.step_label}
+          </div>
+          {step.step_description ? (
+            <p className="mt-1 text-xs text-neutral-500">{step.step_description}</p>
+          ) : null}
+          <div className="mt-2 space-y-1">
+            {(step.step_skills ?? []).map((skill) => (
+              <div key={skill.skill_slug} className="rounded bg-white p-2 text-xs dark:bg-neutral-900">
+                <div className="font-semibold">{skill.skill_label ?? skill.skill_slug}</div>
+                <div className="font-mono text-[11px] text-neutral-500">{skill.skill_slug}</div>
+                {skill.skill_description ? (
+                  <p className="mt-1 text-neutral-500">{skill.skill_description}</p>
+                ) : null}
+                {skill.skill_tools?.length ? (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {skill.skill_tools.map((tool) => (
+                      <span
+                        key={tool.tool_id}
+                        className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] text-neutral-600"
+                      >
+                        {tool.tool_label ?? tool.tool_id}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+            {(step.step_tools ?? []).length > 0 ? (
+              <div className="flex flex-wrap gap-1">
+                {(step.step_tools ?? []).map((tool) => (
+                  <span
+                    key={tool.tool_id}
+                    className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] text-neutral-600"
+                  >
+                    {tool.tool_label ?? tool.tool_id}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function testProgressBadge(status: OperationalCaseFlowProgressStatus) {
+  if (status === "completed") return activationStatusBadge("ready", "✓ Completado");
+  if (status === "blocked") return activationStatusBadge("attention", "Bloqueado");
+  if (status === "in_progress") return activationStatusBadge("attention", "En curso");
+  return activationStatusBadge("pending", "Pendiente");
+}
+
 function formatDateTime(value: string | null | undefined) {
   if (!value) return "Sin fecha";
   return new Intl.DateTimeFormat("es-MX", {
@@ -671,6 +1008,7 @@ function serializeEditingSnapshot(snapshot: EditingSnapshot | null) {
   return JSON.stringify({
     editing: snapshot.editing,
     schemaText: snapshot.schemaText,
+    flowText: snapshot.flowText,
     procedureText: snapshot.procedureText,
     fieldListText: snapshot.fieldListText,
     createPrivateSkill: snapshot.createPrivateSkill,
@@ -691,6 +1029,7 @@ export function OperationalCaseTypesClient({
     useState<OperationalCaseType | null>(null);
   const [editing, setEditing] = useState<EditingCaseType | null>(null);
   const [schemaText, setSchemaText] = useState("");
+  const [flowText, setFlowText] = useState("");
   const [procedureText, setProcedureText] = useState("");
   const [fieldListText, setFieldListText] = useState("");
   const [createPrivateSkill, setCreatePrivateSkill] = useState(true);
@@ -786,6 +1125,7 @@ export function OperationalCaseTypesClient({
     ? {
         editing,
         schemaText,
+        flowText,
         procedureText,
         fieldListText,
         createPrivateSkill,
@@ -864,6 +1204,20 @@ export function OperationalCaseTypesClient({
     return data.skills;
   }
 
+  function effectiveOperationalFlowForRow(row: OperationalCaseType) {
+    const ownFlow = Array.isArray(row.operational_flow_jsonb)
+      ? row.operational_flow_jsonb
+      : [];
+    if (ownFlow.length > 0 || scopeLabel(row) === "global") return ownFlow;
+    const globalCounterpart = caseTypes.find(
+      (candidate) =>
+        candidate.case_type === row.case_type && scopeLabel(candidate) === "global"
+    );
+    return Array.isArray(globalCounterpart?.operational_flow_jsonb)
+      ? globalCounterpart.operational_flow_jsonb
+      : [];
+  }
+
   async function refreshToolReadiness(row: OperationalCaseType) {
     if (scopeLabel(row) === "global") {
       setToolReadiness(null);
@@ -899,6 +1253,7 @@ export function OperationalCaseTypesClient({
         summary: data.summary,
         skill: data.skill,
         tools: data.tools,
+        flow: data.flow,
       });
       void refreshToolRequests(row);
     } catch (err) {
@@ -992,6 +1347,7 @@ export function OperationalCaseTypesClient({
         case: data.case,
         events: data.events ?? [],
         toolCalls: data.toolCalls ?? [],
+        flowProgress: data.flowProgress ?? [],
       });
     } catch (err) {
       console.warn("[operational-case-types] test case load failed:", err);
@@ -1022,6 +1378,7 @@ export function OperationalCaseTypesClient({
         case: data.case,
         events: data.events ?? [],
         toolCalls: data.toolCalls ?? [],
+        flowProgress: data.flowProgress ?? [],
       });
     } catch (err) {
       setError((err as Error).message ?? String(err));
@@ -1052,6 +1409,7 @@ export function OperationalCaseTypesClient({
         case: data.case,
         events: data.events ?? [],
         toolCalls: data.toolCalls ?? [],
+        flowProgress: data.flowProgress ?? [],
       });
     } catch (err) {
       setError((err as Error).message ?? String(err));
@@ -1071,6 +1429,7 @@ export function OperationalCaseTypesClient({
 
   async function startEdit(row: OperationalCaseType) {
     const value = caseTypeToEditing(row);
+    value.operational_flow_jsonb = effectiveOperationalFlowForRow(row);
     const editableDescription = descriptionForEditing(value.description);
     let savedSkillBody =
       accountSkillMap.get(value.default_skill_slug)?.body_md ?? "";
@@ -1087,12 +1446,14 @@ export function OperationalCaseTypesClient({
     setSelectedCaseType(row);
     const nextEditing = { ...value, description: editableDescription };
     const nextSchemaText = JSON.stringify(value.intake_schema_jsonb, null, 2);
+    const nextFlowText = JSON.stringify(value.operational_flow_jsonb, null, 2);
     const nextFieldListText = value.intake_schema_jsonb
       .map((field) => field.label)
       .join("\n");
     const nextCreatePrivateSkill = Boolean(savedSkillBody);
     setEditing(nextEditing);
     setSchemaText(nextSchemaText);
+    setFlowText(nextFlowText);
     setProcedureText(editableDescription);
     setFieldListText(nextFieldListText);
     setCreatePrivateSkill(nextCreatePrivateSkill);
@@ -1100,6 +1461,7 @@ export function OperationalCaseTypesClient({
     setEditingBaseline({
       editing: nextEditing,
       schemaText: nextSchemaText,
+      flowText: nextFlowText,
       procedureText: editableDescription,
       fieldListText: nextFieldListText,
       createPrivateSkill: nextCreatePrivateSkill,
@@ -1124,6 +1486,7 @@ export function OperationalCaseTypesClient({
     setSelectedCaseType(row);
     setEditing(null);
     setSchemaText("");
+    setFlowText("");
     setProcedureText("");
     setFieldListText("");
     setGeneratedSkillBody("");
@@ -1164,12 +1527,14 @@ export function OperationalCaseTypesClient({
       isNew: true,
     };
     const nextSchemaText = JSON.stringify(value.intake_schema_jsonb, null, 2);
+    const nextFlowText = JSON.stringify(value.operational_flow_jsonb, null, 2);
     const nextFieldListText = value.intake_schema_jsonb
       .map((field) => field.label)
       .join("\n");
     setSelectedCaseType(row);
     setEditing(nextEditing);
     setSchemaText(nextSchemaText);
+    setFlowText(nextFlowText);
     setProcedureText(editableDescription);
     setFieldListText(nextFieldListText);
     setCreatePrivateSkill(true);
@@ -1177,6 +1542,7 @@ export function OperationalCaseTypesClient({
     setEditingBaseline({
       editing: nextEditing,
       schemaText: nextSchemaText,
+      flowText: nextFlowText,
       procedureText: editableDescription,
       fieldListText: nextFieldListText,
       createPrivateSkill: true,
@@ -1200,8 +1566,10 @@ export function OperationalCaseTypesClient({
     setSelectedCaseType(null);
     setEditing(value);
     const nextSchemaText = JSON.stringify(value.intake_schema_jsonb, null, 2);
+    const nextFlowText = JSON.stringify(value.operational_flow_jsonb, null, 2);
     const nextFieldListText = "Título\nNotas iniciales";
     setSchemaText(nextSchemaText);
+    setFlowText(nextFlowText);
     setProcedureText("");
     setFieldListText(nextFieldListText);
     setCreatePrivateSkill(true);
@@ -1209,6 +1577,7 @@ export function OperationalCaseTypesClient({
     setEditingBaseline({
       editing: value,
       schemaText: nextSchemaText,
+      flowText: nextFlowText,
       procedureText: "",
       fieldListText: nextFieldListText,
       createPrivateSkill: true,
@@ -1246,9 +1615,14 @@ export function OperationalCaseTypesClient({
       default_skill_slug: skillSlug,
       description,
       intake_schema_jsonb: fields,
+      operational_flow_jsonb: fallbackOperationalFlow({
+        defaultSkillSlug: skillSlug,
+        skill: existingSkill,
+      }),
     };
     setEditing(next);
     setSchemaText(JSON.stringify(fields, null, 2));
+    setFlowText(JSON.stringify(next.operational_flow_jsonb, null, 2));
     setGeneratedSkillBody(
       buildSkillBody({
         slug: skillSlug,
@@ -1288,11 +1662,19 @@ export function OperationalCaseTypesClient({
       skillDraft: data.skillDraft,
       validationRubric: data.validationRubric ?? [],
       suggestedEvals: data.suggestedEvals ?? {},
+      operationalFlow: data.operationalFlow ?? [],
       activationRecommendation: data.activationRecommendation ?? "",
       attemptsUsed: data.attemptsUsed,
       elapsedMs: data.elapsedMs,
       metadataTruncated: data.metadataTruncated,
     });
+    if (data.operationalFlow?.length) {
+      const normalized = normalizeOperationalFlow(data.operationalFlow);
+      setEditing((current) =>
+        current ? { ...current, operational_flow_jsonb: normalized } : current
+      );
+      setFlowText(JSON.stringify(normalized, null, 2));
+    }
     setCreatePrivateSkill(true);
     setShowAdvanced(true);
   }
@@ -1321,6 +1703,7 @@ export function OperationalCaseTypesClient({
           description: procedureText || editing.description,
           fieldList: fieldListText,
           intakeSchema: editing.intake_schema_jsonb,
+          operationalFlow: editing.operational_flow_jsonb,
           skillSlug: editing.default_skill_slug,
           baseSkillSlug: selectedCaseType?.default_skill_slug ?? editing.default_skill_slug,
         }),
@@ -1443,6 +1826,13 @@ export function OperationalCaseTypesClient({
         setError(`intake_schema_jsonb inválido: ${(err as Error).message}`);
         return;
       }
+      let operationalFlow: OperationalCaseFlowStep[];
+      try {
+        operationalFlow = normalizeOperationalFlow(JSON.parse(flowText || "[]"));
+      } catch (err) {
+        setError(`operational_flow_jsonb inválido: ${(err as Error).message}`);
+        return;
+      }
 
       if (createPrivateSkill) {
         const skillBody =
@@ -1486,6 +1876,7 @@ export function OperationalCaseTypesClient({
         body: JSON.stringify({
           ...editing,
           intake_schema_jsonb: intakeSchema,
+          operational_flow_jsonb: operationalFlow,
           default_reminder_policy_jsonb: editing.default_reminder_policy_jsonb,
         }),
       });
@@ -1527,6 +1918,12 @@ export function OperationalCaseTypesClient({
     const fields = Array.isArray(row.intake_schema_jsonb)
       ? row.intake_schema_jsonb
       : [];
+    const effectiveFlow = effectiveOperationalFlowForRow(row);
+    const flowInherited =
+      effectiveFlow.length > 0 &&
+      (!Array.isArray(row.operational_flow_jsonb) ||
+        row.operational_flow_jsonb.length === 0) &&
+      !isGlobal;
 
     return (
       <div className="space-y-4">
@@ -1669,6 +2066,24 @@ export function OperationalCaseTypesClient({
           ) : null}
         </div>
 
+        <details className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            Flujo operativo (vista resumida){effectiveFlow.length > 0 ? ` · ${effectiveFlow.length} pasos` : ""}
+          </summary>
+          <p className="mt-2 text-xs text-neutral-500">
+            Procedimiento estructurado que se usa para readiness y prueba
+            controlada antes de activar chat/Telegram. Los detalles operativos y
+            el estado de cada herramienta se muestran abajo en{" "}
+            <span className="font-semibold">Preparación operativa</span>.
+            {flowInherited
+              ? " Esta versión usa el flujo de la plantilla global hasta que guardes uno propio."
+              : ""}
+          </p>
+          <div className="mt-3">
+            {renderOperationalFlowPreview(effectiveFlow)}
+          </div>
+        </details>
+
         {!isGlobal ? (
           <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
             <div className="flex items-start justify-between gap-3">
@@ -1735,93 +2150,168 @@ export function OperationalCaseTypesClient({
                 No se pudo revisar la preparación operativa: {toolReadinessError}
               </p>
             ) : toolReadiness?.tools.length ? (
-              <ul className="space-y-2">
-                {toolReadiness.tools.map((item) => {
-                  const expanded = expandedReadinessTools.has(item.tool_id);
-                  const existingRequest = toolRequests.find(
-                    (req) => req.tool_id === item.tool_id
-                  );
-                  const submitting = toolRequestSubmitting === item.tool_id;
-                  return (
-                    <li
-                      key={item.tool_id}
-                      className={`rounded border p-2 ${toolReadinessClass(item.status)}`}
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-mono text-xs">{item.tool_id}</span>
-                        <span className="rounded bg-white/70 px-1.5 py-0.5 text-[11px] font-semibold">
-                          {toolReadinessLabel(item.status)}
-                        </span>
-                      </div>
-                      <div className="mt-1 text-[11px]">
-                        Riesgo: {item.risk ?? "n/d"}
-                        {item.requires_integration
-                          ? ` · integración: ${item.requires_integration}`
-                          : ""}
-                        {` · ${toolReadinessCategoryLabel(item.category)}`}
-                      </div>
-                      {item.blocking ? (
-                        <p className="mt-1 text-xs font-semibold">
-                          Bloquea la prueba end-to-end.
-                        </p>
-                      ) : item.status !== "ready" ? (
-                        <p className="mt-1 text-xs font-semibold">
-                          No bloquea la prueba segura, pero debe resolverse antes
-                          de operación real.
-                        </p>
+              (() => {
+                const flowSteps = toolReadiness.flow ?? [];
+                const procedureSteps = flowSteps.filter(
+                  (step) => step.step_key !== "transversal_tools"
+                );
+                const transversalStep = flowSteps.find(
+                  (step) => step.step_key === "transversal_tools"
+                );
+
+                const renderToolCard = (
+                  tool: ToolReadinessFlowTool,
+                  keyPrefix: string
+                ) =>
+                  tool.readiness ? (
+                    <div key={`${keyPrefix}-${tool.tool_id}`}>
+                      {tool.tool_label || tool.tool_description ? (
+                        <div className="mb-1 text-xs">
+                          <span className="font-semibold">
+                            {tool.tool_label ?? tool.tool_id}
+                          </span>
+                          {tool.tool_description ? (
+                            <span className="text-neutral-500">
+                              {" · "}
+                              {tool.tool_description}
+                            </span>
+                          ) : null}
+                        </div>
                       ) : null}
-                      {item.notes.length > 0 ? (
-                        <p className="mt-1 text-xs">{item.notes.join(" ")}</p>
-                      ) : null}
-                      {renderReadinessActions({
-                        item,
+                      {renderFlowToolReadiness({
+                        item: tool.readiness,
                         row,
-                        expanded,
-                        existingRequest,
-                        submitting,
+                        expanded: expandedReadinessTools.has(tool.tool_id),
+                        existingRequest: toolRequests.find(
+                          (req) => req.tool_id === tool.tool_id
+                        ),
+                        submitting: toolRequestSubmitting === tool.tool_id,
                         onEditSkill: () => startEdit(row),
                         onToggleExpand: () =>
                           setExpandedReadinessTools((prev) => {
                             const next = new Set(prev);
-                            if (next.has(item.tool_id)) {
-                              next.delete(item.tool_id);
-                            } else {
-                              next.add(item.tool_id);
-                            }
+                            if (next.has(tool.tool_id)) next.delete(tool.tool_id);
+                            else next.add(tool.tool_id);
                             return next;
                           }),
-                        onRequestGlobal: () => createToolRequest(row, item),
+                        onRequestGlobal: () =>
+                          tool.readiness &&
+                          createToolRequest(row, tool.readiness),
+                        refreshToolReadiness,
                       })}
-                      {expanded ? (
-                        <div className="mt-2 space-y-2">
-                          {item.action_message ? (
-                            <p className="rounded border border-white/70 bg-white/70 p-2 text-[11px] leading-snug">
-                              {item.action_message}
-                            </p>
-                          ) : null}
-                          {item.account_provider &&
-                          item.action_kind === "configure_account" ? (
-                            <div className="rounded border border-white/70 bg-white/85 p-3">
-                              <AccountToolConnectionForm
-                                provider={item.account_provider}
-                                compact
-                                onChanged={() => {
-                                  void refreshToolReadiness(row);
-                                }}
-                              />
+                    </div>
+                  ) : null;
+
+                return (
+                  <div className="space-y-3">
+                    {procedureSteps.map((step, stepIndex) => (
+                      <section
+                        key={`${step.step_key}-${stepIndex}`}
+                        className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
+                      >
+                        <div className="text-center">
+                          <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                            Paso {stepIndex + 1}
+                          </span>
+                          <div className="mt-2">
+                            <div className="font-semibold">{step.step_label}</div>
+                            {step.step_description ? (
+                              <p className="mt-1 text-xs text-neutral-500">
+                                {step.step_description}
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          {step.step_skills.length > 0 ? (
+                            step.step_skills.map((skill) => (
+                              <div
+                                key={skill.skill_slug}
+                                className="rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900"
+                              >
+                                <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                                  Habilidad
+                                </div>
+                                <div className="text-xs font-semibold">
+                                  {skill.skill_label ?? labelFromSlug(skill.skill_slug)}
+                                </div>
+                                <div className="font-mono text-[11px] text-neutral-500">
+                                  {skill.skill_slug}
+                                </div>
+                                {skill.skill_description ? (
+                                  <p className="mt-1 text-xs text-neutral-500">
+                                    {skill.skill_description}
+                                  </p>
+                                ) : null}
+                                <div className="mt-4 space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                                    Herramientas
+                                  </div>
+                                  {skill.skill_tools.length > 0 ? (
+                                    skill.skill_tools.map((tool) =>
+                                      renderToolCard(tool, skill.skill_slug)
+                                    )
+                                  ) : (
+                                    <p className="text-xs text-neutral-500">
+                                      Esta habilidad no declara herramientas
+                                      específicas en el flujo.
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                                Habilidad
+                              </div>
+                              <div className="text-xs font-semibold">
+                                No aplica
+                              </div>
+                              <p className="mt-1 text-xs text-neutral-500">
+                                Este paso usa herramientas directas del flujo
+                                para crear y preparar la instancia.
+                              </p>
+                            </div>
+                          )}
+                          {step.step_tools.length > 0 ? (
+                            <div className="space-y-2 rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                                Herramientas
+                              </div>
+                              {step.step_tools.map((tool) =>
+                                renderToolCard(tool, step.step_key)
+                              )}
                             </div>
                           ) : null}
                         </div>
-                      ) : null}
-                    </li>
-                  );
-                })}
-                {toolRequestError ? (
-                  <li className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
-                    {toolRequestError}
-                  </li>
-                ) : null}
-              </ul>
+                      </section>
+                    ))}
+                    {transversalStep ? (
+                      <details className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+                        <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                          {transversalStep.step_label}
+                        </summary>
+                        {transversalStep.step_description ? (
+                          <p className="mt-2 text-xs text-neutral-500">
+                            {transversalStep.step_description}
+                          </p>
+                        ) : null}
+                        <div className="mt-2 space-y-2">
+                          {transversalStep.step_tools.map((tool) =>
+                            renderToolCard(tool, "transversal")
+                          )}
+                        </div>
+                      </details>
+                    ) : null}
+                    {toolRequestError ? (
+                      <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+                        {toolRequestError}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()
             ) : toolReadiness ? (
               <p className="rounded border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800">
                 No se requieren herramientas para esta habilidad. Puedes seguir
@@ -1844,8 +2334,8 @@ export function OperationalCaseTypesClient({
                 Caso de prueba
               </div>
               <p className="mt-1 text-xs text-neutral-500">
-                Crea un caso marcado como prueba para validar esta plantilla sin
-                mezclarlo con la operación real.
+                Crea un caso con valores sintéticos del intake para validar el
+                arranque seguro del flujo sin mezclarlo con operación real.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1870,17 +2360,17 @@ export function OperationalCaseTypesClient({
                 className="rounded border border-violet-300 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60"
                 title={
                   toolsHaveBlocks
-                    ? "Resuelve las tools bloqueantes antes de ejecutar la prueba end-to-end."
+                    ? "Resuelve las tools bloqueantes antes de ejecutar la prueba segura inicial."
                     : undefined
                 }
               >
-                {testCaseRunning ? "Ejecutando..." : "Ejecutar prueba controlada"}
+                {testCaseRunning ? "Ejecutando..." : "Ejecutar prueba segura inicial"}
               </button>
             </div>
             {toolsHaveBlocks && testCaseResult?.case ? (
               <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
-                Hay un caso de prueba creado previamente, pero la ejecución
-                quedó bloqueada hasta resolver las tools marcadas como
+                Hay un caso de prueba creado previamente, pero la prueba segura
+                queda bloqueada hasta resolver las tools marcadas como
                 bloqueantes en Preparación operativa.
               </p>
             ) : null}
@@ -1903,6 +2393,11 @@ export function OperationalCaseTypesClient({
                 >
                   Abrir en Casos operacionales
                 </a>
+                <p className="mt-2 text-neutral-500">
+                  Este caso se creó con valores de prueba derivados del
+                  formulario inicial; no usa datos reales ni ejecuta envíos,
+                  escrituras o publicaciones.
+                </p>
               </div>
             ) : (
               <p className="text-xs text-neutral-500">
@@ -1911,10 +2406,37 @@ export function OperationalCaseTypesClient({
                   : !toolReadiness
                     ? "Primero revisa la preparación operativa."
                     : toolsHaveBlocks
-                      ? "Resuelve las tools bloqueantes antes de crear una prueba end-to-end."
+                      ? "Resuelve las tools bloqueantes antes de crear una prueba segura inicial."
                       : "Aún no hay caso de prueba para esta plantilla."}
               </p>
             )}
+            {testCaseResult?.flowProgress?.length ? (
+              <div className="rounded border border-neutral-200 p-2 text-xs dark:border-neutral-800">
+                <div className="font-semibold text-neutral-700 dark:text-neutral-200">
+                  Progreso por paso
+                </div>
+                <ol className="mt-2 space-y-2">
+                  {testCaseResult.flowProgress.map((step, index) => (
+                    <li
+                      key={step.step_key}
+                      className="flex items-start justify-between gap-3 rounded bg-neutral-50 p-2 dark:bg-neutral-950"
+                    >
+                      <div>
+                        <div className="font-semibold">
+                          {index + 1}. {step.step_label}
+                        </div>
+                        {step.evidence.length > 0 ? (
+                          <div className="mt-1 font-mono text-[11px] text-neutral-500">
+                            {step.evidence.join(", ")}
+                          </div>
+                        ) : null}
+                      </div>
+                      {testProgressBadge(step.status)}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -2019,8 +2541,9 @@ export function OperationalCaseTypesClient({
                   testPassed ? "✓ Listo" : "Pendiente"
                 )}
                 <span>
-                  Prueba end-to-end pasada: caso de prueba avanzó por el flujo
-                  seguro inicial.
+                  Prueba segura inicial pasada: el caso de prueba validó intake
+                  y avanzó al primer paso operativo sin ejecutar acciones
+                  externas.
                 </span>
               </li>
               <li className="flex items-start gap-2">
@@ -2033,8 +2556,22 @@ export function OperationalCaseTypesClient({
                     : "Pendiente"
                 )}
                 <span>
-                  Activo para operación: listo para usarse normalmente desde
-                  Casos operacionales.
+                  Uso conversacional seguro: puede iniciarse desde chat/Telegram
+                  en modo controlado, sin envíos/publicaciones automáticas.
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                {activationStatusBadge(
+                  toolsPass && readinessCounts.stub === 0 ? "ready" : "attention",
+                  toolsPass && readinessCounts.stub === 0
+                    ? "✓ Listo"
+                    : "Pendiente operación real"
+                )}
+                <span>
+                  {operationCompletenessDescription({
+                    readinessCounts,
+                    toolsPass,
+                  })}
                 </span>
               </li>
             </ul>
@@ -2417,8 +2954,8 @@ export function OperationalCaseTypesClient({
               </summary>
               <p className="mt-2 text-xs leading-relaxed text-gray-500">
                 Usa esta sección para revisar o ajustar la definición exacta que
-                guardará el sistema. El formulario JSON y la habilidad se validan
-                al guardar.
+                guardará el sistema. El formulario JSON, el flujo operativo y la
+                habilidad se validan al guardar.
               </p>
               <label className="mt-3 block text-sm">
                 <span className="font-medium">Formulario inicial JSON</span>
@@ -2427,6 +2964,35 @@ export function OperationalCaseTypesClient({
                   onChange={(event) => setSchemaText(event.target.value)}
                   className="mt-1 h-56 w-full rounded border border-gray-300 p-2 font-mono text-xs"
                 />
+              </label>
+              <label className="mt-3 block text-sm">
+                <span className="font-medium">
+                  Flujo operativo JSON paso → skill → tool
+                </span>
+                <textarea
+                  value={flowText}
+                  onChange={(event) => {
+                    setFlowText(event.target.value);
+                    try {
+                      const normalized = normalizeOperationalFlow(
+                        JSON.parse(event.target.value || "[]")
+                      );
+                      setEditing((current) =>
+                        current
+                          ? { ...current, operational_flow_jsonb: normalized }
+                          : current
+                      );
+                    } catch {
+                      // Mientras el usuario edita JSON parcial, esperamos a guardar.
+                    }
+                  }}
+                  className="mt-1 h-64 w-full rounded border border-gray-300 p-2 font-mono text-xs"
+                />
+                <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                  Este flow alimenta Preparación operativa y Prueba controlada.
+                  skill-authoring lo propone automáticamente; aquí puedes ajustar
+                  labels/descripciones o editar JSON avanzado.
+                </p>
               </label>
               <label className="mt-3 block text-sm">
                 <span className="font-medium">Habilidad</span>

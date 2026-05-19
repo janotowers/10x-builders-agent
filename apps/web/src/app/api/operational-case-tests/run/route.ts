@@ -1,12 +1,69 @@
 import { NextResponse } from "next/server";
 import {
   createServerClient,
+  getGlobalOperationalCaseTypeBySlug,
   getOperationalCase,
+  getOperationalCaseTypeById,
   insertOperationalCaseEvent,
   markCaseProcessing,
   updateOperationalCase,
 } from "@agents/db";
+import type {
+  OperationalCase,
+  OperationalCaseEvent,
+  OperationalCaseFlowStep,
+} from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
+
+async function effectiveFlowForCase(
+  db: ReturnType<typeof createServerClient>,
+  opCase: OperationalCase
+): Promise<OperationalCaseFlowStep[]> {
+  const caseType = await getOperationalCaseTypeById(db, opCase.case_type_id);
+  const ownFlow = Array.isArray(caseType?.operational_flow_jsonb)
+    ? caseType.operational_flow_jsonb
+    : [];
+  if (ownFlow.length > 0 || !caseType?.user_id) return ownFlow;
+  const globalCaseType = await getGlobalOperationalCaseTypeBySlug(
+    db,
+    caseType.case_type
+  );
+  return Array.isArray(globalCaseType?.operational_flow_jsonb)
+    ? globalCaseType.operational_flow_jsonb
+    : [];
+}
+
+function buildFlowProgress(params: {
+  opCase: OperationalCase;
+  events: OperationalCaseEvent[];
+  flow: OperationalCaseFlowStep[];
+}) {
+  return params.flow.map((step, index) => {
+    const evidence = params.events
+      .filter((event) => {
+        const payload = event.payload_jsonb as Record<string, unknown> | null;
+        return (
+          payload?.current_step === step.step_key ||
+          payload?.step === step.step_key ||
+          payload?.step_key === step.step_key ||
+          (index === 0 && payload?.kind === "controlled_test_started")
+        );
+      })
+      .map((event) => `event:${event.event_type}`);
+    const status =
+      params.opCase.current_step === step.step_key
+        ? "in_progress"
+        : evidence.length > 0
+          ? "completed"
+          : "pending";
+    return {
+      step_key: step.step_key,
+      step_label: step.step_label,
+      status,
+      evidence,
+    };
+  });
+}
 
 export async function POST(request: Request) {
   try {
@@ -51,7 +108,7 @@ export async function POST(request: Request) {
         kind: "controlled_test_started",
         source: "case_type_settings",
         safe_mode: true,
-        note: "Prueba controlada: solo se valida intake y se deja pendiente la siguiente acción. Tools send/write/publish requieren confirmación humana.",
+        note: "Prueba segura inicial: valida intake y deja pendiente la siguiente acción. Tools de envío/escritura/publicación no se ejecutan automáticamente y requieren confirmación humana.",
       },
     });
 
@@ -81,7 +138,7 @@ export async function POST(request: Request) {
         status: updated.status,
         current_step: updated.current_step,
         result: "safe_readiness_passed",
-        next_action: "Revisar readiness de tools send/write/publish antes de ejecutar acciones reales.",
+        next_action: "Revisar readiness de tools de envío/escritura/publicación antes de operación real completa.",
       },
     });
 
@@ -92,11 +149,19 @@ export async function POST(request: Request) {
       .order("created_at", { ascending: true })
       .limit(80);
 
+    const flow = await effectiveFlowForCase(db, updated);
+    const flowProgress = buildFlowProgress({
+      opCase: updated,
+      events: (events.data ?? []) as OperationalCaseEvent[],
+      flow,
+    });
+
     return NextResponse.json({
       ok: true,
       case: updated,
       events: events.data ?? [],
       toolCalls: [],
+      flowProgress,
     });
   } catch (err) {
     console.error("[POST /api/operational-case-tests/run] failed:", err);

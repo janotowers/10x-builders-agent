@@ -20,6 +20,7 @@ type SkillAuthoringRequest = {
   description?: unknown;
   fieldList?: unknown;
   intakeSchema?: unknown;
+  operationalFlow?: unknown;
   skillSlug?: unknown;
   baseSkillSlug?: unknown;
 };
@@ -280,6 +281,97 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value != null;
+}
+
+type OperationalFlowToolDraft = {
+  tool_id: string;
+  tool_label?: string;
+  tool_description?: string;
+};
+
+type OperationalFlowSkillDraft = {
+  skill_slug: string;
+  skill_label?: string;
+  skill_description?: string;
+  skill_tools: OperationalFlowToolDraft[];
+};
+
+type OperationalFlowStepDraft = {
+  step_key: string;
+  step_label: string;
+  step_description?: string;
+  step_skills: OperationalFlowSkillDraft[];
+  step_tools: OperationalFlowToolDraft[];
+};
+
+function labelFromSlug(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function normalizeCaseStepKey(value: unknown, fallback: string) {
+  const text = cleanText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+  return text || fallback;
+}
+
+function normalizeFlowTool(value: unknown): OperationalFlowToolDraft | null {
+  if (!isRecord(value)) return null;
+  const toolId = cleanText(value.tool_id);
+  if (!toolId) return null;
+  return {
+    tool_id: toolId,
+    tool_label: cleanText(value.tool_label) || undefined,
+    tool_description: cleanText(value.tool_description) || undefined,
+  };
+}
+
+function normalizeFlowSkill(value: unknown): OperationalFlowSkillDraft | null {
+  if (!isRecord(value)) return null;
+  const skillSlug = cleanText(value.skill_slug);
+  if (!skillSlug) return null;
+  return {
+    skill_slug: skillSlug,
+    skill_label: cleanText(value.skill_label) || undefined,
+    skill_description: cleanText(value.skill_description) || undefined,
+    skill_tools: Array.isArray(value.skill_tools)
+      ? value.skill_tools.map(normalizeFlowTool).filter(isPresent)
+      : [],
+  };
+}
+
+function normalizeOperationalFlow(value: unknown): OperationalFlowStepDraft[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((step, index): OperationalFlowStepDraft | null => {
+      if (!isRecord(step)) return null;
+      const stepKey = normalizeCaseStepKey(step.step_key, `step_${index + 1}`);
+      const stepLabel = cleanText(step.step_label) || labelFromSlug(stepKey);
+      return {
+        step_key: stepKey,
+        step_label: stepLabel,
+        step_description: cleanText(step.step_description) || undefined,
+        step_skills: Array.isArray(step.step_skills)
+          ? step.step_skills.map(normalizeFlowSkill).filter(isPresent)
+          : [],
+        step_tools: Array.isArray(step.step_tools)
+          ? step.step_tools.map(normalizeFlowTool).filter(isPresent)
+          : [],
+      };
+    })
+    .filter(isPresent);
+}
+
 function normalizeSkillDraft(value: string): string {
   // Gu's frontmatter parser is a strict subset of YAML and only supports
   // `key: |` block scalars (clip mode). Anything like `|-`, `|+`, `>`, `>-`
@@ -446,6 +538,75 @@ async function buildBackendRubric(params: {
   ];
 }
 
+async function buildFlowRubric(params: {
+  flow: OperationalFlowStepDraft[];
+  record: SkillRecord | null;
+}): Promise<RubricItem[]> {
+  const catalogIds = new Set(TOOL_CATALOG.map((tool) => tool.id));
+  const registry = await getGlobalSkillRegistry();
+  const rootAllowedTools = new Set(params.record?.metadata.allowedTools ?? []);
+  const rootIncludes = new Set(params.record?.metadata.includes ?? []);
+  const unknownTools: string[] = [];
+  const missingSkills: string[] = [];
+  const unmappedAllowedTools = new Set(rootAllowedTools);
+
+  for (const step of params.flow) {
+    for (const tool of step.step_tools ?? []) {
+      if (!catalogIds.has(tool.tool_id)) unknownTools.push(tool.tool_id);
+      unmappedAllowedTools.delete(tool.tool_id);
+    }
+    for (const skill of step.step_skills ?? []) {
+      if (
+        params.record &&
+        skill.skill_slug !== params.record.metadata.name &&
+        !rootIncludes.has(skill.skill_slug) &&
+        !registry.has(skill.skill_slug)
+      ) {
+        missingSkills.push(skill.skill_slug);
+      }
+      for (const tool of skill.skill_tools ?? []) {
+        if (!catalogIds.has(tool.tool_id)) unknownTools.push(tool.tool_id);
+        unmappedAllowedTools.delete(tool.tool_id);
+      }
+    }
+  }
+
+  return [
+    {
+      item: "operationalFlow has at least one step.",
+      status: params.flow.length > 0 ? "PASS" : "WARN",
+      note:
+        params.flow.length > 0
+          ? "El flujo estructurado incluye pasos para readiness/prueba."
+          : "No se recibió operationalFlow; la UI usará fallback inferido.",
+    },
+    {
+      item: "operationalFlow tools exist in TOOL_CATALOG.",
+      status: unknownTools.length === 0 ? "PASS" : "FAIL",
+      note:
+        unknownTools.length === 0
+          ? "Todas las tools del flow existen en el catálogo."
+          : `Tools desconocidas en flow: ${[...new Set(unknownTools)].join(", ")}`,
+    },
+    {
+      item: "operationalFlow skills exist or are declared in includes.",
+      status: missingSkills.length === 0 ? "PASS" : "WARN",
+      note:
+        missingSkills.length === 0
+          ? "Las skills del flow existen o están declaradas en la composición."
+          : `Skills no encontradas/no incluidas: ${[...new Set(missingSkills)].join(", ")}`,
+    },
+    {
+      item: "allowed_tools are mapped into the flow or can appear as general tools.",
+      status: unmappedAllowedTools.size === 0 ? "PASS" : "WARN",
+      note:
+        unmappedAllowedTools.size === 0
+          ? "Todas las allowed_tools del root están ubicadas en el flow."
+          : `Allowed tools sin paso específico: ${[...unmappedAllowedTools].join(", ")}`,
+    },
+  ];
+}
+
 export async function POST(request: Request) {
   try {
     ensureAgentToolDepsWired();
@@ -464,6 +625,7 @@ export async function POST(request: Request) {
     const fieldList = cleanText(body.fieldList);
     const skillSlug = cleanText(body.skillSlug);
     const baseSkillSlug = cleanText(body.baseSkillSlug) || skillSlug;
+    const existingOperationalFlow = normalizeOperationalFlow(body.operationalFlow);
     const baseSkillBody = await readGlobalSkillBody(baseSkillSlug);
 
     if (!displayName && !description) {
@@ -523,7 +685,7 @@ export async function POST(request: Request) {
       "Usa la skill `skill-authoring` para proponer un SKILL.md optimizado para Gu OS.",
       "FORMATO DE SALIDA OBLIGATORIO (no añadas texto fuera de las etiquetas):",
       "<metadata>",
-      `{"suggestedEvals":{"positive":["..."],"nearMiss":["..."],"heartbeat":["..."]},"notes":"<opcional, ≤300 chars, solo si es concreta>"}`,
+      `{"suggestedEvals":{"positive":["..."],"nearMiss":["..."],"heartbeat":["..."]},"operationalFlow":[{"step_key":"intake","step_label":"Captura inicial","step_description":"...","step_skills":[],"step_tools":[{"tool_id":"operational_case_create","tool_label":"Crear caso operacional","tool_description":"..."}]}],"notes":"<opcional, ≤300 chars, solo si es concreta>"}`,
       "</metadata>",
       "<skill-draft>",
       "...el SKILL.md completo aquí, tal cual, sin escapar nada, sin ```fences```...",
@@ -534,6 +696,11 @@ export async function POST(request: Request) {
       "- NO incluyas `activationRecommendation`; el backend la calcula a partir de la rúbrica.",
       "- `notes` es OPCIONAL: inclúyelo solo si nombra un campo, paso, tool o riesgo exacto. Omítelo si sería genérico como \"revisar validación\" o \"checar flujo\". Máximo 300 caracteres.",
       "- Mantén `suggestedEvals` con máximo 3 elementos por lista; si no hay heartbeat, omite la clave.",
+      "- Incluye `operationalFlow` SIEMPRE que estés generando/mejorando un caso operacional. Es un array JSON de pasos para UI/readiness/prueba, NO markdown.",
+      "- Cada paso de `operationalFlow` usa esta forma exacta: `{step_key, step_label, step_description, step_skills, step_tools}`.",
+      "- `step_skills` es array de `{skill_slug, skill_label, skill_description, skill_tools}`; `skill_tools` es array de `{tool_id, tool_label, tool_description}`.",
+      "- Usa `step_tools` sólo para tools del paso no asociadas claramente a una skill específica (ej. `operational_case_create`, `operational_case_update_state`).",
+      "- Todo `tool_id` en operationalFlow debe existir en TOOL_CATALOG y estar contemplado por `allowed_tools` del SKILL.md root o de sus includes.",
       "Nunca metas el SKILL.md dentro del JSON: va exclusivamente en <skill-draft>.",
       "",
       "Reglas no negociables para el skillDraft:",
@@ -556,6 +723,7 @@ export async function POST(request: Request) {
           description,
           fieldList,
           intakeSchema: body.intakeSchema ?? null,
+          existingOperationalFlow,
           baseSkillSlug,
           hasBaseSkillBody: Boolean(baseSkillBody),
         },
@@ -751,6 +919,13 @@ export async function POST(request: Request) {
             skillDraft,
             expectedSlug: skillSlug || baseSkillSlug,
           });
+          const operationalFlow = normalizeOperationalFlow(parsed.operationalFlow);
+          validationRubric.push(
+            ...(await buildFlowRubric({
+              flow: operationalFlow,
+              record: parsedSkill,
+            }))
+          );
           const hasBlockingIssue = validationRubric.some(
             (item) => item.status === "FAIL"
           );
@@ -776,6 +951,7 @@ export async function POST(request: Request) {
               suggestedEvals: isRecord(parsed.suggestedEvals)
                 ? parsed.suggestedEvals
                 : {},
+              operationalFlow,
               activationRecommendation,
               parserValid: Boolean(parsedSkill),
               metadataTruncated,

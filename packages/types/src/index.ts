@@ -397,6 +397,27 @@ export interface OperationalCaseIntakeField {
   options?: string[];
 }
 
+export interface OperationalCaseFlowTool {
+  tool_id: string;
+  tool_label?: string;
+  tool_description?: string;
+}
+
+export interface OperationalCaseFlowSkill {
+  skill_slug: string;
+  skill_label?: string;
+  skill_description?: string;
+  skill_tools?: OperationalCaseFlowTool[];
+}
+
+export interface OperationalCaseFlowStep {
+  step_key: string;
+  step_label: string;
+  step_description?: string;
+  step_skills?: OperationalCaseFlowSkill[];
+  step_tools?: OperationalCaseFlowTool[];
+}
+
 export interface OperationalCaseType {
   id: string;
   case_type: string;
@@ -407,6 +428,7 @@ export interface OperationalCaseType {
   visibility?: OperationalCaseTypeVisibility;
   status?: OperationalCaseTypeStatus;
   intake_schema_jsonb?: OperationalCaseIntakeField[];
+  operational_flow_jsonb?: OperationalCaseFlowStep[];
   description: string | null;
   created_at: string;
   updated_at: string;

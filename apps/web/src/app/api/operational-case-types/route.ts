@@ -6,6 +6,9 @@ import {
   upsertOperationalCaseTypeForUser,
 } from "@agents/db";
 import type {
+  OperationalCaseFlowSkill,
+  OperationalCaseFlowStep,
+  OperationalCaseFlowTool,
   OperationalCaseIntakeField,
   OperationalCaseIntakeFieldType,
   OperationalCaseReminderPolicy,
@@ -27,6 +30,10 @@ const FIELD_TYPES: OperationalCaseIntakeFieldType[] = [
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value != null;
 }
 
 function cleanText(value: unknown): string {
@@ -95,6 +102,57 @@ function normalizeReminderPolicy(value: unknown): OperationalCaseReminderPolicy 
   };
 }
 
+function normalizeFlowTool(value: unknown): OperationalCaseFlowTool | null {
+  if (!isRecord(value)) return null;
+  const toolId = cleanText(value.tool_id);
+  if (!toolId) return null;
+  return {
+    tool_id: toolId,
+    tool_label: cleanText(value.tool_label) || undefined,
+    tool_description: cleanText(value.tool_description) || undefined,
+  };
+}
+
+function normalizeFlowSkill(value: unknown): OperationalCaseFlowSkill | null {
+  if (!isRecord(value)) return null;
+  const skillSlug = cleanSlug(value.skill_slug);
+  if (!skillSlug) return null;
+  const skillTools = Array.isArray(value.skill_tools)
+    ? value.skill_tools.map(normalizeFlowTool).filter(isPresent)
+    : [];
+  return {
+    skill_slug: skillSlug,
+    skill_label: cleanText(value.skill_label) || undefined,
+    skill_description: cleanText(value.skill_description) || undefined,
+    skill_tools: skillTools,
+  };
+}
+
+function normalizeOperationalFlow(value: unknown): OperationalCaseFlowStep[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isRecord)
+    .map((step, index) => {
+      const stepKey =
+        cleanSlug(step.step_key).replace(/-/g, "_") || `step_${index + 1}`;
+      const stepLabel = cleanText(step.step_label);
+      const stepSkills = Array.isArray(step.step_skills)
+        ? step.step_skills.map(normalizeFlowSkill).filter(isPresent)
+        : [];
+      const stepTools = Array.isArray(step.step_tools)
+        ? step.step_tools.map(normalizeFlowTool).filter(isPresent)
+        : [];
+      return {
+        step_key: stepKey,
+        step_label: stepLabel,
+        step_description: cleanText(step.step_description) || undefined,
+        step_skills: stepSkills,
+        step_tools: stepTools,
+      } satisfies OperationalCaseFlowStep;
+    })
+    .filter((step) => step.step_key && step.step_label);
+}
+
 export async function GET() {
   try {
     const supabase = await createClient();
@@ -142,6 +200,7 @@ export async function POST(request: Request) {
     const visibility: Exclude<OperationalCaseTypeVisibility, "global"> =
       "private";
     const intakeSchema = normalizeIntakeSchema(body.intake_schema_jsonb);
+    const operationalFlow = normalizeOperationalFlow(body.operational_flow_jsonb);
     const reminderPolicy = normalizeReminderPolicy(
       body.default_reminder_policy_jsonb
     );
@@ -181,6 +240,7 @@ export async function POST(request: Request) {
       status,
       visibility,
       intakeSchema,
+      operationalFlow,
       reminderPolicy,
     });
 
