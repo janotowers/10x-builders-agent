@@ -1018,8 +1018,7 @@ function ToolTestPanel({
   const [response, setResponse] = useState<ToolTestResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const requiresConfirm =
-    (item.risk === "medium" || item.risk === "high") && !confirm;
+  const requiresConfirm = item.risk === "medium" && !confirm;
 
   function parseUserArgs(): {
     ok: boolean;
@@ -1211,18 +1210,19 @@ function ToolTestPanel({
         >
           {showArgs ? "Ocultar avanzado" : "Avanzado: modificar args JSON"}
         </button>
-        {item.risk !== "low" ? (
+        {item.risk === "medium" ? (
           <label className="flex items-center gap-1 text-[11px] text-neutral-600">
             <input
               type="checkbox"
               checked={confirm}
               onChange={(event) => setConfirm(event.target.checked)}
-              disabled={item.risk === "high"}
             />
-            {item.risk === "high"
-              ? "Riesgo alto: sólo dry-run desde esta capa"
-              : "Confirmar ejecución (riesgo medio)"}
+            Confirmar ejecución (riesgo medio)
           </label>
+        ) : item.risk === "high" ? (
+          <span className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+            Riesgo alto: sólo dry-run desde esta capa
+          </span>
         ) : null}
       </div>
       {showArgs ? (

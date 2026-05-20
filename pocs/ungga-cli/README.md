@@ -23,6 +23,8 @@ UNGGA_STAGING_URL=https://ungga.com/login
 UNGGA_STAGING_EMAIL=...
 UNGGA_STAGING_PASSWORD=...
 UNGGA_CLI_DRY_RUN=true
+# Opcional en desarrollo local; requerido en producción si se usa el fallback.
+# UNGGA_CLI_ENABLED=true
 UNGGA_CLI_HEADLESS=true
 UNGGA_CLI_SCREENSHOTS=true
 UNGGA_CLI_TIMEOUT_MS=60000
@@ -61,6 +63,12 @@ como borrador"** (no publica): la ficha queda en la pestaña *Borrador* de Ungga
 para que un humano la revise, complete el resto del wizard y publique
 manualmente (HITL). Esto encaja con el riesgo "high" de
 `ungga_publish_listing`.
+
+Cuando el adapter `ungga_publish_listing` usa este POC como fallback, ejecuta
+`src/publish-listing.mjs` en este directorio. En desarrollo local puede cargar
+este `.env` directamente vía `dotenv/config`; en producción debe habilitarse de
+forma explícita con `UNGGA_CLI_ENABLED=true` y credenciales administradas como
+secretos del runtime.
 
 Campos que el script llena automáticamente:
 

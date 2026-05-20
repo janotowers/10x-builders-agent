@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
@@ -190,12 +192,35 @@ function envConfigured(toolId: string) {
         process.env.UNGGA_INTERNAL_API_TOKEN?.trim()
     ) || Boolean(
       process.env.UNGGA_CLI_ENABLED?.trim().toLowerCase() === "true" &&
-        process.env.UNGGA_STAGING_URL?.trim() &&
-        process.env.UNGGA_STAGING_EMAIL?.trim() &&
-        process.env.UNGGA_STAGING_PASSWORD?.trim()
-    );
+        ((
+          process.env.UNGGA_STAGING_URL?.trim() &&
+          process.env.UNGGA_STAGING_EMAIL?.trim() &&
+          process.env.UNGGA_STAGING_PASSWORD?.trim()
+        ) ||
+          localUnggaCliEnvAvailable())
+    ) || localUnggaCliEnvAvailable();
   }
   return true;
+}
+
+function localUnggaCliEnvAvailable() {
+  if (process.env.NODE_ENV === "production") return false;
+  const pocDir = resolveLocalUnggaCliDir();
+  return Boolean(pocDir && existsSync(path.join(pocDir, ".env")));
+}
+
+function resolveLocalUnggaCliDir() {
+  const configured = process.env.UNGGA_CLI_DIR?.trim();
+  if (configured) return configured;
+  const cwd = process.cwd();
+  const candidates = [
+    path.resolve(cwd, "pocs", "ungga-cli"),
+    path.resolve(cwd, "..", "pocs", "ungga-cli"),
+    path.resolve(cwd, "..", "..", "pocs", "ungga-cli"),
+  ];
+  return candidates.find((candidate) =>
+    existsSync(path.join(candidate, "src", "publish-listing.mjs"))
+  );
 }
 
 function collectRequiredAssets(flow: OperationalCaseFlowStep[]) {
@@ -358,21 +383,21 @@ function classifyTool(params: {
       };
     }
     notes.push(
-      "Pendiente de Ungga: implementar publicación vía CLI/browser automation. La API queda como alternativa futura."
+      "Fallback CLI/Playwright no detectado en este runtime. Configura UNGGA_CLI_ENABLED=true + credenciales, UNGGA_CLI_DIR, o asegúrate de que exista pocs/ungga-cli/.env en desarrollo."
     );
     return {
       tool_id: params.toolId,
-      status: "stub",
-      category: "technical_stub",
+      status: "needs_config",
+      category: "account_config",
       blocking: false,
-      action_kind: "request_global",
-      action_label: "Solicitar prioridad",
+      action_kind: "configure_account",
+      action_label: "Configurar fallback CLI",
       action_available: true,
       action_message:
-        "Publicar en Ungga se resolverá primero vía CLI/browser automation para validar el patrón en sitios sin API. No requiere conectar Ungga API para la prueba segura; queda pendiente para operación real.",
+        "El adapter de Ungga ya soporta CLI/browser automation a borrador HITL, pero este servidor no detecta la configuración local o variables necesarias para ejecutarlo.",
       action_url: null,
       action_anchor: null,
-      request_kind: "incorporate_to_catalog",
+      request_kind: null,
       account_provider: null,
       account_secret_status: null,
       exists_in_catalog: true,

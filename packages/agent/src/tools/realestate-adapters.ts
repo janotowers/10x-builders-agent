@@ -6,7 +6,7 @@
  *   - bigquery_lookup_local_comparables (real, sobre bigquery_run_query)
  *   - generate_document_from_template (real: DOCX desde account_assets)
  *   - image_watermark (stub: necesita asset por tenant)
- *   - ungga_publish_listing (stub: depende del POC API)
+ *   - ungga_publish_listing (API interna o fallback CLI/Playwright a borrador HITL)
  *
  * Las tools marcadas como stub siguen el patrón
  * `{ status: "not_configured", hint: ... }` en vez de fallar, para que el
@@ -19,7 +19,7 @@
  */
 import { tool } from "@langchain/core/tools";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -358,7 +358,7 @@ export function addRealEstateTools(
     );
   }
 
-  // ── Ungga publish — HTTP que prefiere account-tool secret → env ────
+  // ── Ungga publish — API interna o fallback CLI/Playwright a borrador ────
   if (toolEnabled("ungga_publish_listing", ctx)) {
     tools.push(
       tool(
@@ -457,7 +457,8 @@ export function addRealEstateTools(
         },
         {
           name: "ungga_publish_listing",
-          description: "Publishes a listing to Ungga via the internal API.",
+          description:
+            "Creates a reviewed Ungga listing draft via internal API or CLI/browser automation. Requires HITL and does not press the final Publish button.",
           schema: z.object({
             title: z.string().min(1),
             description: z.string().optional(),
@@ -465,7 +466,34 @@ export function addRealEstateTools(
             property_type: z.string().min(1),
             price: z.number().positive(),
             currency: z.string().optional(),
+            construction_m2: z.number().positive().optional(),
+            land_m2: z.number().positive().optional(),
+            land_unit: z.string().optional(),
+            condition: z.string().optional(),
+            age_range: z.string().optional(),
+            country: z.string().optional(),
+            address: z.string().optional(),
             location: z.record(z.string(), z.any()).optional(),
+            bedrooms: z.number().nonnegative().optional(),
+            bathrooms_full: z.number().nonnegative().optional(),
+            bathrooms_half: z.number().nonnegative().optional(),
+            parking_spaces: z.number().nonnegative().optional(),
+            covered_parking: z.boolean().optional(),
+            floor: z.string().optional(),
+            location_type: z.string().optional(),
+            current_status: z.string().optional(),
+            amenities: z.array(z.string()).optional(),
+            video_url: z.string().optional(),
+            tour_url: z.string().optional(),
+            operations: z
+              .array(
+                z.object({
+                  type: z.enum(["sale", "rent", "rent_temporary", "presale"]),
+                  price: z.number().positive(),
+                  currency: z.string().optional(),
+                })
+              )
+              .optional(),
             image_urls: z.array(z.string().url()).optional(),
             case_id: z.string().min(1).optional(),
           }),
@@ -1034,33 +1062,68 @@ function makeEasyBrokerWriteStub(
   );
 }
 
-function cliEnabled() {
-  const raw = process.env.UNGGA_CLI_ENABLED?.trim().toLowerCase();
+function envFlagEnabled(name: string) {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return null;
   return raw === "1" || raw === "true" || raw === "yes";
+}
+
+async function fileExists(pathname: string) {
+  try {
+    await access(pathname);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function cliEnabled(pocDir: string) {
+  const explicit = envFlagEnabled("UNGGA_CLI_ENABLED");
+  if (explicit != null) return explicit;
+  // Local POC convenience: when running dev without wiring the web process env,
+  // allow the child CLI to load pocs/ungga-cli/.env via dotenv/config.
+  if (process.env.NODE_ENV === "production") return false;
+  return fileExists(path.join(pocDir, ".env"));
+}
+
+async function resolveUnggaCliDir() {
+  const configured = process.env.UNGGA_CLI_DIR?.trim();
+  if (configured) return configured;
+  const cwd = process.cwd();
+  const candidates = [
+    path.resolve(cwd, "pocs", "ungga-cli"),
+    path.resolve(cwd, "..", "pocs", "ungga-cli"),
+    path.resolve(cwd, "..", "..", "pocs", "ungga-cli"),
+  ];
+  for (const candidate of candidates) {
+    if (await fileExists(path.join(candidate, "src", "publish-listing.mjs"))) {
+      return candidate;
+    }
+  }
+  return candidates[0];
 }
 
 async function runUnggaCliFallback(
   input: Record<string, unknown>
 ): Promise<Record<string, unknown> | null> {
-  if (!cliEnabled()) return null;
+  const pocDir = await resolveUnggaCliDir();
+  if (!(await cliEnabled(pocDir))) return null;
   const required = [
     "UNGGA_STAGING_URL",
     "UNGGA_STAGING_EMAIL",
     "UNGGA_STAGING_PASSWORD",
   ];
   const missing = required.filter((name) => !process.env[name]?.trim());
-  if (missing.length > 0) {
+  const pocEnvAvailable = await fileExists(path.join(pocDir, ".env"));
+  if (missing.length > 0 && !pocEnvAvailable) {
     return {
       ok: false,
       status: "not_configured",
       mode: "cli",
-      error: `Missing env for Ungga CLI fallback: ${missing.join(", ")}`,
+      error: `Missing env for Ungga CLI fallback: ${missing.join(", ")}. Provide them in the runtime env or in ${path.join(pocDir, ".env")}.`,
     };
   }
 
-  const pocDir =
-    process.env.UNGGA_CLI_DIR?.trim() ||
-    path.resolve(process.cwd(), "pocs", "ungga-cli");
   const tempDir = await mkdtemp(path.join(tmpdir(), "ungga-cli-"));
   const inputPath = path.join(tempDir, "listing.json");
   await writeFile(inputPath, JSON.stringify(input), "utf8");
@@ -1078,11 +1141,21 @@ async function runUnggaCliFallback(
       }
     );
     const parsed = parseCliJson(stdout);
+    const cliMode = typeof parsed.mode === "string" ? parsed.mode : "unknown";
+    const ok = parsed.ok === true;
     return {
-      ok: parsed.ok === true,
-      status: parsed.ok === true ? "executed" : "failed",
+      ok,
+      status: ok
+        ? cliMode === "dry_run"
+          ? "dry_run_ready"
+          : "draft_created"
+        : "failed",
       mode: "cli",
-      cli_dry_run: parsed.mode === "dry_run",
+      cli_mode: cliMode,
+      cli_dry_run: cliMode === "dry_run",
+      requires_human_review: true,
+      publish_policy:
+        "CLI fallback fills the Ungga wizard and saves a draft at most; it never presses the final Publish button.",
       cli_result: parsed,
       ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
     };

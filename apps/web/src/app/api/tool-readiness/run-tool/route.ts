@@ -74,6 +74,13 @@ type ToolRunBody = {
 const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
   easybroker_search_listings: { limit: 5 },
   easybroker_search_closed_deals: { limit: 5 },
+  ungga_publish_listing: {
+    title: "POC test - DELETE ME",
+    operation: "sale",
+    property_type: "Departamento",
+    price: 1000000,
+    currency: "MXN",
+  },
 };
 
 /**
@@ -88,6 +95,7 @@ const TOOL_TEST_ARG_RECIPES: Record<
 > = {
   easybroker_search_listings: easyBrokerCaseRecipe,
   easybroker_search_closed_deals: easyBrokerCaseRecipe,
+  ungga_publish_listing: unggaPublishCaseRecipe,
 };
 
 function cleanText(value: unknown) {
@@ -245,6 +253,74 @@ function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
   if (areaM2 != null) {
     args.min_area_m2 = Math.round(areaM2 * 0.8);
     args.max_area_m2 = Math.round(areaM2 * 1.2);
+  }
+  return args;
+}
+
+function unggaPublishCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  const propertyType =
+    firstStringArray(ctx, ["property_type", "tipo_propiedad", "tipo"])[0] ??
+    null;
+  const operationRaw =
+    firstStringArray(ctx, ["operation", "operation_type", "tipo_operacion"])[0] ??
+    "sale";
+  const operation =
+    operationRaw.toLowerCase().includes("renta") || operationRaw === "rent"
+      ? "rent"
+      : "sale";
+  const price = firstNumber(ctx, [
+    "target_price",
+    "expected_price",
+    "asking_price",
+    "price",
+    "precio",
+  ]);
+  const areaM2 = firstNumber(ctx, [
+    "area_m2",
+    "construction_m2",
+    "construction_size",
+    "superficie",
+    "m2",
+  ]);
+  const zona = firstString(ctx, [
+    "address",
+    "property_address",
+    "property_zone",
+    "zona",
+    "neighborhood",
+    "colonia",
+  ]);
+  args.title =
+    firstString(ctx, ["title", "listing_title", "property_title"]) ??
+    `POC ${propertyType ?? "propiedad"} en ${zona ?? "Ungga"}`;
+  args.description =
+    firstString(ctx, ["description", "listing_description"]) ??
+    "Borrador generado por Gu OS para revision humana antes de publicar.";
+  args.operation = operation;
+  if (propertyType) args.property_type = propertyType;
+  if (price != null) args.price = price;
+  args.currency = firstString(ctx, ["currency", "moneda"]) ?? "MXN";
+  if (areaM2 != null) {
+    args.construction_m2 = areaM2;
+    args.land_m2 = areaM2;
+  }
+  args.country = firstString(ctx, ["country", "pais"]) ?? "México";
+  if (zona) {
+    args.address = zona;
+    args.location = { zona };
+  }
+  const bedrooms = firstNumber(ctx, ["bedrooms", "recamaras"]);
+  if (bedrooms != null) args.bedrooms = bedrooms;
+  const bathrooms = firstNumber(ctx, ["bathrooms", "banos"]);
+  if (bathrooms != null) {
+    args.bathrooms_full = Math.floor(bathrooms);
+    args.bathrooms_half = bathrooms % 1 > 0 ? 1 : 0;
+  }
+  const parking = firstNumber(ctx, ["parking_spaces", "parking", "estacionamientos"]);
+  if (parking != null) args.parking_spaces = parking;
+  if (price != null) {
+    args.operations = [{ type: operation, price, currency: args.currency }];
   }
   return args;
 }
