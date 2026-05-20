@@ -385,7 +385,13 @@ export type OperationalCaseIntakeFieldType =
   | "text"
   | "textarea"
   | "number"
-  | "select";
+  | "select"
+  | "multi_select";
+
+export interface OperationalCaseIntakeOption {
+  value: string;
+  label?: string;
+}
 
 export interface OperationalCaseIntakeField {
   name: string;
@@ -394,7 +400,11 @@ export interface OperationalCaseIntakeField {
   required?: boolean;
   placeholder?: string;
   help_text?: string;
-  options?: string[];
+  options?: Array<string | OperationalCaseIntakeOption>;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
 }
 
 export interface OperationalCaseFlowTool {
@@ -402,6 +412,12 @@ export interface OperationalCaseFlowTool {
   tool_label?: string;
   tool_description?: string;
   required_assets?: OperationalCaseRequiredAsset[];
+  /**
+   * Mapping declarativo opcional para la prueba individual de tools en
+   * modo "Datos del caso". Si está presente, el backend usa este mapping
+   * en vez del recipe genérico para derivar args desde `context_jsonb`.
+   */
+  test_inputs_mapping?: Record<string, string>;
 }
 
 export interface OperationalCaseRequiredAsset {
@@ -419,6 +435,14 @@ export interface OperationalCaseFlowSkill {
   skill_description?: string;
   skill_tools?: OperationalCaseFlowTool[];
 }
+
+// Mapping declarativo opcional para la prueba individual de tools desde
+// "Datos del caso": describe cómo derivar args de la tool a partir de
+// claves del `context_jsonb` del caso de prueba. Si está presente, se usa
+// en vez del recipe genérico hardcodeado por tool en el backend.
+// Soporta dos formas: alias 1:1 ("tool_arg": "context_key") y derivaciones
+// con marcadores simples (ej. "min_price": "{{ target_price * 0.8 }}")
+// que el backend interpreta best-effort.
 
 export interface OperationalCaseFlowStep {
   step_key: string;

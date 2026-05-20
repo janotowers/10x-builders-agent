@@ -7,6 +7,8 @@
   "scripts": {
     "poc:login": "node src/login.mjs",
     "poc:create": "node src/create-listing.mjs",
+    "poc:publish": "node src/publish-listing.mjs",
+    "poc:inspect": "node src/inspect-wizard.mjs",
     "poc:report": "node src/report.mjs"
   },
   "dependencies": {

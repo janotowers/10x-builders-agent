@@ -658,7 +658,17 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       properties: {
         zona: { type: "string" },
         operation: { type: "string", enum: ["sale", "rent"] },
+        operations: {
+          type: "array",
+          items: { type: "string", enum: ["sale", "rent"] },
+          description: "One or more operations to include.",
+        },
         property_type: { type: "string" },
+        property_types: {
+          type: "array",
+          items: { type: "string" },
+          description: "One or more EasyBroker property types to include.",
+        },
         min_price: { type: "number" },
         max_price: { type: "number" },
         min_area_m2: { type: "number" },
@@ -684,7 +694,17 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       properties: {
         zona: { type: "string" },
         operation: { type: "string", enum: ["sale", "rent"] },
+        operations: {
+          type: "array",
+          items: { type: "string", enum: ["sale", "rent"] },
+          description: "One or more operations to include.",
+        },
         property_type: { type: "string" },
+        property_types: {
+          type: "array",
+          items: { type: "string" },
+          description: "One or more EasyBroker property types to include.",
+        },
         date_from: { type: "string" },
         date_to: { type: "string" },
         limit: { type: "number" },

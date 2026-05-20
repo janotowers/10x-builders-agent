@@ -18,6 +18,11 @@
  * `packages/agent/`). El layer caller (graph.ts wiring) provee la callback.
  */
 import { tool } from "@langchain/core/tools";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import Docxtemplater from "docxtemplater";
 import PizZip from "pizzip";
 import { z } from "zod";
@@ -38,6 +43,8 @@ import {
   resolveUnggaCredentials,
 } from "./realestate-credentials";
 import type { EasyBrokerCredentials } from "./realestate-credentials";
+
+const execFileAsync = promisify(execFile);
 
 export interface RealEstateToolDeps {
   /**
@@ -366,10 +373,20 @@ export function addRealEstateTools(
           );
           const creds = await resolveUnggaCredentials(ctx);
           if (!creds) {
+            const cliResult = await runUnggaCliFallback(input);
+            if (cliResult) {
+              await updateToolCallStatus(
+                ctx.db,
+                record.id,
+                cliResult.ok ? "executed" : "failed",
+                cliResult as unknown as Record<string, unknown>
+              );
+              return JSON.stringify(cliResult);
+            }
             const out = {
               status: "not_configured",
               hint:
-                "La API interna de Ungga no está configurada para esta cuenta. Conéctala desde Ajustes → Cuentas externas (Base URL + API Token) o pide al admin que configure las env vars UNGGA_INTERNAL_API_BASE / UNGGA_INTERNAL_API_TOKEN.",
+                "La API interna de Ungga no está configurada para esta cuenta y el fallback CLI está desactivado. Conecta Ungga desde Ajustes → Cuentas externas (Base URL + API Token), configura UNGGA_INTERNAL_API_BASE / UNGGA_INTERNAL_API_TOKEN, o habilita el POC con UNGGA_CLI_ENABLED=true y credenciales de staging.",
             };
             await updateToolCallStatus(
               ctx.db,
@@ -631,7 +648,9 @@ function toolEnabled(toolId: string, ctx: ToolContext): boolean {
 type EasyBrokerSearchInput = {
   zona?: string;
   operation?: "sale" | "rent";
+  operations?: Array<"sale" | "rent">;
   property_type?: string;
+  property_types?: string[];
   min_price?: number;
   max_price?: number;
   min_area_m2?: number;
@@ -723,8 +742,14 @@ function easyBrokerPropertiesUrl(input: EasyBrokerSearchInput, statuses: string[
   for (const status of statuses) {
     url.searchParams.append("search[statuses][]", status);
   }
-  if (input.property_type?.trim()) {
-    url.searchParams.append("search[property_types][]", input.property_type.trim());
+  const propertyTypes = [
+    ...(input.property_type?.trim() ? [input.property_type.trim()] : []),
+    ...(Array.isArray(input.property_types) ? input.property_types : []),
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const propertyType of Array.from(new Set(propertyTypes))) {
+    url.searchParams.append("search[property_types][]", propertyType);
   }
   return url;
 }
@@ -788,8 +813,13 @@ function easyBrokerPropertyMatchesInput(
       return false;
     }
   }
-  if (input.operation && property.operation && property.operation !== input.operation) {
-    return false;
+  const operations = [
+    ...(input.operation ? [input.operation] : []),
+    ...(Array.isArray(input.operations) ? input.operations : []),
+  ];
+  if (operations.length > 0 && property.operation) {
+    const allowed = new Set(operations);
+    if (!allowed.has(property.operation as "sale" | "rent")) return false;
   }
   if (input.min_price != null && property.price != null && property.price < input.min_price) {
     return false;
@@ -895,7 +925,9 @@ function makeEasyBrokerSearchTool(
       schema: z.object({
         zona: z.string().optional(),
         operation: z.enum(["sale", "rent"]).optional(),
+        operations: z.array(z.enum(["sale", "rent"])).optional(),
         property_type: z.string().optional(),
+        property_types: z.array(z.string()).optional(),
         min_price: z.number().nonnegative().optional(),
         max_price: z.number().nonnegative().optional(),
         min_area_m2: z.number().nonnegative().optional(),
@@ -1000,4 +1032,95 @@ function makeEasyBrokerWriteStub(
             }),
     }
   );
+}
+
+function cliEnabled() {
+  const raw = process.env.UNGGA_CLI_ENABLED?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+async function runUnggaCliFallback(
+  input: Record<string, unknown>
+): Promise<Record<string, unknown> | null> {
+  if (!cliEnabled()) return null;
+  const required = [
+    "UNGGA_STAGING_URL",
+    "UNGGA_STAGING_EMAIL",
+    "UNGGA_STAGING_PASSWORD",
+  ];
+  const missing = required.filter((name) => !process.env[name]?.trim());
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      status: "not_configured",
+      mode: "cli",
+      error: `Missing env for Ungga CLI fallback: ${missing.join(", ")}`,
+    };
+  }
+
+  const pocDir =
+    process.env.UNGGA_CLI_DIR?.trim() ||
+    path.resolve(process.cwd(), "pocs", "ungga-cli");
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ungga-cli-"));
+  const inputPath = path.join(tempDir, "listing.json");
+  await writeFile(inputPath, JSON.stringify(input), "utf8");
+
+  try {
+    const timeout = Number(process.env.UNGGA_CLI_TIMEOUT_MS ?? "120000");
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      ["src/publish-listing.mjs", inputPath],
+      {
+        cwd: pocDir,
+        timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 120_000,
+        maxBuffer: 4 * 1024 * 1024,
+        env: process.env,
+      }
+    );
+    const parsed = parseCliJson(stdout);
+    return {
+      ok: parsed.ok === true,
+      status: parsed.ok === true ? "executed" : "failed",
+      mode: "cli",
+      cli_dry_run: parsed.mode === "dry_run",
+      cli_result: parsed,
+      ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
+    };
+  } catch (err) {
+    const error = err as {
+      message?: string;
+      stdout?: string;
+      stderr?: string;
+      code?: number | string;
+    };
+    const parsed = error.stdout ? parseCliJson(error.stdout) : null;
+    return {
+      ok: false,
+      status: "failed",
+      mode: "cli",
+      exit_code: error.code,
+      error: error.message ?? String(err),
+      ...(parsed ? { cli_result: parsed } : {}),
+      ...(error.stderr?.trim()
+        ? { stderr: error.stderr.trim().slice(0, 2000) }
+        : {}),
+    };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+function parseCliJson(stdout: string): Record<string, unknown> {
+  const trimmed = stdout.trim();
+  if (!trimmed) return {};
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(trimmed.slice(start, end + 1)) as Record<string, unknown>;
+    }
+    return { raw: trimmed.slice(0, 4000) };
+  }
 }

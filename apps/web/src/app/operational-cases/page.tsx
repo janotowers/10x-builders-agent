@@ -76,11 +76,25 @@ async function createOperationalCaseAction(formData: FormData) {
     .split(",")
     .map((name) => name.trim())
     .filter(Boolean);
+  const fields = Array.isArray(selectedType.intake_schema_jsonb)
+    ? selectedType.intake_schema_jsonb
+    : [];
+  const fieldByName = new Map(fields.map((field) => [field.name, field]));
   const context = Object.fromEntries(
-    fieldNames.map((name) => [
-      name,
-      String(formData.get(`context_${name}`) ?? "").trim() || undefined,
-    ])
+    fieldNames.map((name) => {
+      const field = fieldByName.get(name);
+      if (field?.type === "multi_select") {
+        const values = formData
+          .getAll(`context_${name}`)
+          .map((value) => String(value).trim())
+          .filter(Boolean);
+        return [name, values.length > 0 ? values : undefined];
+      }
+      return [
+        name,
+        String(formData.get(`context_${name}`) ?? "").trim() || undefined,
+      ];
+    })
   );
   const title =
     String(context.property_title ?? "").trim() ||

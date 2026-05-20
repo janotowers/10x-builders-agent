@@ -27,6 +27,7 @@ const FIELD_TYPES: OperationalCaseIntakeFieldType[] = [
   "textarea",
   "number",
   "select",
+  "multi_select",
 ];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,6 +40,26 @@ function isPresent<T>(value: T | null | undefined): value is T {
 
 function cleanText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function cleanNumber(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeFieldOption(value: unknown) {
+  if (typeof value === "string") {
+    const text = cleanText(value);
+    return text ? text : null;
+  }
+  if (!isRecord(value)) return null;
+  const optionValue = cleanText(value.value);
+  if (!optionValue) return null;
+  const label = cleanText(value.label);
+  return {
+    value: optionValue,
+    label: label || undefined,
+  };
 }
 
 function cleanSlug(value: unknown): string {
@@ -66,7 +87,7 @@ function normalizeIntakeSchema(value: unknown): OperationalCaseIntakeField[] {
       const label = cleanText(field.label);
       const type = cleanText(field.type);
       const options = Array.isArray(field.options)
-        ? field.options.map(cleanText).filter(Boolean)
+        ? field.options.map(normalizeFieldOption).filter(isPresent)
         : [];
       return {
         name,
@@ -76,6 +97,10 @@ function normalizeIntakeSchema(value: unknown): OperationalCaseIntakeField[] {
         placeholder: cleanText(field.placeholder) || undefined,
         help_text: cleanText(field.help_text) || undefined,
         options,
+        min: cleanNumber(field.min),
+        max: cleanNumber(field.max),
+        step: cleanNumber(field.step),
+        unit: cleanText(field.unit) || undefined,
       } satisfies OperationalCaseIntakeField;
     })
     .filter((field) => field.name && field.label);

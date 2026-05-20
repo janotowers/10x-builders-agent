@@ -14,11 +14,13 @@ export {
 export { eventDisplayFields } from "./tools/calendar-event-display";
 export { flushSessionMemory } from "./memory_flush";
 export {
+  buildLangChainTools,
   normalizeToolApprovalPolicy,
   setBuildLangChainToolsDeps,
   getBuildLangChainToolsDeps,
   type BuildLangChainToolsDeps,
 } from "./tools/adapters";
+export type { ToolContext } from "./tools/tool-context";
 export type {
   FlushInput,
   FlushResult,

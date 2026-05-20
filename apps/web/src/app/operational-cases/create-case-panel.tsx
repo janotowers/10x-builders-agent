@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   OperationalCaseIntakeField,
+  OperationalCaseIntakeOption,
   OperationalCaseType,
 } from "@agents/types";
 
@@ -12,6 +13,14 @@ function intakeSchema(type: OperationalCaseType): OperationalCaseIntakeField[] {
   return Array.isArray(type.intake_schema_jsonb)
     ? type.intake_schema_jsonb
     : [];
+}
+
+function optionValue(option: string | OperationalCaseIntakeOption) {
+  return typeof option === "string" ? option : option.value;
+}
+
+function optionLabel(option: string | OperationalCaseIntakeOption) {
+  return typeof option === "string" ? option : (option.label ?? option.value);
 }
 
 function fieldInput(field: OperationalCaseIntakeField) {
@@ -56,8 +65,8 @@ function fieldInput(field: OperationalCaseIntakeField) {
         >
           <option value="">Selecciona una opción</option>
           {(field.options ?? []).map((option) => (
-            <option key={option} value={option}>
-              {option}
+            <option key={optionValue(option)} value={optionValue(option)}>
+              {optionLabel(option)}
             </option>
           ))}
         </select>
@@ -70,14 +79,52 @@ function fieldInput(field: OperationalCaseIntakeField) {
     );
   }
 
+  if (field.type === "multi_select") {
+    return (
+      <>
+        <div className="mt-1 flex flex-wrap gap-2 rounded-md border border-neutral-300 bg-neutral-50 p-2 dark:border-neutral-700 dark:bg-neutral-950">
+          {(field.options ?? []).map((option) => {
+            const value = optionValue(option);
+            return (
+              <label
+                key={value}
+                className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-xs dark:bg-neutral-900"
+              >
+                <input
+                  type="checkbox"
+                  name={`context_${field.name}`}
+                  value={value}
+                  required={false}
+                />
+                {optionLabel(option)}
+              </label>
+            );
+          })}
+        </div>
+        {helperText ? (
+          <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+            {helperText}
+          </p>
+        ) : null}
+      </>
+    );
+  }
+
+  const isNumber = field.type === "number";
   return (
     <>
       <input
         name={`context_${field.name}`}
-        type="text"
-        inputMode={field.type === "number" ? "numeric" : undefined}
+        type={isNumber ? "number" : "text"}
+        inputMode={isNumber ? "decimal" : undefined}
+        min={isNumber ? (field.min ?? 0) : field.min}
+        max={field.max}
+        step={isNumber ? (field.step ?? 1) : field.step}
         required={field.required}
         placeholder={placeholder}
+        onWheel={
+          isNumber ? (event) => event.currentTarget.blur() : undefined
+        }
         className={baseClass}
       />
       {helperText ? (
@@ -173,12 +220,18 @@ export function CreateCasePanel({
             Este caso de uso no tiene formulario inicial configurado.
           </p>
         ) : (
-          fields.map((field) => (
-            <label key={field.name} className="block text-sm">
-              <span className="font-medium">{field.label}</span>
-              {fieldInput(field)}
-            </label>
-          ))
+          fields.map((field) => {
+            // multi_select renderiza <label> por cada checkbox, por lo que el
+            // contenedor exterior debe ser <div> (anidar <label> es HTML inválido
+            // y provoca toggles dobles al hacer click).
+            const Wrapper = field.type === "multi_select" ? "div" : "label";
+            return (
+              <Wrapper key={field.name} className="block text-sm">
+                <span className="font-medium">{field.label}</span>
+                {fieldInput(field)}
+              </Wrapper>
+            );
+          })
         )}
 
         <button

@@ -11,6 +11,7 @@ import type {
   OperationalCaseFlowStep,
   OperationalCaseFlowTool,
   OperationalCaseIntakeField,
+  OperationalCaseIntakeOption,
   OperationalCaseReminderPolicy,
   OperationalCaseType,
   OperationalCaseTypeStatus,
@@ -232,6 +233,8 @@ type OperationalCaseTestResult = {
   toolCalls: ToolCall[];
   flowProgress?: OperationalCaseFlowProgressStep[];
 };
+
+type TestContextDraft = Record<string, string | string[]>;
 
 type OperationalCaseFlowProgressStatus =
   | "pending"
@@ -945,6 +948,590 @@ function AccountAssetUploadPanel({
   );
 }
 
+type ToolTestMode = "smoke" | "case";
+
+interface ToolTestResponse {
+  ok: boolean;
+  tool_id: string;
+  risk: "low" | "medium" | "high";
+  dry_run: boolean;
+  reason: string;
+  requested_mode?: ToolTestMode;
+  mode_used?: ToolTestMode;
+  mode_source?: string;
+  case_id?: string | null;
+  resolved_args: Record<string, unknown>;
+  elapsed_ms?: number;
+  error?: string | null;
+  hint?: string;
+  summary?: {
+    ok: boolean | null;
+    status: string | null;
+    count: number | null;
+    preview: unknown[] | null;
+  } | null;
+  result?: unknown;
+  raw_text?: string;
+}
+
+const MODE_LABELS: Record<ToolTestMode, string> = {
+  smoke: "Smoke test",
+  case: "Datos del caso",
+};
+
+const MODE_DESCRIPTIONS: Record<ToolTestMode, string> = {
+  smoke:
+    "Args mínimos genéricos. Valida que la integración responde, no que los resultados sean comparables al caso.",
+  case:
+    "Args derivados del caso de prueba creado abajo. Valida si la tool es útil para los datos reales del flow.",
+};
+
+const MODE_SOURCE_LABELS: Record<string, string> = {
+  smoke_defaults: "smoke defaults",
+  manual_user_args: "args manuales",
+  flow_test_inputs_mapping: "mapping del flow",
+  tool_recipe: "recipe por tool",
+  generic_param_name_match: "match por nombre de param",
+  fallback_smoke_no_test_case: "fallback smoke (sin caso de prueba)",
+  preview_only: "preview",
+};
+
+function ToolTestPanel({
+  item,
+  row,
+  hasTestCase,
+  caseContextVersion,
+}: {
+  item: ToolReadinessToolItem;
+  row: OperationalCaseType;
+  hasTestCase: boolean;
+  caseContextVersion?: string | null;
+}) {
+  const [mode, setMode] = useState<ToolTestMode>(hasTestCase ? "case" : "smoke");
+  const [argsText, setArgsText] = useState("{}");
+  const [confirm, setConfirm] = useState(false);
+  const [showArgs, setShowArgs] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [preview, setPreview] = useState<ToolTestResponse | null>(null);
+  const [response, setResponse] = useState<ToolTestResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const requiresConfirm =
+    (item.risk === "medium" || item.risk === "high") && !confirm;
+
+  function parseUserArgs(): {
+    ok: boolean;
+    value?: Record<string, unknown>;
+    error?: string;
+  } {
+    const trimmed = argsText.trim();
+    if (!trimmed || trimmed === "{}") return { ok: true };
+    try {
+      const value = JSON.parse(trimmed);
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return { ok: false, error: "Los args deben ser un objeto JSON." };
+      }
+      return { ok: true, value: value as Record<string, unknown> };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async function fetchPreview(targetMode: ToolTestMode) {
+    setPreviewing(true);
+    setError(null);
+    const parsed = parseUserArgs();
+    if (!parsed.ok) {
+      setError(parsed.error ?? "Args inválidos.");
+      setPreviewing(false);
+      return;
+    }
+    try {
+      const res = await fetch("/api/tool-readiness/run-tool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          case_type_id: row.id,
+          tool_id: item.tool_id,
+          mode: targetMode,
+          args: parsed.value,
+          preview: true,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as ToolTestResponse & {
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error ?? "No se pudo calcular la vista previa.");
+      }
+      setPreview(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  useEffect(() => {
+    void fetchPreview(mode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, caseContextVersion]);
+
+  function selectMode(next: ToolTestMode) {
+    if (next === "case" && !hasTestCase) return;
+    setMode(next);
+    setResponse(null);
+  }
+
+  async function run() {
+    setRunning(true);
+    setError(null);
+    setResponse(null);
+    const parsed = parseUserArgs();
+    if (!parsed.ok) {
+      setError(parsed.error ?? "Args inválidos.");
+      setRunning(false);
+      return;
+    }
+    try {
+      const res = await fetch("/api/tool-readiness/run-tool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          case_type_id: row.id,
+          tool_id: item.tool_id,
+          mode,
+          args: parsed.value,
+          confirm,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as ToolTestResponse & {
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error ?? "No se pudo ejecutar la prueba.");
+      }
+      setResponse(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const usedFallbackSmoke =
+    response?.requested_mode === "case" && response?.mode_used === "smoke";
+
+  return (
+    <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+          Prueba individual de tool
+        </div>
+        <span className="text-[11px] text-neutral-500">Riesgo: {riskLabel(item.risk)}</span>
+      </div>
+      <p className="text-[11px] text-neutral-600">
+        Valida la tool en aislamiento. Elige cómo construir los args y revisa
+        el resultado antes de correr el flow completo.
+      </p>
+      <div className="flex flex-wrap items-center gap-1">
+        {(["smoke", "case"] as ToolTestMode[]).map((option) => {
+          const disabled = option === "case" && !hasTestCase;
+          const active = mode === option;
+          return (
+            <button
+              key={option}
+              type="button"
+              onClick={() => selectMode(option)}
+              disabled={disabled}
+              title={
+                disabled
+                  ? "Crea primero un caso de prueba en la sección de abajo."
+                  : undefined
+              }
+              className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
+                active
+                  ? "bg-violet-700 text-white"
+                  : disabled
+                    ? "border border-neutral-200 bg-neutral-100 text-neutral-400"
+                    : "border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50"
+              }`}
+            >
+              {MODE_LABELS[option]}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-neutral-500">{MODE_DESCRIPTIONS[mode]}</p>
+      {mode === "case" && !hasTestCase ? (
+        <p className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
+          Aún no hay caso de prueba. Crea uno desde &quot;Caso de prueba y
+          resultados&quot; para habilitar este modo.
+        </p>
+      ) : null}
+      {preview && !error ? (
+        <div className="rounded border border-violet-200 bg-violet-50 p-2 text-[11px] text-violet-900">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold">Args a usar:</span>
+            <span className="text-violet-700">
+              fuente: {MODE_SOURCE_LABELS[preview.mode_source ?? ""] ?? preview.mode_source ?? "—"}
+            </span>
+            {preview.case_id ? (
+              <span className="text-violet-700">caso: {preview.case_id.slice(0, 8)}…</span>
+            ) : null}
+            {previewing ? (
+              <span className="text-violet-700">recalculando…</span>
+            ) : null}
+          </div>
+          <pre className="mt-1 overflow-x-auto rounded bg-white/70 p-1 font-mono text-[11px]">
+            {JSON.stringify(preview.resolved_args, null, 2)}
+          </pre>
+          {preview.requested_mode === "case" && preview.mode_used === "smoke" ? (
+            <p className="mt-1 text-violet-700">
+              No se encontró caso de prueba; se aplicó smoke como fallback.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void run()}
+          disabled={running || requiresConfirm}
+          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800 disabled:bg-neutral-400"
+        >
+          {running ? "Ejecutando..." : `Probar tool (${MODE_LABELS[mode]})`}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowArgs((prev) => !prev)}
+          className="rounded border border-neutral-300 px-2 py-1 text-[11px] text-neutral-700"
+        >
+          {showArgs ? "Ocultar avanzado" : "Avanzado: modificar args JSON"}
+        </button>
+        {item.risk !== "low" ? (
+          <label className="flex items-center gap-1 text-[11px] text-neutral-600">
+            <input
+              type="checkbox"
+              checked={confirm}
+              onChange={(event) => setConfirm(event.target.checked)}
+              disabled={item.risk === "high"}
+            />
+            {item.risk === "high"
+              ? "Riesgo alto: sólo dry-run desde esta capa"
+              : "Confirmar ejecución (riesgo medio)"}
+          </label>
+        ) : null}
+      </div>
+      {showArgs ? (
+        <div className="space-y-1">
+          <p className="text-[11px] text-neutral-500">
+            Override JSON avanzado. Se mezcla encima de los args del modo elegido:
+          </p>
+          <textarea
+            value={argsText}
+            onChange={(event) => {
+              setArgsText(event.target.value);
+            }}
+            onBlur={() => void fetchPreview(mode)}
+            rows={4}
+            className="w-full rounded border border-neutral-300 bg-white p-2 font-mono text-[11px]"
+            placeholder='{"zona": "Roma Norte", "limit": 5}'
+          />
+        </div>
+      ) : null}
+      {error ? (
+        <p className="rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-800">
+          {error}
+        </p>
+      ) : null}
+      {response ? (
+        <div className="space-y-1 rounded border border-neutral-200 bg-white p-2 text-[11px]">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`rounded px-1.5 py-0.5 font-semibold ${
+                response.dry_run
+                  ? "bg-amber-50 text-amber-800"
+                  : response.ok
+                    ? "bg-emerald-50 text-emerald-800"
+                    : "bg-red-50 text-red-800"
+              }`}
+            >
+              {response.dry_run
+                ? "Dry-run"
+                : response.ok
+                  ? "Éxito"
+                  : "Error"}
+            </span>
+            {response.mode_used ? (
+              <span className="rounded bg-violet-50 px-1.5 py-0.5 text-violet-800">
+                modo: {MODE_LABELS[response.mode_used]}
+              </span>
+            ) : null}
+            {response.summary?.status ? (
+              <span className="text-neutral-500">
+                status: {response.summary.status}
+              </span>
+            ) : null}
+            {response.summary?.count != null ? (
+              <span className="text-neutral-500">
+                count: {response.summary.count}
+              </span>
+            ) : null}
+            {response.elapsed_ms != null ? (
+              <span className="text-neutral-500">
+                {response.elapsed_ms} ms
+              </span>
+            ) : null}
+          </div>
+          {usedFallbackSmoke ? (
+            <p className="text-amber-800">
+              No se encontró caso de prueba; se ejecutó en modo smoke.
+            </p>
+          ) : null}
+          {response.hint ? (
+            <p className="text-neutral-600">{response.hint}</p>
+          ) : null}
+          {response.error ? (
+            <p className="text-red-800">Error: {response.error}</p>
+          ) : null}
+          <details>
+            <summary className="cursor-pointer text-neutral-600">
+              Args resueltos
+            </summary>
+            <pre className="mt-1 overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
+              {JSON.stringify(response.resolved_args, null, 2)}
+            </pre>
+          </details>
+          {response.summary?.preview && response.summary.preview.length > 0 ? (
+            <details open>
+              <summary className="cursor-pointer text-neutral-600">
+                Primeros resultados
+              </summary>
+              <pre className="mt-1 overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
+                {JSON.stringify(response.summary.preview, null, 2)}
+              </pre>
+            </details>
+          ) : null}
+          {response.result != null ? (
+            <button
+              type="button"
+              onClick={() => setShowRaw((prev) => !prev)}
+              className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700"
+            >
+              {showRaw ? "Ocultar respuesta completa" : "Ver respuesta completa"}
+            </button>
+          ) : null}
+          {showRaw && response.result != null ? (
+            <pre className="overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
+              {JSON.stringify(response.result, null, 2)}
+            </pre>
+          ) : null}
+          {response.raw_text ? (
+            <pre className="overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
+              {response.raw_text}
+            </pre>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function intakeOptionValue(option: string | OperationalCaseIntakeOption) {
+  return typeof option === "string" ? option : option.value;
+}
+
+function intakeOptionLabel(option: string | OperationalCaseIntakeOption) {
+  return typeof option === "string" ? option : (option.label ?? option.value);
+}
+
+function draftValue(value: unknown): string | string[] {
+  if (value == null) return "";
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item : String(item ?? "")))
+      .filter(Boolean);
+  }
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function draftString(value: string | string[] | undefined) {
+  return typeof value === "string" ? value : "";
+}
+
+function draftArray(value: string | string[] | undefined) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") return [value];
+  return [];
+}
+
+function TestCaseContextForm({
+  fields,
+  draft,
+  saving,
+  message,
+  onChange,
+  onSave,
+}: {
+  fields: OperationalCaseIntakeField[];
+  draft: TestContextDraft;
+  saving: boolean;
+  message: string | null;
+  onChange: (name: string, value: string | string[]) => void;
+  onSave: () => void;
+}) {
+  if (fields.length === 0) return null;
+  return (
+    <div className="rounded border border-neutral-200 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="font-semibold text-neutral-700 dark:text-neutral-200">
+            Datos del caso de prueba
+          </div>
+          <p className="mt-1 text-neutral-500">
+            Estos valores alimentan el modo &quot;Datos del caso&quot; de las tools.
+            Editarlos aquí evita tener que escribir JSON.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800 disabled:bg-neutral-400"
+        >
+          {saving ? "Guardando..." : "Guardar datos"}
+        </button>
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {fields.map((field) => {
+          const value = draft[field.name] ?? "";
+          const commonClass =
+            "mt-1 w-full rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-950";
+          const headerNode = (
+            <div className="flex flex-wrap items-baseline gap-1">
+              <span className="font-semibold">
+                {field.label}
+                {field.required ? " *" : ""}
+              </span>
+              <span className="font-mono text-[10px] text-neutral-400">
+                {field.name}
+              </span>
+            </div>
+          );
+          // Nota: NO usamos <label> exterior porque algunos tipos (multi_select)
+          // renderizan <label> por cada checkbox y la anidación de <label> es
+          // HTML inválido y provoca toggles dobles al hacer click en una opción.
+          if (field.type === "multi_select") {
+            return (
+              <div key={field.name}>
+                {headerNode}
+                <div className="mt-1 flex flex-wrap gap-2 rounded border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-800 dark:bg-neutral-950">
+                  {(field.options ?? []).map((option) => {
+                    const optionValue = intakeOptionValue(option);
+                    const selected = draftArray(value).includes(optionValue);
+                    return (
+                      <label
+                        key={optionValue}
+                        className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] dark:bg-neutral-900"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={(event) => {
+                            const current = draftArray(value);
+                            onChange(
+                              field.name,
+                              event.target.checked
+                                ? Array.from(new Set([...current, optionValue]))
+                                : current.filter((item) => item !== optionValue)
+                            );
+                          }}
+                        />
+                        {intakeOptionLabel(option)}
+                      </label>
+                    );
+                  })}
+                </div>
+                {field.help_text ? (
+                  <p className="mt-1 text-[11px] text-neutral-500">
+                    {field.help_text}
+                  </p>
+                ) : null}
+              </div>
+            );
+          }
+          const helpNode = field.help_text ? (
+            <p className="mt-1 text-[11px] text-neutral-500">
+              {field.help_text}
+            </p>
+          ) : null;
+          return (
+            <label key={field.name} className="block">
+              {headerNode}
+              {field.type === "textarea" ? (
+                <textarea
+                  value={draftString(value)}
+                  onChange={(event) => onChange(field.name, event.target.value)}
+                  rows={3}
+                  placeholder={field.placeholder}
+                  className={commonClass}
+                />
+              ) : field.type === "select" ? (
+                <select
+                  value={draftString(value)}
+                  onChange={(event) => onChange(field.name, event.target.value)}
+                  className={commonClass}
+                >
+                  <option value="">Selecciona...</option>
+                  {(field.options ?? []).map((option) => (
+                    <option key={intakeOptionValue(option)} value={intakeOptionValue(option)}>
+                      {intakeOptionLabel(option)}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "number" ? (
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={draftString(value)}
+                    onChange={(event) => onChange(field.name, event.target.value)}
+                    placeholder={field.placeholder}
+                    min={field.min ?? 0}
+                    max={field.max}
+                    step={field.step ?? 1}
+                    onWheel={(event) => event.currentTarget.blur()}
+                    className={`${commonClass} ${field.unit ? "pr-14" : ""}`}
+                  />
+                  {field.unit ? (
+                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-500">
+                      {field.unit}
+                    </span>
+                  ) : null}
+                </div>
+              ) : (
+                <input
+                  type="text"
+                  value={draftString(value)}
+                  onChange={(event) => onChange(field.name, event.target.value)}
+                  placeholder={field.placeholder}
+                  className={commonClass}
+                />
+              )}
+              {helpNode}
+            </label>
+          );
+        })}
+      </div>
+      {message ? <p className="mt-2 text-[11px] text-neutral-600">{message}</p> : null}
+    </div>
+  );
+}
+
 function renderReadinessActions(params: {
   item: ToolReadinessToolItem;
   row: OperationalCaseType;
@@ -1102,6 +1689,24 @@ function renderReadinessActions(params: {
     );
   }
 
+  // Tools listas sin configuración pendiente: la única acción útil hoy
+  // es expandir para usar la prueba individual.
+  if (item.status === "ready") {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={params.onToggleExpand}
+          aria-expanded={expanded}
+          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
+        >
+          {expanded ? "Cerrar" : "Probar tool"}
+        </button>
+        {!expanded && detailsToggle}
+      </div>
+    );
+  }
+
   return null;
 }
 
@@ -1118,6 +1723,8 @@ function renderFlowToolReadiness(params: {
   expanded: boolean;
   existingRequest: ToolReadinessRequestRecord | undefined;
   submitting: boolean;
+  hasTestCase: boolean;
+  caseContextVersion?: string | null;
   onEditSkill: () => void;
   onToggleExpand: () => void;
   onRequestGlobal: () => void;
@@ -1186,6 +1793,14 @@ function renderFlowToolReadiness(params: {
               onUploaded={() => {
                 void params.refreshToolReadiness(row);
               }}
+            />
+          ) : null}
+          {item.status === "ready" ? (
+            <ToolTestPanel
+              item={item}
+              row={row}
+              hasTestCase={params.hasTestCase}
+              caseContextVersion={params.caseContextVersion}
             />
           ) : null}
         </div>
@@ -1356,6 +1971,9 @@ export function OperationalCaseTypesClient({
     useState<OperationalCaseTestResult | null>(null);
   const [testCaseLoading, setTestCaseLoading] = useState(false);
   const [testCaseRunning, setTestCaseRunning] = useState(false);
+  const [testContextDraft, setTestContextDraft] = useState<TestContextDraft>({});
+  const [testContextSaving, setTestContextSaving] = useState(false);
+  const [testContextMessage, setTestContextMessage] = useState<string | null>(null);
   const [editingBaseline, setEditingBaseline] =
     useState<EditingSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1410,6 +2028,13 @@ export function OperationalCaseTypesClient({
   const testPassed =
     testCaseResult?.case?.context_jsonb?.controlled_test_status ===
     "passed_safe_checks";
+  const testContextFields = useMemo(
+    () =>
+      selectedCaseType && Array.isArray(selectedCaseType.intake_schema_jsonb)
+        ? selectedCaseType.intake_schema_jsonb
+        : [],
+    [selectedCaseType]
+  );
   const currentEditingSnapshot = editing
     ? {
         editing,
@@ -1483,6 +2108,21 @@ export function OperationalCaseTypesClient({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const opCase = testCaseResult?.case;
+    if (!opCase || testContextFields.length === 0) {
+      setTestContextDraft({});
+      setTestContextMessage(null);
+      return;
+    }
+    const next: TestContextDraft = {};
+    for (const field of testContextFields) {
+      next[field.name] = draftValue(opCase.context_jsonb?.[field.name]);
+    }
+    setTestContextDraft(next);
+    setTestContextMessage(null);
+  }, [testCaseResult?.case, testContextFields]);
 
   async function loadAccountSkillsFromApi() {
     const res = await fetch("/api/account-skills", { cache: "no-store" });
@@ -1686,6 +2326,44 @@ export function OperationalCaseTypesClient({
       setError((err as Error).message ?? String(err));
     } finally {
       setTestCaseLoading(false);
+    }
+  }
+
+  async function saveTestContext() {
+    const caseId = testCaseResult?.case?.id;
+    if (!caseId) return;
+    setTestContextSaving(true);
+    setTestContextMessage(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/operational-case-tests", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          case_id: caseId,
+          context: testContextDraft,
+        }),
+      });
+      const data = (await res.json()) as
+        | ({ ok: true } & OperationalCaseTestResult)
+        | { error: string };
+      if (!res.ok || !("ok" in data)) {
+        setTestContextMessage(
+          "error" in data ? data.error : "No se pudieron guardar los datos."
+        );
+        return;
+      }
+      setTestCaseResult({
+        case: data.case,
+        events: data.events ?? [],
+        toolCalls: data.toolCalls ?? [],
+        flowProgress: data.flowProgress ?? [],
+      });
+      setTestContextMessage("Datos guardados. Las pruebas por tool usarán estos valores.");
+    } catch (err) {
+      setTestContextMessage((err as Error).message ?? String(err));
+    } finally {
+      setTestContextSaving(false);
     }
   }
 
@@ -2531,6 +3209,8 @@ export function OperationalCaseTypesClient({
                           (req) => req.tool_id === tool.tool_id
                         ),
                         submitting: toolRequestSubmitting === tool.tool_id,
+                        hasTestCase: Boolean(testCaseResult?.case),
+                        caseContextVersion: testCaseResult?.case?.updated_at ?? null,
                         onEditSkill: () => startEdit(row),
                         onToggleExpand: () =>
                           setExpandedReadinessTools((prev) => {
@@ -2754,6 +3434,21 @@ export function OperationalCaseTypesClient({
                       : "Aún no hay caso de prueba para esta plantilla."}
               </p>
             )}
+            {testCaseResult?.case ? (
+              <TestCaseContextForm
+                fields={testContextFields}
+                draft={testContextDraft}
+                saving={testContextSaving}
+                message={testContextMessage}
+                onChange={(name, value) => {
+                  setTestContextDraft((prev) => ({ ...prev, [name]: value }));
+                  setTestContextMessage(null);
+                }}
+                onSave={() => {
+                  void saveTestContext();
+                }}
+              />
+            ) : null}
             {testCaseResult?.flowProgress?.length ? (
               <div className="rounded border border-neutral-200 p-2 text-xs dark:border-neutral-800">
                 <div className="font-semibold text-neutral-700 dark:text-neutral-200">

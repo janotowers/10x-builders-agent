@@ -1,0 +1,34 @@
+{
+  "title": "POC test - DELETE ME",
+  "description": "Ficha creada por el POC Playwright de Gu OS. No usar en operación real.",
+  "operation": "sale",
+  "property_type": "Departamento",
+  "price": 5500000,
+  "currency": "MXN",
+  "construction_m2": 120,
+  "land_m2": 150,
+  "land_unit": "m²",
+  "condition": "Bueno",
+  "age_range": "1-5 años",
+  "country": "México",
+  "address": "Av. Acueducto 6050, Lomas Altas, Zapopan, Jalisco, México",
+  "location": {
+    "zona": "Lomas Altas, Zapopan"
+  },
+  "bedrooms": 3,
+  "bathrooms_full": 2,
+  "bathrooms_half": 1,
+  "parking_spaces": 2,
+  "covered_parking": true,
+  "floor": "3",
+  "location_type": "Residencial",
+  "current_status": "Habitable",
+  "amenities": ["Alberca", "Jardín"],
+  "video_url": "",
+  "tour_url": "",
+  "operations": [
+    { "type": "sale", "price": 5500000, "currency": "MXN" }
+  ],
+  "image_urls": [],
+  "case_id": "poc"
+}

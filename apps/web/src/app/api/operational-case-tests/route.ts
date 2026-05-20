@@ -17,9 +17,21 @@ import type {
 } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 
+function optionValue(option: unknown) {
+  if (typeof option === "string") return option;
+  if (option && typeof option === "object" && "value" in option) {
+    return typeof option.value === "string" ? option.value : "";
+  }
+  return "";
+}
+
 function sampleValue(field: OperationalCaseIntakeField) {
   if (field.type === "number") return "1234567890";
-  if (field.type === "select") return field.options?.[0] ?? "prueba";
+  if (field.type === "select") return optionValue(field.options?.[0]) || "prueba";
+  if (field.type === "multi_select") {
+    const first = optionValue(field.options?.[0]);
+    return first ? [first] : [];
+  }
   if (field.name.includes("telegram_chat_id")) return "1234567890";
   if (field.name.includes("owner")) return "Contacto de prueba";
   if (field.name.includes("lead")) return "Lead de prueba";
@@ -245,6 +257,119 @@ export async function POST(request: Request) {
     return NextResponse.json(await responseForCase(db, opCase, flow));
   } catch (err) {
     console.error("[POST /api/operational-case-tests] failed:", err);
+    return NextResponse.json({ error: "Internal error" }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = (await request.json().catch(() => ({}))) as {
+      case_id?: string;
+      context?: Record<string, unknown>;
+    };
+    const caseId = body.case_id?.trim();
+    if (!caseId || !body.context || typeof body.context !== "object") {
+      return NextResponse.json(
+        { error: "case_id and context required" },
+        { status: 400 }
+      );
+    }
+    const requestedContext = body.context;
+
+    const db = createServerClient();
+    const opCase = await getOperationalCase(db, caseId);
+    if (!opCase || opCase.user_id !== user.id) {
+      return NextResponse.json({ error: "case_not_found" }, { status: 404 });
+    }
+    if (
+      opCase.context_jsonb?.created_from !== "case_type_settings_test" ||
+      opCase.context_jsonb?.test_mode !== true
+    ) {
+      return NextResponse.json({ error: "test_case_required" }, { status: 400 });
+    }
+
+    const caseType = await getOperationalCaseTypeById(db, opCase.case_type_id);
+    if (!caseType || caseType.user_id !== user.id) {
+      return NextResponse.json({ error: "case_type_not_found" }, { status: 404 });
+    }
+
+    const fields = Array.isArray(caseType.intake_schema_jsonb)
+      ? (caseType.intake_schema_jsonb as OperationalCaseIntakeField[])
+      : [];
+    const allowedNames = new Set(fields.map((field) => field.name));
+    const nextContext: Record<string, unknown> = {
+      ...(opCase.context_jsonb ?? {}),
+      created_from: "case_type_settings_test",
+      test_mode: true,
+      case_type_id: caseType.id,
+    };
+    for (const field of fields) {
+      if (field.name in requestedContext) {
+        const value = requestedContext[field.name];
+        nextContext[field.name] =
+          field.type === "number" && typeof value === "string" && value.trim()
+            ? Number(value)
+            : value;
+      }
+    }
+    for (const [key, value] of Object.entries(requestedContext)) {
+      if (allowedNames.has(key)) continue;
+      if (key === "title") nextContext.title = String(value ?? "").trim();
+    }
+    nextContext.title =
+      String(nextContext.title ?? "").trim() ||
+      `${caseType.display_name} - prueba`;
+
+    const externalName =
+      String(nextContext.owner_name ?? "").trim() ||
+      String(nextContext.lead_name ?? "").trim() ||
+      "Contacto de prueba";
+    const telegramChatId = Number(nextContext.telegram_chat_id);
+    const externalContact = {
+      ...opCase.external_contact_jsonb,
+      display_name: externalName,
+      channel: Number.isFinite(telegramChatId) ? "telegram" : undefined,
+      chat_id: Number.isFinite(telegramChatId) ? telegramChatId : undefined,
+    };
+
+    const { data, error } = await db
+      .from("operational_cases")
+      .update({
+        context_jsonb: nextContext,
+        external_contact_jsonb: externalContact,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", opCase.id)
+      .select()
+      .single();
+    if (error) throw error;
+
+    await insertOperationalCaseEvent(db, {
+      caseId: opCase.id,
+      eventType: "human_decision",
+      actor: "user",
+      payload: {
+        source: "case_type_settings_test_context_update",
+        updated_fields: fields
+          .map((field) => field.name)
+          .filter((name) => name in requestedContext),
+      },
+    });
+
+    const flow = await effectiveFlowForCaseType(db, caseType);
+    return NextResponse.json(
+      await responseForCase(db, data as OperationalCase, flow)
+    );
+  } catch (err) {
+    console.error("[PATCH /api/operational-case-tests] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
 }

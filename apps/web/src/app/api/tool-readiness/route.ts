@@ -188,6 +188,11 @@ function envConfigured(toolId: string) {
     return Boolean(
       process.env.UNGGA_INTERNAL_API_BASE?.trim() &&
         process.env.UNGGA_INTERNAL_API_TOKEN?.trim()
+    ) || Boolean(
+      process.env.UNGGA_CLI_ENABLED?.trim().toLowerCase() === "true" &&
+        process.env.UNGGA_STAGING_URL?.trim() &&
+        process.env.UNGGA_STAGING_EMAIL?.trim() &&
+        process.env.UNGGA_STAGING_PASSWORD?.trim()
     );
   }
   return true;
@@ -327,6 +332,31 @@ function classifyTool(params: {
     };
   }
   if (params.toolId === "ungga_publish_listing") {
+    if (envConfigured(params.toolId)) {
+      notes.push(
+        "Ungga configurado: usará API interna si hay token o fallback CLI/Playwright si UNGGA_CLI_ENABLED=true."
+      );
+      return {
+        tool_id: params.toolId,
+        status: "ready",
+        category: "ready",
+        blocking: false,
+        action_kind: "none",
+        action_label: null,
+        action_available: false,
+        action_message:
+          "La tool está disponible para prueba controlada. Requiere confirmación humana por ser de riesgo alto.",
+        action_url: null,
+        action_anchor: null,
+        request_kind: null,
+        account_provider: accountProviderId,
+        account_secret_status: accountSecretStatus,
+        exists_in_catalog: true,
+        adapter_available: true,
+        ...base,
+        notes,
+      };
+    }
     notes.push(
       "Pendiente de Ungga: implementar publicación vía CLI/browser automation. La API queda como alternativa futura."
     );
