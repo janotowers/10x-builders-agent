@@ -286,7 +286,13 @@ cuenta** cuando aplica.
 Los adapters en `realestate-adapters.ts` **priorizan** secretos por cuenta y
 **caen** a variables de entorno solo para despliegues legacy
 (`EASYBROKER_API_KEY`, `UNGGA_INTERNAL_API_*`). Búsqueda MLS invoca el CLI
-EasyBroker con credenciales `easybroker_web`. Detalle: `realestate-credentials.ts`.
+EasyBroker con credenciales `easybroker_web`. Si `storage-state.json` expira,
+el CLI reintenta con email/password y sólo pide login asistido cuando EasyBroker
+exige CAPTCHA/MFA o bloquea la automatización. Contrato de filtros MLS: campos
+exactos (`bedrooms`, `bathrooms`, `parking_spaces`) para comparables, mínimos
+(`min_bedrooms`, `min_bathrooms`, `min_parking_spaces`) para búsquedas de
+opciones, y `shared_commission_only` para casos donde sólo interesan propiedades
+que comparten comisión. Detalle: `realestate-credentials.ts`.
 
 ### 10.1 Doctrina de personalización: global code, account configuration
 

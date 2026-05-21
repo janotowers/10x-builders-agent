@@ -65,8 +65,12 @@ function normalizeInput(input) {
     min_area_m2: numberOrNull(input.min_area_m2),
     max_area_m2: numberOrNull(input.max_area_m2),
     bedrooms: numberOrNull(input.bedrooms),
+    min_bedrooms: numberOrNull(input.min_bedrooms),
     bathrooms: numberOrNull(input.bathrooms),
+    min_bathrooms: numberOrNull(input.min_bathrooms),
     parking_spaces: numberOrNull(input.parking_spaces),
+    min_parking_spaces: numberOrNull(input.min_parking_spaces),
+    shared_commission_only: booleanOrFalse(input.shared_commission_only),
     date_from: stringOrNull(input.date_from),
     date_to: stringOrNull(input.date_to),
     limit: Math.min(numberOrNull(input.limit) ?? 20, 50),
@@ -87,6 +91,15 @@ function numberOrNull(value) {
   if (value == null || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function booleanOrFalse(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes";
+  }
+  return false;
 }
 
 const startedAt = Date.now();

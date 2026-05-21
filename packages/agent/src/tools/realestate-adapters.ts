@@ -890,8 +890,12 @@ type EasyBrokerSearchInput = {
   min_area_m2?: number;
   max_area_m2?: number;
   bedrooms?: number;
+  min_bedrooms?: number;
   bathrooms?: number;
+  min_bathrooms?: number;
   parking_spaces?: number;
+  min_parking_spaces?: number;
+  shared_commission_only?: boolean;
   date_from?: string;
   date_to?: string;
   page?: number;
@@ -1040,14 +1044,24 @@ async function runEasyBrokerMlsCliFallback(
       code?: number | string;
     };
     const parsed = error.stdout ? parseCliJson(error.stdout) : null;
+    const parsedError =
+      parsed && typeof parsed.error === "string" ? parsed.error : "";
+    const errorText = `${error.message ?? ""} ${parsedError} ${error.stderr ?? ""}`;
+    const needsManualLogin = isEasyBrokerManualLoginRequired(errorText);
     return {
       ok: false,
-      status: "failed",
+      status: needsManualLogin ? "needs_manual_login" : "failed",
       source: "easybroker_mls",
       mode: "web_mls",
       tool: toolId,
       exit_code: error.code,
       error: error.message ?? String(err),
+      ...(needsManualLogin
+        ? {
+            hint:
+              "EasyBroker requiere login manual, CAPTCHA/MFA o refrescar la sesión persistente. Ejecuta el login asistido del POC y vuelve a probar.",
+          }
+        : {}),
       ...(parsed ? { cli_result: parsed } : {}),
       ...(error.stderr?.trim()
         ? { stderr: error.stderr.trim().slice(0, 2000) }
@@ -1056,6 +1070,12 @@ async function runEasyBrokerMlsCliFallback(
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+function isEasyBrokerManualLoginRequired(value: string) {
+  return /captcha|recaptcha|403|forbidden|access denied|login manual|sesión persistente|storage-state|mfa/i.test(
+    value
+  );
 }
 
 async function resolveEasyBrokerMlsCliDir() {
@@ -1239,7 +1259,39 @@ function easyBrokerPropertyMatchesInput(
   if (input.date_to && property.updated_at && property.updated_at > input.date_to) {
     return false;
   }
+  if (!roomCountMatches(property.bedrooms, input.bedrooms, 4)) return false;
+  if (input.bedrooms == null && !minRoomCountMatches(property.bedrooms, input.min_bedrooms)) {
+    return false;
+  }
+  if (!roomCountMatches(property.bathrooms, input.bathrooms, 5)) return false;
+  if (input.bathrooms == null && !minRoomCountMatches(property.bathrooms, input.min_bathrooms)) {
+    return false;
+  }
+  if (!roomCountMatches(property.parking_spaces, input.parking_spaces, 5)) return false;
+  if (
+    input.parking_spaces == null &&
+    !minRoomCountMatches(property.parking_spaces, input.min_parking_spaces)
+  ) {
+    return false;
+  }
   return true;
+}
+
+function roomCountMatches(actual: number | null, requested: number | undefined, plusAt: number) {
+  if (requested == null) return true;
+  if (actual == null) return true;
+  const target = Math.floor(Number(requested));
+  if (!Number.isFinite(target) || target < 0) return true;
+  if (target >= plusAt) return actual >= target;
+  return actual === target;
+}
+
+function minRoomCountMatches(actual: number | null, requested: number | undefined) {
+  if (requested == null) return true;
+  if (actual == null) return true;
+  const target = Math.floor(Number(requested));
+  if (!Number.isFinite(target) || target < 0) return true;
+  return actual >= target;
 }
 
 function numericOrNull(value: unknown) {
@@ -1284,10 +1336,20 @@ function makeEasyBrokerSearchTool(
       }
       try {
         const out = await searchEasyBrokerProperties(ctx, toolId, input, creds);
-        await markAccountSecretSuccess(
-          ctx,
-          ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker_web
-        );
+        if (out.ok === false) {
+          if (creds.source === "account") {
+            await markAccountSecretFailure(
+              ctx,
+              ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker_web,
+              String(out.error ?? out.status ?? "EasyBroker MLS search failed")
+            );
+          }
+        } else {
+          await markAccountSecretSuccess(
+            ctx,
+            ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker_web
+          );
+        }
         await updateToolCallStatus(ctx.db, record.id, "executed", out);
         return JSON.stringify(out);
       } catch (e) {
@@ -1325,8 +1387,12 @@ function makeEasyBrokerSearchTool(
         min_area_m2: z.number().nonnegative().optional(),
         max_area_m2: z.number().nonnegative().optional(),
         bedrooms: z.number().nonnegative().optional(),
+        min_bedrooms: z.number().nonnegative().optional(),
         bathrooms: z.number().nonnegative().optional(),
+        min_bathrooms: z.number().nonnegative().optional(),
         parking_spaces: z.number().nonnegative().optional(),
+        min_parking_spaces: z.number().nonnegative().optional(),
+        shared_commission_only: z.boolean().optional(),
         date_from: z.string().optional(),
         date_to: z.string().optional(),
         page: z.number().int().positive().optional(),

@@ -673,6 +673,35 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         max_price: { type: "number" },
         min_area_m2: { type: "number" },
         max_area_m2: { type: "number" },
+        bedrooms: {
+          type: "number",
+          description: "Exact bedroom count for comparable searches.",
+        },
+        min_bedrooms: {
+          type: "number",
+          description: "Minimum bedroom count for buyer/renter option searches.",
+        },
+        bathrooms: {
+          type: "number",
+          description: "Exact bathroom count for comparable searches.",
+        },
+        min_bathrooms: {
+          type: "number",
+          description: "Minimum bathroom count for buyer/renter option searches.",
+        },
+        parking_spaces: {
+          type: "number",
+          description: "Exact parking space count for comparable searches.",
+        },
+        min_parking_spaces: {
+          type: "number",
+          description: "Minimum parking space count for buyer/renter option searches.",
+        },
+        shared_commission_only: {
+          type: "boolean",
+          description:
+            "When true, filters MLS results to properties that share commission.",
+        },
         page: { type: "number", description: "1-based page (default 1)." },
         limit: {
           type: "number",
@@ -704,6 +733,34 @@ export const TOOL_CATALOG: ToolDefinition[] = [
           type: "array",
           items: { type: "string" },
           description: "One or more EasyBroker property types to include.",
+        },
+        min_price: { type: "number" },
+        max_price: { type: "number" },
+        min_area_m2: { type: "number" },
+        max_area_m2: { type: "number" },
+        bedrooms: {
+          type: "number",
+          description: "Exact bedroom count for comparable searches.",
+        },
+        min_bedrooms: {
+          type: "number",
+          description: "Minimum bedroom count.",
+        },
+        bathrooms: {
+          type: "number",
+          description: "Exact bathroom count for comparable searches.",
+        },
+        min_bathrooms: {
+          type: "number",
+          description: "Minimum bathroom count.",
+        },
+        parking_spaces: {
+          type: "number",
+          description: "Exact parking space count for comparable searches.",
+        },
+        min_parking_spaces: {
+          type: "number",
+          description: "Minimum parking space count.",
         },
         date_from: { type: "string" },
         date_to: { type: "string" },

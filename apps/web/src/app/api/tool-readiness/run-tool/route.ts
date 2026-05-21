@@ -530,7 +530,7 @@ async function resolveArgsForMode(params: {
       ...userArgs,
     };
     return {
-      args: merged,
+      args: applyUserOverrideSemantics(toolId, merged, userArgs),
       mode_used: "case",
       source,
       case_id: testCase.id,
@@ -539,10 +539,76 @@ async function resolveArgsForMode(params: {
   }
 
   return {
-    args: { ...(TEST_DEFAULTS[toolId] ?? {}), ...userArgs },
+    args: applyUserOverrideSemantics(toolId, { ...(TEST_DEFAULTS[toolId] ?? {}), ...userArgs }, userArgs),
     mode_used: "smoke",
     source: "smoke_defaults",
   };
+}
+
+function applyUserOverrideSemantics(
+  toolId: string,
+  args: Record<string, unknown>,
+  userArgs: Record<string, unknown>
+) {
+  if (
+    toolId !== "easybroker_search_listings" &&
+    toolId !== "easybroker_search_closed_deals"
+  ) {
+    return args;
+  }
+  const normalized = { ...args };
+  const hasUserArg = (key: string) => Object.prototype.hasOwnProperty.call(userArgs, key);
+
+  if (hasUserArg("operation") && !hasUserArg("operations")) {
+    delete normalized.operations;
+  }
+  if (hasUserArg("operations") && !hasUserArg("operation")) {
+    delete normalized.operation;
+  }
+  if (hasUserArg("property_type") && !hasUserArg("property_types")) {
+    delete normalized.property_types;
+  }
+  if (hasUserArg("property_types") && !hasUserArg("property_type")) {
+    delete normalized.property_type;
+  }
+
+  const roomKeys = [
+    "bedrooms",
+    "min_bedrooms",
+    "bathrooms",
+    "min_bathrooms",
+    "parking_spaces",
+    "min_parking_spaces",
+  ];
+  const userTouchedRooms = roomKeys.some(hasUserArg);
+  if (userTouchedRooms) {
+    for (const key of roomKeys) {
+      if (!hasUserArg(key)) delete normalized[key];
+    }
+  } else {
+    removeExactIfMinimumWasProvided(normalized, userArgs, "bedrooms", "min_bedrooms");
+    removeExactIfMinimumWasProvided(normalized, userArgs, "bathrooms", "min_bathrooms");
+    removeExactIfMinimumWasProvided(
+      normalized,
+      userArgs,
+      "parking_spaces",
+      "min_parking_spaces"
+    );
+  }
+
+  return normalized;
+}
+
+function removeExactIfMinimumWasProvided(
+  args: Record<string, unknown>,
+  userArgs: Record<string, unknown>,
+  exactKey: string,
+  minKey: string
+) {
+  const hasUserArg = (key: string) => Object.prototype.hasOwnProperty.call(userArgs, key);
+  if (hasUserArg(minKey) && !hasUserArg(exactKey)) {
+    delete args[exactKey];
+  }
 }
 
 export async function POST(request: Request) {

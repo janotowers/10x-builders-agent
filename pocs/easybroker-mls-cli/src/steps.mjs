@@ -32,7 +32,7 @@ async function fileExists(p) {
   }
 }
 
-export async function launchEasyBrokerContext({ headless } = {}) {
+export async function launchEasyBrokerContext({ headless, useStorageState = true } = {}) {
   const effectiveHeadless =
     headless ?? envFlag("EASYBROKER_MLS_HEADLESS", false);
   const channel = process.env.EASYBROKER_MLS_CHANNEL?.trim() || "chrome";
@@ -58,7 +58,7 @@ export async function launchEasyBrokerContext({ headless } = {}) {
     });
   }
   const storage = storageStatePath();
-  const useStorage = await fileExists(storage);
+  const useStorage = useStorageState && await fileExists(storage);
   const context = await browser.newContext({
     userAgent: REAL_USER_AGENT,
     locale: "es-MX",
@@ -78,8 +78,10 @@ export async function launchEasyBrokerContext({ headless } = {}) {
   return { browser, context, page, usedStorage: useStorage };
 }
 
-export async function loginToEasyBroker(creds, metrics = []) {
-  const session = await launchEasyBrokerContext();
+export async function loginToEasyBroker(creds, metrics = [], options = {}) {
+  const session = await launchEasyBrokerContext({
+    useStorageState: options.useStorageState !== false,
+  });
   const { browser, context, page, usedStorage } = session;
   const push = (step, ok, duration_ms, error) => {
     metrics.push({ step, ok, duration_ms, ...(error ? { error } : {}) });
@@ -112,6 +114,15 @@ export async function loginToEasyBroker(creds, metrics = []) {
           ...(await collectPageDiagnostics(page)),
         });
         await maybeCapture(page, "manager-forbidden", metrics, true);
+        if (canRetryLoginWithoutStorage(creds, options)) {
+          metrics.push({
+            step: "storage_state_fallback_to_password_login",
+            ok: true,
+            reason: "403 en /manager con storageState",
+          });
+          await browser.close();
+          return loginToEasyBroker(creds, metrics, { useStorageState: false });
+        }
         throw new Error(antibotMessage(page.url()));
       }
       const navigated = await openMlsFromManager(page, targetMlsUrl, metrics);
@@ -131,6 +142,15 @@ export async function loginToEasyBroker(creds, metrics = []) {
         ok: false,
         error: "storageState abre /manager pero no llega al MLS sin error.",
       });
+      if (canRetryLoginWithoutStorage(creds, options)) {
+        metrics.push({
+          step: "storage_state_fallback_to_password_login",
+          ok: true,
+          reason: "storageState no llegó al MLS autenticado",
+        });
+        await browser.close();
+        return loginToEasyBroker(creds, metrics, { useStorageState: false });
+      }
       throw new Error(
         "La sesión guardada abre EasyBroker, pero no se pudo navegar a Bolsa Inmobiliaria/MLS desde /manager."
       );
@@ -171,9 +191,24 @@ export async function loginToEasyBroker(creds, metrics = []) {
         }
         const body = await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "");
         throw new Error(
-          `No se encontró formulario de login EasyBroker. Página actual: ${page.url()} — ${body.slice(0, 300)}`
+          `No se pudo abrir la página de login EasyBroker. Página actual: ${page.url()} — ${body.slice(0, 300)}`
         );
       }
+      await prepareEasyBrokerLoginLanding(page, metrics);
+      if (!(await hasLoginForm(page))) {
+        metrics.push({
+          step: "page_diagnostics",
+          ok: true,
+          ...(await collectPageDiagnostics(page)),
+        });
+        await maybeCapture(page, "login-no-email-form", metrics, true);
+        const body = await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "");
+        throw new Error(
+          `No se encontró formulario de login EasyBroker tras abrir email. Página actual: ${page.url()} — ${body.slice(0, 300)}`
+        );
+      }
+    } else {
+      await dismissEasyBrokerLoginBanners(page, metrics);
     }
 
     await clickIfVisible(page, [
@@ -247,6 +282,16 @@ export async function loginToEasyBroker(creds, metrics = []) {
     await browser.close();
     throw e;
   }
+}
+
+function canRetryLoginWithoutStorage(creds, options) {
+  return (
+    options.useStorageState !== false &&
+    typeof creds?.email === "string" &&
+    creds.email.trim() &&
+    typeof creds?.password === "string" &&
+    creds.password.trim()
+  );
 }
 
 function antibotMessage(url) {
@@ -401,8 +446,15 @@ async function openLoginPage(page, configuredUrl, metrics = []) {
         timeout: timeoutMs("EASYBROKER_MLS_TIMEOUT_MS", 60_000),
       });
       await page.waitForTimeout(1200);
-      const ok = await hasLoginForm(page);
-      metrics.push({ step: "open_login_candidate", ok, duration_ms: Date.now() - t0, url });
+      const currentUrl = page.url();
+      const ok =
+        (await hasLoginForm(page)) || /authentication|sign_in|login/i.test(currentUrl);
+      metrics.push({
+        step: "open_login_candidate",
+        ok,
+        duration_ms: Date.now() - t0,
+        url: currentUrl,
+      });
       if (ok) return true;
     } catch (e) {
       metrics.push({
@@ -415,6 +467,39 @@ async function openLoginPage(page, configuredUrl, metrics = []) {
     }
   }
   return false;
+}
+
+async function dismissEasyBrokerLoginBanners(page, metrics = []) {
+  const dismissed = await clickIfVisible(page, [
+    page.getByRole("button", { name: /^ignorar$/i }),
+    page.getByText(/^ignorar$/i),
+    page.locator("button,a").filter({ hasText: /^ignorar$/i }),
+  ]);
+  if (dismissed) {
+    metrics.push({ step: "dismiss_browser_update_banner", ok: true });
+    await page.waitForTimeout(500);
+  }
+}
+
+async function prepareEasyBrokerLoginLanding(page, metrics = []) {
+  await dismissEasyBrokerLoginBanners(page, metrics);
+  const clickedEmail = await clickIfVisible(page, [
+    page.getByText(/continuar con email/i),
+    page.getByRole("button", { name: /continuar con email/i }),
+    page.getByRole("link", { name: /continuar con email/i }),
+    page.getByRole("button", { name: /^email$/i }),
+    page.getByRole("link", { name: /^email$/i }),
+    page.locator("button,a,div,span").filter({ hasText: /continuar con email/i }),
+  ]);
+  metrics.push({ step: "open_email_login", ok: clickedEmail });
+  await page.waitForTimeout(1000);
+  if (!(await hasEmailField(page)) && clickedEmail) {
+    await page.waitForSelector('input[type="email"], input[name*="email" i]', {
+      timeout: 10_000,
+      state: "visible",
+    }).catch(() => {});
+    await page.waitForTimeout(500);
+  }
 }
 
 export async function searchMlsProperties(page, input, metrics = []) {
@@ -592,7 +677,7 @@ async function applySearchFilters(page, input) {
   if (needsUrlSync) {
     const synced = await enforceFiltersInSearchUrl(page, input);
     if (synced.location) filled.push("location:reapplied");
-    for (const param of synced.exactParams) filled.push(`exact:${param}`);
+    for (const param of synced.exactParams) filled.push(param);
   }
   return filled;
 }
@@ -680,15 +765,18 @@ async function enforceFiltersInSearchUrl(page, input) {
     }
   }
   const exactParams = [];
-  if (applyExactRoomParam(current, "bedroom", input.bedrooms, 4)) {
-    exactParams.push("bedrooms");
-  }
-  if (applyExactRoomParam(current, "bathroom", input.bathrooms, 5)) {
-    exactParams.push("bathrooms");
-  }
-  if (applyExactRoomParam(current, "parking_spaces", input.parking_spaces, 5)) {
-    exactParams.push("parking_spaces");
-  }
+  const bedroomParam = applyRoomParam(current, "bedroom", input.bedrooms, input.min_bedrooms, 4);
+  if (bedroomParam) exactParams.push(bedroomParam);
+  const bathroomParam = applyRoomParam(current, "bathroom", input.bathrooms, input.min_bathrooms, 5);
+  if (bathroomParam) exactParams.push(bathroomParam);
+  const parkingParam = applyRoomParam(
+    current,
+    "parking_spaces",
+    input.parking_spaces,
+    input.min_parking_spaces,
+    5
+  );
+  if (parkingParam) exactParams.push(parkingParam);
   if (!locationApplied && exactParams.length === 0) {
     return { location: false, exactParams: [] };
   }
@@ -706,18 +794,21 @@ async function enforceFiltersInSearchUrl(page, input) {
   };
 }
 
-function applyExactRoomParam(url, key, value, plusAt) {
-  if (value == null) return false;
+function applyRoomParam(url, key, exactValue, minValue, plusAt) {
+  const hasExact = exactValue != null;
+  const value = hasExact ? exactValue : minValue;
+  if (value == null) return null;
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric < 0) return false;
   const floored = Math.floor(numeric);
   url.searchParams.set(`min_${key}`, String(floored));
-  if (floored < plusAt) {
+  if (hasExact && floored < plusAt) {
     url.searchParams.set(`max_${key}`, String(floored));
+    return `exact:${key}`;
   } else {
     url.searchParams.delete(`max_${key}`);
+    return `min:${key}`;
   }
-  return floored < plusAt;
 }
 
 function slugifyLocation(value) {
@@ -782,27 +873,34 @@ async function applyMoreFilter(page, input) {
   const applied = [];
   const needsMore =
     input.bedrooms != null ||
+    input.min_bedrooms != null ||
     input.bathrooms != null ||
+    input.min_bathrooms != null ||
     input.parking_spaces != null ||
+    input.min_parking_spaces != null ||
     input.min_area_m2 != null ||
-    input.max_area_m2 != null;
+    input.max_area_m2 != null ||
+    input.shared_commission_only === true;
   if (!needsMore) return applied;
   if (!(await openExactTopFilter(page, "Más"))) return applied;
 
-  if (await clickSegmentedFilterOption(page, /rec[aá]maras/i, roomOption(input.bedrooms, 4))) {
-    applied.push(`bedrooms:${input.bedrooms >= 4 ? "4+" : input.bedrooms}`);
+  const bedroomFilter = roomFilterValue(input.bedrooms, input.min_bedrooms, 4);
+  if (await clickSegmentedFilterOption(page, /rec[aá]maras/i, bedroomFilter.option)) {
+    applied.push(`${bedroomFilter.kind}_bedrooms:${bedroomFilter.option}`);
   }
-  if (await clickSegmentedFilterOption(page, /baños|banos/i, roomOption(input.bathrooms, 5))) {
-    applied.push(`bathrooms:${input.bathrooms >= 5 ? "5+" : input.bathrooms}`);
+  const bathroomFilter = roomFilterValue(input.bathrooms, input.min_bathrooms, 5);
+  if (await clickSegmentedFilterOption(page, /baños|banos/i, bathroomFilter.option)) {
+    applied.push(`${bathroomFilter.kind}_bathrooms:${bathroomFilter.option}`);
   }
+  const parkingFilter = roomFilterValue(input.parking_spaces, input.min_parking_spaces, 5);
   if (
     await clickSegmentedFilterOption(
       page,
       /estacionamientos|parking/i,
-      roomOption(input.parking_spaces, 5)
+      parkingFilter.option
     )
   ) {
-    applied.push(`parking_spaces:${input.parking_spaces >= 5 ? "5+" : input.parking_spaces}`);
+    applied.push(`${parkingFilter.kind}_parking_spaces:${parkingFilter.option}`);
   }
 
   if (input.min_area_m2 != null) {
@@ -818,6 +916,10 @@ async function applyMoreFilter(page, input) {
       await maxConstruction.first().fill(String(input.max_area_m2)).catch(() => {});
       applied.push("max_area_m2");
     }
+  }
+
+  if (input.shared_commission_only === true && await applySharedCommissionFilter(page)) {
+    applied.push("shared_commission_only");
   }
 
   if (applied.length === 0) {
@@ -839,12 +941,26 @@ async function applyMoreFilter(page, input) {
   return applied;
 }
 
+function roomFilterValue(exactValue, minValue, plusAt) {
+  if (exactValue != null) {
+    return { kind: "exact", option: roomOption(exactValue, plusAt) };
+  }
+  return { kind: "min", option: roomOption(minValue, plusAt) };
+}
+
 function roomOption(value, plusAt) {
   if (value == null) return null;
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   if (parsed >= plusAt) return `${plusAt}+`;
   return String(Math.floor(parsed));
+}
+
+async function applySharedCommissionFilter(page) {
+  return clickVisibleText(
+    page,
+    /comparte(?:n)?\s+comisi[oó]n|comisi[oó]n\s+compartida|compartir\s+comisi[oó]n/i
+  );
 }
 
 async function clickSegmentedFilterOption(page, labelRegex, optionLabel) {
@@ -1237,6 +1353,14 @@ function roomCountMatches(actual, requested, plusAt) {
   return actual === target;
 }
 
+function minRoomCountMatches(actual, requested) {
+  if (requested == null) return true;
+  if (actual == null) return true;
+  const target = Math.floor(Number(requested));
+  if (!Number.isFinite(target) || target < 0) return true;
+  return actual >= target;
+}
+
 function canonicalPropertyType(value) {
   if (!value) return null;
   const normalized = String(value).trim().toLowerCase();
@@ -1282,8 +1406,14 @@ function mlsResultMatchesInput(result, input = {}) {
     return false;
   }
   if (!roomCountMatches(result.bedrooms, input.bedrooms, 4)) return false;
+  if (input.bedrooms == null && !minRoomCountMatches(result.bedrooms, input.min_bedrooms)) return false;
   if (!roomCountMatches(result.bathrooms, input.bathrooms, 5)) return false;
+  if (input.bathrooms == null && !minRoomCountMatches(result.bathrooms, input.min_bathrooms)) return false;
   if (!roomCountMatches(result.parking_spaces, input.parking_spaces, 5)) return false;
+  if (
+    input.parking_spaces == null &&
+    !minRoomCountMatches(result.parking_spaces, input.min_parking_spaces)
+  ) return false;
 
   if (typeof input.zona === "string" && input.zona.trim()) {
     const haystack = `${result.location ?? ""} ${result.title ?? ""}`.toLowerCase();

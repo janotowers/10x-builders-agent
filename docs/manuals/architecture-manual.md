@@ -813,6 +813,11 @@ Tools del dominio inmobiliario (en `packages/agent/src/tools/realestate-adapters
   `pocs/easybroker-mls-cli/`). La API pública de EasyBroker no expone la bolsa
   completa; la búsqueda de comparables usa automatización web con credenciales del
   cliente, storage state y prueba de conexión no headless cuando aplica reCAPTCHA.
+  Si el storage state expira, el adapter intenta login con email/password antes
+  de pedir login asistido. Contrato de filtros: `bedrooms`/`bathrooms`/
+  `parking_spaces` son exactos; `min_bedrooms`/`min_bathrooms`/
+  `min_parking_spaces` significan "al menos"; `shared_commission_only` activa el
+  filtro de comisión compartida cuando el caso/skill lo requiere.
 - `easybroker_create_listing`, `easybroker_upload_images` (**stubs** HTTP write;
   provider `easybroker` + API key; fallback legacy `EASYBROKER_API_KEY`). Captura
   y prueba en UI: Ajustes → Conexiones → Credenciales por cuenta, o formulario
