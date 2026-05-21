@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- EasyBroker MLS search tools (`easybroker_search_listings`, `easybroker_search_closed_deals`) via Playwright POC `pocs/easybroker-mls-cli` and per-account provider `easybroker_web`
+- Operational case tool testing: sample context (`test-context-samples.ts`), `run-tool` with `case_id`, readable result preview in settings UI
+- `npm run setup:pocs` to install Playwright dependencies for EasyBroker MLS and Ungga POCs
 - Long-term memory (v1): `memory_injection_node`, `match_memories` RPC, `flushSessionMemory`, chat/Telegram triggers; `memory.log` and `turn_summary.log` (see [docs/memory/long_term_memory_plan.md](docs/memory/long_term_memory_plan.md))
 - Initial project setup with Turborepo monorepo structure
 - Workspace configuration for `apps/*` and `packages/*`
@@ -18,5 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Documentation for operational cases, architecture manual, and POC index aligned with EasyBroker MLS and dual providers (`easybroker` vs `easybroker_web`)
 - Default `MEMORY_MATCH_THRESHOLD` for long-term retrieval: **0.50** (was 0.35). Migration [00008_match_memories_default_threshold_050.sql](packages/db/supabase/migrations/00008_match_memories_default_threshold_050.sql) sets the same default on `public.match_memories` in the database; the app still passes the threshold explicitly from code/env.
 - [docs/plan.md](docs/plan.md): Fase 8 now documents long-term memory as implemented (v1), not only planned

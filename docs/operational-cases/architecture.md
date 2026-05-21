@@ -272,18 +272,21 @@ cuenta** cuando aplica.
 
 | Pieza | Rol |
 |---|---|
-| `GET /api/tool-readiness?case_type_id=…` | Resuelve sólo metadata de skills (no compone el body completo) y devuelve por tool: estado, categoría, si bloquea prueba controlada, acción sugerida y, para EasyBroker/Ungga, `account_provider` (`easybroker`, `ungga_api`). |
-| `account_tool_secrets` | Migración `00024_account_tool_secrets.sql`. Una fila por `(user_id, provider)`: `config_jsonb` público para la UI, secretos cifrados en columna dedicada. Estados `pending_test` → `active` / `invalid` tras `POST …/test`. |
+| `GET /api/tool-readiness?case_type_id=…` | Resuelve sólo metadata de skills (no compone el body completo) y devuelve por tool: estado, categoría, si bloquea prueba controlada, acción sugerida y `account_provider` cuando aplica (`easybroker`, `easybroker_web`, `ungga_api`, `ungga`). |
+| `account_tool_secrets` | Migración `00024_account_tool_secrets.sql`. Una fila por `(user_id, provider)`: `config_jsonb` público para la UI, secretos cifrados en columna dedicada. Estados `pending_test` → `active` / `invalid` tras `POST …/test`. Providers inmobiliarios: `easybroker` (API key write), `easybroker_web` (email/password MLS), `ungga_api`, `ungga`. |
 | `account_assets` | Assets privados por cuenta requeridos por `operational_flow_jsonb.required_assets` (plantillas, watermarks, logos, etc.). El archivo vive en Supabase Storage y la tabla guarda metadata/ruta. |
 | `GET/PUT/DELETE /api/account-tool-secrets` | CRUD sin exponer secretos en GET; PUT valida contra `apps/web/src/lib/account-tool-providers.ts`. |
-| `POST /api/account-tool-secrets/[provider]/test` | Ping barato a la API externa; actualiza `status` y puede cerrar solicitudes abiertas en `global_tool_requests` para tools cubiertas por ese provider. |
+| `POST /api/account-tool-secrets/[provider]/test` | Prueba de conexión por provider (API ping o sesión Playwright según provider); actualiza `status` y puede cerrar solicitudes abiertas en `global_tool_requests` para tools cubiertas por ese provider. |
 | `global_tool_requests` | Migración `00023_global_tool_requests.sql`. Backlog cuando falta capacidad global o recurso de tenant; `GET/POST /api/global-tool-requests`. |
-| UI Casos de uso | **Preparación operativa**: revisar lista, expandir tool, conectar EasyBroker/Ungga inline (mismo form que Ajustes). **Checks de activación**: checklist alineada con bloqueos de readiness. |
-| UI Ajustes | **Conexiones** agrupa OAuth/vínculo (Google, GitHub, Telegram) y **Credenciales por cuenta** (API keys/tokens cifrados). |
+| `operational-case-tests` + `run-tool` | Casos de prueba por `case_type` con contexto de muestra (`test-context-samples.ts`); `POST …/run-tool` ejecuta una tool con args derivados del caso (opcional `case_id` para no usar siempre el último). |
+| UI Casos de uso | **Preparación operativa**: revisar lista, expandir tool, conectar providers inline (mismo form que Ajustes), probar tool con vista previa legible de resultados. **Checks de activación**: checklist alineada con bloqueos de readiness. |
+| UI Ajustes | **Conexiones** agrupa OAuth/vínculo (Google, GitHub, Telegram) y **Credenciales por cuenta** (API keys/tokens/credenciales web cifrados). |
+| POC Playwright | `pocs/easybroker-mls-cli/` y `pocs/ungga-cli/`; instalar browsers con `npm run setup:pocs` en la raíz del monorepo. |
 
 Los adapters en `realestate-adapters.ts` **priorizan** secretos por cuenta y
 **caen** a variables de entorno solo para despliegues legacy
-(`EASYBROKER_API_KEY`, `UNGGA_INTERNAL_API_*`). Detalle: `realestate-credentials.ts`.
+(`EASYBROKER_API_KEY`, `UNGGA_INTERNAL_API_*`). Búsqueda MLS invoca el CLI
+EasyBroker con credenciales `easybroker_web`. Detalle: `realestate-credentials.ts`.
 
 ### 10.1 Doctrina de personalización: global code, account configuration
 

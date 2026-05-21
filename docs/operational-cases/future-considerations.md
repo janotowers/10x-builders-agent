@@ -113,6 +113,7 @@ El subsistema de casos vive sobre **Postgres + cron + LangGraph checkpointer**. 
 **Excepciones legítimas:**
 
 - **Sistemas propios** (Ungga): ver POC Ungga CLI/API en [`plan.md`](plan.md) sección 6. Aquí Gu OS es dueño del sistema, no hay terceros.
+- **EasyBroker MLS (bolsa inmobiliaria)**: la API pública no cubre búsqueda en la bolsa completa; Gu OS usa Playwright con credenciales web del cliente (`easybroker_web` en `account_tool_secrets`, POC `pocs/easybroker-mls-cli/`). Mismos guardrails que abajo: cifrado, prueba de conexión, storage state, HITL en writes, fallback manual si rompe UI o reCAPTCHA. **No** extender este patrón a Inmuebles24 u otros portales sin partnership.
 - **Partnerships oficiales**: si Inmuebles24 ofrece API B2B/partner program, esa es la vía correcta. Buscar antes de automatizar.
 
 **Si en el futuro se decide automatizar (con aprobación explícita y documentada del cliente):**
@@ -220,7 +221,7 @@ Para evitar scope creep:
 
 - **No subagentes** (ver sección 1).
 - **No motor durable externo** (ver sección 3).
-- **No browser automation a portales externos** (ver sección 4).
+- **No browser automation genérica a portales externos** (Inmuebles24, etc.; ver sección 4). Excepción acotada ya en producto: EasyBroker MLS (`easybroker_web`) y Ungga (`ungga` / `ungga_api`).
 - **No WhatsApp Cloud API** (ver sección 5).
 - **No `account_skills` con versionado completo** (V2+).
 - **No mining automático de patrones desde casos** (Brain Layer fase posterior).
@@ -241,7 +242,8 @@ V1 mantiene los adapters en código para las herramientas comunes y críticas. P
 `(user_id, provider)`** con `config_jsonb` + secretos cifrados, más catálogo en
 código (`apps/web/src/lib/account-tool-providers.ts`), API REST bajo
 `/api/account-tool-secrets`, pruebas de conexión y wiring en readiness/UI.
-Esto cubre providers concretos (p. ej. `easybroker`, `ungga_api`) **antes** del
+Esto cubre providers concretos (p. ej. `easybroker`, `easybroker_web`, `ungga_api`,
+`ungga`) **antes** del
 modelo más rico con `account_tool_configs` + primitives y `account_tool_test_runs`
 descrito abajo. Cuando se evolucione a primitives genéricas, conviene migrar o
 convivir: el contrato de readiness (`/api/tool-readiness`) ya está pensado para

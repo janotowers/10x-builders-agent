@@ -1000,13 +1000,14 @@ externas. El piloto end-to-end es "opcionar propiedad" para Alebrixe.
 | 1.7-4 | Adaptación de `runAgent` para aceptar `caseId`: inyecta bloque `[Caso operacional activo]` (state + últimos eventos) en system prompt; binding directo de skill cuando `case_type` define `default_skill_slug`. |
 | 1.7-5 | Webhook `/api/telegram/webhook` enriquecido: detecta contactos externos asociados a un caso `waiting_external` y dispara procesamiento inmediato. |
 | 1.7-6 | Tools del subsistema: `operational_case_update_state` (con `expected_version`), `operational_case_add_event`, `notify_user`. |
-| 1.7-7 | Tools del dominio inmobiliario (la mayoría stubs activables por env var): `telegram_send_message_to_contact` (HITL), `easybroker_*` (search/create/upload), `bigquery_lookup_local_comparables`, `generate_document_from_template`, `image_watermark`, `ungga_publish_listing`. |
+| 1.7-7 | Tools del dominio inmobiliario: `telegram_send_message_to_contact` (HITL); `easybroker_search_*` (**implementadas** vía `easybroker_web` + POC `pocs/easybroker-mls-cli/`); `easybroker_create_listing` / `easybroker_upload_images` (write API, stub); `bigquery_lookup_local_comparables`, `generate_document_from_template`, `image_watermark` (stubs); `ungga_publish_listing` (API + fallback CLI). |
 | 1.7-8 | Skills: composite `property-optioning-coach` + atómicas (`request-property-documents`, `extract-property-characteristics`, `perform-comparable-analysis`, `prepare-listing-price`, `prepare-commission-contract`, `coordinate-photo-session`, `publish-listing-package`). Inicialmente globales para desarrollo; al activar el piloto real se mueven a `account_skills` de Alebrixe. |
 | 1.7-9 | CI: `scripts/validate-skill-tool-refs.mjs` (`npm run validate:skills`, `prebuild`) rechaza build si una skill referencia tools que no existen en el catálogo. |
-| 1.7-10 | POC paralelo: `pocs/ungga-cli/` (Playwright contra staging) y `pocs/ungga-api/` (cliente + OpenAPI del endpoint interno propuesto). Decisión final tras medir latencia/fragilidad/mantenibilidad. |
+| 1.7-10 | POCs Playwright: `pocs/easybroker-mls-cli/` (MLS en producto), `pocs/ungga-cli/` (staging) y `pocs/ungga-api/` (OpenAPI propuesto). Setup: `npm run setup:pocs`. |
 
 **Out of V1.7 (queda para futuro):** WhatsApp Cloud API outbound,
-conectores a portales sin API (Inmuebles24), motor durable tipo
+browser automation a portales sin API ni partnership (Inmuebles24; EasyBroker MLS
+ya está acotado en `easybroker_web`), motor durable tipo
 Temporal/Inngest, multi-agente. Ver
 [`docs/operational-cases/future-considerations.md`](operational-cases/future-considerations.md).
 

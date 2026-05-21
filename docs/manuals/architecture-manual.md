@@ -808,21 +808,23 @@ Tools del dominio inmobiliario (en `packages/agent/src/tools/realestate-adapters
 
 - `telegram_send_message_to_contact` (`high`, HITL): mensajes outbound al
   dueño.
-- `easybroker_search_*`, `easybroker_create_listing`, `easybroker_upload_images`
-  (**stubs** hoy en la lógica de negocio/HTTP real; la credencial se obtiene con
-  **prioridad** desde `account_tool_secrets` del usuario, provider `easybroker`,
-  con fallback legacy a `EASYBROKER_API_KEY` en el entorno). Captura y prueba en
-  UI: Ajustes → Conexiones → Credenciales por cuenta, o formulario inline en
-  Casos de uso → preparación operativa; API `apps/web/src/app/api/account-tool-secrets/`.
+- `easybroker_search_listings`, `easybroker_search_closed_deals` (**implementadas**
+  vía Playwright MLS; provider `easybroker_web` en `account_tool_secrets`; POC
+  `pocs/easybroker-mls-cli/`). La API pública de EasyBroker no expone la bolsa
+  completa; la búsqueda de comparables usa automatización web con credenciales del
+  cliente, storage state y prueba de conexión no headless cuando aplica reCAPTCHA.
+- `easybroker_create_listing`, `easybroker_upload_images` (**stubs** HTTP write;
+  provider `easybroker` + API key; fallback legacy `EASYBROKER_API_KEY`). Captura
+  y prueba en UI: Ajustes → Conexiones → Credenciales por cuenta, o formulario
+  inline en Casos de uso → preparación operativa;
+  API `apps/web/src/app/api/account-tool-secrets/`.
 - `bigquery_lookup_local_comparables` (stub: necesita confirmar tablas
   warehouse).
 - `generate_document_from_template` (stub: necesita plantillas por tenant).
 - `image_watermark` (stub: necesita asset PNG por tenant).
-- `ungga_publish_listing` (POST a `{api_base}/v1/internal/listings` con Bearer
-  token; credencial con prioridad desde `account_tool_secrets`, provider
-  `ungga_api`, campos `config_jsonb.api_base` + token cifrado; fallback a
-  `UNGGA_INTERNAL_API_BASE` / `UNGGA_INTERNAL_API_TOKEN`; `not_configured` si
-  faltan ambos).
+- `ungga_publish_listing` (API interna preferida: POST a `{api_base}/v1/internal/listings`
+  con Bearer; provider `ungga_api`; fallback CLI Playwright `pocs/ungga-cli/` con
+  provider `ungga` y dry-run HITL cuando no hay API estable).
 
 **Readiness y backlog de tools:** `GET /api/tool-readiness?case_type_id=…` (sin
 componer el body completo de la skill; sólo metadata). Solicitudes cuando falta
@@ -847,20 +849,23 @@ Documentos:
   cuándo justificar subagentes, escalar el selector, migrar a Temporal,
   browser automation, WhatsApp Cloud API.
 
-POCs (en `tools/`):
+POCs (en `pocs/`; instalar con `npm run setup:pocs` en la raíz del monorepo):
 
-- `pocs/ungga-cli/`: Playwright contra `app.ungga.com` (staging).
+- `pocs/easybroker-mls-cli/`: Playwright contra la bolsa MLS de EasyBroker
+  (`/agent/mls_properties`); usado en runtime por `easybroker_search_*`.
+- `pocs/ungga-cli/`: Playwright contra `app.ungga.com` (staging); fallback de
+  `ungga_publish_listing`.
 - `pocs/ungga-api/`: cliente y OpenAPI del endpoint interno propuesto.
 
 Estado:
 
 - Subsistema base: **Hoy** (migraciones, cron, runtime, webhook, tools).
-- Credenciales EasyBroker/Ungga por cuenta: **Hoy** (tabla + API + UI + prueba
-  de conexión); adapters siguen **stub** en comportamiento de negocio hasta
-  mapear endpoints reales.
+- Credenciales por cuenta: **Hoy** (`easybroker`, `easybroker_web`, `ungga_api`,
+  `ungga`; tabla + API + UI + prueba de conexión).
+- EasyBroker búsqueda MLS: **Hoy** (Playwright + `easybroker_web`).
+- EasyBroker create/upload: **Stub** hasta mapear endpoints write de la API.
 - Templates DOCX/PDF y watermark: **Stub** (requiere assets).
-- Ungga API en runtime: parcialmente cableada (HTTP real si hay credencial);
-  producto Ungga debe exponer/pegar endpoint estable en cada entorno.
+- Ungga publish: **Parcial** (API si hay credencial; CLI Playwright como fallback).
 
 ---
 

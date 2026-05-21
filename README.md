@@ -207,6 +207,7 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 | `npm run dev` | Desarrollo (monorepo) |
 | `npm run build` | Build de todos los paquetes que definan `build` |
 | `npm run lint` | Lint |
+| `npm run setup:pocs` | Instala dependencias y Chromium de Playwright para `pocs/easybroker-mls-cli` y `pocs/ungga-cli` (pruebas de tools MLS/Ungga en local) |
 | `cd apps/web && npx next build` | Build solo de la app Next (útil para comprobar tipos antes de desplegar) |
 
 ---
