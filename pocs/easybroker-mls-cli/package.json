@@ -1,0 +1,16 @@
+{
+  "name": "poc-easybroker-mls-cli",
+  "private": true,
+  "version": "0.0.1",
+  "description": "POC: buscar propiedades en EasyBroker MLS vía Playwright.",
+  "type": "module",
+  "scripts": {
+    "poc:search": "node src/search-mls.mjs",
+    "poc:login": "node src/login.mjs",
+    "poc:login:assisted": "node src/login-assisted.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "playwright": "^1.49.0"
+  }
+}

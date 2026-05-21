@@ -1772,6 +1772,7 @@ export function buildLangChainTools(ctx: ToolContext) {
     });
     addRealEstateTools(ctx, tools, {
       sendTelegramMessage: toolWiringDeps.sendTelegramMessage,
+      notifyUser: toolWiringDeps.notifyUser,
     });
   }
 

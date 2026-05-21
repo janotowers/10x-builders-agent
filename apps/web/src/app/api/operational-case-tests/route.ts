@@ -16,37 +16,25 @@ import type {
   ToolCall,
 } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
+import { buildTestContext } from "./test-context-samples";
 
-function optionValue(option: unknown) {
-  if (typeof option === "string") return option;
-  if (option && typeof option === "object" && "value" in option) {
-    return typeof option.value === "string" ? option.value : "";
-  }
-  return "";
-}
-
-function sampleValue(field: OperationalCaseIntakeField) {
-  if (field.type === "number") return "1234567890";
-  if (field.type === "select") return optionValue(field.options?.[0]) || "prueba";
-  if (field.type === "multi_select") {
-    const first = optionValue(field.options?.[0]);
-    return first ? [first] : [];
-  }
-  if (field.name.includes("telegram_chat_id")) return "1234567890";
-  if (field.name.includes("owner")) return "Contacto de prueba";
-  if (field.name.includes("lead")) return "Lead de prueba";
-  if (field.name.includes("property") || field.name.includes("title")) {
-    return "Propiedad de prueba";
-  }
-  return field.placeholder?.replace(/^Ej\.\s*/i, "") || `${field.label} de prueba`;
-}
-
-function buildTestContext(fields: OperationalCaseIntakeField[]) {
-  const context: Record<string, unknown> = {};
-  for (const field of fields) {
-    context[field.name] = sampleValue(field);
-  }
-  return context;
+async function findLatestSettingsTestCase(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  caseTypeId: string
+): Promise<OperationalCase | null> {
+  const { data, error } = await db
+    .from("operational_cases")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("case_type_id", caseTypeId)
+    .eq("context_jsonb->>created_from", "case_type_settings_test")
+    .eq("context_jsonb->>test_mode", "true")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as OperationalCase | null) ?? null;
 }
 
 async function listToolCallsForCase(
@@ -214,7 +202,7 @@ export async function POST(request: Request) {
       ? (caseType.intake_schema_jsonb as OperationalCaseIntakeField[])
       : [];
     const context: Record<string, unknown> = {
-      ...buildTestContext(fields),
+      ...buildTestContext(fields, caseType.case_type),
       title: `${caseType.display_name} - prueba`,
       created_from: "case_type_settings_test",
       test_mode: true,
@@ -226,35 +214,81 @@ export async function POST(request: Request) {
       "Contacto de prueba";
     const telegramChatId = Number(context.telegram_chat_id);
 
-    const opCase = await createOperationalCase(db, {
-      userId: user.id,
-      caseTypeId: caseType.id,
-      caseType: caseType.case_type,
-      status: "active",
-      currentStep: "intake",
-      nextActionAt: null,
-      externalContact: {
-        display_name: externalName,
-        channel: Number.isFinite(telegramChatId) ? "telegram" : undefined,
-        chat_id: Number.isFinite(telegramChatId) ? telegramChatId : undefined,
-      },
-      context,
-    });
+    const existing = await findLatestSettingsTestCase(db, user.id, caseType.id);
+    let opCase: OperationalCase;
+    let reusedExisting = false;
 
-    await insertOperationalCaseEvent(db, {
-      caseId: opCase.id,
-      eventType: "state_changed",
-      actor: "user",
-      payload: {
-        source: "case_type_settings_test",
-        status: opCase.status,
-        current_step: opCase.current_step,
-        test_mode: true,
-      },
-    });
+    if (existing) {
+      reusedExisting = true;
+      const { data, error } = await db
+        .from("operational_cases")
+        .update({
+          context_jsonb: {
+            ...context,
+            controlled_test_status: undefined,
+            controlled_test_last_run_at: undefined,
+            controlled_test_e2e_last_run_at: undefined,
+          },
+          external_contact_jsonb: {
+            ...(existing.external_contact_jsonb ?? {}),
+            display_name: externalName,
+            channel: Number.isFinite(telegramChatId) ? "telegram" : undefined,
+            chat_id: Number.isFinite(telegramChatId)
+              ? telegramChatId
+              : undefined,
+          },
+          status: "active",
+          current_step: "intake",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id)
+        .select()
+        .single();
+      if (error) throw error;
+      opCase = data as OperationalCase;
+      await insertOperationalCaseEvent(db, {
+        caseId: opCase.id,
+        eventType: "human_decision",
+        actor: "user",
+        payload: {
+          source: "case_type_settings_test_regenerate",
+          test_mode: true,
+          note: "Datos sintéticos regenerados en el mismo caso de prueba (sin crear fila nueva).",
+        },
+      });
+    } else {
+      opCase = await createOperationalCase(db, {
+        userId: user.id,
+        caseTypeId: caseType.id,
+        caseType: caseType.case_type,
+        status: "active",
+        currentStep: "intake",
+        nextActionAt: null,
+        externalContact: {
+          display_name: externalName,
+          channel: Number.isFinite(telegramChatId) ? "telegram" : undefined,
+          chat_id: Number.isFinite(telegramChatId) ? telegramChatId : undefined,
+        },
+        context,
+      });
+      await insertOperationalCaseEvent(db, {
+        caseId: opCase.id,
+        eventType: "state_changed",
+        actor: "user",
+        payload: {
+          source: "case_type_settings_test",
+          status: opCase.status,
+          current_step: opCase.current_step,
+          test_mode: true,
+        },
+      });
+    }
 
     const flow = await effectiveFlowForCaseType(db, caseType);
-    return NextResponse.json(await responseForCase(db, opCase, flow));
+    return NextResponse.json({
+      ...(await responseForCase(db, opCase, flow)),
+      reused_existing: reusedExisting,
+    });
   } catch (err) {
     console.error("[POST /api/operational-case-tests] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
@@ -320,9 +354,18 @@ export async function PATCH(request: Request) {
             : value;
       }
     }
+    const extraContextKeys = new Set([
+      "condition",
+      "age_range",
+      "current_status",
+      "address",
+      "currency",
+      "location",
+    ]);
     for (const [key, value] of Object.entries(requestedContext)) {
       if (allowedNames.has(key)) continue;
       if (key === "title") nextContext.title = String(value ?? "").trim();
+      if (extraContextKeys.has(key)) nextContext[key] = value;
     }
     nextContext.title =
       String(nextContext.title ?? "").trim() ||

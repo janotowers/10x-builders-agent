@@ -40,9 +40,16 @@ import {
   markAccountSecretFailure,
   markAccountSecretSuccess,
   resolveEasyBrokerCredentials,
+  resolveEasyBrokerWebCredentials,
+  resolveUnggaCliCredentials,
   resolveUnggaCredentials,
 } from "./realestate-credentials";
-import type { EasyBrokerCredentials } from "./realestate-credentials";
+import type {
+  EasyBrokerCredentials,
+  EasyBrokerWebCredentials,
+  UnggaCliCredentials,
+} from "./realestate-credentials";
+import type { NotifyUserFn } from "./operational-cases-adapters";
 
 const execFileAsync = promisify(execFile);
 
@@ -53,6 +60,8 @@ export interface RealEstateToolDeps {
    * registra el fallo y devuelve `{ ok: false, error }` al modelo.
    */
   sendTelegramMessage?: (chatId: number, text: string) => Promise<void>;
+  /** Notifica al inmobiliario (web/Telegram según preferencias). */
+  notifyUser?: NotifyUserFn;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -358,8 +367,97 @@ export function addRealEstateTools(
     );
   }
 
-  // ── Ungga publish — API interna o fallback CLI/Playwright a borrador ────
+  // ── Ungga publish — prepare_draft (HITL) + publish_draft (post-aprobación) ─
   if (toolEnabled("ungga_publish_listing", ctx)) {
+    const unggaPublishSchema = z
+      .object({
+        action: z
+          .enum(["prepare_draft", "publish_draft"])
+          .default("prepare_draft")
+          .describe(
+            "prepare_draft: llena wizard y guarda borrador (requiere revisión HITL). publish_draft: publica un borrador ya aprobado usando ungga_property_id o draft_url."
+          ),
+        ungga_property_id: z.string().min(1).optional(),
+        draft_url: z.string().url().optional(),
+        title: z.string().min(1).optional(),
+        description: z.string().optional(),
+        operation: z.string().min(1).optional(),
+        property_type: z.string().min(1).optional(),
+        price: z.number().positive().optional(),
+        currency: z.string().optional(),
+        construction_m2: z.number().positive().optional(),
+        land_m2: z.number().positive().optional(),
+        land_unit: z.string().optional(),
+        condition: z.string().optional(),
+        age_range: z.string().optional(),
+        country: z.string().optional(),
+        address: z.string().optional(),
+        location: z.record(z.string(), z.any()).optional(),
+        bedrooms: z.number().nonnegative().optional(),
+        bathrooms_full: z.number().nonnegative().optional(),
+        bathrooms_half: z.number().nonnegative().optional(),
+        parking_spaces: z.number().nonnegative().optional(),
+        covered_parking: z.boolean().optional(),
+        floor: z.string().optional(),
+        location_type: z.string().optional(),
+        current_status: z.string().optional(),
+        amenities: z.array(z.string()).optional(),
+        video_url: z.string().optional(),
+        tour_url: z.string().optional(),
+        operations: z
+          .array(
+            z.object({
+              type: z.enum(["sale", "rent", "rent_temporary", "presale"]),
+              price: z.number().positive(),
+              currency: z.string().optional(),
+            })
+          )
+          .optional(),
+        image_urls: z.array(z.string().url()).optional(),
+        case_id: z.string().min(1).optional(),
+      })
+      .superRefine((data, ctx) => {
+        if (data.action === "publish_draft") {
+          if (!resolveUnggaPropertyId(data)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                "publish_draft requires ungga_property_id or draft_url pointing to /app/propiedades/{GU-ID}",
+              path: ["ungga_property_id"],
+            });
+          }
+          return;
+        }
+        if (!data.title?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "prepare_draft requires title",
+            path: ["title"],
+          });
+        }
+        if (!data.operation?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "prepare_draft requires operation",
+            path: ["operation"],
+          });
+        }
+        if (!data.property_type?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "prepare_draft requires property_type",
+            path: ["property_type"],
+          });
+        }
+        if (data.price == null || !(data.price > 0)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "prepare_draft requires a positive price",
+            path: ["price"],
+          });
+        }
+      });
+
     tools.push(
       tool(
         async (input: Record<string, unknown>) => {
@@ -371,132 +469,20 @@ export function addRealEstateTools(
             true,
             ctx.turnId
           );
-          const creds = await resolveUnggaCredentials(ctx);
-          if (!creds) {
-            const cliResult = await runUnggaCliFallback(input);
-            if (cliResult) {
-              await updateToolCallStatus(
-                ctx.db,
-                record.id,
-                cliResult.ok ? "executed" : "failed",
-                cliResult as unknown as Record<string, unknown>
-              );
-              return JSON.stringify(cliResult);
-            }
-            const out = {
-              status: "not_configured",
-              hint:
-                "La API interna de Ungga no está configurada para esta cuenta y el fallback CLI está desactivado. Conecta Ungga desde Ajustes → Cuentas externas (Base URL + API Token), configura UNGGA_INTERNAL_API_BASE / UNGGA_INTERNAL_API_TOKEN, o habilita el POC con UNGGA_CLI_ENABLED=true y credenciales de staging.",
-            };
-            await updateToolCallStatus(
-              ctx.db,
-              record.id,
-              "executed",
-              out as unknown as Record<string, unknown>
-            );
-            return JSON.stringify(out);
-          }
-          try {
-            const res = await fetch(
-              `${creds.apiBase.replace(/\/$/, "")}/v1/internal/listings`,
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  Authorization: `Bearer ${creds.apiToken}`,
-                },
-                body: JSON.stringify(input),
-              }
-            );
-            const text = await res.text();
-            const data = (() => {
-              try {
-                return JSON.parse(text);
-              } catch {
-                return { raw: text };
-              }
-            })();
-            const out =
-              res.ok
-                ? { ok: true, status_code: res.status, data, credential_source: creds.source }
-                : { ok: false, status_code: res.status, data, credential_source: creds.source };
-            if (creds.source === "account") {
-              if (res.ok) {
-                await markAccountSecretSuccess(
-                  ctx,
-                  ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga
-                );
-              } else {
-                await markAccountSecretFailure(
-                  ctx,
-                  ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga,
-                  `HTTP ${res.status}`
-                );
-              }
-            }
-            await updateToolCallStatus(
-              ctx.db,
-              record.id,
-              res.ok ? "executed" : "failed",
-              out as unknown as Record<string, unknown>
-            );
-            return JSON.stringify(out);
-          } catch (e) {
-            const errMsg = (e as Error).message ?? String(e);
-            if (creds.source === "account") {
-              await markAccountSecretFailure(
-                ctx,
-                ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga,
-                errMsg
-              );
-            }
-            const out = { ok: false, error: errMsg };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
+          const out = await executeUnggaPublishListing(ctx, input, deps);
+          await updateToolCallStatus(
+            ctx.db,
+            record.id,
+            out.ok ? "executed" : "failed",
+            out as unknown as Record<string, unknown>
+          );
+          return JSON.stringify(out);
         },
         {
           name: "ungga_publish_listing",
           description:
-            "Creates a reviewed Ungga listing draft via internal API or CLI/browser automation. Requires HITL and does not press the final Publish button.",
-          schema: z.object({
-            title: z.string().min(1),
-            description: z.string().optional(),
-            operation: z.string().min(1),
-            property_type: z.string().min(1),
-            price: z.number().positive(),
-            currency: z.string().optional(),
-            construction_m2: z.number().positive().optional(),
-            land_m2: z.number().positive().optional(),
-            land_unit: z.string().optional(),
-            condition: z.string().optional(),
-            age_range: z.string().optional(),
-            country: z.string().optional(),
-            address: z.string().optional(),
-            location: z.record(z.string(), z.any()).optional(),
-            bedrooms: z.number().nonnegative().optional(),
-            bathrooms_full: z.number().nonnegative().optional(),
-            bathrooms_half: z.number().nonnegative().optional(),
-            parking_spaces: z.number().nonnegative().optional(),
-            covered_parking: z.boolean().optional(),
-            floor: z.string().optional(),
-            location_type: z.string().optional(),
-            current_status: z.string().optional(),
-            amenities: z.array(z.string()).optional(),
-            video_url: z.string().optional(),
-            tour_url: z.string().optional(),
-            operations: z
-              .array(
-                z.object({
-                  type: z.enum(["sale", "rent", "rent_temporary", "presale"]),
-                  price: z.number().positive(),
-                  currency: z.string().optional(),
-                })
-              )
-              .optional(),
-            image_urls: z.array(z.string().url()).optional(),
-            case_id: z.string().min(1).optional(),
-          }),
+            "Ungga listing in two phases on the same tool: action=prepare_draft creates a draft for human review (HITL); after approval, action=publish_draft publishes that draft using ungga_property_id or draft_url. CLI fallback uses Playwright; internal API when configured.",
+          schema: unggaPublishSchema,
         }
       )
     );
@@ -506,6 +492,226 @@ export function addRealEstateTools(
 // ============================================================
 // Helpers
 // ============================================================
+
+async function executeUnggaPublishListing(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+  deps: RealEstateToolDeps
+): Promise<Record<string, unknown>> {
+  const action =
+    typeof input.action === "string" && input.action.trim()
+      ? input.action.trim()
+      : "prepare_draft";
+
+  const forceCliDryRun = envFlagEnabled("UNGGA_TOOL_TEST_DRY_RUN") === true;
+  const apiCreds = forceCliDryRun ? null : await resolveUnggaCredentials(ctx);
+  if (apiCreds) {
+    try {
+      const apiBase = apiCreds.apiBase.replace(/\/$/, "");
+      const propertyId = resolveUnggaPropertyId(input);
+      const endpoint =
+        action === "publish_draft" && propertyId
+          ? `${apiBase}/v1/internal/listings/${encodeURIComponent(propertyId)}/publish`
+          : `${apiBase}/v1/internal/listings`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiCreds.apiToken}`,
+        },
+        body: JSON.stringify(input),
+      });
+      const text = await res.text();
+      const data = (() => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return { raw: text };
+        }
+      })();
+      const out: Record<string, unknown> = {
+        ok: res.ok,
+        action,
+        phase: action,
+        mode: "api",
+        status: res.ok
+          ? action === "publish_draft"
+            ? "published"
+            : "draft_created"
+          : "failed",
+        status_code: res.status,
+        data,
+        credential_source: apiCreds.source,
+      };
+      if (action === "publish_draft" && propertyId) {
+        out.ungga_property_id = propertyId;
+        out.published_url = buildUnggaPropertyUrl(propertyId);
+      }
+      if (action === "prepare_draft" && res.ok) {
+        out.requires_human_review = true;
+        const draftId =
+          typeof data === "object" &&
+          data &&
+          "ungga_property_id" in data &&
+          typeof (data as { ungga_property_id?: string }).ungga_property_id ===
+            "string"
+            ? (data as { ungga_property_id: string }).ungga_property_id
+            : null;
+        if (draftId) {
+          out.ungga_property_id = draftId;
+          out.draft_url = buildUnggaPropertyUrl(draftId);
+        }
+        out.next_action = {
+          action: "publish_draft",
+          ungga_property_id: out.ungga_property_id ?? null,
+          draft_url: out.draft_url ?? null,
+          hint: "Tras aprobación HITL, invocar ungga_publish_listing con action publish_draft.",
+        };
+      }
+      if (apiCreds.source === "account") {
+        if (res.ok) {
+          await markAccountSecretSuccess(
+            ctx,
+            ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga_api
+          );
+        } else {
+          await markAccountSecretFailure(
+            ctx,
+            ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga_api,
+            `HTTP ${res.status}`
+          );
+        }
+      }
+      await attachUnggaNotification(ctx, deps, input, out);
+      return out;
+    } catch (e) {
+      const errMsg = (e as Error).message ?? String(e);
+      if (apiCreds.source === "account") {
+        await markAccountSecretFailure(
+          ctx,
+          ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga_api,
+          errMsg
+        );
+      }
+      return { ok: false, action, mode: "api", error: errMsg };
+    }
+  }
+
+  const cliCreds = await resolveUnggaCliCredentials(ctx);
+  const cliResult = await runUnggaCliFallback(input, cliCreds);
+  if (cliResult) {
+    if (cliResult.ok && cliCreds?.source === "account") {
+      await markAccountSecretSuccess(
+        ctx,
+        ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga_cli
+      );
+    } else if (!cliResult.ok && cliCreds?.source === "account") {
+      const err =
+        typeof cliResult.error === "string"
+          ? cliResult.error
+          : "CLI fallback failed";
+      await markAccountSecretFailure(
+        ctx,
+        ACCOUNT_TOOL_PROVIDERS_REALESTATE.ungga_cli,
+        err
+      );
+    }
+    await attachUnggaNotification(ctx, deps, input, cliResult);
+    return cliResult;
+  }
+
+  return {
+    ok: false,
+    status: "not_configured",
+    action,
+    hint:
+      "Conecta Ungga en Ajustes → Cuentas externas (automatización web con correo/contraseña) o configura la API interna. En desarrollo también sirve pocs/ungga-cli/.env.",
+  };
+}
+
+function buildUnggaPropertyUrl(propertyId: string) {
+  return `https://ungga.com/app/propiedades/${propertyId}`;
+}
+
+async function attachUnggaNotification(
+  ctx: ToolContext,
+  deps: RealEstateToolDeps,
+  input: Record<string, unknown>,
+  out: Record<string, unknown>
+) {
+  if (!deps.notifyUser || out.ok !== true) return;
+  const action =
+    typeof input.action === "string" && input.action.trim()
+      ? input.action.trim()
+      : "prepare_draft";
+  const caseId =
+    typeof input.case_id === "string" && input.case_id.trim()
+      ? input.case_id.trim()
+      : undefined;
+
+  let text: string | null = null;
+  if (action === "prepare_draft") {
+    const draftUrl =
+      typeof out.draft_url === "string" ? out.draft_url.trim() : "";
+    if (draftUrl) {
+      text = `Gu preparó el borrador en Ungga. Revisa la ficha y aprueba la publicación cuando esté listo:\n${draftUrl}`;
+    }
+  } else if (action === "publish_draft") {
+    const publishedUrl =
+      typeof out.published_url === "string" ? out.published_url.trim() : "";
+    if (publishedUrl) {
+      text = `La ficha ya está publicada en Ungga:\n${publishedUrl}`;
+    }
+  }
+  if (!text) return;
+
+  try {
+    const result = await deps.notifyUser(
+      ctx.db,
+      ctx.userId,
+      {
+        text,
+        kind: action === "publish_draft" ? "ungga_published" : "ungga_draft_ready",
+        data: {
+          ...(caseId ? { case_id: caseId } : {}),
+          action,
+          draft_url: out.draft_url,
+          published_url: out.published_url,
+          ungga_property_id: out.ungga_property_id,
+        },
+      },
+      action === "publish_draft" ? "normal" : "high"
+    );
+    out.notification = {
+      sent: result.delivered.length > 0,
+      attempted: result.attempted,
+      delivered: result.delivered,
+    };
+  } catch (e) {
+    out.notification = {
+      sent: false,
+      error: (e as Error).message ?? String(e),
+    };
+  }
+}
+
+function resolveUnggaPropertyId(input: {
+  ungga_property_id?: string;
+  draft_url?: string;
+}): string | null {
+  const id =
+    typeof input.ungga_property_id === "string"
+      ? input.ungga_property_id.trim()
+      : "";
+  if (id) return id;
+  const url = typeof input.draft_url === "string" ? input.draft_url.trim() : "";
+  if (!url) return null;
+  const m = url.match(/\/propiedades\/([^/?#]+)/i);
+  if (!m?.[1]) return null;
+  const segment = m[1];
+  if (segment === "nueva" || segment === "new") return null;
+  return segment;
+}
 
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -683,6 +889,9 @@ type EasyBrokerSearchInput = {
   max_price?: number;
   min_area_m2?: number;
   max_area_m2?: number;
+  bedrooms?: number;
+  bathrooms?: number;
+  parking_spaces?: number;
   date_from?: string;
   date_to?: string;
   page?: number;
@@ -714,6 +923,24 @@ type EasyBrokerRawProperty = {
 };
 
 async function searchEasyBrokerProperties(
+  ctx: ToolContext,
+  toolId: "easybroker_search_listings" | "easybroker_search_closed_deals",
+  input: EasyBrokerSearchInput,
+  creds: EasyBrokerWebCredentials
+): Promise<Record<string, unknown>> {
+  const cliResult = await runEasyBrokerMlsCliFallback(input, toolId, creds);
+  if (cliResult) return cliResult;
+  return {
+    ok: false,
+    status: "not_configured",
+    source: "easybroker_mls",
+    tool: toolId,
+    hint:
+      "EasyBroker MLS requiere credenciales web (easybroker_web) y el POC Playwright disponible en pocs/easybroker-mls-cli.",
+  };
+}
+
+async function searchEasyBrokerPropertiesApi(
   ctx: ToolContext,
   toolId: "easybroker_search_listings" | "easybroker_search_closed_deals",
   input: EasyBrokerSearchInput,
@@ -759,6 +986,143 @@ async function searchEasyBrokerProperties(
     caveat: isHistoricalReference
       ? "Estas propiedades están marcadas como sold/rented en EasyBroker. El precio puede ser el publicado o capturado en la propiedad; no se garantiza que sea el precio final real de cierre."
       : "Estas son propiedades activas/publicadas similares para referencia de mercado actual.",
+  };
+}
+
+async function runEasyBrokerMlsCliFallback(
+  input: EasyBrokerSearchInput,
+  toolId: "easybroker_search_listings" | "easybroker_search_closed_deals",
+  creds: EasyBrokerWebCredentials
+): Promise<Record<string, unknown> | null> {
+  const pocDir = await resolveEasyBrokerMlsCliDir();
+  if (!(await fileExists(path.join(pocDir, "src", "search-mls.mjs")))) {
+    return null;
+  }
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "easybroker-mls-"));
+  const inputPath = path.join(tempDir, "query.json");
+  const cliInput = {
+    ...input,
+    tool_id: toolId,
+    mode:
+      toolId === "easybroker_search_closed_deals"
+        ? "closed_deals"
+        : "listings",
+    mls_url: creds.loginUrl,
+  };
+  await writeFile(inputPath, JSON.stringify(cliInput), "utf8");
+
+  try {
+    const timeout = Number(process.env.EASYBROKER_MLS_TIMEOUT_MS ?? "120000");
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      ["src/search-mls.mjs", inputPath],
+      {
+        cwd: pocDir,
+        timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 120_000,
+        maxBuffer: 4 * 1024 * 1024,
+        env: {
+          ...process.env,
+          EASYBROKER_WEB_URL: creds.loginUrl,
+          EASYBROKER_WEB_EMAIL: creds.email,
+          EASYBROKER_WEB_PASSWORD: creds.password,
+          EASYBROKER_MLS_HEADLESS: process.env.EASYBROKER_MLS_HEADLESS ?? "false",
+        },
+      }
+    );
+    const parsed = parseCliJson(stdout);
+    return buildEasyBrokerMlsToolResponse(toolId, input, parsed, stderr, creds.source);
+  } catch (err) {
+    const error = err as {
+      message?: string;
+      stdout?: string;
+      stderr?: string;
+      code?: number | string;
+    };
+    const parsed = error.stdout ? parseCliJson(error.stdout) : null;
+    return {
+      ok: false,
+      status: "failed",
+      source: "easybroker_mls",
+      mode: "web_mls",
+      tool: toolId,
+      exit_code: error.code,
+      error: error.message ?? String(err),
+      ...(parsed ? { cli_result: parsed } : {}),
+      ...(error.stderr?.trim()
+        ? { stderr: error.stderr.trim().slice(0, 2000) }
+        : {}),
+    };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function resolveEasyBrokerMlsCliDir() {
+  const configured = process.env.EASYBROKER_MLS_CLI_DIR?.trim();
+  if (configured) return configured;
+  const cwd = process.cwd();
+  const candidates = [
+    path.resolve(cwd, "pocs", "easybroker-mls-cli"),
+    path.resolve(cwd, "..", "pocs", "easybroker-mls-cli"),
+    path.resolve(cwd, "..", "..", "pocs", "easybroker-mls-cli"),
+  ];
+  for (const candidate of candidates) {
+    if (await fileExists(path.join(candidate, "src", "search-mls.mjs"))) {
+      return candidate;
+    }
+  }
+  return candidates[0];
+}
+
+function buildEasyBrokerMlsToolResponse(
+  toolId: "easybroker_search_listings" | "easybroker_search_closed_deals",
+  input: EasyBrokerSearchInput,
+  parsed: Record<string, unknown>,
+  stderr: string,
+  credentialSource: "account" | "env"
+): Record<string, unknown> {
+  const isHistoricalReference = toolId === "easybroker_search_closed_deals";
+  const cliResult =
+    parsed.result && typeof parsed.result === "object"
+      ? (parsed.result as Record<string, unknown>)
+      : {};
+  const rawResults = Array.isArray(cliResult.results) ? cliResult.results : [];
+  const normalized = rawResults.filter((item) =>
+    easyBrokerPropertyMatchesInput(item as ReturnType<typeof normalizeEasyBrokerProperty>, input)
+  );
+  const filteredCliResult = {
+    ...parsed,
+    result: {
+      ...cliResult,
+      raw_count: rawResults.length,
+      count: normalized.length,
+      results: normalized,
+    },
+  };
+  return {
+    ok: parsed.ok === true,
+    status: parsed.ok === true ? "success" : "failed",
+    source: "easybroker_mls",
+    mode: "web_mls",
+    tool: toolId,
+    credential_source: credentialSource,
+    query: {
+      ...input,
+      backend:
+        "EasyBroker MLS web (/agent/mls_properties). Se aplican filtros en UI cuando existen y se normaliza/filtra de nuevo en Gu OS.",
+      historical_status_filter:
+        isHistoricalReference
+          ? "Intento de buscar cerradas/rentadas históricas en MLS; depende de que la UI exponga esos estados."
+          : null,
+    },
+    count: normalized.length,
+    results: normalized,
+    caveat: isHistoricalReference
+      ? "La búsqueda intenta usar propiedades vendidas/rentadas/cerradas en EasyBroker MLS cuando la UI lo permite. El precio visible puede ser precio publicado o capturado, no necesariamente precio final real de cierre."
+      : "Resultados provenientes de EasyBroker MLS/bolsa inmobiliaria, filtrados por características del caso.",
+    cli_result: filteredCliResult,
+    ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
   };
 }
 
@@ -903,12 +1267,12 @@ function makeEasyBrokerSearchTool(
         false,
         ctx.turnId
       );
-      const creds = await resolveEasyBrokerCredentials(ctx);
+      const creds = await resolveEasyBrokerWebCredentials(ctx);
       if (!creds) {
         const out = {
           status: "not_configured",
           hint:
-            "EasyBroker no está conectado para esta cuenta. Conéctalo desde Ajustes → Cuentas externas o desde la pantalla de Casos de uso.",
+            "EasyBroker MLS no está conectado para esta cuenta. Conecta EasyBroker MLS (automatización web) con email/password para buscar en la bolsa inmobiliaria.",
         };
         await updateToolCallStatus(
           ctx.db,
@@ -922,7 +1286,7 @@ function makeEasyBrokerSearchTool(
         const out = await searchEasyBrokerProperties(ctx, toolId, input, creds);
         await markAccountSecretSuccess(
           ctx,
-          ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker
+          ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker_web
         );
         await updateToolCallStatus(ctx.db, record.id, "executed", out);
         return JSON.stringify(out);
@@ -931,7 +1295,7 @@ function makeEasyBrokerSearchTool(
         if (creds.source === "account") {
           await markAccountSecretFailure(
             ctx,
-            ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker,
+            ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker_web,
             errorMessage
           );
         }
@@ -960,6 +1324,9 @@ function makeEasyBrokerSearchTool(
         max_price: z.number().nonnegative().optional(),
         min_area_m2: z.number().nonnegative().optional(),
         max_area_m2: z.number().nonnegative().optional(),
+        bedrooms: z.number().nonnegative().optional(),
+        bathrooms: z.number().nonnegative().optional(),
+        parking_spaces: z.number().nonnegative().optional(),
         date_from: z.string().optional(),
         date_to: z.string().optional(),
         page: z.number().int().positive().optional(),
@@ -1104,24 +1471,44 @@ async function resolveUnggaCliDir() {
 }
 
 async function runUnggaCliFallback(
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  cliCreds: UnggaCliCredentials | null
 ): Promise<Record<string, unknown> | null> {
   const pocDir = await resolveUnggaCliDir();
-  if (!(await cliEnabled(pocDir))) return null;
-  const required = [
-    "UNGGA_STAGING_URL",
-    "UNGGA_STAGING_EMAIL",
-    "UNGGA_STAGING_PASSWORD",
-  ];
-  const missing = required.filter((name) => !process.env[name]?.trim());
   const pocEnvAvailable = await fileExists(path.join(pocDir, ".env"));
-  if (missing.length > 0 && !pocEnvAvailable) {
-    return {
-      ok: false,
-      status: "not_configured",
-      mode: "cli",
-      error: `Missing env for Ungga CLI fallback: ${missing.join(", ")}. Provide them in the runtime env or in ${path.join(pocDir, ".env")}.`,
-    };
+  const hasAccountCli = Boolean(cliCreds?.email && cliCreds.password);
+  const cliAllowed =
+    hasAccountCli ||
+    (await cliEnabled(pocDir)) ||
+    (process.env.NODE_ENV !== "production" && pocEnvAvailable);
+  if (!cliAllowed) return null;
+
+  if (!hasAccountCli) {
+    const required = [
+      "UNGGA_STAGING_URL",
+      "UNGGA_STAGING_EMAIL",
+      "UNGGA_STAGING_PASSWORD",
+    ];
+    const missing = required.filter((name) => !process.env[name]?.trim());
+    if (missing.length > 0 && !pocEnvAvailable) {
+      return {
+        ok: false,
+        status: "not_configured",
+        mode: "cli",
+        error: `Missing env for Ungga CLI fallback: ${missing.join(", ")}. Connect Ungga (automatización web) per-account or provide ${path.join(pocDir, ".env")}.`,
+      };
+    }
+  }
+
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  if (cliCreds) {
+    childEnv.UNGGA_STAGING_URL = cliCreds.loginUrl;
+    childEnv.UNGGA_STAGING_EMAIL = cliCreds.email;
+    childEnv.UNGGA_STAGING_PASSWORD = cliCreds.password;
+    childEnv.UNGGA_CLI_ENABLED = "true";
+  }
+  if (envFlagEnabled("UNGGA_TOOL_TEST_DRY_RUN")) {
+    childEnv.UNGGA_CLI_DRY_RUN = "true";
   }
 
   const tempDir = await mkdtemp(path.join(tmpdir(), "ungga-cli-"));
@@ -1137,28 +1524,11 @@ async function runUnggaCliFallback(
         cwd: pocDir,
         timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 120_000,
         maxBuffer: 4 * 1024 * 1024,
-        env: process.env,
+        env: childEnv,
       }
     );
     const parsed = parseCliJson(stdout);
-    const cliMode = typeof parsed.mode === "string" ? parsed.mode : "unknown";
-    const ok = parsed.ok === true;
-    return {
-      ok,
-      status: ok
-        ? cliMode === "dry_run"
-          ? "dry_run_ready"
-          : "draft_created"
-        : "failed",
-      mode: "cli",
-      cli_mode: cliMode,
-      cli_dry_run: cliMode === "dry_run",
-      requires_human_review: true,
-      publish_policy:
-        "CLI fallback fills the Ungga wizard and saves a draft at most; it never presses the final Publish button.",
-      cli_result: parsed,
-      ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
-    };
+    return buildUnggaCliToolResponse(input, parsed, stderr, cliCreds?.source);
   } catch (err) {
     const error = err as {
       message?: string;
@@ -1181,6 +1551,126 @@ async function runUnggaCliFallback(
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+function buildUnggaCliToolResponse(
+  input: Record<string, unknown>,
+  parsed: Record<string, unknown>,
+  stderr: string,
+  credentialSource?: "account" | "env"
+): Record<string, unknown> {
+  const action =
+    typeof input.action === "string" && input.action.trim()
+      ? input.action.trim()
+      : "prepare_draft";
+  const cliMode = typeof parsed.mode === "string" ? parsed.mode : "unknown";
+  const ok = parsed.ok === true;
+  const links = extractDraftLinks(parsed);
+  const propertyId =
+    (typeof links.ungga_property_id === "string" ? links.ungga_property_id : null) ??
+    resolveUnggaPropertyId({
+      ungga_property_id:
+        typeof input.ungga_property_id === "string"
+          ? input.ungga_property_id
+          : undefined,
+      draft_url:
+        (typeof links.draft_url === "string" ? links.draft_url : undefined) ??
+        (typeof input.draft_url === "string" ? input.draft_url : undefined),
+    });
+
+  if (action === "publish_draft") {
+    const publishedUrl =
+      typeof links.published_url === "string"
+        ? links.published_url
+        : propertyId
+          ? buildUnggaPropertyUrl(propertyId)
+          : null;
+    return {
+      ok,
+      action,
+      phase: "publish_draft",
+      status: ok
+        ? cliMode === "publish_dry_run"
+          ? "publish_preview"
+          : "published"
+        : "failed",
+      mode: "cli",
+      cli_mode: cliMode,
+      credential_source: credentialSource ?? null,
+      requires_human_review: false,
+      publish_policy:
+        "publish_draft runs after human approval; it presses Publicar on the existing Ungga draft.",
+      ...(publishedUrl ? { published_url: publishedUrl } : {}),
+      ...(propertyId ? { ungga_property_id: propertyId } : {}),
+      ...links,
+      cli_result: parsed,
+      ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
+    };
+  }
+
+  const draftReady = ok && cliMode === "save_draft" && Boolean(propertyId);
+  return {
+    ok,
+    action,
+    phase: "prepare_draft",
+    status: ok
+      ? cliMode === "dry_run"
+        ? "dry_run_ready"
+        : "draft_created"
+      : "failed",
+    mode: "cli",
+    cli_mode: cliMode,
+    cli_dry_run: cliMode === "dry_run",
+    credential_source: credentialSource ?? null,
+    requires_human_review: draftReady,
+    publish_policy:
+      cliMode === "dry_run"
+        ? "Dry-run fills the wizard only; no draft is saved."
+        : "prepare_draft saves a Ungga draft for human review; final publish uses action publish_draft after HITL approval.",
+    ...links,
+    ...(draftReady
+      ? {
+          next_action: {
+            action: "publish_draft",
+            ungga_property_id: propertyId,
+            draft_url: links.draft_url,
+            hint: "Gu preparó el borrador en Ungga. Tras aprobación HITL, invocar ungga_publish_listing con action publish_draft.",
+          },
+        }
+      : {}),
+    cli_result: parsed,
+    ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
+  };
+}
+
+function extractDraftLinks(parsed: Record<string, unknown>): Record<string, unknown> {
+  const result =
+    parsed && typeof parsed === "object" && parsed.result && typeof parsed.result === "object"
+      ? (parsed.result as Record<string, unknown>)
+      : null;
+  if (!result) return {};
+  const out: Record<string, unknown> = {};
+  if (typeof result.draft_url === "string" && result.draft_url.trim()) {
+    out.draft_url = result.draft_url.trim();
+  }
+  if (typeof result.published_url === "string" && result.published_url.trim()) {
+    out.published_url = result.published_url.trim();
+  }
+  if (typeof result.properties_url === "string" && result.properties_url.trim()) {
+    out.properties_url = result.properties_url.trim();
+  }
+  const propId =
+    (typeof result.ungga_property_id === "string" && result.ungga_property_id.trim()) ||
+    (typeof result.ungga_listing_id === "string" && result.ungga_listing_id.trim()) ||
+    (typeof result.property_id === "string" && result.property_id.trim()) ||
+    null;
+  if (propId) {
+    out.ungga_property_id = propId;
+  }
+  if (result.draft_lookup && typeof result.draft_lookup === "object") {
+    out.draft_lookup = result.draft_lookup;
+  }
+  return out;
 }
 
 function parseCliJson(stdout: string): Record<string, unknown> {

@@ -20,7 +20,11 @@ import { getAccountToolSecretForRuntime } from "@agents/db";
 import type { ToolContext } from "./tool-context";
 
 const EASYBROKER_PROVIDER = "easybroker";
+const EASYBROKER_WEB_PROVIDER = "easybroker_web";
 const UNGGA_API_PROVIDER = "ungga_api";
+const UNGGA_CLI_PROVIDER = "ungga_cli";
+const EASYBROKER_WEB_LOGIN_URL =
+  "https://www.easybroker.com/mx/account/authentication/new";
 
 export interface EasyBrokerCredentials {
   apiKey: string;
@@ -28,9 +32,23 @@ export interface EasyBrokerCredentials {
   source: "account" | "env";
 }
 
+export interface EasyBrokerWebCredentials {
+  loginUrl: string;
+  email: string;
+  password: string;
+  source: "account" | "env";
+}
+
 export interface UnggaCredentials {
   apiBase: string;
   apiToken: string;
+  source: "account" | "env";
+}
+
+export interface UnggaCliCredentials {
+  loginUrl: string;
+  email: string;
+  password: string;
   source: "account" | "env";
 }
 
@@ -59,6 +77,47 @@ export async function resolveEasyBrokerCredentials(
 
   const envKey = process.env.EASYBROKER_API_KEY?.trim();
   if (envKey) return { apiKey: envKey, source: "env" };
+  return null;
+}
+
+/**
+ * Credenciales de login web para buscar en EasyBroker MLS/bolsa inmobiliaria.
+ * Se mantienen separadas de la API key porque la API sirve para inventario
+ * propio/write, mientras MLS requiere sesión web.
+ */
+export async function resolveEasyBrokerWebCredentials(
+  ctx: ToolContext
+): Promise<EasyBrokerWebCredentials | null> {
+  try {
+    const accountSecret = await getAccountToolSecretForRuntime<{
+      email?: string;
+      password?: string;
+    }>(ctx.db, { userId: ctx.userId, provider: EASYBROKER_WEB_PROVIDER });
+    const email = accountSecret?.secret?.email?.trim();
+    const password = accountSecret?.secret?.password?.trim();
+    if (email && password) {
+      return {
+        loginUrl: EASYBROKER_WEB_LOGIN_URL,
+        email,
+        password,
+        source: "account",
+      };
+    }
+  } catch (err) {
+    console.warn(
+      "[realestate-credentials] EasyBroker web per-account lookup failed:",
+      err
+    );
+  }
+
+  const loginUrl =
+    process.env.EASYBROKER_WEB_URL?.trim() ||
+    EASYBROKER_WEB_LOGIN_URL;
+  const email = process.env.EASYBROKER_WEB_EMAIL?.trim();
+  const password = process.env.EASYBROKER_WEB_PASSWORD?.trim();
+  if (email && password) {
+    return { loginUrl, email, password, source: "env" };
+  }
   return null;
 }
 
@@ -96,6 +155,44 @@ export async function resolveUnggaCredentials(
   const envToken = process.env.UNGGA_INTERNAL_API_TOKEN?.trim();
   if (envBase && envToken) {
     return { apiBase: envBase, apiToken: envToken, source: "env" };
+  }
+  return null;
+}
+
+/**
+ * Credenciales de login web para el fallback Playwright (ungga_cli).
+ * Resuelve per-account → env (UNGGA_STAGING_*).
+ */
+export async function resolveUnggaCliCredentials(
+  ctx: ToolContext
+): Promise<UnggaCliCredentials | null> {
+  try {
+    const accountSecret = await getAccountToolSecretForRuntime<{
+      email?: string;
+      password?: string;
+    }>(ctx.db, { userId: ctx.userId, provider: UNGGA_CLI_PROVIDER });
+    const loginUrl =
+      typeof accountSecret?.config?.login_url === "string" &&
+      accountSecret.config.login_url.trim()
+        ? accountSecret.config.login_url.trim()
+        : "https://ungga.com/login";
+    const email = accountSecret?.secret?.email?.trim();
+    const password = accountSecret?.secret?.password?.trim();
+    if (email && password) {
+      return { loginUrl, email, password, source: "account" };
+    }
+  } catch (err) {
+    console.warn(
+      "[realestate-credentials] Ungga CLI per-account lookup failed:",
+      err
+    );
+  }
+
+  const loginUrl = process.env.UNGGA_STAGING_URL?.trim();
+  const email = process.env.UNGGA_STAGING_EMAIL?.trim();
+  const password = process.env.UNGGA_STAGING_PASSWORD?.trim();
+  if (loginUrl && email && password) {
+    return { loginUrl, email, password, source: "env" };
   }
   return null;
 }
@@ -169,5 +266,9 @@ export async function markAccountSecretFailure(
 
 export const ACCOUNT_TOOL_PROVIDERS_REALESTATE = {
   easybroker: EASYBROKER_PROVIDER,
+  easybroker_web: EASYBROKER_WEB_PROVIDER,
+  ungga_api: UNGGA_API_PROVIDER,
+  ungga_cli: UNGGA_CLI_PROVIDER,
+  /** @deprecated alias */
   ungga: UNGGA_API_PROVIDER,
 } as const;

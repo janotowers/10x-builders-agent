@@ -57,7 +57,7 @@ export const ACCOUNT_TOOL_PROVIDERS: AccountToolProviderSpec[] = [
     id: "easybroker",
     displayName: "EasyBroker",
     description:
-      "Consultar propiedades, leads y mensajes del CRM EasyBroker de tu cuenta.",
+      "API de EasyBroker para crear fichas, subir imágenes y otras operaciones sobre tu inventario.",
     credentialsHelpUrl: "https://dev.easybroker.com/docs/autenticaci%C3%B3n",
     configFields: [
       {
@@ -80,10 +80,36 @@ export const ACCOUNT_TOOL_PROVIDERS: AccountToolProviderSpec[] = [
       },
     ],
     appliesToTools: [
-      "easybroker_search_listings",
-      "easybroker_search_closed_deals",
       "easybroker_create_listing",
       "easybroker_upload_images",
+    ],
+  },
+  {
+    id: "easybroker_web",
+    displayName: "EasyBroker MLS (automatización web)",
+    description:
+      "Inicio de sesión web para buscar en la bolsa inmobiliaria/MLS de EasyBroker vía automatización del navegador.",
+    credentialsHelpUrl: "https://www.easybroker.com/mx/account/authentication/new",
+    configFields: [],
+    secretFields: [
+      {
+        name: "email",
+        label: "Correo de EasyBroker",
+        type: "text",
+        required: true,
+        placeholder: "usuario@agencia.com",
+      },
+      {
+        name: "password",
+        label: "Contraseña",
+        type: "password",
+        required: true,
+        placeholder: "••••••••",
+      },
+    ],
+    appliesToTools: [
+      "easybroker_search_listings",
+      "easybroker_search_closed_deals",
     ],
   },
   {
@@ -107,6 +133,40 @@ export const ACCOUNT_TOOL_PROVIDERS: AccountToolProviderSpec[] = [
         type: "password",
         required: true,
         placeholder: "ungga_pat_...",
+      },
+    ],
+    appliesToTools: [],
+  },
+  {
+    id: "ungga_cli",
+    displayName: "Ungga (automatización web)",
+    description:
+      "Inicio de sesión en ungga.com para crear borradores y publicar fichas vía automatización del navegador (Playwright). Es la vía habitual mientras no haya API interna.",
+    credentialsHelpUrl: "https://ungga.com/login",
+    configFields: [
+      {
+        name: "login_url",
+        label: "URL de inicio de sesión",
+        type: "url",
+        required: true,
+        placeholder: "https://ungga.com/login",
+        help: "Pantalla donde el usuario inicia sesión en Ungga.",
+      },
+    ],
+    secretFields: [
+      {
+        name: "email",
+        label: "Correo de Ungga",
+        type: "text",
+        required: true,
+        placeholder: "usuario@agencia.com",
+      },
+      {
+        name: "password",
+        label: "Contraseña",
+        type: "password",
+        required: true,
+        placeholder: "••••••••",
       },
     ],
     appliesToTools: ["ungga_publish_listing"],

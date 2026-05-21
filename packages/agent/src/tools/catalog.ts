@@ -652,7 +652,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     description:
       "Searches active/published EasyBroker listings (read-only) using property type/status server filters and normalized zona/operation/price/area filters. Use for current market comparables and published inventory.",
     risk: "low",
-    requires_integration: "easybroker",
+    requires_integration: "easybroker_web",
     parameters_schema: {
       type: "object",
       properties: {
@@ -688,7 +688,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     description:
       "Read-only search over EasyBroker properties marked sold/rented. Use as historical reference for comparables, but do not assume the exposed price is the final closing price unless the account captures it that way.",
     risk: "low",
-    requires_integration: "easybroker",
+    requires_integration: "easybroker_web",
     parameters_schema: {
       type: "object",
       properties: {
@@ -856,12 +856,20 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "ungga_publish_listing",
     name: "ungga_publish_listing",
     description:
-      "Creates a property draft in Ungga via the internal API (preferred) or Playwright CLI/browser automation (fallback). WRITE: requires HITL. The CLI fallback saves a draft for human review and never presses the final Publish button.",
+      "Ungga listing in two phases: action=prepare_draft creates a draft for human review (HITL); after approval, action=publish_draft publishes using ungga_property_id or draft_url. Internal API preferred; Playwright CLI fallback in dev.",
     risk: "high",
     requires_integration: "ungga",
     parameters_schema: {
       type: "object",
       properties: {
+        action: {
+          type: "string",
+          enum: ["prepare_draft", "publish_draft"],
+          description:
+            "prepare_draft: wizard + save draft. publish_draft: publish an approved draft by GU-ID.",
+        },
+        ungga_property_id: { type: "string" },
+        draft_url: { type: "string" },
         title: { type: "string" },
         description: { type: "string" },
         operation: { type: "string" },
@@ -905,7 +913,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         image_urls: { type: "array", items: { type: "string" } },
         case_id: { type: "string" },
       },
-      required: ["title", "operation", "property_type", "price"],
+      required: [],
     },
   },
   {

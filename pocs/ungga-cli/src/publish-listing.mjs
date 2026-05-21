@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import {
   loginToUngga,
   publishListingDraft,
+  publishExistingDraft,
   closeSession,
 } from "./steps.mjs";
 
@@ -33,6 +34,19 @@ function requireEnv(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing env ${name}`);
   return value;
+}
+
+function resolvePropertyId(input) {
+  const id =
+    typeof input.ungga_property_id === "string" ? input.ungga_property_id.trim() : "";
+  if (id) return id;
+  const url = typeof input.draft_url === "string" ? input.draft_url.trim() : "";
+  if (!url) return null;
+  const m = url.match(/\/propiedades\/([^/?#]+)/i);
+  if (!m?.[1]) return null;
+  const segment = m[1];
+  if (segment === "nueva" || segment === "new") return null;
+  return segment;
 }
 
 function normalizeListing(input) {
@@ -165,22 +179,44 @@ const metrics = [];
 let session;
 
 try {
-  const listing = normalizeListing(await readJsonInput());
+  const rawInput = await readJsonInput();
+  const action =
+    typeof rawInput.action === "string" && rawInput.action.trim()
+      ? rawInput.action.trim()
+      : "prepare_draft";
   const dryRun = envFlag("UNGGA_CLI_DRY_RUN", true);
   const baseUrl = requireEnv("UNGGA_STAGING_URL");
   const email = requireEnv("UNGGA_STAGING_EMAIL");
   const password = requireEnv("UNGGA_STAGING_PASSWORD");
   session = await loginToUngga({ baseUrl, email, password }, metrics);
-  const result = await publishListingDraft(
-    session.page,
-    { listing, dryRun },
-    metrics
-  );
+
+  let result;
+  let mode;
+  if (action === "publish_draft") {
+    const propertyId = resolvePropertyId(rawInput);
+    if (!propertyId) {
+      throw new Error(
+        "publish_draft requires ungga_property_id or draft_url with /app/propiedades/{GU-ID}"
+      );
+    }
+    result = await publishExistingDraft(
+      session.page,
+      { propertyId, dryRun },
+      metrics
+    );
+    mode = dryRun ? "publish_dry_run" : "publish_draft";
+  } else {
+    const listing = normalizeListing(rawInput);
+    result = await publishListingDraft(session.page, { listing, dryRun }, metrics);
+    mode = dryRun ? "dry_run" : "save_draft";
+  }
+
   console.log(
     JSON.stringify(
       {
-        ok: true,
-        mode: dryRun ? "dry_run" : "save_draft",
+        ok: result?.ok !== false,
+        action,
+        mode,
         duration_ms: Date.now() - startedAt,
         result,
         metrics,

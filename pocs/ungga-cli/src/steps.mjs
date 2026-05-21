@@ -113,12 +113,15 @@ export async function publishListingDraft(page, opts, metrics = []) {
     }
     await advanceWizard(page, "GENERAL", metrics);
 
+    await clickWizardTab(page, "DETALLES");
     stages.push({ tab: "DETALLES", filled: await fillDetailsTab(page, listing) });
     await advanceWizard(page, "DETALLES", metrics);
 
+    await clickWizardTab(page, "MEDIA");
     stages.push({ tab: "MEDIA", filled: await fillMediaTab(page, listing) });
     await advanceWizard(page, "MEDIA", metrics);
 
+    await clickWizardTab(page, "OPERACIÓN");
     stages.push({ tab: "OPERACIÓN", filled: await fillOperationTab(page, listing) });
 
     await maybeCapture(
@@ -128,8 +131,12 @@ export async function publishListingDraft(page, opts, metrics = []) {
     );
 
     let saveOutcome = null;
+    let draftLinks = null;
     if (!dryRun) {
       saveOutcome = await saveAsDraft(page, metrics);
+      if (saveOutcome?.ok) {
+        draftLinks = await resolveDraftLinks(page, listing, metrics);
+      }
     }
 
     const url = page.url();
@@ -137,13 +144,161 @@ export async function publishListingDraft(page, opts, metrics = []) {
     return {
       dry_run: dryRun,
       url,
-      ungga_listing_id: extractIdFromUrl(url),
+      ungga_listing_id:
+        draftLinks?.ungga_property_id ?? extractIdFromUrl(url),
       stages,
       save_outcome: saveOutcome,
+      draft_url: draftLinks?.draft_url ?? null,
+      properties_url: draftLinks?.properties_url ?? null,
+      draft_lookup: draftLinks?.lookup ?? null,
     };
   } catch (e) {
     push("publish_listing", false, Date.now() - t0, e?.message ?? String(e));
     await maybeCapture(page, "publish-failed", metrics);
+    throw e;
+  }
+}
+
+/**
+ * Publica un borrador existente navegando a /app/propiedades/{GU-ID}.
+ * En dryRun sólo verifica que el botón Publicar esté disponible.
+ */
+export async function publishExistingDraft(page, opts, metrics = []) {
+  const push = (step, ok, duration_ms, error) => {
+    metrics.push({ step, ok, duration_ms, ...(error ? { error } : {}) });
+  };
+  const dryRun = opts.dryRun !== false;
+  const propertyId = String(opts.propertyId ?? "").trim();
+  if (!propertyId) {
+    throw new Error("publishExistingDraft requires propertyId");
+  }
+  const t0 = Date.now();
+  const origin = new URL(page.url()).origin;
+  const targetUrl = `${origin}/app/propiedades/${propertyId}`;
+  try {
+    await page.goto(targetUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+    });
+    await page.waitForTimeout(800);
+    await dismissStrayModals(page);
+
+    const editBtn = await firstVisible([
+      page.getByRole("button", { name: /^editar$/i }),
+      page.getByRole("link", { name: /^editar$/i }),
+      page.locator("button:has-text('EDITAR'), a:has-text('EDITAR')"),
+    ]);
+    if (editBtn) {
+      try {
+        await editBtn.click({ timeout: 5_000 });
+        await page.waitForTimeout(1200);
+      } catch {}
+    }
+
+    await maybeCapture(
+      page,
+      dryRun ? "publish-draft-preview" : "publish-draft-before",
+      metrics
+    );
+
+    const publishStep = await firstVisible([
+      page.getByRole("tab", { name: /^publicar$/i }),
+      page.locator('[role="tab"]:has-text("PUBLICAR")'),
+      page.locator("button:has-text('PUBLICAR')").filter({ hasText: /^PUBLICAR$/i }),
+      page.getByText(/^PUBLICAR$/i),
+    ]);
+    if (publishStep) {
+      try {
+        await publishStep.click({ timeout: 5_000 });
+        await page.waitForTimeout(800);
+      } catch {}
+    } else {
+      for (let i = 0; i < 4; i += 1) {
+        const cont = await firstVisible([
+          page.getByRole("button", { name: /^continuar/i }),
+          page.locator('button:has-text("Continuar")'),
+        ]);
+        if (!cont) break;
+        try {
+          await cont.click({ timeout: 5_000 });
+          await page.waitForTimeout(800);
+        } catch {
+          break;
+        }
+      }
+    }
+
+    const publishBtn = await firstVisible([
+      page.getByRole("button", { name: /^publicar$/i }),
+      page.getByRole("button", { name: /publicar propiedad|publicar ficha|publicar ahora/i }),
+      page.locator('button[class*="brand-purple"]:has-text("PUBLICAR")'),
+      page.locator('button:has-text("PUBLICAR")').filter({ hasNotText: /continuar/i }),
+    ]);
+    if (!publishBtn) {
+      const msg = "Botón Publicar no encontrado en la ficha.";
+      push("publish_draft", false, Date.now() - t0, msg);
+      await maybeCapture(page, "publish-draft-missing-button", metrics);
+      return { ok: false, error: msg, property_id: propertyId, url: page.url() };
+    }
+
+    const disabled = await publishBtn.evaluate((el) => {
+      const candidate = el.closest("button") ?? el;
+      return Boolean(
+        candidate.disabled ||
+          candidate.getAttribute("disabled") !== null ||
+          candidate.getAttribute("aria-disabled") === "true"
+      );
+    });
+    if (disabled) {
+      const msg = "Botón Publicar está deshabilitado.";
+      push("publish_draft", false, Date.now() - t0, msg);
+      return { ok: false, error: msg, property_id: propertyId, url: page.url() };
+    }
+
+    if (dryRun) {
+      push("publish_draft", true, Date.now() - t0);
+      return {
+        ok: true,
+        dry_run: true,
+        publish_ready: true,
+        property_id: propertyId,
+        draft_url: targetUrl,
+        url: page.url(),
+      };
+    }
+
+    await publishBtn.click({ timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000) });
+    await page.waitForTimeout(800);
+    const confirmBtn = await firstVisible([
+      page.getByRole("button", { name: /^confirmar$|^aceptar$|^sí$|^si$/i }),
+      page.locator('button[class*="brand-purple"]:has-text("CONFIRMAR")'),
+    ]);
+    if (confirmBtn) {
+      try {
+        await confirmBtn.click({ timeout: 5_000 });
+        await page.waitForTimeout(1200);
+      } catch {}
+    }
+    await page.waitForLoadState("networkidle", {
+      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+    }).catch(() => {});
+    await page.waitForTimeout(1000);
+    await maybeCapture(page, "publish-draft-after", metrics);
+
+    const publishedId = extractPropertyIdFromUrl(page.url()) ?? propertyId;
+    const publishedUrl = `${origin}/app/propiedades/${publishedId}`;
+    push("publish_draft", true, Date.now() - t0);
+    return {
+      ok: true,
+      dry_run: false,
+      property_id: publishedId,
+      published_url: publishedUrl,
+      properties_url: `${origin}/app/propiedades`,
+      url: page.url(),
+    };
+  } catch (e) {
+    push("publish_draft", false, Date.now() - t0, e?.message ?? String(e));
+    await maybeCapture(page, "publish-draft-failed", metrics);
     throw e;
   }
 }
@@ -231,23 +386,29 @@ function pickAddress(listing) {
  */
 async function fillAddressAutocomplete(page, address) {
   const input = page
-    .getByPlaceholder(/busca una dirección|arrastra el pin/i)
+    .getByPlaceholder(/busca una dirección|arrastra el pin|dirección/i)
     .first();
   if ((await input.count()) === 0) return false;
   try {
     await input.click({ timeout: 5_000 });
     await input.fill("");
-    await input.type(String(address), { delay: 60 });
-    const suggestion = page.locator(".pac-item, [role='listbox'] [role='option']").first();
+    await input.type(String(address), { delay: 45 });
+    const suggestion = page
+      .locator(".pac-item, .pac-container .pac-item, [role='listbox'] [role='option']")
+      .first();
     try {
-      await suggestion.waitFor({ state: "visible", timeout: 8_000 });
+      await suggestion.waitFor({ state: "visible", timeout: 12_000 });
       await suggestion.click();
     } catch {
       await input.press("ArrowDown");
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(600);
       await input.press("Enter");
     }
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(1500);
+    const body = await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "");
+    if (/selecciona la ubicación exacta en el mapa/i.test(body)) {
+      return false;
+    }
     return true;
   } catch {
     return false;
@@ -411,10 +572,14 @@ export async function fillOperationTab(page, listing) {
   };
 
   for (const op of ops) {
-    const addBtn = page
-      .getByRole("button", { name: /agregar tipo de operación/i })
-      .first();
-    if ((await addBtn.count()) === 0) {
+    const addBtn = await firstVisible([
+      page.getByRole("button", { name: /agregar tipo de operación/i }),
+      page.locator('button:has-text("Agregar tipo de operación")'),
+      page.locator('[role="button"]:has-text("Agregar tipo de operación")'),
+      page.locator("button, a").filter({ hasText: /agregar tipo de operaci[oó]n/i }),
+      page.getByText(/agregar tipo de operaci[oó]n/i),
+    ]);
+    if (!addBtn) {
       filled.push({ op, ok: false, error: "no 'Agregar tipo de operación' button" });
       break;
     }
@@ -549,6 +714,323 @@ async function saveAsDraft(page, metrics) {
   }
 }
 
+/**
+ * Tras guardar el borrador, intenta resolver el link directo a la ficha en
+ * Ungga sin modificar el título del listing.
+ *
+ * Estrategia:
+ *  1. Si la URL actual ya es /app/propiedades/{GU-ID}, úsala directo.
+ *  2. Si no, navega a /app/propiedades, abre la pestaña "Borrador" y toma
+ *     el primer card cuyo texto contenga el título exacto del listing
+ *     (Ungga ordena por más reciente arriba, así que el recién creado es
+ *     el primero). Abre el modal y sigue el botón "DETALLE" para capturar
+ *     la URL real.
+ *
+ * Nunca lanza; ante cualquier problema retorna lo que haya podido capturar
+ * y registra el motivo en metrics + screenshot.
+ */
+async function resolveDraftLinks(page, listing, metrics) {
+  const t0 = Date.now();
+  const origin = new URL(page.url()).origin;
+  const propertiesUrl = `${origin}/app/propiedades`;
+  const out = {
+    draft_url: null,
+    properties_url: propertiesUrl,
+    ungga_property_id: null,
+    lookup: { method: null, title_used: null, fallback_reason: null },
+  };
+
+  const postSaveId = extractPropertyIdFromUrl(page.url());
+  if (postSaveId) {
+    out.draft_url = `${origin}/app/propiedades/${postSaveId}`;
+    out.ungga_property_id = postSaveId;
+    out.lookup.method = "post_save_url";
+    metrics.push({
+      step: "resolve_draft_links",
+      ok: true,
+      via: "post_save_url",
+      duration_ms: Date.now() - t0,
+      draft_url: out.draft_url,
+    });
+    return out;
+  }
+
+  const title = typeof listing.title === "string" ? listing.title.trim() : "";
+  out.lookup.method = "listing_search";
+  out.lookup.title_used = title;
+  if (!title) {
+    out.lookup.fallback_reason = "no title to search";
+    metrics.push({
+      step: "resolve_draft_links",
+      ok: false,
+      via: "listing_search",
+      error: out.lookup.fallback_reason,
+      duration_ms: Date.now() - t0,
+    });
+    return out;
+  }
+
+  try {
+    await page.goto(propertiesUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+    });
+    await page.waitForTimeout(800);
+    await dismissStrayModals(page);
+
+    const draftTab = await firstVisible([
+      page.getByRole("tab", { name: /^borrador/i }),
+      page.getByRole("button", { name: /^borrador/i }),
+      page.locator("button:has-text('Borrador'), [role='tab']:has-text('Borrador')"),
+    ]);
+    if (draftTab) {
+      try {
+        await draftTab.click({ timeout: 5_000 });
+      } catch {}
+      await page.waitForTimeout(800);
+    } else {
+      out.lookup.fallback_reason = "Borrador tab not found";
+    }
+    await maybeCapture(page, "draft-listing", metrics);
+
+    const card = await findDraftCardByTitle(page, title);
+    if (!card) {
+      out.lookup.fallback_reason = `card not found for title: ${title}`;
+      metrics.push({
+        step: "resolve_draft_links",
+        ok: false,
+        via: "listing_search",
+        error: out.lookup.fallback_reason,
+        duration_ms: Date.now() - t0,
+        properties_url: propertiesUrl,
+      });
+      await maybeCapture(page, "resolve-draft-missing", metrics);
+      return out;
+    }
+    await card.click({ timeout: 5_000 }).catch(() => {});
+    await page.waitForTimeout(800);
+    await maybeCapture(page, "draft-modal", metrics);
+
+    await page.waitForTimeout(500);
+    await page.getByText(/GU-ID/i).first().waitFor({ state: "visible", timeout: 8_000 }).catch(() => {});
+    const modalGuId = await extractGuIdFromModal(page, title);
+    if (modalGuId) {
+      out.ungga_property_id = modalGuId;
+      out.draft_url = `${origin}/app/propiedades/${modalGuId}`;
+      out.lookup.method = "listing_search";
+      out.lookup.via = "modal_gu_id";
+      metrics.push({
+        step: "resolve_draft_links",
+        ok: true,
+        via: "modal_gu_id",
+        duration_ms: Date.now() - t0,
+        draft_url: out.draft_url,
+        ungga_property_id: out.ungga_property_id,
+      });
+      await maybeCapture(page, "draft-detalle", metrics);
+      return out;
+    }
+
+    const modalScope =
+      (await firstVisible([
+        page.locator('[role="dialog"]'),
+        page.locator('[class*="modal"], [class*="Modal"]').filter({ hasText: /GU-ID/i }),
+      ])) ?? page;
+
+    const detalle = await firstVisible([
+      modalScope.getByRole("link", { name: /^detalle$/i }),
+      modalScope.getByRole("button", { name: /^detalle$/i }),
+      modalScope.locator("a:has-text('DETALLE'), button:has-text('DETALLE')"),
+    ]);
+    if (!detalle) {
+      out.lookup.fallback_reason = "DETALLE not found in modal";
+      metrics.push({
+        step: "resolve_draft_links",
+        ok: false,
+        via: "listing_search",
+        error: out.lookup.fallback_reason,
+        duration_ms: Date.now() - t0,
+        properties_url: propertiesUrl,
+      });
+      return out;
+    }
+
+    const href = await detalle.getAttribute("href").catch(() => null);
+    if (href && /\/propiedades\/[^/?#]+/i.test(href)) {
+      out.draft_url = href.startsWith("http")
+        ? href
+        : `${origin}${href.startsWith("/") ? "" : "/"}${href}`;
+    } else {
+      try {
+        await Promise.all([
+          page.waitForURL(/\/propiedades\/[^/?#]+/i, {
+            timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 30_000),
+          }),
+          detalle.click({ timeout: 5_000 }),
+        ]);
+      } catch {
+        await detalle.click({ timeout: 5_000 }).catch(() => {});
+        await page.waitForTimeout(1200);
+      }
+      const navigatedId = extractPropertyIdFromUrl(page.url());
+      if (navigatedId) {
+        out.draft_url = page.url();
+      }
+    }
+
+    out.ungga_property_id = extractPropertyIdFromUrl(out.draft_url || "") ?? null;
+    if (!out.ungga_property_id) {
+      out.lookup.fallback_reason = "could not resolve GU-ID from modal or DETALLE navigation";
+    }
+    metrics.push({
+      step: "resolve_draft_links",
+      ok: Boolean(out.ungga_property_id),
+      via: out.ungga_property_id ? "detalle_navigation" : "listing_search",
+      duration_ms: Date.now() - t0,
+      draft_url: out.draft_url,
+      ungga_property_id: out.ungga_property_id,
+      ...(out.lookup.fallback_reason ? { error: out.lookup.fallback_reason } : {}),
+    });
+    await maybeCapture(page, "draft-detalle", metrics);
+    return out;
+  } catch (e) {
+    out.lookup.fallback_reason = e?.message ?? String(e);
+    metrics.push({
+      step: "resolve_draft_links",
+      ok: false,
+      via: "listing_search",
+      duration_ms: Date.now() - t0,
+      error: out.lookup.fallback_reason,
+      properties_url: propertiesUrl,
+    });
+    await maybeCapture(page, "resolve-draft-failed", metrics);
+    return out;
+  }
+}
+
+/**
+ * Lee el GU-ID visible en el modal de detalle (ej. "GU-ID" + "CpJi0ZSVrOeNAlsHwxBE").
+ * Ungga no siempre usa role=dialog; priorizamos el panel que contiene el título buscado.
+ */
+async function extractGuIdFromModal(page, title) {
+  const fromDom = await page
+    .evaluate((searchTitle) => {
+      const isVisible = (el) => {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 40 && rect.height > 40 && rect.top >= 0 && rect.top < window.innerHeight;
+      };
+      const parseId = (text) => {
+        if (!text) return null;
+        const patterns = [
+          /GU-ID\s*:?\s*([A-Za-z0-9_-]{10,})/i,
+          /GU-ID[\s\n\r]+([A-Za-z0-9_-]{10,})/i,
+        ];
+        for (const re of patterns) {
+          const m = text.match(re);
+          if (m?.[1]) return m[1];
+        }
+        const lines = text.split(/\n/).map((s) => s.trim());
+        const idx = lines.findIndex((l) => /^GU-ID/i.test(l));
+        if (idx >= 0 && lines[idx + 1] && /^[A-Za-z0-9_-]{10,}$/.test(lines[idx + 1])) {
+          return lines[idx + 1];
+        }
+        return null;
+      };
+
+      const candidates = [...document.querySelectorAll("div, section, article, aside")];
+      let best = null;
+      let bestArea = Infinity;
+      for (const el of candidates) {
+        if (!isVisible(el)) continue;
+        const text = el.innerText || "";
+        if (!/GU-ID/i.test(text) || !/\bDETALLE\b/i.test(text)) continue;
+        if (searchTitle && !text.includes(searchTitle)) continue;
+        if (/Nueva propiedad|Crea una propiedad desde cero/i.test(text)) continue;
+        const rect = el.getBoundingClientRect();
+        const area = rect.width * rect.height;
+        if (area < bestArea) {
+          bestArea = area;
+          best = el;
+        }
+      }
+      return best ? parseId(best.innerText || "") : null;
+    }, title)
+    .catch(() => null);
+  if (fromDom) return fromDom;
+  return null;
+}
+
+async function dismissStrayModals(page) {
+  const cancel = await firstVisible([
+    page.getByRole("button", { name: /^cancelar$/i }),
+    page.locator("button:has-text('CANCELAR')"),
+  ]);
+  if (cancel) {
+    try {
+      await cancel.click({ timeout: 2_000 });
+      await page.waitForTimeout(400);
+    } catch {}
+  }
+}
+
+function parseGuIdFromText(text) {
+  if (!text) return null;
+  const patterns = [
+    /GU-ID\s*:?\s*([A-Za-z0-9_-]{10,})/i,
+    /GU-ID[\s\n\r]+([A-Za-z0-9_-]{10,})/i,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m?.[1] && m[1].toLowerCase() !== "nueva" && m[1].toLowerCase() !== "new") {
+      return m[1];
+    }
+  }
+  return null;
+}
+
+/**
+ * En la pestaña "Borrador" Ungga ordena por más reciente primero. Buscamos
+ * el primer elemento clickable que contenga el título exacto del listing.
+ * Devolvemos un Locator listo para click, o null si no hay match.
+ */
+async function findDraftCardByTitle(page, title) {
+  const safeTitle = title.replace(/"/g, '\\"');
+  const candidates = [
+    page.locator(`article:has-text("${safeTitle}")`),
+    page.locator(`div[class*="cursor-pointer"]:has-text("${safeTitle}")`),
+    page.locator(`[role="button"]:has-text("${safeTitle}")`),
+    page.locator(`button:has-text("${safeTitle}")`),
+    page.locator(`a:has-text("${safeTitle}")`),
+    page.locator(`li:has-text("${safeTitle}")`),
+  ];
+  for (const loc of candidates) {
+    const total = await loc.count().catch(() => 0);
+    for (let i = 0; i < Math.min(total, 5); i += 1) {
+      const candidate = loc.nth(i);
+      const visible = await candidate.isVisible().catch(() => false);
+      if (visible) return candidate;
+    }
+  }
+  const textNode = page.locator(`text="${safeTitle}"`).first();
+  if ((await textNode.count().catch(() => 0)) > 0) {
+    return textNode.locator(
+      "xpath=ancestor-or-self::*[self::button or self::a or @role='button'][1]"
+    );
+  }
+  return null;
+}
+
+function extractPropertyIdFromUrl(url) {
+  if (!url) return null;
+  const m = url.match(/\/propiedades\/([^/?#]+)(?:[/?#]|$)/i);
+  if (!m) return null;
+  const id = m[1];
+  if (!id || id === "nueva" || id === "new") return null;
+  return id;
+}
+
 async function fillByLabel(page, label, value, opts = {}) {
   const nth = opts.nth ?? 0;
   const control = page
@@ -661,6 +1143,23 @@ async function firstVisible(locators) {
     }
   }
   return null;
+}
+
+/** Navega a una pestaña del wizard (GENERAL, DETALLES, MEDIA, OPERACIÓN, PUBLICAR). */
+async function clickWizardTab(page, tabName) {
+  const escaped = tabName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tab = await firstVisible([
+    page.getByRole("button", { name: new RegExp(`^${escaped}$`, "i") }),
+    page.locator(`button:has-text("${tabName}")`),
+  ]);
+  if (!tab) return false;
+  try {
+    await tab.click({ timeout: 8_000 });
+    await page.waitForTimeout(700);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function selectOrFillIfPresent(page, label, value) {

@@ -15,6 +15,10 @@
  * sólo se usa server-side dentro de este handler.
  */
 import { NextResponse } from "next/server";
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { promisify } from "node:util";
 import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
@@ -23,6 +27,42 @@ import {
   updateAccountToolSecretStatus,
 } from "@agents/db";
 import { getAccountToolProvider } from "@/lib/account-tool-providers";
+
+const execFileAsync = promisify(execFile);
+const EASYBROKER_WEB_LOGIN_URL =
+  "https://www.easybroker.com/mx/account/authentication/new";
+
+function resolveUnggaCliPocDir() {
+  const configured = process.env.UNGGA_CLI_DIR?.trim();
+  if (configured) return configured;
+  const cwd = process.cwd();
+  const candidates = [
+    path.resolve(cwd, "pocs", "ungga-cli"),
+    path.resolve(cwd, "..", "pocs", "ungga-cli"),
+    path.resolve(cwd, "..", "..", "pocs", "ungga-cli"),
+  ];
+  return (
+    candidates.find((candidate) =>
+      existsSync(path.join(candidate, "src", "login.mjs"))
+    ) ?? candidates[0]
+  );
+}
+
+function resolveEasyBrokerMlsPocDir() {
+  const configured = process.env.EASYBROKER_MLS_CLI_DIR?.trim();
+  if (configured) return configured;
+  const cwd = process.cwd();
+  const candidates = [
+    path.resolve(cwd, "pocs", "easybroker-mls-cli"),
+    path.resolve(cwd, "..", "pocs", "easybroker-mls-cli"),
+    path.resolve(cwd, "..", "..", "pocs", "easybroker-mls-cli"),
+  ];
+  return (
+    candidates.find((candidate) =>
+      existsSync(path.join(candidate, "src", "login.mjs"))
+    ) ?? candidates[0]
+  );
+}
 
 export async function POST(
   _request: Request,
@@ -68,10 +108,26 @@ export async function POST(
     let result: TestResult;
     if (provider === "easybroker") {
       result = await testEasyBroker(stored.secret as { api_key?: string });
+    } else if (provider === "easybroker_web") {
+      result = await testEasyBrokerWeb({
+        loginUrl: EASYBROKER_WEB_LOGIN_URL,
+        email: (stored.secret as { email?: string }).email ?? "",
+        password: (stored.secret as { password?: string }).password ?? "",
+      });
     } else if (provider === "ungga_api") {
       result = await testUngga({
         apiBase: typeof stored.config.api_base === "string" ? stored.config.api_base : "",
         apiToken: (stored.secret as { api_token?: string }).api_token ?? "",
+      });
+    } else if (provider === "ungga_cli") {
+      const loginUrl =
+        typeof stored.config.login_url === "string" && stored.config.login_url.trim()
+          ? stored.config.login_url.trim()
+          : "https://ungga.com/login";
+      result = await testUnggaCli({
+        loginUrl,
+        email: (stored.secret as { email?: string }).email ?? "",
+        password: (stored.secret as { password?: string }).password ?? "",
       });
     } else {
       // Provider declarado pero sin tester implementado todavía. Marca
@@ -162,6 +218,55 @@ async function testEasyBroker(secret: { api_key?: string }): Promise<TestResult>
   }
 }
 
+async function testEasyBrokerWeb(input: {
+  loginUrl: string;
+  email: string;
+  password: string;
+}): Promise<TestResult> {
+  const loginUrl = input.loginUrl.trim();
+  const email = input.email.trim();
+  const password = input.password.trim();
+  if (!loginUrl) return { ok: false, error: "login_url vacío" };
+  if (!email) return { ok: false, error: "email vacío" };
+  if (!password) return { ok: false, error: "password vacío" };
+
+  const pocDir = resolveEasyBrokerMlsPocDir();
+  try {
+    const { stdout } = await execFileAsync(process.execPath, ["src/login.mjs"], {
+      cwd: pocDir,
+      timeout: 90_000,
+      maxBuffer: 2 * 1024 * 1024,
+      env: {
+        ...process.env,
+        EASYBROKER_WEB_URL: loginUrl,
+        EASYBROKER_WEB_EMAIL: email,
+        EASYBROKER_WEB_PASSWORD: password,
+        EASYBROKER_MLS_HEADLESS: process.env.EASYBROKER_MLS_HEADLESS ?? "false",
+      },
+    });
+    const parsed = JSON.parse(stdout) as { ok?: boolean; error?: string };
+    if (parsed.ok === true) return { ok: true };
+    return {
+      ok: false,
+      error: parsed.error ?? "EasyBroker MLS login falló sin detalle.",
+    };
+  } catch (e) {
+    const err = e as { stdout?: string; message?: string };
+    if (err.stdout) {
+      try {
+        const parsed = JSON.parse(err.stdout) as { error?: string };
+        if (parsed.error) return { ok: false, error: parsed.error };
+      } catch {
+        /* ignore */
+      }
+    }
+    return {
+      ok: false,
+      error: `No se pudo validar EasyBroker MLS: ${err.message ?? String(e)}`,
+    };
+  }
+}
+
 /**
  * Ungga API interna: convención del POC es exponer
  * `{apiBase}/v1/internal/listings`. No tenemos endpoint `/health` estable,
@@ -170,6 +275,84 @@ async function testEasyBroker(secret: { api_key?: string }): Promise<TestResult>
  * (incluyendo 405 Method Not Allowed, que es lo esperable para un GET
  * sobre un endpoint POST).
  */
+/**
+ * Valida credenciales web ejecutando el POC de login (Playwright headless).
+ */
+async function testUnggaCli(input: {
+  loginUrl: string;
+  email: string;
+  password: string;
+}): Promise<TestResult> {
+  const loginUrl = input.loginUrl.trim();
+  const email = input.email.trim();
+  const password = input.password.trim();
+  if (!loginUrl) return { ok: false, error: "login_url vacío" };
+  if (!email) return { ok: false, error: "email vacío" };
+  if (!password) return { ok: false, error: "password vacío" };
+
+  const pocDir = resolveUnggaCliPocDir();
+  if (!existsSync(path.join(pocDir, "src", "login.mjs"))) {
+    return {
+      ok: false,
+      error: `POC Ungga CLI no encontrado en ${pocDir}.`,
+    };
+  }
+
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      ["src/login.mjs"],
+      {
+        cwd: pocDir,
+        timeout: 90_000,
+        maxBuffer: 2 * 1024 * 1024,
+        env: {
+          ...process.env,
+          UNGGA_CLI_HEADLESS: "true",
+          UNGGA_STAGING_URL: loginUrl,
+          UNGGA_STAGING_EMAIL: email,
+          UNGGA_STAGING_PASSWORD: password,
+        },
+      }
+    );
+    const parsed = parseLoginMetrics(stdout);
+    if (parsed.loginOk) return { ok: true };
+    return {
+      ok: false,
+      error:
+        parsed.error ??
+        (stderr.trim().slice(0, 300) || "Login en Ungga falló (revisa correo/contraseña)."),
+    };
+  } catch (e) {
+    const err = e as { message?: string; stderr?: string };
+    return {
+      ok: false,
+      error: `No se pudo validar login Ungga: ${err.message ?? String(e)}${err.stderr ? ` — ${err.stderr.slice(0, 200)}` : ""}`,
+    };
+  }
+}
+
+function parseLoginMetrics(stdout: string): { loginOk: boolean; error?: string } {
+  try {
+    const start = stdout.indexOf("{");
+    const end = stdout.lastIndexOf("}");
+    if (start < 0 || end <= start) {
+      return { loginOk: false, error: "Salida del POC sin JSON" };
+    }
+    const payload = JSON.parse(stdout.slice(start, end + 1)) as {
+      metrics?: Array<{ step?: string; ok?: boolean; error?: string }>;
+    };
+    const loginStep = payload.metrics?.find((m) => m.step === "login");
+    if (loginStep?.ok) return { loginOk: true };
+    return {
+      loginOk: false,
+      error: loginStep?.error ?? "Paso login no reportó éxito",
+    };
+  } catch {
+    return { loginOk: false, error: "No se pudo interpretar la salida del POC" };
+  }
+}
+
 async function testUngga(input: {
   apiBase: string;
   apiToken: string;

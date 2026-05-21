@@ -40,14 +40,14 @@ const DEFAULT_INTAKE_SCHEMA: OperationalCaseIntakeField[] = [
 const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
   safe_test: {
     description:
-      "Crea un caso con valores sintéticos del intake para validar el arranque seguro del flujo sin mezclarlo con operación real.",
-    run_button_label: "Ejecutar prueba segura inicial",
+      "Crea o regenera un caso de prueba con datos sintéticos realistas. Fase 1 valida intake; fase 2 (E2E con agente) ejecuta un tick operacional real cuando las tools están listas.",
+    run_button_label: "Fase 1: prueba segura (intake)",
     synthetic_data_copy:
-      "Este caso se creó con valores de prueba derivados del formulario inicial; no usa datos reales ni ejecuta envíos, escrituras o publicaciones.",
+      "Caso de prueba en la misma fila de operational_cases (regenerar no crea otro registro). Fase 1 no invoca tools; fase 2 sí, con HITL en riesgo alto.",
     success_copy:
-      "Prueba segura inicial pasada: el caso de prueba validó intake y avanzó al primer paso operativo sin ejecutar acciones externas.",
+      "Prueba segura inicial pasada: intake validado. Usa la fase E2E con agente para probar tools y pasos como en operación real.",
     timeline_note:
-      "Prueba segura inicial: valida intake y deja pendiente la siguiente acción. Tools de envío/escritura/publicación no se ejecutan automáticamente y requieren confirmación humana.",
+      "Fase 1: intake y paso inicial sin agente. Fase E2E: tick del agente con tools reales; publicación/envíos pueden pedir aprobación humana.",
     next_action:
       "Revisar readiness de tools de envío/escritura/publicación antes de operación real completa.",
     start_step: "intake",
@@ -952,6 +952,7 @@ type ToolTestMode = "smoke" | "case";
 
 interface ToolTestResponse {
   ok: boolean;
+  executed?: boolean;
   tool_id: string;
   risk: "low" | "medium" | "high";
   dry_run: boolean;
@@ -996,15 +997,157 @@ const MODE_SOURCE_LABELS: Record<string, string> = {
   preview_only: "preview",
 };
 
+function summarizeUnggaWizardIssues(result: unknown): string[] {
+  if (!result || typeof result !== "object") return [];
+  const root = result as Record<string, unknown>;
+  const cli = root.cli_result;
+  if (!cli || typeof cli !== "object") return [];
+  const metrics = (cli as Record<string, unknown>).metrics;
+  if (!Array.isArray(metrics)) return [];
+  const lines: string[] = [];
+  for (const entry of metrics) {
+    if (!entry || typeof entry !== "object") continue;
+    const step = entry as Record<string, unknown>;
+    if (step.ok !== false) continue;
+    const name = typeof step.step === "string" ? step.step : "paso";
+    const errs = Array.isArray(step.validation_errors)
+      ? step.validation_errors.filter((e) => typeof e === "string" && e !== "*")
+      : [];
+    if (errs.length > 0) {
+      lines.push(`${name}: ${errs.join("; ")}`);
+      continue;
+    }
+    if (typeof step.error === "string" && step.error.trim()) {
+      lines.push(`${name}: ${step.error}`);
+    }
+  }
+  const inner = (cli as Record<string, unknown>).result;
+  if (inner && typeof inner === "object") {
+    const stages = (inner as Record<string, unknown>).stages;
+    if (Array.isArray(stages)) {
+      for (const stage of stages) {
+        if (!stage || typeof stage !== "object") continue;
+        const filled = (stage as Record<string, unknown>).filled;
+        if (!Array.isArray(filled)) continue;
+        for (const item of filled) {
+          if (item && typeof item === "object" && (item as { ok?: boolean }).ok === false) {
+            const err = (item as { error?: string }).error;
+            const tab = (stage as { tab?: string }).tab ?? "tab";
+            if (err) lines.push(`${tab}: ${err}`);
+          }
+        }
+      }
+    }
+  }
+  return [...new Set(lines)];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function resultItems(result: unknown): Record<string, unknown>[] {
+  const root = asRecord(result);
+  const results = root?.results;
+  if (!Array.isArray(results)) return [];
+  return results
+    .map((item) => asRecord(item))
+    .filter((item): item is Record<string, unknown> => Boolean(item));
+}
+
+function stringField(item: Record<string, unknown>, key: string) {
+  const value = item[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function numberField(item: Record<string, unknown>, key: string) {
+  const value = item[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function ToolResultPreview({ result }: { result: unknown }) {
+  const items = resultItems(result);
+  if (items.length === 0) return null;
+  const shown = items.slice(0, 3);
+  return (
+    <div className="space-y-2 rounded border border-emerald-100 bg-emerald-50/40 p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-900">
+          Propiedades encontradas
+        </div>
+        <span className="text-[11px] text-emerald-800">
+          mostrando {shown.length} de {items.length}
+        </span>
+      </div>
+      <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+        {shown.map((item, index) => {
+          const title = stringField(item, "title") ?? `Resultado ${index + 1}`;
+          const url = stringField(item, "url");
+          const price =
+            stringField(item, "formatted_price") ??
+            (numberField(item, "price") != null
+              ? `$${numberField(item, "price")?.toLocaleString("es-MX")}`
+              : null);
+          const location = stringField(item, "location");
+          const propertyType = stringField(item, "property_type");
+          const area = numberField(item, "area_m2");
+          const bedrooms = numberField(item, "bedrooms");
+          const bathrooms = numberField(item, "bathrooms");
+          const parking = numberField(item, "parking_spaces");
+          return (
+            <div
+              key={`${url ?? title}-${index}`}
+              className="space-y-1 rounded border border-emerald-100 bg-white p-2"
+            >
+              <div className="font-semibold text-neutral-900">
+                {url ? (
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-violet-800 underline-offset-2 hover:underline"
+                  >
+                    {title}
+                  </a>
+                ) : (
+                  title
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2 text-neutral-600">
+                {price ? <span>{price}</span> : null}
+                {propertyType ? <span>{propertyType}</span> : null}
+                {area != null ? <span>{area} m²</span> : null}
+                {bedrooms != null ? <span>{bedrooms} rec.</span> : null}
+                {bathrooms != null ? <span>{bathrooms} baños</span> : null}
+                {parking != null ? <span>{parking} est.</span> : null}
+              </div>
+              {location ? <div className="text-neutral-500">{location}</div> : null}
+            </div>
+          );
+        })}
+      </div>
+      {items.length > shown.length ? (
+        <p className="text-[11px] text-emerald-800">
+          El JSON completo conserva los {items.length} resultados.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function ToolTestPanel({
   item,
   row,
   hasTestCase,
+  caseId,
   caseContextVersion,
 }: {
   item: ToolReadinessToolItem;
   row: OperationalCaseType;
   hasTestCase: boolean;
+  caseId?: string | null;
   caseContextVersion?: string | null;
 }) {
   const [mode, setMode] = useState<ToolTestMode>(hasTestCase ? "case" : "smoke");
@@ -1053,6 +1196,7 @@ function ToolTestPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           case_type_id: row.id,
+          case_id: caseId ?? undefined,
           tool_id: item.tool_id,
           mode: targetMode,
           args: parsed.value,
@@ -1100,6 +1244,7 @@ function ToolTestPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           case_type_id: row.id,
+          case_id: caseId ?? undefined,
           tool_id: item.tool_id,
           mode,
           args: parsed.value,
@@ -1113,6 +1258,12 @@ function ToolTestPanel({
         throw new Error(data.error ?? "No se pudo ejecutar la prueba.");
       }
       setResponse(data);
+      setShowRaw(data.executed === true || Boolean(data.result));
+      requestAnimationFrame(() => {
+        document
+          .getElementById(`tool-test-result-${item.tool_id}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1122,6 +1273,8 @@ function ToolTestPanel({
 
   const usedFallbackSmoke =
     response?.requested_mode === "case" && response?.mode_used === "smoke";
+  const wizardIssues = response ? summarizeUnggaWizardIssues(response.result) : [];
+  const executedResultItems = response?.executed ? resultItems(response.result) : [];
 
   return (
     <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3">
@@ -1242,29 +1395,47 @@ function ToolTestPanel({
           />
         </div>
       ) : null}
+      {running && item.tool_id === "ungga_publish_listing" ? (
+        <p className="rounded border border-violet-200 bg-violet-50 p-2 text-[11px] text-violet-900">
+          Ejecutando dry-run en Ungga con Playwright (login + wizard). Suele tardar
+          1–2 minutos; no cierres este panel.
+        </p>
+      ) : null}
       {error ? (
         <p className="rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-800">
           {error}
         </p>
       ) : null}
       {response ? (
-        <div className="space-y-1 rounded border border-neutral-200 bg-white p-2 text-[11px]">
+        <div
+          id={`tool-test-result-${item.tool_id}`}
+          className="space-y-1 rounded border border-neutral-200 bg-white p-2 text-[11px]"
+        >
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={`rounded px-1.5 py-0.5 font-semibold ${
-                response.dry_run
+                response.executed === false
                   ? "bg-amber-50 text-amber-800"
                   : response.ok
                     ? "bg-emerald-50 text-emerald-800"
                     : "bg-red-50 text-red-800"
               }`}
             >
-              {response.dry_run
-                ? "Dry-run"
-                : response.ok
-                  ? "Éxito"
-                  : "Error"}
+              {response.executed === false
+                ? "Sin ejecutar (política)"
+                : response.dry_run && response.executed
+                  ? response.ok
+                    ? wizardIssues.length > 0
+                      ? "Dry-run OK (con avisos)"
+                      : "Dry-run OK"
+                    : "Dry-run falló"
+                  : response.ok
+                    ? "Éxito"
+                    : "Error"}
             </span>
+            {response.reason ? (
+              <span className="text-neutral-500">motivo: {response.reason}</span>
+            ) : null}
             {response.mode_used ? (
               <span className="rounded bg-violet-50 px-1.5 py-0.5 text-violet-800">
                 modo: {MODE_LABELS[response.mode_used]}
@@ -1292,42 +1463,93 @@ function ToolTestPanel({
             </p>
           ) : null}
           {response.hint ? (
-            <p className="text-neutral-600">{response.hint}</p>
+            <p className="rounded border border-amber-100 bg-amber-50/80 p-2 text-amber-900">
+              {response.hint}
+            </p>
+          ) : null}
+          {wizardIssues.length > 0 ? (
+            <ul className="list-inside list-disc rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-950">
+              <li className="list-none font-semibold">
+                Avisos del wizard (revisa antes de un borrador real):
+              </li>
+              {wizardIssues.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
           ) : null}
           {response.error ? (
             <p className="text-red-800">Error: {response.error}</p>
           ) : null}
-          <details>
-            <summary className="cursor-pointer text-neutral-600">
-              Args resueltos
+          {response.executed === false ? (
+            <p className="text-neutral-600">
+              La prueba no invocó la tool ({response.reason ?? "política de riesgo"}
+              ). {response.hint ?? "Usa el flow completo con HITL para escritura real."}
+            </p>
+          ) : null}
+          <details className="rounded border border-neutral-100 bg-neutral-50/50">
+            <summary className="cursor-pointer px-2 py-1 font-semibold text-neutral-700">
+              Args enviados a la tool
             </summary>
-            <pre className="mt-1 overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
+            <pre className="mx-2 mb-2 overflow-x-auto rounded border border-neutral-200 bg-white p-2 font-mono text-[11px]">
               {JSON.stringify(response.resolved_args, null, 2)}
             </pre>
           </details>
-          {response.summary?.preview && response.summary.preview.length > 0 ? (
-            <details open>
-              <summary className="cursor-pointer text-neutral-600">
-                Primeros resultados
+          {response.summary?.preview &&
+          response.summary.preview.length > 0 &&
+          executedResultItems.length === 0 ? (
+            <details className="rounded border border-neutral-100">
+              <summary className="cursor-pointer px-2 py-1 font-semibold text-neutral-700">
+                Vista previa (primeros ítems)
               </summary>
-              <pre className="mt-1 overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
+              <pre className="mx-2 mb-2 overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
                 {JSON.stringify(response.summary.preview, null, 2)}
               </pre>
             </details>
           ) : null}
-          {response.result != null ? (
-            <button
-              type="button"
-              onClick={() => setShowRaw((prev) => !prev)}
-              className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700"
-            >
-              {showRaw ? "Ocultar respuesta completa" : "Ver respuesta completa"}
-            </button>
+          {response.executed === false && response.resolved_args ? (
+            <p className="text-neutral-500">
+              Sin payload de ejecución; solo se validaron los args de arriba.
+            </p>
           ) : null}
-          {showRaw && response.result != null ? (
-            <pre className="overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
-              {JSON.stringify(response.result, null, 2)}
-            </pre>
+          {response.executed && response.result != null ? (
+            <div className="space-y-2 rounded border border-violet-200 bg-violet-50/40 p-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-violet-900">
+                Resultado de la prueba
+              </div>
+              <p className="text-[11px] text-violet-800">
+                Respuesta de la tool tras ejecutar (dry-run o real). Distinto de los
+                args enviados.
+              </p>
+              <ToolResultPreview result={response.result} />
+              <details className="rounded border border-violet-100 bg-white">
+                <summary className="cursor-pointer px-2 py-1 font-semibold text-violet-900">
+                  Ver JSON completo
+                </summary>
+                <pre className="mx-2 mb-2 max-h-96 overflow-auto rounded border border-violet-100 bg-white p-2 font-mono text-[11px]">
+                  {JSON.stringify(response.result, null, 2)}
+                </pre>
+              </details>
+            </div>
+          ) : response.result != null ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowRaw((prev) => !prev)}
+                className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-700"
+              >
+                {showRaw ? "Ocultar resultado" : "Ver resultado de la prueba"}
+              </button>
+              {showRaw ? (
+                <div className="space-y-1 rounded border border-violet-200 bg-violet-50/40 p-2">
+                  <div className="text-[11px] font-semibold text-violet-900">
+                    Resultado de la prueba
+                  </div>
+                  <pre className="overflow-x-auto rounded bg-white p-2 font-mono text-[11px]">
+                    {JSON.stringify(response.result, null, 2)}
+                  </pre>
+                </div>
+              ) : null}
+            </>
           ) : null}
           {response.raw_text ? (
             <pre className="overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
@@ -1702,7 +1924,6 @@ function renderReadinessActions(params: {
         >
           {expanded ? "Cerrar" : "Probar tool"}
         </button>
-        {!expanded && detailsToggle}
       </div>
     );
   }
@@ -1724,6 +1945,7 @@ function renderFlowToolReadiness(params: {
   existingRequest: ToolReadinessRequestRecord | undefined;
   submitting: boolean;
   hasTestCase: boolean;
+  caseId?: string | null;
   caseContextVersion?: string | null;
   onEditSkill: () => void;
   onToggleExpand: () => void;
@@ -1800,6 +2022,7 @@ function renderFlowToolReadiness(params: {
               item={item}
               row={row}
               hasTestCase={params.hasTestCase}
+              caseId={params.caseId}
               caseContextVersion={params.caseContextVersion}
             />
           ) : null}
@@ -1970,10 +2193,14 @@ export function OperationalCaseTypesClient({
   const [testCaseResult, setTestCaseResult] =
     useState<OperationalCaseTestResult | null>(null);
   const [testCaseLoading, setTestCaseLoading] = useState(false);
-  const [testCaseRunning, setTestCaseRunning] = useState(false);
+  const [testCaseRunningMode, setTestCaseRunningMode] = useState<
+    "safe_check" | "agent_e2e" | null
+  >(null);
+  const testCaseRunning = testCaseRunningMode !== null;
   const [testContextDraft, setTestContextDraft] = useState<TestContextDraft>({});
   const [testContextSaving, setTestContextSaving] = useState(false);
   const [testContextMessage, setTestContextMessage] = useState<string | null>(null);
+  const [testContextVersion, setTestContextVersion] = useState(0);
   const [editingBaseline, setEditingBaseline] =
     useState<EditingSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
@@ -2020,14 +2247,26 @@ export function OperationalCaseTypesClient({
     Boolean(toolReadiness) && readinessCounts.blocking === 0;
   const toolsHaveBlocks = readinessCounts.blocking > 0;
   const shouldReviewTools = selectedIsPrivate && !toolReadiness && !toolReadinessLoading;
-  const canCreateTestCase =
-    selectedIsPrivate &&
-    selectedIsActive &&
-    Boolean(toolReadiness) &&
-    !toolsHaveBlocks;
+  const canManageTestCase =
+    selectedIsPrivate && selectedIsActive && Boolean(toolReadiness);
+  const canCreateTestCase = canManageTestCase && !toolsHaveBlocks;
+  const testStatus = testCaseResult?.case?.context_jsonb?.controlled_test_status;
   const testPassed =
-    testCaseResult?.case?.context_jsonb?.controlled_test_status ===
-    "passed_safe_checks";
+    testStatus === "passed_safe_checks" ||
+    testStatus === "e2e_tick_completed" ||
+    testStatus === "e2e_pending_hitl";
+  const e2ePendingHitl = testStatus === "e2e_pending_hitl";
+  const e2eCompleted =
+    testStatus === "e2e_tick_completed" || testStatus === "e2e_pending_hitl";
+  // E2E enabled only when ALL tools are technically ready (sin stubs ni
+  // missing/unknown). Bloqueos los cubre toolsPass; los stubs ejecutarían
+  // respuestas vacías y romperían el tick real.
+  const canRunE2E =
+    canCreateTestCase &&
+    readinessCounts.stub === 0 &&
+    readinessCounts.missing === 0 &&
+    readinessCounts.unknown === 0 &&
+    readinessCounts.needs_config === 0;
   const testContextFields = useMemo(
     () =>
       selectedCaseType && Array.isArray(selectedCaseType.intake_schema_jsonb)
@@ -2172,7 +2411,7 @@ export function OperationalCaseTypesClient({
     }
     setToolReadinessLoading(true);
     setToolReadinessError(null);
-    setExpandedReadinessTools(new Set());
+    // Mantener paneles expandidos (p. ej. prueba individual en curso).
     setToolRequests([]);
     setToolRequestError(null);
     setToolRequestSubmitting(null);
@@ -2322,6 +2561,14 @@ export function OperationalCaseTypesClient({
         toolCalls: data.toolCalls ?? [],
         flowProgress: data.flowProgress ?? [],
       });
+      const reused =
+        "reused_existing" in data &&
+        Boolean((data as { reused_existing?: boolean }).reused_existing);
+      setTestContextMessage(
+        reused
+          ? "Datos regenerados en el mismo caso de prueba (misma fila en la base de datos)."
+          : "Caso de prueba creado."
+      );
     } catch (err) {
       setError((err as Error).message ?? String(err));
     } finally {
@@ -2359,6 +2606,7 @@ export function OperationalCaseTypesClient({
         toolCalls: data.toolCalls ?? [],
         flowProgress: data.flowProgress ?? [],
       });
+      setTestContextVersion((version) => version + 1);
       setTestContextMessage("Datos guardados. Las pruebas por tool usarán estos valores.");
     } catch (err) {
       setTestContextMessage((err as Error).message ?? String(err));
@@ -2367,19 +2615,20 @@ export function OperationalCaseTypesClient({
     }
   }
 
-  async function runControlledTest() {
+  async function runControlledTest(mode: "safe_check" | "agent_e2e" = "safe_check") {
     const caseId = testCaseResult?.case?.id;
     if (!caseId) return;
-    setTestCaseRunning(true);
+    setTestCaseRunningMode(mode);
     setError(null);
+    setTestContextMessage(null);
     try {
       const res = await fetch("/api/operational-case-tests/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ case_id: caseId }),
+        body: JSON.stringify({ case_id: caseId, mode }),
       });
       const data = (await res.json()) as
-        | ({ ok: true } & OperationalCaseTestResult)
+        | ({ ok: true; mode?: string; agent?: { pending_confirmation?: boolean; response_preview?: string | null } } & OperationalCaseTestResult)
         | { error: string };
       if (!res.ok || !("ok" in data)) {
         setError("error" in data ? data.error : "controlled_test_failed");
@@ -2391,10 +2640,21 @@ export function OperationalCaseTypesClient({
         toolCalls: data.toolCalls ?? [],
         flowProgress: data.flowProgress ?? [],
       });
+      if (data.mode === "agent_e2e") {
+        setTestContextMessage(
+          data.agent?.pending_confirmation
+            ? "E2E ejecutado: hay tools pendientes de aprobación (HITL). Revisa Casos operacionales o el chat."
+            : "E2E ejecutado: tick del agente completado. Revisa timeline y tool calls abajo."
+        );
+      } else {
+        setTestContextMessage(
+          "Fase 1 completada: intake validado sin invocar el agente."
+        );
+      }
     } catch (err) {
       setError((err as Error).message ?? String(err));
     } finally {
-      setTestCaseRunning(false);
+      setTestCaseRunningMode(null);
     }
   }
 
@@ -3210,7 +3470,8 @@ export function OperationalCaseTypesClient({
                         ),
                         submitting: toolRequestSubmitting === tool.tool_id,
                         hasTestCase: Boolean(testCaseResult?.case),
-                        caseContextVersion: testCaseResult?.case?.updated_at ?? null,
+                        caseId: testCaseResult?.case?.id ?? null,
+                        caseContextVersion: `${testCaseResult?.case?.updated_at ?? ""}:${testContextVersion}`,
                         onEditSkill: () => startEdit(row),
                         onToggleExpand: () =>
                           setExpandedReadinessTools((prev) => {
@@ -3366,18 +3627,25 @@ export function OperationalCaseTypesClient({
               <button
                 type="button"
                 onClick={createTestCase}
-                disabled={!canCreateTestCase || testCaseLoading}
+                disabled={
+                  testCaseLoading ||
+                  (!testCaseResult?.case ? !canCreateTestCase : !canManageTestCase)
+                }
                 className={`rounded px-3 py-2 text-xs font-semibold disabled:opacity-60 ${
-                  canCreateTestCase && !testCaseResult?.case
+                  !testCaseResult?.case && canCreateTestCase
                     ? "bg-violet-700 text-white hover:bg-violet-800"
                     : "border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50"
                 }`}
               >
-                {testCaseLoading ? "Creando..." : "Crear caso de prueba"}
+                {testCaseLoading
+                  ? "Procesando..."
+                  : testCaseResult?.case
+                    ? "Regenerar datos de prueba"
+                    : "Crear caso de prueba"}
               </button>
               <button
                 type="button"
-                onClick={runControlledTest}
+                onClick={() => void runControlledTest("safe_check")}
                 disabled={
                   !testCaseResult?.case || testCaseRunning || toolsHaveBlocks
                 }
@@ -3385,14 +3653,54 @@ export function OperationalCaseTypesClient({
                 title={
                   toolsHaveBlocks
                     ? "Resuelve las tools bloqueantes antes de ejecutar la prueba segura inicial."
-                    : undefined
+                    : "Valida intake y paso inicial sin invocar el agente."
                 }
               >
-                {testCaseRunning
+                {testCaseRunningMode === "safe_check"
                   ? "Ejecutando..."
                   : activationPolicy.safe_test.run_button_label}
               </button>
+              <button
+                type="button"
+                onClick={() => void runControlledTest("agent_e2e")}
+                disabled={!testCaseResult?.case || testCaseRunning || !canRunE2E}
+                className="rounded border border-violet-300 bg-white px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-60"
+                title={
+                  toolsHaveBlocks
+                    ? "Resuelve las tools bloqueantes antes del E2E."
+                    : !canRunE2E
+                      ? "Resuelve stubs, configuraciones de cuenta y tools faltantes antes del E2E. Con stubs el tick puede fallar o devolver respuestas vacías."
+                      : "Un tick del agente sobre el caso de prueba, con tools reales y HITL si aplica (p. ej. ungga_publish_listing)."
+                }
+              >
+                {testCaseRunningMode === "agent_e2e"
+                  ? "Ejecutando..."
+                  : "Fase 2: E2E con agente"}
+              </button>
             </div>
+            <p className="text-[11px] text-neutral-500">
+              La prueba individual por tool (dry-run) valida integración aislada.
+              La fase 2 ejecuta el flujo vía agente como en operación real (puede
+              tardar varios minutos y pedir aprobaciones).
+              {!canRunE2E && !toolsHaveBlocks ? (
+                <span className="ml-1 text-amber-700">
+                  Fase 2 deshabilitada hasta resolver{" "}
+                  {readinessCounts.stub} stubs,{" "}
+                  {readinessCounts.needs_config} de cuenta y{" "}
+                  {readinessCounts.missing + readinessCounts.unknown} faltantes.
+                </span>
+              ) : null}
+              {e2ePendingHitl ? (
+                <span className="ml-1 text-violet-700">
+                  Último E2E quedó pendiente de aprobación humana; resuélvelo en
+                  Casos operacionales o chat antes del siguiente tick.
+                </span>
+              ) : e2eCompleted ? (
+                <span className="ml-1 text-emerald-700">
+                  Último E2E completó un tick del agente.
+                </span>
+              ) : null}
+            </p>
             {toolsHaveBlocks && testCaseResult?.case ? (
               <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
                 Hay un caso de prueba creado previamente, pero la prueba segura
@@ -3458,19 +3766,21 @@ export function OperationalCaseTypesClient({
                   {testCaseResult.flowProgress.map((step, index) => (
                     <li
                       key={step.step_key}
-                      className="flex items-start justify-between gap-3 rounded bg-neutral-50 p-2 dark:bg-neutral-950"
+                      className="flex items-start gap-3 rounded bg-neutral-50 p-2 dark:bg-neutral-950"
                     >
-                      <div>
+                      <div className="min-w-0 flex-1">
                         <div className="font-semibold">
                           {index + 1}. {step.step_label}
                         </div>
                         {step.evidence.length > 0 ? (
-                          <div className="mt-1 font-mono text-[11px] text-neutral-500">
+                          <div className="mt-1 break-all font-mono text-[11px] text-neutral-500">
                             {step.evidence.join(", ")}
                           </div>
                         ) : null}
                       </div>
-                      {testProgressBadge(step.status)}
+                      <div className="w-28 shrink-0 text-right">
+                        {testProgressBadge(step.status)}
+                      </div>
                     </li>
                   ))}
                 </ol>

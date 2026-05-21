@@ -83,10 +83,18 @@ Campos que el script llena automáticamente:
   tipo de operación", selecciona el tab (`sale`/`rent`/`rent_temporary`/
   `presale`), llena `price` + `currency` y confirma con el botón ✓.
 
-`PUBLICAR` se delega al humano (el agente nunca presiona publicar en este POC).
-El script sólo escribe en borrador vía "Guardar como borrador". La integración
-productiva de `ungga_publish_listing` debería mantener una aprobación explícita
-antes de ejecutar cualquier paso automático de publicación.
+En `prepare_draft` el POC no presiona `PUBLICAR`; guarda borrador con
+"Guardar como borrador". Tras aprobación HITL, `publish_draft` publica el borrador:
+
+```bash
+echo '{"action":"publish_draft","ungga_property_id":"GU-ID_AQUI"}' | npm run poc:publish
+```
+
+Abre la ficha → **EDITAR** → pestaña **PUBLICAR** → botón Publicar.
+Con `UNGGA_CLI_DRY_RUN=true` sólo verifica que el botón esté disponible.
+
+La tool `ungga_publish_listing` usa el mismo contrato (`action`: `prepare_draft` |
+`publish_draft`) y mantiene HITL entre fases.
 
 Mapa de pestañas en `artifacts/wizard-map.json` y `artifacts/wizard-map-full.json`
 (generado con `npm run poc:inspect`, opcionalmente con

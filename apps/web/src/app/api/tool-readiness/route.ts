@@ -143,20 +143,47 @@ const TENANT_ASSET_TOOLS = new Set([
  * equivalente a tener configuración global por env vars.
  */
 const TOOL_TO_ACCOUNT_PROVIDER: Record<string, string> = {
-  easybroker_search_listings: "easybroker",
-  easybroker_search_closed_deals: "easybroker",
+  easybroker_search_listings: "easybroker_web",
+  easybroker_search_closed_deals: "easybroker_web",
   easybroker_create_listing: "easybroker",
   easybroker_upload_images: "easybroker",
-  ungga_publish_listing: "ungga_api",
+  ungga_publish_listing: "ungga_cli",
 };
+
+/** Providers que satisfacen `ungga_publish_listing` (cualquiera activo basta). */
+const UNGGA_PUBLISH_ACCOUNT_PROVIDERS = ["ungga_cli", "ungga_api"] as const;
 
 const ACCOUNT_PROVIDER_LABELS: Record<string, string> = {
   easybroker: "EasyBroker",
+  easybroker_web: "EasyBroker MLS (automatización web)",
   ungga_api: "Ungga API",
+  ungga_cli: "Ungga (automatización web)",
 };
 
 function accountProviderLabel(providerId: string) {
   return ACCOUNT_PROVIDER_LABELS[providerId] ?? providerId;
+}
+
+function unggaPublishAccountState(
+  accountSecretsByProvider: Map<string, AccountToolSecretPublic>
+) {
+  for (const providerId of UNGGA_PUBLISH_ACCOUNT_PROVIDERS) {
+    const secret = accountSecretsByProvider.get(providerId) ?? null;
+    if (secret?.status === "active") {
+      return { providerId, secret, satisfied: true };
+    }
+  }
+  for (const providerId of UNGGA_PUBLISH_ACCOUNT_PROVIDERS) {
+    const secret = accountSecretsByProvider.get(providerId) ?? null;
+    if (secret) {
+      return { providerId, secret, satisfied: false };
+    }
+  }
+  return {
+    providerId: "ungga_cli" as const,
+    secret: null as AccountToolSecretPublic | null,
+    satisfied: false,
+  };
 }
 
 function enabledByUser(toolId: string, settings: UserToolSetting[]) {
@@ -180,7 +207,14 @@ function integrationActive(
 function envConfigured(toolId: string) {
   if (
     toolId === "easybroker_search_listings" ||
-    toolId === "easybroker_search_closed_deals" ||
+    toolId === "easybroker_search_closed_deals"
+  ) {
+    return Boolean(
+      process.env.EASYBROKER_WEB_EMAIL?.trim() &&
+        process.env.EASYBROKER_WEB_PASSWORD?.trim()
+    );
+  }
+  if (
     toolId === "easybroker_create_listing" ||
     toolId === "easybroker_upload_images"
   ) {
@@ -357,9 +391,10 @@ function classifyTool(params: {
     };
   }
   if (params.toolId === "ungga_publish_listing") {
-    if (envConfigured(params.toolId)) {
+    const ungga = unggaPublishAccountState(params.accountSecretsByProvider);
+    if (ungga.satisfied) {
       notes.push(
-        "Ungga configurado: usará API interna si hay token o fallback CLI/Playwright si UNGGA_CLI_ENABLED=true."
+        `Ungga conectado por cuenta (${accountProviderLabel(ungga.providerId)}).`
       );
       return {
         tool_id: params.toolId,
@@ -374,8 +409,79 @@ function classifyTool(params: {
         action_url: null,
         action_anchor: null,
         request_kind: null,
-        account_provider: accountProviderId,
-        account_secret_status: accountSecretStatus,
+        account_provider: ungga.providerId,
+        account_secret_status: ungga.secret?.status ?? null,
+        exists_in_catalog: true,
+        adapter_available: true,
+        ...base,
+        notes,
+      };
+    }
+    if (envConfigured(params.toolId)) {
+      notes.push(
+        "Ungga disponible vía env global o pocs/ungga-cli/.env (desarrollo)."
+      );
+      return {
+        tool_id: params.toolId,
+        status: "ready",
+        category: "ready",
+        blocking: false,
+        action_kind: "none",
+        action_label: null,
+        action_available: false,
+        action_message:
+          "La tool está disponible para prueba controlada. Requiere confirmación humana por ser de riesgo alto.",
+        action_url: null,
+        action_anchor: null,
+        request_kind: null,
+        account_provider: ungga.providerId,
+        account_secret_status: ungga.secret?.status ?? null,
+        exists_in_catalog: true,
+        adapter_available: true,
+        ...base,
+        notes,
+      };
+    }
+    if (ungga.secret?.status === "pending_test") {
+      notes.push("Credenciales Ungga guardadas; falta probar la conexión.");
+      return {
+        tool_id: params.toolId,
+        status: "needs_config",
+        category: "account_config",
+        blocking: true,
+        action_kind: "configure_account",
+        action_label: `Probar conexión ${accountProviderLabel(ungga.providerId)}`,
+        action_available: true,
+        action_message: `Tienes credenciales guardadas para ${accountProviderLabel(ungga.providerId)}. Valídalas con «Probar conexión» para activar la publicación en Ungga.`,
+        action_url: null,
+        action_anchor: null,
+        request_kind: null,
+        account_provider: ungga.providerId,
+        account_secret_status: ungga.secret.status,
+        exists_in_catalog: true,
+        adapter_available: true,
+        ...base,
+        notes,
+      };
+    }
+    if (ungga.secret?.status === "invalid") {
+      notes.push(
+        `Conexión Ungga inválida: ${ungga.secret.last_error ?? "error sin detalle"}.`
+      );
+      return {
+        tool_id: params.toolId,
+        status: "needs_config",
+        category: "account_config",
+        blocking: true,
+        action_kind: "configure_account",
+        action_label: `Reconfigurar ${accountProviderLabel(ungga.providerId)}`,
+        action_available: true,
+        action_message: `La última validación de Ungga falló${ungga.secret.last_error ? `: ${ungga.secret.last_error}` : ""}. Reingresa tus credenciales.`,
+        action_url: null,
+        action_anchor: null,
+        request_kind: null,
+        account_provider: ungga.providerId,
+        account_secret_status: ungga.secret.status,
         exists_in_catalog: true,
         adapter_available: true,
         ...base,
@@ -383,7 +489,7 @@ function classifyTool(params: {
       };
     }
     notes.push(
-      "Fallback CLI/Playwright no detectado en este runtime. Configura UNGGA_CLI_ENABLED=true + credenciales, UNGGA_CLI_DIR, o asegúrate de que exista pocs/ungga-cli/.env en desarrollo."
+      "Conecta Ungga (automatización web) con tu correo y contraseña, o configura la API interna."
     );
     return {
       tool_id: params.toolId,
@@ -391,14 +497,14 @@ function classifyTool(params: {
       category: "account_config",
       blocking: false,
       action_kind: "configure_account",
-      action_label: "Configurar fallback CLI",
+      action_label: "Conectar Ungga (automatización web)",
       action_available: true,
       action_message:
-        "El adapter de Ungga ya soporta CLI/browser automation a borrador HITL, pero este servidor no detecta la configuración local o variables necesarias para ejecutarlo.",
+        "Para publicar en Ungga necesitas conectar tu cuenta (correo y contraseña de ungga.com) desde aquí o desde Ajustes → Cuentas externas.",
       action_url: null,
       action_anchor: null,
       request_kind: null,
-      account_provider: null,
+      account_provider: "ungga_cli",
       account_secret_status: null,
       exists_in_catalog: true,
       adapter_available: true,
@@ -726,14 +832,14 @@ function providerActionMeta(
   if (provider === "ungga") {
     return {
       category: "account_config",
-      action_kind: "request_global",
-      action_label: "Solicitar configuración de Ungga por cuenta",
+      action_kind: "configure_account",
+      action_label: "Conectar Ungga (automatización web)",
       action_available: true,
       action_message:
-        "El publicador interno de Ungga aún no tiene flujo de configuración por cuenta. Crea una solicitud para que el equipo lo active para ti.",
-      action_url: null,
-      action_anchor: null,
-      request_kind: "enable_account_config",
+        "Conecta tu cuenta de ungga.com (correo y contraseña) en Ajustes → Cuentas externas para publicar fichas desde Gu OS.",
+      action_url: "/settings",
+      action_anchor: "external-accounts",
+      request_kind: null,
     };
   }
   // Provider desconocido (tokko, wiggot, whatsapp, etc.): aún no hay flujo.

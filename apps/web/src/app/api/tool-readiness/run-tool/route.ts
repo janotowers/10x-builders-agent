@@ -23,10 +23,9 @@
  *   - low                → ejecuta directo.
  *   - medium             → ejecuta sólo si el body trae `confirm: true`; si
  *                          no, devuelve `dry_run: true` con los args
- *                          resueltos para que el usuario revise antes.
- *   - high               → nunca ejecuta desde esta capa; devuelve
- *                          `dry_run: true`. Las tools de escritura siguen
- *                          requiriendo HITL real desde el flow.
+ *   - high (ungga_publish_listing) → ejecuta dry-run real vía Playwright
+ *                          (UNGGA_CLI_DRY_RUN=true); no guarda ni publica.
+ *   - high (otras)       → no ejecuta; devuelve dry_run con hint (HITL en flow).
  *
  * Modo `preview` (body.preview === true):
  *   No ejecuta la tool; sólo resuelve y devuelve `resolved_args` y
@@ -37,10 +36,14 @@
  * volver a implementar la ejecución.
  */
 import { NextResponse } from "next/server";
+
+/** Playwright Ungga puede tardar ~1–2 min en dry-run. */
+export const maxDuration = 180;
 import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
   getGlobalOperationalCaseTypeBySlug,
+  getOperationalCase,
   getOperationalCaseTypeById,
   getOrCreateSession,
 } from "@agents/db";
@@ -64,6 +67,7 @@ type ToolRunMode = "smoke" | "case" | "manual";
 
 type ToolRunBody = {
   case_type_id?: string;
+  case_id?: string;
   tool_id?: string;
   mode?: ToolRunMode;
   args?: Record<string, unknown>;
@@ -72,14 +76,20 @@ type ToolRunBody = {
 };
 
 const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
-  easybroker_search_listings: { limit: 5 },
-  easybroker_search_closed_deals: { limit: 5 },
+  easybroker_search_listings: { limit: 50 },
+  easybroker_search_closed_deals: { limit: 50 },
   ungga_publish_listing: {
+    action: "prepare_draft",
     title: "POC test - DELETE ME",
     operation: "sale",
     property_type: "Departamento",
     price: 1000000,
     currency: "MXN",
+    construction_m2: 80,
+    land_m2: 80,
+    condition: "Bueno",
+    age_range: "1-5 años",
+    current_status: "Habitable",
   },
 };
 
@@ -106,15 +116,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function pickRiskPolicy(def: ToolDefinition | undefined, confirm: boolean) {
+/** Tools de riesgo alto que sí pueden ejecutarse en dry-run desde esta capa de prueba. */
+const HIGH_RISK_DRY_RUN_TOOLS = new Set(["ungga_publish_listing"]);
+
+function pickRiskPolicy(
+  def: ToolDefinition | undefined,
+  confirm: boolean,
+  toolId?: string
+) {
   const risk = def?.risk ?? "medium";
-  if (risk === "low") return { execute: true, reason: "low_risk_auto_execute" };
+  if (risk === "low") return { execute: true, reason: "low_risk_auto_execute", forceCliDryRun: false };
   if (risk === "medium") {
     return confirm
-      ? { execute: true, reason: "medium_risk_confirmed" }
-      : { execute: false, reason: "medium_risk_requires_confirm" };
+      ? { execute: true, reason: "medium_risk_confirmed", forceCliDryRun: false }
+      : { execute: false, reason: "medium_risk_requires_confirm", forceCliDryRun: false };
   }
-  return { execute: false, reason: "high_risk_requires_hitl" };
+  if (toolId && HIGH_RISK_DRY_RUN_TOOLS.has(toolId)) {
+    return {
+      execute: true,
+      reason: "high_risk_dry_run",
+      forceCliDryRun: true,
+    };
+  }
+  return { execute: false, reason: "high_risk_requires_hitl", forceCliDryRun: false };
 }
 
 function parseToolOutput(raw: unknown): {
@@ -193,7 +217,7 @@ function firstNumber(ctx: Record<string, unknown>, keys: string[]) {
 }
 
 function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
-  const args: Record<string, unknown> = { limit: 10 };
+  const args: Record<string, unknown> = { limit: 50 };
   const zona = firstString(ctx, [
     "zona",
     "property_zone",
@@ -232,6 +256,8 @@ function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
   } else if (uniquePropertyTypes.length > 1) {
     args.property_types = uniquePropertyTypes;
   }
+  const minPrice = firstNumber(ctx, ["min_price", "price_min", "precio_min"]);
+  const maxPrice = firstNumber(ctx, ["max_price", "price_max", "precio_max"]);
   const targetPrice = firstNumber(ctx, [
     "target_price",
     "expected_price",
@@ -239,26 +265,27 @@ function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
     "price",
     "precio",
   ]);
-  if (targetPrice != null) {
+  if (minPrice != null) args.min_price = minPrice;
+  if (maxPrice != null) args.max_price = maxPrice;
+  if (targetPrice != null && minPrice == null && maxPrice == null) {
     args.min_price = Math.round(targetPrice * 0.8);
     args.max_price = Math.round(targetPrice * 1.2);
   }
-  const areaM2 = firstNumber(ctx, [
-    "area_m2",
-    "construction_size",
-    "lot_size",
-    "superficie",
-    "m2",
-  ]);
-  if (areaM2 != null) {
-    args.min_area_m2 = Math.round(areaM2 * 0.8);
-    args.max_area_m2 = Math.round(areaM2 * 1.2);
-  }
+  const minAreaM2 = firstNumber(ctx, ["min_area_m2", "area_min_m2", "superficie_min"]);
+  const maxAreaM2 = firstNumber(ctx, ["max_area_m2", "area_max_m2", "superficie_max"]);
+  if (minAreaM2 != null) args.min_area_m2 = minAreaM2;
+  if (maxAreaM2 != null) args.max_area_m2 = maxAreaM2;
+  const bedrooms = firstNumber(ctx, ["bedrooms", "recamaras"]);
+  if (bedrooms != null) args.bedrooms = bedrooms;
+  const bathrooms = firstNumber(ctx, ["bathrooms", "banos"]);
+  if (bathrooms != null) args.bathrooms = bathrooms;
+  const parking = firstNumber(ctx, ["parking_spaces", "parking", "estacionamientos"]);
+  if (parking != null) args.parking_spaces = parking;
   return args;
 }
 
 function unggaPublishCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
-  const args: Record<string, unknown> = {};
+  const args: Record<string, unknown> = { action: "prepare_draft" };
   const propertyType =
     firstStringArray(ctx, ["property_type", "tipo_propiedad", "tipo"])[0] ??
     null;
@@ -321,6 +348,29 @@ function unggaPublishCaseRecipe(ctx: Record<string, unknown>): Record<string, un
   if (parking != null) args.parking_spaces = parking;
   if (price != null) {
     args.operations = [{ type: operation, price, currency: args.currency }];
+  }
+  // Ungga exige área de construcción para avanzar en el wizard; si el caso no la trae, usar default de prueba.
+  if (args.construction_m2 == null) {
+    args.construction_m2 = 80;
+    args.land_m2 = 80;
+  }
+  args.condition =
+    firstString(ctx, ["condition", "estado_propiedad", "property_condition"]) ??
+    "Bueno";
+  args.age_range =
+    firstString(ctx, ["age_range", "antiguedad", "property_age"]) ?? "1-5 años";
+  args.current_status =
+    firstString(ctx, ["current_status", "estado_actual"]) ?? "Habitable";
+  // Ungga exige pin en mapa (autocomplete); default de prueba si el caso no trae dirección.
+  if (!args.address) {
+    args.address =
+      "Av. Paseo de la Reforma 222, Juárez, Ciudad de México, CDMX, México";
+    args.location = {
+      ...(typeof args.location === "object" && args.location
+        ? (args.location as Record<string, unknown>)
+        : {}),
+      zona: "Juárez, Ciudad de México",
+    };
   }
   return args;
 }
@@ -421,12 +471,13 @@ async function resolveArgsForMode(params: {
   db: ReturnType<typeof createServerClient>;
   userId: string;
   caseType: NonNullable<Awaited<ReturnType<typeof getOperationalCaseTypeById>>>;
+  caseId?: string | null;
   toolId: string;
   def: ToolDefinition;
   mode: ToolRunMode;
   userArgs: Record<string, unknown>;
 }): Promise<ArgResolution> {
-  const { db, userId, caseType, toolId, def, mode, userArgs } = params;
+  const { db, userId, caseType, caseId, toolId, def, mode, userArgs } = params;
 
   if (mode === "manual") {
     return {
@@ -437,7 +488,15 @@ async function resolveArgsForMode(params: {
   }
 
   if (mode === "case") {
-    const testCase = await loadLatestTestCase(db, userId, caseType.id);
+    const requestedCase = caseId ? await getOperationalCase(db, caseId) : null;
+    const testCase =
+      requestedCase &&
+      requestedCase.user_id === userId &&
+      requestedCase.case_type_id === caseType.id &&
+      requestedCase.context_jsonb?.created_from === "case_type_settings_test" &&
+      requestedCase.context_jsonb?.test_mode === true
+        ? requestedCase
+        : await loadLatestTestCase(db, userId, caseType.id);
     if (!testCase) {
       return {
         args: { ...(TEST_DEFAULTS[toolId] ?? {}), ...userArgs },
@@ -498,6 +557,7 @@ export async function POST(request: Request) {
 
     const body = (await request.json().catch(() => ({}))) as ToolRunBody;
     const caseTypeId = cleanText(body.case_type_id);
+    const caseId = cleanText(body.case_id);
     const toolId = cleanText(body.tool_id);
     const confirm = body.confirm === true;
     const preview = body.preview === true;
@@ -544,17 +604,19 @@ export async function POST(request: Request) {
       db,
       userId: user.id,
       caseType,
+      caseId: caseId || null,
       toolId,
       def,
       mode: requestedMode,
       userArgs,
     });
 
-    const policy = pickRiskPolicy(def, confirm);
+    const policy = pickRiskPolicy(def, confirm, toolId);
 
     if (preview) {
       return NextResponse.json({
         ok: true,
+        executed: false,
         tool_id: toolId,
         dry_run: true,
         reason: "preview_only",
@@ -571,6 +633,7 @@ export async function POST(request: Request) {
     if (!policy.execute) {
       return NextResponse.json({
         ok: true,
+        executed: false,
         tool_id: toolId,
         dry_run: true,
         reason: policy.reason,
@@ -585,6 +648,11 @@ export async function POST(request: Request) {
             ? "Esta tool es de riesgo medio; envía confirm:true para ejecutarla desde la prueba individual."
             : "Esta tool es de riesgo alto. Por seguridad sólo se ejecuta dentro del flow con HITL.",
       });
+    }
+
+    const forceCliDryRun = policy.forceCliDryRun === true;
+    if (forceCliDryRun) {
+      process.env.UNGGA_TOOL_TEST_DRY_RUN = "true";
     }
 
     ensureAgentToolDepsWired();
@@ -629,6 +697,10 @@ export async function POST(request: Request) {
       raw = await lcTool.invoke(resolution.args);
     } catch (err) {
       invokeError = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (forceCliDryRun) {
+        delete process.env.UNGGA_TOOL_TEST_DRY_RUN;
+      }
     }
     const elapsedMs = Date.now() - startedAt;
     const { parsed, text } = parseToolOutput(raw);
@@ -636,10 +708,14 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: invokeError === null,
+      executed: true,
       tool_id: toolId,
       risk: def.risk,
-      dry_run: false,
+      dry_run: forceCliDryRun,
       reason: policy.reason,
+      hint: forceCliDryRun
+        ? "Dry-run completado: Playwright abrió Ungga y recorrió el wizard sin guardar borrador ni publicar. Revisa status, stages y validation_errors en el JSON."
+        : undefined,
       requested_mode: requestedMode,
       mode_used: resolution.mode_used,
       mode_source: resolution.source,
