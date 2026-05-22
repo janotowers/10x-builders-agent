@@ -323,6 +323,23 @@ Alebrixe no es código: es un asset privado de esa cuenta. El mismo renderer
 puede servir a otra cuenta si esa cuenta sube su propia plantilla y su flow
 declara el `asset_key` correspondiente.
 
+### 10.2 Orden de publicación EasyBroker
+
+Para publicación real, el orden recomendado es:
+
+1. `image_watermark` genera fotos marcadas en `account-assets` usando
+   `listing_photo_watermark` u otro asset de watermark de la cuenta.
+2. `easybroker_create_listing` crea la ficha con API key `easybroker` y debe
+   mantenerse `risk='high'` / HITL. El payload base viene del paquete aprobado:
+   título, descripción, operación, tipo, precio, ubicación, área y recámaras.
+3. `easybroker_upload_images` recibe el `listing_id` devuelto por create y sube
+   las fotos generadas por `image_watermark`.
+
+El adapter write debe guardar en el resultado IDs/URLs devueltos por EasyBroker
+y registrar errores por imagen sin perder el listing ya creado. La validación
+operativa mínima es: dry-run/HITL del paquete aprobado → create listing →
+upload imágenes → devolver URL de borrador/publicación para revisión humana.
+
 ---
 
 ## 11. Convenciones operativas

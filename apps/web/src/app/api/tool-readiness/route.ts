@@ -76,11 +76,26 @@ type ToolReadinessItem = {
   requires_integration?: string;
   notes: string[];
   asset_requirements?: ToolAssetRequirementStatus[];
+  test_asset_requirements?: ToolAssetRequirementStatus[];
 };
 
 type ToolAssetRequirementStatus = OperationalCaseRequiredAsset & {
   configured: boolean;
   asset: AccountAsset | null;
+};
+
+const TOOL_TEST_ASSET_REQUIREMENTS: Record<string, OperationalCaseRequiredAsset[]> = {
+  image_watermark: [
+    {
+      asset_key: "test_image_watermark_source",
+      label: "Foto fuente para probar watermark",
+      description:
+        "Carga una foto temporal de una propiedad para validar cómo se aplica la marca de agua.",
+      accept: ["image/jpeg", "image/png", "image/webp"],
+      max_size_mb: 15,
+      required: true,
+    },
+  ],
 };
 
 type ReadinessSkillGraph = {
@@ -115,7 +130,6 @@ const ADAPTER_TOOLS = new Set([
 
 const STUB_TOOLS = new Set([
   "bigquery_lookup_local_comparables",
-  "image_watermark",
   "easybroker_create_listing",
   "easybroker_upload_images",
 ]);
@@ -281,6 +295,38 @@ function collectRequiredAssets(flow: OperationalCaseFlowStep[]) {
   return byTool;
 }
 
+function collectTestAssets(
+  flow: OperationalCaseFlowStep[],
+  allowedTools: string[]
+) {
+  const byTool = new Map<string, OperationalCaseRequiredAsset[]>();
+  const add = (toolId: string, requirements: OperationalCaseRequiredAsset[]) => {
+    if (requirements.length === 0) return;
+    byTool.set(toolId, [...(byTool.get(toolId) ?? []), ...requirements]);
+  };
+  const addTool = (tool: OperationalCaseFlowTool) => {
+    add(
+      tool.tool_id,
+      Array.isArray(tool.test_assets)
+        ? tool.test_assets.filter(
+            (item): item is OperationalCaseRequiredAsset =>
+              Boolean(item?.asset_key && item.label)
+          )
+        : []
+    );
+  };
+  for (const step of flow) {
+    for (const tool of step.step_tools ?? []) addTool(tool);
+    for (const skill of step.step_skills ?? []) {
+      for (const tool of skill.skill_tools ?? []) addTool(tool);
+    }
+  }
+  for (const toolId of allowedTools) {
+    add(toolId, TOOL_TEST_ASSET_REQUIREMENTS[toolId] ?? []);
+  }
+  return byTool;
+}
+
 function classifyTool(params: {
   toolId: string;
   def?: ToolDefinition;
@@ -289,14 +335,26 @@ function classifyTool(params: {
   accountSecretsByProvider: Map<string, AccountToolSecretPublic>;
   accountAssetsByKey: Map<string, AccountAsset>;
   requiredAssets: OperationalCaseRequiredAsset[];
+  testAssets: OperationalCaseRequiredAsset[];
   telegramLinked: boolean;
 }): ToolReadinessItem {
   const notes: string[] = [];
   const exists = Boolean(params.def);
   const adapterAvailable = ADAPTER_TOOLS.has(params.toolId);
+  const testAssetRequirements = params.testAssets.map((requirement) => {
+    const asset = params.accountAssetsByKey.get(requirement.asset_key) ?? null;
+    return {
+      ...requirement,
+      configured: Boolean(asset),
+      asset,
+    } satisfies ToolAssetRequirementStatus;
+  });
   const base = {
     risk: params.def?.risk,
     requires_integration: params.def?.requires_integration,
+    test_asset_requirements: testAssetRequirements.length
+      ? testAssetRequirements
+      : undefined,
   };
 
   const accountProviderId = TOOL_TO_ACCOUNT_PROVIDER[params.toolId] ?? null;
@@ -342,6 +400,7 @@ function classifyTool(params: {
       account_secret_status: accountSecretStatus,
       exists_in_catalog: false,
       adapter_available: adapterAvailable,
+      ...base,
       notes: ["No existe en TOOL_CATALOG."],
     };
   }
@@ -1055,11 +1114,19 @@ export async function GET(request: Request) {
       ? globalCaseType.operational_flow_jsonb
       : [];
     const sourceFlow = ownFlow.length > 0 ? ownFlow : inheritedFlow;
+    const registry = await getSkillRegistryForUser(db, user.id);
     const requiredAssetsByTool = collectRequiredAssets(sourceFlow);
+    const resolved = resolveSkillToolsFromMetadata(
+      caseType.default_skill_slug,
+      registry
+    );
+    const testAssetsByTool = collectTestAssets(sourceFlow, resolved.allowedTools);
     const requiredAssetKeys = Array.from(
       new Set(
-        Array.from(requiredAssetsByTool.values())
-          .flat()
+        [
+          ...Array.from(requiredAssetsByTool.values()).flat(),
+          ...Array.from(testAssetsByTool.values()).flat(),
+        ]
           .map((asset) => asset.asset_key)
       )
     );
@@ -1070,7 +1137,6 @@ export async function GET(request: Request) {
       { data: telegramAccount },
       accountSecrets,
       accountAssets,
-      registry,
     ] = await Promise.all([
       supabase.from("user_tool_settings").select("*").eq("user_id", user.id),
       supabase.from("user_integrations").select("*").eq("user_id", user.id),
@@ -1084,7 +1150,6 @@ export async function GET(request: Request) {
         userId: user.id,
         assetKeys: requiredAssetKeys,
       }),
-      getSkillRegistryForUser(db, user.id),
     ]);
 
     const telegramLinked = Boolean(telegramAccount);
@@ -1097,10 +1162,6 @@ export async function GET(request: Request) {
       accountAssetsByKey.set(asset.asset_key, asset);
     }
 
-    const resolved = resolveSkillToolsFromMetadata(
-      caseType.default_skill_slug,
-      registry
-    );
     const catalogById = new Map(TOOL_CATALOG.map((tool) => [tool.id, tool]));
     const tools = resolved.allowedTools.map((toolId) =>
       classifyTool({
@@ -1111,6 +1172,7 @@ export async function GET(request: Request) {
         accountSecretsByProvider,
         accountAssetsByKey,
         requiredAssets: requiredAssetsByTool.get(toolId) ?? [],
+        testAssets: testAssetsByTool.get(toolId) ?? [],
         telegramLinked,
       })
     );

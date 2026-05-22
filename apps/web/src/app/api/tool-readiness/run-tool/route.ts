@@ -43,6 +43,7 @@ import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
   getGlobalOperationalCaseTypeBySlug,
+  listAccountAssets,
   getOperationalCase,
   getOperationalCaseTypeById,
   getOrCreateSession,
@@ -105,7 +106,17 @@ const TOOL_TEST_ARG_RECIPES: Record<
 > = {
   easybroker_search_listings: easyBrokerCaseRecipe,
   easybroker_search_closed_deals: easyBrokerCaseRecipe,
+  image_watermark: () => ({
+    asset_key: "listing_photo_watermark",
+    position: "bottom-right",
+    opacity: 0.6,
+    scale: 0.18,
+  }),
   ungga_publish_listing: unggaPublishCaseRecipe,
+};
+
+const TOOL_TEST_ASSET_KEYS: Record<string, string[]> = {
+  image_watermark: ["test_image_watermark_source"],
 };
 
 function cleanText(value: unknown) {
@@ -481,7 +492,12 @@ async function resolveArgsForMode(params: {
 
   if (mode === "manual") {
     return {
-      args: { ...userArgs },
+      args: await applyTestAssetsToArgs({
+        db,
+        userId,
+        toolId,
+        args: { ...userArgs },
+      }),
       mode_used: "manual",
       source: "manual_user_args",
     };
@@ -498,8 +514,14 @@ async function resolveArgsForMode(params: {
         ? requestedCase
         : await loadLatestTestCase(db, userId, caseType.id);
     if (!testCase) {
+      const normalized = { ...(TEST_DEFAULTS[toolId] ?? {}), ...userArgs };
       return {
-        args: { ...(TEST_DEFAULTS[toolId] ?? {}), ...userArgs },
+        args: await applyTestAssetsToArgs({
+          db,
+          userId,
+          toolId,
+          args: normalized,
+        }),
         mode_used: "smoke",
         source: "fallback_smoke_no_test_case",
         case_id: null,
@@ -529,8 +551,14 @@ async function resolveArgsForMode(params: {
       ...derived,
       ...userArgs,
     };
+    const normalized = applyUserOverrideSemantics(toolId, merged, userArgs);
     return {
-      args: applyUserOverrideSemantics(toolId, merged, userArgs),
+      args: await applyTestAssetsToArgs({
+        db,
+        userId,
+        toolId,
+        args: normalized,
+      }),
       mode_used: "case",
       source,
       case_id: testCase.id,
@@ -538,11 +566,50 @@ async function resolveArgsForMode(params: {
     };
   }
 
+  const normalized = applyUserOverrideSemantics(
+    toolId,
+    { ...(TEST_DEFAULTS[toolId] ?? {}), ...userArgs },
+    userArgs
+  );
   return {
-    args: applyUserOverrideSemantics(toolId, { ...(TEST_DEFAULTS[toolId] ?? {}), ...userArgs }, userArgs),
+    args: await applyTestAssetsToArgs({
+      db,
+      userId,
+      toolId,
+      args: normalized,
+    }),
     mode_used: "smoke",
     source: "smoke_defaults",
   };
+}
+
+async function applyTestAssetsToArgs(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  toolId: string;
+  args: Record<string, unknown>;
+}) {
+  const assetKeys = TOOL_TEST_ASSET_KEYS[params.toolId] ?? [];
+  if (assetKeys.length === 0) return params.args;
+  if (params.toolId === "image_watermark" && Array.isArray(params.args.input_paths)) {
+    return params.args;
+  }
+  const assets = await listAccountAssets(params.db, {
+    userId: params.userId,
+    assetKeys,
+  });
+  if (params.toolId === "image_watermark") {
+    const paths = assets
+      .filter((asset) => typeof asset.storage_path === "string" && asset.storage_path)
+      .map((asset) => `${asset.storage_bucket}:${asset.storage_path}`);
+    if (paths.length > 0) {
+      return {
+        ...params.args,
+        input_paths: paths,
+      };
+    }
+  }
+  return params.args;
 }
 
 function applyUserOverrideSemantics(

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - EasyBroker MLS search tools (`easybroker_search_listings`, `easybroker_search_closed_deals`) via Playwright POC `pocs/easybroker-mls-cli` and per-account provider `easybroker_web`
 - EasyBroker MLS search filters for "minimum" room counts (`min_bedrooms`, `min_bathrooms`, `min_parking_spaces`) and `shared_commission_only`
+- Real `image_watermark` adapter using account watermark assets and Sharp-generated watermarked outputs
+- Tool test UX: declarative test assets for `image_watermark`, signed URL previews of watermarked outputs, and `Probar tool` alongside resource management when a tool is ready
 - Operational case tool testing: sample context (`test-context-samples.ts`), `run-tool` with `case_id`, readable result preview in settings UI
 - `npm run setup:pocs` to install Playwright dependencies for EasyBroker MLS and Ungga POCs
 - Long-term memory (v1): `memory_injection_node`, `match_memories` RPC, `flushSessionMemory`, chat/Telegram triggers; `memory.log` and `turn_summary.log` (see [docs/memory/long_term_memory_plan.md](docs/memory/long_term_memory_plan.md))

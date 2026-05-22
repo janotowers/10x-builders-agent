@@ -5,7 +5,7 @@
  *   - easybroker_create_listing, easybroker_upload_images (stub HTTP, write)
  *   - bigquery_lookup_local_comparables (real, sobre bigquery_run_query)
  *   - generate_document_from_template (real: DOCX desde account_assets)
- *   - image_watermark (stub: necesita asset por tenant)
+ *   - image_watermark (real: Sharp + account_assets)
  *   - ungga_publish_listing (API interna o fallback CLI/Playwright a borrador HITL)
  *
  * Las tools marcadas como stub siguen el patrón
@@ -25,6 +25,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import Docxtemplater from "docxtemplater";
 import PizZip from "pizzip";
+import sharp from "sharp";
 import { z } from "zod";
 import {
   createToolCall,
@@ -49,6 +50,7 @@ import type {
   EasyBrokerWebCredentials,
   UnggaCliCredentials,
 } from "./realestate-credentials";
+import type { AccountAsset } from "@agents/types";
 import type { NotifyUserFn } from "./operational-cases-adapters";
 
 const execFileAsync = promisify(execFile);
@@ -316,13 +318,14 @@ export function addRealEstateTools(
     );
   }
 
-  // ── Image watermark — stub que indica asset faltante ───────────────
+  // ── Image watermark ────────────────────────────────────────────────
   if (toolEnabled("image_watermark", ctx)) {
     tools.push(
       tool(
         async (input: {
           input_paths: string[];
-          position?: string;
+          asset_key?: string;
+          position?: "bottom-right" | "bottom-left" | "top-right" | "top-left" | "center";
           opacity?: number;
           scale?: number;
         }) => {
@@ -334,28 +337,26 @@ export function addRealEstateTools(
             false,
             ctx.turnId
           );
-          const out = {
-            status: "not_configured",
-            hint:
-              "El asset PNG del watermark del tenant no está cargado. Necesito el PNG con transparencia, opacidad y posición preferida. Una vez cargado, este handler usa Sharp para componer y devuelve los paths salida.",
-            received_inputs: input.input_paths.length,
-            position: input.position ?? "bottom-right",
-            opacity: input.opacity ?? 0.6,
-            scale: input.scale ?? 0.18,
-          };
-          await updateToolCallStatus(
-            ctx.db,
-            record.id,
-            "executed",
-            out as unknown as Record<string, unknown>
-          );
-          return JSON.stringify(out);
+          try {
+            const out = await applyImageWatermark(ctx, input);
+            await updateToolCallStatus(ctx.db, record.id, "executed", out);
+            return JSON.stringify(out);
+          } catch (err) {
+            const out = {
+              ok: false,
+              status: "failed",
+              error: err instanceof Error ? err.message : String(err),
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
         },
         {
           name: "image_watermark",
           description: "Applies the tenant watermark to property photos.",
           schema: z.object({
             input_paths: z.array(z.string().min(1)).min(1),
+            asset_key: z.string().min(1).optional(),
             position: z
               .enum(["bottom-right", "bottom-left", "top-right", "top-left", "center"])
               .optional(),
@@ -840,6 +841,301 @@ async function resolveDocumentTemplateAsset(
     ) ??
     null
   );
+}
+
+type ImageWatermarkInput = {
+  input_paths: string[];
+  asset_key?: string;
+  position?: "bottom-right" | "bottom-left" | "top-right" | "top-left" | "center";
+  opacity?: number;
+  scale?: number;
+};
+
+const IMAGE_WATERMARK_OUTPUT_BUCKET = "account-assets";
+const WATERMARK_IMAGE_MIMES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/svg+xml",
+]);
+
+async function applyImageWatermark(
+  ctx: ToolContext,
+  input: ImageWatermarkInput
+): Promise<Record<string, unknown>> {
+  const watermarkAsset = await resolveWatermarkAsset(ctx, input.asset_key);
+  if (!watermarkAsset) {
+    return {
+      ok: false,
+      status: "not_configured",
+      requested_asset_key: input.asset_key ?? null,
+      hint:
+        "No encontré un watermark de imagen en account_assets para esta cuenta. Sube un PNG/SVG/WebP/JPG como watermark, watermark_png o brand_watermark.",
+    };
+  }
+
+  const opacity = clampNumber(input.opacity ?? 0.6, 0, 1);
+  const scale = clampNumber(input.scale ?? 0.18, 0.05, 0.5);
+  const position = input.position ?? "bottom-right";
+  const watermarkBuffer = await downloadStorageObject(
+    ctx,
+    watermarkAsset.storage_bucket,
+    watermarkAsset.storage_path,
+    "watermark"
+  );
+  const batchId = Date.now();
+  const outputs = [];
+
+  for (let index = 0; index < input.input_paths.length; index += 1) {
+    const inputPath = input.input_paths[index];
+    try {
+      const source = await loadImageInput(ctx, inputPath);
+      const base = sharp(source.buffer, { failOn: "none" });
+      const metadata = await base.metadata();
+      const width = metadata.width ?? 0;
+      if (width <= 0) {
+        throw new Error("No se pudo leer el ancho de la imagen fuente.");
+      }
+      const watermarkWidth = Math.max(1, Math.round(width * scale));
+      const preparedWatermark = await prepareWatermark(
+        watermarkBuffer,
+        watermarkWidth,
+        opacity
+      );
+      const outputFormat = outputFormatFor(metadata.format);
+      const outputBuffer = await base
+        .rotate()
+        .composite([
+          {
+            input: preparedWatermark,
+            gravity: gravityForPosition(position),
+          },
+        ])
+        .toFormat(outputFormat.format, outputFormat.options)
+        .toBuffer();
+      const outputPath = `${ctx.userId}/watermarked-images/${batchId}/${index + 1}-${safeSegment(
+        path.basename(source.name).replace(/\.[^.]+$/, "") || "image"
+      )}.${outputFormat.extension}`;
+      const { error: uploadError } = await ctx.db.storage
+        .from(IMAGE_WATERMARK_OUTPUT_BUCKET)
+        .upload(outputPath, outputBuffer, {
+          contentType: outputFormat.contentType,
+          upsert: true,
+        });
+      if (uploadError) {
+        throw new Error(`No se pudo guardar imagen con watermark: ${uploadError.message}`);
+      }
+      const { data: signedUrlData } = await ctx.db.storage
+        .from(IMAGE_WATERMARK_OUTPUT_BUCKET)
+        .createSignedUrl(outputPath, 60 * 60);
+      outputs.push({
+        ok: true,
+        input_path: inputPath,
+        output_bucket: IMAGE_WATERMARK_OUTPUT_BUCKET,
+        output_path: outputPath,
+        signed_url: signedUrlData?.signedUrl,
+        signed_url_expires_in_seconds: 60 * 60,
+        output_content_type: outputFormat.contentType,
+        bytes: outputBuffer.length,
+      });
+    } catch (err) {
+      outputs.push({
+        ok: false,
+        input_path: inputPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const successCount = outputs.filter((item) => item.ok).length;
+  return {
+    ok: successCount === input.input_paths.length,
+    status: successCount === input.input_paths.length ? "watermarked" : "partial_failure",
+    watermark_asset_key: watermarkAsset.asset_key,
+    watermark_bucket: watermarkAsset.storage_bucket,
+    watermark_path: watermarkAsset.storage_path,
+    position,
+    opacity,
+    scale,
+    count: successCount,
+    total: input.input_paths.length,
+    outputs,
+  };
+}
+
+async function resolveWatermarkAsset(ctx: ToolContext, assetKey?: string) {
+  const candidateKeys = Array.from(
+    new Set(
+      [
+        assetKey,
+        "listing_photo_watermark",
+        "watermark",
+        "watermark_png",
+        "brand_watermark",
+        "alebrixe_watermark",
+      ]
+        .map((item) => item?.trim())
+        .filter((item): item is string => Boolean(item))
+    )
+  );
+  const directMatches = await listAccountAssets(ctx.db, {
+    userId: ctx.userId,
+    assetKeys: candidateKeys,
+  });
+  for (const key of candidateKeys) {
+    const match = directMatches.find((asset) => asset.asset_key === key);
+    if (match && isWatermarkImageAsset(match)) return match;
+  }
+
+  const accountAssets = await listAccountAssets(ctx.db, { userId: ctx.userId });
+  return (
+    accountAssets.find(
+      (asset) =>
+        asset.source_tool_id === "image_watermark" && isWatermarkImageAsset(asset)
+    ) ??
+    accountAssets.find(
+      (asset) =>
+        /watermark|marca.*agua|brand/i.test(
+          `${asset.asset_key} ${asset.display_name}`
+        ) && isWatermarkImageAsset(asset)
+    ) ??
+    null
+  );
+}
+
+function isWatermarkImageAsset(asset: AccountAsset) {
+  return Boolean(asset.content_type && WATERMARK_IMAGE_MIMES.has(asset.content_type));
+}
+
+async function loadImageInput(ctx: ToolContext, inputPath: string) {
+  if (/^https?:\/\//i.test(inputPath)) {
+    const response = await fetch(inputPath);
+    if (!response.ok) {
+      throw new Error(`No se pudo descargar imagen (${response.status})`);
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType && !contentType.startsWith("image/")) {
+      throw new Error(`URL no parece imagen: ${contentType}`);
+    }
+    return {
+      buffer: Buffer.from(await response.arrayBuffer()),
+      name: new URL(inputPath).pathname,
+    };
+  }
+
+  const parsed = parseStoragePath(inputPath);
+  return {
+    buffer: await downloadStorageObject(ctx, parsed.bucket, parsed.path, "imagen fuente"),
+    name: parsed.path,
+  };
+}
+
+function parseStoragePath(inputPath: string) {
+  const trimmed = inputPath.trim();
+  const bucketMatch = trimmed.match(/^([a-z0-9._-]+):(.*)$/i);
+  if (bucketMatch?.[1] && bucketMatch?.[2]) {
+    return {
+      bucket: bucketMatch[1],
+      path: bucketMatch[2].replace(/^\/+/, ""),
+    };
+  }
+  return {
+    bucket: IMAGE_WATERMARK_OUTPUT_BUCKET,
+    path: trimmed.replace(/^\/+/, ""),
+  };
+}
+
+async function downloadStorageObject(
+  ctx: ToolContext,
+  bucket: string,
+  storagePath: string,
+  label: string
+) {
+  const { data, error } = await ctx.db.storage.from(bucket).download(storagePath);
+  if (error) {
+    throw new Error(`No se pudo descargar ${label}: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(`No se pudo descargar ${label}: respuesta vacía.`);
+  }
+  return Buffer.from(await data.arrayBuffer());
+}
+
+async function prepareWatermark(
+  watermarkBuffer: Buffer,
+  watermarkWidth: number,
+  opacity: number
+) {
+  const resized = await sharp(watermarkBuffer, { failOn: "none" })
+    .resize({ width: watermarkWidth, withoutEnlargement: true })
+    .png()
+    .toBuffer();
+  const metadata = await sharp(resized).metadata();
+  const width = metadata.width ?? watermarkWidth;
+  const height = metadata.height ?? watermarkWidth;
+  return sharp(resized)
+    .ensureAlpha()
+    .composite([
+      {
+        input: {
+          create: {
+            width,
+            height,
+            channels: 4,
+            background: { r: 255, g: 255, b: 255, alpha: opacity },
+          },
+        },
+        blend: "dest-in",
+      },
+    ])
+    .png()
+    .toBuffer();
+}
+
+function gravityForPosition(position: NonNullable<ImageWatermarkInput["position"]>) {
+  switch (position) {
+    case "bottom-left":
+      return "southwest" as const;
+    case "top-right":
+      return "northeast" as const;
+    case "top-left":
+      return "northwest" as const;
+    case "center":
+      return "center" as const;
+    case "bottom-right":
+    default:
+      return "southeast" as const;
+  }
+}
+
+function outputFormatFor(format?: string) {
+  if (format === "png") {
+    return {
+      format: "png" as const,
+      extension: "png",
+      contentType: "image/png",
+      options: {},
+    };
+  }
+  if (format === "webp") {
+    return {
+      format: "webp" as const,
+      extension: "webp",
+      contentType: "image/webp",
+      options: { quality: 88 },
+    };
+  }
+  return {
+    format: "jpeg" as const,
+    extension: "jpg",
+    contentType: "image/jpeg",
+    options: { quality: 90 },
+  };
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 function normalizeTemplateData(data: Record<string, unknown>) {

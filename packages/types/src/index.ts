@@ -413,6 +413,11 @@ export interface OperationalCaseFlowTool {
   tool_description?: string;
   required_assets?: OperationalCaseRequiredAsset[];
   /**
+   * Archivos temporales/de prueba necesarios para probar una tool en Settings.
+   * A diferencia de required_assets, no son configuración reusable de cuenta.
+   */
+  test_assets?: OperationalCaseRequiredAsset[];
+  /**
    * Mapping declarativo opcional para la prueba individual de tools en
    * modo "Datos del caso". Si está presente, el backend usa este mapping
    * en vez del recipe genérico para derivar args desde `context_jsonb`.

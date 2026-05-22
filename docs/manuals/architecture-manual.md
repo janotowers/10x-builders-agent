@@ -825,8 +825,10 @@ Tools del dominio inmobiliario (en `packages/agent/src/tools/realestate-adapters
   API `apps/web/src/app/api/account-tool-secrets/`.
 - `bigquery_lookup_local_comparables` (stub: necesita confirmar tablas
   warehouse).
-- `generate_document_from_template` (stub: necesita plantillas por tenant).
-- `image_watermark` (stub: necesita asset PNG por tenant).
+- `generate_document_from_template` (DOCX desde `account_assets`; PDF queda
+  pendiente de conversión).
+- `image_watermark` (Sharp + watermark de `account_assets`; genera imágenes
+  marcadas en el bucket privado `account-assets`).
 - `ungga_publish_listing` (API interna preferida: POST a `{api_base}/v1/internal/listings`
   con Bearer; provider `ungga_api`; fallback CLI Playwright `pocs/ungga-cli/` con
   provider `ungga` y dry-run HITL cuando no hay API estable).

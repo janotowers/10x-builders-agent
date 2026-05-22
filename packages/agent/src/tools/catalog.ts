@@ -840,6 +840,11 @@ export const TOOL_CATALOG: ToolDefinition[] = [
           description:
             "Server-side paths or URLs of the source images (within FILE_TOOLS_ROOT or signed URLs).",
         },
+        asset_key: {
+          type: "string",
+          description:
+            "Optional explicit account_assets.asset_key for the watermark. Defaults to watermark, watermark_png, brand_watermark, or a matching image asset.",
+        },
         position: {
           type: "string",
           enum: ["bottom-right", "bottom-left", "top-right", "top-left", "center"],

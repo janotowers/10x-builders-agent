@@ -172,6 +172,7 @@ type ToolReadinessToolItem = {
   requires_integration?: string;
   notes: string[];
   asset_requirements?: ToolAssetRequirementStatus[];
+  test_asset_requirements?: ToolAssetRequirementStatus[];
 };
 
 type ToolAssetRequirementStatus = {
@@ -325,46 +326,49 @@ function isPresent<T>(value: T | null | undefined): value is T {
   return value != null;
 }
 
+function normalizeAssetRequirements(
+  value: unknown
+): OperationalCaseFlowTool["required_assets"] {
+  if (!Array.isArray(value)) return undefined;
+  const assets = value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return null;
+      }
+      const asset = item as Record<string, unknown>;
+      const assetKey =
+        typeof asset.asset_key === "string" ? asset.asset_key.trim() : "";
+      const label = typeof asset.label === "string" ? asset.label.trim() : "";
+      if (!assetKey || !label) return null;
+      return {
+        asset_key: assetKey,
+        label,
+        description:
+          typeof asset.description === "string" && asset.description.trim()
+            ? asset.description.trim()
+            : undefined,
+        accept: Array.isArray(asset.accept)
+          ? asset.accept
+              .filter((value): value is string => typeof value === "string")
+              .map((value) => value.trim())
+              .filter(Boolean)
+          : undefined,
+        max_size_mb:
+          typeof asset.max_size_mb === "number" ? asset.max_size_mb : undefined,
+        required: typeof asset.required === "boolean" ? asset.required : undefined,
+      };
+    })
+    .filter(isPresent);
+  return assets.length ? assets : undefined;
+}
+
 function normalizeFlowTool(value: unknown): OperationalCaseFlowTool | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const toolId = typeof record.tool_id === "string" ? record.tool_id.trim() : "";
   if (!toolId) return null;
-  const requiredAssets = Array.isArray(record.required_assets)
-    ? record.required_assets
-        .map((item) => {
-          if (!item || typeof item !== "object" || Array.isArray(item)) {
-            return null;
-          }
-          const asset = item as Record<string, unknown>;
-          const assetKey =
-            typeof asset.asset_key === "string" ? asset.asset_key.trim() : "";
-          const label =
-            typeof asset.label === "string" ? asset.label.trim() : "";
-          if (!assetKey || !label) return null;
-          return {
-            asset_key: assetKey,
-            label,
-            description:
-              typeof asset.description === "string" && asset.description.trim()
-                ? asset.description.trim()
-                : undefined,
-            accept: Array.isArray(asset.accept)
-              ? asset.accept
-                  .filter((value): value is string => typeof value === "string")
-                  .map((value) => value.trim())
-                  .filter(Boolean)
-              : undefined,
-            max_size_mb:
-              typeof asset.max_size_mb === "number"
-                ? asset.max_size_mb
-                : undefined,
-            required:
-              typeof asset.required === "boolean" ? asset.required : undefined,
-          };
-        })
-        .filter(isPresent)
-    : undefined;
+  const requiredAssets = normalizeAssetRequirements(record.required_assets);
+  const testAssets = normalizeAssetRequirements(record.test_assets);
   return {
     tool_id: toolId,
     tool_label:
@@ -377,6 +381,7 @@ function normalizeFlowTool(value: unknown): OperationalCaseFlowTool | null {
         ? record.tool_description.trim()
         : undefined,
     required_assets: requiredAssets?.length ? requiredAssets : undefined,
+    test_assets: testAssets?.length ? testAssets : undefined,
   };
 }
 
@@ -841,13 +846,19 @@ function formatFileSize(bytes: number | null | undefined) {
 function AccountAssetUploadPanel({
   item,
   row,
+  title = "Recursos de cuenta",
+  requirements,
+  successMessage = "Recurso guardado. Preparación operativa actualizada.",
   onUploaded,
 }: {
   item: ToolReadinessToolItem;
   row: OperationalCaseType;
-  onUploaded: () => void;
+  title?: string;
+  requirements?: ToolAssetRequirementStatus[];
+  successMessage?: string;
+  onUploaded: () => Promise<void> | void;
 }) {
-  const requirements = item.asset_requirements ?? [];
+  const effectiveRequirements = requirements ?? item.asset_requirements ?? [];
   const [submittingKey, setSubmittingKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -878,7 +889,8 @@ function AccountAssetUploadPanel({
         throw new Error(data.error ?? "No se pudo subir el recurso.");
       }
       setMessage("Recurso guardado. Recalculando preparación operativa...");
-      onUploaded();
+      await onUploaded();
+      setMessage(successMessage);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
@@ -886,13 +898,13 @@ function AccountAssetUploadPanel({
     }
   }
 
-  if (requirements.length === 0) return null;
+  if (effectiveRequirements.length === 0) return null;
   return (
     <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-        Recursos de cuenta
+        {title}
       </div>
-      {requirements.map((requirement) => (
+      {effectiveRequirements.map((requirement) => (
         <div
           key={requirement.asset_key}
           className="rounded border border-neutral-200 bg-white p-2 text-xs"
@@ -1057,6 +1069,22 @@ function resultItems(result: unknown): Record<string, unknown>[] {
     .filter((item): item is Record<string, unknown> => Boolean(item));
 }
 
+function imageOutputItems(result: unknown): Record<string, unknown>[] {
+  const root = asRecord(result);
+  const outputs = root?.outputs;
+  if (!Array.isArray(outputs)) return [];
+  return outputs
+    .map((item) => asRecord(item))
+    .filter(
+      (item): item is Record<string, unknown> =>
+        Boolean(
+          item?.ok === true &&
+            typeof item.signed_url === "string" &&
+            item.signed_url.trim()
+        )
+    );
+}
+
 function stringField(item: Record<string, unknown>, key: string) {
   const value = item[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -1068,6 +1096,65 @@ function numberField(item: Record<string, unknown>, key: string) {
 }
 
 function ToolResultPreview({ result }: { result: unknown }) {
+  const imageOutputs = imageOutputItems(result);
+  if (imageOutputs.length > 0) {
+    return (
+      <div className="space-y-2 rounded border border-emerald-100 bg-emerald-50/40 p-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-900">
+            Imágenes generadas
+          </div>
+          <span className="text-[11px] text-emerald-800">
+            {imageOutputs.length} archivo{imageOutputs.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {imageOutputs.slice(0, 6).map((item, index) => {
+            const url = stringField(item, "signed_url");
+            const outputPath = stringField(item, "output_path");
+            const bytes = numberField(item, "bytes");
+            if (!url) return null;
+            return (
+              <div
+                key={`${outputPath ?? url}-${index}`}
+                className="space-y-2 rounded border border-emerald-100 bg-white p-2"
+              >
+                <a href={url} target="_blank" rel="noreferrer">
+                  <img
+                    src={url}
+                    alt={outputPath ?? `Imagen generada ${index + 1}`}
+                    className="max-h-56 w-full rounded border border-neutral-100 object-contain"
+                  />
+                </a>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold text-violet-800 underline-offset-2 hover:underline"
+                  >
+                    Abrir imagen
+                  </a>
+                  {bytes != null ? (
+                    <span className="text-neutral-500">{formatFileSize(bytes)}</span>
+                  ) : null}
+                </div>
+                {outputPath ? (
+                  <div className="break-all font-mono text-[10px] text-neutral-500">
+                    {outputPath}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-emerald-800">
+          Los enlaces firmados expiran; vuelve a ejecutar la prueba si necesitas
+          regenerarlos.
+        </p>
+      </div>
+    );
+  }
   const items = resultItems(result);
   if (items.length === 0) return null;
   const shown = items.slice(0, 3);
@@ -1898,6 +1985,16 @@ function renderReadinessActions(params: {
   if ((item.asset_requirements?.length ?? 0) > 0) {
     return (
       <div className="mt-2 flex flex-wrap items-center gap-2">
+        {item.status === "ready" ? (
+          <button
+            type="button"
+            onClick={params.onToggleExpand}
+            aria-expanded={expanded}
+            className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
+          >
+            {expanded ? "Cerrar" : "Probar tool"}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={params.onToggleExpand}
@@ -1906,7 +2003,7 @@ function renderReadinessActions(params: {
         >
           {expanded ? "Cerrar recursos" : "Gestionar recursos"}
         </button>
-        {!expanded && detailsToggle}
+        {!expanded && item.status !== "ready" ? detailsToggle : null}
       </div>
     );
   }
@@ -2012,9 +2109,17 @@ function renderFlowToolReadiness(params: {
             <AccountAssetUploadPanel
               item={item}
               row={row}
-              onUploaded={() => {
-                void params.refreshToolReadiness(row);
-              }}
+              onUploaded={() => params.refreshToolReadiness(row)}
+            />
+          ) : null}
+          {(item.test_asset_requirements?.length ?? 0) > 0 ? (
+            <AccountAssetUploadPanel
+              item={item}
+              row={row}
+              title="Activos de prueba"
+              requirements={item.test_asset_requirements}
+              successMessage="Activo de prueba guardado. Preparación operativa actualizada."
+              onUploaded={() => params.refreshToolReadiness(row)}
             />
           ) : null}
           {item.status === "ready" ? (
