@@ -1,3 +1,5 @@
 .env
 storage-state.json
+storage-state.bak
 artifacts/
+
