@@ -195,7 +195,7 @@ Orden de prioridad:
 
 1. `telegram_send_message_to_contact` (outbound proactivo a dueño).
 2. `easybroker_search_listings` y `easybroker_search_closed_deals` (read). **Implementado (2026-05):** Playwright MLS + provider `easybroker_web`; ver `pocs/easybroker-mls-cli/`.
-3. `bigquery_lookup_local_comparables` (sobre warehouse propio).
+3. `bigquery_lookup_local_comparables` (sobre inventario interno publicado en warehouse propio; asking prices, no cierres reales).
 4. `generate_document_from_template` (DOCX/PDF, basado en patrones de Anthropic skills `docx`/`pdf` portados a Node con `docx` y `pdf-lib`).
 5. `image_watermark` (Sharp + asset Alebrixe).
 6. `easybroker_create_listing` y `easybroker_upload_images` (write, HITL).
@@ -232,10 +232,10 @@ Para no quedar bloqueado, te listo qué necesito antes de implementar cada bloqu
 |---|---|
 | Subsistema base | Aprobación del esquema final (puedo proponer borrador SQL antes de implementar). |
 | `telegram_send_message_to_contact` | Confirmación si los dueños deben iniciar contacto con el bot vía link `t.me/...`, o ya tienes flujo distinto. |
-| `easybroker_*` | **Búsqueda (read):** credenciales web `easybroker_web` + POC MLS (listo). **Write (create/upload):** API key `easybroker`; adapters write siguen stub hasta endpoints reales. UI: Ajustes → Conexiones o preparación operativa en Casos de uso. |
+| `easybroker_*` | **Búsqueda (read):** credenciales web `easybroker_web` + POC MLS (listo). **Write (create/upload):** API key `easybroker`; adapters HTTP implementados con HITL, prueba controlada de create y assets temporales multi-foto para validar upload desde preparación operativa. |
 | `generate_document_from_template` | Plantilla DOCX actual de Alebrixe + lista de placeholders/campos. |
 | `image_watermark` | PNG con transparencia del watermark de Alebrixe + reglas (esquina, opacidad, tamaño). |
-| `bigquery_lookup_local_comparables` | Confirmación de qué tablas en warehouse tienen propiedades cerradas con zona/precio/m². |
+| `bigquery_lookup_local_comparables` | Implementado sobre `firestore_properties.properties_light` como inventario publicado / asking prices. Pendiente enriquecer cuando existan campos confiables de m² y cierres reales. |
 | Account skills UI | Confirmación de cuán básica es aceptable la primera versión (textarea vs editor con preview). |
 | POC Ungga CLI | Acceso a staging de Ungga + credenciales de prueba; permiso explícito para automatizar contra staging. |
 | POC Ungga API | Definición conjunta del endpoint y el token. |

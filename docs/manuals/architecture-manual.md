@@ -818,13 +818,36 @@ Tools del dominio inmobiliario (en `packages/agent/src/tools/realestate-adapters
   `parking_spaces` son exactos; `min_bedrooms`/`min_bathrooms`/
   `min_parking_spaces` significan "al menos"; `shared_commission_only` activa el
   filtro de comisión compartida cuando el caso/skill lo requiere.
-- `easybroker_create_listing`, `easybroker_upload_images` (**stubs** HTTP write;
-  provider `easybroker` + API key; fallback legacy `EASYBROKER_API_KEY`). Captura
-  y prueba en UI: Ajustes → Conexiones → Credenciales por cuenta, o formulario
-  inline en Casos de uso → preparación operativa;
-  API `apps/web/src/app/api/account-tool-secrets/`.
-- `bigquery_lookup_local_comparables` (stub: necesita confirmar tablas
-  warehouse).
+- `easybroker_create_listing`, `easybroker_upload_images` (**implementadas** HTTP
+  write; provider `easybroker` + API key; fallback legacy `EASYBROKER_API_KEY`;
+  `risk='high'`/HITL). `create` usa `POST /v1/properties` y crea por default
+  `status=not_published`; `upload_images` usa `PATCH /v1/properties/{id}` con
+  URLs firmadas para paths privados de Storage. Las fotos operativas son
+  artefactos de caso/prueba; la readiness UI las modela como colección temporal
+  declarativa (`asset_profile.test`, `param=image_paths`, hasta 30 fotos), no como
+  30 campos fijos. La prueba real controlada de upload requiere
+  `FOTOS A BORRADOR`, intenta reutilizar el último `listing_id` creado por
+  `easybroker_create_listing` y debe usarse sólo sobre borradores de prueba
+  porque EasyBroker reemplaza el arreglo de imágenes de la ficha. EasyBroker
+  limita `images[].url` a 255 caracteres; el adapter usa URLs públicas cortas de
+  Gu OS que redirigen a Supabase Storage cuando hay base URL pública configurada.
+  En local se prueba con `ngrok http 3000` y
+  `EASYBROKER_PUBLIC_ASSET_BASE_URL=https://<ngrok>`; en producción/GCP debe
+  existir `NEXT_PUBLIC_SITE_URL` con un dominio público HTTPS (o una base pública
+  específica para EasyBroker).
+  La pantalla de readiness permite una prueba real controlada de create-listing:
+  requiere `CREAR BORRADOR`, fuerza `not_published` y prefija `[PRUEBA - BORRAR]`.
+  El schema real de create se validó contra el OpenAPI Markdown publicado vía
+  `https://dev.easybroker.com/llms.txt`: `location.name` debe ser la ubicación
+  completa registrada, `show_exact_location` va top-level y `operations[]`
+  requiere `type`, `amount`, `currency`, `active` (más `unit=total`). Si no se
+  manda `agent`, el adapter usa como default el email de `easybroker_web` para
+  que EasyBroker asigne el usuario/agente correspondiente. La respuesta conserva
+  `public_url` y deriva `agent_url` para el panel interno de EasyBroker.
+- `bigquery_lookup_local_comparables` (wrapper BigQuery read-only sobre
+  `firestore_properties.properties_light`; devuelve inventario interno publicado
+  como `asking_price`, no cierres reales, y stats de precio cuando `price_display`
+  se puede parsear).
 - `generate_document_from_template` (DOCX desde `account_assets`; PDF queda
   pendiente de conversión).
 - `image_watermark` (Sharp + watermark de `account_assets`; genera imágenes
@@ -836,7 +859,13 @@ Tools del dominio inmobiliario (en `packages/agent/src/tools/realestate-adapters
 **Readiness y backlog de tools:** `GET /api/tool-readiness?case_type_id=…` (sin
 componer el body completo de la skill; sólo metadata). Solicitudes cuando falta
 capacidad global: tabla `global_tool_requests` + `POST/GET /api/global-tool-requests`.
+Los assets se resuelven de forma declarativa: el catálogo de tools define
+`asset_profile.account` / `asset_profile.test` y cada flow puede sobrescribir con
+`required_assets` / `test_assets` sin cambios de código por caso nuevo.
 Detalle arquitectónico: [`docs/operational-cases/architecture.md`](../operational-cases/architecture.md) §10.
+Para entender la diferencia entre skills user-facing, skills de referencia,
+tools técnicas y wrappers de negocio, ver
+[`docs/skills-tools-architecture.md`](../skills-tools-architecture.md).
 
 Skill compuesta de referencia:
 

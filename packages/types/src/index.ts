@@ -311,6 +311,18 @@ export interface ToolDefinition {
   risk: ToolRisk;
   requires_integration?: string;
   parameters_schema: Record<string, unknown>;
+  asset_profile?: {
+    /**
+     * Assets persistentes de cuenta que la tool necesita para operar
+     * (plantillas, watermarks, logos). El flow puede sobrescribir labels/keys.
+     */
+    account?: OperationalCaseRequiredAsset[];
+    /**
+     * Assets temporales usados sólo por la prueba individual de Settings.
+     * Permite inferir UI/readiness/run-tool sin hardcodear cada caso.
+     */
+    test?: OperationalCaseRequiredAsset[];
+  };
 }
 
 // ============================================================
@@ -320,6 +332,7 @@ export interface ToolDefinition {
 
 export type OperationalCaseStatus =
   | "active"
+  | "waiting_internal"
   | "waiting_external"
   | "paused"
   | "completed"
@@ -432,6 +445,19 @@ export interface OperationalCaseRequiredAsset {
   accept?: string[];
   max_size_mb?: number;
   required?: boolean;
+  /**
+   * Nombre del argumento de la tool que debe recibir este asset o colección
+   * al ejecutar una prueba individual (ej. input_paths, image_paths).
+   */
+  param?: string;
+  /**
+   * Mínimo/máximo de archivos permitidos para este requisito. Defaults:
+   * min=1 si required !== false, max=1.
+   */
+  min_count?: number;
+  max_count?: number;
+  /** Marca explícita para UI/readiness cuando max_count no basta para inferir colección. */
+  collection?: boolean;
 }
 
 export interface OperationalCaseFlowSkill {
@@ -631,6 +657,60 @@ export interface UserNotificationPreferences {
     by_case_type?: Record<string, OperationalCaseReminderPolicy>;
     by_case_id?: Record<string, OperationalCaseReminderPolicy>;
   };
+  created_at: string;
+  updated_at: string;
+}
+
+export type InternalUserNotificationStatus =
+  | "unread"
+  | "read"
+  | "actioned"
+  | "dismissed";
+
+export type NotificationPriority = "low" | "normal" | "high";
+
+export interface InternalUserNotification {
+  id: string;
+  user_id: string;
+  case_id: string | null;
+  kind: string;
+  title: string;
+  body: string;
+  status: InternalUserNotificationStatus;
+  priority: NotificationPriority;
+  action_url: string | null;
+  due_at: string | null;
+  delivered_channels_jsonb: Record<string, unknown>;
+  metadata_jsonb: Record<string, unknown>;
+  created_at: string;
+  read_at: string | null;
+  actioned_at: string | null;
+  updated_at: string;
+}
+
+export type ExternalContactNotificationStatus =
+  | "pending"
+  | "sent"
+  | "responded"
+  | "failed"
+  | "expired"
+  | "cancelled";
+
+export interface ExternalContactNotification {
+  id: string;
+  user_id: string;
+  case_id: string;
+  contact_jsonb: OperationalCaseExternalContact & Record<string, unknown>;
+  channel: Exclude<NotificationChannel, "web">;
+  recipient_identifier: string;
+  message_body: string;
+  status: ExternalContactNotificationStatus;
+  attempt_count: number;
+  max_attempts: number;
+  last_sent_at: string | null;
+  next_reminder_at: string | null;
+  responded_at: string | null;
+  metadata_jsonb: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }

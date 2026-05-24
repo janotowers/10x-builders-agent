@@ -22,6 +22,10 @@ This skill is intended to be included by domain skills such as `company-data`,
 schema, joins, conventions, and canonical SQL patterns in one place so those
 skills do not duplicate warehouse knowledge.
 
+For the broader architecture distinction between user-facing skills, reference
+skills, technical tools, business wrappers, and internal adapters, see
+`docs/skills-tools-architecture.md`.
+
 ## How To Use
 
 1. Read the active skill's task-specific instructions first.

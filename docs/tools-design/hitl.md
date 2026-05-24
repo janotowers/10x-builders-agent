@@ -34,6 +34,8 @@ isProject: false
 
 # LangGraph HITL Layer Plan
 
+> **Alcance de este documento:** HITL de **ejecución de tools** (riesgo `medium`/`high` en el catálogo). Para aprobaciones de negocio que no bloquean una tool sino una decisión comercial (ej. precio de listing), ver **[§7.1 HITL de negocio](../operational-cases/architecture.md#71-hitl-de-negocio-vs-hitl-de-ejecución-de-tools)** en la arquitectura de casos operacionales.
+
 ## Current architecture (and why it breaks)
 
 ```mermaid

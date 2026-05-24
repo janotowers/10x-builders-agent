@@ -5,29 +5,26 @@
  * proactivos del agente: recordatorios, aprobaciones pendientes, escalaciones.
  *
  * Lee `user_notification_preferences.channels_priority_jsonb` (default
- * `["web", "telegram"]`) y elige el primer canal disponible:
+ * `["web", "telegram"]`) y registra siempre una notificación web persistente:
  *
- *   - `web`: hoy se considera "disponible" si la sesión del usuario en
- *     `agent_sessions(channel='web')` se actualizó dentro de los últimos
- *     `WEB_PRESENCE_WINDOW_MINUTES`. Cuando exista una capa real de
- *     notificaciones in-app (toast / inbox), se cambiará por una inserción
- *     ahí; por ahora, si está "presente", el agente devuelve la respuesta
- *     en el siguiente turno y no mandamos por Telegram.
+ *   - `web`: se almacena en `internal_user_notifications` como inbox/action item.
  *   - `telegram`: usa `getTelegramChatId(db, userId)` y manda con
  *     `sendTelegramMessage`.
  *
  * Urgencia:
- *   - `low`: respeta presencia web; si no hay presencia, intenta el
- *     siguiente canal según la prioridad del usuario.
- *   - `normal`: igual que `low` por ahora.
- *   - `high`: ignora presencia y manda por todos los canales con preferencia
- *     ≤ web. Usar para escalaciones (ej. paquete listo, decisión bloqueante).
+ *   - `low` / `normal`: registra web y manda por un canal push habilitado.
+ *   - `high`: registra web y manda por todos los canales habilitados.
  *
  * Devuelve un resumen de qué canales se intentaron y el resultado de cada
  * uno, para que el caller persista el evento `reminder_sent` o `escalated`
  * en `operational_case_events`.
  */
-import { createServerClient, getTelegramChatId } from "@agents/db";
+import {
+  createInternalUserNotification,
+  createServerClient,
+  getTelegramChatId,
+  updateInternalUserNotificationChannels,
+} from "@agents/db";
 import {
   sendTelegramMessage,
   truncateTelegramText,
@@ -36,8 +33,8 @@ import type { NotificationChannel } from "@agents/types";
 
 export type NotifyUrgency = "low" | "normal" | "high";
 
-const WEB_PRESENCE_WINDOW_MINUTES = 5;
 const DEFAULT_PRIORITY: NotificationChannel[] = ["web", "telegram"];
+const PRICE_APPROVAL_DUE_HOURS = 4;
 
 export interface NotifyPayload {
   text: string;
@@ -50,6 +47,7 @@ export interface NotifyPayload {
 export interface NotifyChannelResult {
   channel: NotificationChannel;
   ok: boolean;
+  status?: "stored" | "delivered" | "not_configured" | "failed";
   reason?: string;
 }
 
@@ -79,39 +77,6 @@ async function loadPriority(
   return cleaned.length > 0 ? cleaned : DEFAULT_PRIORITY;
 }
 
-async function isWebPresent(
-  db: ReturnType<typeof createServerClient>,
-  userId: string
-): Promise<boolean> {
-  const cutoff = new Date(
-    Date.now() - WEB_PRESENCE_WINDOW_MINUTES * 60_000
-  ).toISOString();
-  const { data, error } = await db
-    .from("agent_sessions")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("channel", "web")
-    .gte("updated_at", cutoff)
-    .limit(1);
-  if (error) return false;
-  return Array.isArray(data) && data.length > 0;
-}
-
-async function deliverWeb(
-  db: ReturnType<typeof createServerClient>,
-  userId: string,
-  payload: NotifyPayload
-): Promise<NotifyChannelResult> {
-  // Por ahora "entregar por web" solo significa que asumimos que la próxima
-  // interacción del usuario en web verá esta nota. Cuando exista una tabla
-  // `inbox_items` o equivalente, aquí se hace el INSERT correspondiente.
-  // De momento dejamos un evento mínimo en logs para no perder visibilidad.
-  console.log(
-    `[notify] web channel queued user=${userId} kind=${payload.kind ?? "?"}: ${payload.text.slice(0, 200)}`
-  );
-  return { channel: "web", ok: true, reason: "queued (no inbox yet)" };
-}
-
 async function deliverTelegram(
   db: ReturnType<typeof createServerClient>,
   userId: string,
@@ -122,21 +87,46 @@ async function deliverTelegram(
     return {
       channel: "telegram",
       ok: false,
+      status: "not_configured",
       reason: "no_telegram_account_linked",
     };
   }
   try {
+    const notificationId =
+      typeof payload.data?.notification_id === "string"
+        ? payload.data.notification_id
+        : "";
+    const replyMarkup =
+      payload.kind === "price_approval" && notificationId
+        ? {
+            inline_keyboard: [
+              [
+                {
+                  text: "Aprobar precio",
+                  callback_data: `price_approve:${notificationId}`,
+                },
+              ],
+              [
+                {
+                  text: "Ajustar y aprobar",
+                  callback_data: `price_adjust:${notificationId}`,
+                },
+              ],
+            ],
+          }
+        : undefined;
     await sendTelegramMessage(
       chatId,
       truncateTelegramText(payload.text),
-      undefined,
+      replyMarkup,
       { throwOnError: true }
     );
-    return { channel: "telegram", ok: true };
+    return { channel: "telegram", ok: true, status: "delivered" };
   } catch (e) {
     return {
       channel: "telegram",
       ok: false,
+      status: "failed",
       reason: (e as Error).message ?? String(e),
     };
   }
@@ -150,20 +140,61 @@ const DELIVERERS: Record<
     payload: NotifyPayload
   ) => Promise<NotifyChannelResult>
 > = {
-  web: deliverWeb,
+  web: async () => ({ channel: "web", ok: true, status: "stored" }),
   telegram: deliverTelegram,
   // Stubs para canales futuros. Cuando se implementen, swap.
   email: async () => ({
     channel: "email",
     ok: false,
+    status: "not_configured",
     reason: "not_implemented",
   }),
   whatsapp: async () => ({
     channel: "whatsapp",
     ok: false,
+    status: "not_configured",
     reason: "not_implemented",
   }),
 };
+
+function notificationTitle(payload: NotifyPayload) {
+  if (typeof payload.data?.title === "string" && payload.data.title.trim()) {
+    return payload.data.title.trim();
+  }
+  if (payload.kind) return payload.kind.replace(/[_-]+/g, " ");
+  return "Notificacion de Gu";
+}
+
+function notificationActionUrl(payload: NotifyPayload) {
+  const caseId = payload.data?.case_id;
+  return typeof caseId === "string" && caseId.trim()
+    ? `/operational-cases?case_id=${encodeURIComponent(caseId)}`
+    : null;
+}
+
+function notificationDueAt(payload: NotifyPayload) {
+  const dueAt = payload.data?.due_at;
+  if (typeof dueAt === "string" && dueAt.trim()) return dueAt;
+  if (payload.kind === "price_approval") {
+    return new Date(
+      Date.now() + PRICE_APPROVAL_DUE_HOURS * 60 * 60_000
+    ).toISOString();
+  }
+  return null;
+}
+
+function channelMap(results: NotifyChannelResult[]) {
+  return Object.fromEntries(
+    results.map((result) => [
+      result.channel,
+      {
+        ok: result.ok,
+        status: result.status ?? (result.ok ? "delivered" : "failed"),
+        ...(result.reason ? { reason: result.reason } : {}),
+      },
+    ])
+  );
+}
 
 export async function notify(
   db: ReturnType<typeof createServerClient>,
@@ -172,33 +203,52 @@ export async function notify(
   urgency: NotifyUrgency = "normal"
 ): Promise<NotifyResult> {
   const priority = await loadPriority(db, userId);
-  const webPresent =
-    priority.includes("web") && (await isWebPresent(db, userId));
 
   const attempted: NotifyChannelResult[] = [];
   const delivered: NotifyChannelResult[] = [];
+  const webResult: NotifyChannelResult = {
+    channel: "web",
+    ok: true,
+    status: "stored",
+  };
+  attempted.push(webResult);
+  delivered.push(webResult);
+  const caseId =
+    typeof payload.data?.case_id === "string" ? payload.data.case_id : null;
+  const notification = await createInternalUserNotification(db, {
+    userId,
+    caseId,
+    kind: payload.kind ?? "general",
+    title: notificationTitle(payload),
+    body: payload.text,
+    priority: urgency,
+    actionUrl: notificationActionUrl(payload),
+    dueAt: notificationDueAt(payload),
+    deliveredChannels: channelMap([webResult]),
+    metadata: payload.data ?? {},
+  });
 
   for (const channel of priority) {
-    if (channel === "web" && !webPresent && urgency !== "high") {
-      // Sin presencia web y baja urgencia → no marcamos web como entregado;
-      // dejamos que el siguiente canal de la prioridad lo intente.
-      attempted.push({
-        channel: "web",
-        ok: false,
-        reason: "no_web_presence",
-      });
-      continue;
-    }
-    const result = await DELIVERERS[channel](db, userId, payload);
+    if (channel === "web") continue;
+    const result = await DELIVERERS[channel](db, userId, {
+      ...payload,
+      data: {
+        ...(payload.data ?? {}),
+        notification_id: notification.id,
+      },
+    });
     attempted.push(result);
     if (result.ok) {
       delivered.push(result);
-      // Para urgencia normal/low: con un canal entregado basta. Para high:
-      // continuamos para que también llegue por Telegram aunque la web esté
-      // presente.
       if (urgency !== "high") break;
     }
   }
+
+  await updateInternalUserNotificationChannels(
+    db,
+    notification.id,
+    channelMap(attempted)
+  );
 
   return { attempted, delivered };
 }

@@ -6,6 +6,7 @@ import {
   createServerClient,
   getGlobalOperationalCaseTypeBySlug,
   getOperationalCaseTypeById,
+  getRecentOperationalCaseEvents,
   listAccountAssets,
   listAccountToolSecretsPublic,
 } from "@agents/db";
@@ -75,27 +76,39 @@ type ToolReadinessItem = {
   risk?: string;
   requires_integration?: string;
   notes: string[];
+  test_status?: "ready_untested" | "tested_ok" | "tested_failed";
+  last_tested_at?: string | null;
   asset_requirements?: ToolAssetRequirementStatus[];
   test_asset_requirements?: ToolAssetRequirementStatus[];
 };
 
+type SkillTestStatus =
+  | "blocked_by_tools"
+  | "ready_to_test"
+  | "tested_ok"
+  | "tested_failed"
+  | "partial";
+
+type StepTestStatus =
+  | "blocked"
+  | "ready_to_test"
+  | "partially_tested"
+  | "tested_ok"
+  | "tested_failed";
+
+type CaseE2EStatus =
+  | "not_ready"
+  | "ready_for_e2e"
+  | "e2e_passed"
+  | "operational_ready";
+
 type ToolAssetRequirementStatus = OperationalCaseRequiredAsset & {
   configured: boolean;
   asset: AccountAsset | null;
-};
-
-const TOOL_TEST_ASSET_REQUIREMENTS: Record<string, OperationalCaseRequiredAsset[]> = {
-  image_watermark: [
-    {
-      asset_key: "test_image_watermark_source",
-      label: "Foto fuente para probar watermark",
-      description:
-        "Carga una foto temporal de una propiedad para validar cómo se aplica la marca de agua.",
-      accept: ["image/jpeg", "image/png", "image/webp"],
-      max_size_mb: 15,
-      required: true,
-    },
-  ],
+  assets: AccountAsset[];
+  configured_count: number;
+  min_count: number;
+  max_count: number;
 };
 
 type ReadinessSkillGraph = {
@@ -103,6 +116,16 @@ type ReadinessSkillGraph = {
   composedFrom: string[];
   allowedTools: string[];
   warnings: string[];
+};
+
+type ToolTestEvidence = {
+  status: "tested_ok" | "tested_failed";
+  testedAt: string | null;
+};
+
+type SkillTestEvidence = {
+  status: SkillTestStatus;
+  testedAt: string | null;
 };
 
 const ADAPTER_TOOLS = new Set([
@@ -128,11 +151,7 @@ const ADAPTER_TOOLS = new Set([
   "ungga_publish_listing",
 ]);
 
-const STUB_TOOLS = new Set([
-  "bigquery_lookup_local_comparables",
-  "easybroker_create_listing",
-  "easybroker_upload_images",
-]);
+const STUB_TOOLS = new Set<string>([]);
 
 const EASYBROKER_TOOLS = new Set([
   "easybroker_search_listings",
@@ -176,6 +195,13 @@ const ACCOUNT_PROVIDER_LABELS: Record<string, string> = {
 
 function accountProviderLabel(providerId: string) {
   return ACCOUNT_PROVIDER_LABELS[providerId] ?? providerId;
+}
+
+function isEasyBrokerWebOperationalFailure(lastError: string | null | undefined) {
+  if (!lastError) return false;
+  return /command failed|playwright|browser|timeout|storage-state|sesión|session|selector|formulario|captcha|mfa/i.test(
+    lastError
+  );
 }
 
 function unggaPublishAccountState(
@@ -271,33 +297,35 @@ function resolveLocalUnggaCliDir() {
   );
 }
 
-function collectRequiredAssets(flow: OperationalCaseFlowStep[]) {
-  const byTool = new Map<string, OperationalCaseRequiredAsset[]>();
-  const addTool = (tool: OperationalCaseFlowTool) => {
-    const requirements = Array.isArray(tool.required_assets)
-      ? tool.required_assets.filter(
-          (item): item is OperationalCaseRequiredAsset =>
-            Boolean(item?.asset_key && item.label)
-        )
-      : [];
-    if (requirements.length === 0) return;
-    byTool.set(tool.tool_id, [
-      ...(byTool.get(tool.tool_id) ?? []),
-      ...requirements,
-    ]);
-  };
-  for (const step of flow) {
-    for (const tool of step.step_tools ?? []) addTool(tool);
-    for (const skill of step.step_skills ?? []) {
-      for (const tool of skill.skill_tools ?? []) addTool(tool);
-    }
-  }
-  return byTool;
+function validAssetRequirements(
+  requirements: OperationalCaseRequiredAsset[] | undefined
+) {
+  return Array.isArray(requirements)
+    ? requirements.filter(
+        (item): item is OperationalCaseRequiredAsset =>
+          Boolean(item?.asset_key && item.label)
+      )
+    : [];
 }
 
-function collectTestAssets(
+function mergeAssetRequirementsWithDefaults(
+  defaults: OperationalCaseRequiredAsset[],
+  overrides: OperationalCaseRequiredAsset[]
+) {
+  if (overrides.length === 0) return defaults;
+  return overrides.map((override) => {
+    const fallback = defaults.find(
+      (item) => item.asset_key === override.asset_key
+    );
+    return fallback ? { ...fallback, ...override } : override;
+  });
+}
+
+function collectAssetsForScope(
   flow: OperationalCaseFlowStep[],
-  allowedTools: string[]
+  allowedTools: string[],
+  catalogById: Map<string, ToolDefinition>,
+  scope: "account" | "test"
 ) {
   const byTool = new Map<string, OperationalCaseRequiredAsset[]>();
   const add = (toolId: string, requirements: OperationalCaseRequiredAsset[]) => {
@@ -305,15 +333,12 @@ function collectTestAssets(
     byTool.set(toolId, [...(byTool.get(toolId) ?? []), ...requirements]);
   };
   const addTool = (tool: OperationalCaseFlowTool) => {
-    add(
-      tool.tool_id,
-      Array.isArray(tool.test_assets)
-        ? tool.test_assets.filter(
-            (item): item is OperationalCaseRequiredAsset =>
-              Boolean(item?.asset_key && item.label)
-          )
-        : []
+    const def = catalogById.get(tool.tool_id);
+    const defaults = validAssetRequirements(def?.asset_profile?.[scope]);
+    const overrides = validAssetRequirements(
+      scope === "account" ? tool.required_assets : tool.test_assets
     );
+    add(tool.tool_id, mergeAssetRequirementsWithDefaults(defaults, overrides));
   };
   for (const step of flow) {
     for (const tool of step.step_tools ?? []) addTool(tool);
@@ -322,9 +347,59 @@ function collectTestAssets(
     }
   }
   for (const toolId of allowedTools) {
-    add(toolId, TOOL_TEST_ASSET_REQUIREMENTS[toolId] ?? []);
+    if (byTool.has(toolId)) continue;
+    const def = catalogById.get(toolId);
+    add(toolId, validAssetRequirements(def?.asset_profile?.[scope]));
   }
   return byTool;
+}
+
+function minAssetCount(requirement: OperationalCaseRequiredAsset) {
+  if (typeof requirement.min_count === "number") return requirement.min_count;
+  return requirement.required === false ? 0 : 1;
+}
+
+function maxAssetCount(requirement: OperationalCaseRequiredAsset) {
+  if (typeof requirement.max_count === "number") return requirement.max_count;
+  return 1;
+}
+
+function isAssetCollection(requirement: OperationalCaseRequiredAsset) {
+  return requirement.collection === true || maxAssetCount(requirement) > 1;
+}
+
+function assetsForRequirement(
+  accountAssets: AccountAsset[],
+  requirement: OperationalCaseRequiredAsset
+) {
+  const exact = accountAssets.filter(
+    (asset) => asset.asset_key === requirement.asset_key
+  );
+  if (!isAssetCollection(requirement)) return exact;
+  const prefixed = accountAssets.filter((asset) =>
+    asset.asset_key.startsWith(`${requirement.asset_key}__`)
+  );
+  return [...exact, ...prefixed].sort((a, b) =>
+    a.asset_key.localeCompare(b.asset_key)
+  );
+}
+
+function assetRequirementStatus(
+  requirement: OperationalCaseRequiredAsset,
+  accountAssets: AccountAsset[]
+): ToolAssetRequirementStatus {
+  const assets = assetsForRequirement(accountAssets, requirement);
+  const minCount = minAssetCount(requirement);
+  const maxCount = maxAssetCount(requirement);
+  return {
+    ...requirement,
+    min_count: minCount,
+    max_count: maxCount,
+    configured: assets.length >= minCount,
+    asset: assets[0] ?? null,
+    assets,
+    configured_count: assets.length,
+  };
 }
 
 function classifyTool(params: {
@@ -333,7 +408,7 @@ function classifyTool(params: {
   settings: UserToolSetting[];
   integrations: UserIntegration[];
   accountSecretsByProvider: Map<string, AccountToolSecretPublic>;
-  accountAssetsByKey: Map<string, AccountAsset>;
+  accountAssets: AccountAsset[];
   requiredAssets: OperationalCaseRequiredAsset[];
   testAssets: OperationalCaseRequiredAsset[];
   telegramLinked: boolean;
@@ -341,14 +416,9 @@ function classifyTool(params: {
   const notes: string[] = [];
   const exists = Boolean(params.def);
   const adapterAvailable = ADAPTER_TOOLS.has(params.toolId);
-  const testAssetRequirements = params.testAssets.map((requirement) => {
-    const asset = params.accountAssetsByKey.get(requirement.asset_key) ?? null;
-    return {
-      ...requirement,
-      configured: Boolean(asset),
-      asset,
-    } satisfies ToolAssetRequirementStatus;
-  });
+  const testAssetRequirements = params.testAssets.map((requirement) =>
+    assetRequirementStatus(requirement, params.accountAssets)
+  );
   const base = {
     risk: params.def?.risk,
     requires_integration: params.def?.requires_integration,
@@ -366,21 +436,21 @@ function classifyTool(params: {
       ? (params.accountSecretsByProvider.get(accountProviderId) ?? null)
       : null;
   const accountSecretStatus = accountSecret?.status ?? null;
-  const assetRequirements = params.requiredAssets.map((requirement) => {
-    const asset = params.accountAssetsByKey.get(requirement.asset_key) ?? null;
-    return {
-      ...requirement,
-      configured: Boolean(asset),
-      asset,
-    } satisfies ToolAssetRequirementStatus;
-  });
+  const easyBrokerWebOperationalFailure =
+    accountProviderId === "easybroker_web" &&
+    accountSecretStatus === "invalid" &&
+    isEasyBrokerWebOperationalFailure(accountSecret?.last_error);
+  const assetRequirements = params.requiredAssets.map((requirement) =>
+    assetRequirementStatus(requirement, params.accountAssets)
+  );
   const missingRequiredAssets = assetRequirements.filter(
     (requirement) => requirement.required !== false && !requirement.configured
   );
   // `active` significa que la última validación fue OK; los estados
   // intermedios (`pending_test`, `invalid`) se tratan más abajo como
   // needs_config con acciones específicas.
-  const accountSatisfied = accountSecretStatus === "active";
+  const accountSatisfied =
+    accountSecretStatus === "active" || easyBrokerWebOperationalFailure;
 
   if (!exists) {
     return {
@@ -607,7 +677,7 @@ function classifyTool(params: {
   // depender de env vars globales. Estados intermedios producen
   // needs_config con acciones específicas.
   if (accountProviderConfigurable && accountProviderId) {
-    if (accountSecretStatus === "invalid") {
+    if (accountSecretStatus === "invalid" && !easyBrokerWebOperationalFailure) {
       notes.push(
         `Conexión con ${accountProviderId} falló en la última validación: ${accountSecret?.last_error ?? "error sin detalle"}.`
       );
@@ -656,9 +726,15 @@ function classifyTool(params: {
       };
     }
     if (accountSatisfied) {
-      notes.push(
-        `Conexión con ${accountProviderId} activa por cuenta — no depende de env vars globales.`
-      );
+      if (easyBrokerWebOperationalFailure) {
+        notes.push(
+          `EasyBroker MLS tiene credenciales guardadas, pero la última ejecución falló por automatización/sesión: ${accountSecret?.last_error ?? "error sin detalle"}. Puedes volver a probar la tool sin reingresar credenciales.`
+        );
+      } else {
+        notes.push(
+          `Conexión con ${accountProviderId} activa por cuenta — no depende de env vars globales.`
+        );
+      }
       // Cae al check de STUB / ready más abajo.
     } else if (!envConfigured(params.toolId)) {
       // Sin secret per-cuenta y sin env: ofrecemos configurarlo aquí mismo
@@ -965,9 +1041,19 @@ function resolveSkillToolsFromMetadata(
   return {
     rootName,
     composedFrom: order,
-    allowedTools,
+    allowedTools: pruneToolsForOperationalReadiness(rootName, allowedTools),
     warnings,
   };
+}
+
+function pruneToolsForOperationalReadiness(rootName: string, toolIds: string[]) {
+  if (
+    rootName === "property-optioning-coach" &&
+    toolIds.includes("bigquery_lookup_local_comparables")
+  ) {
+    return toolIds.filter((toolId) => toolId !== "bigquery_run_query");
+  }
+  return toolIds;
 }
 
 function labelFromSlug(value: string) {
@@ -976,6 +1062,195 @@ function labelFromSlug(value: string) {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+async function toolTestEvidenceForUser(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  toolIds: string[]
+) {
+  if (toolIds.length === 0) return new Map<string, ToolTestEvidence>();
+  const { data: sessions, error: sessionsError } = await db
+    .from("agent_sessions")
+    .select("id")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (sessionsError) {
+    console.warn("[tool-readiness] tool test session lookup failed:", sessionsError);
+    return new Map<string, ToolTestEvidence>();
+  }
+  const sessionIds = (sessions ?? [])
+    .map((row) => (row as { id?: unknown }).id)
+    .filter((id): id is string => typeof id === "string");
+  if (sessionIds.length === 0) return new Map<string, ToolTestEvidence>();
+  const { data: calls, error: callsError } = await db
+    .from("tool_calls")
+    .select("tool_name,status,finished_at,created_at")
+    .in("session_id", sessionIds)
+    .in("tool_name", Array.from(new Set(toolIds)))
+    .in("status", ["executed", "failed"])
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (callsError) {
+    console.warn("[tool-readiness] tool test call lookup failed:", callsError);
+    return new Map<string, ToolTestEvidence>();
+  }
+  const evidence = new Map<string, ToolTestEvidence>();
+  for (const call of calls ?? []) {
+    const row = call as {
+      tool_name?: unknown;
+      status?: unknown;
+      finished_at?: unknown;
+      created_at?: unknown;
+    };
+    if (typeof row.tool_name !== "string" || evidence.has(row.tool_name)) continue;
+    evidence.set(row.tool_name, {
+      status: row.status === "executed" ? "tested_ok" : "tested_failed",
+      testedAt:
+        typeof row.finished_at === "string"
+          ? row.finished_at
+          : typeof row.created_at === "string"
+            ? row.created_at
+            : null,
+    });
+  }
+  return evidence;
+}
+
+function applyToolTestEvidence(
+  tool: ToolReadinessItem,
+  evidence: Map<string, ToolTestEvidence>
+): ToolReadinessItem {
+  const item = evidence.get(tool.tool_id);
+  if (!item) {
+    return {
+      ...tool,
+      test_status: "ready_untested",
+      last_tested_at: null,
+    };
+  }
+  return {
+    ...tool,
+    test_status: item.status,
+    last_tested_at: item.testedAt,
+  };
+}
+
+function toolReadyAndTested(tool: ToolReadinessItem | null) {
+  return tool?.status === "ready" && tool.test_status === "tested_ok";
+}
+
+function toolReadyButUntested(tool: ToolReadinessItem | null) {
+  return tool?.status === "ready" && tool.test_status !== "tested_ok";
+}
+
+function skillTestStatus(tools: Array<ToolReadinessItem | null>): SkillTestStatus {
+  if (tools.some((tool) => !tool || tool.blocking || tool.status !== "ready")) {
+    return "blocked_by_tools";
+  }
+  if (tools.some((tool) => tool?.test_status === "tested_failed")) return "tested_failed";
+  if (tools.some(toolReadyButUntested)) return "blocked_by_tools";
+  if (tools.length > 0 && tools.every(toolReadyAndTested)) return "ready_to_test";
+  return "ready_to_test";
+}
+
+function stepTestStatus(
+  skills: Array<{ test_status?: SkillTestStatus }>,
+  tools: Array<ToolReadinessItem | null>
+): StepTestStatus {
+  const skillStatuses = skills.map((skill) => skill.test_status);
+  if (tools.some((tool) => !tool || tool.blocking || tool.status !== "ready")) {
+    return "blocked";
+  }
+  if (skillStatuses.some((status) => status === "blocked_by_tools")) return "blocked";
+  if (
+    skillStatuses.some((status) => status === "tested_failed") ||
+    tools.some((tool) => tool?.test_status === "tested_failed")
+  ) {
+    return "tested_failed";
+  }
+  const directToolsOk = tools.length === 0 || tools.every(toolReadyAndTested);
+  if (
+    (skillStatuses.length === 0 || skillStatuses.every((status) => status === "tested_ok")) &&
+    directToolsOk
+  ) {
+    return "tested_ok";
+  }
+  if (
+    skillStatuses.some((status) => status === "tested_ok" || status === "partial") ||
+    tools.some((tool) => tool?.test_status === "tested_ok")
+  ) {
+    return "partially_tested";
+  }
+  return "ready_to_test";
+}
+
+function applySkillTestEvidence<T extends { skill_slug: string; test_status?: SkillTestStatus }>(
+  skills: T[],
+  evidence: Map<string, SkillTestEvidence>
+): T[] {
+  return skills.map((skill) => {
+    const item = evidence.get(skill.skill_slug);
+    return item ? { ...skill, test_status: item.status } : skill;
+  });
+}
+
+async function latestSettingsTestCaseId(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  caseTypeId: string
+) {
+  const { data, error } = await db
+    .from("operational_cases")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("case_type_id", caseTypeId)
+    .eq("context_jsonb->>created_from", "case_type_settings_test")
+    .eq("context_jsonb->>test_mode", "true")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn("[tool-readiness] latest test case lookup failed:", error);
+    return null;
+  }
+  return typeof data?.id === "string" ? data.id : null;
+}
+
+async function skillTestEvidenceForCase(
+  db: ReturnType<typeof createServerClient>,
+  caseId: string | null
+) {
+  const evidence = new Map<string, SkillTestEvidence>();
+  if (!caseId) return evidence;
+  const events = await getRecentOperationalCaseEvents(db, caseId, 100);
+  for (const event of events) {
+    const payload = event.payload_jsonb as Record<string, unknown> | null;
+    if (payload?.kind !== "skill_test_completed") continue;
+    const slug = typeof payload.skill_slug === "string" ? payload.skill_slug : null;
+    if (!slug) continue;
+    const rawStatus =
+      typeof payload.status === "string" ? payload.status : "tested_failed";
+    const status: SkillTestStatus =
+      rawStatus === "tested_ok" || rawStatus === "partial"
+        ? rawStatus
+        : "tested_failed";
+    evidence.set(slug, { status, testedAt: event.created_at });
+  }
+  return evidence;
+}
+
+function caseE2EStatus(flow: Array<{ test_status?: StepTestStatus }>): CaseE2EStatus {
+  const procedure = flow.filter((step) => step.test_status != null);
+  if (procedure.some((step) => step.test_status === "blocked")) return "not_ready";
+  if (
+    procedure.length > 0 &&
+    procedure.every((step) => step.test_status === "tested_ok")
+  ) {
+    return "ready_for_e2e";
+  }
+  return "not_ready";
 }
 
 function fallbackOperationalFlow(
@@ -1036,12 +1311,14 @@ function enrichFlow(params: {
   toolsById: Map<string, ReturnType<typeof classifyTool>>;
   resolved: ReadinessSkillGraph;
   registry: Awaited<ReturnType<typeof getSkillRegistryForUser>>;
+  skillEvidence?: Map<string, SkillTestEvidence>;
 }) {
   const sourceFlow =
     params.flow.length > 0
       ? params.flow
       : fallbackOperationalFlow(params.resolved, params.registry);
   const mapped = new Set<string>();
+  const allowedToolIds = new Set(params.resolved.allowedTools);
 
   function enrichTool(tool: OperationalCaseFlowTool) {
     mapped.add(tool.tool_id);
@@ -1051,14 +1328,31 @@ function enrichFlow(params: {
     };
   }
 
-  const flow = sourceFlow.map((step) => ({
-    ...step,
-    step_skills: (step.step_skills ?? []).map((skill: OperationalCaseFlowSkill) => ({
-      ...skill,
-      skill_tools: (skill.skill_tools ?? []).map(enrichTool),
-    })),
-    step_tools: (step.step_tools ?? []).map(enrichTool),
-  }));
+  const flow = sourceFlow.map((step) => {
+    const enrichedSkills = (step.step_skills ?? []).map((skill: OperationalCaseFlowSkill) => {
+      const skillTools = (skill.skill_tools ?? [])
+        .filter((tool) => allowedToolIds.has(tool.tool_id))
+        .map(enrichTool);
+      return {
+        ...skill,
+        skill_tools: skillTools,
+        test_status: skillTestStatus(skillTools.map((tool) => tool.readiness)),
+      };
+    });
+    const evidencedSkills = applySkillTestEvidence(
+      enrichedSkills,
+      params.skillEvidence ?? new Map()
+    );
+    const stepTools = (step.step_tools ?? [])
+      .filter((tool) => allowedToolIds.has(tool.tool_id))
+      .map(enrichTool);
+    return {
+      ...step,
+      step_skills: evidencedSkills,
+      step_tools: stepTools,
+      test_status: stepTestStatus(evidencedSkills, stepTools.map((tool) => tool.readiness)),
+    };
+  });
 
   const unmappedTools = params.resolved.allowedTools
     .filter((toolId) => !mapped.has(toolId))
@@ -1076,6 +1370,7 @@ function enrichFlow(params: {
         "Herramientas permitidas por la habilidad que no pertenecen a un paso específico (auditoría, contexto del usuario, referencias internas). El agente puede usarlas en cualquier paso.",
       step_skills: [],
       step_tools: unmappedTools,
+      test_status: stepTestStatus([], unmappedTools.map((tool) => tool.readiness)),
     });
   }
 
@@ -1115,18 +1410,36 @@ export async function GET(request: Request) {
       : [];
     const sourceFlow = ownFlow.length > 0 ? ownFlow : inheritedFlow;
     const registry = await getSkillRegistryForUser(db, user.id);
-    const requiredAssetsByTool = collectRequiredAssets(sourceFlow);
     const resolved = resolveSkillToolsFromMetadata(
       caseType.default_skill_slug,
       registry
     );
-    const testAssetsByTool = collectTestAssets(sourceFlow, resolved.allowedTools);
+    const catalogById = new Map(TOOL_CATALOG.map((tool) => [tool.id, tool]));
+    const requiredAssetsByTool = collectAssetsForScope(
+      sourceFlow,
+      resolved.allowedTools,
+      catalogById,
+      "account"
+    );
+    const testAssetsByTool = collectAssetsForScope(
+      sourceFlow,
+      resolved.allowedTools,
+      catalogById,
+      "test"
+    );
+    const allAssetRequirements = [
+      ...Array.from(requiredAssetsByTool.values()).flat(),
+      ...Array.from(testAssetsByTool.values()).flat(),
+    ];
     const requiredAssetKeys = Array.from(
       new Set(
-        [
-          ...Array.from(requiredAssetsByTool.values()).flat(),
-          ...Array.from(testAssetsByTool.values()).flat(),
-        ]
+        allAssetRequirements.map((asset) => asset.asset_key)
+      )
+    );
+    const assetKeyPrefixes = Array.from(
+      new Set(
+        allAssetRequirements
+          .filter(isAssetCollection)
           .map((asset) => asset.asset_key)
       )
     );
@@ -1149,6 +1462,7 @@ export async function GET(request: Request) {
       listAccountAssets(db, {
         userId: user.id,
         assetKeys: requiredAssetKeys,
+        assetKeyPrefixes,
       }),
     ]);
 
@@ -1157,32 +1471,38 @@ export async function GET(request: Request) {
     for (const secret of accountSecrets) {
       accountSecretsByProvider.set(secret.provider, secret);
     }
-    const accountAssetsByKey = new Map<string, AccountAsset>();
-    for (const asset of accountAssets) {
-      accountAssetsByKey.set(asset.asset_key, asset);
-    }
-
-    const catalogById = new Map(TOOL_CATALOG.map((tool) => [tool.id, tool]));
-    const tools = resolved.allowedTools.map((toolId) =>
+    const rawTools = resolved.allowedTools.map((toolId) =>
       classifyTool({
         toolId,
         def: catalogById.get(toolId),
         settings: (toolSettings ?? []) as UserToolSetting[],
         integrations: (integrations ?? []) as UserIntegration[],
         accountSecretsByProvider,
-        accountAssetsByKey,
+        accountAssets,
         requiredAssets: requiredAssetsByTool.get(toolId) ?? [],
         testAssets: testAssetsByTool.get(toolId) ?? [],
         telegramLinked,
       })
     );
+    const toolEvidence = await toolTestEvidenceForUser(
+      db,
+      user.id,
+      rawTools.map((tool) => tool.tool_id)
+    );
+    const tools = rawTools.map((tool) => applyToolTestEvidence(tool, toolEvidence));
     const toolsById = new Map(tools.map((tool) => [tool.tool_id, tool]));
+    const testCaseId = await latestSettingsTestCaseId(db, user.id, caseType.id);
+    const skillEvidence = await skillTestEvidenceForCase(db, testCaseId);
     const flow = enrichFlow({
       flow: sourceFlow,
       toolsById,
       resolved,
       registry,
+      skillEvidence,
     });
+    const case_e2e_status = caseE2EStatus(
+      flow.filter((step) => step.step_key !== "transversal_tools")
+    );
 
     const hasBlocking = tools.some((tool) => tool.blocking);
     const hasStub = tools.some((tool) => tool.status === "stub");
@@ -1206,6 +1526,7 @@ export async function GET(request: Request) {
         warnings: resolved.warnings,
       },
       summary,
+      case_e2e_status,
       tools,
       flow,
     });

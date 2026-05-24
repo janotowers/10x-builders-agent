@@ -6,7 +6,7 @@
  *
  * Pasos por tick:
  *   1. Lee casos donde next_action_at <= now() y status in (active,
- *      waiting_external) — `getDueOperationalCases`.
+ *      waiting_internal, waiting_external) — `getDueOperationalCases`.
  *   2. Para cada caso, intenta tomar el lock optimista (`markCaseProcessing`).
  *      Si otro worker se adelantó, lo salta.
  *   3. Crea/recupera una sesión persistente para el caso (canal `case_runner`).
@@ -33,18 +33,36 @@ import {
   getGoogleCalendarAccessToken,
   getDueOperationalCases,
   getOperationalCase,
+  listDueExternalContactNotifications,
+  listDueInternalUserNotifications,
   insertOperationalCaseEvent,
+  markExternalContactNotificationFailed,
+  markExternalContactNotificationSent,
+  markInternalNotificationReminderSent,
+  expireExternalContactNotification,
   markCaseProcessing,
   updateOperationalCase,
   getOrCreateSession,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
-import type { OperationalCase } from "@agents/types";
+import type {
+  ExternalContactNotification,
+  InternalUserNotification,
+  OperationalCase,
+} from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import { notify } from "@/lib/notify";
+import {
+  sendTelegramMessage,
+  truncateTelegramText,
+} from "@/lib/telegram/send-message";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 
 const DEFAULT_CONCURRENCY = 5;
+const DEFAULT_INTERNAL_REMINDER_COOLDOWN_HOURS = 24;
+const PRICE_APPROVAL_INTERNAL_REMINDER_COOLDOWN_HOURS = 4;
+const EXTERNAL_CONTACT_REMINDER_COOLDOWN_HOURS = 24;
 
 function isAuthorized(request: Request): boolean {
   const auth = request.headers.get("authorization") ?? "";
@@ -69,6 +87,147 @@ function buildCaseTickMessage(opCase: OperationalCase): string {
     `Tick de procesamiento del caso operacional ${opCase.id} (case_type=${opCase.case_type}, status=${opCase.status}, current_step=${opCase.current_step ?? "(none)"}).`,
     "Lee el bloque [Caso operacional activo] del system prompt y decide la siguiente acción siguiendo la skill activa. Si necesitas comunicarte con el humano externo o interno, usa las tools correspondientes. Cuando avances un paso, actualiza el caso con la tool de update y registra el evento.",
   ].join(" ");
+}
+
+function hoursFromNow(hours: number) {
+  return new Date(Date.now() + hours * 60 * 60_000).toISOString();
+}
+
+function shouldSendInternalReminder(notification: InternalUserNotification) {
+  const lastReminder = notification.metadata_jsonb?.last_reminder_at;
+  if (typeof lastReminder !== "string") return true;
+  const cooldownHours =
+    notification.kind === "price_approval"
+      ? PRICE_APPROVAL_INTERNAL_REMINDER_COOLDOWN_HOURS
+      : DEFAULT_INTERNAL_REMINDER_COOLDOWN_HOURS;
+  // TODO: make reminder cadence configurable by user, notification kind,
+  // priority, working hours, and the user's timezone.
+  return (
+    Date.now() - new Date(lastReminder).getTime() >
+    cooldownHours * 60 * 60_000
+  );
+}
+
+async function processInternalNotificationReminder(
+  db: ReturnType<typeof createServerClient>,
+  notification: InternalUserNotification
+) {
+  if (!shouldSendInternalReminder(notification)) return "cooldown";
+  await notify(
+    db,
+    notification.user_id,
+    {
+      text: `Recordatorio: ${notification.title}\n\n${notification.body}`,
+      kind: "internal_notification_reminder",
+      data: {
+        case_id: notification.case_id ?? undefined,
+        title: `Recordatorio: ${notification.title}`,
+        source_notification_id: notification.id,
+      },
+    },
+    notification.priority
+  );
+  await markInternalNotificationReminderSent(db, notification);
+  if (notification.case_id) {
+    await insertOperationalCaseEvent(db, {
+      caseId: notification.case_id,
+      eventType: "reminder_sent",
+      actor: "system",
+      payload: {
+        source: "internal_user_notifications",
+        notification_id: notification.id,
+      },
+    });
+  }
+  return "reminded";
+}
+
+async function processExternalContactReminder(
+  db: ReturnType<typeof createServerClient>,
+  notification: ExternalContactNotification
+) {
+  if (notification.attempt_count >= notification.max_attempts) {
+    await expireExternalContactNotification(db, notification.id);
+    await notify(
+      db,
+      notification.user_id,
+      {
+        text:
+          "Un contacto externo no respondio despues del maximo de recordatorios. " +
+          `Caso: ${notification.case_id}. Canal: ${notification.channel}.`,
+        kind: "external_contact_escalation",
+        data: {
+          case_id: notification.case_id,
+          title: "Contacto externo sin respuesta",
+          external_notification_id: notification.id,
+        },
+      },
+      "high"
+    );
+    await insertOperationalCaseEvent(db, {
+      caseId: notification.case_id,
+      eventType: "escalated",
+      actor: "system",
+      payload: {
+        source: "external_contact_notifications",
+        notification_id: notification.id,
+        reason: "max_attempts_reached",
+      },
+    });
+    return "expired_escalated";
+  }
+
+  if (notification.channel !== "telegram") return "unsupported_channel";
+  try {
+    await sendTelegramMessage(
+      Number(notification.recipient_identifier),
+      truncateTelegramText(notification.message_body),
+      undefined,
+      { throwOnError: true }
+    );
+    await markExternalContactNotificationSent(
+      db,
+      notification,
+      hoursFromNow(EXTERNAL_CONTACT_REMINDER_COOLDOWN_HOURS)
+    );
+    await insertOperationalCaseEvent(db, {
+      caseId: notification.case_id,
+      eventType: "reminder_sent",
+      actor: "system",
+      payload: {
+        source: "external_contact_notifications",
+        notification_id: notification.id,
+        channel: notification.channel,
+        attempt: notification.attempt_count + 1,
+      },
+    });
+    return "sent";
+  } catch (error) {
+    await markExternalContactNotificationFailed(
+      db,
+      notification.id,
+      error instanceof Error ? error.message : String(error)
+    );
+    return "failed";
+  }
+}
+
+async function processNotificationReminders(
+  db: ReturnType<typeof createServerClient>
+) {
+  const [internalDue, externalDue] = await Promise.all([
+    listDueInternalUserNotifications(db, { limit: 50 }),
+    listDueExternalContactNotifications(db, { limit: 50 }),
+  ]);
+  const internalResults = [];
+  for (const notification of internalDue) {
+    internalResults.push(await processInternalNotificationReminder(db, notification));
+  }
+  const externalResults = [];
+  for (const notification of externalDue) {
+    externalResults.push(await processExternalContactReminder(db, notification));
+  }
+  return { internal: internalResults, external: externalResults };
 }
 
 async function processCase(
@@ -213,6 +372,15 @@ export async function POST(request: Request) {
   ensureAgentToolDepsWired();
   const db = createServerClient();
 
+  let notificationReminderResults: Awaited<
+    ReturnType<typeof processNotificationReminders>
+  > = { internal: [], external: [] };
+  try {
+    notificationReminderResults = await processNotificationReminders(db);
+  } catch (e) {
+    console.error("[ops-case-cron] notification reminders failed:", e);
+  }
+
   let dueCases: OperationalCase[] = [];
   try {
     dueCases = await getDueOperationalCases(db, { limit: 100 });
@@ -225,7 +393,11 @@ export async function POST(request: Request) {
   }
 
   if (dueCases.length === 0) {
-    return NextResponse.json({ processed: 0, results: [] });
+    return NextResponse.json({
+      processed: 0,
+      results: [],
+      notification_reminders: notificationReminderResults,
+    });
   }
 
   const concurrencyEnv = process.env.OPERATIONAL_CASES_CONCURRENCY?.trim();
@@ -241,5 +413,9 @@ export async function POST(request: Request) {
     results.map((r) => `${r.case_id}=${r.status}`).join(", ")
   );
 
-  return NextResponse.json({ processed: results.length, results });
+  return NextResponse.json({
+    processed: results.length,
+    results,
+    notification_reminders: notificationReminderResults,
+  });
 }

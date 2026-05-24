@@ -22,7 +22,6 @@ allowed_tools:
   - operational_case_update_state
   - operational_case_add_event
   - telegram_send_message_to_contact
-  - bigquery_run_query
   - bigquery_lookup_local_comparables
   - easybroker_search_listings
   - easybroker_search_closed_deals
@@ -121,7 +120,11 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
    - al **dueño/lead** (humano externo): siempre
      `telegram_send_message_to_contact` (HITL antes de mandar texto nuevo
      no plantillado).
-6. **HITL en juicio comercial**: precio (mínimo y de salida), selección
+6. **Validación por artefactos de negocio**: cada paso se considera probado
+   cuando la sub-skill genera el artefacto esperado en `context_jsonb`
+   (`comparables_analysis`, `pricing_proposal`, paquete de publicación, etc.),
+   no sólo porque una tool respondió técnicamente.
+7. **HITL en juicio comercial**: precio (mínimo y de salida), selección
    final de comparables, contrato firmado, decisión de publicar. Tú
    preparas, el humano decide.
 

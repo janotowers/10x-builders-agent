@@ -28,6 +28,7 @@ import type { ToolContext } from "./tool-context";
 
 const STATUS_VALUES = [
   "active",
+  "waiting_internal",
   "waiting_external",
   "paused",
   "completed",
@@ -382,6 +383,7 @@ export function addOperationalCaseTools(
           urgency?: "low" | "normal" | "high";
           case_id?: string;
         }) => {
+          const caseId = input.case_id ?? ctx.caseId ?? undefined;
           const record = await createToolCall(
             ctx.db,
             ctx.sessionId,
@@ -397,7 +399,15 @@ export function addOperationalCaseTools(
               {
                 text: input.text,
                 kind: input.kind,
-                data: input.case_id ? { case_id: input.case_id } : undefined,
+                data: {
+                  ...(caseId ? { case_id: caseId } : {}),
+                  ...(input.kind === "price_approval"
+                    ? {
+                        artifact_key: "pricing_proposal",
+                        actions: ["approve", "adjust", "reject"],
+                      }
+                    : {}),
+                },
               },
               input.urgency ?? "normal"
             );

@@ -27,6 +27,7 @@ type Search = { case?: string };
 
 const CASE_STATUSES: OperationalCaseStatus[] = [
   "active",
+  "waiting_internal",
   "waiting_external",
   "paused",
   "completed",
@@ -35,6 +36,7 @@ const CASE_STATUSES: OperationalCaseStatus[] = [
 
 const STATUS_LABELS: Record<OperationalCaseStatus, string> = {
   active: "Activo",
+  waiting_internal: "Esperando asesor",
   waiting_external: "Esperando externo",
   paused: "Pausado",
   completed: "Completado",
@@ -43,6 +45,7 @@ const STATUS_LABELS: Record<OperationalCaseStatus, string> = {
 
 const STATUS_BADGES: Record<OperationalCaseStatus, string> = {
   active: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  waiting_internal: "border-violet-200 bg-violet-50 text-violet-700",
   waiting_external: "border-amber-200 bg-amber-50 text-amber-700",
   paused: "border-neutral-200 bg-neutral-50 text-neutral-600",
   completed: "border-blue-200 bg-blue-50 text-blue-700",

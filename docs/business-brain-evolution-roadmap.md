@@ -17,7 +17,7 @@ Canonical roadmap for evolving the assistant (Skills, Heartbeat, Business Brain)
 | **V1-E** | Settings: Heartbeat UI, digest history, and skill catalog visibility grouped by `scope` |
 | **V1.5** | Visible **Skill Registry** + `user_skill_settings` toggles/config per account; tenant-configurable `brand-kit`; staged document/file skills behind attachment tools |
 | **V1.6 (NEW, in progress)** | **`account_skills` V1 (Opción B mínima)**: tabla `account_skills(slug, body_md, metadata_jsonb, status, version)` + RLS por `user_id`; runtime compone `account_skills(active) ∪ skills/global/*` con override por slug; UI mínima en Ajustes (textarea + frontmatter + Zod). Sin draft/review/archived/rollback ni shared per-org. |
-| **V1.7 (NEW, in progress)** | **Subsistema `operational_cases`**: cron `/api/cron/operational-cases`, lock optimista por `version`, binding directo de skill por `case_type`, `notify_user` multi-canal con `user_notification_preferences`, webhook entrante que asocia respuestas externas (Telegram). Pilot end-to-end: `property-optioning-coach` para Alebrixe. |
+| **V1.7 (NEW, in progress)** | **Subsistema `operational_cases`**: cron `/api/cron/operational-cases`, lock optimista por `version`, binding directo de skill por `case_type`, `notify_user` multi-canal con inbox persistente (`internal_user_notifications`), HITL de negocio (`price_approval`), status `waiting_internal`, webhook entrante que asocia respuestas externas (Telegram). Pilot end-to-end: `property-optioning-coach` para Alebrixe. |
 | **V2** | `account_skills` versioning completo (draft/active/archived, rollback, QA pre-publicación, editor con preview), admin UI + test harness para playbooks custom across `scope: business | personal | shared` |
 | **V3** | `organizations` + memberships + RLS; `account_skills` shareables a nivel de organización; optional dynamic multi-skill router/subagents |
 
@@ -1000,15 +1000,23 @@ externas. El piloto end-to-end es "opcionar propiedad" para Alebrixe.
 | 1.7-4 | Adaptación de `runAgent` para aceptar `caseId`: inyecta bloque `[Caso operacional activo]` (state + últimos eventos) en system prompt; binding directo de skill cuando `case_type` define `default_skill_slug`. |
 | 1.7-5 | Webhook `/api/telegram/webhook` enriquecido: detecta contactos externos asociados a un caso `waiting_external` y dispara procesamiento inmediato. |
 | 1.7-6 | Tools del subsistema: `operational_case_update_state` (con `expected_version`), `operational_case_add_event`, `notify_user`. |
-| 1.7-7 | Tools del dominio inmobiliario: `telegram_send_message_to_contact` (HITL); `easybroker_search_*` (**implementadas** vía `easybroker_web` + POC `pocs/easybroker-mls-cli/`); `easybroker_create_listing` / `easybroker_upload_images` (write API, stub); `bigquery_lookup_local_comparables`, `generate_document_from_template`, `image_watermark` (stubs); `ungga_publish_listing` (API + fallback CLI). |
+| 1.7-7 | Tools del dominio inmobiliario: `telegram_send_message_to_contact` (HITL); `easybroker_search_*` (**implementadas** vía `easybroker_web` + POC `pocs/easybroker-mls-cli/`); `easybroker_create_listing` / `easybroker_upload_images` (write API HTTP + HITL, con assets temporales multi-foto para pruebas de upload); `generate_document_from_template`, `image_watermark` (implementadas); `bigquery_lookup_local_comparables` (wrapper BigQuery sobre inventario interno publicado / asking prices); `ungga_publish_listing` (API + fallback CLI). |
 | 1.7-8 | Skills: composite `property-optioning-coach` + atómicas (`request-property-documents`, `extract-property-characteristics`, `perform-comparable-analysis`, `prepare-listing-price`, `prepare-commission-contract`, `coordinate-photo-session`, `publish-listing-package`). Inicialmente globales para desarrollo; al activar el piloto real se mueven a `account_skills` de Alebrixe. |
 | 1.7-9 | CI: `scripts/validate-skill-tool-refs.mjs` (`npm run validate:skills`, `prebuild`) rechaza build si una skill referencia tools que no existen en el catálogo. |
 | 1.7-10 | POCs Playwright: `pocs/easybroker-mls-cli/` (MLS en producto), `pocs/ungga-cli/` (staging) y `pocs/ungga-api/` (OpenAPI propuesto). Setup: `npm run setup:pocs`. |
+| 1.7-11 | Migraciones `00035_persistent_notifications.sql`, `00036_waiting_internal_status.sql`: `internal_user_notifications`, `external_contact_notifications`, status `waiting_internal`. |
+| 1.7-12 | Inbox web **Pendientes** (`/api/notifications`, chat UI) + `notify()` siempre persiste web; recordatorios internos/externos en cron operational-cases. |
+| 1.7-13 | **HITL de negocio** para `price_approval`: handler compartido, `POST /api/business-decisions/price-approval`, botones Telegram, parser textual; aprobar o ajustar-y-aprobar avanza a `contract_pending`. |
+| 1.7-14 | Framework de prueba de skills en settings: contratos (artefactos, tools, eventos), reparación determinística donde aplica, UX de resultados más clara. |
+| 1.7-15 | `bigquery_lookup_local_comparables` + mejoras tool/skill readiness (`perform-comparable-analysis`, `prepare-listing-price`). |
 
 **Out of V1.7 (queda para futuro):** WhatsApp Cloud API outbound,
 browser automation a portales sin API ni partnership (Inmuebles24; EasyBroker MLS
 ya está acotado en `easybroker_web`), motor durable tipo
-Temporal/Inngest, multi-agente. Ver
+Temporal/Inngest, multi-agente, **políticas de notificación configurables en UI**
+(cooldowns por tipo/canal, horario laboral, defaults de `due_at`), rama completa
+**Pedir revisión** de precio (motivo → replantear propuesta → nueva notificación).
+Ver
 [`docs/operational-cases/future-considerations.md`](operational-cases/future-considerations.md).
 
 **Documentos:**

@@ -50,14 +50,17 @@ import {
 } from "@agents/db";
 import {
   buildLangChainTools,
+  getBusinessBrainWarehouse,
   getSkillRegistryForUser,
   TOOL_CATALOG,
   type ToolContext,
 } from "@agents/agent";
 import type {
+  AccountAsset,
   OperationalCase,
   OperationalCaseFlowStep,
   OperationalCaseFlowTool,
+  OperationalCaseRequiredAsset,
   ToolDefinition,
   UserIntegration,
   UserToolSetting,
@@ -74,9 +77,17 @@ type ToolRunBody = {
   args?: Record<string, unknown>;
   confirm?: boolean;
   preview?: boolean;
+  controlled_real_write?: boolean;
+  confirmation_text?: string;
 };
 
 const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
+  notify_user: {
+    text: "Prueba controlada desde Ajustes: valida que la notificacion al asesor pueda entregarse.",
+    kind: "tool_readiness_test",
+    urgency: "low",
+  },
+  bigquery_lookup_local_comparables: { months_back: 24, limit: 100 },
   easybroker_search_listings: { limit: 50 },
   easybroker_search_closed_deals: { limit: 50 },
   ungga_publish_listing: {
@@ -106,17 +117,17 @@ const TOOL_TEST_ARG_RECIPES: Record<
 > = {
   easybroker_search_listings: easyBrokerCaseRecipe,
   easybroker_search_closed_deals: easyBrokerCaseRecipe,
+  bigquery_lookup_local_comparables: bigQueryLocalComparablesCaseRecipe,
+  notify_user: notifyUserCaseRecipe,
   image_watermark: () => ({
     asset_key: "listing_photo_watermark",
     position: "bottom-right",
     opacity: 0.6,
     scale: 0.18,
   }),
+  easybroker_create_listing: easyBrokerCreateCaseRecipe,
+  easybroker_upload_images: easyBrokerUploadImagesCaseRecipe,
   ungga_publish_listing: unggaPublishCaseRecipe,
-};
-
-const TOOL_TEST_ASSET_KEYS: Record<string, string[]> = {
-  image_watermark: ["test_image_watermark_source"],
 };
 
 function cleanText(value: unknown) {
@@ -128,7 +139,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Tools de riesgo alto que sí pueden ejecutarse en dry-run desde esta capa de prueba. */
-const HIGH_RISK_DRY_RUN_TOOLS = new Set(["ungga_publish_listing"]);
+const HIGH_RISK_DRY_RUN_TOOLS = new Set([
+  "easybroker_create_listing",
+  "easybroker_upload_images",
+  "ungga_publish_listing",
+]);
+
+const CONTROLLED_REAL_WRITE_TOOLS = new Set([
+  "easybroker_create_listing",
+  "easybroker_upload_images",
+]);
+const CONTROLLED_REAL_WRITE_CONFIRMATIONS: Record<string, string> = {
+  easybroker_create_listing: "CREAR BORRADOR",
+  easybroker_upload_images: "FOTOS A BORRADOR",
+};
+
+function controlledRealWriteConfirmation(toolId: string) {
+  return CONTROLLED_REAL_WRITE_CONFIRMATIONS[toolId] ?? "";
+}
 
 function pickRiskPolicy(
   def: ToolDefinition | undefined,
@@ -227,6 +255,57 @@ function firstNumber(ctx: Record<string, unknown>, keys: string[]) {
   return null;
 }
 
+function contextWithPropertyData(ctx: Record<string, unknown>) {
+  const propertyData = isRecord(ctx.property_data) ? ctx.property_data : {};
+  return { ...propertyData, ...ctx };
+}
+
+function notifyUserCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+  const merged = contextWithPropertyData(ctx);
+  const propertyType =
+    firstStringArray(merged, ["property_type", "tipo_propiedad", "tipo"])[0] ??
+    "propiedad";
+  const operationRaw =
+    firstStringArray(merged, ["operation", "operation_type", "tipo_operacion"])[0] ??
+    "";
+  const normalizedOperation = operationRaw.toLowerCase();
+  const operation =
+    normalizedOperation === "rent" || normalizedOperation.includes("renta")
+    ? "renta"
+    : normalizedOperation === "sale" || normalizedOperation.includes("venta")
+      ? "venta"
+      : "operacion";
+  const zona =
+    firstString(merged, [
+      "zona",
+      "property_zone",
+      "neighborhood",
+      "colonia",
+      "property_address",
+      "address",
+    ]) ?? "la zona capturada";
+  const price = firstNumber(merged, [
+    "target_price",
+    "expected_price",
+    "asking_price",
+    "price",
+    "precio",
+  ]);
+  const priceText =
+    price != null
+      ? ` Precio de referencia capturado: ${new Intl.NumberFormat("es-MX", {
+          style: "currency",
+          currency: "MXN",
+          maximumFractionDigits: 0,
+        }).format(price)}.`
+      : "";
+  return {
+    text: `Prueba controlada desde Ajustes: la habilidad solicita revision del asesor para ${propertyType} en ${operation} en ${zona}.${priceText} No requiere accion real; valida que notify_user pueda entregar mensajes del flow.`,
+    kind: "tool_readiness_test",
+    urgency: "low",
+  };
+}
+
 function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
   const args: Record<string, unknown> = { limit: 50 };
   const zona = firstString(ctx, [
@@ -292,6 +371,70 @@ function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
   if (bathrooms != null) args.bathrooms = bathrooms;
   const parking = firstNumber(ctx, ["parking_spaces", "parking", "estacionamientos"]);
   if (parking != null) args.parking_spaces = parking;
+  return args;
+}
+
+function bigQueryLocalComparablesCaseRecipe(
+  ctx: Record<string, unknown>
+): Record<string, unknown> {
+  const args: Record<string, unknown> = { months_back: 24, limit: 100 };
+  const zona = firstString(ctx, [
+    "zona",
+    "property_zone",
+    "neighborhood",
+    "colonia",
+    "city_area",
+    "property_address",
+    "address",
+  ]);
+  if (zona) args.zona = zona;
+
+  const operation = firstStringArray(ctx, [
+    "operation",
+    "operation_type",
+    "tipo_operacion",
+  ])
+    .map((value) => value.toLowerCase())
+    .map((value) => {
+      if (value === "rent" || value.includes("renta")) return "rent";
+      if (value === "sale" || value.includes("venta")) return "sale";
+      return null;
+    })
+    .find((value): value is "sale" | "rent" => value != null);
+  if (operation) args.operation = operation;
+
+  const propertyType = firstStringArray(ctx, [
+    "property_type",
+    "tipo_propiedad",
+    "tipo",
+  ])[0];
+  if (propertyType) args.property_type = propertyType;
+
+  const minPrice = firstNumber(ctx, ["min_price", "price_min", "precio_min"]);
+  const maxPrice = firstNumber(ctx, ["max_price", "price_max", "precio_max"]);
+  const targetPrice = firstNumber(ctx, [
+    "target_price",
+    "expected_price",
+    "asking_price",
+    "price",
+    "precio",
+  ]);
+  if (targetPrice != null) args.target_price = targetPrice;
+  if (minPrice != null) args.min_price = minPrice;
+  if (maxPrice != null) args.max_price = maxPrice;
+
+  const areaM2 = firstNumber(ctx, [
+    "area_m2",
+    "construction_m2",
+    "construction_size",
+    "superficie",
+    "m2",
+  ]);
+  if (areaM2 != null) {
+    args.min_area_m2 = Math.round(areaM2 * 0.7);
+    args.max_area_m2 = Math.round(areaM2 * 1.3);
+  }
+
   return args;
 }
 
@@ -386,6 +529,236 @@ function unggaPublishCaseRecipe(ctx: Record<string, unknown>): Record<string, un
   return args;
 }
 
+function easyBrokerCreateCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  const propertyType = selectPublishPropertyType(ctx);
+  const operationRaw =
+    firstStringArray(ctx, ["operation", "operation_type", "tipo_operacion"])[0] ??
+    "sale";
+  const operation =
+    operationRaw.toLowerCase().includes("renta") || operationRaw === "rent"
+      ? "rent"
+      : "sale";
+  const price =
+    firstNumber(ctx, ["target_price", "expected_price", "asking_price", "price", "precio"]) ??
+    21000;
+  const zona = firstString(ctx, [
+    "zona",
+    "property_zone",
+    "neighborhood",
+    "colonia",
+    "property_address",
+    "address",
+  ]);
+  const street =
+    firstString(ctx, ["street", "calle"]) ??
+    "Av. Patria 2644";
+  const locationName =
+    firstString(ctx, ["location_name", "neighborhood", "colonia"]) ??
+    "Colomos Providencia";
+  const locationFullName =
+    firstString(ctx, ["location_full_name", "easybroker_location_full_name"]) ??
+    zona ??
+    "Colomos Providencia, Guadalajara, Jalisco";
+  const city = firstString(ctx, ["city", "ciudad"]) ?? "Guadalajara";
+  const state = firstString(ctx, ["state", "estado"]) ?? "Jalisco";
+  const country = firstString(ctx, ["country", "pais"]) ?? "México";
+  const cityArea =
+    firstString(ctx, ["city_area", "neighborhood", "colonia"]) ??
+    locationName;
+  const bedrooms = firstNumber(ctx, ["bedrooms", "recamaras"]) ?? 2;
+  const bathrooms = firstNumber(ctx, ["bathrooms", "banos"]);
+  const fullBathrooms = bathrooms != null ? Math.floor(bathrooms) : 2;
+  const parking = firstNumber(ctx, ["parking_spaces", "parking", "estacionamientos"]) ?? 1;
+  const operationLabel = operation === "rent" ? "renta" : "venta";
+  args.title =
+    firstString(ctx, ["title", "listing_title", "property_title"]) ??
+    `${propertyType} en ${operationLabel} en ${cityArea}`;
+  args.description =
+    firstString(ctx, ["description", "listing_description"]) ??
+    `${propertyType} en ${operationLabel} en ${locationFullName}. Cuenta con ${formatCount(
+      bedrooms,
+      "recámara",
+      "recámaras"
+    )}, ${formatCount(fullBathrooms, "baño", "baños")} y ${formatCount(
+      parking,
+      "estacionamiento",
+      "estacionamientos"
+    )}. Borrador generado por Gu OS para revisión humana antes de publicar.`;
+  args.operation = operation;
+  args.property_type = propertyType;
+  args.price = price;
+  args.currency = firstString(ctx, ["currency", "moneda"]) ?? "MXN";
+  args.status = "not_published";
+  args.street = street;
+  const latitude =
+    firstNumber(ctx, ["latitude", "lat", "easybroker_latitude"]) ?? 20.7044;
+  const longitude =
+    firstNumber(ctx, ["longitude", "lng", "lon", "easybroker_longitude"]) ?? -103.3793;
+  args.location = {
+    street,
+    name: locationName,
+    full_name: locationFullName,
+    type: firstString(ctx, ["location_type"]) ?? "Neighborhood",
+    city,
+    state,
+    country,
+    city_area: cityArea,
+    latitude,
+    longitude,
+  };
+  const areaM2 = firstNumber(ctx, ["area_m2", "construction_m2", "construction_size", "superficie", "m2"]);
+  if (areaM2 != null) args.construction_size = areaM2;
+  args.bedrooms = bedrooms;
+  args.bathrooms = fullBathrooms;
+  if (bathrooms != null && bathrooms % 1 > 0) args.half_bathrooms = 1;
+  args.parking_spaces = parking;
+  args.features = [
+    "Alberca",
+    "Gimnasio",
+    "Salón de usos múltiples",
+    "Terraza",
+    "Área de juegos",
+  ];
+  return args;
+}
+
+function formatCount(value: number, singular: string, plural: string) {
+  return `${value} ${value === 1 ? singular : plural}`;
+}
+
+function selectPublishPropertyType(ctx: Record<string, unknown>) {
+  const explicit =
+    firstStringArray(ctx, [
+      "publish_property_type",
+      "listing_property_type",
+      "easybroker_property_type",
+    ])[0] ?? null;
+  if (explicit) return explicit;
+  const candidates = firstStringArray(ctx, [
+    "property_type",
+    "tipo_propiedad",
+    "tipo",
+  ]);
+  if (candidates.length === 1) return candidates[0];
+  const apartment = candidates.find((value) =>
+    value.toLowerCase().includes("departamento")
+  );
+  return apartment ?? candidates[0] ?? "Departamento";
+}
+
+function validEasyBrokerListingId(value: unknown) {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.trim() !== "REEMPLAZA-CON-LISTING-ID"
+  );
+}
+
+function listingIdFromResult(result: unknown) {
+  if (!isRecord(result)) return null;
+  const listingId = cleanText(result.listing_id);
+  if (validEasyBrokerListingId(listingId)) return listingId;
+  const publicId = cleanText(result.public_id);
+  if (validEasyBrokerListingId(publicId)) return publicId;
+  return null;
+}
+
+async function latestEasyBrokerCreateListingIdForUser(
+  db: ReturnType<typeof createServerClient>,
+  userId: string
+) {
+  const { data: sessions, error: sessionsError } = await db
+    .from("agent_sessions")
+    .select("id")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (sessionsError) {
+    console.warn("[run-tool] listing_id session lookup failed:", sessionsError);
+    return null;
+  }
+  const sessionIds = (sessions ?? [])
+    .map((session) => (typeof session.id === "string" ? session.id : null))
+    .filter((id): id is string => Boolean(id));
+  if (sessionIds.length === 0) return null;
+
+  const { data: calls, error: callsError } = await db
+    .from("tool_calls")
+    .select("result_json")
+    .in("session_id", sessionIds)
+    .eq("tool_name", "easybroker_create_listing")
+    .eq("status", "executed")
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (callsError) {
+    console.warn("[run-tool] listing_id tool_call lookup failed:", callsError);
+    return null;
+  }
+
+  for (const call of calls ?? []) {
+    const listingId = listingIdFromResult(call.result_json);
+    if (listingId) return listingId;
+  }
+  return null;
+}
+
+async function hydrateEasyBrokerUploadListingId(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  toolId: string;
+  args: Record<string, unknown>;
+}) {
+  if (params.toolId !== "easybroker_upload_images") return params.args;
+  if (validEasyBrokerListingId(params.args.listing_id)) return params.args;
+  const listingId = await latestEasyBrokerCreateListingIdForUser(
+    params.db,
+    params.userId
+  );
+  if (!listingId) return params.args;
+  return {
+    ...params.args,
+    listing_id: listingId,
+  };
+}
+
+function applyControlledRealWriteSafeguards(
+  toolId: string,
+  args: Record<string, unknown>
+) {
+  if (toolId === "easybroker_upload_images") {
+    return {
+      ...args,
+      dry_run: false,
+    };
+  }
+  const currentTitle =
+    typeof args.title === "string" && args.title.trim()
+      ? args.title.trim()
+      : "Borrador EasyBroker";
+  const safeTitle = currentTitle.startsWith("[PRUEBA - BORRAR]")
+    ? currentTitle
+    : `[PRUEBA - BORRAR] ${currentTitle}`;
+  return {
+    ...args,
+    title: safeTitle,
+    status: "not_published",
+    dry_run: false,
+  };
+}
+
+function easyBrokerUploadImagesCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+  return {
+    listing_id:
+      firstString(ctx, [
+        "easybroker_listing_id",
+        "listing_id",
+        "public_id",
+        "easybroker_public_id",
+      ]) ?? "REEMPLAZA-CON-LISTING-ID",
+  };
+}
+
 function genericArgsFromContext(
   def: ToolDefinition,
   ctx: Record<string, unknown>
@@ -470,6 +843,66 @@ async function effectiveFlowForCaseType(
     : [];
 }
 
+function validAssetRequirements(
+  requirements: OperationalCaseRequiredAsset[] | undefined
+) {
+  return Array.isArray(requirements)
+    ? requirements.filter(
+        (item): item is OperationalCaseRequiredAsset =>
+          Boolean(item?.asset_key && item.label)
+      )
+    : [];
+}
+
+function mergeAssetRequirementsWithDefaults(
+  defaults: OperationalCaseRequiredAsset[],
+  overrides: OperationalCaseRequiredAsset[]
+) {
+  if (overrides.length === 0) return defaults;
+  return overrides.map((override) => {
+    const fallback = defaults.find(
+      (item) => item.asset_key === override.asset_key
+    );
+    return fallback ? { ...fallback, ...override } : override;
+  });
+}
+
+function maxAssetCount(requirement: OperationalCaseRequiredAsset) {
+  if (typeof requirement.max_count === "number") return requirement.max_count;
+  return 1;
+}
+
+function isAssetCollection(requirement: OperationalCaseRequiredAsset) {
+  return requirement.collection === true || maxAssetCount(requirement) > 1;
+}
+
+function assetsForRequirement(
+  assets: AccountAsset[],
+  requirement: OperationalCaseRequiredAsset
+) {
+  const exact = assets.filter((asset) => asset.asset_key === requirement.asset_key);
+  if (!isAssetCollection(requirement)) return exact;
+  const prefixed = assets.filter((asset) =>
+    asset.asset_key.startsWith(`${requirement.asset_key}__`)
+  );
+  return [...exact, ...prefixed].sort((a, b) =>
+    a.asset_key.localeCompare(b.asset_key)
+  );
+}
+
+async function testAssetRequirementsForTool(params: {
+  db: ReturnType<typeof createServerClient>;
+  caseType: Awaited<ReturnType<typeof getOperationalCaseTypeById>>;
+  def: ToolDefinition;
+  toolId: string;
+}) {
+  const flow = await effectiveFlowForCaseType(params.db, params.caseType);
+  const flowTool = flattenFlow(flow).find((tool) => tool.tool_id === params.toolId);
+  const defaults = validAssetRequirements(params.def.asset_profile?.test);
+  const overrides = validAssetRequirements(flowTool?.test_assets);
+  return mergeAssetRequirementsWithDefaults(defaults, overrides);
+}
+
 interface ArgResolution {
   args: Record<string, unknown>;
   mode_used: ToolRunMode;
@@ -495,6 +928,8 @@ async function resolveArgsForMode(params: {
       args: await applyTestAssetsToArgs({
         db,
         userId,
+        caseType,
+        def,
         toolId,
         args: { ...userArgs },
       }),
@@ -519,6 +954,8 @@ async function resolveArgsForMode(params: {
         args: await applyTestAssetsToArgs({
           db,
           userId,
+          caseType,
+          def,
           toolId,
           args: normalized,
         }),
@@ -556,6 +993,8 @@ async function resolveArgsForMode(params: {
       args: await applyTestAssetsToArgs({
         db,
         userId,
+        caseType,
+        def,
         toolId,
         args: normalized,
       }),
@@ -575,6 +1014,8 @@ async function resolveArgsForMode(params: {
     args: await applyTestAssetsToArgs({
       db,
       userId,
+      caseType,
+      def,
       toolId,
       args: normalized,
     }),
@@ -586,30 +1027,46 @@ async function resolveArgsForMode(params: {
 async function applyTestAssetsToArgs(params: {
   db: ReturnType<typeof createServerClient>;
   userId: string;
+  caseType: Awaited<ReturnType<typeof getOperationalCaseTypeById>>;
+  def: ToolDefinition;
   toolId: string;
   args: Record<string, unknown>;
 }) {
-  const assetKeys = TOOL_TEST_ASSET_KEYS[params.toolId] ?? [];
-  if (assetKeys.length === 0) return params.args;
-  if (params.toolId === "image_watermark" && Array.isArray(params.args.input_paths)) {
-    return params.args;
-  }
+  const requirements = await testAssetRequirementsForTool({
+    db: params.db,
+    caseType: params.caseType,
+    def: params.def,
+    toolId: params.toolId,
+  });
+  if (requirements.length === 0) return params.args;
+  const assetKeys = requirements.map((requirement) => requirement.asset_key);
+  const assetKeyPrefixes = requirements
+    .filter(isAssetCollection)
+    .map((requirement) => requirement.asset_key);
   const assets = await listAccountAssets(params.db, {
     userId: params.userId,
     assetKeys,
+    assetKeyPrefixes,
   });
-  if (params.toolId === "image_watermark") {
-    const paths = assets
+
+  const nextArgs = { ...params.args };
+  for (const requirement of requirements) {
+    if (!requirement.param) continue;
+    if (
+      Array.isArray(nextArgs[requirement.param]) &&
+      (nextArgs[requirement.param] as unknown[]).length > 0
+    ) {
+      continue;
+    }
+    const paths = assetsForRequirement(assets, requirement)
       .filter((asset) => typeof asset.storage_path === "string" && asset.storage_path)
-      .map((asset) => `${asset.storage_bucket}:${asset.storage_path}`);
+      .map((asset) => `${asset.storage_bucket}:${asset.storage_path}`)
+      .slice(0, maxAssetCount(requirement));
     if (paths.length > 0) {
-      return {
-        ...params.args,
-        input_paths: paths,
-      };
+      nextArgs[requirement.param] = paths;
     }
   }
-  return params.args;
+  return nextArgs;
 }
 
 function applyUserOverrideSemantics(
@@ -678,6 +1135,21 @@ function removeExactIfMinimumWasProvided(
   }
 }
 
+function toolAllowedForCaseType(
+  toolId: string,
+  allowedTools: readonly string[],
+  rootSkill: string
+) {
+  if (
+    rootSkill === "property-optioning-coach" &&
+    toolId === "bigquery_run_query" &&
+    allowedTools.includes("bigquery_lookup_local_comparables")
+  ) {
+    return false;
+  }
+  return allowedTools.includes(toolId);
+}
+
 export async function POST(request: Request) {
   try {
     const supabase = await createClient();
@@ -715,7 +1187,7 @@ export async function POST(request: Request) {
     const registry = await getSkillRegistryForUser(db, user.id);
     const skillRecord = registry.get(caseType.default_skill_slug);
     const allowed = skillRecord?.metadata.allowedTools ?? [];
-    if (!allowed.includes(toolId)) {
+    if (!toolAllowedForCaseType(toolId, allowed, caseType.default_skill_slug)) {
       return NextResponse.json(
         {
           error: "tool_not_allowed_for_case_type",
@@ -743,8 +1215,51 @@ export async function POST(request: Request) {
       mode: requestedMode,
       userArgs,
     });
+    const resolvedArgs = await hydrateEasyBrokerUploadListingId({
+      db,
+      userId: user.id,
+      toolId,
+      args: resolution.args,
+    });
 
+    const controlledRealWriteRequested = body.controlled_real_write === true;
+    const expectedControlledConfirmation = controlledRealWriteConfirmation(toolId);
+    if (
+      controlledRealWriteRequested &&
+      (!CONTROLLED_REAL_WRITE_TOOLS.has(toolId) ||
+        cleanText(body.confirmation_text) !== expectedControlledConfirmation)
+    ) {
+      return NextResponse.json(
+        {
+          error: "controlled_real_write_not_allowed",
+          hint: `Esta prueba real controlada requiere una tool permitida y escribir "${expectedControlledConfirmation}".`,
+        },
+        { status: 400 }
+      );
+    }
+    if (
+      controlledRealWriteRequested &&
+      toolId === "easybroker_upload_images" &&
+      !validEasyBrokerListingId(resolvedArgs.listing_id)
+    ) {
+      return NextResponse.json(
+        {
+          error: "controlled_real_write_missing_listing_id",
+          hint:
+            "Para subir fotos realmente debes indicar un listing_id real de EasyBroker en los args avanzados o en el caso de prueba.",
+          resolved_args: resolvedArgs,
+        },
+        { status: 400 }
+      );
+    }
     const policy = pickRiskPolicy(def, confirm, toolId);
+    const resolvedArgsForExecution = controlledRealWriteRequested
+      ? applyControlledRealWriteSafeguards(toolId, resolvedArgs)
+      : policy.forceCliDryRun === true &&
+          (toolId === "easybroker_create_listing" ||
+            toolId === "easybroker_upload_images")
+        ? { ...resolvedArgs, dry_run: true }
+        : resolvedArgs;
 
     if (preview) {
       return NextResponse.json({
@@ -759,11 +1274,11 @@ export async function POST(request: Request) {
         mode_source: resolution.source,
         case_id: resolution.case_id ?? null,
         case_context_sample: resolution.case_context_sample ?? null,
-        resolved_args: resolution.args,
+        resolved_args: resolvedArgsForExecution,
       });
     }
 
-    if (!policy.execute) {
+    if (!controlledRealWriteRequested && !policy.execute) {
       return NextResponse.json({
         ok: true,
         executed: false,
@@ -775,7 +1290,7 @@ export async function POST(request: Request) {
         mode_used: resolution.mode_used,
         mode_source: resolution.source,
         case_id: resolution.case_id ?? null,
-        resolved_args: resolution.args,
+        resolved_args: resolvedArgsForExecution,
         hint:
           policy.reason === "medium_risk_requires_confirm"
             ? "Esta tool es de riesgo medio; envía confirm:true para ejecutarla desde la prueba individual."
@@ -783,17 +1298,38 @@ export async function POST(request: Request) {
       });
     }
 
-    const forceCliDryRun = policy.forceCliDryRun === true;
-    if (forceCliDryRun) {
+    const forceCliDryRun =
+      !controlledRealWriteRequested && policy.forceCliDryRun === true;
+    if (forceCliDryRun && toolId === "ungga_publish_listing") {
       process.env.UNGGA_TOOL_TEST_DRY_RUN = "true";
     }
 
     ensureAgentToolDepsWired();
-    const [{ data: toolSettings }, { data: integrations }] = await Promise.all([
+    const [
+      { data: toolSettings },
+      { data: integrations },
+      { data: profile },
+    ] = await Promise.all([
       supabase.from("user_tool_settings").select("*").eq("user_id", user.id),
       supabase.from("user_integrations").select("*").eq("user_id", user.id),
+      supabase
+        .from("profiles")
+        .select("business_brain, is_ungga_admin")
+        .eq("id", user.id)
+        .single(),
     ]);
     const session = await getOrCreateSession(db, user.id, "web");
+    const businessBrain =
+      profile?.business_brain &&
+      typeof profile.business_brain === "object" &&
+      !Array.isArray(profile.business_brain)
+        ? profile.business_brain
+        : {};
+    const warehouse = getBusinessBrainWarehouse(businessBrain);
+    const tenantOrganizationId =
+      profile?.is_ungga_admin === true
+        ? undefined
+        : warehouse?.organization_id?.trim() || undefined;
 
     const ctx: ToolContext = {
       db,
@@ -805,6 +1341,9 @@ export async function POST(request: Request) {
       // Sólo dejamos disponible esta tool durante la prueba individual:
       // evita que el agente o adapters dependientes confundan el contexto.
       activeSkillAllowedTools: [toolId],
+      tenantOrganizationId,
+      bigQueryProjectId: warehouse?.project_id?.trim() || undefined,
+      bigQueryLocation: warehouse?.location?.trim() || undefined,
     };
 
     const tools = buildLangChainTools(ctx);
@@ -827,33 +1366,42 @@ export async function POST(request: Request) {
     let invokeError: string | null = null;
     let raw: unknown = null;
     try {
-      raw = await lcTool.invoke(resolution.args);
+      raw = await lcTool.invoke(resolvedArgsForExecution);
     } catch (err) {
       invokeError = err instanceof Error ? err.message : String(err);
     } finally {
-      if (forceCliDryRun) {
+      if (forceCliDryRun && toolId === "ungga_publish_listing") {
         delete process.env.UNGGA_TOOL_TEST_DRY_RUN;
       }
     }
     const elapsedMs = Date.now() - startedAt;
     const { parsed, text } = parseToolOutput(raw);
     const summary = summarizeResult(parsed);
+    const toolOk = summary.ok ?? (invokeError === null ? true : false);
 
     return NextResponse.json({
-      ok: invokeError === null,
+      ok: invokeError === null && toolOk !== false,
       executed: true,
       tool_id: toolId,
       risk: def.risk,
       dry_run: forceCliDryRun,
-      reason: policy.reason,
+      reason: controlledRealWriteRequested
+        ? "high_risk_controlled_real_write"
+        : policy.reason,
       hint: forceCliDryRun
-        ? "Dry-run completado: Playwright abrió Ungga y recorrió el wizard sin guardar borrador ni publicar. Revisa status, stages y validation_errors en el JSON."
+        ? toolId === "ungga_publish_listing"
+          ? "Dry-run completado: Playwright abrió Ungga y recorrió el wizard sin guardar borrador ni publicar. Revisa status, stages y validation_errors en el JSON."
+          : "Dry-run completado: se validó el payload sin enviar escritura real a EasyBroker."
+        : controlledRealWriteRequested
+          ? toolId === "easybroker_upload_images"
+            ? "Prueba real controlada ejecutada: se intentó adjuntar las fotos al borrador indicado en EasyBroker. Revisa la ficha y elimina el borrador cuando termines de validar."
+            : "Prueba real controlada ejecutada: se intentó crear un borrador not_published en EasyBroker. Si fue exitoso, bórralo manualmente del inventario cuando termines de validar."
         : undefined,
       requested_mode: requestedMode,
       mode_used: resolution.mode_used,
       mode_source: resolution.source,
       case_id: resolution.case_id ?? null,
-      resolved_args: resolution.args,
+      resolved_args: resolvedArgsForExecution,
       elapsed_ms: elapsedMs,
       error: invokeError,
       summary,

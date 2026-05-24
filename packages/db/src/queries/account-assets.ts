@@ -8,6 +8,7 @@ import type { AccountAsset } from "@agents/types";
 export interface ListAccountAssetsFilter {
   userId: string;
   assetKeys?: string[];
+  assetKeyPrefixes?: string[];
 }
 
 export async function listAccountAssets(
@@ -19,12 +20,49 @@ export async function listAccountAssets(
     .select("*")
     .eq("user_id", filter.userId)
     .order("updated_at", { ascending: false });
-  if (filter.assetKeys?.length) {
+  if (filter.assetKeys?.length && !filter.assetKeyPrefixes?.length) {
     query = query.in("asset_key", filter.assetKeys);
   }
   const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []) as AccountAsset[];
+  const assets = (data ?? []) as AccountAsset[];
+  if (!filter.assetKeys?.length && !filter.assetKeyPrefixes?.length) {
+    return assets;
+  }
+  const exactKeys = new Set(filter.assetKeys ?? []);
+  const prefixes = filter.assetKeyPrefixes ?? [];
+  return assets.filter(
+    (asset) =>
+      exactKeys.has(asset.asset_key) ||
+      prefixes.some((prefix) => asset.asset_key.startsWith(`${prefix}__`))
+  );
+}
+
+export async function getAccountAssetById(
+  db: DbClient,
+  assetId: string
+): Promise<AccountAsset | null> {
+  const { data, error } = await db
+    .from("account_assets")
+    .select("*")
+    .eq("id", assetId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as AccountAsset | null) ?? null;
+}
+
+export async function getAccountAssetByStoragePath(
+  db: DbClient,
+  input: { storageBucket: string; storagePath: string }
+): Promise<AccountAsset | null> {
+  const { data, error } = await db
+    .from("account_assets")
+    .select("*")
+    .eq("storage_bucket", input.storageBucket)
+    .eq("storage_path", input.storagePath)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as AccountAsset | null) ?? null;
 }
 
 export interface UpsertAccountAssetInput {
@@ -69,4 +107,26 @@ export async function upsertAccountAsset(
     .single();
   if (error) throw error;
   return data as AccountAsset;
+}
+
+export async function deleteAccountAsset(
+  db: DbClient,
+  input: { userId: string; assetKey: string }
+): Promise<AccountAsset | null> {
+  const { data: existing, error: selectError } = await db
+    .from("account_assets")
+    .select("*")
+    .eq("user_id", input.userId)
+    .eq("asset_key", input.assetKey)
+    .maybeSingle();
+  if (selectError) throw selectError;
+  if (!existing) return null;
+
+  const { error: deleteError } = await db
+    .from("account_assets")
+    .delete()
+    .eq("user_id", input.userId)
+    .eq("asset_key", input.assetKey);
+  if (deleteError) throw deleteError;
+  return existing as AccountAsset;
 }

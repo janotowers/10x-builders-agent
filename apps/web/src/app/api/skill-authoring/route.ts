@@ -290,14 +290,21 @@ type OperationalFlowToolDraft = {
   tool_id: string;
   tool_label?: string;
   tool_description?: string;
-  required_assets?: Array<{
-    asset_key: string;
-    label: string;
-    description?: string;
-    accept?: string[];
-    max_size_mb?: number;
-    required?: boolean;
-  }>;
+  required_assets?: OperationalFlowAssetDraft[];
+  test_assets?: OperationalFlowAssetDraft[];
+};
+
+type OperationalFlowAssetDraft = {
+  asset_key: string;
+  label: string;
+  description?: string;
+  accept?: string[];
+  max_size_mb?: number;
+  required?: boolean;
+  param?: string;
+  min_count?: number;
+  max_count?: number;
+  collection?: boolean;
 };
 
 type OperationalFlowSkillDraft = {
@@ -338,8 +345,9 @@ function normalizeFlowTool(value: unknown): OperationalFlowToolDraft | null {
   if (!isRecord(value)) return null;
   const toolId = cleanText(value.tool_id);
   if (!toolId) return null;
-  const requiredAssets = Array.isArray(value.required_assets)
-    ? value.required_assets
+  const normalizeAssets = (raw: unknown) =>
+    Array.isArray(raw)
+      ? raw
         .map((item) => {
           if (!isRecord(item)) return null;
           const assetKey = cleanText(item.asset_key);
@@ -361,15 +369,25 @@ function normalizeFlowTool(value: unknown): OperationalFlowToolDraft | null {
                 : undefined,
             required:
               typeof item.required === "boolean" ? item.required : undefined,
+            param: cleanText(item.param) || undefined,
+            min_count:
+              typeof item.min_count === "number" ? item.min_count : undefined,
+            max_count:
+              typeof item.max_count === "number" ? item.max_count : undefined,
+            collection:
+              typeof item.collection === "boolean" ? item.collection : undefined,
           };
         })
         .filter(isPresent)
-    : undefined;
+      : undefined;
+  const requiredAssets = normalizeAssets(value.required_assets);
+  const testAssets = normalizeAssets(value.test_assets);
   return {
     tool_id: toolId,
     tool_label: cleanText(value.tool_label) || undefined,
     tool_description: cleanText(value.tool_description) || undefined,
     required_assets: requiredAssets?.length ? requiredAssets : undefined,
+    test_assets: testAssets?.length ? testAssets : undefined,
   };
 }
 
@@ -738,8 +756,10 @@ export async function POST(request: Request) {
       "- Mantén `suggestedEvals` con máximo 3 elementos por lista; si no hay heartbeat, omite la clave.",
       "- Incluye `operationalFlow` SIEMPRE que estés generando/mejorando un caso operacional. Es un array JSON de pasos para UI/readiness/prueba, NO markdown.",
       "- Cada paso de `operationalFlow` usa esta forma exacta: `{step_key, step_label, step_description, step_skills, step_tools}`.",
-      "- `step_skills` es array de `{skill_slug, skill_label, skill_description, skill_tools}`; `skill_tools` es array de `{tool_id, tool_label, tool_description, required_assets?}`.",
-      "- Usa `required_assets` sólo cuando una tool necesita archivos/configuración por cuenta que el usuario puede subir (plantillas, logos, watermarks). Cada asset usa `{asset_key, label, description, accept, max_size_mb, required}` con `asset_key` estable y reutilizable.",
+      "- `step_skills` es array de `{skill_slug, skill_label, skill_description, skill_tools}`; `skill_tools` es array de `{tool_id, tool_label, tool_description, required_assets?, test_assets?}`.",
+      "- Usa `required_assets` sólo cuando una tool necesita archivos/configuración persistente por cuenta que el usuario puede subir (plantillas, logos, watermarks). Cada asset usa `{asset_key, label, description, accept, max_size_mb, required, min_count?, max_count?, collection?}` con `asset_key` estable y reutilizable.",
+      "- Usa `test_assets` sólo si el caso necesita sobrescribir los defaults del catálogo para la prueba individual en Settings. Si la tool ya declara su perfil de assets en TOOL_CATALOG, no repitas metadata salvo que cambien copy, límites o `asset_key`.",
+      "- Para assets temporales que alimentan argumentos array como `image_paths` o `input_paths`, usa `param`, `min_count`, `max_count` y `collection: true` cuando aplique; la UI mostrará un cargador compacto de colección, no campos repetidos.",
       "- Usa `step_tools` sólo para tools del paso no asociadas claramente a una skill específica (ej. `operational_case_create`, `operational_case_update_state`).",
       "- Todo `tool_id` en operationalFlow debe existir en TOOL_CATALOG y estar contemplado por `allowed_tools` del SKILL.md root o de sus includes.",
       "- Incluye `activationPolicy` SIEMPRE que estés generando/mejorando un caso operacional. No hardcodees referencias a property_optioning salvo que sea ese caso.",

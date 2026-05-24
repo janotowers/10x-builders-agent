@@ -53,6 +53,12 @@ export interface ToolContext {
    * tenant filters instead of letting the model inline this value in SQL.
    */
   tenantOrganizationId?: string;
+  /** Optional BigQuery project resolved from Business Brain warehouse binding. */
+  bigQueryProjectId?: string;
+  /** Optional BigQuery location resolved from Business Brain warehouse binding. */
+  bigQueryLocation?: string;
+  /** Active operational case id when the turn is bound to a case. */
+  caseId?: string | null;
   /**
    * Absolute path to the workspace root used to resolve skill references.
    * Defaults to `defaultSkillsRoot()` when omitted; tests can override.

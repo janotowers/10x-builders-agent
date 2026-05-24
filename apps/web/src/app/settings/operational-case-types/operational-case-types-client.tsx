@@ -171,6 +171,8 @@ type ToolReadinessToolItem = {
   risk?: string;
   requires_integration?: string;
   notes: string[];
+  test_status?: "ready_untested" | "tested_ok" | "tested_failed";
+  last_tested_at?: string | null;
   asset_requirements?: ToolAssetRequirementStatus[];
   test_asset_requirements?: ToolAssetRequirementStatus[];
 };
@@ -182,12 +184,19 @@ type ToolAssetRequirementStatus = {
   accept?: string[];
   max_size_mb?: number;
   required?: boolean;
+  param?: string;
+  min_count?: number;
+  max_count?: number;
+  collection?: boolean;
   configured: boolean;
   asset: AccountAsset | null;
+  assets?: AccountAsset[];
+  configured_count?: number;
 };
 
 type ToolReadinessResult = {
   summary: "ready" | "has_stubs" | "needs_config";
+  case_e2e_status?: "not_ready" | "ready_for_e2e" | "e2e_passed" | "operational_ready";
   skill: {
     root: string;
     composedFrom: string[];
@@ -203,6 +212,7 @@ type ToolReadinessFlowTool = OperationalCaseFlowTool & {
 
 type ToolReadinessFlowSkill = Omit<OperationalCaseFlowSkill, "skill_tools"> & {
   skill_tools: ToolReadinessFlowTool[];
+  test_status?: "blocked_by_tools" | "ready_to_test" | "tested_ok" | "tested_failed" | "partial";
 };
 
 type ToolReadinessFlowStep = Omit<
@@ -211,6 +221,7 @@ type ToolReadinessFlowStep = Omit<
 > & {
   step_skills: ToolReadinessFlowSkill[];
   step_tools: ToolReadinessFlowTool[];
+  test_status?: "blocked" | "ready_to_test" | "partially_tested" | "tested_ok" | "tested_failed";
 };
 
 type ToolReadinessRequestStatus =
@@ -356,6 +367,16 @@ function normalizeAssetRequirements(
         max_size_mb:
           typeof asset.max_size_mb === "number" ? asset.max_size_mb : undefined,
         required: typeof asset.required === "boolean" ? asset.required : undefined,
+        param:
+          typeof asset.param === "string" && asset.param.trim()
+            ? asset.param.trim()
+            : undefined,
+        min_count:
+          typeof asset.min_count === "number" ? asset.min_count : undefined,
+        max_count:
+          typeof asset.max_count === "number" ? asset.max_count : undefined,
+        collection:
+          typeof asset.collection === "boolean" ? asset.collection : undefined,
       };
     })
     .filter(isPresent);
@@ -843,6 +864,34 @@ function formatFileSize(bytes: number | null | undefined) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function requirementMinCount(requirement: ToolAssetRequirementStatus) {
+  if (typeof requirement.min_count === "number") return requirement.min_count;
+  return requirement.required === false ? 0 : 1;
+}
+
+function requirementMaxCount(requirement: ToolAssetRequirementStatus) {
+  if (typeof requirement.max_count === "number") return requirement.max_count;
+  return 1;
+}
+
+function isCollectionRequirement(requirement: ToolAssetRequirementStatus) {
+  return requirement.collection === true || requirementMaxCount(requirement) > 1;
+}
+
+function collectionAssetKey(baseKey: string, index: number) {
+  return `${baseKey}__${String(index + 1).padStart(3, "0")}`;
+}
+
+function nextCollectionAssetKey(requirement: ToolAssetRequirementStatus) {
+  const used = new Set((requirement.assets ?? []).map((asset) => asset.asset_key));
+  const maxCount = requirementMaxCount(requirement);
+  for (let index = 0; index < maxCount; index += 1) {
+    const key = collectionAssetKey(requirement.asset_key, index);
+    if (!used.has(key)) return key;
+  }
+  return null;
+}
+
 function AccountAssetUploadPanel({
   item,
   row,
@@ -862,17 +911,22 @@ function AccountAssetUploadPanel({
   const [submittingKey, setSubmittingKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
-  async function uploadAsset(requirement: ToolAssetRequirementStatus, file: File) {
+  async function uploadAsset(
+    requirement: ToolAssetRequirementStatus,
+    file: File,
+    assetKey = requirement.asset_key,
+    refreshAfterUpload = true
+  ) {
     setMessage(null);
     const maxSize = (requirement.max_size_mb ?? 15) * 1024 * 1024;
     if (file.size > maxSize) {
       setMessage(`El archivo supera el máximo de ${requirement.max_size_mb ?? 15} MB.`);
       return;
     }
-    setSubmittingKey(requirement.asset_key);
+    setSubmittingKey(assetKey);
     try {
       const formData = new FormData();
-      formData.set("asset_key", requirement.asset_key);
+      formData.set("asset_key", assetKey);
       formData.set("display_name", requirement.label);
       formData.set("description", requirement.description ?? "");
       formData.set("source_tool_id", item.tool_id);
@@ -888,9 +942,72 @@ function AccountAssetUploadPanel({
       if (!res.ok) {
         throw new Error(data.error ?? "No se pudo subir el recurso.");
       }
-      setMessage("Recurso guardado. Recalculando preparación operativa...");
+      if (refreshAfterUpload) {
+        setMessage("Recurso guardado. Recalculando preparación operativa...");
+        await onUploaded();
+        setMessage(successMessage);
+      }
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmittingKey(null);
+    }
+  }
+
+  async function uploadCollectionAssets(
+    requirement: ToolAssetRequirementStatus,
+    files: FileList | File[]
+  ) {
+    setMessage(null);
+    const selectedFiles = Array.from(files);
+    const maxCount = requirementMaxCount(requirement);
+    const currentCount = requirement.assets?.length ?? 0;
+    const availableSlots = Math.max(0, maxCount - currentCount);
+    if (availableSlots <= 0) {
+      setMessage(`Ya alcanzaste el máximo de ${maxCount} archivos.`);
+      return;
+    }
+    const filesToUpload = selectedFiles.slice(0, availableSlots);
+    if (filesToUpload.length < selectedFiles.length) {
+      setMessage(`Sólo se agregarán ${availableSlots} archivo(s); máximo ${maxCount}.`);
+    }
+    const usedKeys = new Set((requirement.assets ?? []).map((asset) => asset.asset_key));
+    try {
+      for (const file of filesToUpload) {
+        const tempRequirement = {
+          ...requirement,
+          assets: Array.from(usedKeys).map((assetKey) => ({ asset_key: assetKey }) as AccountAsset),
+        };
+        const assetKey = nextCollectionAssetKey(tempRequirement);
+        if (!assetKey) break;
+        usedKeys.add(assetKey);
+        await uploadAsset(requirement, file, assetKey, false);
+      }
+      setMessage("Recursos guardados. Recalculando preparación operativa...");
       await onUploaded();
       setMessage(successMessage);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmittingKey(null);
+    }
+  }
+
+  async function deleteAsset(asset: AccountAsset) {
+    setMessage(null);
+    setSubmittingKey(asset.asset_key);
+    try {
+      const res = await fetch(
+        `/api/account-assets?asset_key=${encodeURIComponent(asset.asset_key)}`,
+        { method: "DELETE" }
+      );
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error ?? "No se pudo eliminar el recurso.");
+      }
+      setMessage("Recurso eliminado. Recalculando preparación operativa...");
+      await onUploaded();
+      setMessage("Recurso eliminado. Preparación operativa actualizada.");
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
@@ -904,7 +1021,17 @@ function AccountAssetUploadPanel({
       <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
         {title}
       </div>
-      {effectiveRequirements.map((requirement) => (
+      {effectiveRequirements.map((requirement) => {
+        const isCollection = isCollectionRequirement(requirement);
+        const assets = requirement.assets?.length
+          ? requirement.assets
+          : requirement.asset
+            ? [requirement.asset]
+            : [];
+        const minCount = requirementMinCount(requirement);
+        const maxCount = requirementMaxCount(requirement);
+        const canUpload = !isCollection || assets.length < maxCount;
+        return (
         <div
           key={requirement.asset_key}
           className="rounded border border-neutral-200 bg-white p-2 text-xs"
@@ -923,38 +1050,92 @@ function AccountAssetUploadPanel({
                   : "bg-amber-50 text-amber-800"
               }`}
             >
-              {requirement.configured ? "Configurado" : "Pendiente"}
+              {isCollection
+                ? `${assets.length}/${maxCount}`
+                : requirement.configured
+                  ? "Configurado"
+                  : "Pendiente"}
             </span>
           </div>
           {requirement.description ? (
             <p className="mt-1 text-neutral-500">{requirement.description}</p>
           ) : null}
-          {requirement.asset ? (
+          {isCollection ? (
+            <div className="mt-2 space-y-1">
+              {assets.length > 0 ? (
+                <div className="max-h-40 space-y-1 overflow-auto rounded border border-neutral-100 bg-neutral-50 p-1">
+                  {assets.map((asset) => (
+                    <div
+                      key={asset.asset_key}
+                      className="flex items-center justify-between gap-2 rounded bg-white px-2 py-1"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-[11px] font-medium">
+                          {String(asset.metadata_jsonb?.original_name ?? asset.display_name)}
+                        </div>
+                        <div className="font-mono text-[10px] text-neutral-400">
+                          {asset.content_type ?? "archivo"} ·{" "}
+                          {formatFileSize(asset.file_size_bytes)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded border border-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-600 hover:bg-neutral-100 disabled:opacity-50"
+                        disabled={Boolean(submittingKey)}
+                        onClick={() => void deleteAsset(asset)}
+                      >
+                        Quitar
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <p className="text-[11px] text-neutral-500">
+                {assets.length} archivo(s) listos · mínimo {minCount}, máximo {maxCount}.
+              </p>
+            </div>
+          ) : requirement.asset ? (
             <p className="mt-1 text-[11px] text-neutral-500">
               Actual: {requirement.asset.content_type ?? "archivo"} ·{" "}
               {formatFileSize(requirement.asset.file_size_bytes)}
             </p>
           ) : null}
-          <label className="mt-2 inline-flex cursor-pointer rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800">
-            {submittingKey === requirement.asset_key
+          <label
+            className={`mt-2 inline-flex rounded px-2 py-1 text-[11px] font-semibold text-white ${
+              canUpload
+                ? "cursor-pointer bg-violet-700 hover:bg-violet-800"
+                : "cursor-not-allowed bg-neutral-400"
+            }`}
+          >
+            {submittingKey?.startsWith(requirement.asset_key)
               ? "Subiendo..."
-              : requirement.configured
+              : isCollection
+                ? "Agregar fotos"
+                : requirement.configured
                 ? "Reemplazar recurso"
                 : "Subir recurso"}
             <input
               type="file"
               className="hidden"
               accept={requirement.accept?.join(",")}
-              disabled={Boolean(submittingKey)}
+              multiple={isCollection}
+              disabled={Boolean(submittingKey) || !canUpload}
               onChange={(event) => {
-                const file = event.currentTarget.files?.[0];
+                const files = Array.from(event.currentTarget.files ?? []);
                 event.currentTarget.value = "";
-                if (file) void uploadAsset(requirement, file);
+                if (files.length === 0) return;
+                if (isCollection) {
+                  void uploadCollectionAssets(requirement, files);
+                } else {
+                  const file = files[0];
+                  if (file) void uploadAsset(requirement, file);
+                }
               }}
             />
           </label>
         </div>
-      ))}
+        );
+      })}
       {message ? <p className="text-[11px] text-neutral-600">{message}</p> : null}
     </div>
   );
@@ -1007,6 +1188,31 @@ const MODE_SOURCE_LABELS: Record<string, string> = {
   generic_param_name_match: "match por nombre de param",
   fallback_smoke_no_test_case: "fallback smoke (sin caso de prueba)",
   preview_only: "preview",
+};
+
+const CONTROLLED_WRITE_COPY: Record<
+  string,
+  {
+    confirmation: string;
+    title: string;
+    description: string;
+    button: string;
+  }
+> = {
+  easybroker_create_listing: {
+    confirmation: "CREAR BORRADOR",
+    title: "Prueba real controlada",
+    description:
+      "Crea una propiedad real en EasyBroker como not_published y fuerza el prefijo [PRUEBA - BORRAR] en el título. Úsalo sólo para validar la integración; después borra el borrador manualmente en EasyBroker.",
+    button: "Ejecutar prueba real controlada",
+  },
+  easybroker_upload_images: {
+    confirmation: "FOTOS A BORRADOR",
+    title: "Prueba real controlada de fotos",
+    description:
+      "Envía las fotos temporales al borrador de EasyBroker resuelto. Si antes se creó un borrador desde easybroker_create_listing, se usará ese listing_id automáticamente; si no, indícalo en args avanzados. EasyBroker reemplaza el arreglo de imágenes de esa ficha.",
+    button: "Subir fotos al borrador",
+  },
 };
 
 function summarizeUnggaWizardIssues(result: unknown): string[] {
@@ -1240,6 +1446,7 @@ function ToolTestPanel({
   const [mode, setMode] = useState<ToolTestMode>(hasTestCase ? "case" : "smoke");
   const [argsText, setArgsText] = useState("{}");
   const [confirm, setConfirm] = useState(false);
+  const [controlledWriteText, setControlledWriteText] = useState("");
   const [showArgs, setShowArgs] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [running, setRunning] = useState(false);
@@ -1315,7 +1522,7 @@ function ToolTestPanel({
     setResponse(null);
   }
 
-  async function run() {
+  async function run(options?: { controlledRealWrite?: boolean }) {
     setRunning(true);
     setError(null);
     setResponse(null);
@@ -1336,6 +1543,9 @@ function ToolTestPanel({
           mode,
           args: parsed.value,
           confirm,
+          controlled_real_write: options?.controlledRealWrite === true,
+          confirmation_text:
+            options?.controlledRealWrite === true ? controlledWriteText : undefined,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as ToolTestResponse & {
@@ -1347,9 +1557,11 @@ function ToolTestPanel({
       setResponse(data);
       setShowRaw(data.executed === true || Boolean(data.result));
       requestAnimationFrame(() => {
-        document
-          .getElementById(`tool-test-result-${item.tool_id}`)
-          ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        requestAnimationFrame(() => {
+          document
+            .getElementById(`tool-test-result-${item.tool_id}`)
+            ?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+        });
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1362,6 +1574,10 @@ function ToolTestPanel({
     response?.requested_mode === "case" && response?.mode_used === "smoke";
   const wizardIssues = response ? summarizeUnggaWizardIssues(response.result) : [];
   const executedResultItems = response?.executed ? resultItems(response.result) : [];
+  const controlledWriteCopy = CONTROLLED_WRITE_COPY[item.tool_id] ?? null;
+  const canControlledRealWrite =
+    Boolean(controlledWriteCopy) &&
+    controlledWriteText.trim() === controlledWriteCopy?.confirmation;
 
   return (
     <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3">
@@ -1465,6 +1681,43 @@ function ToolTestPanel({
           </span>
         ) : null}
       </div>
+      {controlledWriteCopy ? (
+        <div className="space-y-2 rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-950">
+          <div className="font-semibold">{controlledWriteCopy.title}</div>
+          <p>{controlledWriteCopy.description}</p>
+          {item.tool_id === "easybroker_upload_images" ? (
+            <p>
+              Si la vista previa muestra{" "}
+              <span className="font-mono">REEMPLAZA-CON-LISTING-ID</span>, abre
+              avanzado y usa un override como{" "}
+              <span className="font-mono">{'{"listing_id":"EB-XXXX"}'}</span>.
+            </p>
+          ) : null}
+          <label className="block space-y-1">
+            <span>
+              Escribe{" "}
+              <span className="font-mono font-semibold">
+                {controlledWriteCopy.confirmation}
+              </span>{" "}
+              para habilitar:
+            </span>
+            <input
+              value={controlledWriteText}
+              onChange={(event) => setControlledWriteText(event.target.value)}
+              className="w-full rounded border border-amber-300 bg-white px-2 py-1 font-mono text-[11px]"
+              placeholder={controlledWriteCopy.confirmation}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void run({ controlledRealWrite: true })}
+            disabled={running || !canControlledRealWrite}
+            className="rounded bg-amber-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-amber-800 disabled:bg-neutral-400"
+          >
+            {running ? "Ejecutando..." : controlledWriteCopy.button}
+          </button>
+        </div>
+      ) : null}
       {showArgs ? (
         <div className="space-y-1">
           <p className="text-[11px] text-neutral-500">
@@ -2035,6 +2288,331 @@ function riskLabel(risk?: string) {
   return risk ?? "n/d";
 }
 
+function toolTestStatusLabel(status?: ToolReadinessToolItem["test_status"]) {
+  if (status === "tested_ok") return "Probada";
+  if (status === "tested_failed") return "Prueba falló";
+  return "Sin probar";
+}
+
+function skillTestStatusLabel(status?: ToolReadinessFlowSkill["test_status"]) {
+  if (status === "tested_ok") return "Probada";
+  if (status === "tested_failed") return "Prueba falló";
+  if (status === "partial") return "Parcial";
+  if (status === "ready_to_test") return "Lista para probar";
+  if (status === "blocked_by_tools") return "Bloqueada por tools";
+  return "Sin estado";
+}
+
+function stepTestStatusLabel(status?: ToolReadinessFlowStep["test_status"]) {
+  if (status === "tested_ok") return "Paso probado";
+  if (status === "tested_failed") return "Prueba falló";
+  if (status === "partially_tested") return "Parcial";
+  if (status === "ready_to_test") return "Listo para probar";
+  if (status === "blocked") return "Bloqueado";
+  return "Sin estado";
+}
+
+function statusPillClass(status?: string) {
+  if (status === "tested_ok" || status === "ready_for_e2e") {
+    return "bg-emerald-50 text-emerald-800";
+  }
+  if (status === "tested_failed" || status === "blocked" || status === "blocked_by_tools") {
+    return "bg-red-50 text-red-800";
+  }
+  if (status === "partial" || status === "partially_tested") {
+    return "bg-amber-50 text-amber-800";
+  }
+  return "bg-neutral-100 text-neutral-700";
+}
+
+type SkillTestResponse = {
+  ok: boolean;
+  status: "tested_ok" | "tested_failed" | "partial";
+  skill_slug: string;
+  step_key: string;
+  expected_context_keys: string[];
+  validation?: {
+    ok: boolean;
+    missing_context_keys: string[];
+    created_context_keys: string[];
+    missing_events?: string[];
+    missing_tool_calls?: string[];
+    artifact_errors?: string[];
+  };
+  pending_confirmation?: boolean;
+  deterministic_repair?: { applied: boolean; reason?: string };
+  response_preview?: string | null;
+  response_preview_truncated?: boolean;
+  artifacts?: Record<string, unknown>;
+  source_tool_calls?: Array<{ tool_name: string; status: string }>;
+  internal_tool_calls?: Array<{ tool_name: string; status: string }>;
+  other_tool_calls?: Array<{ tool_name: string; status: string }>;
+  tool_calls?: Array<{ tool_name: string; status: string }>;
+  error?: string;
+  hint?: string;
+};
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function numberFromRecord(
+  record: Record<string, unknown>,
+  key: string
+): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function arrayCountFromRecord(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return Array.isArray(value) ? value.length : null;
+}
+
+function comparableContributionSummary(artifacts?: Record<string, unknown>) {
+  const comparables = artifacts?.comparables_analysis;
+  if (!isPlainRecord(comparables)) return null;
+  const stats = isPlainRecord(comparables.stats) ? comparables.stats : {};
+  const active =
+    numberFromRecord(stats, "active_count") ??
+    arrayCountFromRecord(comparables, "active_listings") ??
+    0;
+  const historical =
+    numberFromRecord(stats, "historical_reference_count") ??
+    arrayCountFromRecord(comparables, "historical_references") ??
+    arrayCountFromRecord(comparables, "closed_deals") ??
+    0;
+  const internal =
+    numberFromRecord(stats, "internal_inventory_count") ??
+    arrayCountFromRecord(comparables, "internal_inventory") ??
+    0;
+  return `Datos aportados al analisis: activas ${active} · historicas ${historical} · internas ${internal}.`;
+}
+
+function SkillTestPanel({
+  skill,
+  row,
+  hasTestCase,
+  caseId,
+  onFinished,
+}: {
+  skill: ToolReadinessFlowSkill;
+  row: OperationalCaseType;
+  hasTestCase: boolean;
+  caseId?: string | null;
+  onFinished: () => Promise<void>;
+}) {
+  const [running, setRunning] = useState(false);
+  const [response, setResponse] = useState<SkillTestResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const blocked = skill.test_status === "blocked_by_tools";
+  const sourceToolCalls = response?.source_tool_calls ?? response?.tool_calls ?? [];
+  const internalToolCalls = response?.internal_tool_calls ?? [];
+  const otherToolCalls = response?.other_tool_calls ?? [];
+  const executedSourceToolCount = sourceToolCalls.filter(
+    (call) => call.status === "executed"
+  ).length;
+  const artifactEntries = response?.artifacts ? Object.entries(response.artifacts) : [];
+  const contributionSummary = comparableContributionSummary(response?.artifacts);
+  const missingContextKeys = response?.validation?.missing_context_keys ?? [];
+  const missingEvents = response?.validation?.missing_events ?? [];
+  const missingToolCalls = response?.validation?.missing_tool_calls ?? [];
+  const artifactErrors = response?.validation?.artifact_errors ?? [];
+  const statusLabel =
+    response?.pending_confirmation && response.status === "partial"
+      ? "Guardado pendiente"
+      : response
+        ? skillTestStatusLabel(response.status)
+        : "";
+  async function runSkill() {
+    setRunning(true);
+    setError(null);
+    setResponse(null);
+    try {
+      const res = await fetch("/api/tool-readiness/run-skill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          case_type_id: row.id,
+          case_id: caseId ?? undefined,
+          skill_slug: skill.skill_slug,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SkillTestResponse;
+      if (!res.ok) {
+        throw new Error(data.error ?? data.hint ?? "No se pudo probar la habilidad.");
+      }
+      setResponse(data);
+      await onFinished();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 space-y-2 rounded border border-violet-100 bg-violet-50/40 p-2 text-[11px]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="font-semibold text-violet-950">Prueba de habilidad</div>
+          <p className="text-violet-800">
+            Valida que este paso produzca su artefacto de negocio esperado.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void runSkill()}
+          disabled={running || !hasTestCase || blocked}
+          title={
+            !hasTestCase
+              ? "Crea primero un caso de prueba."
+              : blocked
+                ? "Primero resuelve/probar las tools requeridas."
+                : undefined
+          }
+          className="rounded bg-violet-700 px-2 py-1 font-semibold text-white hover:bg-violet-800 disabled:bg-neutral-400"
+        >
+          {running ? "Probando..." : "Probar habilidad"}
+        </button>
+      </div>
+      {error ? (
+        <p className="rounded border border-red-200 bg-red-50 p-2 text-red-800">
+          {error}
+        </p>
+      ) : null}
+      {response ? (
+        <div className="space-y-1 rounded border border-white bg-white/80 p-2">
+          <div className="flex flex-wrap gap-2">
+            <span
+              className={`rounded px-1.5 py-0.5 font-semibold ${statusPillClass(
+                response.status
+              )}`}
+            >
+              {statusLabel}
+            </span>
+            {response.pending_confirmation ? (
+              <span className="rounded bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-800">
+                Requiere confirmacion
+              </span>
+            ) : null}
+          </div>
+          <p className="text-neutral-700">
+            {response.ok
+              ? "La habilidad produjo el artefacto esperado y el contrato quedo cumplido."
+              : response.pending_confirmation
+                ? "Las tools pudieron ejecutarse, pero falta confirmar una accion interna para guardar el artefacto en el caso de prueba."
+                : "La habilidad no alcanzo el artefacto esperado; revisa la respuesta del agente y las tools llamadas."}
+          </p>
+          {response.validation ? (
+            <p className="text-neutral-700">
+              Artefactos esperados: {response.expected_context_keys.join(", ") || "n/d"}.
+              {missingContextKeys.length > 0
+                ? ` Faltan: ${missingContextKeys.join(", ")}.`
+                : " Contrato cumplido."}
+            </p>
+          ) : null}
+          {response.deterministic_repair?.applied ? (
+            <p className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
+              El artefacto fue corregido determinísticamente desde los datos
+              guardados del caso porque la respuesta original del agente no
+              cumplía el contrato. Revisa el artefacto guardado; el preview
+              textual puede mostrar la respuesta original.
+              {response.deterministic_repair.reason
+                ? ` Motivo: ${response.deterministic_repair.reason}`
+                : ""}
+            </p>
+          ) : null}
+          {artifactErrors.length > 0 ? (
+            <div className="rounded border border-red-200 bg-red-50 p-2 text-red-800">
+              <p className="font-semibold">Errores del artefacto:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {artifactErrors.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {missingEvents.length > 0 ? (
+            <p className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
+              Eventos esperados faltantes: {missingEvents.join(", ")}.
+            </p>
+          ) : null}
+          {missingToolCalls.length > 0 ? (
+            <p className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
+              Tools obligatorias no ejecutadas: {missingToolCalls.join(", ")}.
+            </p>
+          ) : null}
+          {sourceToolCalls.length > 0 ? (
+            <p className="text-neutral-600">
+              Tools de la habilidad ejecutadas correctamente: {executedSourceToolCount}/
+              {sourceToolCalls.length}.
+            </p>
+          ) : null}
+          {contributionSummary ? (
+            <p className="text-neutral-600">{contributionSummary}</p>
+          ) : null}
+          {sourceToolCalls.length ? (
+            <p className="text-neutral-600">
+              Tools de la habilidad:{" "}
+              {sourceToolCalls
+                .map((call) => `${call.tool_name}:${call.status}`)
+                .join(", ")}
+            </p>
+          ) : null}
+          {internalToolCalls.length ? (
+            <div className="text-neutral-600">
+              <p>Acciones internas: artefacto guardado y caso actualizado.</p>
+              <details className="mt-1">
+                <summary className="cursor-pointer font-semibold">
+                  Ver detalle tecnico de las acciones internas
+                </summary>
+                {internalToolCalls
+                  .map((call) => `${call.tool_name}:${call.status}`)
+                  .join(", ")}
+              </details>
+            </div>
+          ) : null}
+          {otherToolCalls.length ? (
+            <p className="text-neutral-600">
+              Otras tools:{" "}
+              {otherToolCalls
+                .map((call) => `${call.tool_name}:${call.status}`)
+                .join(", ")}
+            </p>
+          ) : null}
+          {artifactEntries.length ? (
+            <details>
+              <summary className="cursor-pointer font-semibold text-violet-900">
+                Ver artefacto guardado
+              </summary>
+              <pre className="mt-1 max-h-72 overflow-auto rounded bg-white p-2 font-mono">
+                {JSON.stringify(Object.fromEntries(artifactEntries), null, 2)}
+              </pre>
+            </details>
+          ) : null}
+          {response.response_preview ? (
+            <details>
+              <summary className="cursor-pointer font-semibold text-violet-900">
+                Ver respuesta textual original del agente (preview)
+              </summary>
+              {response.response_preview_truncated ? (
+                <p className="mt-1 rounded bg-amber-50 p-2 text-amber-800">
+                  Preview truncado para mantener la pantalla legible. Revisa el
+                  resultado completo en el artefacto guardado.
+                </p>
+              ) : null}
+              <pre className="mt-1 max-h-52 overflow-auto rounded bg-white p-2 font-mono">
+                {response.response_preview}
+              </pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function renderFlowToolReadiness(params: {
   item: ToolReadinessToolItem;
   row: OperationalCaseType;
@@ -2062,9 +2640,18 @@ function renderFlowToolReadiness(params: {
     <div className={`rounded border p-2 ${toolReadinessClass(item.status)}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-mono text-xs">{item.tool_id}</span>
-        <span className="rounded bg-white/70 px-1.5 py-0.5 text-[11px] font-semibold">
-          Estado: {toolReadinessLabel(item.status)}
-        </span>
+        <div className="flex flex-wrap gap-1">
+          <span className="rounded bg-white/70 px-1.5 py-0.5 text-[11px] font-semibold">
+            Estado: {toolReadinessLabel(item.status)}
+          </span>
+          <span
+            className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${statusPillClass(
+              item.test_status
+            )}`}
+          >
+            {toolTestStatusLabel(item.test_status)}
+          </span>
+        </div>
       </div>
       <div className="mt-1 text-[11px]">{metaParts.join(" · ")}</div>
       {item.blocking ? (
@@ -3601,9 +4188,18 @@ export function OperationalCaseTypesClient({
                         className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
                       >
                         <div className="text-center">
-                          <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
-                            Paso {stepIndex + 1}
-                          </span>
+                          <div className="flex flex-wrap items-center justify-center gap-2">
+                            <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                              Paso {stepIndex + 1}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusPillClass(
+                                step.test_status
+                              )}`}
+                            >
+                              {stepTestStatusLabel(step.test_status)}
+                            </span>
+                          </div>
                           <div className="mt-2">
                             <div className="font-semibold">{step.step_label}</div>
                             {step.step_description ? (
@@ -3626,8 +4222,17 @@ export function OperationalCaseTypesClient({
                                 <div className="text-xs font-semibold">
                                   {skill.skill_label ?? labelFromSlug(skill.skill_slug)}
                                 </div>
-                                <div className="font-mono text-[11px] text-neutral-500">
-                                  {skill.skill_slug}
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="font-mono text-[11px] text-neutral-500">
+                                    {skill.skill_slug}
+                                  </div>
+                                  <span
+                                    className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${statusPillClass(
+                                      skill.test_status
+                                    )}`}
+                                  >
+                                    {skillTestStatusLabel(skill.test_status)}
+                                  </span>
                                 </div>
                                 {skill.skill_description ? (
                                   <p className="mt-1 text-xs text-neutral-500">
@@ -3649,6 +4254,16 @@ export function OperationalCaseTypesClient({
                                     </p>
                                   )}
                                 </div>
+                                <SkillTestPanel
+                                  skill={skill}
+                                  row={row}
+                                  hasTestCase={Boolean(testCaseResult?.case)}
+                                  caseId={testCaseResult?.case?.id ?? null}
+                                  onFinished={async () => {
+                                    await refreshToolReadiness(row);
+                                    await refreshTestCase(row);
+                                  }}
+                                />
                               </div>
                             ))
                           ) : (

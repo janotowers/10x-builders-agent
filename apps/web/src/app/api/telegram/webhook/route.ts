@@ -6,6 +6,7 @@ import {
   getGoogleCalendarAccessToken,
   associateExternalResponseWithCase,
   findOperationalCaseByExternalChatId,
+  listInternalUserNotifications,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
 import {
@@ -14,6 +15,10 @@ import {
 } from "@/lib/telegram/send-message";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import {
+  handlePriceApprovalDecision,
+  parsePriceApprovalDecision,
+} from "@/lib/business-decisions/price-approval";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -190,9 +195,9 @@ export async function POST(request: Request) {
   // Handle callback queries (confirmation buttons)
   if (update.callback_query) {
     const cb = update.callback_query;
-    const [action, toolCallId] = cb.data.split(":");
+    const [action, targetId] = cb.data.split(":");
 
-    if (!toolCallId) {
+    if (!targetId) {
       await answerCallbackQuery(cb.id, "Datos inválidos");
       return NextResponse.json({ ok: true });
     }
@@ -209,11 +214,53 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
+    const userId = telegramAccount.user_id as string;
+    if (action === "price_approve" || action === "price_reject") {
+      const result = await handlePriceApprovalDecision(db, {
+        userId,
+        notificationId: targetId,
+        text: action === "price_approve" ? "APROBAR PRECIO" : "RECHAZAR PRECIO",
+      });
+      await answerCallbackQuery(
+        cb.id,
+        result.ok
+          ? action === "price_approve"
+            ? "Precio aprobado"
+            : "Precio rechazado"
+          : "No pude procesarlo"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Listo, procese tu decision de precio."
+            : "No pude procesar la decision de precio.")
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "price_approval",
+        notification_id: targetId,
+      });
+    }
+
+    if (action === "price_adjust") {
+      await answerCallbackQuery(cb.id, "Envia el ajuste para aprobar");
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        "Claro. Respondeme con los montos para ajustar y aprobar, por ejemplo:\nAJUSTAR PRECIO salida=23500 ideal=22000 minimo=18000"
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "price_adjust_guidance",
+        notification_id: targetId,
+      });
+    }
+
     if (action === "approve") {
       await answerCallbackQuery(cb.id, "✅ Aprobado");
       await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Procesando...");
       const result = await withTypingHeartbeat(cb.message.chat.id, () =>
-        resumeAgentFromCallback(db, toolCallId, "approve")
+        resumeAgentFromCallback(db, targetId, "approve")
       );
       if (result.pendingConfirmation) {
         const pc = result.pendingConfirmation;
@@ -237,7 +284,7 @@ export async function POST(request: Request) {
     } else if (action === "reject") {
       await answerCallbackQuery(cb.id, "❌ Cancelado");
       await sendTelegramMessage(cb.message.chat.id, "Acción cancelada.");
-      const result = await resumeAgentFromCallback(db, toolCallId, "reject");
+      const result = await resumeAgentFromCallback(db, targetId, "reject");
       if (result.message) {
         await sendTelegramMessage(cb.message.chat.id, result.message);
       }
@@ -366,6 +413,36 @@ export async function POST(request: Request) {
   }
 
   const userId = telegramAccount.user_id;
+
+  const parsedPriceDecision = parsePriceApprovalDecision(text);
+  if (parsedPriceDecision.intent !== "unclear") {
+    const pendingPriceApprovals = await listInternalUserNotifications(db, userId, {
+      statuses: ["unread"],
+      limit: 10,
+    });
+    const pendingPriceApproval = pendingPriceApprovals.find(
+      (notification) => notification.kind === "price_approval"
+    );
+    if (pendingPriceApproval) {
+      const result = await handlePriceApprovalDecision(db, {
+        userId,
+        notificationId: pendingPriceApproval.id,
+        text,
+      });
+      await sendTelegramMessage(
+        chatId,
+        result.message ??
+          (result.ok
+            ? "Listo, procese tu decision de precio."
+            : "No pude procesar la decision de precio.")
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "price_approval",
+        notification_id: pendingPriceApproval.id,
+      });
+    }
+  }
 
   // Get or create session
   let session = await db

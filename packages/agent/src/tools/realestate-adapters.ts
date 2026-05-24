@@ -2,7 +2,7 @@
  * LangChain adapters para tools del dominio inmobiliario:
  *   - telegram_send_message_to_contact (real)
  *   - easybroker_search_listings, easybroker_search_closed_deals (real, read-only)
- *   - easybroker_create_listing, easybroker_upload_images (stub HTTP, write)
+ *   - easybroker_create_listing, easybroker_upload_images (real HTTP write, HITL)
  *   - bigquery_lookup_local_comparables (real, sobre bigquery_run_query)
  *   - generate_document_from_template (real: DOCX desde account_assets)
  *   - image_watermark (real: Sharp + account_assets)
@@ -28,12 +28,18 @@ import PizZip from "pizzip";
 import sharp from "sharp";
 import { z } from "zod";
 import {
+  executeBigQueryQuery,
+  type BigQueryParamValue,
+} from "./bigquery-adapter";
+import {
   createToolCall,
+  getAccountAssetByStoragePath,
   listAccountAssets,
   updateToolCallStatus,
   getOperationalCase,
   insertOperationalCaseEvent,
   updateOperationalCase,
+  createExternalContactNotification,
 } from "@agents/db";
 import type { ToolContext } from "./tool-context";
 import {
@@ -54,6 +60,9 @@ import type { AccountAsset } from "@agents/types";
 import type { NotifyUserFn } from "./operational-cases-adapters";
 
 const execFileAsync = promisify(execFile);
+
+const LOCAL_COMPARABLES_BIGQUERY_PROJECT_ID = "ungga-full";
+const LOCAL_COMPARABLES_BIGQUERY_LOCATION = "US";
 
 export interface RealEstateToolDeps {
   /**
@@ -144,6 +153,26 @@ export function addRealEstateTools(
                     text_preview: input.text.slice(0, 200),
                   },
                 });
+                await createExternalContactNotification(ctx.db, {
+                  userId: ctx.userId,
+                  caseId: opCase.id,
+                  contact: {
+                    ...(opCase.external_contact_jsonb as Record<string, unknown>),
+                    channel: "telegram",
+                    chat_id: input.chat_id,
+                  },
+                  channel: "telegram",
+                  recipientIdentifier: String(input.chat_id),
+                  messageBody: input.text,
+                  status: "sent",
+                  nextReminderAt: new Date(
+                    Date.now() + 24 * 60 * 60_000
+                  ).toISOString(),
+                  metadata: {
+                    purpose: input.purpose ?? "outbound",
+                    source: "telegram_send_message_to_contact",
+                  },
+                });
               }
             } catch (e) {
               console.warn(
@@ -180,12 +209,12 @@ export function addRealEstateTools(
     tools.push(makeEasyBrokerSearchTool(ctx, "easybroker_search_closed_deals"));
   }
 
-  // ── EasyBroker (write) — stubs que requieren HITL ───────────────────
+  // ── EasyBroker (write) — API real, siempre risk=high/HITL ───────────
   if (toolEnabled("easybroker_create_listing", ctx)) {
-    tools.push(makeEasyBrokerWriteStub(ctx, "easybroker_create_listing"));
+    tools.push(makeEasyBrokerCreateListingTool(ctx));
   }
   if (toolEnabled("easybroker_upload_images", ctx)) {
-    tools.push(makeEasyBrokerWriteStub(ctx, "easybroker_upload_images"));
+    tools.push(makeEasyBrokerUploadImagesTool(ctx));
   }
 
   // ── BigQuery comparables ────────────────────────────────────────────
@@ -196,6 +225,10 @@ export function addRealEstateTools(
           zona?: string;
           operation?: "sale" | "rent";
           property_type?: string;
+          target_price?: number;
+          price?: number;
+          min_price?: number;
+          max_price?: number;
           min_area_m2?: number;
           max_area_m2?: number;
           months_back?: number;
@@ -209,30 +242,11 @@ export function addRealEstateTools(
             false,
             ctx.turnId
           );
-          // Esta tool es un convenience wrapper sobre bigquery_run_query.
-          // En vez de duplicar la implementación, devolvemos el SQL
-          // sugerido + parámetros para que el agente (o una pasada
-          // posterior) lo ejecute via la tool BigQuery existente. Cuando
-          // exista la tabla canónica de deals cerrados confirmaremos el
-          // shape y haremos que esta tool ejecute la query directamente.
-          const out = {
-            status: "not_configured",
-            hint:
-              "Esta tool requiere confirmar qué tablas en BigQuery contienen propiedades cerradas con (zona, precio, m², fecha_cierre). Hasta que tengas eso, usa bigquery_run_query con un SELECT manual, o llama a easybroker_search_closed_deals.",
-            suggested_filters: {
-              zona: input.zona,
-              operation: input.operation,
-              property_type: input.property_type,
-              min_area_m2: input.min_area_m2,
-              max_area_m2: input.max_area_m2,
-              months_back: input.months_back ?? 12,
-              limit: input.limit ?? 25,
-            },
-          };
+          const out = await lookupLocalComparablesFromBigQuery(ctx, input);
           await updateToolCallStatus(
             ctx.db,
             record.id,
-            "executed",
+            out.status === "ok" ? "executed" : "failed",
             out as unknown as Record<string, unknown>
           );
           return JSON.stringify(out);
@@ -240,15 +254,19 @@ export function addRealEstateTools(
         {
           name: "bigquery_lookup_local_comparables",
           description:
-            "Looks up closed real estate deals in the Ungga warehouse (BigQuery) for comparables.",
+            "Looks up published internal inventory in the Ungga warehouse (BigQuery) for comparable asking prices.",
           schema: z.object({
             zona: z.string().min(1).optional(),
             operation: z.enum(["sale", "rent"]).optional(),
             property_type: z.string().min(1).optional(),
+            target_price: z.number().positive().optional(),
+            price: z.number().positive().optional(),
+            min_price: z.number().positive().optional(),
+            max_price: z.number().positive().optional(),
             min_area_m2: z.number().positive().optional(),
             max_area_m2: z.number().positive().optional(),
-            months_back: z.number().int().positive().max(36).optional(),
-            limit: z.number().int().positive().max(100).optional(),
+            months_back: z.number().int().positive().max(60).optional(),
+            limit: z.number().int().positive().max(250).optional(),
           }),
         }
       )
@@ -1596,8 +1614,12 @@ function numericOrNull(value: unknown) {
 
 function errorMessageFromPayload(payload: Record<string, unknown>) {
   const error = payload.error ?? payload.message ?? payload.errors;
-  if (typeof error === "string") return error;
+  const serialized = JSON.stringify(payload);
+  if (typeof error === "string") {
+    return serialized && serialized !== "{}" ? `${error} — ${serialized}` : error;
+  }
   if (error) return JSON.stringify(error);
+  if (serialized && serialized !== "{}") return serialized;
   return "error sin detalle";
 }
 
@@ -1632,15 +1654,7 @@ function makeEasyBrokerSearchTool(
       }
       try {
         const out = await searchEasyBrokerProperties(ctx, toolId, input, creds);
-        if (out.ok === false) {
-          if (creds.source === "account") {
-            await markAccountSecretFailure(
-              ctx,
-              ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker_web,
-              String(out.error ?? out.status ?? "EasyBroker MLS search failed")
-            );
-          }
-        } else {
+        if (out.ok !== false) {
           await markAccountSecretSuccess(
             ctx,
             ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker_web
@@ -1650,13 +1664,6 @@ function makeEasyBrokerSearchTool(
         return JSON.stringify(out);
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
-        if (creds.source === "account") {
-          await markAccountSecretFailure(
-            ctx,
-            ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker_web,
-            errorMessage
-          );
-        }
         const out = {
           ok: false,
           status: "failed",
@@ -1698,17 +1705,100 @@ function makeEasyBrokerSearchTool(
   );
 }
 
-function makeEasyBrokerWriteStub(
-  ctx: ToolContext,
-  toolId: "easybroker_create_listing" | "easybroker_upload_images"
-) {
+type EasyBrokerListingLocationInput = {
+  street?: string;
+  exterior_number?: string;
+  neighborhood?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  postal_code?: string;
+  latitude?: number;
+  longitude?: number;
+  [key: string]: unknown;
+};
+
+type EasyBrokerCreateListingInput = {
+  title: string;
+  description: string;
+  operation: "sale" | "rent";
+  property_type: string;
+  price: number;
+  currency?: string;
+  status?: "published" | "sold" | "rented" | "reserved" | "suspended" | "not_published";
+  street?: string;
+  location?: EasyBrokerListingLocationInput;
+  private_description?: string;
+  agent?: string;
+  show_prices?: boolean;
+  bedrooms?: number;
+  bathrooms?: number;
+  half_bathrooms?: number;
+  parking?: number;
+  parking_spaces?: number;
+  age?: string;
+  floor?: string;
+  floors?: number;
+  expenses?: string;
+  internal_id?: string;
+  tags?: string[];
+  features?: string[];
+  share_commission?: boolean;
+  collaboration_notes?: string;
+  shared_commission_percentage?: number | null;
+  construction_size?: number;
+  lot_size?: number;
+  area_m2?: number;
+  lot_length?: number;
+  lot_width?: number;
+  covered_space?: number;
+  exclusive?: boolean | null;
+  videos?: string[];
+  virtual_tour?: string;
+  show_exact_location?: boolean;
+  custom_fields?: Record<string, unknown>;
+  custom_fields_json?: string;
+  case_id?: string;
+  dry_run?: boolean;
+};
+
+type EasyBrokerUploadImagesInput = {
+  listing_id: string;
+  image_paths: string[];
+  image_titles?: string[];
+  case_id?: string;
+  dry_run?: boolean;
+};
+
+type EasyBrokerImagePayload = {
+  url: string;
+  title?: string | null;
+  source_path?: string;
+  expires_in_seconds?: number;
+};
+
+class EasyBrokerApiError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+    readonly payload: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = "EasyBrokerApiError";
+  }
+}
+
+const EASYBROKER_SIGNED_URL_TTL_SECONDS = 60 * 60 * 72;
+const EASYBROKER_MAX_IMAGE_URL_LENGTH = 255;
+
+function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
   return tool(
-    async (input: Record<string, unknown>) => {
+    async (input: EasyBrokerCreateListingInput) => {
       const record = await createToolCall(
         ctx.db,
         ctx.sessionId,
-        toolId,
-        input,
+        "easybroker_create_listing",
+        input as unknown as Record<string, unknown>,
         true,
         ctx.turnId
       );
@@ -1727,68 +1817,962 @@ function makeEasyBrokerWriteStub(
         );
         return JSON.stringify(out);
       }
-      const out = {
-        status: "stub",
-        credential_source: creds.source,
-        hint:
-          "Stub: cuando esté la docs de EasyBroker mapeada (POST /properties, POST /properties/:id/images), este handler hace la llamada real. HITL ya está aplicado por risk='high'.",
-        received: Object.keys(input),
-      };
-      await updateToolCallStatus(
-        ctx.db,
-        record.id,
-        "executed",
-        out as unknown as Record<string, unknown>
-      );
-      return JSON.stringify(out);
+      let attemptedPayload: Record<string, unknown> | undefined;
+      try {
+        const inputForExecution = await applyDefaultEasyBrokerAgent(ctx, input);
+        attemptedPayload = buildEasyBrokerCreatePayload(inputForExecution);
+        const out = await createEasyBrokerListing(ctx, inputForExecution, creds, attemptedPayload);
+        await markEasyBrokerCredentialResult(ctx, creds, out.ok !== false, out.status);
+        await updateToolCallStatus(ctx.db, record.id, out.ok === false ? "failed" : "executed", out);
+        if (input.case_id && out.ok !== false) {
+          await insertOperationalCaseEvent(ctx.db, {
+            caseId: input.case_id,
+            eventType: "state_changed",
+            actor: "agent",
+            payload: {
+              tool: "easybroker_create_listing",
+              listing_id: out.listing_id,
+              public_id: out.public_id,
+              url: out.url,
+              public_url: out.public_url,
+              agent_url: out.agent_url,
+              status: out.status,
+            },
+          });
+        }
+        return JSON.stringify(out);
+      } catch (err) {
+        const credentialFailure = isEasyBrokerCredentialFailure(err);
+        const apiPayload =
+          err instanceof EasyBrokerApiError ? err.payload : undefined;
+        const out = {
+          ok: false,
+          status: "failed",
+          error: err instanceof Error ? err.message : String(err),
+          credential_failure: credentialFailure,
+          ...(apiPayload ? { easybroker_response: apiPayload } : {}),
+          ...(attemptedPayload ? { attempted_payload: attemptedPayload } : {}),
+        };
+        if (credentialFailure) {
+          await markEasyBrokerCredentialResult(ctx, creds, false, out.error);
+        }
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
     },
     {
-      name: toolId,
+      name: "easybroker_create_listing",
       description:
-        toolId === "easybroker_create_listing"
-          ? "Creates an EasyBroker listing (write, HITL)."
-          : "Uploads images to an EasyBroker listing (write, HITL).",
-      schema:
-        toolId === "easybroker_create_listing"
-          ? z.object({
-              title: z.string().min(1),
-              description: z.string().optional(),
-              operation: z.enum(["sale", "rent"]),
-              property_type: z.string().min(1),
-              price: z.number().nonnegative(),
-              currency: z.string().optional(),
-              location: z
-                .object({
-                  street: z.string().optional(),
-                  exterior_number: z.string().optional(),
-                  neighborhood: z.string().optional(),
-                  city: z.string().optional(),
-                  state: z.string().optional(),
-                  country: z.string().optional(),
-                  postal_code: z.string().optional(),
-                  latitude: z.number().optional(),
-                  longitude: z.number().optional(),
-                })
-                .optional(),
-              area_m2: z.number().nonnegative().optional(),
-              bedrooms: z.number().nonnegative().optional(),
-              bathrooms: z.number().nonnegative().optional(),
-              parking: z.number().nonnegative().optional(),
-              case_id: z.string().optional(),
-              custom_fields_json: z
-                .string()
-                .optional()
-                .describe(
-                  "Optional JSON string with tenant-specific EasyBroker fields."
-                ),
-            })
-          : z.object({
-              listing_id: z.string().min(1),
-              image_paths: z.array(z.string().min(1)).min(1),
-              case_id: z.string().optional(),
-            }),
+        "Creates an EasyBroker property as not_published by default (write, HITL).",
+      schema: z.object({
+        title: z.string().min(1),
+        description: z.string().min(1).max(4000),
+        operation: z.enum(["sale", "rent"]),
+        property_type: z.string().min(1),
+        price: z.number().nonnegative(),
+        currency: z.string().optional(),
+        status: z
+          .enum(["published", "sold", "rented", "reserved", "suspended", "not_published"])
+          .optional(),
+        street: z.string().optional(),
+        location: z.record(z.string(), z.any()).optional(),
+        private_description: z.string().optional(),
+        agent: z.string().optional(),
+        show_prices: z.boolean().optional(),
+        bedrooms: z.number().nonnegative().optional(),
+        bathrooms: z.number().nonnegative().optional(),
+        half_bathrooms: z.number().nonnegative().optional(),
+        parking: z.number().nonnegative().optional(),
+        parking_spaces: z.number().nonnegative().optional(),
+        age: z.string().optional(),
+        floor: z.string().optional(),
+        floors: z.number().int().nonnegative().optional(),
+        expenses: z.string().optional(),
+        internal_id: z.string().optional(),
+        tags: z.array(z.string()).optional(),
+        features: z.array(z.string()).optional(),
+        share_commission: z.boolean().optional(),
+        collaboration_notes: z.string().optional(),
+        shared_commission_percentage: z.number().nullable().optional(),
+        construction_size: z.number().nonnegative().optional(),
+        lot_size: z.number().nonnegative().optional(),
+        area_m2: z.number().nonnegative().optional(),
+        lot_length: z.number().nonnegative().optional(),
+        lot_width: z.number().nonnegative().optional(),
+        covered_space: z.number().nonnegative().optional(),
+        exclusive: z.boolean().nullable().optional(),
+        videos: z.array(z.string()).optional(),
+        virtual_tour: z.string().optional(),
+        show_exact_location: z.boolean().optional(),
+        custom_fields: z.record(z.string(), z.any()).optional(),
+        custom_fields_json: z
+          .string()
+          .optional()
+          .describe("Optional JSON string with tenant-specific EasyBroker fields."),
+        case_id: z.string().optional(),
+        dry_run: z.boolean().optional(),
+      }),
     }
   );
+}
+
+function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
+  return tool(
+    async (input: EasyBrokerUploadImagesInput) => {
+      const record = await createToolCall(
+        ctx.db,
+        ctx.sessionId,
+        "easybroker_upload_images",
+        input as unknown as Record<string, unknown>,
+        true,
+        ctx.turnId
+      );
+      const creds = await resolveEasyBrokerCredentials(ctx);
+      if (!creds) {
+        const out = {
+          status: "not_configured",
+          hint:
+            "EasyBroker no está conectado para esta cuenta. Conéctalo desde Ajustes → Cuentas externas antes de publicar.",
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+      try {
+        const out = await uploadEasyBrokerImages(ctx, input, creds);
+        await markEasyBrokerCredentialResult(ctx, creds, out.ok !== false, out.status);
+        await updateToolCallStatus(ctx.db, record.id, out.ok === false ? "failed" : "executed", out);
+        if (input.case_id && out.ok !== false) {
+          await insertOperationalCaseEvent(ctx.db, {
+            caseId: input.case_id,
+            eventType: "state_changed",
+            actor: "agent",
+            payload: {
+              tool: "easybroker_upload_images",
+              listing_id: input.listing_id,
+              image_count: out.count,
+              status: out.status,
+            },
+          });
+        }
+        return JSON.stringify(out);
+      } catch (err) {
+        const credentialFailure = isEasyBrokerCredentialFailure(err);
+        const out = {
+          ok: false,
+          status: "failed",
+          error: err instanceof Error ? err.message : String(err),
+          credential_failure: credentialFailure,
+        };
+        if (credentialFailure) {
+          await markEasyBrokerCredentialResult(ctx, creds, false, out.error);
+        }
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+    },
+    {
+      name: "easybroker_upload_images",
+      description:
+        "Replaces an EasyBroker property's image array using HTTP(S) image URLs (write, HITL).",
+      schema: z.object({
+        listing_id: z.string().min(1),
+        image_paths: z.array(z.string().min(1)).min(1).max(50),
+        image_titles: z.array(z.string()).optional(),
+        case_id: z.string().optional(),
+        dry_run: z.boolean().optional(),
+      }),
+    }
+  );
+}
+
+type BigQueryComparableLookupInput = {
+  zona?: string;
+  operation?: "sale" | "rent";
+  property_type?: string;
+  target_price?: number;
+  price?: number;
+  min_price?: number;
+  max_price?: number;
+  min_area_m2?: number;
+  max_area_m2?: number;
+  months_back?: number;
+  limit?: number;
+};
+
+type LocalComparableRow = {
+  source: "bigquery_internal_inventory";
+  id: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  property_type: string | null;
+  operation: string | null;
+  price: number | null;
+  price_display: string | null;
+  currency: string | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  ad_status: string | null;
+  created_at: string | null;
+  created_at_raw: string | null;
+  url: string | null;
+  price_basis: "asking_price";
+  is_closed_price: false;
+  price_parse_status: "parsed" | "missing" | "failed";
+  quality: "complete" | "incomplete";
+  quality_reasons: string[];
+  usable_as_comparable: boolean;
+};
+
+async function lookupLocalComparablesFromBigQuery(
+  ctx: ToolContext,
+  input: BigQueryComparableLookupInput
+) {
+  const organizationId = ctx.tenantOrganizationId?.trim();
+  if (!organizationId) {
+    return {
+      ok: false,
+      status: "not_configured",
+      source: "bigquery_internal_inventory",
+      price_basis: "asking_price",
+      is_closed_price: false,
+      hint:
+        "No hay tenantOrganizationId en el contexto; no se puede consultar inventario interno sin filtro por organización.",
+      rows: [],
+      stats: emptyLocalComparableStats(),
+    };
+  }
+
+  const limit = Math.min(Math.max(input.limit ?? 100, 1), 250);
+  const monthsBack = Math.min(Math.max(input.months_back ?? 24, 1), 60);
+  const params: Record<string, BigQueryParamValue> = {
+    organization_id: organizationId,
+    months_back: monthsBack,
+    limit,
+  };
+  const filters = [
+    "p.ad_status = 'Publicado'",
+    "DATE(p.created_time, 'America/Mexico_City') >= DATE_SUB(CURRENT_DATE('America/Mexico_City'), INTERVAL @months_back MONTH)",
+  ];
+  const priceFilters: string[] = [];
+
+  const zona = cleanString(input.zona);
+  if (zona) {
+    params.zona = zona.toLowerCase();
+    filters.push(`(
+      LOWER(COALESCE(p.address, '')) LIKE CONCAT('%', @zona, '%')
+      OR LOWER(COALESCE(p.city, '')) LIKE CONCAT('%', @zona, '%')
+      OR LOWER(COALESCE(p.state, '')) LIKE CONCAT('%', @zona, '%')
+    )`);
+  }
+
+  const propertyType = cleanString(input.property_type);
+  if (propertyType) {
+    params.property_type = propertyType;
+    filters.push("p.house_type = @property_type");
+  }
+
+  if (input.operation === "rent") {
+    filters.push("p.monetization_type_display = 'Renta'");
+  } else if (input.operation === "sale") {
+    filters.push("p.monetization_type_display IN ('Venta', 'Preventa')");
+  }
+
+  const explicitMinPrice = positiveNumberOrNull(input.min_price);
+  const explicitMaxPrice = positiveNumberOrNull(input.max_price);
+  const targetPrice = positiveNumberOrNull(input.target_price) ?? positiveNumberOrNull(input.price);
+  const minPrice = explicitMinPrice ?? (targetPrice != null ? Math.round(targetPrice * 0.7) : null);
+  const maxPrice = explicitMaxPrice ?? (targetPrice != null ? Math.round(targetPrice * 1.3) : null);
+  if (minPrice != null) {
+    params.min_price = minPrice;
+    priceFilters.push("price >= @min_price");
+  }
+  if (maxPrice != null) {
+    params.max_price = maxPrice;
+    priceFilters.push("price <= @max_price");
+  }
+
+  const sql = `
+WITH user_ids AS (
+  SELECT u.document_id AS user_id
+  FROM \`ungga-full.firestore_users.users_light\` u
+  WHERE (u.is_test IS NULL OR u.is_test = FALSE)
+    AND u.organization_id = @organization_id
+),
+inventory_raw AS (
+  SELECT
+    p.document_id,
+    p.address,
+    p.city,
+    p.state,
+    p.house_type,
+    p.monetization_type_display,
+    p.price_display,
+    SAFE_CAST(NULLIF(REGEXP_REPLACE(COALESCE(p.price_display, ''), r'[^0-9.]', ''), '') AS FLOAT64) AS price,
+    p.currency_display,
+    p.bedroom,
+    p.bathroom,
+    p.ad_status,
+    p.created_time,
+    p.public_url
+  FROM \`ungga-full.firestore_properties.properties_light\` p
+  JOIN user_ids u ON REPLACE(p.user_owner, 'users/', '') = u.user_id
+  WHERE ${filters.join("\n    AND ")}
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY p.document_id ORDER BY p.created_time DESC) = 1
+),
+inventory AS (
+  SELECT *
+  FROM inventory_raw
+  WHERE ${priceFilters.length > 0 ? priceFilters.join("\n    AND ") : "TRUE"}
+)
+SELECT *
+FROM inventory
+ORDER BY price IS NULL, created_time DESC
+LIMIT @limit`;
+
+  const result = await executeBigQueryQuery({
+    sql,
+    params,
+    projectId: ctx.bigQueryProjectId ?? LOCAL_COMPARABLES_BIGQUERY_PROJECT_ID,
+    // These hard-coded Ungga warehouse tables are in the multi-region `US`.
+    // Do not inherit regional app defaults such as `us-central1`, which make
+    // BigQuery report the dataset as missing even when the table name is valid.
+    location: LOCAL_COMPARABLES_BIGQUERY_LOCATION,
+    maxResults: limit,
+  });
+
+  if (result.status !== "ok") {
+    return {
+      ok: false,
+      status: result.status,
+      source: "bigquery_internal_inventory",
+      price_basis: "asking_price",
+      is_closed_price: false,
+      hint:
+        result.status === "not_configured"
+          ? result.message
+          : "No se pudo consultar BigQuery para comparables internos.",
+      error: "error" in result ? result.error : undefined,
+      missing: "missing" in result ? result.missing : undefined,
+      rows: [],
+      stats: emptyLocalComparableStats(),
+      filters_used: comparableFiltersUsed(input, monthsBack, limit, minPrice, maxPrice),
+    };
+  }
+
+  const rows = result.rows.map(normalizeLocalComparableRow);
+  return {
+    ok: true,
+    status: "ok",
+    source: "bigquery_internal_inventory",
+    price_basis: "asking_price",
+    is_closed_price: false,
+    count: rows.length,
+    rows,
+    stats: localComparableStats(rows),
+    filters_used: comparableFiltersUsed(input, monthsBack, limit, minPrice, maxPrice),
+    notes:
+      "Inventario interno publicado desde BigQuery; son precios publicados (asking prices), no precios de cierre. No se calcula precio/m² hasta confirmar campos de área confiables.",
+    bigquery: {
+      row_count: result.rowCount,
+      truncated: result.truncated,
+      bytes_processed: result.bytesProcessed ?? null,
+      cache_hit: result.cacheHit ?? null,
+    },
+  };
+}
+
+function comparableFiltersUsed(
+  input: BigQueryComparableLookupInput,
+  monthsBack: number,
+  limit: number,
+  minPrice: number | null,
+  maxPrice: number | null
+) {
+  return {
+    zona: cleanString(input.zona),
+    operation: input.operation ?? null,
+    property_type: cleanString(input.property_type),
+    target_price: positiveNumberOrNull(input.target_price) ?? positiveNumberOrNull(input.price),
+    min_price: minPrice,
+    max_price: maxPrice,
+    months_back: monthsBack,
+    limit,
+    price_basis: "asking_price",
+    source: "bigquery_internal_inventory",
+  };
+}
+
+function normalizeLocalComparableRow(row: Record<string, unknown>): LocalComparableRow {
+  const price = numberOrNull(row.price);
+  const priceDisplay = cleanString(row.price_display);
+  const normalized = {
+    id: cleanStringOrNull(row.document_id),
+    address: cleanStringOrNull(row.address),
+    city: cleanStringOrNull(row.city),
+    state: cleanStringOrNull(row.state),
+    property_type: cleanStringOrNull(row.house_type),
+    operation: cleanStringOrNull(row.monetization_type_display),
+    price,
+    price_display: priceDisplay ?? null,
+    currency: cleanStringOrNull(row.currency_display),
+    bedrooms: numberOrNull(row.bedroom),
+    bathrooms: numberOrNull(row.bathroom),
+    ad_status: cleanStringOrNull(row.ad_status),
+    created_at: timestampLikeToIsoString(row.created_time),
+    created_at_raw: cleanStringOrNull(row.created_time),
+    url: cleanStringOrNull(row.public_url),
+  };
+  const qualityReasons = localComparableQualityReasons(normalized);
+  return {
+    source: "bigquery_internal_inventory",
+    ...normalized,
+    price_basis: "asking_price",
+    is_closed_price: false,
+    price_parse_status: price != null ? "parsed" : priceDisplay ? "failed" : "missing",
+    quality: qualityReasons.length === 0 ? "complete" : "incomplete",
+    quality_reasons: qualityReasons,
+    usable_as_comparable: qualityReasons.length === 0,
+  };
+}
+
+function localComparableQualityReasons(
+  row: Pick<
+    LocalComparableRow,
+    "address" | "city" | "state" | "property_type" | "operation" | "price"
+  >
+) {
+  const reasons: string[] = [];
+  if (!row.property_type) reasons.push("missing_property_type");
+  if (!row.operation) reasons.push("missing_operation");
+  if (row.price == null) reasons.push("missing_price");
+  if (!row.address && !row.city && !row.state) reasons.push("missing_location");
+  return reasons;
+}
+
+function emptyLocalComparableStats() {
+  return {
+    count: 0,
+    usable_count: 0,
+    incomplete_count: 0,
+    priced_count: 0,
+    p25_price: null,
+    p50_price: null,
+    p75_price: null,
+    average_price: null,
+    min_price: null,
+    max_price: null,
+    price_per_m2_available: false,
+  };
+}
+
+function localComparableStats(rows: LocalComparableRow[]) {
+  const usableRows = rows.filter((row) => row.usable_as_comparable);
+  const prices = usableRows
+    .map((row) => row.price)
+    .filter((price): price is number => typeof price === "number" && Number.isFinite(price))
+    .sort((a, b) => a - b);
+  if (prices.length === 0) {
+    return {
+      ...emptyLocalComparableStats(),
+      count: rows.length,
+      incomplete_count: rows.filter((row) => !row.usable_as_comparable).length,
+    };
+  }
+  const sum = prices.reduce((acc, value) => acc + value, 0);
+  return {
+    count: rows.length,
+    usable_count: usableRows.length,
+    incomplete_count: rows.length - usableRows.length,
+    priced_count: prices.length,
+    p25_price: percentileNearestRank(prices, 0.25),
+    p50_price: percentileNearestRank(prices, 0.5),
+    p75_price: percentileNearestRank(prices, 0.75),
+    average_price: Math.round(sum / prices.length),
+    min_price: prices[0],
+    max_price: prices[prices.length - 1],
+    price_per_m2_available: false,
+  };
+}
+
+function percentileNearestRank(sortedValues: number[], percentile: number) {
+  if (sortedValues.length === 0) return null;
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil(percentile * sortedValues.length) - 1)
+  );
+  return sortedValues[index];
+}
+
+function numberOrNull(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function timestampLikeToIsoString(value: unknown) {
+  if (value == null) return null;
+  const raw = typeof value === "string" ? value.trim() : String(value);
+  if (!raw) return null;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) {
+    const millis = numeric > 1e12 ? numeric : numeric * 1000;
+    const date = new Date(millis);
+    return Number.isNaN(date.getTime()) ? raw : date.toISOString();
+  }
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? raw : new Date(parsed).toISOString();
+}
+
+function positiveNumberOrNull(value: unknown) {
+  const parsed = numberOrNull(value);
+  return parsed != null && parsed > 0 ? parsed : null;
+}
+
+function cleanStringOrNull(value: unknown) {
+  return cleanString(value) ?? null;
+}
+
+async function applyDefaultEasyBrokerAgent(
+  ctx: ToolContext,
+  input: EasyBrokerCreateListingInput
+): Promise<EasyBrokerCreateListingInput> {
+  if (cleanString(input.agent)) return input;
+  const webCreds = await resolveEasyBrokerWebCredentials(ctx);
+  const agentEmail = cleanString(webCreds?.email);
+  return agentEmail ? { ...input, agent: agentEmail } : input;
+}
+
+async function createEasyBrokerListing(
+  ctx: ToolContext,
+  input: EasyBrokerCreateListingInput,
+  creds: EasyBrokerCredentials,
+  prebuiltPayload?: Record<string, unknown>
+) {
+  const payload = prebuiltPayload ?? buildEasyBrokerCreatePayload(input);
+  if (input.dry_run) {
+    return {
+      ok: true,
+      status: "dry_run",
+      credential_source: creds.source,
+      payload,
+      hint: "Dry-run local: no se envió POST /v1/properties a EasyBroker.",
+    };
+  }
+  const response = await easyBrokerApiRequest(creds, "/v1/properties", {
+    method: "POST",
+    body: payload,
+  });
+  const listingId = stringFromPayload(response.payload, [
+    "public_id",
+    "id",
+    "property_id",
+    "internal_id",
+  ]);
+  const publicUrl = stringFromPayload(response.payload, ["public_url", "url"]);
+  const agentUrl = easyBrokerAgentUrlFromPublicUrl(publicUrl);
+  return {
+    ok: true,
+    status: "created",
+    credential_source: creds.source,
+    listing_id: listingId,
+    public_id: stringFromPayload(response.payload, ["public_id"]),
+    internal_id: stringFromPayload(response.payload, ["internal_id"]),
+    url: publicUrl,
+    public_url: publicUrl,
+    agent_url: agentUrl,
+    easybroker_status: stringFromPayload(response.payload, ["status"]),
+    request_status: payload.status,
+    payload_sent: payload,
+    raw: truncatePayload(response.payload),
+  };
+}
+
+async function uploadEasyBrokerImages(
+  ctx: ToolContext,
+  input: EasyBrokerUploadImagesInput,
+  creds: EasyBrokerCredentials
+) {
+  const images = await resolveEasyBrokerImagePayloads(ctx, input);
+  const payload = {
+    images: images.map((image) => ({
+      url: image.url,
+      ...(image.title ? { title: image.title } : {}),
+    })),
+  };
+  if (input.dry_run) {
+    return {
+      ok: true,
+      status: "dry_run",
+      credential_source: creds.source,
+      listing_id: input.listing_id,
+      count: images.length,
+      images,
+      payload,
+      hint:
+        "Dry-run local: no se envió PATCH /v1/properties/{listing_id} a EasyBroker.",
+    };
+  }
+  const response = await easyBrokerApiRequest(
+    creds,
+    `/v1/properties/${encodeURIComponent(input.listing_id)}`,
+    {
+      method: "PATCH",
+      body: payload,
+    }
+  );
+  return {
+    ok: true,
+    status: "images_submitted",
+    credential_source: creds.source,
+    listing_id: input.listing_id,
+    count: images.length,
+    images,
+    caveat:
+      "EasyBroker procesa imágenes de forma asíncrona. En PATCH, el arreglo images reemplaza las imágenes existentes de la propiedad.",
+    raw: truncatePayload(response.payload),
+  };
+}
+
+function buildEasyBrokerCreatePayload(input: EasyBrokerCreateListingInput) {
+  const customFields = parseEasyBrokerCustomFields(input);
+  const location = input.location ?? {};
+  const street =
+    cleanString(input.street) ??
+    cleanString(location.street) ??
+    cleanString(location.address);
+  if (!street) {
+    throw new Error(
+      "easybroker_create_listing requiere `street` o `location.street` para crear la propiedad."
+    );
+  }
+  if (!input.location || Object.keys(input.location).length === 0) {
+    throw new Error(
+      "easybroker_create_listing requiere `location` con la ubicación registrada/compatible con EasyBroker."
+    );
+  }
+  const easyBrokerLocation = buildEasyBrokerLocationPayload(location, street);
+  if (
+    easyBrokerLocation.latitude === undefined ||
+    easyBrokerLocation.longitude === undefined
+  ) {
+    throw new Error(
+      "easybroker_create_listing requiere `location.latitude` y `location.longitude` para que EasyBroker geolocalice la propiedad. Alternativa futura: integrar lookup de city_id/administrative_division_id vía /v1/locations."
+    );
+  }
+  // EasyBroker's create docs and read responses use `rental` for long-term rentals.
+  const operationTypeMap: Record<string, string> = {
+    sale: "sale",
+    rent: "rental",
+    rental: "rental",
+    temporary_rental: "temporary_rental",
+  };
+  const operationType = operationTypeMap[input.operation] ?? input.operation;
+  const payload: Record<string, unknown> = {
+    ...customFields,
+    property_type: input.property_type,
+    title: input.title,
+    description: input.description.slice(0, 4000),
+    status: input.status ?? "not_published",
+    location: easyBrokerLocation,
+    operations: [
+      {
+        type: operationType,
+        amount: input.price,
+        currency: input.currency ?? "MXN",
+        active: true,
+        unit: "total",
+      },
+    ],
+  };
+  setIfPresent(payload, "private_description", cleanString(input.private_description));
+  setIfPresent(payload, "agent", cleanString(input.agent));
+  setIfPresent(payload, "show_prices", input.show_prices);
+  setIfPresent(payload, "bedrooms", integerOrUndefined(input.bedrooms));
+  setIfPresent(payload, "bathrooms", integerOrUndefined(input.bathrooms));
+  setIfPresent(payload, "half_bathrooms", integerOrUndefined(input.half_bathrooms));
+  setIfPresent(
+    payload,
+    "parking_spaces",
+    integerOrUndefined(input.parking_spaces ?? input.parking)
+  );
+  setIfPresent(payload, "age", cleanString(input.age));
+  setIfPresent(payload, "floor", cleanString(input.floor));
+  setIfPresent(payload, "floors", integerOrUndefined(input.floors));
+  setIfPresent(payload, "expenses", cleanString(input.expenses));
+  setIfPresent(payload, "internal_id", cleanString(input.internal_id));
+  setIfPresent(payload, "tags", nonEmptyStringArray(input.tags));
+  // `features` must match EasyBroker's feature catalog exactly; omit from the
+  // generic test recipe unless caller explicitly maps known-valid names later.
+  setIfPresent(payload, "share_commission", input.share_commission);
+  setIfPresent(payload, "collaboration_notes", cleanString(input.collaboration_notes));
+  if (input.shared_commission_percentage !== undefined) {
+    payload.shared_commission_percentage = input.shared_commission_percentage;
+  }
+  setIfPresent(
+    payload,
+    "construction_size",
+    numberOrUndefined(input.construction_size ?? input.area_m2)
+  );
+  setIfPresent(payload, "lot_size", numberOrUndefined(input.lot_size));
+  setIfPresent(payload, "lot_length", numberOrUndefined(input.lot_length));
+  setIfPresent(payload, "lot_width", numberOrUndefined(input.lot_width));
+  setIfPresent(payload, "covered_space", numberOrUndefined(input.covered_space));
+  if (input.exclusive !== undefined) payload.exclusive = input.exclusive;
+  setIfPresent(payload, "videos", nonEmptyStringArray(input.videos));
+  setIfPresent(payload, "virtual_tour", cleanString(input.virtual_tour));
+  setIfPresent(payload, "show_exact_location", input.show_exact_location ?? false);
+  return payload;
+}
+
+function parseEasyBrokerCustomFields(input: EasyBrokerCreateListingInput) {
+  const custom: Record<string, unknown> = { ...(input.custom_fields ?? {}) };
+  if (input.custom_fields_json?.trim()) {
+    const parsed = JSON.parse(input.custom_fields_json) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("custom_fields_json debe ser un objeto JSON.");
+    }
+    Object.assign(custom, parsed as Record<string, unknown>);
+  }
+  return custom;
+}
+
+function buildEasyBrokerLocationPayload(
+  location: EasyBrokerListingLocationInput,
+  street?: string
+) {
+  // OpenAPI create schema:
+  // location.name is the registered full location string returned by /locations.
+  // Do not send city_area/city/region/show_exact_location here; those appear in
+  // read responses but are not permitted in POST /properties.
+  const payload: Record<string, unknown> = {};
+  const locationName =
+    cleanString(location.full_name) ??
+    cleanString(location.name) ??
+    [location.city_area ?? location.neighborhood, location.city, location.region ?? location.state]
+      .map(cleanString)
+      .filter(Boolean)
+      .join(", ");
+  setIfPresent(payload, "name", cleanString(locationName));
+  setIfPresent(payload, "street", cleanString(street));
+  setIfPresent(payload, "postal_code", cleanString(location.postal_code));
+  setIfPresent(payload, "latitude", numberOrUndefined(location.latitude));
+  setIfPresent(payload, "longitude", numberOrUndefined(location.longitude));
+  return payload;
+}
+
+async function resolveEasyBrokerImagePayloads(
+  ctx: ToolContext,
+  input: EasyBrokerUploadImagesInput
+): Promise<EasyBrokerImagePayload[]> {
+  if (input.image_paths.length > 50) {
+    throw new Error("EasyBroker permite máximo 50 imágenes por propiedad.");
+  }
+  const images = await Promise.all(
+    input.image_paths.map(async (imagePath, index) => {
+      const title = input.image_titles?.[index]?.trim() || null;
+      if (/^https?:\/\//i.test(imagePath)) {
+        return { url: imagePath, title, source_path: imagePath };
+      }
+      const parsed = parseStoragePath(imagePath);
+      const shortUrl = await publicAccountAssetUrlForEasyBroker(ctx, parsed);
+      if (shortUrl) {
+        return {
+          url: shortUrl,
+          title,
+          source_path: imagePath,
+        };
+      }
+      const { data, error } = await ctx.db.storage
+        .from(parsed.bucket)
+        .createSignedUrl(parsed.path, EASYBROKER_SIGNED_URL_TTL_SECONDS);
+      if (error || !data?.signedUrl) {
+        throw new Error(
+          `No se pudo generar signed URL para ${imagePath}: ${
+            error?.message ?? "respuesta vacía"
+          }`
+        );
+      }
+      return {
+        url: ensureEasyBrokerImageUrlIsAccepted(
+          ensureEasyBrokerImageUrlExtension(data.signedUrl, parsed.path)
+        ),
+        title,
+        source_path: imagePath,
+        expires_in_seconds: EASYBROKER_SIGNED_URL_TTL_SECONDS,
+      };
+    })
+  );
+  return images;
+}
+
+async function publicAccountAssetUrlForEasyBroker(
+  ctx: ToolContext,
+  parsed: { bucket: string; path: string }
+) {
+  const siteUrl = publicSiteUrl();
+  if (!siteUrl) return null;
+  const asset = await getAccountAssetByStoragePath(ctx.db, {
+    storageBucket: parsed.bucket,
+    storagePath: parsed.path,
+  });
+  if (!asset) return null;
+  const extension = path.extname(parsed.path).replace(/^\./, "").toLowerCase();
+  if (!["jpg", "jpeg", "png", "gif", "bmp", "heic"].includes(extension)) {
+    throw new Error(
+      `EasyBroker requiere URLs de imagen con extensión jpg/png/gif/bmp/heic; path recibido: ${parsed.path}`
+    );
+  }
+  return ensureEasyBrokerImageUrlIsAccepted(
+    `${siteUrl}/api/public/account-assets/${asset.id}/image.${extension}`
+  );
+}
+
+function publicSiteUrl() {
+  const explicit = process.env.EASYBROKER_PUBLIC_ASSET_BASE_URL?.trim();
+  const configured =
+    explicit ||
+    process.env.NEXT_PUBLIC_SITE_URL?.trim() ||
+    process.env.VERCEL_URL?.trim();
+  if (!configured) return null;
+  const withProtocol = /^https?:\/\//i.test(configured)
+    ? configured
+    : `https://${configured}`;
+  const normalized = withProtocol.replace(/\/+$/, "");
+  if (!explicit && /^https?:\/\/(localhost|127\.0\.0\.1)(?::\d+)?$/i.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function ensureEasyBrokerImageUrlIsAccepted(url: string) {
+  if (url.length <= EASYBROKER_MAX_IMAGE_URL_LENGTH) return url;
+  throw new Error(
+    `EasyBroker permite máximo ${EASYBROKER_MAX_IMAGE_URL_LENGTH} caracteres por URL de imagen; URL generada mide ${url.length}. Configura EASYBROKER_PUBLIC_ASSET_BASE_URL o NEXT_PUBLIC_SITE_URL con una URL pública corta.`
+  );
+}
+
+function ensureEasyBrokerImageUrlExtension(url: string, sourcePath: string) {
+  if (/\.(jpe?g|png|gif|bmp|heic)(?:[?#]|$)/i.test(url)) return url;
+  const extension = path.extname(sourcePath).replace(/^\./, "").toLowerCase();
+  if (!["jpg", "jpeg", "png", "gif", "bmp", "heic"].includes(extension)) {
+    throw new Error(
+      `EasyBroker requiere URLs de imagen con extensión jpg/png/gif/bmp/heic; path recibido: ${sourcePath}`
+    );
+  }
+  return `${url}${url.includes("?") ? "&" : "?"}filename=image.${extension}`;
+}
+
+async function easyBrokerApiRequest(
+  creds: EasyBrokerCredentials,
+  pathname: string,
+  options: { method: "POST" | "PATCH"; body: Record<string, unknown> }
+) {
+  const base = process.env.EASYBROKER_API_BASE?.trim() || "https://api.easybroker.com";
+  const url = new URL(pathname, base.replace(/\/$/, ""));
+  const res = await fetch(url, {
+    method: options.method,
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "Country-Code": "MX",
+      "X-Authorization": creds.apiKey,
+    },
+    body: JSON.stringify(options.body),
+  });
+  const payload = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    throw new EasyBrokerApiError(
+      `EasyBroker respondió ${res.status}: ${errorMessageFromPayload(payload)}`,
+      res.status,
+      payload
+    );
+  }
+  return { status: res.status, payload };
+}
+
+function isEasyBrokerCredentialFailure(error: unknown) {
+  return error instanceof EasyBrokerApiError
+    ? error.statusCode === 401 || error.statusCode === 403
+    : false;
+}
+
+async function markEasyBrokerCredentialResult(
+  ctx: ToolContext,
+  creds: EasyBrokerCredentials,
+  ok: boolean,
+  error?: unknown
+) {
+  if (ok) {
+    await markAccountSecretSuccess(ctx, ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker);
+    return;
+  }
+  if (creds.source === "account") {
+    await markAccountSecretFailure(
+      ctx,
+      ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker,
+      String(error ?? "EasyBroker write failed")
+    );
+  }
+}
+
+function cleanString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function setIfPresent(target: Record<string, unknown>, key: string, value: unknown) {
+  if (value !== undefined && value !== null) target[key] = value;
+}
+
+function integerOrUndefined(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.trunc(value)
+    : undefined;
+}
+
+function numberOrUndefined(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function nonEmptyStringArray(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
+  return strings.length ? strings : undefined;
+}
+
+function stringFromPayload(payload: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function easyBrokerAgentUrlFromPublicUrl(publicUrl: string | null) {
+  if (!publicUrl) return null;
+  try {
+    const url = new URL(publicUrl);
+    const slug = url.pathname.split("/").filter(Boolean).at(-1);
+    if (!slug) return null;
+    return `${url.origin}/agent/properties/${slug}`;
+  } catch {
+    return null;
+  }
+}
+
+function truncatePayload(payload: Record<string, unknown>) {
+  const serialized = JSON.stringify(payload);
+  if (serialized.length <= 5000) return payload;
+  return {
+    truncated: true,
+    preview: serialized.slice(0, 5000),
+  };
 }
 
 function envFlagEnabled(name: string) {

@@ -107,6 +107,17 @@ type ScheduledTaskSummary = {
   lastFailure?: string | null;
 };
 
+type InternalNotificationDisplay = {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  priority: "low" | "normal" | "high";
+  action_url: string | null;
+  due_at: string | null;
+  created_at: string;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -561,6 +572,14 @@ export default async function ChatPage() {
     availableSkills = [];
   }
 
+  const { data: notificationRows } = await supabase
+    .from("internal_user_notifications")
+    .select("id, kind, title, body, priority, action_url, due_at, created_at")
+    .eq("user_id", user.id)
+    .eq("status", "unread")
+    .order("created_at", { ascending: false })
+    .limit(20);
+
   return (
     <ChatInterface
       agentName={profile.agent_name as string}
@@ -595,6 +614,7 @@ export default async function ChatPage() {
       initialRecentLearnings={recentLearnings}
       heartbeatStatus={heartbeatStatus}
       scheduledTaskSummary={scheduledTaskSummary}
+      initialNotifications={(notificationRows ?? []) as InternalNotificationDisplay[]}
     />
   );
 }

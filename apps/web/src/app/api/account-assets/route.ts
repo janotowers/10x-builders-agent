@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
+  deleteAccountAsset,
   listAccountAssets,
   upsertAccountAsset,
 } from "@agents/db";
@@ -44,14 +45,59 @@ export async function GET(request: Request) {
       ?.split(",")
       .map((item) => item.trim())
       .filter(Boolean);
+    const assetKeyPrefixes = url.searchParams
+      .get("asset_key_prefixes")
+      ?.split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
     const db = createServerClient();
     const assets = await listAccountAssets(db, {
       userId: user.id,
       assetKeys,
+      assetKeyPrefixes,
     });
     return NextResponse.json({ ok: true, assets });
   } catch (err) {
     console.error("[GET /api/account-assets] failed:", err);
+    return NextResponse.json({ error: "Internal error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const url = new URL(request.url);
+    const assetKey = safeSegment(cleanText(url.searchParams.get("asset_key")));
+    if (!assetKey) {
+      return NextResponse.json({ error: "asset_key required" }, { status: 400 });
+    }
+
+    const db = createServerClient();
+    const asset = await deleteAccountAsset(db, {
+      userId: user.id,
+      assetKey,
+    });
+    if (!asset) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+
+    const { error: removeError } = await supabase.storage
+      .from(asset.storage_bucket)
+      .remove([asset.storage_path]);
+    if (removeError) {
+      console.warn("[DELETE /api/account-assets] storage remove failed:", removeError);
+    }
+
+    return NextResponse.json({ ok: true, asset });
+  } catch (err) {
+    console.error("[DELETE /api/account-assets] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
 }

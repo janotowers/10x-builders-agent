@@ -6,7 +6,7 @@ export const PROPERTY_OPTIONING_TEST_CONTEXT: Record<string, unknown> = {
   owner_name: "Contacto de prueba",
   property_zone: "Colomos Providencia, Guadalajara, Jalisco",
   operation_type: ["rent"],
-  property_type: ["Casa", "Departamento"],
+  property_type: ["Departamento"],
   target_price: 21000,
   min_price: 18000,
   max_price: 24000,

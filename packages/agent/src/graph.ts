@@ -1014,17 +1014,11 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           events: recentEvents,
         });
         if (caseType?.default_skill_slug) {
-          if (
-            resolvedForcedSkillId &&
-            resolvedForcedSkillId !== caseType.default_skill_slug
-          ) {
-            console.warn(
-              `[ops-case] forcedSkillId=${resolvedForcedSkillId} overridden by case binding ${caseType.default_skill_slug}`
-            );
+          if (!resolvedForcedSkillId) {
+            resolvedForcedSkillId = caseType.default_skill_slug;
           }
-          resolvedForcedSkillId = caseType.default_skill_slug;
           console.log(
-            `[ops-case] caseId=${opCase.id} type=${opCase.case_type} step=${opCase.current_step ?? "(none)"} → forcing skill=${caseType.default_skill_slug}`
+            `[ops-case] caseId=${opCase.id} type=${opCase.case_type} step=${opCase.current_step ?? "(none)"} → forcing skill=${resolvedForcedSkillId}`
           );
         }
       }
@@ -1275,6 +1269,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       activeSkill?.requiresTenantContext && !input.isUnggaAdmin
         ? businessBrainWarehouse?.organization_id?.trim() || undefined
         : undefined,
+    bigQueryProjectId: businessBrainWarehouse?.project_id?.trim() || undefined,
+    bigQueryLocation: businessBrainWarehouse?.location?.trim() || undefined,
+    caseId: input.caseId ?? null,
     toolApprovalPolicy: input.toolApprovalPolicy,
   });
   emitEvent({

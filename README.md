@@ -110,6 +110,7 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `DATABASE_URL` | *(Opcional)* URI Postgres directa para checkpoints de LangGraph; ver comentarios en `.env.example` |
    | `CRON_SECRET` | *(Opcional)* Secreto compartido con el runner externo que llama a `POST /api/cron/scheduled-tasks` y `POST /api/cron/heartbeat`; debe coincidir con el header `Authorization: Bearer <CRON_SECRET>`. Runbook: [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) |
    | `NEXT_PUBLIC_SITE_URL` | URL pública base **sin barra final** (OAuth redirect y enlaces de reserva). Ej.: `http://localhost:3000` o `https://tu-dominio.com` |
+   | `EASYBROKER_PUBLIC_ASSET_BASE_URL` | *(Opcional, necesario para probar upload real de fotos EasyBroker en local)* URL pública base **sin barra final** que EasyBroker puede abrir para descargar imágenes privadas vía redirect corto. En local usa ngrok, ej. `https://abc123.ngrok-free.app`; en producción normalmente basta `NEXT_PUBLIC_SITE_URL`. |
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |
    | `OPENROUTER_MAX_TOKENS` | *(Opcional)* Cap de `max_tokens` de salida por llamada. OpenRouter lo reserva contra tu saldo antes de ejecutar, así que con poco crédito conviene bajarlo. Default: `2048` |
    | `ENCRYPTION_KEY` | 64 caracteres hexadecimales (32 bytes) para cifrar tokens de integraciones en base de datos. Generar: `openssl rand -hex 32` |
@@ -197,6 +198,36 @@ Telegram **exige HTTPS** para webhooks. En local:
 6. En Telegram, envía al bot: `/link TU_CODIGO` (el código que te muestra la web).
 
 Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web.
+
+---
+
+## EasyBroker upload de fotos en local (ngrok)
+
+EasyBroker valida que cada `images[].url` mida máximo 255 caracteres. Las signed
+URLs privadas de Supabase Storage son más largas, así que Gu OS expone una URL
+corta que redirige temporalmente al objeto privado:
+
+`/api/public/account-assets/{id}/image.ext`
+
+Para que EasyBroker pueda abrir esa URL en local, expón Next con HTTPS público:
+
+```powershell
+ngrok http 3000
+```
+
+Copia la URL HTTPS de ngrok (por ejemplo `https://abc123.ngrok-free.app`) y agrega
+en `apps/web/.env.local`:
+
+```env
+EASYBROKER_PUBLIC_ASSET_BASE_URL=https://abc123.ngrok-free.app
+```
+
+Sin barra final. Reinicia `npm run dev` después de modificar `.env.local`.
+
+En producción/GCP no se usa ngrok: configura `NEXT_PUBLIC_SITE_URL` con el
+dominio público HTTPS de la app (dominio propio, Load Balancer, Cloud Run público
+o endpoint estable). Si EasyBroker necesita una base distinta al dominio canónico
+de la app, configura `EASYBROKER_PUBLIC_ASSET_BASE_URL` con esa base pública.
 
 ---
 

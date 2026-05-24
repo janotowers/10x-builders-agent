@@ -532,7 +532,14 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         },
         status: {
           type: "string",
-          enum: ["active", "waiting_external", "paused", "completed", "failed"],
+          enum: [
+            "active",
+            "waiting_internal",
+            "waiting_external",
+            "paused",
+            "completed",
+            "failed",
+          ],
         },
         current_step: { type: "string" },
         next_action_at: { type: "string", description: "ISO 8601 datetime." },
@@ -773,7 +780,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "bigquery_lookup_local_comparables",
     name: "bigquery_lookup_local_comparables",
     description:
-      "Queries the Ungga warehouse (BigQuery) for closed real estate deals matching a zone/area/operation, used as comparables. Read-only; tenant-filtered automatically. Returns aggregated stats (count, p25/p50/p75 price/m², median DOM) plus the underlying rows up to `limit`.",
+      "Queries the Ungga warehouse (BigQuery) for published internal inventory matching a zone/type/operation, used as comparable asking prices. Read-only; tenant-filtered automatically. Returns normalized rows plus price percentiles over parsed asking prices. Does not represent closed prices.",
     risk: "low",
     parameters_schema: {
       type: "object",
@@ -781,13 +788,35 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         zona: { type: "string", description: "Free-text zone or city name." },
         operation: { type: "string", enum: ["sale", "rent"] },
         property_type: { type: "string" },
+        target_price: {
+          type: "number",
+          description:
+            "Reference asking price for the subject property. If min_price/max_price are omitted, the tool derives an approximate comparison band around this price.",
+        },
+        price: {
+          type: "number",
+          description: "Alias for target_price.",
+        },
+        min_price: {
+          type: "number",
+          description: "Minimum asking price to include after best-effort price_display parsing.",
+        },
+        max_price: {
+          type: "number",
+          description: "Maximum asking price to include after best-effort price_display parsing.",
+        },
         min_area_m2: { type: "number" },
         max_area_m2: { type: "number" },
         months_back: {
           type: "number",
-          description: "Lookback window (default 12, max 36).",
+          description:
+            "Maximum listing age in months based on created_time/high date (default 24, max 60).",
         },
-        limit: { type: "number", description: "Max rows (default 25, cap 100)." },
+        limit: {
+          type: "number",
+          description:
+            "Max comparable rows returned and used for local stats (default 100, cap 250).",
+        },
       },
       required: [],
     },
@@ -862,12 +891,39 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       },
       required: ["input_paths"],
     },
+    asset_profile: {
+      account: [
+        {
+          asset_key: "listing_photo_watermark",
+          label: "Watermark para fotos de publicación",
+          description:
+            "Imagen transparente o logo que se aplicará a las fotos antes de publicar.",
+          accept: ["image/png", "image/jpeg", "image/webp", "image/svg+xml"],
+          max_size_mb: 5,
+          required: true,
+        },
+      ],
+      test: [
+        {
+          asset_key: "test_image_watermark_source",
+          label: "Foto fuente para probar watermark",
+          description:
+            "Carga una foto temporal de una propiedad para validar cómo se aplica la marca de agua.",
+          accept: ["image/jpeg", "image/png", "image/webp"],
+          max_size_mb: 15,
+          required: true,
+          param: "input_paths",
+          min_count: 1,
+          max_count: 1,
+        },
+      ],
+    },
   },
   {
     id: "easybroker_create_listing",
     name: "easybroker_create_listing",
     description:
-      "Creates a new listing in EasyBroker using the active tenant's API key. WRITE operation: requires HITL confirmation. After creation use easybroker_upload_images to attach photos.",
+      "Creates a new not_published property in EasyBroker using the active tenant's API key. WRITE operation: requires HITL confirmation. After creation use easybroker_upload_images to attach photos.",
     risk: "high",
     requires_integration: "easybroker",
     parameters_schema: {
@@ -879,23 +935,47 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         property_type: { type: "string" },
         price: { type: "number" },
         currency: { type: "string", description: "ISO 4217 (e.g. 'MXN')." },
+        status: {
+          type: "string",
+          enum: ["published", "sold", "rented", "reserved", "suspended", "not_published"],
+          description: "Defaults to not_published for safety.",
+        },
+        street: {
+          type: "string",
+          description: "Required by EasyBroker. Can also be provided as location.street.",
+        },
         location: {
           type: "object",
           description:
-            "{ street, exterior_number, neighborhood, city, state, country, postal_code, latitude, longitude }",
+            "EasyBroker location object, e.g. { street, city_area, city, state, country, postal_code, latitude, longitude }.",
         },
-        area_m2: { type: "number" },
+        construction_size: { type: "number" },
+        lot_size: { type: "number" },
+        area_m2: { type: "number", description: "Alias for construction_size." },
         bedrooms: { type: "number" },
         bathrooms: { type: "number" },
-        parking: { type: "number" },
+        half_bathrooms: { type: "number" },
+        parking: { type: "number", description: "Alias for parking_spaces." },
+        parking_spaces: { type: "number" },
+        features: { type: "array", items: { type: "string" } },
+        tags: { type: "array", items: { type: "string" } },
+        share_commission: { type: "boolean" },
+        collaboration_notes: { type: "string" },
+        videos: { type: "array", items: { type: "string" } },
+        virtual_tour: { type: "string" },
         custom_fields: {
           type: "object",
           description:
             "Extra fields specific to the tenant's EasyBroker schema.",
         },
+        custom_fields_json: {
+          type: "string",
+          description: "Optional JSON object string with extra EasyBroker fields.",
+        },
         case_id: { type: "string" },
+        dry_run: { type: "boolean" },
       },
-      required: ["title", "operation", "property_type", "price"],
+      required: ["title", "description", "operation", "property_type", "price"],
     },
   },
   {
@@ -910,8 +990,28 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       properties: {
         listing_id: { type: "string" },
         image_paths: { type: "array", items: { type: "string" } },
+        image_titles: { type: "array", items: { type: "string" } },
+        case_id: { type: "string" },
+        dry_run: { type: "boolean" },
       },
       required: ["listing_id", "image_paths"],
+    },
+    asset_profile: {
+      test: [
+        {
+          asset_key: "test_easybroker_upload_image",
+          label: "Fotos para probar subida a EasyBroker",
+          description:
+            "Carga una o más fotos temporales para validar los args de subida. La tool usará signed URLs al ejecutar.",
+          accept: ["image/jpeg", "image/png", "image/webp"],
+          max_size_mb: 6,
+          required: true,
+          param: "image_paths",
+          min_count: 1,
+          max_count: 30,
+          collection: true,
+        },
+      ],
     },
   },
   {

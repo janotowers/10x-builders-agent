@@ -236,6 +236,7 @@ export async function listOperationalCasesForUser(
 ): Promise<OperationalCase[]> {
   const statuses = opts.statuses ?? [
     "active",
+    "waiting_internal",
     "waiting_external",
     "paused",
   ];
@@ -267,7 +268,7 @@ export async function getDueOperationalCases(
   const { data, error } = await db
     .from("operational_cases")
     .select("*")
-    .in("status", ["active", "waiting_external"])
+    .in("status", ["active", "waiting_internal", "waiting_external"])
     .not("next_action_at", "is", null)
     .lte("next_action_at", now)
     .order("next_action_at", { ascending: true })
