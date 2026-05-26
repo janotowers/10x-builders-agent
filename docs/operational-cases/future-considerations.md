@@ -3,6 +3,7 @@
 > Este documento archiva las recomendaciones, umbrales y lecciones que **no** entran en el alcance de la primera versión del subsistema de casos, pero que conviene tener documentadas para evitar discusiones repetitivas más adelante.
 >
 > Plan de implementación: [`plan.md`](plan.md). Arquitectura: [`architecture.md`](architecture.md).
+> Marco de pruebas: [`testing-framework.md`](testing-framework.md). Autoría NL: [`use-case-authoring-vision.md`](use-case-authoring-vision.md).
 
 ---
 

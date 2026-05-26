@@ -478,3 +478,50 @@ Si es cálculo crítico -> código determinístico.
 Si es juicio comercial -> LLM prepara, humano aprueba.
 ```
 
+---
+
+## 11. Patrón de prueba UI para readiness operacional
+
+> Detalle completo: [`operational-cases/testing-framework.md`](operational-cases/testing-framework.md).
+> Visión NL → propuesta implementable: [`operational-cases/use-case-authoring-vision.md`](operational-cases/use-case-authoring-vision.md).
+
+La UI de Preparación operativa debe distinguir tres niveles de prueba:
+
+1. **Tool individual**
+   - Úsala para capacidades atómicas: búsquedas, dry-runs, validaciones o una
+     integración sin dependencias de orden.
+   - La acción vive en un bloque violeta y el resultado se muestra junto a la
+     acción con color semántico.
+   - Verde significa contrato cumplido; ámbar significa parcial, bloqueado,
+     HITL pendiente o warning no fatal; rojo significa fallo o estado
+     incompatible con el contrato.
+
+2. **Escenario guiado A/B/C**
+   - Úsalo cuando hay una secuencia causal: validar payload, ejecutar escritura
+     controlada, simular respuesta externa o verificar el artefacto del caso.
+   - Re-ejecutar un sub-paso debe invalidar sólo los resultados posteriores.
+   - Los botones posteriores deben quedar deshabilitados hasta cumplir el
+     prerequisito visible.
+   - Ejemplos:
+     - `request-property-documents` + `telegram_send_message_to_contact`: A
+       valida mensaje, B envía solicitud controlada.
+     - `extract-property-characteristics` + `telegram_send_message_to_contact`:
+       A valida mensaje, B envía, C simula respuesta del propietario y verifica
+       `property_data`.
+     - `publish-listing-package` + EasyBroker: A crea borrador, B sube fotos al
+       `listing_id` creado.
+
+3. **Skill E2E**
+   - Úsala para validar el contrato de negocio del paso completo: artefactos,
+     tool calls esperadas, eventos y estado del caso.
+   - No reemplaza las pruebas controladas de tools de riesgo alto; las
+     complementa.
+
+Reglas visuales:
+
+- Violeta: acción, configuración, preview o estado interactivo.
+- Verde: éxito confirmado.
+- Ámbar: parcial, warning, política/HITL o prerequisito faltante.
+- Rojo: fallo, excepción o contrato incumplido.
+- Gris/neutro: metadata, pendiente o detalle técnico.
+

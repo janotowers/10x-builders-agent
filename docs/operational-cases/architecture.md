@@ -3,6 +3,7 @@
 > Este documento sobrevive al plan. Describe **cómo funciona** el subsistema una vez implementado, separado del plan de ejecución y de las decisiones temporales.
 >
 > Plan asociado: [`plan.md`](plan.md). Consideraciones futuras: [`future-considerations.md`](future-considerations.md).
+> Marco de pruebas: [`testing-framework.md`](testing-framework.md). Visión de autoría NL: [`use-case-authoring-vision.md`](use-case-authoring-vision.md).
 
 ---
 
@@ -228,10 +229,11 @@ Recordatorios (mismo cron `POST /api/cron/operational-cases`):
 
 - Antes de procesar casos vencidos, el cron consulta `internal_user_notifications` con `status = unread` y `due_at <= now()`.
 - Reenvía vía `notify()` con `kind = internal_notification_reminder` y respeta cooldown desde `metadata_jsonb.last_reminder_at`.
-- Defaults actuales (hardcoded; **pendiente UI configurable**):
-  - `price_approval`: `due_at` automático **+4h** si el caller no lo envía; cooldown entre recordatorios **4h**.
-  - Otros pendientes internos: cooldown **24h**.
-  - Contactos externos: cooldown **24h**, max intentos antes de escalar al asesor.
+- Los defaults de cadencia se resuelven en `apps/web/src/lib/engagement-policies/registry.ts` por audiencia, intención, canal, prioridad y `kind`:
+  - `internal_user + approval + price_approval`: `due_at` automático **+4h** si el caller no lo envía; cooldown **4h**.
+  - `external_contact/prospect/owner + reminder/followup`: cooldown **24h**, max intentos **3** antes de escalar al asesor.
+  - `high` priority puede reducir cooldown interno a **1h**.
+- Pendiente UI configurable: mover estos defaults a Ajustes (horario laboral, timezone, cooldowns por audiencia/canal/intención/kind y límites de intentos).
 
 ### 7.1 HITL de negocio vs HITL de ejecución de tools
 
@@ -341,7 +343,7 @@ cuenta** cuando aplica.
 | `POST /api/account-tool-secrets/[provider]/test` | Prueba de conexión por provider (API ping o sesión Playwright según provider); actualiza `status` y puede cerrar solicitudes abiertas en `global_tool_requests` para tools cubiertas por ese provider. |
 | `global_tool_requests` | Migración `00023_global_tool_requests.sql`. Backlog cuando falta capacidad global o recurso de tenant; `GET/POST /api/global-tool-requests`. |
 | `operational-case-tests` + `run-tool` | Casos de prueba por `case_type` con contexto de muestra (`test-context-samples.ts`); `POST …/run-tool` ejecuta una tool con args derivados del caso (opcional `case_id` para no usar siempre el último). |
-| UI Casos de uso | **Preparación operativa**: revisar lista, expandir tool, conectar providers inline (mismo form que Ajustes), probar tool con vista previa legible de resultados. **Checks de activación**: checklist alineada con bloqueos de readiness. |
+| UI Casos de uso | **Preparación operativa**: revisar lista, expandir tool, conectar providers inline (mismo form que Ajustes), probar tool con vista previa legible de resultados. **Checks de activación**: checklist alineada con bloqueos de readiness. Patrones N1/N2/N3 y guía de batería: [`testing-framework.md`](testing-framework.md). |
 | UI Ajustes | **Conexiones** agrupa OAuth/vínculo (Google, GitHub, Telegram) y **Credenciales por cuenta** (API keys/tokens/credenciales web cifrados). |
 | POC Playwright | `pocs/easybroker-mls-cli/` y `pocs/ungga-cli/`; instalar browsers con `npm run setup:pocs` en la raíz del monorepo. |
 
