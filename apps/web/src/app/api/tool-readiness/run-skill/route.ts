@@ -25,6 +25,10 @@ import type {
 } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import {
+  SETTINGS_TEST_AUTO_EXECUTE_TOOLS,
+  buildSettingsTestToolApprovalPolicy,
+} from "@/lib/operational-cases/settings-test-tool-policy";
 
 export const maxDuration = 180;
 
@@ -56,10 +60,9 @@ const SKILL_TEST_CONTRACTS: Record<string, SkillTestContract> = {
   },
 };
 
-const SKILL_TEST_INTERNAL_WRITE_TOOLS = new Set([
-  "operational_case_update_state",
-  "operational_case_add_event",
-]);
+const SKILL_TEST_INTERNAL_WRITE_TOOLS = new Set<string>(
+  SETTINGS_TEST_AUTO_EXECUTE_TOOLS
+);
 
 const RESPONSE_PREVIEW_MAX_CHARS = 6000;
 
@@ -582,9 +585,10 @@ export async function POST(request: Request) {
         risk === "low" ? "auto_execute" : "request_approval";
     }
     if (isSettingsTestCase(opCase)) {
-      for (const toolId of SKILL_TEST_INTERNAL_WRITE_TOOLS) {
-        toolApprovalPolicy[toolId] = "auto_execute";
-      }
+      Object.assign(
+        toolApprovalPolicy,
+        buildSettingsTestToolApprovalPolicy(located.skill.skill_tools?.map((t) => t.tool_id))
+      );
     }
 
     const agentResult = await runAgent({

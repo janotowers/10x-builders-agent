@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createServerClient } from "@agents/db";
 import { createClient } from "@/lib/supabase/server";
-import { handlePriceApprovalDecision } from "@/lib/business-decisions/price-approval";
+import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -33,7 +33,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await handlePriceApprovalDecision(createServerClient(), {
+  const handler = businessDecisionHandler("price_approval");
+  const result = await handler.handle(createServerClient(), {
     userId: user.id,
     notificationId,
     text,

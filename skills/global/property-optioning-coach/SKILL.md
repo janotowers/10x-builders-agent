@@ -21,6 +21,8 @@ allowed_tools:
   - operational_case_create
   - operational_case_update_state
   - operational_case_add_event
+  - operational_case_list_documents
+  - operational_case_extract_document_fields
   - telegram_send_message_to_contact
   - bigquery_lookup_local_comparables
   - easybroker_search_listings
@@ -91,7 +93,7 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
 |---|---|---|
 | `intake` | Esta skill compuesta | `operational_case_create` (solo creación), `operational_case_update_state`, `notify_user` |
 | `awaiting_documents` | `request-property-documents` | `telegram_send_message_to_contact`, `notify_user` |
-| `documents_received` | `extract-property-characteristics` | `notify_user` |
+| `documents_received` | `extract-property-characteristics` | `operational_case_list_documents`, `operational_case_extract_document_fields`, `telegram_send_message_to_contact`, `notify_user` |
 | `comparables_in_progress` | `perform-comparable-analysis` | `easybroker_search_*`, `bigquery_lookup_local_comparables` |
 | `price_proposal_pending` | `prepare-listing-price` | `notify_user` (HITL) |
 | `contract_pending` | `prepare-commission-contract` | `generate_document_from_template`, `notify_user` |

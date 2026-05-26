@@ -43,6 +43,7 @@
     "@langchain/openai": "^0.4",
     "croner": "^10.0.1",
     "docxtemplater": "^3.68.7",
+    "pdf-parse": "^2.4.5",
     "pizzip": "^3.2.0",
     "sharp": "^0.34.5",
     "zod": "^3"

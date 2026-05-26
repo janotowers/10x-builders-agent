@@ -594,6 +594,131 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "operational_case_register_document",
+    name: "operational_case_register_document",
+    description:
+      "Registers a file that is already stored in Supabase Storage as document evidence for an operational case. Use when the owner or inmobiliario provides predial, escritura, INE, comprobante de domicilio, boleta registral, or related files. This does not upload bytes; it records metadata and audit trail for an existing storage_path.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        case_id: { type: "string", description: "UUID of the operational case." },
+        kind: {
+          type: "string",
+          description:
+            "Canonical document kind, e.g. escritura_descripcion, predial, ine, comprobante_domicilio, boleta_registral, escritura_primera_hoja, escritura_ultima_hoja.",
+        },
+        storage_path: {
+          type: "string",
+          description: "Private path in Supabase Storage for the document bytes.",
+        },
+        storage_bucket: {
+          type: "string",
+          description: "Storage bucket. Defaults to case-documents.",
+        },
+        display_name: { type: "string" },
+        original_name: { type: "string" },
+        content_type: { type: "string" },
+        file_size_bytes: { type: "number" },
+        sha256: { type: "string" },
+        source: {
+          type: "string",
+          enum: [
+            "external_telegram",
+            "advisor_web",
+            "advisor_telegram",
+            "settings_test",
+            "unknown",
+          ],
+        },
+        blocking: { type: "boolean" },
+        metadata: { type: "object" },
+      },
+      required: ["case_id", "kind", "storage_path"],
+    },
+    asset_profile: {
+      test: [
+        {
+          asset_key: "test_property_document",
+          label: "Documentos de propiedad para prueba",
+          description:
+            "Sube uno o más archivos (escritura-descripción, predial, INE, etc.). Se registran sólo en el caso aislado de prueba.",
+          accept: ["image/*", "application/pdf"],
+          max_size_mb: 15,
+          collection: true,
+          min_count: 1,
+          max_count: 8,
+        },
+      ],
+    },
+  },
+  {
+    id: "operational_case_list_documents",
+    name: "operational_case_list_documents",
+    description:
+      "Lists received documents attached to an operational case, including kind, source, blocking flag, and cached extraction metadata. Use before deciding whether request-property-documents or extract-property-characteristics can advance.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        case_id: { type: "string", description: "UUID of the operational case." },
+      },
+      required: ["case_id"],
+    },
+    asset_profile: {
+      test: [
+        {
+          asset_key: "test_property_document",
+          label: "Documentos de propiedad para prueba",
+          description:
+            "Sube uno o más archivos. Al probar, se registran en el caso aislado antes de listar.",
+          accept: ["image/*", "application/pdf"],
+          max_size_mb: 15,
+          collection: true,
+          min_count: 1,
+          max_count: 8,
+        },
+      ],
+    },
+  },
+  {
+    id: "operational_case_extract_document_fields",
+    name: "operational_case_extract_document_fields",
+    description:
+      "Runs cached extraction for a case document image or PDF and stores the extracted JSON. Use for escritura_descripcion, predial, boleta registral, and similar documents before asking the owner for missing characteristics. Does not re-run when extraction is already cached unless force=true.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        document_id: {
+          type: "string",
+          description: "UUID from operational_case_documents.",
+        },
+        force: {
+          type: "boolean",
+          description:
+            "Set true only if the document was replaced or the user explicitly asks to re-extract.",
+        },
+      },
+      required: ["document_id"],
+    },
+    asset_profile: {
+      test: [
+        {
+          asset_key: "test_property_document",
+          label: "Documentos de propiedad para extracción",
+          description:
+            "Sube uno o más PDFs o imágenes legibles. La prueba de extracción usa primero escritura-descripción si existe.",
+          accept: ["image/*", "application/pdf"],
+          max_size_mb: 15,
+          collection: true,
+          min_count: 1,
+          max_count: 8,
+        },
+      ],
+    },
+  },
+  {
     id: "notify_user",
     name: "notify_user",
     description:

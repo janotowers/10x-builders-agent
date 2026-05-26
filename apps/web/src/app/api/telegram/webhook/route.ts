@@ -1,24 +1,32 @@
 import { NextResponse } from "next/server";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  CASE_DOCUMENTS_BUCKET,
   createServerClient,
+  createOperationalCaseDocument,
   decryptToken,
   getPendingToolCall,
   getGoogleCalendarAccessToken,
   associateExternalResponseWithCase,
   findOperationalCaseByExternalChatId,
+  getOperationalCase,
   listInternalUserNotifications,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
 import {
+  downloadTelegramFile,
+  getTelegramFile,
   sendTelegramMessage,
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import { parsePriceApprovalDecision } from "@/lib/business-decisions/price-approval";
+import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import {
-  handlePriceApprovalDecision,
-  parsePriceApprovalDecision,
-} from "@/lib/business-decisions/price-approval";
+  isSettingsTestCase,
+  runSettingsTestCaseAgentTick,
+} from "@/lib/operational-cases/run-settings-test-case-tick";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -30,6 +38,21 @@ interface TelegramUpdate {
     from: { id: number; first_name: string };
     chat: { id: number };
     text?: string;
+    caption?: string;
+    photo?: Array<{
+      file_id: string;
+      file_unique_id: string;
+      width: number;
+      height: number;
+      file_size?: number;
+    }>;
+    document?: {
+      file_id: string;
+      file_unique_id: string;
+      file_name?: string;
+      mime_type?: string;
+      file_size?: number;
+    };
   };
   callback_query?: {
     id: string;
@@ -37,6 +60,62 @@ interface TelegramUpdate {
     message: { chat: { id: number }; message_id: number };
     data: string;
   };
+}
+
+function safePathSegment(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "file";
+}
+
+function extensionFromPath(filePath: string, fallback = "bin") {
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  return ext && /^[a-z0-9]{1,8}$/.test(ext) ? ext : fallback;
+}
+
+function inferDocumentKind(text: string) {
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  if (/descripcion|descriptiva|metraje|superficie|escritura/.test(normalized)) {
+    return "escritura_descripcion";
+  }
+  if (/predial/.test(normalized)) return "predial";
+  if (/\bine\b|identificacion|identidad/.test(normalized)) return "ine";
+  if (/comprobante|domicilio/.test(normalized)) return "comprobante_domicilio";
+  if (/boleta|registral|folio real/.test(normalized)) return "boleta_registral";
+  return "unknown";
+}
+
+function bestTelegramMedia(message: NonNullable<TelegramUpdate["message"]>) {
+  if (message.document) {
+    return {
+      fileId: message.document.file_id,
+      uniqueId: message.document.file_unique_id,
+      originalName: message.document.file_name ?? "telegram-document",
+      contentType: message.document.mime_type ?? "application/octet-stream",
+      fileSize: message.document.file_size ?? null,
+      fallbackExtension: "bin",
+    };
+  }
+  if (message.photo?.length) {
+    const photo = [...message.photo].sort(
+      (a, b) => (b.file_size ?? b.width * b.height) - (a.file_size ?? a.width * a.height)
+    )[0];
+    return {
+      fileId: photo.file_id,
+      uniqueId: photo.file_unique_id,
+      originalName: "telegram-photo.jpg",
+      contentType: "image/jpeg",
+      fileSize: photo.file_size ?? null,
+      fallbackExtension: "jpg",
+    };
+  }
+  return null;
 }
 
 function parseBotCommand(messageText: string): {
@@ -216,7 +295,7 @@ export async function POST(request: Request) {
 
     const userId = telegramAccount.user_id as string;
     if (action === "price_approve" || action === "price_reject") {
-      const result = await handlePriceApprovalDecision(db, {
+      const result = await businessDecisionHandler("price_approval").handle(db, {
         userId,
         notificationId: targetId,
         text: action === "price_approve" ? "APROBAR PRECIO" : "RECHAZAR PRECIO",
@@ -294,13 +373,13 @@ export async function POST(request: Request) {
   }
 
   const message = update.message;
-  if (!message?.text) {
+  if (!message) {
     return NextResponse.json({ ok: true });
   }
 
   const telegramUserId = message.from.id;
   const chatId = message.chat.id;
-  const text = message.text.trim();
+  const text = (message.text ?? message.caption ?? "").trim();
   const { command, args } = parseBotCommand(text);
 
   if (command === "/start") {
@@ -371,6 +450,64 @@ export async function POST(request: Request) {
       chatId
     );
     if (matchedCase) {
+      const media = bestTelegramMedia(message);
+      let documentPayload:
+        | {
+            document_id: string;
+            kind: string;
+            storage_bucket: string;
+            storage_path: string;
+            original_name: string;
+            content_type: string;
+            sha256: string;
+          }
+        | null = null;
+      if (media) {
+        const fileInfo = await getTelegramFile(media.fileId);
+        const bytes = Buffer.from(await downloadTelegramFile(fileInfo.file_path!));
+        const sha256 = createHash("sha256").update(bytes).digest("hex");
+        const kind = inferDocumentKind(text);
+        const extension = extensionFromPath(fileInfo.file_path!, media.fallbackExtension);
+        const storagePath = `${matchedCase.user_id}/${matchedCase.id}/${randomUUID()}-${safePathSegment(
+          media.originalName.replace(/\.[^.]+$/, "")
+        )}.${extension}`;
+        const { error: uploadError } = await db.storage
+          .from(CASE_DOCUMENTS_BUCKET)
+          .upload(storagePath, bytes, {
+            contentType: media.contentType,
+            upsert: false,
+          });
+        if (uploadError) throw uploadError;
+        const doc = await createOperationalCaseDocument(db, {
+          caseId: matchedCase.id,
+          userId: matchedCase.user_id,
+          kind,
+          displayName: kind === "unknown" ? null : kind,
+          storagePath,
+          originalName: media.originalName,
+          contentType: media.contentType,
+          fileSizeBytes: media.fileSize ?? bytes.byteLength,
+          sha256,
+          source: "external_telegram",
+          sourceMetadata: {
+            message_id: message.message_id,
+            from: message.from,
+            telegram_file_id: media.fileId,
+            telegram_file_unique_id: media.uniqueId,
+            caption: text || null,
+          },
+          blocking: kind === "escritura_descripcion",
+        });
+        documentPayload = {
+          document_id: doc.id,
+          kind: doc.kind,
+          storage_bucket: doc.storage_bucket,
+          storage_path: doc.storage_path,
+          original_name: media.originalName,
+          content_type: media.contentType,
+          sha256,
+        };
+      }
       await associateExternalResponseWithCase(db, {
         caseId: matchedCase.id,
         channel: "telegram",
@@ -379,16 +516,35 @@ export async function POST(request: Request) {
           message_id: message.message_id,
           from: message.from,
           text,
+          ...(documentPayload ? { documents: [documentPayload] } : {}),
           received_at: new Date().toISOString(),
         },
       });
-      // Acuse de recibo cortés al externo. El procesamiento real lo hace el
-      // próximo tick del cron (≤ 1 minuto típicamente) o, si exponemos un
-      // disparador inline más adelante, inmediatamente.
-      await sendTelegramMessage(
-        chatId,
-        "Recibí tu mensaje, gracias. Lo paso al asesor y te confirmamos el siguiente paso pronto."
-      );
+      const refreshedCase = await getOperationalCase(db, matchedCase.id);
+      const cannedAck = media
+        ? "Recibí el archivo, gracias. Lo registro en el caso y lo paso al asesor para revisar el siguiente paso."
+        : "Recibí tu mensaje, gracias. Lo paso al asesor y te confirmamos el siguiente paso pronto.";
+      if (refreshedCase && isSettingsTestCase(refreshedCase)) {
+        try {
+          await runSettingsTestCaseAgentTick(db, refreshedCase, refreshedCase.user_id, {
+            source: "telegram_webhook_settings_test",
+          });
+          await sendTelegramMessage(
+            chatId,
+            `${cannedAck}\n\n(Caso de prueba: actualiza «Preparación operativa» en Ajustes para ver property_data y el paso del caso.)`
+          );
+        } catch (tickError) {
+          console.error(
+            "[telegram-webhook] settings test case tick failed:",
+            tickError
+          );
+          await sendTelegramMessage(chatId, cannedAck);
+        }
+      } else {
+        // Acuse de recibo cortés al externo. El procesamiento real lo hace el
+        // próximo tick del cron (≤ 1 minuto típicamente).
+        await sendTelegramMessage(chatId, cannedAck);
+      }
       return NextResponse.json({ ok: true, routed: "operational_case", case_id: matchedCase.id });
     }
   } catch (err) {
@@ -424,7 +580,7 @@ export async function POST(request: Request) {
       (notification) => notification.kind === "price_approval"
     );
     if (pendingPriceApproval) {
-      const result = await handlePriceApprovalDecision(db, {
+      const result = await businessDecisionHandler("price_approval").handle(db, {
         userId,
         notificationId: pendingPriceApproval.id,
         text,

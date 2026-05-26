@@ -23,18 +23,23 @@ import {
   createInternalUserNotification,
   createServerClient,
   getTelegramChatId,
+  setInternalUserNotificationStatus,
   updateInternalUserNotificationChannels,
 } from "@agents/db";
 import {
   sendTelegramMessage,
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
+import {
+  autoStatusOnCreateForNotificationKind,
+  defaultDueAtForNotificationKind,
+  internalNotificationKindConfig,
+} from "@/lib/internal-notifications/registry";
 import type { NotificationChannel } from "@agents/types";
 
 export type NotifyUrgency = "low" | "normal" | "high";
 
 const DEFAULT_PRIORITY: NotificationChannel[] = ["web", "telegram"];
-const PRICE_APPROVAL_DUE_HOURS = 4;
 
 export interface NotifyPayload {
   text: string;
@@ -161,7 +166,7 @@ function notificationTitle(payload: NotifyPayload) {
   if (typeof payload.data?.title === "string" && payload.data.title.trim()) {
     return payload.data.title.trim();
   }
-  if (payload.kind) return payload.kind.replace(/[_-]+/g, " ");
+  if (payload.kind) return internalNotificationKindConfig(payload.kind).label;
   return "Notificacion de Gu";
 }
 
@@ -175,12 +180,7 @@ function notificationActionUrl(payload: NotifyPayload) {
 function notificationDueAt(payload: NotifyPayload) {
   const dueAt = payload.data?.due_at;
   if (typeof dueAt === "string" && dueAt.trim()) return dueAt;
-  if (payload.kind === "price_approval") {
-    return new Date(
-      Date.now() + PRICE_APPROVAL_DUE_HOURS * 60 * 60_000
-    ).toISOString();
-  }
-  return null;
+  return defaultDueAtForNotificationKind(payload.kind);
 }
 
 function channelMap(results: NotifyChannelResult[]) {
@@ -249,6 +249,15 @@ export async function notify(
     notification.id,
     channelMap(attempted)
   );
+
+  const autoStatus = autoStatusOnCreateForNotificationKind(payload.kind);
+  if (autoStatus) {
+    await setInternalUserNotificationStatus(db, {
+      id: notification.id,
+      userId,
+      status: autoStatus,
+    });
+  }
 
   return { attempted, delivered };
 }

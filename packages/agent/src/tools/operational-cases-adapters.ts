@@ -10,14 +10,22 @@
  * caso y avisar al humano interno.
  */
 import { tool } from "@langchain/core/tools";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import { PDFParse } from "pdf-parse";
 import { z } from "zod";
 import {
   createToolCall,
   updateToolCallStatus,
+  createOperationalCaseDocument,
   createOperationalCase,
+  findExtractedOperationalCaseDocumentByHash,
+  getOperationalCaseDocument,
   getOperationalCase,
   getOperationalCaseTypeForUser,
   insertOperationalCaseEvent,
+  listOperationalCaseDocuments,
+  updateOperationalCaseDocumentExtraction,
   updateOperationalCase,
 } from "@agents/db";
 import type {
@@ -44,6 +52,552 @@ const EVENT_TYPE_VALUES = [
   "external_response",
   "error",
 ] as const;
+
+const VISION_EXTRACTION_MODEL = "openai/gpt-4o-mini";
+const PDF_TEXT_EXTRACTION_MODEL = "openai/gpt-4o-mini";
+const DOCUMENT_EXTRACTION_JSON_SHAPE =
+  '{"document_kind":string,"property_description":string|null,"address":object|null,"area_total_m2":number|null,"area_construida_m2":number|null,"owner_names":string[],"folio_real":string|null,"predial_account":string|null,"confidence":"high"|"medium"|"low","warnings":string[]}';
+const PROPERTY_AREA_EXTRACTION_GUIDANCE =
+  "En escrituras mexicanas, area_total_m2 debe capturar la superficie total/privativa del inmueble cuando aparezca como 'superficie total de X metros cuadrados', 'superficie privativa', 'area privativa' o 'superficie del terreno'. No uses medidas de linderos/colindancias como area_total_m2. area_construida_m2 solo debe llenarse cuando el texto diga construccion/superficie construida.";
+const requireFromHere = createRequire(import.meta.url);
+const requireFromCwd = createRequire(`${process.cwd()}/__pdf-resolver.js`);
+let pdfWorkerConfigured = false;
+
+/**
+ * Resuelve la ruta del worker de pdfjs-dist y la registra vía
+ * `PDFParse.setWorker`. Construimos los specs de forma dinámica (joins en
+ * arreglo) para que Turbopack/webpack no los analicen estáticamente y
+ * traten de bundlear el .mjs (lo cual rompe el resolver en runtime). Como
+ * `pdf-parse` se marca como `serverExternalPackages`, pdf.js suele encontrar
+ * el worker por sí mismo (adyacente a `pdf.mjs`); esta función es defensa en
+ * profundidad para entornos donde la resolución por defecto falla.
+ */
+function ensurePdfWorkerConfigured() {
+  if (pdfWorkerConfigured) return;
+  pdfWorkerConfigured = true;
+  const pkg = ["pdfjs-dist"].join("");
+  const specs = [
+    [pkg, "legacy", "build", "pdf.worker.mjs"].join("/"),
+    [pkg, "build", "pdf.worker.mjs"].join("/"),
+  ];
+  const candidates: string[] = [];
+  for (const resolver of [requireFromHere, requireFromCwd]) {
+    for (const spec of specs) {
+      try {
+        candidates.push(resolver.resolve(spec));
+      } catch {
+        // resolver no puede; continuamos con el siguiente intento
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    try {
+      PDFParse.setWorker(pathToFileURL(candidate).toString());
+      return;
+    } catch {
+      // intentamos con el siguiente candidato
+    }
+  }
+}
+
+function parseModelJson(content: string, documentKind: string): Record<string, unknown> {
+  try {
+    return JSON.parse(content.replace(/^```json\s*|\s*```$/g, ""));
+  } catch {
+    return {
+      document_kind: documentKind,
+      confidence: "low",
+      raw_text: content,
+      warnings: ["El modelo no devolvió JSON parseable."],
+    };
+  }
+}
+
+function parseLocalizedNumber(value: string) {
+  const normalized = value.replace(/\s+/g, "").replace(",", ".");
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+const SPANISH_SMALL_NUMBERS: Record<string, number> = {
+  cero: 0,
+  un: 1,
+  uno: 1,
+  una: 1,
+  dos: 2,
+  tres: 3,
+  cuatro: 4,
+  cinco: 5,
+  seis: 6,
+  siete: 7,
+  ocho: 8,
+  nueve: 9,
+  diez: 10,
+  once: 11,
+  doce: 12,
+  trece: 13,
+  catorce: 14,
+  quince: 15,
+  dieciseis: 16,
+  dieciséis: 16,
+  diecisiete: 17,
+  dieciocho: 18,
+  diecinueve: 19,
+  veinte: 20,
+  veintiuno: 21,
+  veintiuna: 21,
+  veintidos: 22,
+  veintidós: 22,
+  veintitres: 23,
+  veintitrés: 23,
+  veinticuatro: 24,
+  veinticinco: 25,
+  veintiseis: 26,
+  veintiséis: 26,
+  veintisiete: 27,
+  veintiocho: 28,
+  veintinueve: 29,
+  treinta: 30,
+  cuarenta: 40,
+  cincuenta: 50,
+  sesenta: 60,
+  setenta: 70,
+  ochenta: 80,
+  noventa: 90,
+  cien: 100,
+  ciento: 100,
+};
+
+function parseSpanishNumberBelow200(value: string) {
+  const words = value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .split(/\s+/)
+    .filter((word) => word !== "y")
+    .filter(Boolean);
+  let total = 0;
+  for (const word of words) {
+    const number = SPANISH_SMALL_NUMBERS[word];
+    if (typeof number !== "number") return null;
+    total += number;
+  }
+  return total > 0 ? total : null;
+}
+
+function spanishNumberWordsBeforePunto(value: string) {
+  const words = value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+  const selected: string[] = [];
+  for (let index = words.length - 1; index >= 0; index -= 1) {
+    const word = words[index];
+    if (word === "y" || SPANISH_SMALL_NUMBERS[word] !== undefined) {
+      selected.unshift(word);
+      continue;
+    }
+    if (selected.length > 0) break;
+  }
+  return selected.join(" ");
+}
+
+function spanishNumberWordsAfterPunto(value: string) {
+  const words = value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+  const selected: string[] = [];
+  for (const word of words) {
+    if (word === "y" || SPANISH_SMALL_NUMBERS[word] !== undefined) {
+      selected.push(word);
+      continue;
+    }
+    if (selected.length > 0) break;
+  }
+  return selected.join(" ");
+}
+
+function parseSpanishDecimalSurface(value: string) {
+  const match = value.match(/\bpunto\b/i);
+  if (!match || match.index === undefined) return null;
+  const integerText = spanishNumberWordsBeforePunto(value.slice(0, match.index));
+  const decimalText = spanishNumberWordsAfterPunto(
+    value.slice(match.index + match[0].length)
+  );
+  const integer = parseSpanishNumberBelow200(integerText);
+  const decimal = parseSpanishNumberBelow200(decimalText);
+  if (integer === null || decimal === null) return null;
+  return Number(`${integer}.${String(decimal).padStart(2, "0")}`);
+}
+
+function normalizeOcrDigits(value: string) {
+  return value
+    .replace(/(?<=\b)[iíl|](?=\d)/gi, "1")
+    .replace(/(?<=\d)[iíl|](?=\d|\b)/gi, "1")
+    .replace(/(?<=\d)[oO](?=\d|\b)/g, "0")
+    .replace(/(?<=\d)[sS](?=\d|\b)/g, "5");
+}
+
+export function extractSurfaceTotalM2FromTextForTest(text: string) {
+  const normalized = normalizeOcrDigits(text.replace(/\s+/g, " "));
+  const numberPattern = "([0-9]{1,5}(?:\\s*[.,]\\s*[0-9]{1,3})?)";
+  const patterns = [
+    new RegExp(
+      `(?:superficie|area|área)\\s+(?:total|privativa|del\\s+terreno|de\\s+terreno|de\\s+la\\s+unidad|del\\s+inmueble)[^0-9]{0,140}${numberPattern}[^\\n]{0,160}(?:m2|m²|metros?\\s+cuadrados?)`,
+      "i"
+    ),
+    new RegExp(
+      `cuenta\\s+con\\s+una\\s+(?:superficie|area|área)\\s+total\\s+de[^0-9]{0,140}${numberPattern}[^\\n]{0,160}(?:m2|m²|metros?\\s+cuadrados?)`,
+      "i"
+    ),
+  ];
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    const parsed = match?.[1] ? parseLocalizedNumber(match[1]) : null;
+    if (parsed && parsed > 5 && parsed < 100000) return parsed;
+  }
+  const surfaceWindow = normalized.match(
+    /(?:superficie|area|área)\s+(?:total|privativa|del\s+terreno|de\s+terreno|de\s+la\s+unidad|del\s+inmueble)[\s\S]{0,260}(?:m2|m²|metros?\s+cuadrados?)/i
+  )?.[0];
+  const spelledSurface = surfaceWindow ? parseSpanishDecimalSurface(surfaceWindow) : null;
+  if (spelledSurface && spelledSurface > 5 && spelledSurface < 100000) {
+    return spelledSurface;
+  }
+  return null;
+}
+
+function enrichExtractionFromText(
+  extraction: Record<string, unknown>,
+  documentKind: string,
+  text: string
+) {
+  const enriched: Record<string, unknown> = {
+    ...extraction,
+    document_kind: documentKind,
+  };
+  if (typeof enriched.area_total_m2 !== "number") {
+    const areaTotalM2 = extractSurfaceTotalM2FromTextForTest(text);
+    if (areaTotalM2 !== null) {
+      enriched.area_total_m2 = areaTotalM2;
+      enriched.area_total_m2_source = "pdf_text_surface_phrase";
+    }
+  }
+  return enriched;
+}
+
+function isPropertyDeedKind(value: unknown) {
+  return typeof value === "string" && value.toLowerCase().includes("escritura");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function needsPdfVisionSupplement(input: {
+  documentKind: string;
+  extraction: Record<string, unknown>;
+}) {
+  if (!isPropertyDeedKind(input.documentKind)) return false;
+  return typeof input.extraction.area_total_m2 !== "number";
+}
+
+function mergeDocumentExtractions(
+  primary: Record<string, unknown>,
+  supplement: Record<string, unknown>,
+  extractionSource: string
+) {
+  const merged: Record<string, unknown> = { ...primary };
+  for (const key of [
+    "area_total_m2",
+    "area_construida_m2",
+    "property_description",
+    "folio_real",
+    "predial_account",
+    "area_total_m2_source",
+  ] as const) {
+    const primaryValue = merged[key];
+    const supplementValue = supplement[key];
+    if (
+      (primaryValue == null || primaryValue === "") &&
+      supplementValue != null &&
+      supplementValue !== ""
+    ) {
+      merged[key] = supplementValue;
+    }
+  }
+  const primaryOwners = Array.isArray(merged.owner_names) ? merged.owner_names : [];
+  const supplementOwners = Array.isArray(supplement.owner_names)
+    ? supplement.owner_names
+    : [];
+  if (primaryOwners.length === 0 && supplementOwners.length > 0) {
+    merged.owner_names = supplementOwners;
+  }
+  if (isRecord(supplement.address)) {
+    merged.address = {
+      ...(isRecord(merged.address) ? merged.address : {}),
+      ...supplement.address,
+    };
+  }
+  const warnings = [
+    ...(Array.isArray(merged.warnings) ? merged.warnings : []),
+    ...(Array.isArray(supplement.warnings) ? supplement.warnings : []),
+  ].filter((item, index, items) => items.indexOf(item) === index);
+  if (warnings.length > 0) merged.warnings = warnings;
+  merged.extraction_source = extractionSource;
+  return merged;
+}
+
+async function renderPdfFirstPageDataUrl(parser: PDFParse) {
+  const screenshot = await parser.getScreenshot({
+    first: 1,
+    desiredWidth: 1800,
+    imageDataUrl: true,
+    imageBuffer: false,
+  });
+  return screenshot.pages[0]?.dataUrl ?? null;
+}
+
+function extractionStatusFor(extraction: Record<string, unknown>) {
+  const confidence =
+    typeof extraction.confidence === "string" ? extraction.confidence : "low";
+  return confidence === "high" || confidence === "medium" ? "ok" : "low_confidence";
+}
+
+async function callOpenRouterForJson(input: {
+  apiKey: string;
+  model: string;
+  messages: Array<Record<string, unknown>>;
+}) {
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${input.apiKey}`,
+      "HTTP-Referer": "https://agents.local",
+    },
+    body: JSON.stringify({
+      model: input.model,
+      temperature: 0,
+      max_tokens: 900,
+      messages: input.messages,
+    }),
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    error?: { message?: string };
+  };
+  const content = body.choices?.[0]?.message?.content;
+  if (!res.ok || !content) {
+    throw new Error(body.error?.message ?? `model_request_failed_${res.status}`);
+  }
+  return content;
+}
+
+async function extractDocumentFieldsFromImage(input: {
+  apiKey: string;
+  documentKind: string;
+  dataUrl: string;
+}) {
+  const content = await callOpenRouterForJson({
+    apiKey: input.apiKey,
+    model: VISION_EXTRACTION_MODEL,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Extrae datos inmobiliarios de documentos mexicanos. Devuelve exclusivamente JSON válido sin markdown. " +
+          PROPERTY_AREA_EXTRACTION_GUIDANCE,
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              `Documento tipo ${input.documentKind}. Extrae sólo lo visible con este shape: ` +
+              `${DOCUMENT_EXTRACTION_JSON_SHAPE}. ${PROPERTY_AREA_EXTRACTION_GUIDANCE} No inventes datos; usa null cuando no esté visible.`,
+          },
+          { type: "image_url", image_url: { url: input.dataUrl } },
+        ],
+      },
+    ],
+  });
+  return parseModelJson(content, input.documentKind);
+}
+
+async function extractDocumentFieldsFromText(input: {
+  apiKey: string;
+  documentKind: string;
+  text: string;
+}) {
+  const content = await callOpenRouterForJson({
+    apiKey: input.apiKey,
+    model: PDF_TEXT_EXTRACTION_MODEL,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Extrae datos inmobiliarios de documentos mexicanos a partir de texto OCR/PDF. Devuelve exclusivamente JSON válido sin markdown. " +
+          PROPERTY_AREA_EXTRACTION_GUIDANCE,
+      },
+      {
+        role: "user",
+        content:
+          `Documento tipo ${input.documentKind}. Extrae sólo datos presentes en el texto con este shape: ` +
+          `${DOCUMENT_EXTRACTION_JSON_SHAPE}. ${PROPERTY_AREA_EXTRACTION_GUIDANCE} No inventes datos; usa null cuando no esté visible.\n\n` +
+          input.text.slice(0, 24000),
+      },
+    ],
+  });
+  return enrichExtractionFromText(
+    parseModelJson(content, input.documentKind),
+    input.documentKind,
+    input.text
+  );
+}
+
+async function extractPdfDocumentFields(input: {
+  apiKey: string;
+  documentKind: string;
+  bytes: Buffer;
+}) {
+  ensurePdfWorkerConfigured();
+  const parser = new PDFParse({ data: Uint8Array.from(input.bytes) });
+  try {
+    const textResult = await parser.getText({
+      first: 5,
+      pageJoiner: "\n\n--- page_number of total_number ---\n\n",
+    });
+    const normalizedText = textResult.text.replace(/\s+/g, " ").trim();
+    if (normalizedText.length >= 120) {
+      const textExtraction = await extractDocumentFieldsFromText({
+        apiKey: input.apiKey,
+        documentKind: input.documentKind,
+        text: textResult.text,
+      });
+      if (
+        needsPdfVisionSupplement({
+          documentKind: input.documentKind,
+          extraction: textExtraction,
+        })
+      ) {
+        const dataUrl = await renderPdfFirstPageDataUrl(parser);
+        if (dataUrl) {
+          const visionExtraction = enrichExtractionFromText(
+            await extractDocumentFieldsFromImage({
+              apiKey: input.apiKey,
+              documentKind: input.documentKind,
+              dataUrl,
+            }),
+            input.documentKind,
+            textResult.text
+          );
+          const warnings = [
+            ...(Array.isArray(textExtraction.warnings) ? textExtraction.warnings : []),
+            "La capa de texto del PDF no trajo superficie; se complementó con visión sobre la primera página.",
+          ];
+          return {
+            model: VISION_EXTRACTION_MODEL,
+            extraction: {
+              ...mergeDocumentExtractions(
+                textExtraction,
+                visionExtraction,
+                "pdf_text_plus_vision"
+              ),
+              warnings,
+            },
+          };
+        }
+      }
+      return {
+        model: PDF_TEXT_EXTRACTION_MODEL,
+        extraction: {
+          ...textExtraction,
+          extraction_source: "pdf_text",
+        },
+      };
+    }
+
+    const dataUrl = await renderPdfFirstPageDataUrl(parser);
+    if (dataUrl) {
+      const imageExtraction = await extractDocumentFieldsFromImage({
+        apiKey: input.apiKey,
+        documentKind: input.documentKind,
+        dataUrl,
+      });
+      const warnings = Array.isArray(imageExtraction.warnings)
+        ? imageExtraction.warnings
+        : [];
+      return {
+        model: VISION_EXTRACTION_MODEL,
+        extraction: {
+          ...imageExtraction,
+          extraction_source: "pdf_rendered_first_page",
+          warnings: [
+            ...warnings,
+            "PDF sin texto suficiente; se renderizó la primera página como imagen.",
+          ],
+        },
+      };
+    }
+    return {
+      model: PDF_TEXT_EXTRACTION_MODEL,
+      extraction: {
+        document_kind: input.documentKind,
+        confidence: "low",
+        extraction_source: "pdf_unreadable",
+        warnings: [
+          "No se pudo extraer texto suficiente ni renderizar la primera página del PDF.",
+        ],
+      },
+    };
+  } catch (err) {
+    return {
+      model: PDF_TEXT_EXTRACTION_MODEL,
+      extraction: {
+        document_kind: input.documentKind,
+        confidence: "low",
+        extraction_source: "pdf_failed",
+        warnings: [
+          `No se pudo procesar el PDF: ${err instanceof Error ? err.message : String(err)}`,
+        ],
+      },
+    };
+  } finally {
+    await parser.destroy().catch(() => undefined);
+  }
+}
+
+function shouldUseCachedExtraction(input: {
+  force?: boolean;
+  contentType: string;
+  extractionStatus: string;
+  extraction: Record<string, unknown>;
+}) {
+  if (input.force) return false;
+  if (Object.keys(input.extraction ?? {}).length === 0) return false;
+  if (
+    input.contentType === "application/pdf" &&
+    isPropertyDeedKind(input.extraction.document_kind) &&
+    typeof input.extraction.area_total_m2 !== "number"
+  ) {
+    return false;
+  }
+  if (input.extractionStatus === "ok") return true;
+  if (input.extractionStatus !== "low_confidence") return false;
+  if (input.contentType === "application/pdf") {
+    return (
+      input.extraction.extraction_source === "pdf_text_plus_vision" ||
+      input.extraction.extraction_source === "pdf_rendered_first_page"
+    );
+  }
+  return true;
+}
 
 export type NotifyUserFn = (
   db: ToolContext["db"],
@@ -368,6 +922,317 @@ export function addOperationalCaseTools(
             event_type: z.enum(EVENT_TYPE_VALUES),
             actor: z.enum(ACTOR_VALUES),
             payload: z.record(z.string(), z.any()).optional(),
+          }),
+        }
+      )
+    );
+  }
+
+  if (toolEnabled("operational_case_register_document", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          case_id: string;
+          kind: string;
+          storage_path: string;
+          storage_bucket?: string;
+          display_name?: string;
+          original_name?: string;
+          content_type?: string;
+          file_size_bytes?: number;
+          sha256?: string;
+          source?: "external_telegram" | "advisor_web" | "advisor_telegram" | "settings_test" | "unknown";
+          blocking?: boolean;
+          metadata?: Record<string, unknown>;
+        }) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "operational_case_register_document",
+            input as unknown as Record<string, unknown>,
+            false,
+            ctx.turnId
+          );
+          const opCase = await getOperationalCase(ctx.db, input.case_id);
+          if (!opCase || opCase.user_id !== ctx.userId) {
+            const out = { ok: false, error: "case_not_found_or_forbidden" };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+          const document = await createOperationalCaseDocument(ctx.db, {
+            caseId: opCase.id,
+            userId: opCase.user_id,
+            kind: input.kind,
+            displayName: input.display_name ?? null,
+            storageBucket: input.storage_bucket,
+            storagePath: input.storage_path,
+            originalName: input.original_name ?? null,
+            contentType: input.content_type ?? null,
+            fileSizeBytes: input.file_size_bytes ?? null,
+            sha256: input.sha256 ?? null,
+            source: input.source ?? "unknown",
+            sourceMetadata: input.metadata ?? {},
+            blocking: input.blocking ?? input.kind === "escritura_descripcion",
+          });
+          await insertOperationalCaseEvent(ctx.db, {
+            caseId: opCase.id,
+            eventType: "external_response",
+            actor: input.source?.startsWith("advisor") ? "user" : "external",
+            payload: {
+              kind: "document_registered",
+              document_id: document.id,
+              document_kind: document.kind,
+              source: document.source,
+            },
+          });
+          const out = {
+            ok: true,
+            document_id: document.id,
+            kind: document.kind,
+            blocking: document.blocking,
+            extraction_status: document.extraction_status,
+          };
+          await updateToolCallStatus(ctx.db, record.id, "executed", out);
+          return JSON.stringify(out);
+        },
+        {
+          name: "operational_case_register_document",
+          description:
+            "Registers a document already stored in Supabase Storage as evidence for an operational case.",
+          schema: z.object({
+            case_id: z.string().min(1),
+            kind: z.string().min(1),
+            storage_path: z.string().min(1),
+            storage_bucket: z.string().min(1).optional(),
+            display_name: z.string().optional(),
+            original_name: z.string().optional(),
+            content_type: z.string().optional(),
+            file_size_bytes: z.number().int().nonnegative().optional(),
+            sha256: z.string().optional(),
+            source: z
+              .enum(["external_telegram", "advisor_web", "advisor_telegram", "settings_test", "unknown"])
+              .optional(),
+            blocking: z.boolean().optional(),
+            metadata: z.record(z.string(), z.any()).optional(),
+          }),
+        }
+      )
+    );
+  }
+
+  if (toolEnabled("operational_case_list_documents", ctx)) {
+    tools.push(
+      tool(
+        async (input: { case_id: string }) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "operational_case_list_documents",
+            input,
+            false,
+            ctx.turnId
+          );
+          const opCase = await getOperationalCase(ctx.db, input.case_id);
+          if (!opCase || opCase.user_id !== ctx.userId) {
+            const out = { ok: false, error: "case_not_found_or_forbidden" };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+          const documents = await listOperationalCaseDocuments(ctx.db, {
+            caseId: opCase.id,
+            statuses: ["received"],
+          });
+          const out = {
+            ok: true,
+            documents: documents.map((doc) => ({
+              id: doc.id,
+              kind: doc.kind,
+              display_name: doc.display_name,
+              original_name: doc.original_name,
+              content_type: doc.content_type,
+              file_size_bytes: doc.file_size_bytes,
+              blocking: doc.blocking,
+              source: doc.source,
+              extraction_status: doc.extraction_status,
+              extraction: doc.extraction_jsonb,
+              created_at: doc.created_at,
+            })),
+          };
+          await updateToolCallStatus(ctx.db, record.id, "executed", out);
+          return JSON.stringify(out);
+        },
+        {
+          name: "operational_case_list_documents",
+          description:
+            "Lists received documents attached to an operational case, including cached extraction metadata.",
+          schema: z.object({
+            case_id: z.string().min(1),
+          }),
+        }
+      )
+    );
+  }
+
+  if (toolEnabled("operational_case_extract_document_fields", ctx)) {
+    tools.push(
+      tool(
+        async (input: { document_id: string; force?: boolean }) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "operational_case_extract_document_fields",
+            input,
+            false,
+            ctx.turnId
+          );
+          const document = await getOperationalCaseDocument(ctx.db, input.document_id);
+          if (!document || document.user_id !== ctx.userId) {
+            const out = { ok: false, error: "document_not_found_or_forbidden" };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+          const contentType = document.content_type ?? "";
+          if (
+            shouldUseCachedExtraction({
+              force: input.force,
+              contentType,
+              extractionStatus: document.extraction_status,
+              extraction: document.extraction_jsonb ?? {},
+            })
+          ) {
+            const out = {
+              ok: true,
+              cached: true,
+              document_id: document.id,
+              extraction_status: document.extraction_status,
+              extraction: document.extraction_jsonb,
+            };
+            await updateToolCallStatus(ctx.db, record.id, "executed", out);
+            return JSON.stringify(out);
+          }
+          if (!input.force && document.sha256) {
+            const previous = await findExtractedOperationalCaseDocumentByHash(ctx.db, {
+              caseId: document.case_id,
+              kind: document.kind,
+              sha256: document.sha256,
+              excludeDocumentId: document.id,
+            });
+            if (
+              previous &&
+              shouldUseCachedExtraction({
+                contentType,
+                extractionStatus: previous.extraction_status,
+                extraction: previous.extraction_jsonb ?? {},
+              })
+            ) {
+              const updated = await updateOperationalCaseDocumentExtraction(ctx.db, {
+                documentId: document.id,
+                status: previous.extraction_status,
+                model: previous.extraction_model,
+                extraction: {
+                  ...previous.extraction_jsonb,
+                  reused_from_document_id: previous.id,
+                },
+              });
+              const out = {
+                ok: true,
+                cached: true,
+                reused_from_document_id: previous.id,
+                document_id: document.id,
+                extraction_status: updated.extraction_status,
+                extraction: updated.extraction_jsonb,
+              };
+              await updateToolCallStatus(ctx.db, record.id, "executed", out);
+              return JSON.stringify(out);
+            }
+          }
+          const { data: blob, error: downloadError } = await ctx.db.storage
+            .from(document.storage_bucket)
+            .download(document.storage_path);
+          if (downloadError || !blob) {
+            const out = {
+              ok: false,
+              error: downloadError?.message ?? "storage_download_failed",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+          const bytes = Buffer.from(await blob.arrayBuffer());
+          const apiKey = process.env.OPENROUTER_API_KEY;
+          if (!apiKey) {
+            const out = { ok: false, error: "missing_openrouter_api_key" };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+
+          let extractionResult: {
+            model: string;
+            extraction: Record<string, unknown>;
+          };
+          try {
+            if (contentType === "application/pdf") {
+              extractionResult = await extractPdfDocumentFields({
+                apiKey,
+                documentKind: document.kind,
+                bytes,
+              });
+            } else if (contentType.startsWith("image/")) {
+              const dataUrl = `data:${contentType};base64,${bytes.toString("base64")}`;
+              extractionResult = {
+                model: VISION_EXTRACTION_MODEL,
+                extraction: {
+                  ...(await extractDocumentFieldsFromImage({
+                    apiKey,
+                    documentKind: document.kind,
+                    dataUrl,
+                  })),
+                  extraction_source: "image",
+                },
+              };
+            } else {
+              extractionResult = {
+                model: VISION_EXTRACTION_MODEL,
+                extraction: {
+                  document_kind: document.kind,
+                  confidence: "low",
+                  extraction_source: "unsupported_content_type",
+                  warnings: [
+                    `Tipo de archivo no soportado para extracción: ${contentType || "sin content-type"}.`,
+                  ],
+                },
+              };
+            }
+          } catch (err) {
+            const out = {
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+          const updated = await updateOperationalCaseDocumentExtraction(ctx.db, {
+            documentId: document.id,
+            status: extractionStatusFor(extractionResult.extraction),
+            model: extractionResult.model,
+            extraction: extractionResult.extraction,
+          });
+          const out = {
+            ok: true,
+            cached: false,
+            document_id: document.id,
+            extraction_status: updated.extraction_status,
+            extraction: updated.extraction_jsonb,
+          };
+          await updateToolCallStatus(ctx.db, record.id, "executed", out);
+          return JSON.stringify(out);
+        },
+        {
+          name: "operational_case_extract_document_fields",
+          description:
+            "Runs cached multimodal extraction for a case document image and stores the extracted JSON on operational_case_documents.",
+          schema: z.object({
+            document_id: z.string().min(1),
+            force: z.boolean().optional(),
           }),
         }
       )

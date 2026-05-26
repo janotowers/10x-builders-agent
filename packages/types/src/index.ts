@@ -383,6 +383,49 @@ export interface OperationalCaseEvent {
   created_at: string;
 }
 
+export type OperationalCaseDocumentSource =
+  | "external_telegram"
+  | "advisor_web"
+  | "advisor_telegram"
+  | "settings_test"
+  | "unknown";
+
+export type OperationalCaseDocumentStatus =
+  | "received"
+  | "superseded"
+  | "rejected";
+
+export type OperationalCaseDocumentExtractionStatus =
+  | "pending"
+  | "ok"
+  | "low_confidence"
+  | "failed"
+  | "not_applicable";
+
+export interface OperationalCaseDocument {
+  id: string;
+  case_id: string;
+  user_id: string;
+  kind: string;
+  display_name: string | null;
+  storage_bucket: string;
+  storage_path: string;
+  original_name: string | null;
+  content_type: string | null;
+  file_size_bytes: number | null;
+  sha256: string | null;
+  source: OperationalCaseDocumentSource;
+  source_metadata_jsonb: Record<string, unknown>;
+  blocking: boolean;
+  status: OperationalCaseDocumentStatus;
+  extraction_status: OperationalCaseDocumentExtractionStatus;
+  extraction_model: string | null;
+  extraction_jsonb: Record<string, unknown>;
+  extracted_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface OperationalCaseReminderPolicy {
   /** Horas tras las cuales mandar recordatorio si seguimos en `waiting_external`. */
   remind_after_h?: number[];

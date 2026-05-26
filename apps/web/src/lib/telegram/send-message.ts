@@ -22,9 +22,14 @@ export async function sendTelegramMessage(
   replyMarkup?: Record<string, unknown>,
   options?: { throwOnError?: boolean }
 ): Promise<void> {
-  const res = await fetch(
-    `https://api.telegram.org/bot${BOT_TOKEN()}/sendMessage`,
-    {
+  const token = BOT_TOKEN().trim();
+  if (!token) {
+    throw new Error("Telegram sendMessage not configured: TELEGRAM_BOT_TOKEN is empty");
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -32,8 +37,14 @@ export async function sendTelegramMessage(
         text,
         ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       }),
-    }
-  );
+    });
+  } catch (error) {
+    const cause =
+      error instanceof Error && error.cause instanceof Error
+        ? `: ${error.cause.message}`
+        : "";
+    throw new Error(`Telegram sendMessage network error${cause}`);
+  }
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     console.error("[telegram] sendMessage failed:", res.status, body);
@@ -45,6 +56,42 @@ export async function sendTelegramMessage(
       );
     }
   }
+}
+
+export interface TelegramFileInfo {
+  file_id: string;
+  file_unique_id?: string;
+  file_size?: number;
+  file_path?: string;
+}
+
+export async function getTelegramFile(fileId: string): Promise<TelegramFileInfo> {
+  const res = await fetch(
+    `https://api.telegram.org/bot${BOT_TOKEN()}/getFile?file_id=${encodeURIComponent(
+      fileId
+    )}`
+  );
+  const body = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    result?: TelegramFileInfo;
+    description?: string;
+  };
+  if (!res.ok || body.ok !== true || !body.result?.file_path) {
+    throw new Error(
+      `Telegram getFile failed${body.description ? `: ${body.description}` : ""}`
+    );
+  }
+  return body.result;
+}
+
+export async function downloadTelegramFile(filePath: string): Promise<ArrayBuffer> {
+  const res = await fetch(
+    `https://api.telegram.org/file/bot${BOT_TOKEN()}/${filePath}`
+  );
+  if (!res.ok) {
+    throw new Error(`Telegram file download failed: HTTP ${res.status}`);
+  }
+  return res.arrayBuffer();
 }
 
 /**

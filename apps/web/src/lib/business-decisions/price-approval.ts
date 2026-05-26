@@ -83,6 +83,13 @@ function pricingProposalFromCase(context: Record<string, unknown>) {
   return isRecord(proposal) ? proposal : null;
 }
 
+function isSettingsTestCase(context: Record<string, unknown>) {
+  return (
+    context.created_from === "case_type_settings_test" ||
+    context.test_mode === true
+  );
+}
+
 export async function handlePriceApprovalDecision(
   db: DbClient,
   params: {
@@ -135,11 +142,22 @@ export async function handlePriceApprovalDecision(
       approved_at: new Date().toISOString(),
       approved_by: params.userId,
     };
+    const settingsTestCase = isSettingsTestCase(context);
     const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-      status: "active",
+      status: settingsTestCase ? "paused" : "active",
       currentStep: "contract_pending",
-      nextActionAt: new Date().toISOString(),
-      context: { ...context, pricing_proposal: nextProposal },
+      nextActionAt: settingsTestCase ? null : new Date().toISOString(),
+      context: {
+        ...context,
+        pricing_proposal: nextProposal,
+        ...(settingsTestCase
+          ? {
+              controlled_test_status: "price_approved_stopped_before_next_step",
+              controlled_test_note:
+                "Precio aprobado en caso de prueba; detenido antes de preparar contrato para no mezclar settings con operacion real.",
+            }
+          : {}),
+      },
     });
     if (!updated) return { ok: false, status: "version_conflict", message: "El caso cambio; intenta de nuevo." };
     await insertOperationalCaseEvent(db, {
@@ -156,7 +174,9 @@ export async function handlePriceApprovalDecision(
     return {
       ok: true,
       status: "approved",
-      message: "Precio aprobado. El caso avanzo a contrato.",
+      message: settingsTestCase
+        ? "Precio aprobado. El caso de prueba quedo detenido antes del siguiente paso."
+        : "Precio aprobado. El caso avanzo a contrato.",
     };
   }
 
@@ -202,11 +222,22 @@ export async function handlePriceApprovalDecision(
     approved_at: new Date().toISOString(),
     approved_by: params.userId,
   };
+  const settingsTestCase = isSettingsTestCase(context);
   const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    status: "active",
+    status: settingsTestCase ? "paused" : "active",
     currentStep: "contract_pending",
-    nextActionAt: new Date().toISOString(),
-    context: { ...context, pricing_proposal: nextProposal },
+    nextActionAt: settingsTestCase ? null : new Date().toISOString(),
+    context: {
+      ...context,
+      pricing_proposal: nextProposal,
+      ...(settingsTestCase
+        ? {
+            controlled_test_status: "price_adjusted_approved_stopped_before_next_step",
+            controlled_test_note:
+              "Precio ajustado/aprobado en caso de prueba; detenido antes de preparar contrato para no mezclar settings con operacion real.",
+          }
+        : {}),
+    },
   });
   if (!updated) return { ok: false, status: "version_conflict", message: "El caso cambio; intenta de nuevo." };
   await insertOperationalCaseEvent(db, {
@@ -227,7 +258,9 @@ export async function handlePriceApprovalDecision(
   return {
     ok: true,
     status: "adjusted_and_approved",
-    message: "Ajuste aplicado y precio aprobado. El caso avanzo a contrato.",
+    message: settingsTestCase
+      ? "Ajuste aplicado y precio aprobado. El caso de prueba quedo detenido antes del siguiente paso."
+      : "Ajuste aplicado y precio aprobado. El caso avanzo a contrato.",
     pricing_proposal: nextProposal,
   };
 }

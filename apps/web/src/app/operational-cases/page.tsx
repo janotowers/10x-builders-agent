@@ -1,11 +1,15 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  CASE_DOCUMENTS_BUCKET,
   createOperationalCase,
+  createOperationalCaseDocument,
   createServerClient,
   getOperationalCaseTypeById,
   getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
+  listOperationalCaseDocuments,
   listActiveAccountSkillsForUser,
   listOperationalCasesForUser,
   listOperationalCaseTypesForUser,
@@ -13,6 +17,7 @@ import {
 import { getSkillRegistryForUser } from "@agents/agent";
 import type {
   OperationalCase,
+  OperationalCaseDocument,
   OperationalCaseEvent,
   OperationalCaseStatus,
   OperationalCaseType,
@@ -147,6 +152,89 @@ async function createOperationalCaseAction(formData: FormData) {
   redirect(`/operational-cases?case=${opCase.id}`);
 }
 
+function safePathSegment(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "document";
+}
+
+function documentKindBlocking(kind: string) {
+  return kind === "escritura_descripcion";
+}
+
+async function uploadCaseDocumentAction(formData: FormData) {
+  "use server";
+
+  const auth = await createClient();
+  const {
+    data: { user },
+  } = await auth.auth.getUser();
+  if (!user) redirect("/login");
+
+  const caseId = String(formData.get("case_id") ?? "").trim();
+  const kind = String(formData.get("document_kind") ?? "").trim();
+  const file = formData.get("document_file");
+  if (!caseId || !kind || !(file instanceof File) || file.size === 0) {
+    redirect(`/operational-cases?case=${caseId || ""}&error=missing_document`);
+  }
+
+  const db = createServerClient();
+  const opCase = (await listOperationalCasesForUser(db, user.id, {
+    statuses: CASE_STATUSES,
+    limit: 100,
+  })).find((item) => item.id === caseId);
+  if (!opCase) redirect("/operational-cases?error=case_not_found");
+
+  const bytes = Buffer.from(await file.arrayBuffer());
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const ext = file.name.includes(".")
+    ? safePathSegment(file.name.split(".").pop() ?? "bin")
+    : "bin";
+  const storagePath = `${user.id}/${caseId}/${randomUUID()}-${safePathSegment(
+    file.name.replace(/\.[^.]+$/, "")
+  )}.${ext}`;
+  const { error: uploadError } = await db.storage
+    .from(CASE_DOCUMENTS_BUCKET)
+    .upload(storagePath, bytes, {
+      contentType: file.type || "application/octet-stream",
+      upsert: false,
+    });
+  if (uploadError) throw uploadError;
+
+  const document = await createOperationalCaseDocument(db, {
+    caseId,
+    userId: user.id,
+    kind,
+    displayName: documentKindLabel(kind),
+    storagePath,
+    originalName: file.name,
+    contentType: file.type || "application/octet-stream",
+    fileSizeBytes: file.size,
+    sha256,
+    source: "advisor_web",
+    sourceMetadata: { source: "operational_cases_ui" },
+    blocking: documentKindBlocking(kind),
+  });
+
+  await insertOperationalCaseEvent(db, {
+    caseId,
+    eventType: "external_response",
+    actor: "user",
+    payload: {
+      kind: "document_registered",
+      source: "advisor_web",
+      document_id: document.id,
+      document_kind: document.kind,
+    },
+  });
+
+  revalidatePath("/operational-cases");
+  redirect(`/operational-cases?case=${caseId}`);
+}
+
 function formatDate(value: string | null): string {
   if (!value) return "Sin fecha";
   return new Intl.DateTimeFormat("es-MX", {
@@ -207,6 +295,20 @@ const ACTOR_LABELS: Record<string, string> = {
 
 function eventTypeLabel(value: string): string {
   return EVENT_TYPE_LABELS[value] ?? value;
+}
+
+function documentKindLabel(value: string): string {
+  const labels: Record<string, string> = {
+    escritura_descripcion: "Escritura - descripción de la propiedad",
+    predial: "Predial",
+    ine: "INE",
+    comprobante_domicilio: "Comprobante de domicilio",
+    boleta_registral: "Boleta registral",
+    escritura_primera_hoja: "Escritura - primera hoja",
+    escritura_ultima_hoja: "Escritura - última hoja",
+    unknown: "Sin clasificar",
+  };
+  return labels[value] ?? value;
 }
 
 function actorLabel(value: string): string {
@@ -291,6 +393,12 @@ export default async function OperationalCasesPage({
 
   const selectedEvents = selectedCase
     ? await getRecentOperationalCaseEvents(db, selectedCase.id, 50)
+    : [];
+  const selectedDocuments = selectedCase
+    ? await listOperationalCaseDocuments(db, {
+        caseId: selectedCase.id,
+        statuses: ["received"],
+      })
     : [];
   const latestEvents = latestEventByCase(
     (
@@ -493,6 +601,7 @@ export default async function OperationalCasesPage({
               opCase={selectedCase}
               type={caseTypeMap.get(selectedCase.case_type_id) ?? null}
               events={selectedEvents}
+              documents={selectedDocuments}
               skillInfo={skillInfo(
                 caseTypeMap.get(selectedCase.case_type_id)
                   ?.default_skill_slug ??
@@ -522,11 +631,13 @@ function CaseDetail({
   opCase,
   type,
   events,
+  documents,
   skillInfo,
 }: {
   opCase: OperationalCase;
   type: OperationalCaseType | null;
   events: OperationalCaseEvent[];
+  documents: OperationalCaseDocument[];
   skillInfo: {
     source: string;
     kind: string;
@@ -604,6 +715,93 @@ function CaseDetail({
             Incluye: {skillInfo.includes.join(", ")}
           </p>
         ) : null}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-neutral-200 p-3 dark:border-neutral-800">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">Documentos del caso</h3>
+            <p className="mt-1 text-xs text-neutral-500">
+              Si el dueño te mandó documentos por otro canal, súbelos aquí para
+              asociarlos al caso y permitir extracción con visión.
+            </p>
+          </div>
+          <span className="rounded bg-neutral-100 px-2 py-1 text-xs font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+            {documents.length} recibido{documents.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <form
+          action={uploadCaseDocumentAction}
+          encType="multipart/form-data"
+          className="mt-3 grid gap-2 rounded-lg bg-neutral-50 p-3 text-xs dark:bg-neutral-950 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
+        >
+          <input type="hidden" name="case_id" value={opCase.id} />
+          <label>
+            <span className="font-semibold text-neutral-700 dark:text-neutral-200">
+              Tipo
+            </span>
+            <select
+              name="document_kind"
+              className="mt-1 w-full rounded border border-neutral-300 bg-white px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-900"
+              defaultValue="escritura_descripcion"
+            >
+              <option value="escritura_descripcion">Escritura - descripción</option>
+              <option value="predial">Predial</option>
+              <option value="ine">INE</option>
+              <option value="comprobante_domicilio">Comprobante domicilio</option>
+              <option value="boleta_registral">Boleta registral</option>
+              <option value="escritura_primera_hoja">Escritura - primera hoja</option>
+              <option value="escritura_ultima_hoja">Escritura - última hoja</option>
+              <option value="unknown">Sin clasificar</option>
+            </select>
+          </label>
+          <label>
+            <span className="font-semibold text-neutral-700 dark:text-neutral-200">
+              Archivo
+            </span>
+            <input
+              name="document_file"
+              type="file"
+              accept="image/*,application/pdf"
+              required
+              className="mt-1 w-full text-xs"
+            />
+          </label>
+          <button
+            type="submit"
+            className="self-end rounded bg-violet-700 px-3 py-2 font-semibold text-white hover:bg-violet-800"
+          >
+            Subir
+          </button>
+        </form>
+        {documents.length === 0 ? (
+          <p className="mt-3 text-xs text-neutral-500">
+            Aún no hay documentos registrados.
+          </p>
+        ) : (
+          <div className="mt-3 grid gap-2">
+            {documents.map((doc) => (
+              <div
+                key={doc.id}
+                className="rounded-lg border border-neutral-200 p-2 text-xs dark:border-neutral-800"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold">
+                    {documentKindLabel(doc.kind)}
+                    {doc.blocking ? " · bloqueante" : ""}
+                  </span>
+                  <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                    {doc.extraction_status}
+                  </span>
+                </div>
+                <p className="mt-1 text-neutral-500">
+                  {doc.original_name ?? doc.storage_path} · {doc.source} ·{" "}
+                  {formatDate(doc.created_at)}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="mt-4">

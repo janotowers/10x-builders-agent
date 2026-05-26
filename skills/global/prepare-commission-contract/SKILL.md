@@ -59,13 +59,16 @@ guardrails: |
    - Si la tool devuelve `status=not_configured`: notifica al inmobiliario
      que falta la plantilla DOCX cargada y pausa el caso (`status=paused`).
 
-3. Notifica al inmobiliario:
-   `notify_user("Borrador del contrato listo para [propiedad]. Revísalo y dime si lo mando al dueño o necesita cambios.")`.
-   Adjunta el path/URL del DOCX en el payload.
+3. Notifica al inmobiliario sólo cuando tengas un borrador/link real:
+   `notify_user(kind="contract_review", "Borrador del contrato listo para [propiedad]. Revísalo y dime si lo mando al dueño o necesita cambios: [doc_url]")`.
+   Adjunta el path/URL del DOCX en el payload. Si no hay `doc_url` o la
+   plantilla no se pudo renderizar, no pidas aprobación de contrato; explica
+   qué configuración falta y pausa el caso.
 
 4. Inserta evento `operational_case_add_event(human_decision, payload={kind: contract_drafted, doc_url: "..."})`.
-5. Mantén `current_step=contract_pending`, `status=waiting_external` hasta
-   que el inmobiliario revise.
+5. Mantén `current_step=contract_pending`, `status=waiting_internal` hasta
+   que el inmobiliario revise. Esta espera es interna; `waiting_external` sólo
+   aplica cuando ya se mandó algo al dueño/lead y esperamos su respuesta.
 
 6. Cuando el inmobiliario aprueba (mensaje normal):
    - Manda al dueño por Telegram con

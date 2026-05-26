@@ -6,6 +6,8 @@ allowed_tools:
   - notify_user
   - operational_case_update_state
   - operational_case_add_event
+  - operational_case_list_documents
+  - operational_case_extract_document_fields
   - telegram_send_message_to_contact
 requires_tenant_context: false
 memory_extraction: ephemeral
@@ -15,9 +17,9 @@ guardrails: |
   repitas datos que ya proporcionó el dueño.
   Mensajes al externo SIEMPRE cortos (≤ 4 preguntas por mensaje) para no
   saturar.
-  Cuando todos los campos canónicos estén llenos, pasa al siguiente paso
-  (perform-comparable-analysis); no esperes a tener "todos los nice-to-have"
-  como amenidades opcionales.
+  Antes de pasar a comparables, solicita validación interna del inmobiliario
+  con `notify_user(kind="property_data_review")`. No avances si hay conflicto
+  evidente entre intake, documentos y respuesta del dueño.
 ---
 
 # Extract property characteristics
@@ -60,9 +62,16 @@ Llenar `context_jsonb.property_data` con un objeto canónico:
 
 ## Workflow
 
-1. Lee `context_jsonb.property_data` (puede no existir; trata como `{}`).
-2. Calcula los campos faltantes contra el shape canónico de arriba.
-3. Si quedan **campos críticos** sin responder
+1. Lee `context_jsonb.property_data` (puede no existir; trata como `{}`) y
+   lista documentos con `operational_case_list_documents`.
+2. Para documentos relevantes (especialmente `escritura_descripcion`,
+   `predial`, `boleta_registral`), corre
+   `operational_case_extract_document_fields` si la extracción no existe. La
+   tool acepta PDFs e imágenes y decide internamente si extraer texto, renderizar
+   una página o usar visión directa.
+   Usa esos datos como fuente, no como verdad absoluta.
+3. Calcula los campos faltantes contra el shape canónico de arriba.
+4. Si quedan **campos críticos** sin responder
    (operation, property_type, address.{street, neighborhood, city},
    area_total_m2, bedrooms, bathrooms):
    - Compón un mensaje al dueño con **máximo 4 preguntas** específicas, en
@@ -71,14 +80,14 @@ Llenar `context_jsonb.property_data` con un objeto canónico:
      `purpose=characteristics_pending`.
    - Inserta `operational_case_add_event(reminder_sent)`.
    - Pon `status=waiting_external`, `next_action_at=now()+24h`.
-4. Si llegó `external_response`:
+5. Si llegó `external_response`:
    - Parsea las respuestas y mergea en `property_data`.
-   - Si todos los críticos están llenos, mueve
-     `current_step=comparables_in_progress`, `status=active`,
-     `next_action_at=now()`.
+   - Si todos los críticos están llenos, llama `notify_user` con
+     `kind="property_data_review"` y `status=waiting_internal` para que el
+     asesor confirme/corrija antes de comparables.
    - Si aún faltan algunos críticos, repite paso 3 con los que faltan.
-5. Notifica al inmobiliario brevemente cuando completes:
-   `notify_user("Datos básicos de la propiedad listos. Empiezo el análisis de comparables.")`.
+6. Sólo cuando exista confirmación interna de datos básicos, mueve
+   `current_step=comparables_in_progress`, `status=active`, `next_action_at=now()`.
 
 ## Buenas prácticas de redacción de preguntas
 

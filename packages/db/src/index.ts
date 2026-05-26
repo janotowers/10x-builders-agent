@@ -18,6 +18,7 @@ export * from "./queries/notification-preferences";
 export * from "./queries/global-tool-requests";
 export * from "./queries/account-tool-secrets";
 export * from "./queries/account-assets";
+export * from "./queries/operational-case-documents";
 export * from "./queries/notifications";
 export { encryptToken, decryptToken, encryptJson, decryptJson } from "./crypto";
 export {

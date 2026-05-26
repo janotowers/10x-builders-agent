@@ -65,7 +65,11 @@ export async function updateInternalUserNotificationChannels(
 export async function listInternalUserNotifications(
   db: DbClient,
   userId: string,
-  opts: { statuses?: InternalUserNotificationStatus[]; limit?: number } = {}
+  opts: {
+    statuses?: InternalUserNotificationStatus[];
+    excludeKinds?: string[];
+    limit?: number;
+  } = {}
 ): Promise<InternalUserNotification[]> {
   let query = db
     .from("internal_user_notifications")
@@ -75,6 +79,9 @@ export async function listInternalUserNotifications(
     .limit(opts.limit ?? 20);
   if (opts.statuses && opts.statuses.length > 0) {
     query = query.in("status", opts.statuses);
+  }
+  if (opts.excludeKinds && opts.excludeKinds.length > 0) {
+    query = query.not("kind", "in", `(${opts.excludeKinds.join(",")})`);
   }
   const { data, error } = await query;
   if (error) throw error;
@@ -139,6 +146,31 @@ export async function setInternalUserNotificationStatus(
     .maybeSingle();
   if (error) throw error;
   return (data as InternalUserNotification | null) ?? null;
+}
+
+export async function deleteSettingsTestInternalNotifications(
+  db: DbClient,
+  userId: string
+): Promise<number> {
+  const { data: cases, error: casesError } = await db
+    .from("operational_cases")
+    .select("id")
+    .eq("user_id", userId)
+    .or("context_jsonb->>created_from.eq.case_type_settings_test,context_jsonb->>test_mode.eq.true");
+  if (casesError) throw casesError;
+  const caseIds = (cases ?? [])
+    .map((row: { id?: unknown }) => row.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (caseIds.length === 0) return 0;
+
+  const { data, error } = await db
+    .from("internal_user_notifications")
+    .delete()
+    .eq("user_id", userId)
+    .in("case_id", caseIds)
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
 }
 
 export async function listDueInternalUserNotifications(
@@ -279,4 +311,23 @@ export async function expireExternalContactNotification(
     })
     .eq("id", notificationId);
   if (error) throw error;
+}
+
+/** Cancels pending/sent external reminders for a case (e.g. Settings test cleanup). */
+export async function expireExternalContactNotificationsForCase(
+  db: DbClient,
+  caseId: string
+): Promise<number> {
+  const { data, error } = await db
+    .from("external_contact_notifications")
+    .update({
+      status: "expired",
+      next_reminder_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("case_id", caseId)
+    .in("status", ["pending", "sent"])
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
 }

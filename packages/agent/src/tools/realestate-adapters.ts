@@ -42,6 +42,22 @@ import {
   createExternalContactNotification,
 } from "@agents/db";
 import type { ToolContext } from "./tool-context";
+
+/** Outbound Telegram messages that expect a reply from the external contact. */
+const TELEGRAM_REPLY_EXPECTED_PURPOSES = new Set([
+  "request_documents",
+  "characteristics_pending",
+]);
+
+function isSettingsOperationalTestCase(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  if (!context) return false;
+  return (
+    context.created_from === "case_type_settings_test" ||
+    context.test_mode === true
+  );
+}
 import {
   ACCOUNT_TOOL_PROVIDERS_REALESTATE,
   markAccountSecretFailure,
@@ -153,26 +169,54 @@ export function addRealEstateTools(
                     text_preview: input.text.slice(0, 200),
                   },
                 });
-                await createExternalContactNotification(ctx.db, {
-                  userId: ctx.userId,
-                  caseId: opCase.id,
-                  contact: {
-                    ...(opCase.external_contact_jsonb as Record<string, unknown>),
+                const settingsTestCase = isSettingsOperationalTestCase(
+                  opCase.context_jsonb as Record<string, unknown>
+                );
+                if (!settingsTestCase) {
+                  await createExternalContactNotification(ctx.db, {
+                    userId: ctx.userId,
+                    caseId: opCase.id,
+                    contact: {
+                      ...(opCase.external_contact_jsonb as Record<string, unknown>),
+                      channel: "telegram",
+                      chat_id: input.chat_id,
+                    },
                     channel: "telegram",
-                    chat_id: input.chat_id,
-                  },
-                  channel: "telegram",
-                  recipientIdentifier: String(input.chat_id),
-                  messageBody: input.text,
-                  status: "sent",
-                  nextReminderAt: new Date(
-                    Date.now() + 24 * 60 * 60_000
-                  ).toISOString(),
-                  metadata: {
-                    purpose: input.purpose ?? "outbound",
-                    source: "telegram_send_message_to_contact",
-                  },
-                });
+                    recipientIdentifier: String(input.chat_id),
+                    messageBody: input.text,
+                    status: "sent",
+                    nextReminderAt: new Date(
+                      Date.now() + 24 * 60 * 60_000
+                    ).toISOString(),
+                    metadata: {
+                      purpose: input.purpose ?? "outbound",
+                      source: "telegram_send_message_to_contact",
+                    },
+                  });
+                }
+                const purpose = input.purpose ?? "outbound";
+                if (TELEGRAM_REPLY_EXPECTED_PURPOSES.has(purpose)) {
+                  const latest = await getOperationalCase(ctx.db, opCase.id);
+                  if (latest && latest.user_id === ctx.userId) {
+                    await updateOperationalCase(
+                      ctx.db,
+                      latest.id,
+                      latest.version,
+                      {
+                        status: "waiting_external",
+                        currentStep:
+                          purpose === "characteristics_pending"
+                            ? "documents_received"
+                            : latest.current_step,
+                        nextActionAt: settingsTestCase
+                          ? null
+                          : new Date(
+                              Date.now() + 24 * 60 * 60_000
+                            ).toISOString(),
+                      }
+                    );
+                  }
+                }
               }
             } catch (e) {
               console.warn(

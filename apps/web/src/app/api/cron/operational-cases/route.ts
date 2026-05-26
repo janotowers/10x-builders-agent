@@ -40,6 +40,7 @@ import {
   markExternalContactNotificationSent,
   markInternalNotificationReminderSent,
   expireExternalContactNotification,
+  expireExternalContactNotificationsForCase,
   markCaseProcessing,
   updateOperationalCase,
   getOrCreateSession,
@@ -56,13 +57,12 @@ import {
   sendTelegramMessage,
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
+import { reminderCooldownHoursForNotificationKind } from "@/lib/internal-notifications/registry";
+import { reminderCooldownHoursForEngagement } from "@/lib/engagement-policies/registry";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 
 const DEFAULT_CONCURRENCY = 5;
-const DEFAULT_INTERNAL_REMINDER_COOLDOWN_HOURS = 24;
-const PRICE_APPROVAL_INTERNAL_REMINDER_COOLDOWN_HOURS = 4;
-const EXTERNAL_CONTACT_REMINDER_COOLDOWN_HOURS = 24;
 
 function isAuthorized(request: Request): boolean {
   const auth = request.headers.get("authorization") ?? "";
@@ -96,10 +96,9 @@ function hoursFromNow(hours: number) {
 function shouldSendInternalReminder(notification: InternalUserNotification) {
   const lastReminder = notification.metadata_jsonb?.last_reminder_at;
   if (typeof lastReminder !== "string") return true;
-  const cooldownHours =
-    notification.kind === "price_approval"
-      ? PRICE_APPROVAL_INTERNAL_REMINDER_COOLDOWN_HOURS
-      : DEFAULT_INTERNAL_REMINDER_COOLDOWN_HOURS;
+  const cooldownHours = reminderCooldownHoursForNotificationKind(
+    notification.kind
+  );
   // TODO: make reminder cadence configurable by user, notification kind,
   // priority, working hours, and the user's timezone.
   return (
@@ -146,6 +145,14 @@ async function processExternalContactReminder(
   db: ReturnType<typeof createServerClient>,
   notification: ExternalContactNotification
 ) {
+  if (notification.case_id) {
+    const opCase = await getOperationalCase(db, notification.case_id);
+    if (opCase && isSettingsTestCase(opCase)) {
+      await expireExternalContactNotification(db, notification.id);
+      return "skipped_settings_test";
+    }
+  }
+
   if (notification.attempt_count >= notification.max_attempts) {
     await expireExternalContactNotification(db, notification.id);
     await notify(
@@ -188,7 +195,17 @@ async function processExternalContactReminder(
     await markExternalContactNotificationSent(
       db,
       notification,
-      hoursFromNow(EXTERNAL_CONTACT_REMINDER_COOLDOWN_HOURS)
+      hoursFromNow(
+        reminderCooldownHoursForEngagement({
+          audience: "external_contact",
+          intent: "reminder",
+          channel: notification.channel,
+          kind:
+            typeof notification.metadata_jsonb?.kind === "string"
+              ? notification.metadata_jsonb.kind
+              : "external_contact_reminder",
+        })
+      )
     );
     await insertOperationalCaseEvent(db, {
       caseId: notification.case_id,
@@ -364,6 +381,13 @@ async function processWithConcurrency(
   return results;
 }
 
+function isSettingsTestCase(opCase: OperationalCase): boolean {
+  return (
+    opCase.context_jsonb?.created_from === "case_type_settings_test" ||
+    opCase.context_jsonb?.test_mode === true
+  );
+}
+
 export async function POST(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -392,10 +416,37 @@ export async function POST(request: Request) {
     );
   }
 
+  const settingsTestCases = dueCases.filter(isSettingsTestCase);
+  if (settingsTestCases.length > 0) {
+    for (const opCase of settingsTestCases) {
+      try {
+        await expireExternalContactNotificationsForCase(db, opCase.id);
+        await updateOperationalCase(db, opCase.id, opCase.version, {
+          status: "paused",
+          nextActionAt: null,
+          context: {
+            ...(opCase.context_jsonb ?? {}),
+            controlled_test_status: "paused_by_cron_guard",
+            controlled_test_note:
+              "El cron no continua casos de prueba creados desde Settings.",
+          },
+        });
+      } catch (error) {
+        console.warn(
+          `[ops-case-cron] failed to pause settings test case ${opCase.id}:`,
+          error
+        );
+      }
+    }
+  }
+
+  dueCases = dueCases.filter((opCase) => !isSettingsTestCase(opCase));
+
   if (dueCases.length === 0) {
     return NextResponse.json({
       processed: 0,
       results: [],
+      skipped_settings_test_cases: settingsTestCases.length,
       notification_reminders: notificationReminderResults,
     });
   }
@@ -416,6 +467,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     processed: results.length,
     results,
+    skipped_settings_test_cases: settingsTestCases.length,
     notification_reminders: notificationReminderResults,
   });
 }

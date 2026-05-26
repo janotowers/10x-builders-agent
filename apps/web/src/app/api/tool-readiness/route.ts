@@ -139,6 +139,9 @@ const ADAPTER_TOOLS = new Set([
   "operational_case_create",
   "operational_case_update_state",
   "operational_case_add_event",
+  "operational_case_register_document",
+  "operational_case_list_documents",
+  "operational_case_extract_document_fields",
   "notify_user",
   "telegram_send_message_to_contact",
   "easybroker_search_listings",
@@ -330,7 +333,15 @@ function collectAssetsForScope(
   const byTool = new Map<string, OperationalCaseRequiredAsset[]>();
   const add = (toolId: string, requirements: OperationalCaseRequiredAsset[]) => {
     if (requirements.length === 0) return;
-    byTool.set(toolId, [...(byTool.get(toolId) ?? []), ...requirements]);
+    const existing = byTool.get(toolId) ?? [];
+    const byKey = new Map(existing.map((item) => [item.asset_key, item]));
+    for (const requirement of requirements) {
+      byKey.set(requirement.asset_key, {
+        ...(byKey.get(requirement.asset_key) ?? {}),
+        ...requirement,
+      });
+    }
+    byTool.set(toolId, Array.from(byKey.values()));
   };
   const addTool = (tool: OperationalCaseFlowTool) => {
     const def = catalogById.get(tool.tool_id);
@@ -1122,6 +1133,16 @@ function applyToolTestEvidence(
   tool: ToolReadinessItem,
   evidence: Map<string, ToolTestEvidence>
 ): ToolReadinessItem {
+  const missingRequiredTestAsset = tool.test_asset_requirements?.some(
+    (requirement) => requirement.min_count > 0 && !requirement.configured
+  );
+  if (missingRequiredTestAsset) {
+    return {
+      ...tool,
+      test_status: "ready_untested",
+      last_tested_at: null,
+    };
+  }
   const item = evidence.get(tool.tool_id);
   if (!item) {
     return {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   AccountAsset,
   AccountSkill,
@@ -19,6 +19,7 @@ import type {
   ToolCall,
 } from "@agents/types";
 import { AccountToolConnectionForm } from "@/components/account-tool-connection-form";
+import type { OwnerResponseBusinessOutcome } from "@/lib/operational-cases/evaluate-owner-response-outcome";
 
 const DEFAULT_INTAKE_SCHEMA: OperationalCaseIntakeField[] = [
   {
@@ -40,14 +41,14 @@ const DEFAULT_INTAKE_SCHEMA: OperationalCaseIntakeField[] = [
 const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
   safe_test: {
     description:
-      "Crea o regenera un caso de prueba con datos sintéticos realistas. Fase 1 valida intake; fase 2 (E2E con agente) ejecuta un tick operacional real cuando las tools están listas.",
-    run_button_label: "Fase 1: prueba segura (intake)",
+      "Crea o regenera un caso de prueba con datos sintéticos realistas. La validación segura no invoca el agente; el E2E ejecuta sólo un tick controlado y luego detiene el caso de prueba.",
+    run_button_label: "Validar intake seguro",
     synthetic_data_copy:
-      "Caso de prueba en la misma fila de operational_cases (regenerar no crea otro registro). Fase 1 no invoca tools; fase 2 sí, con HITL en riesgo alto.",
+      "Caso de prueba en la misma fila de operational_cases (regenerar no crea otro registro). El tick E2E puede invocar tools y crear pendientes de prueba, pero el cron no debe continuar el caso automáticamente.",
     success_copy:
-      "Prueba segura inicial pasada: intake validado. Usa la fase E2E con agente para probar tools y pasos como en operación real.",
+      "Prueba segura inicial pasada: intake validado. Usa el tick E2E para probar una transición controlada vía agente.",
     timeline_note:
-      "Fase 1: intake y paso inicial sin agente. Fase E2E: tick del agente con tools reales; publicación/envíos pueden pedir aprobación humana.",
+      "Validación segura: intake y paso inicial sin agente. Tick E2E: una ejecución controlada del agente con tools reales; publicación/envíos pueden pedir aprobación humana.",
     next_action:
       "Revisar readiness de tools de envío/escritura/publicación antes de operación real completa.",
     start_step: "intake",
@@ -57,7 +58,7 @@ const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
     skill_valid_copy: "Skill válida: parser/rúbrica sin bloqueos.",
     readiness_ready_copy: "Tools listas: readiness sin bloqueos críticos.",
     readiness_blocked_copy:
-      "Tools pendientes: resuelve las herramientas bloqueantes antes de activar.",
+      "Tools pendientes de validación: prueba o configura las herramientas requeridas antes de activar.",
     safe_test_success_copy:
       "Prueba segura inicial pasada: el caso de prueba validó intake y avanzó al primer paso operativo sin ejecutar acciones externas.",
     conversational_safe_copy:
@@ -765,7 +766,7 @@ function toolReadinessClass(status: ToolReadinessStatus) {
 }
 
 function toolReadinessSummaryLabel(summary?: ToolReadinessResult["summary"]) {
-  if (summary === "ready") return "Preparación completa";
+  if (summary === "ready") return "Herramientas listas";
   if (summary === "has_stubs") return "Pendientes técnicos";
   if (summary === "needs_config") return "Preparación incompleta";
   return "Sin diagnóstico";
@@ -820,7 +821,7 @@ function activationToolsDescription(params: {
   if (!params.toolReadiness) {
     return "Tools pendientes: revisa preparación operativa para detectar bloqueos.";
   }
-  return "Tools pendientes: hay advertencias no bloqueantes por revisar antes de operar en producción.";
+  return "Tools pendientes: hay advertencias no críticas por revisar antes de operar en producción.";
 }
 
 function operationCompletenessDescription(params: {
@@ -862,6 +863,34 @@ function formatFileSize(bytes: number | null | undefined) {
   if (!bytes) return "tamaño no registrado";
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const TEST_PROPERTY_DOCUMENT_ASSET_KEY = "test_property_document";
+
+const PROPERTY_DOCUMENT_KIND_OPTIONS = [
+  { value: "escritura_descripcion", label: "Escritura - descripción" },
+  { value: "predial", label: "Predial" },
+  { value: "ine", label: "INE" },
+  { value: "comprobante_domicilio", label: "Comprobante domicilio" },
+  { value: "boleta_registral", label: "Boleta registral" },
+  { value: "escritura_primera_hoja", label: "Escritura - primera hoja" },
+  { value: "escritura_ultima_hoja", label: "Escritura - última hoja" },
+  { value: "unknown", label: "Sin clasificar" },
+] as const;
+
+function isPropertyDocumentRequirement(requirement: ToolAssetRequirementStatus) {
+  return (
+    requirement.asset_key === TEST_PROPERTY_DOCUMENT_ASSET_KEY ||
+    requirement.asset_key.startsWith(`${TEST_PROPERTY_DOCUMENT_ASSET_KEY}__`)
+  );
+}
+
+function propertyDocumentKindLabel(value: unknown) {
+  const kind = typeof value === "string" ? value : "";
+  return (
+    PROPERTY_DOCUMENT_KIND_OPTIONS.find((option) => option.value === kind)?.label ??
+    (kind || "Escritura - descripción")
+  );
 }
 
 function requirementMinCount(requirement: ToolAssetRequirementStatus) {
@@ -910,6 +939,15 @@ function AccountAssetUploadPanel({
   const effectiveRequirements = requirements ?? item.asset_requirements ?? [];
   const [submittingKey, setSubmittingKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [documentKindByRequirement, setDocumentKindByRequirement] = useState<
+    Record<string, string>
+  >({});
+
+  function documentKindForRequirement(requirement: ToolAssetRequirementStatus) {
+    return (
+      documentKindByRequirement[requirement.asset_key] ?? "escritura_descripcion"
+    );
+  }
 
   async function uploadAsset(
     requirement: ToolAssetRequirementStatus,
@@ -932,6 +970,9 @@ function AccountAssetUploadPanel({
       formData.set("source_tool_id", item.tool_id);
       formData.set("case_type_id", row.id);
       formData.set("file", file);
+      if (isPropertyDocumentRequirement(requirement)) {
+        formData.set("document_kind", documentKindForRequirement(requirement));
+      }
       const res = await fetch("/api/account-assets", {
         method: "POST",
         body: formData,
@@ -1074,6 +1115,7 @@ function AccountAssetUploadPanel({
                           {String(asset.metadata_jsonb?.original_name ?? asset.display_name)}
                         </div>
                         <div className="font-mono text-[10px] text-neutral-400">
+                          {propertyDocumentKindLabel(asset.metadata_jsonb?.document_kind)} ·{" "}
                           {asset.content_type ?? "archivo"} ·{" "}
                           {formatFileSize(asset.file_size_bytes)}
                         </div>
@@ -1096,9 +1138,39 @@ function AccountAssetUploadPanel({
             </div>
           ) : requirement.asset ? (
             <p className="mt-1 text-[11px] text-neutral-500">
-              Actual: {requirement.asset.content_type ?? "archivo"} ·{" "}
+              Actual:{" "}
+              {String(
+                requirement.asset.metadata_jsonb?.original_name ??
+                  requirement.asset.display_name
+              )}{" "}
+              ·{" "}
+              {isPropertyDocumentRequirement(requirement)
+                ? `${propertyDocumentKindLabel(requirement.asset.metadata_jsonb?.document_kind)} · `
+                : ""}
+              {requirement.asset.content_type ?? "archivo"} ·{" "}
               {formatFileSize(requirement.asset.file_size_bytes)}
             </p>
+          ) : null}
+          {isPropertyDocumentRequirement(requirement) ? (
+            <label className="mt-2 block text-[11px] text-neutral-600">
+              <span className="font-semibold">Tipo de documento</span>
+              <select
+                className="mt-1 w-full rounded border border-neutral-300 bg-white px-2 py-1 text-[11px]"
+                value={documentKindForRequirement(requirement)}
+                onChange={(event) =>
+                  setDocumentKindByRequirement((current) => ({
+                    ...current,
+                    [requirement.asset_key]: event.target.value,
+                  }))
+                }
+              >
+                {PROPERTY_DOCUMENT_KIND_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           ) : null}
           <label
             className={`mt-2 inline-flex rounded px-2 py-1 text-[11px] font-semibold text-white ${
@@ -1110,7 +1182,7 @@ function AccountAssetUploadPanel({
             {submittingKey?.startsWith(requirement.asset_key)
               ? "Subiendo..."
               : isCollection
-                ? "Agregar fotos"
+                ? "Agregar documento"
                 : requirement.configured
                 ? "Reemplazar recurso"
                 : "Subir recurso"}
@@ -1170,14 +1242,14 @@ interface ToolTestResponse {
 
 const MODE_LABELS: Record<ToolTestMode, string> = {
   smoke: "Smoke test",
-  case: "Datos del caso",
+  case: "Caso de prueba",
 };
 
 const MODE_DESCRIPTIONS: Record<ToolTestMode, string> = {
   smoke:
     "Args mínimos genéricos. Valida que la integración responde, no que los resultados sean comparables al caso.",
   case:
-    "Args derivados del caso de prueba creado abajo. Valida si la tool es útil para los datos reales del flow.",
+    "Args derivados del caso aislado creado en Preparación operativa y de sus activos de prueba.",
 };
 
 const MODE_SOURCE_LABELS: Record<string, string> = {
@@ -1199,6 +1271,13 @@ const CONTROLLED_WRITE_COPY: Record<
     button: string;
   }
 > = {
+  telegram_send_message_to_contact: {
+    confirmation: "ENVIAR PRUEBA",
+    title: "Prueba real controlada por Telegram",
+    description:
+      "Envía un mensaje real al chat_id externo mostrado en los args. El sistema agrega el prefijo [PRUEBA CONTROLADA]. Úsalo sólo con un contacto/chat de prueba. En paso 3 el texto pide características faltantes, no el checklist de documentos.",
+    button: "Enviar prueba por Telegram",
+  },
   easybroker_create_listing: {
     confirmation: "CREAR BORRADOR",
     title: "Prueba real controlada",
@@ -1214,6 +1293,48 @@ const CONTROLLED_WRITE_COPY: Record<
     button: "Subir fotos al borrador",
   },
 };
+
+type OutcomeVariant = "success" | "warning" | "error" | "info";
+
+const WIZARD_PRIMARY_BUTTON_CLASS =
+  "rounded bg-violet-700 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-violet-300 disabled:text-violet-100 dark:disabled:bg-violet-900/50 dark:disabled:text-violet-300";
+
+function outcomePanelClass(variant: OutcomeVariant) {
+  switch (variant) {
+    case "success":
+      return "border-emerald-300 bg-emerald-50 text-emerald-950";
+    case "warning":
+      return "border-amber-300 bg-amber-50 text-amber-950";
+    case "error":
+      return "border-red-300 bg-red-50 text-red-950";
+    case "info":
+      return "border-violet-300 bg-violet-50 text-violet-950";
+  }
+}
+
+function OutcomePanel({
+  variant,
+  title,
+  children,
+  className = "",
+  id,
+}: {
+  variant: OutcomeVariant;
+  title: string;
+  children: ReactNode;
+  className?: string;
+  id?: string;
+}) {
+  return (
+    <div
+      id={id}
+      className={`rounded border p-3 text-[11px] ${outcomePanelClass(variant)} ${className}`}
+    >
+      <div className="font-semibold">{title}</div>
+      {children}
+    </div>
+  );
+}
 
 function summarizeUnggaWizardIssues(result: unknown): string[] {
   if (!result || typeof result !== "object") return [];
@@ -1264,6 +1385,24 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function validEasyBrokerListingId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.trim() !== "REEMPLAZA-CON-LISTING-ID"
+  );
+}
+
+function easyBrokerListingIdFromResult(result: unknown) {
+  const root = asRecord(result);
+  if (!root) return null;
+  const listingId = root.listing_id;
+  if (validEasyBrokerListingId(listingId)) return listingId.trim();
+  const publicId = root.public_id;
+  if (validEasyBrokerListingId(publicId)) return publicId.trim();
+  return null;
 }
 
 function resultItems(result: unknown): Record<string, unknown>[] {
@@ -1436,12 +1575,24 @@ function ToolTestPanel({
   hasTestCase,
   caseId,
   caseContextVersion,
+  readinessSkillSlug,
+  readinessFlowStepKey,
+  onFinished,
+  onTestCaseUpdated,
+  easyBrokerCreatedListingId,
+  onEasyBrokerListingCreated,
 }: {
   item: ToolReadinessToolItem;
   row: OperationalCaseType;
   hasTestCase: boolean;
   caseId?: string | null;
   caseContextVersion?: string | null;
+  readinessSkillSlug?: string;
+  readinessFlowStepKey?: string;
+  onFinished: () => Promise<void>;
+  onTestCaseUpdated?: (result: OperationalCaseTestResult) => Promise<void>;
+  easyBrokerCreatedListingId?: string | null;
+  onEasyBrokerListingCreated?: (listingId: string) => void;
 }) {
   const [mode, setMode] = useState<ToolTestMode>(hasTestCase ? "case" : "smoke");
   const [argsText, setArgsText] = useState("{}");
@@ -1453,7 +1604,14 @@ function ToolTestPanel({
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<ToolTestResponse | null>(null);
   const [response, setResponse] = useState<ToolTestResponse | null>(null);
+  const [validationResponse, setValidationResponse] =
+    useState<ToolTestResponse | null>(null);
+  const [controlledSendResponse, setControlledSendResponse] =
+    useState<ToolTestResponse | null>(null);
+  const [simulationResetVersion, setSimulationResetVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [aCaseSnapshot, setACaseSnapshot] = useState<OperationalCase | null>(null);
+  const [messageValidated, setMessageValidated] = useState(false);
 
   const requiresConfirm = item.risk === "medium" && !confirm;
 
@@ -1475,6 +1633,20 @@ function ToolTestPanel({
     }
   }
 
+  function withScenarioArgs(args: Record<string, unknown> | undefined) {
+    if (
+      item.tool_id === "easybroker_upload_images" &&
+      easyBrokerCreatedListingId &&
+      !validEasyBrokerListingId(args?.listing_id)
+    ) {
+      return {
+        ...(args ?? {}),
+        listing_id: easyBrokerCreatedListingId,
+      };
+    }
+    return args;
+  }
+
   async function fetchPreview(targetMode: ToolTestMode) {
     setPreviewing(true);
     setError(null);
@@ -1493,8 +1665,10 @@ function ToolTestPanel({
           case_id: caseId ?? undefined,
           tool_id: item.tool_id,
           mode: targetMode,
-          args: parsed.value,
+          args: withScenarioArgs(parsed.value),
           preview: true,
+          readiness_skill_slug: readinessSkillSlug,
+          readiness_flow_step_key: readinessFlowStepKey,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as ToolTestResponse & {
@@ -1520,12 +1694,27 @@ function ToolTestPanel({
     if (next === "case" && !hasTestCase) return;
     setMode(next);
     setResponse(null);
+    setValidationResponse(null);
+    setControlledSendResponse(null);
+    setACaseSnapshot(null);
+    setSimulationResetVersion((version) => version + 1);
+    setMessageValidated(false);
   }
 
   async function run(options?: { controlledRealWrite?: boolean }) {
     setRunning(true);
     setError(null);
     setResponse(null);
+    if (showTelegramGuidedScenario) {
+      if (options?.controlledRealWrite) {
+        setControlledSendResponse(null);
+      } else {
+        setValidationResponse(null);
+        setControlledSendResponse(null);
+        setACaseSnapshot(null);
+      }
+      setSimulationResetVersion((version) => version + 1);
+    }
     const parsed = parseUserArgs();
     if (!parsed.ok) {
       setError(parsed.error ?? "Args inválidos.");
@@ -1541,11 +1730,13 @@ function ToolTestPanel({
           case_id: caseId ?? undefined,
           tool_id: item.tool_id,
           mode,
-          args: parsed.value,
+          args: withScenarioArgs(parsed.value),
           confirm,
           controlled_real_write: options?.controlledRealWrite === true,
           confirmation_text:
             options?.controlledRealWrite === true ? controlledWriteText : undefined,
+          readiness_skill_slug: readinessSkillSlug,
+          readiness_flow_step_key: readinessFlowStepKey,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as ToolTestResponse & {
@@ -1555,14 +1746,44 @@ function ToolTestPanel({
         throw new Error(data.error ?? "No se pudo ejecutar la prueba.");
       }
       setResponse(data);
+      if (
+        item.tool_id === "easybroker_create_listing" &&
+        data.executed === true &&
+        data.ok === true
+      ) {
+        const listingId = easyBrokerListingIdFromResult(data.result);
+        if (listingId) onEasyBrokerListingCreated?.(listingId);
+      }
+      if (showTelegramGuidedScenario && !options?.controlledRealWrite) {
+        setValidationResponse(data);
+        setMessageValidated(data.ok === true);
+      } else if (
+        showTelegramGuidedScenario &&
+        options?.controlledRealWrite
+      ) {
+        setControlledSendResponse(data);
+      }
+      if (data.executed === true && data.ok === true) {
+        await onFinished();
+        if (
+          options?.controlledRealWrite === true &&
+          showTelegramGuidedScenario &&
+          caseId
+        ) {
+          try {
+            const caseRes = await fetch(
+              `/api/operational-case-tests?case_id=${encodeURIComponent(caseId)}`
+            );
+            const caseData = (await caseRes.json()) as {
+              case?: OperationalCase | null;
+            };
+            setACaseSnapshot(caseData.case ?? null);
+          } catch {
+            setACaseSnapshot(null);
+          }
+        }
+      }
       setShowRaw(data.executed === true || Boolean(data.result));
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          document
-            .getElementById(`tool-test-result-${item.tool_id}`)
-            ?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
-        });
-      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1575,22 +1796,184 @@ function ToolTestPanel({
   const wizardIssues = response ? summarizeUnggaWizardIssues(response.result) : [];
   const executedResultItems = response?.executed ? resultItems(response.result) : [];
   const controlledWriteCopy = CONTROLLED_WRITE_COPY[item.tool_id] ?? null;
+  const policyOnlyValidation =
+    response?.executed === false &&
+    response.reason === "high_risk_requires_hitl" &&
+    item.tool_id === "telegram_send_message_to_contact";
+  const isTelegramContactTool = item.tool_id === "telegram_send_message_to_contact";
+  const isCharacteristicsTelegramScenario =
+    isTelegramContactTool &&
+    readinessSkillSlug === "extract-property-characteristics";
+  const isDocumentRequestTelegramScenario =
+    isTelegramContactTool && readinessSkillSlug === "request-property-documents";
+  const isGenericTelegramGuidedScenario =
+    isTelegramContactTool &&
+    !isCharacteristicsTelegramScenario &&
+    !isDocumentRequestTelegramScenario;
+  const isDocumentRegisterScenario =
+    item.tool_id === "operational_case_register_document";
+  const isDocumentExtractScenario =
+    item.tool_id === "operational_case_extract_document_fields";
+  const isDocumentListScenario = item.tool_id === "operational_case_list_documents";
+  const isDocumentGuidedScenario =
+    isDocumentRegisterScenario ||
+    isDocumentExtractScenario ||
+    isDocumentListScenario;
+  const showTelegramGuidedScenario =
+    isTelegramContactTool &&
+    hasTestCase &&
+    Boolean(caseId);
+  const isEasyBrokerPackageStep = readinessSkillSlug === "publish-listing-package";
+  const isEasyBrokerCreateScenario =
+    item.tool_id === "easybroker_create_listing" && isEasyBrokerPackageStep;
+  const isEasyBrokerUploadScenario =
+    item.tool_id === "easybroker_upload_images" && isEasyBrokerPackageStep;
+  const easyBrokerUploadListingId =
+    easyBrokerCreatedListingId ??
+    (validEasyBrokerListingId(preview?.resolved_args?.listing_id)
+      ? String(preview?.resolved_args?.listing_id).trim()
+      : validEasyBrokerListingId(response?.resolved_args?.listing_id)
+        ? String(response?.resolved_args?.listing_id).trim()
+        : null);
+  const showOwnerCharacteristicsSimulation =
+    isCharacteristicsTelegramScenario && hasTestCase && Boolean(caseId);
+  const isValidationResponse = Boolean(
+    showTelegramGuidedScenario && validationResponse
+  );
   const canControlledRealWrite =
     Boolean(controlledWriteCopy) &&
-    controlledWriteText.trim() === controlledWriteCopy?.confirmation;
+    controlledWriteText.trim() === controlledWriteCopy?.confirmation &&
+    (!showTelegramGuidedScenario || messageValidated) &&
+    (!isEasyBrokerUploadScenario || Boolean(easyBrokerUploadListingId));
+  const controlledSendSucceeded =
+    controlledSendResponse?.executed === true &&
+    controlledSendResponse.ok === true &&
+    controlledSendResponse.reason === "high_risk_controlled_real_write";
+  const documentScenarioTitle = isDocumentRegisterScenario
+    ? "A · Registrar documento de prueba"
+    : isDocumentExtractScenario
+      ? "B · Extraer datos del documento"
+      : isDocumentListScenario
+        ? "C · Verificar documentos del caso"
+        : null;
+  const documentScenarioDescription = isDocumentRegisterScenario
+    ? "Registra en el caso aislado el PDF/imagen de prueba cargado en Activos de prueba."
+    : isDocumentExtractScenario
+      ? "Extrae campos visibles del documento del caso; si falta document_id, se usa el documento de prueba preferido."
+      : isDocumentListScenario
+        ? "Lista documentos recibidos y su estado de extracción para confirmar que el caso tiene evidencia usable."
+        : null;
 
-  return (
-    <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-          Prueba individual de tool
-        </div>
-        <span className="text-[11px] text-neutral-500">Riesgo: {riskLabel(item.risk)}</span>
+  const controlledWriteTitle = isCharacteristicsTelegramScenario
+    ? "B · Enviar mensaje de prueba por Telegram"
+    : isDocumentRequestTelegramScenario
+      ? "B · Enviar solicitud de documentos de prueba"
+      : isGenericTelegramGuidedScenario
+        ? "B · Enviar mensaje de prueba por Telegram"
+      : isEasyBrokerCreateScenario
+        ? "A · Crear borrador de prueba en EasyBroker"
+      : isEasyBrokerUploadScenario
+        ? "B · Subir fotos al borrador de EasyBroker"
+      : controlledWriteCopy?.title;
+  const controlledWriteDescription = isCharacteristicsTelegramScenario
+    ? "Envía el mensaje validado al chat_id externo mostrado en los args. El sistema agrega el prefijo [PRUEBA CONTROLADA]. Úsalo sólo con un contacto/chat de prueba."
+    : isDocumentRequestTelegramScenario
+      ? "Envía un mensaje real al chat_id externo mostrado en los args. El sistema agrega el prefijo [PRUEBA CONTROLADA]. Úsalo sólo con un contacto/chat de prueba. En este paso el texto solicita documentos del expediente."
+      : isGenericTelegramGuidedScenario
+        ? "Envía el mensaje validado al chat_id externo mostrado en los args. El sistema agrega el prefijo [PRUEBA CONTROLADA]. Úsalo sólo con un contacto/chat de prueba."
+      : isEasyBrokerCreateScenario
+        ? "Crea un borrador real controlado como not_published con prefijo [PRUEBA - BORRAR]. Si funciona, usa el listing_id para B."
+      : isEasyBrokerUploadScenario
+        ? "Sube fotos de prueba al borrador resuelto. B queda disponible cuando hay un listing_id de EasyBroker, normalmente creado en A."
+      : controlledWriteCopy?.description;
+
+  const controlledWriteSection = controlledWriteCopy ? (
+    <div className="space-y-2 rounded border-2 border-violet-400 bg-violet-50/90 p-3 text-xs text-violet-950 shadow-sm dark:border-violet-700 dark:bg-violet-950/40">
+      <div className="font-semibold text-violet-950 dark:text-violet-100">
+        {controlledWriteTitle}
       </div>
-      <p className="text-[11px] text-neutral-600">
-        Valida la tool en aislamiento. Elige cómo construir los args y revisa
-        el resultado antes de correr el flow completo.
-      </p>
+      {controlledWriteDescription ? <p>{controlledWriteDescription}</p> : null}
+      {item.tool_id === "easybroker_upload_images" ? (
+        <p>
+          Si la vista previa muestra{" "}
+          <span className="font-mono">REEMPLAZA-CON-LISTING-ID</span>, abre
+          avanzado y usa un override como{" "}
+          <span className="font-mono">{'{"listing_id":"EB-XXXX"}'}</span>.
+        </p>
+      ) : null}
+      <label className="block space-y-1">
+        <span>
+          Escribe{" "}
+          <span className="font-mono font-semibold">
+            {controlledWriteCopy.confirmation}
+          </span>{" "}
+          para habilitar:
+        </span>
+        <input
+          value={controlledWriteText}
+          onChange={(event) => setControlledWriteText(event.target.value)}
+          className="w-full rounded border border-violet-300 bg-white px-2 py-1 font-mono text-[11px] dark:border-violet-800 dark:bg-neutral-900"
+          placeholder={controlledWriteCopy.confirmation}
+        />
+      </label>
+      <button
+        type="button"
+        onClick={() => void run({ controlledRealWrite: true })}
+        disabled={running || !canControlledRealWrite}
+        className={WIZARD_PRIMARY_BUTTON_CLASS}
+      >
+        {running ? "Ejecutando..." : controlledWriteCopy.button}
+      </button>
+      {showTelegramGuidedScenario && !messageValidated ? (
+        <p className="text-[11px] text-violet-900 dark:text-violet-200">
+          Primero completa A · Validar mensaje para habilitar el envío real.
+        </p>
+      ) : null}
+      {isEasyBrokerUploadScenario ? (
+        easyBrokerUploadListingId ? (
+          <p className="text-[11px] text-violet-900 dark:text-violet-200">
+            B usará el borrador{" "}
+            <span className="font-mono">{easyBrokerUploadListingId}</span>.
+          </p>
+        ) : (
+          <p className="text-[11px] text-violet-900 dark:text-violet-200">
+            Primero completa A · Crear borrador o indica un{" "}
+            <span className="font-mono">listing_id</span> real en args avanzados.
+          </p>
+        )
+      ) : null}
+      {showTelegramGuidedScenario && controlledSendResponse ? (
+        <TelegramStepAOutcomePanel
+          response={controlledSendResponse}
+          caseSnapshot={aCaseSnapshot}
+          nextActionLabel={
+            showOwnerCharacteristicsSimulation
+              ? "Siguiente: C · Simular respuesta y procesar"
+              : undefined
+          }
+        />
+      ) : null}
+    </div>
+  ) : null;
+
+  const simulateSection =
+    showOwnerCharacteristicsSimulation && caseId ? (
+      <SimulateOwnerResponsePanel
+        caseId={caseId}
+        variant="inline"
+        resetVersion={simulationResetVersion}
+        disabled={!controlledSendSucceeded}
+        disabledReason="Primero completa B · Enviar mensaje de prueba por Telegram para simular la respuesta."
+        onProcessed={async (processedResult) => {
+          if (onTestCaseUpdated) {
+            await onTestCaseUpdated(processedResult);
+          }
+        }}
+      />
+    ) : null;
+
+  const technicalValidationSection = (
+    <>
       <div className="flex flex-wrap items-center gap-1">
         {(["smoke", "case"] as ToolTestMode[]).map((option) => {
           const disabled = option === "case" && !hasTestCase;
@@ -1650,14 +2033,29 @@ function ToolTestPanel({
           ) : null}
         </div>
       ) : null}
+      {item.tool_id === "telegram_send_message_to_contact" && item.risk === "high" ? (
+        <p className="rounded border border-violet-200 bg-violet-50 p-2 text-[11px] text-violet-900">
+          {readinessSkillSlug === "extract-property-characteristics"
+            ? "Esta validación arma preguntas de características faltantes (purpose=characteristics_pending), no envía Telegram ni vuelve a pedir el checklist de documentos."
+            : readinessSkillSlug === "request-property-documents"
+              ? "Esta vista previa pide el checklist documental inicial (purpose=request_documents). La simulación de características se prueba en el siguiente paso."
+              : "Esta validación sólo revisa args. Para enviar, usa la prueba controlada con un chat de prueba."}
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => void run()}
           disabled={running || requiresConfirm}
-          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800 disabled:bg-neutral-400"
+          className={WIZARD_PRIMARY_BUTTON_CLASS}
         >
-          {running ? "Ejecutando..." : `Probar tool (${MODE_LABELS[mode]})`}
+          {running
+            ? "Validando..."
+            : showTelegramGuidedScenario
+              ? `Validar mensaje (${MODE_LABELS[mode]})`
+              : isDocumentGuidedScenario
+                ? `${documentScenarioTitle ?? "Probar documento"} (${MODE_LABELS[mode]})`
+              : `Probar tool (${MODE_LABELS[mode]})`}
         </button>
         <button
           type="button"
@@ -1677,47 +2075,12 @@ function ToolTestPanel({
           </label>
         ) : item.risk === "high" ? (
           <span className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
-            Riesgo alto: sólo dry-run desde esta capa
+            {controlledWriteCopy
+              ? "Riesgo alto: requiere confirmación explícita"
+              : "Riesgo alto: sólo dry-run desde esta capa"}
           </span>
         ) : null}
       </div>
-      {controlledWriteCopy ? (
-        <div className="space-y-2 rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-950">
-          <div className="font-semibold">{controlledWriteCopy.title}</div>
-          <p>{controlledWriteCopy.description}</p>
-          {item.tool_id === "easybroker_upload_images" ? (
-            <p>
-              Si la vista previa muestra{" "}
-              <span className="font-mono">REEMPLAZA-CON-LISTING-ID</span>, abre
-              avanzado y usa un override como{" "}
-              <span className="font-mono">{'{"listing_id":"EB-XXXX"}'}</span>.
-            </p>
-          ) : null}
-          <label className="block space-y-1">
-            <span>
-              Escribe{" "}
-              <span className="font-mono font-semibold">
-                {controlledWriteCopy.confirmation}
-              </span>{" "}
-              para habilitar:
-            </span>
-            <input
-              value={controlledWriteText}
-              onChange={(event) => setControlledWriteText(event.target.value)}
-              className="w-full rounded border border-amber-300 bg-white px-2 py-1 font-mono text-[11px]"
-              placeholder={controlledWriteCopy.confirmation}
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() => void run({ controlledRealWrite: true })}
-            disabled={running || !canControlledRealWrite}
-            className="rounded bg-amber-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-amber-800 disabled:bg-neutral-400"
-          >
-            {running ? "Ejecutando..." : controlledWriteCopy.button}
-          </button>
-        </div>
-      ) : null}
       {showArgs ? (
         <div className="space-y-1">
           <p className="text-[11px] text-neutral-500">
@@ -1727,6 +2090,11 @@ function ToolTestPanel({
             value={argsText}
             onChange={(event) => {
               setArgsText(event.target.value);
+              setMessageValidated(false);
+              setValidationResponse(null);
+              setControlledSendResponse(null);
+              setACaseSnapshot(null);
+              setSimulationResetVersion((version) => version + 1);
             }}
             onBlur={() => void fetchPreview(mode)}
             rows={4}
@@ -1735,44 +2103,54 @@ function ToolTestPanel({
           />
         </div>
       ) : null}
-      {running && item.tool_id === "ungga_publish_listing" ? (
-        <p className="rounded border border-violet-200 bg-violet-50 p-2 text-[11px] text-violet-900">
-          Ejecutando dry-run en Ungga con Playwright (login + wizard). Suele tardar
-          1–2 minutos; no cierres este panel.
-        </p>
+      {isValidationResponse ? (
+        <TelegramStepValidationOutcomePanel
+          response={validationResponse as ToolTestResponse}
+          nextActionLabel={
+            isDocumentRequestTelegramScenario
+              ? "Siguiente: B · Enviar solicitud de documentos de prueba"
+              : "Siguiente: B · Enviar mensaje de prueba por Telegram"
+          }
+        />
       ) : null}
-      {error ? (
-        <p className="rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-800">
-          {error}
-        </p>
-      ) : null}
-      {response ? (
-        <div
+    </>
+  );
+
+  const responseOutcomeVariant: OutcomeVariant = !response
+    ? "info"
+    : policyOnlyValidation
+      ? "success"
+      : response.executed === false
+        ? "warning"
+      : !response.ok
+        ? "error"
+      : wizardIssues.length > 0
+        ? "warning"
+      : "success";
+  const responseOutcomeTitle = !response
+    ? "Resultado de la prueba"
+    : policyOnlyValidation
+      ? "Args OK (esperado)"
+      : response.executed === false
+        ? "Sin ejecutar (política)"
+      : response.dry_run && response.executed
+        ? response.ok
+          ? wizardIssues.length > 0
+            ? "Dry-run OK (con avisos)"
+            : "Dry-run OK"
+          : "Dry-run falló"
+      : response.ok
+        ? "Éxito"
+      : "Error";
+
+  const responseSection = response ? (
+        <OutcomePanel
+          variant={responseOutcomeVariant}
+          title={responseOutcomeTitle}
+          className="space-y-1"
           id={`tool-test-result-${item.tool_id}`}
-          className="space-y-1 rounded border border-neutral-200 bg-white p-2 text-[11px]"
         >
           <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded px-1.5 py-0.5 font-semibold ${
-                response.executed === false
-                  ? "bg-amber-50 text-amber-800"
-                  : response.ok
-                    ? "bg-emerald-50 text-emerald-800"
-                    : "bg-red-50 text-red-800"
-              }`}
-            >
-              {response.executed === false
-                ? "Sin ejecutar (política)"
-                : response.dry_run && response.executed
-                  ? response.ok
-                    ? wizardIssues.length > 0
-                      ? "Dry-run OK (con avisos)"
-                      : "Dry-run OK"
-                    : "Dry-run falló"
-                  : response.ok
-                    ? "Éxito"
-                    : "Error"}
-            </span>
             {response.reason ? (
               <span className="text-neutral-500">motivo: {response.reason}</span>
             ) : null}
@@ -1822,8 +2200,11 @@ function ToolTestPanel({
           ) : null}
           {response.executed === false ? (
             <p className="text-neutral-600">
-              La prueba no invocó la tool ({response.reason ?? "política de riesgo"}
-              ). {response.hint ?? "Usa el flow completo con HITL para escritura real."}
+              {policyOnlyValidation
+                ? showOwnerCharacteristicsSimulation
+                  ? "Comportamiento esperado: solo valida args y texto. Sigue con B (enviar mensaje) y C (simular respuesta) en este panel."
+                  : "Comportamiento esperado: solo valida args. Usa la prueba controlada para enviar el mensaje de documentos."
+                : `La prueba no invocó la tool (${response.reason ?? "política de riesgo"}). ${response.hint ?? "Usa el flow completo con HITL para escritura real."}`}
             </p>
           ) : null}
           <details className="rounded border border-neutral-100 bg-neutral-50/50">
@@ -1896,8 +2277,125 @@ function ToolTestPanel({
               {response.raw_text}
             </pre>
           ) : null}
+        </OutcomePanel>
+  ) : null;
+
+  return (
+    <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+          {showOwnerCharacteristicsSimulation
+            ? "Prueba de mensaje a contacto externo"
+            : isDocumentRequestTelegramScenario
+              ? "Prueba solicitud de documentos"
+            : isGenericTelegramGuidedScenario
+              ? "Prueba de mensaje a contacto externo"
+            : isDocumentGuidedScenario
+              ? "Prueba documental del caso"
+            : "Prueba individual de tool"}
         </div>
+        <span className="text-[11px] text-neutral-500">Riesgo: {riskLabel(item.risk)}</span>
+      </div>
+      {showOwnerCharacteristicsSimulation ? (
+        <>
+          <p className="text-[11px] text-neutral-600">
+            Para este paso, el contacto externo es el dueño de la propiedad.
+            Valida el mensaje, envíalo al chat de prueba y simula la respuesta
+            para comprobar que el caso actualiza{" "}
+            <span className="font-mono">property_data</span>.
+          </p>
+          <div className="rounded border-2 border-violet-400 bg-violet-50/90 p-3 text-xs shadow-sm dark:border-violet-700 dark:bg-violet-950/40">
+            <div className="font-semibold text-violet-950">
+              A · Validar mensaje
+            </div>
+            <p className="mt-1 text-[11px] text-violet-900">
+              Revisa args, texto, chat_id, case_id y purpose sin enviar nada.
+            </p>
+            <div className="mt-2 space-y-2">{technicalValidationSection}</div>
+          </div>
+          {controlledWriteSection}
+          {simulateSection}
+        </>
+      ) : isDocumentRequestTelegramScenario ? (
+        <>
+          <p className="text-[11px] text-neutral-600">
+            En este paso se prueba el mensaje inicial de solicitud de documentos:
+            primero valida el texto y luego envía una prueba controlada por
+            Telegram al chat externo.
+          </p>
+          <div className="rounded border-2 border-violet-400 bg-violet-50/90 p-3 text-xs shadow-sm dark:border-violet-700 dark:bg-violet-950/40">
+            <div className="font-semibold text-violet-950 dark:text-violet-100">
+              A · Validar solicitud de documentos
+            </div>
+            <p className="mt-1 text-[11px] text-violet-900 dark:text-violet-200">
+              Revisa args, texto, chat_id, case_id y purpose sin enviar nada.
+            </p>
+            <div className="mt-2 space-y-2">{technicalValidationSection}</div>
+          </div>
+          {controlledWriteSection}
+        </>
+      ) : isGenericTelegramGuidedScenario ? (
+        <>
+          <p className="text-[11px] text-neutral-600">
+            En este paso se prueba un mensaje a contacto externo: primero valida
+            el texto y luego envía una prueba controlada por Telegram al chat de
+            prueba.
+          </p>
+          <div className="rounded border-2 border-violet-400 bg-violet-50/90 p-3 text-xs shadow-sm dark:border-violet-700 dark:bg-violet-950/40">
+            <div className="font-semibold text-violet-950 dark:text-violet-100">
+              A · Validar mensaje
+            </div>
+            <p className="mt-1 text-[11px] text-violet-900 dark:text-violet-200">
+              Revisa args, texto, chat_id, case_id y purpose sin enviar nada.
+            </p>
+            <div className="mt-2 space-y-2">{technicalValidationSection}</div>
+          </div>
+          {controlledWriteSection}
+        </>
+      ) : isDocumentGuidedScenario ? (
+        <>
+          <p className="text-[11px] text-neutral-600">
+            Este sub-paso valida la cadena documental del caso de prueba:
+            registrar evidencia, extraer campos y verificar que el caso pueda
+            consultar documentos recibidos.
+          </p>
+          <div className="rounded border-2 border-violet-400 bg-violet-50/90 p-3 text-xs shadow-sm dark:border-violet-700 dark:bg-violet-950/40">
+            <div className="font-semibold text-violet-950 dark:text-violet-100">
+              {documentScenarioTitle}
+            </div>
+            {documentScenarioDescription ? (
+              <p className="mt-1 text-[11px] text-violet-900 dark:text-violet-200">
+                {documentScenarioDescription}
+              </p>
+            ) : null}
+            <div className="mt-2 space-y-2">{technicalValidationSection}</div>
+            {responseSection ? <div className="mt-2">{responseSection}</div> : null}
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-[11px] text-neutral-600">
+            Valida la tool en aislamiento. Elige cómo construir los args y revisa
+            el resultado antes de correr el flow completo.
+          </p>
+          {technicalValidationSection}
+          {controlledWriteSection}
+        </>
+      )}
+      {running && item.tool_id === "ungga_publish_listing" ? (
+        <p className="rounded border border-violet-200 bg-violet-50 p-2 text-[11px] text-violet-900">
+          Ejecutando dry-run en Ungga con Playwright (login + wizard). Suele tardar
+          1–2 minutos; no cierres este panel.
+        </p>
       ) : null}
+      {error ? (
+        <p className="rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-800">
+          {error}
+        </p>
+      ) : null}
+      {!showTelegramGuidedScenario && !isDocumentGuidedScenario && responseSection
+        ? responseSection
+        : null}
     </div>
   );
 }
@@ -2297,18 +2795,18 @@ function toolTestStatusLabel(status?: ToolReadinessToolItem["test_status"]) {
 function skillTestStatusLabel(status?: ToolReadinessFlowSkill["test_status"]) {
   if (status === "tested_ok") return "Probada";
   if (status === "tested_failed") return "Prueba falló";
-  if (status === "partial") return "Parcial";
+  if (status === "partial") return "Validación parcial";
   if (status === "ready_to_test") return "Lista para probar";
-  if (status === "blocked_by_tools") return "Bloqueada por tools";
+  if (status === "blocked_by_tools") return "Requiere validar tools";
   return "Sin estado";
 }
 
 function stepTestStatusLabel(status?: ToolReadinessFlowStep["test_status"]) {
   if (status === "tested_ok") return "Paso probado";
   if (status === "tested_failed") return "Prueba falló";
-  if (status === "partially_tested") return "Parcial";
-  if (status === "ready_to_test") return "Listo para probar";
-  if (status === "blocked") return "Bloqueado";
+  if (status === "partially_tested") return "Validación parcial";
+  if (status === "ready_to_test") return "Habilidad lista para validar";
+  if (status === "blocked") return "Pendiente de validar";
   return "Sin estado";
 }
 
@@ -2316,8 +2814,11 @@ function statusPillClass(status?: string) {
   if (status === "tested_ok" || status === "ready_for_e2e") {
     return "bg-emerald-50 text-emerald-800";
   }
-  if (status === "tested_failed" || status === "blocked" || status === "blocked_by_tools") {
+  if (status === "tested_failed") {
     return "bg-red-50 text-red-800";
+  }
+  if (status === "blocked" || status === "blocked_by_tools") {
+    return "bg-amber-50 text-amber-800";
   }
   if (status === "partial" || status === "partially_tested") {
     return "bg-amber-50 text-amber-800";
@@ -2412,6 +2913,12 @@ function SkillTestPanel({
   const executedSourceToolCount = sourceToolCalls.filter(
     (call) => call.status === "executed"
   ).length;
+  const preparedSourceToolCount = sourceToolCalls.filter(
+    (call) => call.status === "executed" || call.status === "pending_confirmation"
+  ).length;
+  const pendingSourceToolCount = sourceToolCalls.filter(
+    (call) => call.status === "pending_confirmation"
+  ).length;
   const artifactEntries = response?.artifacts ? Object.entries(response.artifacts) : [];
   const contributionSummary = comparableContributionSummary(response?.artifacts);
   const missingContextKeys = response?.validation?.missing_context_keys ?? [];
@@ -2419,8 +2926,10 @@ function SkillTestPanel({
   const missingToolCalls = response?.validation?.missing_tool_calls ?? [];
   const artifactErrors = response?.validation?.artifact_errors ?? [];
   const statusLabel =
-    response?.pending_confirmation && response.status === "partial"
-      ? "Guardado pendiente"
+    response?.pending_confirmation && response.status === "tested_ok"
+      ? "Probada con acción externa pendiente"
+      : response?.pending_confirmation && response.status === "partial"
+        ? "Guardado pendiente"
       : response
         ? skillTestStatusLabel(response.status)
         : "";
@@ -2493,12 +3002,14 @@ function SkillTestPanel({
             </span>
             {response.pending_confirmation ? (
               <span className="rounded bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-800">
-                Requiere confirmacion
+                Acción no enviada
               </span>
             ) : null}
           </div>
           <p className="text-neutral-700">
-            {response.ok
+            {response.ok && response.pending_confirmation
+              ? "La habilidad llegó a la acción externa esperada y el contrato de prueba quedó cumplido. Por seguridad, la acción real quedó preparada pero no se envió desde la prueba de habilidad."
+              : response.ok
               ? "La habilidad produjo el artefacto esperado y el contrato quedo cumplido."
               : response.pending_confirmation
                 ? "Las tools pudieron ejecutarse, pero falta confirmar una accion interna para guardar el artefacto en el caso de prueba."
@@ -2545,8 +3056,9 @@ function SkillTestPanel({
           ) : null}
           {sourceToolCalls.length > 0 ? (
             <p className="text-neutral-600">
-              Tools de la habilidad ejecutadas correctamente: {executedSourceToolCount}/
-              {sourceToolCalls.length}.
+              {pendingSourceToolCount > 0
+                ? `Acciones de la habilidad preparadas o ejecutadas: ${preparedSourceToolCount}/${sourceToolCalls.length}. ${pendingSourceToolCount} quedaron sin enviar por seguridad.`
+                : `Tools de la habilidad ejecutadas correctamente: ${executedSourceToolCount}/${sourceToolCalls.length}.`}
             </p>
           ) : null}
           {contributionSummary ? (
@@ -2613,6 +3125,492 @@ function SkillTestPanel({
   );
 }
 
+function ownerResponseVerdictClass(verdict: OwnerResponseBusinessOutcome["verdict"]) {
+  switch (verdict) {
+    case "success":
+      return "border-emerald-300 bg-emerald-50 text-emerald-950";
+    case "blocked":
+      return "border-amber-300 bg-amber-50 text-amber-950";
+    case "wrong_step":
+      return "border-red-300 bg-red-50 text-red-950";
+    default:
+      return "border-violet-300 bg-violet-50 text-violet-950";
+  }
+}
+
+function leadDeliveryLabel(
+  delivery: OwnerResponseBusinessOutcome["lead_messages"][number]["delivery"]
+) {
+  switch (delivery) {
+    case "sent":
+      return "Enviado al lead";
+    case "pending_approval":
+      return "Preparado, pendiente de tu aprobación";
+    case "failed":
+      return "Falló al enviar";
+    default:
+      return "No enviado";
+  }
+}
+
+function TelegramStepValidationOutcomePanel({
+  response,
+  nextActionLabel,
+}: {
+  response: ToolTestResponse;
+  nextActionLabel: string;
+}) {
+  const args = response.resolved_args ?? {};
+  const text = typeof args.text === "string" ? args.text : "";
+  const purpose =
+    typeof args.purpose === "string" ? args.purpose : "characteristics_pending";
+  const success = response.ok === true;
+  return (
+    <OutcomePanel
+      variant={success ? "success" : "error"}
+      title={success ? "A · Mensaje validado" : "A · Validación falló"}
+      className="mt-2"
+    >
+      <p className="mt-1">
+        {success
+          ? "Args y texto listos. No se envió Telegram en esta validación."
+          : response.error ?? response.hint ?? "No se pudo validar el mensaje."}
+      </p>
+      <p className="mt-1">
+        <span className="font-semibold">purpose:</span>{" "}
+        <span className="font-mono">{purpose}</span>
+        {" · "}
+        <span className="font-semibold">modo:</span>{" "}
+        <span className="font-mono">
+          {response.mode_used ? MODE_LABELS[response.mode_used] : "n/d"}
+        </span>
+      </p>
+      {text ? (
+        <details className="mt-2 rounded border border-emerald-200 bg-white/80 p-2">
+          <summary className="cursor-pointer font-semibold">
+            Texto validado (preview)
+          </summary>
+          <p className="mt-1 whitespace-pre-wrap font-mono text-[11px]">{text}</p>
+        </details>
+      ) : null}
+      <details className="mt-2 rounded border border-emerald-200 bg-white/80 p-2">
+        <summary className="cursor-pointer font-semibold">
+          A · Detalle técnico de validación
+        </summary>
+        <pre className="mt-1 max-h-72 overflow-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
+          {JSON.stringify(
+            {
+              ok: response.ok,
+              executed: response.executed,
+              reason: response.reason,
+              resolved_args: response.resolved_args,
+            },
+            null,
+            2
+          )}
+        </pre>
+      </details>
+      {success ? (
+        <p className="mt-2 font-semibold">{nextActionLabel}</p>
+      ) : null}
+    </OutcomePanel>
+  );
+}
+
+function TelegramStepAOutcomePanel({
+  response,
+  caseSnapshot,
+  nextActionLabel,
+}: {
+  response: ToolTestResponse;
+  caseSnapshot?: OperationalCase | null;
+  nextActionLabel?: string;
+}) {
+  const args = response.resolved_args ?? {};
+  const text = typeof args.text === "string" ? args.text : "";
+  const purpose =
+    typeof args.purpose === "string" ? args.purpose : "characteristics_pending";
+  const success = response.executed === true && response.ok === true;
+  const variant: OutcomeVariant = success
+    ? "success"
+    : response.ok === true
+      ? "warning"
+      : "error";
+  return (
+    <OutcomePanel
+      variant={variant}
+      title={
+        success
+          ? "B · Mensaje enviado al contacto externo"
+          : "B · Envío no completado"
+      }
+      className="mt-2"
+    >
+      <p className="mt-1">
+        {success ? (
+          <>
+            Telegram confirmó el envío. El caso queda en{" "}
+            <span className="font-mono">waiting_external</span> esperando respuesta
+            del contacto externo.
+          </>
+        ) : (
+          response.error ??
+          response.hint ??
+          "La prueba controlada no confirmó el envío por Telegram."
+        )}
+      </p>
+      <p className="mt-1">
+        <span className="font-semibold">purpose:</span>{" "}
+        <span className="font-mono">{purpose}</span>
+        {caseSnapshot ? (
+          <>
+            {" · "}
+            <span className="font-semibold">Estado actual:</span>{" "}
+            <span className="font-mono">
+              {caseSnapshot.current_step ?? "sin paso"} / {caseSnapshot.status}
+            </span>
+          </>
+        ) : null}
+      </p>
+      {text ? (
+        <details className="mt-2 rounded border border-emerald-200 bg-white/80 p-2">
+          <summary className="cursor-pointer font-semibold">
+            Texto enviado (preview)
+          </summary>
+          <p className="mt-1 whitespace-pre-wrap font-mono text-[11px]">{text}</p>
+        </details>
+      ) : null}
+      <details className="mt-2 rounded border border-emerald-200 bg-white/80 p-2">
+        <summary className="cursor-pointer font-semibold">
+          B · Detalle técnico del envío
+        </summary>
+        <pre className="mt-1 max-h-72 overflow-auto rounded bg-neutral-50 p-2 font-mono text-[11px]">
+          {JSON.stringify(
+            {
+              ok: response.ok,
+              executed: response.executed,
+              reason: response.reason,
+              result: response.result,
+              elapsed_ms: response.elapsed_ms,
+            },
+            null,
+            2
+          )}
+        </pre>
+      </details>
+      {success && nextActionLabel ? (
+        <p className="mt-2 font-semibold">{nextActionLabel}</p>
+      ) : null}
+    </OutcomePanel>
+  );
+}
+
+function OwnerResponseOutcomePanel({
+  outcome,
+}: {
+  outcome: OwnerResponseBusinessOutcome;
+}) {
+  return (
+    <div
+      className={`mt-3 rounded border p-3 text-xs ${ownerResponseVerdictClass(outcome.verdict)}`}
+    >
+      <div className="font-semibold">{outcome.headline}</div>
+      <p className="mt-1">{outcome.summary}</p>
+      <p className="mt-2 text-[11px] opacity-90">
+        Esperado:{" "}
+        <span className="font-mono">{outcome.expected_step}</span>
+        {" · "}
+        Actual:{" "}
+        <span className="font-mono">
+          {outcome.actual_step ?? "sin paso"} / {outcome.actual_status ?? "n/d"}
+        </span>
+      </p>
+      {outcome.actual_status === "waiting_internal" ? (
+        <p className="mt-2 rounded border border-white/70 bg-white/80 p-2 text-[11px] dark:border-neutral-800 dark:bg-neutral-900">
+          <span className="font-semibold">Siguiente acción del paso 3:</span>{" "}
+          validación del asesor con{" "}
+          <span className="font-mono">notify_user · property_data_review</span>{" "}
+          antes de avanzar a comparables. El caso no cambia de paso todavía.
+        </p>
+      ) : null}
+      {outcome.internal_review_sent ? (
+        <p className="mt-2 text-[11px] font-semibold opacity-90">
+          Revisión interna solicitada al asesor (notify_user).
+        </p>
+      ) : null}
+      {outcome.owner_response_text ? (
+        <div className="mt-2 rounded border border-white/70 bg-white/80 p-2 dark:border-neutral-800 dark:bg-neutral-900">
+          <div className="font-semibold">Respuesta simulada del dueño</div>
+          <p className="mt-1 whitespace-pre-wrap font-mono text-[11px]">
+            {outcome.owner_response_text}
+          </p>
+        </div>
+      ) : null}
+      {outcome.lead_messages.length > 0 ? (
+        <div className="mt-2 space-y-2">
+          <div className="font-semibold">Lo que vería el lead por Telegram</div>
+          {outcome.lead_messages.map((message, index) => (
+            <div
+              key={`${message.purpose ?? "msg"}-${index}`}
+              className="rounded border border-white/70 bg-white/80 p-2 dark:border-neutral-800 dark:bg-neutral-900"
+            >
+              <div className="text-[11px] font-semibold text-neutral-600 dark:text-neutral-300">
+                {leadDeliveryLabel(message.delivery)}
+                {message.purpose ? (
+                  <span className="ml-1 font-mono text-neutral-500">
+                    ({message.purpose})
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-1 whitespace-pre-wrap font-mono text-[11px]">
+                {message.text}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-[11px] opacity-90">
+          En este tick el agente no preparó ni envió un mensaje nuevo al lead.
+        </p>
+      )}
+      {outcome.next_actions.length > 0 ? (
+        <ul className="mt-2 list-inside list-disc text-[11px]">
+          {outcome.next_actions.map((action) => (
+            <li key={action}>{action}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function TestCaseBusinessSnapshot({
+  opCase,
+  events,
+  compact,
+}: {
+  opCase: OperationalCaseTestResult["case"];
+  events?: OperationalCaseTestResult["events"];
+  compact?: boolean;
+}) {
+  if (!opCase) return null;
+  const propertyData =
+    opCase.context_jsonb && isPlainRecord(opCase.context_jsonb.property_data)
+      ? opCase.context_jsonb.property_data
+      : null;
+  const missingCritical = propertyData
+    ? [
+        ["operation", "operación"],
+        ["property_type", "tipo"],
+        ["area_total_m2", "m² totales"],
+        ["bedrooms", "recámaras"],
+        ["bathrooms", "baños"],
+      ]
+        .filter(([key]) => propertyData[key] == null || propertyData[key] === "")
+        .map(([, label]) => label)
+    : [];
+  const externalResponses = (events ?? [])
+    .filter((event) => event.event_type === "external_response")
+    .slice(-3);
+
+  return (
+    <div
+      className={`rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900 ${
+        compact ? "mt-2" : "mt-3"
+      }`}
+    >
+      <div className="font-semibold text-neutral-800 dark:text-neutral-100">
+        Estado de negocio del caso
+      </div>
+      <p className="mt-1 text-neutral-600 dark:text-neutral-300">
+        Paso:{" "}
+        <span className="font-mono">{opCase.current_step ?? "sin paso"}</span>
+        {" · "}
+        Estado: <span className="font-mono">{opCase.status}</span>
+        {" · "}
+        Actualizado: {formatDateTime(opCase.updated_at)}
+      </p>
+      <p className="mt-1 text-neutral-600 dark:text-neutral-300">
+        Críticos faltantes en{" "}
+        <span className="font-mono">property_data</span>:{" "}
+        {propertyData
+          ? missingCritical.length > 0
+            ? missingCritical.join(", ")
+            : "ninguno detectado"
+          : "sin property_data aún"}
+      </p>
+      {externalResponses.length > 0 ? (
+        <details className="mt-2">
+          <summary className="cursor-pointer font-semibold text-violet-800 dark:text-violet-200">
+            Últimas respuestas externas ({externalResponses.length})
+          </summary>
+          <ul className="mt-1 space-y-1 font-mono text-[11px] text-neutral-600 dark:text-neutral-300">
+            {externalResponses.map((event) => {
+              const payload = event.payload_jsonb as Record<string, unknown> | null;
+              const preview =
+                typeof payload?.text === "string"
+                  ? payload.text.slice(0, 120)
+                  : "(sin texto)";
+              return (
+                <li key={event.id}>
+                  {formatDateTime(event.created_at)} — {preview}
+                </li>
+              );
+            })}
+          </ul>
+        </details>
+      ) : null}
+      {propertyData ? (
+        <details className="mt-2">
+          <summary className="cursor-pointer font-semibold text-violet-800 dark:text-violet-200">
+            Ver property_data
+          </summary>
+          <pre className="mt-1 max-h-48 overflow-auto rounded bg-neutral-50 p-2 font-mono text-[11px] dark:bg-neutral-950">
+            {JSON.stringify(propertyData, null, 2)}
+          </pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function SimulateOwnerResponsePanel({
+  caseId,
+  onProcessed,
+  variant = "standalone",
+  resetVersion = 0,
+  disabled = false,
+  disabledReason,
+}: {
+  caseId: string;
+  onProcessed: (result: OperationalCaseTestResult) => Promise<void>;
+  variant?: "standalone" | "inline";
+  resetVersion?: number;
+  disabled?: boolean;
+  disabledReason?: string;
+}) {
+  const [text, setText] = useState(
+    "Es venta, departamento, 3 recámaras, 2 baños completos y 1 cajón de estacionamiento."
+  );
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<OperationalCaseTestResult | null>(null);
+  const [businessOutcome, setBusinessOutcome] =
+    useState<OwnerResponseBusinessOutcome | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setResult(null);
+    setBusinessOutcome(null);
+    setError(null);
+  }, [resetVersion]);
+
+  async function submit() {
+    setRunning(true);
+    setError(null);
+    setResult(null);
+    setBusinessOutcome(null);
+    try {
+      const res = await fetch("/api/operational-case-tests/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          case_id: caseId,
+          mode: "agent_e2e",
+          owner_response_text: text.trim(),
+          readiness_skill_slug: "extract-property-characteristics",
+          readiness_flow_step_key: "documents_received",
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        agent?: {
+          pending_confirmation?: boolean;
+          response_preview?: string | null;
+        };
+        error?: string;
+        hint?: string;
+        message?: string;
+        business_outcome?: OwnerResponseBusinessOutcome | null;
+      } & OperationalCaseTestResult;
+      if (!res.ok || data.ok !== true) {
+        throw new Error(data.hint ?? data.error ?? "No se pudo simular la respuesta.");
+      }
+      const processedResult = {
+        case: data.case,
+        events: data.events ?? [],
+        toolCalls: data.toolCalls ?? [],
+        flowProgress: data.flowProgress ?? [],
+      };
+      setResult(processedResult);
+      setBusinessOutcome(data.business_outcome ?? null);
+      await onProcessed(processedResult);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div
+      id={variant === "inline" ? "telegram-scenario-c" : undefined}
+      className={`rounded border-2 border-violet-400 bg-violet-50/90 p-3 text-xs shadow-sm dark:border-violet-700 dark:bg-violet-950/40 ${
+        variant === "inline" ? "mt-3" : "mt-3"
+      }`}
+    >
+      <div className="font-semibold text-violet-900 dark:text-violet-200">
+        {variant === "inline"
+          ? "C · Simular respuesta y procesar"
+          : "Simular respuesta y procesar"}
+      </div>
+      <p className="mt-1 text-violet-900/80 dark:text-violet-200/80">
+        {variant === "inline"
+          ? "Como si el dueño respondiera por Telegram. Edita el texto si hace falta y pulsa el botón violeta."
+          : "Registra un external_response de prueba y ejecuta un tick controlado del agente en una sola acción."}
+      </p>
+      <label className="mt-2 block space-y-1">
+        <span className="font-semibold text-neutral-700 dark:text-neutral-200">
+          Texto del dueño
+        </span>
+        <textarea
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          rows={3}
+          className="w-full rounded border border-violet-200 bg-white px-2 py-1.5 font-mono text-[11px] dark:border-violet-800 dark:bg-neutral-900"
+        />
+      </label>
+      <button
+        type="button"
+        onClick={() => void submit()}
+        disabled={disabled || running || !text.trim()}
+        className={`mt-2 ${WIZARD_PRIMARY_BUTTON_CLASS}`}
+      >
+        {running ? "Procesando respuesta del dueño..." : "Simular respuesta y procesar"}
+      </button>
+      {disabled && disabledReason ? (
+        <p className="mt-2 text-[11px] text-violet-900 dark:text-violet-200">
+          {disabledReason}
+        </p>
+      ) : null}
+      {businessOutcome ? (
+        <OwnerResponseOutcomePanel outcome={businessOutcome} />
+      ) : null}
+      {result?.case ? (
+        <TestCaseBusinessSnapshot
+          opCase={result.case}
+          events={result.events}
+          compact
+        />
+      ) : null}
+      {error ? (
+        <p className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-red-800">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function renderFlowToolReadiness(params: {
   item: ToolReadinessToolItem;
   row: OperationalCaseType;
@@ -2622,10 +3620,16 @@ function renderFlowToolReadiness(params: {
   hasTestCase: boolean;
   caseId?: string | null;
   caseContextVersion?: string | null;
+  readinessSkillSlug?: string;
+  readinessFlowStepKey?: string;
   onEditSkill: () => void;
   onToggleExpand: () => void;
   onRequestGlobal: () => void;
   refreshToolReadiness: (row: OperationalCaseType) => Promise<void>;
+  refreshTestCase?: (row: OperationalCaseType) => Promise<void>;
+  onTestCaseUpdated?: (result: OperationalCaseTestResult) => Promise<void>;
+  easyBrokerCreatedListingId?: string | null;
+  onEasyBrokerListingCreated?: (listingId: string) => void;
 }) {
   const { item, row, expanded, existingRequest, submitting } = params;
   const metaParts = [`Riesgo: ${riskLabel(item.risk)}`];
@@ -2716,6 +3720,17 @@ function renderFlowToolReadiness(params: {
               hasTestCase={params.hasTestCase}
               caseId={params.caseId}
               caseContextVersion={params.caseContextVersion}
+              readinessSkillSlug={params.readinessSkillSlug}
+              readinessFlowStepKey={params.readinessFlowStepKey}
+              onFinished={async () => {
+                await params.refreshToolReadiness(row);
+                if (params.refreshTestCase) {
+                  await params.refreshTestCase(row);
+                }
+              }}
+              onTestCaseUpdated={params.onTestCaseUpdated}
+              easyBrokerCreatedListingId={params.easyBrokerCreatedListingId}
+              onEasyBrokerListingCreated={params.onEasyBrokerListingCreated}
             />
           ) : null}
         </div>
@@ -2788,7 +3803,7 @@ function renderOperationalFlowPreview(flow: OperationalCaseFlowStep[]) {
 
 function testProgressBadge(status: OperationalCaseFlowProgressStatus) {
   if (status === "completed") return activationStatusBadge("ready", "✓ Completado");
-  if (status === "blocked") return activationStatusBadge("attention", "Bloqueado");
+  if (status === "blocked") return activationStatusBadge("attention", "Pendiente de validar");
   if (status === "in_progress") return activationStatusBadge("attention", "En curso");
   return activationStatusBadge("pending", "Pendiente");
 }
@@ -2893,6 +3908,8 @@ export function OperationalCaseTypesClient({
   const [testContextSaving, setTestContextSaving] = useState(false);
   const [testContextMessage, setTestContextMessage] = useState<string | null>(null);
   const [testContextVersion, setTestContextVersion] = useState(0);
+  const [easyBrokerCreatedListingId, setEasyBrokerCreatedListingId] =
+    useState<string | null>(null);
   const [editingBaseline, setEditingBaseline] =
     useState<EditingSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
@@ -4115,8 +5132,8 @@ export function OperationalCaseTypesClient({
             ) : null}
             {toolsHaveBlocks ? (
               <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
-                Resuelve las tools bloqueantes antes de crear una prueba
-                end-to-end. Los stubs no bloqueantes pueden quedar como
+                Prueba o configura las tools requeridas antes de crear una prueba
+                end-to-end. Los stubs no críticos pueden quedar como
                 advertencia para una prueba parcial.
               </p>
             ) : null}
@@ -4136,7 +5153,11 @@ export function OperationalCaseTypesClient({
 
                 const renderToolCard = (
                   tool: ToolReadinessFlowTool,
-                  keyPrefix: string
+                  keyPrefix: string,
+                  flowContext?: {
+                    flowStepKey?: string;
+                    skillSlug?: string;
+                  }
                 ) =>
                   tool.readiness ? (
                     <div key={`${keyPrefix}-${tool.tool_id}`}>
@@ -4164,6 +5185,8 @@ export function OperationalCaseTypesClient({
                         hasTestCase: Boolean(testCaseResult?.case),
                         caseId: testCaseResult?.case?.id ?? null,
                         caseContextVersion: `${testCaseResult?.case?.updated_at ?? ""}:${testContextVersion}`,
+                        readinessSkillSlug: flowContext?.skillSlug,
+                        readinessFlowStepKey: flowContext?.flowStepKey,
                         onEditSkill: () => startEdit(row),
                         onToggleExpand: () =>
                           setExpandedReadinessTools((prev) => {
@@ -4176,6 +5199,21 @@ export function OperationalCaseTypesClient({
                           tool.readiness &&
                           createToolRequest(row, tool.readiness),
                         refreshToolReadiness,
+                        refreshTestCase,
+                        onTestCaseUpdated: async (processedResult) => {
+                          setTestCaseResult(processedResult);
+                          setTestContextMessage(
+                            "Respuesta del dueño simulada y procesada."
+                          );
+                          await refreshToolReadiness(row);
+                        },
+                        easyBrokerCreatedListingId,
+                        onEasyBrokerListingCreated: (listingId) => {
+                          setEasyBrokerCreatedListingId(listingId);
+                          setTestContextMessage(
+                            `Borrador EasyBroker de prueba creado: ${listingId}.`
+                          );
+                        },
                       })}
                     </div>
                   ) : null;
@@ -4245,7 +5283,10 @@ export function OperationalCaseTypesClient({
                                   </div>
                                   {skill.skill_tools.length > 0 ? (
                                     skill.skill_tools.map((tool) =>
-                                      renderToolCard(tool, skill.skill_slug)
+                                      renderToolCard(tool, skill.skill_slug, {
+                                        flowStepKey: step.step_key,
+                                        skillSlug: skill.skill_slug,
+                                      })
                                     )
                                   ) : (
                                     <p className="text-xs text-neutral-500">
@@ -4286,7 +5327,9 @@ export function OperationalCaseTypesClient({
                                 Herramientas
                               </div>
                               {step.step_tools.map((tool) =>
-                                renderToolCard(tool, step.step_key)
+                                renderToolCard(tool, step.step_key, {
+                                  flowStepKey: step.step_key,
+                                })
                               )}
                             </div>
                           ) : null}
@@ -4305,7 +5348,9 @@ export function OperationalCaseTypesClient({
                         ) : null}
                         <div className="mt-2 space-y-2">
                           {transversalStep.step_tools.map((tool) =>
-                            renderToolCard(tool, "transversal")
+                            renderToolCard(tool, "transversal", {
+                              flowStepKey: "transversal_tools",
+                            })
                           )}
                         </div>
                       </details>
@@ -4372,7 +5417,7 @@ export function OperationalCaseTypesClient({
                 className="rounded border border-violet-300 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60"
                 title={
                   toolsHaveBlocks
-                    ? "Resuelve las tools bloqueantes antes de ejecutar la prueba segura inicial."
+                    ? "Prueba o configura las tools requeridas antes de ejecutar la prueba segura inicial."
                     : "Valida intake y paso inicial sin invocar el agente."
                 }
               >
@@ -4387,7 +5432,7 @@ export function OperationalCaseTypesClient({
                 className="rounded border border-violet-300 bg-white px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-60"
                 title={
                   toolsHaveBlocks
-                    ? "Resuelve las tools bloqueantes antes del E2E."
+                    ? "Prueba o configura las tools requeridas antes del E2E."
                     : !canRunE2E
                       ? "Resuelve stubs, configuraciones de cuenta y tools faltantes antes del E2E. Con stubs el tick puede fallar o devolver respuestas vacías."
                       : "Un tick del agente sobre el caso de prueba, con tools reales y HITL si aplica (p. ej. ungga_publish_listing)."
@@ -4395,16 +5440,17 @@ export function OperationalCaseTypesClient({
               >
                 {testCaseRunningMode === "agent_e2e"
                   ? "Ejecutando..."
-                  : "Fase 2: E2E con agente"}
+                  : "Ejecutar 1 tick E2E con agente"}
               </button>
             </div>
             <p className="text-[11px] text-neutral-500">
               La prueba individual por tool (dry-run) valida integración aislada.
-              La fase 2 ejecuta el flujo vía agente como en operación real (puede
-              tardar varios minutos y pedir aprobaciones).
+              El tick E2E ejecuta una sola transición vía agente sobre el caso de
+              prueba; puede crear pendientes/notificaciones de prueba, pero no
+              debe dejar que el cron continúe el flujo automáticamente.
               {!canRunE2E && !toolsHaveBlocks ? (
                 <span className="ml-1 text-amber-700">
-                  Fase 2 deshabilitada hasta resolver{" "}
+                  Tick E2E deshabilitado hasta resolver{" "}
                   {readinessCounts.stub} stubs,{" "}
                   {readinessCounts.needs_config} de cuenta y{" "}
                   {readinessCounts.missing + readinessCounts.unknown} faltantes.
@@ -4413,7 +5459,7 @@ export function OperationalCaseTypesClient({
               {e2ePendingHitl ? (
                 <span className="ml-1 text-violet-700">
                   Último E2E quedó pendiente de aprobación humana; resuélvelo en
-                  Casos operacionales o chat antes del siguiente tick.
+                  Pendientes o Telegram. El caso de prueba no seguirá solo por cron.
                 </span>
               ) : e2eCompleted ? (
                 <span className="ml-1 text-emerald-700">
@@ -4424,8 +5470,8 @@ export function OperationalCaseTypesClient({
             {toolsHaveBlocks && testCaseResult?.case ? (
               <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
                 Hay un caso de prueba creado previamente, pero la prueba segura
-                queda bloqueada hasta resolver las tools marcadas como
-                bloqueantes en Preparación operativa.
+                queda pendiente hasta probar o configurar las tools requeridas
+                en Preparación operativa.
               </p>
             ) : null}
             {testCaseResult?.case ? (
@@ -4441,12 +5487,26 @@ export function OperationalCaseTypesClient({
                   {testCaseResult.case.current_step ?? "sin paso"} · Creado:{" "}
                   {formatDateTime(testCaseResult.case.created_at)}
                 </div>
-                <a
-                  href={`/operational-cases?case=${testCaseResult.case.id}`}
-                  className="mt-1 inline-block font-semibold text-violet-700 hover:underline"
-                >
-                  Abrir en Casos operacionales
-                </a>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void refreshTestCase(row)}
+                    disabled={testCaseLoading}
+                    className="rounded border border-violet-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-60"
+                  >
+                    {testCaseLoading ? "Actualizando..." : "Actualizar caso"}
+                  </button>
+                  <a
+                    href={`/operational-cases?case=${testCaseResult.case.id}`}
+                    className="inline-flex items-center rounded border border-neutral-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-700 hover:bg-neutral-50"
+                  >
+                    Abrir en Casos operacionales
+                  </a>
+                </div>
+                <TestCaseBusinessSnapshot
+                  opCase={testCaseResult.case}
+                  events={testCaseResult.events}
+                />
                 <p className="mt-2 text-neutral-500">
                   {activationPolicy.safe_test.synthetic_data_copy}
                 </p>
@@ -4458,7 +5518,7 @@ export function OperationalCaseTypesClient({
                   : !toolReadiness
                     ? "Primero revisa la preparación operativa."
                     : toolsHaveBlocks
-                      ? "Resuelve las tools bloqueantes antes de crear una prueba segura inicial."
+                      ? "Prueba o configura las tools requeridas antes de crear una prueba segura inicial."
                       : "Aún no hay caso de prueba para esta plantilla."}
               </p>
             )}

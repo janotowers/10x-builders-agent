@@ -36,17 +36,21 @@
  * volver a implementar la ejecución.
  */
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 
 /** Playwright Ungga puede tardar ~1–2 min en dry-run. */
 export const maxDuration = 180;
 import { createClient } from "@/lib/supabase/server";
 import {
+  createOperationalCaseDocument,
   createServerClient,
   getGlobalOperationalCaseTypeBySlug,
   listAccountAssets,
   getOperationalCase,
   getOperationalCaseTypeById,
   getOrCreateSession,
+  listOperationalCaseDocuments,
+  expireExternalContactNotificationsForCase,
 } from "@agents/db";
 import {
   buildLangChainTools,
@@ -79,13 +83,33 @@ type ToolRunBody = {
   preview?: boolean;
   controlled_real_write?: boolean;
   confirmation_text?: string;
+  /** Paso/skill desde el que se abrió la prueba en Preparación operativa. */
+  readiness_skill_slug?: string;
+  readiness_flow_step_key?: string;
+};
+
+type ToolRecipeInput = {
+  ctx: Record<string, unknown>;
+  testCase?: OperationalCase | null;
+  skillSlug?: string;
+  flowStepKey?: string;
 };
 
 const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
+  telegram_send_message_to_contact: {
+    text: "Hola, soy parte del equipo inmobiliario. Esta es una prueba controlada de mensaje externo; no requiere accion.",
+    purpose: "tool_readiness_test",
+  },
   notify_user: {
     text: "Prueba controlada desde Ajustes: valida que la notificacion al asesor pueda entregarse.",
     kind: "tool_readiness_test",
     urgency: "low",
+  },
+  operational_case_register_document: {
+    kind: "escritura_descripcion",
+    display_name: "Escritura - descripcion",
+    source: "settings_test",
+    blocking: true,
   },
   bigquery_lookup_local_comparables: { months_back: 24, limit: 100 },
   easybroker_search_listings: { limit: 50 },
@@ -105,6 +129,21 @@ const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
   },
 };
 
+const TEST_PROPERTY_DOCUMENT_ASSET_KEY = "test_property_document";
+const TEST_PROPERTY_DOCUMENT_KIND = "escritura_descripcion";
+const DOCUMENT_READINESS_TOOLS = new Set([
+  "operational_case_register_document",
+  "operational_case_list_documents",
+  "operational_case_extract_document_fields",
+]);
+
+class MissingTestDocumentAssetError extends Error {
+  constructor() {
+    super("missing_test_document_asset");
+    this.name = "MissingTestDocumentAssetError";
+  }
+}
+
 /**
  * Recipes para derivar args desde `context_jsonb` del caso de prueba.
  * Cada recipe recibe el contexto plano y devuelve args parciales para la
@@ -113,21 +152,24 @@ const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
  */
 const TOOL_TEST_ARG_RECIPES: Record<
   string,
-  (ctx: Record<string, unknown>) => Record<string, unknown>
+  (input: ToolRecipeInput) => Record<string, unknown>
 > = {
-  easybroker_search_listings: easyBrokerCaseRecipe,
-  easybroker_search_closed_deals: easyBrokerCaseRecipe,
-  bigquery_lookup_local_comparables: bigQueryLocalComparablesCaseRecipe,
-  notify_user: notifyUserCaseRecipe,
+  easybroker_search_listings: (input) => easyBrokerCaseRecipe(input.ctx),
+  easybroker_search_closed_deals: (input) => easyBrokerCaseRecipe(input.ctx),
+  bigquery_lookup_local_comparables: (input) =>
+    bigQueryLocalComparablesCaseRecipe(input.ctx),
+  telegram_send_message_to_contact: telegramContactCaseRecipe,
+  notify_user: (input) => notifyUserCaseRecipe(input.ctx),
   image_watermark: () => ({
     asset_key: "listing_photo_watermark",
     position: "bottom-right",
     opacity: 0.6,
     scale: 0.18,
   }),
-  easybroker_create_listing: easyBrokerCreateCaseRecipe,
-  easybroker_upload_images: easyBrokerUploadImagesCaseRecipe,
-  ungga_publish_listing: unggaPublishCaseRecipe,
+  easybroker_create_listing: (input) => easyBrokerCreateCaseRecipe(input.ctx),
+  easybroker_upload_images: (input) =>
+    easyBrokerUploadImagesCaseRecipe(input.ctx),
+  ungga_publish_listing: (input) => unggaPublishCaseRecipe(input.ctx),
 };
 
 function cleanText(value: unknown) {
@@ -146,10 +188,12 @@ const HIGH_RISK_DRY_RUN_TOOLS = new Set([
 ]);
 
 const CONTROLLED_REAL_WRITE_TOOLS = new Set([
+  "telegram_send_message_to_contact",
   "easybroker_create_listing",
   "easybroker_upload_images",
 ]);
 const CONTROLLED_REAL_WRITE_CONFIRMATIONS: Record<string, string> = {
+  telegram_send_message_to_contact: "ENVIAR PRUEBA",
   easybroker_create_listing: "CREAR BORRADOR",
   easybroker_upload_images: "FOTOS A BORRADOR",
 };
@@ -210,6 +254,57 @@ function summarizeResult(parsed: unknown) {
     count: typeof parsed.count === "number" ? parsed.count : results?.length ?? null,
     preview: results ? results.slice(0, 3) : null,
   };
+}
+
+function documentExtractionHasStructuredFields(extraction: unknown) {
+  if (!isRecord(extraction)) return false;
+  const meaningfulKeys = [
+    "property_description",
+    "address",
+    "area_total_m2",
+    "area_construida_m2",
+    "owner_names",
+    "folio_real",
+    "predial_account",
+  ];
+  return meaningfulKeys.some((key) => {
+    const value = extraction[key];
+    if (Array.isArray(value)) return value.length > 0;
+    return value != null && value !== "";
+  });
+}
+
+function evaluateDocumentExtractionTest(parsed: unknown) {
+  if (!isRecord(parsed) || parsed.ok !== true) {
+    return { ok: false as const, hint: undefined as string | undefined };
+  }
+  const status =
+    typeof parsed.extraction_status === "string" ? parsed.extraction_status : "";
+  const extraction = isRecord(parsed.extraction) ? parsed.extraction : null;
+  const hasFields = documentExtractionHasStructuredFields(extraction);
+  const missingDeedArea =
+    extraction &&
+    typeof extraction.document_kind === "string" &&
+    extraction.document_kind.toLowerCase().includes("escritura") &&
+    typeof extraction.area_total_m2 !== "number";
+  if (status === "ok" && hasFields && !missingDeedArea) {
+    return { ok: true as const, hint: undefined as string | undefined };
+  }
+  if (status === "low_confidence" || status === "failed" || !hasFields || missingDeedArea) {
+    const warnings = extraction?.warnings;
+    const warningText = Array.isArray(warnings)
+      ? warnings.filter((item): item is string => typeof item === "string").join(" ")
+      : "";
+    return {
+      ok: false as const,
+      hint:
+        (missingDeedArea
+          ? "La extracción no capturó area_total_m2 de la escritura. Verifica que la página con superficie esté legible o prueba con force=true tras reemplazar el archivo."
+          : warningText) ||
+        "La tool respondió, pero no extrajo campos estructurados. Sube una imagen legible (jpg/png) de la escritura-descripción o usa Avanzado con force=true tras reemplazar el archivo.",
+    };
+  }
+  return { ok: true as const, hint: undefined as string | undefined };
 }
 
 function numericFromContext(value: unknown): number | null {
@@ -303,6 +398,100 @@ function notifyUserCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
     text: `Prueba controlada desde Ajustes: la habilidad solicita revision del asesor para ${propertyType} en ${operation} en ${zona}.${priceText} No requiere accion real; valida que notify_user pueda entregar mensajes del flow.`,
     kind: "tool_readiness_test",
     urgency: "low",
+  };
+}
+
+function isCharacteristicsTelegramContext(input: ToolRecipeInput) {
+  if (input.skillSlug === "extract-property-characteristics") return true;
+  const currentStep =
+    typeof input.testCase?.current_step === "string"
+      ? input.testCase.current_step
+      : firstString(input.ctx, ["current_step"]);
+  return currentStep === "documents_received";
+}
+
+function missingCriticalPropertyQuestions(propertyData: Record<string, unknown>) {
+  const address = isRecord(propertyData.address) ? propertyData.address : {};
+  const merged = { ...propertyData, ...address };
+  const questions: string[] = [];
+  if (!firstString(merged, ["operation", "operation_type", "tipo_operacion"])) {
+    questions.push("¿La propiedad es para venta o renta?");
+  }
+  if (!firstString(merged, ["property_type", "tipo_propiedad", "tipo"])) {
+    questions.push("¿Qué tipo de propiedad es (departamento, casa, terreno, etc.)?");
+  }
+  if (
+    !firstString(merged, ["street", "street_name", "calle"]) &&
+    !firstString(merged, ["property_address", "address"])
+  ) {
+    questions.push("¿Cuál es la calle y número de la propiedad?");
+  }
+  if (typeof propertyData.area_total_m2 !== "number") {
+    questions.push("¿Cuántos metros cuadrados totales tiene?");
+  }
+  if (propertyData.bedrooms == null) {
+    questions.push("¿Cuántas recámaras tiene?");
+  }
+  if (propertyData.bathrooms == null) {
+    questions.push("¿Cuántos baños completos tiene?");
+  }
+  return questions.slice(0, 4);
+}
+
+function telegramCharacteristicsMessage(input: ToolRecipeInput) {
+  const merged = contextWithPropertyData(input.ctx);
+  const ownerName =
+    firstString(merged, ["owner_name", "contact_name", "lead_name"]) ??
+    "Contacto";
+  const propertyTitle =
+    firstString(merged, ["title", "property_title"]) ?? "la propiedad";
+  const propertyData = isRecord(input.ctx.property_data)
+    ? input.ctx.property_data
+    : {};
+  const questions = missingCriticalPropertyQuestions(propertyData);
+  const questionBlock =
+    questions.length > 0
+      ? questions.map((question, index) => `${index + 1}. ${question}`).join("\n")
+      : "1. ¿Puedes confirmar que los datos de la propiedad que tenemos son correctos?";
+  return (
+    `Hola ${ownerName}, gracias por los documentos de ${propertyTitle}. ` +
+    "Para completar la ficha antes de comparables, me ayudaría confirmar:\n\n" +
+    `${questionBlock}\n\n` +
+    "Puedes responder por aquí con texto. Si tienes predial u otro documento extra, también puedes enviarlo, pero no es obligatorio para avanzar."
+  );
+}
+
+function telegramRequestDocumentsMessage(input: ToolRecipeInput) {
+  const merged = contextWithPropertyData(input.ctx);
+  const ownerName =
+    firstString(merged, ["owner_name", "contact_name", "lead_name"]) ??
+    "Contacto";
+  const propertyTitle =
+    firstString(merged, ["title", "property_title"]) ?? "la propiedad";
+  const zona =
+    firstString(merged, ["property_zone", "zona", "neighborhood", "colonia"]) ??
+    "la zona capturada";
+  return (
+    `Hola ${ownerName}, estamos preparando la opción de comercialización de ${propertyTitle} en ${zona}. ` +
+    "Para avanzar necesito la hoja de la escritura donde esté la descripción de la propiedad. " +
+    "También ayuda si puedes enviar predial, INE, comprobante de domicilio, boleta registral y primera/última hoja de escritura."
+  );
+}
+
+function telegramContactCaseRecipe(input: ToolRecipeInput): Record<string, unknown> {
+  const merged = contextWithPropertyData(input.ctx);
+  const telegramChatId = firstNumber(merged, [
+    "telegram_chat_id",
+    "external_chat_id",
+    "chat_id",
+  ]);
+  const characteristicsContext = isCharacteristicsTelegramContext(input);
+  return {
+    ...(telegramChatId != null ? { chat_id: telegramChatId } : {}),
+    text: characteristicsContext
+      ? telegramCharacteristicsMessage(input)
+      : telegramRequestDocumentsMessage(input),
+    purpose: characteristicsContext ? "characteristics_pending" : "request_documents",
   };
 }
 
@@ -726,6 +915,22 @@ function applyControlledRealWriteSafeguards(
   toolId: string,
   args: Record<string, unknown>
 ) {
+  if (toolId === "telegram_send_message_to_contact") {
+    const currentText =
+      typeof args.text === "string" && args.text.trim()
+        ? args.text.trim()
+        : "Mensaje de prueba";
+    return {
+      ...args,
+      text: currentText.startsWith("[PRUEBA CONTROLADA]")
+        ? currentText
+        : `[PRUEBA CONTROLADA]\n${currentText}`,
+      purpose:
+        typeof args.purpose === "string" && args.purpose.trim()
+          ? args.purpose
+          : "tool_readiness_test",
+    };
+  }
   if (toolId === "easybroker_upload_images") {
     return {
       ...args,
@@ -911,6 +1116,39 @@ interface ArgResolution {
   case_context_sample?: Record<string, unknown> | null;
 }
 
+function enrichCaseContextFromDocuments(
+  ctx: Record<string, unknown>,
+  documents: Awaited<ReturnType<typeof listOperationalCaseDocuments>>
+) {
+  const propertyData = isRecord(ctx.property_data) ? { ...ctx.property_data } : {};
+  for (const doc of documents) {
+    const extraction = doc.extraction_jsonb;
+    if (!isRecord(extraction) || doc.extraction_status !== "ok") continue;
+    if (
+      typeof propertyData.area_total_m2 !== "number" &&
+      typeof extraction.area_total_m2 === "number"
+    ) {
+      propertyData.area_total_m2 = extraction.area_total_m2;
+    }
+    if (
+      typeof propertyData.area_construida_m2 !== "number" &&
+      typeof extraction.area_construida_m2 === "number"
+    ) {
+      propertyData.area_construida_m2 = extraction.area_construida_m2;
+    }
+    if (isRecord(extraction.address) && !isRecord(propertyData.address)) {
+      propertyData.address = extraction.address;
+    }
+    if (
+      !firstString(propertyData, ["property_description", "description"]) &&
+      typeof extraction.property_description === "string"
+    ) {
+      propertyData.property_description = extraction.property_description;
+    }
+  }
+  return { ...ctx, property_data: propertyData };
+}
+
 async function resolveArgsForMode(params: {
   db: ReturnType<typeof createServerClient>;
   userId: string;
@@ -920,8 +1158,21 @@ async function resolveArgsForMode(params: {
   def: ToolDefinition;
   mode: ToolRunMode;
   userArgs: Record<string, unknown>;
+  readinessSkillSlug?: string;
+  readinessFlowStepKey?: string;
 }): Promise<ArgResolution> {
-  const { db, userId, caseType, caseId, toolId, def, mode, userArgs } = params;
+  const {
+    db,
+    userId,
+    caseType,
+    caseId,
+    toolId,
+    def,
+    mode,
+    userArgs,
+    readinessSkillSlug,
+    readinessFlowStepKey,
+  } = params;
 
   if (mode === "manual") {
     return {
@@ -964,7 +1215,16 @@ async function resolveArgsForMode(params: {
         case_id: null,
       };
     }
-    const ctx = (testCase.context_jsonb ?? {}) as Record<string, unknown>;
+    const ctxRaw = (testCase.context_jsonb ?? {}) as Record<string, unknown>;
+    const ctx =
+      toolId === "telegram_send_message_to_contact" &&
+      (readinessSkillSlug === "extract-property-characteristics" ||
+        testCase.current_step === "documents_received")
+        ? enrichCaseContextFromDocuments(
+            ctxRaw,
+            await listOperationalCaseDocuments(db, { caseId: testCase.id })
+          )
+        : ctxRaw;
     const flow = await effectiveFlowForCaseType(db, caseType);
     const flowTool = flattenFlow(flow).find((tool) => tool.tool_id === toolId);
     const mapping = flowTool?.test_inputs_mapping;
@@ -976,7 +1236,12 @@ async function resolveArgsForMode(params: {
       derived = applyTestInputsMapping(mapping, ctx);
       source = "flow_test_inputs_mapping";
     } else if (recipe) {
-      derived = recipe(ctx);
+      derived = recipe({
+        ctx,
+        testCase,
+        skillSlug: readinessSkillSlug,
+        flowStepKey: readinessFlowStepKey,
+      });
       source = "tool_recipe";
     } else {
       derived = genericArgsFromContext(def, ctx);
@@ -988,6 +1253,14 @@ async function resolveArgsForMode(params: {
       ...derived,
       ...userArgs,
     };
+    if (
+      (toolId === "telegram_send_message_to_contact" ||
+        toolId === "operational_case_register_document" ||
+        toolId === "operational_case_list_documents") &&
+      !merged.case_id
+    ) {
+      merged.case_id = testCase.id;
+    }
     const normalized = applyUserOverrideSemantics(toolId, merged, userArgs);
     return {
       args: await applyTestAssetsToArgs({
@@ -1069,6 +1342,263 @@ async function applyTestAssetsToArgs(params: {
   return nextArgs;
 }
 
+function originalNameForAsset(asset: AccountAsset) {
+  const originalName = asset.metadata_jsonb?.original_name;
+  return typeof originalName === "string" && originalName.trim()
+    ? originalName.trim()
+    : asset.display_name;
+}
+
+function documentKindFromAsset(asset: AccountAsset) {
+  const kind = asset.metadata_jsonb?.document_kind;
+  return typeof kind === "string" && kind.trim()
+    ? kind.trim()
+    : TEST_PROPERTY_DOCUMENT_KIND;
+}
+
+function documentKindLabel(kind: string) {
+  const labels: Record<string, string> = {
+    escritura_descripcion: "Escritura - descripcion",
+    predial: "Predial",
+    ine: "INE",
+    comprobante_domicilio: "Comprobante de domicilio",
+    boleta_registral: "Boleta registral",
+    escritura_primera_hoja: "Escritura - primera hoja",
+    escritura_ultima_hoja: "Escritura - ultima hoja",
+    unknown: "Sin clasificar",
+  };
+  return labels[kind] ?? kind;
+}
+
+function isBlockingDocumentKind(kind: string) {
+  return kind === TEST_PROPERTY_DOCUMENT_KIND;
+}
+
+async function loadAllDocumentTestAssets(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  caseType: Awaited<ReturnType<typeof getOperationalCaseTypeById>>;
+  def: ToolDefinition;
+  toolId: string;
+}) {
+  const requirements = await testAssetRequirementsForTool(params);
+  const requirement =
+    requirements.find(
+      (item) => item.asset_key === TEST_PROPERTY_DOCUMENT_ASSET_KEY
+    ) ?? requirements[0];
+  if (!requirement) return [];
+  const assets = await listAccountAssets(params.db, {
+    userId: params.userId,
+    assetKeys: [requirement.asset_key],
+    assetKeyPrefixes: isAssetCollection(requirement)
+      ? [requirement.asset_key]
+      : undefined,
+  });
+  return assetsForRequirement(assets, requirement);
+}
+
+async function sha256ForAsset(
+  db: ReturnType<typeof createServerClient>,
+  asset: AccountAsset
+) {
+  const { data: blob, error } = await db.storage
+    .from(asset.storage_bucket)
+    .download(asset.storage_path);
+  if (error || !blob) return null;
+  const bytes = Buffer.from(await blob.arrayBuffer());
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function ensureSettingsTestDocumentArgs(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  caseType: NonNullable<Awaited<ReturnType<typeof getOperationalCaseTypeById>>>;
+  def: ToolDefinition;
+  toolId: string;
+  args: Record<string, unknown>;
+  caseId?: string | null;
+  preview: boolean;
+  mode: ToolRunMode;
+}) {
+  if (!DOCUMENT_READINESS_TOOLS.has(params.toolId)) return params.args;
+  if (params.mode === "manual") return params.args;
+  const caseId = cleanText(params.args.case_id) || cleanText(params.caseId);
+  if (!caseId) return params.args;
+  const assets = await loadAllDocumentTestAssets({
+    db: params.db,
+    userId: params.userId,
+    caseType: params.caseType,
+    def: params.def,
+    toolId: params.toolId,
+  });
+  if (assets.length === 0) {
+    const existingDocument = await findPreferredSettingsTestDocument(params.db, {
+      caseId,
+    });
+    if (!existingDocument) throw new MissingTestDocumentAssetError();
+    if (params.toolId === "operational_case_extract_document_fields") {
+      return cleanText(params.args.document_id)
+        ? params.args
+        : { ...params.args, document_id: existingDocument.id };
+    }
+    return { ...params.args, case_id: caseId };
+  }
+
+  if (params.toolId === "operational_case_register_document") {
+    const asset = assets[0];
+    const kind = cleanText(params.args.kind) || documentKindFromAsset(asset);
+    return {
+      case_id: caseId,
+      kind,
+      display_name:
+        cleanText(params.args.display_name) || documentKindLabel(kind),
+      storage_bucket: asset.storage_bucket,
+      storage_path: asset.storage_path,
+      original_name: originalNameForAsset(asset),
+      content_type: asset.content_type ?? undefined,
+      file_size_bytes: asset.file_size_bytes ?? undefined,
+      source: "settings_test",
+      blocking:
+        typeof params.args.blocking === "boolean"
+          ? params.args.blocking
+          : isBlockingDocumentKind(kind),
+      metadata: {
+        source: "tool_readiness_test",
+        asset_key: asset.asset_key,
+        case_type_id: params.caseType.id,
+      },
+      ...params.args,
+    };
+  }
+
+  if (params.preview) {
+    const existingPreview = await findPreferredSettingsTestDocument(params.db, {
+      caseId,
+    });
+    return params.toolId === "operational_case_extract_document_fields" &&
+      existingPreview &&
+      !cleanText(params.args.document_id)
+      ? { ...params.args, document_id: existingPreview.id }
+      : { ...params.args, case_id: caseId };
+  }
+
+  const documents = await syncSettingsTestDocumentsFromAssets(params.db, {
+    caseId,
+    userId: params.userId,
+    caseTypeId: params.caseType.id,
+    assets,
+  });
+  const preferredDocument = pickPreferredSettingsTestDocument(documents);
+
+  if (params.toolId === "operational_case_extract_document_fields") {
+    return cleanText(params.args.document_id)
+      ? params.args
+      : {
+          ...params.args,
+          document_id: preferredDocument?.id,
+        };
+  }
+  return { ...params.args, case_id: caseId };
+}
+
+async function syncSettingsTestDocumentsFromAssets(
+  db: ReturnType<typeof createServerClient>,
+  input: {
+    caseId: string;
+    userId: string;
+    caseTypeId: string;
+    assets: AccountAsset[];
+  }
+) {
+  const documents: Awaited<ReturnType<typeof listOperationalCaseDocuments>> = [];
+  for (const asset of input.assets) {
+    const kind = documentKindFromAsset(asset);
+    const metadata = {
+      source: "tool_readiness_test",
+      asset_key: asset.asset_key,
+      case_type_id: input.caseTypeId,
+    };
+    const existing = await findSettingsTestDocumentForAsset(db, {
+      caseId: input.caseId,
+      asset,
+    });
+    if (existing) {
+      documents.push(existing);
+      continue;
+    }
+    const created = await createOperationalCaseDocument(db, {
+      caseId: input.caseId,
+      userId: input.userId,
+      kind,
+      displayName: documentKindLabel(kind),
+      storageBucket: asset.storage_bucket,
+      storagePath: asset.storage_path,
+      originalName: originalNameForAsset(asset),
+      contentType: asset.content_type ?? null,
+      fileSizeBytes: asset.file_size_bytes ?? null,
+      sha256: await sha256ForAsset(db, asset),
+      source: "settings_test",
+      sourceMetadata: metadata,
+      blocking: isBlockingDocumentKind(kind),
+    });
+    documents.push(created);
+  }
+  return documents;
+}
+
+function pickPreferredSettingsTestDocument(
+  documents: Awaited<ReturnType<typeof listOperationalCaseDocuments>>
+) {
+  return (
+    documents.find(
+      (document) =>
+        document.kind === TEST_PROPERTY_DOCUMENT_KIND &&
+        document.source === "settings_test"
+    ) ??
+    documents.find((document) => document.source === "settings_test") ??
+    null
+  );
+}
+
+async function findPreferredSettingsTestDocument(
+  db: ReturnType<typeof createServerClient>,
+  input: { caseId: string }
+) {
+  const documents = await listOperationalCaseDocuments(db, {
+    caseId: input.caseId,
+    statuses: ["received"],
+  });
+  return pickPreferredSettingsTestDocument(documents);
+}
+
+async function findAnySettingsTestDocument(
+  db: ReturnType<typeof createServerClient>,
+  input: { caseId: string }
+) {
+  return findPreferredSettingsTestDocument(db, input);
+}
+
+async function findSettingsTestDocumentForAsset(
+  db: ReturnType<typeof createServerClient>,
+  input: { caseId: string; asset: AccountAsset }
+) {
+  const documents = await listOperationalCaseDocuments(db, {
+    caseId: input.caseId,
+    statuses: ["received"],
+  });
+  return (
+    documents.find((document) => {
+      const metadata = document.source_metadata_jsonb ?? {};
+      return (
+        document.source === "settings_test" &&
+        document.storage_bucket === input.asset.storage_bucket &&
+        document.storage_path === input.asset.storage_path &&
+        metadata.asset_key === input.asset.asset_key
+      );
+    }) ?? null
+  );
+}
+
 function applyUserOverrideSemantics(
   toolId: string,
   args: Record<string, unknown>,
@@ -1138,7 +1668,8 @@ function removeExactIfMinimumWasProvided(
 function toolAllowedForCaseType(
   toolId: string,
   allowedTools: readonly string[],
-  rootSkill: string
+  rootSkill: string,
+  flowTools: readonly string[] = []
 ) {
   if (
     rootSkill === "property-optioning-coach" &&
@@ -1147,7 +1678,7 @@ function toolAllowedForCaseType(
   ) {
     return false;
   }
-  return allowedTools.includes(toolId);
+  return allowedTools.includes(toolId) || flowTools.includes(toolId);
 }
 
 export async function POST(request: Request) {
@@ -1187,7 +1718,16 @@ export async function POST(request: Request) {
     const registry = await getSkillRegistryForUser(db, user.id);
     const skillRecord = registry.get(caseType.default_skill_slug);
     const allowed = skillRecord?.metadata.allowedTools ?? [];
-    if (!toolAllowedForCaseType(toolId, allowed, caseType.default_skill_slug)) {
+    const flow = await effectiveFlowForCaseType(db, caseType);
+    const flowToolIds = flattenFlow(flow).map((tool) => tool.tool_id);
+    if (
+      !toolAllowedForCaseType(
+        toolId,
+        allowed,
+        caseType.default_skill_slug,
+        flowToolIds
+      )
+    ) {
       return NextResponse.json(
         {
           error: "tool_not_allowed_for_case_type",
@@ -1214,13 +1754,51 @@ export async function POST(request: Request) {
       def,
       mode: requestedMode,
       userArgs,
+      readinessSkillSlug: cleanText(body.readiness_skill_slug) || undefined,
+      readinessFlowStepKey: cleanText(body.readiness_flow_step_key) || undefined,
     });
-    const resolvedArgs = await hydrateEasyBrokerUploadListingId({
+    let resolvedArgs = await hydrateEasyBrokerUploadListingId({
       db,
       userId: user.id,
       toolId,
       args: resolution.args,
     });
+    try {
+      resolvedArgs = await ensureSettingsTestDocumentArgs({
+        db,
+        userId: user.id,
+        caseType,
+        def,
+        toolId,
+        args: resolvedArgs,
+        caseId: resolution.case_id ?? null,
+        preview,
+        mode: requestedMode,
+      });
+    } catch (err) {
+      if (err instanceof MissingTestDocumentAssetError) {
+        return NextResponse.json(
+          {
+            ok: false,
+            executed: false,
+            tool_id: toolId,
+            dry_run: true,
+            reason: "missing_test_document_asset",
+            risk: def.risk,
+            requested_mode: requestedMode,
+            mode_used: resolution.mode_used,
+            mode_source: resolution.source,
+            case_id: resolution.case_id ?? null,
+            resolved_args: resolvedArgs,
+            error: "missing_test_document_asset",
+            hint:
+              "Sube primero el activo de prueba test_property_document. Sin ese documento, una lista vacia no valida el flujo documental.",
+          },
+          { status: 400 }
+        );
+      }
+      throw err;
+    }
 
     const controlledRealWriteRequested = body.controlled_real_write === true;
     const expectedControlledConfirmation = controlledRealWriteConfirmation(toolId);
@@ -1237,6 +1815,24 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+  if (
+    controlledRealWriteRequested &&
+    toolId === "telegram_send_message_to_contact" &&
+    (typeof resolvedArgs.chat_id !== "number" ||
+      !Number.isFinite(resolvedArgs.chat_id) ||
+      typeof resolvedArgs.text !== "string" ||
+      !resolvedArgs.text.trim())
+  ) {
+    return NextResponse.json(
+      {
+        error: "controlled_real_write_missing_telegram_args",
+        hint:
+          "Para enviar una prueba real por Telegram necesitas chat_id numérico y text. Usa Datos del caso o args avanzados.",
+        resolved_args: resolvedArgs,
+      },
+      { status: 400 }
+    );
+  }
     if (
       controlledRealWriteRequested &&
       toolId === "easybroker_upload_images" &&
@@ -1294,7 +1890,9 @@ export async function POST(request: Request) {
         hint:
           policy.reason === "medium_risk_requires_confirm"
             ? "Esta tool es de riesgo medio; envía confirm:true para ejecutarla desde la prueba individual."
-            : "Esta tool es de riesgo alto. Por seguridad sólo se ejecuta dentro del flow con HITL.",
+            : toolId === "telegram_send_message_to_contact"
+              ? "Esta tool enviaría un mensaje real a un contacto externo. En prueba individual sólo se validan los args; usa «Prueba real controlada por Telegram» con un chat de prueba, o ejecuta «Probar habilidad» / tick E2E para pasar por HITL del flow."
+              : "Esta tool es de riesgo alto. Por seguridad sólo se ejecuta dentro del flow con HITL.",
       });
     }
 
@@ -1377,10 +1975,31 @@ export async function POST(request: Request) {
     const elapsedMs = Date.now() - startedAt;
     const { parsed, text } = parseToolOutput(raw);
     const summary = summarizeResult(parsed);
-    const toolOk = summary.ok ?? (invokeError === null ? true : false);
+    const extractionEval =
+      toolId === "operational_case_extract_document_fields"
+        ? evaluateDocumentExtractionTest(parsed)
+        : null;
+    const toolOk = extractionEval
+      ? extractionEval.ok
+      : summary.ok ?? (invokeError === null ? true : false);
 
+    const ok = invokeError === null && toolOk !== false;
+    if (
+      controlledRealWriteRequested &&
+      toolId === "telegram_send_message_to_contact" &&
+      ok &&
+      resolution.case_id
+    ) {
+      const linkedCase = await getOperationalCase(db, resolution.case_id);
+      if (
+        linkedCase?.context_jsonb?.created_from === "case_type_settings_test" ||
+        linkedCase?.context_jsonb?.test_mode === true
+      ) {
+        await expireExternalContactNotificationsForCase(db, linkedCase.id);
+      }
+    }
     return NextResponse.json({
-      ok: invokeError === null && toolOk !== false,
+      ok,
       executed: true,
       tool_id: toolId,
       risk: def.risk,
@@ -1388,14 +2007,22 @@ export async function POST(request: Request) {
       reason: controlledRealWriteRequested
         ? "high_risk_controlled_real_write"
         : policy.reason,
-      hint: forceCliDryRun
+      hint: extractionEval?.hint
+        ? extractionEval.hint
+        : forceCliDryRun
         ? toolId === "ungga_publish_listing"
           ? "Dry-run completado: Playwright abrió Ungga y recorrió el wizard sin guardar borrador ni publicar. Revisa status, stages y validation_errors en el JSON."
           : "Dry-run completado: se validó el payload sin enviar escritura real a EasyBroker."
+        : controlledRealWriteRequested && !ok
+          ? toolId === "telegram_send_message_to_contact"
+            ? "Telegram no confirmó el envío. Revisa el error de la respuesta; puedes continuar con «B · Simular respuesta y procesar» para validar la actualización del caso sin enviar otro mensaje."
+            : "La prueba real controlada falló. Revisa el error de la respuesta antes de continuar."
         : controlledRealWriteRequested
-          ? toolId === "easybroker_upload_images"
-            ? "Prueba real controlada ejecutada: se intentó adjuntar las fotos al borrador indicado en EasyBroker. Revisa la ficha y elimina el borrador cuando termines de validar."
-            : "Prueba real controlada ejecutada: se intentó crear un borrador not_published en EasyBroker. Si fue exitoso, bórralo manualmente del inventario cuando termines de validar."
+          ? toolId === "telegram_send_message_to_contact"
+            ? "Prueba real controlada ejecutada: se intentó enviar el mensaje al chat_id externo indicado por Telegram."
+            : toolId === "easybroker_upload_images"
+              ? "Prueba real controlada ejecutada: se intentó adjuntar las fotos al borrador indicado en EasyBroker. Revisa la ficha y elimina el borrador cuando termines de validar."
+              : "Prueba real controlada ejecutada: se intentó crear un borrador not_published en EasyBroker. Si fue exitoso, bórralo manualmente del inventario cuando termines de validar."
         : undefined,
       requested_mode: requestedMode,
       mode_used: resolution.mode_used,

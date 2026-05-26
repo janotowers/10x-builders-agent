@@ -157,6 +157,9 @@ export async function POST(request: Request) {
       caseTypeId: caseTypeId || null,
       metadata: {
         original_name: file.name,
+        ...(cleanText(formData.get("document_kind"))
+          ? { document_kind: cleanText(formData.get("document_kind")) }
+          : {}),
       },
     });
 

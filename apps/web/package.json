@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test:business-decisions": "tsx src/lib/business-decisions/price-approval.selftest.ts",
+    "test:engagement-policies": "tsx src/lib/engagement-policies/registry.selftest.ts",
+    "test:notifications": "tsx src/lib/internal-notifications/registry.selftest.ts"
   },
   "dependencies": {
     "@agents/agent": "*",

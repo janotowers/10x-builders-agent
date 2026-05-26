@@ -15,6 +15,7 @@ import {
   type AppliedSkillDisplay,
 } from "@/lib/skill-display";
 import { formatToolForUserPanel } from "@/lib/tool-display";
+import { internalNotificationKindConfig } from "@/lib/internal-notifications/registry";
 
 interface Message {
   id?: string;
@@ -1157,6 +1158,7 @@ export function ChatInterface({
   const [notificationInputs, setNotificationInputs] = useState<Record<string, string>>({});
   const [notificationActionStatus, setNotificationActionStatus] =
     useState<Record<string, string>>({});
+  const [notificationCleanupStatus, setNotificationCleanupStatus] = useState<string | null>(null);
   const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(
     () =>
@@ -1213,6 +1215,27 @@ export function ChatInterface({
     });
     if (res.ok) {
       setNotifications((current) => current.filter((item) => item.id !== id));
+    }
+  }
+
+  async function cleanupSettingsTestNotifications() {
+    setNotificationCleanupStatus("Limpiando pendientes de prueba...");
+    const res = await fetch("/api/notifications?scope=settings-test", {
+      method: "DELETE",
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      deleted?: number;
+      error?: string;
+    };
+    if (res.ok) {
+      setNotificationCleanupStatus(
+        `Pendientes de prueba eliminados: ${data.deleted ?? 0}.`
+      );
+      await refreshNotifications();
+    } else {
+      setNotificationCleanupStatus(
+        data.error ?? "No se pudieron limpiar los pendientes de prueba."
+      );
     }
   }
 
@@ -1795,14 +1818,28 @@ export function ChatInterface({
                     Notificaciones persistentes guardadas para tu usuario web.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void refreshNotifications()}
-                  className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-white/70 dark:hover:bg-white/10"
-                >
-                  Refrescar
-                </button>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void cleanupSettingsTestNotifications()}
+                    className="rounded-full border border-rose-200 px-3 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-300/20 dark:text-rose-100 dark:hover:bg-rose-300/10"
+                  >
+                    Limpiar pruebas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refreshNotifications()}
+                    className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-white/70 dark:hover:bg-white/10"
+                  >
+                    Refrescar
+                  </button>
+                </div>
               </div>
+              {notificationCleanupStatus ? (
+                <p className="mt-2 rounded-2xl bg-slate-50 p-2 text-xs text-slate-500 dark:bg-white/5 dark:text-white/60">
+                  {notificationCleanupStatus}
+                </p>
+              ) : null}
               {notifications.length === 0 ? (
                 <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-xs text-slate-500 dark:bg-white/5 dark:text-white/60">
                   No tienes pendientes internos sin leer.
@@ -1817,8 +1854,13 @@ export function ChatInterface({
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div>
                           <p className="font-semibold text-slate-900 dark:text-white">
-                            {notification.title}
+                            {internalNotificationKindConfig(notification.kind).label}
                           </p>
+                          {notification.title !== notification.kind ? (
+                            <p className="mt-0.5 text-[11px] text-slate-400">
+                              {notification.title}
+                            </p>
+                          ) : null}
                           <p className="mt-1 text-slate-600 dark:text-white/70">
                             {notification.body}
                           </p>
