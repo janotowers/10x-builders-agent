@@ -4,7 +4,8 @@
 >
 > **Documentos relacionados**
 > - [`architecture.md`](architecture.md): explicación técnica del subsistema (sobrevive al plan).
-> - [`testing-framework.md`](testing-framework.md): marco N0–N4 de pruebas de readiness operacional.
+> - [`testing-framework.md`](testing-framework.md): marco N0–N5 de pruebas de readiness operacional.
+> - [`authoring-playbook.md`](authoring-playbook.md): playbook de diseño paso / habilidad / `current_step`.
 > - [`use-case-authoring-vision.md`](use-case-authoring-vision.md): visión NL → propuesta de caso/skill + roadmap.
 > - [`future-considerations.md`](future-considerations.md): cuándo justificar subagentes, escalar el selector de skills, migrar a un motor durable, etc.
 > - [`docs/manuals/architecture-manual.md`](../manuals/architecture-manual.md): manual técnico integrador de Gu OS.

@@ -482,12 +482,13 @@ Si es juicio comercial -> LLM prepara, humano aprueba.
 
 ## 11. Patrón de prueba UI para readiness operacional
 
-> Detalle completo: [`operational-cases/testing-framework.md`](operational-cases/testing-framework.md).
+> Detalle completo: [`operational-cases/testing-framework.md`](operational-cases/testing-framework.md) (N0–N5).
+> Modelo paso / habilidad raíz: [`operational-cases/authoring-playbook.md`](operational-cases/authoring-playbook.md).
 > Visión NL → propuesta implementable: [`operational-cases/use-case-authoring-vision.md`](operational-cases/use-case-authoring-vision.md).
 
-La UI de Preparación operativa debe distinguir tres niveles de prueba:
+La UI de Preparación operativa debe distinguir estos niveles de prueba (resumen):
 
-1. **Tool individual**
+1. **Tool individual (N1)**
    - Úsala para capacidades atómicas: búsquedas, dry-runs, validaciones o una
      integración sin dependencias de orden.
    - La acción vive en un bloque violeta y el resultado se muestra junto a la
@@ -511,11 +512,17 @@ La UI de Preparación operativa debe distinguir tres niveles de prueba:
      - `publish-listing-package` + EasyBroker: A crea borrador, B sube fotos al
        `listing_id` creado.
 
-3. **Skill E2E**
-   - Úsala para validar el contrato de negocio del paso completo: artefactos,
-     tool calls esperadas, eventos y estado del caso.
-   - No reemplaza las pruebas controladas de tools de riesgo alto; las
-     complementa.
+3. **Habilidad — N3**
+   - Un tick con habilidad atómica forzada; contrato del escenario (`test_contract`).
+   - Una prueba por habilidad declarada en el paso.
+   - No reemplaza N2 ni el cierre del hito (N4).
+
+4. **Paso — N4** *(pendiente de producto)*
+   - Habilidad raíz; valida cierre del `step_key` / orquestación entre varias habilidades.
+   - No es «encadenar todos los N3».
+
+5. **Caso — N5** *(parcial / futuro)*
+   - E2E del `case_type` completo en caso de prueba aislado.
 
 Reglas visuales:
 

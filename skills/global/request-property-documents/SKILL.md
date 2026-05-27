@@ -85,7 +85,8 @@ Más cualquier documento extra que la cuenta exija (revisa
 
 4. Si llegó respuesta del externo (`external_response`):
 
-   a. Lee el payload del evento. Si vienen documentos (URLs/IDs de fotos),
+   a. Lee el payload del evento. Si vienen documentos (URLs/IDs de archivos
+      o documentos recibidos),
       añádelos a `context_jsonb.documents_received[]`.
 
    b. Compara contra el checklist. Si ya está la hoja de escritura con
@@ -115,8 +116,8 @@ publicación de tu propiedad necesito estos documentos:
 • Escritura: primera y última hoja, si las tienes a la mano
 
 Solo los uso para verificar la propiedad y armar el contrato; no los
-comparto con nadie sin tu autorización. ¿Puedes mandarme las fotos por
-aquí cuando puedas?
+comparto con nadie sin tu autorización. ¿Puedes enviarme esos documentos
+por aquí cuando puedas?
 ```
 
 ### Recordatorio (24-72h)

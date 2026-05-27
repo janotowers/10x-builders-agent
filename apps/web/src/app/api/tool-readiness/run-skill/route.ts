@@ -25,10 +25,7 @@ import type {
 } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
-import {
-  SETTINGS_TEST_AUTO_EXECUTE_TOOLS,
-  buildSettingsTestToolApprovalPolicy,
-} from "@/lib/operational-cases/settings-test-tool-policy";
+import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
 
 export const maxDuration = 180;
 
@@ -42,13 +39,32 @@ type SkillTestContract = {
   expected_context_keys: string[];
   expected_events?: string[];
   expected_tool_calls?: string[];
+  expected_internal_tool_calls?: string[];
+  optional_tool_calls?: string[];
+  tool_coverage_policy?: "all_step_tools" | "expected_only" | "any_step_tool" | "none";
   required_tools_policy: "all_ready_and_tested" | "none";
   allow_partial_sources?: boolean;
 };
 
 const SKILL_TEST_CONTRACTS: Record<string, SkillTestContract> = {
+  "request-property-documents": {
+    expected_context_keys: [],
+    expected_events: ["reminder_sent"],
+    expected_tool_calls: [
+      "operational_case_list_documents",
+      "telegram_send_message_to_contact",
+    ],
+    expected_internal_tool_calls: [
+      "operational_case_add_event",
+      "operational_case_update_state",
+    ],
+    optional_tool_calls: ["notify_user"],
+    tool_coverage_policy: "expected_only",
+    required_tools_policy: "all_ready_and_tested",
+  },
   "perform-comparable-analysis": {
     expected_context_keys: ["comparables_analysis"],
+    tool_coverage_policy: "any_step_tool",
     required_tools_policy: "all_ready_and_tested",
     allow_partial_sources: true,
   },
@@ -56,13 +72,39 @@ const SKILL_TEST_CONTRACTS: Record<string, SkillTestContract> = {
     expected_context_keys: ["pricing_proposal"],
     expected_events: ["human_decision:price_proposed"],
     expected_tool_calls: ["notify_user"],
+    tool_coverage_policy: "expected_only",
     required_tools_policy: "none",
   },
 };
 
-const SKILL_TEST_INTERNAL_WRITE_TOOLS = new Set<string>(
-  SETTINGS_TEST_AUTO_EXECUTE_TOOLS
-);
+/** Persistencia del caso; no son tools de negocio del paso (p. ej. Telegram). */
+const SKILL_TEST_CASE_WRITE_TOOLS = new Set<string>([
+  "operational_case_update_state",
+  "operational_case_add_event",
+]);
+
+function classifySkillTestToolCalls(params: {
+  toolCalls: ToolCall[];
+  sourceToolIds: Set<string>;
+  expectedInternalToolCalls: string[];
+}) {
+  const internalIds = new Set([
+    ...SKILL_TEST_CASE_WRITE_TOOLS,
+    ...params.expectedInternalToolCalls,
+  ]);
+  const sourceToolCalls = params.toolCalls.filter((call) =>
+    params.sourceToolIds.has(call.tool_name)
+  );
+  const internalToolCalls = params.toolCalls.filter(
+    (call) =>
+      internalIds.has(call.tool_name) && !params.sourceToolIds.has(call.tool_name)
+  );
+  const otherToolCalls = params.toolCalls.filter(
+    (call) =>
+      !params.sourceToolIds.has(call.tool_name) && !internalIds.has(call.tool_name)
+  );
+  return { sourceToolCalls, internalToolCalls, otherToolCalls };
+}
 
 const RESPONSE_PREVIEW_MAX_CHARS = 6000;
 
@@ -163,12 +205,31 @@ function normalizeSkillTestContract(value: unknown): SkillTestContract | null {
         (item): item is string => typeof item === "string" && item.trim().length > 0
       )
     : undefined;
+  const internalToolCalls = Array.isArray(value.expected_internal_tool_calls)
+    ? value.expected_internal_tool_calls.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0
+      )
+    : undefined;
+  const optionalToolCalls = Array.isArray(value.optional_tool_calls)
+    ? value.optional_tool_calls.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0
+      )
+    : undefined;
+  const coveragePolicy =
+    value.tool_coverage_policy === "expected_only" ||
+    value.tool_coverage_policy === "any_step_tool" ||
+    value.tool_coverage_policy === "none"
+      ? value.tool_coverage_policy
+      : "all_step_tools";
   const policy =
     value.required_tools_policy === "none" ? "none" : "all_ready_and_tested";
   return {
     expected_context_keys: expected,
     expected_events: events,
     expected_tool_calls: toolCalls,
+    expected_internal_tool_calls: internalToolCalls,
+    optional_tool_calls: optionalToolCalls,
+    tool_coverage_policy: coveragePolicy,
     required_tools_policy: policy,
     allow_partial_sources: value.allow_partial_sources === true,
   };
@@ -406,15 +467,42 @@ function eventMatchesSpec(event: OperationalCaseEvent, spec: string) {
   return isRecord(payload) && payload.kind === expectedKind;
 }
 
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
+}
+
+function callCoversTool(call: ToolCall, toolName: string) {
+  return (
+    call.tool_name === toolName &&
+    (call.status === "executed" || call.status === "pending_confirmation")
+  );
+}
+
+function expectedSourceToolCalls(
+  contract: SkillTestContract,
+  skillToolIds: string[]
+) {
+  const optional = new Set(contract.optional_tool_calls ?? []);
+  if (contract.expected_tool_calls) {
+    return uniqueStrings(contract.expected_tool_calls);
+  }
+  if (contract.tool_coverage_policy === "none") return [];
+  if (contract.tool_coverage_policy === "expected_only") return [];
+  if (contract.tool_coverage_policy === "any_step_tool") return [];
+  return uniqueStrings(skillToolIds.filter((toolId) => !optional.has(toolId)));
+}
+
 function validateContract(
   contract: SkillTestContract,
   before: OperationalCase,
   after: OperationalCase,
   events: OperationalCaseEvent[],
-  toolCalls: ToolCall[]
+  toolCalls: ToolCall[],
+  skillToolIds: string[]
 ) {
   const context = (after.context_jsonb ?? {}) as Record<string, unknown>;
   const beforeContext = (before.context_jsonb ?? {}) as Record<string, unknown>;
+  const expected_tool_calls = expectedSourceToolCalls(contract, skillToolIds);
   const missing_context_keys = contract.expected_context_keys.filter(
     (key) => !contextHasKey(context, key)
   );
@@ -427,22 +515,39 @@ function validateContract(
   const missing_events = (contract.expected_events ?? []).filter(
     (spec) => !events.some((event) => eventMatchesSpec(event, spec))
   );
-  const missing_tool_calls = (contract.expected_tool_calls ?? []).filter(
-    (toolName) =>
-      !toolCalls.some(
-        (call) => call.tool_name === toolName && call.status === "executed"
-      )
+  const missing_tool_calls = expected_tool_calls.filter(
+    (toolName) => !toolCalls.some((call) => callCoversTool(call, toolName))
   );
+  const missing_internal_tool_calls = (
+    contract.expected_internal_tool_calls ?? []
+  ).filter(
+    (toolName) => !toolCalls.some((call) => callCoversTool(call, toolName))
+  );
+  const missing_any_tool_call =
+    contract.tool_coverage_policy === "any_step_tool" &&
+    skillToolIds.length > 0 &&
+    !skillToolIds.some((toolName) =>
+      toolCalls.some((call) => callCoversTool(call, toolName))
+    )
+      ? [`al menos una de: ${skillToolIds.join(", ")}`]
+      : [];
   return {
     ok:
       missing_context_keys.length === 0 &&
       artifact_errors.length === 0 &&
       missing_events.length === 0 &&
-      missing_tool_calls.length === 0,
+      missing_tool_calls.length === 0 &&
+      missing_internal_tool_calls.length === 0 &&
+      missing_any_tool_call.length === 0,
+    expected_tool_calls,
+    expected_internal_tool_calls: contract.expected_internal_tool_calls ?? [],
+    optional_tool_calls: contract.optional_tool_calls ?? [],
     missing_context_keys,
     created_context_keys,
     missing_events,
     missing_tool_calls,
+    missing_internal_tool_calls,
+    missing_any_tool_call,
     artifact_errors,
   };
 }
@@ -456,9 +561,31 @@ function buildSkillTestMessage(params: {
   const lines = [
     `Prueba controlada de habilidad desde Ajustes para el caso ${params.opCase.id}.`,
     `Ejecuta únicamente la habilidad ${params.skill.skill_slug} del paso ${params.stepKey}.`,
-    `Objetivo de prueba: generar o actualizar en context_jsonb estas claves: ${params.contract.expected_context_keys.join(", ")}.`,
+    params.contract.expected_context_keys.length > 0
+      ? `Objetivo de prueba: generar o actualizar en context_jsonb estas claves: ${params.contract.expected_context_keys.join(", ")}.`
+      : "Objetivo de prueba: cubrir el contrato operativo del paso aunque no haya artefacto context_jsonb nuevo.",
     "Usa las tools disponibles sólo si son necesarias. No ejecutes escrituras reales de alto riesgo sin confirmación humana; si una fuente no está disponible, registra la limitación y continúa cuando el contrato lo permita.",
   ];
+  if ((params.contract.expected_tool_calls ?? []).length > 0) {
+    lines.push(
+      `Para que la prueba pase, cubre estas tools del paso: ${params.contract.expected_tool_calls?.join(", ")}.`
+    );
+  }
+  if ((params.contract.expected_internal_tool_calls ?? []).length > 0) {
+    lines.push(
+      `También registra estas acciones internas: ${params.contract.expected_internal_tool_calls?.join(", ")}.`
+    );
+  }
+  if ((params.contract.expected_events ?? []).length > 0) {
+    lines.push(
+      `Debe quedar evidencia en eventos: ${params.contract.expected_events?.join(", ")}.`
+    );
+  }
+  if ((params.contract.optional_tool_calls ?? []).length > 0) {
+    lines.push(
+      `Estas tools son condicionales/opcionales en este escenario: ${params.contract.optional_tool_calls?.join(", ")}.`
+    );
+  }
   if (params.skill.skill_slug === "prepare-listing-price") {
     lines.push(
       "Antes de guardar pricing_proposal, calcula numeros concretos desde context_jsonb.comparables_analysis.stats.price. Si hay p25/p50/p75 disponibles, no uses placeholders ni ceros. Debes llamar notify_user con kind='price_approval' para pedir aprobacion al asesor interno. Inserta tambien operational_case_add_event con event_type='human_decision' y payload.kind='price_proposed'. Usa status='waiting_internal', no waiting_external, cuando esperas respuesta del asesor interno."
@@ -516,16 +643,19 @@ export async function POST(request: Request) {
     const flowContract = normalizeSkillTestContract(
       (located.skill as unknown as { test_contract?: unknown }).test_contract
     );
+    const skillToolIds = uniqueStrings(
+      (located.skill.skill_tools ?? []).map((tool) => tool.tool_id)
+    );
     const contract =
       flowContract ??
       SKILL_TEST_CONTRACTS[skillSlug] ?? {
         expected_context_keys: [],
+        tool_coverage_policy: "all_step_tools",
         required_tools_policy: "all_ready_and_tested",
       };
     if (contract.required_tools_policy === "all_ready_and_tested") {
-      const toolIds = (located.skill.skill_tools ?? []).map((tool) => tool.tool_id);
-      const tested = await testedToolsForUser(db, user.id, toolIds);
-      const missingTestedTools = toolIds.filter((toolId) => !tested.has(toolId));
+      const tested = await testedToolsForUser(db, user.id, skillToolIds);
+      const missingTestedTools = skillToolIds.filter((toolId) => !tested.has(toolId));
       if (missingTestedTools.length > 0) {
         return NextResponse.json(
           {
@@ -551,6 +681,8 @@ export async function POST(request: Request) {
         skill_slug: skillSlug,
         step_key: located.step.step_key,
         expected_context_keys: contract.expected_context_keys,
+        expected_tool_calls: expectedSourceToolCalls(contract, skillToolIds),
+        expected_internal_tool_calls: contract.expected_internal_tool_calls ?? [],
       },
     });
 
@@ -640,7 +772,8 @@ export async function POST(request: Request) {
       opCase,
       after,
       recentEvents,
-      toolCalls
+      toolCalls,
+      skillToolIds
     );
     const status = validation.ok
       ? "tested_ok"
@@ -650,17 +783,12 @@ export async function POST(request: Request) {
     const sourceToolIds = new Set(
       (located.skill.skill_tools ?? []).map((tool) => tool.tool_id)
     );
-    const sourceToolCalls = toolCalls.filter((call) =>
-      sourceToolIds.has(call.tool_name)
-    );
-    const internalToolCalls = toolCalls.filter((call) =>
-      SKILL_TEST_INTERNAL_WRITE_TOOLS.has(call.tool_name)
-    );
-    const otherToolCalls = toolCalls.filter(
-      (call) =>
-        !sourceToolIds.has(call.tool_name) &&
-        !SKILL_TEST_INTERNAL_WRITE_TOOLS.has(call.tool_name)
-    );
+    const { sourceToolCalls, internalToolCalls, otherToolCalls } =
+      classifySkillTestToolCalls({
+        toolCalls,
+        sourceToolIds,
+        expectedInternalToolCalls: contract.expected_internal_tool_calls ?? [],
+      });
     const toToolCallSummary = (call: ToolCall) => ({
       tool_name: call.tool_name,
       status: call.status,
@@ -690,6 +818,7 @@ export async function POST(request: Request) {
         step_key: located.step.step_key,
         status,
         validation,
+        expected_step_tools: skillToolIds,
         pending_confirmation: Boolean(agentResult.pendingConfirmation),
         deterministic_repair: deterministicRepair,
         source_tool_calls: sourceToolCalls.map(toToolCallSummary),
@@ -705,6 +834,7 @@ export async function POST(request: Request) {
       skill_slug: skillSlug,
       step_key: located.step.step_key,
       expected_context_keys: contract.expected_context_keys,
+      expected_step_tools: skillToolIds,
       validation,
       pending_confirmation: Boolean(agentResult.pendingConfirmation),
       deterministic_repair: deterministicRepair,

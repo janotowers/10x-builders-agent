@@ -64,12 +64,14 @@ import type {
   OperationalCase,
   OperationalCaseFlowStep,
   OperationalCaseFlowTool,
+  OperationalCaseIntakeField,
   OperationalCaseRequiredAsset,
   ToolDefinition,
   UserIntegration,
   UserToolSetting,
 } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import { buildTestContext } from "../../operational-case-tests/test-context-samples";
 
 type ToolRunMode = "smoke" | "case" | "manual";
 
@@ -91,6 +93,7 @@ type ToolRunBody = {
 type ToolRecipeInput = {
   ctx: Record<string, unknown>;
   testCase?: OperationalCase | null;
+  caseType?: { case_type: string; intake_schema_jsonb?: unknown };
   skillSlug?: string;
   flowStepKey?: string;
 };
@@ -128,6 +131,26 @@ const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
     current_status: "Habitable",
   },
 };
+
+function smokeDefaultsForTool(
+  toolId: string,
+  caseType: { case_type: string; intake_schema_jsonb?: unknown }
+): Record<string, unknown> {
+  if (toolId === "operational_case_create") {
+    const fields = Array.isArray(caseType.intake_schema_jsonb)
+      ? (caseType.intake_schema_jsonb as OperationalCaseIntakeField[])
+      : [];
+    return {
+      case_type: caseType.case_type,
+      context: {
+        ...buildTestContext(fields, caseType.case_type),
+        created_from: "tool_readiness_test",
+        test_mode: true,
+      },
+    };
+  }
+  return TEST_DEFAULTS[toolId] ?? {};
+}
 
 const TEST_PROPERTY_DOCUMENT_ASSET_KEY = "test_property_document";
 const TEST_PROPERTY_DOCUMENT_KIND = "escritura_descripcion";
@@ -170,10 +193,122 @@ const TOOL_TEST_ARG_RECIPES: Record<
   easybroker_upload_images: (input) =>
     easyBrokerUploadImagesCaseRecipe(input.ctx),
   ungga_publish_listing: (input) => unggaPublishCaseRecipe(input.ctx),
+  operational_case_create: operationalCaseCreateCaseRecipe,
+  operational_case_update_state: operationalCaseUpdateStateCaseRecipe,
 };
+
+/**
+ * Tools que en smoke no tienen plantilla estática útil (requieren `case_id` real).
+ * Si existe el caso aislado de Preparación operativa, smoke arma args como en
+ * Caso de prueba (recipe o match por nombre de param + `case_id`).
+ */
+const SMOKE_BINDS_TEST_CASE_WHEN_PRESENT = new Set([
+  "operational_case_update_state",
+  "operational_case_list_documents",
+  "operational_case_extract_document_fields",
+  "operational_case_register_document",
+]);
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function intakeFieldsForCaseType(
+  caseType: ToolRecipeInput["caseType"]
+): OperationalCaseIntakeField[] {
+  return Array.isArray(caseType?.intake_schema_jsonb)
+    ? (caseType.intake_schema_jsonb as OperationalCaseIntakeField[])
+    : [];
+}
+
+function intakeContextFromSettingsTestCase(input: ToolRecipeInput): Record<string, unknown> {
+  const fields = intakeFieldsForCaseType(input.caseType);
+  const base = buildTestContext(fields, input.caseType?.case_type ?? "property_optioning");
+  const intake: Record<string, unknown> = {};
+  const allowedNames = new Set(fields.map((field) => field.name));
+
+  for (const field of fields) {
+    const value = input.ctx[field.name];
+    if (value === undefined || value === null || value === "") {
+      if (base[field.name] !== undefined && base[field.name] !== "") {
+        intake[field.name] = base[field.name];
+      }
+      continue;
+    }
+    intake[field.name] = value;
+  }
+
+  // Preserva valores auxiliares que las recipes usan pero que algunos case types
+  // no declaran en intake. No copia artefactos de readiness ni historial del caso.
+  for (const key of ["condition", "age_range", "current_status", "address", "currency"]) {
+    if (!allowedNames.has(key) && input.ctx[key] != null && input.ctx[key] !== "") {
+      intake[key] = input.ctx[key];
+    } else if (!allowedNames.has(key) && base[key] != null && base[key] !== "") {
+      intake[key] = base[key];
+    }
+  }
+  return intake;
+}
+
+/**
+ * Deriva `case_type` + `context` desde el caso de prueba de Preparación operativa.
+ * Crea una instancia nueva (no reutiliza el caso aislado de settings).
+ */
+function operationalCaseCreateCaseRecipe(
+  input: ToolRecipeInput
+): Record<string, unknown> {
+  const caseType =
+    typeof input.testCase?.case_type === "string" && input.testCase.case_type.trim()
+      ? input.testCase.case_type.trim()
+      : typeof input.caseType?.case_type === "string" && input.caseType.case_type.trim()
+        ? input.caseType.case_type.trim()
+        : typeof input.ctx.case_type === "string" && input.ctx.case_type.trim()
+          ? String(input.ctx.case_type).trim()
+        : "property_optioning";
+  const intake = intakeContextFromSettingsTestCase(input);
+  const args: Record<string, unknown> = {
+    case_type: caseType,
+    context: {
+      ...intake,
+      created_from: "tool_readiness_test",
+      test_mode: true,
+    },
+  };
+  const chatId = firstNumber(input.ctx, ["telegram_chat_id"]);
+  const displayName =
+    firstString(input.ctx, ["owner_name", "lead_name", "contact_name"]) ??
+    "Contacto de prueba";
+  const external = input.testCase?.external_contact_jsonb;
+  if (Number.isFinite(chatId)) {
+    args.external_contact = {
+      channel: "telegram",
+      chat_id: chatId,
+      display_name: displayName,
+    };
+  } else if (external && typeof external === "object") {
+    args.external_contact = external;
+  }
+  return args;
+}
+
+/** Args mínimos para validar `operational_case_update_state` contra el caso de prueba. */
+function operationalCaseUpdateStateCaseRecipe(
+  input: ToolRecipeInput
+): Record<string, unknown> {
+  const testCase = input.testCase;
+  if (!testCase) return {};
+  const args: Record<string, unknown> = {
+    case_id: testCase.id,
+    expected_version: testCase.version,
+  };
+  if (testCase.current_step === "intake" || testCase.current_step == null) {
+    args.current_step = "awaiting_documents";
+    args.status = "active";
+    args.context_patch = {
+      intake_validated_by: "tool_readiness_test",
+    };
+  }
+  return args;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1239,6 +1374,7 @@ async function resolveArgsForMode(params: {
       derived = recipe({
         ctx,
         testCase,
+        caseType,
         skillSlug: readinessSkillSlug,
         flowStepKey: readinessFlowStepKey,
       });
@@ -1278,9 +1414,49 @@ async function resolveArgsForMode(params: {
     };
   }
 
+  if (SMOKE_BINDS_TEST_CASE_WHEN_PRESENT.has(toolId)) {
+    const testCase = await loadLatestTestCase(db, userId, caseType.id);
+    if (testCase) {
+      const ctx = (testCase.context_jsonb ?? {}) as Record<string, unknown>;
+      const recipe = TOOL_TEST_ARG_RECIPES[toolId];
+      const derived = recipe
+        ? recipe({
+            ctx,
+            testCase,
+            caseType,
+            skillSlug: readinessSkillSlug,
+            flowStepKey: readinessFlowStepKey,
+          })
+        : (() => {
+            const fromContext = genericArgsFromContext(def, ctx);
+            if (!fromContext.case_id) fromContext.case_id = testCase.id;
+            return fromContext;
+          })();
+      const normalized = applyUserOverrideSemantics(
+        toolId,
+        { ...(TEST_DEFAULTS[toolId] ?? {}), ...derived, ...userArgs },
+        userArgs
+      );
+      return {
+        args: await applyTestAssetsToArgs({
+          db,
+          userId,
+          caseType,
+          def,
+          toolId,
+          args: normalized,
+        }),
+        mode_used: "smoke",
+        source: "smoke_bound_test_case",
+        case_id: testCase.id,
+        case_context_sample: ctx,
+      };
+    }
+  }
+
   const normalized = applyUserOverrideSemantics(
     toolId,
-    { ...(TEST_DEFAULTS[toolId] ?? {}), ...userArgs },
+    { ...smokeDefaultsForTool(toolId, caseType), ...userArgs },
     userArgs
   );
   return {

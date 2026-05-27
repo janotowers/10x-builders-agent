@@ -3,7 +3,7 @@
 > Este documento sobrevive al plan. Describe **cómo funciona** el subsistema una vez implementado, separado del plan de ejecución y de las decisiones temporales.
 >
 > Plan asociado: [`plan.md`](plan.md). Consideraciones futuras: [`future-considerations.md`](future-considerations.md).
-> Marco de pruebas: [`testing-framework.md`](testing-framework.md). Visión de autoría NL: [`use-case-authoring-vision.md`](use-case-authoring-vision.md).
+> Marco de pruebas: [`testing-framework.md`](testing-framework.md) (N0–N5). **Playbook de autoría:** [`authoring-playbook.md`](authoring-playbook.md). Visión de autoría NL: [`use-case-authoring-vision.md`](use-case-authoring-vision.md).
 
 ---
 
@@ -55,6 +55,21 @@ flowchart TB
 - **Tipo de caso (`operational_case_types`)** define el "qué procedimiento es" (`property_optioning`, `lead_qualification`, etc.) y a qué skill compuesta apunta por default.
 - **Instancia (`operational_cases`)** es la unidad viva. Tiene estado, paso actual, deadline, contexto y versión para optimistic locking.
 - **Eventos (`operational_case_events`)** son la historia append-only. Reconstrucción completa siempre disponible.
+
+### 2.1 Paso del flujo, habilidad raíz y `current_step`
+
+Detalle completo, ejemplos y criterios de autoría: [`authoring-playbook.md`](authoring-playbook.md).
+
+| Concepto | Dónde | Rol |
+|----------|--------|-----|
+| **Habilidad raíz** (compuesta) | `operational_case_types.default_skill_slug` | Única habilidad que el cron invoca por `case_type` (p. ej. `property-optioning-coach`). |
+| **Paso del flujo** | `operational_flow_jsonb[]` con `step_key` | Hito de negocio para UI, readiness y pruebas; `step_key` = valores posibles de `current_step`. |
+| **Habilidades del paso** | `step_skills[]` (atómicas, 0..n) | Catálogo de comportamientos del hito; la raíz elige cuál aplicar según estado — **no** es cola automática del array. |
+| **`current_step`** | `operational_cases` | Puntero al hito (`step_key`), no al slug de una habilidad. |
+| **`status`** | `operational_cases` | Modo del motor (`active`, `waiting_external`, …). |
+| **`context_jsonb`** | `operational_cases` | Sub-progreso dentro del hito (flags, artefactos parciales). |
+
+`operational_flow_jsonb` documenta y prueba; **no** sustituye la orquestación en el `SKILL.md` de la habilidad raíz.
 
 ---
 
@@ -343,7 +358,7 @@ cuenta** cuando aplica.
 | `POST /api/account-tool-secrets/[provider]/test` | Prueba de conexión por provider (API ping o sesión Playwright según provider); actualiza `status` y puede cerrar solicitudes abiertas en `global_tool_requests` para tools cubiertas por ese provider. |
 | `global_tool_requests` | Migración `00023_global_tool_requests.sql`. Backlog cuando falta capacidad global o recurso de tenant; `GET/POST /api/global-tool-requests`. |
 | `operational-case-tests` + `run-tool` | Casos de prueba por `case_type` con contexto de muestra (`test-context-samples.ts`); `POST …/run-tool` ejecuta una tool con args derivados del caso (opcional `case_id` para no usar siempre el último). |
-| UI Casos de uso | **Preparación operativa**: revisar lista, expandir tool, conectar providers inline (mismo form que Ajustes), probar tool con vista previa legible de resultados. **Checks de activación**: checklist alineada con bloqueos de readiness. Patrones N1/N2/N3 y guía de batería: [`testing-framework.md`](testing-framework.md). |
+| UI Casos de uso | **Preparación operativa**: revisar lista, expandir tool, conectar providers inline (mismo form que Ajustes), probar tool con vista previa legible de resultados. **Checks de activación**: checklist alineada con bloqueos de readiness. Marco N0–N5: [`testing-framework.md`](testing-framework.md). Modelo de autoría: [`authoring-playbook.md`](authoring-playbook.md). |
 | UI Ajustes | **Conexiones** agrupa OAuth/vínculo (Google, GitHub, Telegram) y **Credenciales por cuenta** (API keys/tokens/credenciales web cifrados). |
 | POC Playwright | `pocs/easybroker-mls-cli/` y `pocs/ungga-cli/`; instalar browsers con `npm run setup:pocs` en la raíz del monorepo. |
 

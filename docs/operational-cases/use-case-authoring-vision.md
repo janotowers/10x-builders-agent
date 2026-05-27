@@ -3,7 +3,8 @@
 > **Estado:** v1.0 — documento de visión y roadmap; no describe comportamiento ya implementado al 100%.
 >
 > **Documentos relacionados**
-> - [`testing-framework.md`](testing-framework.md) — marco operativo N0–N4 para validar lo que se proponga o implemente.
+> - [`authoring-playbook.md`](authoring-playbook.md) — **playbook obligatorio** para diseñar pasos, habilidad raíz, `current_step` y pruebas.
+> - [`testing-framework.md`](testing-framework.md) — marco operativo N0–N5 para validar lo que se proponga o implemente.
 > - [`architecture.md`](architecture.md) — subsistema de casos operacionales.
 > - [`../skills-tools-architecture.md`](../skills-tools-architecture.md) — skills, tools, wrappers, HITL.
 > - Skill global `skills/global/skill-authoring/SKILL.md` — contrato del agente de autoría.
@@ -17,7 +18,7 @@ La meta es que un usuario inmobiliario describa un proceso en **lenguaje natural
 - clasificación de forma (caso operacional vs skill de un turno);
 - pasos, skills compuestas y atómicas, tools por paso;
 - mecanismos (HITL, esperas externas, recordatorios, deadlines);
-- esquema de pruebas alineado al [marco N0–N4](testing-framework.md);
+- esquema de pruebas alineado al [marco N0–N5](testing-framework.md) y al [playbook de autoría](authoring-playbook.md);
 - gaps explícitos contra el catálogo existente.
 
 **Principio de producto:** propuesta → revisión humana → pruebas de readiness → activación controlada.
@@ -50,7 +51,7 @@ flowchart TD
   Q -->|Síncrono, bajo riesgo, un turno| SK[Skill compuesta / atómica]
   OC --> OCT[operational_case_types + flow + cron]
   SK --> SKT[account_skill o global + allowed_tools]
-  OC --> TST[Esquema N0–N4]
+  OC --> TST[Esquema N0–N5]
   SK --> TST2[Esquema N0–N1 + evals]
   TST --> REV[Revisión humana]
   TST2 --> REV
@@ -200,7 +201,8 @@ Nada de lo generado se activa sin:
 | Generación asistida LLM | `POST /api/skill-authoring` + skill `skill-authoring` | Media — skill, flow, rúbrica, evals |
 | Propuesta heartbeat NL | `generateHeartbeatChecklistProposal()` en `packages/agent/src/heartbeat/checklist.ts` | Baja — reglas/heurísticas |
 | UI readiness N1/N2/N3 | Preparación operativa | Media-alta — patrones concretos |
-| Marco de prueba documentado | [`testing-framework.md`](testing-framework.md) | v1.0 |
+| Playbook paso / habilidad / estado | [`authoring-playbook.md`](authoring-playbook.md) | v1.0 |
+| Marco de prueba documentado | [`testing-framework.md`](testing-framework.md) | v1.1 (N0–N5) |
 | Catálogo tools/skills | `TOOL_CATALOG`, registry global + account | Alta |
 | Caso piloto referencia | `property_optioning` | Alta — plantilla de realidad |
 
@@ -241,7 +243,7 @@ Nada de lo generado se activa sin:
 
 - Extender `/api/skill-authoring` (o endpoint hermano) para emitir `testPlan` + `classification`.
 - Validador de gaps contra `TOOL_CATALOG` y skills registry.
-- UI Casos de uso: pestaña «Propuesta» con checklist N0–N3 generado editable.
+- UI Casos de uso: pestaña «Propuesta» con checklist N0–N5 generado editable (N4/N5 según madurez).
 
 **Entregable:** NL → propuesta estructurada + plan de prueba en un flujo.
 
@@ -256,7 +258,7 @@ Nada de lo generado se activa sin:
 
 ### Anillo 5 — E2E y mejora continua (largo plazo)
 
-- N4 automatizado por case type.
+- N4 (prueba de paso) y N5 (caso E2E) automatizados por case type.
 - Evals en CI derivados de `suggestedEvals`.
 - Feedback loop: fallos en producción → actualización de patrones/rúbrica.
 
@@ -380,4 +382,5 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 | Skill authoring | `skills/global/skill-authoring/SKILL.md` |
 | Heartbeat NL heurístico | `packages/agent/src/heartbeat/checklist.ts` |
 | Marco de prueba | [`testing-framework.md`](testing-framework.md) |
+| Playbook de autoría | [`authoring-playbook.md`](authoring-playbook.md) |
 | Arquitectura casos | [`architecture.md`](architecture.md) |

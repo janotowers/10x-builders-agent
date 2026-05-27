@@ -20,6 +20,8 @@ import type {
 } from "@agents/types";
 import { AccountToolConnectionForm } from "@/components/account-tool-connection-form";
 import type { OwnerResponseBusinessOutcome } from "@/lib/operational-cases/evaluate-owner-response-outcome";
+import { stepTestAvailable } from "@/lib/operational-cases/step-test-scenarios";
+import { stringifyToolArgsForDisplay } from "@/lib/tool-readiness/format-args-for-display";
 
 const DEFAULT_INTAKE_SCHEMA: OperationalCaseIntakeField[] = [
   {
@@ -1247,13 +1249,29 @@ const MODE_LABELS: Record<ToolTestMode, string> = {
 
 const MODE_DESCRIPTIONS: Record<ToolTestMode, string> = {
   smoke:
-    "Args mínimos genéricos. Valida que la integración responde, no que los resultados sean comparables al caso.",
+    "Args mínimos genéricos (plantilla). Si la tool requiere caso aislado y existe, smoke puede enlazar case_id automáticamente. La tool recibe únicamente el JSON mostrado.",
   case:
-    "Args derivados del caso aislado creado en Preparación operativa y de sus activos de prueba.",
+    "Args armados desde el contexto del caso aislado de Preparación operativa (más overrides en Avanzado). La tool recibe sólo ese JSON resuelto, no un formulario paralelo en runtime.",
 };
+
+function documentToolReadinessHint(toolId: string, flowStepKey?: string) {
+  switch (toolId) {
+    case "operational_case_list_documents":
+      return flowStepKey === "awaiting_documents"
+        ? "Lista documentos del caso. Si cargaste Activos de prueba, la ejecución puede sincronizar el PDF al caso antes de listar."
+        : "Lista documentos recibidos y su estado de extracción para confirmar evidencia usable.";
+    case "operational_case_extract_document_fields":
+      return "Extrae campos visibles del documento. Si falta document_id en args, se usa el documento de prueba preferido del caso.";
+    case "operational_case_register_document":
+      return "Registra en el caso el archivo subido en Activos de prueba.";
+    default:
+      return null;
+  }
+}
 
 const MODE_SOURCE_LABELS: Record<string, string> = {
   smoke_defaults: "smoke defaults",
+  smoke_bound_test_case: "smoke con caso de prueba (case_id + versión)",
   manual_user_args: "args manuales",
   flow_test_inputs_mapping: "mapping del flow",
   tool_recipe: "recipe por tool",
@@ -1746,6 +1764,21 @@ function ToolTestPanel({
         throw new Error(data.error ?? "No se pudo ejecutar la prueba.");
       }
       setResponse(data);
+      if (data.resolved_args && Object.keys(data.resolved_args).length > 0) {
+        setPreview({
+          ok: true,
+          executed: false,
+          tool_id: item.tool_id,
+          risk: data.risk ?? "medium",
+          dry_run: true,
+          reason: "preview_only",
+          requested_mode: mode,
+          mode_used: data.mode_used ?? mode,
+          mode_source: data.mode_source,
+          case_id: data.case_id ?? caseId ?? null,
+          resolved_args: data.resolved_args,
+        });
+      }
       if (
         item.tool_id === "easybroker_create_listing" &&
         data.executed === true &&
@@ -1810,15 +1843,10 @@ function ToolTestPanel({
     isTelegramContactTool &&
     !isCharacteristicsTelegramScenario &&
     !isDocumentRequestTelegramScenario;
-  const isDocumentRegisterScenario =
-    item.tool_id === "operational_case_register_document";
-  const isDocumentExtractScenario =
-    item.tool_id === "operational_case_extract_document_fields";
-  const isDocumentListScenario = item.tool_id === "operational_case_list_documents";
-  const isDocumentGuidedScenario =
-    isDocumentRegisterScenario ||
-    isDocumentExtractScenario ||
-    isDocumentListScenario;
+  const documentToolHint = documentToolReadinessHint(
+    item.tool_id,
+    readinessFlowStepKey
+  );
   const showTelegramGuidedScenario =
     isTelegramContactTool &&
     hasTestCase &&
@@ -1849,21 +1877,6 @@ function ToolTestPanel({
     controlledSendResponse?.executed === true &&
     controlledSendResponse.ok === true &&
     controlledSendResponse.reason === "high_risk_controlled_real_write";
-  const documentScenarioTitle = isDocumentRegisterScenario
-    ? "A · Registrar documento de prueba"
-    : isDocumentExtractScenario
-      ? "B · Extraer datos del documento"
-      : isDocumentListScenario
-        ? "C · Verificar documentos del caso"
-        : null;
-  const documentScenarioDescription = isDocumentRegisterScenario
-    ? "Registra en el caso aislado el PDF/imagen de prueba cargado en Activos de prueba."
-    : isDocumentExtractScenario
-      ? "Extrae campos visibles del documento del caso; si falta document_id, se usa el documento de prueba preferido."
-      : isDocumentListScenario
-        ? "Lista documentos recibidos y su estado de extracción para confirmar que el caso tiene evidencia usable."
-        : null;
-
   const controlledWriteTitle = isCharacteristicsTelegramScenario
     ? "B · Enviar mensaje de prueba por Telegram"
     : isDocumentRequestTelegramScenario
@@ -2003,6 +2016,28 @@ function ToolTestPanel({
         })}
       </div>
       <p className="text-[11px] text-neutral-500">{MODE_DESCRIPTIONS[mode]}</p>
+      {item.tool_id === "operational_case_create" ? (
+        <p className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">
+          Esta prueba crea un caso real adicional en{" "}
+          <span className="font-mono">operational_cases</span> (contexto{" "}
+          <span className="font-mono">created_from=tool_readiness_test</span>). No
+          reemplaza el caso aislado de Preparación operativa
+          {caseId ? (
+            <>
+              {" "}
+              (<span className="font-mono break-all">{caseId}</span>)
+            </>
+          ) : null}
+          . Repetir la prueba genera más filas de prueba; el caso aislado sigue
+          siendo el que alimenta el resto del flow. Los args se muestran con
+          claves ordenadas (alfabético dentro de context) para comparar Smoke vs
+          Caso de prueba a simple vista.
+        </p>
+      ) : null}
+      <p className="text-[10px] text-neutral-500">
+        Vista previa: claves ordenadas para comparar modos (mismos valores, orden
+        estable). Lo enviado a la tool es exactamente el JSON mostrado.
+      </p>
       {mode === "case" && !hasTestCase ? (
         <p className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
           Aún no hay caso de prueba. Crea uno desde &quot;Caso de prueba y
@@ -2017,14 +2052,19 @@ function ToolTestPanel({
               fuente: {MODE_SOURCE_LABELS[preview.mode_source ?? ""] ?? preview.mode_source ?? "—"}
             </span>
             {preview.case_id ? (
-              <span className="text-violet-700">caso: {preview.case_id.slice(0, 8)}…</span>
+              <span
+                className="break-all font-mono text-[10px] text-violet-700"
+                title="Caso de prueba de Preparación operativa (fuente de args en modo Caso de prueba)"
+              >
+                caso: {preview.case_id}
+              </span>
             ) : null}
             {previewing ? (
               <span className="text-violet-700">recalculando…</span>
             ) : null}
           </div>
           <pre className="mt-1 overflow-x-auto rounded bg-white/70 p-1 font-mono text-[11px]">
-            {JSON.stringify(preview.resolved_args, null, 2)}
+            {stringifyToolArgsForDisplay(preview.resolved_args)}
           </pre>
           {preview.requested_mode === "case" && preview.mode_used === "smoke" ? (
             <p className="mt-1 text-violet-700">
@@ -2053,8 +2093,6 @@ function ToolTestPanel({
             ? "Validando..."
             : showTelegramGuidedScenario
               ? `Validar mensaje (${MODE_LABELS[mode]})`
-              : isDocumentGuidedScenario
-                ? `${documentScenarioTitle ?? "Probar documento"} (${MODE_LABELS[mode]})`
               : `Probar tool (${MODE_LABELS[mode]})`}
         </button>
         <button
@@ -2212,7 +2250,7 @@ function ToolTestPanel({
               Args enviados a la tool
             </summary>
             <pre className="mx-2 mb-2 overflow-x-auto rounded border border-neutral-200 bg-white p-2 font-mono text-[11px]">
-              {JSON.stringify(response.resolved_args, null, 2)}
+              {stringifyToolArgsForDisplay(response.resolved_args)}
             </pre>
           </details>
           {response.summary?.preview &&
@@ -2290,8 +2328,6 @@ function ToolTestPanel({
               ? "Prueba solicitud de documentos"
             : isGenericTelegramGuidedScenario
               ? "Prueba de mensaje a contacto externo"
-            : isDocumentGuidedScenario
-              ? "Prueba documental del caso"
             : "Prueba individual de tool"}
         </div>
         <span className="text-[11px] text-neutral-500">Riesgo: {riskLabel(item.risk)}</span>
@@ -2352,32 +2388,15 @@ function ToolTestPanel({
           </div>
           {controlledWriteSection}
         </>
-      ) : isDocumentGuidedScenario ? (
-        <>
-          <p className="text-[11px] text-neutral-600">
-            Este sub-paso valida la cadena documental del caso de prueba:
-            registrar evidencia, extraer campos y verificar que el caso pueda
-            consultar documentos recibidos.
-          </p>
-          <div className="rounded border-2 border-violet-400 bg-violet-50/90 p-3 text-xs shadow-sm dark:border-violet-700 dark:bg-violet-950/40">
-            <div className="font-semibold text-violet-950 dark:text-violet-100">
-              {documentScenarioTitle}
-            </div>
-            {documentScenarioDescription ? (
-              <p className="mt-1 text-[11px] text-violet-900 dark:text-violet-200">
-                {documentScenarioDescription}
-              </p>
-            ) : null}
-            <div className="mt-2 space-y-2">{technicalValidationSection}</div>
-            {responseSection ? <div className="mt-2">{responseSection}</div> : null}
-          </div>
-        </>
       ) : (
         <>
           <p className="text-[11px] text-neutral-600">
             Valida la tool en aislamiento. Elige cómo construir los args y revisa
             el resultado antes de correr el flow completo.
           </p>
+          {documentToolHint ? (
+            <p className="text-[11px] text-neutral-500">{documentToolHint}</p>
+          ) : null}
           {technicalValidationSection}
           {controlledWriteSection}
         </>
@@ -2393,9 +2412,7 @@ function ToolTestPanel({
           {error}
         </p>
       ) : null}
-      {!showTelegramGuidedScenario && !isDocumentGuidedScenario && responseSection
-        ? responseSection
-        : null}
+      {!showTelegramGuidedScenario && responseSection ? responseSection : null}
     </div>
   );
 }
@@ -2832,12 +2849,18 @@ type SkillTestResponse = {
   skill_slug: string;
   step_key: string;
   expected_context_keys: string[];
+  expected_step_tools?: string[];
   validation?: {
     ok: boolean;
+    expected_tool_calls?: string[];
+    expected_internal_tool_calls?: string[];
+    optional_tool_calls?: string[];
     missing_context_keys: string[];
     created_context_keys: string[];
     missing_events?: string[];
     missing_tool_calls?: string[];
+    missing_internal_tool_calls?: string[];
+    missing_any_tool_call?: string[];
     artifact_errors?: string[];
   };
   pending_confirmation?: boolean;
@@ -2924,7 +2947,29 @@ function SkillTestPanel({
   const missingContextKeys = response?.validation?.missing_context_keys ?? [];
   const missingEvents = response?.validation?.missing_events ?? [];
   const missingToolCalls = response?.validation?.missing_tool_calls ?? [];
+  const missingInternalToolCalls =
+    response?.validation?.missing_internal_tool_calls ?? [];
+  const missingAnyToolCall = response?.validation?.missing_any_tool_call ?? [];
   const artifactErrors = response?.validation?.artifact_errors ?? [];
+  const expectedToolCalls = response?.validation?.expected_tool_calls ?? [];
+  const expectedInternalToolCalls =
+    response?.validation?.expected_internal_tool_calls ?? [];
+  const optionalToolCalls = response?.validation?.optional_tool_calls ?? [];
+  const coveredExpectedToolCount = expectedToolCalls.filter((toolName) =>
+    sourceToolCalls.some(
+      (call) =>
+        call.tool_name === toolName &&
+        (call.status === "executed" || call.status === "pending_confirmation")
+    )
+  ).length;
+  const coveredExpectedInternalToolCount = expectedInternalToolCalls.filter(
+    (toolName) =>
+      internalToolCalls.some(
+        (call) =>
+          call.tool_name === toolName &&
+          (call.status === "executed" || call.status === "pending_confirmation")
+      )
+  ).length;
   const statusLabel =
     response?.pending_confirmation && response.status === "tested_ok"
       ? "Probada con acción externa pendiente"
@@ -2966,7 +3011,7 @@ function SkillTestPanel({
         <div>
           <div className="font-semibold text-violet-950">Prueba de habilidad</div>
           <p className="text-violet-800">
-            Valida que este paso produzca su artefacto de negocio esperado.
+            Valida un escenario de esta habilidad dentro del paso (N3).
           </p>
         </div>
         <button
@@ -3008,20 +3053,44 @@ function SkillTestPanel({
           </div>
           <p className="text-neutral-700">
             {response.ok && response.pending_confirmation
-              ? "La habilidad llegó a la acción externa esperada y el contrato de prueba quedó cumplido. Por seguridad, la acción real quedó preparada pero no se envió desde la prueba de habilidad."
+              ? "La habilidad cubrió el contrato operativo esperado. Por seguridad, alguna acción externa quedó preparada pero no enviada desde la prueba de habilidad."
               : response.ok
-              ? "La habilidad produjo el artefacto esperado y el contrato quedo cumplido."
+              ? "La habilidad cubrió el contrato del escenario esperado."
               : response.pending_confirmation
-                ? "Las tools pudieron ejecutarse, pero falta confirmar una accion interna para guardar el artefacto en el caso de prueba."
-                : "La habilidad no alcanzo el artefacto esperado; revisa la respuesta del agente y las tools llamadas."}
+                ? "La habilidad llegó a una acción pendiente, pero todavía no cubrió todo el contrato operativo esperado."
+                : "La habilidad no cubrió el contrato operativo esperado; revisa respuesta, eventos y tools llamadas."}
           </p>
           {response.validation ? (
-            <p className="text-neutral-700">
-              Artefactos esperados: {response.expected_context_keys.join(", ") || "n/d"}.
-              {missingContextKeys.length > 0
-                ? ` Faltan: ${missingContextKeys.join(", ")}.`
-                : " Contrato cumplido."}
-            </p>
+            <div className="space-y-1 text-neutral-700">
+              <p>
+                Artefactos esperados:{" "}
+                {response.expected_context_keys.join(", ") || "n/d"}.
+                {missingContextKeys.length > 0
+                  ? ` Faltan: ${missingContextKeys.join(", ")}.`
+                  : " OK."}
+              </p>
+              <p>
+                Tools de negocio:{" "}
+                {expectedToolCalls.length > 0
+                  ? `${coveredExpectedToolCount}/${expectedToolCalls.length}`
+                  : "n/d"}
+                {expectedToolCalls.length > 0
+                  ? ` (${expectedToolCalls.join(", ")})`
+                  : ""}
+                .
+              </p>
+              {expectedInternalToolCalls.length > 0 ? (
+                <p>
+                  Acciones internas esperadas:{" "}
+                  {coveredExpectedInternalToolCount}/
+                  {expectedInternalToolCalls.length} (
+                  {expectedInternalToolCalls.join(", ")}).
+                </p>
+              ) : null}
+              {optionalToolCalls.length > 0 ? (
+                <p>Tools condicionales/opcionales: {optionalToolCalls.join(", ")}.</p>
+              ) : null}
+            </div>
           ) : null}
           {response.deterministic_repair?.applied ? (
             <p className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
@@ -3054,44 +3123,56 @@ function SkillTestPanel({
               Tools obligatorias no ejecutadas: {missingToolCalls.join(", ")}.
             </p>
           ) : null}
-          {sourceToolCalls.length > 0 ? (
-            <p className="text-neutral-600">
-              {pendingSourceToolCount > 0
-                ? `Acciones de la habilidad preparadas o ejecutadas: ${preparedSourceToolCount}/${sourceToolCalls.length}. ${pendingSourceToolCount} quedaron sin enviar por seguridad.`
-                : `Tools de la habilidad ejecutadas correctamente: ${executedSourceToolCount}/${sourceToolCalls.length}.`}
+          {missingInternalToolCalls.length > 0 ? (
+            <p className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
+              Acciones internas obligatorias no ejecutadas:{" "}
+              {missingInternalToolCalls.join(", ")}.
+            </p>
+          ) : null}
+          {missingAnyToolCall.length > 0 ? (
+            <p className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
+              Cobertura mínima de tools faltante: {missingAnyToolCall.join(", ")}.
             </p>
           ) : null}
           {contributionSummary ? (
             <p className="text-neutral-600">{contributionSummary}</p>
           ) : null}
-          {sourceToolCalls.length ? (
-            <p className="text-neutral-600">
-              Tools de la habilidad:{" "}
-              {sourceToolCalls
-                .map((call) => `${call.tool_name}:${call.status}`)
-                .join(", ")}
-            </p>
-          ) : null}
-          {internalToolCalls.length ? (
-            <div className="text-neutral-600">
-              <p>Acciones internas: artefacto guardado y caso actualizado.</p>
-              <details className="mt-1">
-                <summary className="cursor-pointer font-semibold">
-                  Ver detalle tecnico de las acciones internas
-                </summary>
-                {internalToolCalls
-                  .map((call) => `${call.tool_name}:${call.status}`)
-                  .join(", ")}
-              </details>
-            </div>
-          ) : null}
-          {otherToolCalls.length ? (
-            <p className="text-neutral-600">
-              Otras tools:{" "}
-              {otherToolCalls
-                .map((call) => `${call.tool_name}:${call.status}`)
-                .join(", ")}
-            </p>
+          {sourceToolCalls.length > 0 ||
+          internalToolCalls.length > 0 ||
+          otherToolCalls.length > 0 ? (
+            <details className="text-neutral-600">
+              <summary className="cursor-pointer font-semibold text-violet-900">
+                Ver detalle tecnico de tools llamadas
+              </summary>
+              <div className="mt-1 space-y-1 font-mono text-[10px]">
+                {sourceToolCalls.length > 0 ? (
+                  <p>
+                    {pendingSourceToolCount > 0
+                      ? `Negocio (${preparedSourceToolCount}/${sourceToolCalls.length}, ${pendingSourceToolCount} sin enviar): `
+                      : `Negocio (${executedSourceToolCount}/${sourceToolCalls.length}): `}
+                    {sourceToolCalls
+                      .map((call) => `${call.tool_name}:${call.status}`)
+                      .join(", ")}
+                  </p>
+                ) : null}
+                {internalToolCalls.length > 0 ? (
+                  <p>
+                    Persistencia:{" "}
+                    {internalToolCalls
+                      .map((call) => `${call.tool_name}:${call.status}`)
+                      .join(", ")}
+                  </p>
+                ) : null}
+                {otherToolCalls.length > 0 ? (
+                  <p>
+                    Otras:{" "}
+                    {otherToolCalls
+                      .map((call) => `${call.tool_name}:${call.status}`)
+                      .join(", ")}
+                  </p>
+                ) : null}
+              </div>
+            </details>
           ) : null}
           {artifactEntries.length ? (
             <details>
@@ -3115,6 +3196,185 @@ function SkillTestPanel({
                 </p>
               ) : null}
               <pre className="mt-1 max-h-52 overflow-auto rounded bg-white p-2 font-mono">
+                {response.response_preview}
+              </pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type StepTestResponse = {
+  ok: boolean;
+  status: "tested_ok" | "tested_failed" | "partial";
+  step_key: string;
+  scenario_id: string;
+  scenario_label: string;
+  root_skill_slug: string;
+  validation?: {
+    ok: boolean;
+    missing_context_keys?: string[];
+    missing_events?: string[];
+    wrong_current_step?: string[];
+    wrong_status?: string[];
+    actual_current_step?: string | null;
+    actual_status?: string;
+  };
+  pending_confirmation?: boolean;
+  response_preview?: string | null;
+  response_preview_truncated?: boolean;
+  tool_calls?: Array<{ tool_name: string; status: string }>;
+  error?: string;
+  hint?: string;
+};
+
+function StepTestPanel({
+  step,
+  row,
+  caseTypeSlug,
+  hasTestCase,
+  caseId,
+  onFinished,
+}: {
+  step: ToolReadinessFlowStep;
+  row: OperationalCaseType;
+  caseTypeSlug: string;
+  hasTestCase: boolean;
+  caseId?: string | null;
+  onFinished: () => Promise<void>;
+}) {
+  const [running, setRunning] = useState(false);
+  const [response, setResponse] = useState<StepTestResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const available = stepTestAvailable(caseTypeSlug, step.step_key);
+  if (!available) return null;
+
+  const statusLabel =
+    response?.pending_confirmation && response.status === "tested_ok"
+      ? "Paso probado con acción pendiente"
+      : response
+        ? stepTestStatusLabel(
+            response.status === "tested_ok"
+              ? "tested_ok"
+              : response.status === "partial"
+                ? "partially_tested"
+                : "tested_failed"
+          )
+        : "";
+
+  async function runStep() {
+    setRunning(true);
+    setError(null);
+    setResponse(null);
+    try {
+      const res = await fetch("/api/tool-readiness/run-step", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          case_type_id: row.id,
+          case_id: caseId ?? undefined,
+          step_key: step.step_key,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as StepTestResponse;
+      if (!res.ok) {
+        throw new Error(data.error ?? data.hint ?? "No se pudo probar el paso.");
+      }
+      setResponse(data);
+      await onFinished();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const validation = response?.validation;
+
+  return (
+    <div className="mt-3 space-y-2 rounded border border-indigo-100 bg-indigo-50/40 p-2 text-[11px]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="font-semibold text-indigo-950">Prueba de paso</div>
+          <p className="text-indigo-800">
+            Valida el hito con la habilidad raíz del caso (N4).
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void runStep()}
+          disabled={running || !hasTestCase}
+          title={!hasTestCase ? "Crea primero un caso de prueba." : undefined}
+          className="rounded bg-indigo-700 px-2 py-1 font-semibold text-white hover:bg-indigo-800 disabled:bg-neutral-400"
+        >
+          {running ? "Probando..." : "Probar paso"}
+        </button>
+      </div>
+      {error ? (
+        <p className="rounded border border-red-200 bg-red-50 p-2 text-red-800">
+          {error}
+        </p>
+      ) : null}
+      {response ? (
+        <div className="space-y-1 rounded border border-white bg-white/80 p-2">
+          <div className="flex flex-wrap gap-2">
+            <span
+              className={`rounded px-1.5 py-0.5 font-semibold ${statusPillClass(
+                response.status
+              )}`}
+            >
+              {statusLabel}
+            </span>
+          </div>
+          <p className="text-neutral-700">
+            {response.ok
+              ? "La habilidad raíz cumplió el contrato de salida del paso."
+              : "El paso no cumplió el contrato esperado; revisa estado, eventos y contexto."}
+          </p>
+          <p className="text-neutral-600">
+            Escenario: {response.scenario_label} · Raíz: {response.root_skill_slug}
+          </p>
+          {validation ? (
+            <div className="space-y-0.5 text-neutral-700">
+              <p>
+                Estado: {validation.actual_status ?? "n/d"}
+                {validation.wrong_status?.length
+                  ? ` (esperado: ${validation.wrong_status.join(", ")})`
+                  : " OK."}
+              </p>
+              <p>
+                current_step: {validation.actual_current_step ?? "n/d"}
+                {validation.wrong_current_step?.length
+                  ? ` (esperado: ${validation.wrong_current_step.join(", ")})`
+                  : " OK."}
+              </p>
+              {validation.missing_events?.length ? (
+                <p className="text-amber-800">
+                  Eventos faltantes: {validation.missing_events.join(", ")}.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {response.tool_calls?.length ? (
+            <details className="text-neutral-600">
+              <summary className="cursor-pointer font-semibold text-indigo-900">
+                Ver tools llamadas en el tick
+              </summary>
+              <p className="mt-1 font-mono text-[10px]">
+                {response.tool_calls
+                  .map((call) => `${call.tool_name}:${call.status}`)
+                  .join(", ")}
+              </p>
+            </details>
+          ) : null}
+          {response.response_preview ? (
+            <details>
+              <summary className="cursor-pointer font-semibold text-indigo-900">
+                Ver respuesta del agente (preview)
+              </summary>
+              <pre className="mt-1 max-h-40 overflow-auto rounded bg-white p-2 font-mono">
                 {response.response_preview}
               </pre>
             </details>
@@ -5333,6 +5593,17 @@ export function OperationalCaseTypesClient({
                               )}
                             </div>
                           ) : null}
+                          <StepTestPanel
+                            step={step}
+                            row={row}
+                            caseTypeSlug={row.case_type}
+                            hasTestCase={Boolean(testCaseResult?.case)}
+                            caseId={testCaseResult?.case?.id ?? null}
+                            onFinished={async () => {
+                              await refreshToolReadiness(row);
+                              await refreshTestCase(row);
+                            }}
+                          />
                         </div>
                       </section>
                     ))}
@@ -5509,6 +5780,12 @@ export function OperationalCaseTypesClient({
                 />
                 <p className="mt-2 text-neutral-500">
                   {activationPolicy.safe_test.synthetic_data_copy}
+                </p>
+                <p className="mt-1 text-[11px] text-neutral-500">
+                  Regenerar datos de prueba restablece el contexto y el paso de
+                  esta misma fila, pero conserva la línea de tiempo de eventos
+                  para auditoría. Las tools que requieren intake limpio derivan
+                  sólo los campos del formulario, no el historial del caso.
                 </p>
               </div>
             ) : (
