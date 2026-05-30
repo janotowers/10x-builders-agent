@@ -72,7 +72,7 @@ típicos: `owner_name`, `owner_phone` o `telegram_chat_id`,
 nuevo debe aparecer en la lista:
 - Estado: `Activo`.
 - Badge nuevo: `Conversacional` (violeta).
-- `Paso: Captura inicial`.
+- `Paso: Completar registro del caso` (`intake`).
 - Al abrirlo, el panel `Contexto` debe mostrar los campos que diste y
   `created_from: 'agent_conversation'`.
 

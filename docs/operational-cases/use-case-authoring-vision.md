@@ -5,9 +5,11 @@
 > **Documentos relacionados**
 > - [`authoring-playbook.md`](authoring-playbook.md) — **playbook obligatorio** para diseñar pasos, habilidad raíz, `current_step` y pruebas.
 > - [`testing-framework.md`](testing-framework.md) — marco operativo N0–N5 para validar lo que se proponga o implemente.
+> - [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) — **catálogo de patrones** reutilizables (runtime, N3/N4, UI).
 > - [`architecture.md`](architecture.md) — subsistema de casos operacionales.
 > - [`../skills-tools-architecture.md`](../skills-tools-architecture.md) — skills, tools, wrappers, HITL.
 > - Skill global `skills/global/skill-authoring/SKILL.md` — contrato del agente de autoría.
+> - Código: [`apps/web/src/lib/operational-cases/test-patterns-catalog.ts`](../../apps/web/src/lib/operational-cases/test-patterns-catalog.ts)
 
 ---
 
@@ -157,17 +159,17 @@ interface UseCaseProposal {
   validationRubric: RubricItem[];
   suggestedEvals: Record<string, unknown>;
 
+  // IDs alineados con operational-case-reusable-patterns.md §5–9
   testPlan: {
-    n0: string[];  // prep checklist
+    n0: string[];
     steps: Array<{
       stepKey: string;
-      tools: Array<{
-        toolId: string;
-        pattern: "n1_single" | "n2_abc" | "n2_ab" | "telegram_abc" | "easybroker_ab" | "documents_abc";
-        subSteps?: Array<{ key: "A" | "B" | "C"; description: string }>;
-      }>;
-      skillE2E: boolean;
+      patterns: string[];       // n2_* del catálogo (p. ej. n2_request_documents)
+      n3Skills?: string[];
+      n4Scenarios?: string[];   // keys en step-test-scenario-registry.ts
     }>;
+    runtimePatterns?: string[]; // PATTERN_* (dedup, notify, update_state, …)
+    uiPatterns?: string[];
   };
 
   gaps: {
@@ -211,10 +213,10 @@ Nada de lo generado se activa sin:
 | # | Brecha | Impacto |
 |---|--------|---------|
 | 1 | Sin clasificador caso vs skill | Propuestas sobredimensionadas o subdimensionadas |
-| 2 | Patrones N2 sólo en código React | No generables automáticamente desde flow |
-| 3 | `testPlan` no es salida de skill-authoring | Operador diseña pruebas manualmente |
+| 2 | Patrones N2 sólo en código React | No generables automáticamente desde flow — ver catálogo [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) y `test-patterns-catalog.ts` (v1 documental) |
+| 3 | `testPlan` no es salida de skill-authoring | Operador diseña pruebas manualmente — esquema ejemplo en catálogo §9 |
 | 4 | `tested_ok` por ejecución suelta | Falsa sensación de cobertura |
-| 5 | Sin catálogo machine-readable de patrones | Duplicación al añadir case types |
+| 5 | Sin consumo UI de `test_pattern` en flow | Catálogo TS listo; falta enlazar React (anillo 2b) |
 | 6 | Heartbeat NL y case authoring desconectados | Dos heurísticas distintas |
 
 ---
@@ -232,12 +234,11 @@ Nada de lo generado se activa sin:
 
 ### Anillo 2 — Patrones declarativos
 
-- Definir catálogo `TEST_PATTERNS` (JSON/TS) con:
-  - `id`, `applies_to_tools`, `sub_steps`, `gating_rules`, `invalidation_rules`, `risk_level`.
-- Referenciar `test_pattern` en `operational_flow_jsonb.skill_tools[]`.
-- UI lee metadata antes de hardcodear `isEasyBrokerCreateScenario`, etc.
+- [x] v1 documental: [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) + [`test-patterns-catalog.ts`](../../apps/web/src/lib/operational-cases/test-patterns-catalog.ts).
+- [ ] Referenciar `test_pattern` en `operational_flow_jsonb.skill_tools[]`.
+- [ ] UI lee metadata antes de hardcodear `isEasyBrokerCreateScenario`, etc.
 
-**Entregable:** añadir un patrón nuevo sin tocar lógica React repetitiva.
+**Entregable:** añadir un patrón nuevo actualizando catálogo + TS; luego sin tocar lógica React repetitiva.
 
 ### Anillo 3 — Autoría asistida ampliada
 
@@ -382,5 +383,7 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 | Skill authoring | `skills/global/skill-authoring/SKILL.md` |
 | Heartbeat NL heurístico | `packages/agent/src/heartbeat/checklist.ts` |
 | Marco de prueba | [`testing-framework.md`](testing-framework.md) |
+| Catálogo de patrones | [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) |
+| Patrones (TS) | [`test-patterns-catalog.ts`](../../apps/web/src/lib/operational-cases/test-patterns-catalog.ts) |
 | Playbook de autoría | [`authoring-playbook.md`](authoring-playbook.md) |
 | Arquitectura casos | [`architecture.md`](architecture.md) |

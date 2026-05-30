@@ -68,4 +68,26 @@ export interface ToolContext {
   channel: Channel;
   /** Optional per-tool/per-operation approval policy for automated turns. */
   toolApprovalPolicy?: ToolApprovalPolicy;
+  /**
+   * Envíos Telegram ya realizados en este proceso (mismo turno).
+   * Se marca al enviar (no al crear la fila de auditoría) para no bloquear
+   * la primera llamada cuando hay hermanas `pending_confirmation` en paralelo.
+   */
+  telegramSendDedupKeys?: Set<string>;
+  /**
+   * Renders de documento ya iniciados o completados en este turno (misma
+   * plantilla/formato/caso). Evita doble DOCX cuando el modelo repite la tool.
+   */
+  generateDocumentDedupKeys?: Set<string>;
+  /** Promesas de render en curso por clave de dedup (mismo turno, llamadas paralelas). */
+  generateDocumentInFlight?: Map<string, Promise<Record<string, unknown>>>;
+  /** Resolvers del líder por clave (registrados de forma síncrona antes de cualquier await). */
+  generateDocumentDeferredByKey?: Map<
+    string,
+    {
+      promise: Promise<Record<string, unknown>>;
+      resolve: (value: Record<string, unknown>) => void;
+      reject: (reason: unknown) => void;
+    }
+  >;
 }

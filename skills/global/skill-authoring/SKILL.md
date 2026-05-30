@@ -119,7 +119,13 @@ Concrete corrections to mistakes the agent will make without being told.
 - `scope`: `business` for tenant data; `personal` for individual user data;
   `shared` only when both apply with the same safety rules.
 - `allowed_tools`: minimal and scoped. Every tool must exist in the catalog
-  (validated by `prebuild` script `validate-skill-tool-refs.mjs`).
+  (validated by `prebuild` script `validate-skill-tool-refs.mjs`). **Runtime
+  only:** appearing in `allowed_tools` does **not** make a tool N1-visible in
+  Preparación operativa. Classify each id (see
+  `apps/web/src/lib/operational-cases/tool-surface-classification.ts`):
+  integration/action tools need N1; platform/domain tools (`operational_case_*`
+  persist/update/add) belong in `allowed_tools` but are validated in N3/N4
+  technical detail; `operational_case_create` is `scenario_only` (intake/N0).
 - `includes`: every slug must exist; no cycles; prefer composite skills for
   known multi-step procedures (e.g. `property-optioning-coach` orchestrates
   seven atomic skills).
@@ -306,6 +312,64 @@ When invoked interactively (no automation contract), return:
    approval before creating files, calling APIs, or activating the skill. If
    creating a private account skill that shadows a global, restate that the
    runtime will pick the account version over the global once active.
+
+## Operational case proposals (caso operacional)
+
+When the user describes a **multi-step business process** (not a single-turn
+draft), treat it as an operational case proposal in addition to the SKILL draft.
+
+### Classify first
+
+Emit in metadata (or prose when interactive):
+
+- `classification`: `operational_case` | `single_turn_skill` | `hybrid_review`
+- `confidence` and short `rationale` (why case vs skill-only).
+
+Prefer `single_turn_skill` when there is no durable `current_step`, no external
+waits, and no case runner — e.g. one-off copy, one query, one publish preview.
+
+### Emit `testPlan` (required for `operational_case`)
+
+Reference **catalog IDs** from
+`docs/operational-cases/operational-case-reusable-patterns.md` and
+`apps/web/src/lib/operational-cases/test-patterns-catalog.ts`. Do not invent
+ad-hoc pattern names.
+
+```json
+{
+  "n0": ["Credenciales y secretos", "Activos de prueba", "Caso aislado N0"],
+  "steps": [
+    {
+      "stepKey": "awaiting_documents",
+      "patterns": ["n2_request_documents"],
+      "n3Skills": ["request-property-documents"],
+      "n4Scenarios": ["awaiting_documents_outreach"]
+    }
+  ],
+  "runtimePatterns": [
+    "PATTERN_TELEGRAM_DEDUP_SAME_TURN",
+    "PATTERN_NOTIFY_USER_CHANNELS"
+  ],
+  "uiPatterns": ["PATTERN_SKILL_TEST_CALL_DETAILS"]
+}
+```
+
+Rules:
+
+- `patterns`: use `n1_single`, `n2_telegram_abc`, `n2_request_documents`,
+  `n2_characteristics_telegram_abc`, `n2_easybroker_ab`, etc. from the catalog.
+- `n3Skills`: atomic skill slugs per step that need N3 in Preparación operativa.
+- `n4Scenarios`: only when the step has root orchestration or critical branches;
+  keys must match (or be proposed to match) `step-test-scenarios.ts`.
+- `runtimePatterns` / `uiPatterns`: include when Telegram, `notify_user`,
+  `operational_case_update_state`, or settings-test seed/repair apply.
+- Map each proposed tool to N1 vs N2 vs N3 per
+  `docs/operational-cases/testing-framework.md`.
+- For each step with an N4 scenario: state that **N1 of all step tools is required**
+  before N3/N4 (`PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS` in the patterns catalog).
+
+Never write flow JSON, migrations, or activate case types — proposal only, same
+as SKILL drafts.
 
 ## Gotchas
 

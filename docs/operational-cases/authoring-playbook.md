@@ -5,6 +5,7 @@
 > **Documentos relacionados**
 > - [`architecture.md`](architecture.md) — subsistema, cron, tablas, binding de habilidad raíz.
 > - [`testing-framework.md`](testing-framework.md) — marco N0–N5 de pruebas en Preparación operativa.
+> - [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) — catálogo de patrones reutilizables (IDs `PATTERN_*`, `n2_*`).
 > - [`use-case-authoring-vision.md`](use-case-authoring-vision.md) — visión NL → propuesta implementable.
 > - [`../skills-tools-architecture.md`](../skills-tools-architecture.md) — habilidades, tools, HITL.
 
@@ -25,7 +26,9 @@
 | **Habilidad raíz** | Única habilidad **compuesta** por tipo de caso (`default_skill_slug`). La invoca el cron en `case_runner`. |
 | **Habilidad atómica** | Habilidad sin `includes` en su frontmatter (puede usar muchas tools y lógica extensa). |
 | **Habilidad del paso** | Habilidad atómica declarada en `step_skills[]` de un paso del flow (puede haber 0..n). |
-| **`step_tools`** | Tools declaradas directamente en el paso (sin habilidad), típico en `intake`. |
+| **`step_tools`** | Tools declaradas directamente en el paso (sin habilidad), típico en preparación/intake. |
+| **Completar registro del caso** | Hito `intake` previo al flujo operativo numerado: datos mínimos y alta. En settings se valida con la tarjeta **Preparar caso de prueba** (N0), no como Paso 1. |
+| **Superficie de tool** | Clasificación en [`tool-surface-classification.ts`](../../apps/web/src/lib/operational-cases/tool-surface-classification.ts): qué exige N1, qué es interna (N3/N4) o solo escenario (`scenario_only`). |
 
 **Reglas de nomenclatura:**
 
@@ -261,8 +264,8 @@ Orden recomendado (negocio → técnica):
 7. **Habilidades atómicas por paso** — preferir **una** si basta; varias solo con razón (§9).
 8. **Tools por habilidad** — `allowed_tools`, riesgo, HITL.
 9. **`operational_flow_jsonb`** — alineado 1:1 con `step_key` y skills/tools.
-10. **Contratos de prueba** — `test_contract` por habilidad (N3); `step_test_contract` por paso (N4, cuando exista API).
-11. **Caso de prueba aislado** — N0; batería N1–N3 según [`testing-framework.md`](testing-framework.md); N4/N5 según matriz del playbook §10.
+10. **Contratos de prueba** — `test_contract` por habilidad (N3); escenarios N4 en [`step-test-scenario-registry.ts`](../../apps/web/src/lib/operational-cases/step-test-scenario-registry.ts). Asignar IDs del [catálogo de patrones](operational-case-reusable-patterns.md).
+11. **Caso de prueba aislado** — N0; batería N1–N4 según [`testing-framework.md`](testing-framework.md) y checklist del catálogo §8.
 12. **Activación** — checklist UI; N5 (caso E2E) cuando exista automatización o piloto manual documentado.
 
 ---
@@ -289,13 +292,15 @@ prepare-lease-package
 schedule-move-in-handover
 ```
 
-### 8.2 `operational_flow_jsonb` (3 pasos visibles)
+### 8.2 `operational_flow_jsonb` (preparación + pasos operativos)
 
-| # UI | `step_key` | `step_label` | `step_skills[]` (atómicas) | `step_tools` |
-|----|------------|--------------|----------------------------|--------------|
-| 1 | `intake` | Captura inicial | — | `operational_case_create`, `operational_case_update_state`, `notify_user` |
-| 2 | `compliance_review` | Revisión de cumplimiento | `request-tenant-documents`, `run-tenant-credit-check`, `verify-tenant-references` | — |
-| 3 | `lease_and_handover` | Contrato y entrega | `prepare-lease-package`, `schedule-move-in-handover` | — |
+| Sección UI | `step_key` | `step_label` | `step_skills[]` (atómicas) | `step_tools` |
+|------------|------------|--------------|----------------------------|--------------|
+| Registro (runtime) | `intake` | Completar registro del caso | — | `operational_case_create` (escenario), `operational_case_update_state` (interna; sin `notify_user` en `step_tools`) |
+| Paso 1 | `compliance_review` | Revisión de cumplimiento | `request-tenant-documents`, `run-tenant-credit-check`, `verify-tenant-references` | — |
+| Paso 2 | `lease_and_handover` | Contrato y entrega | `prepare-lease-package`, `schedule-move-in-handover` | — |
+
+**Readiness:** `allowed_tools` en SKILL.md define runtime; **N1** aplica solo a tools *readiness-visible* (integración/acción/notificación). Tools de plataforma (`operational_case_update_state`, `operational_case_add_event`, `operational_case_persist_*`) van en `allowed_tools` pero se validan en detalle técnico N3/N4, no bloquean N3/N4 por N1 pendiente.
 
 ### 8.3 Fragmento JSON del paso 2 (autoría)
 
@@ -396,7 +401,7 @@ sequenceDiagram
 |-------|------------|
 | N1/N2 | Por tool (Telegram A/B/C, crédito, etc.) |
 | **N3** | **Una prueba por habilidad** (`request-tenant-documents`, `run-tenant-credit-check`, `verify-tenant-references`) con `test_contract` y contexto sembrado por escenario |
-| **N4** | **Una o más pruebas del paso** `compliance_review` vía `POST /api/tool-readiness/run-step`: habilidad raíz (`tenant-move-in-coach`), semilla en `STEP_TEST_SCENARIO_DETAILS`, expectativa de salida (p. ej. `current_step=lease_and_handover` o flags en `context.compliance`). Mismo mecanismo que hoy en `property_optioning` / `awaiting_documents` — registrar escenario en `step-test-scenarios.ts` |
+| **N4** | **Una o más pruebas del paso** `compliance_review` vía `POST /api/tool-readiness/run-step`: habilidad raíz (`tenant-move-in-coach`), semilla/expectativa/mensaje en `step-test-scenario-registry.ts` (p. ej. `current_step=lease_and_handover` o flags en `context.compliance`). Mismo mecanismo que hoy en `property_optioning` — registrar escenario completo en el registry |
 | **N5** | Caso completo intake → entrega — *pendiente automatización* |
 
 **Hoy en código (referencia real):** solo `property_optioning` → `awaiting_documents` tiene escenario N4; el ejemplo multi-habilidad ilustra **por qué** conviene N4 además de varios N3.
@@ -414,7 +419,7 @@ sequenceDiagram
 | Paso 2 `awaiting_documents` | Una habilidad atómica; ramas (inicial, recordatorio, escalar) = **misma** `current_step`, distinto `status`/eventos |
 | Cron | Siempre `property-optioning-coach`; nunca bind directo a sub-habilidad |
 
-**Por qué casi no necesitas N4 paso hoy en optioning:** un hito ≈ una habilidad; N3 de esa habilidad cubre el contrato del escenario. N4 paso aporta valor cuando existan **varias habilidades** por hito o cuando quieras validar explícitamente la **raíz** (no solo la atómica forzada).
+**N4 en optioning con una habilidad por paso:** aunque el flow declare una sola atómica, N4 valida la **raíz** (`property-optioning-coach`) y ramas del hito; N3 solo fuerza la atómica. Pasos 2–4 del piloto registran escenarios N4. Prerequisito: N1 de todas las tools *readiness-visible* del paso (igual que N3).
 
 ---
 
@@ -428,18 +433,19 @@ Resumen; detalle en [`testing-framework.md`](testing-framework.md).
 | **N1** | Tool individual | Una tool, un contrato | Sí |
 | **N2** | Escenario A/B/C | Secuencia causal en una tarjeta | Sí |
 | **N3** | **Habilidad** (en contexto de paso) | Un tick, habilidad atómica forzada; contrato del escenario | Sí (`run-skill`) |
-| **N4** | **Paso** (hito) | Habilidad raíz; cierre del `step_key` o rama correcta | **Sí (v1)** — `run-step` + «Probar paso» si hay escenario en `step-test-scenarios.ts` |
+| **N4** | **Paso** (hito) | Habilidad raíz; cierre del `step_key` o rama correcta | **Sí (v1)** — `run-step` + «Probar paso» si hay escenario en `step-test-scenario-registry.ts` |
 | **N5** | **Caso** (tipo completo) | Multi-paso E2E del `case_type` | Parcial / manual |
 
 **Regla de producto:**
 
 ```text
-1 habilidad en el paso     →  N3 de esa habilidad (mínimo)
-2+ habilidades en el paso  →  N3 de cada una + N4 del paso (registrar escenario en step-test-scenarios.ts)
-Activación en producción   →  N0–N2 completos; N3 críticos; N4/N5 según madurez
+Tools del paso (N1)        →  Todas probadas antes de N3 y N4 (UI + API)
+1 habilidad en el paso     →  N3 de esa habilidad + N4 si hay escenario de hito (piloto optioning: sí en pasos 2–4)
+2+ habilidades en el paso  →  N3 de cada una + N4 del paso (escenario en step-test-scenario-registry.ts)
+Activación en producción   →  N0–N2 completos; N3 críticos; N4 donde exista escenario; N5 según madurez
 ```
 
-N3 **no** reemplaza N4: N3 = unitario de habilidad; N4 = integración del hito vía raíz.
+N3 **no** reemplaza N4: N3 = unitario de habilidad; N4 = integración del hito vía raíz. Ver `PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS` en el catálogo de patrones.
 
 ---
 
@@ -466,7 +472,8 @@ Cuando [`use-case-authoring-vision.md`](use-case-authoring-vision.md) genere pro
 | Panel N3 simplificado | `operational-case-types-client.tsx` (`SkillTestPanel`) |
 | Plantilla Telegram «documentos» | `skills/global/request-property-documents/SKILL.md` |
 | N4 v1 un tick | `run-step/route.ts` |
-| Escenarios N4 (índice) | `apps/web/src/lib/operational-cases/step-test-scenarios.ts` |
+| Escenarios N4 (registry único) | `apps/web/src/lib/operational-cases/step-test-scenario-registry.ts` |
+| Compat UI escenarios N4 | `apps/web/src/lib/operational-cases/step-test-scenarios.ts` |
 | Botón «Probar paso» | `operational-case-types-client.tsx` (`StepTestPanel`) |
 
 **Escenario N4 en producción de pruebas hoy:** `property_optioning` / `awaiting_documents` (`awaiting_documents_outreach`).
@@ -480,12 +487,12 @@ Cuando [`use-case-authoring-vision.md`](use-case-authoring-vision.md) genere pro
 | **N4 v2 multi-tick** | Simular `external_response` entre ticks en el mismo paso |
 | **N5 automatizado** | E2E del `case_type` completo; infra parcial en `operational-case-tests/run` |
 | **`test_pattern` en flow** | `tested_ok` por escenario N2 completo, no solo por click |
-| **Evidencia N4 en `test_status` del paso** | Agregar en `GET /api/tool-readiness` (hoy el paso agrega skills/tools, no el resultado de `step_test_completed`) |
+| **Checklist visual por escenario** | Mostrar ✓/pendiente/falló por escenario además del contador «X de Y» |
 
 **Prioridad sugerida antes del segundo case type:**
 
 1. Registrar escenarios N4 para pasos con 2+ habilidades (patrón §8).
-2. Persistir `step_test_contract` en flow (§13).
+2. Persistir `step_test_contract` en flow (§13) cuando el registry TS esté estable.
 3. N4 v2 si el paso requiere varios ticks con esperas simuladas.
 4. N5 guion mínimo para activación estricta.
 
@@ -493,10 +500,10 @@ Cuando [`use-case-authoring-vision.md`](use-case-authoring-vision.md) genere pro
 
 ## 13. Esquema objetivo: `step_test_contract` (N4 en flow)
 
-**Hoy (v1):** los escenarios vivos están en código:
+**Hoy (v1):** los escenarios vivos están en una fuente única en código:
 
-- Índice: [`apps/web/src/lib/operational-cases/step-test-scenarios.ts`](../../apps/web/src/lib/operational-cases/step-test-scenarios.ts) (`STEP_TEST_SCENARIO_INDEX`)
-- Detalle (semilla, expect, mensaje): `STEP_TEST_SCENARIO_DETAILS` en [`run-step/route.ts`](../../apps/web/src/app/api/tool-readiness/run-step/route.ts)
+- Registry: [`apps/web/src/lib/operational-cases/step-test-scenario-registry.ts`](../../apps/web/src/lib/operational-cases/step-test-scenario-registry.ts) (metadata UI, semilla, expect, mensaje, ejecución).
+- Compat UI: [`apps/web/src/lib/operational-cases/step-test-scenarios.ts`](../../apps/web/src/lib/operational-cases/step-test-scenarios.ts).
 
 **Objetivo (v2 autoría):** persistir en `operational_flow_jsonb` por paso, sin duplicar lógica en TS. Borrador de forma:
 
@@ -544,7 +551,7 @@ Antes de mergear un case type nuevo:
 - [ ] ¿`context_jsonb` modela sub-progreso si hay varias habilidades en un paso?
 - [ ] ¿Cada habilidad atómica tiene `test_contract` o justificación de default N3?
 - [ ] ¿Se planificó N4 para pasos con 2+ habilidades (o se documentó por qué N3 basta)?
-- [ ] Si aplica N4: ¿escenario registrado en `step-test-scenarios.ts` (hasta que exista `step_test_contract` en flow)?
+- [ ] Si aplica N4: ¿escenario registrado en `step-test-scenario-registry.ts` (hasta que exista `step_test_contract` en flow)?
 
 ---
 
@@ -557,5 +564,7 @@ Antes de mergear un case type nuevo:
 | Habilidad paso 2 | `skills/global/request-property-documents/SKILL.md` |
 | Run skill N3 | `apps/web/src/app/api/tool-readiness/run-skill/route.ts` |
 | Run paso N4 | `apps/web/src/app/api/tool-readiness/run-step/route.ts` |
-| Escenarios N4 (índice) | `apps/web/src/lib/operational-cases/step-test-scenarios.ts` |
+| Escenarios N4 (registry único) | `apps/web/src/lib/operational-cases/step-test-scenario-registry.ts` |
+| Catálogo patrones (doc) | [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) |
+| Catálogo patrones (TS) | `apps/web/src/lib/operational-cases/test-patterns-catalog.ts` |
 | UI readiness | `apps/web/src/app/settings/operational-case-types/operational-case-types-client.tsx` |

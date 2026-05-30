@@ -37,35 +37,29 @@ guardrails: |
    - `external_contact_jsonb.display_name` (nombre del dueño).
    - `context_jsonb.commission_terms` (si no existe, usa defaults del tenant).
 
-2. Llama `generate_document_from_template`:
+2. Llama `generate_document_from_template` exactamente una vez para este borrador:
    ```json
    {
      "template_slug": "commission_contract",
      "format": "docx",
-     "data": {
-       "owner_name": "...",
-       "property_address": "...",
-       "property_type": "...",
-       "area_m2": 0,
-       "salida_price": 0,
-       "minimum_price": 0,
-       "commission_pct": 0,
-       "exclusive": true,
-       "duration_months": 6
-     },
      "case_id": "..."
    }
    ```
+   Los placeholders del DOCX (`owner_name`, `property_address`, `property_type`,
+   `area_m2`, `salida_price`, `minimum_price`, `commission_pct`, `exclusive`,
+   `duration_months`) se rellenan **automáticamente** desde el caso. Solo pasa
+   `data` si necesitas sobreescribir algún campo puntual.
    - Si la tool devuelve `status=not_configured`: notifica al inmobiliario
      que falta la plantilla DOCX cargada y pausa el caso (`status=paused`).
+   - Si ya tienes `output_path` de esa llamada en este turno, reutilízalo; no vuelvas a generar el mismo contrato.
 
 3. Notifica al inmobiliario sólo cuando tengas un borrador/link real:
-   `notify_user(kind="contract_review", "Borrador del contrato listo para [propiedad]. Revísalo y dime si lo mando al dueño o necesita cambios: [doc_url]")`.
-   Adjunta el path/URL del DOCX en el payload. Si no hay `doc_url` o la
-   plantilla no se pudo renderizar, no pidas aprobación de contrato; explica
+   `notify_user(kind="contract_review", "Borrador del contrato listo para [propiedad]. Revísalo y dime si lo mando al dueño o necesita cambios.\n\nDescargar borrador del contrato: <URL>")`.
+   Sustituye `<URL>` por el enlace estable del caso: `/api/operational-cases/{case_id}/documents/contract_draft/download` (URL absoluta con el dominio del sitio si la conoces). **No** pegues la `signed_url` larga de Supabase en el mensaje. Si no hay `output_path` renderizado o
+   plantilla no se pudo generar, no pidas aprobación de contrato; explica
    qué configuración falta y pausa el caso.
 
-4. Inserta evento `operational_case_add_event(human_decision, payload={kind: contract_drafted, doc_url: "..."})`.
+4. Inserta evento `operational_case_add_event(human_decision, payload={kind: contract_drafted, doc_url: "<mismo enlace corto>", output_path, output_bucket})` usando `output_path`/`output_bucket` de la tool.
 5. Mantén `current_step=contract_pending`, `status=waiting_internal` hasta
    que el inmobiliario revise. Esta espera es interna; `waiting_external` sólo
    aplica cuando ya se mandó algo al dueño/lead y esperamos su respuesta.

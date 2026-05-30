@@ -6,6 +6,7 @@ allowed_tools:
   - bigquery_lookup_local_comparables
   - easybroker_search_listings
   - easybroker_search_closed_deals
+  - operational_case_persist_comparables_analysis
   - notify_user
   - operational_case_update_state
   - operational_case_add_event
@@ -102,26 +103,48 @@ Producir un objeto `context_jsonb.comparables_analysis`:
      configurar (API key, tabla del warehouse, etc.).
    - Continúa con las fuentes que sí funcionaron; no bloquees el caso.
 
-4. Normaliza los resultados al shape de arriba. Si una fuente trae área
-   confiable, calcula `price_per_m2 = price / area_m2`; si no, usa precio
-   publicado y conserva la limitación en `notes`. Filtra outliers sólo sobre
-   métricas disponibles y guarda los buenos (~3-8).
+4. No escribas `comparables_analysis` manualmente. Después de ejecutar las tres
+   búsquedas, llama `operational_case_persist_comparables_analysis`. Esa tool
+   construye el artefacto determinísticamente desde los `tool_calls` del turno:
+   deduplica resultados, normaliza listas, calcula `stats`, `price`,
+   `price_per_m2` y `data_quality.usable_count`.
 
-5. Calcula o consolida `stats` en dos niveles:
-   - `stats.price`: percentiles 25/50/75 sobre precio total publicado, usando
-     filas `usable_as_comparable=true`.
-   - `stats.price_per_m2`: percentiles 25/50/75 sobre precio/m² sólo cuando la
-     fuente trae precio y área confiables. EasyBroker puede alimentar esta
-     métrica; BigQuery interno no debe hacerlo hasta confirmar campo de área.
-   No presentes precio/m² como métrica principal si
-   `stats.price_per_m2.available=false` o `sample_size < 3`.
+5. Lee el resultado de `operational_case_persist_comparables_analysis`
+   (`defensible_sample`, `usable_count`, `stats`, `data_quality`) para decidir
+   el siguiente estado.
 
-6. Guarda en `context_jsonb.comparables_analysis` y mueve el caso a
-   `current_step=price_proposal_pending`, `status=active`,
-   `next_action_at=now()`.
+6. La tool ya guarda `context_jsonb.comparables_analysis` (incluye
+   `data_quality.usable_count` contando usables de **todas** las fuentes:
+   EasyBroker activas, EasyBroker cerradas/referencia histórica e inventario
+   BigQuery).
+
+   - Si `usable_count > 0` (muestra defendible): mueve el caso a
+     `current_step=price_proposal_pending`, `status=active`, `next_action_at=now()`.
+   - Si `usable_count === 0` en **todas** las fuentes: **no** avances a
+     `price_proposal_pending`. Deja `current_step=comparables_in_progress`,
+     `status=waiting_internal` y pasa al paso 7 (notificación de datos
+     insuficientes).
 
 7. Notifica al inmobiliario:
-   `notify_user("Análisis de comparables listo para [propiedad]. N activas, M referencias históricas y K internas. Mediana de precio publicado: $X. Reviso contigo el precio.")`.
+   - Con muestra defendible:
+     `notify_user("Análisis de comparables listo para [propiedad]. N activas, M referencias históricas y K internas. Mediana de precio publicado: $X. Reviso contigo el precio.")`.
+   - Sin comparables usables:
+     `notify_user` con datos de la propiedad, `filters_used`, resumen por fuente
+     (EB activas, EB cerradas, BQ interno) y sugerencias concretas para ampliar
+     criterios (rango de precio, m², meses, zona adyacente).
+
+## Pruebas en Preparación operativa (N3 / N4)
+
+En Ajustes → **Paso 3 · Análisis de comparables** (`comparables_in_progress`):
+
+| Nivel | Acción | Escenario |
+|-------|--------|-----------|
+| N1 | Probar cada tool de integración (EB activas, EB cerradas, BQ) | Recetas del catálogo; pill **Probada** por tool |
+| N3 | **Probar habilidad** (`perform-comparable-analysis`) | **Análisis completo y avance a precio** — `usable_count > 0`, persistencia determinística, avance a `price_proposal_pending` |
+| N3 | Misma habilidad | **Sin comparables usables — no avanzar a precio** — permanece en paso + `waiting_internal` + `notify_user` |
+| N4 | **Probar paso** (habilidad raíz) | Mismos escenarios; valida cierre del hito, no sustituye N3 |
+
+Si N1 está en verde pero el pill del paso dice **Falló N3/N4**, revisa el panel del último run (tools faltantes, `persist` sin ejecutar, transición bloqueada por gate). Ver `PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE` y [`testing-framework.md`](../../docs/operational-cases/testing-framework.md) §7.
 
 ## Antipatrones
 
@@ -130,6 +153,8 @@ Producir un objeto `context_jsonb.comparables_analysis`:
   ese caso usa `price_per_m2`.
 - Presentar inventario interno de BigQuery como cierres reales si la respuesta
   dice `is_closed_price=false`.
-- Quedarte con 0-1 comparables y aún así reportar; mejor reporta "datos
-  insuficientes en esta zona, necesitamos ampliar criterios" y pide
-  decisión.
+- Quedarte con 0 comparables usables (en ninguna fuente) y aún así avanzar a
+  `price_proposal_pending`; reporta "datos insuficientes", permanece en
+  `comparables_in_progress` y pide decisión al asesor interno.
+- Usar una colonia distinta a `property_data` / `property_zone` del caso solo
+  porque hay más listados en otra zona.

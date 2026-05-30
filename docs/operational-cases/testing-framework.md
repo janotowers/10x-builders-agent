@@ -4,6 +4,7 @@
 >
 > **Documentos relacionados**
 > - [`authoring-playbook.md`](authoring-playbook.md) — modelo paso / habilidad raíz / `current_step` / autoría de casos (lectura recomendada).
+> - [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) — catálogo de patrones (`PATTERN_*`, `n2_*`, matriz Pasos 2–3).
 > - [`architecture.md`](architecture.md) §10 — tool readiness, provisioning y APIs.
 > - [`../skills-tools-architecture.md`](../skills-tools-architecture.md) §11 — resumen ejecutivo de patrones UI.
 > - [`use-case-authoring-vision.md`](use-case-authoring-vision.md) — visión de generación NL → propuesta implementable y roadmap.
@@ -89,7 +90,24 @@ Declarados en `operational_flow_jsonb` (`required_assets`, `test_assets`) o en `
 
 Los activos viven en `account_assets` + Supabase Storage.
 
-### 3.3 Caso de prueba aislado
+### 3.3 Preparar caso de prueba (tarjeta N0 en UI)
+
+El **resumen superior** de Preparación operativa cuenta solo tools *readiness-visible* (integración y acción del flujo, sin internas de plataforma) y desglosa chips en lenguaje operativo: **X de Y configuradas**, **sin probar**, **probadas**, por configurar y pendientes técnicos (sin jerga N0–N5 en el resumen).
+
+En el encabezado de la plantilla: **Descripción** visible; **Formulario de alta** y **Habilidades y herramientas** en `<details>` cerrados; el listado resumido de pasos duplicado («Flujo operativo») se omitió — el detalle vive en **Paso N** abajo. Al pie, **Auditoría del caso de prueba** (colapsada) filtra eventos de prueba controlada y resume tool calls para depuración.
+
+En **Preparación operativa**, la tarjeta expandible **Preparar caso de prueba** (pill de estado de fixture: Sin fixture / Fixture creado / Fixture listo / Pendiente de tools) concentra el fixture de prueba **antes** de los pasos colapsables **Paso N**:
+
+1. Formulario derivado de `intake_schema_jsonb`.
+2. **Crear / regenerar** caso aislado (`operational-case-tests`).
+3. **Validar intake seguro** (`safe_check`: avanza `intake` → `awaiting_documents` sin agente).
+4. Opcional: tick E2E.
+
+El bloque colapsado **Completar registro del caso** documenta el hito runtime `intake`; no duplica el formulario.
+
+**Layout compacto (v1.3):** tras el resumen y N0, cada hito operativo aparece como **Paso N** en `<details>` cerrado por defecto (título, descripción del paso, pill de estado N3/N4, hint de habilidades/tools visibles). Las tools N1 viven dentro del cuerpo expandido; su pill **Probada** / **Sin probar** es independiente del pill del paso. La auditoría global del fixture no sustituye el resultado por paso.
+
+### 3.4 Caso de prueba aislado
 
 El subsistema `operational-case-tests` mantiene **un caso de prueba por fila de tipo de caso** (regenerar no crea otro registro). Ese caso:
 
@@ -99,14 +117,19 @@ El subsistema `operational-case-tests` mantiene **un caso de prueba por fila de 
 
 **Checklist N0:**
 
-- [ ] Todas las tools del flow muestran estado «Lista» (no «Necesita config»).
+- [ ] Todas las tools readiness-visible del flujo operativo muestran estado «Lista» (no «Necesita config»).
 - [ ] Activos de prueba cargados y visibles en Preparación operativa.
-- [ ] Caso de prueba generado/regenerado con contexto coherente.
+- [ ] Tarjeta **Preparar caso de prueba**: caso generado/regenerado con contexto coherente.
+- [ ] **Validar intake seguro** ejecutada (caso en `awaiting_documents` o posterior).
 - [ ] Contacto externo de prueba identificado (Telegram u otro canal).
 
 ---
 
 ## 4. N1 — Tool individual
+
+**Alcance N1:** sólo tools *readiness-visible* (`business_integration`, `external_action`, `internal_notification`). Tools de plataforma (`operational_case_update_state`, `operational_case_add_event`, `operational_case_persist_*`) y `scenario_only` (`operational_case_create`) **no** exigen N1 previo a N3/N4 del mismo paso; las internas aparecen en detalle técnico N3/N4. Ver `PATTERN_TOOL_SURFACE_CLASSIFICATION` y [`tool-surface-classification.ts`](../../apps/web/src/lib/operational-cases/tool-surface-classification.ts).
+
+**Intake / registro:** en settings usar la tarjeta **Preparar caso de prueba** (N0: formulario + crear/regenerar fixture + `safe_check`). El hito `intake` del flow (**Completar registro del caso**) es referencia runtime colapsada, no N4 **Probar paso**. Ver `PATTERN_CASE_INTAKE_PRECONDITION`.
 
 ### Cuándo usar N1
 
@@ -196,7 +219,7 @@ Usar wizard A/B/C cuando hay **secuencia causal**:
 
 ### Patrones implementados
 
-#### 5.1 Solicitud de documentos (paso 2 — `awaiting_documents`)
+#### 5.1 Solicitud de documentos (paso operativo 1 — `awaiting_documents`)
 
 **Skill:** `request-property-documents`  
 **Orden en UI** (según `operational_flow_jsonb` tras migración `00038`):
@@ -283,6 +306,11 @@ N3 no debe aprobar una skill sólo porque el modelo respondió texto. Debe exist
 evidencia estructurada: tool calls ejecutadas/preparadas, eventos, cambios de
 contexto o artefactos según el contrato del paso.
 
+**Patrones runtime en N3:** dedup Telegram, `notify_user` multi-canal, auditoría con un solo dueño (`PATTERN_TOOL_AUDIT_SINGLE_OWNER`), dedup de `generate_document_from_template` (`PATTERN_GENERATED_DOCUMENT_DEDUP`), retry de `operational_case_update_state`, semilla/repair en casos `case_type_settings_test` —
+IDs en [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) y
+[`test-patterns-catalog.ts`](../../apps/web/src/lib/operational-cases/test-patterns-catalog.ts).
+Detalle de llamadas en UI: [`skill-test-call-details.tsx`](../../apps/web/src/lib/operational-cases/skill-test-call-details.tsx).
+
 ### Contrato default
 
 Si el flow no declara `test_contract`, N3 usa una regla genérica:
@@ -345,17 +373,32 @@ N3 **complementa** N2; no lo reemplaza para tools de alto riesgo. N2 sigue siend
 
 - Panel N3: resumen acotado; listas de tools en `<details>` «Ver detalle tecnico de tools llamadas».
 - Telegram ya no se clasifica como acción interna duplicada (`classifySkillTestToolCalls` en `run-skill`).
-- Panel N4: bloque indigo «Probar paso» cuando `stepTestAvailable(case_type, step_key)` — ver `step-test-scenarios.ts`.
+- Panel N4: bloque indigo «Probar paso» cuando el catálogo de escenarios (`step-test-scenario-registry.ts`) declara ese `step_key`. Si el paso tiene varios escenarios, la UI muestra selector y envía `scenario_id` al API.
+- Detalle de tools unificado N3/N4: [`skill-test-call-details.tsx`](../../apps/web/src/lib/operational-cases/skill-test-call-details.tsx) (aviso Telegram envíos reales vs duplicadas, notify interno, hints de texto). La normalización de texto compartida con el agente vive en [`packages/types/src/telegram-send-dedup.ts`](../../packages/types/src/telegram-send-dedup.ts) (sin importar `@agents/agent` en el cliente).
+
+**Prerequisito N3 y N4:** todas las tools *readiness-visible* del paso (`readinessToolIdsForSkill` / `readinessToolIdsForStep`) con N1 `tested_ok` antes de habilitar **Probar habilidad** o **Probar paso** (patrón `PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS`).
+
+**Pills paso vs tool:** el pill de la **habilidad** viene del último `skill_test_completed` (N3). El pill del **paso** con escenarios N4 exige que **todos** los escenarios declarados pasen; el progreso sale de `operational_case_test_runs` por `scenario_id` y se muestra como «X de Y escenarios probados». Si la habilidad ya pasó pero faltan escenarios → **Falta probar escenarios del paso**. Sin escenarios N4, el paso puede quedar **Paso probado** cuando todas las habilidades e integraciones están OK. Patrón: `PATTERN_STEP_STATUS_N3_VS_N4`. Las tools **Probada** (N1) son independientes.
+
+**Checklist rápido antes de cerrar un paso en N4**
+
+1. Elegir el escenario correcto en las píldoras (entrada/salida visibles).
+2. Tras correr: semilla aplicada y salida esperada coinciden con la rama.
+3. Si hay Telegram al contacto: el aviso distingue **envíos reales** vs **duplicadas** (`skipped_send` o mismo texto normalizado); el chat de Telegram es la fuente de verdad del envío.
+4. Si hay `notify_user`: detalle con canales (`web`, `telegram`, etc.) — es notificación al asesor interno, no al contacto externo.
+5. Eventos y tools esperados en verde (OK) o listados como faltantes.
 
 ---
 
 ## 7. N4 — Prueba de paso (hito)
 
-> **Estado:** v1 implementado para escenarios declarados en [`step-test-scenarios.ts`](../../apps/web/src/lib/operational-cases/step-test-scenarios.ts) (hoy: `property_optioning` / `awaiting_documents`). Ampliar escenarios antes de nuevos case types.
+> **Estado:** v1 implementado para escenarios declarados en [`step-test-scenario-registry.ts`](../../apps/web/src/lib/operational-cases/step-test-scenario-registry.ts). El catálogo se selecciona explícitamente por habilidad raíz (`property-optioning-coach` → `property_optioning`); `step-test-scenarios.ts` sólo expone metadata para UI.
 
 ### Qué valida
 
 El **objetivo durable del paso** (`step_key` / `current_step`), invocando la **habilidad raíz** (`default_skill_slug`), no encadenando N3 de cada habilidad atómica.
+
+Un escenario N4 es una prueba controlada de una rama importante del paso; no pretende ser, por sí solo, la lista exhaustiva de todas las ramas que producción puede ejecutar. El cron sigue invocando la habilidad raíz con el estado real del caso; los escenarios N4 automatizan QA repetible para los caminos de negocio que ya decidimos cubrir.
 
 | Pregunta | N3 | N4 |
 |----------|----|----|
@@ -363,11 +406,58 @@ El **objetivo durable del paso** (`step_key` / `current_step`), invocando la **h
 | ¿La raíz, con este contexto, cierra el hito o elige la rama correcta? | No | Sí |
 | ¿Varias habilidades en un paso se orquestan bien? | Parcial (N3 cada una) | Sí |
 
+### Ejecución async y UX
+
+N4 puede tardar minutos porque invoca la **habilidad raíz** y no sólo una skill
+atómica. Por eso la UI no debe mantener un request bloqueante hasta el final:
+`POST /api/tool-readiness/run-step` crea un registro durable en
+`operational_case_test_runs`, preasigna `turn_id`, devuelve `run_id` rápido y
+la UI consulta `GET /api/tool-readiness/run-step/:run_id` por polling. El panel
+debe mostrar tiempo transcurrido, fase actual, última tool registrada y lista de
+`tool_calls` parciales con estado/duración. Al terminar renderiza el resultado
+final persistido (`result_jsonb`).
+
+El runner sigue escribiendo eventos append-only en `operational_case_events`
+(`step_test_started`, `step_test_completed`) para conservar la línea de tiempo
+del caso. Para progreso en vivo, el endpoint de polling lee `tool_calls` por el
+`turn_id` guardado en `operational_case_test_runs`; esto permite distinguir
+tiempo de razonamiento antes de tools, tool activa y cierre/validación final.
+Para calcular el estado del paso en Preparación operativa, la fuente primaria es
+`operational_case_test_runs` (`level=n4`, `step_key`, `scenario_id`,
+`result_jsonb.status`); eventos antiguos sin `scenario_id` sólo son fallback
+legacy y no cierran pasos con varios escenarios.
+
 ### Cómo registrar un escenario N4 (v1)
 
-1. Añadir entrada en [`step-test-scenarios.ts`](../../apps/web/src/lib/operational-cases/step-test-scenarios.ts) (`STEP_TEST_SCENARIO_INDEX`).
-2. Añadir semilla, expect y mensaje en `STEP_TEST_SCENARIO_DETAILS` dentro de [`run-step/route.ts`](../../apps/web/src/app/api/tool-readiness/run-step/route.ts).
+1. Añadir una entrada completa en [`step-test-scenario-registry.ts`](../../apps/web/src/lib/operational-cases/step-test-scenario-registry.ts) (metadata UI, `seed`, `expect`, `message`, `execution`).
+2. Si el case type no usa el slug del catálogo, asociar su habilidad raíz en `DEFAULT_STEP_TEST_CATALOG_SLUG_BY_ROOT_SKILL`.
 3. El botón «Probar paso» aparece automáticamente en Preparación operativa para ese `step_key`.
+
+Escenarios N4 actuales en `property_optioning`:
+
+| Paso | Escenario | Rama probada |
+|------|-----------|--------------|
+| `awaiting_documents` | `awaiting_documents_outreach` | Solicitud inicial de documentos al contacto externo |
+| `documents_received` | `documents_received_property_data_review` | Datos suficientes → `property_data_review` / `waiting_internal` |
+| `documents_received` | `documents_received_characteristics_pending` | Faltantes críticos → Telegram al contacto / `waiting_external` |
+| `comparables_in_progress` | `comparables_in_progress_complete` | Muestra defendible → `price_proposal_pending` / `comparables_analysis` (`PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE`) |
+| `comparables_in_progress` | `comparables_in_progress_insufficient_data` | 0 usables en EB + BQ → permanece en paso + `waiting_internal` + `notify_user` |
+| `price_proposal_pending` | `price_proposal_pending_hitl` | `pricing_proposal` pending + `notify_user` + `human_decision:price_proposed` / `waiting_internal` |
+| `price_proposal_pending` | `price_proposal_pending_advisor_approves` | Handler HITL «Aprobar» → `contract_pending` / `paused` + `price_approved` (caso de prueba) |
+| `price_proposal_pending` | `price_proposal_pending_advisor_adjusts` | Handler HITL ajuste → montos nuevos + `price_adjusted_and_approved` + `contract_pending` / `paused` |
+| `contract_pending` | `contract_pending_draft_review` | Borrador o aviso de plantilla faltante / `waiting_internal` o `paused` (`PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`) |
+| `contract_pending` | `contract_pending_advisor_approves_send` | HITL «mándalo al dueño» → `contract_approved_for_owner` + envío simulado / `paused` |
+| `contract_pending` | `contract_pending_advisor_requests_changes` | HITL cambios → `contract_changes_requested` / `waiting_internal` |
+| `contract_pending` | `contract_pending_owner_signed` | Simulación firma → `photos_scheduled` / `step_completed:contract_signed` |
+| `photos_scheduled` | `photos_scheduled_propose_slots` | Propuesta de horarios al contacto / `waiting_external` + Telegram |
+| `package_ready` | `package_ready_preflight_blocked` | Preflight sin fotos → `paused` + `notify_user` (no publicar) |
+
+Para artefactos críticos como `comparables_analysis`, N3/N4 deben validar la ruta
+runtime real: primero se ejecutan las tools de búsqueda, luego una tool de
+persistencia determinística construye el artefacto desde `tool_calls.result_json`
+(`PATTERN_DETERMINISTIC_ARTIFACT_FROM_TOOL_RESULTS`). Las transiciones críticas
+también se bloquean en el adapter de escritura (`PATTERN_OPERATIONAL_WRITE_GATE`),
+no sólo en el runner de pruebas.
 
 Ejemplo multi-habilidad (autoría): [`authoring-playbook.md`](authoring-playbook.md) §8 (`tenant_move_in` / `compliance_review`).
 
@@ -388,19 +478,30 @@ Objetivo en BD: `step_test_contract` en flow — ver [`authoring-playbook.md`](a
 
 ### Cuándo exigir N4 en autoría
 
-- Paso con **2 o más** habilidades en `step_skills[]`.
-- Paso donde la **raíz** tiene ramas críticas (elegir habilidad B vs C según `context`).
-- Opcional en `property_optioning` (casi 1 habilidad por paso): N3 suele bastar.
+- Paso con **2 o más** habilidades en `step_skills[]`, o ramas críticas de la raíz (aunque haya una sola habilidad declarada — ver Pasos 2–4 del piloto).
+- **Prerequisito N1:** igual que N3 — todas las tools *readiness-visible* del paso deben estar probadas antes de habilitar **Probar paso** (UI + `POST /api/tool-readiness/run-step`).
+- Orden recomendado: N1 tools → N3 por habilidad → N4 paso.
+
+### Paso 3 — `comparables_in_progress` (`property_optioning`)
+
+Tras expandir **Paso 3 · Análisis de comparables**:
+
+1. **N1** (ya hecho si las tres tools muestran **Probada**): `easybroker_search_listings`, `easybroker_search_closed_deals`, `bigquery_lookup_local_comparables`.
+2. **N3** — **Probar habilidad** en `perform-comparable-analysis`, escenario **Análisis completo y avance a precio** (`comparables_in_progress_complete`). Revisa el panel: tools ejecutadas, `operational_case_persist_comparables_analysis`, `usable_count > 0`, avance a `price_proposal_pending`. Si falla, el pill pasa a **Falló N3** aunque N1 siga en verde.
+3. **N4** — **Probar paso** con el mismo escenario (raíz del caso) o **Sin comparables usables** para la rama `waiting_internal` + `notify_user`. El pill del paso refleja el último N4.
+4. Escenario negativo N3/N4: **Sin comparables usables — no avanzar a precio** (filtros estrechos / 0 usables en todas las fuentes).
+
+Patrones: `PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT`, `PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE`, `PATTERN_DETERMINISTIC_ARTIFACT_FROM_TOOL_RESULTS`. Skill: [`perform-comparable-analysis/SKILL.md`](../../skills/global/perform-comparable-analysis/SKILL.md).
 
 ### Alcance v1 y pendientes
 
-**Implementado:** `POST /api/tool-readiness/run-step`, botón «Probar paso», escenarios en código (`step-test-scenarios.ts`).
+**Implementado:** `POST /api/tool-readiness/run-step`, botón «Probar paso», escenarios en código (`step-test-scenario-registry.ts`).
 
 **Pendiente:**
 
 1. `step_test_contract` en `operational_flow_jsonb` (machine-readable en BD).
 2. N4 v2 multi-tick con eventos simulados.
-3. Más escenarios por paso / case type (no sólo `awaiting_documents`).
+3. Más escenarios por paso / case type (p. ej. ramas positivas de `package_ready` con watermark/publicación tras preflight completo).
 
 ---
 
@@ -444,19 +545,22 @@ Validación del **tipo de caso completo** en el caso de prueba aislado:
 
 ### Por paso del flow
 
-Agregación de skills y tools del paso: `blocked`, `ready_to_test`, `partially_tested`, `tested_ok`, `tested_failed`.
+Agregación de skills, tools y evidencia N4 del paso: `blocked`, `ready_to_test`, `partially_tested`, `awaiting_n4` (N3 OK, falta N4), `tested_ok` (N4 OK o paso sin N4), `tested_failed`.
 
 ---
 
 ## 10. Reglas visuales unificadas
 
-Aplican en N1 y N2:
+Aplican en N1, N2, **N3** y **N4** (código: [`readiness-test-ui.ts`](../../apps/web/src/lib/operational-cases/readiness-test-ui.ts)):
 
 | Elemento | Estilo | Uso |
 |----------|--------|-----|
-| Botón / bloque de acción primario | Violeta (`border-violet`, `bg-violet-50`) | Ejecutar prueba, sub-paso A/B/C |
-| Botón deshabilitado | Violeta atenuado (`disabled:bg-violet-300`) | Prerequisito no cumplido — coherente con acción, no gris genérico |
+| Botón / bloque de acción primario | Violeta (`border-violet`, `bg-violet-50`) | N1/N2 sub-pasos, panel N3 |
+| Botón N4 «Probar paso» | Índigo (`bg-indigo-700`, panel índigo) | Hito vía habilidad raíz |
+| Botón deshabilitado N3 | Violeta atenuado (`disabled:bg-violet-300`) | Sin caso de prueba o tools N1 pendientes (`blocked_by_tools`) |
+| Botón deshabilitado N4 | Índigo atenuado (`disabled:bg-indigo-300`) | Sin caso de prueba o paso/habilidad con tools N1 pendientes |
 | Panel éxito | Verde | Contrato cumplido |
+| Pills paso / habilidad / tool | Gris / ámbar / verde / rojo | `stepTestStatusLabel`: **Paso listo para probar** = `awaiting_n4` (mismo gris que **Habilidad lista para probar**); **Paso probado** = N4 OK — [`readiness-test-ui.ts`](../../apps/web/src/lib/operational-cases/readiness-test-ui.ts) |
 | Panel warning / HITL / parcial | Ámbar | Revisar antes de continuar |
 | Panel error | Rojo | Fallo |
 | Panel info / siguiente paso | Violeta claro | «Siguiente: B · …» |
@@ -485,14 +589,17 @@ Orden sugerido para la primera batería manual completa:
 | 3 | 3 | `extract-property-characteristics` | `operational_case_extract_document_fields` B | N2 |
 | 3b | 3 | `extract-property-characteristics` | `telegram_send_message_to_contact` A→B→C | N2 |
 | 3c | 3 | — | `notify_user` validación asesor | N1/N3 |
-| 4+ | 4…7 | Comparables, precio, etc. | Según tools del flow | N1/N3 |
+| 4 | 4 | `perform-comparable-analysis` | `easybroker_search_*`, `bigquery_lookup_local_comparables` | N1 |
+| 4b | 4 | `perform-comparable-analysis` | **Probar habilidad** | N3 |
+| 4c | 4 | (paso `comparables_in_progress`) | **Probar paso** | N4 |
+| 5+ | 5…7 | Precio, contrato, etc. | Según tools del flow | N1/N3 |
 | 8 | 8 | `publish-listing-package` | EasyBroker A→B | N2 |
 | — | Todos | Cada habilidad del paso | Probar habilidad | N3 |
 | — | Pasos con escenario N4 declarado | Paso completo | Probar paso | N4 |
 
 Anotar fallos como: **paso · habilidad · tool · sub-paso · modo (smoke/case) · observación**.
 
-En `property_optioning`, N3 por habilidad suele equivaler al escenario principal del paso; N4 paso es opcional hasta validar la raíz explícitamente.
+En `property_optioning`, N3 por habilidad cubre la atómica forzada; N4 valida la raíz en el hito (obligatorio en el piloto cuando hay escenario en `step-test-scenario-registry.ts`).
 
 ---
 
@@ -510,7 +617,7 @@ Al diseñar un flow nuevo, completar:
 - Participantes externos: [ninguno | propietario | portal | …]
 - HITL interno: [ninguno | notify_user | business_decision | …]
 - Artefactos que deben quedar en context_jsonb: […]
-- Patrón de prueba: N1 | N2 (A/B/C) | N3 por habilidad | N4 paso (si 2+ habilidades)
+- Patrón de prueba: IDs del [catálogo](operational-case-reusable-patterns.md) (`n1_single`, `n2_*`, `PATTERN_*`) — N1 | N2 (A/B/C) | N3 por habilidad | N4 paso (si 2+ habilidades)
 - Riesgo máximo del paso: [bajo | medio | alto]
 - ¿N4 paso requerido?: [sí | no — justificación]
 ```
@@ -520,7 +627,8 @@ Al diseñar un flow nuevo, completar:
 - [ ] N0 completo
 - [ ] Cada tool con patrón N1 probada o N2 A/B/C completado según matriz §5
 - [ ] Cada **habilidad** con N3 `tested_ok` o `partial` documentado
-- [ ] Cada **paso multi-habilidad** con N4 documentado o planificado (cuando exista API)
+- [ ] Cada **paso multi-habilidad** con N4 documentado (`step-test-scenario-registry.ts`) o planificado
+- [ ] IDs de patrón asignados según checklist del [catálogo §8](operational-case-reusable-patterns.md#8-checklist-nuevo-case-type)
 - [ ] Checks de activación en UI sin bloqueos rojos
 - [ ] Operador entiende qué borrar manualmente tras pruebas (borradores EasyBroker, mensajes Telegram, etc.)
 
@@ -551,7 +659,17 @@ Un tipo de caso privado puede activarse cuando:
 | Flow piloto | `packages/db/supabase/migrations/00038_property_optioning_document_flow.sql` (y migraciones previas del case type) |
 
 | Playbook autoría | [`authoring-playbook.md`](authoring-playbook.md) |
-| Escenarios N4 (índice) | `apps/web/src/lib/operational-cases/step-test-scenarios.ts` |
+| Catálogo de patrones (doc) | [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) |
+| Catálogo de patrones (TS) | `apps/web/src/lib/operational-cases/test-patterns-catalog.ts` |
+| Detalle llamadas N3/N4 (UI) | `apps/web/src/lib/operational-cases/skill-test-call-details.tsx` |
+| Escenarios N4 (registry) | `apps/web/src/lib/operational-cases/step-test-scenario-registry.ts` |
+| Capa compat UI escenarios N4 | `apps/web/src/lib/operational-cases/step-test-scenarios.ts` |
+| Dedup Telegram | `packages/types/src/telegram-send-dedup.ts`, `packages/agent/src/tools/realestate-adapters.ts` |
+| Auditoría tool (single owner) | `packages/agent/src/tools/tool-audit-ownership.ts`, `packages/agent/src/graph.ts` |
+| Dedup documento generado | `packages/types/src/generated-document-dedup.ts`, `packages/agent/src/tools/realestate-adapters.ts` |
+| HITL contrato (revisión/envío/firma) | `apps/web/src/lib/business-decisions/contract-review.ts`, `contract-owner-signed.ts` |
+| Gating N3/N4 + estilos botón | `apps/web/src/lib/operational-cases/readiness-test-ui.ts` |
+| Tools probadas (N1) | `apps/web/src/lib/operational-cases/tested-tools-for-user.ts` |
 
 ---
 

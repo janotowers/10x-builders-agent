@@ -231,6 +231,36 @@ export interface HeartbeatRun {
   error?: string | null;
 }
 
+export type OperationalCaseTestRunLevel = "n3" | "n4";
+
+export type OperationalCaseTestRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "timed_out";
+
+export interface OperationalCaseTestRun {
+  id: string;
+  user_id: string;
+  case_id: string;
+  case_type_id: string;
+  level: OperationalCaseTestRunLevel;
+  status: OperationalCaseTestRunStatus;
+  step_key?: string | null;
+  skill_slug?: string | null;
+  scenario_id?: string | null;
+  root_skill_slug?: string | null;
+  turn_id?: string | null;
+  request_jsonb: Record<string, unknown>;
+  result_jsonb: Record<string, unknown>;
+  error?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface HeartbeatChecklistTemplateRow {
   id: string;
   user_id: string;
@@ -772,3 +802,14 @@ export interface PendingConfirmation {
   /** LangGraph checkpoint thread ID needed to resume the interrupted graph. */
   checkpointThreadId: string;
 }
+
+export {
+  normalizeTelegramSendText,
+  telegramSendInputsMatch,
+} from "./telegram-send-dedup";
+export {
+  generatedDocumentDedupKey,
+  generatedDocumentInputsMatch,
+  normalizeGeneratedDocumentArgs,
+  type GeneratedDocumentDedupOptions,
+} from "./generated-document-dedup";

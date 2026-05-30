@@ -58,6 +58,7 @@ import {
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
 import { reminderCooldownHoursForNotificationKind } from "@/lib/internal-notifications/registry";
+import { syncContractDraftFromToolCalls } from "@/lib/operational-cases/contract-draft-document";
 import { reminderCooldownHoursForEngagement } from "@/lib/engagement-policies/registry";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
@@ -320,6 +321,24 @@ async function processCase(
     console.log(
       `[ops-case-cron] case ${opCase.id} processed: response_len=${result.response?.length ?? 0} pending_confirmation=${result.pendingConfirmation ? "yes" : "no"}`
     );
+
+    if (result.turnId) {
+      const { data: toolCallRows } = await db
+        .from("tool_calls")
+        .select("tool_name, status, result_json")
+        .eq("turn_id", result.turnId)
+        .order("created_at", { ascending: true });
+      const freshCase = (await getOperationalCase(db, opCase.id)) ?? opCase;
+      await syncContractDraftFromToolCalls(
+        db,
+        freshCase,
+        (toolCallRows ?? []) as Array<{
+          tool_name: string;
+          status: string;
+          result_json?: unknown;
+        }>
+      );
+    }
 
     // Si el agente NO actualizó next_action_at (no movió el caso), lo
     // empujamos a +5min para que no martillemos esto cada minuto. El agente

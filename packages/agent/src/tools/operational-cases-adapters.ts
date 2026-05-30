@@ -28,6 +28,12 @@ import {
   updateOperationalCaseDocumentExtraction,
   updateOperationalCase,
 } from "@agents/db";
+import {
+  buildComparablesAnalysisFromToolCalls,
+  comparablesHasDefensibleSample,
+  normalizeComparablesAnalysisForInsufficientN4Test,
+  validateComparablesAnalysisArtifact,
+} from "../operational-cases/comparables-analysis";
 import type {
   OperationalCaseExternalContact,
   OperationalCaseIntakeField,
@@ -52,6 +58,14 @@ const EVENT_TYPE_VALUES = [
   "external_response",
   "error",
 ] as const;
+
+type PersistedToolCallRow = {
+  tool_name: string;
+  status: string;
+  arguments_json?: Record<string, unknown> | null;
+  result_json?: Record<string, unknown> | null;
+  created_at?: string | null;
+};
 
 const VISION_EXTRACTION_MODEL = "openai/gpt-4o-mini";
 const PDF_TEXT_EXTRACTION_MODEL = "openai/gpt-4o-mini";
@@ -779,50 +793,117 @@ export function addOperationalCaseTools(
             ctx.turnId
           );
 
-          const opCase = await getOperationalCase(ctx.db, input.case_id);
-          if (!opCase) {
-            const out = { ok: false, error: "case_not_found" };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
-          if (opCase.user_id !== ctx.userId) {
-            const out = { ok: false, error: "case_belongs_to_another_user" };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
-          if (opCase.version !== input.expected_version) {
-            const out = {
-              ok: false,
-              error: "version_mismatch",
-              actual_version: opCase.version,
-              expected_version: input.expected_version,
-              hint: "Re-read the case and retry with the new version.",
-            };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
+          let expectedVersion = input.expected_version;
+          let opCaseBefore: Awaited<ReturnType<typeof getOperationalCase>> = null;
+          let updated: Awaited<ReturnType<typeof updateOperationalCase>> = null;
 
-          const mergedContext =
-            input.context_patch && Object.keys(input.context_patch).length > 0
-              ? { ...opCase.context_jsonb, ...input.context_patch }
-              : undefined;
-
-          const updated = await updateOperationalCase(
-            ctx.db,
-            opCase.id,
-            opCase.version,
-            {
-              status: input.status,
-              currentStep: input.current_step,
-              nextActionAt: input.next_action_at,
-              dueAt: input.due_at,
-              context: mergedContext,
-              externalContact: input.external_contact as
-                | import("@agents/types").OperationalCaseExternalContact
-                | undefined,
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const opCase = await getOperationalCase(ctx.db, input.case_id);
+            if (!opCase) {
+              const out = { ok: false, error: "case_not_found" };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
             }
-          );
-          if (!updated) {
+            if (opCase.user_id !== ctx.userId) {
+              const out = { ok: false, error: "case_belongs_to_another_user" };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+            if (opCase.version !== expectedVersion) {
+              if (attempt < 4) {
+                expectedVersion = opCase.version;
+                continue;
+              }
+              const out = {
+                ok: false,
+                error: "version_mismatch",
+                actual_version: opCase.version,
+                expected_version: input.expected_version,
+                hint: "Re-read the case and retry with the new version.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+
+            opCaseBefore = opCase;
+            let contextPatch =
+              input.context_patch && Object.keys(input.context_patch).length > 0
+                ? { ...input.context_patch }
+                : undefined;
+            if (contextPatch && "comparables_analysis" in contextPatch) {
+              const patchErrors = validateComparablesAnalysisArtifact(
+                contextPatch.comparables_analysis
+              );
+              if (patchErrors.length > 0) {
+                const { comparables_analysis: _omit, ...rest } = contextPatch;
+                contextPatch =
+                  Object.keys(rest).length > 0 ? rest : undefined;
+              }
+            }
+            const mergedContext =
+              contextPatch && Object.keys(contextPatch).length > 0
+                ? {
+                    ...(opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                      ? (opCase.context_jsonb as Record<string, unknown>)
+                      : {}),
+                    ...contextPatch,
+                  }
+                : undefined;
+            const nextContext =
+              mergedContext ??
+              (opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                ? (opCase.context_jsonb as Record<string, unknown>)
+                : {});
+            const comparablesAnalysis = nextContext.comparables_analysis;
+            if (comparablesAnalysis != null) {
+              const artifactErrors =
+                validateComparablesAnalysisArtifact(comparablesAnalysis);
+              if (artifactErrors.length > 0) {
+                const out = {
+                  ok: false,
+                  error: "invalid_comparables_analysis",
+                  errors: artifactErrors,
+                  hint:
+                    "Usa operational_case_persist_comparables_analysis para construir el artefacto desde los resultados de búsqueda del turno.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
+            if (
+              input.current_step === "price_proposal_pending" &&
+              opCase.current_step === "comparables_in_progress" &&
+              !comparablesHasDefensibleSample(comparablesAnalysis)
+            ) {
+              const out = {
+                ok: false,
+                error: "comparables_sample_not_defensible",
+                hint:
+                  "No avances a price_proposal_pending hasta persistir comparables_analysis con data_quality.usable_count > 0. Si todas las fuentes tienen 0 usables, deja current_step=comparables_in_progress y status=waiting_internal con notify_user.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+
+            updated = await updateOperationalCase(
+              ctx.db,
+              opCase.id,
+              opCase.version,
+              {
+                status: input.status,
+                currentStep: input.current_step,
+                nextActionAt: input.next_action_at,
+                dueAt: input.due_at,
+                context: mergedContext,
+                externalContact: input.external_contact as
+                  | import("@agents/types").OperationalCaseExternalContact
+                  | undefined,
+              }
+            );
+            if (updated) break;
+          }
+
+          if (!updated || !opCaseBefore) {
             const out = {
               ok: false,
               error: "concurrent_update",
@@ -833,14 +914,14 @@ export function addOperationalCaseTools(
           }
 
           await insertOperationalCaseEvent(ctx.db, {
-            caseId: opCase.id,
+            caseId: opCaseBefore.id,
             eventType: "state_changed",
             actor: "agent",
             payload: {
               from: {
-                status: opCase.status,
-                current_step: opCase.current_step,
-                version: opCase.version,
+                status: opCaseBefore.status,
+                current_step: opCaseBefore.current_step,
+                version: opCaseBefore.version,
               },
               to: {
                 status: updated.status,
@@ -874,6 +955,160 @@ export function addOperationalCaseTools(
             due_at: z.string().optional(),
             context_patch: z.record(z.string(), z.any()).optional(),
             external_contact: z.record(z.string(), z.any()).optional(),
+            note: z.string().optional(),
+          }),
+        }
+      )
+    );
+  }
+
+  if (toolEnabled("operational_case_persist_comparables_analysis", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          case_id: string;
+          expected_version: number;
+          note?: string;
+        }) => {
+          const record = await createToolCall(
+            ctx.db,
+            ctx.sessionId,
+            "operational_case_persist_comparables_analysis",
+            input as unknown as Record<string, unknown>,
+            false,
+            ctx.turnId
+          );
+
+          const opCase = await getOperationalCase(ctx.db, input.case_id);
+          if (!opCase || opCase.user_id !== ctx.userId) {
+            const out = { ok: false, error: "case_not_found_or_forbidden" };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+          if (opCase.version !== input.expected_version) {
+            const out = {
+              ok: false,
+              error: "version_mismatch",
+              actual_version: opCase.version,
+              expected_version: input.expected_version,
+              hint: "Re-read the case and retry with the new version.",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+          if (!ctx.turnId) {
+            const out = {
+              ok: false,
+              error: "turn_id_required",
+              hint: "Esta tool construye comparables desde las búsquedas ejecutadas en el mismo turno.",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+
+          const { data, error } = await ctx.db
+            .from("tool_calls")
+            .select("tool_name,status,arguments_json,result_json,created_at")
+            .eq("turn_id", ctx.turnId)
+            .in("tool_name", [
+              "easybroker_search_listings",
+              "easybroker_search_closed_deals",
+              "bigquery_lookup_local_comparables",
+            ])
+            .order("created_at", { ascending: true });
+          if (error) {
+            const out = {
+              ok: false,
+              error: "tool_calls_lookup_failed",
+              hint: error.message,
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+
+          const context =
+            opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+              ? (opCase.context_jsonb as Record<string, unknown>)
+              : {};
+          let analysis = buildComparablesAnalysisFromToolCalls(
+            ((data ?? []) as PersistedToolCallRow[]).map((call) => ({
+              tool_name: call.tool_name,
+              status: call.status,
+              arguments_json: call.arguments_json ?? null,
+              result_json: call.result_json ?? null,
+              created_at: call.created_at ?? null,
+            }))
+          );
+          analysis = normalizeComparablesAnalysisForInsufficientN4Test(
+            analysis,
+            context
+          );
+          const artifactErrors = validateComparablesAnalysisArtifact(analysis);
+          if (artifactErrors.length > 0) {
+            const out = {
+              ok: false,
+              error: "invalid_comparables_analysis",
+              errors: artifactErrors,
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+
+          const updated = await updateOperationalCase(
+            ctx.db,
+            opCase.id,
+            opCase.version,
+            {
+              context: {
+                ...context,
+                comparables_analysis: analysis,
+              },
+            }
+          );
+          if (!updated) {
+            const out = {
+              ok: false,
+              error: "concurrent_update",
+              hint: "Another worker updated the case between read and write. Re-read and retry.",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+
+          await insertOperationalCaseEvent(ctx.db, {
+            caseId: opCase.id,
+            eventType: "step_completed",
+            actor: "agent",
+            payload: {
+              kind: "comparables_analysis_persisted",
+              source: "operational_case_persist_comparables_analysis",
+              usable_count:
+                typeof analysis.data_quality.usable_count === "number"
+                  ? analysis.data_quality.usable_count
+                  : 0,
+              ...(input.note ? { note: input.note } : {}),
+            },
+          });
+
+          const out = {
+            ok: true,
+            case_id: updated.id,
+            version: updated.version,
+            defensible_sample: comparablesHasDefensibleSample(analysis),
+            usable_count: analysis.data_quality.usable_count,
+            stats: analysis.stats,
+            data_quality: analysis.data_quality,
+          };
+          await updateToolCallStatus(ctx.db, record.id, "executed", out);
+          return JSON.stringify(out);
+        },
+        {
+          name: "operational_case_persist_comparables_analysis",
+          description:
+            "Builds and persists context_jsonb.comparables_analysis deterministically from this turn's EasyBroker and BigQuery search tool results. Use after running all comparable search tools; do not hand-write comparables_analysis via operational_case_update_state.",
+          schema: z.object({
+            case_id: z.string().min(1),
+            expected_version: z.number().int().nonnegative(),
             note: z.string().optional(),
           }),
         }

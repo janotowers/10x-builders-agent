@@ -48,12 +48,17 @@ import {
   listAccountAssets,
   getOperationalCase,
   getOperationalCaseTypeById,
+  getGoogleCalendarAccessToken,
   getOrCreateSession,
   listOperationalCaseDocuments,
   expireExternalContactNotificationsForCase,
+  updateOperationalCase,
+  createToolCall,
+  updateToolCallStatus,
 } from "@agents/db";
 import {
   buildLangChainTools,
+  deriveCommissionContractTemplateData,
   getBusinessBrainWarehouse,
   getSkillRegistryForUser,
   TOOL_CATALOG,
@@ -71,6 +76,7 @@ import type {
   UserToolSetting,
 } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import { mergeContextForToolRecipes } from "@/lib/operational-cases/property-search-zone";
 import { buildTestContext } from "../../operational-case-tests/test-context-samples";
 
 type ToolRunMode = "smoke" | "case" | "manual";
@@ -130,6 +136,22 @@ const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
     age_range: "1-5 años",
     current_status: "Habitable",
   },
+  generate_document_from_template: {
+    template_slug: "commission_contract",
+    format: "docx",
+    data: {
+      owner_name: "Contacto de prueba",
+      property_address:
+        "Privada del Tulipán 1501, Sendas Residencial G1, Zapopan, Jalisco",
+      property_type: "departamento",
+      area_m2: 116.93,
+      salida_price: 25000,
+      minimum_price: 20000,
+      commission_pct: 5,
+      exclusive: true,
+      duration_months: 6,
+    },
+  },
 };
 
 function smokeDefaultsForTool(
@@ -183,6 +205,7 @@ const TOOL_TEST_ARG_RECIPES: Record<
     bigQueryLocalComparablesCaseRecipe(input.ctx),
   telegram_send_message_to_contact: telegramContactCaseRecipe,
   notify_user: (input) => notifyUserCaseRecipe(input.ctx),
+  generate_document_from_template: generateDocumentFromTemplateCaseRecipe,
   image_watermark: () => ({
     asset_key: "listing_photo_watermark",
     position: "bottom-right",
@@ -195,6 +218,9 @@ const TOOL_TEST_ARG_RECIPES: Record<
   ungga_publish_listing: (input) => unggaPublishCaseRecipe(input.ctx),
   operational_case_create: operationalCaseCreateCaseRecipe,
   operational_case_update_state: operationalCaseUpdateStateCaseRecipe,
+  calendar_list_events: calendarListEventsCaseRecipe,
+  calendar_create_event: calendarCreateEventCaseRecipe,
+  calendar_update_event: calendarUpdateEventCaseRecipe,
 };
 
 /**
@@ -202,6 +228,12 @@ const TOOL_TEST_ARG_RECIPES: Record<
  * Si existe el caso aislado de Preparación operativa, smoke arma args como en
  * Caso de prueba (recipe o match por nombre de param + `case_id`).
  */
+/** Tools que en N1 no registran tool_calls en el adapter; persistimos evidencia para el pill «Probada». */
+const READINESS_RECORDS_TOOL_CALL = new Set([
+  "calendar_create_event",
+  "calendar_update_event",
+]);
+
 const SMOKE_BINDS_TEST_CASE_WHEN_PRESENT = new Set([
   "operational_case_update_state",
   "operational_case_list_documents",
@@ -326,11 +358,13 @@ const CONTROLLED_REAL_WRITE_TOOLS = new Set([
   "telegram_send_message_to_contact",
   "easybroker_create_listing",
   "easybroker_upload_images",
+  "calendar_create_event",
 ]);
 const CONTROLLED_REAL_WRITE_CONFIRMATIONS: Record<string, string> = {
   telegram_send_message_to_contact: "ENVIAR PRUEBA",
   easybroker_create_listing: "CREAR BORRADOR",
   easybroker_upload_images: "FOTOS A BORRADOR",
+  calendar_create_event: "CREAR EVENTO PRUEBA",
 };
 
 function controlledRealWriteConfirmation(toolId: string) {
@@ -383,12 +417,74 @@ function summarizeResult(parsed: unknown) {
     };
   }
   const results = Array.isArray(parsed.results) ? parsed.results : null;
+  const events = Array.isArray(parsed.events) ? parsed.events : null;
   return {
     ok: typeof parsed.ok === "boolean" ? parsed.ok : null,
     status: typeof parsed.status === "string" ? parsed.status : null,
-    count: typeof parsed.count === "number" ? parsed.count : results?.length ?? null,
-    preview: results ? results.slice(0, 3) : null,
+    count:
+      typeof parsed.count === "number"
+        ? parsed.count
+        : events?.length ?? results?.length ?? null,
+    preview: events ? events.slice(0, 3) : results ? results.slice(0, 3) : null,
   };
+}
+
+function isPlaceholderCalendarEventId(eventId: unknown) {
+  const id = cleanText(typeof eventId === "string" ? eventId : "");
+  return (
+    !id ||
+    id === "EVENT_ID_FROM_PRIOR_CREATE_EVENT_TEST" ||
+    /^replace_with_/i.test(id)
+  );
+}
+
+/**
+ * Varios adapters devuelven errores en el JSON (p. ej. Calendar API 404) sin lanzar
+ * excepción; N1 debe fallar en esos casos, no marcar Éxito por invoke sin throw.
+ */
+function evaluateGenericToolReadinessResult(
+  parsed: unknown,
+  toolId: string
+): { ok: boolean; hint?: string } {
+  if (!isRecord(parsed)) {
+    return { ok: false, hint: "La tool no devolvió un resultado JSON interpretable." };
+  }
+  if (parsed.ok === false) {
+    return {
+      ok: false,
+      hint:
+        typeof parsed.error === "string" && parsed.error.trim()
+          ? parsed.error
+          : "La tool devolvió ok: false.",
+    };
+  }
+  if (typeof parsed.error === "string" && parsed.error.trim()) {
+    const httpStatus =
+      typeof parsed.status === "number" && Number.isFinite(parsed.status)
+        ? parsed.status
+        : null;
+    if (toolId === "calendar_update_event" && httpStatus === 404) {
+      return {
+        ok: false,
+        hint:
+          "Google Calendar respondió 404: el event_id no existe. Crea un evento de prueba con «Crear evento de calendario» (confirma ejecución), copia el campo id del JSON de respuesta y pégalo en Avanzado como event_id.",
+      };
+    }
+    if (toolId.startsWith("calendar_") && httpStatus != null && httpStatus >= 400) {
+      return {
+        ok: false,
+        hint: `${parsed.error} (HTTP ${httpStatus}). Revisa los args y la integración de Google Calendar.`,
+      };
+    }
+    return { ok: false, hint: parsed.error };
+  }
+  if (parsed.needs_period === true) {
+    return {
+      ok: true,
+      hint: "Integración OK: la tool pidió un período (comportamiento esperado sin time_min/time_max).",
+    };
+  }
+  return { ok: true };
 }
 
 function documentExtractionHasStructuredFields(extraction: unknown) {
@@ -490,6 +586,130 @@ function contextWithPropertyData(ctx: Record<string, unknown>) {
   return { ...propertyData, ...ctx };
 }
 
+/** Offset fijo CST (UTC-6) para ventanas de prueba; suficiente para N1 de coordinación de fotos. */
+const CALENDAR_TEST_TZ_OFFSET_HOURS = -6;
+
+function calendarPartsInTestTimezone(now: Date) {
+  const shifted = new Date(now.getTime() - CALENDAR_TEST_TZ_OFFSET_HOURS * 3600000);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth(),
+    day: shifted.getUTCDate(),
+  };
+}
+
+function instantAtTestTimezone(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute = 0
+) {
+  return new Date(
+    Date.UTC(year, month, day, hour - CALENDAR_TEST_TZ_OFFSET_HOURS, minute, 0)
+  );
+}
+
+/** Mañana 8:00 → +5 días 20:00 (coordinate-photo-session). */
+function photoSessionCalendarListWindow(now = new Date()) {
+  const { year, month, day } = calendarPartsInTestTimezone(now);
+  return {
+    time_min: instantAtTestTimezone(year, month, day + 1, 8).toISOString(),
+    time_max: instantAtTestTimezone(year, month, day + 6, 20).toISOString(),
+  };
+}
+
+function propertyAddressLabel(ctx: Record<string, unknown>) {
+  const merged = contextWithPropertyData(ctx);
+  const address = isRecord(merged.address) ? merged.address : {};
+  return (
+    firstString(address as Record<string, unknown>, [
+      "formatted",
+      "full",
+      "line1",
+      "street",
+    ]) ??
+    firstString(merged, [
+      "property_address",
+      "address",
+      "title",
+      "property_title",
+    ]) ??
+    "propiedad en prueba"
+  );
+}
+
+/** Primera ventana diurna ~2 días después, 10:00–12:00 (horario de propuesta de fotos). */
+function photoSessionDefaultSlot(now = new Date()) {
+  const { year, month, day } = calendarPartsInTestTimezone(now);
+  const start = instantAtTestTimezone(year, month, day + 2, 10);
+  const end = instantAtTestTimezone(year, month, day + 2, 12);
+  return { start, end };
+}
+
+function calendarListEventsCaseRecipe(_input: ToolRecipeInput): Record<string, unknown> {
+  const window = photoSessionCalendarListWindow();
+  return {
+    calendar_id: "primary",
+    time_min: window.time_min,
+    time_max: window.time_max,
+  };
+}
+
+function calendarCreateEventCaseRecipe(input: ToolRecipeInput): Record<string, unknown> {
+  const ctx = input.ctx;
+  const photoSession = isRecord(ctx.photo_session) ? ctx.photo_session : {};
+  const scheduledAt =
+    typeof photoSession.scheduled_at === "string" ? photoSession.scheduled_at.trim() : "";
+  const slot =
+    scheduledAt && Number.isFinite(Date.parse(scheduledAt))
+      ? {
+          start: new Date(scheduledAt),
+          end: new Date(Date.parse(scheduledAt) + 2 * 3600000),
+        }
+      : photoSessionDefaultSlot();
+  const address = propertyAddressLabel(ctx);
+  const caseId = input.testCase?.id;
+  const descriptionParts = [
+    caseId ? `case_id: ${caseId}` : null,
+    "Prueba N1 — coordinación de fotos (settings test).",
+  ].filter(Boolean);
+  return {
+    calendar_id: "primary",
+    summary: `Sesión fotos · ${address}`,
+    start_datetime: slot.start.toISOString(),
+    end_datetime: slot.end.toISOString(),
+    description: descriptionParts.join(" "),
+  };
+}
+
+function calendarUpdateEventCaseRecipe(input: ToolRecipeInput): Record<string, unknown> {
+  const ctx = input.ctx;
+  const photoSession = isRecord(ctx.photo_session) ? ctx.photo_session : {};
+  const eventId = firstString(photoSession, ["calendar_event_id", "event_id"]);
+  const base = calendarCreateEventCaseRecipe(input);
+  const start =
+    typeof base.start_datetime === "string" && Number.isFinite(Date.parse(base.start_datetime))
+      ? new Date(base.start_datetime)
+      : photoSessionDefaultSlot().start;
+  const end =
+    typeof base.end_datetime === "string" && Number.isFinite(Date.parse(base.end_datetime))
+      ? new Date(base.end_datetime)
+      : photoSessionDefaultSlot().end;
+  const shiftedStart = new Date(start.getTime() + 24 * 3600000);
+  const shiftedEnd = new Date(end.getTime() + 24 * 3600000);
+  return {
+    calendar_id: "primary",
+    event_id: eventId ?? "EVENT_ID_FROM_PRIOR_CREATE_EVENT_TEST",
+    summary: base.summary,
+    start_datetime: shiftedStart.toISOString(),
+    end_datetime: shiftedEnd.toISOString(),
+    description: eventId
+      ? String(base.description ?? "")
+      : `${base.description ?? ""} Sin calendar_event_id en el caso: usa «Crear evento de prueba en Google Calendar» en la tool de crear evento o pega event_id en Avanzado.`.trim(),
+  };
+}
+
 function notifyUserCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
   const merged = contextWithPropertyData(ctx);
   const propertyType =
@@ -534,6 +754,35 @@ function notifyUserCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
     kind: "tool_readiness_test",
     urgency: "low",
   };
+}
+
+/** Args N1 alineados a prepare-commission-contract / catálogo (template_slug, format, data). */
+function generateDocumentFromTemplateCaseRecipe(
+  input: ToolRecipeInput
+): Record<string, unknown> {
+  const ctx = input.ctx;
+  const propertyData = isRecord(ctx.property_data) ? ctx.property_data : {};
+  const proposal = isRecord(ctx.pricing_proposal) ? ctx.pricing_proposal : {};
+  const commission = isRecord(ctx.commission_terms) ? ctx.commission_terms : {};
+
+  const external = input.testCase?.external_contact_jsonb;
+
+  const args: Record<string, unknown> = {
+    template_slug: "commission_contract",
+    format: "docx",
+    data: deriveCommissionContractTemplateData({
+      case_context: ctx,
+      property_data: propertyData,
+      pricing_proposal: proposal,
+      commission_terms: commission,
+      external_contact:
+        external && typeof external === "object" && !Array.isArray(external)
+          ? (external as Record<string, unknown>)
+          : {},
+    }),
+  };
+  if (input.testCase?.id) args.case_id = input.testCase.id;
+  return args;
 }
 
 function isCharacteristicsTelegramContext(input: ToolRecipeInput) {
@@ -1046,10 +1295,66 @@ async function hydrateEasyBrokerUploadListingId(params: {
   };
 }
 
+function calendarEventIdFromToolResult(parsed: unknown): string | null {
+  if (!isRecord(parsed)) return null;
+  const id = cleanText(parsed.id);
+  return id || null;
+}
+
+async function persistPhotoSessionCalendarEventIdForTestCase(
+  db: ReturnType<typeof createServerClient>,
+  caseId: string | null | undefined,
+  eventId: string
+) {
+  const trimmed = eventId.trim();
+  if (!caseId || !trimmed) return;
+  const opCase = await getOperationalCase(db, caseId);
+  if (!opCase) return;
+  const context = isRecord(opCase.context_jsonb)
+    ? (opCase.context_jsonb as Record<string, unknown>)
+    : {};
+  if (
+    context.created_from !== "case_type_settings_test" &&
+    context.test_mode !== true
+  ) {
+    return;
+  }
+  const photoSession = isRecord(context.photo_session)
+    ? (context.photo_session as Record<string, unknown>)
+    : {};
+  await updateOperationalCase(db, opCase.id, opCase.version, {
+    context: {
+      ...context,
+      photo_session: {
+        ...photoSession,
+        calendar_event_id: trimmed,
+        source: "tool_readiness_test",
+      },
+    },
+  });
+}
+
 function applyControlledRealWriteSafeguards(
   toolId: string,
   args: Record<string, unknown>
 ) {
+  if (toolId === "calendar_create_event") {
+    const summary =
+      typeof args.summary === "string" && args.summary.trim()
+        ? args.summary.trim()
+        : "Sesión fotos · prueba";
+    const safeSummary = summary.startsWith("[PRUEBA CONTROLADA]")
+      ? summary
+      : `[PRUEBA CONTROLADA] ${summary}`;
+    return {
+      ...args,
+      calendar_id:
+        typeof args.calendar_id === "string" && args.calendar_id.trim()
+          ? args.calendar_id
+          : "primary",
+      summary: safeSummary,
+    };
+  }
   if (toolId === "telegram_send_message_to_contact") {
     const currentText =
       typeof args.text === "string" && args.text.trim()
@@ -1372,7 +1677,7 @@ async function resolveArgsForMode(params: {
       source = "flow_test_inputs_mapping";
     } else if (recipe) {
       derived = recipe({
-        ctx,
+        ctx: mergeContextForToolRecipes(ctx),
         testCase,
         caseType,
         skillSlug: readinessSkillSlug,
@@ -1392,7 +1697,8 @@ async function resolveArgsForMode(params: {
     if (
       (toolId === "telegram_send_message_to_contact" ||
         toolId === "operational_case_register_document" ||
-        toolId === "operational_case_list_documents") &&
+        toolId === "operational_case_list_documents" ||
+        toolId === "generate_document_from_template") &&
       !merged.case_id
     ) {
       merged.case_id = testCase.id;
@@ -2011,6 +2317,23 @@ export async function POST(request: Request) {
   }
     if (
       controlledRealWriteRequested &&
+      toolId === "calendar_create_event" &&
+      (!cleanText(resolvedArgs.summary) ||
+        !cleanText(resolvedArgs.start_datetime) ||
+        !cleanText(resolvedArgs.end_datetime))
+    ) {
+      return NextResponse.json(
+        {
+          error: "controlled_real_write_missing_calendar_args",
+          hint:
+            "Para crear un evento de prueba necesitas summary, start_datetime y end_datetime (la receta Caso de prueba ya los arma).",
+          resolved_args: resolvedArgs,
+        },
+        { status: 400 }
+      );
+    }
+    if (
+      controlledRealWriteRequested &&
       toolId === "easybroker_upload_images" &&
       !validEasyBrokerListingId(resolvedArgs.listing_id)
     ) {
@@ -2083,14 +2406,16 @@ export async function POST(request: Request) {
       { data: toolSettings },
       { data: integrations },
       { data: profile },
+      googleCalendarAccessToken,
     ] = await Promise.all([
       supabase.from("user_tool_settings").select("*").eq("user_id", user.id),
       supabase.from("user_integrations").select("*").eq("user_id", user.id),
       supabase
         .from("profiles")
-        .select("business_brain, is_ungga_admin")
+        .select("business_brain, is_ungga_admin, timezone")
         .eq("id", user.id)
         .single(),
+      getGoogleCalendarAccessToken(db, user.id),
     ]);
     const session = await getOrCreateSession(db, user.id, "web");
     const businessBrain =
@@ -2118,6 +2443,11 @@ export async function POST(request: Request) {
       tenantOrganizationId,
       bigQueryProjectId: warehouse?.project_id?.trim() || undefined,
       bigQueryLocation: warehouse?.location?.trim() || undefined,
+      userTimezone:
+        typeof profile?.timezone === "string" && profile.timezone.trim()
+          ? profile.timezone.trim()
+          : undefined,
+      googleCalendarAccessToken: googleCalendarAccessToken ?? undefined,
     };
 
     const tools = buildLangChainTools(ctx);
@@ -2125,15 +2455,59 @@ export async function POST(request: Request) {
       | { invoke: (args: unknown) => Promise<unknown> }
       | undefined;
     if (!lcTool) {
+      const calendarTool = def.requires_integration === "google_calendar";
+      const calendarIntegrationActive = (integrations ?? []).some(
+        (row) =>
+          (row as { provider?: string; status?: string }).provider ===
+            "google_calendar" &&
+          (row as { status?: string }).status === "active"
+      );
+      const calendarToolEnabled = (toolSettings ?? []).some(
+        (row) =>
+          (row as { tool_id?: string; enabled?: boolean }).tool_id === toolId &&
+          (row as { enabled?: boolean }).enabled === true
+      );
+      let hint =
+        "La tool existe en el catálogo pero no está disponible para esta cuenta. Revisa que la tool esté activada en Ajustes → Herramientas.";
+      if (calendarTool && !calendarToolEnabled) {
+        hint = `Activa «${toolId}» en Ajustes → Herramientas antes de probarla aquí.`;
+      } else if (calendarTool && !calendarIntegrationActive) {
+        hint =
+          "Conecta Google Calendar en Ajustes → Integraciones antes de probar herramientas calendar_*.";
+      } else if (calendarTool && !googleCalendarAccessToken) {
+        hint =
+          "Google Calendar aparece conectado pero no hay token usable (expirado o ENCRYPTION_KEY). Reconecta la integración en Ajustes.";
+      }
       return NextResponse.json(
         {
           error: "tool_not_built_for_user",
           tool_id: toolId,
-          hint:
-            "La tool existe en el catálogo pero no está disponible para esta cuenta. Revisa user_tool_settings y permisos.",
+          hint,
         },
         { status: 400 }
       );
+    }
+
+    if (
+      toolId === "calendar_update_event" &&
+      policy.execute &&
+      isPlaceholderCalendarEventId(resolvedArgsForExecution.event_id)
+    ) {
+      return NextResponse.json({
+        ok: false,
+        executed: false,
+        tool_id: toolId,
+        risk: def.risk,
+        dry_run: false,
+        reason: "placeholder_event_id",
+        requested_mode: requestedMode,
+        mode_used: resolution.mode_used,
+        mode_source: resolution.source,
+        case_id: resolution.case_id ?? null,
+        resolved_args: resolvedArgsForExecution,
+        hint:
+          "Falta un event_id real. En la misma preparación operativa abre «Crear evento de calendario», usa la sección «Crear evento de prueba en Google Calendar» (escribe CREAR EVENTO PRUEBA) y vuelve aquí; el id se guardará en el caso automáticamente. También puedes pegar un event_id manual en Avanzado.",
+      });
     }
 
     const startedAt = Date.now();
@@ -2155,11 +2529,43 @@ export async function POST(request: Request) {
       toolId === "operational_case_extract_document_fields"
         ? evaluateDocumentExtractionTest(parsed)
         : null;
+    const genericEval =
+      extractionEval == null ? evaluateGenericToolReadinessResult(parsed, toolId) : null;
     const toolOk = extractionEval
       ? extractionEval.ok
-      : summary.ok ?? (invokeError === null ? true : false);
+      : genericEval
+        ? genericEval.ok
+        : summary.ok ?? (invokeError === null ? true : false);
 
     const ok = invokeError === null && toolOk !== false;
+    const resultHint = extractionEval?.hint ?? genericEval?.hint;
+
+    if (READINESS_RECORDS_TOOL_CALL.has(toolId)) {
+      try {
+        const record = await createToolCall(
+          db,
+          session.id,
+          toolId,
+          resolvedArgsForExecution,
+          false,
+          null
+        );
+        const resultPayload: Record<string, unknown> = invokeError
+          ? { error: invokeError }
+          : isRecord(parsed)
+            ? (parsed as Record<string, unknown>)
+            : { raw: parsed ?? text };
+        await updateToolCallStatus(
+          db,
+          record.id,
+          ok ? "executed" : "failed",
+          resultPayload
+        );
+      } catch (auditErr) {
+        console.warn("[run-tool] readiness tool_call audit failed:", auditErr);
+      }
+    }
+
     if (
       controlledRealWriteRequested &&
       toolId === "telegram_send_message_to_contact" &&
@@ -2174,6 +2580,23 @@ export async function POST(request: Request) {
         await expireExternalContactNotificationsForCase(db, linkedCase.id);
       }
     }
+    let persistedCalendarEventId: string | null = null;
+    if (
+      controlledRealWriteRequested &&
+      toolId === "calendar_create_event" &&
+      ok &&
+      resolution.case_id
+    ) {
+      const createdId = calendarEventIdFromToolResult(parsed);
+      if (createdId) {
+        await persistPhotoSessionCalendarEventIdForTestCase(
+          db,
+          resolution.case_id,
+          createdId
+        );
+        persistedCalendarEventId = createdId;
+      }
+    }
     return NextResponse.json({
       ok,
       executed: true,
@@ -2183,7 +2606,9 @@ export async function POST(request: Request) {
       reason: controlledRealWriteRequested
         ? "high_risk_controlled_real_write"
         : policy.reason,
-      hint: extractionEval?.hint
+      hint: !ok && resultHint
+        ? resultHint
+        : extractionEval?.hint
         ? extractionEval.hint
         : forceCliDryRun
         ? toolId === "ungga_publish_listing"
@@ -2193,7 +2618,11 @@ export async function POST(request: Request) {
           ? toolId === "telegram_send_message_to_contact"
             ? "Telegram no confirmó el envío. Revisa el error de la respuesta; puedes continuar con «B · Simular respuesta y procesar» para validar la actualización del caso sin enviar otro mensaje."
             : "La prueba real controlada falló. Revisa el error de la respuesta antes de continuar."
-        : controlledRealWriteRequested
+        : controlledRealWriteRequested && ok && toolId === "calendar_create_event"
+          ? persistedCalendarEventId
+            ? `Evento creado en Google Calendar (id ${persistedCalendarEventId}). Quedó en photo_session.calendar_event_id del caso de prueba; abre «Actualizar evento» y vuelve a probar (recarga el panel si la vista previa sigue con el marcador). Borra el evento en Calendar cuando termines.`
+            : "La tool respondió OK pero no devolvió id; revisa el JSON. Si hay id, pégalo en Avanzado de Actualizar evento."
+          : controlledRealWriteRequested
           ? toolId === "telegram_send_message_to_contact"
             ? "Prueba real controlada ejecutada: se intentó enviar el mensaje al chat_id externo indicado por Telegram."
             : toolId === "easybroker_upload_images"

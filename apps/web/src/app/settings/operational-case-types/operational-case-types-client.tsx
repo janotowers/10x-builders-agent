@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import type {
   AccountAsset,
   AccountSkill,
@@ -20,8 +28,139 @@ import type {
 } from "@agents/types";
 import { AccountToolConnectionForm } from "@/components/account-tool-connection-form";
 import type { OwnerResponseBusinessOutcome } from "@/lib/operational-cases/evaluate-owner-response-outcome";
-import { stepTestAvailable } from "@/lib/operational-cases/step-test-scenarios";
+import {
+  collectSkillTestNotifyUserCalls,
+  collectSkillTestRenderedDocuments,
+  collectSkillTestTelegramCalls,
+  formatSkillTestCallGroupLabel,
+  parseRenderedDocumentResult,
+  formatSkillTestToolCallAuditTokenList,
+  SkillTestNotifyUserCallDetails,
+  SkillTestRenderedDocumentLinks,
+  SkillTestTelegramCallDetails,
+  skillTestExternalContactTelegramHint,
+  skillTestNotifyMissingDocUrlNotice,
+  skillTestNotifyUserNotice,
+  skillTestTelegramNotice,
+  type SkillTestToolCallDetail,
+} from "@/lib/operational-cases/skill-test-call-details";
+import {
+  stepTestCatalogSlugForRootSkill,
+  stepTestAvailable,
+  stepTestScenariosFor,
+} from "@/lib/operational-cases/step-test-scenarios";
+import {
+  flowStepProgressBadgeLabel,
+  isStepTestBlocked,
+  contractDraftScenarioOutcomeHint,
+  formatStepScenarioChecklist,
+  formatStepScenarioProgress,
+  stepScenarioRunResultLabel,
+  formatStepTestResultMetaLine,
+  resolveStepTestExecutionMode,
+  resolveStepTestUiCopy,
+  skillTestStatusLabel,
+  SKILL_TEST_BLOCKED_TITLE,
+  SKILL_TEST_PRIMARY_BUTTON_CLASS,
+  stepAllSkillsN3Ok,
+  stepTestStatusLabel,
+  STEP_TEST_BLOCKED_TITLE,
+  STEP_TEST_PRIMARY_BUTTON_CLASS,
+  toolTestStatusLabel,
+} from "@/lib/operational-cases/readiness-test-ui";
 import { stringifyToolArgsForDisplay } from "@/lib/tool-readiness/format-args-for-display";
+import {
+  isInternalOperationalTool,
+  isReadinessVisibleTool,
+  isScenarioOnlyTool,
+  partitionFlowSteps,
+  toolSurfaceKind,
+  toolSurfaceLabel,
+} from "@/lib/operational-cases/tool-surface-classification";
+
+type PageScrollPosition = {
+  x: number;
+  y: number;
+  documentElement: number;
+  body: number;
+  readinessFlow: number;
+};
+
+function capturePageScroll(
+  readinessFlowEl?: HTMLDivElement | null
+): PageScrollPosition {
+  return {
+    x: window.scrollX,
+    y: window.scrollY,
+    documentElement: document.documentElement.scrollTop,
+    body: document.body.scrollTop,
+    readinessFlow: readinessFlowEl?.scrollTop ?? 0,
+  };
+}
+
+function restorePageScroll(
+  position: PageScrollPosition,
+  readinessFlowEl?: HTMLDivElement | null
+) {
+  window.scrollTo(position.x, position.y);
+  document.documentElement.scrollTop = position.documentElement;
+  document.body.scrollTop = position.body;
+  if (readinessFlowEl) {
+    readinessFlowEl.scrollTop = position.readinessFlow;
+  }
+}
+
+/** Restaura scroll tras cambios de layout (expandir panel, preview, refresh). */
+function restorePageScrollAfterLayout(
+  position: PageScrollPosition,
+  readinessFlowEl?: HTMLDivElement | null
+) {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      restorePageScroll(position, readinessFlowEl);
+    });
+  });
+}
+
+function readinessExpandToggleHandlers(onToggle: () => void) {
+  return {
+    onMouseDown: (event: MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+    },
+    onClick: () => {
+      onToggle();
+      (document.activeElement as HTMLElement | null)?.blur();
+    },
+  };
+}
+
+/** Colapsa sin desmontar: al cerrar evita saltos por remount + mantiene estado del panel. */
+function ReadinessExpandableSection({
+  expanded,
+  children,
+}: {
+  expanded: boolean;
+  children: ReactNode;
+}) {
+  const [everExpanded, setEverExpanded] = useState(expanded);
+
+  useEffect(() => {
+    if (expanded) setEverExpanded(true);
+  }, [expanded]);
+
+  if (!everExpanded) return null;
+
+  return (
+    <div
+      className="mt-2 grid [overflow-anchor:none]"
+      style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
+    >
+      <div className="min-h-0 overflow-hidden">
+        <div className="space-y-2 [overflow-anchor:none]">{children}</div>
+      </div>
+    </div>
+  );
+}
 
 const DEFAULT_INTAKE_SCHEMA: OperationalCaseIntakeField[] = [
   {
@@ -43,7 +182,7 @@ const DEFAULT_INTAKE_SCHEMA: OperationalCaseIntakeField[] = [
 const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
   safe_test: {
     description:
-      "Crea o regenera un caso de prueba con datos sintéticos realistas. La validación segura no invoca el agente; el E2E ejecuta sólo un tick controlado y luego detiene el caso de prueba.",
+      "Prepara un caso de prueba con datos del intake y valida el registro antes del flujo operativo, sin mezclarlo con operación real.",
     run_button_label: "Validar intake seguro",
     synthetic_data_copy:
       "Caso de prueba en la misma fila de operational_cases (regenerar no crea otro registro). El tick E2E puede invocar tools y crear pendientes de prueba, pero el cron no debe continuar el caso automáticamente.",
@@ -62,9 +201,9 @@ const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
     readiness_blocked_copy:
       "Tools pendientes de validación: prueba o configura las herramientas requeridas antes de activar.",
     safe_test_success_copy:
-      "Prueba segura inicial pasada: el caso de prueba validó intake y avanzó al primer paso operativo sin ejecutar acciones externas.",
+      "Registro validado: prueba segura ejecutada o el caso de prueba ya avanzó al flujo operativo.",
     conversational_safe_copy:
-      "Uso conversacional seguro: puede iniciarse desde chat/Telegram en modo controlado, sin envíos/publicaciones automáticas.",
+      "Listo para chat/Telegram en modo controlado (plantilla activa, tools listas, registro validado).",
     real_operation_complete_copy:
       "Operación real completa: sin stubs técnicos pendientes.",
     real_operation_pending_copy:
@@ -207,10 +346,13 @@ type ToolReadinessResult = {
   };
   tools: ToolReadinessToolItem[];
   flow?: ToolReadinessFlowStep[];
+  flow_preparation?: ToolReadinessFlowStep[];
+  flow_operational?: ToolReadinessFlowStep[];
 };
 
 type ToolReadinessFlowTool = OperationalCaseFlowTool & {
   readiness: ToolReadinessToolItem | null;
+  test_status?: "ready_untested" | "tested_ok" | "tested_failed";
 };
 
 type ToolReadinessFlowSkill = Omit<OperationalCaseFlowSkill, "skill_tools"> & {
@@ -224,7 +366,27 @@ type ToolReadinessFlowStep = Omit<
 > & {
   step_skills: ToolReadinessFlowSkill[];
   step_tools: ToolReadinessFlowTool[];
-  test_status?: "blocked" | "ready_to_test" | "partially_tested" | "tested_ok" | "tested_failed";
+  step_kind?: "preparation" | "operational";
+  readiness_tool_ids?: string[];
+  test_status?:
+    | "blocked"
+    | "ready_to_test"
+    | "partially_tested"
+    | "awaiting_n4"
+    | "tested_ok"
+    | "tested_failed";
+  step_test_progress?: {
+    scenarios_total: number;
+    scenarios_passed: number;
+    scenarios_failed: number;
+    scenarios_partial: number;
+    scenarios_pending: number;
+    scenarios?: Array<{
+      id: string;
+      label?: string;
+      status: "tested_ok" | "tested_failed" | "partial" | "pending";
+    }>;
+  };
 };
 
 type ToolReadinessRequestStatus =
@@ -776,7 +938,10 @@ function toolReadinessSummaryLabel(summary?: ToolReadinessResult["summary"]) {
 
 function toolReadinessCounts(result: ToolReadinessResult | null) {
   const counts = {
+    visibleTotal: 0,
     ready: 0,
+    untested: 0,
+    testedOk: 0,
     needs_config: 0,
     stub: 0,
     missing: 0,
@@ -784,10 +949,193 @@ function toolReadinessCounts(result: ToolReadinessResult | null) {
     blocking: 0,
   };
   for (const tool of result?.tools ?? []) {
+    if (!isReadinessVisibleTool(tool.tool_id)) continue;
+    counts.visibleTotal += 1;
     counts[tool.status] += 1;
+    if (tool.status === "ready" && tool.test_status === "ready_untested") {
+      counts.untested += 1;
+    }
+    if (tool.test_status === "tested_ok") counts.testedOk += 1;
     if (tool.blocking) counts.blocking += 1;
   }
   return counts;
+}
+
+function fixturePreparationStatus(params: {
+  hasCase: boolean;
+  currentStep: string | null | undefined;
+  safeCheckPassed: boolean;
+  toolsHaveBlocks: boolean;
+}): { label: string; tone: "pending" | "attention" | "ready" } {
+  if (!params.hasCase) {
+    return params.toolsHaveBlocks
+      ? { label: "Tools pendientes", tone: "attention" }
+      : { label: "Sin datos de caso de prueba", tone: "pending" };
+  }
+  if (params.toolsHaveBlocks) {
+    return { label: "Tools pendientes", tone: "attention" };
+  }
+  if (params.currentStep === "intake" && !params.safeCheckPassed) {
+    return { label: "Caso creado · validar registro", tone: "attention" };
+  }
+  return { label: "Caso de prueba listo", tone: "ready" };
+}
+
+function testCaseIntakePrepared(params: {
+  hasCase: boolean;
+  testPassed: boolean;
+  currentStep: string | null | undefined;
+}): boolean {
+  if (!params.hasCase) return false;
+  if (params.testPassed) return true;
+  return Boolean(params.currentStep && params.currentStep !== "intake");
+}
+
+function activationSafeTestCheckCopy(params: {
+  testPassed: boolean;
+  intakePrepared: boolean;
+  testStatus: string | undefined;
+  policy: Required<OperationalCaseActivationPolicy>;
+}): string {
+  if (params.testPassed) {
+    if (
+      params.testStatus === "e2e_tick_completed" ||
+      params.testStatus === "e2e_pending_hitl"
+    ) {
+      return "Prueba con agente ejecutada (tick E2E controlado sobre el caso de prueba).";
+    }
+    return (
+      params.policy.activation_checks?.safe_test_success_copy ??
+      DEFAULT_ACTIVATION_POLICY.activation_checks.safe_test_success_copy ??
+      "Registro validado."
+    );
+  }
+  if (params.intakePrepared) {
+    return "Registro validado: el caso de prueba ya está en el flujo operativo (p. ej. tras pruebas de paso). Opcional: «Validar intake seguro» deja constancia formal del registro.";
+  }
+  return (
+    params.policy.activation_checks?.safe_test_success_copy ??
+    DEFAULT_ACTIVATION_POLICY.activation_checks.safe_test_success_copy ??
+    "Registro pendiente de validar."
+  );
+}
+
+function activationConversationalCheckCopy(params: {
+  ready: boolean;
+  policy: Required<OperationalCaseActivationPolicy>;
+}): string {
+  if (params.ready) {
+    return (
+      params.policy.activation_checks?.conversational_safe_copy ??
+      DEFAULT_ACTIVATION_POLICY.activation_checks.conversational_safe_copy ??
+      "Listo para chat/Telegram en modo controlado."
+    );
+  }
+  return "Requiere plantilla activa, skill sin bloqueos, tools completas para operar y registro del caso validado.";
+}
+
+function operationalStepReadinessSummary(steps: ToolReadinessFlowStep[]) {
+  return {
+    total: steps.length,
+    testedOk: steps.filter((s) => s.test_status === "tested_ok").length,
+    testedFailed: steps.filter((s) => s.test_status === "tested_failed").length,
+    blocked: steps.filter((s) => s.test_status === "blocked").length,
+    readyToTest: steps.filter((s) => s.test_status === "ready_to_test").length,
+    partial: steps.filter((s) => s.test_status === "partially_tested").length,
+    awaitingN4: steps.filter((s) => s.test_status === "awaiting_n4").length,
+  };
+}
+
+function activationStepProgressCheck(params: {
+  steps: ToolReadinessFlowStep[];
+}): { status: "ready" | "attention" | "pending"; label: string; copy: string } {
+  const summary = operationalStepReadinessSummary(params.steps);
+  if (summary.total === 0) {
+    return {
+      status: "pending",
+      label: "Pendiente",
+      copy: "Sin pasos operativos en el flujo; revisa operational_flow_jsonb.",
+    };
+  }
+  const parts: string[] = [
+    `${summary.testedOk} de ${summary.total} pasos con todos los escenarios probados`,
+  ];
+  if (summary.blocked > 0) {
+    parts.push(
+      `${summary.blocked} paso${summary.blocked === 1 ? "" : "s"} con integraciones pendientes`
+    );
+  }
+  if (summary.partial > 0) {
+    parts.push(
+      `${summary.partial} paso${summary.partial === 1 ? "" : "s"} con escenarios en progreso`
+    );
+  }
+  if (summary.awaitingN4 > 0) {
+    parts.push(
+      `${summary.awaitingN4} paso${summary.awaitingN4 === 1 ? "" : "s"} listos para probar escenarios`
+    );
+  }
+  if (summary.readyToTest > 0) {
+    parts.push(
+      `${summary.readyToTest} paso${summary.readyToTest === 1 ? "" : "s"} aún sin prueba de habilidad`
+    );
+  }
+  if (summary.testedFailed > 0) {
+    parts.push(
+      `${summary.testedFailed} con fallo en última prueba`
+    );
+  }
+  if (summary.partial > 0) {
+    parts.push(`${summary.partial} con validación parcial`);
+  }
+  const allOk = summary.testedOk === summary.total;
+  return {
+    status: allOk ? "ready" : summary.testedOk > 0 ? "attention" : "pending",
+    label: allOk ? "✓ Listo" : summary.testedOk > 0 ? "En progreso" : "Pendiente",
+    copy: parts.join(" · "),
+  };
+}
+
+function fixtureStatusPillClass(tone: "pending" | "attention" | "ready") {
+  if (tone === "ready") return "bg-emerald-50 text-emerald-800";
+  if (tone === "attention") return "bg-amber-50 text-amber-800";
+  return "bg-neutral-100 text-neutral-700";
+}
+
+function countReadinessVisibleToolsInStep(step: ToolReadinessFlowStep) {
+  const ids = new Set<string>();
+  for (const skill of step.step_skills ?? []) {
+    for (const tool of skill.skill_tools ?? []) {
+      if (isReadinessVisibleTool(tool.tool_id)) ids.add(tool.tool_id);
+    }
+  }
+  for (const tool of step.step_tools ?? []) {
+    if (isReadinessVisibleTool(tool.tool_id)) ids.add(tool.tool_id);
+  }
+  return ids.size;
+}
+
+function stepExpandableSummaryHint(step: ToolReadinessFlowStep) {
+  const skillCount = step.step_skills?.length ?? 0;
+  const toolCount = countReadinessVisibleToolsInStep(step);
+  const parts: string[] = [];
+  const scenarioProgress = formatStepScenarioProgress(step.step_test_progress);
+  if (scenarioProgress) {
+    parts.push(scenarioProgress);
+  }
+  const scenarioChecklist = formatStepScenarioChecklist(step.step_test_progress);
+  if (scenarioChecklist) {
+    parts.push(scenarioChecklist);
+  }
+  if (skillCount > 0) {
+    parts.push(`${skillCount} habilidad${skillCount === 1 ? "" : "es"}`);
+  }
+  if (toolCount > 0) {
+    parts.push(
+      `${toolCount} integración${toolCount === 1 ? "" : "es"} / acción${toolCount === 1 ? "" : "es"}`
+    );
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 function toolReadinessCategoryLabel(category: ToolReadinessCategory) {
@@ -808,24 +1156,6 @@ function readinessRequestStatusLabel(status: ToolReadinessRequestStatus) {
   return status;
 }
 
-function activationToolsDescription(params: {
-  toolReadiness: ToolReadinessResult | null;
-  toolsHaveBlocks: boolean;
-  toolsPass: boolean;
-  policy: Required<OperationalCaseActivationPolicy>;
-}) {
-  if (params.toolsPass) {
-    return params.policy.activation_checks.readiness_ready_copy;
-  }
-  if (params.toolsHaveBlocks) {
-    return params.policy.activation_checks.readiness_blocked_copy;
-  }
-  if (!params.toolReadiness) {
-    return "Tools pendientes: revisa preparación operativa para detectar bloqueos.";
-  }
-  return "Tools pendientes: hay advertencias no críticas por revisar antes de operar en producción.";
-}
-
 function operationCompletenessDescription(params: {
   readinessCounts: ReturnType<typeof toolReadinessCounts>;
   toolsPass: boolean;
@@ -839,6 +1169,13 @@ function operationCompletenessDescription(params: {
       params.policy.activation_checks.real_operation_pending_copy,
       { stub_count: String(params.readinessCounts.stub) }
     );
+  }
+  const technicalPending =
+    params.readinessCounts.needs_config +
+    params.readinessCounts.missing +
+    params.readinessCounts.unknown;
+  if (technicalPending > 0) {
+    return `Operación real completa: pendiente; quedan ${technicalPending} tools por configurar, incorporar o revisar antes de operar sin restricciones.`;
   }
   return params.policy.activation_checks.real_operation_complete_copy;
 }
@@ -868,6 +1205,25 @@ function formatFileSize(bytes: number | null | undefined) {
 }
 
 const TEST_PROPERTY_DOCUMENT_ASSET_KEY = "test_property_document";
+
+const COMMISSION_CONTRACT_TEMPLATE_ASSET_KEY = "commission_contract_template";
+const DOCX_TEMPLATE_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+/** Accept del input file; la plantilla de contrato solo admite DOCX en runtime. */
+function effectiveAssetAccept(requirement: ToolAssetRequirementStatus): string[] {
+  if (requirement.asset_key === COMMISSION_CONTRACT_TEMPLATE_ASSET_KEY) {
+    return [DOCX_TEMPLATE_MIME, ".docx"];
+  }
+  return requirement.accept ?? [];
+}
+
+function isCommissionContractTemplateDocx(file: File): boolean {
+  const name = file.name.trim().toLowerCase();
+  if (name.endsWith(".docx")) return true;
+  if (file.type === DOCX_TEMPLATE_MIME) return true;
+  return false;
+}
 
 const PROPERTY_DOCUMENT_KIND_OPTIONS = [
   { value: "escritura_descripcion", label: "Escritura - descripción" },
@@ -929,6 +1285,7 @@ function AccountAssetUploadPanel({
   title = "Recursos de cuenta",
   requirements,
   successMessage = "Recurso guardado. Preparación operativa actualizada.",
+  onBeforeUpload,
   onUploaded,
 }: {
   item: ToolReadinessToolItem;
@@ -936,6 +1293,7 @@ function AccountAssetUploadPanel({
   title?: string;
   requirements?: ToolAssetRequirementStatus[];
   successMessage?: string;
+  onBeforeUpload?: () => void;
   onUploaded: () => Promise<void> | void;
 }) {
   const effectiveRequirements = requirements ?? item.asset_requirements ?? [];
@@ -964,6 +1322,7 @@ function AccountAssetUploadPanel({
       return;
     }
     setSubmittingKey(assetKey);
+    onBeforeUpload?.();
     try {
       const formData = new FormData();
       formData.set("asset_key", assetKey);
@@ -1103,6 +1462,11 @@ function AccountAssetUploadPanel({
           {requirement.description ? (
             <p className="mt-1 text-neutral-500">{requirement.description}</p>
           ) : null}
+          {requirement.asset_key === COMMISSION_CONTRACT_TEMPLATE_ASSET_KEY ? (
+            <p className="mt-1 text-[11px] text-neutral-500">
+              Formato admitido: .docx (Word con placeholders {"{{campo}}"}).
+            </p>
+          ) : null}
           {isCollection ? (
             <div className="mt-2 space-y-1">
               {assets.length > 0 ? (
@@ -1191,7 +1555,7 @@ function AccountAssetUploadPanel({
             <input
               type="file"
               className="hidden"
-              accept={requirement.accept?.join(",")}
+              accept={effectiveAssetAccept(requirement).join(",")}
               multiple={isCollection}
               disabled={Boolean(submittingKey) || !canUpload}
               onChange={(event) => {
@@ -1309,6 +1673,13 @@ const CONTROLLED_WRITE_COPY: Record<
     description:
       "Envía las fotos temporales al borrador de EasyBroker resuelto. Si antes se creó un borrador desde easybroker_create_listing, se usará ese listing_id automáticamente; si no, indícalo en args avanzados. EasyBroker reemplaza el arreglo de imágenes de esa ficha.",
     button: "Subir fotos al borrador",
+  },
+  calendar_create_event: {
+    confirmation: "CREAR EVENTO PRUEBA",
+    title: "Crear evento de prueba en Google Calendar",
+    description:
+      "Crea un evento real en tu calendario primary con prefijo [PRUEBA CONTROLADA] en el título. El id queda en photo_session.calendar_event_id del caso de prueba para probar «Actualizar evento» después. Borra el evento en Google Calendar cuando termines.",
+    button: "Crear evento de prueba",
   },
 };
 
@@ -1459,6 +1830,15 @@ function numberField(item: Record<string, unknown>, key: string) {
 }
 
 function ToolResultPreview({ result }: { result: unknown }) {
+  const renderedDocument = parseRenderedDocumentResult(result);
+  if (renderedDocument) {
+    return (
+      <SkillTestRenderedDocumentLinks
+        documents={[{ ...renderedDocument, callTimestamp: null }]}
+        tone="emerald"
+      />
+    );
+  }
   const imageOutputs = imageOutputItems(result);
   if (imageOutputs.length > 0) {
     return (
@@ -1590,6 +1970,8 @@ function ToolResultPreview({ result }: { result: unknown }) {
 function ToolTestPanel({
   item,
   row,
+  panelActive,
+  readinessFlowScrollEl,
   hasTestCase,
   caseId,
   caseContextVersion,
@@ -1602,6 +1984,8 @@ function ToolTestPanel({
 }: {
   item: ToolReadinessToolItem;
   row: OperationalCaseType;
+  panelActive: boolean;
+  readinessFlowScrollEl?: HTMLDivElement | null;
   hasTestCase: boolean;
   caseId?: string | null;
   caseContextVersion?: string | null;
@@ -1630,8 +2014,20 @@ function ToolTestPanel({
   const [error, setError] = useState<string | null>(null);
   const [aCaseSnapshot, setACaseSnapshot] = useState<OperationalCase | null>(null);
   const [messageValidated, setMessageValidated] = useState(false);
+  const scrollLockRef = useRef<PageScrollPosition | null>(null);
+
+  useLayoutEffect(() => {
+    if (!scrollLockRef.current) return;
+    const position = scrollLockRef.current;
+    scrollLockRef.current = null;
+    restorePageScroll(position, readinessFlowScrollEl);
+  });
 
   const requiresConfirm = item.risk === "medium" && !confirm;
+
+  function lockPageScrollForPanelLayout() {
+    scrollLockRef.current = capturePageScroll(readinessFlowScrollEl);
+  }
 
   function parseUserArgs(): {
     ok: boolean;
@@ -1666,6 +2062,7 @@ function ToolTestPanel({
   }
 
   async function fetchPreview(targetMode: ToolTestMode) {
+    lockPageScrollForPanelLayout();
     setPreviewing(true);
     setError(null);
     const parsed = parseUserArgs();
@@ -1704,9 +2101,21 @@ function ToolTestPanel({
   }
 
   useEffect(() => {
-    void fetchPreview(mode);
+    if (!panelActive) return;
+    let cancelled = false;
+    let innerFrame = 0;
+    const outerFrame = requestAnimationFrame(() => {
+      innerFrame = requestAnimationFrame(() => {
+        if (!cancelled) void fetchPreview(mode);
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(outerFrame);
+      if (innerFrame) cancelAnimationFrame(innerFrame);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, caseContextVersion]);
+  }, [panelActive, mode, caseContextVersion]);
 
   function selectMode(next: ToolTestMode) {
     if (next === "case" && !hasTestCase) return;
@@ -1720,6 +2129,7 @@ function ToolTestPanel({
   }
 
   async function run(options?: { controlledRealWrite?: boolean }) {
+    lockPageScrollForPanelLayout();
     setRunning(true);
     setError(null);
     setResponse(null);
@@ -2040,8 +2450,8 @@ function ToolTestPanel({
       </p>
       {mode === "case" && !hasTestCase ? (
         <p className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
-          Aún no hay caso de prueba. Crea uno desde &quot;Caso de prueba y
-          resultados&quot; para habilitar este modo.
+          Aún no hay caso de prueba. Créalo desde la tarjeta &quot;Preparar caso
+          de prueba&quot; para habilitar este modo.
         </p>
       ) : null}
       {preview && !error ? (
@@ -2158,6 +2568,8 @@ function ToolTestPanel({
     ? "info"
     : policyOnlyValidation
       ? "success"
+      : response.reason === "placeholder_event_id"
+        ? "warning"
       : response.executed === false
         ? "warning"
       : !response.ok
@@ -2169,6 +2581,8 @@ function ToolTestPanel({
     ? "Resultado de la prueba"
     : policyOnlyValidation
       ? "Args OK (esperado)"
+      : response.reason === "placeholder_event_id"
+        ? "Falta event_id real"
       : response.executed === false
         ? "Sin ejecutar (política)"
       : response.dry_run && response.executed
@@ -2242,7 +2656,10 @@ function ToolTestPanel({
                 ? showOwnerCharacteristicsSimulation
                   ? "Comportamiento esperado: solo valida args y texto. Sigue con B (enviar mensaje) y C (simular respuesta) en este panel."
                   : "Comportamiento esperado: solo valida args. Usa la prueba controlada para enviar el mensaje de documentos."
-                : `La prueba no invocó la tool (${response.reason ?? "política de riesgo"}). ${response.hint ?? "Usa el flow completo con HITL para escritura real."}`}
+                : response.reason === "placeholder_event_id"
+                  ? response.hint ??
+                    "Falta un event_id real en los args antes de llamar a Google Calendar."
+                  : `La prueba no invocó la tool (${response.reason ?? "política de riesgo"}). ${response.hint ?? "Usa el flow completo con HITL para escritura real."}`}
             </p>
           ) : null}
           <details className="rounded border border-neutral-100 bg-neutral-50/50">
@@ -2319,7 +2736,7 @@ function ToolTestPanel({
   ) : null;
 
   return (
-    <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3">
+    <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3 [overflow-anchor:none]">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
           {showOwnerCharacteristicsSimulation
@@ -2620,10 +3037,11 @@ function renderReadinessActions(params: {
   onRequestGlobal: () => void;
 }) {
   const { item, expanded, existingRequest, submitting } = params;
+  const toggleHandlers = readinessExpandToggleHandlers(params.onToggleExpand);
   const detailsToggle = (
     <button
       type="button"
-      onClick={params.onToggleExpand}
+      {...toggleHandlers}
       aria-expanded={expanded}
       className="rounded border border-current/40 bg-white/70 px-2 py-1 text-[11px] font-semibold hover:bg-white"
     >
@@ -2657,7 +3075,7 @@ function renderReadinessActions(params: {
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={params.onToggleExpand}
+          {...toggleHandlers}
           aria-expanded={expanded}
           className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
         >
@@ -2675,7 +3093,7 @@ function renderReadinessActions(params: {
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={params.onToggleExpand}
+          {...toggleHandlers}
           aria-expanded={expanded}
           className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
         >
@@ -2713,7 +3131,7 @@ function renderReadinessActions(params: {
     const manageAssetsButton = hasAssets ? (
       <button
         type="button"
-        onClick={params.onToggleExpand}
+        {...toggleHandlers}
         aria-expanded={expanded}
         className="rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
       >
@@ -2756,7 +3174,7 @@ function renderReadinessActions(params: {
         {item.status === "ready" ? (
           <button
             type="button"
-            onClick={params.onToggleExpand}
+            {...toggleHandlers}
             aria-expanded={expanded}
             className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
           >
@@ -2765,7 +3183,7 @@ function renderReadinessActions(params: {
         ) : null}
         <button
           type="button"
-          onClick={params.onToggleExpand}
+          {...toggleHandlers}
           aria-expanded={expanded}
           className="rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
         >
@@ -2783,7 +3201,7 @@ function renderReadinessActions(params: {
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={params.onToggleExpand}
+          {...toggleHandlers}
           aria-expanded={expanded}
           className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
         >
@@ -2803,29 +3221,6 @@ function riskLabel(risk?: string) {
   return risk ?? "n/d";
 }
 
-function toolTestStatusLabel(status?: ToolReadinessToolItem["test_status"]) {
-  if (status === "tested_ok") return "Probada";
-  if (status === "tested_failed") return "Prueba falló";
-  return "Sin probar";
-}
-
-function skillTestStatusLabel(status?: ToolReadinessFlowSkill["test_status"]) {
-  if (status === "tested_ok") return "Probada";
-  if (status === "tested_failed") return "Prueba falló";
-  if (status === "partial") return "Validación parcial";
-  if (status === "ready_to_test") return "Lista para probar";
-  if (status === "blocked_by_tools") return "Requiere validar tools";
-  return "Sin estado";
-}
-
-function stepTestStatusLabel(status?: ToolReadinessFlowStep["test_status"]) {
-  if (status === "tested_ok") return "Paso probado";
-  if (status === "tested_failed") return "Prueba falló";
-  if (status === "partially_tested") return "Validación parcial";
-  if (status === "ready_to_test") return "Habilidad lista para validar";
-  if (status === "blocked") return "Pendiente de validar";
-  return "Sin estado";
-}
 
 function statusPillClass(status?: string) {
   if (status === "tested_ok" || status === "ready_for_e2e") {
@@ -2839,6 +3234,9 @@ function statusPillClass(status?: string) {
   }
   if (status === "partial" || status === "partially_tested") {
     return "bg-amber-50 text-amber-800";
+  }
+  if (status === "ready_to_test" || status === "awaiting_n4") {
+    return "bg-neutral-100 text-neutral-700";
   }
   return "bg-neutral-100 text-neutral-700";
 }
@@ -2868,10 +3266,10 @@ type SkillTestResponse = {
   response_preview?: string | null;
   response_preview_truncated?: boolean;
   artifacts?: Record<string, unknown>;
-  source_tool_calls?: Array<{ tool_name: string; status: string }>;
-  internal_tool_calls?: Array<{ tool_name: string; status: string }>;
-  other_tool_calls?: Array<{ tool_name: string; status: string }>;
-  tool_calls?: Array<{ tool_name: string; status: string }>;
+  source_tool_calls?: Array<SkillTestToolCallDetail>;
+  internal_tool_calls?: Array<SkillTestToolCallDetail>;
+  other_tool_calls?: Array<SkillTestToolCallDetail>;
+  tool_calls?: Array<SkillTestToolCallDetail>;
   error?: string;
   hint?: string;
 };
@@ -2912,6 +3310,9 @@ function comparableContributionSummary(artifacts?: Record<string, unknown>) {
     0;
   return `Datos aportados al analisis: activas ${active} · historicas ${historical} · internas ${internal}.`;
 }
+
+/** Contrato N3: el escenario no exige validar este bloque (no es "falta dato"). */
+const SKILL_TEST_NOT_APPLICABLE = "no aplica";
 
 function SkillTestPanel({
   skill,
@@ -2970,6 +3371,41 @@ function SkillTestPanel({
           (call.status === "executed" || call.status === "pending_confirmation")
       )
   ).length;
+  const expectedContextKeys =
+    response?.expected_context_keys ?? [];
+  const telegramNotice = response
+    ? skillTestTelegramNotice([...sourceToolCalls, ...otherToolCalls], "habilidad")
+    : null;
+  const externalContactHint = response
+    ? skillTestExternalContactTelegramHint([...sourceToolCalls, ...otherToolCalls])
+    : null;
+  const telegramCallsForDetails = response
+    ? collectSkillTestTelegramCalls([...sourceToolCalls, ...otherToolCalls])
+    : [];
+  const notifyUserCallsForDetails = response
+    ? collectSkillTestNotifyUserCalls(sourceToolCalls)
+    : [];
+  const notifyUserNotice = response
+    ? skillTestNotifyUserNotice([
+        ...sourceToolCalls,
+        ...otherToolCalls,
+      ] as SkillTestToolCallDetail[])
+    : null;
+  const renderedDocuments = response
+    ? collectSkillTestRenderedDocuments([
+        ...sourceToolCalls,
+        ...otherToolCalls,
+      ])
+    : [];
+  const docUrlPlaceholderNotice = response
+    ? skillTestNotifyMissingDocUrlNotice(
+        [...sourceToolCalls, ...otherToolCalls],
+        renderedDocuments
+      )
+    : null;
+  const executedInternalToolCount = internalToolCalls.filter(
+    (call) => call.status === "executed"
+  ).length;
   const statusLabel =
     response?.pending_confirmation && response.status === "tested_ok"
       ? "Probada con acción externa pendiente"
@@ -3011,7 +3447,7 @@ function SkillTestPanel({
         <div>
           <div className="font-semibold text-violet-950">Prueba de habilidad</div>
           <p className="text-violet-800">
-            Valida un escenario de esta habilidad dentro del paso (N3).
+            Valida el contrato operativo de esta habilidad en un tick (N3).
           </p>
         </div>
         <button
@@ -3022,10 +3458,10 @@ function SkillTestPanel({
             !hasTestCase
               ? "Crea primero un caso de prueba."
               : blocked
-                ? "Primero resuelve/probar las tools requeridas."
+                ? SKILL_TEST_BLOCKED_TITLE
                 : undefined
           }
-          className="rounded bg-violet-700 px-2 py-1 font-semibold text-white hover:bg-violet-800 disabled:bg-neutral-400"
+          className={SKILL_TEST_PRIMARY_BUTTON_CLASS}
         >
           {running ? "Probando..." : "Probar habilidad"}
         </button>
@@ -3060,24 +3496,39 @@ function SkillTestPanel({
                 ? "La habilidad llegó a una acción pendiente, pero todavía no cubrió todo el contrato operativo esperado."
                 : "La habilidad no cubrió el contrato operativo esperado; revisa respuesta, eventos y tools llamadas."}
           </p>
+          {telegramNotice ? (
+            <p className="rounded border border-violet-200 bg-violet-50/80 p-2 text-violet-900">
+              {telegramNotice}
+            </p>
+          ) : null}
+          {notifyUserNotice ? (
+            <p className="text-amber-900">{notifyUserNotice}</p>
+          ) : null}
+          {externalContactHint ? (
+            <p className="text-neutral-600">{externalContactHint}</p>
+          ) : null}
           {response.validation ? (
             <div className="space-y-1 text-neutral-700">
               <p>
-                Artefactos esperados:{" "}
-                {response.expected_context_keys.join(", ") || "n/d"}.
+                Artefactos en{" "}
+                <span className="font-mono">context_jsonb</span>:{" "}
+                {expectedContextKeys.length > 0
+                  ? expectedContextKeys.join(", ")
+                  : SKILL_TEST_NOT_APPLICABLE}
                 {missingContextKeys.length > 0
-                  ? ` Faltan: ${missingContextKeys.join(", ")}.`
-                  : " OK."}
+                  ? `. Faltan: ${missingContextKeys.join(", ")}.`
+                  : expectedContextKeys.length > 0
+                    ? ". OK."
+                    : " (este escenario no exige artefactos nuevos)."}
               </p>
               <p>
                 Tools de negocio:{" "}
                 {expectedToolCalls.length > 0
-                  ? `${coveredExpectedToolCount}/${expectedToolCalls.length}`
-                  : "n/d"}
-                {expectedToolCalls.length > 0
-                  ? ` (${expectedToolCalls.join(", ")})`
-                  : ""}
-                .
+                  ? `${coveredExpectedToolCount}/${expectedToolCalls.length} (${expectedToolCalls.join(", ")})`
+                  : SKILL_TEST_NOT_APPLICABLE}
+                {expectedToolCalls.length === 0
+                  ? " (este escenario no exige tools de negocio concretas)."
+                  : "."}
               </p>
               {expectedInternalToolCalls.length > 0 ? (
                 <p>
@@ -3137,6 +3588,14 @@ function SkillTestPanel({
           {contributionSummary ? (
             <p className="text-neutral-600">{contributionSummary}</p>
           ) : null}
+          {renderedDocuments.length > 0 ? (
+            <SkillTestRenderedDocumentLinks documents={renderedDocuments} />
+          ) : null}
+          {docUrlPlaceholderNotice ? (
+            <p className="rounded border border-amber-200 bg-amber-50/90 p-2 text-amber-950">
+              {docUrlPlaceholderNotice}
+            </p>
+          ) : null}
           {sourceToolCalls.length > 0 ||
           internalToolCalls.length > 0 ||
           otherToolCalls.length > 0 ? (
@@ -3147,29 +3606,44 @@ function SkillTestPanel({
               <div className="mt-1 space-y-1 font-mono text-[10px]">
                 {sourceToolCalls.length > 0 ? (
                   <p>
-                    {pendingSourceToolCount > 0
-                      ? `Negocio (${preparedSourceToolCount}/${sourceToolCalls.length}, ${pendingSourceToolCount} sin enviar): `
-                      : `Negocio (${executedSourceToolCount}/${sourceToolCalls.length}): `}
-                    {sourceToolCalls
-                      .map((call) => `${call.tool_name}:${call.status}`)
-                      .join(", ")}
+                    {formatSkillTestCallGroupLabel({
+                      label: "Negocio",
+                      calls: sourceToolCalls,
+                      executedCount: executedSourceToolCount,
+                      pendingCount: pendingSourceToolCount,
+                    })}
+                    :{" "}
+                    {formatSkillTestToolCallAuditTokenList(sourceToolCalls).join(
+                      ", "
+                    )}
                   </p>
                 ) : null}
                 {internalToolCalls.length > 0 ? (
                   <p>
-                    Persistencia:{" "}
-                    {internalToolCalls
-                      .map((call) => `${call.tool_name}:${call.status}`)
-                      .join(", ")}
+                    {formatSkillTestCallGroupLabel({
+                      label: "Persistencia",
+                      calls: internalToolCalls,
+                      executedCount: executedInternalToolCount,
+                    })}
+                    :{" "}
+                    {formatSkillTestToolCallAuditTokenList(internalToolCalls).join(
+                      ", "
+                    )}
                   </p>
                 ) : null}
                 {otherToolCalls.length > 0 ? (
                   <p>
                     Otras:{" "}
-                    {otherToolCalls
-                      .map((call) => `${call.tool_name}:${call.status}`)
-                      .join(", ")}
+                    {formatSkillTestToolCallAuditTokenList(otherToolCalls).join(
+                      ", "
+                    )}
                   </p>
+                ) : null}
+                {telegramCallsForDetails.length > 0 ? (
+                  <SkillTestTelegramCallDetails calls={telegramCallsForDetails} />
+                ) : null}
+                {notifyUserCallsForDetails.length > 0 ? (
+                  <SkillTestNotifyUserCallDetails calls={notifyUserCallsForDetails} />
                 ) : null}
               </div>
             </details>
@@ -3187,8 +3661,12 @@ function SkillTestPanel({
           {response.response_preview ? (
             <details>
               <summary className="cursor-pointer font-semibold text-violet-900">
-                Ver respuesta textual original del agente (preview)
+                Ver resultado narrativo del agente
               </summary>
+              <p className="mt-1 text-neutral-500">
+                Resumen en lenguaje natural generado por el agente. Complementa
+                la validación estructurada de contrato, tools y eventos de arriba.
+              </p>
               {response.response_preview_truncated ? (
                 <p className="mt-1 rounded bg-amber-50 p-2 text-amber-800">
                   Preview truncado para mantener la pantalla legible. Revisa el
@@ -3209,9 +3687,14 @@ function SkillTestPanel({
 type StepTestResponse = {
   ok: boolean;
   status: "tested_ok" | "tested_failed" | "partial";
+  run_id?: string;
+  duration_ms?: number;
   step_key: string;
   scenario_id: string;
   scenario_label: string;
+  scenario_summary?: string | null;
+  scenario_seed_summary?: string | null;
+  scenario_expect_summary?: string | null;
   root_skill_slug: string;
   validation?: {
     ok: boolean;
@@ -3219,16 +3702,104 @@ type StepTestResponse = {
     missing_events?: string[];
     wrong_current_step?: string[];
     wrong_status?: string[];
+    missing_tool_calls?: string[];
+    comparables_outcome_errors?: string[];
+    comparables_usable_count?: number | null;
+    comparables_defensible?: boolean | null;
+    step_outcome_errors?: string[];
     actual_current_step?: string | null;
     actual_status?: string;
   };
+  expect?: {
+    current_step?: string;
+    status?: string;
+    expected_events?: string[];
+    expected_context_keys?: string[];
+    expected_tool_calls?: string[];
+  };
+  seed_applied?: {
+    current_step?: string;
+    status?: string;
+    context_patch?: Record<string, unknown>;
+  } | null;
+  before_step?: string | null;
+  before_status?: string | null;
   pending_confirmation?: boolean;
+  execution?: "agent" | "business_decision";
+  business_decision_message?: string | null;
   response_preview?: string | null;
   response_preview_truncated?: boolean;
-  tool_calls?: Array<{ tool_name: string; status: string }>;
+  tool_calls?: Array<SkillTestToolCallDetail>;
   error?: string;
   hint?: string;
 };
+
+type StepTestStartResponse =
+  | StepTestResponse
+  | {
+      ok: boolean;
+      async: true;
+      run_id: string;
+      run_status: "queued" | "running" | "completed" | "failed" | "timed_out";
+      step_key: string;
+      scenario_id: string;
+      scenario_label: string;
+      root_skill_slug: string;
+      error?: string;
+      hint?: string;
+    };
+
+type StepTestRunStatusResponse = {
+  ok: boolean;
+  run_id: string;
+  run_status: "queued" | "running" | "completed" | "failed" | "timed_out";
+  progress?: StepTestRunProgress;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at?: string;
+  error?: string | null;
+  result?: StepTestResponse;
+};
+
+type StepTestRunProgress = {
+  phase?: string;
+  label?: string;
+  completed_tool_count?: number;
+  total_tool_calls?: number;
+  last_tool_call?: {
+    tool_name: string;
+    status: string;
+    duration_ms?: number | null;
+  } | null;
+  tool_calls?: Array<{
+    tool_name: string;
+    status: string;
+    duration_ms?: number | null;
+  }>;
+};
+
+function formatDurationMs(ms: number | null | undefined) {
+  if (ms == null) return "";
+  return formatElapsed(ms);
+}
+
+const STEP_TEST_INTERNAL_TOOL_NAMES = new Set([
+  "operational_case_update_state",
+  "operational_case_add_event",
+]);
+
+function untestedReadinessToolIdsInStep(step: ToolReadinessFlowStep): string[] {
+  const pending = new Set<string>();
+  const consider = (tool: ToolReadinessFlowTool) => {
+    if (!tool.tool_id || !isReadinessVisibleTool(tool.tool_id)) return;
+    if (tool.test_status !== "tested_ok") pending.add(tool.tool_id);
+  };
+  for (const tool of step.step_tools ?? []) consider(tool);
+  for (const skill of step.step_skills ?? []) {
+    for (const tool of skill.skill_tools ?? []) consider(tool);
+  }
+  return [...pending];
+}
 
 function StepTestPanel({
   step,
@@ -3248,26 +3819,120 @@ function StepTestPanel({
   const [running, setRunning] = useState(false);
   const [response, setResponse] = useState<StepTestResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const available = stepTestAvailable(caseTypeSlug, step.step_key);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [activeRunStartedAt, setActiveRunStartedAt] = useState<number | null>(null);
+  const [activeRunStatus, setActiveRunStatus] = useState<string | null>(null);
+  const [activeRunProgress, setActiveRunProgress] =
+    useState<StepTestRunProgress | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const onFinishedRef = useRef(onFinished);
+  const scenarioCatalogSlug =
+    stepTestCatalogSlugForRootSkill(row.default_skill_slug) ?? caseTypeSlug;
+  const scenarios = stepTestScenariosFor(scenarioCatalogSlug, step.step_key);
+  const [selectedScenarioId, setSelectedScenarioId] = useState(
+    scenarios[0]?.id ?? ""
+  );
+  const available = stepTestAvailable(scenarioCatalogSlug, step.step_key);
+  const blocked = isStepTestBlocked(step);
   if (!available) return null;
+  const selectedScenario =
+    scenarios.find((scenario) => scenario.id === selectedScenarioId) ??
+    scenarios[0];
+  const stepToolCalls = response?.tool_calls ?? [];
+  const stepBusinessToolCalls = stepToolCalls.filter(
+    (call) => !STEP_TEST_INTERNAL_TOOL_NAMES.has(call.tool_name)
+  );
+  const stepInternalToolCalls = stepToolCalls.filter((call) =>
+    STEP_TEST_INTERNAL_TOOL_NAMES.has(call.tool_name)
+  );
+  const stepTelegramCalls = collectSkillTestTelegramCalls(stepToolCalls);
+  const stepNotifyUserCalls = collectSkillTestNotifyUserCalls(stepToolCalls);
+  const executedStepBusinessToolCount = stepBusinessToolCalls.filter(
+    (call) => call.status === "executed"
+  ).length;
+  const pendingStepBusinessToolCount = stepBusinessToolCalls.filter(
+    (call) => call.status === "pending_confirmation"
+  ).length;
+  const executedStepInternalToolCount = stepInternalToolCalls.filter(
+    (call) => call.status === "executed"
+  ).length;
 
-  const statusLabel =
-    response?.pending_confirmation && response.status === "tested_ok"
-      ? "Paso probado con acción pendiente"
-      : response
-        ? stepTestStatusLabel(
-            response.status === "tested_ok"
-              ? "tested_ok"
-              : response.status === "partial"
-                ? "partially_tested"
-                : "tested_failed"
-          )
-        : "";
+  const statusLabel = response
+    ? response.pending_confirmation && response.status === "tested_ok"
+      ? "Escenario probado con acción pendiente"
+      : stepScenarioRunResultLabel(response.status)
+    : "";
+  const contractDraftOutcomeHint =
+    response && step.step_key === "contract_pending"
+      ? contractDraftScenarioOutcomeHint({
+          scenarioOk: response.ok,
+          scenarioId: response.scenario_id,
+          caseStatus: response.validation?.actual_status,
+          toolCalls: response.tool_calls,
+        })
+      : null;
+
+  useEffect(() => {
+    onFinishedRef.current = onFinished;
+  }, [onFinished]);
+
+  useEffect(() => {
+    if (!activeRunId || !running) return;
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    async function poll() {
+      if (cancelled) return;
+      if (activeRunStartedAt) {
+        setElapsedMs(Date.now() - activeRunStartedAt);
+      }
+      try {
+        const res = await fetch(`/api/tool-readiness/run-step/${activeRunId}`);
+        const data = (await res.json().catch(() => ({}))) as StepTestRunStatusResponse;
+        if (!res.ok) {
+          throw new Error(data.error ?? "No se pudo consultar la prueba de paso.");
+        }
+        setActiveRunStatus(data.run_status);
+        setActiveRunProgress(data.progress ?? null);
+        if (data.run_status === "completed") {
+          if (data.result) setResponse(data.result);
+          await onFinishedRef.current();
+          if (!cancelled) {
+            setRunning(false);
+            setActiveRunId(null);
+          }
+          return;
+        }
+        if (data.run_status === "failed" || data.run_status === "timed_out") {
+          throw new Error(data.error ?? "La prueba de paso falló.");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+          setRunning(false);
+          setActiveRunId(null);
+        }
+        return;
+      }
+      timeoutId = setTimeout(() => void poll(), 2000);
+    }
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [activeRunId, activeRunStartedAt, running]);
 
   async function runStep() {
     setRunning(true);
     setError(null);
     setResponse(null);
+    setActiveRunId(null);
+    setActiveRunStatus(null);
+    setActiveRunProgress(null);
+    setActiveRunStartedAt(Date.now());
+    setElapsedMs(0);
     try {
       const res = await fetch("/api/tool-readiness/run-step", {
         method: "POST",
@@ -3276,42 +3941,208 @@ function StepTestPanel({
           case_type_id: row.id,
           case_id: caseId ?? undefined,
           step_key: step.step_key,
+          scenario_id: selectedScenario?.id,
         }),
       });
-      const data = (await res.json().catch(() => ({}))) as StepTestResponse;
+      const data = (await res.json().catch(() => ({}))) as StepTestStartResponse;
       if (!res.ok) {
-        throw new Error(data.error ?? data.hint ?? "No se pudo probar el paso.");
+        throw new Error(data.hint ?? data.error ?? "No se pudo probar el paso.");
       }
-      setResponse(data);
+      if ((data as { async?: boolean }).async === true) {
+        const asyncData = data as Extract<StepTestStartResponse, { async: true }>;
+        setActiveRunId(asyncData.run_id);
+        setActiveRunStatus(asyncData.run_status);
+        return;
+      }
+      setResponse(data as StepTestResponse);
       await onFinished();
+      setRunning(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
       setRunning(false);
     }
   }
 
   const validation = response?.validation;
+  const missingContextKeys = validation?.missing_context_keys ?? [];
+  const missingEvents = validation?.missing_events ?? [];
+  const expectedEvents = response?.expect?.expected_events ?? [];
+  const expectedContextKeys = response?.expect?.expected_context_keys ?? [];
+  const expectedToolCalls = response?.expect?.expected_tool_calls ?? [];
+  const coveredExpectedToolCount = expectedToolCalls.filter((toolName) =>
+    stepBusinessToolCalls.some(
+      (call) =>
+        call.tool_name === toolName &&
+        (call.status === "executed" || call.status === "pending_confirmation")
+    )
+  ).length;
+  const stepTelegramNotice = response
+    ? skillTestTelegramNotice(stepToolCalls, "paso")
+    : null;
+  const stepExternalContactHint = response
+    ? skillTestExternalContactTelegramHint(stepToolCalls)
+    : null;
+  const stepNotifyUserNotice = response
+    ? skillTestNotifyUserNotice(stepToolCalls)
+    : null;
+  const stepRenderedDocuments = response
+    ? collectSkillTestRenderedDocuments(stepToolCalls)
+    : [];
+  const stepDocUrlPlaceholderNotice = response
+    ? skillTestNotifyMissingDocUrlNotice(stepToolCalls, stepRenderedDocuments)
+    : null;
+  const scenarioForUi =
+    scenarios.find((s) => s.id === (response?.scenario_id ?? selectedScenario?.id)) ??
+    selectedScenario;
+  const stepExecution = resolveStepTestExecutionMode({
+    scenarioExecution: scenarioForUi?.execution,
+    responseExecution: response?.execution,
+  });
+  const stepUiCopy = resolveStepTestUiCopy({
+    execution: stepExecution,
+    business_decision_kind: scenarioForUi?.business_decision_kind,
+    ui: scenarioForUi?.ui,
+  });
+  const pendingN1ToolIds = untestedReadinessToolIdsInStep(step);
+  const scenariosBlock = (
+    <div className="space-y-1 rounded border border-indigo-100 bg-white/70 p-2 text-indigo-950">
+      <p className="font-semibold">Escenarios contemplados</p>
+      <div className="flex flex-wrap gap-1.5">
+        {scenarios.map((scenario) => {
+          const active = scenario.id === selectedScenario?.id;
+          return (
+            <button
+              key={scenario.id}
+              type="button"
+              onClick={() => setSelectedScenarioId(scenario.id)}
+              disabled={running || blocked}
+              className={`rounded border px-2 py-1 text-left font-semibold ${
+                active
+                  ? "border-indigo-300 bg-indigo-100 text-indigo-950"
+                  : "border-neutral-200 bg-white text-neutral-700 hover:border-indigo-200"
+              } disabled:cursor-not-allowed disabled:opacity-60`}
+            >
+              {scenario.label}
+            </button>
+          );
+        })}
+      </div>
+      {selectedScenario ? (
+        <div className="space-y-0.5 text-neutral-700">
+          {selectedScenario.summary ? <p>{selectedScenario.summary}</p> : null}
+          <p>
+            {selectedScenario.seed_summary ?? "Entrada: escenario controlado."}{" "}
+            {selectedScenario.expect_summary ??
+              "Salida: contrato esperado del paso."}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="mt-3 space-y-2 rounded border border-indigo-100 bg-indigo-50/40 p-2 text-[11px]">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="font-semibold text-indigo-950">Prueba de paso</div>
-          <p className="text-indigo-800">
-            Valida el hito con la habilidad raíz del caso (N4).
-          </p>
+          {!blocked ? (
+            <p className="text-indigo-800">{stepUiCopy.panelIntro}</p>
+          ) : (
+            <p className="text-indigo-800">
+              Disponible cuando las tools de integración/acción del paso tengan N1
+              exitosa.
+            </p>
+          )}
         </div>
         <button
           type="button"
           onClick={() => void runStep()}
-          disabled={running || !hasTestCase}
-          title={!hasTestCase ? "Crea primero un caso de prueba." : undefined}
-          className="rounded bg-indigo-700 px-2 py-1 font-semibold text-white hover:bg-indigo-800 disabled:bg-neutral-400"
+          disabled={running || !hasTestCase || blocked}
+          title={
+            !hasTestCase
+              ? "Crea primero un caso de prueba."
+              : blocked
+                ? STEP_TEST_BLOCKED_TITLE
+                : undefined
+          }
+          className={STEP_TEST_PRIMARY_BUTTON_CLASS}
         >
           {running ? "Probando..." : "Probar paso"}
         </button>
       </div>
+      {blocked ? (
+        <>
+          <p className="rounded border border-amber-200 bg-amber-50/90 p-2 text-amber-950">
+            {STEP_TEST_BLOCKED_TITLE}
+            {pendingN1ToolIds.length > 0 ? (
+              <>
+                {" "}
+                Falta N1 en:{" "}
+                <span className="font-mono">{pendingN1ToolIds.join(", ")}</span>.
+              </>
+            ) : null}
+          </p>
+          <details className="rounded border border-indigo-100 bg-white/70 p-2 text-indigo-950">
+            <summary className="cursor-pointer font-semibold text-indigo-900">
+              Ver qué probará este paso (N4)
+            </summary>
+            <div className="mt-2">{scenariosBlock}</div>
+          </details>
+        </>
+      ) : (
+        scenariosBlock
+      )}
+      {running ? (
+        <div className="rounded border border-indigo-200 bg-indigo-50 p-2 text-indigo-950">
+          <div className="font-semibold">
+            Prueba N4 en ejecución · {formatElapsed(elapsedMs)}
+          </div>
+          <p className="text-indigo-800">
+            {activeRunProgress?.label ?? stepUiCopy.runningHint}
+          </p>
+          {activeRunProgress?.last_tool_call ? (
+            <p className="mt-1 text-indigo-800">
+              Última tool:{" "}
+              <span className="font-mono">
+                {activeRunProgress.last_tool_call.tool_name}:
+                {activeRunProgress.last_tool_call.status}
+              </span>
+              {activeRunProgress.last_tool_call.duration_ms != null
+                ? ` · ${formatDurationMs(activeRunProgress.last_tool_call.duration_ms)}`
+                : ""}
+            </p>
+          ) : null}
+          {elapsedMs > 120000 ? (
+            <p className="mt-1 rounded border border-amber-200 bg-amber-50 p-2 text-amber-900">
+              Este N4 está tardando más de 2 minutos. El run sigue vivo, pero
+              conviene revisar la tool activa y los tiempos al terminar.
+            </p>
+          ) : null}
+          {activeRunProgress?.tool_calls?.length ? (
+            <div className="mt-2 space-y-1 rounded border border-indigo-100 bg-white/70 p-2">
+              <div className="font-semibold text-indigo-950">
+                Tools registradas ({activeRunProgress.completed_tool_count ?? 0}/
+                {activeRunProgress.total_tool_calls ?? activeRunProgress.tool_calls.length} terminadas)
+              </div>
+              <div className="space-y-0.5 font-mono text-[10px] text-indigo-800">
+                {activeRunProgress.tool_calls.map((call, index) => (
+                  <div key={`${call.tool_name}-${index}`}>
+                    {call.tool_name}:{call.status}
+                    {call.duration_ms != null
+                      ? ` · ${formatDurationMs(call.duration_ms)}`
+                      : ""}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {activeRunId ? (
+            <p className="mt-1 font-mono text-[10px] text-indigo-700">
+              run_id={activeRunId} · estado={activeRunStatus ?? "queued"}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       {error ? (
         <p className="rounded border border-red-200 bg-red-50 p-2 text-red-800">
           {error}
@@ -3327,17 +4158,104 @@ function StepTestPanel({
             >
               {statusLabel}
             </span>
+            {response.duration_ms != null ? (
+              <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-semibold text-neutral-700">
+                duración {formatElapsed(response.duration_ms)}
+              </span>
+            ) : null}
           </div>
           <p className="text-neutral-700">
-            {response.ok
-              ? "La habilidad raíz cumplió el contrato de salida del paso."
-              : "El paso no cumplió el contrato esperado; revisa estado, eventos y contexto."}
+            {response.ok ? stepUiCopy.successSummary : stepUiCopy.failureSummary}
           </p>
+          {contractDraftOutcomeHint ? (
+            <p className="rounded border border-amber-200 bg-amber-50/90 p-2 text-amber-950">
+              {contractDraftOutcomeHint}
+            </p>
+          ) : null}
           <p className="text-neutral-600">
-            Escenario: {response.scenario_label} · Raíz: {response.root_skill_slug}
+            {formatStepTestResultMetaLine({
+              execution: stepExecution,
+              scenarioLabel: response.scenario_label,
+              rootSkillSlug: response.root_skill_slug,
+              ui: stepUiCopy,
+            })}
           </p>
+          {stepTelegramNotice ? (
+            <p className="rounded border border-indigo-200 bg-indigo-50/80 p-2 text-indigo-950">
+              {stepTelegramNotice}
+            </p>
+          ) : null}
+          {stepNotifyUserNotice ? (
+            <p className="rounded border border-amber-200 bg-amber-50/90 p-2 text-amber-950">
+              {stepNotifyUserNotice}
+            </p>
+          ) : null}
+          {stepRenderedDocuments.length > 0 ? (
+            <SkillTestRenderedDocumentLinks
+              documents={stepRenderedDocuments}
+              tone="indigo"
+            />
+          ) : null}
+          {stepDocUrlPlaceholderNotice ? (
+            <p className="rounded border border-amber-200 bg-amber-50/90 p-2 text-amber-950">
+              {stepDocUrlPlaceholderNotice}
+            </p>
+          ) : null}
+          {stepExternalContactHint ? (
+            <p className="text-neutral-600">{stepExternalContactHint}</p>
+          ) : null}
+          <div className="space-y-0.5 rounded border border-indigo-50 bg-indigo-50/60 p-2 text-neutral-700">
+            <p>
+              Entrada sembrada:{" "}
+              <span className="font-mono">
+                {response.seed_applied?.current_step ?? response.before_step ?? "n/d"} /{" "}
+                {response.seed_applied?.status ?? response.before_status ?? "n/d"}
+              </span>
+              {response.seed_applied?.context_patch ? " · context_patch aplicado" : ""}
+            </p>
+            <p>
+              Salida esperada:{" "}
+              <span className="font-mono">
+                {response.expect?.current_step ?? "no aplica"} /{" "}
+                {response.expect?.status ?? "no aplica"}
+              </span>
+              {response.expect?.expected_tool_calls?.length
+                ? ` · tools: ${response.expect.expected_tool_calls.join(", ")}`
+                : ""}
+            </p>
+          </div>
           {validation ? (
             <div className="space-y-0.5 text-neutral-700">
+              <p>
+                Artefactos en{" "}
+                <span className="font-mono">context_jsonb</span>:{" "}
+                {expectedContextKeys.length > 0
+                  ? expectedContextKeys.join(", ")
+                  : SKILL_TEST_NOT_APPLICABLE}
+                {missingContextKeys.length > 0
+                  ? `. Faltan: ${missingContextKeys.join(", ")}.`
+                  : expectedContextKeys.length > 0
+                    ? ". OK."
+                    : " (este escenario no exige claves en contexto)."}
+              </p>
+              <p>
+                Tools de negocio:{" "}
+                {expectedToolCalls.length > 0
+                  ? `${coveredExpectedToolCount}/${expectedToolCalls.length} (${expectedToolCalls.join(", ")})`
+                  : SKILL_TEST_NOT_APPLICABLE}
+                {expectedToolCalls.length === 0 ? "." : "."}
+              </p>
+              <p>
+                Eventos esperados:{" "}
+                {expectedEvents.length > 0
+                  ? expectedEvents.join(", ")
+                  : SKILL_TEST_NOT_APPLICABLE}
+                {missingEvents.length > 0
+                  ? `. Faltan: ${missingEvents.join(", ")}.`
+                  : expectedEvents.length > 0
+                    ? ". OK."
+                    : " (este escenario no exige eventos)."}
+              </p>
               <p>
                 Estado: {validation.actual_status ?? "n/d"}
                 {validation.wrong_status?.length
@@ -3350,33 +4268,91 @@ function StepTestPanel({
                   ? ` (esperado: ${validation.wrong_current_step.join(", ")})`
                   : " OK."}
               </p>
-              {validation.missing_events?.length ? (
+              {validation.missing_tool_calls?.length ? (
                 <p className="text-amber-800">
-                  Eventos faltantes: {validation.missing_events.join(", ")}.
+                  Tools esperadas faltantes: {validation.missing_tool_calls.join(", ")}.
+                </p>
+              ) : null}
+              {validation.comparables_usable_count != null ? (
+                <p>
+                  Comparables usables en análisis:{" "}
+                  <span className="font-mono">{validation.comparables_usable_count}</span>
+                  {validation.comparables_defensible === true
+                    ? " (muestra defendible)"
+                    : validation.comparables_defensible === false
+                      ? " (insuficiente)"
+                      : ""}
+                </p>
+              ) : null}
+              {validation.comparables_outcome_errors?.length ? (
+                <p className="text-amber-800">
+                  Reglas de comparables:{" "}
+                  {validation.comparables_outcome_errors.join(" ")}
+                </p>
+              ) : null}
+              {validation.step_outcome_errors?.length ? (
+                <p className="text-amber-800">
+                  Validación del paso: {validation.step_outcome_errors.join(" ")}
                 </p>
               ) : null}
             </div>
           ) : null}
-          {response.tool_calls?.length ? (
+          {stepToolCalls.length ? (
             <details className="text-neutral-600">
               <summary className="cursor-pointer font-semibold text-indigo-900">
                 Ver tools llamadas en el tick
               </summary>
-              <p className="mt-1 font-mono text-[10px]">
-                {response.tool_calls
-                  .map((call) => `${call.tool_name}:${call.status}`)
-                  .join(", ")}
-              </p>
+              <div className="mt-1 space-y-1 font-mono text-[10px]">
+                {stepBusinessToolCalls.length > 0 ? (
+                  <p>
+                    {formatSkillTestCallGroupLabel({
+                      label: "Negocio",
+                      calls: stepBusinessToolCalls,
+                      executedCount: executedStepBusinessToolCount,
+                      pendingCount: pendingStepBusinessToolCount,
+                    })}
+                    :{" "}
+                    {formatSkillTestToolCallAuditTokenList(
+                      stepBusinessToolCalls
+                    ).join(", ")}
+                  </p>
+                ) : null}
+                {stepInternalToolCalls.length > 0 ? (
+                  <p>
+                    {formatSkillTestCallGroupLabel({
+                      label: "Persistencia",
+                      calls: stepInternalToolCalls,
+                      executedCount: executedStepInternalToolCount,
+                    })}
+                    :{" "}
+                    {formatSkillTestToolCallAuditTokenList(
+                      stepInternalToolCalls
+                    ).join(", ")}
+                  </p>
+                ) : null}
+                {stepTelegramCalls.length > 0 ? (
+                  <SkillTestTelegramCallDetails calls={stepTelegramCalls} />
+                ) : null}
+                {stepNotifyUserCalls.length > 0 ? (
+                  <SkillTestNotifyUserCallDetails calls={stepNotifyUserCalls} />
+                ) : null}
+              </div>
             </details>
           ) : null}
           {response.response_preview ? (
             <details>
               <summary className="cursor-pointer font-semibold text-indigo-900">
-                Ver respuesta del agente (preview)
+                {stepUiCopy.previewLabel}
               </summary>
-              <pre className="mt-1 max-h-40 overflow-auto rounded bg-white p-2 font-mono">
-                {response.response_preview}
-              </pre>
+              {stepExecution === "business_decision" ? (
+                <p className="mt-1 rounded bg-white p-2 text-neutral-800">
+                  {response.response_preview}
+                </p>
+              ) : (
+                <pre className="mt-1 max-h-40 overflow-auto rounded bg-white p-2 font-mono text-[10px]">
+                  {response.response_preview}
+                </pre>
+              )}
             </details>
           ) : null}
         </div>
@@ -3885,11 +4861,17 @@ function renderFlowToolReadiness(params: {
   onEditSkill: () => void;
   onToggleExpand: () => void;
   onRequestGlobal: () => void;
-  refreshToolReadiness: (row: OperationalCaseType) => Promise<void>;
+  refreshToolReadiness: (
+    row: OperationalCaseType,
+    options?: { silent?: boolean }
+  ) => Promise<void>;
+  onBeforeAssetUpload?: () => void;
+  onAssetUploaded?: () => Promise<void>;
   refreshTestCase?: (row: OperationalCaseType) => Promise<void>;
   onTestCaseUpdated?: (result: OperationalCaseTestResult) => Promise<void>;
   easyBrokerCreatedListingId?: string | null;
   onEasyBrokerListingCreated?: (listingId: string) => void;
+  readinessFlowScrollEl?: HTMLDivElement | null;
 }) {
   const { item, row, expanded, existingRequest, submitting } = params;
   const metaParts = [`Riesgo: ${riskLabel(item.risk)}`];
@@ -3938,63 +4920,71 @@ function renderFlowToolReadiness(params: {
         onToggleExpand: params.onToggleExpand,
         onRequestGlobal: params.onRequestGlobal,
       })}
-      {expanded ? (
-        <div className="mt-2 space-y-2">
-          {item.action_message ? (
-            <p className="rounded border border-white/70 bg-white/70 p-2 text-[11px] leading-snug">
-              {item.action_message}
-            </p>
-          ) : null}
-          {item.account_provider && item.action_kind === "configure_account" ? (
-            <div className="rounded border border-white/70 bg-white/85 p-3">
-              <AccountToolConnectionForm
-                provider={item.account_provider}
-                compact
-                onChanged={() => {
-                  void params.refreshToolReadiness(row);
-                }}
-              />
-            </div>
-          ) : null}
-          {(item.asset_requirements?.length ?? 0) > 0 ? (
-            <AccountAssetUploadPanel
-              item={item}
-              row={row}
-              onUploaded={() => params.refreshToolReadiness(row)}
-            />
-          ) : null}
-          {(item.test_asset_requirements?.length ?? 0) > 0 ? (
-            <AccountAssetUploadPanel
-              item={item}
-              row={row}
-              title="Activos de prueba"
-              requirements={item.test_asset_requirements}
-              successMessage="Activo de prueba guardado. Preparación operativa actualizada."
-              onUploaded={() => params.refreshToolReadiness(row)}
-            />
-          ) : null}
-          {item.status === "ready" ? (
-            <ToolTestPanel
-              item={item}
-              row={row}
-              hasTestCase={params.hasTestCase}
-              caseId={params.caseId}
-              caseContextVersion={params.caseContextVersion}
-              readinessSkillSlug={params.readinessSkillSlug}
-              readinessFlowStepKey={params.readinessFlowStepKey}
-              onFinished={async () => {
-                await params.refreshToolReadiness(row);
-                if (params.refreshTestCase) {
-                  await params.refreshTestCase(row);
-                }
+      <ReadinessExpandableSection expanded={expanded}>
+        {item.action_message ? (
+          <p className="rounded border border-white/70 bg-white/70 p-2 text-[11px] leading-snug">
+            {item.action_message}
+          </p>
+        ) : null}
+        {item.account_provider && item.action_kind === "configure_account" ? (
+          <div className="rounded border border-white/70 bg-white/85 p-3">
+            <AccountToolConnectionForm
+              provider={item.account_provider}
+              compact
+              onChanged={() => {
+                void params.refreshToolReadiness(row);
               }}
-              onTestCaseUpdated={params.onTestCaseUpdated}
-              easyBrokerCreatedListingId={params.easyBrokerCreatedListingId}
-              onEasyBrokerListingCreated={params.onEasyBrokerListingCreated}
             />
-          ) : null}
-        </div>
-      ) : null}
+          </div>
+        ) : null}
+        {(item.asset_requirements?.length ?? 0) > 0 ? (
+          <AccountAssetUploadPanel
+            item={item}
+            row={row}
+            onBeforeUpload={params.onBeforeAssetUpload}
+            onUploaded={
+              params.onAssetUploaded ??
+              (() => params.refreshToolReadiness(row))
+            }
+          />
+        ) : null}
+        {(item.test_asset_requirements?.length ?? 0) > 0 ? (
+          <AccountAssetUploadPanel
+            item={item}
+            row={row}
+            title="Activos de prueba"
+            requirements={item.test_asset_requirements}
+            successMessage="Activo de prueba guardado. Preparación operativa actualizada."
+            onBeforeUpload={params.onBeforeAssetUpload}
+            onUploaded={
+              params.onAssetUploaded ??
+              (() => params.refreshToolReadiness(row))
+            }
+          />
+        ) : null}
+        {item.status === "ready" ? (
+          <ToolTestPanel
+            item={item}
+            row={row}
+            panelActive={expanded}
+            readinessFlowScrollEl={params.readinessFlowScrollEl}
+            hasTestCase={params.hasTestCase}
+            caseId={params.caseId}
+            caseContextVersion={params.caseContextVersion}
+            readinessSkillSlug={params.readinessSkillSlug}
+            readinessFlowStepKey={params.readinessFlowStepKey}
+            onFinished={async () => {
+              await params.refreshToolReadiness(row);
+              if (params.refreshTestCase) {
+                await params.refreshTestCase(row);
+              }
+            }}
+            onTestCaseUpdated={params.onTestCaseUpdated}
+            easyBrokerCreatedListingId={params.easyBrokerCreatedListingId}
+            onEasyBrokerListingCreated={params.onEasyBrokerListingCreated}
+          />
+        ) : null}
+      </ReadinessExpandableSection>
     </div>
   );
 }
@@ -4007,15 +4997,21 @@ function renderOperationalFlowPreview(flow: OperationalCaseFlowStep[]) {
       </p>
     );
   }
-  return (
+  const { preparationSteps, operationalSteps } = partitionFlowSteps(flow);
+  const renderStepList = (
+    steps: OperationalCaseFlowStep[],
+    options?: { numbered?: boolean; labelPrefix?: string }
+  ) => (
     <ol className="space-y-2">
-      {flow.map((step, index) => (
+      {steps.map((step, index) => (
         <li
           key={`${step.step_key}-${index}`}
           className="rounded border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-800 dark:bg-neutral-950"
         >
           <div className="font-semibold">
-            {index + 1}. {step.step_label}
+            {options?.numbered === false
+              ? step.step_label
+              : `${index + 1}. ${step.step_label}`}
           </div>
           {step.step_description ? (
             <p className="mt-1 text-xs text-neutral-500">{step.step_description}</p>
@@ -4059,13 +5055,41 @@ function renderOperationalFlowPreview(flow: OperationalCaseFlowStep[]) {
       ))}
     </ol>
   );
+
+  return (
+    <div className="space-y-3">
+      {preparationSteps.length > 0 ? (
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+            Registro del caso (runtime)
+          </div>
+          <div className="mt-2">{renderStepList(preparationSteps, { numbered: false })}</div>
+        </div>
+      ) : null}
+      {operationalSteps.length > 0 ? (
+        <div>
+          {preparationSteps.length > 0 ? (
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+              Flujo operativo
+            </div>
+          ) : null}
+          <div className={preparationSteps.length > 0 ? "mt-2" : ""}>
+            {renderStepList(operationalSteps)}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function testProgressBadge(status: OperationalCaseFlowProgressStatus) {
-  if (status === "completed") return activationStatusBadge("ready", "✓ Completado");
-  if (status === "blocked") return activationStatusBadge("attention", "Pendiente de validar");
-  if (status === "in_progress") return activationStatusBadge("attention", "En curso");
-  return activationStatusBadge("pending", "Pendiente");
+  if (status === "completed") {
+    return activationStatusBadge("ready", `✓ ${flowStepProgressBadgeLabel(status)}`);
+  }
+  if (status === "blocked" || status === "in_progress") {
+    return activationStatusBadge("attention", flowStepProgressBadgeLabel(status));
+  }
+  return activationStatusBadge("pending", flowStepProgressBadgeLabel(status));
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -4074,6 +5098,210 @@ function formatDateTime(value: string | null | undefined) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+const CONTROLLED_TEST_AUDIT_KINDS = new Set([
+  "step_test_started",
+  "step_test_completed",
+  "skill_test_started",
+  "skill_test_completed",
+]);
+
+const CONTROLLED_TEST_AUDIT_SOURCES = new Set([
+  "tool_readiness_run_step",
+  "tool_readiness_run_skill",
+]);
+
+function isControlledTestAuditEvent(event: OperationalCaseEvent): boolean {
+  const payload = event.payload_jsonb ?? {};
+  const kind = typeof payload.kind === "string" ? payload.kind : "";
+  if (CONTROLLED_TEST_AUDIT_KINDS.has(kind)) return true;
+  const source = typeof payload.source === "string" ? payload.source : "";
+  return CONTROLLED_TEST_AUDIT_SOURCES.has(source);
+}
+
+function controlledTestAuditSummary(event: OperationalCaseEvent): string {
+  const payload = event.payload_jsonb ?? {};
+  const kind = typeof payload.kind === "string" ? payload.kind : event.event_type;
+  const stepKey =
+    typeof payload.step_key === "string" ? payload.step_key : null;
+  const skillSlug =
+    typeof payload.skill_slug === "string" ? payload.skill_slug : null;
+  const scenarioId =
+    typeof payload.scenario_id === "string" ? payload.scenario_id : null;
+  const status =
+    typeof payload.status === "string" ? payload.status : null;
+  const durationMs =
+    typeof payload.duration_ms === "number" ? payload.duration_ms : null;
+
+  if (kind === "step_test_started") {
+    return `Inicio prueba de paso · ${stepKey ?? "paso"}${scenarioId ? ` · ${scenarioId}` : ""}`;
+  }
+  if (kind === "step_test_completed") {
+    const outcome =
+      status === "tested_ok"
+        ? "OK"
+        : status === "tested_failed"
+          ? "Falló"
+          : (status ?? "completada");
+    const dur =
+      durationMs != null ? ` · ${formatDurationMs(durationMs)}` : "";
+    return `Prueba de paso · ${stepKey ?? "paso"} · ${outcome}${dur}`;
+  }
+  if (kind === "skill_test_started") {
+    return `Inicio prueba de habilidad · ${skillSlug ?? stepKey ?? "habilidad"}`;
+  }
+  if (kind === "skill_test_completed") {
+    const outcome =
+      status === "tested_ok"
+        ? "OK"
+        : status === "tested_failed"
+          ? "Falló"
+          : (status ?? "completada");
+    return `Prueba de habilidad · ${skillSlug ?? stepKey ?? "habilidad"} · ${outcome}`;
+  }
+  return `${kind} · ${event.actor}`;
+}
+
+function TestCaseAuditPanel({
+  events,
+  toolCalls,
+}: {
+  events: OperationalCaseEvent[];
+  toolCalls: ToolCall[];
+}) {
+  const [showAllEvents, setShowAllEvents] = useState(false);
+  const [showAllToolCalls, setShowAllToolCalls] = useState(false);
+
+  const controlledEvents = useMemo(
+    () => events.filter(isControlledTestAuditEvent),
+    [events]
+  );
+
+  const displayEvents = useMemo(() => {
+    const list = showAllEvents ? events : controlledEvents;
+    return [...list].sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+  }, [controlledEvents, events, showAllEvents]);
+
+  const sortedToolCalls = useMemo(
+    () =>
+      [...toolCalls].sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      ),
+    [toolCalls]
+  );
+
+  const displayToolCalls = showAllToolCalls
+    ? sortedToolCalls
+    : sortedToolCalls.slice(0, 25);
+
+  const hiddenEventCount = events.length - controlledEvents.length;
+
+  return (
+    <details className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
+        Auditoría del caso de prueba
+        {controlledEvents.length > 0
+          ? ` · ${controlledEvents.length} prueba${controlledEvents.length === 1 ? "" : "s"}`
+          : events.length > 0
+            ? ` · ${events.length} evento${events.length === 1 ? "" : "s"}`
+            : ""}
+      </summary>
+      <p className="mt-2 text-[11px] text-neutral-500">
+        Historial acumulado del caso de prueba aislado. Los resultados útiles para
+        avanzar aparecen en cada paso al probar habilidad o paso; aquí sirve
+        para depuración.
+      </p>
+
+      <div className="mt-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs font-semibold text-neutral-600">Eventos</div>
+          {hiddenEventCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => setShowAllEvents((prev) => !prev)}
+              className="text-[11px] font-semibold text-violet-700 hover:underline"
+            >
+              {showAllEvents
+                ? "Solo pruebas controladas"
+                : `Ver todos (${events.length})`}
+            </button>
+          ) : null}
+        </div>
+        {displayEvents.length > 0 ? (
+          <ul className="mt-2 space-y-1.5">
+            {displayEvents.map((event) => (
+              <li key={event.id}>
+                <details className="rounded border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+                  <summary className="cursor-pointer px-2 py-1.5 text-xs">
+                    <span className="font-medium text-neutral-800 dark:text-neutral-100">
+                      {controlledTestAuditSummary(event)}
+                    </span>
+                    <span className="ml-2 text-neutral-500">
+                      {formatDateTime(event.created_at)}
+                    </span>
+                  </summary>
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap border-t border-neutral-100 px-2 py-1.5 font-mono text-[10px] text-neutral-600 dark:border-neutral-800">
+                    {JSON.stringify(event.payload_jsonb, null, 2)}
+                  </pre>
+                </details>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-xs text-neutral-500">
+            Sin eventos de prueba controlada todavía.
+          </p>
+        )}
+      </div>
+
+      <div className="mt-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs font-semibold text-neutral-600">
+            Llamadas a tools
+          </div>
+          {sortedToolCalls.length > 25 ? (
+            <button
+              type="button"
+              onClick={() => setShowAllToolCalls((prev) => !prev)}
+              className="text-[11px] font-semibold text-violet-700 hover:underline"
+            >
+              {showAllToolCalls
+                ? "Mostrar menos"
+                : `Ver todas (${sortedToolCalls.length})`}
+            </button>
+          ) : null}
+        </div>
+        {displayToolCalls.length > 0 ? (
+          <ul className="mt-2 space-y-1">
+            {displayToolCalls.map((call) => (
+              <li
+                key={call.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded border border-neutral-200 bg-white px-2 py-1 text-[11px] dark:border-neutral-800 dark:bg-neutral-900"
+              >
+                <span className="font-mono text-neutral-800 dark:text-neutral-100">
+                  {call.tool_name}
+                </span>
+                <span className="text-neutral-500">
+                  {call.status}
+                  {" · "}
+                  {formatDateTime(call.created_at)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-xs text-neutral-500">
+            Sin llamadas registradas en este caso.
+          </p>
+        )}
+      </div>
+    </details>
+  );
 }
 
 function activationStatusBadge(
@@ -4149,6 +5377,10 @@ export function OperationalCaseTypesClient({
   const [expandedReadinessTools, setExpandedReadinessTools] = useState<
     Set<string>
   >(new Set());
+  const [openReadinessSteps, setOpenReadinessSteps] = useState<Set<string>>(
+    new Set()
+  );
+  const readinessToggleSuppressUntilRef = useRef(0);
   const [toolRequests, setToolRequests] = useState<ToolReadinessRequestRecord[]>(
     []
   );
@@ -4178,6 +5410,11 @@ export function OperationalCaseTypesClient({
   const authoringAbortRef = useRef<AbortController | null>(null);
   const authoringLogRef = useRef<HTMLUListElement | null>(null);
   const editorPanelRef = useRef<HTMLElement | null>(null);
+  const readinessFlowScrollRef = useRef<HTMLDivElement | null>(null);
+  const readinessScrollLockRef = useRef<{
+    position: PageScrollPosition;
+    until: number;
+  } | null>(null);
 
   const sortedCaseTypes = useMemo(
     () =>
@@ -4276,6 +5513,36 @@ export function OperationalCaseTypesClient({
     element.scrollTop = element.scrollHeight;
   }, [authoringProgress, showAuthoringLog]);
 
+  function lockPageScrollForReadiness(ms: number) {
+    readinessScrollLockRef.current = {
+      position: capturePageScroll(readinessFlowScrollRef.current),
+      until: performance.now() + ms,
+    };
+  }
+
+  useLayoutEffect(() => {
+    const lock = readinessScrollLockRef.current;
+    if (!lock || performance.now() > lock.until) return;
+    restorePageScroll(lock.position, readinessFlowScrollRef.current);
+  });
+
+  useEffect(() => {
+    const lock = readinessScrollLockRef.current;
+    if (!lock) return;
+    let frame = 0;
+    const tick = () => {
+      const current = readinessScrollLockRef.current;
+      if (!current || performance.now() > current.until) {
+        readinessScrollLockRef.current = null;
+        return;
+      }
+      restorePageScroll(current.position, readinessFlowScrollRef.current);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [expandedReadinessTools]);
+
   useEffect(() => {
     let cancelled = false;
     async function refreshCaseTypes() {
@@ -4368,17 +5635,24 @@ export function OperationalCaseTypesClient({
     return mergeActivationPolicy(globalCounterpart?.activation_policy_jsonb);
   }
 
-  async function refreshToolReadiness(row: OperationalCaseType) {
+  async function refreshToolReadiness(
+    row: OperationalCaseType,
+    options?: { silent?: boolean }
+  ) {
     if (scopeLabel(row) === "global") {
       setToolReadiness(null);
       setToolReadinessError(null);
       setExpandedReadinessTools(new Set());
+      setOpenReadinessSteps(new Set());
       setToolRequests([]);
       setToolRequestError(null);
       setToolRequestSubmitting(null);
       return;
     }
-    setToolReadinessLoading(true);
+    const scrollPosition = capturePageScroll(readinessFlowScrollRef.current);
+    if (!options?.silent) {
+      setToolReadinessLoading(true);
+    }
     setToolReadinessError(null);
     // Mantener paneles expandidos (p. ej. prueba individual en curso).
     setToolRequests([]);
@@ -4401,9 +5675,12 @@ export function OperationalCaseTypesClient({
       }
       setToolReadiness({
         summary: data.summary,
+        case_e2e_status: data.case_e2e_status,
         skill: data.skill,
         tools: data.tools,
         flow: data.flow,
+        flow_preparation: data.flow_preparation,
+        flow_operational: data.flow_operational,
       });
       void refreshToolRequests(row);
     } catch (err) {
@@ -4411,8 +5688,57 @@ export function OperationalCaseTypesClient({
       setToolReadiness(null);
       setToolReadinessError((err as Error).message ?? String(err));
     } finally {
-      setToolReadinessLoading(false);
+      if (!options?.silent) {
+        setToolReadinessLoading(false);
+      }
+      restorePageScrollAfterLayout(
+        scrollPosition,
+        readinessFlowScrollRef.current
+      );
     }
+  }
+
+  function preserveReadinessUiContext(params: {
+    expansionKey?: string;
+    flowStepKey?: string;
+    suppressToggleMs?: number;
+    lockScrollMs?: number;
+  }) {
+    if (params.suppressToggleMs) {
+      readinessToggleSuppressUntilRef.current =
+        performance.now() + params.suppressToggleMs;
+    }
+    if (params.lockScrollMs) {
+      lockPageScrollForReadiness(params.lockScrollMs);
+    }
+    if (params.expansionKey) {
+      setExpandedReadinessTools((prev) => {
+        const next = new Set(prev);
+        next.add(params.expansionKey!);
+        return next;
+      });
+    }
+    if (params.flowStepKey) {
+      setOpenReadinessSteps((prev) => {
+        const next = new Set(prev);
+        next.add(params.flowStepKey!);
+        return next;
+      });
+    }
+  }
+
+  function toggleReadinessToolExpand(expansionKey: string) {
+    if (performance.now() < readinessToggleSuppressUntilRef.current) {
+      return;
+    }
+    const isClosing = expandedReadinessTools.has(expansionKey);
+    lockPageScrollForReadiness(isClosing ? 550 : 950);
+    setExpandedReadinessTools((prev) => {
+      const next = new Set(prev);
+      if (next.has(expansionKey)) next.delete(expansionKey);
+      else next.add(expansionKey);
+      return next;
+    });
   }
 
   async function refreshToolRequests(row: OperationalCaseType) {
@@ -4630,7 +5956,7 @@ export function OperationalCaseTypesClient({
   function scrollEditorPanelToTop() {
     window.requestAnimationFrame(() => {
       editorPanelRef.current?.scrollIntoView({
-        behavior: "smooth",
+        behavior: "auto",
         block: "start",
       });
     });
@@ -4688,6 +6014,7 @@ export function OperationalCaseTypesClient({
     setToolReadiness(null);
     setToolReadinessError(null);
     setExpandedReadinessTools(new Set());
+    setOpenReadinessSteps(new Set());
     setToolRequests([]);
     setToolRequestError(null);
     setToolRequestSubmitting(null);
@@ -4712,6 +6039,7 @@ export function OperationalCaseTypesClient({
     setToolReadiness(null);
     setToolReadinessError(null);
     setExpandedReadinessTools(new Set());
+    setOpenReadinessSteps(new Set());
     setToolRequests([]);
     setToolRequestError(null);
     setToolRequestSubmitting(null);
@@ -4777,6 +6105,7 @@ export function OperationalCaseTypesClient({
     setToolReadiness(null);
     setToolReadinessError(null);
     setExpandedReadinessTools(new Set());
+    setOpenReadinessSteps(new Set());
     setToolRequests([]);
     setToolRequestError(null);
     setToolRequestSubmitting(null);
@@ -5147,9 +6476,10 @@ export function OperationalCaseTypesClient({
       setToolReadiness(null);
       setToolReadinessError(null);
       setExpandedReadinessTools(new Set());
-    setToolRequests([]);
-    setToolRequestError(null);
-    setToolRequestSubmitting(null);
+      setOpenReadinessSteps(new Set());
+      setToolRequests([]);
+      setToolRequestError(null);
+      setToolRequestSubmitting(null);
       setTestCaseResult(null);
       void refreshToolReadiness(data.caseType);
       void refreshTestCase(data.caseType);
@@ -5171,11 +6501,260 @@ export function OperationalCaseTypesClient({
       : [];
     const effectiveFlow = effectiveOperationalFlowForRow(row);
     const activationPolicy = effectiveActivationPolicyForRow(row);
-    const flowInherited =
-      effectiveFlow.length > 0 &&
-      (!Array.isArray(row.operational_flow_jsonb) ||
-        row.operational_flow_jsonb.length === 0) &&
-      !isGlobal;
+    const testCasePreparationDefaultOpen =
+      !testCaseResult?.case ||
+      testCaseResult.case.current_step === "intake";
+    const testCaseHasCase = Boolean(testCaseResult?.case);
+    const intakePrepared = testCaseIntakePrepared({
+      hasCase: testCaseHasCase,
+      testPassed,
+      currentStep: testCaseResult?.case?.current_step,
+    });
+    const toolsCompleteForOperation =
+      Boolean(toolReadiness) &&
+      toolsPass &&
+      readinessCounts.stub === 0 &&
+      readinessCounts.missing === 0 &&
+      readinessCounts.unknown === 0 &&
+      readinessCounts.needs_config === 0;
+    const conversationalActivationReady =
+      selectedIsActive &&
+      skillLooksValid &&
+      toolsCompleteForOperation &&
+      intakePrepared;
+    const operationalStepsForActivation = (() => {
+      const flow = toolReadiness?.flow ?? [];
+      if (toolReadiness?.flow_operational?.length) {
+        return toolReadiness.flow_operational;
+      }
+      return partitionFlowSteps(
+        flow.filter((step) => step.step_key !== "transversal_tools")
+      ).operationalSteps;
+    })();
+    const stepProgressCheck = activationStepProgressCheck({
+      steps: operationalStepsForActivation,
+    });
+
+    function renderTestCaseN0Card() {
+      const fixtureStatus = fixturePreparationStatus({
+        hasCase: Boolean(testCaseResult?.case),
+        currentStep: testCaseResult?.case?.current_step,
+        safeCheckPassed:
+          testPassed || testCaseResult?.case?.current_step !== "intake",
+        toolsHaveBlocks,
+      });
+      return (
+        <details
+          key={`n0-${testCaseResult?.case?.id ?? "none"}-${testCaseResult?.case?.current_step ?? "pending"}`}
+          open={testCasePreparationDefaultOpen}
+          className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
+        >
+          <summary className="cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden">
+            <div className="text-center">
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                  Preparar caso de prueba
+                </span>
+                <span
+                  className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${fixtureStatusPillClass(
+                    fixtureStatus.tone
+                  )}`}
+                >
+                  {fixtureStatus.label}
+                </span>
+              </div>
+              <p className="mt-2 text-xs text-neutral-500">
+                {activationPolicy.safe_test.description}
+              </p>
+            </div>
+          </summary>
+          <div className="mt-3 space-y-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={createTestCase}
+                disabled={
+                  testCaseLoading ||
+                  (!testCaseResult?.case ? !canCreateTestCase : !canManageTestCase)
+                }
+                className={`rounded px-3 py-2 text-xs font-semibold disabled:opacity-60 ${
+                  !testCaseResult?.case && canCreateTestCase
+                    ? "bg-violet-700 text-white hover:bg-violet-800"
+                    : "border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50"
+                }`}
+              >
+                {testCaseLoading
+                  ? "Procesando..."
+                  : testCaseResult?.case
+                    ? "Regenerar datos de prueba"
+                    : "Crear caso de prueba"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void runControlledTest("safe_check")}
+                disabled={
+                  !testCaseResult?.case || testCaseRunning || toolsHaveBlocks
+                }
+                className="rounded border border-violet-300 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60"
+                title={
+                  toolsHaveBlocks
+                    ? "Prueba o configura las tools requeridas antes de ejecutar la prueba segura inicial."
+                    : "Valida el registro del caso sin invocar el agente."
+                }
+              >
+                {testCaseRunningMode === "safe_check"
+                  ? "Ejecutando..."
+                  : activationPolicy.safe_test.run_button_label}
+              </button>
+              <button
+                type="button"
+                onClick={() => void runControlledTest("agent_e2e")}
+                disabled={!testCaseResult?.case || testCaseRunning || !canRunE2E}
+                className="rounded border border-violet-300 bg-white px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-60"
+                title={
+                  toolsHaveBlocks
+                    ? "Prueba o configura las tools requeridas antes del E2E."
+                    : !canRunE2E
+                      ? "Resuelve stubs, configuraciones de cuenta y tools faltantes antes del E2E. Con stubs el tick puede fallar o devolver respuestas vacías."
+                      : "Un tick del agente sobre el caso de prueba, con tools reales y HITL si aplica."
+                }
+              >
+                {testCaseRunningMode === "agent_e2e"
+                  ? "Ejecutando..."
+                  : "Ejecutar 1 tick E2E con agente"}
+              </button>
+            </div>
+            <p className="text-[11px] text-neutral-500">
+              La prueba individual por tool (dry-run) valida integración aislada.
+              El tick E2E ejecuta una sola transición vía agente sobre el caso de
+              prueba; no debe dejar que el cron continúe el flujo automáticamente.
+              {!canRunE2E && !toolsHaveBlocks ? (
+                <span className="ml-1 text-amber-700">
+                  Tick E2E deshabilitado hasta resolver{" "}
+                  {readinessCounts.stub} stubs,{" "}
+                  {readinessCounts.needs_config} de cuenta y{" "}
+                  {readinessCounts.missing + readinessCounts.unknown} faltantes.
+                </span>
+              ) : null}
+              {e2ePendingHitl ? (
+                <span className="ml-1 text-violet-700">
+                  Último E2E quedó pendiente de aprobación humana; resuélvelo en
+                  Pendientes o Telegram.
+                </span>
+              ) : e2eCompleted ? (
+                <span className="ml-1 text-emerald-700">
+                  Último E2E completó un tick del agente.
+                </span>
+              ) : null}
+            </p>
+            {toolsHaveBlocks && testCaseResult?.case ? (
+              <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                Hay un caso de prueba creado previamente, pero la prueba segura
+                queda pendiente hasta probar o configurar las tools requeridas
+                en Preparación operativa.
+              </p>
+            ) : null}
+            {testCaseResult?.case ? (
+              <div className="rounded border border-neutral-200 bg-white p-2 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+                <div className="font-semibold">
+                  {String(
+                    testCaseResult.case.context_jsonb?.title ??
+                      testCaseResult.case.id
+                  )}
+                </div>
+                <div className="mt-1 text-neutral-500">
+                  Estado: {testCaseResult.case.status} · Paso:{" "}
+                  {testCaseResult.case.current_step ?? "sin paso"} · Creado:{" "}
+                  {formatDateTime(testCaseResult.case.created_at)}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void refreshTestCase(row)}
+                    disabled={testCaseLoading}
+                    className="rounded border border-violet-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-60"
+                  >
+                    {testCaseLoading ? "Actualizando..." : "Actualizar caso"}
+                  </button>
+                  <a
+                    href={`/operational-cases?case=${testCaseResult.case.id}`}
+                    className="inline-flex items-center rounded border border-neutral-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-700 hover:bg-neutral-50"
+                  >
+                    Abrir en Casos operacionales
+                  </a>
+                </div>
+                <TestCaseBusinessSnapshot
+                  opCase={testCaseResult.case}
+                  events={testCaseResult.events}
+                />
+                <p className="mt-2 text-neutral-500">
+                  {activationPolicy.safe_test.synthetic_data_copy}
+                </p>
+                <p className="mt-1 text-[11px] text-neutral-500">
+                  Regenerar datos de prueba restablece el contexto y el paso de
+                  esta misma fila, pero conserva la línea de tiempo de eventos
+                  para auditoría.
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-neutral-500">
+                {testCaseLoading
+                  ? "Buscando el caso de prueba más reciente..."
+                  : !toolReadiness
+                    ? "Primero revisa la preparación operativa."
+                    : toolsHaveBlocks
+                      ? "Prueba o configura las tools requeridas antes de crear una prueba segura inicial."
+                      : "Aún no hay caso de prueba para esta plantilla."}
+              </p>
+            )}
+            {testCaseResult?.case ? (
+              <TestCaseContextForm
+                fields={testContextFields}
+                draft={testContextDraft}
+                saving={testContextSaving}
+                message={testContextMessage}
+                onChange={(name, value) => {
+                  setTestContextDraft((prev) => ({ ...prev, [name]: value }));
+                  setTestContextMessage(null);
+                }}
+                onSave={() => {
+                  void saveTestContext();
+                }}
+              />
+            ) : null}
+            {testCaseResult?.flowProgress?.length ? (
+              <div className="rounded border border-neutral-200 bg-white p-2 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+                <div className="font-semibold text-neutral-700 dark:text-neutral-200">
+                  Progreso por paso
+                </div>
+                <ol className="mt-2 space-y-2">
+                  {testCaseResult.flowProgress.map((step, index) => (
+                    <li
+                      key={step.step_key}
+                      className="flex items-start gap-3 rounded bg-neutral-50 p-2 dark:bg-neutral-950"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold">
+                          {index + 1}. {step.step_label}
+                        </div>
+                        {step.evidence.length > 0 ? (
+                          <div className="mt-1 break-all font-mono text-[11px] text-neutral-500">
+                            {step.evidence.join(", ")}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="w-28 shrink-0 text-right">
+                        {testProgressBadge(step.status)}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
+          </div>
+        </details>
+      );
+    }
 
     return (
       <div className="space-y-4">
@@ -5230,10 +6809,13 @@ export function OperationalCaseTypesClient({
           </div>
         ) : null}
 
-        <div className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
-          <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            Formulario inicial
-          </div>
+        <details className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            Formulario de alta
+            {fields.length > 0
+              ? ` · ${fields.length} campo${fields.length === 1 ? "" : "s"}`
+              : " · sin campos"}
+          </summary>
           {fields.length > 0 ? (
             <ul className="mt-2 space-y-2">
               {fields.map((field) => (
@@ -5254,12 +6836,16 @@ export function OperationalCaseTypesClient({
               Sin campos iniciales configurados.
             </p>
           )}
-        </div>
+        </details>
 
-        <div className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
-          <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            Habilidad asociada
-          </div>
+        <details className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            Habilidades y herramientas
+            {` · ${row.default_skill_slug}`}
+            {skill && skill.includes.length > 0
+              ? ` · ${skill.includes.length} atómica${skill.includes.length === 1 ? "" : "s"}`
+              : ""}
+          </summary>
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             <span className="rounded bg-violet-50 px-2 py-1 font-mono text-violet-700">
               {row.default_skill_slug}
@@ -5316,24 +6902,6 @@ export function OperationalCaseTypesClient({
               </div>
             </div>
           ) : null}
-        </div>
-
-        <details className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
-          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            Flujo operativo (vista resumida){effectiveFlow.length > 0 ? ` · ${effectiveFlow.length} pasos` : ""}
-          </summary>
-          <p className="mt-2 text-xs text-neutral-500">
-            Procedimiento estructurado que se usa para readiness y prueba
-            controlada antes de activar chat/Telegram. Los detalles operativos y
-            el estado de cada herramienta se muestran abajo en{" "}
-            <span className="font-semibold">Preparación operativa</span>.
-            {flowInherited
-              ? " Esta versión usa el flujo de la plantilla global hasta que guardes uno propio."
-              : ""}
-          </p>
-          <div className="mt-3">
-            {renderOperationalFlowPreview(effectiveFlow)}
-          </div>
         </details>
 
         {!isGlobal ? (
@@ -5369,26 +6937,44 @@ export function OperationalCaseTypesClient({
               {toolReadinessSummaryLabel(toolReadiness?.summary)}
             </div>
             {toolReadiness ? (
-              <div className="flex flex-wrap gap-1.5 text-[11px]">
-                <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-800">
-                  {readinessCounts.ready} listas
-                </span>
-                {readinessCounts.needs_config > 0 ? (
-                  <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">
-                    {readinessCounts.needs_config} por configurar
+              <>
+                <p className="text-[11px] text-neutral-500">
+                  {readinessCounts.visibleTotal} tools del flujo (integración y
+                  acción; sin internas de plataforma).
+                </p>
+                <div className="flex flex-wrap gap-1.5 text-[11px]">
+                  <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-800">
+                    {readinessCounts.ready} de {readinessCounts.visibleTotal}{" "}
+                    configuradas
                   </span>
-                ) : null}
-                {readinessCounts.stub > 0 ? (
-                  <span className="rounded bg-sky-50 px-1.5 py-0.5 text-sky-800">
-                    {readinessCounts.stub} stubs
-                  </span>
-                ) : null}
-                {readinessCounts.missing + readinessCounts.unknown > 0 ? (
-                  <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-800">
-                    {readinessCounts.missing + readinessCounts.unknown} pendientes técnicos
-                  </span>
-                ) : null}
-              </div>
+                  {readinessCounts.untested > 0 ? (
+                    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">
+                      {readinessCounts.untested} sin probar
+                    </span>
+                  ) : null}
+                  {readinessCounts.testedOk > 0 ? (
+                    <span className="rounded bg-emerald-50/80 px-1.5 py-0.5 text-emerald-700">
+                      {readinessCounts.testedOk} probadas
+                    </span>
+                  ) : null}
+                  {readinessCounts.needs_config > 0 ? (
+                    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">
+                      {readinessCounts.needs_config} por configurar
+                    </span>
+                  ) : null}
+                  {readinessCounts.stub > 0 ? (
+                    <span className="rounded bg-sky-50 px-1.5 py-0.5 text-sky-800">
+                      {readinessCounts.stub} stubs
+                    </span>
+                  ) : null}
+                  {readinessCounts.missing + readinessCounts.unknown > 0 ? (
+                    <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-800">
+                      {readinessCounts.missing + readinessCounts.unknown}{" "}
+                      pendientes técnicos
+                    </span>
+                  ) : null}
+                </div>
+              </>
             ) : null}
             {toolsHaveBlocks ? (
               <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
@@ -5401,15 +6987,42 @@ export function OperationalCaseTypesClient({
               <p className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
                 No se pudo revisar la preparación operativa: {toolReadinessError}
               </p>
-            ) : toolReadiness?.tools.length ? (
+            ) : null}
+            {renderTestCaseN0Card()}
+            {toolReadiness?.tools.length ? (
               (() => {
                 const flowSteps = toolReadiness.flow ?? [];
-                const procedureSteps = flowSteps.filter(
-                  (step) => step.step_key !== "transversal_tools"
-                );
+                const preparationSteps =
+                  toolReadiness.flow_preparation ??
+                  partitionFlowSteps(
+                    flowSteps.filter((step) => step.step_key !== "transversal_tools")
+                  ).preparationSteps;
+                const operationalSteps =
+                  toolReadiness.flow_operational ??
+                  partitionFlowSteps(
+                    flowSteps.filter((step) => step.step_key !== "transversal_tools")
+                  ).operationalSteps;
                 const transversalStep = flowSteps.find(
                   (step) => step.step_key === "transversal_tools"
                 );
+
+                const partitionSkillTools = (tools: ToolReadinessFlowTool[]) => {
+                  const readinessVisible: ToolReadinessFlowTool[] = [];
+                  const internal: ToolReadinessFlowTool[] = [];
+                  for (const tool of tools) {
+                    if (
+                      isReadinessVisibleTool(tool.tool_id) ||
+                      isScenarioOnlyTool(tool.tool_id)
+                    ) {
+                      readinessVisible.push(tool);
+                    } else if (isInternalOperationalTool(tool.tool_id)) {
+                      internal.push(tool);
+                    } else {
+                      readinessVisible.push(tool);
+                    }
+                  }
+                  return { readinessVisible, internal };
+                };
 
                 const renderToolCard = (
                   tool: ToolReadinessFlowTool,
@@ -5418,9 +7031,15 @@ export function OperationalCaseTypesClient({
                     flowStepKey?: string;
                     skillSlug?: string;
                   }
-                ) =>
-                  tool.readiness ? (
-                    <div key={`${keyPrefix}-${tool.tool_id}`}>
+                ) => {
+                  const expansionKey = [
+                    flowContext?.flowStepKey ?? "transversal_tools",
+                    flowContext?.skillSlug ?? keyPrefix,
+                    tool.tool_id,
+                  ].join("::");
+
+                  return tool.readiness ? (
+                    <div key={expansionKey}>
                       {tool.tool_label || tool.tool_description ? (
                         <div className="mb-1 text-xs">
                           <span className="font-semibold">
@@ -5437,7 +7056,8 @@ export function OperationalCaseTypesClient({
                       {renderFlowToolReadiness({
                         item: tool.readiness,
                         row,
-                        expanded: expandedReadinessTools.has(tool.tool_id),
+                        readinessFlowScrollEl: readinessFlowScrollRef.current,
+                        expanded: expandedReadinessTools.has(expansionKey),
                         existingRequest: toolRequests.find(
                           (req) => req.tool_id === tool.tool_id
                         ),
@@ -5449,15 +7069,27 @@ export function OperationalCaseTypesClient({
                         readinessFlowStepKey: flowContext?.flowStepKey,
                         onEditSkill: () => startEdit(row),
                         onToggleExpand: () =>
-                          setExpandedReadinessTools((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(tool.tool_id)) next.delete(tool.tool_id);
-                            else next.add(tool.tool_id);
-                            return next;
-                          }),
+                          toggleReadinessToolExpand(expansionKey),
                         onRequestGlobal: () =>
                           tool.readiness &&
                           createToolRequest(row, tool.readiness),
+                        onBeforeAssetUpload: () => {
+                          preserveReadinessUiContext({
+                            expansionKey,
+                            flowStepKey: flowContext?.flowStepKey,
+                            suppressToggleMs: 1500,
+                            lockScrollMs: 1500,
+                          });
+                        },
+                        onAssetUploaded: async () => {
+                          preserveReadinessUiContext({
+                            expansionKey,
+                            flowStepKey: flowContext?.flowStepKey,
+                            suppressToggleMs: 1200,
+                            lockScrollMs: 1200,
+                          });
+                          await refreshToolReadiness(row, { silent: true });
+                        },
                         refreshToolReadiness,
                         refreshTestCase,
                         onTestCaseUpdated: async (processedResult) => {
@@ -5477,37 +7109,135 @@ export function OperationalCaseTypesClient({
                       })}
                     </div>
                   ) : null;
+                };
 
-                return (
-                  <div className="space-y-3">
-                    {procedureSteps.map((step, stepIndex) => (
-                      <section
-                        key={`${step.step_key}-${stepIndex}`}
+                const renderInternalToolRow = (tool: ToolReadinessFlowTool) => {
+                  const readiness = tool.readiness;
+                  return (
+                    <div
+                      key={`${tool.tool_id}-internal`}
+                      className="rounded border border-neutral-200 bg-white/80 p-2 text-xs dark:border-neutral-700 dark:bg-neutral-900/60"
+                    >
+                      <div className="font-mono text-[11px] text-neutral-600">
+                        {tool.tool_id}
+                      </div>
+                      {tool.tool_label ? (
+                        <div className="mt-0.5 font-semibold text-neutral-800">
+                          {tool.tool_label}
+                        </div>
+                      ) : null}
+                      {tool.tool_description ? (
+                        <p className="mt-1 text-neutral-500">{tool.tool_description}</p>
+                      ) : null}
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                        <span className="text-neutral-400">
+                          {toolSurfaceLabel(toolSurfaceKind(tool.tool_id))}
+                        </span>
+                        {readiness ? (
+                          <span
+                            className={`rounded px-1.5 py-0.5 font-semibold ${toolReadinessClass(
+                              readiness.status
+                            )}`}
+                          >
+                            {toolReadinessLabel(readiness.status)}
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 text-[11px] text-neutral-500">
+                        Sin prueba individual (N1): se comprueba al ejecutar N3 o N4.
+                      </p>
+                    </div>
+                  );
+                };
+
+                const renderInternalToolsBlock = (
+                  tools: ToolReadinessFlowTool[]
+                ) => {
+                  if (tools.length === 0) return null;
+                  return (
+                    <details className="rounded border border-dashed border-neutral-300 bg-neutral-50/80 p-2 dark:border-neutral-700 dark:bg-neutral-900/40">
+                      <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                        Detalle técnico / tools internas
+                      </summary>
+                      <p className="mt-1 text-[11px] text-neutral-500">
+                        Plataforma y persistencia: no exigen N1; se validan en N3/N4.
+                      </p>
+                      <div className="mt-2 space-y-2">
+                        {tools.map((tool) => renderInternalToolRow(tool))}
+                      </div>
+                    </details>
+                  );
+                };
+
+                const readinessStepDetailsKey = (
+                  step: ToolReadinessFlowStep,
+                  stepIndex: number,
+                  sectionOptions: { preparation?: boolean }
+                ) =>
+                  sectionOptions.preparation
+                    ? `preparation::${step.step_key}`
+                    : `operational::${step.step_key}::${stepIndex}`;
+
+                const renderStepSection = (
+                  step: ToolReadinessFlowStep,
+                  stepIndex: number,
+                  options: { preparation?: boolean }
+                ) => {
+                  const summaryHint = stepExpandableSummaryHint(step);
+                  const stepDetailsKey = readinessStepDetailsKey(
+                    step,
+                    stepIndex,
+                    options
+                  );
+                  const stepDetailsOpen = openReadinessSteps.has(stepDetailsKey);
+                  return (
+                      <details
+                        key={stepDetailsKey}
+                        open={stepDetailsOpen}
+                        onToggle={(event) => {
+                          const nextOpen = event.currentTarget.open;
+                          setOpenReadinessSteps((prev) => {
+                            const next = new Set(prev);
+                            if (nextOpen) next.add(stepDetailsKey);
+                            else next.delete(stepDetailsKey);
+                            return next;
+                          });
+                        }}
                         className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
                       >
-                        <div className="text-center">
-                          <div className="flex flex-wrap items-center justify-center gap-2">
-                            <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
-                              Paso {stepIndex + 1}
-                            </span>
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusPillClass(
-                                step.test_status
-                              )}`}
-                            >
-                              {stepTestStatusLabel(step.test_status)}
-                            </span>
-                          </div>
-                          <div className="mt-2">
-                            <div className="font-semibold">{step.step_label}</div>
+                        <summary className="cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden">
+                          <div className="text-center">
+                            <div className="flex flex-wrap items-center justify-center gap-2">
+                              <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                                {options.preparation
+                                  ? "Preparación del caso"
+                                  : `Paso ${stepIndex + 1}`}
+                              </span>
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusPillClass(
+                                  step.test_status
+                                )}`}
+                              >
+                                {stepTestStatusLabel(
+                                  step.test_status,
+                                  step.step_test_progress
+                                )}
+                              </span>
+                            </div>
+                            <div className="mt-2 font-semibold">{step.step_label}</div>
                             {step.step_description ? (
                               <p className="mt-1 text-xs text-neutral-500">
                                 {step.step_description}
                               </p>
                             ) : null}
+                            {summaryHint ? (
+                              <p className="mt-1 text-[11px] text-neutral-400">
+                                {summaryHint}
+                              </p>
+                            ) : null}
                           </div>
-                        </div>
-                        <div className="mt-3 space-y-3">
+                        </summary>
+                        <div className="mt-3 space-y-3 border-t border-neutral-100 pt-3 dark:border-neutral-800">
                           {step.step_skills.length > 0 ? (
                             step.step_skills.map((skill) => (
                               <div
@@ -5539,32 +7269,47 @@ export function OperationalCaseTypesClient({
                                 ) : null}
                                 <div className="mt-4 space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
                                   <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-                                    Herramientas
+                                    Herramientas de integración / acción (N1)
                                   </div>
-                                  {skill.skill_tools.length > 0 ? (
-                                    skill.skill_tools.map((tool) =>
-                                      renderToolCard(tool, skill.skill_slug, {
-                                        flowStepKey: step.step_key,
-                                        skillSlug: skill.skill_slug,
-                                      })
-                                    )
-                                  ) : (
-                                    <p className="text-xs text-neutral-500">
-                                      Esta habilidad no declara herramientas
-                                      específicas en el flujo.
-                                    </p>
-                                  )}
+                                  {(() => {
+                                    const { readinessVisible, internal } =
+                                      partitionSkillTools(skill.skill_tools);
+                                    if (
+                                      readinessVisible.length === 0 &&
+                                      internal.length === 0
+                                    ) {
+                                      return (
+                                        <p className="text-xs text-neutral-500">
+                                          Esta habilidad no declara herramientas
+                                          específicas en el flujo.
+                                        </p>
+                                      );
+                                    }
+                                    return (
+                                      <>
+                                        {readinessVisible.map((tool) =>
+                                          renderToolCard(tool, skill.skill_slug, {
+                                            flowStepKey: step.step_key,
+                                            skillSlug: skill.skill_slug,
+                                          })
+                                        )}
+                                        {renderInternalToolsBlock(internal)}
+                                      </>
+                                    );
+                                  })()}
                                 </div>
-                                <SkillTestPanel
-                                  skill={skill}
-                                  row={row}
-                                  hasTestCase={Boolean(testCaseResult?.case)}
-                                  caseId={testCaseResult?.case?.id ?? null}
-                                  onFinished={async () => {
-                                    await refreshToolReadiness(row);
-                                    await refreshTestCase(row);
-                                  }}
-                                />
+                                {!options.preparation ? (
+                                  <SkillTestPanel
+                                    skill={skill}
+                                    row={row}
+                                    hasTestCase={Boolean(testCaseResult?.case)}
+                                    caseId={testCaseResult?.case?.id ?? null}
+                                    onFinished={async () => {
+                                      await refreshToolReadiness(row);
+                                      await refreshTestCase(row);
+                                    }}
+                                  />
+                                ) : null}
                               </div>
                             ))
                           ) : (
@@ -5584,40 +7329,144 @@ export function OperationalCaseTypesClient({
                           {step.step_tools.length > 0 ? (
                             <div className="space-y-2 rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
                               <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-                                Herramientas
+                                Herramientas de integración / acción (N1)
                               </div>
-                              {step.step_tools.map((tool) =>
-                                renderToolCard(tool, step.step_key, {
-                                  flowStepKey: step.step_key,
-                                })
-                              )}
+                              {(() => {
+                                const { readinessVisible, internal } =
+                                  partitionSkillTools(step.step_tools);
+                                return (
+                                  <>
+                                    {readinessVisible.map((tool) =>
+                                      renderToolCard(tool, step.step_key, {
+                                        flowStepKey: step.step_key,
+                                      })
+                                    )}
+                                    {renderInternalToolsBlock(internal)}
+                                  </>
+                                );
+                              })()}
                             </div>
                           ) : null}
-                          <StepTestPanel
-                            step={step}
-                            row={row}
-                            caseTypeSlug={row.case_type}
-                            hasTestCase={Boolean(testCaseResult?.case)}
-                            caseId={testCaseResult?.case?.id ?? null}
-                            onFinished={async () => {
-                              await refreshToolReadiness(row);
-                              await refreshTestCase(row);
-                            }}
-                          />
+                          {!options.preparation ? (
+                            <StepTestPanel
+                              step={step}
+                              row={row}
+                              caseTypeSlug={row.case_type}
+                              hasTestCase={Boolean(testCaseResult?.case)}
+                              caseId={testCaseResult?.case?.id ?? null}
+                              onFinished={async () => {
+                                await refreshToolReadiness(row);
+                                await refreshTestCase(row);
+                              }}
+                            />
+                          ) : (
+                            <p className="text-xs text-neutral-500">
+                              La preparación del caso se valida con el formulario
+                              de caso de prueba y «Validar intake seguro», no con
+                              Probar paso.
+                            </p>
+                          )}
                         </div>
-                      </section>
-                    ))}
-                    {transversalStep ? (
-                      <details className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
-                        <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                          {transversalStep.step_label}
-                        </summary>
-                        {transversalStep.step_description ? (
+                      </details>
+                  );
+                };
+
+                const renderIntakeFlowReference = (step: ToolReadinessFlowStep) => {
+                  const { readinessVisible, internal } = partitionSkillTools(
+                    step.step_tools
+                  );
+                  const scenarioTools = readinessVisible.filter((tool) =>
+                    isScenarioOnlyTool(tool.tool_id)
+                  );
+                  const intakeSummaryHint = stepExpandableSummaryHint(step);
+                  return (
+                    <details
+                      key={step.step_key}
+                      className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
+                    >
+                      <summary className="cursor-pointer text-center list-none marker:content-none [&::-webkit-details-marker]:hidden">
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                          <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                            {step.step_label}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusPillClass(
+                              step.test_status
+                            )}`}
+                          >
+                            {stepTestStatusLabel(
+                              step.test_status,
+                              step.step_test_progress,
+                              {
+                                allSkillsN3Ok: stepAllSkillsN3Ok(
+                                  step.step_skills
+                                ),
+                              }
+                            )}
+                          </span>
+                        </div>
+                        {step.step_description ? (
                           <p className="mt-2 text-xs text-neutral-500">
-                            {transversalStep.step_description}
+                            {step.step_description}
                           </p>
                         ) : null}
-                        <div className="mt-2 space-y-2">
+                        {intakeSummaryHint ? (
+                          <p className="mt-1 text-[11px] text-neutral-400">
+                            {intakeSummaryHint}
+                          </p>
+                        ) : null}
+                      </summary>
+                      <div className="mt-3 space-y-3 border-t border-neutral-100 pt-3 dark:border-neutral-800">
+                        <p className="text-xs text-neutral-500">
+                          El formulario y la prueba segura están en{" "}
+                          <span className="font-semibold">
+                            Preparar caso de prueba
+                          </span>{" "}
+                          arriba. Este bloque documenta el hito de runtime (
+                          <span className="font-mono">intake</span>).
+                        </p>
+                        {scenarioTools.length > 0 ? (
+                          <div className="space-y-2 rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                              Alta / escenario (opcional N1)
+                            </div>
+                            {scenarioTools.map((tool) =>
+                              renderToolCard(tool, step.step_key, {
+                                flowStepKey: step.step_key,
+                              })
+                            )}
+                          </div>
+                        ) : null}
+                        {renderInternalToolsBlock(internal)}
+                      </div>
+                    </details>
+                  );
+                };
+
+                return (
+                  <div className="space-y-3 [overflow-anchor:none]">
+                    {preparationSteps.map((step) => renderIntakeFlowReference(step))}
+                    {operationalSteps.map((step, stepIndex) =>
+                      renderStepSection(step, stepIndex, { preparation: false })
+                    )}
+                    {transversalStep ? (
+                      <details className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+                        <summary className="cursor-pointer text-center list-none marker:content-none [&::-webkit-details-marker]:hidden">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                            {transversalStep.step_label}
+                          </div>
+                          {transversalStep.step_description ? (
+                            <p className="mt-2 text-xs text-neutral-500">
+                              {transversalStep.step_description}
+                            </p>
+                          ) : null}
+                          <p className="mt-1 text-[11px] text-neutral-400">
+                            {transversalStep.step_tools.length} tool
+                            {transversalStep.step_tools.length === 1 ? "" : "s"}{" "}
+                            transversal
+                          </p>
+                        </summary>
+                        <div className="mt-3 space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
                           {transversalStep.step_tools.map((tool) =>
                             renderToolCard(tool, "transversal", {
                               flowStepKey: "transversal_tools",
@@ -5650,272 +7499,17 @@ export function OperationalCaseTypesClient({
         ) : null}
 
         {!isGlobal ? (
-          <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                Caso de prueba
-              </div>
-              <p className="mt-1 text-xs text-neutral-500">
-                {activationPolicy.safe_test.description}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={createTestCase}
-                disabled={
-                  testCaseLoading ||
-                  (!testCaseResult?.case ? !canCreateTestCase : !canManageTestCase)
-                }
-                className={`rounded px-3 py-2 text-xs font-semibold disabled:opacity-60 ${
-                  !testCaseResult?.case && canCreateTestCase
-                    ? "bg-violet-700 text-white hover:bg-violet-800"
-                    : "border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50"
-                }`}
-              >
-                {testCaseLoading
-                  ? "Procesando..."
-                  : testCaseResult?.case
-                    ? "Regenerar datos de prueba"
-                    : "Crear caso de prueba"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void runControlledTest("safe_check")}
-                disabled={
-                  !testCaseResult?.case || testCaseRunning || toolsHaveBlocks
-                }
-                className="rounded border border-violet-300 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60"
-                title={
-                  toolsHaveBlocks
-                    ? "Prueba o configura las tools requeridas antes de ejecutar la prueba segura inicial."
-                    : "Valida intake y paso inicial sin invocar el agente."
-                }
-              >
-                {testCaseRunningMode === "safe_check"
-                  ? "Ejecutando..."
-                  : activationPolicy.safe_test.run_button_label}
-              </button>
-              <button
-                type="button"
-                onClick={() => void runControlledTest("agent_e2e")}
-                disabled={!testCaseResult?.case || testCaseRunning || !canRunE2E}
-                className="rounded border border-violet-300 bg-white px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-60"
-                title={
-                  toolsHaveBlocks
-                    ? "Prueba o configura las tools requeridas antes del E2E."
-                    : !canRunE2E
-                      ? "Resuelve stubs, configuraciones de cuenta y tools faltantes antes del E2E. Con stubs el tick puede fallar o devolver respuestas vacías."
-                      : "Un tick del agente sobre el caso de prueba, con tools reales y HITL si aplica (p. ej. ungga_publish_listing)."
-                }
-              >
-                {testCaseRunningMode === "agent_e2e"
-                  ? "Ejecutando..."
-                  : "Ejecutar 1 tick E2E con agente"}
-              </button>
-            </div>
-            <p className="text-[11px] text-neutral-500">
-              La prueba individual por tool (dry-run) valida integración aislada.
-              El tick E2E ejecuta una sola transición vía agente sobre el caso de
-              prueba; puede crear pendientes/notificaciones de prueba, pero no
-              debe dejar que el cron continúe el flujo automáticamente.
-              {!canRunE2E && !toolsHaveBlocks ? (
-                <span className="ml-1 text-amber-700">
-                  Tick E2E deshabilitado hasta resolver{" "}
-                  {readinessCounts.stub} stubs,{" "}
-                  {readinessCounts.needs_config} de cuenta y{" "}
-                  {readinessCounts.missing + readinessCounts.unknown} faltantes.
-                </span>
-              ) : null}
-              {e2ePendingHitl ? (
-                <span className="ml-1 text-violet-700">
-                  Último E2E quedó pendiente de aprobación humana; resuélvelo en
-                  Pendientes o Telegram. El caso de prueba no seguirá solo por cron.
-                </span>
-              ) : e2eCompleted ? (
-                <span className="ml-1 text-emerald-700">
-                  Último E2E completó un tick del agente.
-                </span>
-              ) : null}
-            </p>
-            {toolsHaveBlocks && testCaseResult?.case ? (
-              <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
-                Hay un caso de prueba creado previamente, pero la prueba segura
-                queda pendiente hasta probar o configurar las tools requeridas
-                en Preparación operativa.
-              </p>
-            ) : null}
-            {testCaseResult?.case ? (
-              <div className="rounded border border-neutral-200 bg-neutral-50 p-2 text-xs dark:border-neutral-800 dark:bg-neutral-950">
-                <div className="font-semibold">
-                  {String(
-                    testCaseResult.case.context_jsonb?.title ??
-                      testCaseResult.case.id
-                  )}
-                </div>
-                <div className="mt-1 text-neutral-500">
-                  Estado: {testCaseResult.case.status} · Paso:{" "}
-                  {testCaseResult.case.current_step ?? "sin paso"} · Creado:{" "}
-                  {formatDateTime(testCaseResult.case.created_at)}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void refreshTestCase(row)}
-                    disabled={testCaseLoading}
-                    className="rounded border border-violet-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-60"
-                  >
-                    {testCaseLoading ? "Actualizando..." : "Actualizar caso"}
-                  </button>
-                  <a
-                    href={`/operational-cases?case=${testCaseResult.case.id}`}
-                    className="inline-flex items-center rounded border border-neutral-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-700 hover:bg-neutral-50"
-                  >
-                    Abrir en Casos operacionales
-                  </a>
-                </div>
-                <TestCaseBusinessSnapshot
-                  opCase={testCaseResult.case}
-                  events={testCaseResult.events}
-                />
-                <p className="mt-2 text-neutral-500">
-                  {activationPolicy.safe_test.synthetic_data_copy}
-                </p>
-                <p className="mt-1 text-[11px] text-neutral-500">
-                  Regenerar datos de prueba restablece el contexto y el paso de
-                  esta misma fila, pero conserva la línea de tiempo de eventos
-                  para auditoría. Las tools que requieren intake limpio derivan
-                  sólo los campos del formulario, no el historial del caso.
-                </p>
-              </div>
-            ) : (
-              <p className="text-xs text-neutral-500">
-                {testCaseLoading
-                  ? "Buscando el caso de prueba más reciente..."
-                  : !toolReadiness
-                    ? "Primero revisa la preparación operativa."
-                    : toolsHaveBlocks
-                      ? "Prueba o configura las tools requeridas antes de crear una prueba segura inicial."
-                      : "Aún no hay caso de prueba para esta plantilla."}
-              </p>
-            )}
-            {testCaseResult?.case ? (
-              <TestCaseContextForm
-                fields={testContextFields}
-                draft={testContextDraft}
-                saving={testContextSaving}
-                message={testContextMessage}
-                onChange={(name, value) => {
-                  setTestContextDraft((prev) => ({ ...prev, [name]: value }));
-                  setTestContextMessage(null);
-                }}
-                onSave={() => {
-                  void saveTestContext();
-                }}
-              />
-            ) : null}
-            {testCaseResult?.flowProgress?.length ? (
-              <div className="rounded border border-neutral-200 p-2 text-xs dark:border-neutral-800">
-                <div className="font-semibold text-neutral-700 dark:text-neutral-200">
-                  Progreso por paso
-                </div>
-                <ol className="mt-2 space-y-2">
-                  {testCaseResult.flowProgress.map((step, index) => (
-                    <li
-                      key={step.step_key}
-                      className="flex items-start gap-3 rounded bg-neutral-50 p-2 dark:bg-neutral-950"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="font-semibold">
-                          {index + 1}. {step.step_label}
-                        </div>
-                        {step.evidence.length > 0 ? (
-                          <div className="mt-1 break-all font-mono text-[11px] text-neutral-500">
-                            {step.evidence.join(", ")}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div className="w-28 shrink-0 text-right">
-                        {testProgressBadge(step.status)}
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {!isGlobal && testCaseResult?.case ? (
-          <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
-            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              Resultado de prueba
-            </div>
-            <div>
-              <div className="text-xs font-semibold text-neutral-600">
-                Timeline
-              </div>
-              {testCaseResult.events.length > 0 ? (
-                <ul className="mt-2 space-y-2">
-                  {testCaseResult.events.map((event) => (
-                    <li
-                      key={event.id}
-                      className="rounded border border-neutral-200 bg-white p-2 text-xs dark:border-neutral-800 dark:bg-neutral-900"
-                    >
-                      <div className="font-semibold">
-                        {event.event_type} · {event.actor}
-                      </div>
-                      <div className="text-neutral-500">
-                        {formatDateTime(event.created_at)}
-                      </div>
-                      <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 p-2 font-mono text-[11px] dark:bg-neutral-950">
-                        {JSON.stringify(event.payload_jsonb, null, 2)}
-                      </pre>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-1 text-xs text-neutral-500">
-                  Sin eventos registrados todavía.
-                </p>
-              )}
-            </div>
-            <div>
-              <div className="text-xs font-semibold text-neutral-600">
-                Tool calls
-              </div>
-              {testCaseResult.toolCalls.length > 0 ? (
-                <ul className="mt-2 space-y-2">
-                  {testCaseResult.toolCalls.map((call) => (
-                    <li
-                      key={call.id}
-                      className="rounded border border-neutral-200 bg-white p-2 text-xs dark:border-neutral-800 dark:bg-neutral-900"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-mono">{call.tool_name}</span>
-                        <span>{call.status}</span>
-                      </div>
-                      <div className="text-neutral-500">
-                        {formatDateTime(call.created_at)}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-1 text-xs text-neutral-500">
-                  Sin llamadas de tools. Las tools de envío/escritura/publicación
-                  no se ejecutan automáticamente en esta prueba inicial.
-                </p>
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        {!isGlobal ? (
           <div className="space-y-2 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
             <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
               Checks de activación
             </div>
+            <p className="text-[11px] text-neutral-500">
+              Validan si la <span className="font-medium">plantilla</span> puede
+              usarse en modo controlado (skill, tools, caso de prueba). No
+              sustituyen el estado de cada{" "}
+              <span className="font-medium">Paso N</span> arriba, donde ves si
+              ya probaste habilidad o paso en el laboratorio.
+            </p>
             <ul className="space-y-2 text-xs">
               <li className="flex items-start gap-2">
                 {activationStatusBadge(
@@ -5926,50 +7520,16 @@ export function OperationalCaseTypesClient({
               </li>
               <li className="flex items-start gap-2">
                 {activationStatusBadge(
-                  toolsPass ? "ready" : toolsHaveBlocks ? "attention" : "pending",
-                  toolsPass
-                    ? "✓ Listo"
-                    : toolsHaveBlocks
-                      ? "Resolver bloqueos"
-                      : "Pendiente"
-                )}
-                <span>
-                  {activationToolsDescription({
-                    toolReadiness,
-                    toolsHaveBlocks,
-                    toolsPass,
-                    policy: activationPolicy,
-                  })}
-                </span>
-              </li>
-              <li className="flex items-start gap-2">
-                {activationStatusBadge(
-                  testPassed ? "ready" : "pending",
-                  testPassed ? "✓ Listo" : "Pendiente"
-                )}
-                <span>
-                  {activationPolicy.activation_checks.safe_test_success_copy}
-                </span>
-              </li>
-              <li className="flex items-start gap-2">
-                {activationStatusBadge(
-                  selectedIsActive && skillLooksValid && toolsPass && testPassed
+                  toolsCompleteForOperation
                     ? "ready"
-                    : "pending",
-                  selectedIsActive && skillLooksValid && toolsPass && testPassed
+                    : toolReadiness
+                      ? "attention"
+                      : "pending",
+                  toolsCompleteForOperation
                     ? "✓ Listo"
-                    : "Pendiente"
-                )}
-                <span>
-                  {activationPolicy.activation_checks.conversational_safe_copy}
-                </span>
-              </li>
-              <li className="flex items-start gap-2">
-                {activationStatusBadge(
-                  toolsPass && readinessCounts.stub === 0 ? "ready" : "attention",
-                  toolsPass && readinessCounts.stub === 0
-                    ? "✓ Listo"
-                    : "Pendiente operación real"
+                    : toolReadiness
+                      ? "Resolver tools"
+                      : "Pendiente"
                 )}
                 <span>
                   {operationCompletenessDescription({
@@ -5979,8 +7539,57 @@ export function OperationalCaseTypesClient({
                   })}
                 </span>
               </li>
+              <li className="flex items-start gap-2">
+                {activationStatusBadge(
+                  intakePrepared ? "ready" : "pending",
+                  intakePrepared ? "✓ Listo" : "Pendiente"
+                )}
+                <span>
+                  {activationSafeTestCheckCopy({
+                    testPassed,
+                    intakePrepared,
+                    testStatus:
+                      typeof testStatus === "string" ? testStatus : undefined,
+                    policy: activationPolicy,
+                  })}
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                {activationStatusBadge(
+                  stepProgressCheck.status,
+                  stepProgressCheck.label
+                )}
+                <span>{stepProgressCheck.copy}</span>
+              </li>
+              <li className="flex items-start gap-2">
+                {activationStatusBadge(
+                  conversationalActivationReady ? "ready" : "pending",
+                  conversationalActivationReady ? "✓ Listo" : "Pendiente"
+                )}
+                <span>
+                  {activationConversationalCheckCopy({
+                    ready: conversationalActivationReady,
+                    policy: activationPolicy,
+                  })}
+                  {conversationalActivationReady &&
+                  stepProgressCheck.status !== "ready" ? (
+                    <span className="mt-1 block text-neutral-500">
+                      Puedes abrir chat/Telegram en modo controlado; aún faltan
+                      pasos por probar en el laboratorio antes de producción
+                      plena.
+                    </span>
+                  ) : null}
+                </span>
+              </li>
             </ul>
           </div>
+        ) : null}
+
+        {!isGlobal && testCaseResult?.case ? (
+          <TestCaseAuditPanel
+            events={testCaseResult.events}
+            toolCalls={testCaseResult.toolCalls}
+          />
         ) : null}
 
         <div className="flex justify-end gap-2">

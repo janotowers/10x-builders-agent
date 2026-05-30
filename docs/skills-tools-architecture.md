@@ -483,6 +483,7 @@ Si es juicio comercial -> LLM prepara, humano aprueba.
 ## 11. Patrón de prueba UI para readiness operacional
 
 > Detalle completo: [`operational-cases/testing-framework.md`](operational-cases/testing-framework.md) (N0–N5).
+> Catálogo de patrones: [`operational-cases/operational-case-reusable-patterns.md`](operational-cases/operational-case-reusable-patterns.md) + `apps/web/src/lib/operational-cases/test-patterns-catalog.ts`.
 > Modelo paso / habilidad raíz: [`operational-cases/authoring-playbook.md`](operational-cases/authoring-playbook.md).
 > Visión NL → propuesta implementable: [`operational-cases/use-case-authoring-vision.md`](operational-cases/use-case-authoring-vision.md).
 
@@ -517,9 +518,11 @@ La UI de Preparación operativa debe distinguir estos niveles de prueba (resumen
    - Una prueba por habilidad declarada en el paso.
    - No reemplaza N2 ni el cierre del hito (N4).
 
-4. **Paso — N4** *(pendiente de producto)*
-   - Habilidad raíz; valida cierre del `step_key` / orquestación entre varias habilidades.
-   - No es «encadenar todos los N3».
+4. **Paso — N4** *(v1 implementado)*
+   - `POST /api/tool-readiness/run-step`; habilidad raíz; escenarios en `step-test-scenarios.ts`.
+   - Valida cierre del `step_key` / ramas críticas; no es «encadenar todos los N3».
+   - **Prerequisito:** todas las tools *readiness-visible* del paso probadas en N1 (misma regla que N3; UI índigo atenuada si bloqueado). Pills de paso/habilidad = último N3/N4; pills de tool = N1.
+   - Runtime compartido con N3: dedup Telegram, notify interno, detalle en `skill-test-call-details.tsx` (ver catálogo `PATTERN_*`).
 
 5. **Caso — N5** *(parcial / futuro)*
    - E2E del `case_type` completo en caso de prueba aislado.

@@ -35,6 +35,10 @@ import type {
   ToolApprovalPolicy,
 } from "@agents/types";
 import {
+  generatedDocumentDedupKey,
+  normalizeTelegramSendText,
+} from "@agents/types";
+import {
   CHAT_MODEL_ID,
   createChatModel,
   createCompactionModel,
@@ -46,6 +50,7 @@ import {
 import {
   buildLangChainTools,
   resolveToolApprovalMode,
+  toolOwnsAuditTrail,
 } from "./tools/adapters";
 import {
   getGlobalSkillRegistry,
@@ -428,6 +433,36 @@ function skillCandidateIsEnabled(
   candidateSlugs: readonly string[]
 ): boolean {
   return candidateSlugs.includes(skillId);
+}
+
+/**
+ * Clave de deduplicación para tool_calls de negocio idempotentes emitidas
+ * en el MISMO mensaje del modelo. Devuelve `null` para tools que no se deben
+ * colapsar (la mayoría: pueden repetirse legítimamente en un turno).
+ *
+ * Solo cubrimos acciones externas/costosas donde dos llamadas idénticas en un
+ * único turno son siempre un error del modelo, no intención del usuario:
+ *  - generate_document_from_template (render DOCX duplicado).
+ *  - telegram_send_message_to_contact (mensaje externo duplicado).
+ */
+function idempotentSameMessageDedupKey(
+  toolName: string,
+  args: Record<string, unknown>,
+  caseIdFallback?: string
+): string | null {
+  if (toolName === "generate_document_from_template") {
+    return `gen_doc::${generatedDocumentDedupKey(args, { caseIdFallback })}`;
+  }
+  if (toolName === "telegram_send_message_to_contact") {
+    return [
+      "tg",
+      String(args.chat_id ?? ""),
+      String(args.case_id ?? caseIdFallback ?? ""),
+      String(args.purpose ?? ""),
+      normalizeTelegramSendText(args.text),
+    ].join("::");
+  }
+  return null;
 }
 
 function shouldRequireCompanyDataQueryForTurn(args: {
@@ -1249,6 +1284,11 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   });
 
   const businessBrainWarehouse = getBusinessBrainWarehouse(input.businessBrain);
+  const skillNeedsTenantContext = Boolean(
+    activeSkill?.requiresTenantContext ||
+      activeSkill?.allowedTools.includes("bigquery_lookup_local_comparables") ||
+      activeSkill?.allowedTools.includes("bigquery_run_query")
+  );
   const lcTools = buildLangChainTools({
     db,
     userId,
@@ -1266,7 +1306,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     channel: resolvedChannelForRuntime,
     enabledSkills: input.enabledSkills,
     tenantOrganizationId:
-      activeSkill?.requiresTenantContext && !input.isUnggaAdmin
+      skillNeedsTenantContext
         ? businessBrainWarehouse?.organization_id?.trim() || undefined
         : undefined,
     bigQueryProjectId: businessBrainWarehouse?.project_id?.trim() || undefined,
@@ -1836,7 +1876,37 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       };
     }
 
+    // ── Dedup de tool_calls IDÉNTICAS dentro del MISMO mensaje del modelo ──
+    // Causa raíz observada: modelos pequeños (p. ej. gpt-4o-mini) a veces
+    // emiten la misma acción de negocio idempotente dos veces en el array
+    // `tool_calls` de un solo turno (DOCX duplicado, Telegram duplicado).
+    // Aquí colapsamos esos duplicados ANTES de ejecutar: la primera llamada
+    // corre normal; las repetidas reciben un ToolMessage que reutiliza el
+    // resultado de la canónica, sin segundo render/envío ni fila de auditoría.
+    const sameMessageSeenKeyToId = new Map<string, string>();
+    const sameMessageDuplicates: Array<{
+      tc: (typeof lastMsg.tool_calls)[number];
+      canonicalId: string;
+    }> = [];
+    const callsToExecute: typeof lastMsg.tool_calls = [];
     for (const tc of lastMsg.tool_calls) {
+      const key = idempotentSameMessageDedupKey(
+        tc.name,
+        (tc.args as Record<string, unknown>) ?? {},
+        input.caseId ?? undefined
+      );
+      if (key) {
+        const canonicalId = sameMessageSeenKeyToId.get(key);
+        if (canonicalId && tc.id) {
+          sameMessageDuplicates.push({ tc, canonicalId });
+          continue;
+        }
+        if (tc.id) sameMessageSeenKeyToId.set(key, tc.id);
+      }
+      callsToExecute.push(tc);
+    }
+
+    for (const tc of callsToExecute) {
       const matchingTool = lcTools.find((t) => t.name === tc.name);
       toolCallNames.push(tc.name);
       if (matchingTool) {
@@ -1915,16 +1985,21 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           // The user already approved the schedule_task itself; bothering them
           // again at execution time defeats the purpose of "scheduled".
           if (approvalMode === "auto_execute") {
-            const toolCallRecord = await createToolCall(
-              db,
-              state.sessionId,
-              tc.name,
-              toolArgs,
-              false,
-              turnId
-            );
-            trackedToolCallId = toolCallRecord.id;
-            await updateToolCallStatus(db, toolCallRecord.id, "approved");
+            // Tools de negocio (generate_document, notify_user, etc.) ya
+            // crean su fila en tool_calls dentro del handler; una fila previa
+            // aquí duplicaba la auditoría sin ejecutar la tool dos veces.
+            if (!toolOwnsAuditTrail(tc.name)) {
+              const toolCallRecord = await createToolCall(
+                db,
+                state.sessionId,
+                tc.name,
+                toolArgs,
+                false,
+                turnId
+              );
+              trackedToolCallId = toolCallRecord.id;
+              await updateToolCallStatus(db, toolCallRecord.id, "approved");
+            }
           } else {
             const existing = await findExistingPendingToolCall(
               db,
@@ -2184,6 +2259,47 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           })
         );
       }
+    }
+
+    // Resuelve los duplicados del mismo mensaje reutilizando el resultado de
+    // su llamada canónica (ya ejecutada arriba), sin re-ejecutar la tool.
+    for (const { tc, canonicalId } of sameMessageDuplicates) {
+      if (!tc.id) continue;
+      const canonical = results.find(
+        (msg) =>
+          msg instanceof ToolMessage &&
+          (msg as InstanceType<typeof ToolMessage>).tool_call_id === canonicalId
+      ) as InstanceType<typeof ToolMessage> | undefined;
+      const baseContent =
+        canonical && typeof canonical.content === "string"
+          ? canonical.content
+          : "";
+      let content: string;
+      try {
+        const parsed = baseContent ? JSON.parse(baseContent) : {};
+        content = JSON.stringify({
+          ...(parsed && typeof parsed === "object" ? parsed : {}),
+          status: "deduplicated_same_turn",
+          deduped_same_message: true,
+          original_tool_call_id: canonicalId,
+          ...(tc.name === "generate_document_from_template"
+            ? { skipped_render: true }
+            : {}),
+          ...(tc.name === "telegram_send_message_to_contact"
+            ? { skipped_send: true }
+            : {}),
+          hint: "El modelo emitió esta tool dos veces en el mismo mensaje; se reutilizó el resultado de la primera llamada sin re-ejecutarla.",
+        });
+      } catch {
+        content =
+          baseContent ||
+          JSON.stringify({
+            status: "deduplicated_same_turn",
+            deduped_same_message: true,
+            original_tool_call_id: canonicalId,
+          });
+      }
+      results.push(new ToolMessage({ content, tool_call_id: tc.id }));
     }
 
     return { messages: results };

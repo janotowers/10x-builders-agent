@@ -75,6 +75,7 @@ import { resolveSkill } from "../skills/resolve";
 import type { ResolvedSkill } from "../skills/types";
 
 export type { ToolContext } from "./tool-context";
+export { toolOwnsAuditTrail } from "./tool-audit-ownership";
 
 type BigQueryToolInput = {
   sql: string;

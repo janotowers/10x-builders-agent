@@ -249,7 +249,7 @@ function casesEnOperacionLabel(count: number): string {
 }
 
 const STEP_LABELS: Record<string, string> = {
-  intake: "Captura inicial",
+  intake: "Completar registro del caso",
 };
 
 function stepLabel(step: string | null | undefined): string {

@@ -1,31 +1,20 @@
-/** Metadatos de escenarios N4 (paso). La lógica de ejecución vive en run-step/route.ts. */
+/**
+ * Compat layer para consumidores UI. La fuente de verdad completa vive en
+ * `step-test-scenario-registry.ts` (metadata + seed + expect + mensaje).
+ */
+export type {
+  StepTestExecutionMode,
+  StepTestScenarioDef,
+  StepTestScenarioMeta,
+} from "./step-test-scenario-registry";
 
-export type StepTestScenarioMeta = {
-  id: string;
-  label: string;
-};
-
-export const STEP_TEST_SCENARIO_INDEX: Record<
-  string,
-  Record<string, StepTestScenarioMeta[]>
-> = {
-  property_optioning: {
-    awaiting_documents: [
-      {
-        id: "awaiting_documents_outreach",
-        label: "Solicitud inicial vía habilidad raíz",
-      },
-    ],
-  },
-};
-
-export function stepTestScenariosFor(
-  caseTypeSlug: string,
-  stepKey: string
-): StepTestScenarioMeta[] {
-  return STEP_TEST_SCENARIO_INDEX[caseTypeSlug]?.[stepKey] ?? [];
-}
-
-export function stepTestAvailable(caseTypeSlug: string, stepKey: string) {
-  return stepTestScenariosFor(caseTypeSlug, stepKey).length > 0;
-}
+export {
+  DEFAULT_STEP_TEST_CATALOG_SLUG_BY_ROOT_SKILL,
+  STEP_TEST_SCENARIO_CATALOG,
+  stepTestAvailable,
+  stepTestCatalogSlugForRootSkill,
+  stepTestMilestoneScenariosFor,
+  stepTestScenarioCountsTowardMilestone,
+  stepTestScenarioMetasFor as stepTestScenariosFor,
+  stepTestScenariosFor as stepTestScenarioDefsFor,
+} from "./step-test-scenario-registry";

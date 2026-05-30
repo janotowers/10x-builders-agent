@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
-    "test:business-decisions": "tsx src/lib/business-decisions/price-approval.selftest.ts",
+    "test:business-decisions": "tsx src/lib/business-decisions/price-approval.selftest.ts && tsx src/lib/business-decisions/contract-review.selftest.ts",
+    "test:step-scenario-evidence": "tsx src/lib/operational-cases/step-test-scenario-evidence.selftest.ts",
     "test:engagement-policies": "tsx src/lib/engagement-policies/registry.selftest.ts",
     "test:notifications": "tsx src/lib/internal-notifications/registry.selftest.ts"
   },

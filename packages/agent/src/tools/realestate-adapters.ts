@@ -42,6 +42,13 @@ import {
   createExternalContactNotification,
 } from "@agents/db";
 import type { ToolContext } from "./tool-context";
+import {
+  generatedDocumentDedupKey,
+  normalizeGeneratedDocumentArgs,
+  normalizeTelegramSendText,
+  telegramSendInputsMatch,
+} from "@agents/types";
+import { deriveCommissionContractTemplateData } from "./commission-contract-template-data";
 
 /** Outbound Telegram messages that expect a reply from the external contact. */
 const TELEGRAM_REPLY_EXPECTED_PURPOSES = new Set([
@@ -56,6 +63,129 @@ function isSettingsOperationalTestCase(
   return (
     context.created_from === "case_type_settings_test" ||
     context.test_mode === true
+  );
+}
+
+function telegramSendDedupKey(args: Record<string, unknown>): string {
+  return [
+    String(args.chat_id ?? ""),
+    String(args.case_id ?? ""),
+    String(args.purpose ?? ""),
+    normalizeTelegramSendText(args.text),
+  ].join("|");
+}
+
+function hasTelegramSendDedupKey(
+  ctx: ToolContext,
+  args: Record<string, unknown>
+): boolean {
+  const key = telegramSendDedupKey(args);
+  return ctx.telegramSendDedupKeys?.has(key) ?? false;
+}
+
+/** Reserva el slot justo antes de enviar (no al crear la fila de auditoría). */
+function claimTelegramSendDedupSlot(
+  ctx: ToolContext,
+  args: Record<string, unknown>
+): void {
+  const key = telegramSendDedupKey(args);
+  if (!ctx.telegramSendDedupKeys) {
+    ctx.telegramSendDedupKeys = new Set<string>();
+  }
+  ctx.telegramSendDedupKeys.add(key);
+}
+
+function documentArgsForDedup(
+  ctx: ToolContext,
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  return normalizeGeneratedDocumentArgs(args, { caseIdFallback: ctx.caseId });
+}
+
+function documentDedupOptions(ctx: ToolContext) {
+  return { caseIdFallback: ctx.caseId };
+}
+
+function claimGenerateDocumentDedupSlot(
+  ctx: ToolContext,
+  args: Record<string, unknown>
+): void {
+  const key = generatedDocumentDedupKey(
+    documentArgsForDedup(ctx, args),
+    documentDedupOptions(ctx)
+  );
+  if (!ctx.generateDocumentDedupKeys) {
+    ctx.generateDocumentDedupKeys = new Set<string>();
+  }
+  ctx.generateDocumentDedupKeys.add(key);
+}
+
+function generateDocumentInFlightKey(
+  ctx: ToolContext,
+  args: Record<string, unknown>
+): string {
+  return `${ctx.sessionId}::${ctx.turnId ?? ""}::${generatedDocumentDedupKey(
+    documentArgsForDedup(ctx, args),
+    documentDedupOptions(ctx)
+  )}`;
+}
+
+function createGenerateDocumentDeferred(): {
+  promise: Promise<Record<string, unknown>>;
+  resolve: (value: Record<string, unknown>) => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: Record<string, unknown>) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<Record<string, unknown>>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function buildGenerateDocumentDedupResult(
+  original: { id: string; result_json: Record<string, unknown> }
+): Record<string, unknown> {
+  return {
+    ...original.result_json,
+    ok: true,
+    skipped_render: true,
+    status: "deduplicated_same_turn",
+    original_tool_call_id: original.id,
+    hint:
+      "Render de documento duplicado en el mismo turno (misma plantilla, formato y caso); se reutilizó el borrador ya generado.",
+  };
+}
+
+async function findDuplicateTelegramCallInTurn(
+  ctx: ToolContext,
+  recordId: string,
+  args: Record<string, unknown>
+) {
+  if (!ctx.turnId) return null;
+  const { data, error } = await ctx.db
+    .from("tool_calls")
+    .select("id,status,arguments_json,result_json,created_at")
+    .eq("turn_id", ctx.turnId)
+    .eq("tool_name", "telegram_send_message_to_contact")
+    .neq("id", recordId)
+    .eq("status", "executed")
+    .order("created_at", { ascending: true })
+    .limit(20);
+  if (error) {
+    console.warn("[realestate] telegram_send: duplicate lookup failed:", error);
+    return null;
+  }
+  return (
+    (data ?? []).find((call) => {
+      const result = call.result_json as Record<string, unknown> | null;
+      if (result?.skipped_send === true) return false;
+      return telegramSendInputsMatch(
+        (call.arguments_json as Record<string, unknown>) ?? {},
+        args
+      );
+    }) ?? null
   );
 }
 import {
@@ -115,6 +245,30 @@ export function addRealEstateTools(
             true,
             ctx.turnId
           );
+          const inputRecord = input as unknown as Record<string, unknown>;
+          const inMemoryDuplicate = hasTelegramSendDedupKey(ctx, inputRecord);
+          const duplicateInTurn = await findDuplicateTelegramCallInTurn(
+            ctx,
+            record.id,
+            inputRecord
+          );
+          const duplicate =
+            duplicateInTurn ??
+            (inMemoryDuplicate ? { id: "in_memory_same_turn" } : null);
+          if (duplicate) {
+            const out = {
+              ok: true,
+              chat_id: input.chat_id,
+              skipped_send: true,
+              status: "deduplicated_same_turn",
+              original_tool_call_id: duplicate.id,
+              hint:
+                "Duplicate Telegram send (mismo chat_id/case_id/purpose y texto equivalente tras normalización) en el mismo turno; se omitió el segundo envío.",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "executed", out);
+            return JSON.stringify(out);
+          }
+          claimTelegramSendDedupSlot(ctx, inputRecord);
           if (!deps.sendTelegramMessage) {
             const out = {
               ok: false,
@@ -328,20 +482,103 @@ export function addRealEstateTools(
           data: Record<string, unknown>;
           case_id?: string;
         }) => {
+          const inputRecord = input as unknown as Record<string, unknown>;
+          const dedupArgs = documentArgsForDedup(ctx, inputRecord);
+          const inFlightKey = generateDocumentInFlightKey(ctx, dedupArgs);
+
+          if (!ctx.generateDocumentInFlight) {
+            ctx.generateDocumentInFlight = new Map();
+          }
+          if (!ctx.generateDocumentDeferredByKey) {
+            ctx.generateDocumentDeferredByKey = new Map();
+          }
+
+          // Reclamo SÍNCRONO del slot (sin await entre check y set): la primera
+          // llamada equivalente del turno es la canónica; el resto son
+          // seguidoras. Cubre tanto tool_calls paralelas del mismo mensaje como
+          // re-llamadas en iteraciones posteriores (el Map vive todo el turno).
+          const isFollower = ctx.generateDocumentInFlight.has(inFlightKey);
+          if (isFollower) {
+            const deferred = ctx.generateDocumentDeferredByKey.get(inFlightKey);
+            try {
+              const rendered = deferred
+                ? await deferred.promise
+                : { ok: true, status: "rendered" };
+              const out =
+                rendered.skipped_render === true
+                  ? rendered
+                  : buildGenerateDocumentDedupResult({
+                      id: "same_turn_canonical",
+                      result_json: rendered,
+                    });
+              // NO creamos fila de auditoría: el render duplicado del modelo no
+              // debe ensuciar el historial; el modelo recibe el mismo borrador.
+              return JSON.stringify(out);
+            } catch (e) {
+              return JSON.stringify({
+                ok: false,
+                status: "failed",
+                error: e instanceof Error ? e.message : String(e),
+              });
+            }
+          }
+
+          const deferred = createGenerateDocumentDeferred();
+          ctx.generateDocumentInFlight.set(inFlightKey, deferred.promise);
+          ctx.generateDocumentDeferredByKey.set(inFlightKey, deferred);
+          claimGenerateDocumentDedupSlot(ctx, dedupArgs);
+
           const record = await createToolCall(
             ctx.db,
             ctx.sessionId,
             "generate_document_from_template",
-            input as unknown as Record<string, unknown>,
+            inputRecord,
             true,
             ctx.turnId
           );
+
           try {
             const out = await renderDocumentFromTemplate(ctx, input);
+            deferred.resolve(out);
             await updateToolCallStatus(ctx.db, record.id, "executed", out);
-            if (input.case_id && out.ok) {
+            const caseIdForEvent =
+              typeof input.case_id === "string" && input.case_id.trim()
+                ? input.case_id.trim()
+                : typeof ctx.caseId === "string"
+                  ? ctx.caseId.trim()
+                  : "";
+            if (caseIdForEvent && out.ok && out.status === "rendered") {
+              if (
+                input.template_slug === "commission_contract" &&
+                typeof out.output_path === "string" &&
+                out.output_path.trim()
+              ) {
+                const opCase = await getOperationalCase(ctx.db, caseIdForEvent);
+                if (opCase) {
+                  const baseContext =
+                    opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                      ? (opCase.context_jsonb as Record<string, unknown>)
+                      : {};
+                  await updateOperationalCase(ctx.db, caseIdForEvent, opCase.version, {
+                    context: {
+                      ...baseContext,
+                      contract_draft: {
+                        ...(typeof baseContext.contract_draft === "object" &&
+                        baseContext.contract_draft !== null &&
+                        !Array.isArray(baseContext.contract_draft)
+                          ? (baseContext.contract_draft as Record<string, unknown>)
+                          : {}),
+                        template_slug: out.template_slug,
+                        output_bucket: out.output_bucket,
+                        output_path: out.output_path,
+                        generated_at: new Date().toISOString(),
+                      },
+                    },
+                  });
+                }
+              }
               await insertOperationalCaseEvent(ctx.db, {
-                caseId: input.case_id,
+                caseId: caseIdForEvent,
                 eventType: "state_changed",
                 actor: "agent",
                 payload: {
@@ -360,6 +597,11 @@ export function addRealEstateTools(
               status: "failed",
               error: e instanceof Error ? e.message : String(e),
             };
+            // Liberamos el slot para permitir un reintento real tras un fallo
+            // (no queremos que un error deje "deduplicadas" las reintentos).
+            ctx.generateDocumentInFlight.delete(inFlightKey);
+            ctx.generateDocumentDeferredByKey.delete(inFlightKey);
+            deferred.reject(e);
             await updateToolCallStatus(ctx.db, record.id, "failed", out);
             return JSON.stringify(out);
           }
@@ -367,12 +609,12 @@ export function addRealEstateTools(
         {
           name: "generate_document_from_template",
           description:
-            "Renders a DOCX document from a tenant-scoped template stored in account_assets.",
+            "Renders a DOCX document from a tenant-scoped template stored in account_assets. The placeholder values are derived automatically from the operational case (property_data, pricing_proposal, contact); `data` is optional and only needed to override or add fields.",
           schema: z.object({
             template_slug: z.string().min(1),
             asset_key: z.string().min(1).optional(),
             format: z.enum(["docx", "pdf"]),
-            data: z.record(z.string(), z.any()),
+            data: z.record(z.string(), z.any()).optional(),
             case_id: z.string().min(1).optional(),
           }),
         }
@@ -783,9 +1025,38 @@ type GenerateDocumentInput = {
   template_slug: string;
   asset_key?: string;
   format: "docx" | "pdf";
-  data: Record<string, unknown>;
+  data?: Record<string, unknown>;
   case_id?: string;
 };
+
+async function deriveTemplateDataFromCase(
+  ctx: ToolContext,
+  caseId: string | null | undefined
+): Promise<Record<string, unknown>> {
+  if (!caseId) return {};
+  let oc;
+  try {
+    oc = await getOperationalCase(ctx.db, caseId);
+  } catch {
+    return {};
+  }
+  if (!oc) return {};
+
+  const context = isRecord(oc.context_jsonb) ? oc.context_jsonb : {};
+  return deriveCommissionContractTemplateData({
+    case_context: context,
+    property_data: isRecord(context.property_data) ? context.property_data : {},
+    pricing_proposal: isRecord(context.pricing_proposal)
+      ? context.pricing_proposal
+      : {},
+    commission_terms: isRecord(context.commission_terms)
+      ? context.commission_terms
+      : {},
+    external_contact: isRecord(oc.external_contact_jsonb)
+      ? (oc.external_contact_jsonb as Record<string, unknown>)
+      : {},
+  });
+}
 
 async function renderDocumentFromTemplate(
   ctx: ToolContext,
@@ -826,12 +1097,28 @@ async function renderDocumentFromTemplate(
 
   const templateBuffer = Buffer.from(await templateBlob.arrayBuffer());
   const zip = new PizZip(templateBuffer);
+  const templateFields = extractDocxTemplateFields(zip);
+
+  // Valores del modelo (si los dio) sobre los derivados del caso: los del
+  // modelo ganan, pero el caso garantiza un relleno base aunque el modelo
+  // omita `data` por completo (comportamiento común en gpt-4o-mini).
+  const derivedData = await deriveTemplateDataFromCase(
+    ctx,
+    input.case_id ?? ctx.caseId
+  );
+  const modelData = isRecord(input.data) ? input.data : {};
+  const effectiveData: Record<string, unknown> = { ...derivedData, ...modelData };
+
+  const inputFields = Object.keys(effectiveData);
   const doc = new Docxtemplater(zip, {
     paragraphLoop: true,
     linebreaks: true,
     delimiters: { start: "{{", end: "}}" },
+    // Cualquier placeholder sin valor se renderiza como cadena vacía en lugar
+    // de lanzar un error de render que tumbaría toda la generación del DOCX.
+    nullGetter: () => "",
   });
-  doc.render(normalizeTemplateData(input.data));
+  doc.render(normalizeTemplateData(effectiveData));
   const rendered = doc.getZip().generate({
     type: "nodebuffer",
     compression: "DEFLATE",
@@ -850,6 +1137,11 @@ async function renderDocumentFromTemplate(
     throw new Error(`No se pudo guardar el documento generado: ${uploadError.message}`);
   }
 
+  const signedUrlTtlSeconds = 7 * 24 * 60 * 60;
+  const { data: signedUrlData } = await ctx.db.storage
+    .from(templateAsset.storage_bucket)
+    .createSignedUrl(outputPath, signedUrlTtlSeconds);
+
   return {
     ok: true,
     status: "rendered",
@@ -861,7 +1153,18 @@ async function renderDocumentFromTemplate(
     output_bucket: templateAsset.storage_bucket,
     output_path: outputPath,
     output_content_type: DOCX_MIME,
-    received_fields: Object.keys(input.data),
+    signed_url: signedUrlData?.signedUrl ?? null,
+    signed_url_expires_in_seconds: signedUrlTtlSeconds,
+    received_fields: inputFields,
+    template_fields_detected: templateFields,
+    unmatched_input_fields:
+      templateFields.length > 0
+        ? inputFields.filter((field) => !templateFields.includes(field))
+        : inputFields,
+    warning:
+      templateFields.length === 0
+        ? "No detecté placeholders con formato {{campo}} en la plantilla DOCX; el documento puede generarse sin reemplazos."
+        : undefined,
   };
 }
 
@@ -881,12 +1184,17 @@ async function resolveDocumentTemplateAsset(
         .filter((item): item is string => Boolean(item))
     )
   );
+  const isDocxTemplate = (asset: { content_type?: string | null }) =>
+    asset.content_type === DOCX_MIME;
+
   const directMatches = await listAccountAssets(ctx.db, {
     userId: ctx.userId,
     assetKeys: candidateKeys,
   });
   for (const key of candidateKeys) {
-    const match = directMatches.find((asset) => asset.asset_key === key);
+    const match = directMatches.find(
+      (asset) => asset.asset_key === key && isDocxTemplate(asset)
+    );
     if (match) return match;
   }
 
@@ -895,11 +1203,11 @@ async function resolveDocumentTemplateAsset(
     accountAssets.find(
       (asset) =>
         asset.source_tool_id === "generate_document_from_template" &&
-        asset.content_type === DOCX_MIME
+        isDocxTemplate(asset)
     ) ??
     accountAssets.find(
       (asset) =>
-        asset.asset_key.includes("template") && asset.content_type === DOCX_MIME
+        asset.asset_key.includes("template") && isDocxTemplate(asset)
     ) ??
     null
   );
@@ -1204,6 +1512,45 @@ function normalizeTemplateData(data: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(data).map(([key, value]) => [key, templateValue(value)])
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function extractDocxTemplateFields(zip: PizZip): string[] {
+  const fields = new Set<string>();
+  const files = Object.keys(zip.files).filter(
+    (name) =>
+      name.startsWith("word/") &&
+      name.endsWith(".xml") &&
+      (name.includes("document") ||
+        name.includes("header") ||
+        name.includes("footer"))
+  );
+  for (const fileName of files) {
+    const file = zip.file(fileName);
+    const xml = file?.asText();
+    if (!xml) continue;
+    const compact = xml.replace(/<[^>]+>/g, "");
+    for (const match of compact.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g)) {
+      if (match[1]) fields.add(match[1]);
+    }
+  }
+  return [...fields].sort();
 }
 
 function templateValue(value: unknown): unknown {

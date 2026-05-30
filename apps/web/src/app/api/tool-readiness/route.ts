@@ -26,6 +26,24 @@ import type {
   UserToolSetting,
 } from "@agents/types";
 import { providerHasAccountConfig } from "@/lib/account-tool-providers";
+import {
+  mergeStepScenarioEvidenceMaps,
+  parseStepScenarioEvidenceFromEvents,
+  parseStepScenarioEvidenceFromRuns,
+  resolveStepN4TestStatus,
+  type StepN4ScenarioEvidence,
+  type StepTestProgress,
+} from "@/lib/operational-cases/step-test-scenario-evidence";
+import {
+  stepTestCatalogSlugForRootSkill,
+  stepTestAvailable,
+} from "@/lib/operational-cases/step-test-scenarios";
+import {
+  isIntakePreparationStep,
+  isReadinessVisibleTool,
+  partitionFlowSteps,
+  readinessToolIdsForStep,
+} from "@/lib/operational-cases/tool-surface-classification";
 
 type ReadinessStatus = "ready" | "needs_config" | "stub" | "missing" | "unknown";
 type ReadinessCategory =
@@ -93,8 +111,10 @@ type StepTestStatus =
   | "blocked"
   | "ready_to_test"
   | "partially_tested"
+  | "awaiting_n4"
   | "tested_ok"
   | "tested_failed";
+
 
 type CaseE2EStatus =
   | "not_ready"
@@ -1085,6 +1105,7 @@ async function toolTestEvidenceForUser(
     .from("agent_sessions")
     .select("id")
     .eq("user_id", userId)
+    .eq("channel", "web")
     .order("created_at", { ascending: false })
     .limit(50);
   if (sessionsError) {
@@ -1097,10 +1118,11 @@ async function toolTestEvidenceForUser(
   if (sessionIds.length === 0) return new Map<string, ToolTestEvidence>();
   const { data: calls, error: callsError } = await db
     .from("tool_calls")
-    .select("tool_name,status,finished_at,created_at")
+    .select("tool_name,status,finished_at,created_at,turn_id")
     .in("session_id", sessionIds)
     .in("tool_name", Array.from(new Set(toolIds)))
     .in("status", ["executed", "failed"])
+    .is("turn_id", null)
     .order("created_at", { ascending: false })
     .limit(200);
   if (callsError) {
@@ -1166,41 +1188,76 @@ function toolReadyButUntested(tool: ToolReadinessItem | null) {
   return tool?.status === "ready" && tool.test_status !== "tested_ok";
 }
 
-function skillTestStatus(tools: Array<ToolReadinessItem | null>): SkillTestStatus {
-  if (tools.some((tool) => !tool || tool.blocking || tool.status !== "ready")) {
+function readinessGatingTools(
+  tools: Array<{ tool_id: string; readiness: ToolReadinessItem | null }>
+): Array<ToolReadinessItem | null> {
+  return tools
+    .filter((tool) => isReadinessVisibleTool(tool.tool_id))
+    .map((tool) => tool.readiness);
+}
+
+function skillTestStatus(
+  tools: Array<{ tool_id: string; readiness: ToolReadinessItem | null }>
+): SkillTestStatus {
+  const gating = readinessGatingTools(tools);
+  if (gating.some((tool) => !tool || tool.blocking || tool.status !== "ready")) {
     return "blocked_by_tools";
   }
-  if (tools.some((tool) => tool?.test_status === "tested_failed")) return "tested_failed";
-  if (tools.some(toolReadyButUntested)) return "blocked_by_tools";
-  if (tools.length > 0 && tools.every(toolReadyAndTested)) return "ready_to_test";
+  if (gating.some((tool) => tool?.test_status === "tested_failed")) return "tested_failed";
+  if (gating.some(toolReadyButUntested)) return "blocked_by_tools";
+  if (gating.length > 0 && gating.every(toolReadyAndTested)) return "ready_to_test";
   return "ready_to_test";
 }
 
 function stepTestStatus(
   skills: Array<{ test_status?: SkillTestStatus }>,
-  tools: Array<ToolReadinessItem | null>
+  tools: Array<{ tool_id: string; readiness: ToolReadinessItem | null }>,
+  options?: {
+    stepKey: string;
+    catalogSlug: string;
+    scenarioEvidence?: Map<string, StepN4ScenarioEvidence>;
+    progressOut?: { progress: StepTestProgress | null };
+  }
 ): StepTestStatus {
   const skillStatuses = skills.map((skill) => skill.test_status);
-  if (tools.some((tool) => !tool || tool.blocking || tool.status !== "ready")) {
+  const gating = readinessGatingTools(tools);
+  if (gating.some((tool) => !tool || tool.blocking || tool.status !== "ready")) {
     return "blocked";
   }
   if (skillStatuses.some((status) => status === "blocked_by_tools")) return "blocked";
   if (
     skillStatuses.some((status) => status === "tested_failed") ||
-    tools.some((tool) => tool?.test_status === "tested_failed")
+    gating.some((tool) => tool?.test_status === "tested_failed")
   ) {
     return "tested_failed";
   }
-  const directToolsOk = tools.length === 0 || tools.every(toolReadyAndTested);
-  if (
-    (skillStatuses.length === 0 || skillStatuses.every((status) => status === "tested_ok")) &&
-    directToolsOk
-  ) {
+  const directToolsOk = gating.length === 0 || gating.every(toolReadyAndTested);
+  const allSkillsOk =
+    skillStatuses.length === 0 ||
+    skillStatuses.every((status) => status === "tested_ok");
+  const n4Required =
+    options != null && stepTestAvailable(options.catalogSlug, options.stepKey);
+
+  if (n4Required && options) {
+    const resolved = resolveStepN4TestStatus({
+      catalogSlug: options.catalogSlug,
+      stepKey: options.stepKey,
+      scenarioEvidence: options.scenarioEvidence?.get(options.stepKey),
+      allSkillsOk,
+      directToolsOk,
+    });
+    if (options.progressOut) {
+      options.progressOut.progress = resolved.progress;
+    }
+    return resolved.status;
+  }
+
+  if (allSkillsOk && directToolsOk) {
     return "tested_ok";
   }
   if (
     skillStatuses.some((status) => status === "tested_ok" || status === "partial") ||
-    tools.some((tool) => tool?.test_status === "tested_ok")
+    gating.some((tool) => tool?.test_status === "tested_ok")
   ) {
     return "partially_tested";
   }
@@ -1262,8 +1319,36 @@ async function skillTestEvidenceForCase(
   return evidence;
 }
 
-function caseE2EStatus(flow: Array<{ test_status?: StepTestStatus }>): CaseE2EStatus {
-  const procedure = flow.filter((step) => step.test_status != null);
+async function stepScenarioEvidenceForCase(
+  db: ReturnType<typeof createServerClient>,
+  caseId: string | null
+) {
+  if (!caseId) return new Map<string, StepN4ScenarioEvidence>();
+  const { data: runs, error: runsError } = await db
+    .from("operational_case_test_runs")
+    .select("level,status,step_key,scenario_id,result_jsonb,finished_at,created_at")
+    .eq("case_id", caseId)
+    .eq("level", "n4")
+    .in("status", ["completed", "failed"])
+    .order("created_at", { ascending: true })
+    .limit(500);
+  if (runsError) {
+    console.warn("[tool-readiness] step scenario run lookup failed:", runsError);
+  }
+  const runEvidence = runsError
+    ? new Map<string, StepN4ScenarioEvidence>()
+    : parseStepScenarioEvidenceFromRuns(runs ?? []);
+
+  const events = await getRecentOperationalCaseEvents(db, caseId, 200);
+  const eventEvidence = parseStepScenarioEvidenceFromEvents(events);
+  return mergeStepScenarioEvidenceMaps(runEvidence, eventEvidence);
+}
+
+function caseE2EStatus(
+  flow: Array<{ step_key: string; test_status?: StepTestStatus }>
+): CaseE2EStatus {
+  const { operationalSteps } = partitionFlowSteps(flow);
+  const procedure = operationalSteps.filter((step) => step.test_status != null);
   if (procedure.some((step) => step.test_status === "blocked")) return "not_ready";
   if (
     procedure.length > 0 &&
@@ -1333,6 +1418,8 @@ function enrichFlow(params: {
   resolved: ReadinessSkillGraph;
   registry: Awaited<ReturnType<typeof getSkillRegistryForUser>>;
   skillEvidence?: Map<string, SkillTestEvidence>;
+  scenarioEvidence?: Map<string, StepN4ScenarioEvidence>;
+  catalogSlug: string;
 }) {
   const sourceFlow =
     params.flow.length > 0
@@ -1357,7 +1444,7 @@ function enrichFlow(params: {
       return {
         ...skill,
         skill_tools: skillTools,
-        test_status: skillTestStatus(skillTools.map((tool) => tool.readiness)),
+        test_status: skillTestStatus(skillTools),
       };
     });
     const evidencedSkills = applySkillTestEvidence(
@@ -1367,11 +1454,23 @@ function enrichFlow(params: {
     const stepTools = (step.step_tools ?? [])
       .filter((tool) => allowedToolIds.has(tool.tool_id))
       .map(enrichTool);
+    const progressHolder: { progress: StepTestProgress | null } = { progress: null };
+    const test_status = stepTestStatus(evidencedSkills, stepTools, {
+      stepKey: step.step_key,
+      catalogSlug: params.catalogSlug,
+      scenarioEvidence: params.scenarioEvidence,
+      progressOut: progressHolder,
+    });
     return {
       ...step,
+      step_kind: isIntakePreparationStep(step.step_key)
+        ? ("preparation" as const)
+        : ("operational" as const),
+      readiness_tool_ids: readinessToolIdsForStep(step),
       step_skills: evidencedSkills,
       step_tools: stepTools,
-      test_status: stepTestStatus(evidencedSkills, stepTools.map((tool) => tool.readiness)),
+      test_status,
+      step_test_progress: progressHolder.progress ?? undefined,
     };
   });
 
@@ -1389,9 +1488,16 @@ function enrichFlow(params: {
       step_label: "Herramientas transversales / soporte",
       step_description:
         "Herramientas permitidas por la habilidad que no pertenecen a un paso específico (auditoría, contexto del usuario, referencias internas). El agente puede usarlas en cualquier paso.",
+      step_kind: "operational",
+      readiness_tool_ids: [],
       step_skills: [],
       step_tools: unmappedTools,
-      test_status: stepTestStatus([], unmappedTools.map((tool) => tool.readiness)),
+      test_status: stepTestStatus([], unmappedTools, {
+        stepKey: "transversal_tools",
+        catalogSlug: params.catalogSlug,
+        scenarioEvidence: params.scenarioEvidence,
+      }),
+      step_test_progress: undefined,
     });
   }
 
@@ -1514,18 +1620,27 @@ export async function GET(request: Request) {
     const toolsById = new Map(tools.map((tool) => [tool.tool_id, tool]));
     const testCaseId = await latestSettingsTestCaseId(db, user.id, caseType.id);
     const skillEvidence = await skillTestEvidenceForCase(db, testCaseId);
+    const scenarioEvidence = await stepScenarioEvidenceForCase(db, testCaseId);
+    const catalogSlug =
+      stepTestCatalogSlugForRootSkill(caseType.default_skill_slug) ??
+      caseType.case_type;
     const flow = enrichFlow({
       flow: sourceFlow,
       toolsById,
       resolved,
       registry,
       skillEvidence,
+      scenarioEvidence,
+      catalogSlug,
     });
-    const case_e2e_status = caseE2EStatus(
+    const case_e2e_status = caseE2EStatus(flow);
+    const { preparationSteps, operationalSteps } = partitionFlowSteps(
       flow.filter((step) => step.step_key !== "transversal_tools")
     );
 
-    const hasBlocking = tools.some((tool) => tool.blocking);
+    const hasBlocking = tools.some(
+      (tool) => tool.blocking && isReadinessVisibleTool(tool.tool_id)
+    );
     const hasStub = tools.some((tool) => tool.status === "stub");
     const summary = hasBlocking
       ? "needs_config"
@@ -1550,6 +1665,8 @@ export async function GET(request: Request) {
       case_e2e_status,
       tools,
       flow,
+      flow_preparation: preparationSteps,
+      flow_operational: operationalSteps,
     });
   } catch (err) {
     console.error("[GET /api/tool-readiness] failed:", err);

@@ -22,6 +22,7 @@
 import {
   createInternalUserNotification,
   createServerClient,
+  getOperationalCase,
   getTelegramChatId,
   setInternalUserNotificationStatus,
   updateInternalUserNotificationChannels,
@@ -36,10 +37,45 @@ import {
   internalNotificationKindConfig,
 } from "@/lib/internal-notifications/registry";
 import type { NotificationChannel } from "@agents/types";
+import {
+  buildCaseDocumentDownloadUrl,
+  caseDocumentDownloadPath,
+  defaultDownloadLabel,
+  generatedCaseDocumentBindingForNotifyKind,
+  normalizeNotifyTextReplacingSignedUrls,
+  parseGeneratedDocumentFromContext,
+  resolveGeneratedDocumentOutputPathFromCase,
+  resolveGeneratedDocumentDeliveryUrl,
+  dedupeConcatenatedSiteOriginInUrl,
+  replaceCaseDocumentDownloadUrlsForExternalAudience,
+  rewriteCaseDocumentDownloadLinksInText,
+} from "@/lib/operational-cases/generated-case-document";
+import { buildExternalCaseDocumentDownloadUrl } from "@/lib/operational-cases/case-document-download-token";
 
 export type NotifyUrgency = "low" | "normal" | "high";
 
 const DEFAULT_PRIORITY: NotificationChannel[] = ["web", "telegram"];
+
+/** Botones HITL de contrato solo cuando hay borrador real para revisar. */
+function contractReviewOffersHitlActions(payload: NotifyPayload): boolean {
+  if (payload.kind === "contract_template_missing") return false;
+  const text = (payload.text ?? "").toLowerCase();
+  if (
+    /falta la plantilla|plantilla docx|no está configurada|sin plantilla|not_configured/i.test(
+      text
+    )
+  ) {
+    return false;
+  }
+  if (
+    /\/documents\/contract_draft\/download|\/api\/public\/operational-cases\/documents\/download|descargar borrador del contrato/i.test(
+      payload.text ?? ""
+    )
+  ) {
+    return true;
+  }
+  return payload.data?.contract_draft_ready === true;
+}
 
 export interface NotifyPayload {
   text: string;
@@ -96,45 +132,70 @@ async function deliverTelegram(
       reason: "no_telegram_account_linked",
     };
   }
-  try {
-    const notificationId =
-      typeof payload.data?.notification_id === "string"
-        ? payload.data.notification_id
-        : "";
-    const replyMarkup =
-      payload.kind === "price_approval" && notificationId
-        ? {
-            inline_keyboard: [
-              [
-                {
-                  text: "Aprobar precio",
-                  callback_data: `price_approve:${notificationId}`,
-                },
-              ],
-              [
-                {
-                  text: "Ajustar y aprobar",
-                  callback_data: `price_adjust:${notificationId}`,
-                },
-              ],
-            ],
-          }
-        : undefined;
-    await sendTelegramMessage(
-      chatId,
-      truncateTelegramText(payload.text),
-      replyMarkup,
-      { throwOnError: true }
-    );
-    return { channel: "telegram", ok: true, status: "delivered" };
-  } catch (e) {
-    return {
-      channel: "telegram",
-      ok: false,
-      status: "failed",
-      reason: (e as Error).message ?? String(e),
+  const notificationId =
+    typeof payload.data?.notification_id === "string"
+      ? payload.data.notification_id
+      : "";
+  let replyMarkup:
+    | { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }
+    | undefined;
+  if (payload.kind === "price_approval" && notificationId) {
+    replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: "Aprobar precio",
+            callback_data: `price_approve:${notificationId}`,
+          },
+        ],
+        [
+          {
+            text: "Ajustar y aprobar",
+            callback_data: `price_adjust:${notificationId}`,
+          },
+        ],
+      ],
+    };
+  } else if (
+    payload.kind === "contract_review" &&
+    notificationId &&
+    contractReviewOffersHitlActions(payload)
+  ) {
+    replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: "Mandar al dueño",
+            callback_data: `contract_approve_send:${notificationId}`,
+          },
+        ],
+        [
+          {
+            text: "Pedir cambios",
+            callback_data: `contract_request_changes:${notificationId}`,
+          },
+        ],
+      ],
     };
   }
+  const text = truncateTelegramText(payload.text);
+  let lastError: string | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await sendTelegramMessage(chatId, text, replyMarkup, {
+        throwOnError: true,
+      });
+      return { channel: "telegram", ok: true, status: "delivered" };
+    } catch (e) {
+      lastError = (e as Error).message ?? String(e);
+    }
+  }
+  return {
+    channel: "telegram",
+    ok: false,
+    status: "failed",
+    reason: lastError ?? "send_failed",
+  };
 }
 
 const DELIVERERS: Record<
@@ -172,9 +233,95 @@ function notificationTitle(payload: NotifyPayload) {
 
 function notificationActionUrl(payload: NotifyPayload) {
   const caseId = payload.data?.case_id;
-  return typeof caseId === "string" && caseId.trim()
-    ? `/operational-cases?case_id=${encodeURIComponent(caseId)}`
-    : null;
+  if (typeof caseId !== "string" || !caseId.trim()) return null;
+  const binding = generatedCaseDocumentBindingForNotifyKind(payload.kind);
+  if (binding) {
+    return caseDocumentDownloadPath(caseId.trim(), binding.documentKey);
+  }
+  return `/operational-cases?case_id=${encodeURIComponent(caseId)}`;
+}
+
+async function enrichGeneratedDocumentNotifyPayload(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  payload: NotifyPayload
+): Promise<NotifyPayload> {
+  const binding = generatedCaseDocumentBindingForNotifyKind(payload.kind);
+  if (!binding) return payload;
+
+  const caseId =
+    typeof payload.data?.case_id === "string" ? payload.data.case_id.trim() : "";
+  if (!caseId) return payload;
+
+  const opCase = await getOperationalCase(db, caseId);
+  const draft =
+    opCase && opCase.user_id === userId
+      ? ((await resolveGeneratedDocumentOutputPathFromCase(db, {
+          caseId,
+          context: (opCase.context_jsonb ?? {}) as Record<string, unknown>,
+          binding,
+        })) ??
+        parseGeneratedDocumentFromContext(opCase.context_jsonb, binding))
+      : null;
+
+  let text = normalizeNotifyTextReplacingSignedUrls({
+    text: payload.text,
+    caseId,
+    storagePath: draft?.output_path ?? null,
+    binding,
+  });
+
+  const downloadPathSegment = `/documents/${binding.documentKey}/download`;
+  text = dedupeConcatenatedSiteOriginInUrl(
+    rewriteCaseDocumentDownloadLinksInText({ text, caseId, binding })
+  );
+
+  const externalUrl =
+    draft?.output_path && opCase
+      ? buildExternalCaseDocumentDownloadUrl({
+          caseId,
+          userId: opCase.user_id,
+          documentKey: binding.documentKey,
+          outputPath: draft.output_path,
+        })
+      : null;
+  if (externalUrl) {
+    text = replaceCaseDocumentDownloadUrlsForExternalAudience({
+      text,
+      caseId,
+      binding,
+      externalUrl,
+    });
+  }
+
+  const deliveryUrl =
+    externalUrl ??
+    (await resolveGeneratedDocumentDeliveryUrl(db, {
+      caseId,
+      context: (opCase?.context_jsonb ?? {}) as Record<string, unknown>,
+      binding,
+      forExternalAudience: true,
+    })) ??
+    buildCaseDocumentDownloadUrl(caseId, binding);
+
+  if (draft?.output_path && !text.includes(downloadPathSegment) && !text.includes("/api/public/operational-cases/documents/download")) {
+    const label = defaultDownloadLabel(
+      draft.output_path,
+      binding.defaultDownloadLabel
+    );
+    const link =
+      deliveryUrl.startsWith("http") || deliveryUrl.startsWith("/api/public/")
+        ? deliveryUrl
+        : await resolveGeneratedDocumentDeliveryUrl(db, {
+            caseId,
+            context: opCase!.context_jsonb as Record<string, unknown>,
+            binding,
+            forExternalAudience: true,
+          }) ?? deliveryUrl;
+    text = `${text.trim()}\n\n${label}: ${link}`;
+  }
+
+  return { ...payload, text, data: { ...payload.data, contract_draft_ready: Boolean(draft?.output_path) } };
 }
 
 function notificationDueAt(payload: NotifyPayload) {
@@ -202,6 +349,11 @@ export async function notify(
   payload: NotifyPayload,
   urgency: NotifyUrgency = "normal"
 ): Promise<NotifyResult> {
+  const effectivePayload = await enrichGeneratedDocumentNotifyPayload(
+    db,
+    userId,
+    payload
+  );
   const priority = await loadPriority(db, userId);
 
   const attempted: NotifyChannelResult[] = [];
@@ -214,26 +366,28 @@ export async function notify(
   attempted.push(webResult);
   delivered.push(webResult);
   const caseId =
-    typeof payload.data?.case_id === "string" ? payload.data.case_id : null;
+    typeof effectivePayload.data?.case_id === "string"
+      ? effectivePayload.data.case_id
+      : null;
   const notification = await createInternalUserNotification(db, {
     userId,
     caseId,
-    kind: payload.kind ?? "general",
-    title: notificationTitle(payload),
-    body: payload.text,
+    kind: effectivePayload.kind ?? "general",
+    title: notificationTitle(effectivePayload),
+    body: effectivePayload.text,
     priority: urgency,
-    actionUrl: notificationActionUrl(payload),
-    dueAt: notificationDueAt(payload),
+    actionUrl: notificationActionUrl(effectivePayload),
+    dueAt: notificationDueAt(effectivePayload),
     deliveredChannels: channelMap([webResult]),
-    metadata: payload.data ?? {},
+    metadata: effectivePayload.data ?? {},
   });
 
   for (const channel of priority) {
     if (channel === "web") continue;
     const result = await DELIVERERS[channel](db, userId, {
-      ...payload,
+      ...effectivePayload,
       data: {
-        ...(payload.data ?? {}),
+        ...(effectivePayload.data ?? {}),
         notification_id: notification.id,
       },
     });
@@ -250,7 +404,7 @@ export async function notify(
     channelMap(attempted)
   );
 
-  const autoStatus = autoStatusOnCreateForNotificationKind(payload.kind);
+  const autoStatus = autoStatusOnCreateForNotificationKind(effectivePayload.kind);
   if (autoStatus) {
     await setInternalUserNotificationStatus(db, {
       id: notification.id,

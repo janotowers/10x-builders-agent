@@ -175,8 +175,8 @@ export async function handlePriceApprovalDecision(
       ok: true,
       status: "approved",
       message: settingsTestCase
-        ? "Precio aprobado. El caso de prueba quedo detenido antes del siguiente paso."
-        : "Precio aprobado. El caso avanzo a contrato.",
+        ? "Precio aprobado. El caso de prueba quedó detenido antes del siguiente paso."
+        : "Precio aprobado. El caso avanzó a contrato.",
     };
   }
 
@@ -259,8 +259,8 @@ export async function handlePriceApprovalDecision(
     ok: true,
     status: "adjusted_and_approved",
     message: settingsTestCase
-      ? "Ajuste aplicado y precio aprobado. El caso de prueba quedo detenido antes del siguiente paso."
-      : "Ajuste aplicado y precio aprobado. El caso avanzo a contrato.",
+      ? "Ajuste aplicado y precio aprobado. El caso de prueba quedó detenido antes del siguiente paso."
+      : "Ajuste aplicado y precio aprobado. El caso avanzó a contrato.",
     pricing_proposal: nextProposal,
   };
 }

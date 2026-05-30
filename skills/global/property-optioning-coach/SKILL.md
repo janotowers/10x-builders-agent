@@ -27,6 +27,7 @@ allowed_tools:
   - bigquery_lookup_local_comparables
   - easybroker_search_listings
   - easybroker_search_closed_deals
+  - operational_case_persist_comparables_analysis
   - generate_document_from_template
   - image_watermark
   - easybroker_create_listing
@@ -63,17 +64,20 @@ Esta skill orquesta el procedimiento end-to-end "opcionar propiedad" para
 una inmobiliaria. Se aplica cuando el caso operacional es de tipo
 `property_optioning`. Combina siete sub-skills atómicas (vía `includes`).
 
-## Transición desde `intake`
+## Completar registro del caso (`intake`) — no es un paso operativo numerado
 
-- El caso nace con `current_step=intake` (formulario web o recién creado vía
-  `operational_case_create`).
+- **En settings (N0):** el configurador usa la tarjeta **Preparar caso de prueba**
+  (formulario del `intake_schema`, crear/regenerar fixture, prueba segura). No
+  cuenta como “Paso operativo 1” en readiness.
+- El caso nace con `current_step=intake` (formulario web, caso de prueba en
+  settings o `operational_case_create` en chat).
 - Valida `context_jsonb` contra el `intake_schema_jsonb` del case_type. Si
-  falta un campo **required**, no avances: `notify_user` al inmobiliario o
-  pregunta en chat según el canal.
-- Cuando los required estén cubiertos y tengas datos para continuar, mueve el
-  caso a `awaiting_documents` con `operational_case_update_state` (siempre
-  `expected_version`) y deja listo el siguiente tick del cron; la siguiente
-  acción operativa es `request-property-documents`.
+  falta un campo **required**, no avances: pregunta en chat o `notify_user` al
+  inmobiliario (vía `allowed_tools`; no es requisito del grid de intake en
+  settings).
+- Cuando los required estén cubiertos, mueve el caso a `awaiting_documents`
+  con `operational_case_update_state` (siempre `expected_version`). La
+  **primera acción operativa** es `request-property-documents` (Paso operativo 1).
 
 ## Camino conversacional (sin `case_id` en contexto)
 
@@ -89,12 +93,19 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
 
 ## Mapa de pasos (`current_step`)
 
-| Step | Sub-skill principal | Tools clave |
+**Preparación (no numerada en UI de readiness):**
+
+| Step | Rol | Tools clave |
 |---|---|---|
-| `intake` | Esta skill compuesta | `operational_case_create` (solo creación), `operational_case_update_state`, `notify_user` |
+| `intake` | Completar registro (datos mínimos) | `operational_case_create` (escenario), `operational_case_update_state` (interna); `notify_user` solo en runtime incompleto |
+
+**Flujo operativo (desde Paso operativo 1):**
+
+| Step | Sub-skill principal | Tools clave (N1 / integración) |
+|---|---|---|
 | `awaiting_documents` | `request-property-documents` | `telegram_send_message_to_contact`, `notify_user` |
 | `documents_received` | `extract-property-characteristics` | `operational_case_list_documents`, `operational_case_extract_document_fields`, `telegram_send_message_to_contact`, `notify_user` |
-| `comparables_in_progress` | `perform-comparable-analysis` | `easybroker_search_*`, `bigquery_lookup_local_comparables` |
+| `comparables_in_progress` | `perform-comparable-analysis` | `easybroker_search_*`, `bigquery_lookup_local_comparables` (N1); `operational_case_persist_comparables_analysis` y `operational_case_update_state` son **internas** (N3/N4, no N1) |
 | `price_proposal_pending` | `prepare-listing-price` | `notify_user` (HITL) |
 | `contract_pending` | `prepare-commission-contract` | `generate_document_from_template`, `notify_user` |
 | `photos_scheduled` | `coordinate-photo-session` | `calendar_create_event`, `telegram_send_message_to_contact` |

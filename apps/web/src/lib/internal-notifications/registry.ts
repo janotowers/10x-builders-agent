@@ -16,7 +16,7 @@ export interface InternalNotificationKindConfig {
   visibleInInbox: boolean;
   autoStatusOnCreate?: InternalNotificationActionStatus;
   intent?: EngagementIntent;
-  businessDecision?: "price_approval";
+  businessDecision?: "price_approval" | "contract_review";
   technical?: boolean;
 }
 
@@ -44,6 +44,14 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     label: "Revision de contrato",
     visibleInInbox: true,
     intent: "review",
+    businessDecision: "contract_review",
+  },
+  contract_owner_signed: {
+    kind: "contract_owner_signed",
+    label: "Contrato firmado (simulación)",
+    visibleInInbox: false,
+    intent: "technical",
+    technical: true,
   },
   contract_approval: {
     kind: "contract_approval",

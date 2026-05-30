@@ -9,6 +9,14 @@ import {
 
 const ACCOUNT_ASSETS_BUCKET = "account-assets";
 const DEFAULT_MAX_SIZE_BYTES = 15 * 1024 * 1024;
+const COMMISSION_CONTRACT_TEMPLATE_ASSET_KEY = "commission_contract_template";
+const DOCX_TEMPLATE_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+function isCommissionContractTemplateDocx(file: File): boolean {
+  const name = file.name.trim().toLowerCase();
+  return name.endsWith(".docx") || file.type === DOCX_TEMPLATE_MIME;
+}
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -129,6 +137,18 @@ export async function POST(request: Request) {
     if (file.size > DEFAULT_MAX_SIZE_BYTES) {
       return NextResponse.json(
         { error: "file too large", maxBytes: DEFAULT_MAX_SIZE_BYTES },
+        { status: 400 }
+      );
+    }
+    if (
+      assetKey === COMMISSION_CONTRACT_TEMPLATE_ASSET_KEY &&
+      !isCommissionContractTemplateDocx(file)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "La plantilla de contrato debe ser un archivo .docx (Word). PDF y .doc no son compatibles con la generación del borrador.",
+        },
         { status: 400 }
       );
     }

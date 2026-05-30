@@ -21,6 +21,10 @@ export {
   type BuildLangChainToolsDeps,
 } from "./tools/adapters";
 export type { ToolContext } from "./tools/tool-context";
+export {
+  normalizeTelegramSendText,
+  telegramSendInputsMatch,
+} from "@agents/types";
 export type {
   FlushInput,
   FlushResult,
@@ -85,6 +89,13 @@ export type {
   ReadSkillReferenceArgs,
   ReadSkillReferenceResult,
 } from "./tools/skill-references";
+
+export {
+  COMMISSION_CONTRACT_TEMPLATE_PLACEHOLDERS,
+  deriveCommissionContractTemplateData,
+  readablePropertyAddress,
+} from "./tools/commission-contract-template-data";
+export type { CommissionContractPlaceholderKey } from "./tools/commission-contract-template-data";
 
 export {
   HEARTBEAT_CHECKLIST_TEMPLATES,

@@ -22,6 +22,7 @@ import {
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { parsePriceApprovalDecision } from "@/lib/business-decisions/price-approval";
+import { parseContractReviewDecision } from "@/lib/business-decisions/contract-review";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import {
   isSettingsTestCase,
@@ -335,6 +336,37 @@ export async function POST(request: Request) {
       });
     }
 
+    if (action === "contract_approve_send" || action === "contract_request_changes") {
+      const result = await businessDecisionHandler("contract_review").handle(db, {
+        userId,
+        notificationId: targetId,
+        text:
+          action === "contract_approve_send"
+            ? "mándalo al dueño"
+            : "necesita cambios en el contrato",
+      });
+      await answerCallbackQuery(
+        cb.id,
+        result.ok
+          ? action === "contract_approve_send"
+            ? "Contrato enviado al dueño"
+            : "Cambios registrados"
+          : "No pude procesarlo"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Listo, procesé tu decisión sobre el contrato."
+            : "No pude procesar la decisión del contrato.")
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "contract_review",
+        notification_id: targetId,
+      });
+    }
+
     if (action === "approve") {
       await answerCallbackQuery(cb.id, "✅ Aprobado");
       await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Procesando...");
@@ -570,13 +602,14 @@ export async function POST(request: Request) {
 
   const userId = telegramAccount.user_id;
 
+  const pendingInternal = await listInternalUserNotifications(db, userId, {
+    statuses: ["unread"],
+    limit: 10,
+  });
+
   const parsedPriceDecision = parsePriceApprovalDecision(text);
   if (parsedPriceDecision.intent !== "unclear") {
-    const pendingPriceApprovals = await listInternalUserNotifications(db, userId, {
-      statuses: ["unread"],
-      limit: 10,
-    });
-    const pendingPriceApproval = pendingPriceApprovals.find(
+    const pendingPriceApproval = pendingInternal.find(
       (notification) => notification.kind === "price_approval"
     );
     if (pendingPriceApproval) {
@@ -596,6 +629,32 @@ export async function POST(request: Request) {
         ok: true,
         routed: "price_approval",
         notification_id: pendingPriceApproval.id,
+      });
+    }
+  }
+
+  const parsedContractDecision = parseContractReviewDecision(text);
+  if (parsedContractDecision.intent !== "unclear") {
+    const pendingContractReview = pendingInternal.find(
+      (notification) => notification.kind === "contract_review"
+    );
+    if (pendingContractReview) {
+      const result = await businessDecisionHandler("contract_review").handle(db, {
+        userId,
+        notificationId: pendingContractReview.id,
+        text,
+      });
+      await sendTelegramMessage(
+        chatId,
+        result.message ??
+          (result.ok
+            ? "Listo, procesé tu decisión sobre el contrato."
+            : "No pude procesar la decisión del contrato.")
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "contract_review",
+        notification_id: pendingContractReview.id,
       });
     }
   }

@@ -564,6 +564,32 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "operational_case_persist_comparables_analysis",
+    name: "operational_case_persist_comparables_analysis",
+    description:
+      "Builds and persists context_jsonb.comparables_analysis deterministically from this turn's EasyBroker and BigQuery search results. Use after comparable search tools; do not hand-write comparables_analysis with operational_case_update_state.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        case_id: {
+          type: "string",
+          description: "UUID of the active operational case.",
+        },
+        expected_version: {
+          type: "number",
+          description:
+            "Current case version before persisting comparables_analysis.",
+        },
+        note: {
+          type: "string",
+          description: "Optional note for the audit event.",
+        },
+      },
+      required: ["case_id", "expected_version"],
+    },
+  },
+  {
     id: "operational_case_add_event",
     name: "operational_case_add_event",
     description:
@@ -950,7 +976,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "generate_document_from_template",
     name: "generate_document_from_template",
     description:
-      "Renders a DOCX document by filling {{placeholders}} in a tenant template stored in account_assets. Use for the commission contract, property report, or listing description sheet. Requires HITL confirmation because the file is sent to a human.",
+      "Renders a DOCX document by filling {{placeholders}} in a tenant template stored in account_assets. Use for the commission contract, property report, or listing description sheet. Placeholder values are derived automatically from the operational case (property_data, pricing_proposal, contact); `data` is optional and only needed to override or add fields. Requires HITL confirmation because the file is sent to a human.",
     risk: "medium",
     parameters_schema: {
       type: "object",
@@ -969,14 +995,14 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         data: {
           type: "object",
           description:
-            "Object with placeholder values matching the template's required fields.",
+            "Optional. Object with placeholder values that override or extend the values auto-derived from the case. Omit it to let the tool fill the template from the operational case context.",
         },
         case_id: {
           type: "string",
-          description: "Operational case this document belongs to (for audit).",
+          description: "Operational case this document belongs to (for audit and to auto-derive placeholder values).",
         },
       },
-      required: ["template_slug", "format", "data"],
+      required: ["template_slug", "format"],
     },
   },
   {
