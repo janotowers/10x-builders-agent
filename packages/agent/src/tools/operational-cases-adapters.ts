@@ -1030,7 +1030,7 @@ export function addOperationalCaseTools(
             opCase.context_jsonb && typeof opCase.context_jsonb === "object"
               ? (opCase.context_jsonb as Record<string, unknown>)
               : {};
-          let analysis = buildComparablesAnalysisFromToolCalls(
+          let analysis: Record<string, unknown> = buildComparablesAnalysisFromToolCalls(
             ((data ?? []) as PersistedToolCallRow[]).map((call) => ({
               tool_name: call.tool_name,
               status: call.status,
@@ -1075,6 +1075,14 @@ export function addOperationalCaseTools(
             return JSON.stringify(out);
           }
 
+          const analysisDataQuality = isRecord(analysis.data_quality)
+            ? analysis.data_quality
+            : {};
+          const usableCount =
+            typeof analysisDataQuality.usable_count === "number"
+              ? analysisDataQuality.usable_count
+              : 0;
+
           await insertOperationalCaseEvent(ctx.db, {
             caseId: opCase.id,
             eventType: "step_completed",
@@ -1082,10 +1090,7 @@ export function addOperationalCaseTools(
             payload: {
               kind: "comparables_analysis_persisted",
               source: "operational_case_persist_comparables_analysis",
-              usable_count:
-                typeof analysis.data_quality.usable_count === "number"
-                  ? analysis.data_quality.usable_count
-                  : 0,
+              usable_count: usableCount,
               ...(input.note ? { note: input.note } : {}),
             },
           });
@@ -1095,9 +1100,9 @@ export function addOperationalCaseTools(
             case_id: updated.id,
             version: updated.version,
             defensible_sample: comparablesHasDefensibleSample(analysis),
-            usable_count: analysis.data_quality.usable_count,
+            usable_count: usableCount,
             stats: analysis.stats,
-            data_quality: analysis.data_quality,
+            data_quality: analysisDataQuality,
           };
           await updateToolCallStatus(ctx.db, record.id, "executed", out);
           return JSON.stringify(out);

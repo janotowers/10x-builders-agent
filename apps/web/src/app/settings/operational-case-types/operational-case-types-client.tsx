@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   useEffect,
   useLayoutEffect,
@@ -21,6 +22,7 @@ import type {
   OperationalCaseIntakeField,
   OperationalCaseIntakeOption,
   OperationalCaseReminderPolicy,
+  OperationalCaseStatus,
   OperationalCaseType,
   OperationalCaseTypeStatus,
   OperationalCaseTypeVisibility,
@@ -68,6 +70,12 @@ import {
   STEP_TEST_PRIMARY_BUTTON_CLASS,
   toolTestStatusLabel,
 } from "@/lib/operational-cases/readiness-test-ui";
+import {
+  OPERATIONAL_CASE_STATUS_LABELS,
+  OperationalCaseInstanceList,
+  operationalCaseLatestEventSummary,
+  type OperationalCaseInstanceSkillMeta,
+} from "@/lib/operational-cases/instance-list-ui";
 import { stringifyToolArgsForDisplay } from "@/lib/tool-readiness/format-args-for-display";
 import {
   isInternalOperationalTool,
@@ -145,7 +153,9 @@ function ReadinessExpandableSection({
   const [everExpanded, setEverExpanded] = useState(expanded);
 
   useEffect(() => {
-    if (expanded) setEverExpanded(true);
+    if (!expanded) return undefined;
+    const id = requestAnimationFrame(() => setEverExpanded(true));
+    return () => cancelAnimationFrame(id);
   }, [expanded]);
 
   if (!everExpanded) return null;
@@ -234,6 +244,18 @@ type SkillSummary = {
   includes: string[];
   kind: string;
 };
+
+type CaseTypeWorkspaceTab = "summary" | "lab" | "instances" | "activation";
+
+const CASE_TYPE_WORKSPACE_TABS: Array<{
+  id: CaseTypeWorkspaceTab;
+  label: string;
+}> = [
+  { id: "summary", label: "Resumen" },
+  { id: "lab", label: "Laboratorio" },
+  { id: "instances", label: "Instancias" },
+  { id: "activation", label: "Activación" },
+];
 
 type SkillAuthoringResult = {
   skillDraft: string;
@@ -1218,13 +1240,6 @@ function effectiveAssetAccept(requirement: ToolAssetRequirementStatus): string[]
   return requirement.accept ?? [];
 }
 
-function isCommissionContractTemplateDocx(file: File): boolean {
-  const name = file.name.trim().toLowerCase();
-  if (name.endsWith(".docx")) return true;
-  if (file.type === DOCX_TEMPLATE_MIME) return true;
-  return false;
-}
-
 const PROPERTY_DOCUMENT_KIND_OPTIONS = [
   { value: "escritura_descripcion", label: "Escritura - descripción" },
   { value: "predial", label: "Predial" },
@@ -1863,9 +1878,12 @@ function ToolResultPreview({ result }: { result: unknown }) {
                 className="space-y-2 rounded border border-emerald-100 bg-white p-2"
               >
                 <a href={url} target="_blank" rel="noreferrer">
-                  <img
+                  <Image
                     src={url}
                     alt={outputPath ?? `Imagen generada ${index + 1}`}
+                    width={480}
+                    height={320}
+                    unoptimized
                     className="max-h-56 w-full rounded border border-neutral-100 object-contain"
                   />
                 </a>
@@ -3337,9 +3355,6 @@ function SkillTestPanel({
   const executedSourceToolCount = sourceToolCalls.filter(
     (call) => call.status === "executed"
   ).length;
-  const preparedSourceToolCount = sourceToolCalls.filter(
-    (call) => call.status === "executed" || call.status === "pending_confirmation"
-  ).length;
   const pendingSourceToolCount = sourceToolCalls.filter(
     (call) => call.status === "pending_confirmation"
   ).length;
@@ -3834,7 +3849,6 @@ function StepTestPanel({
   );
   const available = stepTestAvailable(scenarioCatalogSlug, step.step_key);
   const blocked = isStepTestBlocked(step);
-  if (!available) return null;
   const selectedScenario =
     scenarios.find((scenario) => scenario.id === selectedScenarioId) ??
     scenarios[0];
@@ -3923,6 +3937,8 @@ function StepTestPanel({
       if (timeoutId) clearTimeout(timeoutId);
     };
   }, [activeRunId, activeRunStartedAt, running]);
+
+  if (!available) return null;
 
   async function runStep() {
     setRunning(true);
@@ -4989,99 +5005,6 @@ function renderFlowToolReadiness(params: {
   );
 }
 
-function renderOperationalFlowPreview(flow: OperationalCaseFlowStep[]) {
-  if (flow.length === 0) {
-    return (
-      <p className="text-xs text-neutral-500">
-        Sin flujo estructurado; se usará una vista inferida desde la skill.
-      </p>
-    );
-  }
-  const { preparationSteps, operationalSteps } = partitionFlowSteps(flow);
-  const renderStepList = (
-    steps: OperationalCaseFlowStep[],
-    options?: { numbered?: boolean; labelPrefix?: string }
-  ) => (
-    <ol className="space-y-2">
-      {steps.map((step, index) => (
-        <li
-          key={`${step.step_key}-${index}`}
-          className="rounded border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-800 dark:bg-neutral-950"
-        >
-          <div className="font-semibold">
-            {options?.numbered === false
-              ? step.step_label
-              : `${index + 1}. ${step.step_label}`}
-          </div>
-          {step.step_description ? (
-            <p className="mt-1 text-xs text-neutral-500">{step.step_description}</p>
-          ) : null}
-          <div className="mt-2 space-y-1">
-            {(step.step_skills ?? []).map((skill) => (
-              <div key={skill.skill_slug} className="rounded bg-white p-2 text-xs dark:bg-neutral-900">
-                <div className="font-semibold">{skill.skill_label ?? skill.skill_slug}</div>
-                <div className="font-mono text-[11px] text-neutral-500">{skill.skill_slug}</div>
-                {skill.skill_description ? (
-                  <p className="mt-1 text-neutral-500">{skill.skill_description}</p>
-                ) : null}
-                {skill.skill_tools?.length ? (
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {skill.skill_tools.map((tool) => (
-                      <span
-                        key={tool.tool_id}
-                        className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] text-neutral-600"
-                      >
-                        {tool.tool_label ?? tool.tool_id}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ))}
-            {(step.step_tools ?? []).length > 0 ? (
-              <div className="flex flex-wrap gap-1">
-                {(step.step_tools ?? []).map((tool) => (
-                  <span
-                    key={tool.tool_id}
-                    className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] text-neutral-600"
-                  >
-                    {tool.tool_label ?? tool.tool_id}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        </li>
-      ))}
-    </ol>
-  );
-
-  return (
-    <div className="space-y-3">
-      {preparationSteps.length > 0 ? (
-        <div>
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-            Registro del caso (runtime)
-          </div>
-          <div className="mt-2">{renderStepList(preparationSteps, { numbered: false })}</div>
-        </div>
-      ) : null}
-      {operationalSteps.length > 0 ? (
-        <div>
-          {preparationSteps.length > 0 ? (
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-              Flujo operativo
-            </div>
-          ) : null}
-          <div className={preparationSteps.length > 0 ? "mt-2" : ""}>
-            {renderStepList(operationalSteps)}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function testProgressBadge(status: OperationalCaseFlowProgressStatus) {
   if (status === "completed") {
     return activationStatusBadge("ready", `✓ ${flowStepProgressBadgeLabel(status)}`);
@@ -5339,15 +5262,21 @@ function serializeEditingSnapshot(snapshot: EditingSnapshot | null) {
 
 export function OperationalCaseTypesClient({
   initialCaseTypes,
+  initialOperationalCases,
+  initialLatestEventsByCaseId,
   initialSkillSummaries,
 }: {
   initialCaseTypes: OperationalCaseType[];
+  initialOperationalCases: OperationalCase[];
+  initialLatestEventsByCaseId: Record<string, OperationalCaseEvent>;
   initialSkillSummaries: SkillSummary[];
 }) {
   const [caseTypes, setCaseTypes] =
     useState<OperationalCaseType[]>(initialCaseTypes);
   const [selectedCaseType, setSelectedCaseType] =
-    useState<OperationalCaseType | null>(null);
+    useState<OperationalCaseType | null>(initialCaseTypes[0] ?? null);
+  const [activeTab, setActiveTab] =
+    useState<CaseTypeWorkspaceTab>("summary");
   const [editing, setEditing] = useState<EditingCaseType | null>(null);
   const [schemaText, setSchemaText] = useState("");
   const [flowText, setFlowText] = useState("");
@@ -5425,6 +5354,24 @@ export function OperationalCaseTypesClient({
       }),
     [caseTypes]
   );
+  const relatedOperationalCases = useMemo(() => {
+    if (!selectedCaseType) return [];
+    const fromPage = initialOperationalCases.filter(
+      (opCase) =>
+        opCase.case_type_id === selectedCaseType.id ||
+        opCase.case_type === selectedCaseType.case_type
+    );
+    const testCase = testCaseResult?.case;
+    if (
+      testCase &&
+      (testCase.case_type_id === selectedCaseType.id ||
+        testCase.case_type === selectedCaseType.case_type) &&
+      !fromPage.some((opCase) => opCase.id === testCase.id)
+    ) {
+      return [testCase, ...fromPage];
+    }
+    return fromPage;
+  }, [initialOperationalCases, selectedCaseType, testCaseResult?.case]);
   const skillMap = useMemo(
     () => new Map(initialSkillSummaries.map((skill) => [skill.slug, skill])),
     [initialSkillSummaries]
@@ -5542,6 +5489,14 @@ export function OperationalCaseTypesClient({
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [expandedReadinessTools]);
+
+  useEffect(() => {
+    const onPageShow = () => {
+      readinessScrollLockRef.current = null;
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -6027,6 +5982,7 @@ export function OperationalCaseTypesClient({
 
   function viewCaseType(row: OperationalCaseType) {
     setSelectedCaseType(row);
+    setActiveTab("summary");
     setEditing(null);
     setSchemaText("");
     setFlowText("");
@@ -6473,6 +6429,7 @@ export function OperationalCaseTypesClient({
         return [data.caseType, ...without];
       });
       setSelectedCaseType(data.caseType);
+      setActiveTab("summary");
       setToolReadiness(null);
       setToolReadinessError(null);
       setExpandedReadinessTools(new Set());
@@ -6499,7 +6456,6 @@ export function OperationalCaseTypesClient({
     const fields = Array.isArray(row.intake_schema_jsonb)
       ? row.intake_schema_jsonb
       : [];
-    const effectiveFlow = effectiveOperationalFlowForRow(row);
     const activationPolicy = effectiveActivationPolicyForRow(row);
     const testCasePreparationDefaultOpen =
       !testCaseResult?.case ||
@@ -6534,6 +6490,121 @@ export function OperationalCaseTypesClient({
     const stepProgressCheck = activationStepProgressCheck({
       steps: operationalStepsForActivation,
     });
+    const realRelatedCases = relatedOperationalCases.filter(
+      (opCase) => opCase.context_jsonb?.test_mode !== true
+    );
+    const testRelatedCases = relatedOperationalCases.filter(
+      (opCase) => opCase.context_jsonb?.test_mode === true
+    );
+
+    function caseTypeDisplayNameForInstance(opCase: OperationalCase) {
+      return (
+        caseTypes.find((type) => type.id === opCase.case_type_id)
+          ?.display_name ?? opCase.case_type
+      );
+    }
+
+    function skillMetaForInstance(
+      opCase: OperationalCase
+    ): OperationalCaseInstanceSkillMeta {
+      const type =
+        caseTypes.find((item) => item.id === opCase.case_type_id) ?? row;
+      const slug = type.default_skill_slug;
+      const summary = skillMap.get(slug);
+      return {
+        slug,
+        kindLabel: summary?.kind === "composite" ? "compuesta" : "atómica",
+        sourceLabel: accountSkills.some(
+          (accountSkill) => accountSkill.slug === slug
+        )
+          ? "cuenta"
+          : "producto",
+        exists: Boolean(summary),
+      };
+    }
+
+    function latestEventForInstance(opCase: OperationalCase) {
+      const event = initialLatestEventsByCaseId[opCase.id];
+      return event ? operationalCaseLatestEventSummary(event) : null;
+    }
+
+    function stepLabelForInstance(opCase: OperationalCase) {
+      if (!opCase.current_step) return "Sin definir";
+      const flow = Array.isArray(row.operational_flow_jsonb)
+        ? row.operational_flow_jsonb
+        : [];
+      return (
+        flow.find((step) => step.step_key === opCase.current_step)
+          ?.step_label ?? opCase.current_step
+      );
+    }
+
+    function renderRelatedOperationalCases() {
+      const statusCounts = relatedOperationalCases.reduce(
+        (acc, opCase) => {
+          acc[opCase.status] = (acc[opCase.status] ?? 0) + 1;
+          return acc;
+        },
+        {} as Partial<Record<OperationalCaseStatus, number>>
+      );
+      return (
+        <div className="w-full min-w-0 space-y-3">
+          <div className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Instancias relacionadas
+            </div>
+            <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-300">
+              Casos creados desde esta plantilla. Los casos de prueba viven en
+              la misma tabla, pero se separan aquí para no mezclarlos con
+              operación real. Para ver instancias de{" "}
+              <span className="font-medium">todas</span> las plantillas, usa{" "}
+              <a
+                href="/operational-cases"
+                className="font-semibold text-violet-700 underline-offset-2 hover:underline dark:text-violet-300"
+              >
+                Todas las instancias
+              </a>
+              .
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+              <span className="rounded bg-neutral-100 px-2 py-1 font-semibold text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                {realRelatedCases.length} reales
+              </span>
+              <span className="rounded bg-sky-50 px-2 py-1 font-semibold text-sky-700">
+                {testRelatedCases.length} prueba
+              </span>
+              {Object.entries(statusCounts).map(([status, count]) => (
+                <span
+                  key={status}
+                  className="rounded bg-neutral-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                >
+                  {OPERATIONAL_CASE_STATUS_LABELS[status as OperationalCaseStatus]}:{" "}
+                  {count}
+                </span>
+              ))}
+            </div>
+          </div>
+          {relatedOperationalCases.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-neutral-300 p-6 text-sm text-neutral-500 dark:border-neutral-700">
+              Todavía no hay casos en operación para esta plantilla. Cuando se
+              creen por chat, Telegram, laboratorio o creación manual aparecerán
+              aquí.
+            </div>
+          ) : (
+            <OperationalCaseInstanceList
+              cases={relatedOperationalCases}
+              getHref={(opCase) =>
+                `/operational-cases?case=${opCase.id}&type=${row.id}`
+              }
+              getCaseTypeDisplayName={caseTypeDisplayNameForInstance}
+              getStepLabel={stepLabelForInstance}
+              getSkillMeta={skillMetaForInstance}
+              getLatestEvent={latestEventForInstance}
+            />
+          )}
+        </div>
+      );
+    }
 
     function renderTestCaseN0Card() {
       const fixtureStatus = fixturePreparationStatus({
@@ -6757,7 +6828,7 @@ export function OperationalCaseTypesClient({
     }
 
     return (
-      <div className="space-y-4">
+      <div className="w-full min-w-0 space-y-4">
         <div>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
@@ -6786,7 +6857,47 @@ export function OperationalCaseTypesClient({
           )}
         </div>
 
-        {row.description ? (
+        <div className="flex flex-wrap gap-2 border-b border-neutral-200 pb-2 text-sm dark:border-neutral-800">
+          {CASE_TYPE_WORKSPACE_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`rounded-full px-3 py-1.5 font-semibold ${
+                activeTab === tab.id
+                  ? "bg-violet-700 text-white"
+                  : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "lab" ? (
+          <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-sm text-violet-950">
+            <div className="font-semibold">Laboratorio guiado</div>
+            <p className="mt-1 text-xs leading-relaxed text-violet-800">
+              Valida la plantilla de menor a mayor riesgo: preparar datos de
+              prueba (N0), verificar herramientas (N1/N2), probar habilidades
+              (N3), probar pasos del flujo (N4) y ejecutar un tick E2E (N5).
+              Los códigos N se mantienen para auditoría, pero la operación
+              diaria debe seguir siendo conversacional.
+            </p>
+          </div>
+        ) : null}
+
+        {activeTab === "activation" ? (
+          <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm dark:border-neutral-800 dark:bg-neutral-950">
+            <div className="font-semibold">Checklist de activación</div>
+            <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+              Esta sección responde si la plantilla está lista para usarse en
+              chat/Telegram y qué falta antes de operación real completa.
+            </p>
+          </div>
+        ) : null}
+
+        {activeTab === "summary" && row.description ? (
           <div className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
             <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
               Descripción
@@ -6809,6 +6920,7 @@ export function OperationalCaseTypesClient({
           </div>
         ) : null}
 
+        {activeTab === "summary" ? (
         <details className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
           <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
             Formulario de alta
@@ -6837,7 +6949,9 @@ export function OperationalCaseTypesClient({
             </p>
           )}
         </details>
+        ) : null}
 
+        {activeTab === "summary" ? (
         <details className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
           <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
             Habilidades y herramientas
@@ -6903,9 +7017,10 @@ export function OperationalCaseTypesClient({
             </div>
           ) : null}
         </details>
+        ) : null}
 
-        {!isGlobal ? (
-          <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+        {activeTab === "lab" && !isGlobal ? (
+          <div className="w-full min-w-0 space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
@@ -7498,7 +7613,9 @@ export function OperationalCaseTypesClient({
           </div>
         ) : null}
 
-        {!isGlobal ? (
+        {activeTab === "instances" ? renderRelatedOperationalCases() : null}
+
+        {activeTab === "activation" && !isGlobal ? (
           <div className="space-y-2 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
             <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
               Checks de activación
@@ -7585,13 +7702,14 @@ export function OperationalCaseTypesClient({
           </div>
         ) : null}
 
-        {!isGlobal && testCaseResult?.case ? (
+        {activeTab === "lab" && !isGlobal && testCaseResult?.case ? (
           <TestCaseAuditPanel
             events={testCaseResult.events}
             toolCalls={testCaseResult.toolCalls}
           />
         ) : null}
 
+        {activeTab === "summary" ? (
         <div className="flex justify-end gap-2">
           {isGlobal ? (
             <button
@@ -7611,15 +7729,74 @@ export function OperationalCaseTypesClient({
             </button>
           )}
         </div>
+        ) : null}
       </div>
     );
   }
 
   return (
-    <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_420px] xl:grid-cols-[minmax(0,1fr)_460px]">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">Disponibles</h2>
+    <section className="w-full min-w-0 space-y-4">
+      <div className="w-full rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Caso de uso seleccionado
+            </div>
+            <div className="mt-2 flex w-full flex-col gap-2">
+              <select
+                value={selectedCaseType?.id ?? ""}
+                onChange={(event) => {
+                  const next = sortedCaseTypes.find(
+                    (row) => row.id === event.target.value
+                  );
+                  if (next) viewCaseType(next);
+                }}
+                className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold dark:border-neutral-700 dark:bg-neutral-950"
+              >
+                <option value="" disabled>
+                  Selecciona un caso de uso
+                </option>
+                {sortedCaseTypes.map((row) => {
+                  const duplicateName =
+                    sortedCaseTypes.filter(
+                      (candidate) => candidate.display_name === row.display_name
+                    ).length > 1;
+                  const scopeUi = templateScopePresentation(
+                    scopeLabel(row) === "global"
+                  );
+                  return (
+                    <option key={row.id} value={row.id}>
+                      {duplicateName
+                        ? `${row.display_name} (${scopeUi.listBadge})`
+                        : row.display_name}
+                    </option>
+                  );
+                })}
+              </select>
+              {selectedCaseType ? (
+                <div className="flex min-w-0 flex-wrap gap-1.5 text-[11px]">
+                  <span className="max-w-full truncate rounded bg-neutral-100 px-2 py-1 font-mono text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                    {selectedCaseType.case_type}
+                  </span>
+                  <span className="max-w-full truncate rounded bg-violet-50 px-2 py-1 font-mono text-violet-700">
+                    {selectedCaseType.default_skill_slug}
+                  </span>
+                  <span className="rounded bg-neutral-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                    {selectedCaseType.status ?? "active"}
+                  </span>
+                  <span className="rounded bg-neutral-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                    {scopeLabel(selectedCaseType) === "global"
+                      ? "producto"
+                      : "cuenta"}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+            <p className="mt-2 text-sm text-neutral-500">
+              Elige la plantilla desde el selector. Los metadatos técnicos
+              aparecen debajo como referencia.
+            </p>
+          </div>
           <button
             type="button"
             onClick={startNew}
@@ -7628,63 +7805,11 @@ export function OperationalCaseTypesClient({
             + Nuevo caso de uso
           </button>
         </div>
-
-        <div className="divide-y divide-gray-200 rounded border border-gray-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
-          {sortedCaseTypes.map((row) => {
-            const isGlobal = scopeLabel(row) === "global";
-            const scopeUi = templateScopePresentation(isGlobal);
-            const selected = selectedCaseType?.id === row.id;
-            return (
-              <button
-                key={row.id}
-                type="button"
-                onClick={() => viewCaseType(row)}
-                aria-current={selected ? "true" : undefined}
-                className={`w-full border-l-4 p-4 text-left text-sm transition-colors ${
-                  selected
-                    ? "border-violet-600 bg-violet-50 shadow-[inset_0_0_0_1px_rgba(124,58,237,0.2)] hover:bg-violet-100/80 dark:border-violet-400 dark:bg-violet-950/35 dark:shadow-[inset_0_0_0_1px_rgba(167,139,250,0.25)] dark:hover:bg-violet-950/50"
-                    : "border-transparent hover:bg-gray-50 dark:hover:bg-neutral-800/50"
-                } cursor-pointer`}
-              >
-                <div className="min-w-0">
-                  <div className="flex min-w-0 items-center gap-x-2">
-                    <span className="shrink-0 whitespace-nowrap font-semibold">
-                      {row.display_name}
-                    </span>
-                    <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px]">
-                      <span
-                        className={`shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 font-medium ${scopeUi.badge}`}
-                        title={scopeUi.hint}
-                      >
-                        {scopeUi.listBadge}
-                      </span>
-                      <span
-                        className="min-w-0 truncate rounded bg-violet-50 px-1.5 py-0.5 font-mono text-violet-700"
-                        title={row.default_skill_slug}
-                      >
-                        {row.default_skill_slug}
-                      </span>
-                      <span className="shrink-0 whitespace-nowrap rounded bg-slate-100 px-1.5 py-0.5 text-slate-700 dark:bg-neutral-800 dark:text-neutral-300">
-                        {row.status ?? "active"}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="mt-1 font-mono text-xs text-gray-500">
-                    {row.case_type}
-                  </div>
-                </div>
-                <p className="mt-2 line-clamp-2 text-xs text-gray-500">
-                  {row.description}
-                </p>
-              </button>
-            );
-          })}
-        </div>
       </div>
 
-      <aside
+      <section
         ref={editorPanelRef}
-        className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+        className="w-full min-w-0 overflow-x-hidden rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
       >
         {editing ? (
           <div className="space-y-3">
@@ -8140,7 +8265,7 @@ export function OperationalCaseTypesClient({
             versión privada para esta cuenta.
           </div>
         )}
-      </aside>
+      </section>
     </section>
   );
 }

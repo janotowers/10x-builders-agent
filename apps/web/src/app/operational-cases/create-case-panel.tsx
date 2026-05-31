@@ -170,18 +170,17 @@ export function CreateCasePanel({
   return (
     <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
       <h2 className="text-base font-semibold">
-        Poner caso de uso en operación
+        Crear caso manualmente
       </h2>
       <p className="mt-1 text-sm text-neutral-500">
         Crea una instancia concreta del caso de uso. Estos datos pertenecen a
         este caso específico (no se guardan en el caso de uso como plantilla).
       </p>
       <p className="mt-2 text-xs leading-relaxed text-neutral-500">
-        Vía recomendada para el día a día: arrancar el caso por chat o
-        Telegram (por ejemplo &ldquo;necesito opcionar una propiedad&rdquo;) y
-        el agente pide los datos en conversación. Esta pantalla sirve para
-        validar el flujo o crear un caso manualmente cuando el canal
-        conversacional no está disponible.
+        Vía recomendada para operación diaria: arrancar por chat o Telegram
+        (por ejemplo &ldquo;necesito opcionar una propiedad&rdquo;) y dejar que
+        el agente pida los datos en conversación. Usa este formulario como
+        fallback, demo o soporte cuando ya conoces datos iniciales.
       </p>
       <form
         ref={formRef}
@@ -239,7 +238,7 @@ export function CreateCasePanel({
           disabled={!selected || !canSubmit}
           className="w-full rounded-md bg-violet-700 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Poner en operación
+          Crear caso manual
         </button>
       </form>
     </section>

@@ -10,10 +10,6 @@ const PUBLISH_TOOLS = [
   "ungga_publish_listing",
 ] as const;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 export function rawPhotosCount(context: Record<string, unknown>): number {
   const raw = context.raw_photos;
   return Array.isArray(raw) ? raw.length : 0;

@@ -13,7 +13,6 @@ import {
   defaultDownloadLabel,
   downloadGeneratedCaseDocumentForUser,
   normalizeNotifyTextReplacingSignedUrls,
-  parseGenerateDocumentRenderResult,
   parseGeneratedDocumentFromContext,
   resolveGeneratedDocumentDeliveryUrl,
   syncGeneratedDocumentFromToolCalls,

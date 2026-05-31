@@ -19,16 +19,32 @@ import type {
   OperationalCase,
   OperationalCaseDocument,
   OperationalCaseEvent,
+  OperationalCaseFlowStep,
   OperationalCaseStatus,
   OperationalCaseType,
 } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
-import { CaseTypesPanel } from "./case-types-panel";
 import { CreateCasePanel } from "./create-case-panel";
+import { OperationalCasesFilters } from "./operational-cases-filters";
+import type { OperationalCasesListFilters } from "@/lib/operational-cases/instance-list-filters";
+import {
+  filterOperationalCases,
+  operationalCasesListHref,
+  operationalCasesListQuerySuffix,
+  parseOperationalCasesListFilters,
+  searchParamValue,
+} from "@/lib/operational-cases/instance-list-filters";
+import {
+  formatOperationalCaseDateTime,
+  OPERATIONAL_CASE_STATUS_BADGES,
+  OPERATIONAL_CASE_STATUS_LABELS,
+  operationalCaseLatestEventSummary,
+  OperationalCaseInstanceList,
+} from "@/lib/operational-cases/instance-list-ui";
 
 export const dynamic = "force-dynamic";
 
-type Search = { case?: string };
+type Search = OperationalCasesListFilters & { case?: string };
 
 const CASE_STATUSES: OperationalCaseStatus[] = [
   "active",
@@ -38,24 +54,6 @@ const CASE_STATUSES: OperationalCaseStatus[] = [
   "completed",
   "failed",
 ];
-
-const STATUS_LABELS: Record<OperationalCaseStatus, string> = {
-  active: "Activo",
-  waiting_internal: "Esperando asesor",
-  waiting_external: "Esperando externo",
-  paused: "Pausado",
-  completed: "Completado",
-  failed: "Fallido",
-};
-
-const STATUS_BADGES: Record<OperationalCaseStatus, string> = {
-  active: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  waiting_internal: "border-violet-200 bg-violet-50 text-violet-700",
-  waiting_external: "border-amber-200 bg-amber-50 text-amber-700",
-  paused: "border-neutral-200 bg-neutral-50 text-neutral-600",
-  completed: "border-blue-200 bg-blue-50 text-blue-700",
-  failed: "border-red-200 bg-red-50 text-red-700",
-};
 
 async function createOperationalCaseAction(formData: FormData) {
   "use server";
@@ -236,11 +234,7 @@ async function uploadCaseDocumentAction(formData: FormData) {
 }
 
 function formatDate(value: string | null): string {
-  if (!value) return "Sin fecha";
-  return new Intl.DateTimeFormat("es-MX", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
+  return formatOperationalCaseDateTime(value);
 }
 
 function casesEnOperacionLabel(count: number): string {
@@ -324,6 +318,69 @@ function typeById(types: OperationalCaseType[]) {
   return new Map(types.map((t) => [t.id, t]));
 }
 
+function flowStepLabelMap(types: OperationalCaseType[]) {
+  const map = new Map<string, Map<string, string>>();
+  for (const type of types) {
+    const steps = Array.isArray(type.operational_flow_jsonb)
+      ? (type.operational_flow_jsonb as OperationalCaseFlowStep[])
+      : [];
+    const labels = new Map<string, string>();
+    for (const step of steps) {
+      if (step.step_key) labels.set(step.step_key, step.step_label);
+    }
+    map.set(type.id, labels);
+  }
+  return map;
+}
+
+function caseTypeForInstance(
+  opCase: OperationalCase,
+  caseTypes: OperationalCaseType[],
+  caseTypeMap: Map<string, OperationalCaseType>
+) {
+  return (
+    caseTypeMap.get(opCase.case_type_id) ??
+    caseTypes.find((type) => type.case_type === opCase.case_type) ??
+    null
+  );
+}
+
+function stepLabelForInstance(
+  opCase: OperationalCase,
+  caseTypes: OperationalCaseType[],
+  caseTypeMap: Map<string, OperationalCaseType>,
+  stepLabelsByTypeId: Map<string, Map<string, string>>
+) {
+  const step = opCase.current_step;
+  if (!step) return "Sin definir";
+  const type = caseTypeForInstance(opCase, caseTypes, caseTypeMap);
+  return (type && stepLabelsByTypeId.get(type.id)?.get(step)) ?? step;
+}
+
+function stepFilterOptions({
+  cases,
+  caseTypes,
+  caseTypeMap,
+  stepLabelsByTypeId,
+}: {
+  cases: OperationalCase[];
+  caseTypes: OperationalCaseType[];
+  caseTypeMap: Map<string, OperationalCaseType>;
+  stepLabelsByTypeId: Map<string, Map<string, string>>;
+}) {
+  const options = new Map<string, string>();
+  for (const opCase of cases) {
+    if (!opCase.current_step) continue;
+    options.set(
+      opCase.current_step,
+      stepLabelForInstance(opCase, caseTypes, caseTypeMap, stepLabelsByTypeId)
+    );
+  }
+  return [...options.entries()]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label, "es"));
+}
+
 /**
  * Dedupe de case types por `case_type`. Si el usuario ya creó/personalizó una
  * versión privada del mismo slug, esa gana sobre la versión de producto. La
@@ -388,8 +445,32 @@ export default async function OperationalCasesPage({
     }),
   ]);
 
-  const selectedCase =
-    cases.find((opCase) => opCase.id === sp.case) ?? cases[0] ?? null;
+  const focusedCaseId = searchParamValue(sp.case) ?? null;
+  const selectedCase = focusedCaseId
+    ? cases.find((opCase) => opCase.id === focusedCaseId) ?? null
+    : null;
+  const isFocusedDetailView = Boolean(focusedCaseId);
+
+  const listFilters = parseOperationalCasesListFilters(sp);
+  const { visible: visibleCaseTypes } = dedupeCaseTypes(caseTypes);
+  const caseTypeMap = typeById(caseTypes);
+  const stepLabelsByTypeId = flowStepLabelMap(caseTypes);
+  const casesForStepOptions = filterOperationalCases(
+    cases,
+    { ...listFilters, step: undefined },
+    caseTypeMap,
+    CASE_STATUSES
+  );
+  const stepOptions = stepFilterOptions({
+    cases: casesForStepOptions,
+    caseTypes,
+    caseTypeMap,
+    stepLabelsByTypeId,
+  });
+  const filteredCases = isFocusedDetailView
+    ? cases
+    : filterOperationalCases(cases, listFilters, caseTypeMap, CASE_STATUSES);
+  const listQuery = operationalCasesListQuerySuffix(listFilters);
 
   const selectedEvents = selectedCase
     ? await getRecentOperationalCaseEvents(db, selectedCase.id, 50)
@@ -400,30 +481,27 @@ export default async function OperationalCasesPage({
         statuses: ["received"],
       })
     : [];
-  const latestEvents = latestEventByCase(
-    (
-      await Promise.all(
-        cases.map((opCase) => getRecentOperationalCaseEvents(db, opCase.id, 1))
-      )
-    ).flat()
-  );
+  const latestEvents = isFocusedDetailView
+    ? new Map<string, OperationalCaseEvent>()
+    : latestEventByCase(
+        (
+          await Promise.all(
+            filteredCases.map((opCase) =>
+              getRecentOperationalCaseEvents(db, opCase.id, 1)
+            )
+          )
+        ).flat()
+      );
 
-  // Importante: la lista cruda puede contener duplicados por slug cuando el
-  // usuario tiene una versión privada del mismo case_type que la global. Esto
-  // es legítimo a nivel de datos (la tabla lo permite por diseño) pero a nivel
-  // de UI sólo queremos mostrar uno: la versión de cuenta gana.
-  const { visible: visibleCaseTypes, globalCounterpartBySlug } =
-    dedupeCaseTypes(caseTypes);
-  // El typeById sigue construyéndose con TODOS los rows (no sólo los visibles)
-  // porque las instancias en `operational_cases` pueden apuntar al case_type_id
-  // global aunque exista uno privado del mismo slug, y necesitamos resolver el
-  // nombre.
-  const caseTypeMap = typeById(caseTypes);
   const accountSkillSlugs = new Set(accountSkills.map((s) => s.slug));
   const testCaseCount = cases.filter(
     (opCase) => opCase.context_jsonb?.test_mode === true
   ).length;
   const realCaseCount = cases.length - testCaseCount;
+  const statusFilterOptions = CASE_STATUSES.map((status) => ({
+    value: status,
+    label: OPERATIONAL_CASE_STATUS_LABELS[status],
+  }));
 
   function skillInfo(slug: string) {
     const metadata = registry?.get(slug)?.metadata ?? null;
@@ -435,168 +513,60 @@ export default async function OperationalCasesPage({
       exists: Boolean(metadata),
     };
   }
-  const skillInfoBySlug = Object.fromEntries(
-    visibleCaseTypes.map((type) => [
-      type.default_skill_slug,
-      skillInfo(type.default_skill_slug),
-    ])
-  );
-
   return (
-    <div className="min-h-screen bg-neutral-50 text-neutral-950 dark:bg-neutral-950 dark:text-neutral-50">
-      <header className="border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-700 dark:text-violet-300">
-              Operaciones
-            </p>
-            <h1 className="text-lg font-semibold">Casos operacionales</h1>
-          </div>
-          <div className="flex flex-wrap justify-end gap-2">
-            <a
-              href="/settings/operational-case-types"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Casos de uso
-            </a>
-            <a
-              href="/chat"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Chat
-            </a>
-            <a
-              href="/settings"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Ajustes
-            </a>
-          </div>
+    <main className="mx-auto w-full max-w-7xl space-y-6 p-6">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-700 dark:text-violet-300">
+            Operaciones
+          </p>
+          <h1 className="text-2xl font-bold">Casos en operación</h1>
+          <p className="mt-1 max-w-2xl text-sm text-gray-500">
+            Bandeja global con instancias de{" "}
+            <span className="font-medium">todas</span> las plantillas. Lo
+            habitual es abrir casos desde chat o Telegram; esta vista sirve para
+            revisar estado, buscar uno concreto o dar soporte.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <a
+            href="/settings/operational-case-types"
+            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+          >
+            Casos de uso
+          </a>
+          <a
+            href="/chat"
+            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+          >
+            Chat
+          </a>
+          <a
+            href="/settings"
+            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+          >
+            Ajustes
+          </a>
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-6xl gap-6 px-4 py-8 lg:grid-cols-[minmax(0,1fr)_360px]">
+      {isFocusedDetailView ? (
         <section className="space-y-4">
-          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-base font-semibold">Casos en operación</h2>
-                <p className="mt-1 text-sm text-neutral-500">
-                  Instancias activas de casos multi-día. Cada una usa el caso
-                  de uso seleccionado como plantilla operativa.
-                </p>
-              </div>
-              <span className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                {casesEnOperacionLabel(realCaseCount)}
-                {testCaseCount > 0 ? ` · ${testCaseCount} prueba` : ""}
-              </span>
-            </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <a
+              href={`/operational-cases${listQuery}`}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-semibold hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            >
+              ← Volver a la bandeja
+            </a>
           </div>
 
-          {cases.length === 0 ? (
+          {!selectedCase ? (
             <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-              Aún no hay casos en operación para esta cuenta. Pon un caso en
-              operación desde el panel lateral; eso crea una instancia concreta
-              a partir de un caso de uso.
+              No encontramos ese caso en operación. Puede haber sido eliminado
+              o no pertenecer a tu cuenta.
             </div>
           ) : (
-            <div className="grid gap-3">
-              {cases.map((opCase) => {
-                const type = caseTypeMap.get(opCase.case_type_id);
-                const skillSlug = type?.default_skill_slug ?? "(sin skill)";
-                const info = skillInfo(skillSlug);
-                const latest = latestEvents.get(opCase.id);
-                const selected = selectedCase?.id === opCase.id;
-                const isTestCase = opCase.context_jsonb?.test_mode === true;
-
-                return (
-                  <a
-                    key={opCase.id}
-                    href={`/operational-cases?case=${opCase.id}`}
-                    className={`block rounded-2xl border bg-white p-4 shadow-sm transition hover:border-violet-300 hover:shadow-md dark:bg-neutral-900 ${
-                      selected
-                        ? "border-violet-400 dark:border-violet-500"
-                        : "border-neutral-200 dark:border-neutral-800"
-                    }`}
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span
-                            className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${STATUS_BADGES[opCase.status]}`}
-                          >
-                            {STATUS_LABELS[opCase.status]}
-                          </span>
-                          <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                            {type?.display_name ?? opCase.case_type}
-                          </span>
-                          {isTestCase ? (
-                            <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
-                              Prueba
-                            </span>
-                          ) : null}
-                          {opCase.context_jsonb?.created_from ===
-                          "agent_conversation" ? (
-                            <span
-                              className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700"
-                              title="Este caso lo creó el agente a partir de una conversación (chat o Telegram), no del formulario web."
-                            >
-                              Conversacional
-                            </span>
-                          ) : null}
-                        </div>
-                        <h3 className="mt-2 truncate font-semibold">
-                          {String(
-                            opCase.context_jsonb.title ??
-                              opCase.context_jsonb.property_title ??
-                              opCase.context_jsonb.lead_name ??
-                              opCase.current_step ??
-                              opCase.id
-                          )}
-                        </h3>
-                        <p className="mt-1 text-xs text-neutral-500">
-                          Paso: {stepLabel(opCase.current_step)} · Próxima
-                          acción: {formatDate(opCase.next_action_at)}
-                        </p>
-                      </div>
-                      <div className="text-right text-xs text-neutral-500">
-                        v{opCase.version}
-                        <br />
-                        {formatDate(opCase.updated_at)}
-                      </div>
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
-                      <span className="rounded bg-violet-50 px-1.5 py-0.5 font-mono text-violet-700 dark:bg-violet-950 dark:text-violet-300">
-                        {skillSlug}
-                      </span>
-                      <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                        {skillKindLabel(info.kind)}
-                      </span>
-                      <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                        {skillSourceLabel(info.source)}
-                      </span>
-                      {!info.exists ? (
-                        <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-700">
-                          habilidad no encontrada
-                        </span>
-                      ) : null}
-                    </div>
-
-                    {latest ? (
-                      <p className="mt-3 text-xs text-neutral-500">
-                        Último evento: {eventTypeLabel(latest.event_type)} ·{" "}
-                        {actorLabel(latest.actor)} ·{" "}
-                        {formatDate(latest.created_at)}
-                      </p>
-                    ) : null}
-                  </a>
-                );
-              })}
-            </div>
-          )}
-
-          {selectedCase ? (
             <CaseDetail
               opCase={selectedCase}
               type={caseTypeMap.get(selectedCase.case_type_id) ?? null}
@@ -604,26 +574,98 @@ export default async function OperationalCasesPage({
               documents={selectedDocuments}
               skillInfo={skillInfo(
                 caseTypeMap.get(selectedCase.case_type_id)
-                  ?.default_skill_slug ??
-                  ""
+                  ?.default_skill_slug ?? ""
               )}
             />
-          ) : null}
+          )}
         </section>
+      ) : (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-end gap-2 text-xs font-semibold text-neutral-600 dark:text-neutral-300">
+            <span className="rounded-full bg-neutral-100 px-2.5 py-1 dark:bg-neutral-800">
+              {casesEnOperacionLabel(realCaseCount)}
+              {testCaseCount > 0 ? ` · ${testCaseCount} prueba` : ""}
+            </span>
+          </div>
 
-        <aside className="space-y-4">
-          <CreateCasePanel
-            action={createOperationalCaseAction}
+          <OperationalCasesFilters
             caseTypes={visibleCaseTypes}
+            filters={listFilters}
+            statusOptions={statusFilterOptions}
+            stepOptions={stepOptions}
+            resultCount={filteredCases.length}
+            totalCount={cases.length}
           />
-          <CaseTypesPanel
-            caseTypes={visibleCaseTypes}
-            skillInfo={skillInfoBySlug}
-            globalCounterpartBySlug={Object.fromEntries(globalCounterpartBySlug)}
-          />
-        </aside>
-      </main>
-    </div>
+
+          {cases.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
+              Aún no hay casos en operación para esta cuenta. Lo recomendado es
+              iniciar por chat o Telegram.
+            </div>
+          ) : filteredCases.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
+              Ninguna instancia coincide con los filtros actuales.{" "}
+              <a
+                href="/operational-cases"
+                className="font-semibold text-violet-700 underline-offset-2 hover:underline dark:text-violet-300"
+              >
+                Limpiar filtros
+              </a>
+            </div>
+          ) : (
+            <OperationalCaseInstanceList
+              cases={filteredCases}
+              getHref={(opCase) =>
+                operationalCasesListHref(listFilters, { caseId: opCase.id })
+              }
+              getCaseTypeDisplayName={(opCase) =>
+                caseTypeForInstance(opCase, caseTypes, caseTypeMap)
+                  ?.display_name ??
+                opCase.case_type
+              }
+              getStepLabel={(opCase) =>
+                stepLabelForInstance(
+                  opCase,
+                  caseTypes,
+                  caseTypeMap,
+                  stepLabelsByTypeId
+                )
+              }
+              getSkillMeta={(opCase) => {
+                const type = caseTypeForInstance(opCase, caseTypes, caseTypeMap);
+                const skillSlug = type?.default_skill_slug ?? "(sin skill)";
+                const info = skillInfo(skillSlug);
+                return {
+                  slug: skillSlug,
+                  kindLabel: skillKindLabel(info.kind),
+                  sourceLabel: skillSourceLabel(info.source),
+                  exists: info.exists,
+                };
+              }}
+              getLatestEvent={(opCase) => {
+                const latest = latestEvents.get(opCase.id);
+                return latest ? operationalCaseLatestEventSummary(latest) : null;
+              }}
+            />
+          )}
+
+          <details className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <summary className="cursor-pointer text-sm font-semibold">
+              Crear caso manualmente
+              <span className="ml-2 text-xs font-normal text-neutral-500">
+                fallback de soporte o demo; lo normal es abrir casos por chat
+              </span>
+            </summary>
+            <div className="mt-4">
+              <CreateCasePanel
+                action={createOperationalCaseAction}
+                caseTypes={visibleCaseTypes}
+              />
+            </div>
+          </details>
+        </section>
+      )}
+    </main>
   );
 }
 
@@ -655,9 +697,9 @@ function CaseDetail({
           <p className="mt-1 font-mono text-xs text-neutral-500">{opCase.id}</p>
         </div>
         <span
-          className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${STATUS_BADGES[opCase.status]}`}
+          className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${OPERATIONAL_CASE_STATUS_BADGES[opCase.status]}`}
         >
-          {STATUS_LABELS[opCase.status]}
+          {OPERATIONAL_CASE_STATUS_LABELS[opCase.status]}
         </span>
         {opCase.context_jsonb?.test_mode === true ? (
           <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-700">

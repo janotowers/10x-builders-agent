@@ -7,10 +7,6 @@ import {
   type DbClient,
 } from "@agents/db";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function isSettingsTestCase(context: Record<string, unknown>) {
   return (
     context.created_from === "case_type_settings_test" ||

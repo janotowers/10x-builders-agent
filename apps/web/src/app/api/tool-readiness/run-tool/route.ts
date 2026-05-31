@@ -647,7 +647,7 @@ function photoSessionDefaultSlot(now = new Date()) {
   return { start, end };
 }
 
-function calendarListEventsCaseRecipe(_input: ToolRecipeInput): Record<string, unknown> {
+function calendarListEventsCaseRecipe(): Record<string, unknown> {
   const window = photoSessionCalendarListWindow();
   return {
     calendar_id: "primary",
@@ -2053,13 +2053,6 @@ async function findPreferredSettingsTestDocument(
   return pickPreferredSettingsTestDocument(documents);
 }
 
-async function findAnySettingsTestDocument(
-  db: ReturnType<typeof createServerClient>,
-  input: { caseId: string }
-) {
-  return findPreferredSettingsTestDocument(db, input);
-}
-
 async function findSettingsTestDocumentForAsset(
   db: ReturnType<typeof createServerClient>,
   input: { caseId: string; asset: AccountAsset }
@@ -2488,10 +2481,13 @@ export async function POST(request: Request) {
       );
     }
 
+    const calendarUpdateEventId = isRecord(resolvedArgsForExecution)
+      ? (resolvedArgsForExecution as Record<string, unknown>)["event_id"]
+      : undefined;
     if (
       toolId === "calendar_update_event" &&
       policy.execute &&
-      isPlaceholderCalendarEventId(resolvedArgsForExecution.event_id)
+      isPlaceholderCalendarEventId(calendarUpdateEventId)
     ) {
       return NextResponse.json({
         ok: false,

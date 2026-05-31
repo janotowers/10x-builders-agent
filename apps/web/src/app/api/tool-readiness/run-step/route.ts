@@ -854,7 +854,7 @@ export async function POST(request: Request) {
       }
     }
 
-    let opCase = caseId
+    const opCase = caseId
       ? await getOperationalCase(db, caseId)
       : await latestSettingsTestCase(db, user.id, caseType.id);
     if (!opCase || opCase.user_id !== user.id) {

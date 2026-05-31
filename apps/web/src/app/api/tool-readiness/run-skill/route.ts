@@ -19,6 +19,7 @@ import {
 import type {
   OperationalCase,
   OperationalCaseEvent,
+  OperationalCaseExternalContact,
   OperationalCaseFlowSkill,
   OperationalCaseFlowStep,
   OperationalCaseStatus,
@@ -32,10 +33,7 @@ import {
 } from "@/lib/operational-cases/comparables-analysis-validation";
 import { validatePackageReadyPreflightOutcome } from "@/lib/operational-cases/package-ready-preflight-validation";
 import { validatePhotosScheduledProposeSlotsOutcome } from "@/lib/operational-cases/photos-scheduled-propose-slots-validation";
-import {
-  mergePropertyDataForComparables,
-  settingsTestPropertyDataSeed,
-} from "@/lib/operational-cases/property-search-zone";
+import { settingsTestPropertyDataSeed } from "@/lib/operational-cases/property-search-zone";
 import { settingsTestApprovedPricingProposalSeed } from "@/lib/operational-cases/step-test-seeds";
 import { isolateContextForSkillTest } from "@/lib/operational-cases/settings-test-run-isolation";
 import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
@@ -515,9 +513,21 @@ async function applyPhotosScheduledSkillTestSeed(
     cleanText(context.contact_name) ||
     "Contacto de prueba";
   const chatId = telegramChatIdFromCase(opCase, context);
-  const externalContact = {
-    ...(isRecord(opCase.external_contact_jsonb)
-      ? (opCase.external_contact_jsonb as Record<string, unknown>)
+  const existingExternalContact = isRecord(opCase.external_contact_jsonb)
+    ? (opCase.external_contact_jsonb as Record<string, unknown>)
+    : {};
+  const existingChannel = existingExternalContact.channel;
+  const externalContact: OperationalCaseExternalContact = {
+    ...(existingChannel === "telegram" ||
+    existingChannel === "whatsapp" ||
+    existingChannel === "email"
+      ? { channel: existingChannel }
+      : {}),
+    ...(typeof existingExternalContact.chat_id === "number"
+      ? { chat_id: existingExternalContact.chat_id }
+      : {}),
+    ...(typeof existingExternalContact.identifier === "string"
+      ? { identifier: existingExternalContact.identifier }
       : {}),
     display_name: ownerName,
     ...(chatId != null
