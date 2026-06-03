@@ -374,10 +374,20 @@ N3 **complementa** N2; no lo reemplaza para tools de alto riesgo. N2 sigue siend
 
 ### UI (v1.1)
 
+- **Jerarquía visual del laboratorio** ([`readiness-lab-hierarchy-ui.ts`](../../apps/web/src/lib/operational-cases/readiness-lab-hierarchy-ui.ts)): en pantalla **no** se muestran chips N0–N4 (son nomenclatura de documentación). Paso = marco índigo + badge «Paso N»; habilidad = bloque violeta con borde izquierdo y rótulo «HABILIDAD»; tools = sección slate con sangría + tarjetas blancas (acento verde/ámbar en borde izquierdo según estado); «▸ Prueba de herramienta» en slate. Los niveles N1/N3/N4 siguen definidos en este doc y en APIs, no en etiquetas de la UI.
+- **Jerarquía dentro de cada paso** (`ReadinessTestSection` + [`readiness-step-section-ui.ts`](../../apps/web/src/lib/operational-cases/readiness-step-section-ui.ts)):
+  1. **Encabezado del paso** (`<summary>` del acordeón): pill canónico (**Paso probado**, **Falta probar escenarios…**, etc.). **Prueba de paso** (`ReadinessTestSection`): chevron **▸** en el summary (gira al expandir); segunda línea = progreso N4 o prerequisito (sin «abrir para…»); pill junto al botón solo si el estado no es `tested_ok`.
+  2. Por **habilidad**: encabezado de tarjeta con pill (**Habilidad probada**, etc.) → **Prueba de habilidad** (mismo chevron; colapsada si faltan integraciones; summary con progreso N1 o «Completada») → integraciones → internas. Pill junto a **Probar habilidad** solo cuando `test_status !== tested_ok`. Botones alineados a la izquierda (misma convención que tools).
+  3. Por **tool** (N1): tarjeta con `tool_id` + pills Estado / Probada. Si la tool **no** está lista y exige `required_assets` de cuenta → botón **Recursos de cuenta** (solo configuración operativa). Si está **lista** → solo **▸ Prueba de herramienta** (dentro: recursos de cuenta + activos de prueba + `ToolTestPanel`; no ejecuta la prueba hasta los botones del panel). Otros botones (Conectar, ENVIAR PRUEBA) no cambian.
+  3. Tools directas del paso (si el flow las declara en `step_tools`).
+- El orden en pantalla prioriza **proximidad estado–acción**; el orden operativo sigue siendo integraciones → habilidad → escenarios del paso.
+- Al desbloquear una sección (`blocked_by_tools` → `ready_to_test`), el `<details>` se abre automáticamente. Si el paso o la habilidad ya están probados con éxito (`tested_ok`), **Prueba de paso** / **Prueba de habilidad** montan **cerrados** (fallo o parcial siguen abiertos por defecto); no se cierran solos al terminar una prueba con la sección ya abierta.
 - Panel N3: resumen acotado; listas de tools en `<details>` «Ver detalle tecnico de tools llamadas».
 - Telegram ya no se clasifica como acción interna duplicada (`classifySkillTestToolCalls` en `run-skill`).
 - Panel N4: bloque indigo «Probar paso» cuando el catálogo de escenarios (`step-test-scenario-registry.ts`) declara ese `step_key`. Si el paso tiene varios escenarios, la UI muestra selector y envía `scenario_id` al API.
 - Detalle de tools unificado N3/N4: [`skill-test-call-details.tsx`](../../apps/web/src/lib/operational-cases/skill-test-call-details.tsx) (aviso Telegram envíos reales vs duplicadas, notify interno, hints de texto). La normalización de texto compartida con el agente vive en [`packages/types/src/telegram-send-dedup.ts`](../../packages/types/src/telegram-send-dedup.ts) (sin importar `@agents/agent` en el cliente).
+
+**Telegram al contacto externo en laboratorio:** si el intake no trae `telegram_chat_id` real, N3/N4 asignan `SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID` y **simulan** el envío (`settings_test_simulated`; la UI lo distingue de deduplicación `skipped_send`). **Envío real** al externo: N2 de la tool con confirmación **«ENVIAR PRUEBA»** y `chat_id` válido en datos del caso; también puede salir real en N3/N4 si el caso de prueba ya trae un `telegram_chat_id` real (no sentinel).
 
 **Prerequisito N3 y N4:** todas las tools *readiness-visible* del paso (`readinessToolIdsForSkill` / `readinessToolIdsForStep`) con N1 `tested_ok` antes de habilitar **Probar habilidad** o **Probar paso** (patrón `PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS`).
 

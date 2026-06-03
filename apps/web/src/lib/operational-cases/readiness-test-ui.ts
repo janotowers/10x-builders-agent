@@ -9,6 +9,26 @@ export const SKILL_TEST_PRIMARY_BUTTON_CLASS =
 export const STEP_TEST_PRIMARY_BUTTON_CLASS =
   "rounded bg-indigo-700 px-2 py-1 font-semibold text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:text-indigo-100 dark:disabled:bg-indigo-900/50 dark:disabled:text-indigo-300";
 
+/** Clases Tailwind para pills de estado N1–N4 en el laboratorio. */
+export function readinessTestStatusPillClass(status?: string): string {
+  if (status === "tested_ok" || status === "ready_for_e2e") {
+    return "bg-emerald-50 text-emerald-800";
+  }
+  if (status === "tested_failed") {
+    return "bg-red-50 text-red-800";
+  }
+  if (status === "blocked" || status === "blocked_by_tools") {
+    return "bg-amber-50 text-amber-800";
+  }
+  if (status === "partial" || status === "partially_tested") {
+    return "bg-amber-50 text-amber-800";
+  }
+  if (status === "ready_to_test" || status === "awaiting_n4") {
+    return "bg-neutral-100 text-neutral-700";
+  }
+  return "bg-neutral-100 text-neutral-700";
+}
+
 export type ReadinessStepForGating = {
   test_status?: string;
   step_skills?: Array<{ test_status?: string }>;
@@ -34,6 +54,23 @@ export function toolTestStatusLabel(status?: string) {
   if (status === "tested_failed") return "Prueba falló";
   return "Sin probar";
 }
+
+/** Hint del summary colapsable «Prueba de herramienta» (solo expandir panel N1). */
+export function toolTestSectionSummaryHint(testStatus?: string): string {
+  if (testStatus === "tested_ok") return "Completada";
+  if (testStatus === "tested_failed") return "Última prueba falló";
+  return "Lista para validar y ejecutar";
+}
+
+/** Toggle de fila: configurar assets de cuenta (operación real), no el laboratorio N1. */
+export const ACCOUNT_RESOURCES_TOGGLE_OPEN_LABEL = "Recursos de cuenta";
+export const ACCOUNT_RESOURCES_TOGGLE_CLOSE_LABEL = "Cerrar recursos de cuenta";
+
+export const ACCOUNT_RESOURCES_PANEL_HINT =
+  "Plantillas y activos de la cuenta para operación real; la prueba de herramienta los usa como prerequisito.";
+
+export const TEST_ASSETS_PANEL_HINT =
+  "Solo para validar esta tool en el laboratorio; no sustituyen los recursos de cuenta.";
 
 export type StepTestProgressSummary = {
   scenarios_total: number;

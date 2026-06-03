@@ -36,6 +36,11 @@ import { validatePhotosScheduledProposeSlotsOutcome } from "@/lib/operational-ca
 import { settingsTestPropertyDataSeed } from "@/lib/operational-cases/property-search-zone";
 import { settingsTestApprovedPricingProposalSeed } from "@/lib/operational-cases/step-test-seeds";
 import { isolateContextForSkillTest } from "@/lib/operational-cases/settings-test-run-isolation";
+import {
+  ensureSettingsTestExternalContact,
+  isSettingsOperationalTestCase,
+  settingsTestTelegramChatIdForAgent,
+} from "@/lib/operational-cases/settings-test-telegram-lab";
 import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
 import { readinessToolIdsForSkill } from "@/lib/operational-cases/tool-surface-classification";
 import {
@@ -179,11 +184,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isSettingsTestCase(opCase: OperationalCase) {
-  const context = opCase.context_jsonb;
-  if (!isRecord(context)) return false;
-  return (
-    context.created_from === "case_type_settings_test" &&
-    (context.test_mode === true || context.test_mode === "true")
+  if (!isRecord(opCase.context_jsonb)) return false;
+  return isSettingsOperationalTestCase(
+    opCase.context_jsonb as Record<string, unknown>
   );
 }
 
@@ -476,23 +479,26 @@ async function applyExtractCharacteristicsSkillTestSeed(
   return updated ?? opCase;
 }
 
-function telegramChatIdFromCase(opCase: OperationalCase, context: Record<string, unknown>) {
-  const external = isRecord(opCase.external_contact_jsonb)
-    ? (opCase.external_contact_jsonb as Record<string, unknown>)
+async function applyRequestPropertyDocumentsSkillTestSeed(
+  db: ReturnType<typeof createServerClient>,
+  opCase: OperationalCase
+): Promise<OperationalCase> {
+  const rawContext = isRecord(opCase.context_jsonb)
+    ? (opCase.context_jsonb as Record<string, unknown>)
     : {};
-  const fromExternal = external.chat_id;
-  if (typeof fromExternal === "number" && Number.isFinite(fromExternal)) {
-    return fromExternal;
-  }
-  const fromContext = context.telegram_chat_id ?? context.external_chat_id;
-  if (typeof fromContext === "number" && Number.isFinite(fromContext)) {
-    return fromContext;
-  }
-  if (typeof fromContext === "string" && fromContext.trim()) {
-    const parsed = Number(fromContext);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
+  const context = isolateContextForSkillTest(
+    rawContext,
+    "request-property-documents"
+  );
+
+  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+    currentStep: "awaiting_documents",
+    status: "active" as OperationalCaseStatus,
+    context: mergeSkillTestContext(context, {
+      skill_test_n3_seed: "awaiting_documents_initial_request",
+    }),
+  });
+  return updated ?? opCase;
 }
 
 async function applyPhotosScheduledSkillTestSeed(
@@ -512,7 +518,7 @@ async function applyPhotosScheduledSkillTestSeed(
     cleanText(context.lead_name) ||
     cleanText(context.contact_name) ||
     "Contacto de prueba";
-  const chatId = telegramChatIdFromCase(opCase, context);
+  const chatId = settingsTestTelegramChatIdForAgent(opCase, context);
   const existingExternalContact = isRecord(opCase.external_contact_jsonb)
     ? (opCase.external_contact_jsonb as Record<string, unknown>)
     : {};
@@ -1010,6 +1016,13 @@ function buildSkillTestMessage(params: {
     lines.push(
       "Invoca telegram_send_message_to_contact como máximo una vez en este tick de prueba; no repitas el mismo mensaje al contacto externo."
     );
+    if (isSettingsOperationalTestCase(params.opCase.context_jsonb as Record<string, unknown>)) {
+      const ctx = (params.opCase.context_jsonb ?? {}) as Record<string, unknown>;
+      const chatId = settingsTestTelegramChatIdForAgent(params.opCase, ctx);
+      lines.push(
+        `Usa chat_id ${chatId} (contacto externo del caso de prueba). Si es el id de laboratorio, el envío se simula sin Telegram real.`
+      );
+    }
   }
   if (params.skill.skill_slug === "perform-comparable-analysis") {
     lines.push(
@@ -1145,6 +1158,15 @@ export async function POST(request: Request) {
       isSettingsTestCase(opCase)
     ) {
       opCase = await applyPhotosScheduledSkillTestSeed(db, opCase);
+    }
+    if (
+      skillSlug === "request-property-documents" &&
+      isSettingsTestCase(opCase)
+    ) {
+      opCase = await applyRequestPropertyDocumentsSkillTestSeed(db, opCase);
+    }
+    if (isSettingsTestCase(opCase)) {
+      opCase = await ensureSettingsTestExternalContact(db, opCase);
     }
 
     ensureAgentToolDepsWired();

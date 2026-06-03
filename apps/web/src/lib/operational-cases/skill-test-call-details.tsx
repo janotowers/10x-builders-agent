@@ -97,9 +97,12 @@ export function formatSkillTestToolCallAuditToken(
   }
   if (
     call.tool_name === "telegram_send_message_to_contact" &&
-    call.result_json?.skipped_send === true
+    (call.result_json?.skipped_send === true ||
+      call.result_json?.settings_test_simulated === true)
   ) {
-    return `${call.tool_name}:deduplicated`;
+    return call.result_json?.settings_test_simulated === true
+      ? `${call.tool_name}:simulated_lab`
+      : `${call.tool_name}:deduplicated`;
   }
   return `${call.tool_name}:${call.status}`;
 }
@@ -170,7 +173,11 @@ export function skillTestTelegramCallIsSemanticDuplicate(
   call: SkillTestToolCallDetail,
   priorCalls: SkillTestToolCallDetail[]
 ) {
-  if (call.status !== "executed" || call.result_json?.skipped_send === true) {
+  if (
+    call.status !== "executed" ||
+    call.result_json?.skipped_send === true ||
+    call.result_json?.settings_test_simulated === true
+  ) {
     return false;
   }
   const args = (call.arguments_json ?? {}) as Record<string, unknown>;
@@ -188,6 +195,9 @@ export function skillTestTelegramCallStatusLabel(
   call: SkillTestToolCallDetail,
   options?: { semanticDuplicate?: boolean }
 ) {
+  if (call.result_json?.settings_test_simulated === true) {
+    return "simulada (laboratorio)";
+  }
   if (call.result_json?.skipped_send === true) {
     return "deduplicada, sin reenvío";
   }
@@ -199,6 +209,7 @@ export function skillTestTelegramCallStatusLabel(
 
 export type SkillTestTelegramSendBuckets = {
   realSends: SkillTestToolCallDetail[];
+  labSimulated: SkillTestToolCallDetail[];
   backendDeduped: SkillTestToolCallDetail[];
   semanticDuplicates: SkillTestToolCallDetail[];
 };
@@ -208,12 +219,18 @@ export function classifySkillTestTelegramSends(
 ): SkillTestTelegramSendBuckets {
   const telegramCalls = collectSkillTestTelegramCalls(calls);
   const realSends: SkillTestToolCallDetail[] = [];
+  const labSimulated: SkillTestToolCallDetail[] = [];
   const backendDeduped: SkillTestToolCallDetail[] = [];
   const semanticDuplicates: SkillTestToolCallDetail[] = [];
   const priorExecuted: SkillTestToolCallDetail[] = [];
 
   for (const call of telegramCalls) {
     if (call.status !== "executed") continue;
+    if (call.result_json?.settings_test_simulated === true) {
+      labSimulated.push(call);
+      priorExecuted.push(call);
+      continue;
+    }
     if (call.result_json?.skipped_send === true) {
       backendDeduped.push(call);
       priorExecuted.push(call);
@@ -228,7 +245,7 @@ export function classifySkillTestTelegramSends(
     priorExecuted.push(call);
   }
 
-  return { realSends, backendDeduped, semanticDuplicates };
+  return { realSends, labSimulated, backendDeduped, semanticDuplicates };
 }
 
 type NotifyChannelResultRow = {
@@ -475,23 +492,66 @@ function telegramSendStats(calls: SkillTestToolCallDetail[]) {
     (call) => call.tool_name === "telegram_send_message_to_contact"
   );
   const executed = telegramCalls.filter((call) => call.status === "executed");
-  const { realSends, backendDeduped, semanticDuplicates } =
+  const { realSends, labSimulated, backendDeduped, semanticDuplicates } =
     classifySkillTestTelegramSends(calls);
   return {
     telegramCalls,
     executed,
     realSends,
+    labSimulated,
     deduped: backendDeduped,
     semanticDuplicates,
   };
+}
+
+function formatTelegramTickSummaryParts(params: {
+  realSends: number;
+  labSimulated: number;
+  deduped: number;
+  semanticDuplicates: number;
+}): string {
+  const segments: string[] = [];
+  if (params.realSends > 0) {
+    segments.push(
+      `${params.realSends} envío${params.realSends === 1 ? "" : "s"} real${
+        params.realSends === 1 ? "" : "es"
+      } (API Telegram)`
+    );
+  }
+  if (params.labSimulated > 0) {
+    segments.push(
+      `${params.labSimulated} simulado${
+        params.labSimulated === 1 ? "" : "s"
+      } (laboratorio, sin API)`
+    );
+  }
+  if (params.deduped > 0) {
+    segments.push(
+      `${params.deduped} deduplicada${params.deduped === 1 ? "" : "s"} sin reenvío (skipped_send)`
+    );
+  }
+  if (params.semanticDuplicates > 0) {
+    segments.push(
+      `${params.semanticDuplicates} duplicada${
+        params.semanticDuplicates === 1 ? "" : "s"
+      } sin reenvío (mismo texto en el turno)`
+    );
+  }
+  return segments.join("; ");
 }
 
 export function skillTestTelegramNotice(
   calls: Array<SkillTestToolCallDetail>,
   scope: SkillTestTickScope = "habilidad"
 ): string | null {
-  const { telegramCalls, executed, realSends, deduped, semanticDuplicates } =
-    telegramSendStats(calls);
+  const {
+    telegramCalls,
+    executed,
+    realSends,
+    labSimulated,
+    deduped,
+    semanticDuplicates,
+  } = telegramSendStats(calls);
   if (telegramCalls.length === 0) return null;
 
   const pending = telegramCalls.filter(
@@ -503,9 +563,11 @@ export function skillTestTelegramNotice(
     const purposeSource =
       realSends.length > 0
         ? realSends
-        : deduped.length > 0
-          ? deduped
-          : executed;
+        : labSimulated.length > 0
+          ? labSimulated
+          : deduped.length > 0
+            ? deduped
+            : executed;
     const purposes = purposeSource
       .map((call) => {
         const purpose = call.arguments_json?.purpose;
@@ -518,35 +580,38 @@ export function skillTestTelegramNotice(
       purposes.length > 0
         ? ` (${[...new Set(purposes)].join(", ")})`
         : "";
-    const duplicateParts: string[] = [];
-    if (deduped.length > 0) {
-      duplicateParts.push(
-        `${deduped.length} duplicada${deduped.length === 1 ? "" : "s"} sin reenvío (skipped_send)`
-      );
-    }
-    if (semanticDuplicates.length > 0) {
-      duplicateParts.push(
-        `${semanticDuplicates.length} duplicada${
-          semanticDuplicates.length === 1 ? "" : "s"
-        } sin reenvío (mismo texto)`
-      );
-    }
-    const duplicateHint =
-      duplicateParts.length > 0 ? ` y ${duplicateParts.join("; ")}` : "";
+    const summary = formatTelegramTickSummaryParts({
+      realSends: realSends.length,
+      labSimulated: labSimulated.length,
+      deduped: deduped.length,
+      semanticDuplicates: semanticDuplicates.length,
+    });
     const lines = [
-      `Telegram al contacto externo: ${realSends.length} envío${
-        realSends.length === 1 ? "" : "s"
-      } real${realSends.length === 1 ? "" : "es"}${duplicateHint} (${executed.length} llamada${
+      `Telegram al contacto externo: ${summary} (${executed.length} llamada${
         executed.length === 1 ? "" : "s"
       } ejecutada${executed.length === 1 ? "" : "s"} en total) en este tick de ${tickLabel}${purposeHint}.`,
     ];
-    if (realSends.length === 0 && executed.length > 0) {
+    if (labSimulated.length > 0 && realSends.length === 0) {
       lines.push(
-        "Atención: ningún envío real en este tick. Si el contacto debía recibir un mensaje nuevo, la deduplicación pudo bloquear todas las llamadas (p. ej. mismo texto que un envío previo en el turno). Confirma en Telegram."
+        "En N3/N4 del laboratorio el envío simulado cumple el contrato sin mandar Telegram al contacto. Para un envío real al externo usa la tool en N2 con «ENVIAR PRUEBA» y un telegram_chat_id válido en datos del caso (o un chat real en N3/N4 si el caso ya lo trae)."
+      );
+    } else if (realSends.length > 0) {
+      lines.push(
+        "Envío real registrado: el mensaje salió (o se intentó) por la API de Telegram al chat_id indicado."
+      );
+    }
+    if (
+      realSends.length === 0 &&
+      labSimulated.length === 0 &&
+      (deduped.length > 0 || semanticDuplicates.length > 0)
+    ) {
+      lines.push(
+        "Atención: ningún envío real ni simulado de laboratorio en este tick; solo deduplicación. Si el contacto debía recibir un mensaje nuevo, revisa texto repetido en el turno o prueba N2 con «ENVIAR PRUEBA»."
       );
     } else if (
       deduped.length === 0 &&
       semanticDuplicates.length === 0 &&
+      labSimulated.length === 0 &&
       executed.length > 1
     ) {
       lines.push(
@@ -808,17 +873,18 @@ export function formatSkillTestCallGroupLabel(params: {
       ? `${executedCount + pendingCount}/${calls.length} preparadas (${pendingCount} sin enviar)`
       : `${executedCount}/${calls.length} ejecutadas`;
 
-  const { realSends, deduped, semanticDuplicates, executed } = telegramSendStats(
-    calls as SkillTestToolCallDetail[]
-  );
+  const { realSends, labSimulated, deduped, semanticDuplicates, executed } =
+    telegramSendStats(calls as SkillTestToolCallDetail[]);
   if (executed.length > 0 && label === "Negocio") {
-    const dupNote =
-      deduped.length > 0 || semanticDuplicates.length > 0
-        ? `, ${deduped.length + semanticDuplicates.length} dup.`
-        : "";
-    statusPart += ` · Telegram: ${realSends.length} envío${
-      realSends.length === 1 ? "" : "s"
-    } real${dupNote}`;
+    const extras: string[] = [];
+    if (labSimulated.length > 0) {
+      extras.push(`${labSimulated.length} sim.`);
+    }
+    if (deduped.length > 0 || semanticDuplicates.length > 0) {
+      extras.push(`${deduped.length + semanticDuplicates.length} dup.`);
+    }
+    const extraNote = extras.length > 0 ? `, ${extras.join(" ")}` : "";
+    statusPart += ` · Telegram: ${realSends.length} real${extraNote}`;
   }
 
   const docStats = generateDocumentRenderStats(calls as SkillTestToolCallDetail[]);

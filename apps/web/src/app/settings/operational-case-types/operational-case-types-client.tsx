@@ -64,6 +64,7 @@ import {
   formatStepTestResultMetaLine,
   resolveStepTestExecutionMode,
   resolveStepTestUiCopy,
+  readinessTestStatusPillClass,
   skillTestStatusLabel,
   SKILL_TEST_BLOCKED_TITLE,
   SKILL_TEST_PRIMARY_BUTTON_CLASS,
@@ -71,8 +72,42 @@ import {
   stepTestStatusLabel,
   STEP_TEST_BLOCKED_TITLE,
   STEP_TEST_PRIMARY_BUTTON_CLASS,
+  ACCOUNT_RESOURCES_PANEL_HINT,
+  ACCOUNT_RESOURCES_TOGGLE_CLOSE_LABEL,
+  ACCOUNT_RESOURCES_TOGGLE_OPEN_LABEL,
+  TEST_ASSETS_PANEL_HINT,
+  toolTestSectionSummaryHint,
   toolTestStatusLabel,
 } from "@/lib/operational-cases/readiness-test-ui";
+import {
+  listUntestedReadinessToolIdsForStep,
+  readinessTestShowActionRowStatusPill,
+  skillN1Progress,
+  skillTestSectionCollapseWhenAlreadyProven,
+  skillTestSectionDefaultOpen,
+  skillTestSectionState,
+  skillTestSectionSummary,
+  stepTestSectionCollapseWhenAlreadyProven,
+  stepTestSectionDefaultOpen,
+  stepTestSectionState,
+  stepTestSectionSummary,
+} from "@/lib/operational-cases/readiness-step-section-ui";
+import {
+  READINESS_LAB_SKILL_LABEL,
+  READINESS_LAB_SKILL_SHELL,
+  READINESS_LAB_STEP_BADGE,
+  READINESS_LAB_STEP_BODY,
+  READINESS_LAB_STEP_SHELL,
+  READINESS_LAB_STEP_TOOLS_SECTION,
+  READINESS_LAB_TOOL_CARD_WRAP,
+  READINESS_LAB_TOOL_TEST_TOGGLE,
+  READINESS_LAB_TOOL_TEST_TOGGLE_HINT,
+  READINESS_LAB_TOOL_TEST_TOGGLE_TITLE,
+  READINESS_LAB_TOOLS_LABEL,
+  READINESS_LAB_TOOLS_SECTION,
+  readinessLabToolShellClass,
+} from "@/lib/operational-cases/readiness-lab-hierarchy-ui";
+import { ReadinessTestSection } from "@/components/readiness-test-section";
 import {
   OPERATIONAL_CASE_STATUS_LABELS,
   OperationalCaseInstanceList,
@@ -174,6 +209,66 @@ function readinessExpandToggleHandlers(onToggle: () => void) {
       (document.activeElement as HTMLElement | null)?.blur();
     },
   };
+}
+
+/** Abre el panel de upload de recursos de cuenta (operación real), no el bloque N1. */
+function AccountResourcesExpandToggle({
+  expanded,
+  onToggle,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const toggleHandlers = readinessExpandToggleHandlers(onToggle);
+  return (
+    <button
+      type="button"
+      {...toggleHandlers}
+      aria-expanded={expanded}
+      className="rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
+    >
+      {expanded
+        ? ACCOUNT_RESOURCES_TOGGLE_CLOSE_LABEL
+        : ACCOUNT_RESOURCES_TOGGLE_OPEN_LABEL}
+    </button>
+  );
+}
+
+/** Sustituye «Probar tool» / «Cerrar»: solo abre el panel N1 (ToolTestPanel). */
+function ToolTestExpandToggle({
+  expanded,
+  onToggle,
+  testStatus,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  testStatus?: string;
+}) {
+  const toggleHandlers = readinessExpandToggleHandlers(onToggle);
+  const hint = toolTestSectionSummaryHint(testStatus);
+  return (
+    <button
+      type="button"
+      {...toggleHandlers}
+      aria-expanded={expanded}
+      className={READINESS_LAB_TOOL_TEST_TOGGLE}
+    >
+      <span
+        aria-hidden
+        className={`mt-0.5 inline-block shrink-0 text-[10px] leading-none transition-transform ${
+          expanded ? "rotate-90" : ""
+        }`}
+      >
+        ▸
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className={READINESS_LAB_TOOL_TEST_TOGGLE_TITLE}>
+          Prueba de herramienta
+        </span>
+        <span className={READINESS_LAB_TOOL_TEST_TOGGLE_HINT}>{hint}</span>
+      </span>
+    </button>
+  );
 }
 
 /** Colapsa sin desmontar: al cerrar evita saltos por remount + mantiene estado del panel. */
@@ -1040,11 +1135,7 @@ function toolReadinessLabel(status: ToolReadinessStatus) {
 }
 
 function toolReadinessClass(status: ToolReadinessStatus) {
-  if (status === "ready") return "border-emerald-200 bg-emerald-50 text-emerald-800";
-  if (status === "needs_config") return "border-amber-200 bg-amber-50 text-amber-800";
-  if (status === "stub") return "border-sky-200 bg-sky-50 text-sky-800";
-  if (status === "missing") return "border-red-200 bg-red-50 text-red-800";
-  return "border-neutral-200 bg-neutral-50 text-neutral-700";
+  return readinessLabToolShellClass(status);
 }
 
 function toolReadinessSummaryLabel(summary?: ToolReadinessResult["summary"]) {
@@ -1397,6 +1488,7 @@ function AccountAssetUploadPanel({
   item,
   row,
   title = "Recursos de cuenta",
+  panelHint,
   requirements,
   successMessage = "Recurso guardado. Preparación operativa actualizada.",
   onBeforeUpload,
@@ -1405,6 +1497,7 @@ function AccountAssetUploadPanel({
   item: ToolReadinessToolItem;
   row: OperationalCaseType;
   title?: string;
+  panelHint?: string;
   requirements?: ToolAssetRequirementStatus[];
   successMessage?: string;
   onBeforeUpload?: () => void;
@@ -1532,10 +1625,24 @@ function AccountAssetUploadPanel({
   }
 
   if (effectiveRequirements.length === 0) return null;
+  const resolvedHint =
+    panelHint ??
+    (title === "Recursos de cuenta"
+      ? ACCOUNT_RESOURCES_PANEL_HINT
+      : title === "Activos de prueba"
+        ? TEST_ASSETS_PANEL_HINT
+        : undefined);
   return (
     <div className="space-y-2 rounded border border-white/70 bg-white/85 p-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-        {title}
+      <div>
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+          {title}
+        </div>
+        {resolvedHint ? (
+          <p className="mt-1 text-[11px] leading-snug text-neutral-600">
+            {resolvedHint}
+          </p>
+        ) : null}
       </div>
       {effectiveRequirements.map((requirement) => {
         const isCollection = isCollectionRequirement(requirement);
@@ -3246,14 +3353,10 @@ function renderReadinessActions(params: {
   if (item.action_kind === "request_global" && item.request_kind) {
     const hasAssets = (item.asset_requirements?.length ?? 0) > 0;
     const manageAssetsButton = hasAssets ? (
-      <button
-        type="button"
-        {...toggleHandlers}
-        aria-expanded={expanded}
-        className="rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
-      >
-        {expanded ? "Cerrar recursos" : "Gestionar recursos"}
-      </button>
+      <AccountResourcesExpandToggle
+        expanded={expanded}
+        onToggle={params.onToggleExpand}
+      />
     ) : null;
     if (existingRequest) {
       return (
@@ -3286,44 +3389,37 @@ function renderReadinessActions(params: {
   }
 
   if ((item.asset_requirements?.length ?? 0) > 0) {
+    if (item.status === "ready") {
+      return (
+        <div className="mt-2">
+          <ToolTestExpandToggle
+            expanded={expanded}
+            onToggle={params.onToggleExpand}
+            testStatus={item.test_status}
+          />
+        </div>
+      );
+    }
     return (
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        {item.status === "ready" ? (
-          <button
-            type="button"
-            {...toggleHandlers}
-            aria-expanded={expanded}
-            className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
-          >
-            {expanded ? "Cerrar" : "Probar tool"}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          {...toggleHandlers}
-          aria-expanded={expanded}
-          className="rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
-        >
-          {expanded ? "Cerrar recursos" : "Gestionar recursos"}
-        </button>
-        {!expanded && item.status !== "ready" ? detailsToggle : null}
+        <AccountResourcesExpandToggle
+          expanded={expanded}
+          onToggle={params.onToggleExpand}
+        />
+        {!expanded ? detailsToggle : null}
       </div>
     );
   }
 
-  // Tools listas sin configuración pendiente: la única acción útil hoy
-  // es expandir para usar la prueba individual.
+  // Tools listas: chevron abre el panel N1 (la ejecución va dentro de ToolTestPanel).
   if (item.status === "ready") {
     return (
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          {...toggleHandlers}
-          aria-expanded={expanded}
-          className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-violet-800"
-        >
-          {expanded ? "Cerrar" : "Probar tool"}
-        </button>
+      <div className="mt-2">
+        <ToolTestExpandToggle
+          expanded={expanded}
+          onToggle={params.onToggleExpand}
+          testStatus={item.test_status}
+        />
       </div>
     );
   }
@@ -3338,25 +3434,6 @@ function riskLabel(risk?: string) {
   return risk ?? "n/d";
 }
 
-
-function statusPillClass(status?: string) {
-  if (status === "tested_ok" || status === "ready_for_e2e") {
-    return "bg-emerald-50 text-emerald-800";
-  }
-  if (status === "tested_failed") {
-    return "bg-red-50 text-red-800";
-  }
-  if (status === "blocked" || status === "blocked_by_tools") {
-    return "bg-amber-50 text-amber-800";
-  }
-  if (status === "partial" || status === "partially_tested") {
-    return "bg-amber-50 text-amber-800";
-  }
-  if (status === "ready_to_test" || status === "awaiting_n4") {
-    return "bg-neutral-100 text-neutral-700";
-  }
-  return "bg-neutral-100 text-neutral-700";
-}
 
 type SkillTestResponse = {
   ok: boolean;
@@ -3448,6 +3525,38 @@ function SkillTestPanel({
   const [response, setResponse] = useState<SkillTestResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const blocked = skill.test_status === "blocked_by_tools";
+  const sectionState = skillTestSectionState(skill);
+  const aggregatedStatusLabel = skillTestStatusLabel(skill.test_status);
+  const sectionSummaryHint = skillTestSectionSummary(skill);
+  const [sectionOpen, setSectionOpen] = useState(() =>
+    skillTestSectionDefaultOpen(skill)
+  );
+  const prevSkillTestStatusRef = useRef(skill.test_status);
+  const wasBlockedRef = useRef(blocked);
+  useEffect(() => {
+    if (wasBlockedRef.current && !blocked) {
+      setSectionOpen(true);
+    }
+    wasBlockedRef.current = blocked;
+  }, [blocked]);
+  useEffect(() => {
+    if (sectionState === "expandedReady") {
+      setSectionOpen(true);
+    }
+  }, [sectionState]);
+  useEffect(() => {
+    const prev = prevSkillTestStatusRef.current;
+    prevSkillTestStatusRef.current = skill.test_status;
+    if (skillTestSectionCollapseWhenAlreadyProven(prev, skill.test_status)) {
+      setSectionOpen(false);
+    }
+  }, [skill.test_status]);
+  const n1Progress = skillN1Progress(skill);
+  const skillBlockedMessage =
+    blocked &&
+    (n1Progress.pendingIds.length > 0
+      ? `${SKILL_TEST_BLOCKED_TITLE} Pendiente: ${n1Progress.pendingIds.join(", ")}.`
+      : SKILL_TEST_BLOCKED_TITLE);
   const sourceToolCalls = response?.source_tool_calls ?? response?.tool_calls ?? [];
   const internalToolCalls = response?.internal_tool_calls ?? [];
   const otherToolCalls = response?.other_tool_calls ?? [];
@@ -3555,15 +3664,42 @@ function SkillTestPanel({
     }
   }
 
+  const skillIntro =
+    "Valida el contrato operativo de esta habilidad en una corrida controlada.";
+  const skillButtonLabel =
+    running
+      ? "Probando..."
+      : skill.test_status === "tested_ok"
+        ? "Volver a probar habilidad"
+        : "Probar habilidad";
+
   return (
-    <div className="mt-3 space-y-2 rounded border border-violet-100 bg-violet-50/40 p-2 text-[11px]">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="font-semibold text-violet-950">Prueba de habilidad</div>
-          <p className="text-violet-800">
-            Valida el contrato operativo de esta habilidad en un tick (N3).
-          </p>
-        </div>
+    <ReadinessTestSection
+      title="Prueba de habilidad"
+      summaryHint={sectionSummaryHint}
+      open={sectionOpen}
+      onOpenChange={setSectionOpen}
+      locked={blocked}
+      intro={
+        blocked ||
+        skill.test_status === "tested_ok" ||
+        skill.test_status === "tested_failed"
+          ? null
+          : skillIntro
+      }
+      blockedMessage={skillBlockedMessage || null}
+      tone="violet"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        {readinessTestShowActionRowStatusPill(skill.test_status) ? (
+          <span
+            className={`rounded px-1.5 py-0.5 font-semibold ${readinessTestStatusPillClass(
+              skill.test_status
+            )}`}
+          >
+            {aggregatedStatusLabel}
+          </span>
+        ) : null}
         <button
           type="button"
           onClick={() => void runSkill()}
@@ -3577,7 +3713,7 @@ function SkillTestPanel({
           }
           className={SKILL_TEST_PRIMARY_BUTTON_CLASS}
         >
-          {running ? "Probando..." : "Probar habilidad"}
+          {skillButtonLabel}
         </button>
       </div>
       {error ? (
@@ -3589,7 +3725,7 @@ function SkillTestPanel({
         <div className="space-y-1 rounded border border-white bg-white/80 p-2">
           <div className="flex flex-wrap gap-2">
             <span
-              className={`rounded px-1.5 py-0.5 font-semibold ${statusPillClass(
+              className={`rounded px-1.5 py-0.5 font-semibold ${readinessTestStatusPillClass(
                 response.status
               )}`}
             >
@@ -3794,7 +3930,7 @@ function SkillTestPanel({
           ) : null}
         </div>
       ) : null}
-    </div>
+    </ReadinessTestSection>
   );
 }
 
@@ -3902,19 +4038,6 @@ const STEP_TEST_INTERNAL_TOOL_NAMES = new Set([
   "operational_case_add_event",
 ]);
 
-function untestedReadinessToolIdsInStep(step: ToolReadinessFlowStep): string[] {
-  const pending = new Set<string>();
-  const consider = (tool: ToolReadinessFlowTool) => {
-    if (!tool.tool_id || !isReadinessVisibleTool(tool.tool_id)) return;
-    if (tool.test_status !== "tested_ok") pending.add(tool.tool_id);
-  };
-  for (const tool of step.step_tools ?? []) consider(tool);
-  for (const skill of step.step_skills ?? []) {
-    for (const tool of skill.skill_tools ?? []) consider(tool);
-  }
-  return [...pending];
-}
-
 function StepTestPanel({
   step,
   row,
@@ -3948,6 +4071,36 @@ function StepTestPanel({
   );
   const available = stepTestAvailable(scenarioCatalogSlug, step.step_key);
   const blocked = isStepTestBlocked(step);
+  const sectionState = stepTestSectionState(step);
+  const aggregatedStepStatusLabel = stepTestStatusLabel(
+    step.test_status,
+    step.step_test_progress,
+    { allSkillsN3Ok: stepAllSkillsN3Ok(step.step_skills) }
+  );
+  const sectionSummaryHint = stepTestSectionSummary(step);
+  const [sectionOpen, setSectionOpen] = useState(() =>
+    stepTestSectionDefaultOpen(step)
+  );
+  const prevStepTestStatusRef = useRef(step.test_status);
+  const wasStepBlockedRef = useRef(blocked);
+  useEffect(() => {
+    if (wasStepBlockedRef.current && !blocked) {
+      setSectionOpen(true);
+    }
+    wasStepBlockedRef.current = blocked;
+  }, [blocked]);
+  useEffect(() => {
+    if (sectionState === "expandedReady") {
+      setSectionOpen(true);
+    }
+  }, [sectionState]);
+  useEffect(() => {
+    const prev = prevStepTestStatusRef.current;
+    prevStepTestStatusRef.current = step.test_status;
+    if (stepTestSectionCollapseWhenAlreadyProven(prev, step.test_status)) {
+      setSectionOpen(false);
+    }
+  }, [step.test_status]);
   const selectedScenario =
     scenarios.find((scenario) => scenario.id === selectedScenarioId) ??
     scenarios[0];
@@ -4118,7 +4271,12 @@ function StepTestPanel({
     business_decision_kind: scenarioForUi?.business_decision_kind,
     ui: scenarioForUi?.ui,
   });
-  const pendingN1ToolIds = untestedReadinessToolIdsInStep(step);
+  const pendingN1ToolIds = listUntestedReadinessToolIdsForStep(step);
+  const stepBlockedMessage =
+    blocked &&
+    (pendingN1ToolIds.length > 0
+      ? `${STEP_TEST_BLOCKED_TITLE} Pendiente: ${pendingN1ToolIds.join(", ")}.`
+      : STEP_TEST_BLOCKED_TITLE);
   const scenariosBlock = (
     <div className="space-y-1 rounded border border-indigo-100 bg-white/70 p-2 text-indigo-950">
       <p className="font-semibold">Escenarios contemplados</p>
@@ -4155,62 +4313,71 @@ function StepTestPanel({
     </div>
   );
 
+  const stepIntro = blocked
+    ? "Disponible cuando las integraciones y la habilidad de este paso estén probadas."
+    : stepUiCopy.panelIntro;
+  const stepButtonLabel =
+    running
+      ? "Probando..."
+      : step.test_status === "tested_ok"
+        ? "Volver a probar paso"
+        : "Probar paso";
+
   return (
-    <div className="mt-3 space-y-2 rounded border border-indigo-100 bg-indigo-50/40 p-2 text-[11px]">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="font-semibold text-indigo-950">Prueba de paso</div>
-          {!blocked ? (
-            <p className="text-indigo-800">{stepUiCopy.panelIntro}</p>
-          ) : (
-            <p className="text-indigo-800">
-              Disponible cuando las tools de integración/acción del paso tengan N1
-              exitosa.
-            </p>
-          )}
-        </div>
+    <ReadinessTestSection
+      title="Prueba de paso"
+      summaryHint={sectionSummaryHint}
+      open={sectionOpen}
+      onOpenChange={setSectionOpen}
+      locked={blocked}
+      intro={
+        blocked || step.test_status === "tested_ok" ? null : stepIntro
+      }
+      blockedMessage={stepBlockedMessage || null}
+      tone="indigo"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        {readinessTestShowActionRowStatusPill(step.test_status) ? (
+          <span
+            className={`rounded px-1.5 py-0.5 font-semibold ${readinessTestStatusPillClass(
+              step.test_status
+            )}`}
+          >
+            {aggregatedStepStatusLabel}
+          </span>
+        ) : null}
         <button
           type="button"
           onClick={() => void runStep()}
-          disabled={running || !hasTestCase || blocked}
+          disabled={running || !hasTestCase || blocked || !available}
           title={
             !hasTestCase
               ? "Crea primero un caso de prueba."
               : blocked
                 ? STEP_TEST_BLOCKED_TITLE
-                : undefined
+                : !available
+                  ? "Este paso no tiene escenarios de prueba configurados."
+                  : undefined
           }
           className={STEP_TEST_PRIMARY_BUTTON_CLASS}
         >
-          {running ? "Probando..." : "Probar paso"}
+          {stepButtonLabel}
         </button>
       </div>
       {blocked ? (
-        <>
-          <p className="rounded border border-amber-200 bg-amber-50/90 p-2 text-amber-950">
-            {STEP_TEST_BLOCKED_TITLE}
-            {pendingN1ToolIds.length > 0 ? (
-              <>
-                {" "}
-                Falta N1 en:{" "}
-                <span className="font-mono">{pendingN1ToolIds.join(", ")}</span>.
-              </>
-            ) : null}
-          </p>
-          <details className="rounded border border-indigo-100 bg-white/70 p-2 text-indigo-950">
-            <summary className="cursor-pointer font-semibold text-indigo-900">
-              Ver qué probará este paso (N4)
-            </summary>
-            <div className="mt-2">{scenariosBlock}</div>
-          </details>
-        </>
+        <details className="rounded border border-indigo-100 bg-white/70 p-2 text-indigo-950">
+          <summary className="cursor-pointer font-semibold text-indigo-900">
+            Ver escenarios contemplados del paso
+          </summary>
+          <div className="mt-2">{scenariosBlock}</div>
+        </details>
       ) : (
         scenariosBlock
       )}
       {running ? (
         <div className="rounded border border-indigo-200 bg-indigo-50 p-2 text-indigo-950">
           <div className="font-semibold">
-            Prueba N4 en ejecución · {formatElapsed(elapsedMs)}
+            Prueba del paso en ejecución · {formatElapsed(elapsedMs)}
           </div>
           <p className="text-indigo-800">
             {activeRunProgress?.label ?? stepUiCopy.runningHint}
@@ -4267,7 +4434,7 @@ function StepTestPanel({
         <div className="space-y-1 rounded border border-white bg-white/80 p-2">
           <div className="flex flex-wrap gap-2">
             <span
-              className={`rounded px-1.5 py-0.5 font-semibold ${statusPillClass(
+              className={`rounded px-1.5 py-0.5 font-semibold ${readinessTestStatusPillClass(
                 response.status
               )}`}
             >
@@ -4472,7 +4639,7 @@ function StepTestPanel({
           ) : null}
         </div>
       ) : null}
-    </div>
+    </ReadinessTestSection>
   );
 }
 
@@ -5011,7 +5178,7 @@ function renderFlowToolReadiness(params: {
             Estado: {toolReadinessLabel(item.status)}
           </span>
           <span
-            className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${statusPillClass(
+            className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${readinessTestStatusPillClass(
               item.test_status
             )}`}
           >
@@ -5068,7 +5235,8 @@ function renderFlowToolReadiness(params: {
             }
           />
         ) : null}
-        {(item.test_asset_requirements?.length ?? 0) > 0 ? (
+        {(item.test_asset_requirements?.length ?? 0) > 0 &&
+        item.status === "ready" ? (
           <AccountAssetUploadPanel
             item={item}
             row={row}
@@ -8200,7 +8368,7 @@ export function OperationalCaseTypesClient({
                   ].join("::");
 
                   return tool.readiness ? (
-                    <div key={expansionKey}>
+                    <div key={expansionKey} className={READINESS_LAB_TOOL_CARD_WRAP}>
                       {tool.tool_label || tool.tool_description ? (
                         <div className="mb-1 text-xs">
                           <span className="font-semibold">
@@ -8362,18 +8530,24 @@ export function OperationalCaseTypesClient({
                             return next;
                           });
                         }}
-                        className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
+                        className={READINESS_LAB_STEP_SHELL}
                       >
                         <summary className="cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden">
                           <div className="text-center">
                             <div className="flex flex-wrap items-center justify-center gap-2">
-                              <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                              <span
+                                className={
+                                  options.preparation
+                                    ? "inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800"
+                                    : READINESS_LAB_STEP_BADGE
+                                }
+                              >
                                 {options.preparation
                                   ? "Preparación del caso"
                                   : `Paso ${stepIndex + 1}`}
                               </span>
                               <span
-                                className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusPillClass(
+                                className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${readinessTestStatusPillClass(
                                   step.test_status
                                 )}`}
                               >
@@ -8396,25 +8570,41 @@ export function OperationalCaseTypesClient({
                             ) : null}
                           </div>
                         </summary>
-                        <div className="mt-3 space-y-3 border-t border-neutral-100 pt-3 dark:border-neutral-800">
+                        <div className={READINESS_LAB_STEP_BODY}>
+                          {stepDetailsOpen && !options.preparation ? (
+                            <StepTestPanel
+                              step={step}
+                              row={row}
+                              caseTypeSlug={row.case_type}
+                              hasTestCase={Boolean(testCaseResult?.case)}
+                              caseId={testCaseResult?.case?.id ?? null}
+                              onFinished={async () => {
+                                await refreshToolReadiness(row);
+                                await refreshTestCase(row);
+                              }}
+                            />
+                          ) : null}
                           {step.step_skills.length > 0 ? (
                             step.step_skills.map((skill) => (
                               <div
                                 key={skill.skill_slug}
-                                className="rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900"
+                                className={READINESS_LAB_SKILL_SHELL}
                               >
-                                <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-                                  Habilidad
-                                </div>
-                                <div className="text-xs font-semibold">
-                                  {skill.skill_label ?? labelFromSlug(skill.skill_slug)}
-                                </div>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <div className="font-mono text-[11px] text-neutral-500">
-                                    {skill.skill_slug}
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <div className={READINESS_LAB_SKILL_LABEL}>
+                                      Habilidad
+                                    </div>
+                                    <div className="text-xs font-semibold">
+                                      {skill.skill_label ??
+                                        labelFromSlug(skill.skill_slug)}
+                                    </div>
+                                    <div className="font-mono text-[11px] text-neutral-500">
+                                      {skill.skill_slug}
+                                    </div>
                                   </div>
                                   <span
-                                    className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${statusPillClass(
+                                    className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${readinessTestStatusPillClass(
                                       skill.test_status
                                     )}`}
                                   >
@@ -8426,9 +8616,23 @@ export function OperationalCaseTypesClient({
                                     {skill.skill_description}
                                   </p>
                                 ) : null}
-                                <div className="mt-4 space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
-                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-                                    Herramientas de integración / acción (N1)
+                                {stepDetailsOpen && !options.preparation ? (
+                                  <div className="mt-3">
+                                    <SkillTestPanel
+                                      skill={skill}
+                                      row={row}
+                                      hasTestCase={Boolean(testCaseResult?.case)}
+                                      caseId={testCaseResult?.case?.id ?? null}
+                                      onFinished={async () => {
+                                        await refreshToolReadiness(row);
+                                        await refreshTestCase(row);
+                                      }}
+                                    />
+                                  </div>
+                                ) : null}
+                                <div className={READINESS_LAB_TOOLS_SECTION}>
+                                  <div className={READINESS_LAB_TOOLS_LABEL}>
+                                    Herramientas de integración / acción
                                   </div>
                                   {(() => {
                                     const { readinessVisible, internal } =
@@ -8457,18 +8661,6 @@ export function OperationalCaseTypesClient({
                                     );
                                   })()}
                                 </div>
-                                {!options.preparation ? (
-                                  <SkillTestPanel
-                                    skill={skill}
-                                    row={row}
-                                    hasTestCase={Boolean(testCaseResult?.case)}
-                                    caseId={testCaseResult?.case?.id ?? null}
-                                    onFinished={async () => {
-                                      await refreshToolReadiness(row);
-                                      await refreshTestCase(row);
-                                    }}
-                                  />
-                                ) : null}
                               </div>
                             ))
                           ) : (
@@ -8486,9 +8678,9 @@ export function OperationalCaseTypesClient({
                             </div>
                           )}
                           {step.step_tools.length > 0 ? (
-                            <div className="space-y-2 rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
-                              <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-                                Herramientas de integración / acción (N1)
+                            <div className={READINESS_LAB_STEP_TOOLS_SECTION}>
+                              <div className={READINESS_LAB_TOOLS_LABEL}>
+                                Herramientas de integración / acción
                               </div>
                               {(() => {
                                 const { readinessVisible, internal } =
@@ -8506,25 +8698,13 @@ export function OperationalCaseTypesClient({
                               })()}
                             </div>
                           ) : null}
-                          {!options.preparation ? (
-                            <StepTestPanel
-                              step={step}
-                              row={row}
-                              caseTypeSlug={row.case_type}
-                              hasTestCase={Boolean(testCaseResult?.case)}
-                              caseId={testCaseResult?.case?.id ?? null}
-                              onFinished={async () => {
-                                await refreshToolReadiness(row);
-                                await refreshTestCase(row);
-                              }}
-                            />
-                          ) : (
+                          {options.preparation ? (
                             <p className="text-xs text-neutral-500">
                               La preparación del caso se valida con el formulario
                               de caso de prueba y «Validar intake seguro», no con
                               Probar paso.
                             </p>
-                          )}
+                          ) : null}
                         </div>
                       </details>
                   );
@@ -8541,16 +8721,16 @@ export function OperationalCaseTypesClient({
                   return (
                     <details
                       key={step.step_key}
-                      className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
+                      className={READINESS_LAB_STEP_SHELL}
                     >
                       <summary className="cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden">
                         <div className="text-center">
                           <div className="flex flex-wrap items-center justify-center gap-2">
-                            <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                            <span className={READINESS_LAB_STEP_BADGE}>
                               Paso 0
                             </span>
                             <span
-                              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusPillClass(
+                              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${readinessTestStatusPillClass(
                                 step.test_status
                               )}`}
                             >
@@ -8578,7 +8758,7 @@ export function OperationalCaseTypesClient({
                           ) : null}
                         </div>
                       </summary>
-                      <div className="mt-3 space-y-3 border-t border-neutral-100 pt-3 dark:border-neutral-800">
+                      <div className={READINESS_LAB_STEP_BODY}>
                         <p className="text-xs text-neutral-500">
                           El formulario y la prueba segura están en{" "}
                           <span className="font-semibold">
@@ -8630,7 +8810,7 @@ export function OperationalCaseTypesClient({
                             })
                           )}
                           {transversalStep ? (
-                            <details className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+                            <details className={READINESS_LAB_STEP_SHELL}>
                               <summary className="cursor-pointer text-center list-none marker:content-none [&::-webkit-details-marker]:hidden">
                                 <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
                                   {transversalStep.step_label}
@@ -8648,7 +8828,7 @@ export function OperationalCaseTypesClient({
                                   transversal
                                 </p>
                               </summary>
-                              <div className="mt-3 space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
+                              <div className={READINESS_LAB_STEP_BODY}>
                                 {(() => {
                                   const { readinessVisible, internal } =
                                     partitionSkillTools(transversalStep.step_tools);

@@ -288,6 +288,12 @@ export interface AgentMessage {
   created_at: string;
 }
 
+/**
+ * Sentinel `chat_id` para N3/N4 del laboratorio cuando el intake no trae Telegram real.
+ * El adapter no llama a la API de Telegram con este id.
+ */
+export const SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID = 900_000_000_001;
+
 /** Who triggered a tool_call row (lab, prod agent, chat, etc.). */
 export type ToolCallSource =
   | "chat"

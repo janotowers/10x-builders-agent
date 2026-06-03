@@ -45,7 +45,9 @@ import {
   generatedDocumentDedupKey,
   normalizeGeneratedDocumentArgs,
   normalizeTelegramSendText,
+  SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID,
   telegramSendInputsMatch,
+  type ToolCallSource,
 } from "@agents/types";
 import { deriveCommissionContractTemplateData } from "./commission-contract-template-data";
 
@@ -60,9 +62,20 @@ function isSettingsOperationalTestCase(
 ): boolean {
   if (!context) return false;
   return (
-    context.created_from === "case_type_settings_test" ||
-    context.test_mode === true
+    context.created_from === "case_type_settings_test" &&
+    (context.test_mode === true || context.test_mode === "true")
   );
+}
+
+function shouldSimulateSettingsTestTelegramSend(
+  chatId: number,
+  toolCallSource?: ToolCallSource
+): boolean {
+  if (toolCallSource !== "skill_test" && toolCallSource !== "step_test") {
+    return false;
+  }
+  if (chatId === SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID) return true;
+  return !Number.isFinite(chatId) || chatId <= 0;
 }
 
 function telegramSendDedupKey(args: Record<string, unknown>): string {
@@ -209,6 +222,79 @@ const execFileAsync = promisify(execFile);
 const LOCAL_COMPARABLES_BIGQUERY_PROJECT_ID = "ungga-full";
 const LOCAL_COMPARABLES_BIGQUERY_LOCATION = "US";
 
+async function applyTelegramSendCaseWiring(
+  ctx: ToolContext,
+  input: {
+    chat_id: number;
+    text: string;
+    case_id?: string;
+    purpose?: string;
+  },
+  opCase: import("@agents/types").OperationalCase,
+  settingsTestCase: boolean
+) {
+  const currentChatId = (opCase.external_contact_jsonb as Record<string, unknown>)
+    ?.chat_id;
+  const chatIdMatches =
+    currentChatId !== undefined && String(currentChatId) === String(input.chat_id);
+  if (!chatIdMatches) {
+    await updateOperationalCase(ctx.db, opCase.id, opCase.version, {
+      externalContact: {
+        ...(opCase.external_contact_jsonb as import("@agents/types").OperationalCaseExternalContact),
+        channel: "telegram",
+        chat_id: input.chat_id,
+      },
+    });
+  }
+  await insertOperationalCaseEvent(ctx.db, {
+    caseId: opCase.id,
+    eventType: "reminder_sent",
+    actor: "agent",
+    payload: {
+      channel: "telegram",
+      chat_id: input.chat_id,
+      purpose: input.purpose ?? "outbound",
+      text_preview: input.text.slice(0, 200),
+    },
+  });
+  if (!settingsTestCase) {
+    await createExternalContactNotification(ctx.db, {
+      userId: ctx.userId,
+      caseId: opCase.id,
+      contact: {
+        ...(opCase.external_contact_jsonb as Record<string, unknown>),
+        channel: "telegram",
+        chat_id: input.chat_id,
+      },
+      channel: "telegram",
+      recipientIdentifier: String(input.chat_id),
+      messageBody: input.text,
+      status: "sent",
+      nextReminderAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+      metadata: {
+        purpose: input.purpose ?? "outbound",
+        source: "telegram_send_message_to_contact",
+      },
+    });
+  }
+  const purpose = input.purpose ?? "outbound";
+  if (TELEGRAM_REPLY_EXPECTED_PURPOSES.has(purpose)) {
+    const latest = await getOperationalCase(ctx.db, opCase.id);
+    if (latest && latest.user_id === ctx.userId) {
+      await updateOperationalCase(ctx.db, latest.id, latest.version, {
+        status: "waiting_external",
+        currentStep:
+          purpose === "characteristics_pending"
+            ? "documents_received"
+            : latest.current_step,
+        nextActionAt: settingsTestCase
+          ? null
+          : new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+      });
+    }
+  }
+}
+
 export interface RealEstateToolDeps {
   /**
    * Envía un mensaje de Telegram a un chat_id arbitrario. La implementación
@@ -263,6 +349,58 @@ export function addRealEstateTools(
             return JSON.stringify(out);
           }
           claimTelegramSendDedupSlot(ctx, inputRecord);
+
+          let opCase: import("@agents/types").OperationalCase | null = null;
+          let settingsTestCase = false;
+          if (input.case_id) {
+            try {
+              const loaded = await getOperationalCase(ctx.db, input.case_id);
+              if (loaded && loaded.user_id === ctx.userId) {
+                opCase = loaded;
+                settingsTestCase = isSettingsOperationalTestCase(
+                  loaded.context_jsonb as Record<string, unknown>
+                );
+              }
+            } catch (e) {
+              console.warn("[realestate] telegram_send: case preload failed:", e);
+            }
+          }
+
+          const simulateLabSend =
+            settingsTestCase &&
+            shouldSimulateSettingsTestTelegramSend(
+              input.chat_id,
+              ctx.toolCallSource
+            );
+
+          if (simulateLabSend) {
+            const out = {
+              ok: true,
+              chat_id: input.chat_id,
+              settings_test_simulated: true,
+              status: "settings_test_simulated",
+              hint:
+                "Envío a Telegram simulado en caso de prueba del laboratorio (sin chat_id real o id de laboratorio).",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "executed", out);
+            if (opCase) {
+              try {
+                await applyTelegramSendCaseWiring(
+                  ctx,
+                  input,
+                  opCase,
+                  settingsTestCase
+                );
+              } catch (e) {
+                console.warn(
+                  "[realestate] telegram_send: lab simulate wiring failed:",
+                  e
+                );
+              }
+            }
+            return JSON.stringify(out);
+          }
+
           if (!deps.sendTelegramMessage) {
             const out = {
               ok: false,
@@ -280,91 +418,20 @@ export function addRealEstateTools(
             return JSON.stringify(out);
           }
 
-          // Si hay case_id, asociamos el chat al caso (idempotente) y
-          // registramos un evento `reminder_sent` (o el purpose dado).
           if (input.case_id) {
             try {
-              const opCase = await getOperationalCase(ctx.db, input.case_id);
-              if (opCase && opCase.user_id === ctx.userId) {
-                const currentChatId =
-                  (opCase.external_contact_jsonb as Record<string, unknown>)
-                    ?.chat_id;
-                const chatIdMatches =
-                  currentChatId !== undefined &&
-                  String(currentChatId) === String(input.chat_id);
-                if (!chatIdMatches) {
-                  await updateOperationalCase(
-                    ctx.db,
-                    opCase.id,
-                    opCase.version,
-                    {
-                      externalContact: {
-                        ...(opCase.external_contact_jsonb as import("@agents/types").OperationalCaseExternalContact),
-                        channel: "telegram",
-                        chat_id: input.chat_id,
-                      },
-                    }
-                  );
-                }
-                await insertOperationalCaseEvent(ctx.db, {
-                  caseId: opCase.id,
-                  eventType: "reminder_sent",
-                  actor: "agent",
-                  payload: {
-                    channel: "telegram",
-                    chat_id: input.chat_id,
-                    purpose: input.purpose ?? "outbound",
-                    text_preview: input.text.slice(0, 200),
-                  },
-                });
-                const settingsTestCase = isSettingsOperationalTestCase(
-                  opCase.context_jsonb as Record<string, unknown>
+              const caseForWiring =
+                opCase ?? (await getOperationalCase(ctx.db, input.case_id));
+              if (caseForWiring && caseForWiring.user_id === ctx.userId) {
+                const labCase = isSettingsOperationalTestCase(
+                  caseForWiring.context_jsonb as Record<string, unknown>
                 );
-                if (!settingsTestCase) {
-                  await createExternalContactNotification(ctx.db, {
-                    userId: ctx.userId,
-                    caseId: opCase.id,
-                    contact: {
-                      ...(opCase.external_contact_jsonb as Record<string, unknown>),
-                      channel: "telegram",
-                      chat_id: input.chat_id,
-                    },
-                    channel: "telegram",
-                    recipientIdentifier: String(input.chat_id),
-                    messageBody: input.text,
-                    status: "sent",
-                    nextReminderAt: new Date(
-                      Date.now() + 24 * 60 * 60_000
-                    ).toISOString(),
-                    metadata: {
-                      purpose: input.purpose ?? "outbound",
-                      source: "telegram_send_message_to_contact",
-                    },
-                  });
-                }
-                const purpose = input.purpose ?? "outbound";
-                if (TELEGRAM_REPLY_EXPECTED_PURPOSES.has(purpose)) {
-                  const latest = await getOperationalCase(ctx.db, opCase.id);
-                  if (latest && latest.user_id === ctx.userId) {
-                    await updateOperationalCase(
-                      ctx.db,
-                      latest.id,
-                      latest.version,
-                      {
-                        status: "waiting_external",
-                        currentStep:
-                          purpose === "characteristics_pending"
-                            ? "documents_received"
-                            : latest.current_step,
-                        nextActionAt: settingsTestCase
-                          ? null
-                          : new Date(
-                              Date.now() + 24 * 60 * 60_000
-                            ).toISOString(),
-                      }
-                    );
-                  }
-                }
+                await applyTelegramSendCaseWiring(
+                  ctx,
+                  input,
+                  caseForWiring,
+                  labCase
+                );
               }
             } catch (e) {
               console.warn(
