@@ -68,7 +68,29 @@ const STEP_OUTPUT_KEYS: Array<{
       "listing_package",
     ],
   },
+  {
+    match: (scenarioId) => scenarioId.startsWith("documents_received_"),
+    keys: ["property_data"],
+  },
 ];
+
+/**
+ * Tras sembrar property_data incompleto, quita campos que deben faltar en N4
+ * (el merge superficial deja valores de una corrida N3 anterior).
+ */
+export function applyPropertyDataSeedRules(
+  propertyData: Record<string, unknown>
+): Record<string, unknown> {
+  const next = { ...propertyData };
+  const missing = next.missing_critical_fields;
+  if (!Array.isArray(missing)) return next;
+  for (const field of missing) {
+    if (typeof field === "string" && field.trim()) {
+      delete next[field.trim()];
+    }
+  }
+  return next;
+}
 
 export function isolateContextForSkillTest(
   context: Record<string, unknown>,

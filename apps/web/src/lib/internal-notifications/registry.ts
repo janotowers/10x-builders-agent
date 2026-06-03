@@ -65,16 +65,83 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     visibleInInbox: true,
     intent: "review",
   },
+  comparables_analysis: {
+    kind: "comparables_analysis",
+    label: "Analisis de comparables",
+    visibleInInbox: true,
+    intent: "reminder",
+  },
+  property_comparables: {
+    kind: "property_comparables",
+    label: "Comparables de propiedad",
+    visibleInInbox: true,
+    intent: "reminder",
+  },
+  preflight_check: {
+    kind: "preflight_check",
+    label: "Verificacion previa",
+    visibleInInbox: true,
+    intent: "reminder",
+  },
+  missing_requirements: {
+    kind: "missing_requirements",
+    label: "Requisitos faltantes",
+    visibleInInbox: true,
+    intent: "reminder",
+  },
 };
 
 export function humanizeNotificationKind(kind: string): string {
   return kind.replace(/[_-]+/g, " ").trim() || "Notificacion";
 }
 
+function normalizeNotificationKindKey(kind: string): string {
+  return kind.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+const COMPARABLES_NOTIFICATION_KINDS = new Set([
+  "comparables_analysis",
+  "property_comparables",
+]);
+
+function notificationDecisionText(params: {
+  kind: string;
+  body?: string | null;
+  title?: string | null;
+}) {
+  return `${params.title ?? ""} ${params.body ?? ""}`.toLowerCase();
+}
+
+/** Algunos notify_user de comparables piden revisión de precio sin kind=price_approval. */
+export function effectiveInternalNotificationKind(params: {
+  kind: string;
+  body?: string | null;
+  title?: string | null;
+}): string {
+  const kind = normalizeNotificationKindKey(params.kind || "general");
+  if (kind === "price_approval") return kind;
+  if (!COMPARABLES_NOTIFICATION_KINDS.has(kind)) return kind;
+
+  const text = notificationDecisionText(params);
+  if (
+    /revisemos el precio|precio propuesto|aprobar precio|aprobacion de precio|aprobar el precio|revisar precio/.test(
+      text
+    )
+  ) {
+    return "price_approval";
+  }
+  return kind;
+}
+
 export function internalNotificationKindConfig(
-  kind: string | null | undefined
+  kind: string | null | undefined,
+  opts: { body?: string | null; title?: string | null } = {}
 ): InternalNotificationKindConfig {
-  const normalized = kind?.trim() || "general";
+  const normalized = effectiveInternalNotificationKind({
+    kind: normalizeNotificationKindKey(kind?.trim() || "general"),
+    body: opts.body,
+    title: opts.title,
+  });
   return (
     INTERNAL_NOTIFICATION_KIND_CONFIGS[normalized] ?? {
       kind: normalized,

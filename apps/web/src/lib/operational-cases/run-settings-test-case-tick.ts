@@ -13,7 +13,7 @@ import {
   markCaseProcessing,
   updateOperationalCase,
 } from "@agents/db";
-import type { OperationalCase } from "@agents/types";
+import type { OperationalCase, PendingConfirmation } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
 
@@ -45,6 +45,7 @@ function buildCaseE2ETickMessage(
 export type SettingsTestCaseTickResult = {
   case: OperationalCase;
   pending_confirmation: boolean;
+  pendingConfirmation: PendingConfirmation | null;
   response_preview: string | null;
 };
 
@@ -84,7 +85,9 @@ export async function runSettingsTestCaseAgentTick(
     payload: {
       kind: "controlled_test_e2e_started",
       source: options?.source ?? "settings_test_case_tick",
-      note: "Tick del agente sobre caso de prueba (tools reales, pre-autorizadas en Settings).",
+      current_step: fresh.current_step ?? null,
+      status: fresh.status,
+      note: "Transición con agente sobre caso de prueba (tools reales, pre-autorizadas en Settings).",
     },
   });
 
@@ -136,6 +139,7 @@ export async function runSettingsTestCaseAgentTick(
       ? buildSettingsTestToolApprovalPolicy()
       : undefined,
     caseId: fresh.id,
+    toolCallSource: "agent_e2e",
   });
 
   const afterAgent = await getOperationalCase(db, fresh.id);
@@ -171,6 +175,7 @@ export async function runSettingsTestCaseAgentTick(
   return {
     case: updated ?? afterAgent ?? fresh,
     pending_confirmation: Boolean(agentResult.pendingConfirmation),
+    pendingConfirmation: agentResult.pendingConfirmation ?? null,
     response_preview: agentResult.response?.slice(0, 800) ?? null,
   };
 }

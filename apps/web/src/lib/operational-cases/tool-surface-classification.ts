@@ -3,8 +3,9 @@
  * Patrones: PATTERN_TOOL_SURFACE_CLASSIFICATION, PATTERN_CASE_INTAKE_PRECONDITION
  *
  * - `allowed_tools` en SKILL.md = runtime (el agente puede invocarlas).
- * - readiness-visible = tarjeta N1 y prerequisito N3/N4.
- * - internal = persistencia/plataforma; validadas en detalle técnico N3/N4.
+ * - readiness-visible = tarjeta «Probar tool» y prerequisitos de habilidad/paso.
+ * - internal = bloque UI «Herramientas internas» en un hito; sin «Probar tool» (se validan con «Probar habilidad» / «Probar paso»).
+ * - infrastructure = soporte transversal; tarjeta «Probar tool» propia.
  */
 
 export type ToolSurfaceKind =
@@ -54,17 +55,14 @@ export function isReadinessVisibleTool(toolId: string): boolean {
   return (
     kind === "business_integration" ||
     kind === "external_action" ||
-    kind === "internal_notification"
+    kind === "internal_notification" ||
+    kind === "infrastructure"
   );
 }
 
 export function isInternalOperationalTool(toolId: string): boolean {
   const kind = toolSurfaceKind(toolId);
-  return (
-    kind === "internal_platform" ||
-    kind === "internal_domain" ||
-    kind === "infrastructure"
-  );
+  return kind === "internal_platform" || kind === "internal_domain";
 }
 
 export function isScenarioOnlyTool(toolId: string): boolean {
@@ -114,6 +112,43 @@ export function partitionFlowSteps<T extends { step_key: string }>(steps: T[]): 
     }
   }
   return { preparationSteps, operationalSteps };
+}
+
+/** Pasos operativos numerables (excluye registro/intake y transversales). */
+export function operationalFlowSteps<T extends { step_key: string }>(
+  steps: T[]
+): T[] {
+  return steps.filter(
+    (step) =>
+      !isIntakePreparationStep(step.step_key) &&
+      step.step_key !== "transversal_tools"
+  );
+}
+
+/**
+ * Número visible alineado con el laboratorio: 0 = registro/intake, 1+ = operativos.
+ * Devuelve null para pasos transversales u otros sin numeración.
+ */
+export function flowStepDisplayNumber(
+  stepKey: string,
+  allSteps: Array<{ step_key: string }>
+): number | null {
+  if (stepKey === "transversal_tools") return null;
+  if (isIntakePreparationStep(stepKey)) return 0;
+  const operationalSteps = operationalFlowSteps(allSteps);
+  const index = operationalSteps.findIndex((step) => step.step_key === stepKey);
+  return index >= 0 ? index + 1 : null;
+}
+
+/** Encabezado «N. Etiqueta» para resumen de avance y vistas similares. */
+export function flowProgressStepHeading(
+  step: { step_key: string; step_label: string },
+  allSteps: Array<{ step_key: string; step_label?: string }>
+): string {
+  const displayNumber = flowStepDisplayNumber(step.step_key, allSteps);
+  return displayNumber !== null
+    ? `${displayNumber}. ${step.step_label}`
+    : step.step_label;
 }
 
 export function toolSurfaceLabel(kind: ToolSurfaceKind): string {

@@ -238,7 +238,7 @@ function notificationActionUrl(payload: NotifyPayload) {
   if (binding) {
     return caseDocumentDownloadPath(caseId.trim(), binding.documentKey);
   }
-  return `/operational-cases?case_id=${encodeURIComponent(caseId)}`;
+  return `/operational-cases?case=${encodeURIComponent(caseId.trim())}`;
 }
 
 async function enrichGeneratedDocumentNotifyPayload(

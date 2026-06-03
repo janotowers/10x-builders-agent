@@ -15,7 +15,6 @@ import { pathToFileURL } from "node:url";
 import { PDFParse } from "pdf-parse";
 import { z } from "zod";
 import {
-  createToolCall,
   updateToolCallStatus,
   createOperationalCaseDocument,
   createOperationalCase,
@@ -39,6 +38,7 @@ import type {
   OperationalCaseIntakeField,
 } from "@agents/types";
 import type { ToolContext } from "./tool-context";
+import { createTrackedToolCall } from "./tool-call-audit";
 
 const STATUS_VALUES = [
   "active",
@@ -644,14 +644,9 @@ export function addOperationalCaseTools(
           next_action_at?: string;
           due_at?: string;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "operational_case_create",
+          const record = await createTrackedToolCall(ctx, "operational_case_create",
             input as unknown as Record<string, unknown>,
-            true,
-            ctx.turnId
-          );
+            true);
 
           const caseType = await getOperationalCaseTypeForUser(
             ctx.db,
@@ -784,14 +779,9 @@ export function addOperationalCaseTools(
           external_contact?: Record<string, unknown>;
           note?: string;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "operational_case_update_state",
+          const record = await createTrackedToolCall(ctx, "operational_case_update_state",
             input as unknown as Record<string, unknown>,
-            true,
-            ctx.turnId
-          );
+            true);
 
           let expectedVersion = input.expected_version;
           let opCaseBefore: Awaited<ReturnType<typeof getOperationalCase>> = null;
@@ -970,14 +960,9 @@ export function addOperationalCaseTools(
           expected_version: number;
           note?: string;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "operational_case_persist_comparables_analysis",
+          const record = await createTrackedToolCall(ctx, "operational_case_persist_comparables_analysis",
             input as unknown as Record<string, unknown>,
-            false,
-            ctx.turnId
-          );
+            false);
 
           const opCase = await getOperationalCase(ctx.db, input.case_id);
           if (!opCase || opCase.user_id !== ctx.userId) {
@@ -1130,14 +1115,9 @@ export function addOperationalCaseTools(
           actor: (typeof ACTOR_VALUES)[number];
           payload?: Record<string, unknown>;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "operational_case_add_event",
+          const record = await createTrackedToolCall(ctx, "operational_case_add_event",
             input as unknown as Record<string, unknown>,
-            false,
-            ctx.turnId
-          );
+            false);
           const opCase = await getOperationalCase(ctx.db, input.case_id);
           if (!opCase || opCase.user_id !== ctx.userId) {
             const out = { ok: false, error: "case_not_found_or_forbidden" };
@@ -1185,14 +1165,9 @@ export function addOperationalCaseTools(
           blocking?: boolean;
           metadata?: Record<string, unknown>;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "operational_case_register_document",
+          const record = await createTrackedToolCall(ctx, "operational_case_register_document",
             input as unknown as Record<string, unknown>,
-            false,
-            ctx.turnId
-          );
+            false);
           const opCase = await getOperationalCase(ctx.db, input.case_id);
           if (!opCase || opCase.user_id !== ctx.userId) {
             const out = { ok: false, error: "case_not_found_or_forbidden" };
@@ -1264,14 +1239,9 @@ export function addOperationalCaseTools(
     tools.push(
       tool(
         async (input: { case_id: string }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "operational_case_list_documents",
+          const record = await createTrackedToolCall(ctx, "operational_case_list_documents",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
           const opCase = await getOperationalCase(ctx.db, input.case_id);
           if (!opCase || opCase.user_id !== ctx.userId) {
             const out = { ok: false, error: "case_not_found_or_forbidden" };
@@ -1317,14 +1287,9 @@ export function addOperationalCaseTools(
     tools.push(
       tool(
         async (input: { document_id: string; force?: boolean }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "operational_case_extract_document_fields",
+          const record = await createTrackedToolCall(ctx, "operational_case_extract_document_fields",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
           const document = await getOperationalCaseDocument(ctx.db, input.document_id);
           if (!document || document.user_id !== ctx.userId) {
             const out = { ok: false, error: "document_not_found_or_forbidden" };
@@ -1489,14 +1454,9 @@ export function addOperationalCaseTools(
           case_id?: string;
         }) => {
           const caseId = input.case_id ?? ctx.caseId ?? undefined;
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "notify_user",
+          const record = await createTrackedToolCall(ctx, "notify_user",
             input as unknown as Record<string, unknown>,
-            false,
-            ctx.turnId
-          );
+            false);
           try {
             const result = await deps.notifyUser(
               ctx.db,

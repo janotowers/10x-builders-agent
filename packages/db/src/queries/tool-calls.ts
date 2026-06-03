@@ -1,5 +1,6 @@
 import type { DbClient } from "../client";
-import type { ToolCall } from "@agents/types";
+import type { ToolCall, ToolCallMetadata } from "@agents/types";
+import { verifyOwnedSettingsTestCase } from "./notifications";
 
 export async function createToolCall(
   db: DbClient,
@@ -8,19 +9,26 @@ export async function createToolCall(
   args: Record<string, unknown>,
   requiresConfirmation: boolean,
   turnId?: string | null,
-  options?: { executorKind?: "agent" | "deterministic" }
+  options?: {
+    executorKind?: "agent" | "deterministic";
+    metadata?: ToolCallMetadata;
+  }
 ) {
+  const insert: Record<string, unknown> = {
+    session_id: sessionId,
+    turn_id: turnId ?? null,
+    tool_name: toolName,
+    arguments_json: args,
+    status: requiresConfirmation ? "pending_confirmation" : "approved",
+    requires_confirmation: requiresConfirmation,
+    executor_kind: options?.executorKind ?? "agent",
+  };
+  if (options?.metadata && Object.keys(options.metadata).length > 0) {
+    insert.metadata_jsonb = options.metadata;
+  }
   const { data, error } = await db
     .from("tool_calls")
-    .insert({
-      session_id: sessionId,
-      turn_id: turnId ?? null,
-      tool_name: toolName,
-      arguments_json: args,
-      status: requiresConfirmation ? "pending_confirmation" : "approved",
-      requires_confirmation: requiresConfirmation,
-      executor_kind: options?.executorKind ?? "agent",
-    })
+    .insert(insert)
     .select()
     .single();
   if (error) throw error;
@@ -94,6 +102,7 @@ export async function recordDeterministicToolCall(
     args: Record<string, unknown>;
     status: "executed" | "failed";
     result?: Record<string, unknown>;
+    metadata?: ToolCallMetadata;
   }
 ): Promise<ToolCall> {
   const finishedAt = new Date().toISOString();
@@ -108,6 +117,9 @@ export async function recordDeterministicToolCall(
     finished_at: finishedAt,
   };
   if (params.result) insert.result_json = params.result;
+  if (params.metadata && Object.keys(params.metadata).length > 0) {
+    insert.metadata_jsonb = params.metadata;
+  }
 
   const { data, error } = await db
     .from("tool_calls")
@@ -116,4 +128,47 @@ export async function recordDeterministicToolCall(
     .single();
   if (error) throw error;
   return data as ToolCall;
+}
+
+export async function rejectSettingsTestPendingToolCallsForCase(
+  db: DbClient,
+  userId: string,
+  caseId: string,
+  opts: { excludeToolCallIds?: string[] } = {}
+): Promise<number> {
+  const verified = await verifyOwnedSettingsTestCase(db, userId, caseId);
+  if (!verified) return 0;
+
+  const exclude = new Set(opts.excludeToolCallIds ?? []);
+  const { data: pending, error: listError } = await db
+    .from("tool_calls")
+    .select("id")
+    .eq("status", "pending_confirmation")
+    .contains("arguments_json", { case_id: caseId });
+  if (listError) throw listError;
+
+  const ids = (pending ?? [])
+    .map((row: { id?: unknown }) => row.id)
+    .filter(
+      (id): id is string =>
+        typeof id === "string" && id.length > 0 && !exclude.has(id)
+    );
+  if (ids.length === 0) return 0;
+
+  const finishedAt = new Date().toISOString();
+  const { data, error } = await db
+    .from("tool_calls")
+    .update({
+      status: "rejected",
+      finished_at: finishedAt,
+      result_json: {
+        reason: "settings_test_history_cleanup",
+        case_id: caseId,
+      },
+    })
+    .in("id", ids)
+    .eq("status", "pending_confirmation")
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
 }

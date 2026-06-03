@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { toolCallId, action } = await request.json();
+    const { toolCallId, action, channel } = await request.json();
 
     if (!toolCallId || !["approve", "reject"].includes(action)) {
       return NextResponse.json(
@@ -188,7 +188,7 @@ export async function POST(request: Request) {
       businessBrain:
         (profile?.business_brain as Record<string, unknown> | null) ?? {},
       isUnggaAdmin: (profile?.is_ungga_admin as boolean | null) ?? false,
-      channel: "web",
+      channel: channel === "case_runner" ? "case_runner" : "web",
       googleCalendarAccessToken,
       onEvent: (event) => {
         const eventTurnId =

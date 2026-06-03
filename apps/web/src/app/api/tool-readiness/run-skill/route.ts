@@ -1226,6 +1226,7 @@ export async function POST(request: Request) {
       autoApproveTools: false,
       forcedSkillId: skillSlug,
       caseId: opCase.id,
+      toolCallSource: "skill_test",
       toolApprovalPolicy,
     });
 

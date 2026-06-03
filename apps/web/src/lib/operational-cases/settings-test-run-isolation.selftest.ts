@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  applyPropertyDataSeedRules,
   isolateContextForSkillTest,
   isolateContextForStepTest,
 } from "./settings-test-run-isolation";
@@ -37,5 +38,23 @@ assert.equal(n4Price.comparables_analysis, undefined);
 assert.equal(n4Price.pricing_proposal, undefined);
 assert.equal(n4Price.contract_draft, undefined);
 assert.deepEqual(n4Price.property_data, { bedrooms: 3 });
+
+const n4Docs = isolateContextForStepTest(
+  base,
+  "documents_received_characteristics_pending"
+);
+assert.equal(n4Docs.property_data, undefined);
+
+const stripped = applyPropertyDataSeedRules({
+  bedrooms: 3,
+  bathrooms: 2,
+  parking_spots: 1,
+  operation: "rent",
+  missing_critical_fields: ["bedrooms", "bathrooms", "parking_spots"],
+});
+assert.equal(stripped.bedrooms, undefined);
+assert.equal(stripped.bathrooms, undefined);
+assert.equal(stripped.parking_spots, undefined);
+assert.equal(stripped.operation, "rent");
 
 console.log("settings-test-run-isolation.selftest: ok");

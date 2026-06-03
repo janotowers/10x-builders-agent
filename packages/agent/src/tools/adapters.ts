@@ -23,7 +23,6 @@ import { userMessageIsCalendarRelated } from "./calendar-intent";
 import { userMessageIsLocalShellOrFilesystemIntent } from "./local-shell-intent";
 import { userMessageIsFileToolsIntent } from "./file-tools-intent";
 import {
-  createToolCall,
   updateToolCallStatus,
   createScheduledTask,
   getScheduledTaskForUser,
@@ -59,6 +58,7 @@ import {
 import { readSkillReference } from "./skill-references";
 import { defaultSkillsRoot } from "../skills/runtime";
 import type { ToolContext } from "./tool-context";
+import { createTrackedToolCall } from "./tool-call-audit";
 import type {
   ToolApprovalMode,
   ToolApprovalPolicy,
@@ -598,14 +598,9 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "read_skill_reference",
+          const record = await createTrackedToolCall(ctx, "read_skill_reference",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
           const result = await readSkillReference({
             name: input.name,
             activeSkillName: ctx.activeSkillName,
@@ -638,14 +633,9 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "bigquery_run_query",
+          const record = await createTrackedToolCall(ctx, "bigquery_run_query",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
           const prepared = prepareBigQueryRunArgs(input, ctx);
           const result =
             "status" in prepared
@@ -708,14 +698,9 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "list_user_memories",
+          const record = await createTrackedToolCall(ctx, "list_user_memories",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
           try {
             const limit = Math.min(
               Math.max(1, Math.floor(input.limit ?? 25)),
@@ -783,14 +768,9 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "search_user_memories",
+          const record = await createTrackedToolCall(ctx, "search_user_memories",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
           try {
             const limit = Math.min(
               Math.max(1, Math.floor(input.limit ?? 8)),
@@ -964,14 +944,9 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "github_list_repos",
+          const record = await createTrackedToolCall(ctx, "github_list_repos",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
 
           if (!ctx.githubToken) {
             const err = { error: "GitHub token not available" };
@@ -1025,14 +1000,9 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "github_list_issues",
+          const record = await createTrackedToolCall(ctx, "github_list_issues",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
 
           if (!ctx.githubToken) {
             const err = { error: "GitHub token not available" };
@@ -1339,14 +1309,9 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input: { path: string; offset?: number; limit?: number }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "read_file",
+          const record = await createTrackedToolCall(ctx, "read_file",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
           const result = await executeReadFile(input);
           const out = JSON.stringify(result);
           const asRecord = result as unknown as Record<string, unknown>;
@@ -1573,14 +1538,9 @@ export function buildLangChainTools(ctx: ToolContext) {
           action: "list" | "pause" | "resume";
           task_id?: string;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "manage_scheduled_tasks",
+          const record = await createTrackedToolCall(ctx, "manage_scheduled_tasks",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
 
           try {
             if (input.action === "list") {

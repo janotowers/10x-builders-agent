@@ -52,7 +52,10 @@ import {
   stepTestScenariosFor,
 } from "@/lib/operational-cases/step-test-scenarios";
 import {
-  flowStepProgressBadgeLabel,
+  flowProgressRuntimeBadgeLabel,
+  flowProgressRuntimeBadgeTitle,
+  formatFlowStepEvidenceSummaryLine,
+  summarizeFlowStepEvidence,
   isStepTestBlocked,
   contractDraftScenarioOutcomeHint,
   formatStepScenarioChecklist,
@@ -78,6 +81,7 @@ import {
 } from "@/lib/operational-cases/instance-list-ui";
 import { stringifyToolArgsForDisplay } from "@/lib/tool-readiness/format-args-for-display";
 import {
+  flowProgressStepHeading,
   isInternalOperationalTool,
   isReadinessVisibleTool,
   isScenarioOnlyTool,
@@ -85,6 +89,36 @@ import {
   toolSurfaceKind,
   toolSurfaceLabel,
 } from "@/lib/operational-cases/tool-surface-classification";
+import type { SettingsTestPendingAction } from "@/lib/operational-cases/settings-test-pending-actions";
+import { settingsTestPlaythroughAnchorAt } from "@/lib/operational-cases/settings-test-pending-actions";
+import type { FlowProgressEvidenceItem } from "@/lib/operational-cases/settings-test-flow-progress";
+import { toolCallStatusLabel } from "@/lib/operational-cases/settings-test-flow-progress";
+import type { LastE2ETransitionOutcome } from "@/lib/operational-cases/settings-test-e2e-transitions";
+import { buildE2ETransitionGroups } from "@/lib/operational-cases/settings-test-e2e-transitions";
+import {
+  buildOperationalStepLabelMap,
+  cleanupTargetLabel,
+  countSettingsTestActionsByKind,
+  formatLabToolArgsPreviewLine,
+  formatLabTransitionBadge,
+  formatLabTransitionSummary,
+  formatLastE2ETransitionOutcome,
+  formatSettingsTestCleanupResult,
+  formatSettingsTestHistorySummary,
+  needsE2EPlaythroughRestartBanner,
+  type OperationalStepLabelMap,
+  type SettingsTestCleanupTarget,
+} from "@/lib/operational-cases/settings-test-history-ui";
+import { internalNotificationKindConfig } from "@/lib/internal-notifications/registry";
+import {
+  caseActionUrl,
+  pendientesDeepLink,
+  pendingActionFocusId,
+  pendingActionLinkLabel,
+  prepareNotificationBodyMarkdown,
+  shouldShowAssociatedActionLink,
+} from "@/lib/notifications/pending-action-display";
+import ReactMarkdown from "react-markdown";
 
 type PageScrollPosition = {
   x: number;
@@ -195,11 +229,11 @@ const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
       "Prepara un caso de prueba con datos del intake y valida el registro antes del flujo operativo, sin mezclarlo con operación real.",
     run_button_label: "Validar intake seguro",
     synthetic_data_copy:
-      "Caso de prueba en la misma fila de operational_cases (regenerar no crea otro registro). El tick E2E puede invocar tools y crear pendientes de prueba, pero el cron no debe continuar el caso automáticamente.",
+      "Caso de prueba en la misma fila de operational_cases (regenerar no crea otro registro). La prueba con agente puede invocar tools y crear pendientes de aprobación, pero el cron no debe continuar el caso automáticamente.",
     success_copy:
-      "Prueba segura inicial pasada: intake validado. Usa el tick E2E para probar una transición controlada vía agente.",
+      "Prueba segura inicial pasada: registro validado. Usa la prueba con agente al final del laboratorio para una transición controlada.",
     timeline_note:
-      "Validación segura: intake y paso inicial sin agente. Tick E2E: una ejecución controlada del agente con tools reales; publicación/envíos pueden pedir aprobación humana.",
+      "Validación segura: registro y paso inicial sin agente. Prueba con agente: una ejecución real desde el paso actual del caso; publicación o envíos pueden pedir aprobación humana.",
     next_action:
       "Revisar readiness de tools de envío/escritura/publicación antes de operación real completa.",
     start_step: "intake",
@@ -256,6 +290,31 @@ const CASE_TYPE_WORKSPACE_TABS: Array<{
   { id: "instances", label: "Instancias" },
   { id: "activation", label: "Activación" },
 ];
+
+function isCaseTypeWorkspaceTab(
+  value: string | null
+): value is CaseTypeWorkspaceTab {
+  return CASE_TYPE_WORKSPACE_TABS.some((tab) => tab.id === value);
+}
+
+function caseTypeFromUrl(
+  rows: OperationalCaseType[]
+): OperationalCaseType | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get("type") ?? params.get("case_type");
+  if (!value) return null;
+  return (
+    rows.find((row) => row.id === value || row.case_type === value) ?? null
+  );
+}
+
+function tabFromUrl(): CaseTypeWorkspaceTab | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get("tab");
+  return isCaseTypeWorkspaceTab(value) ? value : null;
+}
 
 type SkillAuthoringResult = {
   skillDraft: string;
@@ -411,6 +470,34 @@ type ToolReadinessFlowStep = Omit<
   };
 };
 
+function flowToolWithoutReadiness(
+  tool: OperationalCaseFlowTool
+): ToolReadinessFlowTool {
+  return {
+    ...tool,
+    readiness: null,
+  };
+}
+
+function flowSkillWithoutReadiness(
+  skill: OperationalCaseFlowSkill
+): ToolReadinessFlowSkill {
+  return {
+    ...skill,
+    skill_tools: (skill.skill_tools ?? []).map(flowToolWithoutReadiness),
+  };
+}
+
+function flowStepWithoutReadiness(
+  step: OperationalCaseFlowStep
+): ToolReadinessFlowStep {
+  return {
+    ...step,
+    step_skills: (step.step_skills ?? []).map(flowSkillWithoutReadiness),
+    step_tools: (step.step_tools ?? []).map(flowToolWithoutReadiness),
+  };
+}
+
 type ToolReadinessRequestStatus =
   | "requested"
   | "in_review"
@@ -430,8 +517,16 @@ type OperationalCaseTestResult = {
   case: OperationalCase | null;
   events: OperationalCaseEvent[];
   toolCalls: ToolCall[];
+  pendingActions?: SettingsTestPendingAction[];
+  blockingActions?: SettingsTestPendingAction[];
+  historicalActions?: SettingsTestPendingAction[];
+  transitionCount?: number;
+  e2eStartEvents?: OperationalCaseEvent[];
   flowProgress?: OperationalCaseFlowProgressStep[];
+  lastTransition?: LastE2ETransitionOutcome | null;
 };
+
+type LabPendingAction = SettingsTestPendingAction;
 
 type TestContextDraft = Record<string, string | string[]>;
 
@@ -446,6 +541,7 @@ type OperationalCaseFlowProgressStep = {
   step_label: string;
   status: OperationalCaseFlowProgressStatus;
   evidence: string[];
+  evidenceItems?: FlowProgressEvidenceItem[];
 };
 
 type EditingSnapshot = {
@@ -983,9 +1079,9 @@ function toolReadinessCounts(result: ToolReadinessResult | null) {
   return counts;
 }
 
-function fixturePreparationStatus(params: {
+function testCasePreparationStatus(params: {
   hasCase: boolean;
-  currentStep: string | null | undefined;
+  registrationReady: boolean;
   safeCheckPassed: boolean;
   toolsHaveBlocks: boolean;
 }): { label: string; tone: "pending" | "attention" | "ready" } {
@@ -997,10 +1093,13 @@ function fixturePreparationStatus(params: {
   if (params.toolsHaveBlocks) {
     return { label: "Tools pendientes", tone: "attention" };
   }
-  if (params.currentStep === "intake" && !params.safeCheckPassed) {
+  if (!params.registrationReady) {
     return { label: "Caso creado · validar registro", tone: "attention" };
   }
-  return { label: "Caso de prueba listo", tone: "ready" };
+  if (params.safeCheckPassed) {
+    return { label: "Registro validado", tone: "ready" };
+  }
+  return { label: "Registro validado por avance", tone: "ready" };
 }
 
 function testCaseIntakePrepared(params: {
@@ -1024,7 +1123,7 @@ function activationSafeTestCheckCopy(params: {
       params.testStatus === "e2e_tick_completed" ||
       params.testStatus === "e2e_pending_hitl"
     ) {
-      return "Prueba con agente ejecutada (tick E2E controlado sobre el caso de prueba).";
+      return "Prueba con agente ejecutada (una transición controlada sobre el caso de prueba).";
     }
     return (
       params.policy.activation_checks?.safe_test_success_copy ??
@@ -1118,7 +1217,7 @@ function activationStepProgressCheck(params: {
   };
 }
 
-function fixtureStatusPillClass(tone: "pending" | "attention" | "ready") {
+function testCaseStatusPillClass(tone: "pending" | "attention" | "ready") {
   if (tone === "ready") return "bg-emerald-50 text-emerald-800";
   if (tone === "attention") return "bg-amber-50 text-amber-800";
   return "bg-neutral-100 text-neutral-700";
@@ -1628,9 +1727,9 @@ const MODE_LABELS: Record<ToolTestMode, string> = {
 
 const MODE_DESCRIPTIONS: Record<ToolTestMode, string> = {
   smoke:
-    "Args mínimos genéricos (plantilla). Si la tool requiere caso aislado y existe, smoke puede enlazar case_id automáticamente. La tool recibe únicamente el JSON mostrado.",
+    "Args mínimos genéricos (plantilla). Si la tool requiere un caso de prueba y existe, smoke puede enlazar case_id automáticamente. La tool recibe únicamente el JSON mostrado.",
   case:
-    "Args armados desde el contexto del caso aislado de Preparación operativa (más overrides en Avanzado). La tool recibe sólo ese JSON resuelto, no un formulario paralelo en runtime.",
+    "Args armados desde el contexto del caso de prueba del laboratorio (más overrides en Avanzado). La tool recibe sólo ese JSON resuelto, no un formulario paralelo en runtime.",
 };
 
 function documentToolReadinessHint(toolId: string, flowStepKey?: string) {
@@ -2449,14 +2548,14 @@ function ToolTestPanel({
           Esta prueba crea un caso real adicional en{" "}
           <span className="font-mono">operational_cases</span> (contexto{" "}
           <span className="font-mono">created_from=tool_readiness_test</span>). No
-          reemplaza el caso aislado de Preparación operativa
+          reemplaza el caso de prueba del laboratorio
           {caseId ? (
             <>
               {" "}
               (<span className="font-mono break-all">{caseId}</span>)
             </>
           ) : null}
-          . Repetir la prueba genera más filas de prueba; el caso aislado sigue
+          . Repetir la prueba genera más filas de prueba; el caso de prueba sigue
           siendo el que alimenta el resto del flow. Los args se muestran con
           claves ordenadas (alfabético dentro de context) para comparar Smoke vs
           Caso de prueba a simple vista.
@@ -4791,6 +4890,11 @@ function SimulateOwnerResponsePanel({
         case: data.case,
         events: data.events ?? [],
         toolCalls: data.toolCalls ?? [],
+        pendingActions: data.pendingActions ?? [],
+        blockingActions: data.blockingActions ?? [],
+        historicalActions: data.historicalActions ?? [],
+        transitionCount: data.transitionCount ?? 0,
+        e2eStartEvents: data.e2eStartEvents ?? [],
         flowProgress: data.flowProgress ?? [],
       };
       setResult(processedResult);
@@ -4916,9 +5020,9 @@ function renderFlowToolReadiness(params: {
         </div>
       </div>
       <div className="mt-1 text-[11px]">{metaParts.join(" · ")}</div>
-      {item.blocking ? (
+      {item.blocking && isReadinessVisibleTool(item.tool_id) ? (
         <p className="mt-1 text-xs font-semibold">Bloquea la prueba end-to-end.</p>
-      ) : item.status !== "ready" ? (
+      ) : item.status !== "ready" && isReadinessVisibleTool(item.tool_id) ? (
         <p className="mt-1 text-xs font-semibold">
           No bloquea la prueba segura, pero debe resolverse antes de operación real.
         </p>
@@ -5005,14 +5109,664 @@ function renderFlowToolReadiness(params: {
   );
 }
 
-function testProgressBadge(status: OperationalCaseFlowProgressStatus) {
-  if (status === "completed") {
-    return activationStatusBadge("ready", `✓ ${flowStepProgressBadgeLabel(status)}`);
+function flowProgressSummaryBadge(status: OperationalCaseFlowProgressStatus) {
+  let badge;
+  if (status === "completed" || status === "in_progress") {
+    badge = activationStatusBadge(
+      status === "completed" ? "ready" : "attention",
+      flowProgressRuntimeBadgeLabel(status)
+    );
+  } else if (status === "blocked") {
+    badge = activationStatusBadge("attention", flowProgressRuntimeBadgeLabel(status));
+  } else {
+    badge = activationStatusBadge("pending", flowProgressRuntimeBadgeLabel(status));
   }
-  if (status === "blocked" || status === "in_progress") {
-    return activationStatusBadge("attention", flowStepProgressBadgeLabel(status));
+  return (
+    <span title={flowProgressRuntimeBadgeTitle(status)} className="inline-flex">
+      {badge}
+    </span>
+  );
+}
+
+function TestCaseFlowProgressSummary({
+  caseStatus,
+  flowProgress,
+  playthroughAnchorAt,
+}: {
+  caseStatus?: OperationalCaseStatus | null;
+  flowProgress: OperationalCaseFlowProgressStep[];
+  playthroughAnchorAt?: string | null;
+}) {
+  const stepsWithHistory = flowProgress.filter(
+    (step) => step.evidence.length > 0
+  ).length;
+  const currentSteps = flowProgress.filter(
+    (step) => step.status === "in_progress"
+  );
+  const currentStepBadgeLabel =
+    currentSteps.length === 1
+      ? `En: ${currentSteps[0]!.step_label}`
+      : currentSteps.length > 1
+        ? `${currentSteps.length} posiciones activas`
+        : null;
+  const caseStatusLabel = caseStatus
+    ? OPERATIONAL_CASE_STATUS_LABELS[caseStatus]
+    : null;
+
+  return (
+    <details className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+      <summary className="cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden">
+        <div className="text-center">
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+              Resumen de avance del caso de prueba
+            </span>
+            <span className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+              {stepsWithHistory}/{flowProgress.length} pasos con actividad
+            </span>
+            {caseStatusLabel ? (
+              <span className="inline-flex rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-800">
+                Estado: {caseStatusLabel}
+              </span>
+            ) : null}
+            {currentStepBadgeLabel ? (
+              <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                {currentStepBadgeLabel}
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-2 text-xs text-neutral-500">
+            Actividad del caso agrupada por paso del flujo operativo
+            {playthroughAnchorAt
+              ? " (recorrido actual desde Regenerar datos o Validar intake seguro)."
+              : " (todo el caso de prueba; para un recorrido limpio usa Regenerar datos y Validar intake seguro). "}
+            Resume eventos y tools legibles por etapa; el detalle por transición
+            con agente está en «Auditoría técnica» dentro de Prueba con agente.
+          </p>
+        </div>
+      </summary>
+      <ol className="mt-3 space-y-2 border-t border-neutral-200 pt-3 text-xs dark:border-neutral-800">
+        {flowProgress.map((step) => {
+          const summary = summarizeFlowStepEvidence(step.evidence);
+          return (
+            <li
+              key={step.step_key}
+              className="rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900"
+            >
+              <div className="font-semibold">
+                {flowProgressStepHeading(step, flowProgress)}
+              </div>
+              <div className="mt-1">{flowProgressSummaryBadge(step.status)}</div>
+              <p className="mt-1 text-neutral-600 dark:text-neutral-300">
+                {formatFlowStepEvidenceSummaryLine(summary, {
+                  cycleScoped: Boolean(playthroughAnchorAt),
+                })}
+              </p>
+                {summary.uniqueTools.length > 0 ? (
+                  <p className="mt-1 text-[11px] text-neutral-500">
+                    Tools: {summary.uniqueTools.slice(0, 6).join(", ")}
+                    {summary.uniqueTools.length > 6
+                      ? ` (+${summary.uniqueTools.length - 6} más)`
+                      : ""}
+                  </p>
+                ) : null}
+                {step.evidence.length > 0 ? (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-[11px] font-semibold text-violet-700 hover:underline">
+                      Ver actividad ({step.evidence.length})
+                    </summary>
+                    <ul className="mt-1.5 max-h-40 space-y-1 overflow-y-auto text-[11px] text-neutral-600 dark:text-neutral-300">
+                      {(step.evidenceItems ?? []).map((item) => (
+                        <li
+                          key={`${item.kind}:${item.id}`}
+                          className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 rounded border border-neutral-100 bg-neutral-50/80 px-2 py-1 dark:border-neutral-800 dark:bg-neutral-950/50"
+                        >
+                          <span>
+                            {item.kind === "event" ? (
+                              <span className="font-medium text-neutral-800 dark:text-neutral-100">
+                                {item.summary}
+                              </span>
+                            ) : (
+                              <>
+                                <span className="font-mono text-neutral-800 dark:text-neutral-100">
+                                  {item.tool_name}
+                                </span>
+                                <span className="ml-1 text-neutral-500">
+                                  · {toolCallStatusLabel(item.status)}
+                                </span>
+                              </>
+                            )}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-neutral-400">
+                            {formatDateTime(item.created_at)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                ) : null}
+            </li>
+          );
+        })}
+      </ol>
+    </details>
+  );
+}
+
+function labPendingActionDisplayLabel(action: LabPendingAction) {
+  if (action.kind === "internal_notification") {
+    return internalNotificationKindConfig(action.notification_kind, {
+      body: action.body,
+      title: action.label,
+    }).label;
   }
-  return activationStatusBadge("pending", flowStepProgressBadgeLabel(status));
+  return action.label;
+}
+
+function LabPendingActionItem({
+  action,
+  caseId,
+  showTelegramHint,
+  variant = "blocking",
+  operationalStepLabels,
+}: {
+  action: LabPendingAction;
+  caseId: string;
+  showTelegramHint: boolean;
+  variant?: "blocking" | "historical";
+  operationalStepLabels?: OperationalStepLabelMap;
+}) {
+  const isHistorical = variant === "historical";
+  const focusId = pendingActionFocusId(action);
+  const showAssociatedLink =
+    action.kind === "internal_notification" &&
+    shouldShowAssociatedActionLink({
+      kind: "internal_notification",
+      notification_kind: action.notification_kind,
+      action_url: action.action_url,
+      body: action.body,
+    });
+  const badgeClass = isHistorical
+    ? "rounded bg-neutral-100 px-1.5 py-0.5 font-semibold text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+    : "rounded bg-amber-100 px-1.5 py-0.5 font-semibold";
+  const metaClass = isHistorical
+    ? "text-[11px] text-neutral-500 dark:text-neutral-400"
+    : "text-[11px] text-amber-700";
+  const bodyClass = isHistorical
+    ? "prose prose-sm mt-1 max-w-none break-words text-[11px] text-neutral-700 dark:text-neutral-300 prose-a:break-words prose-a:font-semibold prose-a:underline"
+    : "prose prose-sm mt-1 max-w-none break-words text-[11px] text-amber-800 prose-a:break-words prose-a:font-semibold prose-a:underline";
+  const linkClass = isHistorical
+    ? "text-[11px] font-semibold text-neutral-700 underline dark:text-neutral-200"
+    : "text-[11px] font-semibold text-amber-900 underline";
+  const toolArgsPreview =
+    action.kind === "tool_confirmation"
+      ? formatLabToolArgsPreviewLine(action.tool_name, action.args_preview, {
+          operationalStepLabels,
+        })
+      : null;
+  return (
+    <li
+      className={`min-w-0 rounded border p-2 ${
+        variant === "blocking"
+          ? "border-amber-200 bg-white/80"
+          : "border-neutral-200 bg-white/70 dark:border-neutral-700 dark:bg-neutral-950/20"
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={badgeClass}>
+          {action.kind === "tool_confirmation"
+            ? isHistorical
+              ? "Aprobación previa del agente"
+              : "Aprobación del agente"
+            : isHistorical
+              ? "Notificación de prueba"
+              : "Pendiente interno"}
+        </span>
+        <span className="font-semibold">{labPendingActionDisplayLabel(action)}</span>
+        <span className={metaClass}>{formatDateTime(action.created_at)}</span>
+        {showTelegramHint && action.telegram_delivered ? (
+          <span
+            className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800"
+            title="Si vinculaste Telegram, revisa el chat del bot para aprobar desde ahí."
+          >
+            También en Telegram
+          </span>
+        ) : null}
+      </div>
+      {action.kind === "tool_confirmation" ? (
+        <>
+          <p className={`mt-1 ${metaClass}`}>
+            {isHistorical ? (
+              <>
+                Tool usada en prueba previa:{" "}
+                <span className="font-mono">{action.tool_name}</span>.
+              </>
+            ) : (
+              <>
+                Tool pendiente:{" "}
+                <span className="font-mono">{action.tool_name}</span>. Resuélvela en
+                Pendientes o Telegram.
+              </>
+            )}
+          </p>
+          {toolArgsPreview ? (
+            <p
+              className={`mt-1 break-words font-mono text-[10px] leading-snug ${
+                isHistorical
+                  ? "text-neutral-600 dark:text-neutral-400"
+                  : "text-amber-800"
+              }`}
+            >
+              {toolArgsPreview}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <div className={bodyClass}>
+          <ReactMarkdown
+            components={{
+              a: ({ href, children }) => (
+                <a href={href} target="_blank" rel="noopener noreferrer">
+                  {children}
+                </a>
+              ),
+            }}
+          >
+            {prepareNotificationBodyMarkdown(action.body)}
+          </ReactMarkdown>
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <a
+          href={caseActionUrl(caseId)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={linkClass}
+        >
+          {pendingActionLinkLabel(action, "case")}
+        </a>
+        {!isHistorical && focusId ? (
+          <a
+            href={pendientesDeepLink({ caseId, focus: focusId })}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={linkClass}
+          >
+            {pendingActionLinkLabel(action, "pendientes")}
+          </a>
+        ) : null}
+        {action.kind === "internal_notification" && showAssociatedLink ? (
+          <a
+            href={action.action_url ?? "#"}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={linkClass}
+          >
+            {pendingActionLinkLabel(action, "action_url")}
+          </a>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+function LabStepDetails({
+  defaultOpen,
+  className,
+  summary,
+  children,
+}: {
+  defaultOpen: boolean;
+  className?: string;
+  summary: ReactNode;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    setOpen(defaultOpen);
+  }, [defaultOpen]);
+
+  function toggleOpen() {
+    const scrollPosition = capturePageScroll();
+    setOpen((current) => !current);
+    restorePageScrollAfterLayout(scrollPosition);
+    (document.activeElement as HTMLElement | null)?.blur();
+  }
+
+  return (
+    <details
+      className={`[overflow-anchor:none] ${className ?? ""}`.trim()}
+      open={open}
+    >
+      <summary
+        className="cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden"
+        onMouseDown={(event) => {
+          event.preventDefault();
+        }}
+        onClick={(event) => {
+          event.preventDefault();
+          toggleOpen();
+        }}
+      >
+        {summary}
+      </summary>
+      {children}
+    </details>
+  );
+}
+
+function LabCaseHistoryDetails({
+  historicalActions,
+  caseId,
+  summaryToneClass,
+  operationalStepLabels,
+}: {
+  historicalActions: LabPendingAction[];
+  caseId: string;
+  summaryToneClass: string;
+  operationalStepLabels?: OperationalStepLabelMap;
+}) {
+  const [open, setOpen] = useState(false);
+  const historySummary = formatSettingsTestHistorySummary(
+    countSettingsTestActionsByKind(historicalActions)
+  );
+
+  function toggleOpen() {
+    const scrollPosition = capturePageScroll();
+    setOpen((current) => !current);
+    restorePageScrollAfterLayout(scrollPosition);
+    (document.activeElement as HTMLElement | null)?.blur();
+  }
+
+  return (
+    <details className="mt-2 [overflow-anchor:none]" open={open}>
+      <summary
+        className={`flex cursor-pointer list-none items-center gap-1 marker:content-none text-[11px] font-semibold [&::-webkit-details-marker]:hidden ${summaryToneClass}`}
+        onMouseDown={(event) => {
+          event.preventDefault();
+        }}
+        onClick={(event) => {
+          event.preventDefault();
+          toggleOpen();
+        }}
+      >
+        <span
+          aria-hidden
+          className={`inline-block text-[10px] leading-none transition-transform ${
+            open ? "rotate-90" : ""
+          }`}
+        >
+          ▸
+        </span>
+        <span>
+          {historySummary}
+        </span>
+      </summary>
+      <div className="[overflow-anchor:none]">
+        <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
+          Notificaciones y aprobaciones de pruebas previas. Puedes limpiarlas si
+          ya no aplican.
+        </p>
+        <ul className="mt-1 space-y-1.5">
+          {historicalActions.map((action) => (
+            <LabPendingActionItem
+              key={action.id}
+              action={action}
+              caseId={caseId}
+              showTelegramHint={false}
+              variant="historical"
+              operationalStepLabels={operationalStepLabels}
+            />
+          ))}
+        </ul>
+      </div>
+    </details>
+  );
+}
+
+function LabPendingActionPanel({
+  blockingActions,
+  historicalActions,
+  caseId,
+  onRefresh,
+  refreshing,
+  operationalStepLabels,
+  transitionCount,
+  currentStep,
+  currentStepLabel,
+  events,
+  toolCalls,
+  e2eStartEvents = [],
+  playthroughAnchorAt,
+}: {
+  blockingActions: LabPendingAction[];
+  historicalActions: LabPendingAction[];
+  caseId: string;
+  onRefresh: () => void;
+  refreshing: boolean;
+  operationalStepLabels?: OperationalStepLabelMap;
+  transitionCount: number;
+  currentStep?: string | null;
+  currentStepLabel?: string | null;
+  events: OperationalCaseEvent[];
+  toolCalls: ToolCall[];
+  e2eStartEvents?: OperationalCaseEvent[];
+  playthroughAnchorAt?: string | null;
+}) {
+  const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
+  const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [cleanupTarget, setCleanupTarget] = useState<SettingsTestCleanupTarget>("all");
+  const prevTransitionCountRef = useRef(transitionCount);
+  const hasBlocking = blockingActions.length > 0;
+  const hasHistorical = historicalActions.length > 0;
+  const historicalCounts = countSettingsTestActionsByKind(historicalActions);
+  const operationalStepDisplay =
+    currentStepLabel?.trim() ||
+    (currentStep ? operationalStepLabels?.[currentStep] : null) ||
+    currentStep ||
+    "sin paso";
+
+  useEffect(() => {
+    if (
+      transitionCount > prevTransitionCountRef.current &&
+      cleanupStatus
+    ) {
+      setCleanupStatus(null);
+    }
+    prevTransitionCountRef.current = transitionCount;
+  }, [transitionCount, cleanupStatus]);
+
+  async function cleanupCaseHistory() {
+    setCleanupLoading(true);
+    setCleanupStatus(null);
+    try {
+      const res = await fetch(
+        `/api/notifications?scope=settings-test&case_id=${encodeURIComponent(caseId)}&target=${encodeURIComponent(cleanupTarget)}`,
+        { method: "DELETE" }
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        deleted_notifications?: number;
+        rejected_tool_calls?: number;
+        deleted?: number;
+        error?: string;
+      };
+      if (!res.ok) {
+        setCleanupStatus(data.error ?? "No se pudo limpiar el historial HITL.");
+        return;
+      }
+      setCleanupStatus(formatSettingsTestCleanupResult(data));
+      onRefresh();
+    } catch (err) {
+      setCleanupStatus((err as Error).message ?? String(err));
+    } finally {
+      setCleanupLoading(false);
+    }
+  }
+
+  return (
+    <div
+      className={`rounded border p-3 text-xs ${
+        hasBlocking
+          ? "border-amber-200 bg-amber-50 text-amber-900"
+          : "border-neutral-200 bg-neutral-50 text-neutral-800 dark:border-neutral-700 dark:bg-neutral-900/40 dark:text-neutral-200"
+      }`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold">
+            {hasBlocking ? "Acción humana pendiente" : "Estado del laboratorio"}
+          </div>
+          <p
+            className={`mt-1 ${
+              hasBlocking ? "text-amber-800" : "text-neutral-600 dark:text-neutral-300"
+            }`}
+          >
+            {hasBlocking
+              ? "Resuélvela en el mismo canal que usarías en operación real antes de ejecutar otra transición."
+              : hasHistorical
+                ? "Hay registros HITL informativos de pruebas anteriores. No bloquean la siguiente transición."
+                : "Sin pendientes HITL activas. Puedes ejecutar otra transición con agente."}
+          </p>
+          <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
+            {formatLabTransitionSummary(transitionCount)}
+            {" · "}
+            Paso operativo actual:{" "}
+            <span className="font-semibold text-neutral-800 dark:text-neutral-100">
+              {operationalStepDisplay}
+            </span>
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {hasBlocking ? (
+            <a
+              href={pendientesDeepLink({ caseId })}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded border border-amber-300 bg-white px-2 py-1 font-semibold text-amber-900 hover:bg-amber-100"
+            >
+              Abrir Pendientes
+            </a>
+          ) : null}
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing || cleanupLoading}
+            className={`rounded border px-2 py-1 font-semibold disabled:opacity-60 ${
+              hasBlocking
+                ? "border-amber-300 bg-white text-amber-900 hover:bg-amber-100"
+                : "border-neutral-300 bg-white text-neutral-800 hover:bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100"
+            }`}
+          >
+            {refreshing ? "Actualizando..." : "Refrescar caso"}
+          </button>
+          {hasHistorical ? (
+            <>
+              <label className="sr-only" htmlFor={`lab-cleanup-target-${caseId}`}>
+                Qué limpiar del historial HITL
+              </label>
+              <select
+                id={`lab-cleanup-target-${caseId}`}
+                value={cleanupTarget}
+                onChange={(event) => {
+                  setCleanupTarget(event.target.value as SettingsTestCleanupTarget);
+                  setCleanupStatus(null);
+                }}
+                disabled={cleanupLoading || refreshing}
+                className="rounded border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold text-rose-800 disabled:opacity-60"
+              >
+                <option value="all">
+                  {cleanupTargetLabel("all", historicalCounts)}
+                </option>
+                <option value="notifications">
+                  {cleanupTargetLabel("notifications", historicalCounts)}
+                </option>
+                <option value="tool_calls">
+                  {cleanupTargetLabel("tool_calls", historicalCounts)}
+                </option>
+              </select>
+              <button
+                type="button"
+                onClick={() => void cleanupCaseHistory()}
+                disabled={cleanupLoading || refreshing}
+                className="rounded border border-rose-200 bg-white px-2 py-1 font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+              >
+                {cleanupLoading ? "Limpiando..." : "Limpiar historial HITL"}
+              </button>
+            </>
+          ) : null}
+        </div>
+      </div>
+      {hasBlocking ? (
+        <p className="mt-1 text-[11px] text-amber-700">
+          Refrescar caso actualiza el estado tras resolver la acción en Pendientes
+          o Telegram.
+        </p>
+      ) : null}
+      {hasHistorical ? (
+        <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
+          Limpiar historial HITL: las notificaciones se eliminan; las aprobaciones
+          del agente se marcan como rechazadas. No se tocan acciones bloqueantes
+          activas.
+        </p>
+      ) : null}
+      {!hasHistorical && !hasBlocking ? (
+        <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
+          Para empezar un recorrido E2E desde cero: <strong>Regenerar datos</strong>{" "}
+          y <strong>Validar intake seguro</strong> en Preparar caso de prueba, luego
+          ejecuta transiciones una por una.
+        </p>
+      ) : null}
+      {cleanupStatus ? (
+        <p
+          className={`mt-1 text-[11px] ${
+            hasBlocking ? "text-amber-700" : "text-neutral-600 dark:text-neutral-300"
+          }`}
+        >
+          {cleanupStatus}
+        </p>
+      ) : null}
+      <TestCaseAuditPanel
+        events={events}
+        toolCalls={toolCalls}
+        e2eStartEvents={e2eStartEvents}
+        playthroughAnchorAt={playthroughAnchorAt}
+        transitionCount={transitionCount}
+        operationalStepLabels={operationalStepLabels}
+        variant="embedded"
+      />
+      {hasBlocking ? (
+        <div className="mt-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-800">
+            Requiere acción ahora
+          </p>
+          <ul className="mt-1 space-y-1.5">
+            {blockingActions.map((action) => (
+              <LabPendingActionItem
+                key={action.id}
+                action={action}
+                caseId={caseId}
+                showTelegramHint
+                operationalStepLabels={operationalStepLabels}
+              />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {hasHistorical ? (
+        <LabCaseHistoryDetails
+          historicalActions={historicalActions}
+          caseId={caseId}
+          operationalStepLabels={operationalStepLabels}
+          summaryToneClass={
+            hasBlocking
+              ? "text-amber-800"
+              : "text-neutral-700 dark:text-neutral-200"
+          }
+        />
+      ) : null}
+    </div>
+  );
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -5021,26 +5775,6 @@ function formatDateTime(value: string | null | undefined) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
-}
-
-const CONTROLLED_TEST_AUDIT_KINDS = new Set([
-  "step_test_started",
-  "step_test_completed",
-  "skill_test_started",
-  "skill_test_completed",
-]);
-
-const CONTROLLED_TEST_AUDIT_SOURCES = new Set([
-  "tool_readiness_run_step",
-  "tool_readiness_run_skill",
-]);
-
-function isControlledTestAuditEvent(event: OperationalCaseEvent): boolean {
-  const payload = event.payload_jsonb ?? {};
-  const kind = typeof payload.kind === "string" ? payload.kind : "";
-  if (CONTROLLED_TEST_AUDIT_KINDS.has(kind)) return true;
-  const source = typeof payload.source === "string" ? payload.source : "";
-  return CONTROLLED_TEST_AUDIT_SOURCES.has(source);
 }
 
 function controlledTestAuditSummary(event: OperationalCaseEvent): string {
@@ -5083,146 +5817,160 @@ function controlledTestAuditSummary(event: OperationalCaseEvent): string {
           : (status ?? "completada");
     return `Prueba de habilidad · ${skillSlug ?? stepKey ?? "habilidad"} · ${outcome}`;
   }
+  if (kind === "controlled_test_e2e_started") {
+    return "Transición con agente iniciada";
+  }
   return `${kind} · ${event.actor}`;
 }
 
 function TestCaseAuditPanel({
   events,
   toolCalls,
+  e2eStartEvents = [],
+  playthroughAnchorAt,
+  transitionCount,
+  operationalStepLabels,
+  variant = "standalone",
 }: {
   events: OperationalCaseEvent[];
   toolCalls: ToolCall[];
+  e2eStartEvents?: OperationalCaseEvent[];
+  playthroughAnchorAt?: string | null;
+  transitionCount?: number;
+  operationalStepLabels?: OperationalStepLabelMap;
+  variant?: "standalone" | "embedded";
 }) {
-  const [showAllEvents, setShowAllEvents] = useState(false);
-  const [showAllToolCalls, setShowAllToolCalls] = useState(false);
-
-  const controlledEvents = useMemo(
-    () => events.filter(isControlledTestAuditEvent),
-    [events]
-  );
-
-  const displayEvents = useMemo(() => {
-    const list = showAllEvents ? events : controlledEvents;
-    return [...list].sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
-  }, [controlledEvents, events, showAllEvents]);
-
-  const sortedToolCalls = useMemo(
+  const transitionGroups = useMemo(
     () =>
-      [...toolCalls].sort(
-        (a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      ),
-    [toolCalls]
+      buildE2ETransitionGroups({
+        events,
+        toolCalls,
+        anchorAt: playthroughAnchorAt ?? null,
+        e2eStartEvents,
+        stepLabels: operationalStepLabels,
+      }),
+    [events, toolCalls, playthroughAnchorAt, e2eStartEvents, operationalStepLabels]
   );
 
-  const displayToolCalls = showAllToolCalls
-    ? sortedToolCalls
-    : sortedToolCalls.slice(0, 25);
-
-  const hiddenEventCount = events.length - controlledEvents.length;
+  const isEmbedded = variant === "embedded";
 
   return (
-    <details className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
-      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">
-        Auditoría del caso de prueba
-        {controlledEvents.length > 0
-          ? ` · ${controlledEvents.length} prueba${controlledEvents.length === 1 ? "" : "s"}`
-          : events.length > 0
-            ? ` · ${events.length} evento${events.length === 1 ? "" : "s"}`
-            : ""}
+    <details
+      className={`mt-3 ${
+        isEmbedded
+          ? "rounded border border-neutral-200 bg-white/70 dark:border-neutral-700 dark:bg-neutral-950/40"
+          : "rounded-xl border border-neutral-200 dark:border-neutral-800"
+      } p-2 text-sm`}
+    >
+      <summary className="cursor-pointer list-none marker:content-none text-[11px] font-semibold text-violet-800 [&::-webkit-details-marker]:hidden dark:text-violet-200">
+        Auditoría técnica del caso
+        {transitionGroups.length > 0
+          ? ` · ${transitionGroups.length} transición${transitionGroups.length === 1 ? "" : "es"}`
+          : ""}
       </summary>
       <p className="mt-2 text-[11px] text-neutral-500">
-        Historial acumulado del caso de prueba aislado. Los resultados útiles para
-        avanzar aparecen en cada paso al probar habilidad o paso; aquí sirve
-        para depuración.
+        Actividad agrupada por cada ejecución de «Transición con agente»
+        {playthroughAnchorAt
+          ? " en el recorrido actual (desde Regenerar datos o Validar intake seguro)."
+          : " de todo el caso de prueba."}
       </p>
+      {!playthroughAnchorAt ? (
+        <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+          Para un recorrido limpio y contador alineado: Regenerar datos y Validar
+          intake seguro en Preparar caso de prueba.
+        </p>
+      ) : null}
+      {typeof transitionCount === "number" &&
+      transitionCount > transitionGroups.length &&
+      transitionGroups.length > 0 ? (
+        <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+          El contador registra {transitionCount} transición
+          {transitionCount === 1 ? "" : "es"}; aquí se muestran{" "}
+          {transitionGroups.length} (puede faltar historial si supera el límite de
+          eventos cargados).
+        </p>
+      ) : null}
 
-      <div className="mt-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold text-neutral-600">Eventos</div>
-          {hiddenEventCount > 0 ? (
-            <button
-              type="button"
-              onClick={() => setShowAllEvents((prev) => !prev)}
-              className="text-[11px] font-semibold text-violet-700 hover:underline"
+      {transitionGroups.length > 0 ? (
+        <ol className="mt-3 space-y-2">
+          {[...transitionGroups].reverse().map((group) => (
+            <li
+              key={`transition-${group.index}-${group.startedAt}`}
+              className="rounded border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
             >
-              {showAllEvents
-                ? "Solo pruebas controladas"
-                : `Ver todos (${events.length})`}
-            </button>
-          ) : null}
-        </div>
-        {displayEvents.length > 0 ? (
-          <ul className="mt-2 space-y-1.5">
-            {displayEvents.map((event) => (
-              <li key={event.id}>
-                <details className="rounded border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-                  <summary className="cursor-pointer px-2 py-1.5 text-xs">
-                    <span className="font-medium text-neutral-800 dark:text-neutral-100">
-                      {controlledTestAuditSummary(event)}
-                    </span>
-                    <span className="ml-2 text-neutral-500">
-                      {formatDateTime(event.created_at)}
-                    </span>
-                  </summary>
-                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap border-t border-neutral-100 px-2 py-1.5 font-mono text-[10px] text-neutral-600 dark:border-neutral-800">
-                    {JSON.stringify(event.payload_jsonb, null, 2)}
-                  </pre>
-                </details>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-1 text-xs text-neutral-500">
-            Sin eventos de prueba controlada todavía.
-          </p>
-        )}
-      </div>
-
-      <div className="mt-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold text-neutral-600">
-            Llamadas a tools
-          </div>
-          {sortedToolCalls.length > 25 ? (
-            <button
-              type="button"
-              onClick={() => setShowAllToolCalls((prev) => !prev)}
-              className="text-[11px] font-semibold text-violet-700 hover:underline"
-            >
-              {showAllToolCalls
-                ? "Mostrar menos"
-                : `Ver todas (${sortedToolCalls.length})`}
-            </button>
-          ) : null}
-        </div>
-        {displayToolCalls.length > 0 ? (
-          <ul className="mt-2 space-y-1">
-            {displayToolCalls.map((call) => (
-              <li
-                key={call.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded border border-neutral-200 bg-white px-2 py-1 text-[11px] dark:border-neutral-800 dark:bg-neutral-900"
-              >
-                <span className="font-mono text-neutral-800 dark:text-neutral-100">
-                  {call.tool_name}
-                </span>
-                <span className="text-neutral-500">
-                  {call.status}
-                  {" · "}
-                  {formatDateTime(call.created_at)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-1 text-xs text-neutral-500">
-            Sin llamadas registradas en este caso.
-          </p>
-        )}
-      </div>
+              <details className="group" open={group.index === transitionGroups.length}>
+                <summary className="cursor-pointer px-2 py-1.5 text-xs font-semibold text-neutral-800 dark:text-neutral-100">
+                  Transición {group.index}
+                  {group.stepLabel ? ` · ${group.stepLabel}` : ""}
+                  <span className="ml-2 font-normal text-neutral-500">
+                    {formatDateTime(group.startedAt)}
+                  </span>
+                  <span className="ml-2 font-normal text-neutral-400">
+                    ({group.events.length} evento
+                    {group.events.length === 1 ? "" : "s"},{" "}
+                    {group.toolCalls.length} tool
+                    {group.toolCalls.length === 1 ? "" : "s"})
+                  </span>
+                </summary>
+                <div className="border-t border-neutral-100 px-2 py-2 dark:border-neutral-800">
+                  {group.events.length > 0 ? (
+                    <ul className="space-y-1">
+                      {group.events.map((event) => (
+                        <li key={event.id}>
+                          <details className="rounded border border-neutral-100 bg-neutral-50/80 dark:border-neutral-800 dark:bg-neutral-950/50">
+                            <summary className="cursor-pointer px-2 py-1 text-[11px]">
+                              <span className="font-medium text-neutral-800 dark:text-neutral-100">
+                                {controlledTestAuditSummary(event)}
+                              </span>
+                              <span className="ml-2 text-neutral-500">
+                                {formatDateTime(event.created_at)}
+                              </span>
+                            </summary>
+                            <pre className="max-h-32 overflow-auto whitespace-pre-wrap border-t border-neutral-100 px-2 py-1 font-mono text-[10px] text-neutral-600 dark:border-neutral-800">
+                              {JSON.stringify(event.payload_jsonb, null, 2)}
+                            </pre>
+                          </details>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-[11px] text-neutral-500">Sin eventos en esta transición.</p>
+                  )}
+                  {group.toolCalls.length > 0 ? (
+                    <ul className="mt-2 space-y-1">
+                      {group.toolCalls.map((call) => (
+                        <li
+                          key={call.id}
+                          className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-1 text-[11px] ${
+                            call.status === "pending_confirmation"
+                              ? "border-amber-200 bg-amber-50 text-amber-900"
+                              : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+                          }`}
+                        >
+                          <span className="font-mono text-neutral-800 dark:text-neutral-100">
+                            {call.tool_name}
+                          </span>
+                          <span className="text-neutral-500">
+                            {toolCallStatusLabel(call.status)}
+                            {" · "}
+                            {formatDateTime(call.created_at)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              </details>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-2 text-xs text-neutral-500">
+          {playthroughAnchorAt
+            ? "Aún no hay transiciones en este recorrido. Ejecuta la primera transición con agente."
+            : "Sin transiciones con agente registradas."}
+        </p>
+      )}
     </details>
   );
 }
@@ -5324,6 +6072,7 @@ export function OperationalCaseTypesClient({
   const [testCaseRunningMode, setTestCaseRunningMode] = useState<
     "safe_check" | "agent_e2e" | null
   >(null);
+  const testCaseRunLockRef = useRef(false);
   const testCaseRunning = testCaseRunningMode !== null;
   const [testContextDraft, setTestContextDraft] = useState<TestContextDraft>({});
   const [testContextSaving, setTestContextSaving] = useState(false);
@@ -5403,6 +6152,10 @@ export function OperationalCaseTypesClient({
   const canManageTestCase =
     selectedIsPrivate && selectedIsActive && Boolean(toolReadiness);
   const canCreateTestCase = canManageTestCase && !toolsHaveBlocks;
+  const blockingLabActions = testCaseResult?.blockingActions ?? [];
+  const historicalLabActions = testCaseResult?.historicalActions ?? [];
+  const hasPendingLabActions = blockingLabActions.length > 0;
+  const transitionCount = testCaseResult?.transitionCount ?? 0;
   const testStatus = testCaseResult?.case?.context_jsonb?.controlled_test_status;
   const testPassed =
     testStatus === "passed_safe_checks" ||
@@ -5459,6 +6212,90 @@ export function OperationalCaseTypesClient({
     if (!element) return;
     element.scrollTop = element.scrollHeight;
   }, [authoringProgress, showAuthoringLog]);
+
+  function replaceWorkspaceUrl(
+    row: OperationalCaseType | null,
+    tab: CaseTypeWorkspaceTab
+  ) {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (row) {
+      url.searchParams.set("type", row.id);
+    } else {
+      url.searchParams.delete("type");
+    }
+    if (tab === "summary") {
+      url.searchParams.delete("tab");
+    } else {
+      url.searchParams.set("tab", tab);
+    }
+    window.history.replaceState(window.history.state, "", url);
+  }
+
+  function syncWorkspaceFromUrl() {
+    const nextCaseType = caseTypeFromUrl(caseTypes);
+    const nextTab = tabFromUrl();
+    if (nextCaseType && nextCaseType.id !== selectedCaseType?.id) {
+      viewCaseType(nextCaseType, nextTab ?? "summary", {
+        updateUrl: false,
+      });
+      return;
+    }
+    if (nextTab && nextTab !== activeTab) {
+      setActiveTab(nextTab);
+    }
+  }
+
+  useEffect(() => {
+    syncWorkspaceFromUrl();
+    const handleNavigationRestore = () => {
+      readinessScrollLockRef.current = null;
+      syncWorkspaceFromUrl();
+      if (selectedCaseType && scopeLabel(selectedCaseType) !== "global") {
+        void refreshToolReadiness(selectedCaseType);
+        void refreshTestCase(selectedCaseType);
+      }
+    };
+    window.addEventListener("pageshow", handleNavigationRestore);
+    window.addEventListener("popstate", handleNavigationRestore);
+    return () => {
+      window.removeEventListener("pageshow", handleNavigationRestore);
+      window.removeEventListener("popstate", handleNavigationRestore);
+    };
+  }, [caseTypes, selectedCaseType, activeTab]);
+
+  useEffect(() => {
+    if (
+      activeTab !== "lab" ||
+      !selectedCaseType ||
+      scopeLabel(selectedCaseType) === "global" ||
+      toolReadiness ||
+      toolReadinessLoading ||
+      toolReadinessError
+    ) {
+      return;
+    }
+    void refreshToolReadiness(selectedCaseType);
+  }, [
+    activeTab,
+    selectedCaseType,
+    toolReadiness,
+    toolReadinessLoading,
+    toolReadinessError,
+  ]);
+
+  useEffect(() => {
+    if (
+      activeTab !== "lab" ||
+      !selectedCaseType ||
+      scopeLabel(selectedCaseType) === "global" ||
+      testCaseResult ||
+      testCaseLoading
+    ) {
+      return;
+    }
+    void refreshTestCase(selectedCaseType);
+  }, [activeTab, selectedCaseType, testCaseResult, testCaseLoading]);
 
   function lockPageScrollForReadiness(ms: number) {
     readinessScrollLockRef.current = {
@@ -5778,7 +6615,13 @@ export function OperationalCaseTypesClient({
         case: data.case,
         events: data.events ?? [],
         toolCalls: data.toolCalls ?? [],
+        pendingActions: data.pendingActions ?? [],
+        blockingActions: data.blockingActions ?? [],
+        historicalActions: data.historicalActions ?? [],
+        transitionCount: data.transitionCount ?? 0,
+        e2eStartEvents: data.e2eStartEvents ?? [],
         flowProgress: data.flowProgress ?? [],
+        lastTransition: null,
       });
     } catch (err) {
       console.warn("[operational-case-types] test case load failed:", err);
@@ -5809,7 +6652,13 @@ export function OperationalCaseTypesClient({
         case: data.case,
         events: data.events ?? [],
         toolCalls: data.toolCalls ?? [],
+        pendingActions: data.pendingActions ?? [],
+        blockingActions: data.blockingActions ?? [],
+        historicalActions: data.historicalActions ?? [],
+        transitionCount: data.transitionCount ?? 0,
+        e2eStartEvents: data.e2eStartEvents ?? [],
         flowProgress: data.flowProgress ?? [],
+        lastTransition: null,
       });
       const reused =
         "reused_existing" in data &&
@@ -5854,7 +6703,13 @@ export function OperationalCaseTypesClient({
         case: data.case,
         events: data.events ?? [],
         toolCalls: data.toolCalls ?? [],
+        pendingActions: data.pendingActions ?? [],
+        blockingActions: data.blockingActions ?? [],
+        historicalActions: data.historicalActions ?? [],
+        transitionCount: data.transitionCount ?? 0,
+        e2eStartEvents: data.e2eStartEvents ?? [],
         flowProgress: data.flowProgress ?? [],
+        lastTransition: testCaseResult?.lastTransition ?? null,
       });
       setTestContextVersion((version) => version + 1);
       setTestContextMessage("Datos guardados. Las pruebas por tool usarán estos valores.");
@@ -5867,7 +6722,8 @@ export function OperationalCaseTypesClient({
 
   async function runControlledTest(mode: "safe_check" | "agent_e2e" = "safe_check") {
     const caseId = testCaseResult?.case?.id;
-    if (!caseId) return;
+    if (!caseId || testCaseRunLockRef.current) return;
+    testCaseRunLockRef.current = true;
     setTestCaseRunningMode(mode);
     setError(null);
     setTestContextMessage(null);
@@ -5878,7 +6734,12 @@ export function OperationalCaseTypesClient({
         body: JSON.stringify({ case_id: caseId, mode }),
       });
       const data = (await res.json()) as
-        | ({ ok: true; mode?: string; agent?: { pending_confirmation?: boolean; response_preview?: string | null } } & OperationalCaseTestResult)
+        | ({
+            ok: true;
+            mode?: string;
+            agent?: { pending_confirmation?: boolean; response_preview?: string | null };
+            last_transition?: LastE2ETransitionOutcome | null;
+          } & OperationalCaseTestResult)
         | { error: string };
       if (!res.ok || !("ok" in data)) {
         setError("error" in data ? data.error : "controlled_test_failed");
@@ -5888,22 +6749,34 @@ export function OperationalCaseTypesClient({
         case: data.case,
         events: data.events ?? [],
         toolCalls: data.toolCalls ?? [],
+        pendingActions: data.pendingActions ?? [],
+        blockingActions: data.blockingActions ?? [],
+        historicalActions: data.historicalActions ?? [],
+        transitionCount: data.transitionCount ?? 0,
+        e2eStartEvents: data.e2eStartEvents ?? [],
         flowProgress: data.flowProgress ?? [],
+        lastTransition:
+          data.mode === "agent_e2e"
+            ? (data.last_transition ?? null)
+            : data.mode === "safe_check"
+              ? null
+              : (testCaseResult?.lastTransition ?? null),
       });
       if (data.mode === "agent_e2e") {
         setTestContextMessage(
           data.agent?.pending_confirmation
-            ? "E2E ejecutado: hay tools pendientes de aprobación (HITL). Revisa Casos operacionales o el chat."
-            : "E2E ejecutado: tick del agente completado. Revisa timeline y tool calls abajo."
+            ? "Transición con agente ejecutada: hay acciones pendientes de aprobación humana. Revisa Casos operacionales o el chat."
+            : "Transición con agente completada. Revisa el resumen de avance y la auditoría abajo."
         );
       } else {
         setTestContextMessage(
-          "Fase 1 completada: intake validado sin invocar el agente."
+          "Prueba segura completada: registro validado sin invocar al agente."
         );
       }
     } catch (err) {
       setError((err as Error).message ?? String(err));
     } finally {
+      testCaseRunLockRef.current = false;
       setTestCaseRunningMode(null);
     }
   }
@@ -5980,9 +6853,13 @@ export function OperationalCaseTypesClient({
     scrollEditorPanelToTop();
   }
 
-  function viewCaseType(row: OperationalCaseType) {
+  function viewCaseType(
+    row: OperationalCaseType,
+    tab: CaseTypeWorkspaceTab = "summary",
+    options?: { updateUrl?: boolean }
+  ) {
     setSelectedCaseType(row);
-    setActiveTab("summary");
+    setActiveTab(tab);
     setEditing(null);
     setSchemaText("");
     setFlowText("");
@@ -6005,7 +6882,23 @@ export function OperationalCaseTypesClient({
       void refreshToolReadiness(row);
       void refreshTestCase(row);
     }
+    if (options?.updateUrl !== false) {
+      replaceWorkspaceUrl(row, tab);
+    }
     setError(null);
+  }
+
+  function selectWorkspaceTab(tab: CaseTypeWorkspaceTab, row: OperationalCaseType) {
+    setActiveTab(tab);
+    replaceWorkspaceUrl(row, tab);
+    if (tab === "lab" && scopeLabel(row) !== "global") {
+      if (!toolReadiness && !toolReadinessLoading) {
+        void refreshToolReadiness(row);
+      }
+      if (!testCaseResult && !testCaseLoading) {
+        void refreshTestCase(row);
+      }
+    }
   }
 
   function startPrivateVersion(row: OperationalCaseType) {
@@ -6460,6 +7353,23 @@ export function OperationalCaseTypesClient({
     const testCasePreparationDefaultOpen =
       !testCaseResult?.case ||
       testCaseResult.case.current_step === "intake";
+    const configuredLabFlow = Array.isArray(row.operational_flow_jsonb)
+      ? row.operational_flow_jsonb.map(flowStepWithoutReadiness)
+      : [];
+    const labFlowSteps =
+      toolReadiness?.flow && toolReadiness.flow.length > 0
+        ? toolReadiness.flow
+        : configuredLabFlow;
+    const labFlowPartition = partitionFlowSteps(
+      labFlowSteps.filter((step) => step.step_key !== "transversal_tools")
+    );
+    const labPreparationSteps =
+      toolReadiness?.flow_preparation ?? labFlowPartition.preparationSteps;
+    const labOperationalSteps =
+      toolReadiness?.flow_operational ?? labFlowPartition.operationalSteps;
+    const labTransversalStep = labFlowSteps.find(
+      (step) => step.step_key === "transversal_tools"
+    );
     const testCaseHasCase = Boolean(testCaseResult?.case);
     const intakePrepared = testCaseIntakePrepared({
       hasCase: testCaseHasCase,
@@ -6607,38 +7517,37 @@ export function OperationalCaseTypesClient({
     }
 
     function renderTestCaseN0Card() {
-      const fixtureStatus = fixturePreparationStatus({
+      const preparationStatus = testCasePreparationStatus({
         hasCase: Boolean(testCaseResult?.case),
-        currentStep: testCaseResult?.case?.current_step,
-        safeCheckPassed:
-          testPassed || testCaseResult?.case?.current_step !== "intake",
+        registrationReady: intakePrepared,
+        safeCheckPassed: testPassed,
         toolsHaveBlocks,
       });
       return (
-        <details
+        <LabStepDetails
           key={`n0-${testCaseResult?.case?.id ?? "none"}-${testCaseResult?.case?.current_step ?? "pending"}`}
-          open={testCasePreparationDefaultOpen}
+          defaultOpen={testCasePreparationDefaultOpen}
           className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
-        >
-          <summary className="cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden">
+          summary={
             <div className="text-center">
               <div className="flex flex-wrap items-center justify-center gap-2">
                 <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
                   Preparar caso de prueba
                 </span>
                 <span
-                  className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${fixtureStatusPillClass(
-                    fixtureStatus.tone
+                  className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${testCaseStatusPillClass(
+                    preparationStatus.tone
                   )}`}
                 >
-                  {fixtureStatus.label}
+                  {preparationStatus.label}
                 </span>
               </div>
               <p className="mt-2 text-xs text-neutral-500">
                 {activationPolicy.safe_test.description}
               </p>
             </div>
-          </summary>
+          }
+        >
           <div className="mt-3 space-y-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
             <div className="flex flex-wrap gap-2">
               <button
@@ -6677,46 +7586,11 @@ export function OperationalCaseTypesClient({
                   ? "Ejecutando..."
                   : activationPolicy.safe_test.run_button_label}
               </button>
-              <button
-                type="button"
-                onClick={() => void runControlledTest("agent_e2e")}
-                disabled={!testCaseResult?.case || testCaseRunning || !canRunE2E}
-                className="rounded border border-violet-300 bg-white px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-60"
-                title={
-                  toolsHaveBlocks
-                    ? "Prueba o configura las tools requeridas antes del E2E."
-                    : !canRunE2E
-                      ? "Resuelve stubs, configuraciones de cuenta y tools faltantes antes del E2E. Con stubs el tick puede fallar o devolver respuestas vacías."
-                      : "Un tick del agente sobre el caso de prueba, con tools reales y HITL si aplica."
-                }
-              >
-                {testCaseRunningMode === "agent_e2e"
-                  ? "Ejecutando..."
-                  : "Ejecutar 1 tick E2E con agente"}
-              </button>
             </div>
             <p className="text-[11px] text-neutral-500">
-              La prueba individual por tool (dry-run) valida integración aislada.
-              El tick E2E ejecuta una sola transición vía agente sobre el caso de
-              prueba; no debe dejar que el cron continúe el flujo automáticamente.
-              {!canRunE2E && !toolsHaveBlocks ? (
-                <span className="ml-1 text-amber-700">
-                  Tick E2E deshabilitado hasta resolver{" "}
-                  {readinessCounts.stub} stubs,{" "}
-                  {readinessCounts.needs_config} de cuenta y{" "}
-                  {readinessCounts.missing + readinessCounts.unknown} faltantes.
-                </span>
-              ) : null}
-              {e2ePendingHitl ? (
-                <span className="ml-1 text-violet-700">
-                  Último E2E quedó pendiente de aprobación humana; resuélvelo en
-                  Pendientes o Telegram.
-                </span>
-              ) : e2eCompleted ? (
-                <span className="ml-1 text-emerald-700">
-                  Último E2E completó un tick del agente.
-                </span>
-              ) : null}
+              La prueba segura valida el registro sin invocar al agente. Si el
+              caso ya avanzó a un paso operativo, el registro queda validado por
+              avance y la prueba segura solo deja una constancia formal.
             </p>
             {toolsHaveBlocks && testCaseResult?.case ? (
               <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
@@ -6762,9 +7636,9 @@ export function OperationalCaseTypesClient({
                   {activationPolicy.safe_test.synthetic_data_copy}
                 </p>
                 <p className="mt-1 text-[11px] text-neutral-500">
-                  Regenerar datos de prueba restablece el contexto y el paso de
-                  esta misma fila, pero conserva la línea de tiempo de eventos
-                  para auditoría.
+                  Regenerar datos restablece el caso en intake e inicia un nuevo
+                  recorrido E2E (contador y auditoría desde este momento). La
+                  línea de tiempo histórica se conserva en la base de datos.
                 </p>
               </div>
             ) : (
@@ -6793,37 +7667,219 @@ export function OperationalCaseTypesClient({
                 }}
               />
             ) : null}
-            {testCaseResult?.flowProgress?.length ? (
-              <div className="rounded border border-neutral-200 bg-white p-2 text-xs dark:border-neutral-800 dark:bg-neutral-900">
-                <div className="font-semibold text-neutral-700 dark:text-neutral-200">
-                  Progreso por paso
-                </div>
-                <ol className="mt-2 space-y-2">
-                  {testCaseResult.flowProgress.map((step, index) => (
-                    <li
-                      key={step.step_key}
-                      className="flex items-start gap-3 rounded bg-neutral-50 p-2 dark:bg-neutral-950"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="font-semibold">
-                          {index + 1}. {step.step_label}
-                        </div>
-                        {step.evidence.length > 0 ? (
-                          <div className="mt-1 break-all font-mono text-[11px] text-neutral-500">
-                            {step.evidence.join(", ")}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div className="w-28 shrink-0 text-right">
-                        {testProgressBadge(step.status)}
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            ) : null}
           </div>
-        </details>
+        </LabStepDetails>
+      );
+    }
+
+    function renderTestCaseN5Card() {
+      const hasCase = Boolean(testCaseResult?.case);
+      const operationalStepLabels = buildOperationalStepLabelMap(
+        testCaseResult?.flowProgress?.length
+          ? testCaseResult.flowProgress
+          : Array.isArray(row.operational_flow_jsonb)
+            ? row.operational_flow_jsonb
+            : []
+      );
+      const playthroughAnchorAt = testCaseResult?.case
+        ? settingsTestPlaythroughAnchorAt(testCaseResult.case.context_jsonb)
+        : null;
+      const showPlaythroughRestartBanner =
+        hasCase &&
+        needsE2EPlaythroughRestartBanner({
+          currentStep: testCaseResult?.case?.current_step,
+          playthroughAnchorAt,
+        });
+      const lastTransition = testCaseResult?.lastTransition ?? null;
+      const lastTransitionUi =
+        lastTransition && transitionCount > 0
+          ? formatLastE2ETransitionOutcome({
+              transitionNumber: transitionCount,
+              ...lastTransition,
+              stepLabels: operationalStepLabels,
+            })
+          : null;
+      const currentStepKey = testCaseResult?.case?.current_step ?? null;
+      const currentStepProgress = testCaseResult?.flowProgress?.find(
+        (step) => step.step_key === currentStepKey
+      );
+      const currentStepLabel = currentStepProgress?.step_label ?? null;
+      const n5StatusLabel = hasPendingLabActions
+        ? "Acción humana pendiente"
+        : e2ePendingHitl
+        ? "Pendiente aprobación humana"
+        : e2eCompleted
+          ? "Transición completada"
+          : !hasCase
+            ? "Sin caso de prueba"
+            : !intakePrepared
+              ? "Falta validar registro"
+              : "Listo para probar con agente";
+      const n5StatusTone = e2ePendingHitl || hasPendingLabActions
+        ? "attention"
+        : e2eCompleted
+          ? "ready"
+          : intakePrepared
+            ? "ready"
+            : "pending";
+
+      return (
+        <LabStepDetails
+          defaultOpen={hasCase}
+          className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900 dark:bg-violet-950/30"
+          summary={
+            <div className="text-center">
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                  Prueba con agente
+                </span>
+                {hasCase ? (
+                  <span
+                    className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+                    title={formatLabTransitionSummary(transitionCount)}
+                  >
+                    {formatLabTransitionBadge(transitionCount)}
+                  </span>
+                ) : null}
+                {hasCase && currentStepKey ? (
+                  <span
+                    className="inline-flex rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-900 dark:bg-sky-950 dark:text-sky-100"
+                    title="Paso operativo donde está el caso ahora (define qué hará el agente en la siguiente transición)."
+                  >
+                    Paso: {currentStepLabel ?? currentStepKey}
+                  </span>
+                ) : null}
+                {activationStatusBadge(n5StatusTone, n5StatusLabel)}
+              </div>
+              <p className="mt-2 text-xs text-neutral-600 dark:text-neutral-300">
+                Recorrido E2E manual: <strong>Regenerar datos</strong> →{" "}
+                <strong>Validar intake seguro</strong> → transiciones una por una
+                (observa HITL, Pendientes y Telegram reales). Cada clic ejecuta
+                el agente en el paso operativo actual. Hazlo después de verificar
+                herramientas, habilidades y escenarios arriba.
+              </p>
+            </div>
+          }
+        >
+          <div className="mt-3 space-y-3 border-t border-violet-200 pt-3 dark:border-violet-900">
+            {!testCaseResult?.case ? (
+              <p className="text-xs text-neutral-500">
+                Crea el caso de prueba y valida el registro antes de probar con
+                el agente.
+              </p>
+            ) : (
+              <>
+                {showPlaythroughRestartBanner ? (
+                  <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+                    Para un recorrido E2E desde el inicio, usa{" "}
+                    <strong>Regenerar datos de prueba</strong> y{" "}
+                    <strong>Validar intake seguro</strong> en Preparar caso de
+                    prueba. El caso está en un paso avanzado sin ancla de recorrido
+                    actual.
+                  </p>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void runControlledTest("agent_e2e")}
+                  disabled={
+                    !testCaseResult.case ||
+                    testCaseRunning ||
+                    !canRunE2E ||
+                    !intakePrepared ||
+                    hasPendingLabActions
+                  }
+                  className="rounded bg-violet-700 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-60"
+                  title={
+                    toolsHaveBlocks
+                      ? "Prueba o configura las tools requeridas antes de la prueba con agente."
+                      : !canRunE2E
+                        ? "Resuelve stubs, configuraciones de cuenta y tools faltantes antes de la prueba con agente."
+                        : hasPendingLabActions
+                          ? "Resuelve la acción humana pendiente antes de ejecutar otra transición."
+                        : !intakePrepared
+                          ? "Primero valida el registro del caso de prueba."
+                          : "Una transición del agente sobre el caso de prueba, con tools reales y aprobación humana si aplica."
+                  }
+                >
+                  {testCaseRunningMode === "agent_e2e"
+                    ? "Ejecutando..."
+                    : "Ejecutar una transición con agente"}
+                </button>
+                <p className="text-[11px] text-neutral-500">
+                  La prueba con agente no debe dejar que el cron continúe el
+                  flujo automáticamente; es una integración controlada.
+                  {!intakePrepared ? (
+                    <span className="ml-1 text-amber-700">
+                      Falta validar el registro del caso de prueba.
+                    </span>
+                  ) : hasPendingLabActions ? (
+                    <span className="ml-1 text-amber-700">
+                      Resuelve la acción humana pendiente antes de ejecutar otra
+                      transición.
+                    </span>
+                  ) : intakePrepared && !testPassed ? (
+                    <span className="ml-1 text-amber-700">
+                      El registro ya está validado porque el caso avanzó al flujo
+                      operativo; la prueba segura inicial queda como constancia
+                      opcional.
+                    </span>
+                  ) : null}
+                  {!canRunE2E && !toolsHaveBlocks ? (
+                    <span className="ml-1 text-amber-700">
+                      Deshabilitado hasta resolver {readinessCounts.stub} stubs,{" "}
+                      {readinessCounts.needs_config} de cuenta y{" "}
+                      {readinessCounts.missing + readinessCounts.unknown}{" "}
+                      faltantes.
+                    </span>
+                  ) : null}
+                  {e2ePendingHitl ? (
+                    <span className="ml-1 text-violet-700">
+                      La última transición quedó pendiente de aprobación humana;
+                      resuélvela en Pendientes o Telegram.
+                    </span>
+                  ) : e2eCompleted ? (
+                    <span className="ml-1 text-emerald-700">
+                      La última transición del agente se completó.
+                    </span>
+                  ) : null}
+                </p>
+                {lastTransitionUi ? (
+                  <div
+                    className={`rounded border p-2 text-xs ${
+                      lastTransitionUi.tone === "ready"
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                        : lastTransitionUi.tone === "attention"
+                          ? "border-amber-200 bg-amber-50 text-amber-900"
+                          : "border-neutral-200 bg-neutral-50 text-neutral-800 dark:border-neutral-700 dark:bg-neutral-900/50"
+                    }`}
+                  >
+                    <div className="font-semibold">{lastTransitionUi.title}</div>
+                    <ul className="mt-1 list-inside list-disc space-y-0.5 text-[11px]">
+                      {lastTransitionUi.lines.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                <LabPendingActionPanel
+                  blockingActions={blockingLabActions}
+                  historicalActions={historicalLabActions}
+                  caseId={testCaseResult.case.id}
+                  operationalStepLabels={operationalStepLabels}
+                  refreshing={testCaseLoading}
+                  transitionCount={transitionCount}
+                  currentStep={currentStepKey}
+                  currentStepLabel={currentStepLabel}
+                  events={testCaseResult.events ?? []}
+                  toolCalls={testCaseResult.toolCalls ?? []}
+                  e2eStartEvents={testCaseResult.e2eStartEvents ?? []}
+                  playthroughAnchorAt={playthroughAnchorAt}
+                  onRefresh={() => void refreshTestCase(row)}
+                />
+              </>
+            )}
+          </div>
+        </LabStepDetails>
       );
     }
 
@@ -6862,7 +7918,7 @@ export function OperationalCaseTypesClient({
             <button
               key={tab.id}
               type="button"
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => selectWorkspaceTab(tab.id, row)}
               className={`rounded-full px-3 py-1.5 font-semibold ${
                 activeTab === tab.id
                   ? "bg-violet-700 text-white"
@@ -6878,11 +7934,9 @@ export function OperationalCaseTypesClient({
           <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-sm text-violet-950">
             <div className="font-semibold">Laboratorio guiado</div>
             <p className="mt-1 text-xs leading-relaxed text-violet-800">
-              Valida la plantilla de menor a mayor riesgo: preparar datos de
-              prueba (N0), verificar herramientas (N1/N2), probar habilidades
-              (N3), probar pasos del flujo (N4) y ejecutar un tick E2E (N5).
-              Los códigos N se mantienen para auditoría, pero la operación
-              diaria debe seguir siendo conversacional.
+              Valida la plantilla de menor a mayor riesgo: preparar el caso de
+              prueba, verificar herramientas, probar habilidades y escenarios
+              por paso, y al final ejecutar una transición real con el agente.
             </p>
           </div>
         ) : null}
@@ -7020,7 +8074,8 @@ export function OperationalCaseTypesClient({
         ) : null}
 
         {activeTab === "lab" && !isGlobal ? (
-          <div className="w-full min-w-0 space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+          <div className="w-full min-w-0 space-y-3">
+            <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
@@ -7103,23 +8158,14 @@ export function OperationalCaseTypesClient({
                 No se pudo revisar la preparación operativa: {toolReadinessError}
               </p>
             ) : null}
+            </div>
             {renderTestCaseN0Card()}
-            {toolReadiness?.tools.length ? (
-              (() => {
-                const flowSteps = toolReadiness.flow ?? [];
-                const preparationSteps =
-                  toolReadiness.flow_preparation ??
-                  partitionFlowSteps(
-                    flowSteps.filter((step) => step.step_key !== "transversal_tools")
-                  ).preparationSteps;
-                const operationalSteps =
-                  toolReadiness.flow_operational ??
-                  partitionFlowSteps(
-                    flowSteps.filter((step) => step.step_key !== "transversal_tools")
-                  ).operationalSteps;
-                const transversalStep = flowSteps.find(
-                  (step) => step.step_key === "transversal_tools"
-                );
+            {labFlowSteps.length > 0 ? (
+              <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+              {(() => {
+                const preparationSteps = labPreparationSteps;
+                const operationalSteps = labOperationalSteps;
+                const transversalStep = labTransversalStep;
 
                 const partitionSkillTools = (tools: ToolReadinessFlowTool[]) => {
                   const readinessVisible: ToolReadinessFlowTool[] = [];
@@ -7258,9 +8304,6 @@ export function OperationalCaseTypesClient({
                           </span>
                         ) : null}
                       </div>
-                      <p className="mt-1 text-[11px] text-neutral-500">
-                        Sin prueba individual (N1): se comprueba al ejecutar N3 o N4.
-                      </p>
                     </div>
                   );
                 };
@@ -7272,10 +8315,11 @@ export function OperationalCaseTypesClient({
                   return (
                     <details className="rounded border border-dashed border-neutral-300 bg-neutral-50/80 p-2 dark:border-neutral-700 dark:bg-neutral-900/40">
                       <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
-                        Detalle técnico / tools internas
+                        Herramientas internas
                       </summary>
                       <p className="mt-1 text-[11px] text-neutral-500">
-                        Plataforma y persistencia: no exigen N1; se validan en N3/N4.
+                        No requiere «Probar tool» aquí. Se comprueba al usar
+                        «Probar habilidad» o «Probar paso» en este hito.
                       </p>
                       <div className="mt-2 space-y-2">
                         {tools.map((tool) => renderInternalToolRow(tool))}
@@ -7499,37 +8543,40 @@ export function OperationalCaseTypesClient({
                       key={step.step_key}
                       className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
                     >
-                      <summary className="cursor-pointer text-center list-none marker:content-none [&::-webkit-details-marker]:hidden">
-                        <div className="flex flex-wrap items-center justify-center gap-2">
-                          <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
-                            {step.step_label}
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusPillClass(
-                              step.test_status
-                            )}`}
-                          >
-                            {stepTestStatusLabel(
-                              step.test_status,
-                              step.step_test_progress,
-                              {
-                                allSkillsN3Ok: stepAllSkillsN3Ok(
-                                  step.step_skills
-                                ),
-                              }
-                            )}
-                          </span>
+                      <summary className="cursor-pointer list-none marker:content-none [&::-webkit-details-marker]:hidden">
+                        <div className="text-center">
+                          <div className="flex flex-wrap items-center justify-center gap-2">
+                            <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                              Paso 0
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusPillClass(
+                                step.test_status
+                              )}`}
+                            >
+                              {stepTestStatusLabel(
+                                step.test_status,
+                                step.step_test_progress,
+                                {
+                                  allSkillsN3Ok: stepAllSkillsN3Ok(
+                                    step.step_skills
+                                  ),
+                                }
+                              )}
+                            </span>
+                          </div>
+                          <div className="mt-2 font-semibold">{step.step_label}</div>
+                          {step.step_description ? (
+                            <p className="mt-1 text-xs text-neutral-500">
+                              {step.step_description}
+                            </p>
+                          ) : null}
+                          {intakeSummaryHint ? (
+                            <p className="mt-1 text-[11px] text-neutral-400">
+                              {intakeSummaryHint}
+                            </p>
+                          ) : null}
                         </div>
-                        {step.step_description ? (
-                          <p className="mt-2 text-xs text-neutral-500">
-                            {step.step_description}
-                          </p>
-                        ) : null}
-                        {intakeSummaryHint ? (
-                          <p className="mt-1 text-[11px] text-neutral-400">
-                            {intakeSummaryHint}
-                          </p>
-                        ) : null}
                       </summary>
                       <div className="mt-3 space-y-3 border-t border-neutral-100 pt-3 dark:border-neutral-800">
                         <p className="text-xs text-neutral-500">
@@ -7559,36 +8606,68 @@ export function OperationalCaseTypesClient({
                 };
 
                 return (
-                  <div className="space-y-3 [overflow-anchor:none]">
+                  <div
+                    ref={readinessFlowScrollRef}
+                    className="space-y-3 [overflow-anchor:none]"
+                  >
                     {preparationSteps.map((step) => renderIntakeFlowReference(step))}
-                    {operationalSteps.map((step, stepIndex) =>
-                      renderStepSection(step, stepIndex, { preparation: false })
-                    )}
-                    {transversalStep ? (
-                      <details className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
-                        <summary className="cursor-pointer text-center list-none marker:content-none [&::-webkit-details-marker]:hidden">
+                    {operationalSteps.length > 0 || transversalStep ? (
+                      <div className="space-y-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+                        <div>
                           <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                            {transversalStep.step_label}
+                            Pasos operativos del flujo
                           </div>
-                          {transversalStep.step_description ? (
-                            <p className="mt-2 text-xs text-neutral-500">
-                              {transversalStep.step_description}
-                            </p>
-                          ) : null}
-                          <p className="mt-1 text-[11px] text-neutral-400">
-                            {transversalStep.step_tools.length} tool
-                            {transversalStep.step_tools.length === 1 ? "" : "s"}{" "}
-                            transversal
+                          <p className="mt-1 text-xs text-neutral-500">
+                            En cada paso puedes probar herramientas, habilidades
+                            y escenarios. La prueba con agente está al final del
+                            laboratorio.
                           </p>
-                        </summary>
-                        <div className="mt-3 space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
-                          {transversalStep.step_tools.map((tool) =>
-                            renderToolCard(tool, "transversal", {
-                              flowStepKey: "transversal_tools",
+                        </div>
+                        <div className="space-y-3">
+                          {operationalSteps.map((step, stepIndex) =>
+                            renderStepSection(step, stepIndex, {
+                              preparation: false,
                             })
                           )}
+                          {transversalStep ? (
+                            <details className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+                              <summary className="cursor-pointer text-center list-none marker:content-none [&::-webkit-details-marker]:hidden">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                                  {transversalStep.step_label}
+                                </div>
+                                {transversalStep.step_description ? (
+                                  <p className="mt-2 text-xs text-neutral-500">
+                                    {transversalStep.step_description}
+                                  </p>
+                                ) : null}
+                                <p className="mt-1 text-[11px] text-neutral-400">
+                                  {transversalStep.step_tools.length} tool
+                                  {transversalStep.step_tools.length === 1
+                                    ? ""
+                                    : "s"}{" "}
+                                  transversal
+                                </p>
+                              </summary>
+                              <div className="mt-3 space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
+                                {(() => {
+                                  const { readinessVisible, internal } =
+                                    partitionSkillTools(transversalStep.step_tools);
+                                  return (
+                                    <>
+                                      {readinessVisible.map((tool) =>
+                                        renderToolCard(tool, "transversal", {
+                                          flowStepKey: "transversal_tools",
+                                        })
+                                      )}
+                                      {renderInternalToolsBlock(internal)}
+                                    </>
+                                  );
+                                })()}
+                              </div>
+                            </details>
+                          ) : null}
                         </div>
-                      </details>
+                      </div>
                     ) : null}
                     {toolRequestError ? (
                       <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
@@ -7597,7 +8676,8 @@ export function OperationalCaseTypesClient({
                     ) : null}
                   </div>
                 );
-              })()
+              })()}
+              </div>
             ) : toolReadiness ? (
               <p className="rounded border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800">
                 No se requieren herramientas para esta habilidad. Puedes seguir
@@ -7610,6 +8690,16 @@ export function OperationalCaseTypesClient({
                   : "Pendiente: revisa herramientas antes de crear un caso de prueba."}
               </p>
             )}
+            {renderTestCaseN5Card()}
+            {testCaseResult?.flowProgress?.length ? (
+              <TestCaseFlowProgressSummary
+                caseStatus={testCaseResult.case?.status}
+                flowProgress={testCaseResult.flowProgress}
+                playthroughAnchorAt={settingsTestPlaythroughAnchorAt(
+                  testCaseResult.case?.context_jsonb
+                )}
+              />
+            ) : null}
           </div>
         ) : null}
 
@@ -7700,13 +8790,6 @@ export function OperationalCaseTypesClient({
               </li>
             </ul>
           </div>
-        ) : null}
-
-        {activeTab === "lab" && !isGlobal && testCaseResult?.case ? (
-          <TestCaseAuditPanel
-            events={testCaseResult.events}
-            toolCalls={testCaseResult.toolCalls}
-          />
         ) : null}
 
         {activeTab === "summary" ? (

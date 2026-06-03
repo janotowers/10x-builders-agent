@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import {
   createServerClient,
   associateExternalResponseWithCase,
-  getGlobalOperationalCaseTypeBySlug,
   getOperationalCase,
   getOperationalCaseTypeById,
   insertOperationalCaseEvent,
@@ -13,9 +12,7 @@ import {
 } from "@agents/db";
 import type {
   OperationalCase,
-  OperationalCaseEvent,
-  OperationalCaseFlowStep,
-  ToolCall,
+  PendingConfirmation,
 } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { evaluateOwnerResponseBusinessOutcome } from "@/lib/operational-cases/evaluate-owner-response-outcome";
@@ -27,6 +24,12 @@ import {
 } from "@/lib/operational-cases/parse-owner-characteristics";
 import { runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settings-test-case-tick";
 import { notify } from "@/lib/notify";
+import { sendTelegramMessage } from "@/lib/telegram/send-message";
+import {
+  buildSettingsTestCaseResponse,
+  effectiveFlowForCaseType,
+} from "@/lib/operational-cases/settings-test-case-response";
+import { buildLastE2ETransitionOutcome } from "@/lib/operational-cases/settings-test-e2e-transitions";
 type RunMode = "safe_check" | "agent_e2e";
 
 type RunBody = {
@@ -88,88 +91,6 @@ function isCharacteristicsOwnerResponseSimulation(body: RunBody) {
   );
 }
 
-async function effectiveFlowForCase(
-  db: ReturnType<typeof createServerClient>,
-  opCase: OperationalCase
-): Promise<OperationalCaseFlowStep[]> {
-  const caseType = await getOperationalCaseTypeById(db, opCase.case_type_id);
-  const ownFlow = Array.isArray(caseType?.operational_flow_jsonb)
-    ? caseType.operational_flow_jsonb
-    : [];
-  if (ownFlow.length > 0 || !caseType?.user_id) return ownFlow;
-  const globalCaseType = await getGlobalOperationalCaseTypeBySlug(
-    db,
-    caseType.case_type
-  );
-  return Array.isArray(globalCaseType?.operational_flow_jsonb)
-    ? globalCaseType.operational_flow_jsonb
-    : [];
-}
-
-async function listToolCallsForCase(
-  db: ReturnType<typeof createServerClient>,
-  caseId: string
-): Promise<ToolCall[]> {
-  const { data, error } = await db
-    .from("tool_calls")
-    .select("*")
-    .contains("arguments_json", { case_id: caseId })
-    .order("created_at", { ascending: true })
-    .limit(100);
-  if (error) {
-    console.warn("[operational-case-tests/run] tool_calls lookup failed:", error);
-    return [];
-  }
-  return (data ?? []) as ToolCall[];
-}
-
-function buildFlowProgress(params: {
-  opCase: OperationalCase;
-  events: OperationalCaseEvent[];
-  flow: OperationalCaseFlowStep[];
-  toolCalls?: ToolCall[];
-}) {
-  return params.flow.map((step, index) => {
-    const stepToolIds = new Set<string>();
-    for (const tool of step.step_tools ?? []) stepToolIds.add(tool.tool_id);
-    for (const skill of step.step_skills ?? []) {
-      for (const tool of skill.skill_tools ?? []) stepToolIds.add(tool.tool_id);
-    }
-    const toolEvidence = (params.toolCalls ?? []).filter((call) =>
-      stepToolIds.has(call.tool_name)
-    );
-    const eventEvidence = params.events
-      .filter((event) => {
-        const payload = event.payload_jsonb as Record<string, unknown> | null;
-        return (
-          payload?.current_step === step.step_key ||
-          payload?.step === step.step_key ||
-          payload?.step_key === step.step_key ||
-          (index === 0 &&
-            (payload?.kind === "controlled_test_started" ||
-              payload?.kind === "controlled_test_e2e_started"))
-        );
-      })
-      .map((event) => `event:${event.event_type}`);
-    const evidence = [
-      ...eventEvidence,
-      ...toolEvidence.map((call) => `tool:${call.tool_name}:${call.status}`),
-    ];
-    const status =
-      params.opCase.current_step === step.step_key
-        ? "in_progress"
-        : evidence.length > 0
-          ? "completed"
-          : "pending";
-    return {
-      step_key: step.step_key,
-      step_label: step.step_label,
-      status,
-      evidence,
-    };
-  });
-}
-
 async function runSafeCheck(
   db: ReturnType<typeof createServerClient>,
   fresh: OperationalCase
@@ -186,6 +107,12 @@ async function runSafeCheck(
     },
   });
 
+  const anchorAt =
+    typeof fresh.context_jsonb?.controlled_test_playthrough_anchor_at ===
+      "string" && fresh.context_jsonb.controlled_test_playthrough_anchor_at.trim()
+      ? fresh.context_jsonb.controlled_test_playthrough_anchor_at.trim()
+      : new Date().toISOString();
+
   const updated = await updateOperationalCase(db, fresh.id, fresh.version, {
     status: "paused",
     currentStep:
@@ -194,6 +121,8 @@ async function runSafeCheck(
     context: {
       ...fresh.context_jsonb,
       test_mode: true,
+      controlled_test_playthrough_anchor_at: anchorAt,
+      controlled_test_cycle_reset_at: undefined,
       controlled_test_last_run_at: new Date().toISOString(),
       controlled_test_status: "passed_safe_checks",
     },
@@ -235,9 +164,49 @@ async function runAgentE2E(
     case: tick.case,
     agent: {
       pending_confirmation: tick.pending_confirmation,
+      pendingConfirmation: tick.pendingConfirmation,
       response_preview: tick.response_preview,
     },
   };
+}
+
+async function sendPendingConfirmationToLinkedTelegram(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  pending: PendingConfirmation | null | undefined
+) {
+  if (!pending) return false;
+  const { data, error } = await db
+    .from("telegram_accounts")
+    .select("chat_id")
+    .eq("user_id", userId)
+    .order("linked_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data?.chat_id) return false;
+  try {
+    await sendTelegramMessage(Number(data.chat_id), pending.message, {
+      inline_keyboard: [
+        [
+          {
+            text: "✅ Aprobar",
+            callback_data: `approve:${pending.toolCallId}`,
+          },
+          {
+            text: "❌ Cancelar",
+            callback_data: `reject:${pending.toolCallId}`,
+          },
+        ],
+      ],
+    });
+    return true;
+  } catch (error) {
+    console.warn(
+      "[operational-case-tests/run] telegram pending confirmation send failed:",
+      error
+    );
+    return false;
+  }
 }
 
 async function processCharacteristicsOwnerResponseDeterministically(
@@ -446,10 +415,17 @@ export async function POST(request: Request) {
     }
 
     let resultCase: OperationalCase;
-    let agentMeta: { pending_confirmation: boolean; response_preview: string | null } | null =
-      null;
+    let agentMeta: {
+      pending_confirmation: boolean;
+      pendingConfirmation?: PendingConfirmation | null;
+      response_preview: string | null;
+      telegram_sent?: boolean;
+    } | null = null;
     let tickStartedAt: string | null = null;
     let internalReviewSent = false;
+
+    const stepBeforeE2E = fresh.current_step ?? null;
+    const statusBeforeE2E = fresh.status ?? null;
 
     if (mode === "agent_e2e") {
       tickStartedAt = new Date().toISOString();
@@ -476,6 +452,13 @@ export async function POST(request: Request) {
         const e2e = await runAgentE2E(db, fresh, user.id, ownerResponseText || undefined);
         resultCase = e2e.case;
         agentMeta = e2e.agent;
+        if (agentMeta.pendingConfirmation) {
+          agentMeta.telegram_sent = await sendPendingConfirmationToLinkedTelegram(
+            db,
+            user.id,
+            agentMeta.pendingConfirmation
+          );
+        }
       }
     } else {
       const safe = await runSafeCheck(db, fresh);
@@ -485,25 +468,24 @@ export async function POST(request: Request) {
       resultCase = safe.case;
     }
 
-    const events = await db
-      .from("operational_case_events")
-      .select("*")
-      .eq("case_id", resultCase.id)
-      .order("created_at", { ascending: true })
-      .limit(80);
-
-    const toolCalls = await listToolCallsForCase(db, resultCase.id);
-    const flow = await effectiveFlowForCase(db, resultCase);
-    const flowProgress = buildFlowProgress({
-      opCase: resultCase,
-      events: (events.data ?? []) as OperationalCaseEvent[],
+    const telegramSentToolCallId =
+      agentMeta?.telegram_sent && agentMeta.pendingConfirmation?.toolCallId
+        ? agentMeta.pendingConfirmation.toolCallId
+        : null;
+    const caseType = await getOperationalCaseTypeById(db, resultCase.case_type_id);
+    const flow = caseType ? await effectiveFlowForCaseType(db, caseType) : [];
+    const testCasePayload = await buildSettingsTestCaseResponse(
+      db,
+      resultCase,
+      user.id,
       flow,
-      toolCalls,
-    });
+      { telegramSentForToolCallId: telegramSentToolCallId }
+    );
+    const { toolCalls } = testCasePayload;
 
     const businessOutcome = ownerResponseText
       ? evaluateOwnerResponseBusinessOutcome({
-          opCase: resultCase,
+          opCase: testCasePayload.case,
           toolCalls,
           pendingConfirmation: Boolean(agentMeta?.pending_confirmation),
           ownerResponseText,
@@ -515,16 +497,26 @@ export async function POST(request: Request) {
         })
       : null;
 
+    const last_transition =
+      mode === "agent_e2e"
+        ? buildLastE2ETransitionOutcome({
+            stepBefore: stepBeforeE2E,
+            stepAfter: testCasePayload.case.current_step ?? null,
+            statusBefore: statusBeforeE2E,
+            statusAfter: testCasePayload.case.status ?? null,
+            responsePreview: agentMeta?.response_preview ?? null,
+            pendingConfirmation: agentMeta?.pending_confirmation,
+          })
+        : null;
+
     return NextResponse.json({
       ok: true,
       mode,
       owner_response_processed: Boolean(ownerResponseText),
-      case: resultCase,
-      events: events.data ?? [],
-      toolCalls,
-      flowProgress,
+      ...testCasePayload,
       agent: agentMeta,
       business_outcome: businessOutcome,
+      last_transition,
     });
   } catch (err) {
     console.error("[POST /api/operational-case-tests/run] failed:", err);

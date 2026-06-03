@@ -173,7 +173,7 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 |--|--|
 | **Capa** | `runtime` + `test_ui` |
 | **Cuándo usar** | Al declarar tools en flow, skills y `allowed_tools` |
-| **Comportamiento** | `business_integration` / `external_action` / `internal_notification` → tarjeta N1 y prerequisito N3/N4. `internal_platform` / `internal_domain` / `infrastructure` → detalle técnico, sin N1 obligatorio. `scenario_only` → alta/intake (N0), no bloquea pasos operativos. |
+| **Comportamiento** | `business_integration` / `external_action` / `internal_notification` / `infrastructure` → tarjeta «Probar tool». `internal_platform` / `internal_domain` → bloque «Herramientas internas» en el hito (sin «Probar tool»; se validan con «Probar habilidad» / «Probar paso»). `scenario_only` → alta/intake, no bloquea pasos operativos. |
 | **Implementación** | [`tool-surface-classification.ts`](../../apps/web/src/lib/operational-cases/tool-surface-classification.ts); API `GET /api/tool-readiness`, `run-skill`, `run-step` |
 
 ### `PATTERN_CASE_INTAKE_PRECONDITION`

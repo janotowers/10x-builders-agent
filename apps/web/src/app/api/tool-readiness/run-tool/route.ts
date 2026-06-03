@@ -2538,13 +2538,32 @@ export async function POST(request: Request) {
 
     if (READINESS_RECORDS_TOOL_CALL.has(toolId)) {
       try {
+        const readinessFlowStepKey =
+          cleanText(body.readiness_flow_step_key) || undefined;
+        const readinessSkillSlug =
+          cleanText(body.readiness_skill_slug) || undefined;
         const record = await createToolCall(
           db,
           session.id,
           toolId,
           resolvedArgsForExecution,
           false,
-          null
+          null,
+          {
+            metadata: {
+              ...(resolution.case_id ? { case_id: resolution.case_id } : {}),
+              ...(readinessFlowStepKey
+                ? { operational_step_key: readinessFlowStepKey }
+                : {}),
+              ...(readinessSkillSlug ? { skill_slug: readinessSkillSlug } : {}),
+              source: readinessFlowStepKey
+                ? "step_test"
+                : readinessSkillSlug
+                  ? "skill_test"
+                  : undefined,
+              channel: "case_runner",
+            },
+          }
         );
         const resultPayload: Record<string, unknown> = invokeError
           ? { error: invokeError }

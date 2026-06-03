@@ -159,6 +159,7 @@ const ADAPTER_TOOLS = new Set([
   "operational_case_create",
   "operational_case_update_state",
   "operational_case_add_event",
+  "operational_case_persist_comparables_analysis",
   "operational_case_register_document",
   "operational_case_list_documents",
   "operational_case_extract_document_fields",

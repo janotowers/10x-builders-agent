@@ -148,6 +148,45 @@ export async function setInternalUserNotificationStatus(
   return (data as InternalUserNotification | null) ?? null;
 }
 
+export async function deleteSettingsTestInternalNotificationsForCase(
+  db: DbClient,
+  userId: string,
+  caseId: string
+): Promise<number> {
+  const verified = await verifyOwnedSettingsTestCase(db, userId, caseId);
+  if (!verified) return 0;
+
+  const { data, error } = await db
+    .from("internal_user_notifications")
+    .delete()
+    .eq("user_id", userId)
+    .eq("case_id", caseId)
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
+}
+
+/** Caso de prueba del laboratorio perteneciente al usuario. */
+export async function verifyOwnedSettingsTestCase(
+  db: DbClient,
+  userId: string,
+  caseId: string
+): Promise<boolean> {
+  const { data: opCase, error: caseError } = await db
+    .from("operational_cases")
+    .select("id, user_id, context_jsonb")
+    .eq("id", caseId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (caseError) throw caseError;
+  if (!opCase) return false;
+  const context = (opCase as { context_jsonb?: Record<string, unknown> }).context_jsonb;
+  return (
+    context?.created_from === "case_type_settings_test" ||
+    context?.test_mode === true
+  );
+}
+
 export async function deleteSettingsTestInternalNotifications(
   db: DbClient,
   userId: string

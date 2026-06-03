@@ -31,9 +31,7 @@ import {
   executeBigQueryQuery,
   type BigQueryParamValue,
 } from "./bigquery-adapter";
-import {
-  createToolCall,
-  getAccountAssetByStoragePath,
+import { getAccountAssetByStoragePath,
   listAccountAssets,
   updateToolCallStatus,
   getOperationalCase,
@@ -42,6 +40,7 @@ import {
   createExternalContactNotification,
 } from "@agents/db";
 import type { ToolContext } from "./tool-context";
+import { createTrackedToolCall } from "./tool-call-audit";
 import {
   generatedDocumentDedupKey,
   normalizeGeneratedDocumentArgs,
@@ -237,14 +236,9 @@ export function addRealEstateTools(
           case_id?: string;
           purpose?: string;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "telegram_send_message_to_contact",
+          const record = await createTrackedToolCall(ctx, "telegram_send_message_to_contact",
             input as unknown as Record<string, unknown>,
-            true,
-            ctx.turnId
-          );
+            true);
           const inputRecord = input as unknown as Record<string, unknown>;
           const inMemoryDuplicate = hasTelegramSendDedupKey(ctx, inputRecord);
           const duplicateInTurn = await findDuplicateTelegramCallInTurn(
@@ -432,14 +426,9 @@ export function addRealEstateTools(
           months_back?: number;
           limit?: number;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "bigquery_lookup_local_comparables",
+          const record = await createTrackedToolCall(ctx, "bigquery_lookup_local_comparables",
             input as unknown as Record<string, unknown>,
-            false,
-            ctx.turnId
-          );
+            false);
           const out = await lookupLocalComparablesFromBigQuery(ctx, input);
           await updateToolCallStatus(
             ctx.db,
@@ -528,14 +517,9 @@ export function addRealEstateTools(
           ctx.generateDocumentDeferredByKey.set(inFlightKey, deferred);
           claimGenerateDocumentDedupSlot(ctx, dedupArgs);
 
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "generate_document_from_template",
+          const record = await createTrackedToolCall(ctx, "generate_document_from_template",
             inputRecord,
-            true,
-            ctx.turnId
-          );
+            true);
 
           try {
             const out = await renderDocumentFromTemplate(ctx, input);
@@ -633,14 +617,9 @@ export function addRealEstateTools(
           opacity?: number;
           scale?: number;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "image_watermark",
+          const record = await createTrackedToolCall(ctx, "image_watermark",
             input as unknown as Record<string, unknown>,
-            false,
-            ctx.turnId
-          );
+            false);
           try {
             const out = await applyImageWatermark(ctx, input);
             await updateToolCallStatus(ctx.db, record.id, "executed", out);
@@ -766,14 +745,9 @@ export function addRealEstateTools(
     tools.push(
       tool(
         async (input: Record<string, unknown>) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "ungga_publish_listing",
+          const record = await createTrackedToolCall(ctx, "ungga_publish_listing",
             input,
-            true,
-            ctx.turnId
-          );
+            true);
           const out = await executeUnggaPublishListing(ctx, input, deps);
           await updateToolCallStatus(
             ctx.db,
@@ -2020,14 +1994,9 @@ function makeEasyBrokerSearchTool(
 ) {
   return tool(
     async (input: EasyBrokerSearchInput) => {
-      const record = await createToolCall(
-        ctx.db,
-        ctx.sessionId,
-        toolId,
+      const record = await createTrackedToolCall(ctx, toolId,
         input as unknown as Record<string, unknown>,
-        false,
-        ctx.turnId
-      );
+        false);
       const creds = await resolveEasyBrokerWebCredentials(ctx);
       if (!creds) {
         const out = {
@@ -2185,14 +2154,9 @@ const EASYBROKER_MAX_IMAGE_URL_LENGTH = 255;
 function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
   return tool(
     async (input: EasyBrokerCreateListingInput) => {
-      const record = await createToolCall(
-        ctx.db,
-        ctx.sessionId,
-        "easybroker_create_listing",
+      const record = await createTrackedToolCall(ctx, "easybroker_create_listing",
         input as unknown as Record<string, unknown>,
-        true,
-        ctx.turnId
-      );
+        true);
       const creds = await resolveEasyBrokerCredentials(ctx);
       if (!creds) {
         const out = {
@@ -2310,14 +2274,9 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
 function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
   return tool(
     async (input: EasyBrokerUploadImagesInput) => {
-      const record = await createToolCall(
-        ctx.db,
-        ctx.sessionId,
-        "easybroker_upload_images",
+      const record = await createTrackedToolCall(ctx, "easybroker_upload_images",
         input as unknown as Record<string, unknown>,
-        true,
-        ctx.turnId
-      );
+        true);
       const creds = await resolveEasyBrokerCredentials(ctx);
       if (!creds) {
         const out = {

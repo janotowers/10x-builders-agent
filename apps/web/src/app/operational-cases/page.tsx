@@ -44,7 +44,7 @@ import {
 
 export const dynamic = "force-dynamic";
 
-type Search = OperationalCasesListFilters & { case?: string };
+type Search = OperationalCasesListFilters & { case?: string; case_id?: string };
 
 const CASE_STATUSES: OperationalCaseStatus[] = [
   "active",
@@ -445,7 +445,8 @@ export default async function OperationalCasesPage({
     }),
   ]);
 
-  const focusedCaseId = searchParamValue(sp.case) ?? null;
+  const focusedCaseId =
+    searchParamValue(sp.case) ?? searchParamValue(sp.case_id) ?? null;
   const selectedCase = focusedCaseId
     ? cases.find((opCase) => opCase.id === focusedCaseId) ?? null
     : null;
@@ -514,7 +515,7 @@ export default async function OperationalCasesPage({
     };
   }
   return (
-    <main className="mx-auto w-full max-w-7xl space-y-6 p-6">
+    <main className="mx-auto min-w-0 w-full max-w-7xl space-y-6 p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-700 dark:text-violet-300">
@@ -551,7 +552,7 @@ export default async function OperationalCasesPage({
       </header>
 
       {isFocusedDetailView ? (
-        <section className="space-y-4">
+        <section className="min-w-0 space-y-4">
           <div className="flex flex-wrap items-center gap-3">
             <a
               href={`/operational-cases${listQuery}`}
@@ -690,11 +691,13 @@ function CaseDetail({
 }) {
   const skillSlug = type?.default_skill_slug ?? "(sin skill)";
   return (
-    <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+    <section className="min-w-0 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <h2 className="text-base font-semibold">Detalle del caso</h2>
-          <p className="mt-1 font-mono text-xs text-neutral-500">{opCase.id}</p>
+          <p className="mt-1 break-all font-mono text-xs text-neutral-500">
+            {opCase.id}
+          </p>
         </div>
         <span
           className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${OPERATIONAL_CASE_STATUS_BADGES[opCase.status]}`}
@@ -848,7 +851,7 @@ function CaseDetail({
 
       <div className="mt-4">
         <h3 className="text-sm font-semibold">Contexto</h3>
-        <pre className="mt-2 overflow-auto rounded-xl bg-neutral-950 p-3 text-xs text-neutral-100">
+        <pre className="mt-2 max-w-full overflow-auto rounded-xl bg-neutral-950 p-3 text-xs text-neutral-100">
           {toShortJson(opCase.context_jsonb)}
         </pre>
       </div>

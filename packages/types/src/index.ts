@@ -288,6 +288,26 @@ export interface AgentMessage {
   created_at: string;
 }
 
+/** Who triggered a tool_call row (lab, prod agent, chat, etc.). */
+export type ToolCallSource =
+  | "chat"
+  | "telegram"
+  | "cron"
+  | "heartbeat"
+  | "case_runner"
+  | "agent_e2e"
+  | "step_test"
+  | "skill_test";
+
+/** Operational context persisted alongside a tool_call for observability. */
+export interface ToolCallMetadata {
+  case_id?: string;
+  operational_step_key?: string;
+  skill_slug?: string;
+  source?: ToolCallSource;
+  channel?: Channel;
+}
+
 export interface ToolCall {
   id: string;
   session_id: string;
@@ -306,6 +326,8 @@ export interface ToolCall {
    *   the turn's tool history.
    */
   executor_kind?: "agent" | "deterministic";
+  /** Case/step/skill/channel context for lab observability and prod audit. */
+  metadata_jsonb?: ToolCallMetadata | null;
 }
 
 export interface AppliedSkill {

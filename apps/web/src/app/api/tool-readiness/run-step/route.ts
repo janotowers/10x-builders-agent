@@ -60,7 +60,10 @@ import {
 import { runBusinessDecisionStepTest } from "@/lib/operational-cases/step-test-business-decision";
 import type { BusinessDecisionKind } from "@/lib/business-decisions/registry";
 import { stepTestContextEnrichment } from "@/lib/operational-cases/step-test-seeds";
-import { isolateContextForStepTest } from "@/lib/operational-cases/settings-test-run-isolation";
+import {
+  applyPropertyDataSeedRules,
+  isolateContextForStepTest,
+} from "@/lib/operational-cases/settings-test-run-isolation";
 import {
   stepTestCatalogSlugForRootSkill,
   stepTestScenariosFor,
@@ -229,7 +232,7 @@ function mergeContext(
         ...(isRecord(patchPd.address) ? patchPd.address : {}),
       };
     }
-    next.property_data = mergedPd;
+    next.property_data = applyPropertyDataSeedRules(mergedPd);
   }
   return next;
 }
@@ -639,6 +642,7 @@ async function executeStepTestRun(runId: string) {
         forcedSkillId: rootSkillSlug,
         caseId: opCase.id,
         turnId,
+        toolCallSource: "step_test",
         toolApprovalPolicy,
       });
       turnId = agentResult.turnId;

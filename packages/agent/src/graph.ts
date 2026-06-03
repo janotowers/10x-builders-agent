@@ -33,6 +33,7 @@ import type {
   AppliedSkill,
   AppliedMemory,
   ToolApprovalPolicy,
+  ToolCallSource,
 } from "@agents/types";
 import {
   generatedDocumentDedupKey,
@@ -52,6 +53,7 @@ import {
   resolveToolApprovalMode,
   toolOwnsAuditTrail,
 } from "./tools/adapters";
+import { buildToolCallMetadata } from "./tools/tool-call-audit";
 import {
   getGlobalSkillRegistry,
   getSkillRegistryForUser,
@@ -148,6 +150,8 @@ export interface AgentInput {
    * en canal `case_runner`.
    */
   caseId?: string | null;
+  /** Stored on tool_calls.metadata_jsonb.source (defaults from channel). */
+  toolCallSource?: ToolCallSource;
   /**
    * V1-C-α: Business Brain del perfil. Se materializa en el bloque
    * `[Contexto de tenant]` cuando la skill activa pide
@@ -932,6 +936,23 @@ function appendCalendarToolRules(
   return `${basePrompt.trimEnd()}${CALENDAR_TOOLS_ADDENDUM}`;
 }
 
+function resolveToolCallSource(input: AgentInput): ToolCallSource {
+  if (input.toolCallSource) return input.toolCallSource;
+  const channel = input.channel ?? (input.autoApproveTools ? "cron" : "web");
+  switch (channel) {
+    case "telegram":
+      return "telegram";
+    case "cron":
+      return "cron";
+    case "heartbeat":
+      return "heartbeat";
+    case "case_runner":
+      return "case_runner";
+    default:
+      return "chat";
+  }
+}
+
 export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const turnStartedAt = new Date();
   const {
@@ -1022,6 +1043,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // concatena al system prompt más abajo.
   let operationalCaseContextBlock = "";
   let resolvedForcedSkillId = input.forcedSkillId ?? null;
+  let boundOperationalStepKey: string | null = null;
+  const resolvedToolCallSource = resolveToolCallSource(input);
   if (input.caseId) {
     try {
       const opCase = await getOperationalCase(db, input.caseId);
@@ -1034,6 +1057,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           `[ops-case] caseId=${input.caseId} belongs to ${opCase.user_id}, not turn user ${input.userId}; ignoring binding`
         );
       } else {
+        boundOperationalStepKey = opCase.current_step ?? null;
         const caseType = await getOperationalCaseTypeById(
           db,
           opCase.case_type_id
@@ -1312,6 +1336,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     bigQueryProjectId: businessBrainWarehouse?.project_id?.trim() || undefined,
     bigQueryLocation: businessBrainWarehouse?.location?.trim() || undefined,
     caseId: input.caseId ?? null,
+    operationalStepKey: boundOperationalStepKey,
+    toolCallSource: resolvedToolCallSource,
     toolApprovalPolicy: input.toolApprovalPolicy,
   });
   emitEvent({
@@ -1672,6 +1698,21 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       : { messages: [response] };
   }
 
+  function graphToolCallMetadata(
+    overrides?: Partial<import("@agents/types").ToolCallMetadata>
+  ) {
+    return buildToolCallMetadata(
+      {
+        caseId: input.caseId,
+        operationalStepKey: boundOperationalStepKey,
+        activeSkillName: activeSkill?.rootName,
+        channel: resolvedChannelForRuntime,
+        toolCallSource: resolvedToolCallSource,
+      },
+      overrides
+    );
+  }
+
   async function toolExecutorNode(
     state: GraphStateType
   ): Promise<Partial<GraphStateType>> {
@@ -1965,7 +2006,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
               tc.name,
               toolArgs,
               false,
-              turnId
+              turnId,
+              { metadata: graphToolCallMetadata() }
             );
             await updateToolCallStatus(db, record.id, "failed", deniedPayload);
           } catch (auditErr) {
@@ -1995,7 +2037,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 tc.name,
                 toolArgs,
                 false,
-                turnId
+                turnId,
+                { metadata: graphToolCallMetadata() }
               );
               trackedToolCallId = toolCallRecord.id;
               await updateToolCallStatus(db, toolCallRecord.id, "approved");
@@ -2016,7 +2059,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
                 tc.name,
                 toolArgs,
                 true,
-                turnId
+                turnId,
+                { metadata: graphToolCallMetadata() }
               ));
             trackedToolCallId = toolCallRecord.id;
             let memoryContent: string | null = null;
@@ -2092,7 +2136,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
               tc.name,
               (tc.args as Record<string, unknown>) ?? {},
               false,
-              turnId
+              turnId,
+              { metadata: graphToolCallMetadata() }
             );
             await updateToolCallStatus(
               db,
@@ -2140,7 +2185,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
               tc.name,
               (tc.args as Record<string, unknown>) ?? {},
               false,
-              turnId
+              turnId,
+              { metadata: graphToolCallMetadata() }
             );
             await updateToolCallStatus(db, record.id, "failed", payload);
           } catch (auditErr) {
@@ -2240,7 +2286,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
             tc.name,
             (tc.args as Record<string, unknown>) ?? {},
             false,
-            turnId
+            turnId,
+            { metadata: graphToolCallMetadata() }
           );
           await updateToolCallStatus(db, record.id, "failed", unavailablePayload);
         } catch (e) {

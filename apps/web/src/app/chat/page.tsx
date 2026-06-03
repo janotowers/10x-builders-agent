@@ -165,7 +165,19 @@ async function signedProfileAssetUrl(
   return data?.signedUrl ?? "";
 }
 
-export default async function ChatPage() {
+export default async function ChatPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    pendientes?: string;
+    case?: string;
+    focus?: string;
+  }>;
+}) {
+  const sp = await searchParams;
+  const initialPendientesOpen = sp.pendientes === "1";
+  const initialCaseFilter = sp.case?.trim() || null;
+  const initialFocusId = sp.focus?.trim() || null;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -615,6 +627,9 @@ export default async function ChatPage() {
       heartbeatStatus={heartbeatStatus}
       scheduledTaskSummary={scheduledTaskSummary}
       initialNotifications={(notificationRows ?? []) as InternalNotificationDisplay[]}
+      initialPendientesOpen={initialPendientesOpen}
+      initialCaseFilter={initialCaseFilter}
+      initialFocusId={initialFocusId}
     />
   );
 }

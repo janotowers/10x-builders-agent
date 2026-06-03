@@ -185,11 +185,14 @@ Para tools de **riesgo alto**, el smoke puede devolver `high_risk_requires_hitl`
 
 Son tools **permitidas por el grafo de skills** (`property-optioning-coach` + includes) que **no** están listadas en `operational_flow_jsonb` de ningún paso. La UI las agrupa para no mezclar soporte técnico con el relato operativo paso a paso.
 
+Las **internas de un hito** (p. ej. `operational_case_persist_comparables_analysis` en comparables) deben declararse en el **paso correspondiente** bajo «Herramientas internas», no dejarse solo en transversales. Las de **infraestructura** (`get_user_preferences`, `read_skill_reference`) viven en transversales con «Probar tool» propia.
+
 | Tool típica | Rol | ¿Obligatoria en readiness? |
 |-------------|-----|----------------------------|
-| `operational_case_add_event` | Auditoría (recordatorios, decisiones sin cambio de estado) | Opcional; conviene probar una vez |
 | `get_user_preferences` | Contexto del usuario | Opcional |
 | `read_skill_reference` | Leer SKILL.md en runtime | Opcional |
+
+**Recorrido E2E (N5):** tras cambios grandes del flujo o para un laboratorio limpio, **Regenerar datos** + **Validar intake seguro** fijan `controlled_test_playthrough_anchor_at`. Resumen y auditoría filtran actividad posterior a esa marca; sin ancla se muestra todo el historial del fixture con aviso.
 
 **No confundir con tools ausentes del grafo:** si una tool no está en `allowed_tools` de ninguna skill del caso (p. ej. `operational_case_register_document` en `property_optioning`), **no aparece** ni en pasos ni en transversales — aunque exista en el catálogo global.
 
@@ -507,15 +510,20 @@ Patrones: `PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT`, `PATTERN_COMPARABLES_INSUF
 
 ## 8. N5 — Prueba de caso (E2E)
 
-Validación del **tipo de caso completo** en el caso de prueba aislado:
+Validación del **tipo de caso completo** en el caso de prueba aislado mediante **recorrido manual lineal**:
 
-- uno o varios ticks en `case_runner` con habilidad raíz;
-- avance secuencial por **varios** `step_key` con intervención humana simulada donde aplique;
-- verificación de que el cron no corrompe el caso de prueba durante la batería.
+1. **Regenerar datos** (N0) — reinicia fixture en `intake` y fija `controlled_test_playthrough_anchor_at`.
+2. **Validar intake seguro** — constancia formal sin agente; confirma ancla de recorrido.
+3. **Transición con agente** (una por clic) — tick real en `case_runner`; observar HITL, Pendientes y Telegram.
+4. Repetir transiciones hasta fin del flujo o bloqueo explícito.
 
-**Estado:** infraestructura parcial (`operational-case-tests/run`); guion y UI formalizados son trabajo pendiente. Antes se llamaba «N4» en v1.0 del marco; se renumeró a **N5** al introducir N4 paso. Ver [`use-case-authoring-vision.md`](use-case-authoring-vision.md) anillo 2–3.
+**Reinicio del recorrido:** solo **Regenerar datos** (no existe «reiniciar ronda»). El contador y la auditoría agrupan actividad desde la ancla del recorrido actual.
 
-**Relación N4 + N5:** N4 valida hitos aislados; N5 valida la cadena de hitos y regresiones entre pasos.
+**UI:** resumen por paso, auditoría agrupada por transición, diff post-transición (paso/estado antes→después). Atribución de eventos/tools al `current_step` del tick.
+
+**Estado:** playthrough manual implementado en Settings (`operational-case-tests/run` + panel Prueba con agente). Batería automatizada multi-tick sigue pendiente.
+
+**Relación N4 + N5:** N4 valida hitos aislados con escenarios sembrados; N5 valida la cadena real paso a paso con interfaces de producción.
 
 ---
 

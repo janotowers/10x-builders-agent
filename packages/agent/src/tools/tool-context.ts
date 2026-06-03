@@ -2,6 +2,7 @@ import type { DbClient } from "@agents/db";
 import type {
   Channel,
   ToolApprovalPolicy,
+  ToolCallSource,
   UserToolSetting,
   UserIntegration,
   UserSkillSetting,
@@ -59,6 +60,10 @@ export interface ToolContext {
   bigQueryLocation?: string;
   /** Active operational case id when the turn is bound to a case. */
   caseId?: string | null;
+  /** Current operational step when the turn is bound to a case. */
+  operationalStepKey?: string | null;
+  /** Provenance label stored on tool_calls.metadata_jsonb.source. */
+  toolCallSource?: ToolCallSource;
   /**
    * Absolute path to the workspace root used to resolve skill references.
    * Defaults to `defaultSkillsRoot()` when omitted; tests can override.

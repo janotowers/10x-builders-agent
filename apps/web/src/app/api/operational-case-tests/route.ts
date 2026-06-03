@@ -2,26 +2,26 @@ import { NextResponse } from "next/server";
 import {
   createOperationalCase,
   createServerClient,
-  getGlobalOperationalCaseTypeBySlug,
   getOperationalCase,
   getOperationalCaseTypeById,
-  getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
 } from "@agents/db";
 import type {
   OperationalCase,
-  OperationalCaseEvent,
-  OperationalCaseFlowStep,
   OperationalCaseIntakeField,
-  ToolCall,
 } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { buildTestContext } from "./test-context-samples";
+import {
+  buildSettingsTestCaseResponse,
+  effectiveFlowForCaseType,
+} from "@/lib/operational-cases/settings-test-case-response";
 
 async function findLatestSettingsTestCase(
   db: ReturnType<typeof createServerClient>,
   userId: string,
-  caseTypeId: string
+  caseTypeId: string,
+  caseTypeSlug?: string
 ): Promise<OperationalCase | null> {
   const { data, error } = await db
     .from("operational_cases")
@@ -34,95 +34,21 @@ async function findLatestSettingsTestCase(
     .limit(1)
     .maybeSingle();
   if (error) throw error;
-  return (data as OperationalCase | null) ?? null;
-}
+  const exact = (data as OperationalCase | null) ?? null;
+  if (exact || !caseTypeSlug) return exact;
 
-async function listToolCallsForCase(
-  db: ReturnType<typeof createServerClient>,
-  caseId: string
-): Promise<ToolCall[]> {
-  const { data, error } = await db
-    .from("tool_calls")
+  const fallback = await db
+    .from("operational_cases")
     .select("*")
-    .contains("arguments_json", { case_id: caseId })
-    .order("created_at", { ascending: true })
-    .limit(100);
-  if (error) {
-    console.warn("[operational-case-tests] tool_calls lookup failed:", error);
-    return [];
-  }
-  return (data ?? []) as ToolCall[];
-}
-
-async function responseForCase(
-  db: ReturnType<typeof createServerClient>,
-  opCase: OperationalCase,
-  flow: OperationalCaseFlowStep[] = []
-): Promise<{
-  ok: true;
-  case: OperationalCase;
-  events: OperationalCaseEvent[];
-  toolCalls: ToolCall[];
-  flowProgress: Array<{
-    step_key: string;
-    step_label: string;
-    status: "pending" | "in_progress" | "completed" | "blocked";
-    evidence: string[];
-  }>;
-}> {
-  const fresh = (await getOperationalCase(db, opCase.id)) ?? opCase;
-  const events = await getRecentOperationalCaseEvents(db, fresh.id, 80);
-  const toolCalls = await listToolCallsForCase(db, fresh.id);
-  const flowProgress = flow.map((step) => {
-    const stepToolIds = new Set<string>();
-    for (const tool of step.step_tools ?? []) stepToolIds.add(tool.tool_id);
-    for (const skill of step.step_skills ?? []) {
-      for (const tool of skill.skill_tools ?? []) stepToolIds.add(tool.tool_id);
-    }
-    const toolEvidence = toolCalls.filter((call) => stepToolIds.has(call.tool_name));
-    const eventEvidence = events.filter((event) => {
-      const payload = event.payload_jsonb as Record<string, unknown> | null;
-      return (
-        payload?.current_step === step.step_key ||
-        payload?.step === step.step_key ||
-        payload?.step_key === step.step_key
-      );
-    });
-    const evidence = [
-      ...eventEvidence.map((event) => `event:${event.event_type}`),
-      ...toolEvidence.map((call) => `tool:${call.tool_name}:${call.status}`),
-    ];
-    const status: "pending" | "in_progress" | "completed" | "blocked" =
-      fresh.current_step === step.step_key
-        ? "in_progress"
-        : evidence.length > 0
-          ? "completed"
-          : "pending";
-    return {
-      step_key: step.step_key,
-      step_label: step.step_label,
-      status,
-      evidence,
-    };
-  });
-  return { ok: true, case: fresh, events, toolCalls, flowProgress };
-}
-
-async function effectiveFlowForCaseType(
-  db: ReturnType<typeof createServerClient>,
-  caseType: Awaited<ReturnType<typeof getOperationalCaseTypeById>>
-): Promise<OperationalCaseFlowStep[]> {
-  const ownFlow = Array.isArray(caseType?.operational_flow_jsonb)
-    ? caseType.operational_flow_jsonb
-    : [];
-  if (ownFlow.length > 0 || !caseType?.user_id) return ownFlow;
-  const globalCaseType = await getGlobalOperationalCaseTypeBySlug(
-    db,
-    caseType.case_type
-  );
-  return Array.isArray(globalCaseType?.operational_flow_jsonb)
-    ? globalCaseType.operational_flow_jsonb
-    : [];
+    .eq("user_id", userId)
+    .eq("case_type", caseTypeSlug)
+    .eq("context_jsonb->>created_from", "case_type_settings_test")
+    .eq("context_jsonb->>test_mode", "true")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (fallback.error) throw fallback.error;
+  return (fallback.data as OperationalCase | null) ?? null;
 }
 
 export async function GET(request: Request) {
@@ -144,27 +70,31 @@ export async function GET(request: Request) {
     if (caseId) {
       opCase = await getOperationalCase(db, caseId);
     } else if (caseTypeId) {
-      const { data, error } = await db
-        .from("operational_cases")
-        .select("*")
-        .eq("user_id", user.id)
-        .eq("case_type_id", caseTypeId)
-        .eq("context_jsonb->>created_from", "case_type_settings_test")
-        .eq("context_jsonb->>test_mode", "true")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (error) throw error;
-      opCase = (data as OperationalCase | null) ?? null;
+      const caseType = await getOperationalCaseTypeById(db, caseTypeId);
+      opCase = await findLatestSettingsTestCase(
+        db,
+        user.id,
+        caseTypeId,
+        caseType?.case_type
+      );
     }
 
     if (!opCase || opCase.user_id !== user.id) {
-      return NextResponse.json({ ok: true, case: null, events: [], toolCalls: [] });
+      return NextResponse.json({
+        ok: true,
+        case: null,
+        events: [],
+        toolCalls: [],
+        pendingActions: [],
+        blockingActions: [],
+        historicalActions: [],
+        transitionCount: 0,
+      });
     }
 
     const caseType = await getOperationalCaseTypeById(db, opCase.case_type_id);
     const flow = await effectiveFlowForCaseType(db, caseType);
-    return NextResponse.json(await responseForCase(db, opCase, flow));
+    return NextResponse.json(await buildSettingsTestCaseResponse(db, opCase, user.id, flow));
   } catch (err) {
     console.error("[GET /api/operational-case-tests] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
@@ -214,20 +144,30 @@ export async function POST(request: Request) {
       "Contacto de prueba";
     const telegramChatId = Number(context.telegram_chat_id);
 
-    const existing = await findLatestSettingsTestCase(db, user.id, caseType.id);
+    const existing = await findLatestSettingsTestCase(
+      db,
+      user.id,
+      caseType.id,
+      caseType.case_type
+    );
     let opCase: OperationalCase;
     let reusedExisting = false;
 
     if (existing) {
       reusedExisting = true;
+      const playthroughAnchorAt = new Date().toISOString();
       const { data, error } = await db
         .from("operational_cases")
         .update({
           context_jsonb: {
             ...context,
+            controlled_test_playthrough_anchor_at: playthroughAnchorAt,
+            controlled_test_cycle_reset_at: undefined,
             controlled_test_status: undefined,
             controlled_test_last_run_at: undefined,
             controlled_test_e2e_last_run_at: undefined,
+            controlled_test_e2e_pending_confirmation: undefined,
+            controlled_test_owner_response_processed_at: undefined,
           },
           external_contact_jsonb: {
             ...(existing.external_contact_jsonb ?? {}),
@@ -257,6 +197,7 @@ export async function POST(request: Request) {
         },
       });
     } else {
+      const playthroughAnchorAt = new Date().toISOString();
       opCase = await createOperationalCase(db, {
         userId: user.id,
         caseTypeId: caseType.id,
@@ -269,7 +210,10 @@ export async function POST(request: Request) {
           channel: Number.isFinite(telegramChatId) ? "telegram" : undefined,
           chat_id: Number.isFinite(telegramChatId) ? telegramChatId : undefined,
         },
-        context,
+        context: {
+          ...context,
+          controlled_test_playthrough_anchor_at: playthroughAnchorAt,
+        },
       });
       await insertOperationalCaseEvent(db, {
         caseId: opCase.id,
@@ -286,7 +230,7 @@ export async function POST(request: Request) {
 
     const flow = await effectiveFlowForCaseType(db, caseType);
     return NextResponse.json({
-      ...(await responseForCase(db, opCase, flow)),
+      ...(await buildSettingsTestCaseResponse(db, opCase, user.id, flow)),
       reused_existing: reusedExisting,
     });
   } catch (err) {
@@ -409,7 +353,7 @@ export async function PATCH(request: Request) {
 
     const flow = await effectiveFlowForCaseType(db, caseType);
     return NextResponse.json(
-      await responseForCase(db, data as OperationalCase, flow)
+      await buildSettingsTestCaseResponse(db, data as OperationalCase, user.id, flow)
     );
   } catch (err) {
     console.error("[PATCH /api/operational-case-tests] failed:", err);

@@ -2,7 +2,8 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { TOOL_CATALOG } from "./catalog";
 import type { ToolContext } from "./tool-context";
-import { createToolCall, updateToolCallStatus } from "@agents/db";
+import { createTrackedToolCall } from "./tool-call-audit";
+import { updateToolCallStatus } from "@agents/db";
 import {
   googleCalendarJson,
   calendarEventsPath,
@@ -142,14 +143,9 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
     tools.push(
       tool(
         async () => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "calendar_list_calendars",
+          const record = await createTrackedToolCall(ctx, "calendar_list_calendars",
             {},
-            false,
-            ctx.turnId
-          );
+            false);
           const { status, data } = await googleCalendarJson(
             token,
             "/users/me/calendarList"
@@ -195,14 +191,9 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
           time_max?: string;
           historical?: boolean;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "calendar_list_events",
+          const record = await createTrackedToolCall(ctx, "calendar_list_events",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
           const profileTz = tz(ctx);
 
           if (calendarListEventsNeedsPeriod(input.time_min, input.time_max)) {
@@ -313,14 +304,9 @@ export function addCalendarTools(ctx: ToolContext, tools: any[]): void {
           tasklist_id?: string;
           show_completed?: boolean;
         }) => {
-          const record = await createToolCall(
-            ctx.db,
-            ctx.sessionId,
-            "calendar_list_tasks",
+          const record = await createTrackedToolCall(ctx, "calendar_list_tasks",
             input,
-            false,
-            ctx.turnId
-          );
+            false);
           const profileTz = tz(ctx);
           const dueMin = input.due_min?.trim();
           const dueMax = input.due_max?.trim();

@@ -215,3 +215,105 @@ export function flowStepProgressBadgeLabel(status?: string) {
   if (status === "in_progress") return "En curso";
   return "Pendiente";
 }
+
+/** Badge del resumen runtime del caso de prueba (no confundir con «Paso probado» del lab). */
+export function flowProgressRuntimeBadgeLabel(status?: string) {
+  if (status === "completed") return "Con actividad registrada";
+  if (status === "in_progress") return "Paso actual del caso";
+  if (status === "blocked") return "Bloqueado";
+  return "Sin actividad atribuida";
+}
+
+export function flowProgressRuntimeBadgeTitle(status?: string): string {
+  if (status === "completed") {
+    return "Hay eventos o tools registrados y atribuidos a este paso del flujo.";
+  }
+  if (status === "in_progress") {
+    return "El caso operativo está en este paso ahora (no confundir con las tarjetas del laboratorio).";
+  }
+  if (status === "blocked") return "Este paso aparece bloqueado según la telemetría.";
+  return "No hay actividad atribuida a este paso; no implica que nunca se haya recorrido.";
+}
+
+export type FlowStepEvidenceSummary = {
+  eventCount: number;
+  toolExecuted: number;
+  toolPending: number;
+  toolFailed: number;
+  toolRejected: number;
+  uniqueTools: string[];
+};
+
+/** Resume evidencia cruda de flowProgress para UI operativa. */
+export function summarizeFlowStepEvidence(
+  evidence: string[]
+): FlowStepEvidenceSummary {
+  let eventCount = 0;
+  let toolExecuted = 0;
+  let toolPending = 0;
+  let toolFailed = 0;
+  let toolRejected = 0;
+  const toolNames = new Set<string>();
+
+  for (const item of evidence) {
+    if (item.startsWith("event:")) {
+      eventCount += 1;
+      continue;
+    }
+    if (!item.startsWith("tool:")) continue;
+    const lastColon = item.lastIndexOf(":");
+    if (lastColon <= 5) continue;
+    const status = item.slice(lastColon + 1);
+    const toolName = item.slice(5, lastColon);
+    toolNames.add(toolName);
+    if (status === "executed") toolExecuted += 1;
+    else if (status === "pending_confirmation") toolPending += 1;
+    else if (status === "failed") toolFailed += 1;
+    else if (status === "rejected") toolRejected += 1;
+  }
+
+  return {
+    eventCount,
+    toolExecuted,
+    toolPending,
+    toolFailed,
+    toolRejected,
+    uniqueTools: [...toolNames].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
+export function formatFlowStepEvidenceSummaryLine(
+  summary: FlowStepEvidenceSummary,
+  options?: { cycleScoped?: boolean }
+): string {
+  const parts: string[] = [];
+  if (summary.eventCount > 0) {
+    parts.push(
+      `${summary.eventCount} evento${summary.eventCount === 1 ? "" : "s"}`
+    );
+  }
+  if (summary.toolExecuted > 0) {
+    parts.push(
+      `${summary.toolExecuted} tool${summary.toolExecuted === 1 ? "" : "s"} ejecutada${summary.toolExecuted === 1 ? "" : "s"}`
+    );
+  }
+  if (summary.toolPending > 0) {
+    parts.push(
+      `${summary.toolPending} pendiente${summary.toolPending === 1 ? "" : "s"} de confirmación`
+    );
+  }
+  if (summary.toolFailed > 0) {
+    parts.push(`${summary.toolFailed} fallida${summary.toolFailed === 1 ? "" : "s"}`);
+  }
+  if (summary.toolRejected > 0) {
+    parts.push(
+      `${summary.toolRejected} rechazada${summary.toolRejected === 1 ? "" : "s"}`
+    );
+  }
+  if (parts.length === 0) {
+    return options?.cycleScoped
+      ? "Sin actividad registrada en este recorrido E2E."
+      : "Sin actividad atribuida a este paso.";
+  }
+  return parts.join(" · ");
+}
