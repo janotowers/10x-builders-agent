@@ -189,8 +189,8 @@ Las **internas de un hito** (p. ej. `operational_case_persist_comparables_analys
 
 | Tool típica | Rol | ¿Obligatoria en readiness? |
 |-------------|-----|----------------------------|
-| `get_user_preferences` | Contexto del usuario | Opcional |
-| `read_skill_reference` | Leer SKILL.md en runtime | Opcional |
+| `get_user_preferences` | Contexto del usuario (`{}` en N1; sin recipe) | Opcional |
+| `read_skill_reference` | Leer referencia de la skill activa (`name`, p. ej. `coach-routing` en optioning) | Opcional; N1 arma args y skill raíz del case type |
 
 **Recorrido E2E (N5):** tras cambios grandes del flujo o para un laboratorio limpio, **Regenerar datos** + **Validar intake seguro** fijan `controlled_test_playthrough_anchor_at`. Resumen y auditoría filtran actividad posterior a esa marca; sin ancla se muestra todo el historial del fixture con aviso.
 

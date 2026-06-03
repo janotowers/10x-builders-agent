@@ -61,6 +61,7 @@ import {
   deriveCommissionContractTemplateData,
   getBusinessBrainWarehouse,
   getSkillRegistryForUser,
+  resolveSkill,
   TOOL_CATALOG,
   type ToolContext,
 } from "@agents/agent";
@@ -152,7 +153,14 @@ const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
       duration_months: 6,
     },
   },
+  // Catálogo sin properties (schema vacío): smoke/caso envían {} a propósito.
+  get_user_preferences: {},
+  list_enabled_tools: {},
+  read_skill_reference: { name: "coach-routing" },
 };
+
+/** Referencia bajo `property-optioning-coach/references/` usada en N1 transversal. */
+const READ_SKILL_REFERENCE_CASE_CONTEXT_KEY = "skill_reference_name";
 
 function smokeDefaultsForTool(
   toolId: string,
@@ -221,7 +229,18 @@ const TOOL_TEST_ARG_RECIPES: Record<
   calendar_list_events: calendarListEventsCaseRecipe,
   calendar_create_event: calendarCreateEventCaseRecipe,
   calendar_update_event: calendarUpdateEventCaseRecipe,
+  read_skill_reference: readSkillReferenceCaseRecipe,
 };
+
+function readSkillReferenceCaseRecipe(
+  input: ToolRecipeInput
+): Record<string, unknown> {
+  const fromContext = input.ctx[READ_SKILL_REFERENCE_CASE_CONTEXT_KEY];
+  if (typeof fromContext === "string" && fromContext.trim()) {
+    return { name: fromContext.trim() };
+  }
+  return TEST_DEFAULTS.read_skill_reference ?? { name: "coach-routing" };
+}
 
 /**
  * Tools que en smoke no tienen plantilla estática útil (requieren `case_id` real).
@@ -230,6 +249,8 @@ const TOOL_TEST_ARG_RECIPES: Record<
  */
 /** Tools que en N1 no registran tool_calls en el adapter; persistimos evidencia para el pill «Probada». */
 const READINESS_RECORDS_TOOL_CALL = new Set([
+  "get_user_preferences",
+  "list_enabled_tools",
   "calendar_create_event",
   "calendar_update_event",
 ]);
@@ -484,7 +505,44 @@ function evaluateGenericToolReadinessResult(
       hint: "Integración OK: la tool pidió un período (comportamiento esperado sin time_min/time_max).",
     };
   }
+  if (toolId === "read_skill_reference") {
+    const status = typeof parsed.status === "string" ? parsed.status : "";
+    if (status === "ok") {
+      return { ok: true };
+    }
+    const message =
+      typeof parsed.message === "string" && parsed.message.trim()
+        ? parsed.message
+        : status
+          ? `read_skill_reference devolvió status=${status}.`
+          : "read_skill_reference no devolvió contenido (revisa skill activa y el stem name).";
+    return { ok: false, hint: message };
+  }
   return { ok: true };
+}
+
+async function resolveReadinessActiveSkill(
+  registry: Awaited<ReturnType<typeof getSkillRegistryForUser>>,
+  rootSlug: string | undefined
+): Promise<{
+  activeSkillName?: string;
+  activeSkillReferenceNames?: readonly string[];
+}> {
+  const slug = rootSlug?.trim();
+  if (!slug) return {};
+  try {
+    const resolved = await resolveSkill(registry, slug);
+    return {
+      activeSkillName: resolved.rootName,
+      activeSkillReferenceNames: resolved.composedFrom,
+    };
+  } catch (err) {
+    console.warn(
+      `[run-tool] resolveSkill failed for ${slug}:`,
+      err instanceof Error ? err.message : err
+    );
+    return { activeSkillName: slug };
+  }
 }
 
 function documentExtractionHasStructuredFields(extraction: unknown) {
@@ -2193,6 +2251,12 @@ export async function POST(request: Request) {
     const registry = await getSkillRegistryForUser(db, user.id);
     const skillRecord = registry.get(caseType.default_skill_slug);
     const allowed = skillRecord?.metadata.allowedTools ?? [];
+    const readinessSkillSlug =
+      cleanText(body.readiness_skill_slug) || caseType.default_skill_slug;
+    const readinessActiveSkill = await resolveReadinessActiveSkill(
+      registry,
+      readinessSkillSlug
+    );
     const flow = await effectiveFlowForCaseType(db, caseType);
     const flowToolIds = flattenFlow(flow).map((tool) => tool.tool_id);
     if (
@@ -2229,7 +2293,7 @@ export async function POST(request: Request) {
       def,
       mode: requestedMode,
       userArgs,
-      readinessSkillSlug: cleanText(body.readiness_skill_slug) || undefined,
+      readinessSkillSlug: readinessSkillSlug || undefined,
       readinessFlowStepKey: cleanText(body.readiness_flow_step_key) || undefined,
     });
     let resolvedArgs = await hydrateEasyBrokerUploadListingId({
@@ -2433,6 +2497,7 @@ export async function POST(request: Request) {
       // Sólo dejamos disponible esta tool durante la prueba individual:
       // evita que el agente o adapters dependientes confundan el contexto.
       activeSkillAllowedTools: [toolId],
+      ...readinessActiveSkill,
       tenantOrganizationId,
       bigQueryProjectId: warehouse?.project_id?.trim() || undefined,
       bigQueryLocation: warehouse?.location?.trim() || undefined,
