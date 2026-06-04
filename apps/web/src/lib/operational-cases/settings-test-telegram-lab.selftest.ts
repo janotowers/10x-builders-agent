@@ -38,7 +38,7 @@ assert.equal(
 const opCase = {
   external_contact_jsonb: {},
   context_jsonb: { telegram_chat_id: "" },
-} as Parameters<typeof telegramChatIdFromCase>[0];
+} as unknown as Parameters<typeof telegramChatIdFromCase>[0];
 
 assert.equal(telegramChatIdFromCase(opCase, {}), null);
 assert.equal(

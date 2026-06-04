@@ -531,7 +531,7 @@ async function resolveReadinessActiveSkill(
   const slug = rootSlug?.trim();
   if (!slug) return {};
   try {
-    const resolved = await resolveSkill(registry, slug);
+    const resolved = await resolveSkill(slug, registry);
     return {
       activeSkillName: resolved.rootName,
       activeSkillReferenceNames: resolved.composedFrom,
