@@ -3,6 +3,7 @@
  * Reutiliza las mismas reglas de gating que `tool-readiness/route.ts` (sin duplicar negocio).
  */
 
+import { formatStepScenarioProgressBrief } from "./readiness-test-ui";
 import { isReadinessVisibleTool } from "./tool-surface-classification";
 
 function isStepTestBlocked(step: ReadinessFlowStepLike): boolean {
@@ -218,11 +219,7 @@ export function stepTestSectionCollapseWhenAlreadyProven(
 }
 
 function stepScenarioProgressBrief(step: ReadinessFlowStepLike): string | null {
-  const progress = step.step_test_progress;
-  if (!progress?.scenarios_total) return null;
-  const passed = progress.scenarios_passed ?? 0;
-  const total = progress.scenarios_total;
-  return `${passed}/${total} escenarios probados`;
+  return formatStepScenarioProgressBrief(step.step_test_progress);
 }
 
 export function stepTestSectionSummary(step: ReadinessFlowStepLike): string {

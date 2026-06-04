@@ -391,7 +391,7 @@ N3 **complementa** N2; no lo reemplaza para tools de alto riesgo. N2 sigue siend
 
 **Prerequisito N3 y N4:** todas las tools *readiness-visible* del paso (`readinessToolIdsForSkill` / `readinessToolIdsForStep`) con N1 `tested_ok` antes de habilitar **Probar habilidad** o **Probar paso** (patrón `PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS`).
 
-**Pills paso vs tool:** el pill de la **habilidad** viene del último `skill_test_completed` (N3). El pill del **paso** con escenarios N4 exige que **todos** los escenarios declarados pasen; el progreso sale de `operational_case_test_runs` por `scenario_id` y se muestra como «X de Y escenarios probados». Si la habilidad ya pasó pero faltan escenarios → **Falta probar escenarios del paso**. Sin escenarios N4, el paso puede quedar **Paso probado** cuando todas las habilidades e integraciones están OK. Patrón: `PATTERN_STEP_STATUS_N3_VS_N4`. Las tools **Probada** (N1) son independientes.
+**Pills paso vs tool:** el pill de la **habilidad** viene del último `skill_test_completed` (N3). El pill del **paso** con escenarios N4 exige que **todos** los escenarios *milestone* (`counts_toward_step_milestone`) pasen; el progreso sale de `operational_case_test_runs` por `scenario_id` y en UI se muestra como «X/Y escenarios del hito probados» (y, si hay guardrails opcionales, un sufijo «N escenarios opcionales…» más la checklist agrupada «Opcional: …»). Si la habilidad ya pasó pero faltan escenarios milestone → **Falta probar escenarios del paso**. Sin escenarios N4, el paso puede quedar **Paso probado** cuando todas las habilidades e integraciones están OK. Patrón: `PATTERN_STEP_STATUS_N3_VS_N4`. Las tools **Probada** (N1) son independientes.
 
 **Checklist rápido antes de cerrar un paso en N4**
 

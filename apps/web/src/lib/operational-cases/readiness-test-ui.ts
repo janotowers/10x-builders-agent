@@ -86,19 +86,125 @@ export type StepTestProgressSummary = {
   }>;
 };
 
+export type StepScenarioBucketCounts = {
+  milestoneTotal: number;
+  milestonePassed: number;
+  milestoneFailed: number;
+  milestonePartial: number;
+  milestonePending: number;
+  optionalTotal: number;
+  optionalPassed: number;
+  optionalFailed: number;
+  optionalPartial: number;
+  optionalPending: number;
+  hasOptional: boolean;
+};
+
+/** Separa escenarios del hito (milestone) vs opcionales (p. ej. guardrails). */
+export function stepScenarioBucketCounts(
+  progress?: StepTestProgressSummary | null
+): StepScenarioBucketCounts | null {
+  if (!progress || progress.scenarios_total <= 0) return null;
+  const items = progress.scenarios ?? [];
+  const optionalItems = items.filter((item) => item.optional);
+
+  const milestoneTotal = progress.scenarios_total;
+  const milestonePassed = progress.scenarios_passed ?? 0;
+  const milestoneFailed = progress.scenarios_failed ?? 0;
+  const milestonePartial = progress.scenarios_partial ?? 0;
+  const milestonePending =
+    progress.scenarios_pending ??
+    Math.max(
+      0,
+      milestoneTotal - milestonePassed - milestoneFailed - milestonePartial
+    );
+
+  const optionalTotal = optionalItems.length;
+  const optionalPassed = optionalItems.filter(
+    (item) => item.status === "tested_ok"
+  ).length;
+  const optionalFailed = optionalItems.filter(
+    (item) => item.status === "tested_failed"
+  ).length;
+  const optionalPartial = optionalItems.filter(
+    (item) => item.status === "partial"
+  ).length;
+  const optionalPending = optionalItems.filter(
+    (item) => item.status === "pending"
+  ).length;
+
+  return {
+    milestoneTotal,
+    milestonePassed,
+    milestoneFailed,
+    milestonePartial,
+    milestonePending,
+    optionalTotal,
+    optionalPassed,
+    optionalFailed,
+    optionalPartial,
+    optionalPending,
+    hasOptional: optionalTotal > 0,
+  };
+}
+
+function milestoneScenarioNoun(counts: StepScenarioBucketCounts): string {
+  return counts.hasOptional ? "escenarios del hito" : "escenarios";
+}
+
+function formatOptionalScenarioSuffix(counts: StepScenarioBucketCounts): string {
+  if (!counts.hasOptional) return "";
+  const { optionalTotal, optionalPassed, optionalFailed, optionalPending } =
+    counts;
+  const label = (n: number) =>
+    `${n} escenario${n === 1 ? "" : "s"} opcional${n === 1 ? "" : "es"}`;
+
+  if (optionalFailed > 0 && optionalPassed === 0 && optionalPending === 0) {
+    return ` · ${label(optionalFailed)} con fallo`;
+  }
+  if (optionalPassed === optionalTotal) {
+    return ` · ${label(optionalTotal)} probado${optionalTotal === 1 ? "" : "s"}`;
+  }
+  if (optionalPending === optionalTotal) {
+    return ` · ${label(optionalTotal)} sin probar`;
+  }
+  const done = optionalPassed + counts.optionalPartial;
+  return ` · ${done}/${optionalTotal} escenario${optionalTotal === 1 ? "" : "s"} opcional${optionalTotal === 1 ? "" : "es"}`;
+}
+
 /** Texto corto de progreso por escenarios del paso (sin jerga N3/N4). */
 export function formatStepScenarioProgress(
   progress?: StepTestProgressSummary | null
 ): string | null {
-  if (!progress || progress.scenarios_total <= 0) return null;
-  const { scenarios_passed, scenarios_total, scenarios_failed = 0 } = progress;
-  if (scenarios_passed >= scenarios_total) {
-    return `${scenarios_total} escenario${scenarios_total === 1 ? "" : "s"} probado${scenarios_total === 1 ? "" : "s"}`;
+  const counts = stepScenarioBucketCounts(progress);
+  if (!counts || counts.milestoneTotal <= 0) return null;
+
+  const noun = milestoneScenarioNoun(counts);
+  const {
+    milestonePassed,
+    milestoneTotal,
+    milestoneFailed,
+    milestonePartial,
+  } = counts;
+  const suffix = formatOptionalScenarioSuffix(counts);
+
+  if (milestonePassed >= milestoneTotal) {
+    return `${milestonePassed}/${milestoneTotal} ${noun} probados${suffix}`;
   }
-  if (scenarios_failed > 0) {
-    return `${scenarios_passed} de ${scenarios_total} escenarios OK · ${scenarios_failed} con fallo`;
+  if (milestoneFailed > 0) {
+    return `${milestonePassed}/${milestoneTotal} ${noun} OK · ${milestoneFailed} con fallo${suffix}`;
   }
-  return `${scenarios_passed} de ${scenarios_total} escenarios probados`;
+  if (milestonePartial > 0 && milestonePassed + milestonePartial < milestoneTotal) {
+    return `${milestonePassed}/${milestoneTotal} ${noun} probados · ${milestonePartial} parcial${milestonePartial === 1 ? "" : "es"}${suffix}`;
+  }
+  return `${milestonePassed}/${milestoneTotal} ${noun} probados${suffix}`;
+}
+
+/** Misma línea que `formatStepScenarioProgress` (summary de «Prueba de paso»). */
+export function formatStepScenarioProgressBrief(
+  progress?: StepTestProgressSummary | null
+): string | null {
+  return formatStepScenarioProgress(progress);
 }
 
 const SCENARIO_STATUS_SYMBOL: Record<string, string> = {
@@ -108,12 +214,9 @@ const SCENARIO_STATUS_SYMBOL: Record<string, string> = {
   pending: "○",
 };
 
-/** Lista compacta por escenario (para el acordeón del paso). */
-export function formatStepScenarioChecklist(
-  progress?: StepTestProgressSummary | null
-): string | null {
-  const items = progress?.scenarios;
-  if (!items || items.length === 0) return null;
+function formatScenarioChecklistItems(
+  items: NonNullable<StepTestProgressSummary["scenarios"]>
+): string {
   return items
     .map((item) => {
       const mark = SCENARIO_STATUS_SYMBOL[item.status] ?? "○";
@@ -121,6 +224,32 @@ export function formatStepScenarioChecklist(
       return `${mark} ${name}`;
     })
     .join(" · ");
+}
+
+/** Lista compacta por escenario (hito primero; opcionales agrupados al final). */
+export function formatStepScenarioChecklist(
+  progress?: StepTestProgressSummary | null
+): string | null {
+  const items = progress?.scenarios;
+  if (!items || items.length === 0) return null;
+
+  const milestoneItems = items.filter((item) => !item.optional);
+  const optionalItems = items.filter((item) => item.optional);
+  const parts: string[] = [];
+
+  if (milestoneItems.length > 0) {
+    parts.push(formatScenarioChecklistItems(milestoneItems));
+  }
+  if (optionalItems.length > 0) {
+    const optionalLine = formatScenarioChecklistItems(optionalItems);
+    parts.push(
+      optionalItems.length === 1
+        ? `Opcional: ${optionalLine}`
+        : `Opcionales: ${optionalLine}`
+    );
+  }
+
+  return parts.join(" · ");
 }
 
 /** Pills — habilidad del paso (prueba unitaria de la skill). */

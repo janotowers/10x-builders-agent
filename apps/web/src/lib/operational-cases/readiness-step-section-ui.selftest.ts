@@ -48,7 +48,10 @@ const stepDone = {
   step_test_progress: { scenarios_total: 1, scenarios_passed: 1 },
 };
 assert.equal(stepTestSectionDefaultOpen(stepDone), false);
-assert.equal(stepTestSectionSummary(stepDone), "1/1 escenarios probados");
+assert.equal(
+  stepTestSectionSummary(stepDone),
+  "1/1 escenarios probados"
+);
 
 const stepFailed = {
   test_status: "tested_failed" as const,
