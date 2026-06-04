@@ -16,6 +16,7 @@ import {
   buildSettingsTestCaseResponse,
   effectiveFlowForCaseType,
 } from "@/lib/operational-cases/settings-test-case-response";
+import { runSettingsTestSafeCheck } from "@/lib/operational-cases/settings-test-safe-check";
 
 async function findLatestSettingsTestCase(
   db: ReturnType<typeof createServerClient>,
@@ -111,7 +112,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = (await request.json()) as { case_type_id?: string };
+    const body = (await request.json()) as {
+      case_type_id?: string;
+      validate_registration?: boolean;
+    };
     const caseTypeId = body.case_type_id?.trim();
     if (!caseTypeId) {
       return NextResponse.json({ error: "case_type_id required" }, { status: 400 });
@@ -229,9 +233,21 @@ export async function POST(request: Request) {
     }
 
     const flow = await effectiveFlowForCaseType(db, caseType);
+    if (body.validate_registration) {
+      const safe = await runSettingsTestSafeCheck(db, opCase, {
+        activationPolicy: caseType.activation_policy_jsonb,
+        flow,
+      });
+      if ("error" in safe) {
+        return NextResponse.json({ error: safe.error }, { status: safe.status });
+      }
+      opCase = safe.case;
+    }
+
     return NextResponse.json({
       ...(await buildSettingsTestCaseResponse(db, opCase, user.id, flow)),
       reused_existing: reusedExisting,
+      mode: body.validate_registration ? "safe_check" : undefined,
     });
   } catch (err) {
     console.error("[POST /api/operational-case-tests] failed:", err);

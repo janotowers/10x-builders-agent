@@ -30,6 +30,7 @@ import {
   effectiveFlowForCaseType,
 } from "@/lib/operational-cases/settings-test-case-response";
 import { buildLastE2ETransitionOutcome } from "@/lib/operational-cases/settings-test-e2e-transitions";
+import { runSettingsTestSafeCheck } from "@/lib/operational-cases/settings-test-safe-check";
 type RunMode = "safe_check" | "agent_e2e";
 
 type RunBody = {
@@ -89,64 +90,6 @@ function isCharacteristicsOwnerResponseSimulation(body: RunBody) {
     body.readiness_skill_slug === "extract-property-characteristics" ||
     body.readiness_flow_step_key === "documents_received"
   );
-}
-
-async function runSafeCheck(
-  db: ReturnType<typeof createServerClient>,
-  fresh: OperationalCase
-) {
-  await insertOperationalCaseEvent(db, {
-    caseId: fresh.id,
-    eventType: "step_completed",
-    actor: "system",
-    payload: {
-      kind: "controlled_test_started",
-      source: "case_type_settings",
-      safe_mode: true,
-      note: "Prueba segura inicial (fase 1): valida intake y avance mínimo sin invocar el agente ni tools externas.",
-    },
-  });
-
-  const anchorAt =
-    typeof fresh.context_jsonb?.controlled_test_playthrough_anchor_at ===
-      "string" && fresh.context_jsonb.controlled_test_playthrough_anchor_at.trim()
-      ? fresh.context_jsonb.controlled_test_playthrough_anchor_at.trim()
-      : new Date().toISOString();
-
-  const updated = await updateOperationalCase(db, fresh.id, fresh.version, {
-    status: "paused",
-    currentStep:
-      fresh.current_step === "intake" ? "awaiting_documents" : fresh.current_step,
-    nextActionAt: null,
-    context: {
-      ...fresh.context_jsonb,
-      test_mode: true,
-      controlled_test_playthrough_anchor_at: anchorAt,
-      controlled_test_cycle_reset_at: undefined,
-      controlled_test_last_run_at: new Date().toISOString(),
-      controlled_test_status: "passed_safe_checks",
-    },
-  });
-
-  if (!updated) {
-    return { error: "concurrent_update" as const, status: 409 };
-  }
-
-  await insertOperationalCaseEvent(db, {
-    caseId: updated.id,
-    eventType: "state_changed",
-    actor: "system",
-    payload: {
-      source: "case_type_settings_test",
-      status: updated.status,
-      current_step: updated.current_step,
-      result: "safe_readiness_passed",
-      next_action:
-        "Opcional: ejecutar prueba E2E con agente para simular un tick operacional real.",
-    },
-  });
-
-  return { case: updated };
 }
 
 async function runAgentE2E(
@@ -461,7 +404,12 @@ export async function POST(request: Request) {
         }
       }
     } else {
-      const safe = await runSafeCheck(db, fresh);
+      const caseType = await getOperationalCaseTypeById(db, fresh.case_type_id);
+      const flow = caseType ? await effectiveFlowForCaseType(db, caseType) : [];
+      const safe = await runSettingsTestSafeCheck(db, fresh, {
+        activationPolicy: caseType?.activation_policy_jsonb,
+        flow,
+      });
       if ("error" in safe) {
         return NextResponse.json({ error: safe.error }, { status: safe.status });
       }
@@ -510,7 +458,6 @@ export async function POST(request: Request) {
         : null;
 
     return NextResponse.json({
-      ok: true,
       mode,
       owner_response_processed: Boolean(ownerResponseText),
       ...testCasePayload,

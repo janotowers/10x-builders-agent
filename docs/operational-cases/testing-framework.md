@@ -99,9 +99,8 @@ En el encabezado de la plantilla: **Descripción** visible; **Formulario de alta
 En **Preparación operativa**, la tarjeta expandible **Preparar caso de prueba** (pill de estado de fixture: Sin fixture / Fixture creado / Fixture listo / Pendiente de tools) concentra el fixture de prueba **antes** de los pasos colapsables **Paso N**:
 
 1. Formulario derivado de `intake_schema_jsonb`.
-2. **Crear / regenerar** caso aislado (`operational-case-tests`).
-3. **Validar intake seguro** (`safe_check`: avanza `intake` → `awaiting_documents` sin agente).
-4. Opcional: tick E2E.
+2. **Regenerar y validar registro** (`operational-case-tests`): crea/reusa el caso aislado, regenera datos controlados, fija la ancla del recorrido y ejecuta `safe_check` para avanzar del `start_step` al `success_step` definidos en `activation_policy_jsonb`.
+3. Opcional: tick con agente.
 
 El bloque colapsado **Completar registro del caso** documenta el hito runtime `intake`; no duplica el formulario.
 
@@ -119,8 +118,7 @@ El subsistema `operational-case-tests` mantiene **un caso de prueba por fila de 
 
 - [ ] Todas las tools readiness-visible del flujo operativo muestran estado «Lista» (no «Necesita config»).
 - [ ] Activos de prueba cargados y visibles en Preparación operativa.
-- [ ] Tarjeta **Preparar caso de prueba**: caso generado/regenerado con contexto coherente.
-- [ ] **Validar intake seguro** ejecutada (caso en `awaiting_documents` o posterior).
+- [ ] Tarjeta **Preparar caso de prueba**: caso generado/regenerado con contexto coherente y registro validado.
 - [ ] Contacto externo de prueba identificado (Telegram u otro canal).
 
 ---
@@ -165,7 +163,7 @@ Ejemplos típicos en `property_optioning`:
 
 **Excepción `operational_case_create`:** en ambos modos la ejecución crea una fila **nueva** en `operational_cases` con `created_from=tool_readiness_test`. El caso aislado de Preparación operativa sólo sirve como **fuente al armar args** en modo Caso de prueba; no se reemplaza. Esta tool usa perfil `intake_only`: sólo copia campos declarados en `intake_schema_jsonb` y auxiliares permitidos, no artefactos de readiness ni historial del caso.
 
-**Regenerar datos de prueba:** restablece el `context_jsonb` y el paso del mismo caso aislado, pero conserva eventos de auditoría. Si la UI muestra respuestas externas antiguas después de regenerar, son historial, no datos activos de intake.
+**Regenerar y validar registro:** restablece el `context_jsonb` y el paso del mismo caso aislado, fija `controlled_test_playthrough_anchor_at` y ejecuta la validación segura del registro. Conserva eventos históricos de auditoría. Si la UI muestra respuestas externas antiguas después de regenerar, son historial, no datos activos de intake.
 
 **Tools con `case_id`:** además de los args, el adapter puede cargar el caso en BD (p. ej. `telegram_send_message_to_contact` enriquece contexto). Aun así, lo que se muestra como “Args enviados” es el payload explícito de la prueba.
 
@@ -192,7 +190,7 @@ Las **internas de un hito** (p. ej. `operational_case_persist_comparables_analys
 | `get_user_preferences` | Contexto del usuario (`{}` en N1; sin recipe) | Opcional |
 | `read_skill_reference` | Leer referencia de la skill activa (`name`, p. ej. `coach-routing` en optioning) | Opcional; N1 arma args y skill raíz del case type |
 
-**Recorrido E2E (N5):** tras cambios grandes del flujo o para un laboratorio limpio, **Regenerar datos** + **Validar intake seguro** fijan `controlled_test_playthrough_anchor_at`. Resumen y auditoría filtran actividad posterior a esa marca; sin ancla se muestra todo el historial del fixture con aviso.
+**Recorrido con agente (N5):** tras cambios grandes del flujo o para un laboratorio limpio, **Regenerar y validar registro** fija `controlled_test_playthrough_anchor_at`. Resumen y auditoría filtran actividad posterior a esa marca; sin ancla se muestra todo el historial del fixture con aviso.
 
 **No confundir con tools ausentes del grafo:** si una tool no está en `allowed_tools` de ninguna skill del caso (p. ej. `operational_case_register_document` en `property_optioning`), **no aparece** ni en pasos ni en transversales — aunque exista en el catálogo global.
 
@@ -522,12 +520,11 @@ Patrones: `PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT`, `PATTERN_COMPARABLES_INSUF
 
 Validación del **tipo de caso completo** en el caso de prueba aislado mediante **recorrido manual lineal**:
 
-1. **Regenerar datos** (N0) — reinicia fixture en `intake` y fija `controlled_test_playthrough_anchor_at`.
-2. **Validar intake seguro** — constancia formal sin agente; confirma ancla de recorrido.
-3. **Transición con agente** (una por clic) — tick real en `case_runner`; observar HITL, Pendientes y Telegram.
-4. Repetir transiciones hasta fin del flujo o bloqueo explícito.
+1. **Regenerar y validar registro** (N0) — reinicia fixture en `start_step`, fija `controlled_test_playthrough_anchor_at` y ejecuta la validación segura sin agente.
+2. **Transición con agente** (una por clic) — tick real en `case_runner`; observar HITL, Pendientes y Telegram.
+3. Repetir transiciones hasta fin del flujo o bloqueo explícito.
 
-**Reinicio del recorrido:** solo **Regenerar datos** (no existe «reiniciar ronda»). El contador y la auditoría agrupan actividad desde la ancla del recorrido actual.
+**Reinicio del recorrido:** **Regenerar y validar registro** (no existe «reiniciar ronda» separado). El contador y la auditoría agrupan actividad desde la ancla del recorrido actual.
 
 **UI:** resumen por paso, auditoría agrupada por transición, diff post-transición (paso/estado antes→después). Atribución de eventos/tools al `current_step` del tick.
 

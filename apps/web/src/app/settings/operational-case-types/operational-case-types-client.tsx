@@ -322,7 +322,7 @@ const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
   safe_test: {
     description:
       "Prepara un caso de prueba con datos del intake y valida el registro antes del flujo operativo, sin mezclarlo con operación real.",
-    run_button_label: "Validar intake seguro",
+    run_button_label: "Validar registro",
     synthetic_data_copy:
       "Caso de prueba en la misma fila de operational_cases (regenerar no crea otro registro). La prueba con agente puede invocar tools y crear pendientes de aprobación, pero el cron no debe continuar el caso automáticamente.",
     success_copy:
@@ -1223,7 +1223,7 @@ function activationSafeTestCheckCopy(params: {
     );
   }
   if (params.intakePrepared) {
-    return "Registro validado: el caso de prueba ya está en el flujo operativo (p. ej. tras pruebas de paso). Opcional: «Validar intake seguro» deja constancia formal del registro.";
+    return "Registro validado: el caso de prueba ya está en el flujo operativo (p. ej. tras pruebas de paso).";
   }
   return (
     params.policy.activation_checks?.safe_test_success_copy ??
@@ -5346,8 +5346,8 @@ function TestCaseFlowProgressSummary({
           <p className="mt-2 text-xs text-neutral-500">
             Actividad del caso agrupada por paso del flujo operativo
             {playthroughAnchorAt
-              ? " (recorrido actual desde Regenerar datos o Validar intake seguro)."
-              : " (todo el caso de prueba; para un recorrido limpio usa Regenerar datos y Validar intake seguro). "}
+              ? " (recorrido actual desde Regenerar y validar registro)."
+              : " (todo el caso de prueba; para un recorrido limpio usa Regenerar y validar registro). "}
             Resume eventos y tools legibles por etapa; el detalle por transición
             con agente está en «Auditoría técnica» dentro de Prueba con agente.
           </p>
@@ -5880,9 +5880,9 @@ function LabPendingActionPanel({
       ) : null}
       {!hasHistorical && !hasBlocking ? (
         <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
-          Para empezar un recorrido E2E desde cero: <strong>Regenerar datos</strong>{" "}
-          y <strong>Validar intake seguro</strong> en Preparar caso de prueba, luego
-          ejecuta transiciones una por una.
+          Para empezar un recorrido limpio del laboratorio:{" "}
+          <strong>Regenerar y validar registro</strong> en Preparar caso de
+          prueba, luego ejecuta transiciones una por una.
         </p>
       ) : null}
       {cleanupStatus ? (
@@ -6039,13 +6039,13 @@ function TestCaseAuditPanel({
       <p className="mt-2 text-[11px] text-neutral-500">
         Actividad agrupada por cada ejecución de «Transición con agente»
         {playthroughAnchorAt
-          ? " en el recorrido actual (desde Regenerar datos o Validar intake seguro)."
+          ? " en el recorrido actual (desde Regenerar y validar registro)."
           : " de todo el caso de prueba."}
       </p>
       {!playthroughAnchorAt ? (
         <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
-          Para un recorrido limpio y contador alineado: Regenerar datos y Validar
-          intake seguro en Preparar caso de prueba.
+          Para un recorrido limpio y contador alineado: Regenerar y validar
+          registro en Preparar caso de prueba.
         </p>
       ) : null}
       {typeof transitionCount === "number" &&
@@ -6807,7 +6807,10 @@ export function OperationalCaseTypesClient({
       const res = await fetch("/api/operational-case-tests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ case_type_id: selectedCaseType.id }),
+        body: JSON.stringify({
+          case_type_id: selectedCaseType.id,
+          validate_registration: true,
+        }),
       });
       const data = (await res.json()) as
         | ({ ok: true } & OperationalCaseTestResult)
@@ -6833,8 +6836,8 @@ export function OperationalCaseTypesClient({
         Boolean((data as { reused_existing?: boolean }).reused_existing);
       setTestContextMessage(
         reused
-          ? "Datos regenerados en el mismo caso de prueba (misma fila en la base de datos)."
-          : "Caso de prueba creado."
+          ? "Caso de laboratorio regenerado y registro validado en la misma fila."
+          : "Caso de laboratorio creado y registro validado."
       );
     } catch (err) {
       setError((err as Error).message ?? String(err));
@@ -6880,7 +6883,9 @@ export function OperationalCaseTypesClient({
         lastTransition: testCaseResult?.lastTransition ?? null,
       });
       setTestContextVersion((version) => version + 1);
-      setTestContextMessage("Datos guardados. Las pruebas por tool usarán estos valores.");
+      setTestContextMessage(
+        "Datos guardados. No se reinició el recorrido; las pruebas por tool usarán estos valores."
+      );
     } catch (err) {
       setTestContextMessage((err as Error).message ?? String(err));
     } finally {
@@ -7723,10 +7728,13 @@ export function OperationalCaseTypesClient({
                 onClick={createTestCase}
                 disabled={
                   testCaseLoading ||
+                  testCaseRunning ||
+                  toolsHaveBlocks ||
                   (!testCaseResult?.case ? !canCreateTestCase : !canManageTestCase)
                 }
                 className={`rounded px-3 py-2 text-xs font-semibold disabled:opacity-60 ${
-                  !testCaseResult?.case && canCreateTestCase
+                  !toolsHaveBlocks &&
+                  (testCaseResult?.case ? canManageTestCase : canCreateTestCase)
                     ? "bg-violet-700 text-white hover:bg-violet-800"
                     : "border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50"
                 }`}
@@ -7734,37 +7742,20 @@ export function OperationalCaseTypesClient({
                 {testCaseLoading
                   ? "Procesando..."
                   : testCaseResult?.case
-                    ? "Regenerar datos de prueba"
-                    : "Crear caso de prueba"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void runControlledTest("safe_check")}
-                disabled={
-                  !testCaseResult?.case || testCaseRunning || toolsHaveBlocks
-                }
-                className="rounded border border-violet-300 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60"
-                title={
-                  toolsHaveBlocks
-                    ? "Prueba o configura las tools requeridas antes de ejecutar la prueba segura inicial."
-                    : "Valida el registro del caso sin invocar el agente."
-                }
-              >
-                {testCaseRunningMode === "safe_check"
-                  ? "Ejecutando..."
-                  : activationPolicy.safe_test.run_button_label}
+                    ? "Regenerar y validar registro"
+                    : "Crear y validar registro"}
               </button>
             </div>
             <p className="text-[11px] text-neutral-500">
-              La prueba segura valida el registro sin invocar al agente. Si el
-              caso ya avanzó a un paso operativo, el registro queda validado por
-              avance y la prueba segura solo deja una constancia formal.
+              Regenera datos controlados del laboratorio, valida el registro sin
+              invocar al agente y deja el caso listo en el primer paso operativo.
+              Guardar datos no reinicia el recorrido.
             </p>
             {toolsHaveBlocks && testCaseResult?.case ? (
               <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
-                Hay un caso de prueba creado previamente, pero la prueba segura
-                queda pendiente hasta probar o configurar las tools requeridas
-                en Preparación operativa.
+                Hay un caso de prueba creado previamente, pero no puede
+                regenerarse y validarse hasta probar o configurar las tools
+                requeridas en Preparación operativa.
               </p>
             ) : null}
             {testCaseResult?.case ? (
@@ -7787,7 +7778,7 @@ export function OperationalCaseTypesClient({
                     disabled={testCaseLoading}
                     className="rounded border border-violet-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-60"
                   >
-                    {testCaseLoading ? "Actualizando..." : "Actualizar caso"}
+                    {testCaseLoading ? "Refrescando..." : "Refrescar estado"}
                   </button>
                   <a
                     href={`/operational-cases?case=${testCaseResult.case.id}`}
@@ -7804,9 +7795,10 @@ export function OperationalCaseTypesClient({
                   {activationPolicy.safe_test.synthetic_data_copy}
                 </p>
                 <p className="mt-1 text-[11px] text-neutral-500">
-                  Regenerar datos restablece el caso en intake e inicia un nuevo
-                  recorrido E2E (contador y auditoría desde este momento). La
-                  línea de tiempo histórica se conserva en la base de datos.
+                  Regenerar y validar registro restablece el caso de laboratorio,
+                  inicia una nueva ventana de auditoría y lo deja listo para
+                  pruebas aisladas o transiciones controladas. La línea de tiempo
+                  histórica se conserva en la base de datos.
                 </p>
               </div>
             ) : (
@@ -7816,7 +7808,7 @@ export function OperationalCaseTypesClient({
                   : !toolReadiness
                     ? "Primero revisa la preparación operativa."
                     : toolsHaveBlocks
-                      ? "Prueba o configura las tools requeridas antes de crear una prueba segura inicial."
+                      ? "Prueba o configura las tools requeridas antes de preparar el caso de laboratorio."
                       : "Aún no hay caso de prueba para esta plantilla."}
               </p>
             )}
@@ -7920,11 +7912,10 @@ export function OperationalCaseTypesClient({
                 {activationStatusBadge(n5StatusTone, n5StatusLabel)}
               </div>
               <p className="mt-2 text-xs text-neutral-600 dark:text-neutral-300">
-                Recorrido E2E manual: <strong>Regenerar datos</strong> →{" "}
-                <strong>Validar intake seguro</strong> → transiciones una por una
-                (observa HITL, Pendientes y Telegram reales). Cada clic ejecuta
-                el agente en el paso operativo actual. Hazlo después de verificar
-                herramientas, habilidades y escenarios arriba.
+                Ejecuta transiciones reales del agente una por una, sin que el
+                cron continúe el flujo automáticamente. Para un caso de
+                laboratorio limpio, usa <strong>Regenerar y validar registro</strong>{" "}
+                antes de avanzar.
               </p>
             </div>
           }
@@ -7939,11 +7930,10 @@ export function OperationalCaseTypesClient({
               <>
                 {showPlaythroughRestartBanner ? (
                   <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
-                    Para un recorrido E2E desde el inicio, usa{" "}
-                    <strong>Regenerar datos de prueba</strong> y{" "}
-                    <strong>Validar intake seguro</strong> en Preparar caso de
-                    prueba. El caso está en un paso avanzado sin ancla de recorrido
-                    actual.
+                    Para una prueba controlada desde el registro, usa{" "}
+                    <strong>Regenerar y validar registro</strong> en Preparar
+                    caso de prueba. El caso está en un paso avanzado sin ancla
+                    de recorrido actual.
                   </p>
                 ) : null}
                 <button
@@ -7974,8 +7964,8 @@ export function OperationalCaseTypesClient({
                     : "Ejecutar una transición con agente"}
                 </button>
                 <p className="text-[11px] text-neutral-500">
-                  La prueba con agente no debe dejar que el cron continúe el
-                  flujo automáticamente; es una integración controlada.
+                  Cada clic ejecuta un tick real del agente en el paso actual del
+                  caso; el cron no debe continuar este recorrido automáticamente.
                   {!intakePrepared ? (
                     <span className="ml-1 text-amber-700">
                       Falta validar el registro del caso de prueba.
@@ -7988,8 +7978,7 @@ export function OperationalCaseTypesClient({
                   ) : intakePrepared && !testPassed ? (
                     <span className="ml-1 text-amber-700">
                       El registro ya está validado porque el caso avanzó al flujo
-                      operativo; la prueba segura inicial queda como constancia
-                      opcional.
+                      operativo.
                     </span>
                   ) : null}
                   {!canRunE2E && !toolsHaveBlocks ? (
@@ -8700,9 +8689,11 @@ export function OperationalCaseTypesClient({
                           ) : null}
                           {options.preparation ? (
                             <p className="text-xs text-neutral-500">
-                              La preparación del caso se valida con el formulario
-                              de caso de prueba y «Validar intake seguro», no con
-                              Probar paso.
+                              Este hito representa el registro inicial del caso:
+                              recopilar datos mínimos, crear o completar la
+                              instancia y dejarla lista para el primer paso
+                              operativo. En el laboratorio, Preparar caso de
+                              prueba genera esos datos de forma controlada.
                             </p>
                           ) : null}
                         </div>

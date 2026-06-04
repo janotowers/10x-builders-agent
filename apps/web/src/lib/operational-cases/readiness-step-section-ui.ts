@@ -219,7 +219,13 @@ export function stepTestSectionCollapseWhenAlreadyProven(
 }
 
 function stepScenarioProgressBrief(step: ReadinessFlowStepLike): string | null {
-  return formatStepScenarioProgressBrief(step.step_test_progress);
+  const progress = step.step_test_progress;
+  if (!progress?.scenarios_total) return null;
+  return formatStepScenarioProgressBrief({
+    scenarios_total: progress.scenarios_total,
+    scenarios_passed: progress.scenarios_passed ?? 0,
+    scenarios_pending: progress.scenarios_pending,
+  });
 }
 
 export function stepTestSectionSummary(step: ReadinessFlowStepLike): string {
