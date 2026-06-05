@@ -17,6 +17,7 @@ import {
 import { formatToolForUserPanel } from "@/lib/tool-display";
 import {
   effectiveInternalNotificationKind,
+  hiddenInboxNotificationKinds,
   internalNotificationKindConfig,
 } from "@/lib/internal-notifications/registry";
 import {
@@ -25,6 +26,21 @@ import {
   prepareNotificationBodyMarkdown,
   shouldShowAssociatedActionLink,
 } from "@/lib/notifications/pending-action-display";
+import { CHAT_ATTACHMENT_ACCEPT } from "@/lib/chat/extract-attachment-text";
+
+interface ChatAttachmentMeta {
+  fileName: string;
+  truncated?: boolean;
+  sizeBytes?: number;
+}
+
+interface PendingAttachment {
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  text: string;
+  truncated: boolean;
+}
 
 interface Message {
   id?: string;
@@ -242,6 +258,7 @@ interface Props {
   heartbeatStatus?: HeartbeatStatus;
   scheduledTaskSummary?: ScheduledTaskSummary;
   initialNotifications?: InternalNotificationDisplay[];
+  initialPendingToolConfirmations?: PendingToolConfirmationDisplay[];
   initialPendientesOpen?: boolean;
   initialCaseFilter?: string | null;
   initialFocusId?: string | null;
@@ -437,6 +454,151 @@ function formatBubbleTime(value: string | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function dayKeyFromIso(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function isSameCalendarDay(left: Date, right: Date): boolean {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+}
+
+function formatDaySeparator(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+
+  let label: string;
+  if (isSameCalendarDay(date, now)) {
+    label = "Hoy";
+  } else if (isSameCalendarDay(date, yesterday)) {
+    label = "Ayer";
+  } else if (date.getFullYear() === now.getFullYear()) {
+    label = date.toLocaleDateString("es-MX", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+    });
+  } else {
+    label = date.toLocaleDateString("es-MX", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+  }
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+type ChatTimelineItem =
+  | { type: "date"; key: string; label: string }
+  | { type: "message"; key: string; message: Message; index: number };
+
+function buildChatTimeline(messages: Message[]): ChatTimelineItem[] {
+  const items: ChatTimelineItem[] = [];
+  let lastDayKey = "";
+  messages.forEach((message, index) => {
+    if (message.created_at) {
+      const dayKey = dayKeyFromIso(message.created_at);
+      if (dayKey && dayKey !== lastDayKey) {
+        items.push({
+          type: "date",
+          key: `date-${dayKey}-${index}`,
+          label: formatDaySeparator(message.created_at),
+        });
+        lastDayKey = dayKey;
+      }
+    }
+    items.push({
+      type: "message",
+      key: message.id ?? `message-${index}`,
+      message,
+      index,
+    });
+  });
+  return items;
+}
+
+function messageAttachmentMeta(
+  payload: Record<string, unknown> | null | undefined
+): ChatAttachmentMeta[] {
+  const raw = payload?.attachments;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.fileName !== "string" || !record.fileName.trim()) return [];
+    return [
+      {
+        fileName: record.fileName,
+        truncated: record.truncated === true,
+        sizeBytes:
+          typeof record.sizeBytes === "number" ? record.sizeBytes : undefined,
+      },
+    ];
+  });
+}
+
+function messageDisplayText(message: Message): string {
+  const payload = message.structured_payload;
+  if (message.role === "user" && payload && typeof payload.userText === "string") {
+    return payload.userText;
+  }
+  return message.content;
+}
+
+function buildAgentMessageText(
+  userText: string,
+  attachments: PendingAttachment[]
+): string {
+  if (attachments.length === 0) return userText.trim();
+  const blocks = attachments.map(
+    (attachment) =>
+      `### Archivo adjunto: ${attachment.fileName}\n${attachment.text}`
+  );
+  const trimmed = userText.trim();
+  if (trimmed) {
+    return `${trimmed}\n\n---\n${blocks.join("\n\n---\n")}`;
+  }
+  return blocks.join("\n\n---\n");
+}
+
+function pendientesPanelOpenFromUrl(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("pendientes") === "1";
+}
+
+function writePendientesUrl(expanded: boolean, mode: "push" | "replace") {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (expanded) {
+    url.searchParams.set("pendientes", "1");
+  } else {
+    url.searchParams.delete("pendientes");
+    url.searchParams.delete("case");
+    url.searchParams.delete("focus");
+  }
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (next === current) return;
+  if (mode === "push") {
+    window.history.pushState({ pendientesPanel: expanded }, "", next);
+  } else {
+    window.history.replaceState({ pendientesPanel: expanded }, "", next);
+  }
 }
 
 function formatOperationalEventTime(value: string): string {
@@ -1170,6 +1332,7 @@ export function ChatInterface({
   heartbeatStatus: initialHeartbeatStatus,
   scheduledTaskSummary: initialScheduledTaskSummary,
   initialNotifications = [],
+  initialPendingToolConfirmations = [],
   initialPendientesOpen = false,
   initialCaseFilter = null,
   initialFocusId = null,
@@ -1199,7 +1362,14 @@ export function ChatInterface({
     useState<InternalNotificationDisplay[]>(initialNotifications);
   const [pendingToolConfirmations, setPendingToolConfirmations] = useState<
     PendingToolConfirmationDisplay[]
+  >(initialPendingToolConfirmations);
+  const [pendingAttachments, setPendingAttachments] = useState<
+    PendingAttachment[]
   >([]);
+  const [attachmentUploadStatus, setAttachmentUploadStatus] = useState<
+    string | null
+  >(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendientesCaseFilter, setPendientesCaseFilter] = useState<string | null>(
     initialCaseFilter
   );
@@ -1207,6 +1377,20 @@ export function ChatInterface({
     initialFocusId
   );
   const pendingItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const pendientesPanelRef = useRef<HTMLElement | null>(null);
+  const hiddenNotificationKinds = useMemo(
+    () => new Set(hiddenInboxNotificationKinds()),
+    []
+  );
+  const visibleNotifications = useMemo(
+    () =>
+      notifications.filter(
+        (notification) => !hiddenNotificationKinds.has(notification.kind)
+      ),
+    [notifications, hiddenNotificationKinds]
+  );
+  const pendingInboxCount =
+    visibleNotifications.length + pendingToolConfirmations.length;
   const [notificationInputs, setNotificationInputs] = useState<Record<string, string>>({});
   const [notificationActionStatus, setNotificationActionStatus] =
     useState<Record<string, string>>({});
@@ -1246,6 +1430,25 @@ export function ChatInterface({
     () => scheduledTaskSummary?.tasks ?? [],
     [scheduledTaskSummary?.tasks]
   );
+  const chatTimeline = useMemo(() => buildChatTimeline(messages), [messages]);
+
+  function openPendientesPanel() {
+    const nextExpanded = !notificationsExpanded;
+    setNotificationsExpanded(nextExpanded);
+    if (nextExpanded) {
+      void refreshNotifications();
+      writePendientesUrl(true, "push");
+      window.requestAnimationFrame(() => {
+        pendientesPanelRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+    } else {
+      writePendientesUrl(false, "replace");
+    }
+  }
+
   async function refreshNotifications(caseFilterOverride?: string | null) {
     const activeFilter =
       caseFilterOverride !== undefined ? caseFilterOverride : pendientesCaseFilter;
@@ -1269,6 +1472,14 @@ export function ChatInterface({
     if (!initialPendientesOpen) return;
     void refreshNotifications();
   }, [initialPendientesOpen, pendientesCaseFilter]);
+
+  useEffect(() => {
+    const syncPendientesFromHistory = () => {
+      setNotificationsExpanded(pendientesPanelOpenFromUrl());
+    };
+    window.addEventListener("popstate", syncPendientesFromHistory);
+    return () => window.removeEventListener("popstate", syncPendientesFromHistory);
+  }, []);
 
   useEffect(() => {
     if (!pendientesFocusId || !notificationsExpanded) return;
@@ -1592,24 +1803,89 @@ export function ChatInterface({
     });
   }
 
+  async function handleAttachmentSelection(
+    event: React.ChangeEvent<HTMLInputElement>
+  ) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || loading) return;
+
+    setAttachmentUploadStatus(`Procesando ${file.name}...`);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/chat/attachments", {
+        method: "POST",
+        body: formData,
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        fileName?: string;
+        mimeType?: string;
+        sizeBytes?: number;
+        text?: string;
+        truncated?: boolean;
+        error?: string;
+      };
+      const extractedText =
+        typeof data.text === "string" ? data.text : "";
+      const extractedName =
+        typeof data.fileName === "string" ? data.fileName : "";
+      if (!res.ok || !extractedText || !extractedName) {
+        setAttachmentUploadStatus(
+          data.error ?? "No se pudo adjuntar el archivo."
+        );
+        return;
+      }
+      setPendingAttachments((current) => [
+        ...current,
+        {
+          fileName: extractedName,
+          mimeType: data.mimeType ?? file.type,
+          sizeBytes: data.sizeBytes ?? file.size,
+          text: extractedText,
+          truncated: data.truncated === true,
+        },
+      ]);
+      setAttachmentUploadStatus(null);
+    } catch {
+      setAttachmentUploadStatus("No se pudo adjuntar el archivo.");
+    }
+  }
+
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
     const text = input.trim();
-    if (!text || loading) return;
+    if ((!text && pendingAttachments.length === 0) || loading) return;
     const clientTurnId = createClientTurnId();
+    const attachmentsForTurn = [...pendingAttachments];
+    const agentMessage = buildAgentMessageText(text, attachmentsForTurn);
+    const attachmentMeta: ChatAttachmentMeta[] = attachmentsForTurn.map(
+      (attachment) => ({
+        fileName: attachment.fileName,
+        truncated: attachment.truncated,
+        sizeBytes: attachment.sizeBytes,
+      })
+    );
 
     const userMsg: Message = {
       role: "user",
-      content: text,
+      content: agentMessage,
       created_at: new Date().toISOString(),
       turn_id: clientTurnId,
-      structured_payload: { appliedSkills: [], memoryUsed: [] },
+      structured_payload: {
+        userText: text,
+        attachments: attachmentMeta,
+        appliedSkills: [],
+        memoryUsed: [],
+      },
     };
     setMessages((prev) => [...prev, userMsg]);
     setSelectedTurnId(clientTurnId);
     setShortTermExpanded(false);
     setOperationalEvents([]);
     setInput("");
+    setPendingAttachments([]);
+    setAttachmentUploadStatus(null);
     setLoading(true);
 
     const eventSource = new EventSource(
@@ -1630,7 +1906,7 @@ export function ChatInterface({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, turnId: clientTurnId }),
+        body: JSON.stringify({ message: agentMessage, turnId: clientTurnId }),
       });
 
       const data = (await res.json()) as {
@@ -1889,7 +2165,7 @@ export function ChatInterface({
       </div>
 
       <div className="relative flex h-full">
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col px-3 py-3 sm:px-5 sm:py-5">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-5 sm:py-5">
           <header className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_460px] 2xl:grid-cols-[minmax(0,0.9fr)_520px]">
             <div className="flex min-w-0 items-center gap-3 rounded-[2rem] border border-white/70 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
               <div className="flex h-12 w-20 shrink-0 items-center justify-center rounded-2xl border border-violet-100 bg-white px-3 shadow-sm dark:border-white/10 dark:bg-white/90">
@@ -1918,9 +2194,6 @@ export function ChatInterface({
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 rounded-[2rem] border border-white/70 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-              <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200 sm:inline-flex">
-                {agentStatus}
-              </span>
               <a
                 href="/memory"
                 className="hidden rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10 sm:inline-flex"
@@ -1935,16 +2208,17 @@ export function ChatInterface({
               </a>
               <button
                 type="button"
-                onClick={() => {
-                  setNotificationsExpanded((value) => !value);
-                  if (!notificationsExpanded) void refreshNotifications();
-                }}
-                className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-100 dark:border-violet-400/20 dark:bg-violet-400/10 dark:text-violet-100"
+                aria-expanded={notificationsExpanded}
+                aria-controls="pendientes-internos-panel"
+                onClick={openPendientesPanel}
+                className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-semibold transition hover:bg-violet-100 dark:hover:bg-violet-400/20 ${
+                  notificationsExpanded
+                    ? "border-violet-400 bg-violet-100 text-violet-900 ring-2 ring-violet-300 dark:border-violet-300/40 dark:bg-violet-400/20 dark:text-violet-50 dark:ring-violet-400/30"
+                    : "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-400/20 dark:bg-violet-400/10 dark:text-violet-100"
+                }`}
               >
                 Pendientes{" "}
-                {notifications.length + pendingToolConfirmations.length > 0
-                  ? `(${notifications.length + pendingToolConfirmations.length})`
-                  : ""}
+                {pendingInboxCount > 0 ? `(${pendingInboxCount})` : ""}
               </button>
               <a
                 href="/settings"
@@ -1955,7 +2229,7 @@ export function ChatInterface({
               <form action="/api/auth/signout" method="POST">
                 <button
                   type="submit"
-                  className="rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
+                  className="cursor-pointer rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
                 >
                   Salir
                 </button>
@@ -1964,7 +2238,11 @@ export function ChatInterface({
           </header>
 
           {notificationsExpanded ? (
-            <section className="mb-4 rounded-[1.5rem] border border-violet-100 bg-white/85 p-4 text-sm shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+            <section
+              id="pendientes-internos-panel"
+              ref={pendientesPanelRef}
+              className="mb-4 shrink-0 rounded-[1.5rem] border border-violet-100 bg-white/85 p-4 text-sm shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]"
+            >
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h2 className="font-semibold text-slate-950 dark:text-white">
@@ -2012,8 +2290,14 @@ export function ChatInterface({
                   </button>
                 </div>
               ) : null}
-              {pendingToolConfirmations.length > 0 ? (
-                <div className="mt-3 grid gap-2">
+              <div className="mt-3 max-h-[min(55vh,32rem)] overflow-y-auto pr-1">
+              {visibleNotifications.length === 0 &&
+              pendingToolConfirmations.length === 0 ? (
+                <p className="rounded-2xl bg-slate-50 p-3 text-xs text-slate-500 dark:bg-white/5 dark:text-white/60">
+                  No tienes pendientes internos sin leer.
+                </p>
+              ) : (
+                <div className="grid gap-2">
                   {pendingToolConfirmations.map((pending) => (
                     <div
                       key={pending.toolCallId}
@@ -2080,16 +2364,7 @@ export function ChatInterface({
                       ) : null}
                     </div>
                   ))}
-                </div>
-              ) : null}
-              {notifications.length === 0 &&
-              pendingToolConfirmations.length === 0 ? (
-                <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-xs text-slate-500 dark:bg-white/5 dark:text-white/60">
-                  No tienes pendientes internos sin leer.
-                </p>
-              ) : (
-                <div className="mt-3 grid gap-2">
-                  {notifications.map((notification) => (
+                  {visibleNotifications.map((notification) => (
                     <div
                       key={notification.id}
                       ref={(element) => {
@@ -2283,6 +2558,7 @@ export function ChatInterface({
                   ))}
                 </div>
               )}
+              </div>
             </section>
           ) : null}
 
@@ -2308,11 +2584,24 @@ export function ChatInterface({
               <p className="mt-2">Estoy listo para ayudarte a organizar, decidir y ejecutar tareas.</p>
             </div>
           )}
-          {messages.map((msg, i) => {
+          {chatTimeline.map((item) => {
+            if (item.type === "date") {
+              return (
+                <div key={item.key} className="flex justify-center py-1">
+                  <span className="rounded-full bg-white/80 px-3 py-1 text-[11px] font-semibold text-slate-500 shadow-sm ring-1 ring-slate-200/80 dark:bg-white/10 dark:text-white/60 dark:ring-white/10">
+                    {item.label}
+                  </span>
+                </div>
+              );
+            }
+
+            const msg = item.message;
             const sourceLabel = messageSourceLabel(msg);
+            const attachmentMeta = messageAttachmentMeta(msg.structured_payload);
+            const displayText = messageDisplayText(msg);
             return (
             <div
-              key={i}
+              key={item.key}
               role={msg.turn_id ? "button" : undefined}
               tabIndex={msg.turn_id ? 0 : undefined}
               title={msg.turn_id ? "Ver contexto de este turno" : undefined}
@@ -2350,6 +2639,20 @@ export function ChatInterface({
                     {sourceLabel}
                   </div>
                 ) : null}
+                {attachmentMeta.length > 0 ? (
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {attachmentMeta.map((attachment) => (
+                      <span
+                        key={attachment.fileName}
+                        className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-medium text-white/90 ring-1 ring-white/20"
+                      >
+                        <span aria-hidden="true">📎</span>
+                        {attachment.fileName}
+                        {attachment.truncated ? " · truncado" : ""}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 {msg.role === "assistant" ? (
                   <div className="prose prose-sm max-w-none prose-p:my-1 prose-li:my-0.5 prose-ol:my-1 prose-ul:my-1 prose-a:text-violet-700 prose-a:underline dark:prose-invert dark:prose-a:text-violet-200">
                     <ReactMarkdown
@@ -2364,9 +2667,11 @@ export function ChatInterface({
                       {msg.content}
                     </ReactMarkdown>
                   </div>
-                ) : (
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
-                )}
+                ) : displayText ? (
+                  <p className="whitespace-pre-wrap">{displayText}</p>
+                ) : attachmentMeta.length > 0 ? (
+                  <p className="text-white/80">Archivo adjunto enviado.</p>
+                ) : null}
                 {msg.created_at ? (
                   <p
                     className={`mt-1.5 text-right text-[10px] tabular-nums ${
@@ -2443,12 +2748,53 @@ export function ChatInterface({
 
               {/* Input */}
               <div className="border-t border-slate-200/70 bg-white/80 px-4 py-4 dark:border-white/10 dark:bg-white/[0.03]">
-                <form onSubmit={handleSend} className="mx-auto flex max-w-2xl items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm dark:border-white/10 dark:bg-white/10">
+                <form onSubmit={handleSend} className="mx-auto max-w-2xl space-y-2">
+                  {pendingAttachments.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {pendingAttachments.map((attachment, index) => (
+                        <span
+                          key={`${attachment.fileName}-${index}`}
+                          className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-medium text-violet-800 dark:border-violet-300/20 dark:bg-violet-400/10 dark:text-violet-100"
+                        >
+                          <span aria-hidden="true">📎</span>
+                          {attachment.fileName}
+                          {attachment.truncated ? " · truncado" : ""}
+                          <button
+                            type="button"
+                            aria-label={`Quitar ${attachment.fileName}`}
+                            onClick={() =>
+                              setPendingAttachments((current) =>
+                                current.filter((_, itemIndex) => itemIndex !== index)
+                              )
+                            }
+                            className="cursor-pointer rounded-full px-1 text-violet-500 hover:bg-violet-100 hover:text-violet-900 dark:hover:bg-violet-300/20"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {attachmentUploadStatus ? (
+                    <p className="text-xs text-slate-500 dark:text-white/60">
+                      {attachmentUploadStatus}
+                    </p>
+                  ) : null}
+                  <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm dark:border-white/10 dark:bg-white/10">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={CHAT_ATTACHMENT_ACCEPT}
+                    className="hidden"
+                    onChange={(event) => void handleAttachmentSelection(event)}
+                  />
                   <button
                     type="button"
                     aria-label="Adjuntar archivo"
-                    title="Adjuntar archivo"
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-500 hover:bg-violet-50 hover:text-violet-700 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                    title="Adjuntar PDF, Word, Excel o texto (máx. 5 MB)"
+                    disabled={loading || !!confirmation}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-violet-50 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -2499,8 +2845,12 @@ export function ChatInterface({
                     type="submit"
                     aria-label="Enviar mensaje"
                     title="Enviar"
-                    disabled={loading || !input.trim() || !!confirmation}
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-700 to-fuchsia-600 text-white shadow-lg shadow-violet-900/20 transition hover:from-violet-800 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={
+                      loading ||
+                      (!input.trim() && pendingAttachments.length === 0) ||
+                      !!confirmation
+                    }
+                    className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-gradient-to-br from-violet-700 to-fuchsia-600 text-white shadow-lg shadow-violet-900/20 transition hover:from-violet-800 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -2516,6 +2866,7 @@ export function ChatInterface({
                       <path d="m4 12 16-8-6 18-3-7-7-3z" />
                     </svg>
                   </button>
+                  </div>
                 </form>
               </div>
             </section>

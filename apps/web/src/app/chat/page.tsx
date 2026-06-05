@@ -6,6 +6,7 @@ import {
 } from "@/lib/scheduled-task-confirmation";
 import { sortScheduledTasksForDisplay } from "@/lib/scheduled-task-display-order";
 import { createClient } from "@/lib/supabase/server";
+import { loadPendingInboxSnapshot } from "@/lib/notifications/load-pending-inbox";
 import { ChatInterface } from "./chat-interface";
 
 type RecentToolCall = {
@@ -105,17 +106,6 @@ type ScheduledTaskSummary = {
     status: ScheduledTaskDisplayStatus;
   } | null;
   lastFailure?: string | null;
-};
-
-type InternalNotificationDisplay = {
-  id: string;
-  kind: string;
-  title: string;
-  body: string;
-  priority: "low" | "normal" | "high";
-  action_url: string | null;
-  due_at: string | null;
-  created_at: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -584,13 +574,7 @@ export default async function ChatPage({
     availableSkills = [];
   }
 
-  const { data: notificationRows } = await supabase
-    .from("internal_user_notifications")
-    .select("id, kind, title, body, priority, action_url, due_at, created_at")
-    .eq("user_id", user.id)
-    .eq("status", "unread")
-    .order("created_at", { ascending: false })
-    .limit(20);
+  const pendingInbox = await loadPendingInboxSnapshot(user.id, initialCaseFilter);
 
   return (
     <ChatInterface
@@ -626,7 +610,8 @@ export default async function ChatPage({
       initialRecentLearnings={recentLearnings}
       heartbeatStatus={heartbeatStatus}
       scheduledTaskSummary={scheduledTaskSummary}
-      initialNotifications={(notificationRows ?? []) as InternalNotificationDisplay[]}
+      initialNotifications={pendingInbox.notifications}
+      initialPendingToolConfirmations={pendingInbox.pendingToolConfirmations}
       initialPendientesOpen={initialPendientesOpen}
       initialCaseFilter={initialCaseFilter}
       initialFocusId={initialFocusId}
