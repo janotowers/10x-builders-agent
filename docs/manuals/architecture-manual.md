@@ -251,8 +251,8 @@ Separar responsabilidades permite controlar costo, latencia y calidad.
 
 | Responsabilidad | Modelo actual | Donde se configura | Estado |
 |---|---|---|---|
-| Chat principal | `openai/gpt-4o-mini` via OpenRouter | `CHAT_MODEL_ID` en `model.ts` + `OPENROUTER_MAX_TOKENS` | Hoy |
-| Compaction | `anthropic/claude-3-5-haiku` via OpenRouter | `createCompactionModel()` | Hoy |
+| Chat principal | `openai/gpt-4o-mini` via OpenRouter | `MAIN_AGENT_MODEL_ID` opcional (fallback interno) + `OPENROUTER_MAX_TOKENS` | Hoy |
+| Compaction | `anthropic/claude-3-5-haiku` via OpenRouter | `COMPACTION_MODEL_ID` opcional (fallback interno) | Hoy |
 | Selector de skills | `anthropic/claude-3-5-haiku` via OpenRouter | `SKILL_SELECTOR_MODEL_ID` opcional | Hoy |
 | Reviewer de Business Brain | `anthropic/claude-3-5-haiku` via OpenRouter | `BUSINESS_BRAIN_REVIEWER_MODEL_ID` opcional | Hoy |
 | Embeddings memoria | `google/gemini-embedding-001` via OpenRouter | `MEMORY_EMBEDDING_MODEL`, `MEMORY_EMBEDDING_DIM=1536` | Hoy |

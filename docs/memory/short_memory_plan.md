@@ -55,7 +55,7 @@ Agregar un `compaction_node` al loop del agente para prevenir **Context Rot**, c
   - `__start__` → `compaction` → `agent` → (`tools` | `__end__`)
   - `tools` → `compaction` → `agent` → …
 - **Checkpointer** por `thread_id` (Postgres o memoria); sin cambio de semántica respecto al diseño previo al compaction.
-- **Modelo de compaction:** [`createCompactionModel()`](../../packages/agent/src/model.ts) — `anthropic/claude-3-5-haiku` vía OpenRouter, separado del modelo principal del agente (`createChatModel`).
+- **Modelo de compaction:** [`createCompactionModel()`](../../packages/agent/src/model.ts) — default `anthropic/claude-3-5-haiku` vía OpenRouter, override opcional `COMPACTION_MODEL_ID`; separado del modelo principal del agente (`MAIN_AGENT_MODEL_ID` / `createChatModel`).
 
 ## Topología (referencia rápida)
 

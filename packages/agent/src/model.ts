@@ -32,8 +32,19 @@ export const DEFAULT_HEARTBEAT_TEMPERATURE = 0.1;
  */
 export const DEFAULT_MAX_TOKENS = 2048;
 
-/** Modelo principal del agente (OpenRouter). Exportado para logs / turn_summary. */
-export const CHAT_MODEL_ID = "openai/gpt-4o-mini";
+/** Default del modelo principal del agente (OpenRouter). */
+export const DEFAULT_MAIN_AGENT_MODEL_ID = "openai/gpt-4o-mini";
+/** Default del modelo dedicado a compaction / memory flush. */
+export const DEFAULT_COMPACTION_MODEL_ID = "anthropic/claude-3-5-haiku";
+
+/** Modelo principal del agente (env override > default). */
+export const MAIN_AGENT_MODEL_ID =
+  process.env.MAIN_AGENT_MODEL_ID?.trim() || DEFAULT_MAIN_AGENT_MODEL_ID;
+/**
+ * Alias legacy para minimizar cambios en imports/logs existentes.
+ * Preferir MAIN_AGENT_MODEL_ID en código nuevo.
+ */
+export const CHAT_MODEL_ID = MAIN_AGENT_MODEL_ID;
 
 /** Resuelve maxTokens: variable de entorno > default. */
 function resolveMaxTokens(): number {
@@ -54,7 +65,7 @@ export function createChatModel(options: CreateChatModelOptions = {}) {
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
 
   const temperature = options.temperature ?? DEFAULT_INTERACTIVE_TEMPERATURE;
-  const modelName = options.modelName ?? CHAT_MODEL_ID;
+  const modelName = options.modelName ?? MAIN_AGENT_MODEL_ID;
   const maxTokens = options.maxTokens ?? resolveMaxTokens();
 
   return new ChatOpenAI({
@@ -85,9 +96,11 @@ export function createChatModel(options: CreateChatModelOptions = {}) {
 export function createCompactionModel() {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
+  const modelName =
+    process.env.COMPACTION_MODEL_ID?.trim() || DEFAULT_COMPACTION_MODEL_ID;
 
   return new ChatOpenAI({
-    modelName: "anthropic/claude-3-5-haiku",
+    modelName,
     temperature: 0,
     maxTokens: 2048,
     configuration: {
