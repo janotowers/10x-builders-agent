@@ -43,7 +43,7 @@ export async function updateToolCallStatus(
 ) {
   const update: Record<string, unknown> = { status };
   if (resultJson) update.result_json = resultJson;
-  if (status === "executed" || status === "failed") {
+  if (status === "executed" || status === "failed" || status === "rejected") {
     update.finished_at = new Date().toISOString();
   }
   const { error } = await db
@@ -140,20 +140,29 @@ export async function rejectSettingsTestPendingToolCallsForCase(
   if (!verified) return 0;
 
   const exclude = new Set(opts.excludeToolCallIds ?? []);
-  const { data: pending, error: listError } = await db
-    .from("tool_calls")
-    .select("id")
-    .eq("status", "pending_confirmation")
-    .contains("arguments_json", { case_id: caseId });
-  if (listError) throw listError;
+  const [argsResult, metaResult] = await Promise.all([
+    db
+      .from("tool_calls")
+      .select("id")
+      .eq("status", "pending_confirmation")
+      .contains("arguments_json", { case_id: caseId }),
+    db
+      .from("tool_calls")
+      .select("id")
+      .eq("status", "pending_confirmation")
+      .eq("metadata_jsonb->>case_id", caseId),
+  ]);
+  if (argsResult.error) throw argsResult.error;
+  if (metaResult.error) throw metaResult.error;
 
-  const ids = (pending ?? [])
+  const ids = [...(argsResult.data ?? []), ...(metaResult.data ?? [])]
     .map((row: { id?: unknown }) => row.id)
     .filter(
       (id): id is string =>
         typeof id === "string" && id.length > 0 && !exclude.has(id)
     );
-  if (ids.length === 0) return 0;
+  const uniqueIds = [...new Set(ids)];
+  if (uniqueIds.length === 0) return 0;
 
   const finishedAt = new Date().toISOString();
   const { data, error } = await db
@@ -166,7 +175,7 @@ export async function rejectSettingsTestPendingToolCallsForCase(
         case_id: caseId,
       },
     })
-    .in("id", ids)
+    .in("id", uniqueIds)
     .eq("status", "pending_confirmation")
     .select("id");
   if (error) throw error;

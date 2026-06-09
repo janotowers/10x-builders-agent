@@ -51,6 +51,11 @@ import type {
   InternalUserNotification,
   OperationalCase,
 } from "@agents/types";
+import {
+  isControlledE2EOperationalCase,
+  isCronSuppressedOperationalCase,
+  isSettingsOperationalTestCase,
+} from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { notify } from "@/lib/notify";
 import {
@@ -60,6 +65,7 @@ import {
 import { reminderCooldownHoursForNotificationKind } from "@/lib/internal-notifications/registry";
 import { syncContractDraftFromToolCalls } from "@/lib/operational-cases/contract-draft-document";
 import { reminderCooldownHoursForEngagement } from "@/lib/engagement-policies/registry";
+import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 
@@ -148,9 +154,11 @@ async function processExternalContactReminder(
 ) {
   if (notification.case_id) {
     const opCase = await getOperationalCase(db, notification.case_id);
-    if (opCase && isSettingsTestCase(opCase)) {
+    if (opCase && isCronSuppressedOperationalCase(opCase)) {
       await expireExternalContactNotification(db, notification.id);
-      return "skipped_settings_test";
+      return isControlledE2EOperationalCase(opCase)
+        ? "skipped_controlled_e2e"
+        : "skipped_settings_test";
     }
   }
 
@@ -252,6 +260,10 @@ async function processCase(
   db: ReturnType<typeof createServerClient>,
   opCase: OperationalCase
 ): Promise<CaseProcessResult> {
+  if (isCronSuppressedOperationalCase(opCase)) {
+    return { case_id: opCase.id, status: "skipped" };
+  }
+
   const locked = await markCaseProcessing(db, opCase.id, opCase.version);
   if (!locked) {
     return { case_id: opCase.id, status: "skipped" };
@@ -340,16 +352,25 @@ async function processCase(
       );
     }
 
+    // Si el agente dejó un caso property_optioning en un punto operacional
+    // incompleto, aplicamos las mismas invariantes que usa el E2E.
+    const fresh = await getOperationalCase(db, opCase.id);
+    const invariantResult = await applyPropertyOptioningPostAgentInvariants({
+      db,
+      opCase: fresh,
+      source: "post_agent_invariant_cron",
+    });
+    const caseAfterInvariants = invariantResult.case ?? fresh;
+
     // Si el agente NO actualizó next_action_at (no movió el caso), lo
     // empujamos a +5min para que no martillemos esto cada minuto. El agente
     // bien escrito lo hace solo, pero esto es defensivo.
-    const fresh = await getOperationalCase(db, opCase.id);
-    if (fresh) {
+    if (caseAfterInvariants) {
       const isStillStuckAtLease =
-        fresh.status === opCase.status &&
-        fresh.current_step === opCase.current_step;
+        caseAfterInvariants.status === opCase.status &&
+        caseAfterInvariants.current_step === opCase.current_step;
       if (isStillStuckAtLease) {
-        await updateOperationalCase(db, fresh.id, fresh.version, {
+        await updateOperationalCase(db, caseAfterInvariants.id, caseAfterInvariants.version, {
           nextActionAt: new Date(Date.now() + 5 * 60_000).toISOString(),
         });
       }
@@ -400,13 +421,6 @@ async function processWithConcurrency(
   return results;
 }
 
-function isSettingsTestCase(opCase: OperationalCase): boolean {
-  return (
-    opCase.context_jsonb?.created_from === "case_type_settings_test" ||
-    opCase.context_jsonb?.test_mode === true
-  );
-}
-
 export async function POST(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -435,37 +449,53 @@ export async function POST(request: Request) {
     );
   }
 
-  const settingsTestCases = dueCases.filter(isSettingsTestCase);
-  if (settingsTestCases.length > 0) {
-    for (const opCase of settingsTestCases) {
+  const cronSuppressedCases = dueCases.filter(isCronSuppressedOperationalCase);
+  if (cronSuppressedCases.length > 0) {
+    for (const opCase of cronSuppressedCases) {
       try {
         await expireExternalContactNotificationsForCase(db, opCase.id);
+        const controlledE2E = isControlledE2EOperationalCase(opCase);
         await updateOperationalCase(db, opCase.id, opCase.version, {
-          status: "paused",
+          status: controlledE2E ? opCase.status : "paused",
           nextActionAt: null,
           context: {
             ...(opCase.context_jsonb ?? {}),
-            controlled_test_status: "paused_by_cron_guard",
-            controlled_test_note:
-              "El cron no continua casos de prueba creados desde Settings.",
+            ...(controlledE2E
+              ? {
+                  e2e_control_status: "cron_suppressed",
+                  e2e_control_note:
+                    "El cron no continua casos E2E controlados; usa Prueba con agente.",
+                }
+              : {
+                  controlled_test_status: "paused_by_cron_guard",
+                  controlled_test_note:
+                    "El cron no continua casos de prueba creados desde Settings.",
+                }),
           },
         });
       } catch (error) {
         console.warn(
-          `[ops-case-cron] failed to pause settings test case ${opCase.id}:`,
+          `[ops-case-cron] failed to pause cron-suppressed case ${opCase.id}:`,
           error
         );
       }
     }
   }
 
-  dueCases = dueCases.filter((opCase) => !isSettingsTestCase(opCase));
+  dueCases = dueCases.filter((opCase) => !isCronSuppressedOperationalCase(opCase));
+  const skippedSettingsTestCases = cronSuppressedCases.filter(
+    isSettingsOperationalTestCase
+  ).length;
+  const skippedControlledE2ECases = cronSuppressedCases.filter(
+    isControlledE2EOperationalCase
+  ).length;
 
   if (dueCases.length === 0) {
     return NextResponse.json({
       processed: 0,
       results: [],
-      skipped_settings_test_cases: settingsTestCases.length,
+      skipped_settings_test_cases: skippedSettingsTestCases,
+      skipped_controlled_e2e_cases: skippedControlledE2ECases,
       notification_reminders: notificationReminderResults,
     });
   }
@@ -486,7 +516,8 @@ export async function POST(request: Request) {
   return NextResponse.json({
     processed: results.length,
     results,
-    skipped_settings_test_cases: settingsTestCases.length,
+    skipped_settings_test_cases: skippedSettingsTestCases,
+    skipped_controlled_e2e_cases: skippedControlledE2ECases,
     notification_reminders: notificationReminderResults,
   });
 }

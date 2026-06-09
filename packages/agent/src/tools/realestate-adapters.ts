@@ -35,6 +35,7 @@ import { getAccountAssetByStoragePath,
   listAccountAssets,
   updateToolCallStatus,
   getOperationalCase,
+  listOperationalCaseDocuments,
   insertOperationalCaseEvent,
   updateOperationalCase,
   createExternalContactNotification,
@@ -50,6 +51,11 @@ import {
   type ToolCallSource,
 } from "@agents/types";
 import { deriveCommissionContractTemplateData } from "./commission-contract-template-data";
+import {
+  buildPropertyDataMinimumsSummaryMessage,
+  documentExtractionMinimumsContext,
+  evaluatePropertyDataMinimumsForReview,
+} from "./operational-cases-adapters";
 
 /** Outbound Telegram messages that expect a reply from the external contact. */
 const TELEGRAM_REPLY_EXPECTED_PURPOSES = new Set([
@@ -233,21 +239,42 @@ async function applyTelegramSendCaseWiring(
   opCase: import("@agents/types").OperationalCase,
   settingsTestCase: boolean
 ) {
-  const currentChatId = (opCase.external_contact_jsonb as Record<string, unknown>)
+  let caseForUpdate = opCase;
+  const currentChatId = (caseForUpdate.external_contact_jsonb as Record<string, unknown>)
     ?.chat_id;
   const chatIdMatches =
     currentChatId !== undefined && String(currentChatId) === String(input.chat_id);
   if (!chatIdMatches) {
-    await updateOperationalCase(ctx.db, opCase.id, opCase.version, {
-      externalContact: {
-        ...(opCase.external_contact_jsonb as import("@agents/types").OperationalCaseExternalContact),
-        channel: "telegram",
-        chat_id: input.chat_id,
-      },
-    });
+    let rewired = await updateOperationalCase(
+      ctx.db,
+      caseForUpdate.id,
+      caseForUpdate.version,
+      {
+        externalContact: {
+          ...(caseForUpdate.external_contact_jsonb as import("@agents/types").OperationalCaseExternalContact),
+          channel: "telegram",
+          chat_id: input.chat_id,
+        },
+      }
+    );
+    if (!rewired) {
+      const latest = await getOperationalCase(ctx.db, caseForUpdate.id);
+      if (latest && latest.user_id === ctx.userId) {
+        rewired = await updateOperationalCase(ctx.db, latest.id, latest.version, {
+          externalContact: {
+            ...(latest.external_contact_jsonb as import("@agents/types").OperationalCaseExternalContact),
+            channel: "telegram",
+            chat_id: input.chat_id,
+          },
+        });
+      }
+    }
+    if (rewired) {
+      caseForUpdate = rewired;
+    }
   }
   await insertOperationalCaseEvent(ctx.db, {
-    caseId: opCase.id,
+    caseId: caseForUpdate.id,
     eventType: "reminder_sent",
     actor: "agent",
     payload: {
@@ -260,9 +287,9 @@ async function applyTelegramSendCaseWiring(
   if (!settingsTestCase) {
     await createExternalContactNotification(ctx.db, {
       userId: ctx.userId,
-      caseId: opCase.id,
+      caseId: caseForUpdate.id,
       contact: {
-        ...(opCase.external_contact_jsonb as Record<string, unknown>),
+        ...(caseForUpdate.external_contact_jsonb as Record<string, unknown>),
         channel: "telegram",
         chat_id: input.chat_id,
       },
@@ -279,7 +306,7 @@ async function applyTelegramSendCaseWiring(
   }
   const purpose = input.purpose ?? "outbound";
   if (TELEGRAM_REPLY_EXPECTED_PURPOSES.has(purpose)) {
-    const latest = await getOperationalCase(ctx.db, opCase.id);
+    const latest = await getOperationalCase(ctx.db, caseForUpdate.id);
     if (latest && latest.user_id === ctx.userId) {
       await updateOperationalCase(ctx.db, latest.id, latest.version, {
         status: "waiting_external",
@@ -363,6 +390,36 @@ export function addRealEstateTools(
               }
             } catch (e) {
               console.warn("[realestate] telegram_send: case preload failed:", e);
+            }
+          }
+
+          if (
+            opCase &&
+            input.purpose === "characteristics_pending" &&
+            opCase.current_step === "documents_received"
+          ) {
+            try {
+              const documents = await listOperationalCaseDocuments(ctx.db, {
+                caseId: opCase.id,
+                statuses: ["received"],
+              });
+              const documentFields = documentExtractionMinimumsContext(documents);
+              const minimums = evaluatePropertyDataMinimumsForReview(
+                opCase.context_jsonb,
+                documentFields
+              );
+              if (!minimums.ok) {
+                input.text = buildPropertyDataMinimumsSummaryMessage({
+                  context: opCase.context_jsonb,
+                  supplement: documentFields,
+                  missing: minimums.missing,
+                });
+              }
+            } catch (e) {
+              console.warn(
+                "[realestate] telegram_send: characteristics message normalization failed:",
+                e
+              );
             }
           }
 
@@ -509,19 +566,22 @@ export function addRealEstateTools(
           name: "bigquery_lookup_local_comparables",
           description:
             "Looks up published internal inventory in the Ungga warehouse (BigQuery) for comparable asking prices.",
-          schema: z.object({
-            zona: z.string().min(1).optional(),
-            operation: z.enum(["sale", "rent"]).optional(),
-            property_type: z.string().min(1).optional(),
-            target_price: z.number().positive().optional(),
-            price: z.number().positive().optional(),
-            min_price: z.number().positive().optional(),
-            max_price: z.number().positive().optional(),
-            min_area_m2: z.number().positive().optional(),
-            max_area_m2: z.number().positive().optional(),
-            months_back: z.number().int().positive().max(60).optional(),
-            limit: z.number().int().positive().max(250).optional(),
-          }),
+          schema: z.preprocess(
+            normalizeBigQueryComparableLookupInput,
+            z.object({
+              zona: z.string().min(1).optional(),
+              operation: z.enum(["sale", "rent"]).optional(),
+              property_type: z.string().min(1).optional(),
+              target_price: z.number().positive().optional(),
+              price: z.number().positive().optional(),
+              min_price: z.number().positive().optional(),
+              max_price: z.number().positive().optional(),
+              min_area_m2: z.number().positive().optional(),
+              max_area_m2: z.number().positive().optional(),
+              months_back: z.number().int().positive().max(60).optional(),
+              limit: z.number().int().positive().max(250).optional(),
+            })
+          ),
         }
       )
     );
@@ -2415,6 +2475,102 @@ type BigQueryComparableLookupInput = {
   months_back?: number;
   limit?: number;
 };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function firstNonEmptyComparableString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const cleaned = cleanString(value);
+    if (cleaned) return cleaned;
+  }
+  return undefined;
+}
+
+function comparablePositiveNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const parsed = Number(trimmed.replace(/,/g, ""));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return undefined;
+}
+
+function comparablePositiveInt(value: unknown): number | undefined {
+  const parsed = comparablePositiveNumber(value);
+  if (parsed == null) return undefined;
+  const rounded = Math.trunc(parsed);
+  return rounded > 0 ? rounded : undefined;
+}
+
+function normalizeComparableOperation(value: unknown): "sale" | "rent" | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "sale" || normalized === "venta") return "sale";
+  if (normalized === "rent" || normalized === "renta") return "rent";
+  return undefined;
+}
+
+function normalizeBigQueryComparableLookupInput(
+  raw: unknown
+): BigQueryComparableLookupInput | unknown {
+  const root = asRecord(raw);
+  if (!root) return raw;
+  const nestedFilters = asRecord(root.filters) ?? {};
+  const nestedAddress = asRecord(root.address) ?? {};
+  const merged: Record<string, unknown> = { ...nestedFilters, ...root };
+  const mergedAddress = asRecord(merged.address) ?? nestedAddress;
+
+  const normalized: BigQueryComparableLookupInput = {
+    zona: firstNonEmptyComparableString(
+      merged.zona,
+      merged.search_zone,
+      merged.neighborhood,
+      merged.colonia,
+      merged.property_zone,
+      merged.city_area,
+      merged.city,
+      mergedAddress.neighborhood,
+      mergedAddress.colonia,
+      mergedAddress.city,
+      mergedAddress.state,
+      merged.address
+    ),
+    operation: normalizeComparableOperation(
+      merged.operation ?? merged.operation_type ?? merged.monetization_type
+    ),
+    property_type: firstNonEmptyComparableString(
+      merged.property_type,
+      merged.propertyType,
+      merged.property_kind,
+      merged.tipo_propiedad
+    ),
+    target_price: comparablePositiveNumber(merged.target_price ?? merged.targetPrice),
+    price: comparablePositiveNumber(merged.price),
+    min_price: comparablePositiveNumber(merged.min_price ?? merged.price_min),
+    max_price: comparablePositiveNumber(merged.max_price ?? merged.price_max),
+    min_area_m2: comparablePositiveNumber(
+      merged.min_area_m2 ?? merged.min_area ?? merged.area_min
+    ),
+    max_area_m2: comparablePositiveNumber(
+      merged.max_area_m2 ?? merged.max_area ?? merged.area_max
+    ),
+    months_back: comparablePositiveInt(
+      merged.months_back ?? merged.monthsBack ?? merged.max_age_months
+    ),
+    limit: comparablePositiveInt(merged.limit),
+  };
+
+  return Object.fromEntries(
+    Object.entries(normalized).filter(([, value]) => value !== undefined)
+  ) as BigQueryComparableLookupInput;
+}
 
 type LocalComparableRow = {
   source: "bigquery_internal_inventory";

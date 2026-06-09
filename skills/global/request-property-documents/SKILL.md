@@ -31,12 +31,11 @@ guardrails: |
 
 Obtener del dueño:
 
-- **Escritura - hoja con la descripción de la propiedad** (bloqueante).
+- **Escritura - primera hoja o sección con la descripción de la propiedad, y última hoja si la tiene a la mano** (bloqueante).
 - **Predial** (último pago, ideal/no bloqueante).
 - **Identificación oficial** del propietario (anverso/reverso, ideal/no bloqueante).
 - **Comprobante de domicilio** (no mayor a 3 meses, ideal/no bloqueante).
 - **Boleta registral** (ideal/no bloqueante).
-- **Escritura - primera y última hoja** (ideal/no bloqueante).
 
 Más cualquier documento extra que la cuenta exija (revisa
 `operational_cases.context_jsonb.required_documents` si está definido).
@@ -108,12 +107,11 @@ Más cualquier documento extra que la cuenta exija (revisa
 Hola, [nombre]. Soy [agente] de [inmobiliaria]. Para preparar la
 publicación de tu propiedad necesito estos documentos:
 
-• Escritura: hoja donde esté la descripción de la propiedad (indispensable para avanzar)
+• Escritura: primera hoja o sección donde esté la descripción de la propiedad, y última hoja si la tienes a la mano (indispensable para avanzar)
 • Último recibo de predial
 • Identificación oficial (anverso y reverso)
 • Comprobante de domicilio (≤ 3 meses)
 • Boleta registral
-• Escritura: primera y última hoja, si las tienes a la mano
 
 Solo los uso para verificar la propiedad y armar el contrato; no los
 comparto con nadie sin tu autorización. ¿Puedes enviarme esos documentos

@@ -89,6 +89,14 @@ export function parseOwnerCharacteristics(text: string): Record<string, unknown>
   const areaTotal = numberBefore(normalized, "m2|m²|metros(?:\\s+cuadrados)?");
   if (areaTotal != null) parsed.area_total_m2 = areaTotal;
 
+  if (/\b(coto|condominio|fraccionamiento privado|privada)\b/.test(normalized)) {
+    parsed.land_context = "coto/condominio";
+  } else if (/\bparque industrial\b/.test(normalized)) {
+    parsed.land_context = "parque industrial";
+  } else if (/\bindependiente\b/.test(normalized)) {
+    parsed.land_context = "independiente";
+  }
+
   return parsed;
 }
 

@@ -219,6 +219,67 @@ Esta asociación se mantiene en `operational_cases.external_contact_jsonb` (`{ c
 
 ---
 
+## 6.1 Routing conversacional durable (usuario interno)
+
+Además de respuestas de contactos externos, el sistema soporta conversaciones
+multi-turn del usuario interno (inmobiliario/asesor) que pueden iniciar o
+continuar casos operacionales. Este routing no debe depender sólo del último
+mensaje ni de regex de intención: usa un binding durable entre canal y caso.
+
+Tabla:
+
+| Tabla | Rol |
+|---|---|
+| `operational_case_conversation_bindings` | Vínculo entre `user_id`, canal/chat/sesión y `case_id` mientras un caso espera input conversacional (`awaiting_user`) o una aclaración (`clarification_needed`). |
+
+Estados del binding:
+
+| Estado | Significado |
+|---|---|
+| `awaiting_user` | El caso puede recibir una respuesta futura del usuario por ese canal. |
+| `clarification_needed` | Llegó un mensaje ambiguo; el sistema preguntó a qué caso/flujo corresponde. |
+| `resolved` | El binding cumplió su propósito y ya no enruta mensajes. |
+| `expired` | El binding venció por política de tiempo. |
+| `cancelled` | El usuario o sistema lo canceló explícitamente. |
+
+Flujo de routing:
+
+```mermaid
+flowchart TD
+  inboundMessage["Mensaje del usuario"] --> explicitHandlers["Comandos, callbacks, decisiones HITL"]
+  explicitHandlers --> bindings["Buscar bindings pendientes por user/channel/chat"]
+  bindings --> resolver["Resolver candidatos y confianza"]
+  resolver --> caseRoute["Alta confianza: runAgent con caseId"]
+  resolver --> generalRoute["Baja confianza: runAgent general"]
+  resolver --> clarifyRoute["Ambiguo: pedir aclaración"]
+  clarifyRoute --> pendingClarification["Guardar mensaje original y candidatos"]
+  pendingClarification --> userChoice["Usuario confirma"]
+  userChoice --> caseRoute
+```
+
+Reglas:
+
+- Un binding pendiente **no significa** que todo mensaje siguiente pertenece al
+  caso. Sólo declara que existe un candidato activo.
+- Mensajes claramente no relacionados (analytics, agenda, preguntas generales,
+  etc.) se responden como conversación general y **no cierran** el binding.
+- Mensajes ambiguos deben pedir aclaración con:
+  - tipo de caso (`case_type` / display name),
+  - resumen humano del caso,
+  - estado técnico (`status / current_step`),
+  - ID corto del caso.
+- No crear casos nuevos por keywords inmobiliarios si no hay intención clara o
+  aclaración positiva.
+- `paused` significa pausa deliberada; no representa intake pendiente. La espera
+  conversacional se modela con el binding `awaiting_user`.
+
+Este patrón es canal-agnóstico. Telegram usa `channel='telegram'` + `chat_id`;
+web chat puede usar `channel='web'` + `session_id`. Para canales futuros
+(WhatsApp, email), extender el check de `channel` en la migración y reutilizar el
+mismo resolver.
+
+---
+
 ## 7. Notificación al humano interno
 
 Capa `notify(user_id, payload, urgency)` en [`apps/web/src/lib/notify/index.ts`](../../apps/web/src/lib/notify/index.ts):

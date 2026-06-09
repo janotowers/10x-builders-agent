@@ -432,6 +432,92 @@ export interface OperationalCase {
   updated_at: string;
 }
 
+export type OperationalCaseConversationBindingStatus =
+  | "awaiting_user"
+  | "clarification_needed"
+  | "resolved"
+  | "expired"
+  | "cancelled";
+
+export interface OperationalCaseConversationBinding {
+  id: string;
+  user_id: string;
+  case_id: string;
+  case_type: string;
+  channel: "telegram" | "web";
+  chat_id: number | null;
+  session_id: string | null;
+  status: OperationalCaseConversationBindingStatus;
+  awaiting_fields_jsonb: unknown[];
+  last_agent_prompt: string | null;
+  last_prompt_at: string | null;
+  last_user_message_at: string | null;
+  pending_message_jsonb: Record<string, unknown>;
+  candidate_routes_jsonb: Array<Record<string, unknown>>;
+  metadata_jsonb: Record<string, unknown>;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type OperationalCaseE2ELabSessionStatus =
+  | "active"
+  | "expired"
+  | "cancelled"
+  | "completed";
+
+export interface OperationalCaseE2ELabSession {
+  id: string;
+  user_id: string;
+  case_type: string;
+  case_id: string | null;
+  status: OperationalCaseE2ELabSessionStatus;
+  metadata_jsonb: Record<string, unknown>;
+  started_at: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function isSettingsOperationalTestCaseContext(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  return (
+    context?.created_from === "case_type_settings_test" ||
+    context?.test_mode === true
+  );
+}
+
+export function isSettingsOperationalTestCase(opCase: {
+  context_jsonb?: Record<string, unknown> | null;
+}): boolean {
+  return isSettingsOperationalTestCaseContext(opCase.context_jsonb);
+}
+
+export function isControlledE2EOperationalCaseContext(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  return (
+    context?.created_from === "agent_conversation" &&
+    context?.e2e_controlled === true
+  );
+}
+
+export function isControlledE2EOperationalCase(opCase: {
+  context_jsonb?: Record<string, unknown> | null;
+}): boolean {
+  return isControlledE2EOperationalCaseContext(opCase.context_jsonb);
+}
+
+export function isCronSuppressedOperationalCase(opCase: {
+  context_jsonb?: Record<string, unknown> | null;
+}): boolean {
+  return (
+    isSettingsOperationalTestCase(opCase) ||
+    isControlledE2EOperationalCase(opCase)
+  );
+}
+
 export interface OperationalCaseEvent {
   id: string;
   case_id: string;

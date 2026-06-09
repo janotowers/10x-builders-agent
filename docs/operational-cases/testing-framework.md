@@ -518,13 +518,32 @@ Patrones: `PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT`, `PATTERN_COMPARABLES_INSUF
 
 ## 8. N5 — Prueba de caso (E2E)
 
-Validación del **tipo de caso completo** en el caso de prueba aislado mediante **recorrido manual lineal**:
+Validación del **tipo de caso completo** mediante recorrido controlado. Hay dos fuentes válidas:
+
+- **Fixture sintético de Settings:** caso aislado creado por Preparar caso de prueba.
+- **Caso conversacional controlado:** caso creado desde chat/Telegram con `created_from=agent_conversation`; el recorrido se mantiene mediante `operational_case_conversation_bindings` y el primer tick manual de Prueba con agente lo marca `e2e_controlled=true`.
+
+Pre-flight para caso conversacional: la migración `00044_operational_case_conversation_bindings.sql` debe estar aplicada. Sin esa tabla, el webhook no puede conservar el vínculo durable entre conversación y caso.
+
+Regla de ejecución: **Telegram entrante procesa automáticamente** (usuario/inmobiliario o contacto externo); **cron no procesa casos E2E controlados**. En laboratorio, **Prueba con agente reemplaza al cron** para acciones de fondo.
+
+Para fixture sintético:
 
 1. **Regenerar y validar registro** (N0) — reinicia fixture en `start_step`, fija `controlled_test_playthrough_anchor_at` y ejecuta la validación segura sin agente.
 2. **Transición con agente** (una por clic) — tick real en `case_runner`; observar HITL, Pendientes y Telegram.
 3. Repetir transiciones hasta fin del flujo o bloqueo explícito.
 
-**Reinicio del recorrido:** **Regenerar y validar registro** (no existe «reiniciar ronda» separado). El contador y la auditoría agrupan actividad desde la ancla del recorrido actual.
+Para caso conversacional:
+
+1. Iniciar por chat/Telegram (p. ej. “Quiero opcionar una propiedad”).
+2. El webhook crea/adopta el caso en `intake` y registra un binding `awaiting_user` por canal/chat.
+3. Si faltan required, el agente pregunta por el canal; respuestas futuras pueden llegar horas después.
+4. Preguntas intermedias no relacionadas (p. ej. métricas, agenda, CRM) se atienden como conversación general y no cierran el binding.
+5. Si un mensaje futuro es ambiguo, el sistema pide aclaración mostrando `case_type`, resumen del caso, estado técnico e ID corto antes de asociarlo.
+6. Refrescar Settings; Prueba con agente observa el caso conversacional/binding sin exigir `safe_check`.
+7. Cada click ejecuta un tick de fondo controlado; respuestas reales por Telegram siguen disparando procesamiento normal.
+
+**Reinicio del fixture sintético:** **Regenerar y validar registro** (no existe «reiniciar ronda» separado). El contador y la auditoría agrupan actividad desde la ancla del recorrido actual. En un caso conversacional controlado, reiniciar significa crear/continuar otro caso desde el canal real; no se regenera con N0.
 
 **UI:** resumen por paso, auditoría agrupada por transición, diff post-transición (paso/estado antes→después). Atribución de eventos/tools al `current_step` del tick.
 
@@ -593,7 +612,7 @@ Orden sugerido para la primera batería manual completa:
 |-------|---------------|----------|----------------|-------|
 | 0 | — | — | Preparación + activos + caso de prueba | N0 |
 | 1 | 1 | Intake / apertura | `operational_case_create` (N1; crea un caso **adicional** etiquetado `tool_readiness_test`, no reemplaza el caso aislado de Preparación) | N1 |
-| 1b | 1 | Intake / apertura | `operational_case_update_state` (N1; puede avanzar el caso de prueba de `intake` → `awaiting_documents` si aún está en intake) | N1 |
+| 1b | 1 | Intake / apertura | `operational_case_update_intake` (N1 interna; fusiona datos del schema, recalcula `missing_required` y avanza de `intake` → primer paso operativo cuando está completo) | N1 |
 | 1c | 1 | Intake / apertura | `notify_user` (N1; notificación al asesor; riesgo bajo) | N1 |
 | 2 | 2 | `request-property-documents` | `telegram_send_message_to_contact` A→B | N2 |
 | 2b | 2 | `request-property-documents` | `operational_case_list_documents` | N1 |

@@ -14,6 +14,10 @@ import type {
   OperationalCase,
   PendingConfirmation,
 } from "@agents/types";
+import {
+  isControlledE2EOperationalCase,
+  isSettingsOperationalTestCase,
+} from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { evaluateOwnerResponseBusinessOutcome } from "@/lib/operational-cases/evaluate-owner-response-outcome";
 import {
@@ -89,6 +93,14 @@ function isCharacteristicsOwnerResponseSimulation(body: RunBody) {
   return (
     body.readiness_skill_slug === "extract-property-characteristics" ||
     body.readiness_flow_step_key === "documents_received"
+  );
+}
+
+function isConversationalIntakeIncomplete(opCase: OperationalCase) {
+  return (
+    opCase.context_jsonb?.created_from === "agent_conversation" &&
+    opCase.current_step === "intake" &&
+    opCase.context_jsonb?.intake_status !== "complete"
   );
 }
 
@@ -278,13 +290,25 @@ export async function POST(request: Request) {
     if (!opCase || opCase.user_id !== user.id) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-    if (opCase.context_jsonb?.created_from !== "case_type_settings_test") {
-      return NextResponse.json({ error: "not_a_settings_test_case" }, { status: 400 });
+    const settingsTestCase = isSettingsOperationalTestCase(opCase);
+    const conversationalCase =
+      opCase.context_jsonb?.created_from === "agent_conversation";
+    if (!settingsTestCase && !conversationalCase) {
+      return NextResponse.json(
+        { error: "not_a_lab_or_conversational_case" },
+        { status: 400 }
+      );
+    }
+    if (mode === "safe_check" && !settingsTestCase) {
+      return NextResponse.json(
+        { error: "safe_check_requires_settings_test_case" },
+        { status: 400 }
+      );
     }
     if (ownerResponseText) {
       let caseForOwnerResponse = opCase;
       await expireExternalContactNotificationsForCase(db, opCase.id);
-      if (isCharacteristicsOwnerResponseSimulation(body)) {
+      if (settingsTestCase && isCharacteristicsOwnerResponseSimulation(body)) {
         const prepared = await updateOperationalCase(db, opCase.id, opCase.version, {
           currentStep: "documents_received",
           status: "waiting_external",
@@ -340,11 +364,59 @@ export async function POST(request: Request) {
       }
     }
 
-    const caseBeforeLock = ownerResponseText
+    let caseBeforeLock = ownerResponseText
       ? await getOperationalCase(db, opCase.id)
       : opCase;
     if (!caseBeforeLock) {
       return NextResponse.json({ error: "case_not_found_after_owner_response" }, { status: 404 });
+    }
+    if (
+      mode === "agent_e2e" &&
+      !settingsTestCase &&
+      !isControlledE2EOperationalCase(caseBeforeLock)
+    ) {
+      const adopted = await updateOperationalCase(
+        db,
+        caseBeforeLock.id,
+        caseBeforeLock.version,
+        {
+          nextActionAt: null,
+          context: {
+            ...(caseBeforeLock.context_jsonb ?? {}),
+            e2e_controlled: true,
+            e2e_control_source: "settings_agent_test",
+            e2e_control_case_type: caseBeforeLock.case_type,
+            e2e_control_status:
+              caseBeforeLock.current_step === "intake"
+                ? "intake"
+                : "ready_for_manual_tick",
+            e2e_control_started_at:
+              typeof caseBeforeLock.context_jsonb?.e2e_control_started_at ===
+              "string"
+                ? caseBeforeLock.context_jsonb.e2e_control_started_at
+                : new Date().toISOString(),
+          },
+        }
+      );
+      if (!adopted) {
+        return NextResponse.json({ error: "case_adoption_conflict" }, { status: 409 });
+      }
+      caseBeforeLock = adopted;
+    }
+
+    if (mode === "agent_e2e" && isConversationalIntakeIncomplete(caseBeforeLock)) {
+      const caseType = await getOperationalCaseTypeById(
+        db,
+        caseBeforeLock.case_type_id
+      );
+      const flow = caseType ? await effectiveFlowForCaseType(db, caseType) : [];
+      return NextResponse.json({
+        ...(await buildSettingsTestCaseResponse(db, caseBeforeLock, user.id, flow)),
+        skipped: true,
+        skipped_reason: "conversational_intake_incomplete",
+        hint:
+          "Completa el intake por Telegram antes de ejecutar una revisión E2E con agente.",
+      });
     }
 
     const locked = await markCaseProcessing(db, caseBeforeLock.id, caseBeforeLock.version, 1);

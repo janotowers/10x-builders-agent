@@ -2,9 +2,12 @@ import { NextResponse } from "next/server";
 import {
   createOperationalCase,
   createServerClient,
+  findLatestConversationalOperationalCase,
+  getActiveE2ELabSession,
   getOperationalCase,
   getOperationalCaseTypeById,
   insertOperationalCaseEvent,
+  updateOperationalCase,
 } from "@agents/db";
 import type {
   OperationalCase,
@@ -65,6 +68,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const caseId = searchParams.get("case_id")?.trim();
     const caseTypeId = searchParams.get("case_type_id")?.trim();
+    const source = searchParams.get("source")?.trim();
     const db = createServerClient();
 
     let opCase: OperationalCase | null = null;
@@ -72,18 +76,36 @@ export async function GET(request: Request) {
       opCase = await getOperationalCase(db, caseId);
     } else if (caseTypeId) {
       const caseType = await getOperationalCaseTypeById(db, caseTypeId);
-      opCase = await findLatestSettingsTestCase(
-        db,
-        user.id,
-        caseTypeId,
-        caseType?.case_type
-      );
+      if (source === "conversational" && caseType?.case_type) {
+        opCase = await findLatestConversationalOperationalCase(db, {
+          userId: user.id,
+          caseType: caseType.case_type,
+          statuses: ["active", "waiting_internal", "waiting_external"],
+        });
+      } else {
+        opCase = await findLatestSettingsTestCase(
+          db,
+          user.id,
+          caseTypeId,
+          caseType?.case_type
+        );
+      }
     }
 
     if (!opCase || opCase.user_id !== user.id) {
+      const caseTypeForLabMode = caseTypeId
+        ? await getOperationalCaseTypeById(db, caseTypeId)
+        : null;
+      const e2eLabSession = caseTypeForLabMode?.case_type
+        ? await getActiveE2ELabSession(db, {
+            userId: user.id,
+            caseType: caseTypeForLabMode.case_type,
+          })
+        : null;
       return NextResponse.json({
         ok: true,
         case: null,
+        e2eLabSession,
         events: [],
         toolCalls: [],
         pendingActions: [],
@@ -95,7 +117,15 @@ export async function GET(request: Request) {
 
     const caseType = await getOperationalCaseTypeById(db, opCase.case_type_id);
     const flow = await effectiveFlowForCaseType(db, caseType);
-    return NextResponse.json(await buildSettingsTestCaseResponse(db, opCase, user.id, flow));
+    const payload = await buildSettingsTestCaseResponse(db, opCase, user.id, flow);
+    const e2eLabSession = await getActiveE2ELabSession(db, {
+      userId: user.id,
+      caseType: opCase.case_type,
+    });
+    return NextResponse.json({
+      ...payload,
+      e2eLabSession,
+    });
   } catch (err) {
     console.error("[GET /api/operational-case-tests] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
@@ -251,6 +281,129 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     console.error("[POST /api/operational-case-tests] failed:", err);
+    return NextResponse.json({ error: "Internal error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const caseId = searchParams.get("case_id")?.trim();
+    const source = searchParams.get("source")?.trim();
+    if (!caseId || source !== "conversational") {
+      return NextResponse.json(
+        { error: "case_id and source=conversational required" },
+        { status: 400 }
+      );
+    }
+
+    const db = createServerClient();
+    const opCase = await getOperationalCase(db, caseId);
+    if (
+      !opCase ||
+      opCase.user_id !== user.id ||
+      opCase.context_jsonb?.created_from !== "agent_conversation"
+    ) {
+      return NextResponse.json({ error: "case_not_found" }, { status: 404 });
+    }
+
+    const now = new Date().toISOString();
+    let current = opCase;
+    let updated: OperationalCase | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      updated = await updateOperationalCase(db, current.id, current.version, {
+        status: "paused",
+        nextActionAt: null,
+        context: {
+          ...current.context_jsonb,
+          e2e_control_status: "abandoned",
+          e2e_control_abandoned_at: now,
+          e2e_control_abandoned_by: "settings_lab",
+        },
+      });
+      if (updated) break;
+      const latest = await getOperationalCase(db, current.id);
+      if (!latest || latest.user_id !== user.id) break;
+      current = latest;
+    }
+    if (!updated) {
+      return NextResponse.json(
+        { error: "case_update_conflict_retry" },
+        { status: 409 }
+      );
+    }
+
+    const { data: rejectedToolCalls, error: rejectedError } = await db
+      .from("tool_calls")
+      .update({
+        status: "rejected",
+        finished_at: now,
+        result_json: {
+          reason: "conversational_e2e_abandoned",
+          case_id: opCase.id,
+        },
+      })
+      .eq("status", "pending_confirmation")
+      .contains("arguments_json", { case_id: opCase.id })
+      .select("id");
+    if (rejectedError) throw rejectedError;
+
+    const { data: dismissedNotifications, error: dismissedError } = await db
+      .from("internal_user_notifications")
+      .update({
+        status: "dismissed",
+        read_at: now,
+        updated_at: now,
+      })
+      .eq("user_id", user.id)
+      .eq("case_id", opCase.id)
+      .eq("status", "unread")
+      .select("id");
+    if (dismissedError) throw dismissedError;
+
+    const { error: bindingsError } = await db
+      .from("operational_case_conversation_bindings")
+      .update({
+        status: "cancelled",
+        updated_at: now,
+        metadata_jsonb: {
+          source: "settings_lab_abandon",
+          abandoned_at: now,
+        },
+      })
+      .eq("user_id", user.id)
+      .eq("case_id", opCase.id)
+      .in("status", ["awaiting_user", "clarification_needed"]);
+    if (bindingsError) throw bindingsError;
+
+    await insertOperationalCaseEvent(db, {
+      caseId: opCase.id,
+      eventType: "human_decision",
+      actor: "user",
+      payload: {
+        kind: "conversational_e2e_abandoned",
+        source: "settings_lab",
+        rejected_pending_tool_calls: rejectedToolCalls?.length ?? 0,
+        dismissed_notifications: dismissedNotifications?.length ?? 0,
+      },
+    });
+
+    return NextResponse.json({
+      ok: true,
+      case: updated,
+      rejected_tool_calls: rejectedToolCalls?.length ?? 0,
+      dismissed_notifications: dismissedNotifications?.length ?? 0,
+    });
+  } catch (err) {
+    console.error("[DELETE /api/operational-case-tests] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
 }

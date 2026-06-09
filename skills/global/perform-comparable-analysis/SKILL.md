@@ -87,14 +87,14 @@ Producir un objeto `context_jsonb.comparables_analysis`:
    - `max_area_m2 = area_total_m2 * 1.3` si existe área confiable.
    - `months_back = 12` (subir a 24 si los resultados < 5).
 
-2. Llama:
-   - `easybroker_search_listings(filters)` para activas/publicadas en el mercado
+2. Llama (siempre con **objeto plano de argumentos**, sin anidar en `filters: {...}`):
+   - `easybroker_search_listings({...filters})` para activas/publicadas en el mercado
      actual.
-   - `easybroker_search_closed_deals(filters)` para propiedades marcadas como
+   - `easybroker_search_closed_deals({...filters})` para propiedades marcadas como
      vendidas/rentadas en EasyBroker. Úsalas como referencia histórica; no
      asumas que el precio expuesto es el precio final real de cierre salvo que
      la cuenta lo capture así.
-   - `bigquery_lookup_local_comparables(filters)` para inventario interno
+   - `bigquery_lookup_local_comparables({...filters})` para inventario interno
      publicado en BigQuery. Trátalo como `asking_price`, no como precio de
      cierre, salvo que la respuesta diga `is_closed_price=true`.
 

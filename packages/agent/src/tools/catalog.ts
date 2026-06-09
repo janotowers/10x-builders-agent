@@ -564,6 +564,41 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "operational_case_update_intake",
+    name: "operational_case_update_intake",
+    description:
+      "Updates only intake_schema fields for an active operational case. Recomputes missing_required deterministically and, when complete, moves the case from intake to the configured first operational step so the next case tick can run.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        case_id: { type: "string", description: "UUID of the case in current_step='intake'." },
+        expected_version: {
+          type: "number",
+          description:
+            "Current version from the case context. The update is rejected if this no longer matches.",
+        },
+        intake_patch: {
+          type: "object",
+          description:
+            "Fields extracted from the conversation. Only keys declared in intake_schema_jsonb are persisted.",
+        },
+        external_contact: {
+          type: "object",
+          description:
+            "Optional external contact to bind while completing intake, e.g. { channel, chat_id, display_name }.",
+        },
+        next_action_at: {
+          type: "string",
+          description:
+            "Optional ISO 8601 datetime for the first operational tick after intake completes. Defaults to now.",
+        },
+        note: { type: "string" },
+      },
+      required: ["case_id", "expected_version", "intake_patch"],
+    },
+  },
+  {
     id: "operational_case_persist_comparables_analysis",
     name: "operational_case_persist_comparables_analysis",
     description:

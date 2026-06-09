@@ -275,8 +275,27 @@ function buildOperationalCaseContextBlock(
     lines.push(`- display_name: ${caseTypeRow.display_name}`);
   }
   lines.push(`- status: ${caseRow.status}`);
+  lines.push(
+    "- Este caso ya existe y está en contexto. No uses `operational_case_create` para continuarlo; usa únicamente las tools de actualización/listado/extracción correspondientes al paso actual."
+  );
   if (caseRow.current_step) {
     lines.push(`- current_step: ${caseRow.current_step}`);
+  }
+  if (caseRow.current_step === "intake") {
+    lines.push("");
+    lines.push("### Regla estricta de intake");
+    lines.push(
+      "- Mientras `current_step=intake`, usa `operational_case_update_intake` para persistir datos recolectados y validar campos requeridos."
+    );
+    lines.push(
+      "- No uses `operational_case_update_state` para completar intake ni para mover el caso al primer paso operativo; `operational_case_update_intake` hace ese avance de forma determinística cuando el intake queda completo."
+    );
+    lines.push(
+      "- Si aún faltan campos requeridos, pregunta esos campos al usuario por el canal actual."
+    );
+    lines.push(
+      "- Al completar el intake, confirma brevemente que la propiedad quedó registrada en el caso. No digas «opcional» ni «opcionada»; usa «registrada». No menciones documentos, adjuntos ni el siguiente paso operativo: el sistema o el tick del caso se encargan de eso."
+    );
   }
   if (caseRow.due_at) {
     lines.push(`- due_at: ${caseRow.due_at}`);
@@ -406,7 +425,7 @@ function buildShortTermMemoryPreviews(
   }));
 }
 
-const MAX_TOOL_ITERATIONS = 8;
+const MAX_TOOL_ITERATIONS = 10;
 const MEMORY_CURATE_TOOL_NAMES = new Set([
   "list_user_memories",
   "search_user_memories",
@@ -2167,7 +2186,18 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           result = await (matchingTool as any).invoke(tc.args);
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
+          const rawMessage = err instanceof Error ? err.message : String(err);
+          const serialized =
+            rawMessage === "[object Object]"
+              ? (() => {
+                  try {
+                    return JSON.stringify(err);
+                  } catch {
+                    return rawMessage;
+                  }
+                })()
+              : rawMessage;
+          const message = serialized && serialized !== "{}" ? serialized : rawMessage;
           const payload = {
             status: "validation_error",
             error: message,

@@ -4,6 +4,8 @@ import { isPropertyOptioningIntent } from "./property-optioning-intent";
 function testPositiveIntents(): void {
   const positives = [
     "necesito opcionar una propiedad",
+    "Quisiera opcionar una propiedas",
+    "Quiero opcionar un inmueble",
     "quiero opcionar una casa",
     "voy a conseguir la exclusiva de un departamento",
     "tengo una nueva captación de propiedad",

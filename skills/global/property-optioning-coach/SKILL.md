@@ -19,6 +19,7 @@ allowed_tools:
   - read_skill_reference
   - notify_user
   - operational_case_create
+  - operational_case_update_intake
   - operational_case_update_state
   - operational_case_add_event
   - operational_case_list_documents
@@ -75,19 +76,35 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
   falta un campo **required**, no avances: pregunta en chat o `notify_user` al
   inmobiliario (vía `allowed_tools`; no es requisito del grid de intake en
   settings).
-- Cuando los required estén cubiertos, mueve el caso a `awaiting_documents`
-  con `operational_case_update_state` (siempre `expected_version`). La
-  **primera acción operativa** es `request-property-documents` (Paso operativo 1).
+- Cuando los required estén cubiertos, usa `operational_case_update_intake`
+  (siempre con `expected_version`) para persistir los campos de intake. Esa
+  tool limpia `missing_required` y mueve el caso al primer paso operativo
+  configurado (`awaiting_documents` en `property_optioning`). La **primera
+  acción operativa** es `request-property-documents` (Paso operativo 1), que se
+  ejecuta en el siguiente tick del caso.
 
 ## Camino conversacional (sin `case_id` en contexto)
 
 - Si el usuario pide iniciar "opcionar propiedad" por chat/Telegram y no hay
-  caso en el prompt, pregunta los campos **required** del intake_schema (p. ej.
-  `property_title`), y opcionales que el usuario pueda dar (`owner_name`,
-  `telegram_chat_id` en `external_contact` si aplica).
-- Cuando tengas los required, llama `operational_case_create` con `case_type:
-  property_optioning`, `context` y `external_contact` si el usuario lo
-  proporcionó. No envíes mensaje al externo en este paso.
+  caso en el prompt, llama `operational_case_create` con `case_type:
+  property_optioning`, el `context` disponible y `allow_incomplete_intake: true`.
+  Esto persiste un draft en `current_step=intake` aunque falten campos required.
+- Si la tool devuelve `missing_required`, pregunta esos campos en el mismo chat.
+  En turnos posteriores con `[Caso operacional]`, actualiza ese mismo caso; no
+  crees casos duplicados.
+- Si el usuario responde horas después o intercala preguntas no relacionadas,
+  trata el bloque `[Caso operacional]`/binding conversacional como continuidad
+  durable del caso. Sólo crea un caso nuevo si hay intención explícita de iniciar
+  otro recorrido o si el usuario confirma una aclaración en ese sentido.
+- Cuando tengas nuevos datos de intake, llama `operational_case_update_intake`
+  con `intake_patch` sólo para los campos declarados en el schema. Si aún faltan
+  required, la tool devolverá `missing_required` actualizado. Si ya están todos,
+  dejará el caso listo en el primer paso operativo. No envíes mensaje al externo
+  en este paso.
+- Al cerrar el intake, confirma al inmobiliario con una frase corta: la
+  propiedad quedó **registrada** en el caso (nunca «opcional» ni «opcionada»).
+  No menciones documentos ni adjuntos en esa confirmación; la solicitud de
+  documentos es un paso operativo aparte.
 - Usa el `case_id` y `version` devueltos y aplica la misma transición desde
   `intake` descrita arriba.
 
@@ -97,7 +114,7 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
 
 | Step | Rol | Tools clave |
 |---|---|---|
-| `intake` | Completar registro (datos mínimos) | `operational_case_create` (escenario), `operational_case_update_state` (interna); `notify_user` solo en runtime incompleto |
+| `intake` | Completar registro (datos mínimos) | `operational_case_create` (inicio), `operational_case_update_intake` (merge/validación determinística); `notify_user` solo en runtime incompleto |
 
 **Flujo operativo (desde Paso operativo 1):**
 

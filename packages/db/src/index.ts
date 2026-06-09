@@ -13,6 +13,8 @@ export * from "./queries/heartbeat-runs";
 export * from "./queries/heartbeat-checklist-templates";
 export * from "./queries/memories";
 export * from "./queries/operational-cases";
+export * from "./queries/operational-case-conversation-bindings";
+export * from "./queries/operational-case-e2e-lab-sessions";
 export * from "./queries/operational-case-test-runs";
 export * from "./queries/account-skills";
 export * from "./queries/notification-preferences";

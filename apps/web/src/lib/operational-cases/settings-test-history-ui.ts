@@ -131,12 +131,12 @@ export function cleanupTargetLabel(
   counts: SettingsTestActionKindCounts
 ): string {
   if (target === "notifications") {
-    return `Solo notificaciones HITL (${counts.notifications})`;
+    return `Solo notificaciones (${counts.notifications})`;
   }
   if (target === "tool_calls") {
     return `Solo aprobaciones del agente (${counts.toolConfirmations})`;
   }
-  return `Todo el historial HITL (${counts.total})`;
+  return `Todo el historial (${counts.total})`;
 }
 
 function truncatePreviewText(value: string, max = 120): string {

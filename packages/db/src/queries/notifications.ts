@@ -183,7 +183,9 @@ export async function verifyOwnedSettingsTestCase(
   const context = (opCase as { context_jsonb?: Record<string, unknown> }).context_jsonb;
   return (
     context?.created_from === "case_type_settings_test" ||
-    context?.test_mode === true
+    context?.test_mode === true ||
+    (context?.created_from === "agent_conversation" &&
+      context?.e2e_controlled === true)
   );
 }
 

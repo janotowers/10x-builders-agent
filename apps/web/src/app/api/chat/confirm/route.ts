@@ -14,6 +14,7 @@ import {
   isScheduleTaskConfirmation,
 } from "@/lib/scheduled-task-confirmation";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import { findPendingConfirmationCheckpoint } from "@/lib/agent/pending-confirmation-checkpoint";
 
 export async function POST(request: Request) {
   try {
@@ -53,6 +54,22 @@ export async function POST(request: Request) {
       .single();
     if (!session || session.user_id !== user.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (action === "reject") {
+      await updateToolCallStatus(db, toolCall.id as string, "rejected", {
+        message: "Acción cancelada por el usuario.",
+        source: "chat_confirm",
+      });
+      return NextResponse.json({
+        ok: true,
+        response: "Acción cancelada.",
+        turnId: (toolCall.turn_id as string | null) ?? undefined,
+        appliedSkills: [],
+        memoryUsed: [],
+        toolCalls: [],
+        pendingConfirmation: null,
+      });
     }
 
     const { data: profile } = await supabase
@@ -130,27 +147,20 @@ export async function POST(request: Request) {
     const googleCalendarAccessToken =
       (await getGoogleCalendarAccessToken(db, user.id)) ?? undefined;
 
-    // Retrieve the checkpointThreadId stored when the interrupt was created
-    const { data: pendingMsg } = await db
-      .from("agent_messages")
-      .select("structured_payload")
-      .eq("session_id", toolCall.session_id)
-      .not("structured_payload", "is", null)
-      .order("created_at", { ascending: false })
-      .limit(5);
-    const spEntry = pendingMsg?.find(
-      (m) =>
-        (m.structured_payload as Record<string, unknown>)?.type ===
-        "pending_confirmation"
-    );
-    const storedCheckpointThreadId = (
-      spEntry?.structured_payload as {
-        pendingConfirmation?: { checkpointThreadId?: string };
-      }
-    )?.pendingConfirmation?.checkpointThreadId;
+    const storedCheckpointThreadId = await findPendingConfirmationCheckpoint(db, {
+      sessionId: toolCall.session_id as string,
+      toolCallId: toolCall.id as string,
+      turnId: (toolCall.turn_id as string | null) ?? null,
+    });
+    if (!storedCheckpointThreadId) {
+      return NextResponse.json(
+        { error: "Confirmation checkpoint not found for this tool call" },
+        { status: 409 }
+      );
+    }
 
     const result = await runAgent({
-      resumeDecision: action === "approve" ? "approve" : "reject",
+      resumeDecision: "approve",
       checkpointThreadId: storedCheckpointThreadId,
       turnId: (toolCall.turn_id as string | null) ?? undefined,
       userId: user.id,

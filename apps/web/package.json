@@ -10,7 +10,7 @@
     "type-check": "tsc --noEmit",
     "test:business-decisions": "tsx src/lib/business-decisions/price-approval.selftest.ts && tsx src/lib/business-decisions/contract-review.selftest.ts",
     "test:step-scenario-evidence": "tsx src/lib/operational-cases/step-test-scenario-evidence.selftest.ts",
-    "test:readiness-test-ui": "tsx src/lib/operational-cases/readiness-test-ui.selftest.ts && tsx src/lib/operational-cases/readiness-step-section-ui.selftest.ts && tsx src/lib/operational-cases/settings-test-safe-check.selftest.ts && tsx src/lib/operational-cases/controlled-e2e-case.selftest.ts && tsx src/lib/operational-cases/conversational-case-routing.selftest.ts",
+    "test:readiness-test-ui": "tsx src/lib/operational-cases/readiness-test-ui.selftest.ts && tsx src/lib/operational-cases/readiness-step-section-ui.selftest.ts && tsx src/lib/operational-cases/settings-test-safe-check.selftest.ts && tsx src/lib/operational-cases/controlled-e2e-case.selftest.ts && tsx src/lib/operational-cases/e2e-lab-session.selftest.ts && tsx src/lib/operational-cases/telegram-operational-case-tool-policy.selftest.ts && tsx src/lib/operational-cases/conversational-case-routing.selftest.ts && tsx src/lib/operational-cases/conversation-case-identity.selftest.ts && tsx src/lib/operational-cases/settings-test-flow-progress.selftest.ts && tsx src/lib/operational-cases/telegram-intake-completion-message.selftest.ts",
     "test:engagement-policies": "tsx src/lib/engagement-policies/registry.selftest.ts",
     "test:notifications": "tsx src/lib/internal-notifications/registry.selftest.ts"
   },

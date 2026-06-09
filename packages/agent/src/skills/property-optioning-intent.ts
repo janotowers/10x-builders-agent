@@ -22,7 +22,7 @@ export function isPropertyOptioningIntent(message: string | null | undefined) {
   if (!text) return false;
 
   const propertyNoun =
-    /\b(propiedad|casa|depto|departamento|inmueble|terreno|local)\b/.test(
+    /\b(propiedad(?:es)?|propieda[ds]|casa|depto|departamento|inmueble|terreno|local)\b/.test(
       text
     );
 

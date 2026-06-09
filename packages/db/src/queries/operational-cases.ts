@@ -252,6 +252,34 @@ export async function listOperationalCasesForUser(
   return (data ?? []) as OperationalCase[];
 }
 
+export async function findLatestConversationalOperationalCase(
+  db: DbClient,
+  params: {
+    userId: string;
+    caseType: string;
+    statuses?: OperationalCaseStatus[];
+  }
+): Promise<OperationalCase | null> {
+  const statuses = params.statuses ?? [
+    "active",
+    "waiting_internal",
+    "waiting_external",
+    "paused",
+  ];
+  const { data, error } = await db
+    .from("operational_cases")
+    .select("*")
+    .eq("user_id", params.userId)
+    .eq("case_type", params.caseType)
+    .eq("context_jsonb->>created_from", "agent_conversation")
+    .in("status", statuses)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as OperationalCase | null) ?? null;
+}
+
 /**
  * Devuelve casos vencidos (next_action_at <= now()) en estados procesables.
  * Llamado por el cron `/api/cron/operational-cases` con service_role.

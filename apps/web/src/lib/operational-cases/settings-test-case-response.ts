@@ -1,11 +1,13 @@
 import {
   createServerClient,
+  findPendingConversationBindings,
   getGlobalOperationalCaseTypeBySlug,
   getOperationalCase,
   getOperationalCaseTypeById,
 } from "@agents/db";
 import type {
   OperationalCase,
+  OperationalCaseConversationBinding,
   OperationalCaseEvent,
   OperationalCaseFlowStep,
   ToolCall,
@@ -29,6 +31,7 @@ type Db = ReturnType<typeof createServerClient>;
 export type SettingsTestCaseApiResponse = {
   ok: true;
   case: OperationalCase;
+  conversationBindings?: OperationalCaseConversationBinding[];
   events: OperationalCaseEvent[];
   toolCalls: ToolCall[];
   pendingActions: SettingsTestPendingAction[];
@@ -72,9 +75,15 @@ export async function buildSettingsTestCaseResponse(
     fresh.id,
     playthroughAnchorAt
   );
+  const conversationalCase =
+    fresh.context_jsonb?.created_from === "agent_conversation";
   const labEventsSince =
     playthroughAnchorAt ??
-    (e2eStartEvents.length > 0 ? e2eStartEvents[0]!.created_at : null);
+    (conversationalCase
+      ? null
+      : e2eStartEvents.length > 0
+        ? e2eStartEvents[0]!.created_at
+        : null);
   const events = await listSettingsTestCaseEventsForLab(db, fresh.id, {
     since: labEventsSince,
   });
@@ -101,9 +110,21 @@ export async function buildSettingsTestCaseResponse(
     toolCalls,
     playthroughAnchorAt,
   });
+  const conversationBindings =
+    fresh.context_jsonb?.created_from === "agent_conversation"
+      ? (
+          await findPendingConversationBindings(db, {
+            userId,
+            channel: "telegram",
+            statuses: ["awaiting_user", "clarification_needed"],
+            limit: 10,
+          })
+        ).filter((binding) => binding.case_id === fresh.id)
+      : [];
   return {
     ok: true,
     case: fresh,
+    conversationBindings,
     events,
     toolCalls,
     pendingActions: pendingResult.pendingActions,

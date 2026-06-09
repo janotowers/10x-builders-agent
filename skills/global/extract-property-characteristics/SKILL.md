@@ -68,25 +68,67 @@ Llenar `context_jsonb.property_data` con un objeto canónico:
    `predial`, `boleta_registral`), corre
    `operational_case_extract_document_fields` si la extracción no existe. La
    tool acepta PDFs e imágenes y decide internamente si extraer texto, renderizar
-   una página o usar visión directa.
+   una página o usar visión directa. Usa **exactamente** el `id` UUID real
+   devuelto por `operational_case_list_documents`; nunca uses placeholders como
+   `<document_id>` ni IDs abreviados.
    Usa esos datos como fuente, no como verdad absoluta.
-3. Calcula los campos faltantes contra el shape canónico de arriba.
-4. Si quedan **campos críticos** sin responder
-   (operation, property_type, address.{street, neighborhood, city},
-   area_total_m2, bedrooms, bathrooms):
+3. Consolida primero `context_jsonb.property_data` con los datos extraídos de
+   documentos de propiedad (`escritura_descripcion`, `predial`,
+   `boleta_registral`): titulares, dirección legal y superficie/metraje. No
+   uses la dirección de IFE/comprobante de domicilio como dirección del
+   inmueble salvo que el documento lo indique explícitamente.
+4. Calcula los campos faltantes contra el shape canónico de arriba y la matriz
+   mínima por tipo de inmueble.
+5. Si quedan **campos mínimos** sin responder, pregunta al dueño antes de crear
+   `property_data_review`.
+   - Para todos los tipos: nombre(s) de dueño/titulares, dirección de la
+     propiedad y superficie/metraje total.
+   - Casa: m² de terreno/superficie, m² de construcción, número de
+     plantas/pisos, recámaras, baños completos, medios baños y si tiene cocina
+     integral.
+   - Departamento: recámaras, baños completos, medios baños, cajones, piso,
+     elevador sí/no y amenidades.
+   - Terreno/lote: metraje m² y si está en coto/condominio/parque industrial o
+     es independiente. NO preguntes recámaras, baños ni estacionamientos salvo
+     que exista construcción.
+   - Bodega/nave industrial: m² de bodega/nave, altura, m² de oficinas si
+     aplica, baños, cajones/estacionamientos, KVA y transformador sí/no.
    - Compón un mensaje al dueño con **máximo 4 preguntas** específicas, en
      formato bullet o numerado para fácil lectura.
    - `telegram_send_message_to_contact` con
      `purpose=characteristics_pending`.
+   - Si intentaste `notify_user(kind="property_data_review")` y la tool devolvió
+     `property_data_minimums_missing`, usa exactamente
+     `suggested_external_message` como texto al contacto externo. Ese mensaje ya
+     separa datos conocidos y faltantes reales.
    - Inserta `operational_case_add_event(reminder_sent)`.
    - Pon `status=waiting_external`, `next_action_at=now()+24h`.
-5. Si llegó `external_response`:
+6. Si llegó `external_response`:
    - Parsea las respuestas y mergea en `property_data`.
+   - Conserva como canónicos los campos ya confirmados en intake
+     (`property_title`, `property_zone`, `operation_type`, `property_type`).
+     Los documentos pueden aportar dirección legal, superficie, folio, titular,
+     medidas y colindancias, pero no deben reemplazar `property_type="Terreno"`
+     por etiquetas notariales como "Unidad Privativa" salvo que lo marques como
+     conflicto/duda para revisión.
    - Si todos los críticos están llenos, llama `notify_user` con
      `kind="property_data_review"` y `status=waiting_internal` para que el
      asesor confirme/corrija antes de comparables.
+   - El texto de `notify_user` DEBE ser accionable y auto-contenido: incluye
+     un resumen compacto de lo extraído y un bloque de faltantes/advertencias.
+     Formato recomendado:
+     - "Datos confirmados por intake:" con `operation_type`, `property_type`,
+       `property_zone` y `property_title`.
+     - "Datos encontrados en documentos:" solo con información que venga de los
+       documentos o sus extracciones (dirección legal, `area_total_m2`,
+       titular/folio/predial, etc.). No repitas tipo/operación/zona aquí si
+       solo vienen del intake.
+     - Para terrenos/lotes, recámaras, baños y estacionamientos son "No aplica"
+       salvo que exista construcción; no los trates como faltantes críticos.
+     - "Faltantes o dudas:" con bullets (o "ninguno").
+     - Cierre: "Confirma si es correcto o indícame correcciones puntuales."
    - Si aún faltan algunos críticos, repite paso 3 con los que faltan.
-6. Sólo cuando exista confirmación interna de datos básicos, mueve
+7. Sólo cuando exista confirmación interna de datos básicos, mueve
    `current_step=comparables_in_progress`, `status=active`, `next_action_at=now()`.
 
 ## Buenas prácticas de redacción de preguntas
