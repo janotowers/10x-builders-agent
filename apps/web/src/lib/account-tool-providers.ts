@@ -171,6 +171,52 @@ export const ACCOUNT_TOOL_PROVIDERS: AccountToolProviderSpec[] = [
     ],
     appliesToTools: ["ungga_publish_listing"],
   },
+  {
+    id: "avaclick",
+    displayName: "Avaclick",
+    description:
+      "API de opinión digital de valor para casa/departamento (venta y renta) usando catálogos de ubicación y características.",
+    credentialsHelpUrl: "https://avaclick.app/",
+    configFields: [
+      {
+        name: "api_url",
+        label: "API URL",
+        type: "url",
+        required: false,
+        placeholder: "https://avaclick.app/Apiv2/Avaluo",
+        help: "Opcional. Si se omite se usa la URL por defecto de Avaclick.",
+      },
+      {
+        name: "company_name",
+        label: "Nombre de empresa",
+        type: "text",
+        required: true,
+        placeholder: "Avaclick",
+        help: "Valor enviado en Empresa.NombreEmpresa al proveedor.",
+      },
+    ],
+    secretFields: [
+      {
+        name: "email",
+        label: "Correo API",
+        type: "text",
+        required: true,
+        placeholder: "api.ungga.test@avaclick.app",
+        help:
+          "Si Avaclick rotó tus credenciales, escribe el correo completo aquí. Actualizar solo el nombre de empresa no cambia el secret guardado.",
+      },
+      {
+        name: "password",
+        label: "Password API",
+        type: "password",
+        required: true,
+        placeholder: "••••••••••••••••",
+        help:
+          "Obligatorio al guardar credenciales nuevas. Dejar en blanco solo conserva el password anterior si también dejaste el correo en blanco.",
+      },
+    ],
+    appliesToTools: ["get_avaclick_valuation"],
+  },
 ];
 
 export function getAccountToolProvider(

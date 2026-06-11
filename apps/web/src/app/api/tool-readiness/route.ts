@@ -168,11 +168,13 @@ const ADAPTER_TOOLS = new Set([
   "easybroker_search_listings",
   "easybroker_search_closed_deals",
   "bigquery_lookup_local_comparables",
+  "geocode_property_address",
   "generate_document_from_template",
   "image_watermark",
   "easybroker_create_listing",
   "easybroker_upload_images",
   "ungga_publish_listing",
+  "get_avaclick_valuation",
 ]);
 
 const STUB_TOOLS = new Set<string>([]);
@@ -188,6 +190,7 @@ const EASYBROKER_WRITE_TOOLS = new Set([
   "easybroker_upload_images",
 ]);
 const UNGGA_TOOLS = new Set(["ungga_publish_listing"]);
+const AVACLICK_TOOLS = new Set(["get_avaclick_valuation"]);
 const TENANT_ASSET_TOOLS = new Set([
   "generate_document_from_template",
   "image_watermark",
@@ -205,6 +208,7 @@ const TOOL_TO_ACCOUNT_PROVIDER: Record<string, string> = {
   easybroker_create_listing: "easybroker",
   easybroker_upload_images: "easybroker",
   ungga_publish_listing: "ungga_cli",
+  get_avaclick_valuation: "avaclick",
 };
 
 /** Providers que satisfacen `ungga_publish_listing` (cualquiera activo basta). */
@@ -215,6 +219,7 @@ const ACCOUNT_PROVIDER_LABELS: Record<string, string> = {
   easybroker_web: "EasyBroker MLS (automatización web)",
   ungga_api: "Ungga API",
   ungga_cli: "Ungga (automatización web)",
+  avaclick: "Avaclick",
 };
 
 function accountProviderLabel(providerId: string) {
@@ -297,6 +302,16 @@ function envConfigured(toolId: string) {
         ) ||
           localUnggaCliEnvAvailable())
     ) || localUnggaCliEnvAvailable();
+  }
+  if (toolId === "get_avaclick_valuation") {
+    return Boolean(
+      process.env.AVACLICK_COMPANY_NAME?.trim() &&
+        process.env.AVACLICK_EMAIL?.trim() &&
+        process.env.AVACLICK_PASSWORD?.trim()
+    );
+  }
+  if (toolId === "geocode_property_address") {
+    return Boolean(process.env.GOOGLE_MAPS_API_KEY?.trim());
   }
   return true;
 }
@@ -801,10 +816,13 @@ function classifyTool(params: {
     notes.push("Falta configuración/secret del entorno para ejecutarla.");
     const isEasyBroker = EASYBROKER_TOOLS.has(params.toolId);
     const isUngga = UNGGA_TOOLS.has(params.toolId);
+    const isAvaclick = AVACLICK_TOOLS.has(params.toolId);
     const providerLabel = isEasyBroker
       ? "EasyBroker"
       : isUngga
         ? "Ungga"
+        : isAvaclick
+          ? "Avaclick"
         : "esta tool";
     return {
       tool_id: params.toolId,

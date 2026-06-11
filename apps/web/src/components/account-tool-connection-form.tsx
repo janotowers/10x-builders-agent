@@ -165,7 +165,9 @@ export function AccountToolConnectionForm({
       setFeedback({
         kind: "ok",
         message: onlyConfig
-          ? "Configuración actualizada."
+          ? status === "invalid"
+            ? "Configuración actualizada. Las credenciales guardadas no cambiaron — escribe correo y password para rotarlas."
+            : "Configuración actualizada."
           : "Credenciales guardadas. Ahora prueba la conexión.",
       });
       onChanged?.(body.secret ?? null);
@@ -336,8 +338,16 @@ export function AccountToolConnectionForm({
 
       {hasSecret && (
         <p className="text-xs text-neutral-500">
-          Tip: para conservar las credenciales guardadas, deja los campos
-          de password en blanco. Si los llenas, se reemplazarán.
+          Tip: para conservar las credenciales guardadas, deja{" "}
+          <strong>todos</strong> los campos secretos en blanco. Si actualizas
+          correo o password, debes llenar ambos campos secretos requeridos.
+        </p>
+      )}
+
+      {hasSecret && status === "invalid" && secretDraftEmpty && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          La conexión está inválida. Vuelve a escribir correo y password API —
+          guardar solo el nombre de empresa mantiene las credenciales anteriores.
         </p>
       )}
 

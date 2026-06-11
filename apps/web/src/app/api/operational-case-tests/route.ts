@@ -55,6 +55,38 @@ async function findLatestSettingsTestCase(
   return (fallback.data as OperationalCase | null) ?? null;
 }
 
+function normalizeIntakeFieldValue(
+  field: OperationalCaseIntakeField,
+  value: unknown
+): unknown {
+  if (value == null) return undefined;
+  if (field.type === "number") {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    return undefined;
+  }
+  if (field.type === "multi_select") {
+    if (Array.isArray(value)) {
+      const options = value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean);
+      return options.length > 0 ? options : undefined;
+    }
+    if (typeof value === "string" && value.trim()) {
+      return [value.trim()];
+    }
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  return value;
+}
+
 export async function GET(request: Request) {
   try {
     const supabase = await createClient();
@@ -459,12 +491,29 @@ export async function PATCH(request: Request) {
       case_type_id: caseType.id,
     };
     for (const field of fields) {
-      if (field.name in requestedContext) {
-        const value = requestedContext[field.name];
-        nextContext[field.name] =
-          field.type === "number" && typeof value === "string" && value.trim()
-            ? Number(value)
-            : value;
+      delete nextContext[field.name];
+    }
+    const staleDerivedKeys = [
+      "min_price",
+      "max_price",
+      "price_min",
+      "price_max",
+      "min_area_m2",
+      "max_area_m2",
+      "area_min_m2",
+      "area_max_m2",
+      "expected_price",
+      "asking_price",
+      "price",
+      "precio",
+    ] as const;
+    for (const key of staleDerivedKeys) {
+      delete nextContext[key];
+    }
+    for (const field of fields) {
+      const normalized = normalizeIntakeFieldValue(field, requestedContext[field.name]);
+      if (normalized !== undefined) {
+        nextContext[field.name] = normalized;
       }
     }
     const extraContextKeys = new Set([

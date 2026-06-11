@@ -124,6 +124,40 @@ const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
   bigquery_lookup_local_comparables: { months_back: 24, limit: 100 },
   easybroker_search_listings: { limit: 50 },
   easybroker_search_closed_deals: { limit: 50 },
+  geocode_property_address: {
+    street: "San Carlos",
+    exterior_number: "710",
+    neighborhood: "San Carlos",
+    municipality: "Metepec",
+    state: "Estado de México",
+    postal_code: "52159",
+    country: "MX",
+  },
+  get_avaclick_valuation: {
+    customer_name: "Cliente de prueba",
+    customer_email: "cliente.prueba@example.com",
+    customer_phone: "3331234567",
+    property_type: "condo_house",
+    latitude: 19.270469527143423,
+    longitude: -99.62444830066556,
+    state_name: "Estado de México",
+    municipality_name: "Metepec",
+    neighborhood_name: "San Carlos",
+    zip_code: "52159",
+    street: "San Carlos",
+    exterior_number: "710",
+    land_area_m2: 1095,
+    construction_area_m2: 545,
+    age_years: 20,
+    parking_spaces: 1,
+    bedrooms: 1,
+    full_bathrooms: 1,
+    half_bathrooms: 1,
+    floors: 1,
+    conservation: "new",
+    private_amenities: [],
+    common_amenities: [],
+  },
   ungga_publish_listing: {
     action: "prepare_draft",
     title: "POC test - DELETE ME",
@@ -211,6 +245,8 @@ const TOOL_TEST_ARG_RECIPES: Record<
   easybroker_search_closed_deals: (input) => easyBrokerCaseRecipe(input.ctx),
   bigquery_lookup_local_comparables: (input) =>
     bigQueryLocalComparablesCaseRecipe(input.ctx),
+  geocode_property_address: (input) => geocodeAddressCaseRecipe(input.ctx),
+  get_avaclick_valuation: (input) => avaclickValuationCaseRecipe(input.ctx),
   telegram_send_message_to_contact: telegramContactCaseRecipe,
   notify_user: (input) => notifyUserCaseRecipe(input.ctx),
   generate_document_from_template: generateDocumentFromTemplateCaseRecipe,
@@ -639,9 +675,187 @@ function firstNumber(ctx: Record<string, unknown>, keys: string[]) {
   return null;
 }
 
+function splitMexicanZone(value: string | null): {
+  neighborhood?: string;
+  municipality?: string;
+  state?: string;
+} {
+  if (!value) return {};
+  const parts = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length < 3) return { neighborhood: value };
+  const state = parts.at(-1);
+  const municipality = parts.at(-2);
+  const neighborhood = parts.slice(0, -2).join(", ");
+  return { neighborhood, municipality, state };
+}
+
 function contextWithPropertyData(ctx: Record<string, unknown>) {
   const propertyData = isRecord(ctx.property_data) ? ctx.property_data : {};
   return { ...propertyData, ...ctx };
+}
+
+function comparablePropertyTypes(ctx: Record<string, unknown>) {
+  return Array.from(
+    new Set(
+      firstStringArray(ctx, ["property_type", "tipo_propiedad", "tipo"]).filter(Boolean)
+    )
+  );
+}
+
+function comparableText(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+}
+
+function comparablePropertyKind(propertyTypes: string[]) {
+  const normalized = propertyTypes.map(comparableText);
+  if (normalized.some((value) => /\b(terreno|lote|land)\b/.test(value))) {
+    return "land" as const;
+  }
+  if (normalized.some((value) => /\b(bodega|nave industrial|nave)\b/.test(value))) {
+    return "industrial" as const;
+  }
+  if (
+    normalized.some((value) => /\b(casa|departamento|depto|apartment|residencial)\b/.test(value))
+  ) {
+    return "residential" as const;
+  }
+  return "other" as const;
+}
+
+function easyBrokerComparablePropertyTypes(
+  ctx: Record<string, unknown>,
+  propertyTypes: string[]
+) {
+  const contextText = comparableText(
+    [
+      ...propertyTypes,
+      ctx.land_context,
+      ctx.property_context,
+      ctx.industrial_context,
+      ctx.notes,
+    ].join(" ")
+  );
+  const out: string[] = [];
+  const add = (...values: string[]) => {
+    for (const value of values) {
+      if (!out.includes(value)) out.push(value);
+    }
+  };
+
+  for (const type of propertyTypes) {
+    const normalized = comparableText(type);
+    if (!normalized) continue;
+    if (normalized.includes("casa en condominio")) {
+      add("Casa en condominio");
+    } else if (/\bcasa\b/.test(normalized)) {
+      add("Casa", "Casa en condominio");
+    } else if (/\b(departamento|depto|apartment)\b/.test(normalized)) {
+      add("Departamento");
+    } else if (/\b(terreno|lote|land)\b/.test(normalized)) {
+      if (normalized.includes("industrial") || contextText.includes("parque industrial")) {
+        add("Terreno industrial");
+      } else {
+        add("Terreno");
+      }
+    } else if (normalized.includes("bodega comercial")) {
+      add("Bodega comercial");
+    } else if (/\b(bodega|nave industrial|nave)\b/.test(normalized)) {
+      add("Bodega industrial", "Nave industrial");
+    } else if (/\boficina\b/.test(normalized)) {
+      add("Oficina");
+    } else if (normalized.includes("local en centro comercial")) {
+      add("Local en centro comercial");
+    } else if (/\blocal\b/.test(normalized)) {
+      add("Local comercial");
+    } else {
+      add(type);
+    }
+  }
+
+  return out.length > 0 ? out : propertyTypes;
+}
+
+function comparableOperationArgs(ctx: Record<string, unknown>) {
+  const operationRawValues = firstStringArray(ctx, [
+    "operation",
+    "operation_type",
+    "tipo_operacion",
+  ]).map((value) => value.toLowerCase());
+  const operations = operationRawValues
+    .map((operationRaw) => {
+      if (operationRaw === "rent" || operationRaw.includes("renta")) return "rent";
+      if (operationRaw === "sale" || operationRaw.includes("venta")) return "sale";
+      return null;
+    })
+    .filter((value): value is "sale" | "rent" => value != null);
+  const uniqueOperations = Array.from(new Set(operations));
+  return {
+    operation: uniqueOperations.length === 1 ? uniqueOperations[0] : undefined,
+    operations: uniqueOperations.length > 1 ? uniqueOperations : undefined,
+  };
+}
+
+function comparableAreaArgs(ctx: Record<string, unknown>) {
+  const minAreaM2 = firstNumber(ctx, ["min_area_m2", "area_min_m2", "superficie_min"]);
+  const maxAreaM2 = firstNumber(ctx, ["max_area_m2", "area_max_m2", "superficie_max"]);
+  if (minAreaM2 != null || maxAreaM2 != null) {
+    return {
+      min_area_m2: minAreaM2 ?? undefined,
+      max_area_m2: maxAreaM2 ?? undefined,
+    };
+  }
+  const areaM2 = firstNumber(ctx, [
+    "area_m2",
+    "area_total_m2",
+    "construction_m2",
+    "construction_size",
+    "superficie",
+    "m2",
+  ]);
+  if (areaM2 == null || areaM2 <= 0) return {};
+  return {
+    min_area_m2: Math.round(areaM2 * 0.7),
+    max_area_m2: Math.round(areaM2 * 1.3),
+  };
+}
+
+function comparablePriceArgs(
+  ctx: Record<string, unknown>,
+  allowTargetBand: boolean
+): {
+  min_price?: number;
+  max_price?: number;
+  target_price?: number;
+} {
+  const minPrice = firstNumber(ctx, ["min_price", "price_min", "precio_min"]);
+  const maxPrice = firstNumber(ctx, ["max_price", "price_max", "precio_max"]);
+  const targetPrice = firstNumber(ctx, [
+    "target_price",
+    "expected_price",
+    "asking_price",
+    "price",
+    "precio",
+  ]);
+  if (minPrice != null || maxPrice != null) {
+    return {
+      min_price: minPrice ?? undefined,
+      max_price: maxPrice ?? undefined,
+      target_price: targetPrice ?? undefined,
+    };
+  }
+  if (!allowTargetBand || targetPrice == null) return {};
+  return {
+    min_price: Math.round(targetPrice * 0.8),
+    max_price: Math.round(targetPrice * 1.2),
+    target_price: targetPrice,
+  };
 }
 
 /** Offset fijo CST (UTC-6) para ventanas de prueba; suficiente para N1 de coordinación de fotos. */
@@ -939,6 +1153,10 @@ function telegramContactCaseRecipe(input: ToolRecipeInput): Record<string, unkno
 
 function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
   const args: Record<string, unknown> = { limit: 50 };
+  const propertyTypes = comparablePropertyTypes(ctx);
+  const propertyKind = comparablePropertyKind(propertyTypes);
+  const easyBrokerPropertyTypes = easyBrokerComparablePropertyTypes(ctx, propertyTypes);
+
   const zona = firstString(ctx, [
     "zona",
     "property_zone",
@@ -948,60 +1166,33 @@ function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
     "property_address",
   ]);
   if (zona) args.zona = zona;
-  const operationRawValues = firstStringArray(ctx, [
-    "operation",
-    "operation_type",
-    "tipo_operacion",
-  ]).map((value) => value.toLowerCase());
-  const operations = operationRawValues
-    .map((operationRaw) => {
-      if (operationRaw === "rent" || operationRaw.includes("renta")) return "rent";
-      if (operationRaw === "sale" || operationRaw.includes("venta")) return "sale";
-      return null;
-    })
-    .filter((value): value is "sale" | "rent" => value != null);
-  const uniqueOperations = Array.from(new Set(operations));
-  if (uniqueOperations.length === 1) {
-    args.operation = uniqueOperations[0];
-  } else if (uniqueOperations.length > 1) {
-    args.operations = uniqueOperations;
-  }
-  const propertyTypes = firstStringArray(ctx, [
-    "property_type",
-    "tipo_propiedad",
-    "tipo",
-  ]);
-  const uniquePropertyTypes = Array.from(new Set(propertyTypes));
+  const operationArgs = comparableOperationArgs(ctx);
+  if (operationArgs.operation) args.operation = operationArgs.operation;
+  if (operationArgs.operations) args.operations = operationArgs.operations;
+
+  const uniquePropertyTypes = easyBrokerPropertyTypes;
   if (uniquePropertyTypes.length === 1) {
     args.property_type = uniquePropertyTypes[0];
   } else if (uniquePropertyTypes.length > 1) {
     args.property_types = uniquePropertyTypes;
   }
-  const minPrice = firstNumber(ctx, ["min_price", "price_min", "precio_min"]);
-  const maxPrice = firstNumber(ctx, ["max_price", "price_max", "precio_max"]);
-  const targetPrice = firstNumber(ctx, [
-    "target_price",
-    "expected_price",
-    "asking_price",
-    "price",
-    "precio",
-  ]);
-  if (minPrice != null) args.min_price = minPrice;
-  if (maxPrice != null) args.max_price = maxPrice;
-  if (targetPrice != null && minPrice == null && maxPrice == null) {
-    args.min_price = Math.round(targetPrice * 0.8);
-    args.max_price = Math.round(targetPrice * 1.2);
+  const priceArgs = comparablePriceArgs(ctx, propertyKind === "residential");
+  if (priceArgs.min_price != null) args.min_price = priceArgs.min_price;
+  if (priceArgs.max_price != null) args.max_price = priceArgs.max_price;
+
+  const areaArgs = comparableAreaArgs(ctx);
+  if (areaArgs.min_area_m2 != null) args.min_area_m2 = areaArgs.min_area_m2;
+  if (areaArgs.max_area_m2 != null) args.max_area_m2 = areaArgs.max_area_m2;
+
+  const shouldUseResidentialRooms = propertyKind === "residential";
+  if (shouldUseResidentialRooms) {
+    const bedrooms = firstNumber(ctx, ["bedrooms", "recamaras"]);
+    if (bedrooms != null) args.bedrooms = bedrooms;
+    const bathrooms = firstNumber(ctx, ["bathrooms", "banos"]);
+    if (bathrooms != null) args.bathrooms = bathrooms;
+    const parking = firstNumber(ctx, ["parking_spaces", "parking", "estacionamientos"]);
+    if (parking != null) args.parking_spaces = parking;
   }
-  const minAreaM2 = firstNumber(ctx, ["min_area_m2", "area_min_m2", "superficie_min"]);
-  const maxAreaM2 = firstNumber(ctx, ["max_area_m2", "area_max_m2", "superficie_max"]);
-  if (minAreaM2 != null) args.min_area_m2 = minAreaM2;
-  if (maxAreaM2 != null) args.max_area_m2 = maxAreaM2;
-  const bedrooms = firstNumber(ctx, ["bedrooms", "recamaras"]);
-  if (bedrooms != null) args.bedrooms = bedrooms;
-  const bathrooms = firstNumber(ctx, ["bathrooms", "banos"]);
-  if (bathrooms != null) args.bathrooms = bathrooms;
-  const parking = firstNumber(ctx, ["parking_spaces", "parking", "estacionamientos"]);
-  if (parking != null) args.parking_spaces = parking;
   return args;
 }
 
@@ -1009,6 +1200,8 @@ function bigQueryLocalComparablesCaseRecipe(
   ctx: Record<string, unknown>
 ): Record<string, unknown> {
   const args: Record<string, unknown> = { months_back: 24, limit: 100 };
+  const propertyTypes = comparablePropertyTypes(ctx);
+  const propertyKind = comparablePropertyKind(propertyTypes);
   const zona = firstString(ctx, [
     "zona",
     "property_zone",
@@ -1020,52 +1213,229 @@ function bigQueryLocalComparablesCaseRecipe(
   ]);
   if (zona) args.zona = zona;
 
-  const operation = firstStringArray(ctx, [
-    "operation",
-    "operation_type",
-    "tipo_operacion",
-  ])
-    .map((value) => value.toLowerCase())
-    .map((value) => {
-      if (value === "rent" || value.includes("renta")) return "rent";
-      if (value === "sale" || value.includes("venta")) return "sale";
-      return null;
-    })
-    .find((value): value is "sale" | "rent" => value != null);
-  if (operation) args.operation = operation;
+  const operationArgs = comparableOperationArgs(ctx);
+  if (operationArgs.operation) args.operation = operationArgs.operation;
 
-  const propertyType = firstStringArray(ctx, [
+  const propertyType = propertyTypes[0];
+  if (propertyType) args.property_type = propertyType;
+
+  const priceArgs = comparablePriceArgs(ctx, propertyKind === "residential");
+  if (priceArgs.target_price != null) args.target_price = priceArgs.target_price;
+  if (priceArgs.min_price != null) args.min_price = priceArgs.min_price;
+  if (priceArgs.max_price != null) args.max_price = priceArgs.max_price;
+
+  const areaArgs = comparableAreaArgs(ctx);
+  if (areaArgs.min_area_m2 != null) args.min_area_m2 = areaArgs.min_area_m2;
+  if (areaArgs.max_area_m2 != null) args.max_area_m2 = areaArgs.max_area_m2;
+
+  return args;
+}
+
+function avaclickValuationCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+  const merged = contextWithPropertyData(ctx);
+  const addressRecord = isRecord(merged.address)
+    ? (merged.address as Record<string, unknown>)
+    : {};
+  const args: Record<string, unknown> = {};
+  const propertyTypes = firstStringArray(merged, [
     "property_type",
     "tipo_propiedad",
     "tipo",
-  ])[0];
-  if (propertyType) args.property_type = propertyType;
-
-  const minPrice = firstNumber(ctx, ["min_price", "price_min", "precio_min"]);
-  const maxPrice = firstNumber(ctx, ["max_price", "price_max", "precio_max"]);
-  const targetPrice = firstNumber(ctx, [
-    "target_price",
-    "expected_price",
-    "asking_price",
-    "price",
-    "precio",
   ]);
-  if (targetPrice != null) args.target_price = targetPrice;
-  if (minPrice != null) args.min_price = minPrice;
-  if (maxPrice != null) args.max_price = maxPrice;
-
-  const areaM2 = firstNumber(ctx, [
-    "area_m2",
-    "construction_m2",
-    "construction_size",
-    "superficie",
-    "m2",
-  ]);
-  if (areaM2 != null) {
-    args.min_area_m2 = Math.round(areaM2 * 0.7);
-    args.max_area_m2 = Math.round(areaM2 * 1.3);
+  const normalizedTypes = propertyTypes.map((value) =>
+    value
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+  );
+  const isHouse = normalizedTypes.some((value) => value.includes("casa"));
+  const isApartment = normalizedTypes.some(
+    (value) => value.includes("departamento") || value.includes("depto")
+  );
+  if (isApartment) {
+    args.property_type = "condo_apartment";
+    args.land_area_m2 = 0;
+    args.floors = 0;
+  } else if (isHouse) {
+    const condoHint =
+      firstString(merged, ["land_context", "property_context", "notes"]) ?? "";
+    const normalizedHint = condoHint
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "");
+    args.property_type = normalizedHint.includes("condominio")
+      ? "condo_house"
+      : "house";
+  } else {
+    args.property_type = TEST_DEFAULTS.get_avaclick_valuation?.property_type ?? "house";
   }
 
+  const zona = firstString(merged, [
+    "property_zone",
+    "zona",
+    "neighborhood",
+    "colonia",
+    "city_area",
+  ]);
+  const parsedZone = splitMexicanZone(zona);
+  const state =
+    firstString(merged, ["state_name", "state", "estado"]) ??
+    firstString(addressRecord, ["state", "estado"]) ??
+    parsedZone.state;
+  if (state) args.state_name = state;
+  const municipality =
+    firstString(merged, ["municipality_name", "municipality", "municipio", "city"]) ??
+    firstString(addressRecord, ["municipality", "municipio", "city"]) ??
+    parsedZone.municipality;
+  if (municipality) args.municipality_name = municipality;
+  const neighborhood =
+    firstString(merged, ["neighborhood_name", "neighborhood", "colonia"]) ??
+    firstString(addressRecord, ["neighborhood", "colonia"]) ??
+    parsedZone.neighborhood ??
+    zona;
+  if (neighborhood) args.neighborhood_name = neighborhood;
+
+  const street =
+    firstString(merged, ["street", "calle"]) ??
+    firstString(addressRecord, ["street", "calle"]) ??
+    neighborhood ??
+    firstString(merged, ["property_address", "address"]);
+  if (street) args.street = street;
+  const exteriorNumber =
+    firstString(merged, ["exterior_number", "numero_exterior"]) ??
+    firstString(addressRecord, ["exterior_number", "numero_exterior"]);
+  if (exteriorNumber) args.exterior_number = exteriorNumber;
+  const interiorNumber =
+    firstString(merged, ["interior_number", "numero_interior"]) ??
+    firstString(addressRecord, ["interior_number", "numero_interior"]);
+  if (interiorNumber) args.interior_number = interiorNumber;
+  const postal =
+    firstString(merged, ["postal_code", "cp", "zip_code"]) ??
+    firstString(addressRecord, ["postal_code", "cp", "zip_code"]);
+  args.zip_code = postal ?? "00000";
+
+  const latitude = firstNumber(merged, ["latitude", "lat"]);
+  if (latitude != null) args.latitude = latitude;
+  const longitude = firstNumber(merged, ["longitude", "lng", "lon"]);
+  if (longitude != null) args.longitude = longitude;
+
+  const areaM2 = firstNumber(merged, [
+    "construction_area_m2",
+    "area_construida_m2",
+    "construction_m2",
+    "construction_size",
+    "area_m2",
+    "m2",
+  ]);
+  if (areaM2 != null) args.construction_area_m2 = Math.max(20, Math.round(areaM2));
+  const landM2 = firstNumber(merged, ["land_area_m2", "area_total_m2", "terreno"]);
+  if (landM2 != null) args.land_area_m2 = Math.round(landM2);
+
+  const bedrooms = firstNumber(merged, ["bedrooms", "recamaras"]);
+  if (bedrooms != null) args.bedrooms = bedrooms;
+  const bathrooms = firstNumber(merged, ["bathrooms", "banos"]);
+  if (bathrooms != null) {
+    args.full_bathrooms = Math.floor(bathrooms);
+    args.half_bathrooms = bathrooms % 1 > 0 ? 1 : 0;
+  }
+  const parking = firstNumber(merged, ["parking_spaces", "parking", "estacionamientos"]);
+  if (parking != null) args.parking_spaces = parking;
+  const floors = firstNumber(merged, ["floors", "numero_pisos", "plantas"]);
+  if (floors != null) args.floors = floors;
+  const age = firstNumber(merged, ["age_years", "edad"]);
+  if (age != null) args.age_years = age;
+  const conservation = firstString(merged, ["conservation", "conservacion"]);
+  if (conservation) args.conservation = conservation;
+
+  const ownerName =
+    firstString(merged, ["customer_name", "owner_name", "lead_name", "contact_name"]) ??
+    null;
+  args.customer_name =
+    ownerName ?? TEST_DEFAULTS.get_avaclick_valuation?.customer_name ?? "Cliente de prueba";
+  const customerEmail = firstString(merged, ["customer_email", "email"]);
+  args.customer_email =
+    customerEmail ??
+    TEST_DEFAULTS.get_avaclick_valuation?.customer_email ??
+    "cliente.prueba@example.com";
+  const customerPhone = firstString(merged, ["customer_phone", "phone", "telefono"]);
+  args.customer_phone =
+    customerPhone ?? TEST_DEFAULTS.get_avaclick_valuation?.customer_phone ?? "3331234567";
+
+  return args;
+}
+
+function geocodeAddressCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+  const merged = contextWithPropertyData(ctx);
+  const addressRecord = isRecord(merged.address)
+    ? (merged.address as Record<string, unknown>)
+    : {};
+  const defaults = TEST_DEFAULTS.geocode_property_address ?? {};
+  const zona = firstString(merged, ["property_zone", "zona", "city_area"]);
+  const parsedZone = splitMexicanZone(zona);
+  const hasCaseLocation = Boolean(
+    zona ||
+      firstString(merged, ["neighborhood", "colonia"]) ||
+      firstString(addressRecord, ["neighborhood", "colonia"]) ||
+      firstString(merged, ["municipality", "municipio", "city"]) ||
+      firstString(addressRecord, ["municipality", "municipio", "city"]) ||
+      firstString(merged, ["state", "estado"]) ||
+      firstString(addressRecord, ["state", "estado"])
+  );
+
+  const neighborhood =
+    firstString(merged, ["neighborhood", "colonia"]) ??
+    firstString(addressRecord, ["neighborhood", "colonia"]) ??
+    parsedZone.neighborhood ??
+    (hasCaseLocation ? null : defaults.neighborhood ?? "San Carlos");
+
+  const municipality =
+    firstString(merged, ["municipality", "municipio", "city"]) ??
+    firstString(addressRecord, ["municipality", "municipio", "city"]) ??
+    parsedZone.municipality ??
+    (hasCaseLocation ? null : defaults.municipality ?? "Metepec");
+
+  const state =
+    firstString(merged, ["state", "estado"]) ??
+    firstString(addressRecord, ["state", "estado"]) ??
+    parsedZone.state ??
+    (hasCaseLocation ? null : defaults.state ?? "Estado de México");
+
+  const street =
+    firstString(merged, ["street", "calle"]) ??
+    firstString(addressRecord, ["street", "calle"]) ??
+    (() => {
+      const fullAddress = firstString(merged, ["address", "property_address"]);
+      if (fullAddress && parsedZone.neighborhood) {
+        return parsedZone.neighborhood;
+      }
+      const firstPart = fullAddress?.split(",")[0]?.trim();
+      return firstPart || neighborhood || null;
+    })() ??
+    (hasCaseLocation ? neighborhood : defaults.street ?? "San Carlos");
+
+  const exteriorNumber =
+    firstString(merged, ["exterior_number", "numero_exterior"]) ??
+    firstString(addressRecord, ["exterior_number", "numero_exterior"]) ??
+    (hasCaseLocation ? null : defaults.exterior_number ?? "710");
+
+  const postalCode =
+    firstString(merged, ["zip_code", "postal_code", "cp"]) ??
+    firstString(addressRecord, ["zip_code", "postal_code", "cp"]) ??
+    (hasCaseLocation ? null : defaults.postal_code ?? "52159");
+
+  const country =
+    firstString(merged, ["country", "pais"]) ??
+    firstString(addressRecord, ["country", "pais"]) ??
+    defaults.country ??
+    "MX";
+
+  const args: Record<string, unknown> = { country };
+  if (street) args.street = street;
+  if (exteriorNumber) args.exterior_number = exteriorNumber;
+  if (neighborhood) args.neighborhood = neighborhood;
+  if (municipality) args.municipality = municipality;
+  if (state) args.state = state;
+  if (postalCode) args.postal_code = postalCode;
   return args;
 }
 
@@ -1746,9 +2116,14 @@ async function resolveArgsForMode(params: {
       derived = genericArgsFromContext(def, ctx);
     }
     // Defaults de smoke siguen aplicando para campos no derivados (ej. limit),
-    // y los args del usuario tienen precedencia final.
+    // salvo en tools con datos de direccion/propiedad de fixture completo
+    // (Avaclick, Geocoding): no deben mezclarse con el formulario del caso.
+    const caseDefaults =
+      toolId === "get_avaclick_valuation" || toolId === "geocode_property_address"
+        ? {}
+        : (TEST_DEFAULTS[toolId] ?? {});
     const merged = {
-      ...(TEST_DEFAULTS[toolId] ?? {}),
+      ...caseDefaults,
       ...derived,
       ...userArgs,
     };

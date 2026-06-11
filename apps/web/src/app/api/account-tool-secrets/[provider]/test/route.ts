@@ -27,6 +27,7 @@ import {
   updateAccountToolSecretStatus,
 } from "@agents/db";
 import { getAccountToolProvider } from "@/lib/account-tool-providers";
+import { testAvaclickCredentials } from "@agents/agent";
 
 const execFileAsync = promisify(execFile);
 const EASYBROKER_WEB_LOGIN_URL =
@@ -129,6 +130,19 @@ export async function POST(
         email: (stored.secret as { email?: string }).email ?? "",
         password: (stored.secret as { password?: string }).password ?? "",
       });
+    } else if (provider === "avaclick") {
+      result = await testAvaclick({
+        apiUrl:
+          typeof stored.config.api_url === "string" && stored.config.api_url.trim()
+            ? stored.config.api_url.trim()
+            : "https://avaclick.app/Apiv2/Avaluo",
+        companyName:
+          typeof stored.config.company_name === "string"
+            ? stored.config.company_name
+            : "",
+        email: (stored.secret as { email?: string }).email ?? "",
+        password: (stored.secret as { password?: string }).password ?? "",
+      });
     } else {
       // Provider declarado pero sin tester implementado todavía. Marca
       // pending_test y devuelve aviso explícito (no false positive).
@@ -177,6 +191,30 @@ export async function POST(
     console.error("[POST /api/account-tool-secrets/:provider/test] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
+}
+
+async function testAvaclick(input: {
+  apiUrl: string;
+  companyName: string;
+  email: string;
+  password: string;
+}): Promise<TestResult> {
+  const apiUrl = input.apiUrl.trim();
+  const companyName = input.companyName.trim();
+  const email = input.email.trim();
+  const password = input.password.trim();
+  if (!apiUrl) return { ok: false, error: "api_url vacío" };
+  if (!companyName) return { ok: false, error: "company_name vacío" };
+  if (!email) return { ok: false, error: "email vacío" };
+  if (!password) return { ok: false, error: "password vacío" };
+  const result = await testAvaclickCredentials({
+    apiUrl,
+    companyName,
+    email,
+    password,
+    source: "account",
+  });
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
 }
 
 type TestResult = { ok: true } | { ok: false; error: string };

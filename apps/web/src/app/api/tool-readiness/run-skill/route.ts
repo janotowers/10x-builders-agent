@@ -93,6 +93,7 @@ const SKILL_TEST_CONTRACTS: Record<string, SkillTestContract> = {
     ],
     optional_tool_calls: [
       "operational_case_extract_document_fields",
+      "geocode_property_address",
       "telegram_send_message_to_contact",
     ],
     tool_coverage_policy: "expected_only",
@@ -999,7 +1000,7 @@ function buildSkillTestMessage(params: {
     );
     if (expectsNotify) {
       lines.push(
-        "Esta prueba N3 cubre el camino con datos críticos completos (bedrooms, bathrooms y parking_spots > 0 en property_data). Tras operational_case_list_documents debes llamar notify_user con kind='property_data_review' de forma OBLIGATORIA en este tick, luego operational_case_add_event(step_completed) y operational_case_update_state a status='waiting_internal' y current_step='property_data_review'. Al actualizar context_jsonb.property_data haz merge con lo existente: conserva bedrooms, bathrooms, parking_spots, operation y property_type (no los borres al volcar datos de escritura). No uses telegram_send_message_to_contact ni avances a property_data_review sin haber ejecutado notify_user."
+        "Esta prueba N3 cubre el camino con datos críticos completos (bedrooms, bathrooms y parking_spots > 0 en property_data). Tras operational_case_list_documents debes llamar notify_user con kind='property_data_review' de forma OBLIGATORIA en este tick, luego operational_case_add_event(step_completed) y operational_case_update_state a status='waiting_internal' y current_step='property_data_review'. Al actualizar context_jsonb.property_data haz merge con lo existente: conserva bedrooms, bathrooms, parking_spots, operation y property_type (no los borres al volcar datos de escritura). Si faltan coordenadas y hay dirección suficiente puedes usar geocode_property_address; no pidas lat/lng al dueño. No uses telegram_send_message_to_contact ni avances a property_data_review sin haber ejecutado notify_user."
       );
     } else {
       lines.push(
@@ -1026,9 +1027,9 @@ function buildSkillTestMessage(params: {
   }
   if (params.skill.skill_slug === "perform-comparable-analysis") {
     lines.push(
-      "Usa la zona efectiva del caso: prioriza property_zone/zona del contexto del caso de prueba y alinea property_data.address.neighborhood con esa zona (no uses otra colonia). Consulta easybroker_search_listings, easybroker_search_closed_deals y bigquery_lookup_local_comparables con operación, tipo y m² de property_data.",
+      "Usa la zona efectiva del caso: prioriza property_zone/zona del contexto del caso de prueba y alinea property_data.address.neighborhood con esa zona (no uses otra colonia). Consulta easybroker_search_listings, easybroker_search_closed_deals y bigquery_lookup_local_comparables con operación, tipo y m² de property_data. Cuando el tipo sea casa/departamento en condominio, agrega get_avaclick_valuation como fuente complementaria; si faltan coordenadas pero hay dirección suficiente, intenta geocode_property_address.",
       "Después de las búsquedas, NO escribas comparables_analysis a mano con operational_case_update_state. Debes llamar operational_case_persist_comparables_analysis para que el sistema construya stats/listas/data_quality desde los tool_calls del turno.",
-      "Si operational_case_persist_comparables_analysis devuelve usable_count=0 en todas las fuentes: NO avances a price_proposal_pending; deja current_step=comparables_in_progress y status=waiting_internal; ejecuta notify_user al asesor con datos de la propiedad, filtros usados y sugerencias concretas para ampliar búsqueda (precio, m², meses).",
+      "Si Avaclick responde validation_error con missing_required_fields, registra warning y continúa con EasyBroker/BigQuery (no bloquees el paso por esa fuente). Si operational_case_persist_comparables_analysis devuelve usable_count=0 en todas las fuentes: NO avances a price_proposal_pending; deja current_step=comparables_in_progress y status=waiting_internal; ejecuta notify_user al asesor con datos de la propiedad, filtros usados y sugerencias concretas para ampliar búsqueda (precio, m², meses).",
       "Si devuelve defensible_sample=true: operational_case_update_state a price_proposal_pending y status=active, y notify_user resumiendo el análisis. No uses telegram_send_message_to_contact."
     );
   }

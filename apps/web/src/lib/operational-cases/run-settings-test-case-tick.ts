@@ -77,7 +77,8 @@ function buildCaseE2ETickMessage(
       ? [
           "Acción esperada para este paso: usa perform-comparable-analysis.",
           "No regreses a awaiting_documents ni documents_received.",
-          "Consulta comparables con easybroker_search_listings, easybroker_search_closed_deals y bigquery_lookup_local_comparables usando property_zone/property_data como filtros.",
+          "Consulta comparables con easybroker_search_listings, easybroker_search_closed_deals y bigquery_lookup_local_comparables usando property_zone/property_data como filtros. Si el tipo es casa/departamento en condominio, incluye get_avaclick_valuation como fuente complementaria.",
+          "Si faltan coordenadas para Avaclick y la dirección es suficiente, intenta geocode_property_address antes de valorar. Si Avaclick devuelve missing_required_fields, continúa con las otras fuentes y deja warning en comparables_analysis.",
           "Después llama operational_case_persist_comparables_analysis; no escribas comparables_analysis manualmente.",
           "Si hay muestra defendible, avanza a price_proposal_pending con status=active y notifica al asesor. Si no hay comparables usables, permanece en comparables_in_progress con status=waiting_internal y notifica al asesor con sugerencias para ampliar criterios.",
         ].join(" ")
