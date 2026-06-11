@@ -106,6 +106,7 @@ export {
   readablePropertyAddress,
 } from "./tools/commission-contract-template-data";
 export type { CommissionContractPlaceholderKey } from "./tools/commission-contract-template-data";
+export { testAvaclickCredentials } from "./tools/avaclick";
 
 export {
   HEARTBEAT_CHECKLIST_TEMPLATES,

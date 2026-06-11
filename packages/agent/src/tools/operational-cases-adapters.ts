@@ -1946,6 +1946,7 @@ export function addOperationalCaseTools(
               "easybroker_search_listings",
               "easybroker_search_closed_deals",
               "bigquery_lookup_local_comparables",
+              "get_avaclick_valuation",
             ])
             .order("created_at", { ascending: true });
           if (error) {
@@ -2042,7 +2043,7 @@ export function addOperationalCaseTools(
         {
           name: "operational_case_persist_comparables_analysis",
           description:
-            "Builds and persists context_jsonb.comparables_analysis deterministically from this turn's EasyBroker and BigQuery search tool results. Use after running all comparable search tools; do not hand-write comparables_analysis via operational_case_update_state.",
+            "Builds and persists context_jsonb.comparables_analysis deterministically from this turn's EasyBroker, BigQuery and Avaclick results. Use after running comparable search/valuation tools; do not hand-write comparables_analysis via operational_case_update_state.",
           schema: z.object({
             case_id: z.string().min(1),
             expected_version: z.number().int().nonnegative(),

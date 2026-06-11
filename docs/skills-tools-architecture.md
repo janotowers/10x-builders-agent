@@ -133,6 +133,17 @@ Ejemplo: `bigquery_run_query`.
 Esta tool no sabe qué es un comparable inmobiliario. Sólo sabe ejecutar una
 consulta SQL read-only contra BigQuery.
 
+### Ejemplo aplicado: Avaclick + geocoding
+
+Para opinión de valor inmobiliaria conviene separar capas:
+
+- `get_avaclick_valuation` = tool técnica de valuación externa.
+- `geocode_property_address` = tool técnica de enriquecimiento de ubicación.
+- `prepare-property-value-opinion` = skill user-facing que conversa, pide faltantes,
+  geocodifica y luego llama Avaclick.
+- `perform-comparable-analysis` = skill operativa de caso que no abre conversación
+  para faltantes; si Avaclick no está disponible, continúa con otras fuentes.
+
 Recibe algo como:
 
 ```json

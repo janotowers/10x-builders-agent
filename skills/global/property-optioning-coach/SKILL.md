@@ -25,10 +25,12 @@ allowed_tools:
   - operational_case_list_documents
   - operational_case_extract_document_fields
   - telegram_send_message_to_contact
+  - geocode_property_address
   - bigquery_lookup_local_comparables
   - easybroker_search_listings
   - easybroker_search_closed_deals
   - operational_case_persist_comparables_analysis
+  - get_avaclick_valuation
   - generate_document_from_template
   - image_watermark
   - easybroker_create_listing

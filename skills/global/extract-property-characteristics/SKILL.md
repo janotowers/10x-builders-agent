@@ -3,6 +3,7 @@ name: extract-property-characteristics
 description: Captura las características estructuradas de una propiedad (tipo, m², recámaras, baños, estacionamientos, ubicación, amenidades) preguntando al dueño por Telegram solo lo que falta. Usado como sub-skill de property-optioning-coach durante el step `documents_received`.
 scope: business
 allowed_tools:
+  - geocode_property_address
   - notify_user
   - operational_case_update_state
   - operational_case_add_event
@@ -17,6 +18,8 @@ guardrails: |
   repitas datos que ya proporcionó el dueño.
   Mensajes al externo SIEMPRE cortos (≤ 4 preguntas por mensaje) para no
   saturar.
+  NO pidas latitud/longitud al dueño. Esos campos se enriquecen internamente
+  con geocoding desde dirección/colonia/municipio/estado.
   Antes de pasar a comparables, solicita validación interna del inmobiliario
   con `notify_user(kind="property_data_review")`. No avances si hay conflicto
   evidente entre intake, documentos y respuesta del dueño.
@@ -41,8 +44,8 @@ Llenar `context_jsonb.property_data` con un objeto canónico:
     "state": "...",
     "country": "MX",
     "postal_code": "...",
-    "latitude": 0,
-    "longitude": 0
+    "latitude": null,
+    "longitude": null
   },
   "area_total_m2": 0,
   "area_construida_m2": 0,
@@ -79,6 +82,10 @@ Llenar `context_jsonb.property_data` con un objeto canónico:
    inmueble salvo que el documento lo indique explícitamente.
 4. Calcula los campos faltantes contra el shape canónico de arriba y la matriz
    mínima por tipo de inmueble.
+   - Para `address.latitude` / `address.longitude`, intenta primero
+     `geocode_property_address` usando dirección, colonia, municipio, estado y CP.
+   - Si el geocoding devuelve `status="ambiguous"`, pide confirmación breve al
+     dueño (máximo 3 opciones) o marca warning para revisión interna.
 5. Si quedan **campos mínimos** sin responder, pregunta al dueño antes de crear
    `property_data_review`.
    - Para todos los tipos: nombre(s) de dueño/titulares, dirección de la

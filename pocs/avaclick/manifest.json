@@ -1,0 +1,40 @@
+{
+  "fuente": "Catálogo API Avaclick v2.4",
+  "catalogos": [
+    {
+      "catalogo": "Estados",
+      "archivo": "avaclick_estados.json",
+      "total_registros": 32
+    },
+    {
+      "catalogo": "Municipio",
+      "archivo": "avaclick_municipios.json",
+      "total_registros": 2458
+    },
+    {
+      "catalogo": "Colonia",
+      "archivo": "avaclick_colonias.json",
+      "total_registros": 145976
+    },
+    {
+      "catalogo": "Tipo_Inmueble",
+      "archivo": "avaclick_tipos_inmueble.json",
+      "total_registros": 3
+    },
+    {
+      "catalogo": "Amenidades Privativas",
+      "archivo": "avaclick_amenidades_privativas.json",
+      "total_registros": 16
+    },
+    {
+      "catalogo": "Amenidades Comunes",
+      "archivo": "avaclick_amenidades_comunes.json",
+      "total_registros": 8
+    },
+    {
+      "catalogo": "Conservación",
+      "archivo": "avaclick_conservacion.json",
+      "total_registros": 5
+    }
+  ]
+}

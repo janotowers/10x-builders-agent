@@ -4,6 +4,7 @@ const SOURCE_TOOL_NAMES = [
   "easybroker_search_listings",
   "easybroker_search_closed_deals",
   "bigquery_lookup_local_comparables",
+  "get_avaclick_valuation",
 ] as const;
 
 export type ComparableSourceToolName = (typeof SOURCE_TOOL_NAMES)[number];
@@ -228,12 +229,63 @@ function filtersFromCalls(toolCalls: ComparableToolCallInput[]) {
   };
 }
 
+function normalizeAvaclickValuation(result: RecordValue | null | undefined): {
+  valuation: RecordValue | null;
+  failure_warning: string | null;
+} {
+  if (!isRecord(result)) {
+    return { valuation: null, failure_warning: null };
+  }
+  if (result.ok !== true) {
+    const status = cleanString(result.status);
+    const message = cleanString(result.message);
+    const missingFields = Array.isArray(result.missing_required_fields)
+      ? result.missing_required_fields.filter(
+          (field): field is string => typeof field === "string" && field.trim().length > 0
+        )
+      : [];
+    if (status === "validation_error" && missingFields.length > 0) {
+      return {
+        valuation: null,
+        failure_warning:
+          `Avaclick omitido por faltantes mínimos: ${missingFields.join(", ")}.`,
+      };
+    }
+    return {
+      valuation: null,
+      failure_warning:
+        message != null
+          ? `Avaclick no disponible (${status ?? "error"}): ${message}`
+          : `Avaclick no disponible (${status ?? "error"}).`,
+    };
+  }
+  return {
+    valuation: {
+      source: "avaclick",
+      sale_average_mxn: numberOrNull(result.sale_average_mxn),
+      sale_min_mxn: numberOrNull(result.sale_min_mxn),
+      sale_max_mxn: numberOrNull(result.sale_max_mxn),
+      rent_average_mxn: numberOrNull(result.rent_average_mxn),
+      rent_min_mxn: numberOrNull(result.rent_min_mxn),
+      rent_max_mxn: numberOrNull(result.rent_max_mxn),
+      price_per_m2_min_mxn: numberOrNull(result.price_per_m2_min_mxn),
+      price_per_m2_max_mxn: numberOrNull(result.price_per_m2_max_mxn),
+      pdf_url: cleanString(result.pdf_url),
+      warning:
+        cleanString(result.warning) ??
+        "Opinión digital de valor (no avalúo legal/fiscal/bancario).",
+    },
+    failure_warning: null,
+  };
+}
+
 export function buildComparablesAnalysisFromToolCalls(
   toolCalls: ComparableToolCallInput[]
 ) {
   const activeCall = latestExecutedToolCall(toolCalls, "easybroker_search_listings");
   const historicalCall = latestExecutedToolCall(toolCalls, "easybroker_search_closed_deals");
   const bqCall = latestExecutedToolCall(toolCalls, "bigquery_lookup_local_comparables");
+  const avaclickCall = latestExecutedToolCall(toolCalls, "get_avaclick_valuation");
 
   const active = resultArray(activeCall?.result_json, "results").map((row) =>
     normalizeEasyBrokerRow(row, "easybroker_active")
@@ -242,6 +294,8 @@ export function buildComparablesAnalysisFromToolCalls(
     normalizeEasyBrokerRow(row, "easybroker_historical")
   );
   const internal = resultArray(bqCall?.result_json, "rows").map(normalizeBigQueryRow);
+  const avaclickOutcome = normalizeAvaclickValuation(avaclickCall?.result_json);
+  const avaclickValuation = avaclickOutcome.valuation;
 
   const activeKeys = new Set(active.map(comparableKey));
   const historical = historicalRaw.filter((row) => !activeKeys.has(comparableKey(row)));
@@ -255,9 +309,16 @@ export function buildComparablesAnalysisFromToolCalls(
   if (!activeCall) warnings.push("No se ejecutó easybroker_search_listings en este turno.");
   if (!historicalCall) warnings.push("No se ejecutó easybroker_search_closed_deals en este turno.");
   if (!bqCall) warnings.push("No se ejecutó bigquery_lookup_local_comparables en este turno.");
+  if (!avaclickCall) warnings.push("No se ejecutó get_avaclick_valuation en este turno.");
   if (active.length === 0) warnings.push("No se encontraron propiedades activas usables en EasyBroker.");
   if (historical.length === 0) warnings.push("No se encontraron referencias históricas únicas en EasyBroker.");
   if (internal.length === 0) warnings.push("No se encontraron registros en el inventario interno.");
+  if (avaclickCall && !avaclickValuation) {
+    warnings.push(
+      avaclickOutcome.failure_warning ??
+        "La valoración Avaclick no estuvo disponible o no fue exitosa; el análisis continúa con EasyBroker/BigQuery."
+    );
+  }
   if (duplicateHistoricalCount > 0) {
     warnings.push(
       `${duplicateHistoricalCount} resultado(s) de EasyBroker cerradas ya estaban presentes en activas y se deduplicaron.`
@@ -272,6 +333,7 @@ export function buildComparablesAnalysisFromToolCalls(
     active_listings: active,
     historical_references: historical,
     internal_inventory: internal,
+    external_valuation: avaclickValuation,
     stats: {
       active_count: active.filter((row) => row.usable_as_comparable).length,
       historical_reference_count: historical.filter((row) => row.usable_as_comparable).length,

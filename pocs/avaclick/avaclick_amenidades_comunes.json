@@ -1,0 +1,38 @@
+{
+  "catalogo": "Amenidades Comunes",
+  "total_registros": 8,
+  "data": [
+    {
+      "IdAmenidadesComunes": "1",
+      "Amenidades Comunes": "Casa Club"
+    },
+    {
+      "IdAmenidadesComunes": "2",
+      "Amenidades Comunes": "Área Deportiva"
+    },
+    {
+      "IdAmenidadesComunes": "3",
+      "Amenidades Comunes": "Área de Coworking"
+    },
+    {
+      "IdAmenidadesComunes": "4",
+      "Amenidades Comunes": "Alberca"
+    },
+    {
+      "IdAmenidadesComunes": "5",
+      "Amenidades Comunes": "Gym"
+    },
+    {
+      "IdAmenidadesComunes": "6",
+      "Amenidades Comunes": "Elevador"
+    },
+    {
+      "IdAmenidadesComunes": "7",
+      "Amenidades Comunes": "Jacuzzi"
+    },
+    {
+      "IdAmenidadesComunes": "8",
+      "Amenidades Comunes": "Seguridad(vigilancia 24/7)"
+    }
+  ]
+}

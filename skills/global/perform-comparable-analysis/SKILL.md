@@ -3,9 +3,11 @@ name: perform-comparable-analysis
 description: Construye un análisis de comparables (~3-8 propiedades) para una propiedad capturada, combinando EasyBroker (activas/publicadas y vendidas/rentadas como referencia histórica) con inventario interno publicado de BigQuery cuando esté disponible. Usado como sub-skill de property-optioning-coach durante el step `comparables_in_progress`.
 scope: business
 allowed_tools:
+  - geocode_property_address
   - bigquery_lookup_local_comparables
   - easybroker_search_listings
   - easybroker_search_closed_deals
+  - get_avaclick_valuation
   - operational_case_persist_comparables_analysis
   - notify_user
   - operational_case_update_state
@@ -22,6 +24,8 @@ guardrails: |
   defendible, no decidir.
   BigQuery interno aporta inventario publicado / asking prices, NO precios de
   cierre, salvo que la tool indique explícitamente is_closed_price=true.
+  En este step NO abras conversación para pedir faltantes de Avaclick. Si faltan
+  mínimos, registra warning y continúa con las demás fuentes.
   Si alguna fuente devuelve status="not_configured" o error, reporta al
   inmobiliario y continúa con las fuentes disponibles.
 ---
@@ -94,11 +98,20 @@ Producir un objeto `context_jsonb.comparables_analysis`:
      vendidas/rentadas en EasyBroker. Úsalas como referencia histórica; no
      asumas que el precio expuesto es el precio final real de cierre salvo que
      la cuenta lo capture así.
+  - `get_avaclick_valuation({...})` para opinión digital externa de valor cuando
+    `property_type` sea casa/departamento en condominio.
+    - Si faltan lat/lng pero hay dirección suficiente en `property_data.address`,
+      intenta primero `geocode_property_address`.
+    - Si Avaclick devuelve `validation_error` con `missing_required_fields`,
+      NO bloquees el paso: continúa con EasyBroker/BigQuery y deja warning.
+    - Si el tipo no es compatible o la cuenta no está configurada, continúa con
+      las demás fuentes.
    - `bigquery_lookup_local_comparables({...filters})` para inventario interno
      publicado en BigQuery. Trátalo como `asking_price`, no como precio de
      cierre, salvo que la respuesta diga `is_closed_price=true`.
 
-3. Si alguna devuelve `status: "not_configured"`:
+3. Si alguna devuelve `status: "not_configured"` o `status: "validation_error"` por
+   faltantes mínimos:
    - Reporta al inmobiliario via `notify_user` qué fuente falla y qué necesita
      configurar (API key, tabla del warehouse, etc.).
    - Continúa con las fuentes que sí funcionaron; no bloquees el caso.

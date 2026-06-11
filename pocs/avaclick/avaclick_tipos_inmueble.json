@@ -1,0 +1,18 @@
+{
+  "catalogo": "Tipo_Inmueble",
+  "total_registros": 3,
+  "data": [
+    {
+      "IdTipoInmueble": "3",
+      "Nombre": "CASA HABITACIÓN"
+    },
+    {
+      "IdTipoInmueble": "4",
+      "Nombre": "CASA EN CONDOMINIO"
+    },
+    {
+      "IdTipoInmueble": "5",
+      "Nombre": "DPTO EN CONDOMINIO"
+    }
+  ]
+}

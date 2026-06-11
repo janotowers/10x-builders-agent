@@ -1,0 +1,70 @@
+{
+  "catalogo": "Amenidades Privativas",
+  "total_registros": 16,
+  "data": [
+    {
+      "IdAmenidadesPrivativas": "1",
+      "Amenidades Privativas": "Aire Acondicionado"
+    },
+    {
+      "IdAmenidadesPrivativas": "2",
+      "Amenidades Privativas": "Amueblado"
+    },
+    {
+      "IdAmenidadesPrivativas": "3",
+      "Amenidades Privativas": "Jacuzzi"
+    },
+    {
+      "IdAmenidadesPrivativas": "4",
+      "Amenidades Privativas": "Cocina Integral"
+    },
+    {
+      "IdAmenidadesPrivativas": "5",
+      "Amenidades Privativas": "Circuito Cerrado"
+    },
+    {
+      "IdAmenidadesPrivativas": "6",
+      "Amenidades Privativas": "Alberca"
+    },
+    {
+      "IdAmenidadesPrivativas": "7",
+      "Amenidades Privativas": "Terraza"
+    },
+    {
+      "IdAmenidadesPrivativas": "8",
+      "Amenidades Privativas": "Jardin"
+    },
+    {
+      "IdAmenidadesPrivativas": "9",
+      "Amenidades Privativas": "Lavanderia"
+    },
+    {
+      "IdAmenidadesPrivativas": "10",
+      "Amenidades Privativas": "GYM"
+    },
+    {
+      "IdAmenidadesPrivativas": "11",
+      "Amenidades Privativas": "Estudio"
+    },
+    {
+      "IdAmenidadesPrivativas": "12",
+      "Amenidades Privativas": "Calentador Solar"
+    },
+    {
+      "IdAmenidadesPrivativas": "13",
+      "Amenidades Privativas": "Casa Inteligente (Smart House)"
+    },
+    {
+      "IdAmenidadesPrivativas": "14",
+      "Amenidades Privativas": "Paneles Solares"
+    },
+    {
+      "IdAmenidadesPrivativas": "15",
+      "Amenidades Privativas": "Roof Garden"
+    },
+    {
+      "IdAmenidadesPrivativas": "16",
+      "Amenidades Privativas": "Cuarto Servicio"
+    }
+  ]
+}

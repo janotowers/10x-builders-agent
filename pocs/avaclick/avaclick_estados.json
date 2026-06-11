@@ -1,0 +1,134 @@
+{
+  "catalogo": "Estados",
+  "total_registros": 32,
+  "data": [
+    {
+      "IdEstado": "1",
+      "Nombre": "Aguascalientes"
+    },
+    {
+      "IdEstado": "2",
+      "Nombre": "Baja California"
+    },
+    {
+      "IdEstado": "3",
+      "Nombre": "Baja California Sur"
+    },
+    {
+      "IdEstado": "4",
+      "Nombre": "Campeche"
+    },
+    {
+      "IdEstado": "5",
+      "Nombre": "Coahuila de Zaragoza"
+    },
+    {
+      "IdEstado": "6",
+      "Nombre": "Colima"
+    },
+    {
+      "IdEstado": "7",
+      "Nombre": "Chiapas"
+    },
+    {
+      "IdEstado": "8",
+      "Nombre": "Chihuahua"
+    },
+    {
+      "IdEstado": "9",
+      "Nombre": "Ciudad de México"
+    },
+    {
+      "IdEstado": "10",
+      "Nombre": "Durango"
+    },
+    {
+      "IdEstado": "11",
+      "Nombre": "Guanajuato"
+    },
+    {
+      "IdEstado": "12",
+      "Nombre": "Guerrero"
+    },
+    {
+      "IdEstado": "13",
+      "Nombre": "Hidalgo"
+    },
+    {
+      "IdEstado": "14",
+      "Nombre": "Jalisco"
+    },
+    {
+      "IdEstado": "15",
+      "Nombre": "México"
+    },
+    {
+      "IdEstado": "16",
+      "Nombre": "Michoacán de Ocampo"
+    },
+    {
+      "IdEstado": "17",
+      "Nombre": "Morelos"
+    },
+    {
+      "IdEstado": "18",
+      "Nombre": "Nayarit"
+    },
+    {
+      "IdEstado": "19",
+      "Nombre": "Nuevo León"
+    },
+    {
+      "IdEstado": "20",
+      "Nombre": "Oaxaca"
+    },
+    {
+      "IdEstado": "21",
+      "Nombre": "Puebla"
+    },
+    {
+      "IdEstado": "22",
+      "Nombre": "Querétaro"
+    },
+    {
+      "IdEstado": "23",
+      "Nombre": "Quintana Roo"
+    },
+    {
+      "IdEstado": "24",
+      "Nombre": "San Luis Potosí"
+    },
+    {
+      "IdEstado": "25",
+      "Nombre": "Sinaloa"
+    },
+    {
+      "IdEstado": "26",
+      "Nombre": "Sonora"
+    },
+    {
+      "IdEstado": "27",
+      "Nombre": "Tabasco"
+    },
+    {
+      "IdEstado": "28",
+      "Nombre": "Tamaulipas"
+    },
+    {
+      "IdEstado": "29",
+      "Nombre": "Tlaxcala"
+    },
+    {
+      "IdEstado": "30",
+      "Nombre": "Veracruz de Ignacio de la Llave"
+    },
+    {
+      "IdEstado": "31",
+      "Nombre": "Yucatán"
+    },
+    {
+      "IdEstado": "32",
+      "Nombre": "Zacatecas"
+    }
+  ]
+}

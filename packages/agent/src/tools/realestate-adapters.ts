@@ -208,6 +208,7 @@ async function findDuplicateTelegramCallInTurn(
 }
 import {
   ACCOUNT_TOOL_PROVIDERS_REALESTATE,
+  resolveAvaclickCredentials,
   markAccountSecretFailure,
   markAccountSecretSuccess,
   resolveEasyBrokerCredentials,
@@ -215,6 +216,11 @@ import {
   resolveUnggaCliCredentials,
   resolveUnggaCredentials,
 } from "./realestate-credentials";
+import {
+  getAvaclickValuation,
+  type AvaclickValuationInput,
+} from "./avaclick";
+import { geocodePropertyAddress } from "./geocoding";
 import type {
   EasyBrokerCredentials,
   EasyBrokerWebCredentials,
@@ -531,6 +537,189 @@ export function addRealEstateTools(
   }
   if (toolEnabled("easybroker_upload_images", ctx)) {
     tools.push(makeEasyBrokerUploadImagesTool(ctx));
+  }
+
+  // ── Address geocoding (read) ────────────────────────────────────────
+  if (toolEnabled("geocode_property_address", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          street?: string;
+          exterior_number?: string;
+          neighborhood?: string;
+          municipality?: string;
+          state?: string;
+          postal_code?: string;
+          country?: string;
+        }) => {
+          const record = await createTrackedToolCall(
+            ctx,
+            "geocode_property_address",
+            input as unknown as Record<string, unknown>,
+            false
+          );
+          const out = await geocodePropertyAddress(input);
+          await updateToolCallStatus(
+            ctx.db,
+            record.id,
+            out.ok ? "executed" : "failed",
+            out as unknown as Record<string, unknown>
+          );
+          return JSON.stringify(out);
+        },
+        {
+          name: "geocode_property_address",
+          description:
+            "Geocodes a property address in Mexico and returns latitude/longitude with confidence and candidates.",
+          schema: z
+            .object({
+              street: z.string().min(1).optional(),
+              exterior_number: z.string().min(1).optional(),
+              neighborhood: z.string().min(1).optional(),
+              municipality: z.string().min(1).optional(),
+              state: z.string().min(1).optional(),
+              postal_code: z.string().min(3).max(10).optional(),
+              country: z.string().min(2).max(64).optional(),
+            })
+            .superRefine((value, issueCtx) => {
+              const filledCount = [
+                value.street,
+                value.neighborhood,
+                value.municipality,
+                value.state,
+                value.postal_code,
+              ].filter((item) => typeof item === "string" && item.trim().length > 0)
+                .length;
+              if (filledCount < 2) {
+                issueCtx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ["street"],
+                  message:
+                    "Proporciona al menos 2 componentes de dirección (ej. calle + municipio o colonia + municipio + estado).",
+                });
+              }
+            }),
+        }
+      )
+    );
+  }
+
+  // ── Avaclick valuation (read) ───────────────────────────────────────
+  if (toolEnabled("get_avaclick_valuation", ctx)) {
+    tools.push(
+      tool(
+        async (input: AvaclickValuationInput) => {
+          const record = await createTrackedToolCall(
+            ctx,
+            "get_avaclick_valuation",
+            input as unknown as Record<string, unknown>,
+            false
+          );
+          const creds = await resolveAvaclickCredentials(ctx);
+          if (!creds) {
+            const out = {
+              ok: false,
+              status: "not_configured",
+              message:
+                "Avaclick no está conectado para esta cuenta. Configura Credenciales por cuenta → Avaclick.",
+              retryable: false,
+            };
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              "executed",
+              out as unknown as Record<string, unknown>
+            );
+            return JSON.stringify(out);
+          }
+          try {
+            const out = await getAvaclickValuation(input, creds);
+            if (out.ok) {
+              await markAccountSecretSuccess(
+                ctx,
+                ACCOUNT_TOOL_PROVIDERS_REALESTATE.avaclick
+              );
+            } else if (out.status === "auth_error") {
+              await markAccountSecretFailure(
+                ctx,
+                ACCOUNT_TOOL_PROVIDERS_REALESTATE.avaclick,
+                out.message
+              );
+            }
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              out.ok ? "executed" : "failed",
+              out as unknown as Record<string, unknown>
+            );
+            return JSON.stringify(out);
+          } catch (error) {
+            const out = {
+              ok: false,
+              status: "provider_error",
+              message: error instanceof Error ? error.message : String(error),
+              retryable: false,
+            };
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              "failed",
+              out as unknown as Record<string, unknown>
+            );
+            return JSON.stringify(out);
+          }
+        },
+        {
+          name: "get_avaclick_valuation",
+          description:
+            "Gets an external Avaclick valuation opinion for house/condo-house/condo-apartment in Mexico.",
+          schema: z.preprocess(
+            normalizeAvaclickToolInput,
+            z.object({
+              customer_name: z.string().min(1).optional(),
+              customer_email: z.string().email().optional(),
+              customer_phone: z.string().min(7).optional(),
+              property_type: z.enum(["house", "condo_house", "condo_apartment"]),
+              latitude: z.number().min(-90).max(90).optional(),
+              longitude: z.number().min(-180).max(180).optional(),
+              state_name: z.string().min(1).optional(),
+              municipality_name: z.string().min(1).optional(),
+              neighborhood_name: z.string().min(1).optional(),
+              zip_code: z.string().min(4).max(10).optional(),
+              street: z.string().min(1).optional(),
+              lot: z.string().optional(),
+              block: z.string().optional(),
+              interior_number: z.string().optional(),
+              exterior_number: z.string().optional(),
+              land_area_m2: z.number().positive().optional(),
+              construction_area_m2: z.number().min(20),
+              has_elevator: z.boolean().optional(),
+              apartment_floor: z.number().int().positive().optional(),
+              age_years: z.number().int().nonnegative().optional(),
+              parking_spaces: z.number().int().nonnegative().optional(),
+              bedrooms: z.number().int().nonnegative().optional(),
+              full_bathrooms: z.number().nonnegative().optional(),
+              half_bathrooms: z.number().nonnegative().optional(),
+              floors: z.number().int().nonnegative().optional(),
+              conservation: z.enum(["new", "very_good", "good", "regular", "bad"]).optional(),
+              private_amenities: z.array(z.string()).optional(),
+              common_amenities: z.array(z.string()).optional(),
+            }).superRefine((value, issueCtx) => {
+              if (value.property_type === "condo_apartment" && value.has_elevator) {
+                if (value.apartment_floor == null || value.apartment_floor < 1) {
+                  issueCtx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ["apartment_floor"],
+                    message:
+                      "apartment_floor es requerido para condo_apartment cuando has_elevator=true",
+                  });
+                }
+              }
+            })
+          ),
+        }
+      )
+    );
   }
 
   // ── BigQuery comparables ────────────────────────────────────────────
@@ -2460,6 +2649,175 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
       }),
     }
   );
+}
+
+function normalizeAvaclickPropertyType(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+  if (!normalized) return undefined;
+  if (normalized === "house" || normalized.includes("casa habitacion")) return "house";
+  if (
+    normalized === "condo_house" ||
+    normalized.includes("casa en condominio")
+  ) {
+    return "condo_house";
+  }
+  if (
+    normalized === "condo_apartment" ||
+    normalized.includes("depto en condominio") ||
+    normalized.includes("departamento")
+  ) {
+    return "condo_apartment";
+  }
+  return undefined;
+}
+
+function normalizeAvaclickConservation(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+  if (!normalized) return undefined;
+  if (normalized === "new" || normalized === "nuevo") return "new";
+  if (
+    normalized === "very_good" ||
+    normalized === "muy bueno" ||
+    normalized === "muy_bueno"
+  ) {
+    return "very_good";
+  }
+  if (normalized === "good" || normalized === "bueno") return "good";
+  if (normalized === "regular") return "regular";
+  if (normalized === "bad" || normalized === "malo") return "bad";
+  return undefined;
+}
+
+function normalizeAvaclickToolInput(raw: unknown): unknown {
+  const root = asRecord(raw);
+  if (!root) return raw;
+  const customer = asRecord(root.customer) ?? {};
+  const property = asRecord(root.property) ?? {};
+  const merged: Record<string, unknown> = { ...property, ...root };
+  return {
+    customer_name:
+      firstNonEmptyComparableString(
+        merged.customer_name,
+        customer.name,
+        customer.customer_name
+      ) ?? undefined,
+    customer_email:
+      firstNonEmptyComparableString(
+        merged.customer_email,
+        customer.email,
+        customer.customer_email
+      ) ?? undefined,
+    customer_phone:
+      firstNonEmptyComparableString(
+        merged.customer_phone,
+        customer.phone,
+        customer.customer_phone
+      ) ?? undefined,
+    property_type: normalizeAvaclickPropertyType(
+      merged.property_type ?? merged.tipo_inmueble ?? merged.propertyType
+    ),
+    latitude:
+      typeof merged.latitude === "number"
+        ? merged.latitude
+        : (() => {
+            const parsed = Number(merged.latitude ?? merged.lat);
+            return Number.isFinite(parsed) ? parsed : undefined;
+          })(),
+    longitude:
+      typeof merged.longitude === "number"
+        ? merged.longitude
+        : (() => {
+            const parsed = Number(merged.longitude ?? merged.lng ?? merged.lon);
+            return Number.isFinite(parsed) ? parsed : undefined;
+          })(),
+    state_name:
+      firstNonEmptyComparableString(
+        merged.state_name,
+        merged.estado,
+        property.state_name
+      ) ?? undefined,
+    municipality_name:
+      firstNonEmptyComparableString(
+        merged.municipality_name,
+        merged.municipio,
+        property.municipality_name
+      ) ?? undefined,
+    neighborhood_name:
+      firstNonEmptyComparableString(
+        merged.neighborhood_name,
+        merged.colonia,
+        merged.neighborhood,
+        property.neighborhood_name
+      ) ?? undefined,
+    zip_code:
+      firstNonEmptyComparableString(
+        merged.zip_code,
+        merged.postal_code,
+        merged.cp,
+        property.zip_code
+      ) ?? undefined,
+    street:
+      firstNonEmptyComparableString(
+        merged.street,
+        merged.calle,
+        merged.address_line,
+        property.street
+      ) ?? undefined,
+    lot: firstNonEmptyComparableString(merged.lot, merged.lote) ?? undefined,
+    block: firstNonEmptyComparableString(merged.block, merged.manzana) ?? undefined,
+    interior_number:
+      firstNonEmptyComparableString(merged.interior_number, merged.numero_interior) ??
+      undefined,
+    exterior_number:
+      firstNonEmptyComparableString(merged.exterior_number, merged.numero_exterior) ??
+      undefined,
+    land_area_m2: comparablePositiveNumber(merged.land_area_m2 ?? merged.terreno),
+    construction_area_m2: comparablePositiveNumber(
+      merged.construction_area_m2 ?? merged.construccion ?? merged.area_m2
+    ),
+    has_elevator:
+      typeof merged.has_elevator === "boolean"
+        ? merged.has_elevator
+        : merged.elevador === 1 || merged.elevador === "1" || undefined,
+    apartment_floor:
+      comparablePositiveNumber(
+        merged.apartment_floor ?? merged.piso_departamento ?? merged.floor
+      ) ?? undefined,
+    age_years: comparablePositiveNumber(merged.age_years ?? merged.edad),
+    parking_spaces:
+      comparablePositiveNumber(merged.parking_spaces ?? merged.cochera),
+    bedrooms: comparablePositiveNumber(merged.bedrooms ?? merged.recamaras),
+    full_bathrooms:
+      comparablePositiveNumber(
+        merged.full_bathrooms ?? merged.banios ?? merged.bathrooms
+      ),
+    half_bathrooms:
+      comparablePositiveNumber(merged.half_bathrooms ?? merged.medio_banio),
+    floors: comparablePositiveNumber(merged.floors ?? merged.numero_pisos),
+    conservation: normalizeAvaclickConservation(
+      merged.conservation ?? merged.conservacion
+    ),
+    private_amenities:
+      Array.isArray(merged.private_amenities) &&
+      merged.private_amenities.every((item) => typeof item === "string")
+        ? merged.private_amenities
+        : undefined,
+    common_amenities:
+      Array.isArray(merged.common_amenities) &&
+      merged.common_amenities.every((item) => typeof item === "string")
+        ? merged.common_amenities
+        : undefined,
+  };
 }
 
 type BigQueryComparableLookupInput = {

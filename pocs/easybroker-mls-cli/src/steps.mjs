@@ -753,7 +753,7 @@ async function enforceFiltersInSearchUrl(page, input) {
   if (input.zona) {
     const slug = slugifyLocation(input.zona);
     if (slug) {
-      const operation = normalizeOperationHint(input.operation);
+      const operation = preferredOperationFromInput(input);
       const operationSlug =
         operation === "rent"
           ? "renta"
@@ -777,6 +777,8 @@ async function enforceFiltersInSearchUrl(page, input) {
     5
   );
   if (parkingParam) exactParams.push(parkingParam);
+  const areaParams = applyAreaParams(current, input);
+  exactParams.push(...areaParams);
   if (!locationApplied && exactParams.length === 0) {
     return { location: false, exactParams: [] };
   }
@@ -792,6 +794,51 @@ async function enforceFiltersInSearchUrl(page, input) {
       : false,
     exactParams,
   };
+}
+
+function preferredOperationFromInput(input) {
+  const operations = [
+    normalizeOperationHint(input.operation),
+    ...(Array.isArray(input.operations) ? input.operations.map(normalizeOperationHint) : []),
+  ].filter(Boolean);
+  if (operations.includes("rent")) return "rent";
+  if (operations.includes("sale")) return "sale";
+  return null;
+}
+
+function isLandSearch(input) {
+  const propertyTypes = [
+    input.property_type,
+    ...(Array.isArray(input.property_types) ? input.property_types : []),
+  ]
+    .filter((value) => typeof value === "string" && value.trim())
+    .map((value) => value.trim().toLowerCase());
+  return propertyTypes.some((type) => /\b(terreno|lote|land)\b/.test(type));
+}
+
+function applyAreaParams(url, input) {
+  const land = isLandSearch(input);
+  const activeBase = land ? "lot_size_square_meters" : "total_square_meters";
+  const inactiveBase = land ? "total_square_meters" : "lot_size_square_meters";
+  url.searchParams.delete(`min_${inactiveBase}`);
+  url.searchParams.delete(`max_${inactiveBase}`);
+
+  const applied = [];
+  if (input.min_area_m2 != null) {
+    const min = Number(input.min_area_m2);
+    if (Number.isFinite(min) && min > 0) {
+      url.searchParams.set(`min_${activeBase}`, String(Math.round(min)));
+      applied.push(`min_${activeBase}`);
+    }
+  }
+  if (input.max_area_m2 != null) {
+    const max = Number(input.max_area_m2);
+    if (Number.isFinite(max) && max > 0) {
+      url.searchParams.set(`max_${activeBase}`, String(Math.round(max)));
+      applied.push(`max_${activeBase}`);
+    }
+  }
+  return applied;
 }
 
 function applyRoomParam(url, key, exactValue, minValue, plusAt) {
@@ -903,15 +950,18 @@ async function applyMoreFilter(page, input) {
     applied.push(`${parkingFilter.kind}_parking_spaces:${parkingFilter.option}`);
   }
 
+  const areaParamBase = isLandSearch(input)
+    ? "lot_size_square_meters"
+    : "total_square_meters";
   if (input.min_area_m2 != null) {
-    const minConstruction = page.locator('input[name="search_criteria[min_total_square_meters]"]:visible');
+    const minConstruction = page.locator(`input[name="search_criteria[min_${areaParamBase}]"]:visible`);
     if (await minConstruction.first().isVisible().catch(() => false)) {
       await minConstruction.first().fill(String(input.min_area_m2)).catch(() => {});
       applied.push("min_area_m2");
     }
   }
   if (input.max_area_m2 != null) {
-    const maxConstruction = page.locator('input[name="search_criteria[max_total_square_meters]"]:visible');
+    const maxConstruction = page.locator(`input[name="search_criteria[max_${areaParamBase}]"]:visible`);
     if (await maxConstruction.first().isVisible().catch(() => false)) {
       await maxConstruction.first().fill(String(input.max_area_m2)).catch(() => {});
       applied.push("max_area_m2");

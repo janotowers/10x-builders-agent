@@ -23,8 +23,10 @@ const EASYBROKER_PROVIDER = "easybroker";
 const EASYBROKER_WEB_PROVIDER = "easybroker_web";
 const UNGGA_API_PROVIDER = "ungga_api";
 const UNGGA_CLI_PROVIDER = "ungga_cli";
+const AVACLICK_PROVIDER = "avaclick";
 const EASYBROKER_WEB_LOGIN_URL =
   "https://www.easybroker.com/mx/account/authentication/new";
+const AVACLICK_API_URL = "https://avaclick.app/Apiv2/Avaluo";
 
 export interface EasyBrokerCredentials {
   apiKey: string;
@@ -47,6 +49,14 @@ export interface UnggaCredentials {
 
 export interface UnggaCliCredentials {
   loginUrl: string;
+  email: string;
+  password: string;
+  source: "account" | "env";
+}
+
+export interface AvaclickCredentials {
+  apiUrl: string;
+  companyName: string;
   email: string;
   password: string;
   source: "account" | "env";
@@ -197,6 +207,46 @@ export async function resolveUnggaCliCredentials(
   return null;
 }
 
+export async function resolveAvaclickCredentials(
+  ctx: ToolContext
+): Promise<AvaclickCredentials | null> {
+  try {
+    const accountSecret = await getAccountToolSecretForRuntime<{
+      email?: string;
+      password?: string;
+    }>(ctx.db, { userId: ctx.userId, provider: AVACLICK_PROVIDER });
+    const apiUrl =
+      typeof accountSecret?.config?.api_url === "string" &&
+      accountSecret.config.api_url.trim()
+        ? accountSecret.config.api_url.trim()
+        : AVACLICK_API_URL;
+    const companyName =
+      typeof accountSecret?.config?.company_name === "string" &&
+      accountSecret.config.company_name.trim()
+        ? accountSecret.config.company_name.trim()
+        : "";
+    const email = accountSecret?.secret?.email?.trim();
+    const password = accountSecret?.secret?.password?.trim();
+    if (companyName && email && password) {
+      return { apiUrl, companyName, email, password, source: "account" };
+    }
+  } catch (err) {
+    console.warn(
+      "[realestate-credentials] Avaclick per-account lookup failed:",
+      err
+    );
+  }
+
+  const apiUrl = process.env.AVACLICK_API_URL?.trim() || AVACLICK_API_URL;
+  const companyName = process.env.AVACLICK_COMPANY_NAME?.trim();
+  const email = process.env.AVACLICK_EMAIL?.trim();
+  const password = process.env.AVACLICK_PASSWORD?.trim();
+  if (companyName && email && password) {
+    return { apiUrl, companyName, email, password, source: "env" };
+  }
+  return null;
+}
+
 /**
  * Marca el secret per-account como usado y, opcionalmente, lo promueve a
  * `active` si estaba `pending_test`. Llamar **después** de una request
@@ -269,6 +319,7 @@ export const ACCOUNT_TOOL_PROVIDERS_REALESTATE = {
   easybroker_web: EASYBROKER_WEB_PROVIDER,
   ungga_api: UNGGA_API_PROVIDER,
   ungga_cli: UNGGA_CLI_PROVIDER,
+  avaclick: AVACLICK_PROVIDER,
   /** @deprecated alias */
   ungga: UNGGA_API_PROVIDER,
 } as const;

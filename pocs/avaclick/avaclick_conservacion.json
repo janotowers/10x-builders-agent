@@ -1,0 +1,26 @@
+{
+  "catalogo": "Conservación",
+  "total_registros": 5,
+  "data": [
+    {
+      "IdConservacion": "1",
+      "Nombre": "Nuevo"
+    },
+    {
+      "IdConservacion": "2",
+      "Nombre": "Muy Bueno"
+    },
+    {
+      "IdConservacion": "3",
+      "Nombre": "Bueno"
+    },
+    {
+      "IdConservacion": "4",
+      "Nombre": "Regular"
+    },
+    {
+      "IdConservacion": "5",
+      "Nombre": "Malo"
+    }
+  ]
+}
