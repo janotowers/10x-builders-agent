@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  memo,
+  useCallback,
   useState,
   useRef,
   useLayoutEffect,
@@ -15,17 +17,6 @@ import {
   type AppliedSkillDisplay,
 } from "@/lib/skill-display";
 import { formatToolForUserPanel } from "@/lib/tool-display";
-import {
-  effectiveInternalNotificationKind,
-  hiddenInboxNotificationKinds,
-  internalNotificationKindConfig,
-} from "@/lib/internal-notifications/registry";
-import {
-  normalizeNotificationActionUrl,
-  pendingActionLinkLabel,
-  prepareNotificationBodyMarkdown,
-  shouldShowAssociatedActionLink,
-} from "@/lib/notifications/pending-action-display";
 import { CHAT_ATTACHMENT_ACCEPT } from "@/lib/chat/extract-attachment-text";
 
 interface ChatAttachmentMeta {
@@ -164,42 +155,6 @@ interface ScheduledTaskSummary {
   lastFailure?: string | null;
 }
 
-interface InternalNotificationDisplay {
-  id: string;
-  kind: string;
-  title: string;
-  body: string;
-  priority: "low" | "normal" | "high";
-  action_url: string | null;
-  due_at: string | null;
-  created_at: string;
-  caseId?: string | null;
-  caseTitle?: string | null;
-  caseStep?: string | null;
-  caseStepLabel?: string | null;
-  caseStatus?: string | null;
-  caseStatusLabel?: string | null;
-  caseContextLine?: string | null;
-}
-
-interface PendingToolConfirmationDisplay {
-  toolCallId: string;
-  sessionId: string;
-  turnId?: string | null;
-  toolName: string;
-  args: Record<string, unknown>;
-  status: string;
-  createdAt: string;
-  caseId?: string | null;
-  caseTitle?: string | null;
-  caseStep?: string | null;
-  caseStepLabel?: string | null;
-  caseStatus?: string | null;
-  caseStatusLabel?: string | null;
-  caseContextLine?: string | null;
-  message: string;
-}
-
 interface BaseContext {
   identity: {
     name?: string;
@@ -257,11 +212,7 @@ interface Props {
   initialRecentLearnings?: RecentLearning[];
   heartbeatStatus?: HeartbeatStatus;
   scheduledTaskSummary?: ScheduledTaskSummary;
-  initialNotifications?: InternalNotificationDisplay[];
-  initialPendingToolConfirmations?: PendingToolConfirmationDisplay[];
-  initialPendientesOpen?: boolean;
-  initialCaseFilter?: string | null;
-  initialFocusId?: string | null;
+  pendingInboxCount?: number;
 }
 
 function ChatAvatar({
@@ -574,31 +525,6 @@ function buildAgentMessageText(
     return `${trimmed}\n\n---\n${blocks.join("\n\n---\n")}`;
   }
   return blocks.join("\n\n---\n");
-}
-
-function pendientesPanelOpenFromUrl(): boolean {
-  if (typeof window === "undefined") return false;
-  return new URLSearchParams(window.location.search).get("pendientes") === "1";
-}
-
-function writePendientesUrl(expanded: boolean, mode: "push" | "replace") {
-  if (typeof window === "undefined") return;
-  const url = new URL(window.location.href);
-  if (expanded) {
-    url.searchParams.set("pendientes", "1");
-  } else {
-    url.searchParams.delete("pendientes");
-    url.searchParams.delete("case");
-    url.searchParams.delete("focus");
-  }
-  const next = `${url.pathname}${url.search}${url.hash}`;
-  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (next === current) return;
-  if (mode === "push") {
-    window.history.pushState({ pendientesPanel: expanded }, "", next);
-  } else {
-    window.history.replaceState({ pendientesPanel: expanded }, "", next);
-  }
 }
 
 function formatOperationalEventTime(value: string): string {
@@ -1177,6 +1103,15 @@ function mergeToolCalls(
   return out.slice(0, maxTotal);
 }
 
+function toolCallSignature(call: RecentToolCall): string {
+  // Cheap identity check: avoid JSON.stringify of potentially large result_json
+  // on every poll. status/finished_at flip when a call completes, which is the
+  // only transition the panel needs to react to.
+  return `${call.id}|${call.status}|${call.finished_at ?? ""}|${
+    call.requires_confirmation ? 1 : 0
+  }`;
+}
+
 function messageDedupKey(message: Message): string {
   return (
     message.id ??
@@ -1316,6 +1251,133 @@ function PanelSectionTitle({
   );
 }
 
+const AssistantMarkdown = memo(function AssistantMarkdown({
+  content,
+}: {
+  content: string;
+}) {
+  return (
+    <div className="prose prose-sm max-w-none prose-p:my-1 prose-li:my-0.5 prose-ol:my-1 prose-ul:my-1 prose-a:text-violet-700 prose-a:underline dark:prose-invert dark:prose-a:text-violet-200">
+      <ReactMarkdown
+        components={{
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer">
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
+const ChatMessageBubble = memo(function ChatMessageBubble({
+  message,
+  agentAvatarUrl,
+  agentInitial,
+  agentName,
+  userAvatarUrl,
+  userName,
+  onSelectTurn,
+}: {
+  message: Message;
+  agentAvatarUrl?: string;
+  agentInitial: string;
+  agentName: string;
+  userAvatarUrl?: string;
+  userName?: string;
+  onSelectTurn: (turnId: string) => void;
+}) {
+  const msg = message;
+  const sourceLabel = messageSourceLabel(msg);
+  const attachmentMeta = messageAttachmentMeta(msg.structured_payload);
+  const displayText = messageDisplayText(msg);
+  return (
+    <div
+      role={msg.turn_id ? "button" : undefined}
+      tabIndex={msg.turn_id ? 0 : undefined}
+      title={msg.turn_id ? "Ver contexto de este turno" : undefined}
+      onClick={() => {
+        if (msg.turn_id) onSelectTurn(msg.turn_id);
+      }}
+      onKeyDown={(event) => {
+        if (!msg.turn_id) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelectTurn(msg.turn_id);
+        }
+      }}
+      className={`flex items-start gap-2 rounded-[1.75rem] outline-none transition ${
+        msg.turn_id ? "cursor-pointer" : ""
+      } ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+    >
+      {msg.role !== "user" && (
+        <ChatAvatar
+          imageUrl={agentAvatarUrl}
+          fallback={agentInitial}
+          label={`Avatar de ${agentName}`}
+          tone="agent"
+        />
+      )}
+      <div
+        className={`max-w-[82%] rounded-3xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
+          msg.role === "user"
+            ? "bg-gradient-to-br from-violet-700 to-fuchsia-600 text-white shadow-violet-900/20"
+            : "border border-slate-200/70 bg-white text-slate-900 dark:border-white/10 dark:bg-white/10 dark:text-white"
+        }`}
+      >
+        {sourceLabel ? (
+          <div className="mb-2 inline-flex rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-violet-700 dark:bg-violet-400/10 dark:text-violet-100">
+            {sourceLabel}
+          </div>
+        ) : null}
+        {attachmentMeta.length > 0 ? (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {attachmentMeta.map((attachment) => (
+              <span
+                key={attachment.fileName}
+                className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-medium text-white/90 ring-1 ring-white/20"
+              >
+                <span aria-hidden="true">📎</span>
+                {attachment.fileName}
+                {attachment.truncated ? " · truncado" : ""}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {msg.role === "assistant" ? (
+          <AssistantMarkdown content={msg.content} />
+        ) : displayText ? (
+          <p className="whitespace-pre-wrap">{displayText}</p>
+        ) : attachmentMeta.length > 0 ? (
+          <p className="text-white/80">Archivo adjunto enviado.</p>
+        ) : null}
+        {msg.created_at ? (
+          <p
+            className={`mt-1.5 text-right text-[10px] tabular-nums ${
+              msg.role === "user"
+                ? "text-white/70"
+                : "text-slate-400 dark:text-white/40"
+            }`}
+          >
+            {formatBubbleTime(msg.created_at)}
+          </p>
+        ) : null}
+      </div>
+      {msg.role === "user" && (
+        <ChatAvatar
+          imageUrl={userAvatarUrl}
+          fallback={(userName || "U").slice(0, 1).toUpperCase()}
+          label="Avatar del usuario"
+          tone="user"
+        />
+      )}
+    </div>
+  );
+});
+
 export function ChatInterface({
   agentName,
   agentAvatarUrl,
@@ -1331,11 +1393,7 @@ export function ChatInterface({
   initialRecentLearnings = [],
   heartbeatStatus: initialHeartbeatStatus,
   scheduledTaskSummary: initialScheduledTaskSummary,
-  initialNotifications = [],
-  initialPendingToolConfirmations = [],
-  initialPendientesOpen = false,
-  initialCaseFilter = null,
-  initialFocusId = null,
+  pendingInboxCount = 0,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [toolCalls, setToolCalls] = useState<RecentToolCall[]>(initialToolCalls);
@@ -1355,14 +1413,6 @@ export function ChatInterface({
   const [shortTermExpanded, setShortTermExpanded] = useState(false);
   const [heartbeatHistoryExpanded, setHeartbeatHistoryExpanded] = useState(false);
   const [scheduledTasksExpanded, setScheduledTasksExpanded] = useState(false);
-  const [notificationsExpanded, setNotificationsExpanded] = useState(
-    initialPendientesOpen
-  );
-  const [notifications, setNotifications] =
-    useState<InternalNotificationDisplay[]>(initialNotifications);
-  const [pendingToolConfirmations, setPendingToolConfirmations] = useState<
-    PendingToolConfirmationDisplay[]
-  >(initialPendingToolConfirmations);
   const [pendingAttachments, setPendingAttachments] = useState<
     PendingAttachment[]
   >([]);
@@ -1370,44 +1420,25 @@ export function ChatInterface({
     string | null
   >(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [pendientesCaseFilter, setPendientesCaseFilter] = useState<string | null>(
-    initialCaseFilter
-  );
-  const [pendientesFocusId, setPendientesFocusId] = useState<string | null>(
-    initialFocusId
-  );
-  const pendingItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const pendientesPanelRef = useRef<HTMLElement | null>(null);
-  const hiddenNotificationKinds = useMemo(
-    () => new Set(hiddenInboxNotificationKinds()),
-    []
-  );
-  const visibleNotifications = useMemo(
-    () =>
-      notifications.filter(
-        (notification) => !hiddenNotificationKinds.has(notification.kind)
-      ),
-    [notifications, hiddenNotificationKinds]
-  );
-  const pendingInboxCount =
-    visibleNotifications.length + pendingToolConfirmations.length;
-  const [notificationInputs, setNotificationInputs] = useState<Record<string, string>>({});
-  const [notificationActionStatus, setNotificationActionStatus] =
-    useState<Record<string, string>>({});
-  const [notificationCleanupStatus, setNotificationCleanupStatus] = useState<string | null>(null);
+  const pendingHref = pendingInboxCount > 0 ? "/chat/pending" : null;
   const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(
     () =>
       initialPendingConfirmation?.turnId ??
       defaultSelectedTurnId(initialMessages)
   );
+  const handleSelectTurn = useCallback((turnId: string) => {
+    setSelectedTurnId(turnId);
+  }, []);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const syncAfterRef = useRef<string | null>(
     initialMessages.at(-1)?.created_at ?? null
   );
+  const lastOperationalSyncAtRef = useRef<number>(0);
   const messagesRef = useRef<Message[]>(initialMessages);
+  const toolCallsRef = useRef<RecentToolCall[]>(initialToolCalls);
   const loadingRef = useRef(false);
   const agentInitial =
     agentEmoji || agentName.slice(0, 1).toUpperCase() || "G";
@@ -1432,205 +1463,6 @@ export function ChatInterface({
   );
   const chatTimeline = useMemo(() => buildChatTimeline(messages), [messages]);
 
-  function openPendientesPanel() {
-    const nextExpanded = !notificationsExpanded;
-    setNotificationsExpanded(nextExpanded);
-    if (nextExpanded) {
-      void refreshNotifications();
-      writePendientesUrl(true, "push");
-      window.requestAnimationFrame(() => {
-        pendientesPanelRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        });
-      });
-    } else {
-      writePendientesUrl(false, "replace");
-    }
-  }
-
-  async function refreshNotifications(caseFilterOverride?: string | null) {
-    const activeFilter =
-      caseFilterOverride !== undefined ? caseFilterOverride : pendientesCaseFilter;
-    const query = activeFilter
-      ? `?case_id=${encodeURIComponent(activeFilter)}`
-      : "";
-    const res = await fetch(`/api/notifications${query}`);
-    const data = (await res.json().catch(() => ({}))) as {
-      notifications?: InternalNotificationDisplay[];
-      pendingToolConfirmations?: PendingToolConfirmationDisplay[];
-    };
-    if (res.ok && Array.isArray(data.notifications)) {
-      setNotifications(data.notifications);
-    }
-    if (res.ok && Array.isArray(data.pendingToolConfirmations)) {
-      setPendingToolConfirmations(data.pendingToolConfirmations);
-    }
-  }
-
-  useEffect(() => {
-    if (!initialPendientesOpen) return;
-    void refreshNotifications();
-  }, [initialPendientesOpen, pendientesCaseFilter]);
-
-  useEffect(() => {
-    const syncPendientesFromHistory = () => {
-      setNotificationsExpanded(pendientesPanelOpenFromUrl());
-    };
-    window.addEventListener("popstate", syncPendientesFromHistory);
-    return () => window.removeEventListener("popstate", syncPendientesFromHistory);
-  }, []);
-
-  useEffect(() => {
-    if (!pendientesFocusId || !notificationsExpanded) return;
-    const element = pendingItemRefs.current[pendientesFocusId];
-    if (!element) return;
-    window.requestAnimationFrame(() => {
-      element.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-  }, [
-    pendientesFocusId,
-    notificationsExpanded,
-    notifications,
-    pendingToolConfirmations,
-  ]);
-
-  async function updateNotificationStatus(
-    id: string,
-    status: "read" | "actioned" | "dismissed"
-  ) {
-    const res = await fetch("/api/notifications", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, status }),
-    });
-    if (res.ok) {
-      setNotifications((current) => current.filter((item) => item.id !== id));
-    }
-  }
-
-  async function cleanupSettingsTestNotifications() {
-    setNotificationCleanupStatus("Limpiando pendientes de prueba...");
-    const res = await fetch("/api/notifications?scope=settings-test", {
-      method: "DELETE",
-    });
-    const data = (await res.json().catch(() => ({}))) as {
-      deleted?: number;
-      error?: string;
-    };
-    if (res.ok) {
-      setNotificationCleanupStatus(
-        `Pendientes de prueba eliminados: ${data.deleted ?? 0}.`
-      );
-      await refreshNotifications();
-    } else {
-      setNotificationCleanupStatus(
-        data.error ?? "No se pudieron limpiar los pendientes de prueba."
-      );
-    }
-  }
-
-  async function submitPriceApprovalDecision(
-    notificationId: string,
-    payload: { action?: "approve" | "reject"; text?: string }
-  ) {
-    setNotificationActionStatus((current) => ({
-      ...current,
-      [notificationId]: "Procesando...",
-    }));
-    const res = await fetch("/api/business-decisions/price-approval", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        notification_id: notificationId,
-        ...payload,
-      }),
-    });
-    const data = (await res.json().catch(() => ({}))) as {
-      ok?: boolean;
-      message?: string;
-    };
-    setNotificationActionStatus((current) => ({
-      ...current,
-      [notificationId]: data.message ?? (res.ok ? "Listo." : "No se pudo procesar."),
-    }));
-    if (res.ok && data.ok !== false) {
-      await refreshNotifications();
-    }
-  }
-
-  async function submitContractReviewDecision(
-    notificationId: string,
-    action: "approve_send" | "request_changes"
-  ) {
-    setNotificationActionStatus((current) => ({
-      ...current,
-      [notificationId]: "Procesando...",
-    }));
-    const res = await fetch("/api/business-decisions/contract-review", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        notification_id: notificationId,
-        action,
-      }),
-    });
-    const data = (await res.json().catch(() => ({}))) as {
-      ok?: boolean;
-      message?: string;
-      error?: string;
-    };
-    setNotificationActionStatus((current) => ({
-      ...current,
-      [notificationId]:
-        data.message ?? data.error ?? (res.ok ? "Listo." : "No se pudo procesar."),
-    }));
-    if (res.ok && data.ok !== false) {
-      await refreshNotifications();
-    }
-  }
-
-  async function submitToolConfirmationDecision(
-    pending: PendingToolConfirmationDisplay,
-    action: "approve" | "reject"
-  ) {
-    setNotificationActionStatus((current) => ({
-      ...current,
-      [pending.toolCallId]: "Procesando...",
-    }));
-    const res = await fetch("/api/chat/confirm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        toolCallId: pending.toolCallId,
-        action,
-        channel: "case_runner",
-      }),
-    });
-    const data = (await res.json().catch(() => ({}))) as {
-      ok?: boolean;
-      response?: string | null;
-      error?: string;
-      pendingConfirmation?: PendingConfirmation | null;
-    };
-    setNotificationActionStatus((current) => ({
-      ...current,
-      [pending.toolCallId]:
-        data.error ??
-        (res.ok
-          ? action === "approve"
-            ? "Aprobado. El agente continuó el caso."
-            : "Rechazado."
-          : "No se pudo procesar."),
-    }));
-    if (data.pendingConfirmation) {
-      setConfirmation(data.pendingConfirmation);
-      setSelectedTurnId(data.pendingConfirmation.turnId ?? pending.turnId ?? null);
-    }
-    if (res.ok) {
-      await refreshNotifications();
-    }
-  }
   const inspectedTurnId = selectedTurnId ?? confirmation?.turnId ?? null;
   const inspectedMessage = inspectedTurnId
     ? [...messages].reverse().find((message) => message.turn_id === inspectedTurnId)
@@ -1711,16 +1543,27 @@ export function ChatInterface({
   useLayoutEffect(() => {
     const viewport = messagesViewportRef.current;
     if (!viewport) return;
-    viewport.scrollTo({
-      top: viewport.scrollHeight,
-      behavior: didInitialScrollRef.current ? "smooth" : "auto",
-    });
+    const scrollToBottom = (behavior: ScrollBehavior) => {
+      viewport.scrollTo({
+        top: viewport.scrollHeight,
+        behavior,
+      });
+    };
+    const behavior = didInitialScrollRef.current ? "smooth" : "auto";
+    scrollToBottom(behavior);
+    if (!didInitialScrollRef.current) {
+      requestAnimationFrame(() => scrollToBottom("auto"));
+    }
     didInitialScrollRef.current = true;
   }, [messages.length, confirmation?.toolCallId, loading]);
 
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    toolCallsRef.current = toolCalls;
+  }, [toolCalls]);
 
   useEffect(() => {
     loadingRef.current = loading;
@@ -1730,13 +1573,17 @@ export function ChatInterface({
     let cancelled = false;
     let inFlight = false;
 
-    async function syncAutomatedActivity() {
+    async function syncAutomatedActivity(includeOperational = false) {
       if (cancelled || inFlight || document.visibilityState !== "visible") return;
       inFlight = true;
       try {
         const params = new URLSearchParams();
         const after = syncAfterRef.current;
         if (after) params.set("after", after);
+        if (includeOperational) {
+          params.set("ops", "1");
+          lastOperationalSyncAtRef.current = Date.now();
+        }
         const res = await fetch(`/api/chat/sync?${params.toString()}`, {
           cache: "no-store",
         });
@@ -1769,8 +1616,20 @@ export function ChatInterface({
             setSelectedTurnId(newest.turn_id);
           }
         }
-        if (Array.isArray(data.toolCalls)) {
-          setToolCalls((prev) => mergeToolCalls(prev, data.toolCalls ?? []));
+        if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
+          const currentById = new Map(
+            toolCallsRef.current.map((call) => [call.id, toolCallSignature(call)])
+          );
+          const changedToolCalls = data.toolCalls.filter(
+            (call) => currentById.get(call.id) !== toolCallSignature(call)
+          );
+          if (changedToolCalls.length > 0) {
+            setToolCalls((prev) => {
+              const merged = mergeToolCalls(prev, changedToolCalls);
+              toolCallsRef.current = merged;
+              return merged;
+            });
+          }
         }
         if (data.heartbeatStatus) setHeartbeatStatus(data.heartbeatStatus);
         if (data.scheduledTaskSummary) {
@@ -1783,10 +1642,23 @@ export function ChatInterface({
       }
     }
 
-    const interval = window.setInterval(syncAutomatedActivity, 5000);
+    const tick = () => {
+      const shouldSyncOperational =
+        Date.now() - lastOperationalSyncAtRef.current >= 30_000;
+      void syncAutomatedActivity(shouldSyncOperational);
+    };
+    void syncAutomatedActivity(true);
+    const interval = window.setInterval(tick, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void syncAutomatedActivity(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 
@@ -2158,413 +2030,14 @@ export function ChatInterface({
   }
 
   return (
-    <div className="h-screen overflow-hidden bg-[#f8f4ff] text-slate-950 dark:bg-[#090411] dark:text-white">
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+    <div className="relative flex h-full min-h-0 flex-1 flex-col text-slate-950 dark:text-white">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute -left-32 top-16 h-72 w-72 rounded-full bg-violet-500/20 blur-3xl" />
         <div className="absolute right-0 top-0 h-96 w-96 rounded-full bg-fuchsia-500/20 blur-3xl" />
       </div>
-
-      <div className="relative flex h-full">
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-5 sm:py-5">
-          <header className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_460px] 2xl:grid-cols-[minmax(0,0.9fr)_520px]">
-            <div className="flex min-w-0 items-center gap-3 rounded-[2rem] border border-white/70 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-              <div className="flex h-12 w-20 shrink-0 items-center justify-center rounded-2xl border border-violet-100 bg-white px-3 shadow-sm dark:border-white/10 dark:bg-white/90">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src="/ungga-logo.png"
-                  alt="Logo de la cuenta"
-                  className="max-h-9 w-full object-contain"
-                />
-              </div>
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-violet-700 to-fuchsia-600 text-sm font-bold text-white shadow-lg shadow-violet-900/20">
-                {agentAvatarUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={agentAvatarUrl} alt="Avatar del colaborador IA" className="h-full w-full object-cover" />
-                ) : (
-                  agentInitial
-                )}
-              </div>
-              <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-violet-700 dark:text-violet-200">
-                  Consola Ungga
-                </p>
-                <h1 className="truncate text-lg font-semibold text-slate-950 dark:text-white">
-                  {agentName}
-                </h1>
-              </div>
-            </div>
-            <div className="flex items-center justify-end gap-2 rounded-[2rem] border border-white/70 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-              <a
-                href="/memory"
-                className="inline-flex rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
-              >
-                Memoria
-              </a>
-              <a
-                href="/operational-cases"
-                className="inline-flex rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
-              >
-                Flujos en curso
-              </a>
-              <button
-                type="button"
-                aria-expanded={notificationsExpanded}
-                aria-controls="pendientes-internos-panel"
-                onClick={openPendientesPanel}
-                className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-semibold transition hover:bg-violet-100 dark:hover:bg-violet-400/20 ${
-                  notificationsExpanded
-                    ? "border-violet-400 bg-violet-100 text-violet-900 ring-2 ring-violet-300 dark:border-violet-300/40 dark:bg-violet-400/20 dark:text-violet-50 dark:ring-violet-400/30"
-                    : "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-400/20 dark:bg-violet-400/10 dark:text-violet-100"
-                }`}
-              >
-                Pendientes{" "}
-                {pendingInboxCount > 0 ? `(${pendingInboxCount})` : ""}
-              </button>
-              <a
-                href="/settings"
-                className="rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
-              >
-                Configuración
-              </a>
-              <form action="/api/auth/signout" method="POST">
-                <button
-                  type="submit"
-                  className="cursor-pointer rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
-                >
-                  Salir
-                </button>
-              </form>
-            </div>
-          </header>
-
-          {notificationsExpanded ? (
-            <section
-              id="pendientes-internos-panel"
-              ref={pendientesPanelRef}
-              className="mb-4 shrink-0 rounded-[1.5rem] border border-violet-100 bg-white/85 p-4 text-sm shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="font-semibold text-slate-950 dark:text-white">
-                    Pendientes
-                  </h2>
-                  <p className="text-xs text-slate-500 dark:text-white/50">
-                    Notificaciones y aprobaciones pendientes de revisión.
-                  </p>
-                </div>
-                <div className="flex flex-wrap justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void cleanupSettingsTestNotifications()}
-                    className="rounded-full border border-rose-200 px-3 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-300/20 dark:text-rose-100 dark:hover:bg-rose-300/10"
-                  >
-                    Limpiar pruebas
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void refreshNotifications()}
-                    className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-white/70 dark:hover:bg-white/10"
-                  >
-                    Refrescar
-                  </button>
-                </div>
-              </div>
-              {notificationCleanupStatus ? (
-                <p className="mt-2 rounded-2xl bg-slate-50 p-2 text-xs text-slate-500 dark:bg-white/5 dark:text-white/60">
-                  {notificationCleanupStatus}
-                </p>
-              ) : null}
-              {pendientesCaseFilter ? (
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-violet-100 bg-violet-50/70 px-3 py-2 text-xs text-violet-900 dark:border-violet-300/20 dark:bg-violet-300/10 dark:text-violet-100">
-                  <span>Mostrando pendientes del flujo seleccionado.</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPendientesCaseFilter(null);
-                      setPendientesFocusId(null);
-                      void refreshNotifications(null);
-                    }}
-                    className="font-semibold underline"
-                  >
-                    Ver todos
-                  </button>
-                </div>
-              ) : null}
-              <div className="mt-3 max-h-[min(55vh,32rem)] overflow-y-auto pr-1">
-              {visibleNotifications.length === 0 &&
-              pendingToolConfirmations.length === 0 ? (
-                <p className="rounded-2xl bg-slate-50 p-3 text-xs text-slate-500 dark:bg-white/5 dark:text-white/60">
-                  No tienes pendientes internos sin leer.
-                </p>
-              ) : (
-                <div className="grid gap-2">
-                  {pendingToolConfirmations.map((pending) => (
-                    <div
-                      key={pending.toolCallId}
-                      ref={(element) => {
-                        pendingItemRefs.current[pending.toolCallId] = element;
-                      }}
-                      className={`rounded-2xl border bg-amber-50/80 p-3 text-xs dark:bg-amber-300/10 ${
-                        pendientesFocusId === pending.toolCallId
-                          ? "border-amber-400 ring-2 ring-amber-300 dark:border-amber-300/40"
-                          : "border-amber-200 dark:border-amber-300/20"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div>
-                          <p className="font-semibold text-amber-900 dark:text-amber-100">
-                            Aprobación del agente
-                          </p>
-                          <p className="mt-1 text-amber-800 dark:text-amber-100/80">
-                            {pending.message}
-                          </p>
-                          {pending.caseContextLine ? (
-                            <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-100/70">
-                              {pending.caseContextLine}
-                            </p>
-                          ) : (
-                            <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-100/70">
-                              Tool:{" "}
-                              <span className="font-mono">{pending.toolName}</span>
-                              {pending.caseId ? ` · caso ${pending.caseId}` : ""}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void submitToolConfirmationDecision(
-                                pending,
-                                "approve"
-                              )
-                            }
-                            className="rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700"
-                          >
-                            Aprobar
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void submitToolConfirmationDecision(
-                                pending,
-                                "reject"
-                              )
-                            }
-                            className="rounded-full border border-rose-200 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-300/20 dark:text-rose-100 dark:hover:bg-rose-300/10"
-                          >
-                            Rechazar
-                          </button>
-                        </div>
-                      </div>
-                      {notificationActionStatus[pending.toolCallId] ? (
-                        <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-100/70">
-                          {notificationActionStatus[pending.toolCallId]}
-                        </p>
-                      ) : null}
-                    </div>
-                  ))}
-                  {visibleNotifications.map((notification) => (
-                    <div
-                      key={notification.id}
-                      ref={(element) => {
-                        pendingItemRefs.current[notification.id] = element;
-                      }}
-                      className={`min-w-0 rounded-2xl border bg-white p-3 text-xs dark:bg-white/5 ${
-                        pendientesFocusId === notification.id
-                          ? "border-violet-400 ring-2 ring-violet-300 dark:border-violet-300/40"
-                          : "border-slate-200 dark:border-white/10"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <p className="font-semibold text-slate-900 dark:text-white">
-                            {internalNotificationKindConfig(notification.kind, {
-                              body: notification.body,
-                              title: notification.title,
-                            }).label}
-                          </p>
-                          {notification.title !== notification.kind ? (
-                            <p className="mt-0.5 text-[11px] text-slate-400">
-                              {notification.title}
-                            </p>
-                          ) : null}
-                          {notification.caseContextLine ? (
-                            <p className="mt-1 text-[11px] text-slate-500 dark:text-white/50">
-                              {notification.caseContextLine}
-                            </p>
-                          ) : null}
-                          <div className="prose prose-sm mt-1 max-w-none break-words text-slate-600 dark:text-white/70 prose-a:break-words prose-a:text-violet-700 prose-a:underline dark:prose-a:text-violet-200">
-                            <ReactMarkdown
-                              components={{
-                                a: ({ href, children }) => (
-                                  <a
-                                    href={href}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                  >
-                                    {children}
-                                  </a>
-                                ),
-                              }}
-                            >
-                              {prepareNotificationBodyMarkdown(notification.body)}
-                            </ReactMarkdown>
-                          </div>
-                          <p className="mt-1 text-[11px] text-slate-400">
-                            Prioridad: {notification.priority}
-                            {notification.due_at
-                              ? ` · vence ${new Date(notification.due_at).toLocaleString()}`
-                              : ""}
-                          </p>
-                          {effectiveInternalNotificationKind({
-                            kind: notification.kind,
-                            body: notification.body,
-                            title: notification.title,
-                          }) === "price_approval" ? (
-                            <div className="mt-3 space-y-2 rounded-2xl border border-amber-100 bg-amber-50/70 p-2 dark:border-amber-300/20 dark:bg-amber-300/10">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-100">
-                                Aprobacion de precio
-                              </p>
-                              <div className="flex flex-wrap gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void submitPriceApprovalDecision(notification.id, {
-                                      action: "approve",
-                                    })
-                                  }
-                                  className="rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700"
-                                >
-                                  Aprobar
-                                </button>
-                              </div>
-                              <div className="flex flex-col gap-1 sm:flex-row">
-                                <input
-                                  value={notificationInputs[notification.id] ?? ""}
-                                  onChange={(event) =>
-                                    setNotificationInputs((current) => ({
-                                      ...current,
-                                      [notification.id]: event.target.value,
-                                    }))
-                                  }
-                                  placeholder="Ej. AJUSTAR PRECIO salida=23500 ideal=22000 minimo=18000"
-                                  className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void submitPriceApprovalDecision(notification.id, {
-                                      text: notificationInputs[notification.id] ?? "",
-                                    })
-                                  }
-                                  className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
-                                >
-                                  Ajustar y aprobar
-                                </button>
-                              </div>
-                              {notificationActionStatus[notification.id] ? (
-                                <p className="text-[11px] text-slate-500 dark:text-white/60">
-                                  {notificationActionStatus[notification.id]}
-                                </p>
-                              ) : null}
-                            </div>
-                          ) : null}
-                          {notification.kind === "contract_review" ? (
-                            <div className="mt-3 space-y-2 rounded-2xl border border-violet-100 bg-violet-50/70 p-2 dark:border-violet-300/20 dark:bg-violet-300/10">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-700 dark:text-violet-100">
-                                Revisión de contrato
-                              </p>
-                              <div className="flex flex-wrap gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void submitContractReviewDecision(
-                                      notification.id,
-                                      "approve_send"
-                                    )
-                                  }
-                                  className="rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700"
-                                >
-                                  Aprobar y enviar
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void submitContractReviewDecision(
-                                      notification.id,
-                                      "request_changes"
-                                    )
-                                  }
-                                  className="rounded-full border border-violet-200 px-2 py-1 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
-                                >
-                                  Pedir cambios
-                                </button>
-                              </div>
-                              {notificationActionStatus[notification.id] ? (
-                                <p className="text-[11px] text-slate-500 dark:text-white/60">
-                                  {notificationActionStatus[notification.id]}
-                                </p>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="flex shrink-0 flex-wrap gap-1">
-                          {shouldShowAssociatedActionLink({
-                            kind: "internal_notification",
-                            notification_kind: notification.kind,
-                            action_url: notification.action_url,
-                            body: notification.body,
-                          }) ? (
-                            <a
-                              href={normalizeNotificationActionUrl(
-                                notification.action_url
-                              ) ?? notification.action_url ?? "#"}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="rounded-full bg-violet-700 px-2 py-1 font-semibold text-white hover:bg-violet-800"
-                            >
-                              {pendingActionLinkLabel(
-                                {
-                                  kind: "internal_notification",
-                                  notification_kind: notification.kind,
-                                  action_url: notification.action_url,
-                                },
-                                "action_url"
-                              )}
-                            </a>
-                          ) : null}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void updateNotificationStatus(notification.id, "read")
-                            }
-                            className="rounded-full border border-slate-200 px-2 py-1 font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-white/70"
-                          >
-                            Leida
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void updateNotificationStatus(notification.id, "actioned")
-                            }
-                            className="rounded-full border border-emerald-200 px-2 py-1 font-semibold text-emerald-700 hover:bg-emerald-50"
-                          >
-                            Atendida
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              </div>
-            </section>
-          ) : null}
-
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_460px] 2xl:grid-cols-[minmax(0,0.9fr)_520px]">
-            <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[2rem] border border-white/70 bg-white/75 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
-              <div className="border-b border-slate-200/70 px-5 py-4 dark:border-white/10">
+      <div className="relative grid h-full min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_460px] 2xl:grid-cols-[minmax(0,0.9fr)_520px]">
+            <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[2rem] border border-white/70 bg-white/75 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+              <div className="shrink-0 border-b border-slate-200/70 px-5 py-4 dark:border-white/10">
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">
                   Conversación
                 </p>
@@ -2595,104 +2068,17 @@ export function ChatInterface({
               );
             }
 
-            const msg = item.message;
-            const sourceLabel = messageSourceLabel(msg);
-            const attachmentMeta = messageAttachmentMeta(msg.structured_payload);
-            const displayText = messageDisplayText(msg);
             return (
-            <div
-              key={item.key}
-              role={msg.turn_id ? "button" : undefined}
-              tabIndex={msg.turn_id ? 0 : undefined}
-              title={msg.turn_id ? "Ver contexto de este turno" : undefined}
-              onClick={() => {
-                if (msg.turn_id) setSelectedTurnId(msg.turn_id);
-              }}
-              onKeyDown={(event) => {
-                if (!msg.turn_id) return;
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  setSelectedTurnId(msg.turn_id);
-                }
-              }}
-              className={`flex items-start gap-2 rounded-[1.75rem] outline-none transition ${
-                msg.turn_id ? "cursor-pointer" : ""
-              } ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              {msg.role !== "user" && (
-                <ChatAvatar
-                  imageUrl={agentAvatarUrl}
-                  fallback={agentInitial}
-                  label={`Avatar de ${agentName}`}
-                  tone="agent"
-                />
-              )}
-              <div
-                className={`max-w-[82%] rounded-3xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
-                  msg.role === "user"
-                    ? "bg-gradient-to-br from-violet-700 to-fuchsia-600 text-white shadow-violet-900/20"
-                    : "border border-slate-200/70 bg-white text-slate-900 dark:border-white/10 dark:bg-white/10 dark:text-white"
-                }`}
-              >
-                {sourceLabel ? (
-                  <div className="mb-2 inline-flex rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-violet-700 dark:bg-violet-400/10 dark:text-violet-100">
-                    {sourceLabel}
-                  </div>
-                ) : null}
-                {attachmentMeta.length > 0 ? (
-                  <div className="mb-2 flex flex-wrap gap-1.5">
-                    {attachmentMeta.map((attachment) => (
-                      <span
-                        key={attachment.fileName}
-                        className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-medium text-white/90 ring-1 ring-white/20"
-                      >
-                        <span aria-hidden="true">📎</span>
-                        {attachment.fileName}
-                        {attachment.truncated ? " · truncado" : ""}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                {msg.role === "assistant" ? (
-                  <div className="prose prose-sm max-w-none prose-p:my-1 prose-li:my-0.5 prose-ol:my-1 prose-ul:my-1 prose-a:text-violet-700 prose-a:underline dark:prose-invert dark:prose-a:text-violet-200">
-                    <ReactMarkdown
-                      components={{
-                        a: ({ href, children }) => (
-                          <a href={href} target="_blank" rel="noopener noreferrer">
-                            {children}
-                          </a>
-                        ),
-                      }}
-                    >
-                      {msg.content}
-                    </ReactMarkdown>
-                  </div>
-                ) : displayText ? (
-                  <p className="whitespace-pre-wrap">{displayText}</p>
-                ) : attachmentMeta.length > 0 ? (
-                  <p className="text-white/80">Archivo adjunto enviado.</p>
-                ) : null}
-                {msg.created_at ? (
-                  <p
-                    className={`mt-1.5 text-right text-[10px] tabular-nums ${
-                      msg.role === "user"
-                        ? "text-white/70"
-                        : "text-slate-400 dark:text-white/40"
-                    }`}
-                  >
-                    {formatBubbleTime(msg.created_at)}
-                  </p>
-                ) : null}
-              </div>
-              {msg.role === "user" && (
-                <ChatAvatar
-                  imageUrl={userAvatarUrl}
-                  fallback={(userName || "U").slice(0, 1).toUpperCase()}
-                  label="Avatar del usuario"
-                  tone="user"
-                />
-              )}
-            </div>
+              <ChatMessageBubble
+                key={item.key}
+                message={item.message}
+                agentAvatarUrl={agentAvatarUrl}
+                agentInitial={agentInitial}
+                agentName={agentName}
+                userAvatarUrl={userAvatarUrl}
+                userName={userName}
+                onSelectTurn={handleSelectTurn}
+              />
             );
           })}
 
@@ -2747,7 +2133,7 @@ export function ChatInterface({
               </div>
 
               {/* Input */}
-              <div className="border-t border-slate-200/70 bg-white/80 px-4 py-4 dark:border-white/10 dark:bg-white/[0.03]">
+              <div className="shrink-0 border-t border-slate-200/70 bg-white/80 px-4 py-4 dark:border-white/10 dark:bg-white/[0.03]">
                 <form onSubmit={handleSend} className="mx-auto max-w-2xl space-y-2">
                   {pendingAttachments.length > 0 ? (
                     <div className="flex flex-wrap gap-2">
@@ -2871,7 +2257,7 @@ export function ChatInterface({
               </div>
             </section>
 
-            <aside className="hidden min-h-0 flex-col gap-4 overflow-y-auto pr-1 xl:flex">
+            <aside className="hidden h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1 xl:flex">
               <section className="rounded-[2rem] border border-white/70 bg-[#32107a] p-5 text-white shadow-xl shadow-violet-950/10 dark:border-white/10">
                 <div className="flex items-center gap-4">
                   <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[1.75rem] bg-white/10 ring-1 ring-white/20">
@@ -2916,7 +2302,7 @@ export function ChatInterface({
                             ♥
                           </span>
                         </span>
-                        <span className="text-base leading-tight">Pulso operativo</span>
+                        <span className="text-base leading-tight">Pulso</span>
                       </div>
                       <p className="mt-0.5 text-center text-violet-100">
                         {heartbeatStatus?.enabled ? "Activo" : "Desactivado"}
@@ -2931,9 +2317,18 @@ export function ChatInterface({
                   </div>
                   <div className="flex flex-col items-center px-3 py-3">
                     <p className="flex min-h-10 items-center justify-center text-base font-bold leading-none">
-                      {confirmation ? "1" : "0"}
+                      {pendingInboxCount}
                     </p>
-                    <p className="mt-0.5 text-violet-100">Por aprobar</p>
+                    {pendingHref ? (
+                      <a
+                        href={pendingHref}
+                        className="mt-0.5 text-violet-100 underline decoration-violet-200/70 underline-offset-2 hover:text-white"
+                      >
+                        Pendientes
+                      </a>
+                    ) : (
+                      <p className="mt-0.5 text-violet-100">Pendientes</p>
+                    )}
                   </div>
                 </div>
               </section>
@@ -3474,7 +2869,7 @@ export function ChatInterface({
                   <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-900 dark:bg-emerald-400/10 dark:text-emerald-100">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="font-semibold">Pulso operativo</p>
+                        <p className="font-semibold">Pulso</p>
                         <p className="mt-1 opacity-70">
                           {heartbeatStatus?.enabled
                             ? `Activo · cada ${heartbeatStatus.intervalMinutes} min`
@@ -3678,8 +3073,6 @@ export function ChatInterface({
               </section>
             </aside>
           </div>
-        </main>
-      </div>
     </div>
   );
 }

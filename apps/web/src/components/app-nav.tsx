@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import {
   APP_NAV_TREE,
@@ -65,10 +66,10 @@ function matchesRule(
 ): boolean {
   if (!matcher) return false;
   if (matcher === "chat-pending") {
-    return pathname === "/chat" && searchParams.get("pendientes") === "1";
+    return pathname === "/chat/pending";
   }
   if (matcher === "chat-conversation") {
-    return pathname === "/chat" && searchParams.get("pendientes") !== "1";
+    return pathname === "/chat";
   }
   if (matcher.kind === "settings-view") {
     const currentView = searchParams.get("view") ?? "profile-user";
@@ -145,7 +146,7 @@ function renderNode(
 
     return (
       <li key={node.key} className={indent}>
-        <a
+        <Link
           href={node.href}
           title={node.label}
           aria-label={node.label}
@@ -156,7 +157,7 @@ function renderNode(
           <span className="flex justify-center">
             <NavIcon name={node.icon} />
           </span>
-        </a>
+        </Link>
       </li>
     );
   }
@@ -164,7 +165,7 @@ function renderNode(
   return (
     <li key={node.key} className={`space-y-1 ${indent}`}>
       {node.href ? (
-        <a
+        <Link
           href={node.href}
           aria-current={selfActive ? "page" : undefined}
           onClick={scrollMainContentToTop}
@@ -174,7 +175,7 @@ function renderNode(
             <NavIcon name={node.icon} />
           </span>
           <span className="truncate">{node.label}</span>
-        </a>
+        </Link>
       ) : (
         <p className="px-2 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
           {node.label}

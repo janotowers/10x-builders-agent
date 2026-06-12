@@ -18,8 +18,7 @@ export function pendientesDeepLink(params: {
   caseId?: string | null;
   focus?: string | null;
 }) {
-  const url = new URL("/chat", "http://local");
-  url.searchParams.set("pendientes", "1");
+  const url = new URL("/chat/pending", "http://local");
   if (params.caseId) {
     url.searchParams.set("case", params.caseId);
   }

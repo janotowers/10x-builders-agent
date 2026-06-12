@@ -6,7 +6,8 @@ import {
 } from "@/lib/scheduled-task-confirmation";
 import { sortScheduledTasksForDisplay } from "@/lib/scheduled-task-display-order";
 import { createClient } from "@/lib/supabase/server";
-import { loadPendingInboxSnapshot } from "@/lib/notifications/load-pending-inbox";
+import { hiddenInboxNotificationKinds } from "@/lib/internal-notifications/registry";
+import { AppShell } from "@/components/app-shell";
 import { ChatInterface } from "./chat-interface";
 
 type RecentToolCall = {
@@ -165,9 +166,13 @@ export default async function ChatPage({
   }>;
 }) {
   const sp = await searchParams;
-  const initialPendientesOpen = sp.pendientes === "1";
-  const initialCaseFilter = sp.case?.trim() || null;
-  const initialFocusId = sp.focus?.trim() || null;
+  if (sp.pendientes === "1") {
+    const params = new URLSearchParams();
+    if (sp.case?.trim()) params.set("case", sp.case.trim());
+    if (sp.focus?.trim()) params.set("focus", sp.focus.trim());
+    const query = params.toString();
+    redirect(query ? `/chat/pending?${query}` : "/chat/pending");
+  }
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -574,47 +579,62 @@ export default async function ChatPage({
     availableSkills = [];
   }
 
-  const pendingInbox = await loadPendingInboxSnapshot(user.id, initialCaseFilter);
+  const hiddenNotificationKinds = hiddenInboxNotificationKinds();
+  let unreadNotificationsQuery = supabase
+    .from("internal_user_notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", user.id)
+    .eq("status", "unread");
+  if (hiddenNotificationKinds.length > 0) {
+    unreadNotificationsQuery = unreadNotificationsQuery.not(
+      "kind",
+      "in",
+      `(${hiddenNotificationKinds.join(",")})`
+    );
+  }
+  const { count: pendingInboxCount } = await unreadNotificationsQuery;
 
   return (
-    <ChatInterface
-      agentName={profile.agent_name as string}
-      agentAvatarUrl={agentAvatarUrl}
-      agentEmoji={agentEmoji}
-      userAvatarUrl={userAvatarUrl}
-      userName={(profile.name as string) ?? ""}
-      baseContext={{
-        identity: {
-          name: asString(agentIdentity.name) || (profile.agent_name as string),
-          role: asString(agentIdentity.role),
-          shortDescription: asString(agentIdentity.short_description),
-        },
-        soul: {
-          voice: asString(soul.voice),
-          tone: asString(soul.tone),
-          style: asString(soul.style),
-          brevity: asString(soul.brevity),
-        },
-        businessContext: {
-          kind: asString(businessContext.kind),
-          markets: asStringArray(businessContext.markets),
-          notes: asString(businessContext.notes),
-        },
-        operatingPreferences: asString(operatingPreferences.text),
-      }}
-      availableSkills={availableSkills}
-      availableTools={availableTools}
-      initialMessages={sessionMessages}
-      initialToolCalls={recentToolCalls}
-      initialPendingConfirmation={initialPendingConfirmation}
-      initialRecentLearnings={recentLearnings}
-      heartbeatStatus={heartbeatStatus}
-      scheduledTaskSummary={scheduledTaskSummary}
-      initialNotifications={pendingInbox.notifications}
-      initialPendingToolConfirmations={pendingInbox.pendingToolConfirmations}
-      initialPendientesOpen={initialPendientesOpen}
-      initialCaseFilter={initialCaseFilter}
-      initialFocusId={initialFocusId}
-    />
+    <AppShell
+      viewportFill
+      title="Conversación"
+      description="Habla con Gu y revisa el contexto operativo de cada turno."
+    >
+      <ChatInterface
+        agentName={profile.agent_name as string}
+        agentAvatarUrl={agentAvatarUrl}
+        agentEmoji={agentEmoji}
+        userAvatarUrl={userAvatarUrl}
+        userName={(profile.name as string) ?? ""}
+        baseContext={{
+          identity: {
+            name: asString(agentIdentity.name) || (profile.agent_name as string),
+            role: asString(agentIdentity.role),
+            shortDescription: asString(agentIdentity.short_description),
+          },
+          soul: {
+            voice: asString(soul.voice),
+            tone: asString(soul.tone),
+            style: asString(soul.style),
+            brevity: asString(soul.brevity),
+          },
+          businessContext: {
+            kind: asString(businessContext.kind),
+            markets: asStringArray(businessContext.markets),
+            notes: asString(businessContext.notes),
+          },
+          operatingPreferences: asString(operatingPreferences.text),
+        }}
+        availableSkills={availableSkills}
+        availableTools={availableTools}
+        initialMessages={sessionMessages}
+        initialToolCalls={recentToolCalls}
+        initialPendingConfirmation={initialPendingConfirmation}
+        initialRecentLearnings={recentLearnings}
+        heartbeatStatus={heartbeatStatus}
+        scheduledTaskSummary={scheduledTaskSummary}
+        pendingInboxCount={pendingInboxCount ?? 0}
+      />
+    </AppShell>
   );
 }

@@ -50,13 +50,7 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const after = parseAfter(url.searchParams.get("after"));
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("business_brain")
-    .eq("id", user.id)
-    .maybeSingle();
-  const businessBrain = asRecord(profile?.business_brain);
+  const includeOperational = url.searchParams.get("ops") === "1";
 
   const { data: sessionRows } = await supabase
     .from("agent_sessions")
@@ -117,138 +111,200 @@ export async function GET(request: Request) {
 
   let toolCalls: Array<Record<string, unknown>> = [];
   if (sessionIds.length > 0) {
-    const { data } = await supabase
+    let toolCallsQuery = supabase
       .from("tool_calls")
       .select(
         "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind"
       )
       .in("session_id", sessionIds)
       .order("created_at", { ascending: false })
-      .limit(80);
+      .limit(after ? 30 : 80);
+    if (after) {
+      toolCallsQuery = toolCallsQuery.gt("created_at", after);
+    }
+    const { data } = await toolCallsQuery;
     toolCalls = (data ?? []) as Array<Record<string, unknown>>;
   }
 
-  const heartbeat = asRecord(businessBrain.heartbeat);
-  const { data: heartbeatRuns } = await supabase
-    .from("heartbeat_runs")
-    .select("status, started_at, finished_at, payload, error")
-    .eq("user_id", user.id)
-    .order("started_at", { ascending: false })
-    .limit(15);
-  const normalizedHeartbeatRuns = ((heartbeatRuns ?? []) as Array<Record<string, unknown>>)
-    .filter(
-      (run) =>
-        typeof run.started_at === "string" &&
-        (run.status === "running" ||
-          run.status === "completed" ||
-          run.status === "error")
-    )
-    .map((run) => ({
-      status: run.status as "running" | "completed" | "error",
-      startedAt: run.started_at as string,
-      finishedAt: typeof run.finished_at === "string" ? run.finished_at : null,
-      summary:
-        typeof run.error === "string" && run.error
-          ? run.error
-          : summarizeHeartbeatPayload(run.payload),
-      details: readHeartbeatPayload(run.payload),
-    }));
+  const response: {
+    messages: Array<Record<string, unknown>>;
+    toolCalls: Array<Record<string, unknown>>;
+    heartbeatStatus?: {
+      enabled: boolean;
+      intervalMinutes: number;
+      runs: Array<{
+        status: "running" | "completed" | "error";
+        startedAt: string;
+        finishedAt: string | null;
+        summary: string;
+        details: Record<string, unknown>;
+      }>;
+      lastRun: {
+        status: "running" | "completed" | "error";
+        startedAt: string;
+        finishedAt: string | null;
+        summary: string;
+        details: Record<string, unknown>;
+      } | null;
+    };
+    scheduledTaskSummary?: {
+      activeCount: number;
+      pausedCount: number;
+      runningCount: number;
+      tasks: Array<{
+        id: string;
+        prompt: string;
+        userRequest: string | null;
+        displayTitle: string | null;
+        skillId: string | null;
+        scheduleType: "one_time" | "recurring";
+        nextRunAt: string | null;
+        status: "active" | "paused" | "completed" | "failed" | "running";
+      }>;
+      nextTask:
+        | {
+            id: string;
+            prompt: string;
+            userRequest: string | null;
+            displayTitle: string | null;
+            skillId: string | null;
+            scheduleType: "one_time" | "recurring";
+            nextRunAt: string | null;
+            status: "active" | "paused" | "completed" | "failed" | "running";
+          }
+        | null;
+      lastFailure: string | null;
+    };
+  } = {
+    messages,
+    toolCalls,
+  };
 
-  const scheduledTasksResult = await supabase
-    .from("scheduled_tasks")
-    .select(
-      "id, prompt, user_request, display_title, skill_id, schedule_type, status, next_run_at, last_failure_error"
-    )
-    .eq("user_id", user.id)
-    .in("status", ["active", "paused"])
-    .order("next_run_at", { ascending: true, nullsFirst: false })
-    .limit(50);
-  let scheduledTasks = scheduledTasksResult.data as
-    | Array<Record<string, unknown>>
-    | null;
-  let scheduledTasksError = scheduledTasksResult.error;
-  if (scheduledTasksError) {
-    console.warn(
-      "[chat-sync] scheduled_tasks query with skill columns failed; retrying legacy projection:",
-      scheduledTasksError.message
-    );
-    const fallback = await supabase
+  if (includeOperational) {
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("business_brain")
+      .eq("id", user.id)
+      .maybeSingle();
+    const businessBrain = asRecord(profile?.business_brain);
+    const heartbeat = asRecord(businessBrain.heartbeat);
+    const { data: heartbeatRuns } = await supabase
+      .from("heartbeat_runs")
+      .select("status, started_at, finished_at, payload, error")
+      .eq("user_id", user.id)
+      .order("started_at", { ascending: false })
+      .limit(15);
+    const normalizedHeartbeatRuns = ((heartbeatRuns ?? []) as Array<Record<string, unknown>>)
+      .filter(
+        (run) =>
+          typeof run.started_at === "string" &&
+          (run.status === "running" ||
+            run.status === "completed" ||
+            run.status === "error")
+      )
+      .map((run) => ({
+        status: run.status as "running" | "completed" | "error",
+        startedAt: run.started_at as string,
+        finishedAt: typeof run.finished_at === "string" ? run.finished_at : null,
+        summary:
+          typeof run.error === "string" && run.error
+            ? run.error
+            : summarizeHeartbeatPayload(run.payload),
+        details: readHeartbeatPayload(run.payload),
+      }));
+
+    const scheduledTasksResult = await supabase
       .from("scheduled_tasks")
       .select(
-        "id, prompt, user_request, display_title, schedule_type, status, next_run_at, last_failure_error"
+        "id, prompt, user_request, display_title, skill_id, schedule_type, status, next_run_at, last_failure_error"
       )
       .eq("user_id", user.id)
       .in("status", ["active", "paused"])
       .order("next_run_at", { ascending: true, nullsFirst: false })
       .limit(50);
-    scheduledTasks = fallback.data as Array<Record<string, unknown>> | null;
-    scheduledTasksError = fallback.error;
-  }
-  if (scheduledTasksError) {
-    console.error("[chat-sync] scheduled_tasks query failed:", scheduledTasksError);
-  }
-  const taskRows = (scheduledTasks ?? []) as Array<Record<string, unknown>>;
-  const taskIds = taskRows
-    .map((task) => task.id)
-    .filter((id): id is string => typeof id === "string");
-  let runningTaskIds = new Set<string>();
-  if (taskIds.length > 0) {
-    const { data: activeRuns } = await supabase
-      .from("scheduled_task_runs")
-      .select("task_id")
-      .in("task_id", taskIds)
-      .eq("status", "running");
-    runningTaskIds = new Set(
-      ((activeRuns ?? []) as Array<{ task_id?: unknown }>)
-        .map((row) => row.task_id)
-        .filter((id): id is string => typeof id === "string")
-    );
-  }
-  type DisplayStatus = "active" | "paused" | "completed" | "failed" | "running";
-  const resolveDisplayStatus = (task: Record<string, unknown>): DisplayStatus => {
-    if (typeof task.id === "string" && runningTaskIds.has(task.id)) {
-      return "running";
+    let scheduledTasks = scheduledTasksResult.data as
+      | Array<Record<string, unknown>>
+      | null;
+    let scheduledTasksError = scheduledTasksResult.error;
+    if (scheduledTasksError) {
+      console.warn(
+        "[chat-sync] scheduled_tasks query with skill columns failed; retrying legacy projection:",
+        scheduledTasksError.message
+      );
+      const fallback = await supabase
+        .from("scheduled_tasks")
+        .select(
+          "id, prompt, user_request, display_title, schedule_type, status, next_run_at, last_failure_error"
+        )
+        .eq("user_id", user.id)
+        .in("status", ["active", "paused"])
+        .order("next_run_at", { ascending: true, nullsFirst: false })
+        .limit(50);
+      scheduledTasks = fallback.data as Array<Record<string, unknown>> | null;
+      scheduledTasksError = fallback.error;
     }
-    return task.status as DisplayStatus;
-  };
-  const activeTasks = taskRows.filter(
-    (task) => resolveDisplayStatus(task) === "active"
-  );
-  const pausedTasks = taskRows.filter(
-    (task) => resolveDisplayStatus(task) === "paused"
-  );
-  const normalizedScheduledTasks = taskRows
-    .filter(
-      (task) =>
-        typeof task.id === "string" &&
-        typeof task.prompt === "string" &&
-        (task.schedule_type === "one_time" ||
-          task.schedule_type === "recurring") &&
-        (task.status === "active" || task.status === "paused")
-    )
-    .map((task) => ({
-      id: task.id as string,
-      prompt: task.prompt as string,
-      userRequest:
-        typeof task.user_request === "string" ? task.user_request : null,
-      displayTitle:
-        typeof task.display_title === "string" ? task.display_title : null,
-      skillId: typeof task.skill_id === "string" ? task.skill_id : null,
-      scheduleType: task.schedule_type as "one_time" | "recurring",
-      nextRunAt:
-        typeof task.next_run_at === "string" ? task.next_run_at : null,
-      status: resolveDisplayStatus(task),
-    }));
-  const orderedScheduledTasks =
-    sortScheduledTasksForDisplay(normalizedScheduledTasks);
-  const lastFailureTask = taskRows.find(
-    (task) => typeof task.last_failure_error === "string" && task.last_failure_error
-  );
+    if (scheduledTasksError) {
+      console.error("[chat-sync] scheduled_tasks query failed:", scheduledTasksError);
+    }
+    const taskRows = (scheduledTasks ?? []) as Array<Record<string, unknown>>;
+    const taskIds = taskRows
+      .map((task) => task.id)
+      .filter((id): id is string => typeof id === "string");
+    let runningTaskIds = new Set<string>();
+    if (taskIds.length > 0) {
+      const { data: activeRuns } = await supabase
+        .from("scheduled_task_runs")
+        .select("task_id")
+        .in("task_id", taskIds)
+        .eq("status", "running");
+      runningTaskIds = new Set(
+        ((activeRuns ?? []) as Array<{ task_id?: unknown }>)
+          .map((row) => row.task_id)
+          .filter((id): id is string => typeof id === "string")
+      );
+    }
+    type DisplayStatus = "active" | "paused" | "completed" | "failed" | "running";
+    const resolveDisplayStatus = (task: Record<string, unknown>): DisplayStatus => {
+      if (typeof task.id === "string" && runningTaskIds.has(task.id)) {
+        return "running";
+      }
+      return task.status as DisplayStatus;
+    };
+    const activeTasks = taskRows.filter(
+      (task) => resolveDisplayStatus(task) === "active"
+    );
+    const pausedTasks = taskRows.filter(
+      (task) => resolveDisplayStatus(task) === "paused"
+    );
+    const normalizedScheduledTasks = taskRows
+      .filter(
+        (task) =>
+          typeof task.id === "string" &&
+          typeof task.prompt === "string" &&
+          (task.schedule_type === "one_time" ||
+            task.schedule_type === "recurring") &&
+          (task.status === "active" || task.status === "paused")
+      )
+      .map((task) => ({
+        id: task.id as string,
+        prompt: task.prompt as string,
+        userRequest:
+          typeof task.user_request === "string" ? task.user_request : null,
+        displayTitle:
+          typeof task.display_title === "string" ? task.display_title : null,
+        skillId: typeof task.skill_id === "string" ? task.skill_id : null,
+        scheduleType: task.schedule_type as "one_time" | "recurring",
+        nextRunAt:
+          typeof task.next_run_at === "string" ? task.next_run_at : null,
+        status: resolveDisplayStatus(task),
+      }));
+    const orderedScheduledTasks =
+      sortScheduledTasksForDisplay(normalizedScheduledTasks);
+    const lastFailureTask = taskRows.find(
+      (task) => typeof task.last_failure_error === "string" && task.last_failure_error
+    );
 
-  return NextResponse.json({
-    messages,
-    toolCalls,
-    heartbeatStatus: {
+    response.heartbeatStatus = {
       enabled: heartbeat.enabled === true,
       intervalMinutes:
         typeof heartbeat.interval_minutes === "number"
@@ -256,8 +312,8 @@ export async function GET(request: Request) {
           : 30,
       runs: normalizedHeartbeatRuns,
       lastRun: normalizedHeartbeatRuns[0] ?? null,
-    },
-    scheduledTaskSummary: {
+    };
+    response.scheduledTaskSummary = {
       activeCount: activeTasks.length,
       pausedCount: pausedTasks.length,
       runningCount: runningTaskIds.size,
@@ -272,6 +328,8 @@ export async function GET(request: Request) {
         typeof lastFailureTask?.last_failure_error === "string"
           ? lastFailureTask.last_failure_error
           : null,
-    },
-  });
+    };
+  }
+
+  return NextResponse.json(response);
 }
