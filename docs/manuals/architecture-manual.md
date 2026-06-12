@@ -859,6 +859,8 @@ Tools del dominio inmobiliario (en `packages/agent/src/tools/realestate-adapters
 **Readiness y backlog de tools:** `GET /api/tool-readiness?case_type_id=…` (sin
 componer el body completo de la skill; sólo metadata). Solicitudes cuando falta
 capacidad global: tabla `global_tool_requests` + `POST/GET /api/global-tool-requests`.
+UI: Ajustes → Capacidades → Solicitudes (`/settings?view=capabilities&section=requests`);
+la ruta legacy `/settings/tool-requests` redirige allí.
 Los assets se resuelven de forma declarativa: el catálogo de tools define
 `asset_profile.account` / `asset_profile.test` y cada flow puede sobrescribir con
 `required_assets` / `test_assets` sin cambios de código por caso nuevo.

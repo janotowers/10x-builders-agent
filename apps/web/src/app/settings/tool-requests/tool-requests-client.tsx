@@ -40,8 +40,10 @@ function formatDateTime(value: string) {
 
 export function ToolRequestsClient({
   initialRequests,
+  embedded = false,
 }: {
   initialRequests: GlobalToolRequest[];
+  embedded?: boolean;
 }) {
   const [requests, setRequests] = useState(initialRequests);
   const [statusFilter, setStatusFilter] = useState<"open" | "all">("open");
@@ -90,16 +92,18 @@ export function ToolRequestsClient({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold">
-            Solicitudes de herramientas y capacidades
-          </h1>
-          <p className="mt-1 text-sm text-neutral-500">
-            Backlog creado desde Preparación operativa cuando una tool está en
-            stub, requiere un recurso de cuenta o necesita prioridad de producto.
-          </p>
-        </div>
-        <div className="flex gap-2 text-xs">
+        {!embedded ? (
+          <div>
+            <h1 className="text-lg font-semibold">
+              Solicitudes de herramientas y capacidades
+            </h1>
+            <p className="mt-1 text-sm text-neutral-500">
+              Backlog creado desde Preparación operativa cuando una tool está en
+              stub, requiere un recurso de cuenta o necesita prioridad de producto.
+            </p>
+          </div>
+        ) : null}
+        <div className={`flex gap-2 text-xs ${embedded ? "ml-auto" : ""}`}>
           <button
             type="button"
             onClick={() => setStatusFilter("open")}

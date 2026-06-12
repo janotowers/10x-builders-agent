@@ -420,7 +420,7 @@ cuenta** cuando aplica.
 | `global_tool_requests` | Migración `00023_global_tool_requests.sql`. Backlog cuando falta capacidad global o recurso de tenant; `GET/POST /api/global-tool-requests`. |
 | `operational-case-tests` + `run-tool` | Casos de prueba por `case_type` con contexto de muestra (`test-context-samples.ts`); `POST …/run-tool` ejecuta una tool con args derivados del caso (opcional `case_id` para no usar siempre el último). |
 | UI Casos de uso | **Preparación operativa**: revisar lista, expandir tool, conectar providers inline (mismo form que Ajustes), probar tool con vista previa legible de resultados. **Checks de activación**: checklist alineada con bloqueos de readiness. Marco N0–N5: [`testing-framework.md`](testing-framework.md). Modelo de autoría: [`authoring-playbook.md`](authoring-playbook.md). |
-| UI Ajustes | **Conexiones** agrupa OAuth/vínculo (Google, GitHub, Telegram) y **Credenciales por cuenta** (API keys/tokens/credenciales web cifrados). |
+| UI Ajustes | Vista **Integraciones** (`/settings?view=integrations`): tabs **Conexiones** (OAuth/vínculo: Google, GitHub, Telegram), **Canales** y **Credenciales por cuenta** (API keys/tokens/credenciales web cifrados). Vista **Capacidades** (`/settings?view=capabilities`): **Habilidades activadas**, **Herramientas permitidas** y **Solicitudes** (backlog `global_tool_requests`; `/settings/tool-requests` redirige a `section=requests`). |
 | POC Playwright | `pocs/easybroker-mls-cli/` y `pocs/ungga-cli/`; instalar browsers con `npm run setup:pocs` en la raíz del monorepo. |
 
 Los adapters en `realestate-adapters.ts` **priorizan** secretos por cuenta y

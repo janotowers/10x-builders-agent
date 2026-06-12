@@ -41,6 +41,7 @@ import {
   operationalCaseLatestEventSummary,
   OperationalCaseInstanceList,
 } from "@/lib/operational-cases/instance-list-ui";
+import { AppShell } from "@/components/app-shell";
 
 export const dynamic = "force-dynamic";
 
@@ -238,8 +239,8 @@ function formatDate(value: string | null): string {
 }
 
 function casesEnOperacionLabel(count: number): string {
-  if (count === 1) return "1 caso en operación";
-  return `${count} casos en operación`;
+  if (count === 1) return "1 flujo en curso";
+  return `${count} flujos en curso`;
 }
 
 const STEP_LABELS: Record<string, string> = {
@@ -515,42 +516,18 @@ export default async function OperationalCasesPage({
     };
   }
   return (
-    <main className="mx-auto min-w-0 w-full max-w-7xl space-y-6 p-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-700 dark:text-violet-300">
-            Operaciones
-          </p>
-          <h1 className="text-2xl font-bold">Casos en operación</h1>
-          <p className="mt-1 max-w-2xl text-sm text-gray-500">
-            Bandeja global con instancias de{" "}
-            <span className="font-medium">todas</span> las plantillas. Lo
-            habitual es abrir casos desde chat o Telegram; esta vista sirve para
-            revisar estado, buscar uno concreto o dar soporte.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <a
-            href="/settings/operational-case-types"
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
-            Casos de uso
-          </a>
-          <a
-            href="/chat"
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
-            Chat
-          </a>
-          <a
-            href="/settings"
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
-            Ajustes
-          </a>
-        </div>
-      </header>
-
+    <AppShell
+      title="Flujos en curso"
+      description="Bandeja global con instancias de todas las plantillas para seguimiento operativo y soporte."
+      actions={
+        <a
+          href="/settings/operational-case-types"
+          className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+        >
+          Plantillas de flujos
+        </a>
+      }
+    >
       {isFocusedDetailView ? (
         <section className="min-w-0 space-y-4">
           <div className="flex flex-wrap items-center gap-3">
@@ -564,7 +541,7 @@ export default async function OperationalCasesPage({
 
           {!selectedCase ? (
             <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-              No encontramos ese caso en operación. Puede haber sido eliminado
+              No encontramos ese flujo en curso. Puede haber sido eliminado
               o no pertenecer a tu cuenta.
             </div>
           ) : (
@@ -600,7 +577,7 @@ export default async function OperationalCasesPage({
 
           {cases.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-              Aún no hay casos en operación para esta cuenta. Lo recomendado es
+              Aún no hay flujos en curso para esta cuenta. Lo recomendado es
               iniciar por chat o Telegram.
             </div>
           ) : filteredCases.length === 0 ? (
@@ -666,7 +643,7 @@ export default async function OperationalCasesPage({
           </details>
         </section>
       )}
-    </main>
+    </AppShell>
   );
 }
 
@@ -721,7 +698,7 @@ function CaseDetail({
 
       <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
         <Info
-          label="Caso de uso"
+          label="Plantilla de flujo"
           value={type?.display_name ?? opCase.case_type}
         />
         <Info label="Paso actual" value={stepLabel(opCase.current_step)} />
@@ -739,7 +716,7 @@ function CaseDetail({
 
       <div className="mt-4 rounded-xl border border-neutral-200 p-3 dark:border-neutral-800">
         <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          Habilidad del caso de uso
+          Skill de la plantilla
         </div>
         <div className="mt-2 flex flex-wrap gap-2 text-xs">
           <span className="rounded bg-violet-50 px-2 py-1 font-mono text-violet-700 dark:bg-violet-950 dark:text-violet-300">

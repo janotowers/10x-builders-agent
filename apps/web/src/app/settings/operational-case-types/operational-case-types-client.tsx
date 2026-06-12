@@ -387,7 +387,7 @@ const CASE_TYPE_WORKSPACE_TABS: Array<{
 }> = [
   { id: "summary", label: "Resumen" },
   { id: "lab", label: "Laboratorio" },
-  { id: "instances", label: "Instancias" },
+  { id: "instances", label: "Flujos generados" },
   { id: "activation", label: "Activación" },
 ];
 
@@ -7567,7 +7567,7 @@ export function OperationalCaseTypesClient({
       if (data.mode === "agent_e2e") {
         setTestContextMessage(
           data.agent?.pending_confirmation
-            ? "Transición con agente ejecutada: hay acciones pendientes de aprobación humana. Revisa Casos operacionales o el chat."
+            ? "Transición con agente ejecutada: hay acciones pendientes de aprobación humana. Revisa Flujos en curso o el chat."
             : "Transición con agente completada. Revisa el resumen de avance y la auditoría abajo."
         );
       } else {
@@ -8276,7 +8276,7 @@ export function OperationalCaseTypesClient({
         <div className="w-full min-w-0 space-y-3">
           <div className="rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
             <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              Instancias relacionadas
+              Flujos relacionados
             </div>
             <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-300">
               Casos creados desde esta plantilla. Los casos de prueba viven en
@@ -8426,7 +8426,7 @@ export function OperationalCaseTypesClient({
                     href={`/operational-cases?case=${testCaseResult.case.id}`}
                     className="inline-flex items-center rounded border border-neutral-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-700 hover:bg-neutral-50"
                   >
-                    Abrir en Casos operacionales
+                    Abrir en Flujos en curso
                   </a>
                 </div>
                 <TestCaseBusinessSnapshot

@@ -9,6 +9,7 @@ import {
 import { getSkillRegistryForUser } from "@agents/agent";
 import { OperationalCaseTypesClient } from "./operational-case-types-client";
 import { BfcacheRecoveryBoundary } from "./bfcache-recovery-boundary";
+import { AppShell } from "@/components/app-shell";
 
 export const dynamic = "force-dynamic";
 
@@ -65,44 +66,29 @@ export default async function OperationalCaseTypesPage() {
   );
 
   return (
-    <main className="mx-auto w-full max-w-7xl space-y-6 p-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-700 dark:text-violet-300">
-            Operaciones
-          </p>
-          <h1 className="text-2xl font-bold">Casos de uso</h1>
-          <p className="mt-1 max-w-2xl text-sm text-gray-500">
-            Diseña, prueba y activa plantillas operativas. Cada plantilla puede
-            originar casos en operación desde chat, Telegram o una creación
-            manual controlada.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <a
-            href="/operational-cases"
-            title="Bandeja global con todas las instancias, sin filtrar por plantilla"
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
-            Todas las instancias
-          </a>
-          <a
-            href="/settings"
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
-            Ajustes
-          </a>
-        </div>
-      </header>
-
-      <BfcacheRecoveryBoundary>
-        <OperationalCaseTypesClient
-          initialCaseTypes={caseTypes}
-          initialOperationalCases={operationalCases}
-          initialLatestEventsByCaseId={latestEventsByCaseId}
-          initialSkillSummaries={skillSummaries}
-        />
-      </BfcacheRecoveryBoundary>
-    </main>
+    <AppShell
+      title="Plantillas de flujos"
+      description="Diseña, prueba y activa plantillas operativas que generan flujos en curso."
+      actions={
+        <a
+          href="/operational-cases"
+          title="Bandeja global con todas las instancias, sin filtrar por plantilla"
+          className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+        >
+          Ver flujos en curso
+        </a>
+      }
+    >
+      <div className="space-y-6">
+        <BfcacheRecoveryBoundary>
+          <OperationalCaseTypesClient
+            initialCaseTypes={caseTypes}
+            initialOperationalCases={operationalCases}
+            initialLatestEventsByCaseId={latestEventsByCaseId}
+            initialSkillSummaries={skillSummaries}
+          />
+        </BfcacheRecoveryBoundary>
+      </div>
+    </AppShell>
   );
 }

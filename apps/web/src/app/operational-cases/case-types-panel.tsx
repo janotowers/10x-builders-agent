@@ -35,7 +35,7 @@ export function CaseTypesPanel({
 
   return (
     <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-      <h2 className="text-base font-semibold">Casos de uso disponibles</h2>
+      <h2 className="text-base font-semibold">Plantillas de flujos disponibles</h2>
       <div className="mt-3 space-y-3">
         {caseTypes.map((type) => {
           const info = skillInfo[type.default_skill_slug] ?? {

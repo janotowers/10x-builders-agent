@@ -1009,7 +1009,7 @@ function messageSource(message: Message | undefined): "scheduled_task" | "heartb
 function messageSourceLabel(message: Message | undefined): string | null {
   const source = messageSource(message);
   if (source === "scheduled_task") return "Tarea programada";
-  if (source === "heartbeat") return "Heartbeat proactivo";
+  if (source === "heartbeat") return "Pulso operativo";
   return null;
 }
 
@@ -2196,15 +2196,15 @@ export function ChatInterface({
             <div className="flex items-center justify-end gap-2 rounded-[2rem] border border-white/70 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
               <a
                 href="/memory"
-                className="hidden rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10 sm:inline-flex"
+                className="inline-flex rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
               >
                 Memoria
               </a>
               <a
                 href="/operational-cases"
-                className="hidden rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10 lg:inline-flex"
+                className="inline-flex rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
               >
-                Casos operacionales
+                Flujos en curso
               </a>
               <button
                 type="button"
@@ -2224,7 +2224,7 @@ export function ChatInterface({
                 href="/settings"
                 className="rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-white/70 dark:hover:bg-white/10"
               >
-                Ajustes
+                Configuración
               </a>
               <form action="/api/auth/signout" method="POST">
                 <button
@@ -2246,10 +2246,10 @@ export function ChatInterface({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h2 className="font-semibold text-slate-950 dark:text-white">
-                    Pendientes internos
+                    Pendientes
                   </h2>
                   <p className="text-xs text-slate-500 dark:text-white/50">
-                    Notificaciones persistentes guardadas para tu usuario web.
+                    Notificaciones y aprobaciones pendientes de revisión.
                   </p>
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
@@ -2276,7 +2276,7 @@ export function ChatInterface({
               ) : null}
               {pendientesCaseFilter ? (
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-violet-100 bg-violet-50/70 px-3 py-2 text-xs text-violet-900 dark:border-violet-300/20 dark:bg-violet-300/10 dark:text-violet-100">
-                  <span>Mostrando pendientes del caso de prueba.</span>
+                  <span>Mostrando pendientes del flujo seleccionado.</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -2916,7 +2916,7 @@ export function ChatInterface({
                             ♥
                           </span>
                         </span>
-                        <span className="text-base leading-tight">Heartbeat</span>
+                        <span className="text-base leading-tight">Pulso operativo</span>
                       </div>
                       <p className="mt-0.5 text-center text-violet-100">
                         {heartbeatStatus?.enabled ? "Activo" : "Desactivado"}
@@ -3456,7 +3456,7 @@ export function ChatInterface({
                         ? "bg-fuchsia-100 text-fuchsia-600 dark:bg-fuchsia-400/10 dark:text-fuchsia-200"
                         : "bg-slate-100 text-slate-400 dark:bg-white/10 dark:text-white/40"
                     }`}
-                    title={heartbeatStatus?.enabled ? "Heartbeat activo" : "Heartbeat inactivo"}
+                    title={heartbeatStatus?.enabled ? "Pulso operativo activo" : "Pulso operativo inactivo"}
                   >
                     {heartbeatStatus?.enabled ? (
                       <span className="absolute inline-flex h-8 w-8 animate-ping rounded-full bg-fuchsia-400/25" />
@@ -3474,7 +3474,7 @@ export function ChatInterface({
                   <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-900 dark:bg-emerald-400/10 dark:text-emerald-100">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="font-semibold">Heartbeat proactivo</p>
+                        <p className="font-semibold">Pulso operativo</p>
                         <p className="mt-1 opacity-70">
                           {heartbeatStatus?.enabled
                             ? `Activo · cada ${heartbeatStatus.intervalMinutes} min`

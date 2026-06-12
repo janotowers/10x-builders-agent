@@ -52,7 +52,7 @@ flowchart LR
   topBar --> guPanel
 ```
 
-- **Sidebar:** Chat, Actividad, Memoria, Herramientas, Integraciones, Ajustes.
+- **Sidebar:** árbol en `APP_NAV_TREE` (`apps/web/src/lib/navigation/app-navigation.ts`), renderizado por `AppNav` dentro de `AppShell`: **Chat** (Conversación, Pendientes), **Operaciones** (Flujos en curso, Plantillas de flujos), **Proactividad**, **Conocimiento** (Memoria), **Configuración** (Perfil del usuario, Perfil del agente, Capacidades del agente, Integraciones, Cuenta y sesión). Modo expandido/compacto con iconos; estado persistido en `localStorage`.
 - **Chat central:** conversacion, input fijo, confirmaciones HITL integradas.
 - **Input multimodal:** texto, adjuntos, mensaje de voz y futura voz en tiempo real.
 - **Panel derecho:** Gu visual, estado, tools recientes, memoria, checklist de trabajo, heartbeat, scheduled tasks y presencia.
@@ -60,10 +60,14 @@ flowchart LR
 
 ## Archivos Clave
 
+- `apps/web/src/components/app-shell.tsx`: layout global (sidebar, header dinámico, area de contenido).
+- `apps/web/src/components/app-nav.tsx`: navegacion lateral; scroll al top al cambiar de ruta.
+- `apps/web/src/lib/navigation/app-navigation.ts`: arbol `APP_NAV_TREE` (labels, hrefs, matchers).
 - `apps/web/src/app/chat/page.tsx`: carga inicial del chat, perfil, sesion y mensajes.
 - `apps/web/src/app/chat/chat-interface.tsx`: UI del chat, scroll, input y confirmaciones.
-- `apps/web/src/app/settings/page.tsx`: pantalla actual de ajustes.
-- `apps/web/src/app/settings/settings-form.tsx`: configuracion de perfil, IA, tools, skills e integraciones.
+- `apps/web/src/app/settings/page.tsx`: carga de datos de ajustes (server); enruta por `?view=` y `?section=`.
+- `apps/web/src/app/settings/settings-form.tsx`: UI de ajustes por vista (perfil, agente, capacidades, integraciones, proactividad, cuenta); tabs client-side con `history.replaceState` dentro de la misma vista.
+- `apps/web/src/app/settings/settings-page-meta.ts`: titulos y descripciones del header segun vista/seccion activa.
 - `apps/web/src/app/memory/page.tsx`: entrada a memorias.
 - `apps/web/src/app/globals.css`: tokens visuales globales.
 - `apps/web/src/app/api/chat/route.ts`: POST request/response del turno completo (contrato estable).
@@ -90,6 +94,7 @@ flowchart LR
 ## Estado Actual
 
 - Completado (Fase 1): shell visual de `/chat`, header de marca/cuenta, avatar de colaborador, input con iconos de adjuntos/voz/envio, scroll independiente del chat y panel derecho; auto-scroll inicial del chat alineado al comportamiento esperado.
+- **Shell global de app (post-Fase 1):** `AppShell` unifica chat, memoria, operaciones y configuracion con sidebar Ungga colapsable; ajustes organizados por `?view=` (sin sub-items profundos en el sidebar); sub-navegacion por tabs dentro del contenido (capacidades, integraciones, proactividad).
 - Completado (Fase 2 en producto): panel derecho con Flujo, Contexto preparado expandible (Business Brain, habilidades disponibles para seleccion y herramientas configuradas), Memoria del turno (corto/largo plazo, previews expandibles cuando el backend los envia), Habilidades del turno, Herramientas del turno, Aprendizajes recientes (ultimas memorias activas por cuenta); correlacion por `turn_id` en mensajes y `tool_calls` con columnas persistentes (**migracion `00013`**, aplicada en los entornos Ungga activos); UI sin exponer chain-of-thought.
 - Tarjeta superior del panel («Colaborador en acción»): mini-dashboard en tres métricas: **Heartbeat** (activado en `profiles.business_brain.heartbeat`; estado vivo Activo/Inactivo con ícono), **Programadas** (conteo de `scheduled_tasks` activas cargado en `page.tsx`), **Por aprobar** (única confirmación HITL pendiente en la vista de chat cuando aplica).
 - Plan Cursor export emparejado: `.cursor/plans/gu_console_ui_3b083b6d.plan.md` (misma vision por fases; revisar YAML de estado vs texto de este doc).

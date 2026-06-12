@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import { TOOL_CATALOG } from "@agents/agent/src/tools/catalog";
 import {
@@ -14,15 +14,19 @@ import type { HeartbeatChecklistTemplate } from "@agents/agent/src/heartbeat/che
 import type {
   BusinessBrain,
   BusinessBrainWarehouseSource,
+  GlobalToolRequest,
   HeartbeatChecklistTemplateRow,
   HeartbeatRun,
   ToolRisk,
 } from "@agents/types";
 import { ACCOUNT_TOOL_PROVIDERS } from "@/lib/account-tool-providers";
 import { AccountToolConnectionForm } from "@/components/account-tool-connection-form";
+import { ToolRequestsClient } from "@/app/settings/tool-requests/tool-requests-client";
+import { getSettingsPageMeta } from "./settings-page-meta";
 
 interface Props {
   userId: string;
+  authEmail: string;
   profile: Record<string, unknown> | null;
   toolSettings: Array<{ tool_id: string; enabled: boolean }>;
   skillSettings: Array<{
@@ -31,6 +35,7 @@ interface Props {
     config_json?: Record<string, unknown>;
   }>;
   skillCatalog: SkillCatalogItem[];
+  toolRequests: GlobalToolRequest[];
   telegramLinked: boolean;
   githubConnected: boolean;
   googleCalendarConnected: boolean;
@@ -92,6 +97,45 @@ interface SectionReviewResult {
 }
 
 type ReviewSection = "identity" | "soul" | "context" | "operating";
+
+type SettingsView =
+  | "profile-user"
+  | "profile-agent"
+  | "capabilities"
+  | "integrations"
+  | "proactivity"
+  | "account-session";
+
+type CapabilitiesSection = "tools" | "skills" | "requests";
+type IntegrationsSection = "connections" | "channels" | "credentials";
+type ProactivitySection = "pulse" | "tasks";
+
+function isSettingsView(value: string | null): value is SettingsView {
+  return (
+    value === "profile-user" ||
+    value === "profile-agent" ||
+    value === "capabilities" ||
+    value === "integrations" ||
+    value === "proactivity" ||
+    value === "account-session"
+  );
+}
+
+function isCapabilitiesSection(value: string | null): value is CapabilitiesSection {
+  return value === "tools" || value === "skills" || value === "requests";
+}
+
+function isIntegrationsSection(value: string | null): value is IntegrationsSection {
+  return (
+    value === "connections" ||
+    value === "channels" ||
+    value === "credentials"
+  );
+}
+
+function isProactivitySection(value: string | null): value is ProactivitySection {
+  return value === "pulse" || value === "tasks";
+}
 
 interface SectionReviewState {
   loading?: boolean;
@@ -458,10 +502,12 @@ function scheduledTaskSkillLabel(task: ScheduledTaskItem): string | null {
 
 export function SettingsForm({
   userId,
+  authEmail,
   profile,
   toolSettings,
   skillSettings,
   skillCatalog,
+  toolRequests,
   telegramLinked,
   githubConnected,
   googleCalendarConnected,
@@ -472,9 +518,90 @@ export function SettingsForm({
   googleOAuthReason,
 }: Props) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const activeView: SettingsView = isSettingsView(searchParams.get("view"))
+    ? searchParams.get("view")
+    : "profile-user";
+  const currentSectionParam = searchParams.get("section");
+  const [activeCapabilitiesSection, setActiveCapabilitiesSection] =
+    useState<CapabilitiesSection>(
+      isCapabilitiesSection(currentSectionParam) ? currentSectionParam : "skills"
+    );
+  const [activeIntegrationsSection, setActiveIntegrationsSection] =
+    useState<IntegrationsSection>(
+      isIntegrationsSection(currentSectionParam)
+        ? currentSectionParam
+        : "connections"
+    );
+  const [activeProactivitySection, setActiveProactivitySection] =
+    useState<ProactivitySection>(
+      isProactivitySection(currentSectionParam) ? currentSectionParam : "pulse"
+    );
+  const applySectionInUrl = (section: string) => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("view", activeView);
+    params.set("section", section);
+    const query = params.toString();
+    window.history.replaceState({}, "", `/settings?${query}`);
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  };
+  const selectCapabilitiesSection = (section: CapabilitiesSection) => {
+    setActiveCapabilitiesSection(section);
+    applySectionInUrl(section);
+  };
+  const selectIntegrationsSection = (section: IntegrationsSection) => {
+    setActiveIntegrationsSection(section);
+    applySectionInUrl(section);
+  };
+  const selectProactivitySection = (section: ProactivitySection) => {
+    setActiveProactivitySection(section);
+    applySectionInUrl(section);
+  };
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordUpdating, setPasswordUpdating] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordUpdated, setPasswordUpdated] = useState(false);
+  const currentMetaSection =
+    activeView === "capabilities"
+      ? activeCapabilitiesSection
+      : activeView === "integrations"
+        ? activeIntegrationsSection
+        : activeView === "proactivity"
+          ? activeProactivitySection
+          : undefined;
+
+  useEffect(() => {
+    const section = searchParams.get("section");
+    if (activeView === "capabilities") {
+      setActiveCapabilitiesSection(
+        isCapabilitiesSection(section) ? section : "skills"
+      );
+      return;
+    }
+    if (activeView === "integrations") {
+      setActiveIntegrationsSection(
+        isIntegrationsSection(section) ? section : "connections"
+      );
+      return;
+    }
+    if (activeView === "proactivity") {
+      setActiveProactivitySection(isProactivitySection(section) ? section : "pulse");
+    }
+  }, [activeView, searchParams]);
+
+  useEffect(() => {
+    const meta = getSettingsPageMeta(activeView, currentMetaSection);
+    window.dispatchEvent(
+      new CustomEvent("app-shell-header", {
+        detail: { title: meta.title, description: meta.description },
+      })
+    );
+  }, [activeView, currentMetaSection]);
 
   const [name, setName] = useState((profile?.name as string) ?? "");
   const [email, setEmail] = useState((profile?.email as string | null) ?? "");
@@ -490,7 +617,7 @@ export function SettingsForm({
       ? profileAgentName
       : DEFAULT_AGENT_NAME
   );
-  const [systemPrompt, setSystemPrompt] = useState(
+  const [systemPrompt] = useState(
     (profile?.agent_system_prompt as string) ?? ""
   );
   const [enabledTools, setEnabledTools] = useState<string[]>(
@@ -1232,6 +1359,30 @@ export function SettingsForm({
     }
   }
 
+  async function handlePasswordUpdate() {
+    setPasswordUpdating(true);
+    setPasswordError(null);
+    setPasswordUpdated(false);
+    try {
+      if (newPassword.length < 8) {
+        throw new Error("La contraseña debe tener al menos 8 caracteres.");
+      }
+      if (newPassword !== confirmPassword) {
+        throw new Error("Las contraseñas no coinciden.");
+      }
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) throw error;
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordUpdated(true);
+      setTimeout(() => setPasswordUpdated(false), 3000);
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPasswordUpdating(false);
+    }
+  }
+
   async function disconnectGoogleCalendar() {
     setDisconnectingGCal(true);
     try {
@@ -1444,8 +1595,10 @@ export function SettingsForm({
         </div>
       )}
       {/* Profile */}
-      <section id="google-calendar" className="space-y-4">
-        <h2 className="text-base font-semibold">Perfil de usuario</h2>
+      <section
+        id="profile-user"
+        className={`scroll-mt-24 space-y-4 ${activeView === "profile-user" ? "" : "hidden"}`}
+      >
         <div>
           <label className="block text-sm font-medium mb-1">Foto / avatar</label>
           <div className="flex items-center gap-3">
@@ -1530,15 +1683,16 @@ export function SettingsForm({
       </section>
 
       {/* Agent / Business Brain */}
-      <section className="space-y-5">
-        <div>
-          <h2 className="text-base font-semibold">Perfil de IA</h2>
-          <p className="mt-1 text-sm text-neutral-500">
-            Define identidad, voz, contexto y preferencias. Las reglas de
-            seguridad, aprobaciones humanas, herramientas habilitadas y
-            separación de datos entre cuentas siempre tienen prioridad.
-          </p>
-        </div>
+      <section
+        id="profile-agent"
+        className={`scroll-mt-24 space-y-5 ${
+          activeView === "profile-agent" || activeView === "proactivity"
+            ? ""
+            : "hidden"
+        }`}
+      >
+        {activeView === "profile-agent" ? (
+          <>
         <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
           <div className="grid gap-4 md:grid-cols-[auto_1fr]">
             <div>
@@ -1832,13 +1986,46 @@ export function SettingsForm({
           </details>
         </div>
 
-        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-          <h3 className="text-sm font-semibold">Heartbeat proactivo</h3>
-          <p className="mt-1 text-xs text-neutral-500">
-            Configura la rutina periódica de Gu cuando no hay un mensaje manual.
-            En esta etapa se ejecuta en modo seguro (solo lectura).
-          </p>
-          <div className="mt-4 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-950">
+          </>
+        ) : null}
+
+        {activeView === "proactivity" ? (
+          <>
+        <div className="inline-flex flex-wrap gap-2 rounded-lg border border-neutral-200 p-1 dark:border-neutral-800">
+          <button
+            type="button"
+            onClick={() => selectProactivitySection("pulse")}
+            aria-current={activeProactivitySection === "pulse" ? "page" : undefined}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              activeProactivitySection === "pulse"
+                ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Pulso operativo
+          </button>
+          <button
+            type="button"
+            onClick={() => selectProactivitySection("tasks")}
+            aria-current={activeProactivitySection === "tasks" ? "page" : undefined}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              activeProactivitySection === "tasks"
+                ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Tareas programadas
+          </button>
+        </div>
+
+        <div id="proactivity" className="scroll-mt-24" />
+        <div
+          id="operational-pulse"
+          className={`scroll-mt-24 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800 ${
+            activeProactivitySection === "pulse" ? "" : "hidden"
+          }`}
+        >
+          <div className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-950">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="font-medium text-neutral-800 dark:text-neutral-100">
@@ -1872,7 +2059,7 @@ export function SettingsForm({
           </div>
           <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-800">
             <div>
-              <p className="text-sm font-medium">Habilitar Heartbeat</p>
+              <p className="text-sm font-medium">Habilitar pulso operativo</p>
               <p className="text-xs text-neutral-500">
                 Activa corridas periódicas usando este checklist.
               </p>
@@ -2112,7 +2299,7 @@ export function SettingsForm({
           {heartbeatRuns.length > 0 ? (
             <details className="mt-4 rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-800">
               <summary className="cursor-pointer text-sm font-medium">
-                Historial reciente de Heartbeat
+                Historial reciente de pulso operativo
               </summary>
               <div className="mt-3 space-y-3">
                 {heartbeatRuns.map((run) => {
@@ -2150,7 +2337,7 @@ export function SettingsForm({
                       ) : null}
                       {heartbeatSkills.length > 0 ? (
                         <p className="mt-2 text-neutral-400">
-                          Skills Heartbeat: {heartbeatSkills.join(", ")}
+                          Skills de pulso: {heartbeatSkills.join(", ")}
                         </p>
                       ) : null}
                       {checklistSelections.length > 0 ? (
@@ -2173,15 +2360,13 @@ export function SettingsForm({
           ) : null}
         </div>
 
-        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-semibold">Tareas programadas</h3>
-              <p className="mt-1 text-xs text-neutral-500">
-                Automatizaciones que tú pediste a Gu. Se ejecutan por cron y son
-                distintas del Heartbeat proactivo.
-              </p>
-            </div>
+        <div
+          id="scheduled-tasks"
+          className={`scroll-mt-24 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800 ${
+            activeProactivitySection === "tasks" ? "" : "hidden"
+          }`}
+        >
+          <div className="flex flex-wrap items-start justify-end gap-3">
             <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
               {scheduledTaskRows.filter((task) => task.status === "active").length} activas
             </span>
@@ -2279,34 +2464,129 @@ export function SettingsForm({
             )}
           </div>
         </div>
-
-        <details className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-          <summary className="cursor-pointer text-sm font-semibold">
-            Instrucciones legacy
-          </summary>
-          <p className="mt-2 text-xs text-neutral-500">
-            Fallback temporal mientras el Perfil de IA se estabiliza.
-          </p>
-          <textarea
-            value={systemPrompt}
-            onChange={(e) => setSystemPrompt(e.target.value.slice(0, 500))}
-            rows={4}
-            maxLength={500}
-            className="mt-3 w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-          />
-          <p className="text-xs text-neutral-400 text-right mt-1">{systemPrompt.length}/500</p>
-        </details>
+          </>
+        ) : null}
       </section>
 
       {/* Tools */}
-      <section id="github" className="space-y-4">
-        <div>
-          <h2 className="text-base font-semibold">Herramientas</h2>
-          <p className="mt-1 text-sm text-neutral-500">
-            El color indica el nivel de riesgo operativo declarado para cada tool.
-            Las reglas del producto (confirmaciones, permisos, integraciones) siguen aplicándose siempre.
-          </p>
+      <section
+        id="capabilities"
+        className={`scroll-mt-24 space-y-4 ${activeView === "capabilities" ? "" : "hidden"}`}
+      >
+        <div className="inline-flex flex-wrap gap-2 rounded-lg border border-neutral-200 p-1 dark:border-neutral-800">
+          <button
+            type="button"
+            onClick={() => selectCapabilitiesSection("skills")}
+            aria-current={activeCapabilitiesSection === "skills" ? "page" : undefined}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              activeCapabilitiesSection === "skills"
+                ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Habilidades activadas
+          </button>
+          <button
+            type="button"
+            onClick={() => selectCapabilitiesSection("tools")}
+            aria-current={activeCapabilitiesSection === "tools" ? "page" : undefined}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              activeCapabilitiesSection === "tools"
+                ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Herramientas permitidas
+          </button>
+          <button
+            type="button"
+            onClick={() => selectCapabilitiesSection("requests")}
+            aria-current={activeCapabilitiesSection === "requests" ? "page" : undefined}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              activeCapabilitiesSection === "requests"
+                ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Solicitudes de herramientas
+          </button>
         </div>
+      </section>
+
+      {/* Skills */}
+      <section
+        id="enabled-skills"
+        className={`scroll-mt-24 space-y-4 ${
+          activeView === "capabilities" && activeCapabilitiesSection === "skills"
+            ? ""
+            : "hidden"
+        }`}
+      >
+        {skillCatalog.length === 0 ? (
+          <p className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-500 dark:border-neutral-800">
+            No se encontró ningún skill global en el registry.
+          </p>
+        ) : (
+          <div className="space-y-5">
+            {SKILL_SCOPE_ORDER.map((scope) => {
+              const skills = skillCatalog.filter((s) => s.scope === scope);
+              if (skills.length === 0) return null;
+              return (
+                <div key={scope} className="space-y-2">
+                  <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                    {SKILL_SCOPE_LABELS[scope]}
+                  </h3>
+                  <div className="space-y-2">
+                    {skills.map((skill) => (
+                      <label
+                        key={skill.name}
+                        className="block rounded-md border border-neutral-200 p-3 text-sm dark:border-neutral-800"
+                      >
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={enabledSkills.includes(skill.name)}
+                            onChange={() => toggleSkill(skill.name)}
+                            className="mt-1 rounded border-neutral-300"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">{skill.name}</span>
+                              {skill.requiresTenantContext && (
+                                <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                                  tenant
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-1 text-xs text-neutral-500">
+                              {skill.description}
+                            </p>
+                            {skill.allowedTools.length > 0 && (
+                              <p className="mt-2 text-[11px] text-neutral-400">
+                                Tools: {skill.allowedTools.join(", ")}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* Tools */}
+      <section
+        id="allowed-tools"
+        className={`scroll-mt-24 space-y-4 ${
+          activeView === "capabilities" && activeCapabilitiesSection === "tools"
+            ? ""
+            : "hidden"
+        }`}
+      >
         <div
           className="flex flex-wrap gap-2 rounded-md border border-neutral-200 bg-neutral-50/80 px-3 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-950/40"
           aria-label="Leyenda de riesgo de herramientas"
@@ -2365,85 +2645,72 @@ export function SettingsForm({
         </div>
       </section>
 
-      {/* Skills */}
-      <section id="telegram" className="space-y-4">
-        <div>
-          <h2 className="text-base font-semibold">Skills</h2>
-          <p className="mt-1 text-sm text-neutral-500">
-            Playbooks que el agente puede activar según la intención del turno.
-            Si desactivas uno, no será candidato para el selector.
-          </p>
-        </div>
-        {skillCatalog.length === 0 ? (
-          <p className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-500 dark:border-neutral-800">
-            No se encontró ningún skill global en el registry.
-          </p>
-        ) : (
-          <div className="space-y-5">
-            {SKILL_SCOPE_ORDER.map((scope) => {
-              const skills = skillCatalog.filter((s) => s.scope === scope);
-              if (skills.length === 0) return null;
-              return (
-                <div key={scope} className="space-y-2">
-                  <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                    {SKILL_SCOPE_LABELS[scope]}
-                  </h3>
-                  <div className="space-y-2">
-                    {skills.map((skill) => (
-                      <label
-                        key={skill.name}
-                        className="block rounded-md border border-neutral-200 p-3 text-sm dark:border-neutral-800"
-                      >
-                        <div className="flex items-start gap-3">
-                          <input
-                            type="checkbox"
-                            checked={enabledSkills.includes(skill.name)}
-                            onChange={() => toggleSkill(skill.name)}
-                            className="mt-1 rounded border-neutral-300"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium">{skill.name}</span>
-                              {skill.requiresTenantContext && (
-                                <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 dark:bg-blue-950 dark:text-blue-300">
-                                  tenant
-                                </span>
-                              )}
-                            </div>
-                            <p className="mt-1 text-xs text-neutral-500">
-                              {skill.description}
-                            </p>
-                            {skill.allowedTools.length > 0 && (
-                              <p className="mt-2 text-[11px] text-neutral-400">
-                                Tools: {skill.allowedTools.join(", ")}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+      <section
+        id="tool-requests"
+        className={`scroll-mt-24 ${
+          activeView === "capabilities" && activeCapabilitiesSection === "requests"
+            ? ""
+            : "hidden"
+        }`}
+      >
+        <ToolRequestsClient initialRequests={toolRequests} embedded />
       </section>
 
       {/* Conexiones */}
-      <section id="connections" className="space-y-1">
-        <h2 className="text-base font-semibold">Conexiones</h2>
-        <p className="text-xs text-neutral-500">
-          Administra las cuentas y servicios externos que el agente puede usar.
-          Algunas conexiones se autorizan con OAuth o vínculo de cuenta
-          (Google, GitHub, Telegram); otras usan credenciales API cifradas por
-          cuenta (EasyBroker, Ungga).
-        </p>
+      <section
+        id="integrations"
+        className={`scroll-mt-24 ${activeView === "integrations" ? "" : "hidden"}`}
+      >
+        <div className="inline-flex flex-wrap gap-2 rounded-lg border border-neutral-200 p-1 dark:border-neutral-800">
+          <button
+            type="button"
+            onClick={() => selectIntegrationsSection("connections")}
+            aria-current={activeIntegrationsSection === "connections" ? "page" : undefined}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              activeIntegrationsSection === "connections"
+                ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Conexiones
+          </button>
+          <button
+            type="button"
+            onClick={() => selectIntegrationsSection("channels")}
+            aria-current={activeIntegrationsSection === "channels" ? "page" : undefined}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              activeIntegrationsSection === "channels"
+                ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Canales
+          </button>
+          <button
+            type="button"
+            onClick={() => selectIntegrationsSection("credentials")}
+            aria-current={activeIntegrationsSection === "credentials" ? "page" : undefined}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              activeIntegrationsSection === "credentials"
+                ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Credenciales API
+          </button>
+        </div>
       </section>
 
-      {/* Google Calendar */}
-      <section className="space-y-4">
-        <h3 className="text-sm font-semibold">Google Calendar</h3>
+      <section
+        id="connections"
+        className={`scroll-mt-24 space-y-4 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800 ${
+          activeView === "integrations" && activeIntegrationsSection === "connections"
+            ? ""
+            : "hidden"
+        }`}
+      >
+        <section className="space-y-4">
+          <h4 className="text-sm font-semibold">Google Calendar</h4>
         {gCalConnected ? (
           <div className="space-y-3">
             <p className="text-sm text-green-600">Calendario de Google conectado.</p>
@@ -2488,11 +2755,10 @@ export function SettingsForm({
             </a>
           </div>
         )}
-      </section>
+        </section>
 
-      {/* GitHub */}
-      <section className="space-y-4">
-        <h3 className="text-sm font-semibold">GitHub</h3>
+        <section className="space-y-4">
+          <h4 className="text-sm font-semibold">GitHub</h4>
         {ghConnected ? (
           <div className="space-y-2">
             <p className="text-sm text-green-600">Cuenta de GitHub conectada.</p>
@@ -2517,11 +2783,19 @@ export function SettingsForm({
             </a>
           </div>
         )}
+        </section>
       </section>
 
-      {/* Telegram */}
-      <section className="space-y-4">
-        <h3 className="text-sm font-semibold">Telegram</h3>
+      <section
+        id="channels"
+        className={`scroll-mt-24 space-y-4 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800 ${
+          activeView === "integrations" && activeIntegrationsSection === "channels"
+            ? ""
+            : "hidden"
+        }`}
+      >
+        <section className="space-y-4">
+          <h4 className="text-sm font-semibold">Telegram</h4>
         {telegramLinked ? (
           <p className="text-sm text-green-600">Cuenta de Telegram vinculada.</p>
         ) : (
@@ -2549,18 +2823,18 @@ export function SettingsForm({
             )}
           </div>
         )}
+        </section>
       </section>
 
       {/* Credenciales por cuenta (per-account secrets para EasyBroker, Ungga, …) */}
-      <section id="external-accounts" className="space-y-4">
-        <header className="space-y-1">
-          <h3 className="text-sm font-semibold">Credenciales por cuenta</h3>
-          <p className="text-xs text-neutral-500">
-            Estas conexiones también son externas; la diferencia es que usan
-            API keys/tokens propios de tu cuenta en vez de OAuth. Los secretos
-            se cifran antes de guardarse y no se comparten con otros usuarios.
-          </p>
-        </header>
+      <section
+        id="api-credentials"
+        className={`scroll-mt-24 space-y-4 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800 ${
+          activeView === "integrations" && activeIntegrationsSection === "credentials"
+            ? ""
+            : "hidden"
+        }`}
+      >
         <div className="grid gap-4 sm:grid-cols-2">
           {ACCOUNT_TOOL_PROVIDERS.map((spec) => (
             <div
@@ -2573,8 +2847,106 @@ export function SettingsForm({
         </div>
       </section>
 
+      {/* Cuenta y sesión */}
+      <section
+        id="account-session"
+        className={`scroll-mt-24 space-y-6 ${activeView === "account-session" ? "" : "hidden"}`}
+      >
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <h3 className="text-sm font-semibold">Email de acceso</h3>
+          <p className="mt-2 text-sm text-neutral-800 dark:text-neutral-100">
+            {authEmail || "—"}
+          </p>
+          <p className="mt-1 text-xs text-neutral-500">
+            Correo con el que inicias sesión. Es distinto del email de contacto
+            en Perfil de usuario, que el agente usa para comunicarte con terceros.
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <h3 className="text-sm font-semibold">Cambiar contraseña</h3>
+          <p className="mt-1 text-xs text-neutral-500">
+            Actualiza la contraseña de tu cuenta. Debe tener al menos 8 caracteres.
+          </p>
+          <div className="mt-4 space-y-3">
+            <div>
+              <label htmlFor="new-password" className="mb-1 block text-sm font-medium">
+                Nueva contraseña
+              </label>
+              <input
+                id="new-password"
+                type="password"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+            </div>
+            <div>
+              <label htmlFor="confirm-password" className="mb-1 block text-sm font-medium">
+                Confirmar contraseña
+              </label>
+              <input
+                id="confirm-password"
+                type="password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void handlePasswordUpdate()}
+                disabled={
+                  passwordUpdating || !newPassword.trim() || !confirmPassword.trim()
+                }
+                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {passwordUpdating ? "Actualizando..." : "Actualizar contraseña"}
+              </button>
+              {passwordUpdated ? (
+                <span className="text-sm text-green-600">Contraseña actualizada.</span>
+              ) : null}
+              {passwordError ? (
+                <span className="text-sm text-red-600 dark:text-red-400">
+                  {passwordError}
+                </span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <h3 className="text-sm font-semibold">Cerrar sesión</h3>
+          <p className="mt-1 text-xs text-neutral-500">
+            Cierra tu sesión en este navegador. También puedes usar el botón
+            Salir del sidebar.
+          </p>
+          <form action="/api/auth/signout" method="POST" className="mt-4">
+            <button
+              type="submit"
+              className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            >
+              Cerrar sesión
+            </button>
+          </form>
+        </div>
+      </section>
+
       {/* Save */}
-      <div className="flex items-center gap-3">
+      <div
+        className={`scroll-mt-24 flex items-center gap-3 ${
+          activeView === "profile-user" ||
+          activeView === "profile-agent" ||
+          (activeView === "capabilities" && activeCapabilitiesSection !== "requests") ||
+          activeView === "integrations" ||
+          activeView === "proactivity"
+            ? ""
+            : "hidden"
+        }`}
+      >
         <button
           onClick={handleSave}
           disabled={saving}

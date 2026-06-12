@@ -2,9 +2,16 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SettingsForm } from "./settings-form";
 import { getGlobalSkillRegistry } from "@agents/agent";
-import { listHeartbeatChecklistTemplates } from "@agents/db";
+import { createServerClient, listGlobalToolRequests, listHeartbeatChecklistTemplates } from "@agents/db";
+import { AppShell } from "@/components/app-shell";
+import { getSettingsPageMeta } from "./settings-page-meta";
 
-type Search = { google_calendar?: string; reason?: string };
+type Search = {
+  view?: string;
+  section?: string;
+  google_calendar?: string;
+  reason?: string;
+};
 
 export default async function SettingsPage({
   searchParams,
@@ -96,52 +103,26 @@ export default async function SettingsPage({
     return [];
   });
 
+  const db = createServerClient();
+  const toolRequests = await listGlobalToolRequests(db, { userId: user.id });
+
+  const { title, description } = getSettingsPageMeta(sp.view, sp.section);
+  const contentMaxWidth =
+    sp.view === "capabilities" && sp.section === "requests"
+      ? "max-w-4xl"
+      : "max-w-2xl";
+
   return (
-    <div className="min-h-screen">
-      <header className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
-        <div className="mx-auto flex max-w-2xl items-center justify-between">
-          <h1 className="text-lg font-semibold">Ajustes</h1>
-          <div className="flex gap-2">
-            <a
-              href="/operational-cases"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Casos operacionales
-            </a>
-            <a
-              href="/settings/operational-case-types"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Casos de uso
-            </a>
-            <a
-              href="/settings/tool-requests"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Solicitudes
-            </a>
-            <a
-              href="/memory"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Mis recuerdos
-            </a>
-            <a
-              href="/chat"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Volver al chat
-            </a>
-          </div>
-        </div>
-      </header>
-      <main className="mx-auto max-w-2xl px-4 py-8">
+    <AppShell title={title} description={description}>
+      <div className={`mx-auto ${contentMaxWidth}`}>
         <SettingsForm
           userId={user.id}
+          authEmail={user.email ?? ""}
           profile={profile}
           toolSettings={toolSettings ?? []}
           skillSettings={skillSettings ?? []}
           skillCatalog={skillCatalog}
+          toolRequests={toolRequests}
           telegramLinked={!!telegramAccount}
           githubConnected={!!githubIntegration}
           googleCalendarConnected={!!googleCalendarIntegration}
@@ -151,7 +132,7 @@ export default async function SettingsPage({
           googleOAuthStatus={sp.google_calendar}
           googleOAuthReason={sp.reason}
         />
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 }
