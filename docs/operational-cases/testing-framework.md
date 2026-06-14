@@ -1,6 +1,6 @@
 # Marco de pruebas para readiness operacional
 
-> **Estado:** v1.1 — N0–N3 y **N4 v1** implementados (`run-step` + escenarios en código). **N5** caso E2E y **N4 v2** multi-tick pendientes.
+> **Estado:** v1.2 — N0–N4 v1 implementados. **N5** laboratorio E2E controlado implementado (`agent_e2e`, sesión E2E lab, Prueba con agente); batería E2E automatizada multi-tick y **N4 v2** siguen pendientes.
 >
 > **Documentos relacionados**
 > - [`authoring-playbook.md`](authoring-playbook.md) — modelo paso / habilidad raíz / `current_step` / autoría de casos (lectura recomendada).
@@ -43,7 +43,7 @@ Los niveles son acumulativos: un tipo de caso no debería activarse sin N0 compl
 | **N2** | Escenario A/B/C | Secuencia causal con prerequisitos | Sub-pasos A/B/C en la tarjeta | Sí | Sí, cuando aplique |
 | **N3** | **Habilidad** (escenario del paso) | Un tick, **habilidad atómica** forzada; contrato del escenario (`test_contract`) | Botón **«Probar habilidad»** | Sí (`run-skill`) | Recomendado **por habilidad** declarada |
 | **N4** | **Paso** (hito) | Cierre del `step_key`: habilidad **raíz**, contexto sembrado, salida del hito | Botón **«Probar paso»** | **v1** (escenarios declarados) | Recomendado si el paso tiene 2+ habilidades o orquestación crítica |
-| **N5** | **Caso** (tipo completo) | Multi-paso E2E del `case_type` en caso aislado | Tick E2E / guion manual | Parcial | Aspiracional → obligatorio en madurez |
+| **N5** | **Caso** (tipo completo) | Multi-paso E2E del `case_type` en laboratorio controlado | Prueba con agente / `agent_e2e` / sesión E2E lab | **Sí (controlado)** | Recomendado camino feliz; batería scriptada → madurez |
 
 **Migración v1.0 → v1.1:** el antiguo «N4 Caso E2E» pasó a ser **N5**; el nuevo **N4** es prueba de **paso** (hito). Actualizar checklists y conversaciones internas que citen «N4 = caso completo».
 
@@ -60,8 +60,8 @@ flowchart TB
   N1 --> Activate
   N2 --> Activate
   N3 --> Activate
-  N4 -.->|futuro| Activate
-  N5 -.->|futuro| Activate
+  N4 -.->|recomendado| Activate
+  N5 -.->|recomendado| Activate
 ```
 
 ---
@@ -547,9 +547,18 @@ Para caso conversacional:
 
 **UI:** resumen por paso, auditoría agrupada por transición, diff post-transición (paso/estado antes→después). Atribución de eventos/tools al `current_step` del tick.
 
-**Estado:** playthrough manual implementado en Settings (`operational-case-tests/run` + panel Prueba con agente). Batería automatizada multi-tick sigue pendiente.
+**Estado (v1.2):** laboratorio E2E controlado **implementado**:
 
-**Relación N4 + N5:** N4 valida hitos aislados con escenarios sembrados; N5 valida la cadena real paso a paso con interfaces de producción.
+| Pieza | Ubicación | Qué hace |
+|-------|-----------|----------|
+| Prueba con agente (Settings) | `POST /api/operational-case-tests/run` con `mode: "agent_e2e"` | Un tick real del `case_runner` sobre fixture o caso conversacional |
+| Sesión E2E lab | `POST/GET /api/operational-case-tests/e2e-lab-mode` | Ventana temporal (2 h) donde el cron no procesa el caso de prueba |
+| Fixture sintético | Tarjeta N0 «Regenerar y validar registro» | Ancla `controlled_test_playthrough_anchor_at` + auditoría por transición |
+| Caso conversacional | Webhook + `operational_case_conversation_bindings` | E2E con canal real; `e2e_controlled=true` al primer tick manual |
+
+**Pendiente:** batería automatizada multi-tick (guion que encadena todos los pasos sin clics); evals en CI derivados de N5.
+
+**Relación N4 + N5:** N4 valida hitos aislados con escenarios sembrados; N5 valida la cadena real paso a paso con interfaces de producción (agente, Telegram, HITL).
 
 ---
 
@@ -679,7 +688,43 @@ Un tipo de caso privado puede activarse cuando:
 
 ---
 
-## 13. Archivos de referencia en código
+## 13. Quality bar antes de activación amplia
+
+Los ensayos GStack/GBrain (*Skill Development Cycle*) proponen un checklist cualitativo («¿corrió en 3–10 casos reales?», «¿usuario aprobó output?»). En Gu OS ese espíritu **no** es un formulario suelto: se **instrumenta** con tipos de readiness distintos según la forma de la capacidad.
+
+### 13.1 Tres vías de readiness (no todo es caso operacional)
+
+| Forma | Qué es | Laboratorio | Quality bar mínimo antes de activar |
+|-------|--------|-------------|--------------------------------------|
+| **Caso operacional** | Multi-día, `current_step`, cron, esperas | Preparación operativa N0–N5 | N0–N2 completos; N3 en habilidades críticas; N4 en pasos con escenario; N5 camino feliz en laboratorio controlado |
+| **Skill sin esperas** | Un turno o pocos loops; sin `operational_cases` | **Skill Lab** (§ en [`skills-tools-architecture.md`](../skills-tools-architecture.md)) | Rúbrica `skill-authoring` sin FAIL; evals positivos/near-miss; N1 de tools de integración si aplica; 3–10 prompts reales documentados |
+| **Heartbeat / tarea programada** | Pulso o cron con checklist | Preview + dry-run + un ciclo real supervisado | Item con path `no_action`; HITL en writes; una semana sin falsos positivos críticos |
+
+**Regla:** no exigir N4/N5 a una skill de un turno. No activar un caso operacional solo con N3 si el paso tiene escenario N4 declarado.
+
+### 13.2 Qué cuenta como evidencia instrumentable
+
+| Pregunta del quality bar | Caso operacional | Skill sin esperas |
+|--------------------------|------------------|-------------------|
+| ¿Corrió en casos reales? | N5 manual: transiciones documentadas en auditoría del fixture; o caso conversacional E2E | Log de 3–10 prompts en eval sheet o `suggestedEvals` ejecutados |
+| ¿Usuario aprobó output? | HITL en N2/N3/N4 (Telegram «ENVIAR PRUEBA», `business_decision`, `notify_user`) | Revisión humana del draft + rúbrica PASS |
+| ¿MECE con skills vecinas? | Una raíz por `case_type`; pasos = hitos, no atómicas | Checklist MECE en [`skills-tools-architecture.md`](../skills-tools-architecture.md) §12 |
+| ¿Ramas IF cubiertas? | N4 por escenario en `step-test-scenario-registry.ts` | 2+ near-miss evals + escenario negativo en cuerpo de skill |
+
+### 13.3 Tamaños de muestra (pragmáticos)
+
+- **N3/N4 por escenario:** al menos **1 corrida exitosa** por escenario *milestone* antes de activación; ramas opcionales documentadas como «no bloqueantes».
+- **N5 camino feliz:** **1 recorrido completo** en laboratorio (fixture o conversacional) con ancla de auditoría; no hace falta automatizar 10 corridas en v1.
+- **Skill atómica sin esperas:** **3 prompts positivos + 3 near-miss** en evals; si hay tools de riesgo medio, **1 N1** por tool.
+- **Producción amplia (post-activación privada):** observar **3–10 instancias reales** antes de promover a plantilla global — alineado con Pattern→Skill con HITL, no auto-promoción.
+
+### 13.4 `step_key` vs habilidades (autoría)
+
+Un **`step_key` tiene un objetivo durable de negocio**; **no** crear un paso nuevo por cada **habilidad atómica** (sub-skill) que la raíz invoque dentro del mismo hito. La **habilidad raíz/compuesta** (`default_skill_slug`) orquesta; las atómicas son medios, no hitos. Ver [`authoring-playbook.md`](authoring-playbook.md) §1 y §3.2.
+
+---
+
+## 14. Archivos de referencia en código
 
 | Pieza | Ubicación |
 |-------|-----------|
@@ -689,6 +734,7 @@ Un tipo de caso privado puede activarse cuando:
 | Ejecución N3 habilidad | `apps/web/src/app/api/tool-readiness/run-skill/route.ts` |
 | Ejecución N4 paso | `apps/web/src/app/api/tool-readiness/run-step/route.ts` |
 | Casos de prueba | `apps/web/src/app/api/operational-case-tests/` |
+| N5 E2E lab | `apps/web/src/app/api/operational-case-tests/run/route.ts` (`mode: "agent_e2e"`), `e2e-lab-mode/route.ts` |
 | Contexto de muestra | `apps/web/src/lib/operational-cases/test-context-samples.ts` |
 | Flow piloto | `packages/db/supabase/migrations/00038_property_optioning_document_flow.sql` (y migraciones previas del case type) |
 
@@ -707,7 +753,7 @@ Un tipo de caso privado puede activarse cuando:
 
 ---
 
-## 14. Evolución del marco
+## 15. Evolución del marco
 
 Trabajo pendiente alineado con [`use-case-authoring-vision.md`](use-case-authoring-vision.md) y [`authoring-playbook.md`](authoring-playbook.md) §12:
 
@@ -720,5 +766,5 @@ Trabajo pendiente alineado con [`use-case-authoring-vision.md`](use-case-authori
 7. `tested_ok` por escenario N2 completo, no sólo por click suelto.
 8. Generación automática del esquema N0–N3 (y borrador N4) desde un flow propuesto.
 9. **N4 v2** multi-tick con eventos simulados.
-10. **N5** automatizado con guion E2E por `case_type`.
+10. **N5** batería automatizada multi-tick (guion E2E por `case_type`; el laboratorio controlado ya existe).
 11. Evidencia N4 en `test_status` agregado del paso en `GET /api/tool-readiness`.

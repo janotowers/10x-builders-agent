@@ -267,6 +267,38 @@ Esto reduce errores como:
 
 ---
 
+## 4.1 Cuándo es skill y cuándo es code/tool
+
+Los ensayos *Thin Harness, Fat Skills* (Garry Tan, GStack) resumen la frontera
+así: **skills enseñan procedimiento y juicio; code/tools ejecutan capacidades
+repetibles**. Gu OS ya opera con esa separación; esta sección la hace explícita
+para autores de skills. Matriz ampliada y mapping a capas del sistema:
+[`docs/manuals/agentic-principles-alignment.md`](manuals/agentic-principles-alignment.md).
+
+| Pregunta | Si SÍ | Si NO |
+|----------|-------|-------|
+| ¿El agente debe pensar, adaptarse o preguntar? | **Skill** | Code / tool |
+| ¿Misma entrada → misma salida? | **Code** / tool | Skill |
+| ¿Requiere juicio sobre el entorno del usuario? | **Skill** | Code / tool |
+| ¿Es lookup, listado o status? | **Code** / tool | Probablemente skill |
+| ¿Depende del contexto conversacional? | **Skill** | Code / tool |
+
+Ejemplos en este repo:
+
+| Caso | Destino | Referencia |
+|------|---------|------------|
+| Pregunta analítica de negocio con tenant safety | Skill `company-data` | `skills/global/company-data/` |
+| Ejecutar SQL read-only validado | Tool `bigquery_run_query` | `packages/agent/src/tools/catalog.ts` |
+| Comparables con filtros inmobiliarios fijos | Tool wrapper `bigquery_lookup_local_comparables` | §3 de este doc |
+| Señal de calendario antes del heartbeat | Prefetcher deterministico | `docs/heartbeat/deterministic-prefetchers.md` |
+| Intake conversacional de caso operacional | Skill + tools `operational_case_*` | `docs/operational-cases/architecture.md` |
+
+**Regla práctica:** si puedes escribir una función con tests unitarios y parámetros
+estables, probablemente es tool o adapter. Si necesitas criterio, tono, secuencia
+condicional o HITL de negocio, es skill.
+
+---
+
 ## 5. Tool pública vs función interna
 
 Otra distinción importante:
@@ -535,8 +567,10 @@ La UI de Preparación operativa debe distinguir estos niveles de prueba (resumen
    - **Prerequisito:** todas las tools *readiness-visible* del paso probadas en N1 (misma regla que N3; UI índigo atenuada si bloqueado). Pills de paso/habilidad = último N3/N4; pills de tool = N1.
    - Runtime compartido con N3: dedup Telegram, notify interno, detalle en `skill-test-call-details.tsx` (ver catálogo `PATTERN_*`).
 
-5. **Caso — N5** *(parcial / futuro)*
-   - E2E del `case_type` completo en caso de prueba aislado.
+5. **Caso — N5** *(laboratorio controlado implementado)*
+   - E2E del `case_type` en fixture aislado o caso conversacional con `mode: "agent_e2e"`, sesión E2E lab y panel **Prueba con agente**.
+   - Pendiente: batería automatizada multi-tick en CI.
+   - Ver [`testing-framework.md`](operational-cases/testing-framework.md) §8 y §13.
 
 Reglas visuales:
 
@@ -545,4 +579,63 @@ Reglas visuales:
 - Ámbar: parcial, warning, política/HITL o prerequisito faltante.
 - Rojo: fallo, excepción o contrato incumplido.
 - Gris/neutro: metadata, pendiente o detalle técnico.
+
+---
+
+## 12. Skill Lab — readiness para skills sin caso operacional
+
+Muchas capacidades **no** son casos operacionales: responden en un turno (o pocos
+tool loops), no tienen `current_step`, cron ni esperas multi-día. Ejemplos:
+`company-data`, borradores de follow-up, consultas puntuales, skills de referencia
+usadas bajo demanda.
+
+**No** deben pasar por Preparación operativa N0–N5. Usan un laboratorio más
+ligero alineado al *Skill Development Cycle* (GStack/GBrain):
+
+### 12.1 Cuándo aplica Skill Lab
+
+| Señal | Skill Lab | Caso operacional (N0–N5) |
+|-------|-----------|---------------------------|
+| Sin `operational_cases` / `current_step` | ✓ | |
+| Sin espera de humano externo multi-día | ✓ | |
+| Estado persiste entre semanas | | ✓ |
+| Cron / case_runner debe retomar solo | | ✓ |
+| HITL inline en el turno | ambos | ambos |
+
+### 12.2 Checklist Skill Lab (antes de activar)
+
+1. **Discovery:** ¿existe skill global que ya cubre el 80%? ¿Es delta de `account_skills`?
+2. **Rúbrica `skill-authoring`:** ningún ítem FAIL; WARN documentados.
+3. **Evals:** ≥3 prompts positivos + ≥3 near-miss que el selector debe rechazar.
+4. **Tools:** N1 en integraciones de riesgo medio/alto si la skill las usa en producción.
+5. **MECE:** ver §12.3 — sin solapamiento con skills vecinas.
+6. **Evidencia:** 3–10 corridas reales o supervisadas documentadas (no solo teoría).
+7. **Activación:** humano explícito; nunca auto-activar desde Pattern Layer sin HITL.
+
+### 12.3 MECE — ownership de skills
+
+Principio del *Skill Development Cycle*: cada entidad, señal o procedimiento debe
+tener **un dueño claro** en el registry — Mutually Exclusive, Collectively Exhaustive.
+
+| Regla | Acción |
+|-------|--------|
+| Dos skills con el mismo «use when» | Fusionar, dividir dominio o marcar una como `reference` |
+| Skill user-facing vs skill core | Core (`business-data-core`) no compite con user-facing (`company-data`) |
+| Operational root vs atomic | La **raíz** orquesta por `current_step`; las **atómicas** no compiten con el selector global salvo N3 forzado |
+| Pattern → Skill candidato | Revisión HITL antes de merge; ver Brain plan § Pattern Layer |
+| Señales Brain (futuro) | Una entidad → una página compilada; señales no duplicadas entre skills |
+
+Antes de crear una skill nueva, responder:
+
+1. ¿Qué skill **deja de hacer** este trabajo si activo la nueva?
+2. ¿El selector puede distinguirlas solo con `description`?
+3. ¿Hay near-miss evals que prueben la frontera?
+
+Detalle operacional de pasos vs atómicas: [`operational-cases/authoring-playbook.md`](operational-cases/authoring-playbook.md) §1.
+
+### 12.4 Relación con quality bar
+
+El quality bar instrumentable por forma de capacidad está en
+[`operational-cases/testing-framework.md`](operational-cases/testing-framework.md) §13.
+Skill Lab cubre la columna «skill sin esperas»; N0–N5 cubre casos operacionales.
 

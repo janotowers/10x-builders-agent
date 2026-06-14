@@ -205,6 +205,48 @@ time, and let each query improve the corpus.
   data is generated, use it first for evals, regression tests, skill QA, routing,
   extraction, and safety review.
 
+### Inspiration 3: Garry Tan / GStack (Thin Harness, Fat Skills; Homebrew for Personal AI; Skill Development Cycle)
+
+**Source:** April 2026 essays by Garry Tan on agent architecture and skill/recipe
+distribution (GStack / G Brain narrative), plus the GBrain repo document
+`skill-development.md` (discovery → MECE → quality bar → activation). Canonical
+Gu OS mapping (in Spanish, with skill-vs-code guide and alignment matrix):
+[`docs/manuals/agentic-principles-alignment.md`](manuals/agentic-principles-alignment.md).
+
+**Why consider it:** the essays articulate the same productivity thesis as Gu OS
+V1: models are table stakes; context routing, fat markdown procedures, and
+deterministic execution underneath are the multiplier. They also name recipe
+distribution ("markdown is code") as a future packaging model.
+
+**Gu OS mapping:**
+
+| GStack term | Gu OS equivalent | Status | Notes |
+|-------------|------------------|--------|-------|
+| Skill file (method call) | `skills/global/*/SKILL.md`, `account_skills`, `includes`, parameters via user/context | Today | Closest match to the essays. Progressive disclosure via `references/`. |
+| Thin harness | `runAgent` + LangGraph + tool catalog + HITL + channels | Today | **Not** ~200 LOC by design — multi-tenant product invariants (RLS, audit, approvals). Thin in responsibilities, not file size. |
+| Resolver | Pre-graph `selectSkillForTurn` + skill `description` + deterministic guards + forced bindings | Today | Differs from Claude Code (main model loads skills); see [`skill-routing.md`](tools-design/skill-routing.md). |
+| Latent vs deterministic | Skills vs tools/adapters/prefetchers | Today | Documented in [`skills-tools-architecture.md`](skills-tools-architecture.md) §4.1. |
+| Diarization | Brain Layer `compiled_truth + timeline` on entity pages | Planned | Bloques 1–4 in [`gbrain-evaluation-and-plan.md`](brain/gbrain-evaluation-and-plan.md). |
+| Self-learning loop (`/improve`) | Pattern Layer → HITL → Skill; Brain maintenance / skill curation | Planned | Must not skip HITL; G Brain `cycle/patterns.ts` is **not** organizational playbook mining. |
+| Recipe / `gbrain install` | Capability packs; internal recipe bundles | Optional V3+ | No open marketplace until sandbox + permissions. `account_skills` V2 is nearer-term customization. |
+| "Ask twice, you failed" discipline | Skill authoring, scheduled tasks, operational cases | Partial today | Codify repeat work into skills or automation; see `skill-authoring` skill. |
+| Quality bar / Skill Lab | Rúbrica + N0–N5 (cases) + Skill Lab (single-turn) | Partial today | Instrumented in [`testing-framework.md`](operational-cases/testing-framework.md) §13 and [`skills-tools-architecture.md`](skills-tools-architecture.md) §12; UI unificada pending. |
+| MECE skill ownership | Registry descriptions + near-miss evals | Partial today | Formalized in docs; Brain Pattern→Skill adds HITL gate. |
+
+**Ideas worth carrying forward**
+
+1. Push intelligence **up** into skills; push execution **down** into deterministic tools.
+2. Treat skill `description` as the resolver contract — invest in clear "use when" text.
+3. Plan Brain Layer as the diarization/compiled-truth layer the essays assume for knowledge work.
+4. Treat recipe distribution as **internal capability packs**, not arbitrary third-party plugins.
+5. Use **two readiness tracks**: operational N0–N5 (multi-day cases; N5 controlled lab implemented) and Skill Lab (single-turn skills) — see agentic-principles-alignment §10.
+
+**Ideas not adopted as-is**
+
+- Minimal personal-agent harness without tenant safety, HITL, and product UI.
+- Auto-rewriting skills from mediocre feedback without human review (Pattern→Skill still requires HITL).
+- Executable scripts inside skill folders without sandbox (unchanged V1/V1.5 policy).
+
 ### Subagents: selective recommendation
 
 Subagents are not a blanket architectural migration. Gu OS should keep the

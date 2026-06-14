@@ -108,6 +108,7 @@ Este diagrama y el mapa operativo de Gu OS no compiten; explican niveles distint
 | [`gu-os-business-architecture-stack.png`](../assets/gu-os-business-architecture-stack.png) | Vista de negocio/producto: capacidades apiladas que convierten operación inmobiliaria en inteligencia y ejecución. |
 | [`gu-os-operational-stack-aligned.png`](../assets/gu-os-operational-stack-aligned.png) | Vista operativa: canales, runtime, contexto, skills, tools, rhythm/Heartbeat y Brain Layer futura. |
 | [`gu-os-understanding.md`](gu-os-understanding.md) | Guía narrativa para entender memoria, skills, tools, Heartbeat, tareas programadas y Brain Layer. |
+| [`gu-os-glossary-commercial.md`](gu-os-glossary-commercial.md) | Glosario de una página para ventas, alianzas y demos (sin jerga técnica). |
 | [`architecture-manual.md`](architecture-manual.md) | Manual técnico integrador con rutas, tablas, estado actual y roadmap. |
 
 La forma correcta de usarlos juntos:

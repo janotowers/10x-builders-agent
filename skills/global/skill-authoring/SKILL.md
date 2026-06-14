@@ -70,6 +70,48 @@ If the user is creating a private account skill that shadows a global, read
 the global SKILL.md first via `read_file` and propose a delta, not a fresh
 skill.
 
+## Skill Development Cycle (discovery → activation)
+
+Adapted from GStack/GBrain *Skill Development Cycle* and Gu OS readiness. Use
+this loop before recommending activation — proportional to risk and form.
+
+### Phase 1 — Discovery (before drafting)
+
+1. **Observe:** what does the user repeat? Is there an existing global skill,
+   operational case, or heartbeat item?
+2. **Gap analysis:** list missing tools, credentials, assets, and overlapping
+   skills (MECE check — see
+   [`docs/skills-tools-architecture.md`](../../docs/skills-tools-architecture.md) §12.3).
+3. **Form classification:** operational case vs single-turn skill vs heartbeat
+   vs hybrid — do **not** classify from keywords alone; ask clarifying questions
+   when async waits, external participants, or multi-day state are ambiguous.
+
+### Phase 2 — Draft and MECE
+
+- One dominant owner per workflow; atomic includes only when reused.
+- `description` is the resolver contract — distinct «use when» from neighbors.
+- Push repeatability down: wrappers and adapters, not prose SQL.
+
+### Phase 3 — Readiness (proportional)
+
+| Form | Readiness path |
+|------|----------------|
+| Operational case | Emit `testPlan` with N0–N5 refs; N4 scenarios must match registry keys or be proposed explicitly |
+| Single-turn skill | Skill Lab: rubric + evals + N1 for risky integrations if any — **no** N4/N5 |
+| Heartbeat item | Preview, dry-run, documented `no_action` path |
+
+Quality bar (instrumentable evidence): see
+[`docs/operational-cases/testing-framework.md`](../../docs/operational-cases/testing-framework.md) §13.
+
+### Phase 4 — Activation recommendation
+
+- `do_not_activate` if any rubric FAIL or unresolved MECE overlap.
+- `activate_after_tests` for operational cases until N0–N2 + critical N3/N4 + N5
+  happy path in controlled lab (when case type exists).
+- `skill_only` for single-turn skills after Skill Lab checklist.
+
+Never auto-activate. Pattern→Skill from Brain Layer always requires human review.
+
 ## Gu SKILL.md contract
 
 Draft using exactly this shape (omit optional fields when not applicable):
@@ -318,15 +360,36 @@ When invoked interactively (no automation contract), return:
 When the user describes a **multi-step business process** (not a single-turn
 draft), treat it as an operational case proposal in addition to the SKILL draft.
 
-### Classify first
+### Classify first (discovery, not premature labels)
 
-Emit in metadata (or prose when interactive):
+Before emitting `classification`, clarify when the NL description is ambiguous:
+
+- ¿Hay espera de respuesta externa (propietario, portal) en horas/días?
+- ¿El estado debe persistir entre sesiones de chat?
+- ¿Interviene el cron o case_runner sin que el usuario escriba?
+
+Only after gap analysis, emit:
 
 - `classification`: `operational_case` | `single_turn_skill` | `hybrid_review`
 - `confidence` and short `rationale` (why case vs skill-only).
 
 Prefer `single_turn_skill` when there is no durable `current_step`, no external
 waits, and no case runner — e.g. one-off copy, one query, one publish preview.
+
+For `single_turn_skill`, emit `skillLabChecklist` instead of full `testPlan`:
+
+```json
+{
+  "meceCheck": "No overlap with company-data; near-miss: generic CRM questions",
+  "evalsRequired": { "positive": 3, "nearMiss": 3 },
+  "integrationN1": ["telegram_send_message_to_contact"],
+  "readinessPath": "skill_lab"
+}
+```
+
+Do **not** show «caso operacional» UX to the user when classification is
+`single_turn_skill`. Present one coherent «capability proposal» with the
+recommended form buried in structured metadata, not as a jargon fork.
 
 ### Emit `testPlan` (required for `operational_case`)
 
@@ -365,6 +428,9 @@ Rules:
   `operational_case_update_state`, or settings-test seed/repair apply.
 - Map each proposed tool to N1 vs N2 vs N3 per
   `docs/operational-cases/testing-framework.md`.
+- For operational flows: a **`step_key` is a durable business milestone** — do
+  not propose one step per **atomic** skill; the root composite orchestrates
+  atomics within the same step until the milestone closes.
 - For each step with an N4 scenario: state that **N1 of all step tools is required**
   before N3/N4 (`PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS` in the patterns catalog).
 

@@ -1,6 +1,6 @@
 # Playbook de autoría — Casos de uso
 
-> **Estado:** v1.1 — modelo de autoría + readiness. **N0–N3** y **N4 v1** (un tick, escenarios en código) implementados. **N5** caso E2E y **N4 v2** multi-tick siguen pendientes; ver [§12](#12-pendientes-de-implementación).
+> **Estado:** v1.2 — modelo de autoría + readiness. **N0–N4 v1** implementados. **N5** laboratorio E2E controlado implementado; batería E2E automatizada y **N4 v2** multi-tick siguen pendientes; ver [§12](#12-pendientes-de-implementación).
 >
 > **Documentos relacionados**
 > - [`architecture.md`](architecture.md) — subsistema, cron, tablas, binding de habilidad raíz.
@@ -38,7 +38,9 @@ status        =  modo del motor (active, waiting_external, …)
 context       =  detalle para decidir qué hacer dentro del mismo current_step
 ```
 
-**No** crear un `current_step` distinto por cada habilidad del mismo paso visible.
+**No** crear un `current_step` distinto por cada **habilidad atómica** del mismo hito visible.
+
+> **Aclaración:** «habilidad» aquí significa **habilidad atómica** (o sub-skill incluida), **no** la habilidad raíz/compuesta. El `step_key` marca un hito de negocio durable; la raíz (`default_skill_slug`) puede invocar varias atómicas *dentro* del mismo paso sin avanzar `current_step`. Ejemplo: en `awaiting_documents`, solicitud inicial, recordatorio y procesamiento de documento pueden usar distintas atómicas pero comparten el mismo `step_key` hasta cerrar el objetivo «documentos recibidos».
 
 ---
 
@@ -266,7 +268,7 @@ Orden recomendado (negocio → técnica):
 9. **`operational_flow_jsonb`** — alineado 1:1 con `step_key` y skills/tools.
 10. **Contratos de prueba** — `test_contract` por habilidad (N3); escenarios N4 en [`step-test-scenario-registry.ts`](../../apps/web/src/lib/operational-cases/step-test-scenario-registry.ts). Asignar IDs del [catálogo de patrones](operational-case-reusable-patterns.md).
 11. **Caso de prueba aislado** — N0; batería N1–N4 según [`testing-framework.md`](testing-framework.md) y checklist del catálogo §8.
-12. **Activación** — checklist UI; N5 (caso E2E) cuando exista automatización o piloto manual documentado.
+12. **Activación** — checklist UI; N5 camino feliz en laboratorio controlado antes de activación estricta.
 
 ---
 
@@ -402,7 +404,7 @@ sequenceDiagram
 | N1/N2 | Por tool (Telegram A/B/C, crédito, etc.) |
 | **N3** | **Una prueba por habilidad** (`request-tenant-documents`, `run-tenant-credit-check`, `verify-tenant-references`) con `test_contract` y contexto sembrado por escenario |
 | **N4** | **Una o más pruebas del paso** `compliance_review` vía `POST /api/tool-readiness/run-step`: habilidad raíz (`tenant-move-in-coach`), semilla/expectativa/mensaje en `step-test-scenario-registry.ts` (p. ej. `current_step=lease_and_handover` o flags en `context.compliance`). Mismo mecanismo que hoy en `property_optioning` — registrar escenario completo en el registry |
-| **N5** | Caso completo intake → entrega — *pendiente automatización* |
+| **N5** | Caso completo intake → entrega — laboratorio E2E controlado (`agent_e2e`, Prueba con agente); batería scriptada pendiente |
 
 **Hoy en código (referencia real):** solo `property_optioning` → `awaiting_documents` tiene escenario N4; el ejemplo multi-habilidad ilustra **por qué** conviene N4 además de varios N3.
 
@@ -434,7 +436,7 @@ Resumen; detalle en [`testing-framework.md`](testing-framework.md).
 | **N2** | Escenario A/B/C | Secuencia causal en una tarjeta | Sí |
 | **N3** | **Habilidad** (en contexto de paso) | Un tick, habilidad atómica forzada; contrato del escenario | Sí (`run-skill`) |
 | **N4** | **Paso** (hito) | Habilidad raíz; cierre del `step_key` o rama correcta | **Sí (v1)** — `run-step` + «Probar paso» si hay escenario en `step-test-scenario-registry.ts` |
-| **N5** | **Caso** (tipo completo) | Multi-paso E2E del `case_type` | Parcial / manual |
+| **N5** | **Caso** (tipo completo) | Multi-paso E2E del `case_type` en laboratorio controlado | **Sí (controlado)** — `operational-case-tests/run`, sesión E2E lab |
 
 **Regla de producto:**
 
@@ -475,8 +477,9 @@ Cuando [`use-case-authoring-vision.md`](use-case-authoring-vision.md) genere pro
 | Escenarios N4 (registry único) | `apps/web/src/lib/operational-cases/step-test-scenario-registry.ts` |
 | Compat UI escenarios N4 | `apps/web/src/lib/operational-cases/step-test-scenarios.ts` |
 | Botón «Probar paso» | `operational-case-types-client.tsx` (`StepTestPanel`) |
+| N5 laboratorio E2E | `operational-case-tests/run` (`mode: "agent_e2e"`), `e2e-lab-mode`, panel Prueba con agente |
 
-**Escenario N4 en producción de pruebas hoy:** `property_optioning` / `awaiting_documents` (`awaiting_documents_outreach`).
+**Escenario N4 en producción de pruebas hoy:** múltiples pasos en `property_optioning` (ver [`testing-framework.md`](testing-framework.md) §7).
 
 ### Pendiente
 
@@ -485,7 +488,7 @@ Cuando [`use-case-authoring-vision.md`](use-case-authoring-vision.md) genere pro
 | **`step_test_contract` en `operational_flow_jsonb`** | Declarar escenarios N4 en BD/UI sin tocar TypeScript |
 | **Más escenarios N4** | p. ej. pasos multi-habilidad como `compliance_review` del §8 cuando exista el case type |
 | **N4 v2 multi-tick** | Simular `external_response` entre ticks en el mismo paso |
-| **N5 automatizado** | E2E del `case_type` completo; infra parcial en `operational-case-tests/run` |
+| **N5 batería automatizada** | Guion multi-tick sin clics; evals CI — el laboratorio controlado manual ya existe |
 | **`test_pattern` en flow** | `tested_ok` por escenario N2 completo, no solo por click |
 | **Checklist visual por escenario** | Mostrar ✓/pendiente/falló por escenario además del contador «X de Y» |
 
@@ -494,7 +497,7 @@ Cuando [`use-case-authoring-vision.md`](use-case-authoring-vision.md) genere pro
 1. Registrar escenarios N4 para pasos con 2+ habilidades (patrón §8).
 2. Persistir `step_test_contract` en flow (§13) cuando el registry TS esté estable.
 3. N4 v2 si el paso requiere varios ticks con esperas simuladas.
-4. N5 guion mínimo para activación estricta.
+4. N5 batería automatizada para activación estricta en CI (laboratorio manual ya disponible).
 
 ---
 

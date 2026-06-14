@@ -51,7 +51,7 @@ Una forma compacta de entender Gu OS es verlo como un sistema operativo de traba
 
 Versión estática en PNG (mismo contenido con un poco más de detalle visual, útil fuera del Preview de Cursor): [`gu-os-operational-stack-aligned.png`](../assets/gu-os-operational-stack-aligned.png).
 
-Para una vista complementaria más orientada a negocio/producto, ver [`gu-os-business-architecture-view.md`](gu-os-business-architecture-view.md).
+Para una vista complementaria más orientada a negocio/producto, ver [`gu-os-business-architecture-view.md`](gu-os-business-architecture-view.md). Para **terminología en una página** (ventas, alianzas, demos), ver [`gu-os-glossary-commercial.md`](gu-os-glossary-commercial.md).
 
 ```mermaid
 flowchart TD
@@ -65,6 +65,10 @@ flowchart TD
 ```
 
 La regla importante: **cada capa tiene un destino distinto**. Las preferencias personales no son datos de negocio; los leads no son memoria personal; una señal débil no es todavía un hecho; y un patrón de trabajo aprobado debe convertirse en skill, no esconderse en texto libre. Esta separación evita que el sistema se vuelva una mezcla confusa de notas, prompts y automatizaciones.
+
+En lenguaje de la conversación reciente sobre arquitectura agentica: Gu OS sigue la tesis **thin harness, fat skills** — el runtime (LangGraph, tools, HITL, canales) debe orquestar sin acumular juicio de dominio; el valor vive en los **recetarios** (`SKILL.md`) y en la ejecución determinística de abajo. Nuestro harness no es “delgado” en líneas de código porque somos producto multiusuario con permisos y trazabilidad; sí lo es en responsabilidades. Detalle y matriz de alineación: [`agentic-principles-alignment.md`](agentic-principles-alignment.md).
+
+**Readiness en dos pistas:** los **casos operacionales** multi-día se validan en Preparación operativa (N0–N5, incluido laboratorio E2E controlado). Las **skills de un turno** usan **Skill Lab** — rúbrica, evals y pruebas de integración proporcionales, sin forzar pasos ni cron. Ver [`skills-tools-architecture.md`](../skills-tools-architecture.md) §12 y [`testing-framework.md`](../operational-cases/testing-framework.md) §13.
 
 Gu OS sí toma ideas útiles de sistemas de conocimiento personal y de agent development kits: recetarios bajo demanda, referencias progresivas, health checks, artefactos y mantenimiento del conocimiento. Pero no copia su forma literal. En un producto con clientes, permisos y operación inmobiliaria, la pregunta no es “¿podemos guardar o automatizar esto?”, sino “¿en qué capa vive, con qué evidencia, con qué permisos y con qué revisión humana si puede cambiar la realidad?”.
 
@@ -290,7 +294,163 @@ flowchart LR
 
 Lo que sí puede cambiar en el futuro es el **nivel de ownership**: hoy casi todo cuelga de `user_id`; con `organizations` + memberships, partes de `business_brain`, Brain Layer y skills propias podrían moverse a nivel organización.
 
-### 5.9 ¿Está alineado el roadmap de Business Brain con el plan Brain Layer?
+### 5.9 Diagrama del ecosistema de skills
+
+Esta subsección resume en un solo lugar lo que §5.1–5.8 explica en prosa: **de dónde salen los recetarios**, **cómo se elige uno por turno**, **cómo se componen** y **a qué tools pueden tocar**.
+
+#### 5.9.1 De catálogo a ejecución (un turno)
+
+```mermaid
+flowchart TD
+  subgraph Fuentes
+    G[skills/global/*/SKILL.md<br/>catálogo del producto en Git]
+    A[account_skills<br/>body propio por cuenta]
+    F[Forzado: case_type / cron / forcedSkillId]
+  end
+
+  subgraph Registro
+    R[getSkillRegistryForUser<br/>global ∪ account; slug gana account]
+    U[user_skill_settings.enabled<br/>excluye desactivadas]
+  end
+
+  subgraph Resolver
+    S[selectSkillForTurn<br/>description + routingContext]
+    D[Guards deterministicos<br/>p. ej. property-optioning]
+    N[none = sin playbook]
+  end
+
+  subgraph Turno activo
+    RS[resolveSkill<br/>includes + union allowed_tools]
+    PB[Playbook inyectado al system prompt]
+    TC[Contexto tenant si requires_tenant_context]
+    TL[Tools filtradas por allowed_tools + riesgo + integraciones]
+    AG[Agente LangGraph ↔ tools]
+  end
+
+  G --> R
+  A --> R
+  R --> U --> S
+  F --> RS
+  S --> RS
+  D --> RS
+  N --> AG
+  RS --> PB --> AG
+  RS --> TC --> AG
+  RS --> TL --> AG
+```
+
+**Lectura rápida:** el usuario (o el cron) no “elige skill” a mano en cada turno. El **resolver** lee metadata (`description`, continuidad, canal) y activa **como mucho una skill dominante**. Si no encaja ninguna, el agente sigue con tools generales (`none`).
+
+#### 5.9.2 Árbol de composición: skill user-facing → includes → references → tools
+
+No todas las skills son iguales. Tres roles habituales:
+
+| Rol | Qué es | Ejemplo en repo |
+|-----|--------|-----------------|
+| **User-facing** | Resuelve una intención del usuario | `company-data`, `property-optioning-coach` |
+| **Core / referencia** | Biblioteca incluida; no suele elegirse sola | `business-data-core` |
+| **Atómica operativa** | Un paso de un workflow mayor | `perform-comparable-analysis` |
+
+**Ejemplo A — datos de negocio (dominio + referencias):**
+
+```text
+company-data                          ← user-facing (selector elige esta)
+├── includes: business-data-core      ← canon warehouse (joins, glossary, reglas)
+│   └── references/                   ← progressive disclosure bajo demanda
+│       ├── schema.md
+│       ├── joins.md
+│       ├── fewshots-leads.md
+│       └── fewshots-messages.md
+└── allowed_tools:
+    ├── bigquery_run_query
+    └── read_skill_reference
+```
+
+**Ejemplo B — workflow compuesto (coach + sub-skills):**
+
+```text
+property-optioning-coach              ← user-facing / case binding
+├── includes:
+│   ├── request-property-documents
+│   ├── extract-property-characteristics
+│   ├── perform-comparable-analysis
+│   ├── prepare-listing-price
+│   ├── prepare-commission-contract
+│   ├── coordinate-photo-session
+│   └── publish-listing-package
+├── requires_tenant_context: true
+├── guardrails: HITL en decisiones comerciales
+└── allowed_tools: operational_case_*, BigQuery, EasyBroker, calendario, …
+```
+
+**Ejemplo C — skill de referencia sola (no user-facing):**
+
+```text
+business-data-core                    ← no es destino típico del selector
+├── scope: business
+├── allowed_tools: []                 ← no ejecuta; documenta
+└── references/                       ← la skill hija (company-data) las carga
+```
+
+Regla práctica: antes de crear una micro-skill nueva, preguntar si basta un archivo en `references/` dentro de una skill de dominio existente (ver [`skill-routing.md`](../tools-design/skill-routing.md)).
+
+#### 5.9.3 Catálogo global por `scope` (orientativo)
+
+Hoy hay **29** skills globales en `skills/global/`. El `scope` etiqueta el **tipo de trabajo**, no quién es dueño del archivo (todos viven en Git).
+
+| `scope` | Para qué sirve | Ejemplos representativos |
+|---------|----------------|--------------------------|
+| **business** | Operación inmobiliaria, CRM, captación, watches operativos | `company-data`, `property-optioning-coach`, `lead-follow-up-draft`, `*-watch` de leads/inventario/visitas |
+| **personal** | Vida y rutinas del usuario operador | `personal-day-briefing`, `memory-curate`, `family-reminders`, `travel-prep`, `errand-planner` |
+| **shared** | Útil en negocio y personal, o transversal | `compose-message`, `brand-kit`, `doc-coauthoring`, `skill-authoring`, `pending-approval-watch` |
+
+```mermaid
+flowchart TB
+  subgraph Catálogo_global["Catálogo global (Git)"]
+    B[business<br/>17 skills]
+    P[personal<br/>7 skills]
+    S[shared<br/>5 skills]
+  end
+
+  subgraph Por_cuenta["Por cuenta (DB)"]
+    ON[user_skill_settings<br/>enabled / config_json]
+    ACC[account_skills V1<br/>override por slug]
+  end
+
+  subgraph Futuro["Futuro"]
+    PAT[Pattern Layer<br/>brain_skill_candidates]
+    HITL[HITL aprueba]
+    NEW[SKILL.md o account_skills]
+  end
+
+  Catálogo_global --> ON
+  ACC --> ON
+  ON --> SEL[Selector pre-graph]
+  PAT --> HITL --> NEW
+  NEW -.alimenta.-> Catálogo_global
+  NEW -.alimenta.-> ACC
+```
+
+#### 5.9.4 Progressive disclosure y tools
+
+Cuando una skill está activa, el modelo recibe el **cuerpo compuesto** (root + `includes`, con tope de tokens). Los trozos largos viven en `references/` y se cargan con `read_skill_reference` solo cuando hace falta.
+
+```mermaid
+flowchart LR
+  SK[Skill activa] --> BODY[Cuerpo inyectado<br/>procedimiento + guardrails]
+  SK --> REF[references/*.md<br/>bajo demanda]
+  SK --> AT[allowed_tools<br/>lista cerrada]
+  AT --> T1[Consultas / warehouse]
+  AT --> T2[Calendario / mensajería]
+  AT --> T3[Casos operacionales]
+  AT --> T4[Archivos / documentos futuros]
+```
+
+Si una tool no está en `allowed_tools` de la skill activa, el runtime no la expone al modelo en ese turno (salvo el caso `none`, donde aplican solo gates normales de usuario e integraciones).
+
+**Para profundizar:** [`skills-tools-architecture.md`](../skills-tools-architecture.md) §4.1 (skill vs code), [`agentic-principles-alignment.md`](agentic-principles-alignment.md) (thin harness / fat skills).
+
+### 5.10 ¿Está alineado el roadmap de Business Brain con el plan Brain Layer?
 
 Sí, pero cumplen roles distintos:
 
@@ -298,15 +458,16 @@ Sí, pero cumplen roles distintos:
 |-----------|-----------|--------|
 | `business-brain-evolution-roadmap.md` | Evolución del agente actual: skills, skill registry, `business_brain`, Heartbeat, BigQuery, UI, futuro `account_skills`, futuro `organizations`. | Es el roadmap del sistema existente. |
 | `brain/gbrain-evaluation-and-plan.md` | Nueva Brain Layer inspirada en G Brain: Ingestion, Memory, Graph, Signal, Pattern, Skill, Workflow. | Es el plan para agregar memoria/cognición operacional del negocio. |
+| `manuals/agentic-principles-alignment.md` | Ensayos GStack (Thin Harness / Homebrew) mapeados a Gu OS: matriz de alineación, skill vs code, qué no copiar. | Referencia filosófica transversal; no sustituye al plan Brain. |
 
 La conexión clave es esta:
 
 - El roadmap actual ya tiene **Skill Layer** y **Workflow Layer**.
 - El plan Brain Layer agrega capas nuevas de **Ingestion, Memory, Graph, Signal y Pattern**.
 - La capa **Pattern** (`brain_skill_candidates`) alimentaría en el futuro a la capa **Skill**.
-- Pero mientras no exista `account_skills`, las skills ejecutables siguen naciendo principalmente como `SKILL.md` globales versionados en Git.
+- Hoy las skills ejecutables nacen sobre todo de **`SKILL.md` globales** y de **`account_skills` V1** (override por cuenta); el versionado completo y la promoción automática desde Pattern siguen en roadmap.
 
-Entonces: no es obligatorio implementar `account_skills` **antes** de todo el plan Brain Layer, pero sí conviene decidir antes de construir **Pattern → Skill** cómo se materializarán las skills aprobadas: archivo en repo, `account_skills` en DB, o ambos. Para las primeras fases de Brain Layer (pages, timeline, links, signals), `account_skills` no bloquea.
+Entonces: no es obligatorio tener **`account_skills` V2** (versionado, QA, org sharing) **antes** de las primeras fases de Brain Layer (`brain_pages`, `brain_links`, `brain_signals`), pero sí conviene decidir antes de automatizar bien **Pattern → Skill** dónde materializar una skill aprobada: archivo en repo, fila en `account_skills`, o ambos.
 
 ---
 
@@ -431,10 +592,12 @@ Personal interna (Ungga) puede tener modo especial para ver varias organizacione
 
 | Si eres… | Empieza por… |
 |----------|----------------|
-| Producto / negocio | Secciones 1–8 de este documento; luego el resumen del roadmap en [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md). |
-| Diseño de skills / operación | Sección 5 de este documento + `company-data` / `memory-curate` en `skills/global/`. |
+| Producto / negocio | Secciones 1–8 de este documento; [`gu-os-glossary-commercial.md`](gu-os-glossary-commercial.md) para demos; resumen del roadmap en [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md). |
+| Diseño de skills / operación | Sección 5 de este documento (especialmente §5.9 diagrama) + `company-data` / `memory-curate` en `skills/global/`. |
 | Ingeniería | [`architecture-manual.md`](architecture-manual.md) + [`architecture.md`](../architecture.md). |
 | Brain Layer / G Brain | [`docs/brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) (plan, no guía divulgativa). |
+| Principios agenticos (GStack / alineación) | [`agentic-principles-alignment.md`](agentic-principles-alignment.md) — ensayos Garry Tan mapeados a Gu OS. |
+| Glosario comercial (una página) | [`gu-os-glossary-commercial.md`](gu-os-glossary-commercial.md) — términos para ventas, alianzas y demos. |
 
 ---
 
@@ -444,6 +607,6 @@ Personal interna (Ungga) puede tener modo especial para ver varias organizacione
 - **¿Las skills propias V2 deben ser solo de negocio?** No. Deben admitir por diseño `business`, `personal` y `shared`, porque el usuario real mezcla trabajo inmobiliario con vida personal. La diferencia debe estar en permisos, fuentes de datos y visibilidad, no en prohibir skills personales propias.
 - **¿Un mismo usuario podrá estar en varias organizaciones?** Hoy el producto piensa **una** organización por usuario en el binding de negocio; multi-org es decisión futura.
 - **¿La Brain Layer reemplaza al warehouse?** No: el warehouse sigue siendo la **verdad tabular**; la Brain Layer suma **capa cognitiva y operacional** (páginas, relaciones, señales, playbooks promovidos).
-- **¿Hay que implementar `account_skills` antes de Brain Layer?** No para las primeras capas (`brain_pages`, `brain_links`, `brain_signals`). Sí hay que resolverlo antes de automatizar bien la promoción `Pattern -> Skill`, porque ahí el sistema necesita saber dónde materializar una skill aprobada.
+- **¿Hay que implementar `account_skills` antes de Brain Layer?** No el V2 completo para las primeras capas (`brain_pages`, `brain_links`, `brain_signals`). El V1 mínimo ya existe. Sí hay que cerrar el modelo de materialización antes de automatizar bien la promoción `Pattern -> Skill`.
 
-Si quieres, en un siguiente paso se puede añadir un **diagrama solo de skills** (árbol: catálogo global → scope → includes → tools) o un **glosario de una página** para comercial.
+Para demos comerciales y onboarding ejecutivo, usar [`gu-os-glossary-commercial.md`](gu-os-glossary-commercial.md).

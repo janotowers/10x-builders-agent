@@ -434,7 +434,7 @@ Cuando llegue cualquier nueva pieza de información (de Ingestion, de un turno d
 
 ChatGPT te dijo que el solapamiento es "substancial". Es cierto a nivel filosófico. A nivel de código, esto es lo que **ya tienes implementado** y G Brain también:
 
-1. **Skills como Markdown con frontmatter inyectado al prompt.** Filosofía idéntica ("thin harness, fat skills"). Tu `selectSkillForTurn` + `buildPlaybookInjection` cumple lo mismo que el `RESOLVER.md` de G Brain. Formato sutilmente distinto pero conceptualmente isomorfo.
+1. **Skills como Markdown con frontmatter inyectado al prompt.** Filosofía idéntica ("thin harness, fat skills"). Tu `selectSkillForTurn` + `buildPlaybookInjection` cumple lo mismo que el `RESOLVER.md` de G Brain. Formato sutilmente distinto pero conceptualmente isomorfo. Mapping ampliado a los ensayos GStack (2026): [`docs/manuals/agentic-principles-alignment.md`](../manuals/agentic-principles-alignment.md).
 2. **pgvector como vector store.** Tú con `memories` (1536 dims, `ivfflat`); G Brain con `content_chunks` (1536 dims también).
 3. **Brain-first.** Tu `memory_injection_node` corre **antes** de cualquier tool. La convención `brain-first.md` de G Brain dice exactamente lo mismo: `search -> query -> get_page` antes de APIs externas.
 4. **Determinístico vs LLM.** Ya tienes la distinción operacional: tus prefetchers de Heartbeat son `executor_kind='deterministic'`, registrados en `tool_calls`. G Brain le llama Minions vs Subagents. Mismo patrón.
@@ -1705,8 +1705,9 @@ El sistema puede aprender:
 3. ¿Es **generalizable** o solo aplica al agente específico que lo originó?
 4. ¿Los **side effects** del patrón son aceptables (e.g. no satura al lead, no contradice otra skill activa)?
 5. ¿El patrón **escala** (qué pasa si TODOS los agentes lo aplican)?
+6. ¿Es **MECE** con skills activas? ¿Qué skill deja de hacer este trabajo o cuál es la frontera con near-miss evals? Ver [`skills-tools-architecture.md`](../skills-tools-architecture.md) §12.3.
 
-Si cualquiera de las 5 respuestas es "no claro", el candidate se rechaza o se devuelve para más evidencia. Mismo patrón que el HITL del Bloque 5b para `synthesize`: la autonomía se gana, no se asume.
+Si cualquiera de las 6 respuestas es "no claro", el candidate se rechaza o se devuelve para más evidencia. Mismo patrón que el HITL del Bloque 5b para `synthesize`: la autonomía se gana, no se asume.
 
 #### Ejemplo concreto end-to-end
 
@@ -2047,6 +2048,8 @@ Material complementario que **no es prerequisito** para implementar el plan, per
 **Específico a sistemas agénticos / cognición:**
 
 - [G Brain README + docs](https://github.com/garrytan/gbrain) — fuente conceptual de las primitivas portadas en este plan. Lectura útil para entender la genealogía intelectual de Compiled Truth + Timeline + KG + Dream Cycle + Signal Detector como un sistema integrado.
+- **Garry Tan — *Thin Harness, Fat Skills*** (GStack, abril 2026) — cinco definiciones (skill, harness, resolver, latent/deterministic, diarization), arquitectura de tres capas y guía skill-vs-code. Mapping explícito a Gu OS: [`docs/manuals/agentic-principles-alignment.md`](../manuals/agentic-principles-alignment.md).
+- **Garry Tan — *Homebrew for Personal AI*** (GStack, abril 2026) — markdown como paquete distribuible, recipes y "agent as package manager". Complementa la sección de capability packs en `business-brain-evolution-roadmap.md`; mismo doc de alineación arriba.
 - Anthropic blog: ["Building effective agents"](https://www.anthropic.com/research/building-effective-agents) — patrón "augmented LLM" (memoria + retrieval + tools); coincide con el frame brain-first del plan.
 
 **Sobre ontologías y cuándo NO sobre-modelar:**

@@ -1,6 +1,6 @@
 # Visión: autoría de casos de uso y skills desde lenguaje natural
 
-> **Estado:** v1.0 — documento de visión y roadmap; no describe comportamiento ya implementado al 100%.
+> **Estado:** v1.1 — documento de visión y roadmap; N5 laboratorio E2E controlado ya implementado en código.
 >
 > **Documentos relacionados**
 > - [`authoring-playbook.md`](authoring-playbook.md) — **playbook obligatorio** para diseñar pasos, habilidad raíz, `current_step` y pruebas.
@@ -17,13 +17,16 @@
 
 La meta es que un usuario inmobiliario describa un proceso en **lenguaje natural** y el sistema devuelva una **propuesta implementable** — no activación automática — con:
 
-- clasificación de forma (caso operacional vs skill de un turno);
+- **discovery primero:** preguntas de clarificación y análisis de gaps antes de etiquetar la forma;
+- clasificación de forma (caso operacional vs skill de un turno vs heartbeat);
 - pasos, skills compuestas y atómicas, tools por paso;
 - mecanismos (HITL, esperas externas, recordatorios, deadlines);
-- esquema de pruebas alineado al [marco N0–N5](testing-framework.md) y al [playbook de autoría](authoring-playbook.md);
+- esquema de pruebas alineado al [marco N0–N5](testing-framework.md) o [Skill Lab](../skills-tools-architecture.md#12-skill-lab--readiness-para-skills-sin-caso-operacional);
 - gaps explícitos contra el catálogo existente.
 
-**Principio de producto:** propuesta → revisión humana → pruebas de readiness → activación controlada.
+**Principio de producto:** discovery → propuesta → revisión humana → pruebas de readiness proporcionales → activación controlada.
+
+**Principio UX:** no presentar al usuario un fork técnico («¿caso operacional o skill?») como primera pantalla. El sistema infiere la forma, explica en lenguaje de negocio y solo pide aclaración cuando hay ambigüedad (esperas, participantes externos, persistencia multi-día).
 
 Esto extiende lo que hoy existe en Ajustes (borrador básico, `skill-authoring`, heartbeat checklist) hacia un pipeline coherente de **autoría asistida**.
 
@@ -48,13 +51,16 @@ Un error común en plataformas agenticas es forzar todo flujo a un «caso» mult
 
 ```mermaid
 flowchart TD
-  NL[Descripción NL del usuario] --> Q{Clasificador de forma}
+  NL[Descripción NL del usuario] --> DIS[Discovery: preguntas + gap analysis]
+  DIS --> Q{Clasificador de forma}
   Q -->|Multi-participante, async, multi-día, alto riesgo| OC[Caso operacional]
   Q -->|Síncrono, bajo riesgo, un turno| SK[Skill compuesta / atómica]
+  Q -->|Revisión periódica, checklist| HB[Heartbeat item]
   OC --> OCT[operational_case_types + flow + cron]
   SK --> SKT[account_skill o global + allowed_tools]
+  HB --> HBT[checklist + prefetchers]
   OC --> TST[Esquema N0–N5]
-  SK --> TST2[Esquema N0–N1 + evals]
+  SK --> TST2[Skill Lab: rúbrica + evals]
   TST --> REV[Revisión humana]
   TST2 --> REV
   REV --> ACT[Activación]
@@ -86,6 +92,8 @@ flowchart TD
 
 **Artefactos:** `SKILL.md` (global o `account_skills`), `allowed_tools`, guardrails, evals sugeridos.
 
+**Readiness:** Skill Lab ([`skills-tools-architecture.md`](../skills-tools-architecture.md) §12) — rúbrica, evals, N1 opcional en integraciones; **no** N4/N5.
+
 **Ejemplos:** redactar follow-up a un lead, consultar inventario con `company-data`, preparar borrador de correo, checklist heartbeat item.
 
 ### 3.3 Señales para el clasificador
@@ -112,6 +120,10 @@ flowchart LR
     CAT[Catálogo skills/tools existentes]
     PAT[Patrones de prueba]
   end
+  subgraph Discovery
+    CLQ[Preguntas de clarificación]
+    GAP0[Gap analysis inicial]
+  end
   subgraph Generación
     CLS[Clasificador de forma]
     GEN[Generador de propuesta]
@@ -122,7 +134,9 @@ flowchart LR
     GAP[Gaps y solicitudes de tool]
     TEST[Esquema de pruebas]
   end
-  NL --> CLS
+  NL --> CLQ
+  CLQ --> GAP0
+  GAP0 --> CLS
   CAT --> GEN
   PAT --> GEN
   CLS --> GEN
@@ -132,20 +146,27 @@ flowchart LR
   VAL --> TEST
 ```
 
-### 4.1 Entrada
+### 4.1 Entrada y discovery
 
 - Descripción del proceso en lenguaje natural.
+- **Preguntas automáticas** cuando falte: ¿esperas respuesta externa?, ¿cuánto dura?, ¿quién aprueba?, ¿persiste entre días?
 - Opcional: lista de campos a capturar, participantes, plazos, integraciones mencionadas.
 - Contexto de cuenta: skills/tools ya habilitadas, credenciales, assets.
+- Gap analysis contra `TOOL_CATALOG` y registry **antes** de proponer `case_type` o skill slug.
 
 ### 4.2 Salida estructurada (contrato objetivo)
 
 ```typescript
 // Contrato conceptual — no implementado como tipo único aún
 interface UseCaseProposal {
-  classification: "operational_case" | "single_turn_skill" | "hybrid_review";
+  // Discovery
+  clarifyingQuestions?: string[];
+  discoveryComplete: boolean;
+
+  classification: "operational_case" | "single_turn_skill" | "hybrid_review" | "heartbeat";
   confidence: number;
   rationale: string;
+  recommendedReadiness: "operational_n0_n5" | "skill_lab" | "heartbeat_preview";
 
   displayName: string;
   caseType?: string;
@@ -159,17 +180,24 @@ interface UseCaseProposal {
   validationRubric: RubricItem[];
   suggestedEvals: Record<string, unknown>;
 
-  // IDs alineados con operational-case-reusable-patterns.md §5–9
-  testPlan: {
+  // Operational case only
+  testPlan?: {
     n0: string[];
     steps: Array<{
       stepKey: string;
-      patterns: string[];       // n2_* del catálogo (p. ej. n2_request_documents)
+      patterns: string[];
       n3Skills?: string[];
-      n4Scenarios?: string[];   // keys en step-test-scenario-registry.ts
+      n4Scenarios?: string[];
     }>;
-    runtimePatterns?: string[]; // PATTERN_* (dedup, notify, update_state, …)
+    runtimePatterns?: string[];
     uiPatterns?: string[];
+  };
+
+  // Single-turn skill only
+  skillLabChecklist?: {
+    meceCheck: string;
+    evalsRequired: { positive: number; nearMiss: number };
+    integrationN1?: string[];
   };
 
   gaps: {
@@ -204,7 +232,8 @@ Nada de lo generado se activa sin:
 | Propuesta heartbeat NL | `generateHeartbeatChecklistProposal()` en `packages/agent/src/heartbeat/checklist.ts` | Baja — reglas/heurísticas |
 | UI readiness N1/N2/N3 | Preparación operativa | Media-alta — patrones concretos |
 | Playbook paso / habilidad / estado | [`authoring-playbook.md`](authoring-playbook.md) | v1.0 |
-| Marco de prueba documentado | [`testing-framework.md`](testing-framework.md) | v1.1 (N0–N5) |
+| Marco de prueba documentado | [`testing-framework.md`](testing-framework.md) | v1.2 (N0–N5; N5 lab controlado) |
+| Skill Lab documentado | [`skills-tools-architecture.md`](../skills-tools-architecture.md) §12 | v1 |
 | Catálogo tools/skills | `TOOL_CATALOG`, registry global + account | Alta |
 | Caso piloto referencia | `property_optioning` | Alta — plantilla de realidad |
 
@@ -259,7 +288,8 @@ Nada de lo generado se activa sin:
 
 ### Anillo 5 — E2E y mejora continua (largo plazo)
 
-- N4 (prueba de paso) y N5 (caso E2E) automatizados por case type.
+- N4 (prueba de paso) ampliado con más escenarios por case type.
+- N5 batería automatizada multi-tick (laboratorio controlado manual **ya implementado**).
 - Evals en CI derivados de `suggestedEvals`.
 - Feedback loop: fallos en producción → actualización de patrones/rúbrica.
 
@@ -316,10 +346,12 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 
 1. **Human-in-the-loop siempre** en activación de casos y skills con side effects.
 2. **Reutilizar antes de inventar** — wrappers de negocio y tools globales antes de código nuevo.
-3. **Prueba proporcional al riesgo** — no exigir wizard A/B/C a una consulta read-only.
-4. **Propuesta explícita sobre magia** — gaps, confianza y rúbrica visibles.
-5. **Un solo lenguaje visual** — mismos colores y niveles en UI generada o manual ([§9 testing-framework](testing-framework.md#9-reglas-visuales-unificadas)).
-6. **Global code, account configuration** — ver [`architecture.md`](architecture.md) §10.1.
+3. **Prueba proporcional al riesgo y a la forma** — N0–N5 para casos; Skill Lab para skills de un turno; no exigir wizard A/B/C a una consulta read-only.
+4. **Discovery antes de clasificar** — gaps y preguntas antes de «caso vs skill» visible al usuario.
+5. **Propuesta explícita sobre magia** — gaps, confianza y rúbrica visibles.
+6. **Un solo lenguaje visual** — mismos colores y niveles en UI generada o manual ([§10 testing-framework](testing-framework.md#10-reglas-visuales-unificadas)).
+7. **Global code, account configuration** — ver [`architecture.md`](architecture.md) §10.1.
+8. **`step_key` = hito durable** — no un paso por habilidad **atómica**; la raíz orquesta dentro del hito ([`authoring-playbook.md`](authoring-playbook.md) §1).
 
 ---
 
@@ -337,7 +369,7 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 | Case type sugerido | `property_optioning` o variante privada |
 | Pasos afectados | documentos + características |
 | Tools | `operational_case_register_document`, `operational_case_extract_document_fields`, `telegram_send_message_to_contact`, `notify_user`, … |
-| testPlan | N2 `documents_abc` + N2 `telegram_abc` + N3 por skill |
+| testPlan | N2 `documents_abc` + N2 `telegram_abc` + N3 por skill + N5 lab camino feliz |
 | Gaps | verificar asset PDF de prueba, Telegram vinculado |
 
 **Entrada NL alternativa:**
@@ -348,7 +380,8 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 |-------|-------|
 | Clasificación | `single_turn_skill` |
 | Skill sugerida | `lead-follow-up-draft` (existente) o variante account |
-| testPlan | N0 opcional + N1 eval de tono; sin caso operacional |
+| testPlan | Skill Lab: rúbrica + 3 evals; sin caso operacional |
+| recommendedReadiness | `skill_lab` |
 
 ---
 
