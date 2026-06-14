@@ -11,6 +11,7 @@ import {
   getPendingToolCall,
   getGoogleCalendarAccessToken,
   associateExternalResponseWithCase,
+  countPendingToolCallsForCase,
   findOperationalCaseByExternalChatId,
   getOperationalCase,
   getRecentOperationalCaseEvents,
@@ -18,7 +19,8 @@ import {
   insertOperationalCaseEvent,
   listInternalUserNotifications,
   linkE2ELabSessionToCase,
-  setInternalUserNotificationStatus,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
+  resolveInternalNotificationWithReminders,
   shortOperationalCaseId,
   updateOperationalCase,
   updateToolCallStatus,
@@ -36,6 +38,7 @@ import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { parsePriceApprovalDecision } from "@/lib/business-decisions/price-approval";
 import { parseContractReviewDecision } from "@/lib/business-decisions/contract-review";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
+import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
   resolveTelegramConversationRoute,
   shouldBindTelegramMessageToConversationalCase,
@@ -61,6 +64,66 @@ import {
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
+const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
+
+function toolCallCaseId(toolCall: {
+  arguments_json?: unknown;
+  metadata_jsonb?: unknown;
+}): string | null {
+  const args = toolCall.arguments_json;
+  if (
+    args &&
+    typeof args === "object" &&
+    !Array.isArray(args) &&
+    typeof (args as Record<string, unknown>).case_id === "string"
+  ) {
+    const caseId = ((args as Record<string, unknown>).case_id as string).trim();
+    if (caseId) return caseId;
+  }
+  const metadata = toolCall.metadata_jsonb;
+  if (
+    metadata &&
+    typeof metadata === "object" &&
+    !Array.isArray(metadata) &&
+    typeof (metadata as Record<string, unknown>).case_id === "string"
+  ) {
+    const caseId = ((metadata as Record<string, unknown>).case_id as string).trim();
+    if (caseId) return caseId;
+  }
+  return null;
+}
+
+async function finalizeCaseAfterToolDecision(
+  db: ReturnType<typeof createServerClient>,
+  params: {
+    toolCall: { arguments_json?: unknown; metadata_jsonb?: unknown };
+    userId: string;
+  }
+) {
+  const caseId = toolCallCaseId(params.toolCall);
+  if (!caseId) return;
+  const pending = await countPendingToolCallsForCase(db, caseId);
+  if (pending > 0) return;
+
+  await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+    userId: params.userId,
+    caseId,
+    kind: TOOL_CONFIRMATION_PENDING_KIND,
+    status: "actioned",
+  });
+
+  const opCase = await getOperationalCase(db, caseId);
+  if (
+    !opCase ||
+    opCase.user_id !== params.userId ||
+    !["active", "waiting_internal", "waiting_external"].includes(opCase.status)
+  ) {
+    return;
+  }
+  await updateOperationalCase(db, opCase.id, opCase.version, {
+    nextActionAt: new Date().toISOString(),
+  });
+}
 
 async function ensureConversationalE2ELabExternalContact(
   db: ReturnType<typeof createServerClient>,
@@ -496,6 +559,7 @@ async function resumeAgentFromCallback(
       message: "Acción cancelada por el usuario.",
       source: "telegram_callback",
     });
+    await finalizeCaseAfterToolDecision(db, { toolCall, userId });
     return {
       ok: true,
       message: "Acción cancelada.",
@@ -594,6 +658,7 @@ async function resumeAgentFromCallback(
     channel: "telegram",
     googleCalendarAccessToken,
   });
+  await finalizeCaseAfterToolDecision(db, { toolCall, userId });
 
   return {
     ok: true,
@@ -703,6 +768,42 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         routed: "contract_review",
+        notification_id: targetId,
+      });
+    }
+
+    if (action === "property_data_confirm" || action === "property_data_correct") {
+      if (action === "property_data_correct") {
+        await answerCallbackQuery(cb.id, "Escribe la corrección");
+        await sendTelegramMessage(
+          cb.message.chat.id,
+          "Perfecto. Envíame la corrección en texto, por ejemplo:\nTipo: Terreno · Operación: Venta · Zona: Bucerías"
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "property_data_review_guidance",
+          notification_id: targetId,
+        });
+      }
+      const result = await handlePropertyDataReviewDecision(db, {
+        userId,
+        notificationId: targetId,
+        text: "Confirmo la información",
+      });
+      await answerCallbackQuery(
+        cb.id,
+        result.ok ? "Datos confirmados" : "No pude procesarlo"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Listo, procesé tu revisión de datos."
+            : "No pude procesar la revisión de datos.")
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "property_data_review",
         notification_id: targetId,
       });
     }
@@ -1161,7 +1262,9 @@ export async function POST(request: Request) {
   const parsedContractDecision = parseContractReviewDecision(text);
   if (parsedContractDecision.intent !== "unclear") {
     const pendingContractReview = pendingInternal.find(
-      (notification) => notification.kind === "contract_review"
+      (notification) =>
+        notification.kind === "contract_review" ||
+        notification.kind === "contract_pending"
     );
     if (pendingContractReview) {
       const result = await businessDecisionHandler("contract_review").handle(db, {
@@ -1275,7 +1378,7 @@ export async function POST(request: Request) {
           correction_patch: correctionPatch,
         },
       });
-      await setInternalUserNotificationStatus(db, {
+      await resolveInternalNotificationWithReminders(db, {
         id: notification.id,
         userId,
         status: "actioned",

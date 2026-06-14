@@ -1,80 +1,21 @@
 import { NextResponse } from "next/server";
 import {
   createServerClient,
-  deleteSettingsTestInternalNotifications,
+  deleteResolvedInternalNotificationsForUser,
+  dismissOrphanInternalRemindersForUser,
   getOperationalCase,
   getRecentOperationalCaseEvents,
-  listInternalUserNotifications,
-  setInternalUserNotificationStatus,
+  rejectPendingToolCallsForCase,
+  resolveInternalNotificationWithReminders,
+  updateOperationalCase,
 } from "@agents/db";
 import type { InternalUserNotificationStatus } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
-import { hiddenInboxNotificationKinds } from "@/lib/internal-notifications/registry";
-import {
-  formatPendingCaseContextLine,
-  loadCaseContextMap,
-} from "@/lib/notifications/enrich-case-context";
 import { cleanupSettingsTestCaseHistory } from "@/lib/operational-cases/settings-test-pending-actions";
-import { normalizeNotificationActionUrl } from "@/lib/notifications/pending-action-display";
-
-async function listCaseRunnerPendingConfirmations(
-  db: ReturnType<typeof createServerClient>,
-  userId: string,
-  caseIdFilter?: string | null
-) {
-  const { data: sessions, error: sessionsError } = await db
-    .from("agent_sessions")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("channel", "case_runner")
-    .eq("status", "active");
-  if (sessionsError) throw sessionsError;
-  const sessionIds = (sessions ?? [])
-    .map((session: { id?: unknown }) => session.id)
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-  if (sessionIds.length === 0) return [];
-
-  const { data: toolCalls, error: toolCallsError } = await db
-    .from("tool_calls")
-    .select(
-      "id, session_id, turn_id, tool_name, arguments_json, status, created_at"
-    )
-    .in("session_id", sessionIds)
-    .eq("status", "pending_confirmation")
-    .order("created_at", { ascending: false })
-    .limit(20);
-  if (toolCallsError) throw toolCallsError;
-
-  const mapped = (toolCalls ?? []).map(
-    (call: {
-      id: string;
-      session_id: string;
-      turn_id?: string | null;
-      tool_name: string;
-      arguments_json?: Record<string, unknown> | null;
-      status: string;
-      created_at: string;
-    }) => ({
-      toolCallId: call.id,
-      sessionId: call.session_id,
-      turnId: call.turn_id ?? null,
-      toolName: call.tool_name,
-      args: call.arguments_json ?? {},
-      status: call.status,
-      createdAt: call.created_at,
-      caseId:
-        typeof call.arguments_json?.case_id === "string"
-          ? call.arguments_json.case_id
-          : null,
-      message: `El agente solicita aprobación para ejecutar ${call.tool_name}.`,
-    })
-  );
-
-  if (caseIdFilter) {
-    return mapped.filter((item) => item.caseId === caseIdFilter);
-  }
-  return mapped;
-}
+import {
+  loadPendingInboxSnapshot,
+  loadResolvedInboxSnapshot,
+} from "@/lib/notifications/load-pending-inbox";
 
 export async function GET(request: Request) {
   const supabase = await createClient();
@@ -84,103 +25,18 @@ export async function GET(request: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const url = new URL(request.url);
-  const caseIdFilter = url.searchParams.get("case_id")?.trim() || null;
-
-  const db = createServerClient();
-  let notifications = await listInternalUserNotifications(db, user.id, {
-    statuses: ["unread"],
-    excludeKinds: hiddenInboxNotificationKinds(),
-    limit: caseIdFilter ? 50 : 20,
-  });
-  if (caseIdFilter) {
-    notifications = notifications.filter(
-      (notification) => notification.case_id === caseIdFilter
-    );
+  if (url.searchParams.get("view") === "resolved") {
+    const resolved = await loadResolvedInboxSnapshot(user.id);
+    return NextResponse.json({ notifications: resolved.notifications });
   }
 
-  let pendingToolConfirmations = await listCaseRunnerPendingConfirmations(
-    db,
-    user.id,
-    caseIdFilter
-  );
-
-  const caseIds = [
-    ...notifications.map((n) => n.case_id),
-    ...pendingToolConfirmations.map((p) => p.caseId),
-  ].filter((id): id is string => typeof id === "string" && id.length > 0);
-  const caseContextMap = await loadCaseContextMap(db, caseIds);
-
-  const enrichedNotifications = notifications.map((notification) => {
-    const context = notification.case_id
-      ? caseContextMap.get(notification.case_id) ?? {
-          caseId: notification.case_id,
-          caseTitle: null,
-          caseStep: null,
-          caseStepLabel: null,
-          caseStatus: null,
-          caseStatusLabel: null,
-        }
-      : {
-          caseId: null,
-          caseTitle: null,
-          caseStep: null,
-          caseStepLabel: null,
-          caseStatus: null,
-          caseStatusLabel: null,
-        };
-    return {
-      id: notification.id,
-      kind: notification.kind,
-      title: notification.title,
-      body: notification.body,
-      priority: notification.priority,
-      action_url: normalizeNotificationActionUrl(notification.action_url),
-      due_at: notification.due_at,
-      created_at: notification.created_at,
-      caseId: context.caseId,
-      caseTitle: context.caseTitle,
-      caseStep: context.caseStep,
-      caseStepLabel: context.caseStepLabel,
-      caseStatus: context.caseStatus,
-      caseStatusLabel: context.caseStatusLabel,
-      caseContextLine: formatPendingCaseContextLine(context),
-    };
-  });
-
-  const enrichedPendingToolConfirmations = pendingToolConfirmations.map(
-    (pending) => {
-      const context = pending.caseId
-        ? caseContextMap.get(pending.caseId) ?? {
-            caseId: pending.caseId,
-            caseTitle: null,
-            caseStep: null,
-            caseStepLabel: null,
-            caseStatus: null,
-            caseStatusLabel: null,
-          }
-        : {
-            caseId: null,
-            caseTitle: null,
-            caseStep: null,
-            caseStepLabel: null,
-            caseStatus: null,
-            caseStatusLabel: null,
-          };
-      return {
-        ...pending,
-        caseTitle: context.caseTitle,
-        caseStep: context.caseStep,
-        caseStepLabel: context.caseStepLabel,
-        caseStatus: context.caseStatus,
-        caseStatusLabel: context.caseStatusLabel,
-        caseContextLine: formatPendingCaseContextLine(context),
-      };
-    }
-  );
+  const caseIdFilter = url.searchParams.get("case_id")?.trim() || null;
+  const pendingInbox = await loadPendingInboxSnapshot(user.id, caseIdFilter);
 
   return NextResponse.json({
-    notifications: enrichedNotifications,
-    pendingToolConfirmations: enrichedPendingToolConfirmations,
+    notifications: pendingInbox.notifications,
+    pendingToolConfirmations: pendingInbox.pendingToolConfirmations,
+    counts: pendingInbox.counts,
   });
 }
 
@@ -197,18 +53,18 @@ export async function PATCH(request: Request) {
   };
   const id = typeof body.id === "string" ? body.id : "";
   const status = typeof body.status === "string" ? body.status : "";
-  if (!id || !["read", "actioned", "dismissed"].includes(status)) {
+  if (!id || !["unread", "read", "actioned", "dismissed"].includes(status)) {
     return NextResponse.json(
-      { error: "id and status (read|actioned|dismissed) are required" },
+      { error: "id and status (unread|read|actioned|dismissed) are required" },
       { status: 400 }
     );
   }
 
   const db = createServerClient();
-  const notification = await setInternalUserNotificationStatus(db, {
+  const notification = await resolveInternalNotificationWithReminders(db, {
     id,
     userId: user.id,
-    status: status as Exclude<InternalUserNotificationStatus, "unread">,
+    status: status as InternalUserNotificationStatus,
   });
   if (!notification) {
     return NextResponse.json({ error: "notification_not_found" }, { status: 404 });
@@ -224,9 +80,48 @@ export async function DELETE(request: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const url = new URL(request.url);
-  if (url.searchParams.get("scope") !== "settings-test") {
+  const scope = url.searchParams.get("scope")?.trim() ?? "";
+  const db = createServerClient();
+
+  if (scope === "resolved-history") {
+    const deleted_resolved_history = await deleteResolvedInternalNotificationsForUser(
+      db,
+      user.id
+    );
+    return NextResponse.json({ deleted_resolved_history });
+  }
+
+  if (scope === "stuck-case") {
+    const caseId = url.searchParams.get("case_id")?.trim() || "";
+    if (!caseId) {
+      return NextResponse.json({ error: "case_id is required" }, { status: 400 });
+    }
+    const opCase = await getOperationalCase(db, caseId);
+    if (!opCase || opCase.user_id !== user.id) {
+      return NextResponse.json({ error: "case_not_found" }, { status: 404 });
+    }
+    const rejected_tool_calls = await rejectPendingToolCallsForCase(
+      db,
+      caseId,
+      "stuck_case_cleanup"
+    );
+    const pausedCase = await updateOperationalCase(db, opCase.id, opCase.version, {
+      status: "paused",
+      nextActionAt: null,
+    });
+    if (!pausedCase) {
+      return NextResponse.json({ error: "case_update_conflict" }, { status: 409 });
+    }
+    return NextResponse.json({
+      case_id: caseId,
+      rejected_tool_calls,
+      case_status: pausedCase.status,
+    });
+  }
+
+  if (scope !== "settings-test") {
     return NextResponse.json(
-      { error: "scope=settings-test is required" },
+      { error: "scope must be settings-test, resolved-history, or stuck-case" },
       { status: 400 }
     );
   }
@@ -253,7 +148,10 @@ export async function DELETE(request: Request) {
     );
   }
 
-  const db = createServerClient();
+  const dismissed_orphan_reminders = await dismissOrphanInternalRemindersForUser(
+    db,
+    user.id
+  );
   if (caseId) {
     const opCase = await getOperationalCase(db, caseId);
     if (!opCase || opCase.user_id !== user.id) {
@@ -269,6 +167,7 @@ export async function DELETE(request: Request) {
     return NextResponse.json({
       ...result,
       deleted: result.deleted_notifications,
+      dismissed_orphan_reminders,
       case_id: caseId,
       target,
     });
@@ -280,12 +179,38 @@ export async function DELETE(request: Request) {
       { status: 400 }
     );
   }
-  const deleted = await deleteSettingsTestInternalNotifications(db, user.id);
+
+  const { data: settingsTestCases, error: casesError } = await db
+    .from("operational_cases")
+    .select("id")
+    .eq("user_id", user.id)
+    .or(
+      "context_jsonb->>created_from.eq.case_type_settings_test,context_jsonb->>test_mode.eq.true"
+    );
+  if (casesError) throw casesError;
+
+  let deleted_notifications = 0;
+  let rejected_tool_calls = 0;
+  for (const caseRow of settingsTestCases ?? []) {
+    const settingsCaseId =
+      typeof caseRow.id === "string" && caseRow.id.length > 0 ? caseRow.id : "";
+    if (!settingsCaseId) continue;
+    const result = await cleanupSettingsTestCaseHistory(db, {
+      userId: user.id,
+      caseId: settingsCaseId,
+      target: "all",
+      rejectBlockingToolCalls: true,
+    });
+    deleted_notifications += result.deleted_notifications;
+    rejected_tool_calls += result.rejected_tool_calls;
+  }
+
   return NextResponse.json({
-    deleted_notifications: deleted,
-    rejected_tool_calls: 0,
-    deleted,
+    deleted_notifications,
+    rejected_tool_calls,
+    dismissed_orphan_reminders,
+    deleted: deleted_notifications,
     case_id: null,
-    target,
+    target: "all",
   });
 }

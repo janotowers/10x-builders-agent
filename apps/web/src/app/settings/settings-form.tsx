@@ -519,8 +519,9 @@ export function SettingsForm({
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const activeView: SettingsView = isSettingsView(searchParams.get("view"))
-    ? searchParams.get("view")
+  const viewParam = searchParams.get("view");
+  const activeView: SettingsView = isSettingsView(viewParam)
+    ? viewParam
     : "profile-user";
   const currentSectionParam = searchParams.get("section");
   const [activeCapabilitiesSection, setActiveCapabilitiesSection] =

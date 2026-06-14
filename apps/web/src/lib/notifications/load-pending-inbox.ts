@@ -1,10 +1,24 @@
-import { createServerClient, listInternalUserNotifications } from "@agents/db";
+import {
+  countInternalUserNotifications,
+  createServerClient,
+  listInternalUserNotifications,
+  listResolvedInternalUserNotifications,
+} from "@agents/db";
+import type { InternalUserNotification } from "@agents/types";
 import { hiddenInboxNotificationKinds } from "@/lib/internal-notifications/registry";
 import {
   formatPendingCaseContextLine,
   loadCaseContextMap,
 } from "@/lib/notifications/enrich-case-context";
-import { normalizeNotificationActionUrl } from "@/lib/notifications/pending-action-display";
+import {
+  describeToolConfirmationAction,
+  normalizeNotificationActionUrl,
+} from "@/lib/notifications/pending-action-display";
+import type { PendingInboxCounts } from "@/lib/notifications/pending-inbox-types";
+
+const NOTIFICATION_ROW_LIMIT = 50;
+const TOOL_CONFIRMATION_LIMIT = 50;
+const REMINDER_KIND = "internal_notification_reminder";
 
 export type PendingInboxNotification = {
   id: string;
@@ -22,6 +36,11 @@ export type PendingInboxNotification = {
   caseStatus?: string | null;
   caseStatusLabel?: string | null;
   caseContextLine?: string | null;
+  sourceNotificationId?: string | null;
+  lastReminderAt?: string | null;
+  reminderCount?: number | null;
+  escalatedAt?: string | null;
+  escalationReason?: string | null;
 };
 
 export type PendingInboxToolConfirmation = {
@@ -67,7 +86,7 @@ async function listCaseRunnerPendingConfirmations(
     .in("session_id", sessionIds)
     .eq("status", "pending_confirmation")
     .order("created_at", { ascending: false })
-    .limit(20);
+    .limit(TOOL_CONFIRMATION_LIMIT);
   if (toolCallsError) throw toolCallsError;
 
   const mapped = (toolCalls ?? []).map(
@@ -91,7 +110,7 @@ async function listCaseRunnerPendingConfirmations(
         typeof call.arguments_json?.case_id === "string"
           ? call.arguments_json.case_id
           : null,
-      message: `El agente solicita aprobación para ejecutar ${call.tool_name}.`,
+      message: describeToolConfirmationAction(call.tool_name),
     })
   );
 
@@ -101,30 +120,139 @@ async function listCaseRunnerPendingConfirmations(
   return mapped;
 }
 
+async function countCaseRunnerPendingConfirmations(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  opts: { caseIdFilter?: string | null; caseLinked?: boolean } = {}
+) {
+  const { data: sessions, error: sessionsError } = await db
+    .from("agent_sessions")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("channel", "case_runner")
+    .eq("status", "active");
+  if (sessionsError) throw sessionsError;
+  const sessionIds = (sessions ?? [])
+    .map((session: { id?: unknown }) => session.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (sessionIds.length === 0) return 0;
+
+  let query = db
+    .from("tool_calls")
+    .select("id", { count: "exact", head: true })
+    .in("session_id", sessionIds)
+    .eq("status", "pending_confirmation");
+  if (opts.caseIdFilter) {
+    query = query.eq("arguments_json->>case_id", opts.caseIdFilter);
+  } else if (opts.caseLinked === true) {
+    query = query.not("arguments_json->>case_id", "is", null);
+  }
+  const { count, error } = await query;
+  if (error) throw error;
+  return count ?? 0;
+}
+
+function notificationStringMetadata(
+  notification: InternalUserNotification,
+  key: string
+) {
+  const value = notification.metadata_jsonb?.[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function notificationNumberMetadata(
+  notification: InternalUserNotification,
+  key: string
+) {
+  const value = notification.metadata_jsonb?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+async function includeReminderSourceNotifications(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  notifications: InternalUserNotification[]
+) {
+  const sourceIds = [
+    ...new Set(
+      notifications
+        .filter((notification) => notification.kind === REMINDER_KIND)
+        .map((notification) =>
+          notificationStringMetadata(notification, "source_notification_id")
+        )
+        .filter((id): id is string => Boolean(id))
+    ),
+  ];
+  const existingIds = new Set(notifications.map((notification) => notification.id));
+  const missingSourceIds = sourceIds.filter((id) => !existingIds.has(id));
+  if (missingSourceIds.length === 0) return notifications;
+
+  const { data, error } = await db
+    .from("internal_user_notifications")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("status", "unread")
+    .in("id", missingSourceIds);
+  if (error) throw error;
+  return [...notifications, ...((data ?? []) as InternalUserNotification[])];
+}
+
 export async function loadPendingInboxSnapshot(
   userId: string,
   caseIdFilter?: string | null
 ): Promise<{
   notifications: PendingInboxNotification[];
   pendingToolConfirmations: PendingInboxToolConfirmation[];
+  counts: PendingInboxCounts;
 }> {
   const db = createServerClient();
+  const excludedKinds = hiddenInboxNotificationKinds();
+  const actionableExcludedKinds = [...excludedKinds, REMINDER_KIND];
   let notifications = await listInternalUserNotifications(db, userId, {
     statuses: ["unread"],
-    excludeKinds: hiddenInboxNotificationKinds(),
-    limit: caseIdFilter ? 50 : 20,
+    excludeKinds: excludedKinds,
+    limit: caseIdFilter ? 100 : NOTIFICATION_ROW_LIMIT,
   });
   if (caseIdFilter) {
     notifications = notifications.filter(
       (notification) => notification.case_id === caseIdFilter
     );
   }
+  notifications = await includeReminderSourceNotifications(db, userId, notifications);
 
-  const pendingToolConfirmations = await listCaseRunnerPendingConfirmations(
-    db,
-    userId,
-    caseIdFilter
-  );
+  const [pendingToolConfirmations, notificationRowsTotal, actionableNotificationsTotal, pendingToolConfirmationsTotal, flowRelatedNotificationsTotal, flowRelatedToolConfirmationsTotal, overdueTotal] =
+    await Promise.all([
+      listCaseRunnerPendingConfirmations(db, userId, caseIdFilter),
+      countInternalUserNotifications(db, userId, {
+        statuses: ["unread"],
+        excludeKinds: excludedKinds,
+        caseId: caseIdFilter,
+      }),
+      countInternalUserNotifications(db, userId, {
+        statuses: ["unread"],
+        excludeKinds: actionableExcludedKinds,
+        caseId: caseIdFilter,
+      }),
+      countCaseRunnerPendingConfirmations(db, userId, {
+        caseIdFilter,
+      }),
+      countInternalUserNotifications(db, userId, {
+        statuses: ["unread"],
+        excludeKinds: actionableExcludedKinds,
+        caseId: caseIdFilter,
+        caseLinked: caseIdFilter ? undefined : true,
+      }),
+      countCaseRunnerPendingConfirmations(db, userId, {
+        caseIdFilter,
+        caseLinked: caseIdFilter ? undefined : true,
+      }),
+      countInternalUserNotifications(db, userId, {
+        statuses: ["unread"],
+        excludeKinds: actionableExcludedKinds,
+        caseId: caseIdFilter,
+        dueBefore: new Date().toISOString(),
+      }),
+    ]);
 
   const caseIds = [
     ...notifications.map((n) => n.case_id),
@@ -166,6 +294,16 @@ export async function loadPendingInboxSnapshot(
       caseStatus: context.caseStatus,
       caseStatusLabel: context.caseStatusLabel,
       caseContextLine: formatPendingCaseContextLine(context),
+      sourceNotificationId: notificationStringMetadata(
+        notification,
+        "source_notification_id"
+      ),
+      lastReminderAt: notificationStringMetadata(notification, "last_reminder_at"),
+      reminderCount: notificationNumberMetadata(notification, "reminder_count"),
+      escalatedAt: notificationStringMetadata(notification, "escalated_at"),
+      escalationReason: notificationStringMetadata(notification, "escalation_reason"),
+      refreshCount: notificationNumberMetadata(notification, "refresh_count"),
+      lastRefreshedAt: notificationStringMetadata(notification, "last_refreshed_at"),
     };
   });
 
@@ -203,5 +341,82 @@ export async function loadPendingInboxSnapshot(
   return {
     notifications: enrichedNotifications,
     pendingToolConfirmations: enrichedPendingToolConfirmations,
+    counts: {
+      notificationRowsTotal,
+      actionableNotificationsTotal,
+      pendingToolConfirmationsTotal,
+      flowRelatedTotal:
+        flowRelatedNotificationsTotal + flowRelatedToolConfirmationsTotal,
+      overdueTotal,
+    },
   };
+}
+
+export type ResolvedInboxNotification = PendingInboxNotification & {
+  status: string;
+  updated_at: string;
+};
+
+export async function loadResolvedInboxSnapshot(
+  userId: string,
+  limit = 20
+): Promise<{ notifications: ResolvedInboxNotification[] }> {
+  const db = createServerClient();
+  const resolved = await listResolvedInternalUserNotifications(db, userId, {
+    excludeKinds: hiddenInboxNotificationKinds(),
+    limit,
+  });
+
+  const caseIds = resolved
+    .map((notification) => notification.case_id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  const caseContextMap = await loadCaseContextMap(db, caseIds);
+
+  const notifications = resolved.map((notification) => {
+    const context = notification.case_id
+      ? caseContextMap.get(notification.case_id) ?? {
+          caseId: notification.case_id,
+          caseTitle: null,
+          caseStep: null,
+          caseStepLabel: null,
+          caseStatus: null,
+          caseStatusLabel: null,
+        }
+      : {
+          caseId: null,
+          caseTitle: null,
+          caseStep: null,
+          caseStepLabel: null,
+          caseStatus: null,
+          caseStatusLabel: null,
+        };
+    return {
+      id: notification.id,
+      kind: notification.kind,
+      title: notification.title,
+      body: notification.body,
+      priority: notification.priority,
+      action_url: normalizeNotificationActionUrl(notification.action_url),
+      due_at: notification.due_at,
+      created_at: notification.created_at,
+      status: notification.status,
+      updated_at: notification.updated_at,
+      caseId: context.caseId,
+      caseTitle: context.caseTitle,
+      caseStep: context.caseStep,
+      caseStepLabel: context.caseStepLabel,
+      caseStatus: context.caseStatus,
+      caseStatusLabel: context.caseStatusLabel,
+      caseContextLine: formatPendingCaseContextLine(context),
+      sourceNotificationId:
+        typeof notification.metadata_jsonb?.source_notification_id === "string"
+          ? notification.metadata_jsonb.source_notification_id
+          : null,
+      lastReminderAt: null,
+      refreshCount: notificationNumberMetadata(notification, "refresh_count"),
+      lastRefreshedAt: notificationStringMetadata(notification, "last_refreshed_at"),
+    };
+  });
+
+  return { notifications };
 }

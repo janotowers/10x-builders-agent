@@ -8,7 +8,10 @@ import {
   useLayoutEffect,
   useEffect,
   useMemo,
+  type ChangeEvent,
+  type FormEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import {
@@ -733,7 +736,7 @@ function scheduledTaskStatusClass(
     failed:
       "bg-red-100 text-red-800 dark:bg-red-400/10 dark:text-red-100",
     running:
-      "bg-sky-100 text-sky-800 dark:bg-sky-400/15 dark:text-sky-100 animate-pulse",
+      "bg-sky-100 text-sky-800 dark:bg-sky-400/15 dark:text-sky-100",
   };
   return classes[status];
 }
@@ -1309,9 +1312,9 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
           onSelectTurn(msg.turn_id);
         }
       }}
-      className={`flex items-start gap-2 rounded-[1.75rem] outline-none transition ${
+      className={`flex items-start gap-2 rounded-[1.75rem] outline-none ${
         msg.turn_id ? "cursor-pointer" : ""
-      } ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+      } ${msg.role === "user" ? "justify-end" : "justify-start"} [content-visibility:auto] [contain-intrinsic-size:0_120px]`}
     >
       {msg.role !== "user" && (
         <ChatAvatar
@@ -1378,6 +1381,150 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
   );
 });
 
+const ChatComposer = memo(function ChatComposer({
+  loading,
+  hasConfirmation,
+  hasPendingAttachments,
+  fileInputRef,
+  composerInputRef,
+  onAttachmentSelection,
+  onComposingChange,
+  onSend,
+}: {
+  loading: boolean;
+  hasConfirmation: boolean;
+  hasPendingAttachments: boolean;
+  fileInputRef: RefObject<HTMLInputElement | null>;
+  composerInputRef: RefObject<HTMLInputElement | null>;
+  onAttachmentSelection: (event: ChangeEvent<HTMLInputElement>) => void;
+  onComposingChange: (composing: boolean) => void;
+  onSend: (text: string) => void;
+}) {
+  const textInputRef = useRef<HTMLInputElement>(null);
+  const disabled = loading || hasConfirmation;
+
+  useEffect(() => {
+    const el = textInputRef.current;
+    if (!el) return;
+    const markComposing = () => onComposingChange(true);
+    el.addEventListener("input", markComposing);
+    el.addEventListener("keydown", markComposing);
+    return () => {
+      el.removeEventListener("input", markComposing);
+      el.removeEventListener("keydown", markComposing);
+    };
+  }, [onComposingChange]);
+
+  function assignTextInput(el: HTMLInputElement | null) {
+    textInputRef.current = el;
+    composerInputRef.current = el;
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = textInputRef.current?.value.trim() ?? "";
+    if (disabled || (!text && !hasPendingAttachments)) return;
+    onSend(text);
+    if (textInputRef.current) {
+      textInputRef.current.value = "";
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="mx-auto max-w-2xl space-y-2">
+      <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm dark:border-white/10 dark:bg-neutral-900">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={CHAT_ATTACHMENT_ACCEPT}
+          className="hidden"
+          onChange={onAttachmentSelection}
+        />
+        <button
+          type="button"
+          aria-label="Adjuntar archivo"
+          title="Adjuntar PDF, Word, Excel o texto (máx. 5 MB)"
+          disabled={disabled}
+          onClick={() => fileInputRef.current?.click()}
+          className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-violet-50 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-5 w-5"
+            aria-hidden="true"
+          >
+            <path d="M21.44 11.05 12.25 20.24a6 6 0 1 1-8.49-8.49l9.19-9.19a4 4 0 1 1 5.66 5.66l-9.2 9.19a2 2 0 1 1-2.83-2.83l8.49-8.48" />
+          </svg>
+        </button>
+        <input
+          ref={assignTextInput}
+          type="text"
+          defaultValue=""
+          onFocus={() => onComposingChange(true)}
+          onBlur={() => onComposingChange(false)}
+          placeholder={
+            hasConfirmation
+              ? "Resuelve la confirmación para continuar..."
+              : "Dile a Gu qué necesitas..."
+          }
+          disabled={disabled}
+          className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:opacity-50 dark:text-white dark:placeholder:text-white/40"
+        />
+        <button
+          type="button"
+          aria-label="Mensaje de voz"
+          title="Mensaje de voz"
+          className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-violet-700 hover:bg-violet-50 dark:text-violet-200 dark:hover:bg-white/10 sm:flex"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-5 w-5"
+            aria-hidden="true"
+          >
+            <rect x="9" y="3" width="6" height="11" rx="3" />
+            <path d="M5 11a7 7 0 0 0 14 0" />
+            <line x1="12" y1="18" x2="12" y2="22" />
+            <line x1="8" y1="22" x2="16" y2="22" />
+          </svg>
+        </button>
+        <button
+          type="submit"
+          aria-label="Enviar mensaje"
+          title="Enviar"
+          disabled={disabled}
+          className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-gradient-to-br from-violet-700 to-fuchsia-600 text-white shadow-lg shadow-violet-900/20 transition hover:from-violet-800 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-5 w-5"
+            aria-hidden="true"
+          >
+            <path d="m4 12 16-8-6 18-3-7-7-3z" />
+          </svg>
+        </button>
+      </div>
+    </form>
+  );
+});
+
 export function ChatInterface({
   agentName,
   agentAvatarUrl,
@@ -1403,7 +1550,6 @@ export function ChatInterface({
   const [scheduledTaskSummary, setScheduledTaskSummary] = useState<
     ScheduledTaskSummary | undefined
   >(initialScheduledTaskSummary);
-  const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(
     initialPendingConfirmation
@@ -1420,6 +1566,7 @@ export function ChatInterface({
     string | null
   >(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerInputRef = useRef<HTMLInputElement | null>(null);
   const pendingHref = pendingInboxCount > 0 ? "/chat/pending" : null;
   const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(
@@ -1429,6 +1576,15 @@ export function ChatInterface({
   );
   const handleSelectTurn = useCallback((turnId: string) => {
     setSelectedTurnId(turnId);
+  }, []);
+  const isComposingRef = useRef(false);
+  const handleComposingChange = useCallback((composing: boolean) => {
+    isComposingRef.current = composing;
+  }, []);
+  const isUserComposing = useCallback(() => {
+    if (isComposingRef.current) return true;
+    const input = composerInputRef.current;
+    return input != null && document.activeElement === input;
   }, []);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
@@ -1440,6 +1596,8 @@ export function ChatInterface({
   const messagesRef = useRef<Message[]>(initialMessages);
   const toolCallsRef = useRef<RecentToolCall[]>(initialToolCalls);
   const loadingRef = useRef(false);
+  const syncPollMs =
+    process.env.NODE_ENV === "production" ? 5_000 : 30_000;
   const agentInitial =
     agentEmoji || agentName.slice(0, 1).toUpperCase() || "G";
   const agentStatus = confirmation
@@ -1574,7 +1732,14 @@ export function ChatInterface({
     let inFlight = false;
 
     async function syncAutomatedActivity(includeOperational = false) {
-      if (cancelled || inFlight || document.visibilityState !== "visible") return;
+      if (
+        cancelled ||
+        inFlight ||
+        document.visibilityState !== "visible" ||
+        isUserComposing()
+      ) {
+        return;
+      }
       inFlight = true;
       try {
         const params = new URLSearchParams();
@@ -1594,7 +1759,7 @@ export function ChatInterface({
           heartbeatStatus?: HeartbeatStatus;
           scheduledTaskSummary?: ScheduledTaskSummary;
         };
-        if (cancelled) return;
+        if (cancelled || isUserComposing()) return;
         if (Array.isArray(data.messages) && data.messages.length > 0) {
           const existingKeys = new Set(messagesRef.current.map(messageDedupKey));
           const newMessages = data.messages.filter(
@@ -1631,9 +1796,19 @@ export function ChatInterface({
             });
           }
         }
-        if (data.heartbeatStatus) setHeartbeatStatus(data.heartbeatStatus);
+        if (data.heartbeatStatus) {
+          setHeartbeatStatus((current) =>
+            JSON.stringify(current) === JSON.stringify(data.heartbeatStatus)
+              ? current
+              : data.heartbeatStatus
+          );
+        }
         if (data.scheduledTaskSummary) {
-          setScheduledTaskSummary(data.scheduledTaskSummary);
+          setScheduledTaskSummary((current) =>
+            JSON.stringify(current) === JSON.stringify(data.scheduledTaskSummary)
+              ? current
+              : data.scheduledTaskSummary
+          );
         }
       } catch {
         // Polling is best-effort; the next tick will retry.
@@ -1648,7 +1823,7 @@ export function ChatInterface({
       void syncAutomatedActivity(shouldSyncOperational);
     };
     void syncAutomatedActivity(true);
-    const interval = window.setInterval(tick, 5000);
+    const interval = window.setInterval(tick, syncPollMs);
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         void syncAutomatedActivity(true);
@@ -1660,7 +1835,7 @@ export function ChatInterface({
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [isUserComposing, syncPollMs]);
 
   function appendOperationalEvent(event: OperationalEvent) {
     setOperationalEvents((prev) => {
@@ -1724,9 +1899,8 @@ export function ChatInterface({
     }
   }
 
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault();
-    const text = input.trim();
+  async function handleSend(draft: string) {
+    const text = draft.trim();
     if ((!text && pendingAttachments.length === 0) || loading) return;
     const clientTurnId = createClientTurnId();
     const attachmentsForTurn = [...pendingAttachments];
@@ -1755,7 +1929,6 @@ export function ChatInterface({
     setSelectedTurnId(clientTurnId);
     setShortTermExpanded(false);
     setOperationalEvents([]);
-    setInput("");
     setPendingAttachments([]);
     setAttachmentUploadStatus(null);
     setLoading(true);
@@ -2029,14 +2202,24 @@ export function ChatInterface({
     }
   }
 
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
+  const handleAttachmentSelectionRef = useRef(handleAttachmentSelection);
+  handleAttachmentSelectionRef.current = handleAttachmentSelection;
+  const onComposerSend = useCallback((text: string) => {
+    void handleSendRef.current(text);
+  }, []);
+  const onComposerAttachmentSelection = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      void handleAttachmentSelectionRef.current(event);
+    },
+    []
+  );
+
   return (
     <div className="relative flex h-full min-h-0 flex-1 flex-col text-slate-950 dark:text-white">
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute -left-32 top-16 h-72 w-72 rounded-full bg-violet-500/20 blur-3xl" />
-        <div className="absolute right-0 top-0 h-96 w-96 rounded-full bg-fuchsia-500/20 blur-3xl" />
-      </div>
       <div className="relative grid h-full min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_460px] 2xl:grid-cols-[minmax(0,0.9fr)_520px]">
-            <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[2rem] border border-white/70 bg-white/75 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+            <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-xl shadow-violet-950/5 dark:border-white/10 dark:bg-neutral-900">
               <div className="shrink-0 border-b border-slate-200/70 px-5 py-4 dark:border-white/10">
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">
                   Conversación
@@ -2124,7 +2307,7 @@ export function ChatInterface({
                 tone="agent"
               />
               <div className="rounded-3xl border border-slate-200/70 bg-white px-4 py-3 text-sm shadow-sm dark:border-white/10 dark:bg-white/10">
-                <span className="animate-pulse">Pensando...</span>
+                <span>Pensando...</span>
               </div>
             </div>
           )}
@@ -2133,8 +2316,8 @@ export function ChatInterface({
               </div>
 
               {/* Input */}
-              <div className="shrink-0 border-t border-slate-200/70 bg-white/80 px-4 py-4 dark:border-white/10 dark:bg-white/[0.03]">
-                <form onSubmit={handleSend} className="mx-auto max-w-2xl space-y-2">
+              <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-4 dark:border-white/10 dark:bg-neutral-900">
+                <div className="mx-auto max-w-2xl space-y-2">
                   {pendingAttachments.length > 0 ? (
                     <div className="flex flex-wrap gap-2">
                       {pendingAttachments.map((attachment, index) => (
@@ -2166,94 +2349,17 @@ export function ChatInterface({
                       {attachmentUploadStatus}
                     </p>
                   ) : null}
-                  <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm dark:border-white/10 dark:bg-white/10">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept={CHAT_ATTACHMENT_ACCEPT}
-                    className="hidden"
-                    onChange={(event) => void handleAttachmentSelection(event)}
+                  <ChatComposer
+                    loading={loading}
+                    hasConfirmation={Boolean(confirmation)}
+                    hasPendingAttachments={pendingAttachments.length > 0}
+                    fileInputRef={fileInputRef}
+                    composerInputRef={composerInputRef}
+                    onAttachmentSelection={onComposerAttachmentSelection}
+                    onComposingChange={handleComposingChange}
+                    onSend={onComposerSend}
                   />
-                  <button
-                    type="button"
-                    aria-label="Adjuntar archivo"
-                    title="Adjuntar PDF, Word, Excel o texto (máx. 5 MB)"
-                    disabled={loading || !!confirmation}
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-violet-50 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className="h-5 w-5"
-                      aria-hidden="true"
-                    >
-                      <path d="M21.44 11.05 12.25 20.24a6 6 0 1 1-8.49-8.49l9.19-9.19a4 4 0 1 1 5.66 5.66l-9.2 9.19a2 2 0 1 1-2.83-2.83l8.49-8.48" />
-                    </svg>
-                  </button>
-                  <input
-                    type="text"
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    placeholder={confirmation ? "Resuelve la confirmación para continuar..." : "Dile a Gu qué necesitas..."}
-                    disabled={loading || !!confirmation}
-                    className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:opacity-50 dark:text-white dark:placeholder:text-white/40"
-                  />
-                  <button
-                    type="button"
-                    aria-label="Mensaje de voz"
-                    title="Mensaje de voz"
-                    className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-violet-700 hover:bg-violet-50 dark:text-violet-200 dark:hover:bg-white/10 sm:flex"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className="h-5 w-5"
-                      aria-hidden="true"
-                    >
-                      <rect x="9" y="3" width="6" height="11" rx="3" />
-                      <path d="M5 11a7 7 0 0 0 14 0" />
-                      <line x1="12" y1="18" x2="12" y2="22" />
-                      <line x1="8" y1="22" x2="16" y2="22" />
-                    </svg>
-                  </button>
-                  <button
-                    type="submit"
-                    aria-label="Enviar mensaje"
-                    title="Enviar"
-                    disabled={
-                      loading ||
-                      (!input.trim() && pendingAttachments.length === 0) ||
-                      !!confirmation
-                    }
-                    className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-gradient-to-br from-violet-700 to-fuchsia-600 text-white shadow-lg shadow-violet-900/20 transition hover:from-violet-800 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className="h-5 w-5"
-                      aria-hidden="true"
-                    >
-                      <path d="m4 12 16-8-6 18-3-7-7-3z" />
-                    </svg>
-                  </button>
-                  </div>
-                </form>
+                </div>
               </div>
             </section>
 
@@ -2289,12 +2395,12 @@ export function ChatInterface({
                       <div className="flex min-h-10 items-center justify-center gap-1.5 font-bold">
                         <span className="relative inline-flex size-10 shrink-0 items-center justify-center">
                           {heartbeatStatus?.enabled ? (
-                            <span className="absolute inline-flex size-8 animate-ping rounded-full bg-fuchsia-400/[0.13]" />
+                            <span className="absolute inline-flex size-8 rounded-full bg-fuchsia-400/[0.13]" />
                           ) : null}
                           <span
                             className={`relative text-[1.625rem] leading-none ${
                               heartbeatStatus?.enabled
-                                ? "animate-pulse text-fuchsia-300 drop-shadow-[0_0_6px_rgba(244,114,182,0.28)]"
+                                ? "text-fuchsia-300"
                                 : "text-white/45"
                             }`}
                             aria-hidden="true"
@@ -2333,7 +2439,7 @@ export function ChatInterface({
                 </div>
               </section>
 
-              <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+              <section className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-xl shadow-violet-950/5 dark:border-white/10 dark:bg-neutral-900">
                 <PanelSectionTitle icon="flow" title="Flujo actual">
                   <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
                     {inspectedSourceLabel
@@ -2476,7 +2582,7 @@ export function ChatInterface({
                       }`}
                     >
                       {loading && (
-                        <span className="absolute inline-flex h-3.5 w-3.5 animate-ping rounded-full bg-violet-500/60" />
+                        <span className="absolute inline-flex h-3.5 w-3.5 rounded-full bg-violet-500/60" />
                       )}
                     </span>
                     <div className="min-w-0 flex-1">
@@ -2484,7 +2590,7 @@ export function ChatInterface({
                         {loading ? "Procesando solicitud" : "Procesamiento"}
                         {loading && (
                           <span className="inline-flex items-center gap-1 rounded-full bg-violet-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+                            <span className="h-1.5 w-1.5 rounded-full bg-white" />
                             En vivo
                           </span>
                         )}
@@ -2496,7 +2602,7 @@ export function ChatInterface({
                       </p>
                       {loading && (
                         <div className="mt-2 h-1 overflow-hidden rounded-full bg-violet-200/70 dark:bg-violet-400/20">
-                          <div className="h-full w-1/2 animate-pulse rounded-full bg-violet-500" />
+                          <div className="h-full w-1/2 rounded-full bg-violet-500" />
                         </div>
                       )}
                     </div>
@@ -2569,7 +2675,7 @@ export function ChatInterface({
                 </div>
               </section>
 
-              <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+              <section className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-xl shadow-violet-950/5 dark:border-white/10 dark:bg-neutral-900">
                 <div className="flex items-center justify-between gap-3">
                   <PanelSectionTitle icon="memory" title="Memoria del turno">
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
@@ -2676,7 +2782,7 @@ export function ChatInterface({
                 </div>
               </section>
 
-              <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+              <section className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-xl shadow-violet-950/5 dark:border-white/10 dark:bg-neutral-900">
                 <div className="flex items-center justify-between gap-3">
                   <PanelSectionTitle icon="skills" title="Habilidades del turno">
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
@@ -2718,7 +2824,7 @@ export function ChatInterface({
                 </div>
               </section>
 
-              <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+              <section className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-xl shadow-violet-950/5 dark:border-white/10 dark:bg-neutral-900">
                 <div className="flex items-center justify-between gap-3">
                   <PanelSectionTitle icon="tools" title="Herramientas del turno">
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
@@ -2798,7 +2904,7 @@ export function ChatInterface({
                 </div>
               </section>
 
-              <section className="rounded-[2rem] border border-white/70 bg-white/75 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+              <section className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-xl shadow-violet-950/5 dark:border-white/10 dark:bg-neutral-900">
                 <div className="flex items-center justify-between gap-3">
                   <PanelSectionTitle icon="learnings" title="Aprendizajes recientes">
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
@@ -2838,7 +2944,7 @@ export function ChatInterface({
                 </div>
               </section>
 
-              <section className="rounded-[2rem] border border-violet-100 bg-white/80 p-5 shadow-xl shadow-violet-950/5 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06]">
+              <section className="rounded-[2rem] border border-violet-100 bg-white p-5 shadow-xl shadow-violet-950/5 dark:border-white/10 dark:bg-neutral-900">
                 <div className="flex items-start justify-between gap-4">
                   <PanelSectionTitle icon="presence" title="Actividad proactiva">
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
@@ -2854,11 +2960,11 @@ export function ChatInterface({
                     title={heartbeatStatus?.enabled ? "Pulso operativo activo" : "Pulso operativo inactivo"}
                   >
                     {heartbeatStatus?.enabled ? (
-                      <span className="absolute inline-flex h-8 w-8 animate-ping rounded-full bg-fuchsia-400/25" />
+                      <span className="absolute inline-flex h-8 w-8 rounded-full bg-fuchsia-400/25" />
                     ) : null}
                     <span
                       className={`relative text-base leading-none ${
-                        heartbeatStatus?.enabled ? "animate-pulse" : ""
+                        heartbeatStatus?.enabled ? "" : ""
                       }`}
                     >
                       ♥

@@ -37,11 +37,12 @@ export default async function ChatPendingPage({
   return (
     <AppShell
       title="Pendientes"
-      description="Aprobaciones, notificaciones y acciones que requieren tu revisión."
+      description="Decisiones de negocio, avisos del agente y aprobaciones humanas (HITL) antes de ejecutar acciones sensibles."
     >
       <PendingInboxClient
         initialNotifications={pendingInbox.notifications}
         initialPendingToolConfirmations={pendingInbox.pendingToolConfirmations}
+        initialCounts={pendingInbox.counts}
         initialCaseFilter={initialCaseFilter}
         initialFocusId={initialFocusId}
       />

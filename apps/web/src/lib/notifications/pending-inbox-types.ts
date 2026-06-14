@@ -14,6 +14,18 @@ export interface InternalNotificationDisplay {
   caseStatus?: string | null;
   caseStatusLabel?: string | null;
   caseContextLine?: string | null;
+  sourceNotificationId?: string | null;
+  lastReminderAt?: string | null;
+  refreshCount?: number | null;
+  lastRefreshedAt?: string | null;
+  reminderCount?: number | null;
+  escalatedAt?: string | null;
+  escalationReason?: string | null;
+}
+
+export interface ResolvedNotificationDisplay extends InternalNotificationDisplay {
+  status: string;
+  updated_at: string;
 }
 
 export interface PendingToolConfirmationDisplay {
@@ -32,4 +44,12 @@ export interface PendingToolConfirmationDisplay {
   caseStatusLabel?: string | null;
   caseContextLine?: string | null;
   message: string;
+}
+
+export interface PendingInboxCounts {
+  notificationRowsTotal: number;
+  actionableNotificationsTotal: number;
+  pendingToolConfirmationsTotal: number;
+  flowRelatedTotal: number;
+  overdueTotal: number;
 }

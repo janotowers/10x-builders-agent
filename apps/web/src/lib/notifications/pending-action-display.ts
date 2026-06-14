@@ -14,6 +14,26 @@ export function caseActionUrl(caseId: string) {
   return `/operational-cases?case=${encodeURIComponent(caseId)}`;
 }
 
+const TOOL_CONFIRMATION_LABELS: Record<string, string> = {
+  telegram_send_message_to_contact: "enviar un mensaje por Telegram",
+};
+
+export function toolConfirmationCardTitle() {
+  return "Aprobación humana (HITL)";
+}
+
+export function describeToolConfirmationAction(toolName: string) {
+  const action =
+    TOOL_CONFIRMATION_LABELS[toolName] ?? `ejecutar «${toolName}»`;
+  return `El agente pidió tu OK para ${action}. Sin aprobar, el flujo queda en espera.`;
+}
+
+export function toolConfirmationToolLine(toolName: string) {
+  const action =
+    TOOL_CONFIRMATION_LABELS[toolName] ?? toolName;
+  return `Acción: ${action}`;
+}
+
 export function pendientesDeepLink(params: {
   caseId?: string | null;
   focus?: string | null;

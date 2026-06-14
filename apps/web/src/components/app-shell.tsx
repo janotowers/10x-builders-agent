@@ -100,7 +100,9 @@ export function AppShell({
   const desktopSidebarClassName = `hidden h-screen shrink-0 border-r border-neutral-200 p-4 transition-[width] duration-200 dark:border-neutral-800 lg:flex lg:flex-col ${
     desktopHoverOverlay
       ? "absolute inset-y-0 left-0 z-30 bg-white dark:bg-neutral-900"
-      : "sticky top-0 bg-white/85 backdrop-blur dark:bg-neutral-900/60"
+      : viewportFill
+        ? "sticky top-0 bg-white dark:bg-neutral-900"
+        : "sticky top-0 bg-white/85 backdrop-blur dark:bg-neutral-900/60"
   } ${desktopExpanded ? "w-72" : "w-24"}`;
 
   return (
@@ -236,7 +238,13 @@ export function AppShell({
             viewportFill ? "flex min-h-0 flex-col overflow-hidden" : ""
           }`}
         >
-          <header className="sticky top-0 z-10 shrink-0 border-b border-neutral-200 bg-white/80 px-4 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/70">
+          <header
+            className={`sticky top-0 z-10 shrink-0 border-b border-neutral-200 px-4 py-4 dark:border-neutral-800 ${
+              viewportFill
+                ? "bg-white dark:bg-neutral-900"
+                : "bg-white/80 backdrop-blur dark:bg-neutral-900/70"
+            }`}
+          >
             <div className="mx-auto w-full max-w-7xl">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
