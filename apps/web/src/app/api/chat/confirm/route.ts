@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
+  countPendingToolCallsForCase,
   createServerClient,
   decryptToken,
   getGoogleCalendarAccessToken,
+  getOperationalCase,
   getPendingToolCall,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
+  updateOperationalCase,
   updateToolCallStatus,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
@@ -15,6 +19,64 @@ import {
 } from "@/lib/scheduled-task-confirmation";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { findPendingConfirmationCheckpoint } from "@/lib/agent/pending-confirmation-checkpoint";
+
+const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
+
+function toolCallCaseId(toolCall: {
+  arguments_json?: unknown;
+  metadata_jsonb?: unknown;
+}): string | null {
+  const args = toolCall.arguments_json;
+  if (
+    args &&
+    typeof args === "object" &&
+    !Array.isArray(args) &&
+    typeof (args as Record<string, unknown>).case_id === "string"
+  ) {
+    const caseId = ((args as Record<string, unknown>).case_id as string).trim();
+    if (caseId) return caseId;
+  }
+  const metadata = toolCall.metadata_jsonb;
+  if (
+    metadata &&
+    typeof metadata === "object" &&
+    !Array.isArray(metadata) &&
+    typeof (metadata as Record<string, unknown>).case_id === "string"
+  ) {
+    const caseId = ((metadata as Record<string, unknown>).case_id as string).trim();
+    if (caseId) return caseId;
+  }
+  return null;
+}
+
+async function finalizeCaseAfterToolDecision(
+  db: ReturnType<typeof createServerClient>,
+  params: { toolCall: { arguments_json?: unknown; metadata_jsonb?: unknown }; userId: string }
+) {
+  const caseId = toolCallCaseId(params.toolCall);
+  if (!caseId) return;
+  const pending = await countPendingToolCallsForCase(db, caseId);
+  if (pending > 0) return;
+
+  await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+    userId: params.userId,
+    caseId,
+    kind: TOOL_CONFIRMATION_PENDING_KIND,
+    status: "actioned",
+  });
+
+  const opCase = await getOperationalCase(db, caseId);
+  if (
+    !opCase ||
+    opCase.user_id !== params.userId ||
+    !["active", "waiting_internal", "waiting_external"].includes(opCase.status)
+  ) {
+    return;
+  }
+  await updateOperationalCase(db, opCase.id, opCase.version, {
+    nextActionAt: new Date().toISOString(),
+  });
+}
 
 export async function POST(request: Request) {
   try {
@@ -61,6 +123,7 @@ export async function POST(request: Request) {
         message: "Acción cancelada por el usuario.",
         source: "chat_confirm",
       });
+      await finalizeCaseAfterToolDecision(db, { toolCall, userId: user.id });
       return NextResponse.json({
         ok: true,
         response: "Acción cancelada.",
@@ -235,6 +298,7 @@ export async function POST(request: Request) {
         pendingConfirmation = null;
       }
     }
+    await finalizeCaseAfterToolDecision(db, { toolCall, userId: user.id });
 
     return NextResponse.json({
       ok: true,

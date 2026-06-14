@@ -22,10 +22,12 @@
 import {
   createInternalUserNotification,
   createServerClient,
+  getInternalUserNotification,
   getOperationalCase,
   getTelegramChatId,
   setInternalUserNotificationStatus,
   updateInternalUserNotificationChannels,
+  upsertActiveInternalUserNotification,
 } from "@agents/db";
 import {
   sendTelegramMessage,
@@ -136,29 +138,45 @@ async function deliverTelegram(
     typeof payload.data?.notification_id === "string"
       ? payload.data.notification_id
       : "";
+  const reminderSourceNotificationId =
+    typeof payload.data?.source_notification_id === "string"
+      ? payload.data.source_notification_id
+      : "";
+  let actionKind = payload.kind;
+  let actionNotificationId = notificationId;
+  if (payload.kind === "internal_notification_reminder" && reminderSourceNotificationId) {
+    actionNotificationId = reminderSourceNotificationId;
+    const sourceNotification = await getInternalUserNotification(
+      db,
+      reminderSourceNotificationId
+    );
+    if (sourceNotification?.user_id === userId) {
+      actionKind = sourceNotification.kind;
+    }
+  }
   let replyMarkup:
     | { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }
     | undefined;
-  if (payload.kind === "price_approval" && notificationId) {
+  if (actionKind === "price_approval" && actionNotificationId) {
     replyMarkup = {
       inline_keyboard: [
         [
           {
             text: "Aprobar precio",
-            callback_data: `price_approve:${notificationId}`,
+            callback_data: `price_approve:${actionNotificationId}`,
           },
         ],
         [
           {
             text: "Ajustar y aprobar",
-            callback_data: `price_adjust:${notificationId}`,
+            callback_data: `price_adjust:${actionNotificationId}`,
           },
         ],
       ],
     };
   } else if (
-    payload.kind === "contract_review" &&
-    notificationId &&
+    actionKind === "contract_review" &&
+    actionNotificationId &&
     contractReviewOffersHitlActions(payload)
   ) {
     replyMarkup = {
@@ -166,13 +184,30 @@ async function deliverTelegram(
         [
           {
             text: "Mandar al dueño",
-            callback_data: `contract_approve_send:${notificationId}`,
+            callback_data: `contract_approve_send:${actionNotificationId}`,
           },
         ],
         [
           {
             text: "Pedir cambios",
-            callback_data: `contract_request_changes:${notificationId}`,
+            callback_data: `contract_request_changes:${actionNotificationId}`,
+          },
+        ],
+      ],
+    };
+  } else if (actionKind === "property_data_review" && actionNotificationId) {
+    replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: "Confirmar datos",
+            callback_data: `property_data_confirm:${actionNotificationId}`,
+          },
+        ],
+        [
+          {
+            text: "Enviar corrección",
+            callback_data: `property_data_correct:${actionNotificationId}`,
           },
         ],
       ],
@@ -232,6 +267,10 @@ function notificationTitle(payload: NotifyPayload) {
 }
 
 function notificationActionUrl(payload: NotifyPayload) {
+  const explicitActionUrl = payload.data?.action_url;
+  if (typeof explicitActionUrl === "string" && explicitActionUrl.trim()) {
+    return explicitActionUrl.trim();
+  }
   const caseId = payload.data?.case_id;
   if (typeof caseId !== "string" || !caseId.trim()) return null;
   const binding = generatedCaseDocumentBindingForNotifyKind(payload.kind);
@@ -330,6 +369,18 @@ function notificationDueAt(payload: NotifyPayload) {
   return defaultDueAtForNotificationKind(payload.kind);
 }
 
+function shouldReuseActiveNotification(payload: NotifyPayload, caseId: string | null) {
+  if (!caseId || !payload.kind) return false;
+  return [
+    "contract_pending",
+    "contract_review",
+    "missing_requirements",
+    "price_approval",
+    "property_data_review",
+    "tool_confirmation_pending",
+  ].includes(payload.kind);
+}
+
 function channelMap(results: NotifyChannelResult[]) {
   return Object.fromEntries(
     results.map((result) => [
@@ -369,7 +420,7 @@ export async function notify(
     typeof effectivePayload.data?.case_id === "string"
       ? effectivePayload.data.case_id
       : null;
-  const notification = await createInternalUserNotification(db, {
+  const notificationInput = {
     userId,
     caseId,
     kind: effectivePayload.kind ?? "general",
@@ -380,7 +431,10 @@ export async function notify(
     dueAt: notificationDueAt(effectivePayload),
     deliveredChannels: channelMap([webResult]),
     metadata: effectivePayload.data ?? {},
-  });
+  };
+  const notification = shouldReuseActiveNotification(effectivePayload, caseId)
+    ? await upsertActiveInternalUserNotification(db, notificationInput)
+    : await createInternalUserNotification(db, notificationInput);
 
   for (const channel of priority) {
     if (channel === "web") continue;

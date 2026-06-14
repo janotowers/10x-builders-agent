@@ -1,6 +1,7 @@
 import type { InternalUserNotificationStatus } from "@agents/types";
 import {
   defaultDueAtForEngagement,
+  resolveEngagementPolicy,
   reminderCooldownHoursForEngagement,
   type EngagementIntent,
 } from "@/lib/engagement-policies/registry";
@@ -18,6 +19,16 @@ export interface InternalNotificationKindConfig {
   intent?: EngagementIntent;
   businessDecision?: "price_approval" | "contract_review";
   technical?: boolean;
+  /**
+   * Pure FYI notifications: no decision/action expected from the user, so the
+   * inbox only offers an acknowledge ("Entendido") button.
+   */
+  informational?: boolean;
+  /**
+   * Label for the primary CTA when the notification needs action but has no
+   * inline resolver UI (the action lives in the operational case flow).
+   */
+  reviewCtaLabel?: string;
 }
 
 export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
@@ -64,6 +75,21 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     label: "Contrato pendiente",
     visibleInInbox: true,
     intent: "review",
+    reviewCtaLabel: "Revisar y confirmar en flujo",
+  },
+  contract_drafted: {
+    kind: "contract_drafted",
+    label: "Borrador de contrato listo",
+    visibleInInbox: true,
+    intent: "reminder",
+    informational: true,
+  },
+  property_data_review: {
+    kind: "property_data_review",
+    label: "Revisión de datos de propiedad",
+    visibleInInbox: true,
+    intent: "review",
+    reviewCtaLabel: "Confirmar o corregir en flujo",
   },
   comparables_analysis: {
     kind: "comparables_analysis",
@@ -83,11 +109,32 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     visibleInInbox: true,
     intent: "reminder",
   },
+  tool_confirmation_pending: {
+    kind: "tool_confirmation_pending",
+    label: "Esperando aprobación humana (HITL)",
+    visibleInInbox: true,
+    intent: "approval",
+    reviewCtaLabel: "Ver acciones del agente",
+  },
   missing_requirements: {
     kind: "missing_requirements",
     label: "Requisitos faltantes",
     visibleInInbox: true,
     intent: "reminder",
+    reviewCtaLabel: "Revisar en flujo",
+  },
+  internal_notification_reminder: {
+    kind: "internal_notification_reminder",
+    label: "Recordatorio",
+    visibleInInbox: true,
+    intent: "reminder",
+  },
+  internal_notification_escalation: {
+    kind: "internal_notification_escalation",
+    label: "Escalación de pendiente",
+    visibleInInbox: true,
+    intent: "escalation",
+    reviewCtaLabel: "Revisar en flujo",
   },
 };
 
@@ -182,6 +229,36 @@ export function reminderCooldownHoursForNotificationKind(
     intent: config.intent ?? "reminder",
     kind: config.kind,
   });
+}
+
+export function maxReminderAttemptsForNotificationKind(
+  kind: string | null | undefined
+): number | null {
+  const config = internalNotificationKindConfig(kind);
+  const policy = resolveEngagementPolicy({
+    audience: "internal_user",
+    intent: config.intent ?? "reminder",
+    kind: config.kind,
+  });
+  return policy.maxReminderAttempts ?? null;
+}
+
+export function escalationPolicyForNotificationKind(
+  kind: string | null | undefined
+): {
+  escalateAfterHours: number | null;
+  escalationPriority: "high" | null;
+} {
+  const config = internalNotificationKindConfig(kind);
+  const policy = resolveEngagementPolicy({
+    audience: "internal_user",
+    intent: config.intent ?? "reminder",
+    kind: config.kind,
+  });
+  return {
+    escalateAfterHours: policy.escalateAfterHours ?? null,
+    escalationPriority: policy.escalationPriority ?? null,
+  };
 }
 
 export function autoStatusOnCreateForNotificationKind(

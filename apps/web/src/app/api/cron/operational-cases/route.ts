@@ -38,12 +38,15 @@ import {
   insertOperationalCaseEvent,
   markExternalContactNotificationFailed,
   markExternalContactNotificationSent,
+  markInternalNotificationEscalated,
   markInternalNotificationReminderSent,
   expireExternalContactNotification,
   expireExternalContactNotificationsForCase,
   markCaseProcessing,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   updateOperationalCase,
   getOrCreateSession,
+  countPendingToolCallsForCase,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
 import type {
@@ -62,12 +65,17 @@ import {
   sendTelegramMessage,
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
-import { reminderCooldownHoursForNotificationKind } from "@/lib/internal-notifications/registry";
+import {
+  escalationPolicyForNotificationKind,
+  maxReminderAttemptsForNotificationKind,
+  reminderCooldownHoursForNotificationKind,
+} from "@/lib/internal-notifications/registry";
 import { syncContractDraftFromToolCalls } from "@/lib/operational-cases/contract-draft-document";
 import { reminderCooldownHoursForEngagement } from "@/lib/engagement-policies/registry";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
+const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
 
 const DEFAULT_CONCURRENCY = 5;
 
@@ -114,10 +122,80 @@ function shouldSendInternalReminder(notification: InternalUserNotification) {
   );
 }
 
+function reminderCount(notification: InternalUserNotification): number {
+  const count = notification.metadata_jsonb?.reminder_count;
+  return typeof count === "number" && Number.isFinite(count) ? count : 0;
+}
+
+function shouldEscalateInternalReminder(notification: InternalUserNotification) {
+  const reminderAttemptsCap = maxReminderAttemptsForNotificationKind(notification.kind);
+  const { escalateAfterHours, escalationPriority } =
+    escalationPolicyForNotificationKind(notification.kind);
+  if (!reminderAttemptsCap && !escalateAfterHours) return null;
+  if (typeof notification.metadata_jsonb?.escalated_at === "string") return null;
+
+  const reasons: string[] = [];
+  if (reminderAttemptsCap && reminderCount(notification) >= reminderAttemptsCap) {
+    reasons.push("max_reminder_attempts_reached");
+  }
+  if (escalateAfterHours) {
+    const createdAt = new Date(notification.created_at).getTime();
+    if (
+      Number.isFinite(createdAt) &&
+      Date.now() - createdAt >= escalateAfterHours * 60 * 60_000
+    ) {
+      reasons.push("escalation_window_reached");
+    }
+  }
+  if (reasons.length === 0) return null;
+  return {
+    reason: reasons.join(","),
+    escalationPriority: escalationPriority ?? "high",
+  };
+}
+
 async function processInternalNotificationReminder(
   db: ReturnType<typeof createServerClient>,
   notification: InternalUserNotification
 ) {
+  const escalation = shouldEscalateInternalReminder(notification);
+  if (escalation) {
+    const escalated = await markInternalNotificationEscalated(db, notification, {
+      priority: escalation.escalationPriority,
+      reason: escalation.reason,
+    });
+    await notify(
+      db,
+      notification.user_id,
+      {
+        text:
+          `Escalación: sigue pendiente «${notification.title}». ` +
+          "Revísalo cuanto antes en Pendientes o en el flujo del caso.",
+        kind: "internal_notification_escalation",
+        data: {
+          case_id: notification.case_id ?? undefined,
+          title: `Escalación: ${notification.title}`,
+          source_notification_id: notification.id,
+          escalation_reason: escalation.reason,
+        },
+      },
+      "high"
+    );
+    if (notification.case_id) {
+      await insertOperationalCaseEvent(db, {
+        caseId: notification.case_id,
+        eventType: "escalated",
+        actor: "system",
+        payload: {
+          source: "internal_user_notifications",
+          notification_id: notification.id,
+          reason: escalation.reason,
+          priority: escalated?.priority ?? "high",
+        },
+      });
+    }
+    return "escalated";
+  }
   if (!shouldSendInternalReminder(notification)) return "cooldown";
   await notify(
     db,
@@ -270,6 +348,45 @@ async function processCase(
   }
 
   try {
+    const pendingHitlCount = await countPendingToolCallsForCase(db, opCase.id);
+    if (pendingHitlCount > 0) {
+      await notify(
+        db,
+        opCase.user_id,
+        {
+          text:
+            pendingHitlCount === 1
+              ? "Tienes 1 aprobación del agente pendiente para continuar este caso."
+              : `Tienes ${pendingHitlCount} aprobaciones del agente pendientes para continuar este caso.`,
+          kind: TOOL_CONFIRMATION_PENDING_KIND,
+          data: {
+            case_id: opCase.id,
+            title: "Aprobación del agente pendiente",
+            action_url: `/chat/pending?case=${encodeURIComponent(opCase.id)}`,
+            pending_tool_confirmations: pendingHitlCount,
+          },
+        },
+        "normal"
+      );
+      const fresh = await getOperationalCase(db, opCase.id);
+      if (fresh) {
+        await updateOperationalCase(db, fresh.id, fresh.version, {
+          nextActionAt: null,
+        });
+      }
+      console.log(
+        `[ops-case-cron] case ${opCase.id} skipped: ${pendingHitlCount} pending HITL tool call(s) awaiting human approval`
+      );
+      return { case_id: opCase.id, status: "skipped" };
+    }
+
+    await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+      userId: opCase.user_id,
+      caseId: opCase.id,
+      kind: TOOL_CONFIRMATION_PENDING_KIND,
+      status: "actioned",
+    });
+
     const profile = await getProfile(db, opCase.user_id);
     const toolSettings = await getUserToolSettings(db, opCase.user_id);
     const skillSettings = await getUserSkillSettings(db, opCase.user_id);

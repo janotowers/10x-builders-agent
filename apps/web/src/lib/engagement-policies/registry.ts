@@ -28,6 +28,9 @@ export interface EngagementPolicy {
   defaultDueAfterHours?: number;
   reminderCooldownHours: number;
   maxAttempts?: number;
+  maxReminderAttempts?: number;
+  escalateAfterHours?: number;
+  escalationPriority?: "high";
   respectWorkingHours: boolean;
   allowAutonomousAction: boolean;
 }
@@ -64,9 +67,15 @@ const INTENT_POLICIES: Partial<Record<EngagementIntent, Partial<EngagementPolicy
   approval: {
     defaultDueAfterHours: 4,
     reminderCooldownHours: 4,
+    maxReminderAttempts: 3,
+    escalateAfterHours: 24,
+    escalationPriority: "high",
   },
   review: {
     reminderCooldownHours: 4,
+    maxReminderAttempts: 3,
+    escalateAfterHours: 24,
+    escalationPriority: "high",
   },
   followup: {
     reminderCooldownHours: 24,
@@ -88,16 +97,41 @@ const KIND_POLICIES: Record<string, Partial<EngagementPolicy>> = {
   price_approval: {
     defaultDueAfterHours: 4,
     reminderCooldownHours: 4,
+    maxReminderAttempts: 3,
+    escalateAfterHours: 24,
+    escalationPriority: "high",
   },
   contract_review: {
     reminderCooldownHours: 4,
+    maxReminderAttempts: 3,
+    escalateAfterHours: 24,
+    escalationPriority: "high",
   },
   contract_approval: {
     defaultDueAfterHours: 4,
     reminderCooldownHours: 4,
+    maxReminderAttempts: 3,
+    escalateAfterHours: 24,
+    escalationPriority: "high",
   },
   contract_pending: {
     reminderCooldownHours: 4,
+    maxReminderAttempts: 3,
+    escalateAfterHours: 24,
+    escalationPriority: "high",
+  },
+  property_data_review: {
+    reminderCooldownHours: 4,
+    maxReminderAttempts: 3,
+    escalateAfterHours: 24,
+    escalationPriority: "high",
+  },
+  tool_confirmation_pending: {
+    defaultDueAfterHours: 4,
+    reminderCooldownHours: 4,
+    maxReminderAttempts: 3,
+    escalateAfterHours: 24,
+    escalationPriority: "high",
   },
   external_contact_escalation: {
     reminderCooldownHours: 4,
