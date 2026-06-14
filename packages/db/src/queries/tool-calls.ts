@@ -181,3 +181,71 @@ export async function rejectSettingsTestPendingToolCallsForCase(
   if (error) throw error;
   return data?.length ?? 0;
 }
+
+export async function countPendingToolCallsForCase(
+  db: DbClient,
+  caseId: string
+): Promise<number> {
+  const [argsResult, metaResult] = await Promise.all([
+    db
+      .from("tool_calls")
+      .select("id")
+      .eq("status", "pending_confirmation")
+      .contains("arguments_json", { case_id: caseId }),
+    db
+      .from("tool_calls")
+      .select("id")
+      .eq("status", "pending_confirmation")
+      .eq("metadata_jsonb->>case_id", caseId),
+  ]);
+  if (argsResult.error) throw argsResult.error;
+  if (metaResult.error) throw metaResult.error;
+  const ids = [...(argsResult.data ?? []), ...(metaResult.data ?? [])]
+    .map((row: { id?: unknown }) => row.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  return new Set(ids).size;
+}
+
+export async function rejectPendingToolCallsForCase(
+  db: DbClient,
+  caseId: string,
+  reason = "pending_inbox_cleanup"
+): Promise<number> {
+  const [argsResult, metaResult] = await Promise.all([
+    db
+      .from("tool_calls")
+      .select("id")
+      .eq("status", "pending_confirmation")
+      .contains("arguments_json", { case_id: caseId }),
+    db
+      .from("tool_calls")
+      .select("id")
+      .eq("status", "pending_confirmation")
+      .eq("metadata_jsonb->>case_id", caseId),
+  ]);
+  if (argsResult.error) throw argsResult.error;
+  if (metaResult.error) throw metaResult.error;
+
+  const ids = [...(argsResult.data ?? []), ...(metaResult.data ?? [])]
+    .map((row: { id?: unknown }) => row.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  const uniqueIds = [...new Set(ids)];
+  if (uniqueIds.length === 0) return 0;
+
+  const finishedAt = new Date().toISOString();
+  const { data, error } = await db
+    .from("tool_calls")
+    .update({
+      status: "rejected",
+      finished_at: finishedAt,
+      result_json: {
+        reason,
+        case_id: caseId,
+      },
+    })
+    .in("id", uniqueIds)
+    .eq("status", "pending_confirmation")
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
+}
