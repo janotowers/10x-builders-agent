@@ -314,3 +314,13 @@ En `[apps/web/src/app/chat/page.tsx](apps/web/src/app/chat/page.tsx)` los mensaj
 ### Enlaces `htmlLink` de Google Calendar
 
 Los enlaces que devuelve la API apuntan al calendario de la **cuenta Google** asociada al OAuth de la app. Si el usuario abre el enlace en un navegador con **otra** sesión de Google activa, puede parecer que el evento "no existe"; conviene abrir Calendar con la misma cuenta que conectó en Ajustes.
+
+### Casos operativos: no re-ejecutar el agente con HITL pendiente
+
+En flujos con `caseId`, el cron `POST /api/cron/operational-cases` consulta si el caso tiene filas en `tool_calls` con `status = pending_confirmation`. Si las hay:
+
+- **No** llama a `runAgent` en ese tick (evita spam de nuevas solicitudes de aprobación).
+- Deja el caso en espera (`next_action_at = null`) y mantiene visible un pendiente `tool_confirmation_pending` en la bandeja interna.
+- Tras resolver todas las tools pendientes vía `/api/chat/confirm` o Telegram, el handler compartido `finalizeCaseAfterToolDecision` reactiva el caso (`next_action_at = now()`).
+
+Detalle de producto, recordatorios y deduplicación en UI: [§7.1 HITL de negocio vs HITL de ejecución de tools](../operational-cases/architecture.md#71-hitl-de-negocio-vs-hitl-de-ejecución-de-tools) en la arquitectura de casos operativos.

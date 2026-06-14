@@ -298,8 +298,18 @@ Tablas (migración `00035_persistent_notifications.sql`):
 
 API y UI:
 
-- `GET/PATCH /api/notifications` — listar pendientes unread y marcar estado.
-- Consola web → botón **Pendientes** en chat carga `internal_user_notifications`.
+- `GET/PATCH/DELETE /api/notifications` — listar pendientes unread, marcar estado y limpiar bandeja (ver scopes abajo).
+- Consola web → **Pendientes** (`/chat/pending`): bandeja dedicada con notificaciones internas, tarjetas **HITL** (`tool_calls` en `pending_confirmation`), recordatorios agrupados, vencimiento/escalación y acciones inline cuando aplica (`price_approval`, `contract_review`, `property_data_review`).
+- La bandeja hace **auto-sync** mientras la pestaña está visible (30s dev / 60s prod) y al volver a la pestaña; no hay botón manual de refrescar.
+- Menú **Opciones** en la bandeja: ver/ocultar atendidos recientes; **Limpiar bandeja** → historial de atendidos o pendientes de laboratorio (casos `case_type_settings_test`).
+
+**Scopes `DELETE /api/notifications`:**
+
+| Scope | Efecto |
+|---|---|
+| `resolved-history` | Borra notificaciones `read` / `actioned` / `dismissed` del usuario. |
+| `settings-test` | Limpia pendientes de casos de laboratorio en Ajustes: notificaciones, rechaza tool calls bloqueantes y cierra recordatorios huérfanos. |
+| `stuck-case` (+ `case_id`) | Rechaza tools pendientes del caso y lo pausa (salvaguarda manual). |
 
 Recordatorios (mismo cron `POST /api/cron/operational-cases`):
 
@@ -307,8 +317,10 @@ Recordatorios (mismo cron `POST /api/cron/operational-cases`):
 - Reenvía vía `notify()` con `kind = internal_notification_reminder` y respeta cooldown desde `metadata_jsonb.last_reminder_at`.
 - Los defaults de cadencia se resuelven en `apps/web/src/lib/engagement-policies/registry.ts` por audiencia, intención, canal, prioridad y `kind`:
   - `internal_user + approval + price_approval`: `due_at` automático **+4h** si el caller no lo envía; cooldown **4h**.
+  - `internal_user + approval + tool_confirmation_pending`: recordatorio de que hay acciones HITL sin resolver; cooldown **4h**, máx. **3** intentos, escalación a **24h** con prioridad `high`.
   - `external_contact/prospect/owner + reminder/followup`: cooldown **24h**, max intentos **3** antes de escalar al asesor.
   - `high` priority puede reducir cooldown interno a **1h**.
+- Tras **atender** un pendiente (PATCH `actioned`/`dismissed` o handler de business decision), los recordatorios ligados al mismo `source_notification_id` se cierran en cascada para evitar avisos huérfanos.
 - Pendiente UI configurable: mover estos defaults a Ajustes (horario laboral, timezone, cooldowns por audiencia/canal/intención/kind y límites de intentos).
 
 ### 7.1 HITL de negocio vs HITL de ejecución de tools
@@ -317,8 +329,23 @@ Son capas distintas:
 
 | Capa | Cuándo | Mecanismo | Ejemplo |
 |---|---|---|---|
-| **HITL de tool** | Antes de ejecutar una tool `medium`/`high` | LangGraph `interrupt()` + botones Aprobar/Cancelar en web/Telegram | `calendar_create_event`, `easybroker_create_listing` |
-| **HITL de negocio** | Después de que el agente preparó una decisión comercial | `notify_user` crea pendiente persistente; el humano decide por UI o texto estructurado | Aprobación de `pricing_proposal` (`kind = price_approval`) |
+| **HITL de tool** | Antes de ejecutar una tool `medium`/`high` | LangGraph `interrupt()` + tarjetas en **Pendientes** y botones Aprobar/Rechazar en web/Telegram | `calendar_create_event`, `telegram_send_message_to_contact` |
+| **HITL de negocio** | Después de que el agente preparó una decisión comercial | `notify_user` crea pendiente persistente; el humano decide por UI o texto estructurado | Aprobación de `pricing_proposal` (`kind = price_approval`), revisión de datos (`property_data_review`) |
+
+#### HITL de tool en casos operativos (anti-spam del cron)
+
+Cuando un tick del cron llega a un caso con **tool calls en `pending_confirmation`**, el runtime **no** vuelve a invocar `runAgent` (evita duplicar tarjetas «Aprobación del agente»). En su lugar:
+
+1. Pone `operational_cases.next_action_at = null` hasta que el humano resuelva el HITL.
+2. Upsert de notificación `kind = tool_confirmation_pending` vía `notify()` (reutiliza la activa del mismo caso/kind).
+3. Los recordatorios de esa notificación siguen la política de engagement (4h / 3 intentos / escalación 24h).
+
+Al **aprobar o rechazar** la tool (`POST /api/chat/confirm` o callback Telegram):
+
+- Se cierran notificaciones `tool_confirmation_pending` del caso.
+- Si ya no quedan tools pendientes, se fija `next_action_at = now()` para que el siguiente tick retome el flujo.
+
+En la bandeja web, la tarjeta accionable del `tool_call` prevalece sobre la notificación `tool_confirmation_pending` del mismo caso (deduplicación en UI).
 
 Flujo **price_approval** (implementado):
 
@@ -347,6 +374,12 @@ Reglas de producto actuales:
 - **Rechazar / pedir revisión**: no expuesto en UI/Telegram en este MVP; requiere rama completa (motivo → skill replantea → nueva notificación) antes de activarse.
 
 Handler compartido: [`apps/web/src/lib/business-decisions/price-approval.ts`](../../apps/web/src/lib/business-decisions/price-approval.ts). Telegram enruta callbacks `price_approve:*` / `price_adjust:*` y respuestas textuales parseadas en el webhook.
+
+Flujo **property_data_review** (implementado):
+
+- Skill/coach solicita revisión con `notify_user(kind=property_data_review)`.
+- El asesor confirma o corrige desde **Pendientes** (inline) o Telegram (`property_data_confirm` / `property_data_correct`).
+- Handler compartido: [`apps/web/src/lib/business-decisions/property-data-review.ts`](../../apps/web/src/lib/business-decisions/property-data-review.ts); API `POST /api/business-decisions/property-data-review`.
 
 **Pendiente (no olvidar):** políticas configurables en Ajustes — cooldowns por tipo/canal, horario laboral del usuario (timezone + ventana), y defaults de `due_at` por prioridad.
 

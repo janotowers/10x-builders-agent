@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Dedicated **Pendientes** inbox at `/chat/pending`: grouped reminders, due/escalation badges, inline business decisions, HITL tool cards, auto-sync, and bandeja cleanup (`DELETE` scopes `resolved-history`, `settings-test`, `stuck-case`)
+- `tool_confirmation_pending` internal notification kind with engagement policy (4h cooldown, 3 reminders, 24h escalation) when operational-case cron skips `runAgent` while tool HITL is blocking
+- Business decision **property data review**: `POST /api/business-decisions/property-data-review`, shared handler, web inline actions and Telegram confirm/correct callbacks
+- `pending-action-registry` mapping resolvable notification kinds to inline inbox actions
 - Persistent internal notifications (`internal_user_notifications`) and external contact tracking (`external_contact_notifications`); migrations `00035_persistent_notifications.sql`, `00036_waiting_internal_status.sql`
 - Web inbox **Pendientes** in chat (`/api/notifications`, `chat-interface.tsx`) for unread internal action items
 - Business HITL for price approval: `POST /api/business-decisions/price-approval`, shared handler in `apps/web/src/lib/business-decisions/price-approval.ts`, Telegram inline buttons (`Aprobar precio`, `Ajustar y aprobar`) and text parser for structured adjustments
@@ -33,10 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Operational-cases cron: when a case has pending tool confirmations, skip `runAgent`, set `next_action_at = null`, upsert `tool_confirmation_pending`; resume case after approve/reject via `finalizeCaseAfterToolDecision`
+- Resolving internal notifications cascades closure of linked reminder rows; engagement policies extended with `maxReminderAttempts`, `escalateAfterHours`, and escalation priority
 - `notify_user`: always persists web notifications in `internal_user_notifications`; Telegram delivery for `price_approval` includes actionable inline keyboard; default `due_at = now + 4h` for `price_approval` when caller omits it
 - Price approval semantics: **Ajustar y aprobar** applies user-provided amounts, marks `pricing_proposal` approved, actioned notification, and advances case to `contract_pending` (no second approval step)
 - Internal notification reminders in operational-cases cron: `price_approval` cooldown **4h** (other internal kinds remain **24h**); external contact reminders stay **24h**
-- Documentation: operational-cases architecture (persistent notifications + business HITL), business-brain roadmap V1.7 progress, HITL doc clarifies tool vs business HITL
+- Documentation: operational-cases architecture (pending inbox, HITL cron anti-spam, cleanup scopes, property_data_review), HITL doc § casos operativos con tool pendiente, business-brain roadmap V1.7 progress
 - Documentation for operational cases, architecture manual, and POC index aligned with EasyBroker MLS and dual providers (`easybroker` vs `easybroker_web`)
 - EasyBroker MLS session handling now falls back from expired `storage-state.json` to email/password login before requiring assisted login
 - Default `MEMORY_MATCH_THRESHOLD` for long-term retrieval: **0.50** (was 0.35). Migration [00008_match_memories_default_threshold_050.sql](packages/db/supabase/migrations/00008_match_memories_default_threshold_050.sql) sets the same default on `public.match_memories` in the database; the app still passes the threshold explicitly from code/env.
