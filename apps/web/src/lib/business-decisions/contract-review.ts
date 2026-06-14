@@ -3,7 +3,7 @@ import {
   getOperationalCase,
   getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
-  setInternalUserNotificationStatus,
+  resolveInternalNotificationWithReminders,
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
@@ -203,7 +203,10 @@ export async function handleContractReviewDecision(
   if (!notification || notification.user_id !== params.userId) {
     return { ok: false, status: "not_found", message: "No encontré el pendiente." };
   }
-  if (notification.kind !== "contract_review") {
+  if (
+    notification.kind !== "contract_review" &&
+    notification.kind !== "contract_pending"
+  ) {
     return {
       ok: false,
       status: "wrong_kind",
@@ -257,7 +260,7 @@ export async function handleContractReviewDecision(
         notes: parsed.change_notes ?? params.text.trim(),
       },
     });
-    await setInternalUserNotificationStatus(db, {
+    await resolveInternalNotificationWithReminders(db, {
       id: notification.id,
       userId: params.userId,
       status: "actioned",
@@ -367,7 +370,7 @@ export async function handleContractReviewDecision(
       doc_url: docUrl,
     },
   });
-  await setInternalUserNotificationStatus(db, {
+  await resolveInternalNotificationWithReminders(db, {
     id: notification.id,
     userId: params.userId,
     status: "actioned",

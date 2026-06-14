@@ -2,7 +2,7 @@ import {
   getInternalUserNotification,
   getOperationalCase,
   insertOperationalCaseEvent,
-  setInternalUserNotificationStatus,
+  resolveInternalNotificationWithReminders,
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
@@ -166,7 +166,7 @@ export async function handlePriceApprovalDecision(
       actor: "user",
       payload: { kind: "price_approved", pricing_proposal: nextProposal },
     });
-    await setInternalUserNotificationStatus(db, {
+    await resolveInternalNotificationWithReminders(db, {
       id: notification.id,
       userId: params.userId,
       status: "actioned",
@@ -201,7 +201,7 @@ export async function handlePriceApprovalDecision(
       actor: "user",
       payload: { kind: "price_rejected", reason: parsed.reason ?? params.text },
     });
-    await setInternalUserNotificationStatus(db, {
+    await resolveInternalNotificationWithReminders(db, {
       id: notification.id,
       userId: params.userId,
       status: "actioned",
@@ -250,7 +250,7 @@ export async function handlePriceApprovalDecision(
       pricing_proposal: nextProposal,
     },
   });
-  await setInternalUserNotificationStatus(db, {
+  await resolveInternalNotificationWithReminders(db, {
     id: notification.id,
     userId: params.userId,
     status: "actioned",
