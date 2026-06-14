@@ -2220,15 +2220,6 @@ export function ChatInterface({
     <div className="relative flex h-full min-h-0 flex-1 flex-col text-slate-950 dark:text-white">
       <div className="relative grid h-full min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_460px] 2xl:grid-cols-[minmax(0,0.9fr)_520px]">
             <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-xl shadow-violet-950/5 dark:border-white/10 dark:bg-neutral-900">
-              <div className="shrink-0 border-b border-slate-200/70 px-5 py-4 dark:border-white/10">
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Conversación
-                </p>
-                <p className="text-xs text-slate-500 dark:text-white/50">
-                  Apóyate en Gu, tu colaborador digital.
-                </p>
-              </div>
-
               {/* Messages */}
               <div ref={messagesViewportRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
                 <div className="mx-auto max-w-2xl space-y-4">
