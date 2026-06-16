@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Configurable engagement policy overrides per account: `engagement_policy_overrides_jsonb` on `user_notification_preferences` (migration `00036_notification_engagement_policy_overrides.sql`), UI in Plantillas de flujos, API `GET/POST /api/notification-preferences`; delivery windows by weekday/time/timezone with cron deferral outside allowed hours
+- Telegram HITL reminders keep actionable Approve/Cancel buttons via `pending_tool_call_id`; stale `tool_confirmation_pending` notifications auto-resolve when the underlying tool call is no longer pending
+- Telegram multi-case clarification with numbered list selection; explicit new-case intent (`forceNew`) when user asks to open another property case
+- Comparables integration issue detection (`integration_issues`, `needs_user_reauth` in `data_quality`); bounded EasyBroker MLS session retry (`EASYBROKER_MLS_MAX_ATTEMPTS`) before `needs_manual_login`
 - Dedicated **Pendientes** inbox at `/chat/pending`: grouped reminders, due/escalation badges, inline business decisions, HITL tool cards, auto-sync, and bandeja cleanup (`DELETE` scopes `resolved-history`, `settings-test`, `stuck-case`)
 - `tool_confirmation_pending` internal notification kind with engagement policy (4h cooldown, 3 reminders, 24h escalation) when operational-case cron skips `runAgent` while tool HITL is blocking
 - Business decision **property data review**: `POST /api/business-decisions/property-data-review`, shared handler, web inline actions and Telegram confirm/correct callbacks
@@ -37,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Settings lab: separate E2E lab configuration from observed-case panel; case selector tags `[Real]` / `[E2E activo|pausado|abandonado]`; guide for starting a clean E2E run
 - Operational-cases cron: when a case has pending tool confirmations, skip `runAgent`, set `next_action_at = null`, upsert `tool_confirmation_pending`; resume case after approve/reject via `finalizeCaseAfterToolDecision`
 - Resolving internal notifications cascades closure of linked reminder rows; engagement policies extended with `maxReminderAttempts`, `escalateAfterHours`, and escalation priority
 - `notify_user`: always persists web notifications in `internal_user_notifications`; Telegram delivery for `price_approval` includes actionable inline keyboard; default `due_at = now + 4h` for `price_approval` when caller omits it

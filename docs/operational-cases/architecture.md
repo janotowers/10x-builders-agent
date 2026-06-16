@@ -320,8 +320,11 @@ Recordatorios (mismo cron `POST /api/cron/operational-cases`):
   - `internal_user + approval + tool_confirmation_pending`: recordatorio de que hay acciones HITL sin resolver; cooldown **4h**, máx. **3** intentos, escalación a **24h** con prioridad `high`.
   - `external_contact/prospect/owner + reminder/followup`: cooldown **24h**, max intentos **3** antes de escalar al asesor.
   - `high` priority puede reducir cooldown interno a **1h**.
+- **Overrides por cuenta (V1):** `user_notification_preferences.engagement_policy_overrides_jsonb` (`by_audience`, `by_kind`) permite ajustar cooldown, máx. intentos, escalación y **ventana de entrega** (días de la semana + horario local + timezone). UI en **Plantillas de flujos** (`EngagementPolicySettingsCard`); API `GET/POST /api/notification-preferences`. Migración `00036_notification_engagement_policy_overrides.sql`.
+- **Ventana de entrega:** si `respectWorkingHours` está activo y el envío cae fuera de la ventana configurada, el cron **reprograma** (`due_at` / `next_reminder_at`) al siguiente horario permitido en lugar de descartar el recordatorio. Defaults: asesor interno **08:00–21:00** (lun–dom); contacto externo **09:00–20:00** (lun–sáb). Timezone: `profiles.timezone` del asesor (contactos externos usan el mismo proxy en V1).
+- Recordatorios HITL en Telegram reconstruyen botones **Aprobar/Cancelar** desde `pending_tool_call_id`; si el `tool_call` ya no está en `pending_confirmation`, el cron cierra la notificación como obsoleta en lugar de mandar un nudge pasivo.
 - Tras **atender** un pendiente (PATCH `actioned`/`dismissed` o handler de business decision), los recordatorios ligados al mismo `source_notification_id` se cierran en cascada para evitar avisos huérfanos.
-- Pendiente UI configurable: mover estos defaults a Ajustes (horario laboral, timezone, cooldowns por audiencia/canal/intención/kind y límites de intentos).
+- **Pendiente (futuro):** overrides por `case_type`/canal individual en UI; timezone por contacto externo; defer también en el primer push inmediato de Telegram (hoy aplica principalmente a recordatorios del cron).
 
 ### 7.1 HITL de negocio vs HITL de ejecución de tools
 
@@ -380,8 +383,6 @@ Flujo **property_data_review** (implementado):
 - Skill/coach solicita revisión con `notify_user(kind=property_data_review)`.
 - El asesor confirma o corrige desde **Pendientes** (inline) o Telegram (`property_data_confirm` / `property_data_correct`).
 - Handler compartido: [`apps/web/src/lib/business-decisions/property-data-review.ts`](../../apps/web/src/lib/business-decisions/property-data-review.ts); API `POST /api/business-decisions/property-data-review`.
-
-**Pendiente (no olvidar):** políticas configurables en Ajustes — cooldowns por tipo/canal, horario laboral del usuario (timezone + ventana), y defaults de `due_at` por prioridad.
 
 ---
 
