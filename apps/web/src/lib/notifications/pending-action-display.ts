@@ -91,6 +91,9 @@ export function pendingActionLinkLabel(
       kind: action.notification_kind ?? "",
       body: action.body,
     });
+    if (effectiveKind === "integration_reconnect") {
+      return "Reconectar integración";
+    }
     const config = internalNotificationKindConfig(effectiveKind);
     if (config.businessDecision) return "Resolver en Pendientes";
   }

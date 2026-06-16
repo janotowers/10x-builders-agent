@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  looksLikeNewCaseIntent,
   resolveTelegramConversationRoute,
   shouldBindTelegramMessageToConversationalCase,
 } from "./conversational-case-routing";
@@ -138,5 +139,50 @@ const decisionPausedIgnored = resolveTelegramConversationRoute({
   explicitIntent: false,
 });
 assert.equal(decisionPausedIgnored.route, "general");
+
+// Multiple active cases of the same type → clarify with several candidates so
+// the webhook can present a numbered list.
+const intakeCaseWithId = {
+  ...intakeCase,
+  id: "case-1",
+} as unknown as OperationalCase;
+const intakeCaseB = {
+  ...intakeCase,
+  id: "case-2",
+  context_jsonb: {
+    created_from: "agent_conversation",
+    intake_status: "incomplete",
+    title: "Casa Sendas",
+  },
+} as unknown as OperationalCase;
+const bindingB = {
+  ...binding,
+  id: "binding-2",
+  case_id: "case-2",
+} as OperationalCaseConversationBinding;
+const decisionMultiple = resolveTelegramConversationRoute({
+  message: "Quiero seguir con el caso",
+  bindings: [binding, bindingB],
+  candidateCasesById: new Map([
+    ["case-1", intakeCaseWithId],
+    ["case-2", intakeCaseB],
+  ]),
+  explicitIntent: false,
+});
+assert.equal(decisionMultiple.route, "clarify");
+if (decisionMultiple.route === "clarify") {
+  assert.equal(decisionMultiple.candidates.length, 2);
+  assert.deepEqual(
+    decisionMultiple.candidates.map((c) => c.caseId).sort(),
+    ["case-1", "case-2"]
+  );
+}
+
+// New-case intent detection (deterministic gate for forcing a fresh case).
+assert.equal(looksLikeNewCaseIntent("Quiero opcionar otra propiedad"), true);
+assert.equal(looksLikeNewCaseIntent("Es para un nuevo caso"), true);
+assert.equal(looksLikeNewCaseIntent("otra casa en venta"), true);
+assert.equal(looksLikeNewCaseIntent("La zona es Sendas"), false);
+assert.equal(looksLikeNewCaseIntent("Ana Pérez, 5 millones"), false);
 
 console.log("conversational-case-routing.route-selftest: ok");

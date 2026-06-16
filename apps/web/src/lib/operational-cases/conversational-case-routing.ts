@@ -43,6 +43,24 @@ function looksLikePropertyDataReviewResponse(text: string) {
   );
 }
 
+/**
+ * Detects an explicit intent to open a NEW case while another may be active,
+ * e.g. "quiero opcionar otra propiedad", "es para un nuevo caso", "otra casa".
+ * Deterministic on purpose so it can gate forcing a fresh case without an LLM.
+ */
+export function looksLikeNewCaseIntent(message: string): boolean {
+  const text = normalize(message);
+  if (!text) return false;
+  const mentionsNewQualifier =
+    /\b(otra|otro|nueva|nuevo|adicional|adicionales|distinta|distinto|diferente)\b/.test(
+      text
+    );
+  if (!mentionsNewQualifier) return false;
+  return /\b(propiedad|propiedades|casa|casas|depto|departamento|departamentos|inmueble|inmuebles|terreno|terrenos|caso|operacion|operación)\b/.test(
+    text
+  );
+}
+
 export function shouldBindTelegramMessageToConversationalCase(params: {
   message: string;
   opCase: OperationalCase;

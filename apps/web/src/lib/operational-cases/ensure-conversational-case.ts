@@ -45,6 +45,12 @@ export async function ensureConversationalCase(
     channel?: string;
     e2eControlled?: boolean;
     labTelegramChatId?: number;
+    /**
+     * When true, do NOT adopt the latest active conversational case; always
+     * create a fresh draft. Used when the user explicitly asks to open another
+     * case while one is already in progress.
+     */
+    forceNew?: boolean;
   }
 ): Promise<EnsureConversationalCaseResult | null> {
   const e2eControlled = params.e2eControlled === true;
@@ -59,11 +65,13 @@ export async function ensureConversationalCase(
           display_name: "Contacto de prueba E2E",
         }
       : undefined;
-  const existing = await findLatestConversationalOperationalCase(db, {
-    userId: params.userId,
-    caseType: params.caseType,
-    statuses: ["active", "waiting_internal", "waiting_external"],
-  });
+  const existing = params.forceNew
+    ? null
+    : await findLatestConversationalOperationalCase(db, {
+        userId: params.userId,
+        caseType: params.caseType,
+        statuses: ["active", "waiting_internal", "waiting_external"],
+      });
   if (existing && existing.status !== "paused") {
     const existingExternal = existing.external_contact_jsonb ?? {};
     if (

@@ -46,6 +46,7 @@ import { parseContractReviewDecision } from "@/lib/business-decisions/contract-r
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
+  looksLikeNewCaseIntent,
   resolveTelegramConversationRoute,
   shouldBindTelegramMessageToConversationalCase,
 } from "@/lib/operational-cases/conversational-case-routing";
@@ -367,26 +368,42 @@ interface TelegramUpdate {
   };
 }
 
-function parseClarificationSelection(text: string): "yes" | "no" | null {
+type ClarificationSelection =
+  | { kind: "yes" }
+  | { kind: "no" }
+  | { kind: "index"; index: number };
+
+function parseClarificationSelection(text: string): ClarificationSelection | null {
   const normalized = text
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
   if (!normalized) return null;
+  // Numbered selection from a multi-case clarification list ("1", "caso 2",
+  // "opcion 3", "el 2"). 1-based to match the displayed list.
+  const numberMatch = normalized.match(
+    /^(?:caso|opcion|opción|el|la|numero|número|#)?\s*(\d{1,2})$/
+  );
+  if (numberMatch) {
+    const index = Number.parseInt(numberMatch[1]!, 10);
+    if (Number.isFinite(index) && index >= 1) {
+      return { kind: "index", index };
+    }
+  }
   if (
     /^(si|sí|ok|dale|va|correcto|afirmativo|confirmo|usar ese caso|completar ese caso)$/.test(
       normalized
     )
   ) {
-    return "yes";
+    return { kind: "yes" };
   }
   if (
-    /^(no|negativo|otro|otra cosa|no es ese caso|no corresponde)$/.test(
+    /^(no|ninguno|ninguna|negativo|otro|otra cosa|no es ese caso|no corresponde)$/.test(
       normalized
     )
   ) {
-    return "no";
+    return { kind: "no" };
   }
   return null;
 }
@@ -1659,15 +1676,45 @@ export async function POST(request: Request) {
   );
   if (pendingClarificationBinding && text) {
     const selection = parseClarificationSelection(text);
-    if (selection === "yes") {
+    const candidateRoutes = Array.isArray(
+      pendingClarificationBinding.candidate_routes_jsonb
+    )
+      ? pendingClarificationBinding.candidate_routes_jsonb
+      : [];
+    // Resolve which case the user chose: an explicit number picks from the
+    // numbered candidate list; "sí" defaults to the primary (first) candidate
+    // or the binding's own case for the single-candidate path.
+    let chosenCaseId: string | null = null;
+    if (selection?.kind === "index") {
+      const candidate = candidateRoutes[selection.index - 1];
+      const candidateCaseId =
+        candidate && typeof candidate.caseId === "string"
+          ? candidate.caseId
+          : null;
+      if (!candidateCaseId) {
+        await sendTelegramMessage(
+          chatId,
+          `No encontré esa opción. Responde con un número entre 1 y ${candidateRoutes.length}, o "ninguno".`
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "clarification_invalid_index",
+        });
+      }
+      chosenCaseId = candidateCaseId;
+    } else if (selection?.kind === "yes") {
+      const primaryCandidate = candidateRoutes[0];
+      chosenCaseId =
+        primaryCandidate && typeof primaryCandidate.caseId === "string"
+          ? primaryCandidate.caseId
+          : pendingClarificationBinding.case_id;
+    }
+    if (chosenCaseId) {
       const pendingMessageText =
         typeof pendingClarificationBinding.pending_message_jsonb?.text === "string"
           ? pendingClarificationBinding.pending_message_jsonb.text.trim()
           : "";
-      const clarifiedCase = await getOperationalCase(
-        db,
-        pendingClarificationBinding.case_id
-      );
+      const clarifiedCase = await getOperationalCase(db, chosenCaseId);
       if (clarifiedCase) {
         conversationalCase = clarifiedCase;
       }
@@ -1680,12 +1727,14 @@ export async function POST(request: Request) {
         pendingMessage: {},
         candidateRoutes: [],
         metadataMerge: {
-          clarification_last_decision: "yes",
+          clarification_last_decision:
+            selection?.kind === "index" ? `index:${selection.index}` : "yes",
           clarification_resolved_at: new Date().toISOString(),
+          clarification_resolved_case_id: chosenCaseId,
         },
         lastUserMessageAt: new Date().toISOString(),
       });
-    } else if (selection === "no") {
+    } else if (selection?.kind === "no") {
       await setConversationBindingStatus(db, {
         bindingId: pendingClarificationBinding.id,
         status: "awaiting_user",
@@ -1713,6 +1762,7 @@ export async function POST(request: Request) {
           channel: "telegram",
           e2eControlled: Boolean(activeE2ELabSession),
           labTelegramChatId: activeE2ELabSession ? chatId : undefined,
+          forceNew: looksLikeNewCaseIntent(text),
         });
         conversationalCase = ensured?.case ?? null;
         if (conversationalCase && activeE2ELabSession) {
@@ -1803,7 +1853,6 @@ export async function POST(request: Request) {
         const primary = routeDecision.candidates[0]!;
         const primaryCase = candidateCasesById.get(primary.caseId);
         if (primaryCase) {
-          const identity = buildConversationCaseIdentity({ opCase: primaryCase });
           await setConversationBindingStatus(db, {
             bindingId: primary.bindingId ?? pendingBindings[0]!.id,
             status: "clarification_needed",
@@ -1818,14 +1867,37 @@ export async function POST(request: Request) {
             },
             lastUserMessageAt: new Date().toISOString(),
           });
-          await sendTelegramMessage(
-            chatId,
-            `Tu mensaje podría corresponder al caso pendiente de ${identity.caseTypeLabel}:\n` +
-              `• ${identity.summary}\n` +
-              `• Técnico: ${identity.technical}\n` +
-              `• Caso: ${identity.shortId}\n\n` +
-              "¿Quieres que lo asocie a ese caso? Responde: sí / no."
-          );
+          if (routeDecision.candidates.length === 1) {
+            const identity = buildConversationCaseIdentity({ opCase: primaryCase });
+            await sendTelegramMessage(
+              chatId,
+              `Tu mensaje podría corresponder al caso pendiente de ${identity.caseTypeLabel}:\n` +
+                `• ${identity.summary}\n` +
+                `• Técnico: ${identity.technical}\n` +
+                `• Caso: ${identity.shortId}\n\n` +
+                "¿Quieres que lo asocie a ese caso? Responde: sí / no."
+            );
+          } else {
+            const lines = routeDecision.candidates.map((candidate, idx) => {
+              const candidateCase = candidateCasesById.get(candidate.caseId);
+              const label = candidateCase
+                ? (() => {
+                    const identity = buildConversationCaseIdentity({
+                      opCase: candidateCase,
+                    });
+                    return `${identity.caseTypeLabel} · ${identity.summary} · ${identity.technical} · Caso ${identity.shortId}`;
+                  })()
+                : (typeof candidate.label === "string" && candidate.label) ||
+                  `Caso ${candidate.caseId}`;
+              return `${idx + 1}. ${label}`;
+            });
+            await sendTelegramMessage(
+              chatId,
+              "Tu mensaje podría corresponder a varios casos en curso:\n" +
+                `${lines.join("\n")}\n\n` +
+                `Responde con el número del caso (1-${routeDecision.candidates.length}) o "ninguno".`
+            );
+          }
           return NextResponse.json({ ok: true, routed: "clarification_requested" });
         }
       } else {

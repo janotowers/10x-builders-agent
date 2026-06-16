@@ -123,6 +123,13 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     intent: "reminder",
     reviewCtaLabel: "Revisar en flujo",
   },
+  integration_reconnect: {
+    kind: "integration_reconnect",
+    label: "Reconectar integración",
+    visibleInInbox: true,
+    intent: "reminder",
+    reviewCtaLabel: "Reconectar integración",
+  },
   internal_notification_reminder: {
     kind: "internal_notification_reminder",
     label: "Recordatorio",
