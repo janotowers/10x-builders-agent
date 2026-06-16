@@ -837,6 +837,43 @@ export interface AccountToolSecretPublic {
 
 export type NotificationChannel = "web" | "telegram" | "email" | "whatsapp";
 
+export interface EngagementDeliveryWindow {
+  /**
+   * Days in local timezone where delivery is allowed.
+   * Sunday=0 ... Saturday=6.
+   */
+  days_of_week?: number[];
+  /** Local start time (HH:mm), inclusive. */
+  start_time?: string;
+  /** Local end time (HH:mm), exclusive. */
+  end_time?: string;
+  /**
+   * Optional explicit timezone for this policy. Falls back to profile.timezone.
+   */
+  timezone?: string;
+}
+
+export interface EngagementPolicyOverride {
+  default_due_after_hours?: number;
+  reminder_cooldown_hours?: number;
+  max_attempts?: number;
+  max_reminder_attempts?: number;
+  escalate_after_hours?: number;
+  escalation_priority?: "high";
+  respect_working_hours?: boolean;
+  delivery_window?: EngagementDeliveryWindow;
+}
+
+export interface EngagementPolicyOverrides {
+  by_audience?: Partial<
+    Record<
+      "internal_user" | "external_prospect" | "external_owner" | "external_contact",
+      EngagementPolicyOverride
+    >
+  >;
+  by_kind?: Record<string, EngagementPolicyOverride>;
+}
+
 export interface UserNotificationPreferences {
   user_id: string;
   channels_priority_jsonb: NotificationChannel[];
@@ -844,6 +881,7 @@ export interface UserNotificationPreferences {
     by_case_type?: Record<string, OperationalCaseReminderPolicy>;
     by_case_id?: Record<string, OperationalCaseReminderPolicy>;
   };
+  engagement_policy_overrides_jsonb?: EngagementPolicyOverrides;
   created_at: string;
   updated_at: string;
 }

@@ -35,6 +35,7 @@ import {
   getOperationalCase,
   getRecentOperationalCaseEvents,
   getTelegramChatId,
+  getUserNotificationPreferences,
   listDueExternalContactNotifications,
   listDueInternalUserNotifications,
   insertOperationalCaseEvent,
@@ -49,6 +50,8 @@ import {
   updateOperationalCase,
   getOrCreateSession,
   countPendingToolCallsForCase,
+  getPendingToolCall,
+  setInternalUserNotificationStatus,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
 import type {
@@ -68,12 +71,16 @@ import {
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
 import {
+  internalNotificationKindConfig,
   escalationPolicyForNotificationKind,
   maxReminderAttemptsForNotificationKind,
-  reminderCooldownHoursForNotificationKind,
 } from "@/lib/internal-notifications/registry";
 import { syncContractDraftFromToolCalls } from "@/lib/operational-cases/contract-draft-document";
-import { reminderCooldownHoursForEngagement } from "@/lib/engagement-policies/registry";
+import {
+  nextAllowedDeliveryAt,
+  reminderCooldownHoursForEngagement,
+  resolveEngagementPolicy,
+} from "@/lib/engagement-policies/registry";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
@@ -287,11 +294,81 @@ function hoursFromNow(hours: number) {
   return new Date(Date.now() + hours * 60 * 60_000).toISOString();
 }
 
-function shouldSendInternalReminder(notification: InternalUserNotification) {
+type ReminderDeliveryContext = {
+  timezone: string;
+  engagementOverrides: Record<string, unknown> | null;
+};
+
+async function loadReminderDeliveryContext(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  cache: Map<string, ReminderDeliveryContext>
+): Promise<ReminderDeliveryContext> {
+  const cached = cache.get(userId);
+  if (cached) return cached;
+  const [profile, prefs] = await Promise.all([
+    getProfile(db, userId).catch(() => null),
+    getUserNotificationPreferences(db, userId).catch(() => null),
+  ]);
+  const context: ReminderDeliveryContext = {
+    timezone:
+      typeof profile?.timezone === "string" && profile.timezone.trim()
+        ? profile.timezone.trim()
+        : "UTC",
+    engagementOverrides:
+      prefs?.engagement_policy_overrides_jsonb &&
+      typeof prefs.engagement_policy_overrides_jsonb === "object"
+        ? (prefs.engagement_policy_overrides_jsonb as Record<string, unknown>)
+        : null,
+  };
+  cache.set(userId, context);
+  return context;
+}
+
+async function deferInternalNotificationReminder(
+  db: ReturnType<typeof createServerClient>,
+  notification: InternalUserNotification,
+  dueAt: Date
+) {
+  await db
+    .from("internal_user_notifications")
+    .update({
+      due_at: dueAt.toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", notification.id)
+    .eq("status", "unread");
+}
+
+async function deferExternalContactReminder(
+  db: ReturnType<typeof createServerClient>,
+  notification: ExternalContactNotification,
+  nextReminderAt: Date
+) {
+  await db
+    .from("external_contact_notifications")
+    .update({
+      next_reminder_at: nextReminderAt.toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", notification.id)
+    .in("status", ["pending", "sent"]);
+}
+
+function shouldSendInternalReminder(
+  notification: InternalUserNotification,
+  engagementOverrides?: Record<string, unknown> | null
+) {
   const lastReminder = notification.metadata_jsonb?.last_reminder_at;
   if (typeof lastReminder !== "string") return true;
-  const cooldownHours = reminderCooldownHoursForNotificationKind(
-    notification.kind
+  const kindConfig = internalNotificationKindConfig(notification.kind);
+  const cooldownHours = reminderCooldownHoursForEngagement(
+    {
+      audience: "internal_user",
+      intent: kindConfig.intent ?? "reminder",
+      kind: kindConfig.kind,
+    },
+    engagementOverrides
   );
   // TODO: make reminder cadence configurable by user, notification kind,
   // priority, working hours, and the user's timezone.
@@ -306,10 +383,27 @@ function reminderCount(notification: InternalUserNotification): number {
   return typeof count === "number" && Number.isFinite(count) ? count : 0;
 }
 
-function shouldEscalateInternalReminder(notification: InternalUserNotification) {
-  const reminderAttemptsCap = maxReminderAttemptsForNotificationKind(notification.kind);
-  const { escalateAfterHours, escalationPriority } =
-    escalationPolicyForNotificationKind(notification.kind);
+function shouldEscalateInternalReminder(
+  notification: InternalUserNotification,
+  engagementOverrides?: Record<string, unknown> | null
+) {
+  const kindConfig = internalNotificationKindConfig(notification.kind);
+  const policy = resolveEngagementPolicy(
+    {
+      audience: "internal_user",
+      intent: kindConfig.intent ?? "reminder",
+      kind: kindConfig.kind,
+    },
+    engagementOverrides
+  );
+  const reminderAttemptsCap =
+    policy.maxReminderAttempts ?? maxReminderAttemptsForNotificationKind(notification.kind);
+  const escalateAfterHours =
+    policy.escalateAfterHours ??
+    escalationPolicyForNotificationKind(notification.kind).escalateAfterHours;
+  const escalationPriority =
+    policy.escalationPriority ??
+    escalationPolicyForNotificationKind(notification.kind).escalationPriority;
   if (!reminderAttemptsCap && !escalateAfterHours) return null;
   if (typeof notification.metadata_jsonb?.escalated_at === "string") return null;
 
@@ -333,11 +427,85 @@ function shouldEscalateInternalReminder(notification: InternalUserNotification) 
   };
 }
 
-async function processInternalNotificationReminder(
+/**
+ * For HITL approval notifications, the reminder/escalation only makes sense
+ * while the underlying tool call is still awaiting confirmation. If it has
+ * already been approved/rejected, we resolve the notification instead of
+ * sending a stale "still pending" nudge.
+ */
+async function resolveStaleToolConfirmationNotification(
   db: ReturnType<typeof createServerClient>,
   notification: InternalUserNotification
+): Promise<boolean> {
+  if (notification.kind !== TOOL_CONFIRMATION_PENDING_KIND) return false;
+  const pendingToolCallId =
+    typeof notification.metadata_jsonb?.pending_tool_call_id === "string"
+      ? notification.metadata_jsonb.pending_tool_call_id.trim()
+      : "";
+  if (!pendingToolCallId) return false;
+  const stillPending = await getPendingToolCall(db, pendingToolCallId);
+  if (stillPending) return false;
+  await setInternalUserNotificationStatus(db, {
+    id: notification.id,
+    userId: notification.user_id,
+    status: "actioned",
+  });
+  if (notification.case_id) {
+    await insertOperationalCaseEvent(db, {
+      caseId: notification.case_id,
+      eventType: "state_changed",
+      actor: "system",
+      payload: {
+        source: "internal_user_notifications",
+        kind: "tool_confirmation_reminder_resolved_stale",
+        notification_id: notification.id,
+        pending_tool_call_id: pendingToolCallId,
+      },
+    });
+  }
+  return true;
+}
+
+async function processInternalNotificationReminder(
+  db: ReturnType<typeof createServerClient>,
+  notification: InternalUserNotification,
+  deliveryContextCache: Map<string, ReminderDeliveryContext>
 ) {
-  const escalation = shouldEscalateInternalReminder(notification);
+  if (await resolveStaleToolConfirmationNotification(db, notification)) {
+    return "resolved_stale";
+  }
+  const deliveryContext = await loadReminderDeliveryContext(
+    db,
+    notification.user_id,
+    deliveryContextCache
+  );
+  const kindConfig = internalNotificationKindConfig(notification.kind);
+  const policy = resolveEngagementPolicy(
+    {
+      audience: "internal_user",
+      intent: kindConfig.intent ?? "reminder",
+      kind: kindConfig.kind,
+      priority: notification.priority,
+      channel: "telegram",
+    },
+    deliveryContext.engagementOverrides
+  );
+  if (policy.respectWorkingHours) {
+    const nextAllowed = nextAllowedDeliveryAt({
+      now: new Date(),
+      timezone:
+        policy.deliveryWindow?.timezone?.trim() || deliveryContext.timezone || "UTC",
+      window: policy.deliveryWindow,
+    });
+    if (nextAllowed.getTime() > Date.now() + 1000) {
+      await deferInternalNotificationReminder(db, notification, nextAllowed);
+      return "deferred_window";
+    }
+  }
+  const escalation = shouldEscalateInternalReminder(
+    notification,
+    deliveryContext.engagementOverrides
+  );
   if (escalation) {
     const escalated = await markInternalNotificationEscalated(db, notification, {
       priority: escalation.escalationPriority,
@@ -375,7 +543,11 @@ async function processInternalNotificationReminder(
     }
     return "escalated";
   }
-  if (!shouldSendInternalReminder(notification)) return "cooldown";
+  if (
+    !shouldSendInternalReminder(notification, deliveryContext.engagementOverrides)
+  ) {
+    return "cooldown";
+  }
   await notify(
     db,
     notification.user_id,
@@ -407,7 +579,8 @@ async function processInternalNotificationReminder(
 
 async function processExternalContactReminder(
   db: ReturnType<typeof createServerClient>,
-  notification: ExternalContactNotification
+  notification: ExternalContactNotification,
+  deliveryContextCache: Map<string, ReminderDeliveryContext>
 ) {
   if (notification.case_id) {
     const opCase = await getOperationalCase(db, notification.case_id);
@@ -451,6 +624,36 @@ async function processExternalContactReminder(
   }
 
   if (notification.channel !== "telegram") return "unsupported_channel";
+  const deliveryContext = await loadReminderDeliveryContext(
+    db,
+    notification.user_id,
+    deliveryContextCache
+  );
+  const kind =
+    typeof notification.metadata_jsonb?.kind === "string"
+      ? notification.metadata_jsonb.kind
+      : "external_contact_reminder";
+  const policy = resolveEngagementPolicy(
+    {
+      audience: "external_contact",
+      intent: "reminder",
+      channel: "telegram",
+      kind,
+    },
+    deliveryContext.engagementOverrides
+  );
+  if (policy.respectWorkingHours) {
+    const nextAllowed = nextAllowedDeliveryAt({
+      now: new Date(),
+      timezone:
+        policy.deliveryWindow?.timezone?.trim() || deliveryContext.timezone || "UTC",
+      window: policy.deliveryWindow,
+    });
+    if (nextAllowed.getTime() > Date.now() + 1000) {
+      await deferExternalContactReminder(db, notification, nextAllowed);
+      return "deferred_window";
+    }
+  }
   try {
     await sendTelegramMessage(
       Number(notification.recipient_identifier),
@@ -462,15 +665,15 @@ async function processExternalContactReminder(
       db,
       notification,
       hoursFromNow(
-        reminderCooldownHoursForEngagement({
-          audience: "external_contact",
-          intent: "reminder",
-          channel: notification.channel,
-          kind:
-            typeof notification.metadata_jsonb?.kind === "string"
-              ? notification.metadata_jsonb.kind
-              : "external_contact_reminder",
-        })
+        reminderCooldownHoursForEngagement(
+          {
+            audience: "external_contact",
+            intent: "reminder",
+            channel: notification.channel,
+            kind,
+          },
+          deliveryContext.engagementOverrides
+        )
       )
     );
     await insertOperationalCaseEvent(db, {
@@ -498,17 +701,30 @@ async function processExternalContactReminder(
 async function processNotificationReminders(
   db: ReturnType<typeof createServerClient>
 ) {
+  const deliveryContextCache = new Map<string, ReminderDeliveryContext>();
   const [internalDue, externalDue] = await Promise.all([
     listDueInternalUserNotifications(db, { limit: 50 }),
     listDueExternalContactNotifications(db, { limit: 50 }),
   ]);
   const internalResults = [];
   for (const notification of internalDue) {
-    internalResults.push(await processInternalNotificationReminder(db, notification));
+    internalResults.push(
+      await processInternalNotificationReminder(
+        db,
+        notification,
+        deliveryContextCache
+      )
+    );
   }
   const externalResults = [];
   for (const notification of externalDue) {
-    externalResults.push(await processExternalContactReminder(db, notification));
+    externalResults.push(
+      await processExternalContactReminder(
+        db,
+        notification,
+        deliveryContextCache
+      )
+    );
   }
   return { internal: internalResults, external: externalResults };
 }

@@ -24,6 +24,7 @@ import {
   createServerClient,
   getInternalUserNotification,
   getOperationalCase,
+  getPendingToolCall,
   getTelegramChatId,
   setInternalUserNotificationStatus,
   updateInternalUserNotificationChannels,
@@ -38,6 +39,7 @@ import {
   defaultDueAtForNotificationKind,
   internalNotificationKindConfig,
 } from "@/lib/internal-notifications/registry";
+import { defaultDueAtForEngagement } from "@/lib/engagement-policies/registry";
 import type { NotificationChannel } from "@agents/types";
 import {
   buildCaseDocumentDownloadUrl,
@@ -53,6 +55,7 @@ import {
   rewriteCaseDocumentDownloadLinksInText,
 } from "@/lib/operational-cases/generated-case-document";
 import { buildExternalCaseDocumentDownloadUrl } from "@/lib/operational-cases/case-document-download-token";
+import { resolvePendingToolCallId } from "@/lib/notify/pending-tool-call-id";
 
 export type NotifyUrgency = "low" | "normal" | "high";
 
@@ -106,22 +109,40 @@ export interface NotifyOptions {
 async function loadPriority(
   db: ReturnType<typeof createServerClient>,
   userId: string
-): Promise<NotificationChannel[]> {
+): Promise<{
+  channels: NotificationChannel[];
+  engagementOverrides: Record<string, unknown> | null;
+}> {
   const { data, error } = await db
     .from("user_notification_preferences")
-    .select("channels_priority_jsonb")
+    .select("channels_priority_jsonb, engagement_policy_overrides_jsonb")
     .eq("user_id", userId)
     .maybeSingle();
-  if (error || !data) return DEFAULT_PRIORITY;
+  if (error || !data) {
+    return { channels: DEFAULT_PRIORITY, engagementOverrides: null };
+  }
   const raw = (data as { channels_priority_jsonb?: unknown })
     .channels_priority_jsonb;
-  if (!Array.isArray(raw)) return DEFAULT_PRIORITY;
+  if (!Array.isArray(raw)) {
+    return { channels: DEFAULT_PRIORITY, engagementOverrides: null };
+  }
   const cleaned = raw
     .filter((v): v is string => typeof v === "string")
     .filter((v): v is NotificationChannel =>
       ["web", "telegram", "email", "whatsapp"].includes(v)
     );
-  return cleaned.length > 0 ? cleaned : DEFAULT_PRIORITY;
+  const engagementOverrides =
+    (data as { engagement_policy_overrides_jsonb?: unknown })
+      .engagement_policy_overrides_jsonb &&
+    typeof (data as { engagement_policy_overrides_jsonb?: unknown })
+      .engagement_policy_overrides_jsonb === "object"
+      ? ((data as { engagement_policy_overrides_jsonb?: unknown })
+          .engagement_policy_overrides_jsonb as Record<string, unknown>)
+      : null;
+  return {
+    channels: cleaned.length > 0 ? cleaned : DEFAULT_PRIORITY,
+    engagementOverrides,
+  };
 }
 
 async function deliverTelegram(
@@ -148,7 +169,12 @@ async function deliverTelegram(
       : "";
   let actionKind = payload.kind;
   let actionNotificationId = notificationId;
-  if (payload.kind === "internal_notification_reminder" && reminderSourceNotificationId) {
+  // Reminders and escalations carry a `source_notification_id` pointing at the
+  // original actionable notification. Resolve the original kind so the reminder
+  // keeps the SAME primary action (e.g. a HITL reminder must still let the user
+  // approve/reject), instead of degrading into a passive text-only nudge.
+  let sourceNotificationMetadata: Record<string, unknown> | null = null;
+  if (reminderSourceNotificationId) {
     actionNotificationId = reminderSourceNotificationId;
     const sourceNotification = await getInternalUserNotification(
       db,
@@ -156,12 +182,41 @@ async function deliverTelegram(
     );
     if (sourceNotification?.user_id === userId) {
       actionKind = sourceNotification.kind;
+      sourceNotificationMetadata =
+        sourceNotification.metadata_jsonb &&
+        typeof sourceNotification.metadata_jsonb === "object"
+          ? (sourceNotification.metadata_jsonb as Record<string, unknown>)
+          : null;
     }
   }
   let replyMarkup:
     | { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }
     | undefined;
-  if (actionKind === "price_approval" && actionNotificationId) {
+  if (actionKind === "tool_confirmation_pending") {
+    // Resolve the underlying tool_call id from the payload (direct path) or the
+    // source notification metadata (reminder/escalation path).
+    const pendingToolCallId = resolvePendingToolCallId(
+      payload.data,
+      sourceNotificationMetadata
+    );
+    // Only attach approve/reject buttons if the tool call is STILL awaiting
+    // confirmation. `getPendingToolCall` returns null once it has been
+    // executed/rejected, which prevents stale actions on an already-resolved
+    // approval.
+    if (pendingToolCallId) {
+      const stillPending = await getPendingToolCall(db, pendingToolCallId);
+      if (stillPending) {
+        replyMarkup = {
+          inline_keyboard: [
+            [
+              { text: "✅ Aprobar", callback_data: `approve:${pendingToolCallId}` },
+              { text: "❌ Cancelar", callback_data: `reject:${pendingToolCallId}` },
+            ],
+          ],
+        };
+      }
+    }
+  } else if (actionKind === "price_approval" && actionNotificationId) {
     replyMarkup = {
       inline_keyboard: [
         [
@@ -275,6 +330,9 @@ function notificationActionUrl(payload: NotifyPayload) {
   if (typeof explicitActionUrl === "string" && explicitActionUrl.trim()) {
     return explicitActionUrl.trim();
   }
+  if (payload.kind === "integration_reconnect") {
+    return "/settings?view=integrations&section=credentials";
+  }
   const caseId = payload.data?.case_id;
   if (typeof caseId !== "string" || !caseId.trim()) return null;
   const binding = generatedCaseDocumentBindingForNotifyKind(payload.kind);
@@ -367,10 +425,24 @@ async function enrichGeneratedDocumentNotifyPayload(
   return { ...payload, text, data: { ...payload.data, contract_draft_ready: Boolean(draft?.output_path) } };
 }
 
-function notificationDueAt(payload: NotifyPayload) {
+function notificationDueAt(
+  payload: NotifyPayload,
+  engagementOverrides?: Record<string, unknown> | null
+) {
   const dueAt = payload.data?.due_at;
   if (typeof dueAt === "string" && dueAt.trim()) return dueAt;
-  return defaultDueAtForNotificationKind(payload.kind);
+  const config = internalNotificationKindConfig(payload.kind);
+  return (
+    defaultDueAtForEngagement(
+      {
+        audience: "internal_user",
+        intent: config.intent ?? "reminder",
+        kind: config.kind,
+      },
+      Date.now(),
+      engagementOverrides
+    ) ?? defaultDueAtForNotificationKind(payload.kind)
+  );
 }
 
 function shouldReuseActiveNotification(payload: NotifyPayload, caseId: string | null) {
@@ -410,7 +482,8 @@ export async function notify(
     userId,
     payload
   );
-  const priority = await loadPriority(db, userId);
+  const preference = await loadPriority(db, userId);
+  const priority = preference.channels;
 
   const attempted: NotifyChannelResult[] = [];
   const delivered: NotifyChannelResult[] = [];
@@ -433,7 +506,7 @@ export async function notify(
     body: effectivePayload.text,
     priority: urgency,
     actionUrl: notificationActionUrl(effectivePayload),
-    dueAt: notificationDueAt(effectivePayload),
+    dueAt: notificationDueAt(effectivePayload, preference.engagementOverrides),
     deliveredChannels: channelMap([webResult]),
     metadata: effectivePayload.data ?? {},
   };

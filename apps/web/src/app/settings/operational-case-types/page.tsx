@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
+  getProfile,
+  getUserNotificationPreferences,
   getRecentOperationalCaseEvents,
   listOperationalCasesForUser,
   listOperationalCaseTypesForUser,
@@ -10,6 +12,7 @@ import { getSkillRegistryForUser } from "@agents/agent";
 import { OperationalCaseTypesClient } from "./operational-case-types-client";
 import { BfcacheRecoveryBoundary } from "./bfcache-recovery-boundary";
 import { AppShell } from "@/components/app-shell";
+import { EngagementPolicySettingsCard } from "./engagement-policy-settings-card";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +24,8 @@ export default async function OperationalCaseTypesPage() {
   if (!user) redirect("/login");
 
   const db = createServerClient();
-  const [caseTypes, operationalCases, registry] = await Promise.all([
+  const [caseTypes, operationalCases, registry, profile, notificationPreferences] =
+    await Promise.all([
     listOperationalCaseTypesForUser(db, user.id, {
       includeArchived: true,
     }),
@@ -39,6 +43,17 @@ export default async function OperationalCaseTypesPage() {
     getSkillRegistryForUser(db, user.id).catch((err) => {
       console.warn(
         "[operational-case-types] failed to load skill registry:",
+        err
+      );
+      return null;
+    }),
+    getProfile(db, user.id).catch((err) => {
+      console.warn("[operational-case-types] failed to load profile:", err);
+      return null;
+    }),
+    getUserNotificationPreferences(db, user.id).catch((err) => {
+      console.warn(
+        "[operational-case-types] failed to load notification prefs:",
         err
       );
       return null;
@@ -80,6 +95,10 @@ export default async function OperationalCaseTypesPage() {
       }
     >
       <div className="space-y-6">
+        <EngagementPolicySettingsCard
+          initialTimezone={profile?.timezone ?? "UTC"}
+          initialOverrides={notificationPreferences?.engagement_policy_overrides_jsonb ?? {}}
+        />
         <BfcacheRecoveryBoundary>
           <OperationalCaseTypesClient
             initialCaseTypes={caseTypes}

@@ -4,6 +4,7 @@
  */
 import type { DbClient } from "../client";
 import type {
+  EngagementPolicyOverrides,
   NotificationChannel,
   OperationalCaseReminderPolicy,
   UserNotificationPreferences,
@@ -29,6 +30,7 @@ export interface UpsertUserNotificationPreferencesInput {
     by_case_type?: Record<string, OperationalCaseReminderPolicy>;
     by_case_id?: Record<string, OperationalCaseReminderPolicy>;
   };
+  engagementPolicyOverrides?: EngagementPolicyOverrides;
 }
 
 export async function upsertUserNotificationPreferences(
@@ -44,6 +46,9 @@ export async function upsertUserNotificationPreferences(
   }
   if (input.caseReminderOverrides !== undefined) {
     update.case_reminder_overrides_jsonb = input.caseReminderOverrides;
+  }
+  if (input.engagementPolicyOverrides !== undefined) {
+    update.engagement_policy_overrides_jsonb = input.engagementPolicyOverrides;
   }
   const { data, error } = await db
     .from("user_notification_preferences")
