@@ -76,6 +76,10 @@ export function pendingActionLinkLabel(
   if (role === "case") return "Ver caso en operación";
 
   const normalized = normalizeNotificationActionUrl(action.action_url ?? null);
+  if (normalized?.startsWith("/chat/pending")) {
+    const parsed = new URL(normalized, "http://local");
+    return parsed.searchParams.get("focus") ? "Ir a este pendiente" : "Ir a Pendientes";
+  }
   if (normalized?.includes("/documents/") && normalized.includes("/download")) {
     return "Descargar documento";
   }
@@ -95,10 +99,23 @@ export function pendingActionLinkLabel(
 
 export function shouldShowAssociatedActionLink(action: PendingActionLinkInput & {
   body?: string;
+  caseId?: string | null;
+  suppressGenericPendingCaseLink?: boolean;
 }): boolean {
   const normalized = normalizeNotificationActionUrl(action.action_url ?? null);
   if (!normalized) return false;
   if (normalized.startsWith("/operational-cases")) return false;
+  if (
+    action.suppressGenericPendingCaseLink &&
+    normalized.startsWith("/chat/pending")
+  ) {
+    const parsed = new URL(normalized, "http://local");
+    const focus = parsed.searchParams.get("focus");
+    const caseId = parsed.searchParams.get("case");
+    if (!focus && (!action.caseId || !caseId || caseId === action.caseId)) {
+      return false;
+    }
+  }
 
   const body = action.body ?? "";
   const lowerBody = body.toLowerCase();

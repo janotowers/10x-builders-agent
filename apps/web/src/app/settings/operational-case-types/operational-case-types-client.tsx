@@ -416,6 +416,24 @@ function tabFromUrl(): CaseTypeWorkspaceTab | null {
   return isCaseTypeWorkspaceTab(value) ? value : null;
 }
 
+function observedCaseIdFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get("observe_case")?.trim();
+  return value && value.length > 0 ? value : null;
+}
+
+function replaceObservedCaseUrl(caseId: string | null) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (caseId && caseId.trim().length > 0) {
+    url.searchParams.set("observe_case", caseId);
+  } else {
+    url.searchParams.delete("observe_case");
+  }
+  window.history.replaceState(window.history.state, "", url);
+}
+
 type SkillAuthoringResult = {
   skillDraft: string;
   validationRubric: Array<{
@@ -5715,12 +5733,14 @@ function LabPendingActionItem({
   showTelegramHint,
   variant = "blocking",
   operationalStepLabels,
+  realCaseMode = false,
 }: {
   action: LabPendingAction;
   caseId: string;
   showTelegramHint: boolean;
   variant?: "blocking" | "historical";
   operationalStepLabels?: OperationalStepLabelMap;
+  realCaseMode?: boolean;
 }) {
   const isHistorical = variant === "historical";
   const focusId = pendingActionFocusId(action);
@@ -5731,6 +5751,8 @@ function LabPendingActionItem({
       notification_kind: action.notification_kind,
       action_url: action.action_url,
       body: action.body,
+      caseId,
+      suppressGenericPendingCaseLink: true,
     });
   const badgeClass = isHistorical
     ? "rounded bg-neutral-100 px-1.5 py-0.5 font-semibold text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
@@ -5765,7 +5787,9 @@ function LabPendingActionItem({
               ? "Aprobación previa del agente"
               : "Aprobación del agente"
             : isHistorical
-              ? "Notificación de prueba"
+              ? realCaseMode
+                ? "Aviso del sistema"
+                : "Notificación de prueba"
               : "Pendiente interno"}
         </span>
         <span className="font-semibold">{labPendingActionDisplayLabel(action)}</span>
@@ -5784,7 +5808,7 @@ function LabPendingActionItem({
           <p className={`mt-1 ${metaClass}`}>
             {isHistorical ? (
               <>
-                Tool usada en prueba previa:{" "}
+                {realCaseMode ? "Tool usada en aviso previo: " : "Tool usada en prueba previa: "}
                 <span className="font-mono">{action.tool_name}</span>.
               </>
             ) : (
@@ -5907,11 +5931,13 @@ function LabCaseHistoryDetails({
   caseId,
   summaryToneClass,
   operationalStepLabels,
+  realCaseMode = false,
 }: {
   historicalActions: LabPendingAction[];
   caseId: string;
   summaryToneClass: string;
   operationalStepLabels?: OperationalStepLabelMap;
+  realCaseMode?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const historySummary = formatSettingsTestHistorySummary(
@@ -5951,8 +5977,9 @@ function LabCaseHistoryDetails({
       </summary>
       <div className="[overflow-anchor:none]">
         <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
-          Notificaciones y aprobaciones de pruebas previas. Puedes limpiarlas si
-          ya no aplican.
+          {realCaseMode
+            ? "Avisos y aprobaciones registradas anteriormente para este caso. Puedes limpiarlos si ya no aplican."
+            : "Notificaciones y aprobaciones de pruebas previas. Puedes limpiarlas si ya no aplican."}
         </p>
         <ul className="mt-1 space-y-1.5">
           {historicalActions.map((action) => (
@@ -5963,6 +5990,7 @@ function LabCaseHistoryDetails({
               showTelegramHint={false}
               variant="historical"
               operationalStepLabels={operationalStepLabels}
+              realCaseMode={realCaseMode}
             />
           ))}
         </ul>
@@ -5987,6 +6015,7 @@ function LabPendingActionPanel({
   playthroughAnchorAt,
   conversationalMode = false,
   intakeIncomplete = false,
+  realCaseMode = false,
 }: {
   blockingActions: LabPendingAction[];
   historicalActions: LabPendingAction[];
@@ -6003,6 +6032,7 @@ function LabPendingActionPanel({
   playthroughAnchorAt?: string | null;
   conversationalMode?: boolean;
   intakeIncomplete?: boolean;
+  realCaseMode?: boolean;
 }) {
   const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
   const [cleanupLoading, setCleanupLoading] = useState(false);
@@ -6011,6 +6041,9 @@ function LabPendingActionPanel({
   const hasBlocking = blockingActions.length > 0;
   const hasHistorical = historicalActions.length > 0;
   const historicalCounts = countSettingsTestActionsByKind(historicalActions);
+  const transitionSummary = realCaseMode
+    ? "Seguimiento operativo del caso real en curso."
+    : formatLabTransitionSummary(transitionCount);
   const operationalStepDisplay =
     currentStepLabel?.trim() ||
     (currentStep ? operationalStepLabels?.[currentStep] : null) ||
@@ -6065,7 +6098,11 @@ function LabPendingActionPanel({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="font-semibold">
-            {hasBlocking ? "Acción humana pendiente" : "Estado del laboratorio"}
+            {hasBlocking
+              ? "Acción humana pendiente"
+              : realCaseMode
+                ? "Estado del caso real"
+                : "Estado del laboratorio"}
           </div>
           <p
             className={`mt-1 ${
@@ -6077,13 +6114,15 @@ function LabPendingActionPanel({
               : intakeIncomplete
                 ? "Sin pendientes HITL activas. El recorrido sigue en Paso 0: completa el intake por Telegram antes de revisar avance."
                 : hasHistorical
-                  ? "Hay registros HITL informativos de pruebas anteriores. No bloquean la siguiente revisión."
+                  ? realCaseMode
+                    ? "Hay registros HITL informativos previos para este caso. No bloquean la siguiente revisión."
+                    : "Hay registros HITL informativos de pruebas anteriores. No bloquean la siguiente revisión."
                   : conversationalMode
                     ? "Sin pendientes HITL activas. Puedes revisar el avance del caso."
                     : "Sin pendientes HITL activas. Puedes revisar avance con el agente."}
           </p>
           <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
-            {formatLabTransitionSummary(transitionCount)}
+            {transitionSummary}
             {" · "}
             Paso operativo actual:{" "}
             <span className="font-semibold text-neutral-800 dark:text-neutral-100">
@@ -6099,7 +6138,7 @@ function LabPendingActionPanel({
               rel="noopener noreferrer"
               className="rounded border border-amber-300 bg-white px-2 py-1 font-semibold text-amber-900 hover:bg-amber-100"
             >
-              Abrir Pendientes
+                    Abrir pendientes del caso
             </a>
           ) : null}
           <button
@@ -6114,7 +6153,7 @@ function LabPendingActionPanel({
           >
             {refreshing ? "Actualizando..." : "Refrescar caso"}
           </button>
-          {hasHistorical ? (
+          {hasHistorical && !realCaseMode ? (
             <>
               <label className="sr-only" htmlFor={`lab-cleanup-target-${caseId}`}>
                 Qué limpiar del historial
@@ -6157,7 +6196,7 @@ function LabPendingActionPanel({
           o Telegram.
         </p>
       ) : null}
-      {hasHistorical ? (
+      {hasHistorical && !realCaseMode ? (
         <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
           Limpiar historial: las notificaciones se eliminan; las aprobaciones del
           agente se marcan como rechazadas. No se tocan acciones bloqueantes activas.
@@ -6165,7 +6204,9 @@ function LabPendingActionPanel({
       ) : null}
       {!hasHistorical && !hasBlocking ? (
         <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">
-          {conversationalMode
+          {realCaseMode
+            ? "Sin acciones HITL activas en este caso real. El panel seguirá mostrando nuevos bloqueos cuando aparezcan."
+            : conversationalMode
             ? intakeIncomplete
               ? "Responde en Telegram los campos pendientes. El panel se actualiza automáticamente mientras completas el Paso 0."
               : "Cuando el intake esté completo, ejecuta transiciones manuales una por una para avanzar el flujo operativo."
@@ -6189,6 +6230,7 @@ function LabPendingActionPanel({
         transitionCount={transitionCount}
         operationalStepLabels={operationalStepLabels}
         conversationalMode={conversationalMode}
+        realCaseMode={realCaseMode}
         variant="embedded"
       />
       {hasBlocking ? (
@@ -6204,6 +6246,7 @@ function LabPendingActionPanel({
                 caseId={caseId}
                 showTelegramHint
                 operationalStepLabels={operationalStepLabels}
+                realCaseMode={realCaseMode}
               />
             ))}
           </ul>
@@ -6214,6 +6257,7 @@ function LabPendingActionPanel({
           historicalActions={historicalActions}
           caseId={caseId}
           operationalStepLabels={operationalStepLabels}
+          realCaseMode={realCaseMode}
           summaryToneClass={
             hasBlocking
               ? "text-amber-800"
@@ -6287,6 +6331,7 @@ function TestCaseAuditPanel({
   transitionCount,
   operationalStepLabels,
   conversationalMode = false,
+  realCaseMode = false,
   variant = "standalone",
 }: {
   events: OperationalCaseEvent[];
@@ -6296,6 +6341,7 @@ function TestCaseAuditPanel({
   transitionCount?: number;
   operationalStepLabels?: OperationalStepLabelMap;
   conversationalMode?: boolean;
+  realCaseMode?: boolean;
   variant?: "standalone" | "embedded";
 }) {
   const transitionGroups = useMemo(
@@ -6311,6 +6357,9 @@ function TestCaseAuditPanel({
   );
 
   const isEmbedded = variant === "embedded";
+  if (realCaseMode && transitionGroups.length === 0) {
+    return null;
+  }
 
   return (
     <details
@@ -6321,7 +6370,7 @@ function TestCaseAuditPanel({
       } p-2 text-sm`}
     >
       <summary className="cursor-pointer list-none marker:content-none text-[11px] font-semibold text-violet-800 [&::-webkit-details-marker]:hidden dark:text-violet-200">
-        Auditoría técnica del caso
+        {realCaseMode ? "Auditoría de caso" : "Auditoría técnica del caso"}
         {transitionGroups.length > 0
           ? ` · ${transitionGroups.length} transición${transitionGroups.length === 1 ? "" : "es"}`
           : ""}
@@ -6538,7 +6587,7 @@ export function OperationalCaseTypesClient({
   const [abandoningConversationalCase, setAbandoningConversationalCase] =
     useState(false);
   const [activeConversationalCaseId, setActiveConversationalCaseId] =
-    useState<string | null>(null);
+    useState<string | null>(() => observedCaseIdFromUrl());
   const [testCaseLoading, setTestCaseLoading] = useState(false);
   const [testCaseRunningMode, setTestCaseRunningMode] = useState<
     "safe_check" | "agent_e2e" | null
@@ -6581,25 +6630,31 @@ export function OperationalCaseTypesClient({
         opCase.case_type_id === selectedCaseType.id ||
         opCase.case_type === selectedCaseType.case_type
     );
+    const byId = new Map(fromPage.map((opCase) => [opCase.id, opCase]));
+    const upsertIfNewer = (candidate: OperationalCase | null | undefined) => {
+      if (!candidate) return;
+      if (
+        candidate.case_type_id !== selectedCaseType.id &&
+        candidate.case_type !== selectedCaseType.case_type
+      ) {
+        return;
+      }
+      const existing = byId.get(candidate.id);
+      if (!existing) {
+        byId.set(candidate.id, candidate);
+        return;
+      }
+      const candidateUpdated = new Date(candidate.updated_at).getTime();
+      const existingUpdated = new Date(existing.updated_at).getTime();
+      if (!Number.isFinite(existingUpdated) || candidateUpdated >= existingUpdated) {
+        byId.set(candidate.id, candidate);
+      }
+    };
     const testCase = testCaseResult?.case;
     const conversationalCase = conversationalLabResult?.case;
-    if (
-      testCase &&
-      (testCase.case_type_id === selectedCaseType.id ||
-        testCase.case_type === selectedCaseType.case_type) &&
-      !fromPage.some((opCase) => opCase.id === testCase.id)
-    ) {
-      fromPage.unshift(testCase);
-    }
-    if (
-      conversationalCase &&
-      (conversationalCase.case_type_id === selectedCaseType.id ||
-        conversationalCase.case_type === selectedCaseType.case_type) &&
-      !fromPage.some((opCase) => opCase.id === conversationalCase.id)
-    ) {
-      fromPage.unshift(conversationalCase);
-    }
-    return fromPage;
+    upsertIfNewer(testCase);
+    upsertIfNewer(conversationalCase);
+    return Array.from(byId.values());
   }, [
     conversationalLabResult?.case,
     initialOperationalCases,
@@ -6608,6 +6663,20 @@ export function OperationalCaseTypesClient({
   ]);
   const conversationalOperationalCase = useMemo(
     () => pickActiveConversationalCase(relatedOperationalCases),
+    [relatedOperationalCases]
+  );
+  const observableConversationalCases = useMemo(
+    () =>
+      relatedOperationalCases
+        .filter(
+          (opCase) =>
+            opCase.context_jsonb?.created_from === "agent_conversation" &&
+            !["completed", "failed"].includes(opCase.status)
+        )
+        .sort(
+          (a, b) =>
+            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+        ),
     [relatedOperationalCases]
   );
   const pausedConversationalCase = useMemo(
@@ -6625,14 +6694,14 @@ export function OperationalCaseTypesClient({
     [relatedOperationalCases]
   );
   useEffect(() => {
-    if (conversationalOperationalCase?.id) {
-      setActiveConversationalCaseId((prev) =>
-        prev === conversationalOperationalCase.id
-          ? prev
-          : conversationalOperationalCase.id
-      );
-    }
-  }, [conversationalOperationalCase?.id]);
+    const availableIds = new Set(observableConversationalCases.map((opCase) => opCase.id));
+    setActiveConversationalCaseId((prev) => {
+      if (prev && availableIds.has(prev)) return prev;
+      const fromUrl = observedCaseIdFromUrl();
+      if (fromUrl && availableIds.has(fromUrl)) return fromUrl;
+      return conversationalOperationalCase?.id ?? null;
+    });
+  }, [observableConversationalCases, conversationalOperationalCase?.id]);
   const skillMap = useMemo(
     () => new Map(initialSkillSummaries.map((skill) => [skill.slug, skill])),
     [initialSkillSummaries]
@@ -6664,22 +6733,69 @@ export function OperationalCaseTypesClient({
   const canManageTestCase =
     selectedIsPrivate && selectedIsActive && Boolean(toolReadiness);
   const canCreateTestCase = canManageTestCase && !toolsHaveBlocks;
-  const conversationalResultCase =
+  const refreshedConversationalCase =
     conversationalLabResult?.case?.context_jsonb?.created_from ===
       "agent_conversation" && conversationalLabResult.case.status !== "paused"
       ? conversationalLabResult.case
       : null;
-  const blockingLabActions = conversationalResultCase
+  const selectedObservedCase = useMemo(() => {
+    if (activeConversationalCaseId) {
+      // Resolve strictly to the selected case. We intentionally do NOT fall
+      // back to the auto-picked (most recent) case here: doing so created a
+      // feedback loop where any transient miss snapped the panel back to the
+      // recent case.
+      return (
+        observableConversationalCases.find(
+          (opCase) => opCase.id === activeConversationalCaseId
+        ) ??
+        (refreshedConversationalCase?.id === activeConversationalCaseId
+          ? refreshedConversationalCase
+          : null)
+      );
+    }
+    return conversationalOperationalCase;
+  }, [
+    activeConversationalCaseId,
+    observableConversationalCases,
+    refreshedConversationalCase,
+    conversationalOperationalCase,
+  ]);
+  // When a case is selected (pinned), the panel always follows that case. The
+  // refreshed network result only feeds derived data when it matches.
+  const conversationalResultCase = activeConversationalCaseId
+    ? selectedObservedCase
+    : (refreshedConversationalCase ?? selectedObservedCase);
+  const refreshedMatchesObservedCase = Boolean(
+    refreshedConversationalCase &&
+      (!activeConversationalCaseId ||
+        refreshedConversationalCase.id === activeConversationalCaseId)
+  );
+  const blockingLabActions = refreshedMatchesObservedCase
     ? (conversationalLabResult?.blockingActions ?? [])
     : [];
-  const historicalLabActions = conversationalResultCase
+  const historicalLabActions = refreshedMatchesObservedCase
     ? (conversationalLabResult?.historicalActions ?? [])
     : [];
   const hasPendingLabActions = blockingLabActions.length > 0;
-  const transitionCount = conversationalResultCase
+  const transitionCount = refreshedMatchesObservedCase
     ? (conversationalLabResult?.transitionCount ?? 0)
     : 0;
-  const agentTestCase = conversationalOperationalCase ?? conversationalResultCase;
+  const agentTestCase = conversationalResultCase;
+  const conversationalPollingMs = useMemo(() => {
+    const e2eLabModeActive = Boolean(conversationalLabResult?.e2eLabSession);
+    if (!agentTestCase) return e2eLabModeActive ? 15_000 : 30_000;
+    const highActivityStep = [
+      "intake",
+      "awaiting_documents",
+      "documents_received",
+      "property_data_review",
+    ].includes(agentTestCase.current_step ?? "");
+    const highActivityStatus = ["active", "waiting_internal", "waiting_external"].includes(
+      agentTestCase.status
+    );
+    if (e2eLabModeActive && (highActivityStep || highActivityStatus)) return 5_000;
+    return 15_000;
+  }, [agentTestCase, conversationalLabResult?.e2eLabSession]);
   const testStatus = agentTestCase?.context_jsonb?.controlled_test_status;
   const e2eControlStatus =
     agentTestCase?.context_jsonb?.e2e_control_status;
@@ -6762,12 +6878,27 @@ export function OperationalCaseTypesClient({
     } else {
       url.searchParams.set("tab", tab);
     }
+    if (
+      row &&
+      tab === "lab" &&
+      activeConversationalCaseId &&
+      activeConversationalCaseId.trim().length > 0
+    ) {
+      url.searchParams.set("observe_case", activeConversationalCaseId);
+    } else {
+      url.searchParams.delete("observe_case");
+    }
     window.history.replaceState(window.history.state, "", url);
   }
 
   function syncWorkspaceFromUrl() {
     const nextCaseType = caseTypeFromUrl(caseTypes);
     const nextTab = tabFromUrl();
+    const nextObservedCaseId = observedCaseIdFromUrl();
+    setActiveConversationalCaseId((current) => {
+      const normalized = nextObservedCaseId ?? null;
+      return current === normalized ? current : normalized;
+    });
     if (nextCaseType && nextCaseType.id !== selectedCaseType?.id) {
       viewCaseType(nextCaseType, nextTab ?? "summary", {
         updateUrl: false,
@@ -6797,6 +6928,18 @@ export function OperationalCaseTypesClient({
       window.removeEventListener("popstate", handleNavigationRestore);
     };
   }, [caseTypes, selectedCaseType, activeTab]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (activeTab !== "lab" || !selectedCaseType) return;
+    const url = new URL(window.location.href);
+    if (activeConversationalCaseId) {
+      url.searchParams.set("observe_case", activeConversationalCaseId);
+    } else {
+      url.searchParams.delete("observe_case");
+    }
+    window.history.replaceState(window.history.state, "", url);
+  }, [activeTab, selectedCaseType?.id, activeConversationalCaseId]);
 
   useEffect(() => {
     if (
@@ -6861,30 +7004,35 @@ export function OperationalCaseTypesClient({
       return;
     }
     const intervalId = window.setInterval(() => {
-      void refreshConversationalCase(selectedCaseType, { silent: true });
-    }, 15_000);
+      void refreshConversationalCase(selectedCaseType, {
+        silent: true,
+        caseId: activeConversationalCaseId ?? undefined,
+      });
+    }, conversationalPollingMs);
     return () => window.clearInterval(intervalId);
-  }, [activeTab, selectedCaseType]);
+  }, [activeTab, conversationalPollingMs, selectedCaseType, activeConversationalCaseId]);
 
   useEffect(() => {
     if (
       activeTab !== "lab" ||
       !selectedCaseType ||
       scopeLabel(selectedCaseType) === "global" ||
-      !agentTestCase?.id
+      !activeConversationalCaseId
     ) {
       return;
     }
-    if (conversationalLabResult?.case?.id === agentTestCase.id) {
+    // Sync the network result to the *selected* case id, never to the derived
+    // display case. Keying off a derived value let the recent case win.
+    if (conversationalLabResult?.case?.id === activeConversationalCaseId) {
       return;
     }
     void refreshConversationalCase(selectedCaseType, {
-      caseId: agentTestCase.id,
+      caseId: activeConversationalCaseId,
       silent: true,
     });
   }, [
     activeTab,
-    agentTestCase?.id,
+    activeConversationalCaseId,
     conversationalLabResult?.case?.id,
     selectedCaseType,
   ]);
@@ -7225,7 +7373,8 @@ export function OperationalCaseTypesClient({
       setConversationalLabLoading(true);
     }
     try {
-      const targetCaseId = options?.caseId ?? activeConversationalCaseId;
+      const explicitCaseId = options?.caseId?.trim() || null;
+      const targetCaseId = explicitCaseId ?? activeConversationalCaseId;
       const query = targetCaseId
         ? `case_id=${encodeURIComponent(targetCaseId)}`
         : `case_type_id=${encodeURIComponent(row.id)}&source=conversational`;
@@ -7246,7 +7395,9 @@ export function OperationalCaseTypesClient({
         !data.case ||
         data.case.context_jsonb?.created_from !== "agent_conversation"
       ) {
-        setActiveConversationalCaseId(null);
+        if (explicitCaseId || !activeConversationalCaseId) {
+          setActiveConversationalCaseId(null);
+        }
         setConversationalLabResult((current) => ({
           ...(current ?? nextResult),
           case: null,
@@ -7255,35 +7406,20 @@ export function OperationalCaseTypesClient({
         return;
       }
       if (data.case.status === "paused" && targetCaseId) {
-        setActiveConversationalCaseId(null);
-        const fallbackRes = await fetch(
-          `/api/operational-case-tests?case_type_id=${encodeURIComponent(row.id)}&source=conversational`,
-          { cache: "no-store" }
+        // A specific case was being observed and it is paused. Keep showing
+        // that exact case instead of snapping to the most recent one (which
+        // is what made the selector bounce back). Paused cases are still part
+        // of the observable list, so the panel renders them correctly.
+        setActiveConversationalCaseId((current) =>
+          explicitCaseId || !current ? targetCaseId : current
         );
-        const fallbackData = (await fallbackRes.json()) as
-          | ({ ok: true } & OperationalCaseTestResult)
-          | { error: string };
-        if (
-          fallbackRes.ok &&
-          "ok" in fallbackData &&
-          fallbackData.case?.context_jsonb?.created_from === "agent_conversation"
-        ) {
-          setActiveConversationalCaseId(fallbackData.case.id);
-          setConversationalLabResult(asTestCaseResult(fallbackData));
-        } else {
-          const fallbackResult =
-            fallbackRes.ok && "ok" in fallbackData
-              ? asTestCaseResult(fallbackData)
-              : nextResult;
-          setConversationalLabResult((current) => ({
-            ...(current ?? fallbackResult),
-            case: null,
-            e2eLabSession: fallbackResult.e2eLabSession ?? null,
-          }));
-        }
+        setConversationalLabResult(nextResult);
         return;
       }
-      setActiveConversationalCaseId(data.case.id);
+      const loadedCaseId = data.case.id;
+      setActiveConversationalCaseId((current) =>
+        explicitCaseId || !current ? loadedCaseId : current
+      );
       setConversationalLabResult(nextResult);
     } catch (err) {
       console.warn("[operational-case-types] conversational case load failed:", err);
@@ -8550,6 +8686,32 @@ export function OperationalCaseTypesClient({
         agentTestCase ?? null
       );
       const intakeIncomplete = labMode === "intake_conversacional";
+      const caseIsControlledE2E =
+        agentTestCase?.context_jsonb?.e2e_controlled === true;
+      const isRealConversationalCase = Boolean(agentTestCase && !caseIsControlledE2E);
+      const multipleObservableCases = observableConversationalCases.length > 1;
+      const observedCaseSelectorValue =
+        activeConversationalCaseId ?? observableConversationalCases[0]?.id ?? "";
+      const stepLabelForObservedCase = (opCase: OperationalCase) => {
+        if (!opCase.current_step) return "sin paso";
+        return (
+          operationalStepLabels[opCase.current_step] ??
+          currentStepProgress?.step_label ??
+          opCase.current_step
+        );
+      };
+      const observedCaseLabel = (opCase: OperationalCase) => {
+        const modeTag =
+          opCase.context_jsonb?.e2e_controlled === true ? "[E2E]" : "[Real]";
+        const title =
+          typeof opCase.context_jsonb?.title === "string" &&
+          opCase.context_jsonb.title.trim()
+            ? opCase.context_jsonb.title.trim()
+            : `Caso ${opCase.id.slice(0, 8)}`;
+        const step = stepLabelForObservedCase(opCase);
+        const updated = formatDateTime(opCase.updated_at);
+        return `${modeTag} ${title} · ${step} · ${OPERATIONAL_CASE_STATUS_LABELS[opCase.status] ?? opCase.status} · ${updated}`;
+      };
       const activeE2ELabSession = conversationalLabResult?.e2eLabSession ?? null;
       const e2eLabModeActive = Boolean(activeE2ELabSession);
       const e2eLabModeExpiresAt = activeE2ELabSession?.expires_at
@@ -8557,32 +8719,69 @@ export function OperationalCaseTypesClient({
         : null;
       const n5StatusLabel =
         labMode === "sin_caso"
-          ? "Sin caso para probar"
+          ? "Sin caso conversacional activo"
           : labMode === "accion_humana_pendiente"
             ? "Acción humana pendiente"
             : labMode === "intake_conversacional"
               ? "Intake conversacional en curso"
-              : e2ePendingHitl
+              : !isRealConversationalCase && e2ePendingHitl
                 ? "Pendiente aprobación humana"
-                : e2eCompleted
+                : !isRealConversationalCase && e2eCompleted
                   ? "Transición completada"
                   : "Caso conversacional listo";
       return (
-        <LabStepDetails
-          defaultOpen={hasCase}
-          className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900 dark:bg-violet-950/30"
-          summary={
-            <div className="text-center">
-              <div className="flex flex-wrap items-center justify-center gap-2">
+        <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900 dark:bg-violet-950/30">
+          <div className="rounded border border-violet-200 bg-white/80 p-2 text-violet-900 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-100">
+            <div className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+              Caso en observación
+            </div>
+            {multipleObservableCases ? (
+              <select
+                id={`observed-case-${row.id}`}
+                value={observedCaseSelectorValue}
+                onChange={(event) => {
+                  const nextId = event.target.value.trim();
+                  replaceObservedCaseUrl(nextId || null);
+                  setActiveConversationalCaseId(nextId || null);
+                  void refreshConversationalCase(row, {
+                    caseId: nextId || undefined,
+                  });
+                }}
+                className="mt-1 w-full rounded border border-violet-200 bg-white px-2 py-1 text-[11px] font-medium text-violet-900 dark:border-violet-800 dark:bg-neutral-950 dark:text-violet-100"
+              >
+                {observableConversationalCases.map((opCase) => (
+                  <option key={opCase.id} value={opCase.id}>
+                    {observedCaseLabel(opCase)}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p className="mt-1 text-xs font-medium">
+                {agentTestCase ? observedCaseLabel(agentTestCase) : "Sin caso seleccionado"}
+              </p>
+            )}
+          </div>
+          <LabStepDetails
+            defaultOpen={hasCase}
+            className="mt-2"
+            summary={
+              <div className="text-center">
+                <div className="flex flex-wrap items-center justify-center gap-2">
                 <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
-                  Prueba con agente
+                  {isRealConversationalCase ? "Caso real observado" : "Prueba con agente"}
                 </span>
                 {hasCase && !intakeIncomplete ? (
                   <span
                     className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
-                    title={formatLabTransitionSummary(transitionCount)}
+                    title={
+                      isRealConversationalCase
+                        ? "Seguimiento operativo del caso real."
+                        : formatLabTransitionSummary(transitionCount)
+                    }
                   >
-                    {formatLabTransitionBadge(transitionCount)}
+                    {isRealConversationalCase
+                      ? "Seguimiento caso real"
+                      : formatLabTransitionBadge(transitionCount)}
                   </span>
                 ) : null}
                 {e2eLabModeActive ? (
@@ -8597,7 +8796,9 @@ export function OperationalCaseTypesClient({
                 )}
                 {hasCase ? (
                   <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">
-                    Origen: Conversacional (agent_conversation)
+                    {isRealConversationalCase
+                      ? "Origen: Telegram"
+                      : "Origen: Conversacional (agent_conversation)"}
                   </span>
                 ) : null}
                 {hasCase && currentStepKey && !intakeIncomplete ? (
@@ -8614,18 +8815,23 @@ export function OperationalCaseTypesClient({
                   </span>
                 ) : null}
               </div>
-              <p className="mt-2 text-xs text-neutral-600 dark:text-neutral-300">
-                Activa el modo prueba E2E antes de escribir por Telegram si quieres
-                que el nuevo caso sea controlado por el laboratorio. Los avances
-                por evento ocurren en Telegram; las revisiones por tiempo se hacen
-                manualmente aquí.
-              </p>
-              <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-300">
-                Estado actual: {n5StatusLabel}
-              </p>
-            </div>
-          }
-        >
+                <p className="mt-2 text-xs text-neutral-600 dark:text-neutral-300">
+                  {isRealConversationalCase
+                    ? "Este panel observa el caso real. El flujo avanza por Telegram, cron y tus decisiones HITL en Pendientes."
+                    : "Activa el modo prueba E2E antes de escribir por Telegram si quieres que el nuevo caso sea controlado por el laboratorio. Los avances por evento ocurren en Telegram; las revisiones por tiempo se hacen manualmente aquí."}
+                </p>
+                <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-300">
+                  Estado actual: {n5StatusLabel}
+                </p>
+                {isRealConversationalCase ? (
+                  <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                    Caso real de producción: el cron puede continuar este caso fuera
+                    del laboratorio.
+                  </p>
+                ) : null}
+              </div>
+            }
+          >
           <div className="mt-3 space-y-3 border-t border-violet-200 pt-3 dark:border-violet-900">
             <div
               className={`rounded border p-2 text-xs ${
@@ -8646,7 +8852,8 @@ export function OperationalCaseTypesClient({
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {agentTestCase?.context_jsonb?.created_from ===
-                  "agent_conversation" ? (
+                    "agent_conversation" &&
+                  caseIsControlledE2E ? (
                     <button
                       type="button"
                       onClick={() => void abandonConversationalLabCase(row)}
@@ -8715,37 +8922,50 @@ export function OperationalCaseTypesClient({
                     de recorrido actual.
                   </p>
                 ) : null}
-                <button
-                  type="button"
-                  onClick={() => void runControlledTest("agent_e2e")}
-                  disabled={
-                    !agentTestCase ||
-                    testCaseRunning ||
-                    !canRunE2E ||
-                    hasPendingLabActions ||
-                    intakeIncomplete
-                  }
-                  className="rounded bg-violet-700 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-60"
-                  title={
-                    toolsHaveBlocks
-                      ? "Prueba o configura las tools requeridas antes de la prueba con agente."
+                {isRealConversationalCase ? (
+                  <a
+                    href={`/chat/pending?case=${encodeURIComponent(agentTestCase.id)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex w-fit rounded border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-50"
+                  >
+                    Abrir pendientes del caso
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void runControlledTest("agent_e2e")}
+                    disabled={
+                      !agentTestCase ||
+                      testCaseRunning ||
+                      !canRunE2E ||
+                      hasPendingLabActions ||
+                      intakeIncomplete
+                    }
+                    className="rounded bg-violet-700 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-60"
+                    title={
+                      toolsHaveBlocks
+                        ? "Prueba o configura las tools requeridas antes de la prueba con agente."
+                        : intakeIncomplete
+                          ? "Completa el intake por Telegram antes de revisar el primer avance operativo."
+                          : !canRunE2E
+                            ? "Resuelve stubs, configuraciones de cuenta y tools faltantes antes de la prueba con agente."
+                            : hasPendingLabActions
+                              ? "Resuelve la acción humana pendiente antes de revisar de nuevo el caso."
+                              : "Revisa si el caso debe avanzar por tiempo o por estado actual, con tools reales y aprobación humana si aplica."
+                    }
+                  >
+                    {testCaseRunningMode === "agent_e2e"
+                      ? "Revisando avance..."
                       : intakeIncomplete
-                        ? "Completa el intake por Telegram antes de revisar el primer avance operativo."
-                      : !canRunE2E
-                        ? "Resuelve stubs, configuraciones de cuenta y tools faltantes antes de la prueba con agente."
-                        : hasPendingLabActions
-                          ? "Resuelve la acción humana pendiente antes de revisar de nuevo el caso."
-                        : "Revisa si el caso debe avanzar por tiempo o por estado actual, con tools reales y aprobación humana si aplica."
-                  }
-                >
-                  {testCaseRunningMode === "agent_e2e"
-                    ? "Revisando avance..."
-                    : intakeIncomplete
-                      ? "Completa intake en Telegram"
-                      : "Revisar avance de caso"}
-                </button>
+                        ? "Completa intake en Telegram"
+                        : "Revisar avance de caso"}
+                  </button>
+                )}
                 <p className="text-[11px] text-neutral-500">
-                  {intakeIncomplete
+                  {isRealConversationalCase
+                    ? "Este panel muestra auditoría del caso real. Para resolver acciones pendientes usa el inbox de Pendientes o Telegram."
+                    : intakeIncomplete
                     ? "Ahora mismo el recorrido está en Paso 0 (intake). Continúa por Telegram para completar los datos faltantes; la primera revisión manual se habilita después."
                     : "Cada clic ejecuta una revisión real del agente sobre el caso. Los mensajes de Telegram siguen procesándose por evento; el cron no debe continuar este recorrido controlado."}
                   {hasPendingLabActions ? (
@@ -8842,7 +9062,12 @@ export function OperationalCaseTypesClient({
                     playthroughAnchorAt={playthroughAnchorAt}
                     conversationalMode
                     intakeIncomplete={intakeIncomplete}
-                    onRefresh={() => void refreshConversationalCase(row)}
+                    realCaseMode={isRealConversationalCase}
+                    onRefresh={() =>
+                      void refreshConversationalCase(row, {
+                        caseId: conversationalResultCase?.id ?? agentTestCase?.id,
+                      })
+                    }
                   />
                 ) : null}
                 {agentTestCase && e2eFlowProgress.length > 0 ? (
@@ -8863,6 +9088,7 @@ export function OperationalCaseTypesClient({
             )}
           </div>
         </LabStepDetails>
+        </div>
       );
     }
 

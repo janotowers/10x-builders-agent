@@ -64,11 +64,12 @@ function buildCaseE2ETickMessage(
       ? [
           "Acción esperada para este paso: usa request-property-documents, envía el mensaje inicial de solicitud de documentos al contacto por Telegram, registra reminder_sent con purpose=initial_request y deja el caso en waiting_external / awaiting_documents.",
           "El mensaje inicial DEBE enumerar documentos específicos, no uses una frase genérica. Incluye estos bullets:",
-          "• Escritura: primera hoja o sección donde esté la descripción de la propiedad, y última hoja si la tiene a la mano (indispensable para avanzar)",
+          "• Boleta registral (referencia principal para confirmar titularidad)",
+          "• Escritura: primera hoja o sección donde esté la descripción de la propiedad, y última hoja si la tiene a la mano",
           "• Último recibo de predial",
           "• Identificación oficial (anverso y reverso)",
           "• Comprobante de domicilio (≤ 3 meses)",
-          "• Boleta registral",
+          "Si falta alguno, pide que envíe lo disponible y aclara que pueden continuar por texto sin detener el proceso.",
           "Incluye una frase breve de privacidad: solo se usan para verificar la propiedad y armar el contrato; no se comparten sin autorización.",
           "No avances a documents_received, comparables, precio ni contrato sin external_response.",
         ].join(" ")

@@ -125,12 +125,27 @@ function normalizeToolCallFailureText(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+function isExpectedNotifyUserGuardError(errorText: string | null) {
+  if (!errorText) return false;
+  return [
+    "property_data_minimums_missing",
+    "predial_extraction_incomplete",
+    "owner_corroboration_extraction_incomplete",
+  ].includes(errorText);
+}
+
 export function toolCallFailureDetail(
   call: Pick<ToolCall, "status" | "result_json">
 ): string | null {
   if (call.status !== "failed") return null;
   const result = call.result_json as Record<string, unknown> | undefined;
   const errorText = normalizeToolCallFailureText(result?.error);
+  if (isExpectedNotifyUserGuardError(errorText)) {
+    return `Bloqueada por política (${errorText})`;
+  }
+  if (errorText === "case_not_in_intake") {
+    return "Anomalía de flujo: intento de actualizar intake fuera del paso intake";
+  }
   if (errorText && errorText !== "[object Object]") return errorText;
   return (
     normalizeToolCallFailureText(result?.message) ??

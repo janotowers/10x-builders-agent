@@ -50,6 +50,7 @@ export type SettingsTestPendingAction =
       telegram_delivered?: boolean;
       body: string;
       action_url: string | null;
+      pending_tool_call_id?: string | null;
     };
 
 export type SettingsTestPendingActionsResult = {
@@ -172,21 +173,33 @@ export function partitionSettingsTestPendingActions(params: {
   const lastTransitionMs = lastTransitionAt
     ? new Date(lastTransitionAt).getTime()
     : null;
+  const withinCurrentWindow = (createdAt: string) =>
+    lastTransitionMs === null ||
+    new Date(createdAt).getTime() > lastTransitionMs;
+  const blockingToolCallIds = new Set<string>();
+
+  for (const action of actions) {
+    if (action.kind !== "tool_confirmation") continue;
+    const blocking =
+      caseRunnerSessionIds.has(action.session_id) &&
+      action.status === "pending_confirmation" &&
+      withinCurrentWindow(action.created_at);
+    if (blocking) blockingToolCallIds.add(action.tool_call_id);
+  }
+  const hasBlockingToolConfirmation = blockingToolCallIds.size > 0;
 
   const blockingActions: SettingsTestPendingAction[] = [];
   const historicalActions: SettingsTestPendingAction[] = [];
 
   for (const action of actions) {
     let blocking = false;
-    const createdAfterTransition =
-      lastTransitionMs !== null &&
-      new Date(action.created_at).getTime() > lastTransitionMs;
+    const createdWithinWindow = withinCurrentWindow(action.created_at);
 
     if (action.kind === "tool_confirmation") {
       blocking =
         caseRunnerSessionIds.has(action.session_id) &&
         action.status === "pending_confirmation" &&
-        createdAfterTransition;
+        createdWithinWindow;
     } else if (action.kind === "internal_notification") {
       const hasBusinessDecision = Boolean(
         internalNotificationKindConfig(action.notification_kind, {
@@ -194,11 +207,17 @@ export function partitionSettingsTestPendingActions(params: {
           title: action.label,
         }).businessDecision
       );
+      const isHitlShadow =
+        action.notification_kind === "tool_confirmation_pending" &&
+        ((action.pending_tool_call_id &&
+          blockingToolCallIds.has(action.pending_tool_call_id)) ||
+          hasBlockingToolConfirmation);
       const isLatestUnread = latestUnreadNotification?.id === action.id;
       blocking =
+        !isHitlShadow &&
         action.status === "unread" &&
-        createdAfterTransition &&
-        (hasBusinessDecision || (isLatestUnread && createdAfterTransition));
+        createdWithinWindow &&
+        (hasBusinessDecision || (isLatestUnread && lastTransitionMs !== null));
     }
 
     const withBlocking = { ...action, blocking };
@@ -483,6 +502,11 @@ export async function buildSettingsTestPendingActions(
       ),
       body: notification.body,
       action_url: normalizeNotificationActionUrl(notification.action_url),
+      pending_tool_call_id:
+        typeof notification.metadata_jsonb?.pending_tool_call_id === "string" &&
+        notification.metadata_jsonb.pending_tool_call_id.trim()
+          ? notification.metadata_jsonb.pending_tool_call_id.trim()
+          : null,
     })
   );
 
