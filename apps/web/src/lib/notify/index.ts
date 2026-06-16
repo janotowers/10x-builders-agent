@@ -99,6 +99,10 @@ export interface NotifyResult {
   delivered: NotifyChannelResult[];
 }
 
+export interface NotifyOptions {
+  pushChannels?: NotificationChannel[];
+}
+
 async function loadPriority(
   db: ReturnType<typeof createServerClient>,
   userId: string
@@ -398,7 +402,8 @@ export async function notify(
   db: ReturnType<typeof createServerClient>,
   userId: string,
   payload: NotifyPayload,
-  urgency: NotifyUrgency = "normal"
+  urgency: NotifyUrgency = "normal",
+  options: NotifyOptions = {}
 ): Promise<NotifyResult> {
   const effectivePayload = await enrichGeneratedDocumentNotifyPayload(
     db,
@@ -438,6 +443,12 @@ export async function notify(
 
   for (const channel of priority) {
     if (channel === "web") continue;
+    if (
+      Array.isArray(options.pushChannels) &&
+      !options.pushChannels.includes(channel)
+    ) {
+      continue;
+    }
     const result = await DELIVERERS[channel](db, userId, {
       ...effectivePayload,
       data: {

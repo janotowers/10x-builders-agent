@@ -121,7 +121,7 @@ export async function ensureConversationalCase(
     status: incompleteDraft ? "waiting_internal" : "active",
     currentStep: "intake",
     externalContact: labExternalContact,
-    nextActionAt: e2eControlled ? null : new Date().toISOString(),
+    nextActionAt: e2eControlled || incompleteDraft ? null : new Date().toISOString(),
     context: buildOperationalCaseCreateContext({
       context: {},
       missing,

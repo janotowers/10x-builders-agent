@@ -55,6 +55,19 @@ assert.equal(
   buildTelegramIntakeCompletionMessage(caseStub({})),
   "La propiedad quedó registrada en el caso."
 );
+assert.equal(
+  buildTelegramIntakeCompletionMessage(
+    caseStub({
+      context_jsonb: { property_zone: "Las Fuentes, Zapopan, Jalisco", operation_type: "Venta" },
+    })
+  ),
+  [
+    "La propiedad quedó registrada en el caso con estos datos:",
+    "",
+    "- Zona / colonia: Las Fuentes, Zapopan, Jalisco",
+    "- Operación: Venta",
+  ].join("\n")
+);
 assert.equal(isIntakeInProgress(caseStub({ current_step: "intake" })), true);
 assert.equal(
   isIntakeInProgress(

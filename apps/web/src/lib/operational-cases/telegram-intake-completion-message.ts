@@ -44,5 +44,10 @@ export function buildTelegramIntakeCompletionMessage(opCase: OperationalCase) {
       ...details,
     ].join("\n");
   }
+  if (details.length > 0) {
+    return ["La propiedad quedó registrada en el caso con estos datos:", "", ...details].join(
+      "\n"
+    );
+  }
   return "La propiedad quedó registrada en el caso.";
 }

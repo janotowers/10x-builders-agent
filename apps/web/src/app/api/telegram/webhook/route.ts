@@ -14,6 +14,8 @@ import {
   countPendingToolCallsForCase,
   findOperationalCaseByExternalChatId,
   getOperationalCase,
+  listOperationalCaseDocuments,
+  getOperationalCaseTypeForUser,
   getRecentOperationalCaseEvents,
   getActiveE2ELabSession,
   insertOperationalCaseEvent,
@@ -26,7 +28,11 @@ import {
   updateToolCallStatus,
   upsertConversationBinding,
 } from "@agents/db";
-import { isPropertyOptioningIntent, runAgent } from "@agents/agent";
+import {
+  buildOperationalCaseIntakeUpdateContext,
+  isPropertyOptioningIntent,
+  runAgent,
+} from "@agents/agent";
 import {
   downloadTelegramFile,
   getTelegramFile,
@@ -54,9 +60,15 @@ import {
 import { findPendingConfirmationCheckpoint } from "@/lib/agent/pending-confirmation-checkpoint";
 import {
   buildTelegramIntakeCompletionMessage,
+  isIntakeInProgress,
   intakeJustCompleted,
 } from "@/lib/operational-cases/telegram-intake-completion-message";
 import { classifyOperationalConversationMessage } from "@/lib/operational-cases/operational-conversation-classifier";
+import {
+  extractConservativeIntakePatch,
+  mergeIntakePatches,
+  normalizeIntakePatchValues,
+} from "@/lib/operational-cases/property-optioning-intake-extraction";
 import {
   parseOwnerCharacteristics,
   syncIntakeFieldsFromPropertyData,
@@ -310,6 +322,20 @@ async function maybeRunPostIntakeConversationalE2ETick(params: {
   return true;
 }
 
+function firstOperationalStepAfterIntake(flow: unknown) {
+  if (!Array.isArray(flow)) return "awaiting_documents";
+  const steps = flow.filter(
+    (step): step is { step_key?: unknown } =>
+      Boolean(step) && typeof step === "object"
+  );
+  const intakeIndex = steps.findIndex((step) => step.step_key === "intake");
+  const nextStep =
+    intakeIndex >= 0 ? steps[intakeIndex + 1]?.step_key : steps[0]?.step_key;
+  return typeof nextStep === "string" && nextStep.trim()
+    ? nextStep.trim()
+    : "awaiting_documents";
+}
+
 interface TelegramUpdate {
   update_id: number;
   message?: {
@@ -410,9 +436,50 @@ function buildMissingIntakeFieldsPrompt(missingFields: unknown[]) {
   ].join("\n");
 }
 
+function buildIntakeProgressPrompt(params: {
+  context: Record<string, unknown> | null | undefined;
+  missingFields: unknown[];
+}) {
+  const context = params.context ?? {};
+  const captured = [
+    ["Título / propiedad", context.property_title],
+    ["Zona / colonia", context.property_zone],
+    ["Operación aplicable", context.operation_type],
+    ["Tipo de propiedad", context.property_type],
+  ]
+    .filter(([, value]) => typeof value === "string" && value.trim())
+    .map(([label, value]) => `- ${label}: ${String(value).trim()}`);
+  const missingPrompt = buildMissingIntakeFieldsPrompt(params.missingFields);
+  if (captured.length === 0) return missingPrompt;
+  return [
+    "Perfecto, ya registré estos datos:",
+    "",
+    ...captured,
+    "",
+    missingPrompt,
+  ].join("\n");
+}
+
 function describeReceivedTelegramFile(media: ReturnType<typeof bestTelegramMedia>) {
   if (!media?.originalName?.trim()) return "el archivo";
   return `el archivo «${media.originalName.trim()}»`;
+}
+
+function documentKindAckHint(kind: string | null | undefined) {
+  switch (kind) {
+    case "boleta_registral":
+      return "La usaré como referencia principal para validar titularidad.";
+    case "predial":
+      return "La usaré para validar superficies de terreno y construcción.";
+    case "escritura_descripcion":
+    case "escritura_primera_hoja":
+    case "escritura_ultima_hoja":
+      return "La revisaré como soporte legal de la propiedad.";
+    case "comprobante_domicilio":
+      return "Lo usaré para corroborar domicilio y titularidad cuando aplique.";
+    default:
+      return null;
+  }
 }
 
 function parsePropertyDataReviewCorrection(text: string) {
@@ -469,11 +536,24 @@ function extensionFromPath(filePath: string, fallback = "bin") {
   return ext && /^[a-z0-9]{1,8}$/.test(ext) ? ext : fallback;
 }
 
-function inferDocumentKind(text: string) {
-  const normalized = text
+function inferDocumentKind(params: { text?: string; fileName?: string }) {
+  const normalized = `${params.text ?? ""} ${params.fileName ?? ""}`
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
+  if (
+    /boleta|boleta registral|folio real|registro publico|registral/.test(
+      normalized
+    )
+  ) {
+    return "boleta_registral";
+  }
+  if (
+    /predial|impuesto predial|sup\.?\s*terr|sup\.?\s*const|cuenta predial/.test(
+      normalized
+    )
+  )
+    return "predial";
   if (
     /descripcion|descriptiva|metraje|superficie|escritura|testimonio|(?:^|[^a-z])esc(?:[^a-z]|$)|desdeesc/.test(
       normalized
@@ -481,10 +561,14 @@ function inferDocumentKind(text: string) {
   ) {
     return "escritura_descripcion";
   }
-  if (/predial/.test(normalized)) return "predial";
   if (/\bine\b|identificacion|identidad/.test(normalized)) return "ine";
-  if (/comprobante|domicilio/.test(normalized)) return "comprobante_domicilio";
-  if (/boleta|registral|folio real/.test(normalized)) return "boleta_registral";
+  if (
+    /comprobante|domicilio|estado\s+de\s+cuenta|estado\s+cuenta|banco|bancario|bbva|banorte|santander|hsbc|banamex|citibanamex|scotiabank/.test(
+      normalized
+    )
+  ) {
+    return "comprobante_domicilio";
+  }
   return "unknown";
 }
 
@@ -987,7 +1071,10 @@ export async function POST(request: Request) {
         }
         const bytes = Buffer.from(await downloadTelegramFile(fileInfo.file_path));
         const sha256 = createHash("sha256").update(bytes).digest("hex");
-        const kind = inferDocumentKind(text);
+        const kind = inferDocumentKind({
+          text,
+          fileName: media.originalName,
+        });
         const extension = extensionFromPath(fileInfo.file_path!, media.fallbackExtension);
         const storagePath = `${matchedCase.user_id}/${matchedCase.id}/${randomUUID()}-${safePathSegment(
           media.originalName.replace(/\.[^.]+$/, "")
@@ -1045,8 +1132,11 @@ export async function POST(request: Request) {
       const conversationalE2ECase =
         refreshedCase?.context_jsonb?.created_from === "agent_conversation" &&
         refreshedCase.context_jsonb?.e2e_controlled === true;
+      const kindHint = documentKindAckHint(documentPayload?.kind);
       const cannedAck = media
-        ? `Recibí ${describeReceivedTelegramFile(media)}, gracias. Lo registré en el caso.`
+        ? `Recibí ${describeReceivedTelegramFile(media)}, gracias. Lo registré en el caso.${
+            kindHint ? ` ${kindHint}` : ""
+          }`
         : "Recibí tu mensaje, gracias. Lo paso al asesor y te confirmamos el siguiente paso pronto.";
       if (refreshedCase && conversationalE2ECase) {
         const awaitingCharacteristics = await isAwaitingCharacteristicsResponse(
@@ -1779,6 +1869,335 @@ export async function POST(request: Request) {
         "[telegram-webhook] failed to wire E2E external contact:",
         err
       );
+    }
+  }
+
+  if (
+    text &&
+    conversationalCase &&
+    conversationalCase.context_jsonb?.created_from === "agent_conversation" &&
+    conversationalCase.current_step !== "intake" &&
+    conversationalCase.context_jsonb?.intake_status !== "complete"
+  ) {
+    const deterministicPatch = normalizeIntakePatchValues(
+      extractConservativeIntakePatch(text)
+    );
+    let looksLikeIntakeContinuation = Object.keys(deterministicPatch).length > 0;
+    if (!looksLikeIntakeContinuation) {
+      const intakeClassification = await classifyOperationalConversationMessage({
+        message: text,
+        stage: "intake",
+        caseSummary: [
+          conversationalCase.context_jsonb?.property_title,
+          conversationalCase.context_jsonb?.property_zone,
+          conversationalCase.context_jsonb?.operation_type,
+          conversationalCase.context_jsonb?.property_type,
+          `current_step=${conversationalCase.current_step}`,
+          `intake_status=${String(conversationalCase.context_jsonb?.intake_status ?? "")}`,
+        ]
+          .filter((value) => typeof value === "string" && value.trim())
+          .join(" · "),
+      });
+      looksLikeIntakeContinuation = Boolean(
+        intakeClassification &&
+          (intakeClassification.intent === "provide_intake" ||
+            intakeClassification.intent === "start_case")
+      );
+    }
+    if (looksLikeIntakeContinuation) {
+      const [documents, recentEvents] = await Promise.all([
+        listOperationalCaseDocuments(db, {
+          caseId: conversationalCase.id,
+          statuses: ["received"],
+        }),
+        getRecentOperationalCaseEvents(db, conversationalCase.id, 80),
+      ]);
+      const lastIntakeTimestamp = recentEvents.reduce<string | null>((latest, event) => {
+        if (event.event_type !== "state_changed") return latest;
+        const payload =
+          event.payload_jsonb && typeof event.payload_jsonb === "object"
+            ? (event.payload_jsonb as Record<string, unknown>)
+            : null;
+        const payloadStep =
+          typeof payload?.current_step === "string" ? payload.current_step : null;
+        const toStep =
+          payload?.to && typeof payload.to === "object"
+            ? (payload.to as Record<string, unknown>).current_step
+            : null;
+        const enteredIntake =
+          payloadStep === "intake" ||
+          toStep === "intake" ||
+          payload?.kind === "case_created";
+        if (!enteredIntake) return latest;
+        if (!latest || event.created_at > latest) return event.created_at;
+        return latest;
+      }, null);
+      const hasHumanDecisionAfterIntake = recentEvents.some((event) => {
+        if (event.event_type !== "human_decision") return false;
+        if (!lastIntakeTimestamp) return true;
+        return event.created_at > lastIntakeTimestamp;
+      });
+      const canReopenIntake =
+        documents.length === 0 && !hasHumanDecisionAfterIntake;
+      if (canReopenIntake) {
+        const fromStepBeforeReopen = conversationalCase.current_step;
+        const reopenedCase = await updateOperationalCase(
+          db,
+          conversationalCase.id,
+          conversationalCase.version,
+          {
+            status: "waiting_internal",
+            currentStep: "intake",
+            nextActionAt: null,
+          }
+        );
+        if (reopenedCase) {
+          conversationalCase = reopenedCase;
+          await insertOperationalCaseEvent(db, {
+            caseId: reopenedCase.id,
+            eventType: "state_changed",
+            actor: "system",
+            payload: {
+              kind: "conversational_intake_reopened",
+              source: "telegram_webhook_desync_recovery",
+              from_step: fromStepBeforeReopen,
+              to_step: "intake",
+              reason: "intake_incomplete_desync",
+            },
+          });
+        }
+      } else {
+        await insertOperationalCaseEvent(db, {
+          caseId: conversationalCase.id,
+          eventType: "error",
+          actor: "system",
+          payload: {
+            kind: "conversational_intake_reopen_blocked",
+            source: "telegram_webhook_desync_recovery",
+            current_step: conversationalCase.current_step,
+            intake_status: conversationalCase.context_jsonb?.intake_status ?? null,
+            documents_received: documents.length,
+            has_human_decision_after_intake: hasHumanDecisionAfterIntake,
+          },
+        });
+        await sendTelegramMessage(
+          chatId,
+          "Detecté datos de intake, pero este caso ya avanzó a una etapa operativa con actividad registrada. Para evitar inconsistencias, continuaré con el paso actual. Si deseas reiniciar el registro del caso, indícalo explícitamente."
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "operational_case_intake_reopen_blocked",
+          case_id: conversationalCase.id,
+        });
+      }
+    }
+  }
+
+  if (
+    text &&
+    conversationalCase &&
+    conversationalCase.current_step === "intake" &&
+    conversationalCase.context_jsonb?.intake_status !== "complete"
+  ) {
+    const caseType = await getOperationalCaseTypeForUser(
+      db,
+      conversationalCase.user_id,
+      conversationalCase.case_type
+    );
+    if (caseType) {
+      const deterministicPatch = normalizeIntakePatchValues(
+        extractConservativeIntakePatch(text)
+      );
+      const intakeClassification = await classifyOperationalConversationMessage({
+        message: text,
+        stage: "intake",
+        caseSummary: [
+          conversationalCase.context_jsonb?.property_title,
+          conversationalCase.context_jsonb?.property_zone,
+          conversationalCase.context_jsonb?.operation_type,
+          conversationalCase.context_jsonb?.property_type,
+          `missing_required=${JSON.stringify(
+            conversationalCase.context_jsonb?.missing_required ?? []
+          )}`,
+        ]
+          .filter((value) => typeof value === "string" && value.trim())
+          .join(" · "),
+      });
+      const llmPatch =
+        intakeClassification &&
+        (intakeClassification.intent === "provide_intake" ||
+          intakeClassification.intent === "start_case")
+          ? normalizeIntakePatchValues(intakeClassification.patch ?? {})
+          : {};
+      const intakePatch = mergeIntakePatches(llmPatch, deterministicPatch);
+      if (Object.keys(intakePatch).length === 0) {
+        await sendTelegramMessage(
+          chatId,
+          buildIntakeProgressPrompt({
+            context: conversationalCase.context_jsonb,
+            missingFields:
+              (conversationalCase.context_jsonb?.missing_required as unknown[]) ?? [],
+          })
+        );
+        await upsertConversationBinding(db, {
+          userId,
+          caseId: conversationalCase.id,
+          caseType: conversationalCase.case_type,
+          channel: "telegram",
+          chatId,
+          sessionId: session.id,
+          status: "awaiting_user",
+          awaitingFields:
+            (conversationalCase.context_jsonb?.missing_required as unknown[]) ?? [],
+          metadata: { source: "telegram_webhook_intake_still_missing" },
+        });
+        return NextResponse.json({
+          ok: true,
+          routed: "operational_case_intake_still_missing",
+          case_id: conversationalCase.id,
+        });
+      }
+      const beforeUpdate = conversationalCase;
+      const intakeSchema =
+        (caseType.intake_schema_jsonb as Parameters<
+          typeof buildOperationalCaseIntakeUpdateContext
+        >[0]["intakeSchema"]) ?? [];
+      const buildIntakeUpdate = (existingContext: Record<string, unknown>) =>
+        buildOperationalCaseIntakeUpdateContext({
+          existingContext,
+          intakePatch,
+          intakeSchema,
+          e2eControlled: existingContext.e2e_controlled === true,
+          channel: "telegram",
+        });
+      let intakeUpdate = buildIntakeUpdate(
+        (conversationalCase.context_jsonb as Record<string, unknown>) ?? {}
+      );
+      const nextStep = intakeUpdate.complete
+        ? firstOperationalStepAfterIntake(caseType.operational_flow_jsonb)
+        : "intake";
+      let updatedCase = await updateOperationalCase(
+        db,
+        conversationalCase.id,
+        conversationalCase.version,
+        {
+          status: intakeUpdate.complete ? "active" : "waiting_internal",
+          currentStep: nextStep,
+          nextActionAt:
+            conversationalCase.context_jsonb?.e2e_controlled === true
+              ? null
+              : new Date().toISOString(),
+          context: intakeUpdate.context,
+        }
+      );
+      if (!updatedCase) {
+        console.warn("[telegram-webhook] intake update conflict; retrying with fresh version", {
+          case_id: conversationalCase.id,
+        });
+        const refreshedCase = await getOperationalCase(db, conversationalCase.id);
+        if (refreshedCase) {
+          intakeUpdate = buildIntakeUpdate(
+            (refreshedCase.context_jsonb as Record<string, unknown>) ?? {}
+          );
+          const retryNextStep = intakeUpdate.complete
+            ? firstOperationalStepAfterIntake(caseType.operational_flow_jsonb)
+            : "intake";
+          updatedCase = await updateOperationalCase(
+            db,
+            refreshedCase.id,
+            refreshedCase.version,
+            {
+              status: intakeUpdate.complete ? "active" : "waiting_internal",
+              currentStep: retryNextStep,
+              nextActionAt:
+                refreshedCase.context_jsonb?.e2e_controlled === true
+                  ? null
+                  : new Date().toISOString(),
+              context: intakeUpdate.context,
+            }
+          );
+          if (!updatedCase) {
+            updatedCase = refreshedCase;
+          }
+        }
+      }
+      updatedCase = updatedCase ?? conversationalCase;
+      const persistedMissing =
+        ((updatedCase.context_jsonb?.missing_required as unknown[]) ?? intakeUpdate.missing) || [];
+      const intakeCompletedNow = !isIntakeInProgress(updatedCase);
+      await insertOperationalCaseEvent(db, {
+        caseId: updatedCase.id,
+        eventType: intakeCompletedNow ? "step_completed" : "state_changed",
+        actor: "system",
+        payload: {
+          source: "telegram_webhook_deterministic_intake_update",
+          current_step: updatedCase.current_step,
+          intake_status: intakeCompletedNow ? "complete" : "incomplete",
+          intake_patch: intakeUpdate.intakePatch,
+          missing_required: persistedMissing,
+        },
+      });
+      await upsertConversationBinding(db, {
+        userId,
+        caseId: updatedCase.id,
+        caseType: updatedCase.case_type,
+        channel: "telegram",
+        chatId,
+        sessionId: session.id,
+        status: "awaiting_user",
+        awaitingFields: persistedMissing,
+        metadata: { source: "telegram_webhook_deterministic_intake_update" },
+      });
+
+      if (intakeCompletedNow) {
+        await sendTelegramMessage(
+          chatId,
+          buildTelegramIntakeCompletionMessage(updatedCase)
+        );
+        if (updatedCase.context_jsonb?.e2e_controlled === true) {
+          try {
+            await maybeRunPostIntakeConversationalE2ETick({
+              db,
+              opCase: updatedCase,
+              userId,
+              chatId,
+            });
+          } catch (tickError) {
+            console.error(
+              "[telegram-webhook] deterministic post-intake E2E tick failed:",
+              tickError
+            );
+            await sendTelegramMessage(
+              chatId,
+              "El intake quedó completo, pero no pude ejecutar automáticamente la solicitud de documentos. Revisa el laboratorio E2E e intenta la revisión manual."
+            );
+          }
+        }
+        return NextResponse.json({
+          ok: true,
+          routed: "operational_case_intake_completed",
+          case_id: updatedCase.id,
+        });
+      }
+      await sendTelegramMessage(
+        chatId,
+        buildIntakeProgressPrompt({
+          context:
+            (updatedCase.context_jsonb as Record<string, unknown> | null | undefined) ??
+            intakeUpdate.context,
+          missingFields: persistedMissing,
+        })
+      );
+      if (beforeUpdate.version === updatedCase.version) {
+        console.warn("[telegram-webhook] intake update returned unchanged case", {
+          case_id: updatedCase.id,
+        });
+      }
+      return NextResponse.json({
+        ok: true,
+        routed: "operational_case_intake_updated_incomplete",
+        case_id: updatedCase.id,
+      });
     }
   }
 

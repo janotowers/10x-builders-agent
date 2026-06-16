@@ -71,6 +71,43 @@ async function main() {
     null
   );
 
+  const intakeModel: OperationalConversationClassifierModel = {
+    async classify(input) {
+      assert.equal(input.stage, "intake");
+      return {
+        route: "existing_case",
+        confidence: "high",
+        intent: "provide_intake",
+        patch: {
+          property_title: "Casa en venta en Las Fuentes",
+          property_zone: "Las Fuentes, Zapopan, Jalisco",
+          operation_type: "Venta",
+          property_type: "Casa",
+        },
+      };
+    },
+  };
+  assert.deepEqual(
+    await classifyOperationalConversationMessage(
+      {
+        message: "Casa en venta en Las Fuentes, zona Las Fuentes Zapopan, operación venta",
+        stage: "intake",
+      },
+      intakeModel
+    ),
+    {
+      route: "existing_case",
+      confidence: "high",
+      intent: "provide_intake",
+      patch: {
+        property_title: "Casa en venta en Las Fuentes",
+        property_zone: "Las Fuentes, Zapopan, Jalisco",
+        operation_type: "Venta",
+        property_type: "Casa",
+      },
+    }
+  );
+
   console.log("operational-conversation-classifier.selftest.ts: ok");
 }
 

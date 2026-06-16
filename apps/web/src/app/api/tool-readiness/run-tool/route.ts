@@ -1113,7 +1113,7 @@ function telegramCharacteristicsMessage(input: ToolRecipeInput) {
     `Hola ${ownerName}, gracias por los documentos de ${propertyTitle}. ` +
     "Para completar la ficha antes de comparables, me ayudaría confirmar:\n\n" +
     `${questionBlock}\n\n` +
-    "Puedes responder por aquí con texto. Si tienes predial u otro documento extra, también puedes enviarlo, pero no es obligatorio para avanzar."
+    "Puedes responder por aquí con texto. Si además cuentas con boleta registral, predial, escritura, identificación o comprobante, también envíalos para fortalecer la validación documental."
   );
 }
 
@@ -1129,8 +1129,8 @@ function telegramRequestDocumentsMessage(input: ToolRecipeInput) {
     "la zona capturada";
   return (
     `Hola ${ownerName}, estamos preparando la opción de comercialización de ${propertyTitle} en ${zona}. ` +
-    "Para avanzar necesito la hoja de la escritura donde esté la descripción de la propiedad. " +
-    "También ayuda si puedes enviar predial, INE, comprobante de domicilio, boleta registral y primera/última hoja de escritura."
+    "Para validar la propiedad de forma más sólida, envíame por favor los documentos disponibles en este orden: boleta registral (referencia principal de titularidad), predial más reciente, escritura (primera/última hoja o sección descriptiva), identificación oficial y comprobante de domicilio. " +
+    "Si alguno no lo tienes a la mano, envía lo disponible y seguimos; los faltantes se pueden confirmar por texto sin detener el proceso."
   );
 }
 

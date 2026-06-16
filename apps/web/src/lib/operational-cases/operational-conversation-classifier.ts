@@ -75,6 +75,17 @@ function parseJsonContent(content: unknown) {
 }
 
 function buildClassifierPrompt(input: OperationalConversationClassifierInput) {
+  const intakeSpecificRules =
+    input.stage === "intake"
+      ? [
+          "- For stage=intake, focus on extracting ONLY these fields when present: property_title, property_zone, operation_type, property_type.",
+          "- You may infer property_type from title text when explicit (e.g. 'Casa en venta' => Casa).",
+          "- You may infer operation_type from intent phrases when explicit (e.g. 'en venta' => Venta, 'en renta' => Renta).",
+          "- Keep user-provided descriptive titles intact; only shorten property_title when the user explicitly separates title and zone labels.",
+          "- Never include operation or type labels inside property_zone.",
+          "- If a field is unclear, omit it from patch.",
+        ]
+      : [];
   return [
     "Classify this Spanish Telegram message for a real-estate operational case workflow.",
     "Return ONLY compact JSON matching this TypeScript shape:",
@@ -88,6 +99,7 @@ function buildClassifierPrompt(input: OperationalConversationClassifierInput) {
     "- For review corrections, extract only explicit corrections into patch.",
     "- Normalize common operation values to Venta or Renta when clear.",
     "- Do not invent missing intake fields.",
+    ...intakeSpecificRules,
     "",
     `stage: ${input.stage}`,
     input.caseSummary ? `case: ${input.caseSummary}` : "",

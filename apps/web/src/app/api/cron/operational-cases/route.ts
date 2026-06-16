@@ -33,6 +33,8 @@ import {
   getGoogleCalendarAccessToken,
   getDueOperationalCases,
   getOperationalCase,
+  getRecentOperationalCaseEvents,
+  getTelegramChatId,
   listDueExternalContactNotifications,
   listDueInternalUserNotifications,
   insertOperationalCaseEvent,
@@ -76,6 +78,11 @@ import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cas
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
+const APP_URL =
+  process.env.NEXT_PUBLIC_APP_URL ??
+  process.env.NEXT_PUBLIC_SITE_URL ??
+  process.env.SITE_URL ??
+  "";
 
 const DEFAULT_CONCURRENCY = 5;
 
@@ -102,6 +109,178 @@ function buildCaseTickMessage(opCase: OperationalCase): string {
     `Tick de procesamiento del caso operacional ${opCase.id} (case_type=${opCase.case_type}, status=${opCase.status}, current_step=${opCase.current_step ?? "(none)"}).`,
     "Lee el bloque [Caso operacional activo] del system prompt y decide la siguiente acción siguiendo la skill activa. Si necesitas comunicarte con el humano externo o interno, usa las tools correspondientes. Cuando avances un paso, actualiza el caso con la tool de update y registra el evento.",
   ].join(" ");
+}
+
+type PendingCaseToolCall = {
+  id: string;
+  tool_name: string;
+  arguments_json: Record<string, unknown> | null;
+  created_at: string;
+};
+
+function buildPendingCaseUrl(caseId: string): string | null {
+  if (!APP_URL || !/^https?:\/\//i.test(APP_URL)) return null;
+  return `${APP_URL.replace(/\/$/, "")}/chat/pending?case=${encodeURIComponent(caseId)}`;
+}
+
+async function listPendingCaseRunnerToolCalls(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  caseId: string
+): Promise<PendingCaseToolCall[]> {
+  const { data: sessions, error: sessionsError } = await db
+    .from("agent_sessions")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("channel", "case_runner")
+    .eq("status", "active");
+  if (sessionsError) throw sessionsError;
+  const sessionIds = (sessions ?? [])
+    .map((session: { id?: unknown }) => session.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (sessionIds.length === 0) return [];
+
+  const [argsResult, metaResult] = await Promise.all([
+    db
+      .from("tool_calls")
+      .select("id, tool_name, arguments_json, created_at")
+      .in("session_id", sessionIds)
+      .eq("status", "pending_confirmation")
+      .eq("arguments_json->>case_id", caseId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+    db
+      .from("tool_calls")
+      .select("id, tool_name, arguments_json, created_at")
+      .in("session_id", sessionIds)
+      .eq("status", "pending_confirmation")
+      .eq("metadata_jsonb->>case_id", caseId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+  ]);
+  if (argsResult.error) throw argsResult.error;
+  if (metaResult.error) throw metaResult.error;
+
+  const byId = new Map<string, PendingCaseToolCall>();
+  for (const row of [...(argsResult.data ?? []), ...(metaResult.data ?? [])]) {
+    const id = typeof row.id === "string" ? row.id : "";
+    if (!id || byId.has(id)) continue;
+    byId.set(id, {
+      id,
+      tool_name: typeof row.tool_name === "string" ? row.tool_name : "tool",
+      arguments_json:
+        row.arguments_json && typeof row.arguments_json === "object"
+          ? (row.arguments_json as Record<string, unknown>)
+          : null,
+      created_at:
+        typeof row.created_at === "string" ? row.created_at : new Date().toISOString(),
+    });
+  }
+  return [...byId.values()].sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+function buildPendingToolDescription(
+  opCase: OperationalCase,
+  call: PendingCaseToolCall,
+  pendingCount: number
+) {
+  const title =
+    typeof opCase.context_jsonb?.property_title === "string"
+      ? opCase.context_jsonb.property_title.trim()
+      : "";
+  const zone =
+    typeof opCase.context_jsonb?.property_zone === "string"
+      ? opCase.context_jsonb.property_zone.trim()
+      : "";
+  const link = buildPendingCaseUrl(opCase.id);
+  const baseLines = [
+    pendingCount === 1
+      ? "Tienes 1 aprobacion del agente pendiente para continuar este caso."
+      : `Tienes ${pendingCount} aprobaciones del agente pendientes para continuar este caso.`,
+    `Caso: ${title || opCase.case_type}${zone ? ` (${zone})` : ""}`,
+    `Paso tecnico: ${opCase.current_step ?? "(sin paso)"}`,
+    `Tool pendiente: ${call.tool_name}`,
+  ];
+  if (call.tool_name === "telegram_send_message_to_contact") {
+    const preview =
+      typeof call.arguments_json?.message === "string"
+        ? call.arguments_json.message.trim()
+        : "";
+    if (preview) {
+      baseLines.push(`Mensaje propuesto: ${truncateTelegramText(preview)}`);
+    }
+  }
+  baseLines.push(
+    link
+      ? `Revisar detalle: ${link}`
+      : `Revisar detalle en web: /chat/pending?case=${encodeURIComponent(opCase.id)}`
+  );
+  return { text: baseLines.join("\n"), link };
+}
+
+async function maybeSendPendingToolButtonsToAdvisor(
+  db: ReturnType<typeof createServerClient>,
+  opCase: OperationalCase,
+  pendingCalls: PendingCaseToolCall[]
+) {
+  const firstPending = pendingCalls[0];
+  if (!firstPending) return;
+  const chatId = await getTelegramChatId(db, opCase.user_id);
+  if (!chatId) return;
+  const recentEvents = await getRecentOperationalCaseEvents(db, opCase.id, 30);
+  const alreadySent = recentEvents.some((event) => {
+    if (event.event_type !== "reminder_sent") return false;
+    const payload =
+      event.payload_jsonb && typeof event.payload_jsonb === "object"
+        ? (event.payload_jsonb as Record<string, unknown>)
+        : null;
+    return (
+      payload?.source === "cron_hitl_telegram_buttons" &&
+      payload?.tool_call_id === firstPending.id
+    );
+  });
+  if (alreadySent) return;
+
+  const { text, link } = buildPendingToolDescription(
+    opCase,
+    firstPending,
+    pendingCalls.length
+  );
+  await sendTelegramMessage(
+    chatId,
+    truncateTelegramText(text),
+    {
+      inline_keyboard: [
+        [
+          {
+            text: "✅ Aprobar",
+            callback_data: `approve:${firstPending.id}`,
+          },
+          {
+            text: "❌ Cancelar",
+            callback_data: `reject:${firstPending.id}`,
+          },
+        ],
+      ],
+    },
+    { throwOnError: true }
+  );
+  if (link) {
+    await sendTelegramMessage(chatId, `Ver detalle: ${link}`, undefined, {
+      throwOnError: true,
+    });
+  }
+  await insertOperationalCaseEvent(db, {
+    caseId: opCase.id,
+    eventType: "reminder_sent",
+    actor: "system",
+    payload: {
+      source: "cron_hitl_telegram_buttons",
+      tool_call_id: firstPending.id,
+      tool_name: firstPending.tool_name,
+      pending_count: pendingCalls.length,
+    },
+  });
 }
 
 function hoursFromNow(hours: number) {
@@ -341,6 +520,29 @@ async function processCase(
   if (isCronSuppressedOperationalCase(opCase)) {
     return { case_id: opCase.id, status: "skipped" };
   }
+  if (
+    opCase.context_jsonb?.created_from === "agent_conversation" &&
+    opCase.current_step === "intake" &&
+    opCase.context_jsonb?.intake_status !== "complete"
+  ) {
+    if (opCase.next_action_at) {
+      await updateOperationalCase(db, opCase.id, opCase.version, {
+        nextActionAt: null,
+      });
+    }
+    await insertOperationalCaseEvent(db, {
+      caseId: opCase.id,
+      eventType: "step_completed",
+      actor: "system",
+      payload: {
+        kind: "cron_skipped_incomplete_conversational_intake",
+        source: "cron",
+        current_step: opCase.current_step,
+        status: opCase.status,
+      },
+    });
+    return { case_id: opCase.id, status: "skipped" };
+  }
 
   const locked = await markCaseProcessing(db, opCase.id, opCase.version);
   if (!locked) {
@@ -350,24 +552,39 @@ async function processCase(
   try {
     const pendingHitlCount = await countPendingToolCallsForCase(db, opCase.id);
     if (pendingHitlCount > 0) {
+      const pendingCalls = await listPendingCaseRunnerToolCalls(
+        db,
+        opCase.user_id,
+        opCase.id
+      );
+      const pendingReference =
+        pendingCalls.length > 0 ? pendingCalls[0] : null;
+      const pendingReferenceText = pendingReference
+        ? buildPendingToolDescription(opCase, pendingReference, pendingHitlCount).text
+        : pendingHitlCount === 1
+          ? "Tienes 1 aprobación del agente pendiente para continuar este caso."
+          : `Tienes ${pendingHitlCount} aprobaciones del agente pendientes para continuar este caso.`;
       await notify(
         db,
         opCase.user_id,
         {
-          text:
-            pendingHitlCount === 1
-              ? "Tienes 1 aprobación del agente pendiente para continuar este caso."
-              : `Tienes ${pendingHitlCount} aprobaciones del agente pendientes para continuar este caso.`,
+          text: pendingReferenceText,
           kind: TOOL_CONFIRMATION_PENDING_KIND,
           data: {
             case_id: opCase.id,
             title: "Aprobación del agente pendiente",
             action_url: `/chat/pending?case=${encodeURIComponent(opCase.id)}`,
             pending_tool_confirmations: pendingHitlCount,
+            pending_tool_name: pendingReference?.tool_name ?? null,
+            pending_tool_call_id: pendingReference?.id ?? null,
           },
         },
-        "normal"
+        "normal",
+        { pushChannels: [] }
       );
+      if (pendingCalls.length > 0) {
+        await maybeSendPendingToolButtonsToAdvisor(db, opCase, pendingCalls);
+      }
       const fresh = await getOperationalCase(db, opCase.id);
       if (fresh) {
         await updateOperationalCase(db, fresh.id, fresh.version, {
@@ -541,6 +758,11 @@ async function processWithConcurrency(
 export async function POST(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!APP_URL || !/^https?:\/\//i.test(APP_URL)) {
+    console.warn(
+      "[ops-case-cron] APP_URL missing or invalid; pending HITL Telegram messages will not include an absolute web link."
+    );
   }
 
   ensureAgentToolDepsWired();
