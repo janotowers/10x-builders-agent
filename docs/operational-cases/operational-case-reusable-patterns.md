@@ -206,6 +206,18 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Implementación** | [`comparables-analysis-validation.ts`](../../apps/web/src/lib/operational-cases/comparables-analysis-validation.ts); validación en `run-skill` (`validateContract`) y `run-step` (`validateStepExpect` en paso `comparables_in_progress`); skill [`perform-comparable-analysis/SKILL.md`](../../skills/global/perform-comparable-analysis/SKILL.md) |
 | **Pruebas** | N3 contrato; N4 escenarios `comparables_in_progress_complete` (muestra defendible) e `comparables_in_progress_insufficient_data` (0 usables) |
 
+### `PATTERN_INTEGRATION_RECONNECT_DEGRADED_CONTINUATION`
+
+| | |
+|--|--|
+| **Capa** | `runtime` + `ux` |
+| **Cuándo usar** | Una fuente de comparables (especialmente EasyBroker MLS web) devuelve `needs_manual_login` tras reintentos automáticos |
+| **Regla de negocio** | Reintentos automáticos primero; si la fuente sigue pidiendo reconexión, tratarlo como estado recuperable y **evaluar con muestra total** (`usable_count`) antes de bloquear el caso |
+| **Con muestra defendible** | Avanzar a `price_proposal_pending`; notificación no bloqueante (fuente degradada, reconectar después) |
+| **Sin muestra defendible** | Mantener `comparables_in_progress` + `waiting_internal`; `notify_user(kind=integration_reconnect)` con CTA explícito de reconexión |
+| **Implementación** | `realestate-adapters.ts` (reintento acotado + `needs_manual_login`), `comparables-analysis.ts` (`data_quality.needs_user_reauth`, `integration_issues`), skill [`perform-comparable-analysis/SKILL.md`](../../skills/global/perform-comparable-analysis/SKILL.md) |
+| **No hacer en esta fase** | Bypass CAPTCHA, automatizaciones "human-like", bloqueo duro por falla aislada de una sola fuente |
+
 ### `PATTERN_DETERMINISTIC_ARTIFACT_FROM_TOOL_RESULTS`
 
 | | |
@@ -425,6 +437,9 @@ Bloque que `skill-authoring` (o un endpoint hermano) debería emitir al proponer
 | P2 | `test_pattern` en `operational_flow_jsonb` |
 | P3 | `skill-authoring` emite `testPlan` con IDs del catálogo |
 | P4 | Clasificador caso vs skill en pipeline NL |
+| Futuro A | Deep-link de reconexión para asesores en Telegram/web y retorno guiado al caso |
+| Futuro B | Auto-resume: al reconectar EasyBroker, reprogramar/reintentar automáticamente `comparables_in_progress` pendientes |
+| Futuro C | Health check preventivo de integraciones críticas antes de iniciar pasos sensibles |
 
 ---
 

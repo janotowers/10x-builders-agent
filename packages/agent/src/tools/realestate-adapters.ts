@@ -1998,6 +1998,58 @@ async function runEasyBrokerMlsCliFallback(
     return null;
   }
 
+  // EasyBroker MLS depende de una sesión web persistida (storage-state.json).
+  // Cuando expira, el CLI intenta re-loguearse con email/password y, si pasa
+  // el anti-bot, persiste una sesión fresca que el siguiente intento reutiliza
+  // por la vía rápida. Como pasar el anti-bot es probabilístico, reintentamos
+  // de forma acotada ante fallos de sesión/login: es el mismo efecto que
+  // lograba el usuario al correr "Probar conexión" y volver a ejecutar la tool.
+  const maxAttempts = easyBrokerMlsMaxAttempts();
+  let lastResponse: Record<string, unknown> = {
+    ok: false,
+    status: "failed",
+    source: "easybroker_mls",
+    mode: "web_mls",
+    tool: toolId,
+    error: "EasyBroker MLS no devolvió respuesta.",
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    lastResponse = await executeEasyBrokerMlsCliOnce(
+      pocDir,
+      input,
+      toolId,
+      creds,
+      attempt
+    );
+    if (lastResponse.ok !== false) return lastResponse;
+    const recoverable = lastResponse.status === "needs_manual_login";
+    if (!recoverable || attempt >= maxAttempts) {
+      return { ...lastResponse, recovery_attempts: attempt };
+    }
+  }
+
+  return { ...lastResponse, recovery_attempts: maxAttempts };
+}
+
+/**
+ * Número máximo de intentos del CLI MLS ante fallos de sesión/login.
+ * Default 2 (un reintento). Configurable vía EASYBROKER_MLS_MAX_ATTEMPTS,
+ * acotado a [1, 3] para no disparar la latencia ni los timeouts del runtime.
+ */
+function easyBrokerMlsMaxAttempts(): number {
+  const raw = Number(process.env.EASYBROKER_MLS_MAX_ATTEMPTS ?? "2");
+  if (!Number.isFinite(raw)) return 2;
+  return Math.min(Math.max(Math.trunc(raw), 1), 3);
+}
+
+async function executeEasyBrokerMlsCliOnce(
+  pocDir: string,
+  input: EasyBrokerSearchInput,
+  toolId: "easybroker_search_listings" | "easybroker_search_closed_deals",
+  creds: EasyBrokerWebCredentials,
+  attempt: number
+): Promise<Record<string, unknown>> {
   const tempDir = await mkdtemp(path.join(tmpdir(), "easybroker-mls-"));
   const inputPath = path.join(tempDir, "query.json");
   const cliInput = {
@@ -2030,7 +2082,14 @@ async function runEasyBrokerMlsCliFallback(
       }
     );
     const parsed = parseCliJson(stdout);
-    return buildEasyBrokerMlsToolResponse(toolId, input, parsed, stderr, creds.source);
+    const response = buildEasyBrokerMlsToolResponse(
+      toolId,
+      input,
+      parsed,
+      stderr,
+      creds.source
+    );
+    return { ...response, attempt };
   } catch (err) {
     const error = err as {
       message?: string;
@@ -2049,12 +2108,13 @@ async function runEasyBrokerMlsCliFallback(
       source: "easybroker_mls",
       mode: "web_mls",
       tool: toolId,
+      attempt,
       exit_code: error.code,
       error: error.message ?? String(err),
       ...(needsManualLogin
         ? {
             hint:
-              "EasyBroker requiere login manual, CAPTCHA/MFA o refrescar la sesión persistente. Ejecuta el login asistido del POC y vuelve a probar.",
+              "EasyBroker pidió verificar la sesión (login manual, CAPTCHA/MFA o sesión expirada). Reconecta EasyBroker MLS en Credenciales API → 'Probar conexión' (o corre el login asistido del POC) y vuelve a intentar.",
           }
         : {}),
       ...(parsed ? { cli_result: parsed } : {}),
@@ -2068,7 +2128,7 @@ async function runEasyBrokerMlsCliFallback(
 }
 
 function isEasyBrokerManualLoginRequired(value: string) {
-  return /captcha|recaptcha|403|forbidden|access denied|login manual|sesión persistente|storage-state|mfa/i.test(
+  return /captcha|recaptcha|403|forbidden|access denied|login manual|sesi[oó]n persistente|storage[- ]?state|mfa|did not reach mls|authenticated page|login did not reach|no se pudo navegar a bolsa|inicia sesi[oó]n|account\/authentication/i.test(
     value
   );
 }

@@ -28,6 +28,11 @@ guardrails: |
   mínimos, registra warning y continúa con las demás fuentes.
   Si alguna fuente devuelve status="not_configured" o error, reporta al
   inmobiliario y continúa con las fuentes disponibles.
+  Si EasyBroker devuelve status="needs_manual_login" (sesión web expirada o
+  CAPTCHA/MFA tras los reintentos automáticos), trátalo como estado recuperable:
+  continúa con las demás fuentes. La notificación `integration_reconnect` se usa
+  como CTA fuerte sólo cuando no hay muestra defendible total; si sí hay muestra
+  defendible, usa aviso no bloqueante y avanza.
 ---
 
 # Perform comparable analysis
@@ -116,6 +121,15 @@ Producir un objeto `context_jsonb.comparables_analysis`:
      configurar (API key, tabla del warehouse, etc.).
    - Continúa con las fuentes que sí funcionaron; no bloquees el caso.
 
+   Si EasyBroker devuelve `status: "needs_manual_login"` (la sesión web expiró o
+   EasyBroker pidió CAPTCHA/MFA aun después de los reintentos automáticos del
+   adapter):
+   - Es un estado **recuperable**, no un error técnico. Continúa con BigQuery/Avaclick.
+   - No decidas severidad todavía; persiste primero y decide con base en
+     `defensible_sample` / `usable_count`.
+   - Tras persistir, `operational_case_persist_comparables_analysis` reflejará
+     `data_quality.needs_user_reauth=true` y `data_quality.integration_issues`.
+
 4. No escribas `comparables_analysis` manualmente. Después de ejecutar las tres
    búsquedas, llama `operational_case_persist_comparables_analysis`. Esa tool
    construye el artefacto determinísticamente desde los `tool_calls` del turno:
@@ -141,10 +155,16 @@ Producir un objeto `context_jsonb.comparables_analysis`:
 7. Notifica al inmobiliario:
    - Con muestra defendible:
      `notify_user("Análisis de comparables listo para [propiedad]. N activas, M referencias históricas y K internas. Mediana de precio publicado: $X. Reviso contigo el precio.")`.
+     - Si `data_quality.needs_user_reauth=true`, agrega aviso no bloqueante:
+       EasyBroker MLS requiere reconexión para enriquecer futuras búsquedas.
    - Sin comparables usables:
      `notify_user` con datos de la propiedad, `filters_used`, resumen por fuente
      (EB activas, EB cerradas, BQ interno) y sugerencias concretas para ampliar
      criterios (rango de precio, m², meses, zona adyacente).
+     - Si `data_quality.needs_user_reauth=true`, usa
+       `notify_user(kind="integration_reconnect")` con CTA claro:
+       reconectar EasyBroker MLS en **Credenciales API → "Probar conexión"** y luego
+       reintentar comparables.
 
 ## Pruebas en Preparación operativa (N3 / N4)
 

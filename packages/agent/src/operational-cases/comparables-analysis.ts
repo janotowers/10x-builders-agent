@@ -279,6 +279,95 @@ function normalizeAvaclickValuation(result: RecordValue | null | undefined): {
   };
 }
 
+const SOURCE_TOOL_LABELS: Record<ComparableSourceToolName, string> = {
+  easybroker_search_listings: "EasyBroker (activas/publicadas)",
+  easybroker_search_closed_deals: "EasyBroker (cerradas/referencia histórica)",
+  bigquery_lookup_local_comparables: "Inventario interno (BigQuery)",
+  get_avaclick_valuation: "Avaclick",
+};
+
+export type ComparableIntegrationIssue = {
+  source_tool: ComparableSourceToolName;
+  label: string;
+  status: string;
+  action: "reconnect_easybroker_web" | "configure_integration" | "retry_or_check";
+  recoverable_via_reauth: boolean;
+  hint: string | null;
+};
+
+/**
+ * Distingue los modos de fallo de una fuente de comparables. `needs_manual_login`
+ * (EasyBroker MLS) es recuperable por reconexión humana; `not_configured` requiere
+ * configurar la integración; el resto se reporta como fallo genérico. Los
+ * `validation_error` por faltantes mínimos (p.ej. Avaclick) NO son problemas de
+ * integración y se ignoran aquí (se manejan como warnings de datos).
+ */
+function detectIntegrationIssue(
+  toolName: ComparableSourceToolName,
+  result: RecordValue | null | undefined
+): ComparableIntegrationIssue | null {
+  if (!isRecord(result)) return null;
+  const status = cleanString(result.status);
+  if (status === "validation_error") return null;
+  const needsReauth = status === "needs_manual_login";
+  const notConfigured = status === "not_configured" || status === "not_connected";
+  const failed = result.ok === false || status === "failed";
+  if (!needsReauth && !notConfigured && !failed) return null;
+  const hint = cleanString(result.hint) ?? cleanString(result.error);
+  if (needsReauth) {
+    return {
+      source_tool: toolName,
+      label: SOURCE_TOOL_LABELS[toolName],
+      status: "needs_manual_login",
+      action: "reconnect_easybroker_web",
+      recoverable_via_reauth: true,
+      hint,
+    };
+  }
+  if (notConfigured) {
+    return {
+      source_tool: toolName,
+      label: SOURCE_TOOL_LABELS[toolName],
+      status: "not_configured",
+      action: "configure_integration",
+      recoverable_via_reauth: false,
+      hint,
+    };
+  }
+  return {
+    source_tool: toolName,
+    label: SOURCE_TOOL_LABELS[toolName],
+    status: status ?? "failed",
+    action: "retry_or_check",
+    recoverable_via_reauth: false,
+    hint,
+  };
+}
+
+function collectIntegrationIssues(
+  toolCalls: ComparableToolCallInput[]
+): ComparableIntegrationIssue[] {
+  const issues: ComparableIntegrationIssue[] = [];
+  for (const toolName of SOURCE_TOOL_NAMES) {
+    const issue = detectIntegrationIssue(
+      toolName,
+      latestExecutedToolCall(toolCalls, toolName)?.result_json
+    );
+    if (issue) issues.push(issue);
+  }
+  return issues;
+}
+
+function integrationIssueWarning(issue: ComparableIntegrationIssue): string {
+  if (issue.action === "reconnect_easybroker_web") {
+    return `${issue.label} no devolvió resultados: la sesión web de EasyBroker requiere reconexión (login/CAPTCHA/MFA). Reconecta en Credenciales API → "Probar conexión" y reintenta; el análisis continúa con las fuentes disponibles.`;
+  }
+  if (issue.action === "configure_integration") {
+    return `${issue.label} no está configurada${issue.hint ? `: ${issue.hint}` : "."} El análisis continúa con las fuentes disponibles.`;
+  }
+  return `${issue.label} falló${issue.hint ? `: ${issue.hint}` : "."} El análisis continúa con las fuentes disponibles.`;
+}
+
 export function buildComparablesAnalysisFromToolCalls(
   toolCalls: ComparableToolCallInput[]
 ) {
@@ -328,6 +417,14 @@ export function buildComparablesAnalysisFromToolCalls(
     warnings.push(`${deduped.duplicates} comparable(s) duplicados adicionales se omitieron.`);
   }
 
+  const integrationIssues = collectIntegrationIssues(toolCalls);
+  const needsUserReauth = integrationIssues.some(
+    (issue) => issue.recoverable_via_reauth
+  );
+  for (const issue of integrationIssues) {
+    warnings.push(integrationIssueWarning(issue));
+  }
+
   const analysis = {
     filters_used: filtersFromCalls(toolCalls),
     active_listings: active,
@@ -345,6 +442,8 @@ export function buildComparablesAnalysisFromToolCalls(
       usable_count: usableRows.length,
       incomplete_count: incompleteCount,
       warnings,
+      integration_issues: integrationIssues,
+      needs_user_reauth: needsUserReauth,
     },
     notes:
       usableRows.length > 0
