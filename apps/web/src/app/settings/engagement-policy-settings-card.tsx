@@ -179,12 +179,10 @@ export function EngagementPolicySettingsCard({
 
   return (
     <section className="rounded-xl border border-blue-200 bg-blue-50/60 p-3 dark:border-blue-900 dark:bg-blue-950/20">
-      <h2 className="text-sm font-semibold text-blue-900 dark:text-blue-100">
-        Políticas de entrega y recordatorios
-      </h2>
-      <p className="mt-1 text-xs text-blue-800/90 dark:text-blue-200/90">
-        Controla cuándo se envían recordatorios/escalaciones y cada cuánto se
-        reintenta. Horario local aplicado: <span className="font-mono">{timezone}</span>.
+      <p className="text-xs text-blue-800/90 dark:text-blue-200/90">
+        Configuración global de tu cuenta: aplica a todos los flujos operativos
+        y recordatorios proactivos. Horario local:{" "}
+        <span className="font-mono">{timezone}</span> (desde tu perfil de usuario).
       </p>
       <div className="mt-3 grid gap-3 lg:grid-cols-2">
         <div className="rounded border border-blue-200 bg-white/90 p-3 dark:border-blue-900 dark:bg-blue-950/30">
@@ -375,4 +373,3 @@ export function EngagementPolicySettingsCard({
     </section>
   );
 }
-

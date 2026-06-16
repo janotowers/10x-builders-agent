@@ -14,11 +14,13 @@ import type { HeartbeatChecklistTemplate } from "@agents/agent/src/heartbeat/che
 import type {
   BusinessBrain,
   BusinessBrainWarehouseSource,
+  EngagementPolicyOverrides,
   GlobalToolRequest,
   HeartbeatChecklistTemplateRow,
   HeartbeatRun,
   ToolRisk,
 } from "@agents/types";
+import { EngagementPolicySettingsCard } from "./engagement-policy-settings-card";
 import { ACCOUNT_TOOL_PROVIDERS } from "@/lib/account-tool-providers";
 import { AccountToolConnectionForm } from "@/components/account-tool-connection-form";
 import { ToolRequestsClient } from "@/app/settings/tool-requests/tool-requests-client";
@@ -45,6 +47,8 @@ interface Props {
   /** Query `google_calendar` tras OAuth (connected | error). */
   googleOAuthStatus?: string;
   googleOAuthReason?: string;
+  engagementPolicyTimezone?: string;
+  engagementPolicyOverrides?: EngagementPolicyOverrides;
 }
 
 interface ScheduledTaskItem {
@@ -108,7 +112,7 @@ type SettingsView =
 
 type CapabilitiesSection = "tools" | "skills" | "requests";
 type IntegrationsSection = "connections" | "channels" | "credentials";
-type ProactivitySection = "pulse" | "tasks";
+type ProactivitySection = "pulse" | "tasks" | "delivery-policies";
 
 function isSettingsView(value: string | null): value is SettingsView {
   return (
@@ -134,7 +138,7 @@ function isIntegrationsSection(value: string | null): value is IntegrationsSecti
 }
 
 function isProactivitySection(value: string | null): value is ProactivitySection {
-  return value === "pulse" || value === "tasks";
+  return value === "pulse" || value === "tasks" || value === "delivery-policies";
 }
 
 interface SectionReviewState {
@@ -516,6 +520,8 @@ export function SettingsForm({
   heartbeatChecklistTemplates = [],
   googleOAuthStatus,
   googleOAuthReason,
+  engagementPolicyTimezone = "UTC",
+  engagementPolicyOverrides = {},
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -2017,6 +2023,20 @@ export function SettingsForm({
           >
             Tareas programadas
           </button>
+          <button
+            type="button"
+            onClick={() => selectProactivitySection("delivery-policies")}
+            aria-current={
+              activeProactivitySection === "delivery-policies" ? "page" : undefined
+            }
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              activeProactivitySection === "delivery-policies"
+                ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Políticas de entrega
+          </button>
         </div>
 
         <div id="proactivity" className="scroll-mt-24" />
@@ -2464,6 +2484,18 @@ export function SettingsForm({
               ))
             )}
           </div>
+        </div>
+
+        <div
+          id="delivery-policies"
+          className={`scroll-mt-24 ${
+            activeProactivitySection === "delivery-policies" ? "" : "hidden"
+          }`}
+        >
+          <EngagementPolicySettingsCard
+            initialTimezone={engagementPolicyTimezone}
+            initialOverrides={engagementPolicyOverrides}
+          />
         </div>
           </>
         ) : null}
@@ -2943,7 +2975,9 @@ export function SettingsForm({
           activeView === "profile-agent" ||
           (activeView === "capabilities" && activeCapabilitiesSection !== "requests") ||
           activeView === "integrations" ||
-          activeView === "proactivity"
+          (activeView === "proactivity" &&
+            activeProactivitySection !== "delivery-policies" &&
+            activeProactivitySection !== "tasks")
             ? ""
             : "hidden"
         }`}

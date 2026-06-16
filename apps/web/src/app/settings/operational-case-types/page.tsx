@@ -2,8 +2,6 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
-  getProfile,
-  getUserNotificationPreferences,
   getRecentOperationalCaseEvents,
   listOperationalCasesForUser,
   listOperationalCaseTypesForUser,
@@ -12,7 +10,6 @@ import { getSkillRegistryForUser } from "@agents/agent";
 import { OperationalCaseTypesClient } from "./operational-case-types-client";
 import { BfcacheRecoveryBoundary } from "./bfcache-recovery-boundary";
 import { AppShell } from "@/components/app-shell";
-import { EngagementPolicySettingsCard } from "./engagement-policy-settings-card";
 
 export const dynamic = "force-dynamic";
 
@@ -24,8 +21,7 @@ export default async function OperationalCaseTypesPage() {
   if (!user) redirect("/login");
 
   const db = createServerClient();
-  const [caseTypes, operationalCases, registry, profile, notificationPreferences] =
-    await Promise.all([
+  const [caseTypes, operationalCases, registry] = await Promise.all([
     listOperationalCaseTypesForUser(db, user.id, {
       includeArchived: true,
     }),
@@ -43,17 +39,6 @@ export default async function OperationalCaseTypesPage() {
     getSkillRegistryForUser(db, user.id).catch((err) => {
       console.warn(
         "[operational-case-types] failed to load skill registry:",
-        err
-      );
-      return null;
-    }),
-    getProfile(db, user.id).catch((err) => {
-      console.warn("[operational-case-types] failed to load profile:", err);
-      return null;
-    }),
-    getUserNotificationPreferences(db, user.id).catch((err) => {
-      console.warn(
-        "[operational-case-types] failed to load notification prefs:",
         err
       );
       return null;
@@ -95,10 +80,17 @@ export default async function OperationalCaseTypesPage() {
       }
     >
       <div className="space-y-6">
-        <EngagementPolicySettingsCard
-          initialTimezone={profile?.timezone ?? "UTC"}
-          initialOverrides={notificationPreferences?.engagement_policy_overrides_jsonb ?? {}}
-        />
+        <p className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-300">
+          Las políticas globales de recordatorios y ventanas de entrega se
+          configuran en{" "}
+          <a
+            href="/settings?view=proactivity&section=delivery-policies"
+            className="font-medium text-blue-700 underline dark:text-blue-300"
+          >
+            Ajustes → Proactividad → Políticas de entrega
+          </a>
+          . No dependen de la plantilla seleccionada.
+        </p>
         <BfcacheRecoveryBoundary>
           <OperationalCaseTypesClient
             initialCaseTypes={caseTypes}

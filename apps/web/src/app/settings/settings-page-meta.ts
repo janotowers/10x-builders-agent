@@ -85,6 +85,13 @@ export function getSettingsPageMeta(
             "Automatizaciones que pediste a Gu. Se ejecutan por cron y son distintas del pulso operativo.",
         };
       }
+      if (section === "delivery-policies") {
+        return {
+          title: "Políticas de entrega",
+          description:
+            "Configuración global de recordatorios, escalaciones y ventanas horarias para avisos al asesor y contactos externos.",
+        };
+      }
       return {
         title: "Pulso operativo",
         description:

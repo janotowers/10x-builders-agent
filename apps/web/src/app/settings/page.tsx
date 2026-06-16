@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SettingsForm } from "./settings-form";
 import { getGlobalSkillRegistry } from "@agents/agent";
-import { createServerClient, listGlobalToolRequests, listHeartbeatChecklistTemplates } from "@agents/db";
+import { createServerClient, listGlobalToolRequests, listHeartbeatChecklistTemplates, getUserNotificationPreferences } from "@agents/db";
 import { AppShell } from "@/components/app-shell";
 import { getSettingsPageMeta } from "./settings-page-meta";
 
@@ -104,7 +104,13 @@ export default async function SettingsPage({
   });
 
   const db = createServerClient();
-  const toolRequests = await listGlobalToolRequests(db, { userId: user.id });
+  const [toolRequests, notificationPreferences] = await Promise.all([
+    listGlobalToolRequests(db, { userId: user.id }),
+    getUserNotificationPreferences(db, user.id).catch((err) => {
+      console.warn("[settings] failed to load notification prefs:", err);
+      return null;
+    }),
+  ]);
 
   const { title, description } = getSettingsPageMeta(sp.view, sp.section);
   const contentMaxWidth =
@@ -131,6 +137,14 @@ export default async function SettingsPage({
           heartbeatChecklistTemplates={heartbeatChecklistTemplates}
           googleOAuthStatus={sp.google_calendar}
           googleOAuthReason={sp.reason}
+          engagementPolicyTimezone={
+            typeof profile?.timezone === "string" && profile.timezone.trim()
+              ? profile.timezone.trim()
+              : "UTC"
+          }
+          engagementPolicyOverrides={
+            notificationPreferences?.engagement_policy_overrides_jsonb ?? {}
+          }
         />
       </div>
     </AppShell>

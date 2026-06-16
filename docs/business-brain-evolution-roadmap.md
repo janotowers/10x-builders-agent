@@ -1051,7 +1051,7 @@ externas. El piloto end-to-end es "opcionar propiedad" para Alebrixe.
 | 1.7-13 | **HITL de negocio** para `price_approval`: handler compartido, `POST /api/business-decisions/price-approval`, botones Telegram, parser textual; aprobar o ajustar-y-aprobar avanza a `contract_pending`. |
 | 1.7-14 | Framework de prueba de skills en settings: contratos (artefactos, tools, eventos), reparación determinística donde aplica, UX de resultados más clara. |
 | 1.7-15 | `bigquery_lookup_local_comparables` + mejoras tool/skill readiness (`perform-comparable-analysis`, `prepare-listing-price`). |
-| 1.7-16 | **Políticas de engagement configurables (V1):** overrides por cuenta (`engagement_policy_overrides_jsonb`), ventanas de entrega por día/hora/timezone, cooldown/escalación editables en Plantillas de flujos; cron difiere recordatorios fuera de ventana; recordatorios HITL Telegram accionables. |
+| 1.7-16 | **Políticas de engagement configurables (V1):** overrides por cuenta (`engagement_policy_overrides_jsonb`), ventanas de entrega por día/hora/timezone, cooldown/escalación editables en **Ajustes → Proactividad → Políticas de entrega**; cron difiere recordatorios fuera de ventana; recordatorios HITL Telegram accionables. |
 
 **Out of V1.7 (queda para futuro):** WhatsApp Cloud API outbound,
 browser automation a portales sin API ni partnership (Inmuebles24; EasyBroker MLS
