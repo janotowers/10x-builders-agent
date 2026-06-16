@@ -114,6 +114,17 @@ function normalizePropertyDataValue(value: unknown) {
     : "";
 }
 
+function normalizePersonName(value: unknown) {
+  if (typeof value !== "string") return "";
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function propertyDataRecord(context: Record<string, unknown>) {
   const value = context.property_data;
   return value && typeof value === "object" && !Array.isArray(value)
@@ -177,6 +188,17 @@ type PropertyDataMinimumsResult = {
   missing: Array<Pick<PropertyDataRequirement, "key" | "label" | "question">>;
 };
 
+type OwnerConsistencyStatus =
+  | "match"
+  | "partial_mismatch"
+  | "mismatch"
+  | "insufficient";
+
+type OwnerCorroborationEntry = {
+  name: string;
+  source: string;
+};
+
 function displayValue(value: unknown): string | null {
   if (!hasMeaningfulValue(value, { allowZero: true })) return null;
   if (Array.isArray(value)) {
@@ -193,6 +215,231 @@ function displayValue(value: unknown): string | null {
     );
   }
   return String(value).trim();
+}
+
+function extractionOwnerNames(extraction: Record<string, unknown>) {
+  const names: string[] = [];
+  if (Array.isArray(extraction.owner_names)) {
+    for (const value of extraction.owner_names) {
+      if (typeof value === "string" && value.trim()) names.push(value.trim());
+    }
+  } else if (typeof extraction.owner_name === "string" && extraction.owner_name.trim()) {
+    names.push(extraction.owner_name.trim());
+  }
+  for (const key of [
+    "holder_name",
+    "titular_name",
+    "titular",
+    "full_name",
+    "name",
+    "contributor_name",
+    "contribuyente",
+  ] as const) {
+    const value = extraction[key];
+    if (typeof value === "string" && value.trim()) names.push(value.trim());
+  }
+  return names;
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function uniqueByNormalizedName(values: string[]) {
+  const byNormalized = new Map<string, string>();
+  for (const value of values) {
+    const normalized = normalizePersonName(value);
+    if (!normalized) continue;
+    if (!byNormalized.has(normalized)) {
+      byNormalized.set(normalized, value.trim());
+    }
+  }
+  return {
+    values: [...byNormalized.values()],
+    normalizedSet: new Set(byNormalized.keys()),
+  };
+}
+
+function nameTokenSet(value: string) {
+  const normalized = normalizePersonName(value);
+  return new Set(
+    normalized
+      .split(" ")
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2)
+  );
+}
+
+function namesMatchFuzzy(a: string, b: string) {
+  const aTokens = nameTokenSet(a);
+  const bTokens = nameTokenSet(b);
+  if (aTokens.size === 0 || bTokens.size === 0) return false;
+  const common = [...aTokens].filter((token) => bTokens.has(token)).length;
+  const recallA = common / aTokens.size;
+  const recallB = common / bTokens.size;
+  return recallA >= 0.8 && recallB >= 0.5;
+}
+
+function buildOwnerConsistency(params: {
+  boletaOwners: string[];
+  otherOwners: string[];
+  otherOwnerSources?: OwnerCorroborationEntry[];
+}): {
+  status: OwnerConsistencyStatus;
+  note?: string;
+  warning?: string;
+  matchedSources?: string[];
+} {
+  if (params.boletaOwners.length === 0) {
+    return { status: "insufficient" };
+  }
+  if (params.otherOwners.length === 0) {
+    return {
+      status: "insufficient",
+      note:
+        "Titularidad tomada de boleta registral; no hay documentos de corroboración con nombres para cotejar.",
+    };
+  }
+
+  const boleta = uniqueByNormalizedName(params.boletaOwners).values;
+  const other = uniqueByNormalizedName(params.otherOwners).values;
+  const matchedBoleta = new Set<string>();
+  const matchedOther = new Set<string>();
+  const matchedSources = new Set<string>();
+  for (const boletaName of boleta) {
+    for (const otherName of other) {
+      if (namesMatchFuzzy(boletaName, otherName)) {
+        matchedBoleta.add(boletaName);
+        matchedOther.add(otherName);
+        for (const entry of params.otherOwnerSources ?? []) {
+          if (namesMatchFuzzy(otherName, entry.name) && entry.source.trim()) {
+            matchedSources.add(entry.source.trim());
+          }
+        }
+      }
+    }
+  }
+  if (matchedBoleta.size === 0) {
+    return {
+      status: "mismatch",
+      warning:
+        "Los nombres detectados en documentos de apoyo no coinciden con los titulares de la boleta registral.",
+      note:
+        "No hubo coincidencias de titularidad entre boleta registral y documentos de corroboración.",
+    };
+  }
+  const missingInOther = boleta.filter((name) => !matchedBoleta.has(name));
+  const extraInOther = other.filter((name) => !matchedOther.has(name));
+  if (missingInOther.length > 0 || extraInOther.length > 0) {
+    const details = [
+      missingInOther.length > 0
+        ? "Hay titulares de boleta sin corroboración en documentos de apoyo."
+        : null,
+      extraInOther.length > 0
+        ? "Hay nombres adicionales en documentos de apoyo que no coinciden con boleta."
+        : null,
+    ].filter(Boolean);
+    return {
+      status: "partial_mismatch",
+      warning:
+        "La titularidad de boleta registral coincide parcialmente con otros documentos; revisar antes de contrato.",
+      note:
+        details.join(" ") ||
+        "Coincidencia parcial de titulares entre boleta y documentos de corroboración.",
+      matchedSources: [...matchedSources],
+    };
+  }
+  return {
+    status: "match",
+    note:
+      "Los titulares de boleta registral coinciden con los nombres detectados en documentos de corroboración.",
+    matchedSources: [...matchedSources],
+  };
+}
+
+function ownerConsistencyPublicSummary(
+  status: unknown,
+  note: unknown,
+  matchedSources: unknown
+): string | null {
+  const normalizedStatus = typeof status === "string" ? status : "";
+  const sourceList = Array.isArray(matchedSources)
+    ? uniqueStrings(matchedSources.filter((source): source is string => typeof source === "string"))
+    : [];
+  const sourceText =
+    sourceList.length > 0 ? sourceList.join("; ") : "documentos de corroboración";
+  if (normalizedStatus === "match") {
+    return sourceList.length > 0
+      ? `Coincidencia encontrada en: ${sourceText}.`
+      : `Coincide boleta registral con: ${sourceText}.`;
+  }
+  if (normalizedStatus === "insufficient") {
+    return typeof note === "string" && note.trim()
+      ? note.trim()
+      : "Titularidad tomada de boleta registral; falta corroboración en otros documentos.";
+  }
+  if (normalizedStatus === "partial_mismatch") {
+    const noteText = typeof note === "string" ? note.trim() : "";
+    if (sourceList.length > 0) {
+      if (noteText.includes("nombres adicionales")) {
+        return `Coincidencia encontrada en: ${sourceText}. También se detectaron otros nombres en documentos de apoyo que no corresponden al titular de boleta.`;
+      }
+      if (noteText.includes("sin corroboración")) {
+        return `Coincidencia encontrada en: ${sourceText}. Falta corroborar a todos los titulares de boleta en los documentos de apoyo.`;
+      }
+      return `Coincidencia encontrada en: ${sourceText}. Hay detalles de titularidad que requieren validación adicional.`;
+    }
+    return "Hay coincidencia parcial de titularidad y se detectaron diferencias adicionales.";
+  }
+  if (normalizedStatus === "mismatch") {
+    if (sourceList.length > 0) {
+      return `No hubo coincidencia clara entre boleta registral y: ${sourceText}.`;
+    }
+    return "Se detectaron diferencias de titularidad en la corroboración documental.";
+  }
+  return null;
+}
+
+function ownerCorroborationSourceLabel(signals: DocumentSignals) {
+  if (signals.predial) return "predial";
+  if (signals.identificacion) return "identificacion oficial";
+  if (signals.comprobante) return "comprobante de domicilio";
+  return "documento de apoyo";
+}
+
+function sanitizeAddressCandidates(values: string[]) {
+  const unique = uniqueStrings(values);
+  if (unique.length <= 1) return unique;
+  const maxLength = Math.max(...unique.map((value) => value.length));
+  return unique.filter((value) => {
+    const normalized = normalizePropertyDataValue(value);
+    if (!normalized) return false;
+    const hasDigits = /\d/.test(normalized);
+    const tokenCount = normalized.split(/\s+/).filter(Boolean).length;
+    if (maxLength >= 28 && value.length < 18 && !hasDigits && tokenCount < 3) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function extractionAddressCandidates(extraction: Record<string, unknown>) {
+  const candidates: string[] = [];
+  if (isRecord(extraction.address)) {
+    for (const key of ["full", "formatted", "street"] as const) {
+      const value = extraction.address[key];
+      if (typeof value === "string" && value.trim()) candidates.push(value.trim());
+    }
+  }
+  for (const value of [
+    extraction.legal_address,
+    extraction.property_address,
+    extraction.address_text,
+    extraction.property_description,
+  ]) {
+    if (typeof value === "string" && value.trim()) candidates.push(value.trim());
+  }
+  return sanitizeAddressCandidates(candidates);
 }
 
 const COMMON_PROPERTY_DATA_REQUIREMENTS: PropertyDataRequirement[] = [
@@ -427,6 +674,15 @@ export function buildPropertyDataMinimumsSummaryMessage(params: {
   const safeContext = params.context ?? {};
   const propertyData = propertyDataRecord(safeContext);
   const merged = { ...safeContext, ...propertyData, ...(params.supplement ?? {}) };
+  const ownerLabel =
+    merged.owner_names_source === "boleta_registral"
+      ? "Dueño/titular (boleta registral)"
+      : "Dueño/titular";
+  const ownerConsistencySummary = ownerConsistencyPublicSummary(
+    merged.owner_consistency_status,
+    merged.owner_consistency_note,
+    merged.owner_consistency_matched_sources
+  );
   const knownLines = [
     displayValue(safeContext.property_title)
       ? `- Título / propiedad: ${displayValue(safeContext.property_title)}`
@@ -443,7 +699,7 @@ export function buildPropertyDataMinimumsSummaryMessage(params: {
         )}`
       : null,
     displayValue(merged.owner_names)
-      ? `- Dueño/titular: ${displayValue(merged.owner_names)}`
+      ? `- ${ownerLabel}: ${displayValue(merged.owner_names)}`
       : null,
     displayValue(merged.legal_addresses ?? merged.legal_address ?? merged.property_address ?? merged.address)
       ? `- Dirección encontrada: ${displayValue(
@@ -454,7 +710,18 @@ export function buildPropertyDataMinimumsSummaryMessage(params: {
         )}`
       : null,
     displayValue(merged.area_total_m2)
-      ? `- Superficie encontrada: ${displayValue(merged.area_total_m2)} m²`
+      ? `- Superficie de terreno encontrada: ${displayValue(merged.area_total_m2)} m²`
+      : null,
+    displayValue(merged.area_construida_m2)
+      ? `- Superficie de construcción encontrada: ${displayValue(
+          merged.area_construida_m2
+        )} m²`
+      : null,
+    ownerConsistencySummary
+      ? `- Verificación de titularidad: ${ownerConsistencySummary}`
+      : null,
+    displayValue(merged.area_total_m2_source)
+      ? `- Fuente principal de superficie: ${displayValue(merged.area_total_m2_source)}`
       : null,
   ].filter((line): line is string => Boolean(line));
   const missingLines = params.missing.map(
@@ -490,12 +757,91 @@ function isPropertyDocumentForMinimums(document: OperationalCaseDocument) {
   );
 }
 
+type DocumentSignals = {
+  boleta: boolean;
+  predial: boolean;
+  escritura: boolean;
+  identificacion: boolean;
+  comprobante: boolean;
+  property: boolean;
+};
+
+function documentSignalsForMinimums(
+  document: OperationalCaseDocument,
+  extraction: Record<string, unknown>
+): DocumentSignals {
+  const normalized = normalizePropertyDataValue(
+    [
+      document.kind,
+      document.display_name,
+      document.original_name,
+      extraction.document_kind,
+      extraction.raw_text,
+      extraction.text,
+      extraction.property_description,
+      extraction.legal_address,
+      extraction.property_address,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .slice(0, 6000)
+  );
+  const boleta = /\bboleta\b|\bboleta registral\b|folio real|registro publico|registral/.test(
+    normalized
+  );
+  const predial =
+    /\bpredial\b|impuesto predial|cuenta predial|clave catastral|sup\.?\s*terr|sup\.?\s*const/.test(
+      normalized
+    );
+  const escritura =
+    /escritura|testimonio|notaria|notario|instrumento|descripcion|descriptiva|desdeesc/.test(
+      normalized
+    );
+  const identificacion =
+    /\bine\b|instituto nacional electoral|credencial para votar|pasaporte|identificacion oficial|identidad/.test(
+      normalized
+    );
+  const comprobante =
+    /comprobante|domicilio|estado de cuenta|banco|bancario|cfe|telmex|internet|luz|gas/.test(
+      normalized
+    );
+  const property = boleta || predial || escritura || isPropertyDocumentForMinimums(document);
+  return {
+    boleta,
+    predial,
+    escritura,
+    identificacion,
+    comprobante,
+    property,
+  };
+}
+
+function isPredialDocumentCandidate(document: OperationalCaseDocument) {
+  const normalized = normalizePropertyDataValue(
+    [document.kind, document.display_name, document.original_name].filter(Boolean).join(" ")
+  );
+  return /\bpredial\b|impuesto predial|cuenta predial|clave catastral/.test(normalized);
+}
+
 export function documentExtractionMinimumsContext(
   documents: OperationalCaseDocument[]
 ): Record<string, unknown> {
   const extracted: Record<string, unknown> = {};
-  const ownerNames: unknown[] = [];
-  const legalAddresses: unknown[] = [];
+  const ownerNamesAll: string[] = [];
+  const ownerNamesBoleta: string[] = [];
+  const ownerNamesCorroborationDocs: string[] = [];
+  const ownerNameCorroborationSources: OwnerCorroborationEntry[] = [];
+  const ownerNamesIgnoredForConsistency: string[] = [];
+  const legalAddressesBoleta: string[] = [];
+  const legalAddressesEscritura: string[] = [];
+  const legalAddressesOther: string[] = [];
+  const hasPredialDocument = documents.some(
+    (document) => document.status !== "superseded" && isPredialDocumentCandidate(document)
+  );
+  let predialAreaTotalFound = false;
+  let predialAreaConstruidaFound = false;
+  let areaTotalPriority = Number.POSITIVE_INFINITY;
+  let areaConstruidaPriority = Number.POSITIVE_INFINITY;
 
   for (const document of documents) {
     if (
@@ -506,30 +852,85 @@ export function documentExtractionMinimumsContext(
     }
     const extraction = document.extraction_jsonb ?? {};
     if (!hasMeaningfulValue(extraction)) continue;
-    const propertyDocument = isPropertyDocumentForMinimums(document);
+    const signals = documentSignalsForMinimums(document, extraction);
+    const propertyDocument = signals.property;
+    const areaPriority = signals.predial ? 1 : signals.boleta ? 2 : signals.escritura ? 3 : 4;
 
-    if (propertyDocument && !hasMeaningfulValue(extracted.area_total_m2)) {
+    if (propertyDocument) {
       const area = firstMeaningfulValue(
         extraction.area_total_m2,
         extraction.area_m2,
         extraction.surface_m2,
-        extraction.superficie_m2
+        extraction.superficie_m2,
+        extraction.sup_terr,
+        extraction.superficie_terreno_m2
       );
-      if (area != null) extracted.area_total_m2 = area;
+      if (signals.predial && area != null) predialAreaTotalFound = true;
+      const blockedByPendingPredialTotal =
+        hasPredialDocument && !signals.predial && !predialAreaTotalFound;
+      if (
+        area != null &&
+        areaPriority <= areaTotalPriority &&
+        !blockedByPendingPredialTotal
+      ) {
+        extracted.area_total_m2 = area;
+        extracted.area_total_m2_source = signals.predial
+          ? "predial"
+          : signals.boleta
+            ? "boleta_registral"
+            : signals.escritura
+              ? "escritura"
+              : "documento_propiedad";
+        areaTotalPriority = areaPriority;
+      }
     }
-    if (propertyDocument && !hasMeaningfulValue(extracted.area_construida_m2)) {
+    if (propertyDocument) {
       const builtArea = firstMeaningfulValue(
         extraction.area_construida_m2,
         extraction.construction_area_m2,
-        extraction.built_area_m2
+        extraction.built_area_m2,
+        extraction.sup_const,
+        extraction.superficie_construccion_m2
       );
-      if (builtArea != null) extracted.area_construida_m2 = builtArea;
+      if (signals.predial && builtArea != null) predialAreaConstruidaFound = true;
+      const blockedByPendingPredialBuilt =
+        hasPredialDocument && !signals.predial && !predialAreaConstruidaFound;
+      if (
+        builtArea != null &&
+        areaPriority <= areaConstruidaPriority &&
+        !blockedByPendingPredialBuilt
+      ) {
+        extracted.area_construida_m2 = builtArea;
+        extracted.area_construida_m2_source = signals.predial
+          ? "predial"
+          : signals.boleta
+            ? "boleta_registral"
+            : signals.escritura
+              ? "escritura"
+              : "documento_propiedad";
+        areaConstruidaPriority = areaPriority;
+      }
     }
 
-    if (Array.isArray(extraction.owner_names)) {
-      ownerNames.push(...extraction.owner_names);
-    } else if (hasMeaningfulValue(extraction.owner_name)) {
-      ownerNames.push(extraction.owner_name);
+    const names = extractionOwnerNames(extraction);
+    if (names.length > 0) {
+      ownerNamesAll.push(...names);
+      if (signals.boleta) {
+        ownerNamesBoleta.push(...names);
+      } else if (signals.predial || signals.identificacion || signals.comprobante) {
+        ownerNamesCorroborationDocs.push(...names);
+        for (const name of names) {
+          ownerNameCorroborationSources.push({
+            name,
+            source: ownerCorroborationSourceLabel(signals),
+          });
+        }
+      } else if (signals.escritura || propertyDocument) {
+        // Escrituras complejas (p. ej. sucesion testamentaria) suelen listar
+        // varias personas no titulares del inmueble del caso; se excluyen del
+        // cotejo de titularidad para evitar falsos desajustes.
+        ownerNamesIgnoredForConsistency.push(...names);
+      }
     }
 
     if (propertyDocument && isRecord(extraction.address)) {
@@ -537,32 +938,76 @@ export function documentExtractionMinimumsContext(
         ...(isRecord(extracted.address) ? extracted.address : {}),
         ...extraction.address,
       };
-      const addressText = firstMeaningfulValue(
-        extraction.address.full,
-        extraction.address.formatted,
-        extraction.address.street
-      );
-      if (addressText) legalAddresses.push(addressText);
     }
     if (propertyDocument) {
-      for (const value of [
-        extraction.legal_address,
-        extraction.property_address,
-        extraction.address_text,
-      extraction.property_description,
-      ]) {
-        if (hasMeaningfulValue(value)) legalAddresses.push(value);
+      const addressCandidates = extractionAddressCandidates(extraction);
+      if (signals.boleta) {
+        legalAddressesBoleta.push(...addressCandidates);
+      } else if (signals.escritura) {
+        legalAddressesEscritura.push(...addressCandidates);
+      } else {
+        legalAddressesOther.push(...addressCandidates);
       }
     }
   }
 
-  const uniqueOwners = [...new Set(ownerNames.map(String).map((value) => value.trim()))]
-    .filter(Boolean);
-  const uniqueAddresses = [
-    ...new Set(legalAddresses.map(String).map((value) => value.trim())),
-  ].filter(Boolean);
-  if (uniqueOwners.length > 0) extracted.owner_names = uniqueOwners;
-  if (uniqueAddresses.length > 0) extracted.legal_addresses = uniqueAddresses;
+  const uniqueOwnersAll = uniqueStrings(ownerNamesAll);
+  const uniqueOwnersBoleta = uniqueStrings(ownerNamesBoleta);
+  const uniqueOwnersOther = uniqueStrings(ownerNamesCorroborationDocs);
+  const uniqueOwnersIgnored = uniqueStrings(ownerNamesIgnoredForConsistency);
+  const canonicalOwners =
+    uniqueOwnersBoleta.length > 0 ? uniqueOwnersBoleta : uniqueOwnersAll;
+  const uniqueAddressesBoleta = sanitizeAddressCandidates(legalAddressesBoleta);
+  const uniqueAddressesEscritura = sanitizeAddressCandidates(legalAddressesEscritura);
+  const uniqueAddressesOther = sanitizeAddressCandidates(legalAddressesOther);
+  const canonicalAddresses =
+    uniqueAddressesBoleta.length > 0
+      ? uniqueAddressesBoleta
+      : uniqueAddressesEscritura.length > 0
+        ? uniqueAddressesEscritura
+        : uniqueAddressesOther;
+  if (canonicalOwners.length > 0) extracted.owner_names = canonicalOwners;
+  if (uniqueOwnersBoleta.length > 0) {
+    extracted.owner_names_from_boleta = uniqueOwnersBoleta;
+    extracted.owner_names_source = "boleta_registral";
+  } else if (uniqueOwnersAll.length > 0) {
+    extracted.owner_names_source = "documentos_compartidos";
+  }
+  if (uniqueOwnersOther.length > 0) {
+    extracted.owner_names_other_documents = uniqueOwnersOther;
+  }
+  if (uniqueOwnersIgnored.length > 0) {
+    extracted.owner_names_excluded_from_consistency = uniqueOwnersIgnored;
+  }
+  const ownerConsistency = buildOwnerConsistency({
+    boletaOwners: uniqueOwnersBoleta,
+    otherOwners: uniqueOwnersOther,
+    otherOwnerSources: ownerNameCorroborationSources,
+  });
+  extracted.owner_consistency_status = ownerConsistency.status;
+  if (ownerConsistency.note) extracted.owner_consistency_note = ownerConsistency.note;
+  if (ownerConsistency.matchedSources && ownerConsistency.matchedSources.length > 0) {
+    extracted.owner_consistency_matched_sources = ownerConsistency.matchedSources;
+  }
+  if (ownerConsistency.warning) {
+    extracted.owner_consistency_warning = ownerConsistency.warning;
+  }
+  if (canonicalAddresses.length > 0) extracted.legal_addresses = canonicalAddresses;
+  if (uniqueAddressesBoleta.length > 0) {
+    extracted.legal_addresses_source = "boleta_registral";
+  } else if (uniqueAddressesEscritura.length > 0) {
+    extracted.legal_addresses_source = "escritura";
+  } else if (uniqueAddressesOther.length > 0) {
+    extracted.legal_addresses_source = "documentos_compartidos";
+  }
+  const nonCanonicalAddressPool = [
+    ...uniqueAddressesBoleta,
+    ...uniqueAddressesEscritura,
+    ...uniqueAddressesOther,
+  ].filter((value) => !canonicalAddresses.includes(value));
+  if (nonCanonicalAddressPool.length > 0) {
+    extracted.legal_addresses_other_documents = nonCanonicalAddressPool;
+  }
   return extracted;
 }
 
@@ -621,8 +1066,14 @@ const VISION_EXTRACTION_MODEL = "openai/gpt-4o-mini";
 const PDF_TEXT_EXTRACTION_MODEL = "openai/gpt-4o-mini";
 const DOCUMENT_EXTRACTION_JSON_SHAPE =
   '{"document_kind":string,"property_description":string|null,"address":object|null,"area_total_m2":number|null,"area_construida_m2":number|null,"owner_names":string[],"folio_real":string|null,"predial_account":string|null,"confidence":"high"|"medium"|"low","warnings":string[]}';
+const PREDIAL_VISION_EXTRACTION_JSON_SHAPE =
+  `${DOCUMENT_EXTRACTION_JSON_SHAPE.slice(0, -1)},"predial_contribuyente_row_values":string[],"sup_terr_raw":string|null,"sup_const_raw":string|null}`;
+const PREDIAL_VISION_ROW_ONLY_JSON_SHAPE =
+  '{"predial_contribuyente_row_values":string[],"sup_terr_raw":string|null,"sup_const_raw":string|null}';
 const PROPERTY_AREA_EXTRACTION_GUIDANCE =
-  "En escrituras mexicanas, area_total_m2 debe capturar la superficie total/privativa del inmueble cuando aparezca como 'superficie total de X metros cuadrados', 'superficie privativa', 'area privativa' o 'superficie del terreno'. No uses medidas de linderos/colindancias como area_total_m2. area_construida_m2 solo debe llenarse cuando el texto diga construccion/superficie construida.";
+  "En escrituras mexicanas, area_total_m2 debe capturar la superficie total/privativa del inmueble cuando aparezca como 'superficie total de X metros cuadrados', 'superficie privativa', 'area privativa' o 'superficie del terreno'. No uses medidas de linderos/colindancias como area_total_m2. area_construida_m2 debe llenarse cuando el texto diga construccion/superficie construida. En recibos prediales mexicanos (p. ej. Jalisco/Zapopan), mapea SUP. TERR o superficie de terreno a area_total_m2 y SUP. CONST o superficie construida a area_construida_m2 cuando aparezcan en tabla o renglón de valores.";
+const PREDIAL_VISION_TABLE_GUIDANCE =
+  " En recibos prediales, localiza la seccion DATOS DEL CONTRIBUYENTE. Copia literalmente la fila de valores bajo las columnas TIPO, SUP. TERR, SUP. CONST (y columnas vecinas visibles) en predial_contribuyente_row_values en orden izquierda a derecha (ej. [\"U\",\"138.00\",\"146.00\",\"0.00\",\"0.00\"]). Llena sup_terr_raw y sup_const_raw con el texto exacto visible bajo SUP. TERR y SUP. CONST. Importante: 146.00 significa 146 metros cuadrados, no 14.6; conserva todos los digitos antes del punto decimal.";
 const requireFromHere = createRequire(import.meta.url);
 const requireFromCwd = createRequire(`${process.cwd()}/__pdf-resolver.js`);
 let pdfWorkerConfigured = false;
@@ -835,6 +1286,332 @@ export function extractSurfaceTotalM2FromTextForTest(text: string) {
   return null;
 }
 
+function extractNumberNearLabel(input: {
+  text: string;
+  labelPattern: RegExp;
+  min?: number;
+  max?: number;
+  windowChars?: number;
+  rejectYearLike?: boolean;
+}) {
+  const min = typeof input.min === "number" ? input.min : 0;
+  const max = typeof input.max === "number" ? input.max : 200000;
+  const windowChars = typeof input.windowChars === "number" ? input.windowChars : 140;
+  const normalized = normalizeOcrDigits(
+    input.text
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+  );
+  const regex = new RegExp(input.labelPattern.source, input.labelPattern.flags);
+  const numberPattern = /([0-9]{1,6}(?:\s*[.,]\s*[0-9]{1,3})?)/g;
+  let labelMatch: RegExpExecArray | null;
+  while ((labelMatch = regex.exec(normalized))) {
+    const start = labelMatch.index + labelMatch[0].length;
+    const window = normalized.slice(
+      start,
+      Math.min(normalized.length, start + Math.max(30, windowChars))
+    );
+    let numberMatch: RegExpExecArray | null;
+    while ((numberMatch = numberPattern.exec(window))) {
+      const parsed = parseLocalizedNumber(numberMatch[1] ?? "");
+      if (
+        input.rejectYearLike &&
+        parsed != null &&
+        Number.isInteger(parsed) &&
+        parsed >= 1900 &&
+        parsed <= 2100
+      ) {
+        continue;
+      }
+      if (parsed != null && parsed >= min && parsed <= max) return parsed;
+    }
+  }
+  return null;
+}
+
+const PREDIAL_TERR_LABEL_PATTERN =
+  /sup\.?\s*terr\b|superficie\s+terreno|superficie\s+del\s+terreno|s\.?\s*terr\b/;
+const PREDIAL_CONST_LABEL_PATTERN =
+  /sup\.?\s*(?:const|constr)\b|superficie\s+constru(?:ccion|ccion)\b|superficie\s+de\s+constru(?:ccion|ccion)\b|s\.?\s*(?:const|constr)\b/;
+
+function isPlausiblePredialSurfaceValue(value: number) {
+  if (value < 0 || value > 5000) return false;
+  if (Number.isInteger(value) && value >= 1900 && value <= 2100) return false;
+  return true;
+}
+
+function parsePredialSurfaceNumbers(value: string) {
+  const numberPattern = /([0-9]{1,6}(?:\s*[.,]\s*[0-9]{1,3})?)/g;
+  const values: number[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = numberPattern.exec(value))) {
+    const parsed = parseLocalizedNumber(match[1] ?? "");
+    if (parsed != null && isPlausiblePredialSurfaceValue(parsed)) {
+      values.push(parsed);
+    }
+  }
+  return values;
+}
+
+function predialSurfacePairFromValues(values: number[]) {
+  const surfaces = values.filter((value) => value >= 1 && value <= 5000);
+  if (surfaces.length < 2) return null;
+  return {
+    area_total_m2: surfaces[0] ?? null,
+    area_construida_m2: surfaces[1] ?? null,
+  };
+}
+
+function predialSurfacePairFromDecimalWindow(window: string) {
+  const decimalPair = window.match(/\b(\d{1,4}[.,]\d{1,3})\s+(\d{1,4}[.,]\d{1,3})\b/);
+  if (!decimalPair) return null;
+  const areaTotalM2 = parseLocalizedNumber(decimalPair[1] ?? "");
+  const areaConstruidaM2 = parseLocalizedNumber(decimalPair[2] ?? "");
+  if (
+    areaTotalM2 == null ||
+    areaConstruidaM2 == null ||
+    !isPlausiblePredialSurfaceValue(areaTotalM2) ||
+    !isPlausiblePredialSurfaceValue(areaConstruidaM2) ||
+    areaTotalM2 < 1 ||
+    areaConstruidaM2 < 1
+  ) {
+    return null;
+  }
+  return {
+    area_total_m2: areaTotalM2,
+    area_construida_m2: areaConstruidaM2,
+  };
+}
+
+const PREDIAL_BUILT_AREA_MISREAD_MAX = 30;
+const PREDIAL_BUILT_AREA_MIN_PLAUSIBLE = 10;
+const PREDIAL_BUILT_AREA_MAX_PLAUSIBLE = 5000;
+const PREDIAL_MISREAD_MAX_TOTAL_RATIO = 8;
+
+function parsePredialRawSurfaceValue(value: unknown) {
+  if (typeof value === "number") {
+    return isPlausiblePredialSurfaceValue(value) ? value : null;
+  }
+  if (typeof value !== "string") return null;
+  const cleaned = value.trim().replace(/\s+/g, "");
+  if (!cleaned) return null;
+  const parsed = Number.parseFloat(cleaned.replace(/,/g, ""));
+  if (!Number.isFinite(parsed) || !isPlausiblePredialSurfaceValue(parsed)) return null;
+  return parsed;
+}
+
+function isPredialTipoToken(value: unknown) {
+  return typeof value === "string" && /^[A-Za-zÁÉÍÓÚÜÑ]{1,3}$/.test(value.trim());
+}
+
+export function predialSurfacesFromContribuyenteRowValuesForTest(values: unknown[]) {
+  if (!Array.isArray(values) || values.length < 2) return null;
+  const orderedSurfaces: number[] = [];
+  let tipoSkipped = false;
+  for (const item of values) {
+    if (!tipoSkipped && isPredialTipoToken(item)) {
+      tipoSkipped = true;
+      continue;
+    }
+    const parsed = parsePredialRawSurfaceValue(item);
+    if (parsed != null) orderedSurfaces.push(parsed);
+  }
+  if (orderedSurfaces.length >= 2) {
+    const areaTotalM2 = orderedSurfaces[0];
+    const areaConstruidaM2 = orderedSurfaces[1];
+    if (
+      areaTotalM2 != null &&
+      areaTotalM2 >= 1 &&
+      isPlausiblePredialSurfaceValue(areaTotalM2) &&
+      areaConstruidaM2 != null &&
+      isPlausiblePredialSurfaceValue(areaConstruidaM2)
+    ) {
+      return {
+        area_total_m2: areaTotalM2,
+        area_construida_m2: areaConstruidaM2 >= 1 ? areaConstruidaM2 : null,
+      };
+    }
+  }
+  return predialSurfacePairFromValues(orderedSurfaces.filter((value) => value >= 1));
+}
+
+function looksLikePredialBuiltAreaDecimalMisread(
+  areaTotalM2: number | null,
+  areaConstruidaM2: number | null
+) {
+  if (areaConstruidaM2 == null || areaTotalM2 == null) return false;
+  if (areaConstruidaM2 >= PREDIAL_BUILT_AREA_MISREAD_MAX) return false;
+  const scaled = areaConstruidaM2 * 10;
+  if (scaled < PREDIAL_BUILT_AREA_MIN_PLAUSIBLE || scaled > PREDIAL_BUILT_AREA_MAX_PLAUSIBLE) {
+    return false;
+  }
+  if (!isPlausiblePredialSurfaceValue(scaled)) return false;
+  if (scaled > areaTotalM2 * PREDIAL_MISREAD_MAX_TOTAL_RATIO) return false;
+  if (scaled <= areaConstruidaM2 * 5) return false;
+  return true;
+}
+
+export function normalizePredialExtractionSurfacesForTest(
+  extraction: Record<string, unknown>,
+  documentKind: string
+) {
+  if (!isPredialKind(documentKind) && !isPredialKind(extraction.document_kind)) {
+    return extraction;
+  }
+  const enriched: Record<string, unknown> = { ...extraction };
+  const warnings = [
+    ...(Array.isArray(enriched.warnings)
+      ? enriched.warnings.filter((item): item is string => typeof item === "string")
+      : []),
+  ];
+
+  const rowValues =
+    enriched.predial_contribuyente_row_values ?? enriched.predial_table_values;
+  let rowHasCompleteSurfacePair = false;
+  if (Array.isArray(rowValues)) {
+    const fromRow = predialSurfacesFromContribuyenteRowValuesForTest(rowValues);
+    rowHasCompleteSurfacePair =
+      fromRow?.area_total_m2 != null && fromRow?.area_construida_m2 != null;
+    if (fromRow?.area_total_m2 != null) {
+      enriched.area_total_m2 = fromRow.area_total_m2;
+      enriched.area_total_m2_source = "predial_table_row_vision";
+      enriched.sup_terr = fromRow.area_total_m2;
+    }
+    if (fromRow?.area_construida_m2 != null) {
+      enriched.area_construida_m2 = fromRow.area_construida_m2;
+      enriched.area_construida_m2_source = "predial_table_row_vision";
+      enriched.sup_const = fromRow.area_construida_m2;
+    }
+  }
+
+  const terrRaw = parsePredialRawSurfaceValue(enriched.sup_terr_raw);
+  const constRaw = parsePredialRawSurfaceValue(enriched.sup_const_raw);
+  if (terrRaw != null && terrRaw >= 1) {
+    const currentTotal =
+      typeof enriched.area_total_m2 === "number" ? enriched.area_total_m2 : null;
+    if (rowHasCompleteSurfacePair) {
+      if (currentTotal != null && terrRaw !== currentTotal) {
+        warnings.push(
+          "Se ignoró SUP. TERR extraída por columna porque contradice la fila tabular del predial."
+        );
+      }
+    } else {
+      enriched.area_total_m2 = terrRaw;
+      enriched.area_total_m2_source =
+        enriched.area_total_m2_source ?? "predial_raw_column_vision";
+      enriched.sup_terr = terrRaw;
+    }
+  }
+  if (constRaw != null && constRaw >= 1) {
+    const currentBuilt =
+      typeof enriched.area_construida_m2 === "number" ? enriched.area_construida_m2 : null;
+    if (rowHasCompleteSurfacePair) {
+      if (currentBuilt != null && constRaw !== currentBuilt) {
+        warnings.push(
+          "Se ignoró SUP. CONST extraída por columna porque contradice la fila tabular del predial."
+        );
+      }
+    } else {
+      enriched.area_construida_m2 = constRaw;
+      enriched.area_construida_m2_source = "predial_raw_column_vision";
+      enriched.sup_const = constRaw;
+    }
+  }
+
+  if (warnings.length > 0) {
+    enriched.warnings = warnings.filter((item, index, items) => items.indexOf(item) === index);
+  }
+  return enriched;
+}
+
+function predialNeedsContribuyenteRowRetry(extraction: Record<string, unknown>) {
+  const rowValues =
+    extraction.predial_contribuyente_row_values ?? extraction.predial_table_values;
+  const rowBuilt =
+    Array.isArray(rowValues) &&
+    predialSurfacesFromContribuyenteRowValuesForTest(rowValues)?.area_construida_m2 != null;
+  const rawBuilt = parsePredialRawSurfaceValue(extraction.sup_const_raw) ?? null;
+  const areaTotalM2 =
+    typeof extraction.area_total_m2 === "number" ? extraction.area_total_m2 : null;
+  const areaConstruidaM2 =
+    typeof extraction.area_construida_m2 === "number" ? extraction.area_construida_m2 : null;
+  if (areaConstruidaM2 == null) return true;
+  if (looksLikePredialBuiltAreaDecimalMisread(areaTotalM2, areaConstruidaM2)) return true;
+  if (!rowBuilt && (rawBuilt == null || rawBuilt < 1)) return true;
+  return false;
+}
+
+function extractPredialSurfacePairFromTableText(text: string): {
+  area_total_m2: number | null;
+  area_construida_m2: number | null;
+} {
+  const normalized = normalizeOcrDigits(
+    text
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+  );
+  const flat = normalized.replace(/\s+/g, " ");
+  const headerThenValues = new RegExp(
+    `${PREDIAL_TERR_LABEL_PATTERN.source}[\\s\\S]{0,240}${PREDIAL_CONST_LABEL_PATTERN.source}([\\s\\S]{0,720})`,
+    "i"
+  ).exec(flat);
+  if (headerThenValues?.[1]) {
+    const decimalPair = predialSurfacePairFromDecimalWindow(headerThenValues[1]);
+    if (decimalPair) return decimalPair;
+    const values = parsePredialSurfaceNumbers(headerThenValues[1]);
+    const pair = predialSurfacePairFromValues(values);
+    if (pair) return pair;
+  }
+  const lines = normalized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const hasTerr = PREDIAL_TERR_LABEL_PATTERN.test(line);
+    const hasConst = PREDIAL_CONST_LABEL_PATTERN.test(line);
+    if (!hasTerr || !hasConst) continue;
+    const candidateWindow = [lines[index + 1], lines[index + 2], lines[index + 3], lines[index + 4]]
+      .filter((part): part is string => Boolean(part))
+      .join(" ");
+    if (!candidateWindow) continue;
+    const decimalPair = predialSurfacePairFromDecimalWindow(candidateWindow);
+    if (decimalPair) return decimalPair;
+    const values = parsePredialSurfaceNumbers(candidateWindow);
+    const pair = predialSurfacePairFromValues(values);
+    if (pair) return pair;
+  }
+  return { area_total_m2: null, area_construida_m2: null };
+}
+
+export function extractPredialSurfacesFromTextForTest(text: string) {
+  const total = extractNumberNearLabel({
+    text,
+    labelPattern:
+      /sup\.?\s*terr\b|superficie\s+(?:del\s+)?terreno\b|superficie\s+terreno\b|s\.?\s*terr\b/gi,
+    min: 1,
+    max: 5000,
+    windowChars: 320,
+    rejectYearLike: true,
+  });
+  const built = extractNumberNearLabel({
+    text,
+    labelPattern:
+      /sup\.?\s*(?:const|constr)\b|superficie\s+constru(?:ccion|ccion)\b|superficie\s+de\s+constru(?:ccion|ccion)\b|s\.?\s*(?:const|constr)\b/gi,
+    min: 0,
+    max: 5000,
+    windowChars: 320,
+    rejectYearLike: true,
+  });
+  const tablePair = extractPredialSurfacePairFromTableText(text);
+  return {
+    area_total_m2: tablePair.area_total_m2 ?? total,
+    area_construida_m2: tablePair.area_construida_m2 ?? built,
+  };
+}
+
 function enrichExtractionFromText(
   extraction: Record<string, unknown>,
   documentKind: string,
@@ -851,11 +1628,37 @@ function enrichExtractionFromText(
       enriched.area_total_m2_source = "pdf_text_surface_phrase";
     }
   }
-  return enriched;
+  if (
+    documentKind.toLowerCase().includes("predial") ||
+    normalizePropertyDataValue(String(enriched.document_kind ?? "")).includes("predial")
+  ) {
+    const predialSurfaces = extractPredialSurfacesFromTextForTest(text);
+    if (
+      typeof enriched.area_total_m2 !== "number" &&
+      predialSurfaces.area_total_m2 != null
+    ) {
+      enriched.area_total_m2 = predialSurfaces.area_total_m2;
+      enriched.area_total_m2_source = "predial_label_parser";
+      enriched.sup_terr = predialSurfaces.area_total_m2;
+    }
+    if (
+      typeof enriched.area_construida_m2 !== "number" &&
+      predialSurfaces.area_construida_m2 != null
+    ) {
+      enriched.area_construida_m2 = predialSurfaces.area_construida_m2;
+      enriched.area_construida_m2_source = "predial_label_parser";
+      enriched.sup_const = predialSurfaces.area_construida_m2;
+    }
+  }
+  return normalizePredialExtractionSurfacesForTest(enriched, documentKind);
 }
 
 function isPropertyDeedKind(value: unknown) {
   return typeof value === "string" && value.toLowerCase().includes("escritura");
+}
+
+function isPredialKind(value: unknown) {
+  return typeof value === "string" && value.toLowerCase().includes("predial");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -866,8 +1669,20 @@ function needsPdfVisionSupplement(input: {
   documentKind: string;
   extraction: Record<string, unknown>;
 }) {
-  if (!isPropertyDeedKind(input.documentKind)) return false;
-  return typeof input.extraction.area_total_m2 !== "number";
+  if (isPropertyDeedKind(input.documentKind)) {
+    return typeof input.extraction.area_total_m2 !== "number";
+  }
+  if (isPredialKind(input.documentKind)) {
+    return typeof input.extraction.area_construida_m2 !== "number";
+  }
+  return false;
+}
+
+function pdfVisionSupplementWarning(documentKind: string) {
+  if (isPredialKind(documentKind)) {
+    return "La capa de texto del PDF no trajo superficie de construcción; se complementó con visión sobre la primera página.";
+  }
+  return "La capa de texto del PDF no trajo superficie; se complementó con visión sobre la primera página.";
 }
 
 function mergeDocumentExtractions(
@@ -883,6 +1698,7 @@ function mergeDocumentExtractions(
     "folio_real",
     "predial_account",
     "area_total_m2_source",
+    "area_construida_m2_source",
   ] as const) {
     const primaryValue = merged[key];
     const supplementValue = supplement[key];
@@ -916,10 +1732,13 @@ function mergeDocumentExtractions(
   return merged;
 }
 
-async function renderPdfFirstPageDataUrl(parser: PDFParse) {
+async function renderPdfFirstPageDataUrl(
+  parser: PDFParse,
+  options?: { desiredWidth?: number }
+) {
   const screenshot = await parser.getScreenshot({
     first: 1,
-    desiredWidth: 1800,
+    desiredWidth: options?.desiredWidth ?? 1800,
     imageDataUrl: true,
     imageBuffer: false,
   });
@@ -962,7 +1781,7 @@ async function callOpenRouterForJson(input: {
   return content;
 }
 
-async function extractDocumentFieldsFromImage(input: {
+async function extractPredialContribuyenteRowFromImage(input: {
   apiKey: string;
   documentKind: string;
   dataUrl: string;
@@ -974,8 +1793,46 @@ async function extractDocumentFieldsFromImage(input: {
       {
         role: "system",
         content:
+          "Extrae datos tabulares de recibos prediales mexicanos. Devuelve exclusivamente JSON válido sin markdown. " +
+          PREDIAL_VISION_TABLE_GUIDANCE,
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              `Documento tipo ${input.documentKind}. Devuelve sólo este shape: ` +
+              `${PREDIAL_VISION_ROW_ONLY_JSON_SHAPE}. ${PREDIAL_VISION_TABLE_GUIDANCE} No inventes datos.`,
+          },
+          { type: "image_url", image_url: { url: input.dataUrl } },
+        ],
+      },
+    ],
+  });
+  return parseModelJson(content, input.documentKind);
+}
+
+async function extractDocumentFieldsFromImage(input: {
+  apiKey: string;
+  documentKind: string;
+  dataUrl: string;
+}) {
+  const isPredial = isPredialKind(input.documentKind);
+  const jsonShape = isPredial
+    ? PREDIAL_VISION_EXTRACTION_JSON_SHAPE
+    : DOCUMENT_EXTRACTION_JSON_SHAPE;
+  const predialGuidance = isPredial ? PREDIAL_VISION_TABLE_GUIDANCE : "";
+  const content = await callOpenRouterForJson({
+    apiKey: input.apiKey,
+    model: VISION_EXTRACTION_MODEL,
+    messages: [
+      {
+        role: "system",
+        content:
           "Extrae datos inmobiliarios de documentos mexicanos. Devuelve exclusivamente JSON válido sin markdown. " +
-          PROPERTY_AREA_EXTRACTION_GUIDANCE,
+          PROPERTY_AREA_EXTRACTION_GUIDANCE +
+          predialGuidance,
       },
       {
         role: "user",
@@ -984,14 +1841,36 @@ async function extractDocumentFieldsFromImage(input: {
             type: "text",
             text:
               `Documento tipo ${input.documentKind}. Extrae sólo lo visible con este shape: ` +
-              `${DOCUMENT_EXTRACTION_JSON_SHAPE}. ${PROPERTY_AREA_EXTRACTION_GUIDANCE} No inventes datos; usa null cuando no esté visible.`,
+              `${jsonShape}. ${PROPERTY_AREA_EXTRACTION_GUIDANCE}${predialGuidance} No inventes datos; usa null cuando no esté visible.`,
           },
           { type: "image_url", image_url: { url: input.dataUrl } },
         ],
       },
     ],
   });
-  return parseModelJson(content, input.documentKind);
+  const parsed = parseModelJson(content, input.documentKind);
+  if (!isPredial) return parsed;
+  let normalizedPredial = normalizePredialExtractionSurfacesForTest(
+    parsed,
+    input.documentKind
+  );
+  if (predialNeedsContribuyenteRowRetry(normalizedPredial)) {
+    const rowRetry = await extractPredialContribuyenteRowFromImage(input);
+    normalizedPredial = normalizePredialExtractionSurfacesForTest(
+      { ...normalizedPredial, ...rowRetry },
+      input.documentKind
+    );
+    const warnings = [
+      ...(Array.isArray(normalizedPredial.warnings)
+        ? normalizedPredial.warnings.filter((item): item is string => typeof item === "string")
+        : []),
+      "Se ejecutó un segundo pase de lectura tabular del predial para validar SUP. TERR y SUP. CONST.",
+    ];
+    normalizedPredial.warnings = warnings.filter(
+      (item, index, items) => items.indexOf(item) === index
+    );
+  }
+  return normalizedPredial;
 }
 
 async function extractDocumentFieldsFromText(input: {
@@ -1025,6 +1904,10 @@ async function extractDocumentFieldsFromText(input: {
   );
 }
 
+function predialPdfScreenshotWidth(documentKind: string) {
+  return isPredialKind(documentKind) ? 2400 : 1800;
+}
+
 async function extractPdfDocumentFields(input: {
   apiKey: string;
   documentKind: string;
@@ -1050,7 +1933,9 @@ async function extractPdfDocumentFields(input: {
           extraction: textExtraction,
         })
       ) {
-        const dataUrl = await renderPdfFirstPageDataUrl(parser);
+        const dataUrl = await renderPdfFirstPageDataUrl(parser, {
+          desiredWidth: predialPdfScreenshotWidth(input.documentKind),
+        });
         if (dataUrl) {
           const visionExtraction = enrichExtractionFromText(
             await extractDocumentFieldsFromImage({
@@ -1063,7 +1948,7 @@ async function extractPdfDocumentFields(input: {
           );
           const warnings = [
             ...(Array.isArray(textExtraction.warnings) ? textExtraction.warnings : []),
-            "La capa de texto del PDF no trajo superficie; se complementó con visión sobre la primera página.",
+            pdfVisionSupplementWarning(input.documentKind),
           ];
           return {
             model: VISION_EXTRACTION_MODEL,
@@ -1087,7 +1972,9 @@ async function extractPdfDocumentFields(input: {
       };
     }
 
-    const dataUrl = await renderPdfFirstPageDataUrl(parser);
+    const dataUrl = await renderPdfFirstPageDataUrl(parser, {
+      desiredWidth: predialPdfScreenshotWidth(input.documentKind),
+    });
     if (dataUrl) {
       const imageExtraction = await extractDocumentFieldsFromImage({
         apiKey: input.apiKey,
@@ -1143,11 +2030,21 @@ function shouldUseCachedExtraction(input: {
   extractionStatus: string;
   extraction: Record<string, unknown>;
 }) {
+  const extractionDocumentKind =
+    typeof input.extraction.document_kind === "string"
+      ? input.extraction.document_kind
+      : "";
   if (input.force) return false;
   if (Object.keys(input.extraction ?? {}).length === 0) return false;
   if (
     input.contentType === "application/pdf" &&
     isPropertyDeedKind(input.extraction.document_kind) &&
+    typeof input.extraction.area_total_m2 !== "number"
+  ) {
+    return false;
+  }
+  if (
+    isPredialKind(extractionDocumentKind) &&
     typeof input.extraction.area_total_m2 !== "number"
   ) {
     return false;
@@ -1175,6 +2072,94 @@ export type NotifyUserFn = (
 
 interface NotifyDeps {
   notifyUser: NotifyUserFn;
+}
+
+function predialExtractionBlockForPropertyReview(input: {
+  propertyType: string;
+  documents: OperationalCaseDocument[];
+}) {
+  const predials = input.documents.filter(
+    (document) => document.status !== "superseded" && isPredialDocumentCandidate(document)
+  );
+  if (predials.length === 0) {
+    return { blocked: false as const };
+  }
+  const pending = predials.filter((document) =>
+    ["pending", "failed", "not_applicable"].includes(document.extraction_status)
+  );
+  if (pending.length > 0) {
+    return {
+      blocked: true as const,
+      reason: "predial_extraction_pending",
+      pendingDocumentIds: pending.map((document) => document.id),
+    };
+  }
+  const extractedPredials = predials.filter((document) =>
+    ["ok", "low_confidence"].includes(document.extraction_status)
+  );
+  const hasTotal = extractedPredials.some((document) =>
+    hasMeaningfulValue(
+      firstMeaningfulValue(
+        document.extraction_jsonb?.area_total_m2,
+        document.extraction_jsonb?.area_m2,
+        document.extraction_jsonb?.surface_m2,
+        document.extraction_jsonb?.superficie_m2,
+        document.extraction_jsonb?.sup_terr,
+        document.extraction_jsonb?.superficie_terreno_m2
+      )
+    )
+  );
+  if (!hasTotal) {
+    return {
+      blocked: true as const,
+      reason: "predial_area_total_missing",
+      pendingDocumentIds: extractedPredials.map((document) => document.id),
+    };
+  }
+  const requiresBuiltArea = input.propertyType === "casa";
+  const hasBuiltArea = extractedPredials.some((document) =>
+    hasMeaningfulValue(
+      firstMeaningfulValue(
+        document.extraction_jsonb?.area_construida_m2,
+        document.extraction_jsonb?.construction_area_m2,
+        document.extraction_jsonb?.built_area_m2,
+        document.extraction_jsonb?.sup_const,
+        document.extraction_jsonb?.superficie_construccion_m2
+      )
+    )
+  );
+  if (requiresBuiltArea && !hasBuiltArea) {
+    return {
+      blocked: true as const,
+      reason: "predial_area_construida_missing",
+      pendingDocumentIds: extractedPredials.map((document) => document.id),
+    };
+  }
+  return { blocked: false as const };
+}
+
+function ownerCorroborationExtractionBlockForPropertyReview(input: {
+  documents: OperationalCaseDocument[];
+}) {
+  const corroborationDocuments = input.documents.filter((document) => {
+    if (document.status === "superseded") return false;
+    const signals = documentSignalsForMinimums(document, document.extraction_jsonb ?? {});
+    return signals.identificacion || signals.comprobante;
+  });
+  if (corroborationDocuments.length === 0) {
+    return { blocked: false as const };
+  }
+  const pending = corroborationDocuments.filter((document) =>
+    ["pending", "failed", "not_applicable"].includes(document.extraction_status)
+  );
+  if (pending.length === 0) {
+    return { blocked: false as const };
+  }
+  return {
+    blocked: true as const,
+    reason: "owner_corroboration_extraction_pending",
+    pendingDocumentIds: pending.map((document) => document.id),
+  };
 }
 
 export function missingRequiredIntakeFields(
@@ -1744,6 +2729,25 @@ export function addOperationalCaseTools(
               (opCase.context_jsonb && typeof opCase.context_jsonb === "object"
                 ? (opCase.context_jsonb as Record<string, unknown>)
                 : {});
+            if (
+              opCase.case_type === "property_optioning" &&
+              opCase.current_step === "intake" &&
+              input.current_step &&
+              input.current_step !== "intake" &&
+              opCase.context_jsonb?.intake_status !== "complete"
+            ) {
+              const out = {
+                ok: false,
+                error: "intake_incomplete_cannot_advance",
+                current_step: opCase.current_step,
+                requested_step: input.current_step,
+                intake_status: opCase.context_jsonb?.intake_status ?? "incomplete",
+                hint:
+                  "Completa el intake con operational_case_update_intake antes de avanzar al siguiente paso operativo.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
             const regressionReason =
               blockedPropertyOptioningStepRegressionReason({
                 caseType: opCase.case_type,
@@ -2415,6 +3419,46 @@ export function addOperationalCaseTools(
                 caseId: opCase.id,
                 statuses: ["received"],
               });
+              const propertyData = propertyDataRecord(opCase.context_jsonb ?? {});
+              const propertyType =
+                propertyTypeRequirementKey(
+                  propertyData.property_type ?? opCase.context_jsonb?.property_type
+                ) || "desconocido";
+              if (opCase.case_type === "property_optioning") {
+                const predialGate = predialExtractionBlockForPropertyReview({
+                  propertyType,
+                  documents,
+                });
+                if (predialGate.blocked) {
+                  const out = {
+                    ok: false,
+                    error: "predial_extraction_incomplete",
+                    reason: predialGate.reason,
+                    pending_predial_document_ids: predialGate.pendingDocumentIds ?? [],
+                    hint:
+                      "Antes de enviar property_data_review al contacto, termina extracción del predial con operational_case_extract_document_fields (force=true) para los pending_predial_document_ids y reintenta notify_user.",
+                  };
+                  await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                  return JSON.stringify(out);
+                }
+                const ownerCorroborationGate =
+                  ownerCorroborationExtractionBlockForPropertyReview({
+                    documents,
+                  });
+                if (ownerCorroborationGate.blocked) {
+                  const out = {
+                    ok: false,
+                    error: "owner_corroboration_extraction_incomplete",
+                    reason: ownerCorroborationGate.reason,
+                    pending_owner_corroboration_document_ids:
+                      ownerCorroborationGate.pendingDocumentIds ?? [],
+                    hint:
+                      "Antes de enviar property_data_review al contacto, termina extracción de identificación/comprobante con operational_case_extract_document_fields (force=true) para los pending_owner_corroboration_document_ids y reintenta notify_user.",
+                  };
+                  await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                  return JSON.stringify(out);
+                }
+              }
               const documentMinimumsContext =
                 documentExtractionMinimumsContext(documents);
               const minimums = evaluatePropertyDataMinimumsForReview(
