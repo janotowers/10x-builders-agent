@@ -14,11 +14,14 @@ import {
   describeToolConfirmationAction,
   normalizeNotificationActionUrl,
 } from "@/lib/notifications/pending-action-display";
+import {
+  computePendingInboxVisibleCounts,
+  REMINDER_KIND,
+} from "@/lib/notifications/pending-inbox-dedupe";
 import type { PendingInboxCounts } from "@/lib/notifications/pending-inbox-types";
 
 const NOTIFICATION_ROW_LIMIT = 50;
 const TOOL_CONFIRMATION_LIMIT = 50;
-const REMINDER_KIND = "internal_notification_reminder";
 
 export type PendingInboxNotification = {
   id: string;
@@ -61,6 +64,33 @@ export type PendingInboxToolConfirmation = {
   message: string;
 };
 
+type PendingToolCallRow = {
+  id: string;
+  session_id: string;
+  turn_id?: string | null;
+  tool_name: string;
+  arguments_json?: Record<string, unknown> | null;
+  metadata_jsonb?: Record<string, unknown> | null;
+  status: string;
+  created_at: string;
+};
+
+function toolCallCaseId(call: {
+  arguments_json?: Record<string, unknown> | null;
+  metadata_jsonb?: Record<string, unknown> | null;
+}): string | null {
+  const fromArgs =
+    typeof call.arguments_json?.case_id === "string"
+      ? call.arguments_json.case_id.trim()
+      : "";
+  if (fromArgs) return fromArgs;
+  const fromMetadata =
+    typeof call.metadata_jsonb?.case_id === "string"
+      ? call.metadata_jsonb.case_id.trim()
+      : "";
+  return fromMetadata || null;
+}
+
 async function listCaseRunnerPendingConfirmations(
   db: ReturnType<typeof createServerClient>,
   userId: string,
@@ -81,7 +111,7 @@ async function listCaseRunnerPendingConfirmations(
   const { data: toolCalls, error: toolCallsError } = await db
     .from("tool_calls")
     .select(
-      "id, session_id, turn_id, tool_name, arguments_json, status, created_at"
+      "id, session_id, turn_id, tool_name, arguments_json, metadata_jsonb, status, created_at"
     )
     .in("session_id", sessionIds)
     .eq("status", "pending_confirmation")
@@ -90,15 +120,7 @@ async function listCaseRunnerPendingConfirmations(
   if (toolCallsError) throw toolCallsError;
 
   const mapped = (toolCalls ?? []).map(
-    (call: {
-      id: string;
-      session_id: string;
-      turn_id?: string | null;
-      tool_name: string;
-      arguments_json?: Record<string, unknown> | null;
-      status: string;
-      created_at: string;
-    }) => ({
+    (call: PendingToolCallRow) => ({
       toolCallId: call.id,
       sessionId: call.session_id,
       turnId: call.turn_id ?? null,
@@ -106,10 +128,7 @@ async function listCaseRunnerPendingConfirmations(
       args: call.arguments_json ?? {},
       status: call.status,
       createdAt: call.created_at,
-      caseId:
-        typeof call.arguments_json?.case_id === "string"
-          ? call.arguments_json.case_id
-          : null,
+      caseId: toolCallCaseId(call),
       message: describeToolConfirmationAction(call.tool_name),
     })
   );
@@ -118,38 +137,6 @@ async function listCaseRunnerPendingConfirmations(
     return mapped.filter((item) => item.caseId === caseIdFilter);
   }
   return mapped;
-}
-
-async function countCaseRunnerPendingConfirmations(
-  db: ReturnType<typeof createServerClient>,
-  userId: string,
-  opts: { caseIdFilter?: string | null; caseLinked?: boolean } = {}
-) {
-  const { data: sessions, error: sessionsError } = await db
-    .from("agent_sessions")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("channel", "case_runner")
-    .eq("status", "active");
-  if (sessionsError) throw sessionsError;
-  const sessionIds = (sessions ?? [])
-    .map((session: { id?: unknown }) => session.id)
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-  if (sessionIds.length === 0) return 0;
-
-  let query = db
-    .from("tool_calls")
-    .select("id", { count: "exact", head: true })
-    .in("session_id", sessionIds)
-    .eq("status", "pending_confirmation");
-  if (opts.caseIdFilter) {
-    query = query.eq("arguments_json->>case_id", opts.caseIdFilter);
-  } else if (opts.caseLinked === true) {
-    query = query.not("arguments_json->>case_id", "is", null);
-  }
-  const { count, error } = await query;
-  if (error) throw error;
-  return count ?? 0;
 }
 
 function notificationStringMetadata(
@@ -220,37 +207,12 @@ export async function loadPendingInboxSnapshot(
   }
   notifications = await includeReminderSourceNotifications(db, userId, notifications);
 
-  const [pendingToolConfirmations, notificationRowsTotal, actionableNotificationsTotal, pendingToolConfirmationsTotal, flowRelatedNotificationsTotal, flowRelatedToolConfirmationsTotal, overdueTotal] =
-    await Promise.all([
+  const [pendingToolConfirmations, notificationRowsTotal] = await Promise.all([
       listCaseRunnerPendingConfirmations(db, userId, caseIdFilter),
       countInternalUserNotifications(db, userId, {
         statuses: ["unread"],
         excludeKinds: excludedKinds,
         caseId: caseIdFilter,
-      }),
-      countInternalUserNotifications(db, userId, {
-        statuses: ["unread"],
-        excludeKinds: actionableExcludedKinds,
-        caseId: caseIdFilter,
-      }),
-      countCaseRunnerPendingConfirmations(db, userId, {
-        caseIdFilter,
-      }),
-      countInternalUserNotifications(db, userId, {
-        statuses: ["unread"],
-        excludeKinds: actionableExcludedKinds,
-        caseId: caseIdFilter,
-        caseLinked: caseIdFilter ? undefined : true,
-      }),
-      countCaseRunnerPendingConfirmations(db, userId, {
-        caseIdFilter,
-        caseLinked: caseIdFilter ? undefined : true,
-      }),
-      countInternalUserNotifications(db, userId, {
-        statuses: ["unread"],
-        excludeKinds: actionableExcludedKinds,
-        caseId: caseIdFilter,
-        dueBefore: new Date().toISOString(),
       }),
     ]);
 
@@ -294,6 +256,10 @@ export async function loadPendingInboxSnapshot(
       caseStatus: context.caseStatus,
       caseStatusLabel: context.caseStatusLabel,
       caseContextLine: formatPendingCaseContextLine(context),
+      pendingToolCallId: notificationStringMetadata(
+        notification,
+        "pending_tool_call_id"
+      ),
       sourceNotificationId: notificationStringMetadata(
         notification,
         "source_notification_id"
@@ -338,16 +304,18 @@ export async function loadPendingInboxSnapshot(
     }
   );
 
+  const visibleCounts = computePendingInboxVisibleCounts(
+    enrichedNotifications,
+    enrichedPendingToolConfirmations,
+    { hiddenKinds: new Set(excludedKinds) }
+  );
+
   return {
     notifications: enrichedNotifications,
     pendingToolConfirmations: enrichedPendingToolConfirmations,
     counts: {
       notificationRowsTotal,
-      actionableNotificationsTotal,
-      pendingToolConfirmationsTotal,
-      flowRelatedTotal:
-        flowRelatedNotificationsTotal + flowRelatedToolConfirmationsTotal,
-      overdueTotal,
+      ...visibleCounts,
     },
   };
 }

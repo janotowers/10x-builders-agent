@@ -10,6 +10,13 @@ import {
   reminderCooldownHoursForNotificationKind,
 } from "@/lib/internal-notifications/registry";
 import {
+  computePendingInboxVisibleCounts,
+  findHitlLinkedNotifications,
+  listRenderableNotifications,
+  REMINDER_KIND,
+  TOOL_CONFIRMATION_PENDING_KIND,
+} from "@/lib/notifications/pending-inbox-dedupe";
+import {
   caseActionUrl,
   normalizeNotificationActionUrl,
   pendingActionLinkLabel,
@@ -34,8 +41,6 @@ type PendingInboxClientProps = {
   initialFocusId?: string | null;
 };
 
-const REMINDER_KIND = "internal_notification_reminder";
-const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
 const PENDING_INBOX_POLL_MS =
   process.env.NODE_ENV === "production" ? 60_000 : 30_000;
 
@@ -142,6 +147,9 @@ export function PendingInboxClient({
     null
   );
   const [expandedReminderGroups, setExpandedReminderGroups] = useState<
+    Record<string, boolean>
+  >({});
+  const [expandedHitlActivity, setExpandedHitlActivity] = useState<
     Record<string, boolean>
   >({});
   const [showResolved, setShowResolved] = useState(false);
@@ -532,40 +540,77 @@ export function PendingInboxClient({
       ),
     [pendingToolConfirmations]
   );
+  const pendingHitlToolCallIds = useMemo(
+    () => new Set(pendingToolConfirmations.map((pending) => pending.toolCallId)),
+    [pendingToolConfirmations]
+  );
   const renderedNotifications = useMemo(
     () =>
-      visibleNotifications
-        .filter((notification) => {
-          if (notification.kind !== REMINDER_KIND) {
-            if (
-              notification.kind === TOOL_CONFIRMATION_PENDING_KIND &&
-              notification.caseId &&
-              pendingHitlCaseIds.has(notification.caseId)
-            ) {
-              // The actionable HITL card already covers this case.
-              return false;
-            }
-            return true;
-          }
-          // Reminders render nested under their source and should never become
-          // standalone actionable cards.
-          return false;
-        })
+      listRenderableNotifications(
+        visibleNotifications,
+        pendingToolConfirmations,
+        hiddenNotificationKinds
+      )
+        .map((notification) => notificationById.get(notification.id))
+        .filter(
+          (notification): notification is InternalNotificationDisplay =>
+            Boolean(notification)
+        )
         .sort(
           (a, b) =>
             notificationActivityTime(b, remindersBySource.get(b.id) ?? []) -
             notificationActivityTime(a, remindersBySource.get(a.id) ?? [])
         ),
-    [visibleNotifications, notificationById, remindersBySource, pendingHitlCaseIds]
+    [
+      visibleNotifications,
+      pendingToolConfirmations,
+      hiddenNotificationKinds,
+      notificationById,
+      remindersBySource,
+    ]
   );
-  const totalPendingCount =
-    counts.actionableNotificationsTotal + counts.pendingToolConfirmationsTotal;
+  const hitlLinkedByToolCallId = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        notifications: InternalNotificationDisplay[];
+        reminders: InternalNotificationDisplay[];
+      }
+    >();
+    for (const pending of pendingToolConfirmations) {
+      const linkedNotifications = findHitlLinkedNotifications(
+        pending,
+        visibleNotifications
+      );
+      const reminders = linkedNotifications.flatMap(
+        (notification) => remindersBySource.get(notification.id) ?? []
+      );
+      reminders.sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      map.set(pending.toolCallId, {
+        notifications: linkedNotifications,
+        reminders,
+      });
+    }
+    return map;
+  }, [pendingToolConfirmations, visibleNotifications, remindersBySource]);
+  const visibleCounts = useMemo(
+    () =>
+      computePendingInboxVisibleCounts(
+        visibleNotifications,
+        pendingToolConfirmations,
+        { hiddenKinds: hiddenNotificationKinds }
+      ),
+    [visibleNotifications, pendingToolConfirmations, hiddenNotificationKinds]
+  );
+  const totalPendingCount = counts.uniquePendingTotal ?? visibleCounts.uniquePendingTotal;
   const standaloneCount = Math.max(
     totalPendingCount - counts.flowRelatedTotal,
     0
   );
-  const loadedCardCount =
-    renderedNotifications.length + pendingToolConfirmations.length;
+  const loadedCardCount = visibleCounts.uniquePendingTotal;
   const hasMoreNotificationRows =
     counts.notificationRowsTotal > visibleNotifications.length;
   const resolvedNotificationGroups = useMemo(() => {
@@ -613,7 +658,7 @@ export function PendingInboxClient({
             {totalPendingCount}
           </p>
           <p className="mt-0.5 text-[11px] text-violet-700/70 dark:text-violet-100/70">
-            Accionables, sin contar recordatorios repetidos.
+            Accionables únicos en pantalla, sin recordatorios ni avisos duplicados de HITL.
           </p>
         </div>
         <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 dark:border-sky-300/20 dark:bg-sky-300/10">
@@ -663,8 +708,8 @@ export function PendingInboxClient({
             Mostrando {loadedCardCount}{" "}
             {loadedCardCount === 1 ? "elemento" : "elementos"} en pantalla
             (decisiones de negocio, avisos y aprobaciones HITL). Los recordatorios
-            repetidos se agrupan dentro del pendiente original — expándelos con
-            «ver recordatorios».
+            repetidos y los avisos inbox duplicados de HITL se agrupan dentro del
+            pendiente original — expándelos con «ver recordatorios» o «ver avisos del sistema».
           </p>
         </div>
         <div className="relative shrink-0" ref={inboxMenuRef}>
@@ -765,7 +810,38 @@ export function PendingInboxClient({
           </p>
         ) : (
           <div className="grid gap-2">
-            {pendingToolConfirmations.map((pending) => (
+            {pendingToolConfirmations.map((pending) => {
+              const linkedActivity =
+                hitlLinkedByToolCallId.get(pending.toolCallId) ?? {
+                  notifications: [],
+                  reminders: [],
+                };
+              const activityCount =
+                linkedActivity.notifications.length +
+                linkedActivity.reminders.length;
+              const primaryLinkedNotification = linkedActivity.notifications[0];
+              const activityExpanded = Boolean(
+                expandedHitlActivity[pending.toolCallId]
+              );
+              const linkedDueBadge = dueBadgeState(primaryLinkedNotification?.due_at);
+              const linkedLatestReminderAt = fmtDate(
+                primaryLinkedNotification?.lastReminderAt ??
+                  linkedActivity.reminders[0]?.created_at
+              );
+              const linkedNextReminderAt = primaryLinkedNotification
+                ? fmtDate(
+                    nextReminderEstimate(
+                      primaryLinkedNotification.lastReminderAt ??
+                        linkedActivity.reminders[0]?.created_at,
+                      primaryLinkedNotification.created_at,
+                      reminderCooldownHoursForNotificationKind(
+                        TOOL_CONFIRMATION_PENDING_KIND
+                      )
+                    )
+                  )
+                : null;
+
+              return (
               <div
                 key={pending.toolCallId}
                 ref={(element) => {
@@ -813,6 +889,79 @@ export function PendingInboxClient({
                       {" · "}
                       Aprobar ejecuta la acción; rechazar la cancela y el agente sigue sin hacerla.
                     </p>
+                    {activityCount > 0 ? (
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedHitlActivity((current) => ({
+                              ...current,
+                              [pending.toolCallId]: !current[pending.toolCallId],
+                            }))
+                          }
+                          className="rounded-full bg-amber-100/80 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200 hover:bg-amber-100 dark:bg-amber-300/10 dark:text-amber-50 dark:ring-amber-300/20 dark:hover:bg-amber-300/20"
+                        >
+                          {activityCount} aviso{activityCount === 1 ? "" : "s"} del sistema
+                          {activityExpanded ? " · ocultar" : " · ver"}
+                        </button>
+                        {primaryLinkedNotification ? (
+                          <p className="mt-1 text-[11px] text-amber-700/80 dark:text-amber-100/70">
+                            Inbox: {linkedDueBadge.label.toLowerCase()}
+                            {linkedLatestReminderAt
+                              ? ` · último recordatorio ${linkedLatestReminderAt}`
+                              : ""}
+                            {linkedNextReminderAt
+                              ? ` · próximo recordatorio aprox. ${linkedNextReminderAt}`
+                              : ""}
+                            {primaryLinkedNotification.refreshCount &&
+                            primaryLinkedNotification.refreshCount > 0
+                              ? ` · actualizada ${primaryLinkedNotification.refreshCount} ${primaryLinkedNotification.refreshCount === 1 ? "vez" : "veces"}`
+                              : ""}
+                          </p>
+                        ) : null}
+                        {activityExpanded ? (
+                          <div className="mt-2 rounded-2xl border border-amber-200/80 bg-amber-100/50 p-2 text-[11px] text-amber-900 dark:border-amber-300/20 dark:bg-amber-300/10 dark:text-amber-100">
+                            <p className="font-semibold">Historial de avisos</p>
+                            <div className="mt-1 space-y-1.5">
+                              {linkedActivity.notifications.map((notification) => (
+                                <div
+                                  key={notification.id}
+                                  className="rounded-xl bg-white/70 p-2 dark:bg-white/5"
+                                >
+                                  <p className="font-medium">
+                                    Aviso inbox ·{" "}
+                                    {fmtDate(notification.created_at) ??
+                                      "fecha no disponible"}
+                                  </p>
+                                  <div className="prose prose-sm mt-1 max-w-none break-words text-amber-900 dark:text-amber-100 prose-p:my-1">
+                                    <ReactMarkdown>
+                                      {prepareNotificationBodyMarkdown(notification.body)}
+                                    </ReactMarkdown>
+                                  </div>
+                                </div>
+                              ))}
+                              {linkedActivity.reminders.map((reminder) => (
+                                <div
+                                  key={reminder.id}
+                                  className="rounded-xl bg-white/70 p-2 dark:bg-white/5"
+                                >
+                                  <p className="font-medium">
+                                    Recordatorio ·{" "}
+                                    {fmtDate(reminder.created_at) ??
+                                      "fecha no disponible"}
+                                  </p>
+                                  <div className="prose prose-sm mt-1 max-w-none break-words text-amber-900 dark:text-amber-100 prose-p:my-1">
+                                    <ReactMarkdown>
+                                      {prepareNotificationBodyMarkdown(reminder.body)}
+                                    </ReactMarkdown>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap gap-1">
                     <button
@@ -841,7 +990,8 @@ export function PendingInboxClient({
                   </p>
                 ) : null}
               </div>
-            ))}
+              );
+            })}
             {renderedNotifications.map((notification) => {
               const reminders = remindersBySource.get(notification.id) ?? [];
               const latestReminder = reminders[0];

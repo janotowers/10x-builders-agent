@@ -14,6 +14,7 @@ export interface InternalNotificationDisplay {
   caseStatus?: string | null;
   caseStatusLabel?: string | null;
   caseContextLine?: string | null;
+  pendingToolCallId?: string | null;
   sourceNotificationId?: string | null;
   lastReminderAt?: string | null;
   refreshCount?: number | null;
@@ -48,8 +49,11 @@ export interface PendingToolConfirmationDisplay {
 
 export interface PendingInboxCounts {
   notificationRowsTotal: number;
+  /** Actionable notification cards after HITL shadow dedupe. */
   actionableNotificationsTotal: number;
   pendingToolConfirmationsTotal: number;
+  /** Unique pendientes shown in the inbox (notifications + HITL cards). */
+  uniquePendingTotal: number;
   flowRelatedTotal: number;
   overdueTotal: number;
 }
