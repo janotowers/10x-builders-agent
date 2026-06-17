@@ -131,6 +131,40 @@ type PendingCaseToolCall = {
   created_at: string;
 };
 
+const OPERATIONAL_STEP_LABELS: Record<string, string> = {
+  intake: "Completar registro del caso",
+  awaiting_documents: "Solicitud de documentos",
+  documents_received: "Extracción de características",
+  comparables_in_progress: "Análisis de comparables",
+  price_proposal_pending: "Propuesta de precio",
+  contract_pending: "Borrador y revisión de contrato",
+  photos_scheduled: "Programación de fotos",
+  package_ready: "Paquete final listo",
+};
+
+const PENDING_TOOL_LABELS: Record<string, string> = {
+  telegram_send_message_to_contact: "Enviar mensaje por Telegram",
+};
+
+function humanizeTechnicalSlug(value: string): string {
+  return value
+    .replace(/_/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatOperationalStepForReminder(step: string | null | undefined): string {
+  if (!step) return "(sin paso)";
+  const friendly = OPERATIONAL_STEP_LABELS[step] ?? humanizeTechnicalSlug(step);
+  return `${friendly} (${step})`;
+}
+
+function formatPendingToolForReminder(toolName: string): string {
+  const trimmed = toolName.trim();
+  const friendly = PENDING_TOOL_LABELS[trimmed] ?? humanizeTechnicalSlug(trimmed);
+  return `${friendly} (${trimmed})`;
+}
+
 function buildPendingCaseUrl(caseId: string): string | null {
   if (!APP_URL || !/^https?:\/\//i.test(APP_URL)) return null;
   return `${APP_URL.replace(/\/$/, "")}/chat/pending?case=${encodeURIComponent(caseId)}`;
@@ -220,11 +254,11 @@ function buildPendingToolDescription(
   const link = buildPendingCaseUrl(opCase.id);
   const baseLines = [
     pendingCount === 1
-      ? "Tienes 1 aprobacion del agente pendiente para continuar este caso."
+      ? "Tienes 1 aprobación del agente pendiente para continuar este caso."
       : `Tienes ${pendingCount} aprobaciones del agente pendientes para continuar este caso.`,
     `Caso: ${title || opCase.case_type}${zone ? ` (${zone})` : ""}`,
-    `Paso tecnico: ${opCase.current_step ?? "(sin paso)"}`,
-    `Tool pendiente: ${call.tool_name}`,
+    `Paso: ${formatOperationalStepForReminder(opCase.current_step)}`,
+    `Ejecución pendiente: ${formatPendingToolForReminder(call.tool_name)}`,
   ];
   if (call.tool_name === "telegram_send_message_to_contact") {
     const preview =
