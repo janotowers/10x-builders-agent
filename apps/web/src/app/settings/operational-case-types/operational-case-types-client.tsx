@@ -8739,7 +8739,88 @@ export function OperationalCaseTypesClient({
                   : "Caso conversacional listo";
       return (
         <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900 dark:bg-violet-950/30">
-          <div className="rounded border border-violet-200 bg-white/80 p-2 text-violet-900 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-100">
+          <div className="rounded border border-emerald-200 bg-white/70 p-2 dark:border-emerald-900 dark:bg-neutral-950/40">
+            <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+              Configuración del laboratorio E2E
+            </div>
+            <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-300">
+              Define cómo se comportarán los próximos mensajes de Telegram. No
+              describe el caso en observación, más abajo.
+            </p>
+            <div
+              className={`mt-2 rounded border p-2 text-xs ${
+                e2eLabModeActive
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-100"
+                  : "border-neutral-200 bg-white text-neutral-700 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-200"
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="font-semibold">Modo prueba E2E por Telegram</div>
+                  <p className="mt-1 text-[11px]">
+                    {e2eLabModeActive
+                      ? `Activo para ${row.case_type}. Los casos nuevos desde Telegram se marcarán como e2e_controlled y expiran automáticamente.`
+                      : "Inactivo. Telegram creará o continuará casos reales; no se inferirá modo prueba desde el texto del mensaje."}
+                    {e2eLabModeExpiresAt ? ` Expira: ${e2eLabModeExpiresAt}.` : ""}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {agentTestCase?.context_jsonb?.created_from ===
+                    "agent_conversation" && caseIsControlledE2E ? (
+                    <button
+                      type="button"
+                      onClick={() => void abandonConversationalLabCase(row)}
+                      disabled={abandoningConversationalCase || e2eLabModeLoading}
+                      className="rounded border border-amber-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-60"
+                      title="Pausa este recorrido E2E, cancela sus pendientes y permite crear uno nuevo al escribir por Telegram. No borra el historial."
+                    >
+                      {abandoningConversationalCase
+                        ? "Abandonando recorrido..."
+                        : "Abandonar este recorrido E2E"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => void toggleE2ELabMode(row, !e2eLabModeActive)}
+                    disabled={e2eLabModeLoading || scopeLabel(row) === "global"}
+                    className={`rounded px-3 py-1.5 text-[11px] font-semibold disabled:opacity-60 ${
+                      e2eLabModeActive
+                        ? "border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50"
+                        : "bg-violet-700 text-white hover:bg-violet-800"
+                    }`}
+                  >
+                    {e2eLabModeLoading
+                      ? "Actualizando..."
+                      : e2eLabModeActive
+                        ? "Desactivar modo prueba E2E"
+                        : "Activar modo prueba E2E"}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="mt-2 rounded border border-neutral-200 bg-white p-2 text-[11px] text-neutral-600 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-300">
+              <div className="font-semibold text-neutral-700 dark:text-neutral-200">
+                Iniciar un recorrido E2E en limpio
+              </div>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-4">
+                <li>Activa el modo prueba E2E.</li>
+                <li>
+                  Si ya hay un recorrido E2E activo, selecciónalo en Caso en
+                  observación (abajo) y pulsa «Abandonar este recorrido E2E».
+                </li>
+                <li>
+                  Escribe por Telegram para crear un caso nuevo desde Paso 0.
+                </li>
+              </ol>
+              {isRealConversationalCase ? (
+                <p className="mt-1 text-amber-700 dark:text-amber-300">
+                  Observas un caso real. Estos pasos no lo afectan; solo controlan
+                  las pruebas E2E.
+                </p>
+              ) : null}
+            </div>
+          </div>
+          <div className="mt-3 rounded border border-violet-200 bg-white/80 p-2 text-violet-900 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-100">
             <div className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
               Caso en observación
             </div>
@@ -9044,87 +9125,6 @@ export function OperationalCaseTypesClient({
             )}
           </div>
         </LabStepDetails>
-        <div className="mt-3 rounded border border-emerald-200 bg-white/70 p-2 dark:border-emerald-900 dark:bg-neutral-950/40">
-          <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
-            Configuración del laboratorio E2E
-          </div>
-          <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-300">
-            Define cómo se comportarán los próximos mensajes de Telegram. No
-            describe el caso seleccionado arriba.
-          </p>
-          <div
-            className={`mt-2 rounded border p-2 text-xs ${
-              e2eLabModeActive
-                ? "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-100"
-                : "border-neutral-200 bg-white text-neutral-700 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-200"
-            }`}
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="font-semibold">Modo prueba E2E por Telegram</div>
-                <p className="mt-1 text-[11px]">
-                  {e2eLabModeActive
-                    ? `Activo para ${row.case_type}. Los casos nuevos desde Telegram se marcarán como e2e_controlled y expiran automáticamente.`
-                    : "Inactivo. Telegram creará o continuará casos reales; no se inferirá modo prueba desde el texto del mensaje."}
-                  {e2eLabModeExpiresAt ? ` Expira: ${e2eLabModeExpiresAt}.` : ""}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {agentTestCase?.context_jsonb?.created_from ===
-                  "agent_conversation" && caseIsControlledE2E ? (
-                  <button
-                    type="button"
-                    onClick={() => void abandonConversationalLabCase(row)}
-                    disabled={abandoningConversationalCase || e2eLabModeLoading}
-                    className="rounded border border-amber-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-60"
-                    title="Pausa este recorrido E2E, cancela sus pendientes y permite crear uno nuevo al escribir por Telegram. No borra el historial."
-                  >
-                    {abandoningConversationalCase
-                      ? "Abandonando recorrido..."
-                      : "Abandonar este recorrido E2E"}
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => void toggleE2ELabMode(row, !e2eLabModeActive)}
-                  disabled={e2eLabModeLoading || scopeLabel(row) === "global"}
-                  className={`rounded px-3 py-1.5 text-[11px] font-semibold disabled:opacity-60 ${
-                    e2eLabModeActive
-                      ? "border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50"
-                      : "bg-violet-700 text-white hover:bg-violet-800"
-                  }`}
-                >
-                  {e2eLabModeLoading
-                    ? "Actualizando..."
-                    : e2eLabModeActive
-                      ? "Desactivar modo prueba E2E"
-                      : "Activar modo prueba E2E"}
-                </button>
-              </div>
-            </div>
-          </div>
-          <div className="mt-2 rounded border border-neutral-200 bg-white p-2 text-[11px] text-neutral-600 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-300">
-            <div className="font-semibold text-neutral-700 dark:text-neutral-200">
-              Iniciar un recorrido E2E en limpio
-            </div>
-            <ol className="mt-1 list-decimal space-y-0.5 pl-4">
-              <li>Activa el modo prueba E2E.</li>
-              <li>
-                Si ya hay un recorrido E2E activo, selecciónalo arriba y pulsa
-                «Abandonar este recorrido E2E».
-              </li>
-              <li>
-                Escribe por Telegram para crear un caso nuevo desde Paso 0.
-              </li>
-            </ol>
-            {isRealConversationalCase ? (
-              <p className="mt-1 text-amber-700 dark:text-amber-300">
-                Observas un caso real. Estos pasos no lo afectan; solo controlan
-                las pruebas E2E.
-              </p>
-            ) : null}
-          </div>
-        </div>
         </div>
       );
     }
