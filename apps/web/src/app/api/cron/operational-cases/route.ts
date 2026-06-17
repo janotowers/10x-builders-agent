@@ -130,7 +130,21 @@ function buildPendingCaseUrl(caseId: string): string | null {
   return `${APP_URL.replace(/\/$/, "")}/chat/pending?case=${encodeURIComponent(caseId)}`;
 }
 
-async function listPendingCaseRunnerToolCalls(
+/**
+ * Lista los `tool_calls` en `pending_confirmation` que pertenecen a un caso,
+ * abarcando **todas** las sesiones del usuario (no solo `case_runner`).
+ *
+ * Una aprobación HITL puede originarse en cualquier canal: el agente puede
+ * pausar pidiendo confirmación dentro de un chat de Telegram o web, no solo en
+ * el `case_runner` del cron. Si filtráramos por `channel='case_runner'`, el
+ * pendiente real (creado en la sesión de chat) quedaría invisible aquí mientras
+ * `countPendingToolCallsForCase` sí lo cuenta. Esa discrepancia hacía que el
+ * recordatorio cayera al texto genérico sin identificar el caso y sin
+ * `pending_tool_call_id`, lo que impedía reconstruir los botones Aprobar/Cancelar.
+ * El webhook de Telegram resuelve `approve:`/`reject:` por `session_id` del
+ * propio `tool_call`, así que adjuntar botones es válido sin importar el canal.
+ */
+async function listPendingCaseToolCalls(
   db: ReturnType<typeof createServerClient>,
   userId: string,
   caseId: string
@@ -138,9 +152,7 @@ async function listPendingCaseRunnerToolCalls(
   const { data: sessions, error: sessionsError } = await db
     .from("agent_sessions")
     .select("id")
-    .eq("user_id", userId)
-    .eq("channel", "case_runner")
-    .eq("status", "active");
+    .eq("user_id", userId);
   if (sessionsError) throw sessionsError;
   const sessionIds = (sessions ?? [])
     .map((session: { id?: unknown }) => session.id)
@@ -223,6 +235,38 @@ function buildPendingToolDescription(
       : `Revisar detalle en web: /chat/pending?case=${encodeURIComponent(opCase.id)}`
   );
   return { text: baseLines.join("\n"), link };
+}
+
+/**
+ * Texto de respaldo cuando no logramos resolver el `tool_call` concreto: aun
+ * así identificamos el caso por su título/zona para que el aviso nunca sea un
+ * recordatorio anónimo ("no se sabe de qué caso habla").
+ */
+function buildPendingToolFallbackText(
+  opCase: OperationalCase,
+  pendingCount: number
+): string {
+  const title =
+    typeof opCase.context_jsonb?.property_title === "string"
+      ? opCase.context_jsonb.property_title.trim()
+      : "";
+  const zone =
+    typeof opCase.context_jsonb?.property_zone === "string"
+      ? opCase.context_jsonb.property_zone.trim()
+      : "";
+  const lines = [
+    pendingCount === 1
+      ? "Tienes 1 aprobación del agente pendiente para continuar este caso."
+      : `Tienes ${pendingCount} aprobaciones del agente pendientes para continuar este caso.`,
+    `Caso: ${title || opCase.case_type}${zone ? ` (${zone})` : ""}`,
+  ];
+  const link = buildPendingCaseUrl(opCase.id);
+  lines.push(
+    link
+      ? `Revisar detalle: ${link}`
+      : `Revisar detalle en web: /chat/pending?case=${encodeURIComponent(opCase.id)}`
+  );
+  return lines.join("\n");
 }
 
 async function maybeSendPendingToolButtonsToAdvisor(
@@ -768,7 +812,7 @@ async function processCase(
   try {
     const pendingHitlCount = await countPendingToolCallsForCase(db, opCase.id);
     if (pendingHitlCount > 0) {
-      const pendingCalls = await listPendingCaseRunnerToolCalls(
+      const pendingCalls = await listPendingCaseToolCalls(
         db,
         opCase.user_id,
         opCase.id
@@ -777,9 +821,7 @@ async function processCase(
         pendingCalls.length > 0 ? pendingCalls[0] : null;
       const pendingReferenceText = pendingReference
         ? buildPendingToolDescription(opCase, pendingReference, pendingHitlCount).text
-        : pendingHitlCount === 1
-          ? "Tienes 1 aprobación del agente pendiente para continuar este caso."
-          : `Tienes ${pendingHitlCount} aprobaciones del agente pendientes para continuar este caso.`;
+        : buildPendingToolFallbackText(opCase, pendingHitlCount);
       await notify(
         db,
         opCase.user_id,
