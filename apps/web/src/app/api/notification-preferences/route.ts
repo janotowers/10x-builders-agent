@@ -54,6 +54,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, preferences });
   } catch (error) {
     console.error("[POST /api/notification-preferences] failed:", error);
+    const message =
+      error &&
+      typeof error === "object" &&
+      "message" in error &&
+      typeof (error as { message?: unknown }).message === "string"
+        ? (error as { message: string }).message
+        : "";
+    if (message.includes("engagement_policy_overrides_jsonb")) {
+      return NextResponse.json(
+        {
+          error:
+            "Falta la migración 00036 en Supabase (columna engagement_policy_overrides_jsonb). Aplica packages/db/supabase/migrations/00036_notification_engagement_policy_overrides.sql.",
+        },
+        { status: 500 }
+      );
+    }
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
 }
