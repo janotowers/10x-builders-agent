@@ -47,6 +47,7 @@ import {
   expireExternalContactNotificationsForCase,
   markCaseProcessing,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
+  refreshInternalUserNotificationContent,
   updateOperationalCase,
   getOrCreateSession,
   countPendingToolCallsForCase,
@@ -82,6 +83,11 @@ import {
   resolveEngagementPolicy,
 } from "@/lib/engagement-policies/registry";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
+import {
+  buildToolConfirmationEscalationText,
+  notificationMetadataPendingToolCallId,
+  shouldRefreshToolConfirmationNotification,
+} from "@/lib/operational-cases/hitl-reminder-selfheal";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
@@ -482,13 +488,18 @@ async function resolveStaleToolConfirmationNotification(
   notification: InternalUserNotification
 ): Promise<boolean> {
   if (notification.kind !== TOOL_CONFIRMATION_PENDING_KIND) return false;
-  const pendingToolCallId =
-    typeof notification.metadata_jsonb?.pending_tool_call_id === "string"
-      ? notification.metadata_jsonb.pending_tool_call_id.trim()
-      : "";
-  if (!pendingToolCallId) return false;
-  const stillPending = await getPendingToolCall(db, pendingToolCallId);
-  if (stillPending) return false;
+  const pendingToolCallId = notificationMetadataPendingToolCallId(
+    notification.metadata_jsonb
+  );
+  if (pendingToolCallId) {
+    const stillPending = await getPendingToolCall(db, pendingToolCallId);
+    if (stillPending) return false;
+  } else if (notification.case_id) {
+    const pendingForCase = await countPendingToolCallsForCase(db, notification.case_id);
+    if (pendingForCase > 0) return false;
+  } else {
+    return false;
+  }
   await setInternalUserNotificationStatus(db, {
     id: notification.id,
     userId: notification.user_id,
@@ -503,11 +514,59 @@ async function resolveStaleToolConfirmationNotification(
         source: "internal_user_notifications",
         kind: "tool_confirmation_reminder_resolved_stale",
         notification_id: notification.id,
-        pending_tool_call_id: pendingToolCallId,
+        pending_tool_call_id: pendingToolCallId ?? null,
       },
     });
   }
   return true;
+}
+
+async function maybeSelfHealToolConfirmationNotification(
+  db: ReturnType<typeof createServerClient>,
+  notification: InternalUserNotification
+): Promise<InternalUserNotification> {
+  if (
+    notification.kind !== TOOL_CONFIRMATION_PENDING_KIND ||
+    !notification.case_id
+  ) {
+    return notification;
+  }
+  const pendingCalls = await listPendingCaseToolCalls(
+    db,
+    notification.user_id,
+    notification.case_id
+  );
+  const pendingReference = pendingCalls[0];
+  if (!pendingReference) return notification;
+
+  const shouldRefresh = shouldRefreshToolConfirmationNotification({
+    kind: notification.kind,
+    body: notification.body,
+    metadata: notification.metadata_jsonb,
+    pendingToolCallId: pendingReference.id,
+  });
+  if (!shouldRefresh) return notification;
+
+  const opCase = await getOperationalCase(db, notification.case_id);
+  if (!opCase || opCase.user_id !== notification.user_id) return notification;
+
+  const refreshedBody = buildPendingToolDescription(
+    opCase,
+    pendingReference,
+    pendingCalls.length
+  ).text;
+  const refreshed = await refreshInternalUserNotificationContent(
+    db,
+    notification,
+    {
+      body: refreshedBody,
+      metadata: {
+        pending_tool_call_id: pendingReference.id,
+        pending_tool_name: pendingReference.tool_name,
+      },
+    }
+  );
+  return refreshed ?? notification;
 }
 
 async function processInternalNotificationReminder(
@@ -515,21 +574,26 @@ async function processInternalNotificationReminder(
   notification: InternalUserNotification,
   deliveryContextCache: Map<string, ReminderDeliveryContext>
 ) {
-  if (await resolveStaleToolConfirmationNotification(db, notification)) {
+  let currentNotification = notification;
+  if (await resolveStaleToolConfirmationNotification(db, currentNotification)) {
     return "resolved_stale";
   }
+  currentNotification = await maybeSelfHealToolConfirmationNotification(
+    db,
+    currentNotification
+  );
   const deliveryContext = await loadReminderDeliveryContext(
     db,
-    notification.user_id,
+    currentNotification.user_id,
     deliveryContextCache
   );
-  const kindConfig = internalNotificationKindConfig(notification.kind);
+  const kindConfig = internalNotificationKindConfig(currentNotification.kind);
   const policy = resolveEngagementPolicy(
     {
       audience: "internal_user",
       intent: kindConfig.intent ?? "reminder",
       kind: kindConfig.kind,
-      priority: notification.priority,
+      priority: currentNotification.priority,
       channel: "telegram",
     },
     deliveryContext.engagementOverrides
@@ -542,79 +606,94 @@ async function processInternalNotificationReminder(
       window: policy.deliveryWindow,
     });
     if (nextAllowed.getTime() > Date.now() + 1000) {
-      await deferInternalNotificationReminder(db, notification, nextAllowed);
+      await deferInternalNotificationReminder(db, currentNotification, nextAllowed);
       return "deferred_window";
     }
   }
   const escalation = shouldEscalateInternalReminder(
-    notification,
+    currentNotification,
     deliveryContext.engagementOverrides
   );
   if (escalation) {
-    const escalated = await markInternalNotificationEscalated(db, notification, {
+    const escalated = await markInternalNotificationEscalated(db, currentNotification, {
       priority: escalation.escalationPriority,
       reason: escalation.reason,
     });
+    const pendingToolCallId = notificationMetadataPendingToolCallId(
+      currentNotification.metadata_jsonb
+    );
     await notify(
       db,
-      notification.user_id,
+      currentNotification.user_id,
       {
         text:
-          `Escalación: sigue pendiente «${notification.title}». ` +
-          "Revísalo cuanto antes en Pendientes o en el flujo del caso.",
+          currentNotification.kind === TOOL_CONFIRMATION_PENDING_KIND
+            ? buildToolConfirmationEscalationText({
+                title: currentNotification.title,
+                body: currentNotification.body,
+              })
+            : `Escalación: sigue pendiente «${currentNotification.title}». ` +
+              "Revísalo cuanto antes en Pendientes o en el flujo del caso.",
         kind: "internal_notification_escalation",
         data: {
-          case_id: notification.case_id ?? undefined,
-          title: `Escalación: ${notification.title}`,
-          source_notification_id: notification.id,
+          case_id: currentNotification.case_id ?? undefined,
+          title: `Escalación: ${currentNotification.title}`,
+          source_notification_id: currentNotification.id,
           escalation_reason: escalation.reason,
+          pending_tool_call_id: pendingToolCallId,
         },
       },
       "high"
     );
-    if (notification.case_id) {
+    if (currentNotification.case_id) {
       await insertOperationalCaseEvent(db, {
-        caseId: notification.case_id,
+        caseId: currentNotification.case_id,
         eventType: "escalated",
         actor: "system",
         payload: {
           source: "internal_user_notifications",
-          notification_id: notification.id,
+          notification_id: currentNotification.id,
           reason: escalation.reason,
           priority: escalated?.priority ?? "high",
+          pending_tool_call_id: pendingToolCallId,
         },
       });
     }
     return "escalated";
   }
   if (
-    !shouldSendInternalReminder(notification, deliveryContext.engagementOverrides)
+    !shouldSendInternalReminder(currentNotification, deliveryContext.engagementOverrides)
   ) {
     return "cooldown";
   }
+  const pendingToolCallId = notificationMetadataPendingToolCallId(
+    currentNotification.metadata_jsonb
+  );
   await notify(
     db,
-    notification.user_id,
+    currentNotification.user_id,
     {
-      text: `Recordatorio: ${notification.title}\n\n${notification.body}`,
+      text: `Recordatorio: ${currentNotification.title}\n\n${currentNotification.body}`,
       kind: "internal_notification_reminder",
       data: {
-        case_id: notification.case_id ?? undefined,
-        title: `Recordatorio: ${notification.title}`,
-        source_notification_id: notification.id,
+        case_id: currentNotification.case_id ?? undefined,
+        title: `Recordatorio: ${currentNotification.title}`,
+        source_notification_id: currentNotification.id,
+        pending_tool_call_id: pendingToolCallId,
       },
     },
-    notification.priority
+    currentNotification.priority
   );
-  await markInternalNotificationReminderSent(db, notification);
-  if (notification.case_id) {
+  await markInternalNotificationReminderSent(db, currentNotification);
+  if (currentNotification.case_id) {
     await insertOperationalCaseEvent(db, {
-      caseId: notification.case_id,
+      caseId: currentNotification.case_id,
       eventType: "reminder_sent",
       actor: "system",
       payload: {
         source: "internal_user_notifications",
-        notification_id: notification.id,
+        notification_id: currentNotification.id,
+        pending_tool_call_id: pendingToolCallId,
       },
     });
   }

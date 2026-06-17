@@ -251,6 +251,37 @@ export async function updateInternalUserNotificationMetadata(
   return (data as InternalUserNotification | null) ?? null;
 }
 
+export async function refreshInternalUserNotificationContent(
+  db: DbClient,
+  notification: InternalUserNotification,
+  patch: {
+    title?: string;
+    body?: string;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<InternalUserNotification | null> {
+  const update: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  };
+  if (typeof patch.title === "string") update.title = patch.title;
+  if (typeof patch.body === "string") update.body = patch.body;
+  if (patch.metadata) {
+    update.metadata_jsonb = {
+      ...(notification.metadata_jsonb ?? {}),
+      ...patch.metadata,
+    };
+  }
+  const { data, error } = await db
+    .from("internal_user_notifications")
+    .update(update)
+    .eq("id", notification.id)
+    .eq("user_id", notification.user_id)
+    .select("*")
+    .maybeSingle();
+  if (error) throw error;
+  return (data as InternalUserNotification | null) ?? null;
+}
+
 export async function setInternalUserNotificationStatus(
   db: DbClient,
   params: {
