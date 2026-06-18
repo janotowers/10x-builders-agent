@@ -263,7 +263,7 @@ Para no quedar bloqueado, te listo qué necesito antes de implementar cada bloqu
 
 - `docs/operational-cases/plan.md` (este archivo).
 - `docs/operational-cases/architecture.md`: explicación técnica del subsistema (separado del plan para que sobreviva al plan).
-- `docs/operational-cases/future-considerations.md`: subagentes, escalado del selector de skills, motor durable, browser automation, WhatsApp Cloud API, evoluciones futuras de `account_skills`, conexión con Brain Layer.
+- `docs/operational-cases/future-considerations.md`: subagentes, escalado del selector de skills, motor durable, browser automation, WhatsApp Cloud API, consolidación de adapters conversacionales (§10), evoluciones futuras de `account_skills`, conexión con Brain Layer.
 - Actualizar `docs/manuals/architecture-manual.md` con sección "Casos operacionales".
 - Actualizar `docs/manuals/gu-os-understanding.md` con sección narrativa "Casos operacionales".
 - Actualizar `docs/business-brain-evolution-roadmap.md` para alinear con `account_skills` V1 y subsistema de casos.

@@ -304,3 +304,103 @@ Estrategia de adopción:
 3. Hacer que `tool-readiness` combine ambos catálogos.
 4. Permitir que `allowed_tools` referencie `account:<tool_id>` o slugs namespaced equivalentes.
 5. Añadir UI de configuración/prueba antes de permitir que una skill activa use esa tool.
+
+---
+
+## 10. Consolidar adapters conversacionales (Telegram / web / WhatsApp)
+
+**Estado actual (2026-06):** la paridad operacional entre canales ya está
+cerrada en los motores compartidos:
+
+| Motor | Módulo | Usado por |
+|-------|--------|-----------|
+| Intención + creación/adopción de caso | `conversational-case-orchestrator.ts` → `resolveConversationalCaseForChannel` | **Web** (paso 2 del `/api/chat`) |
+| Intake determinístico | `conversational-intake-orchestrator.ts` | Telegram + web |
+| Routing / aclaración multi-caso | `conversational-routing-orchestrator.ts` | Telegram + web |
+| Tick E2E post-intake | `conversational-e2e-post-intake.ts` | Telegram + web |
+| Ingestión de documentos de caso | `case-document-ingestion.ts` | Telegram (contacto externo); WhatsApp reutilizará la misma pipeline |
+
+**Deuda técnica menor que queda:** el webhook de Telegram (`apps/web/src/app/api/telegram/webhook/route.ts`) aún tiene un **bloque inline** en el paso 2 que duplica la orquestación que web ya delega a `resolveConversationalCaseForChannel`. La lógica de negocio es equivalente (misma detección de intención, mismo `ensureConversationalCase`, mismo `forceNew`, mismo linkage E2E), pero Telegram conserva código adapter-específico inline porque:
+
+1. Pasa `labTelegramChatId` para simular el contacto externo en E2E.
+2. Hace `upsertConversationBinding` con `chatId` + `sessionId` explícitos.
+3. Envía el primer prompt de intake por Telegram y responde con rutas del webhook.
+
+**No es un gap funcional** — ambos canales se comportan igual en producción. Es
+refactor de estructura para reducir riesgo de divergencia futura al editar solo
+uno de los dos caminos.
+
+**Cuándo conviene hacerlo:**
+
+| Gatillo | Por qué |
+|---------|---------|
+| **Agregar WhatsApp** como canal conversacional | Evitar copiar el bloque inline de Telegram; un adapter común con `channelContext` (chatId, sessionId, lab external contact) beneficia a N canales. |
+| **Editar el paso 2 de intención/creación** y notar que hay que tocar dos sitios | Señal de que la duplicación ya cuesta mantenimiento. |
+| **Refactor general de adapters** | Oportunidad natural para unificar sin prisa. |
+
+**Dirección del refactor (cuando toque):**
+
+Extender `resolveConversationalCaseForChannel` (o un wrapper `resolveConversationalCaseForMessagingChannel`) con contexto opcional de canal:
+
+```ts
+channelContext?: {
+  chatId?: number;           // Telegram / WhatsApp
+  sessionId?: string;        // agent_sessions
+  labExternalChatId?: number; // E2E: contacto externo simulado
+}
+```
+
+El motor compartido devuelve `{ case, created, explicitIntent, ... }`; el adapter
+solo envía mensajes (Telegram `sendTelegramMessage`, web `addMessage` + JSON).
+
+**Qué NO mover al motor compartido:** envío de mensajes, formato UX de
+aclaración por canal, descarga de archivos del API de Telegram, ticks E2E que
+disparan `runSettingsTestCaseAgentTick` con side-effects de canal.
+
+**Referencias en código:**
+
+- Función compartida: `apps/web/src/lib/operational-cases/conversational-case-orchestrator.ts`
+- Bloque inline pendiente: `apps/web/src/app/api/telegram/webhook/route.ts` (~paso 2, `explicitPropertyIntent`)
+- Paridad web: `apps/web/src/app/api/chat/route.ts`
+
+**Validación post-refactor:** re-ejecutar selftests de routing/intake + smoke E2E
+lab (crear caso, intake, aclaración multi-caso, documento por Telegram como
+contacto externo).
+
+---
+
+## 11. Solicitud de documentos: modo `both` (pendiente)
+
+**Estado (2026-06):** el MVP soporta `document_request_target` en dos rutas:
+
+- `internal_user` (sube documentos el asesor/equipo interno).
+- `external_contact` (se solicita al contacto externo por mensajería).
+
+El modo `both` queda explícitamente **fuera de alcance** por ahora.
+
+### Por qué no entra en el MVP
+
+Con `both`, el sistema deja de poder avanzar sólo por señal “listo” de una
+fuente. Se necesita un control explícito de completitud por documento y por
+origen para evitar falsos positivos de avance.
+
+### Diseño recomendado para futura implementación
+
+1. Extender `document_request_target` con `both`.
+2. Crear checklist por caso (documentos requeridos/ideales) con estado por ítem:
+   - `missing`, `received`, `accepted`, `rejected`, `waived`.
+3. Mantener provenance por fuente:
+   - `advisor_web`, `advisor_telegram`, `external_telegram`, (futuro) WhatsApp.
+4. Reglas de dedupe:
+   - hash (`sha256`) + `kind` + superseded/reemplazo.
+5. Criterio de avance:
+   - sólo por checklist completo o override humano explícito
+     (“continuar con documentos disponibles”).
+
+### Guardrails al implementarlo
+
+- No inferir completitud total sólo por texto libre “listo”.
+- Si una fuente marca “listo”, tratarlo como cierre de **esa fuente** y no del
+  expediente completo.
+- Mostrar en UI qué documentos faltan y de qué fuente se espera cada uno.
+

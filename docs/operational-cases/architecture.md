@@ -276,7 +276,8 @@ Reglas:
 Este patrón es canal-agnóstico. Telegram usa `channel='telegram'` + `chat_id`;
 web chat puede usar `channel='web'` + `session_id`. Para canales futuros
 (WhatsApp, email), extender el check de `channel` en la migración y reutilizar el
-mismo resolver.
+mismo resolver. Deuda menor de adapters: Telegram aún duplica el paso 2 de
+intención/creación inline; ver [`future-considerations.md`](future-considerations.md) §10.
 
 ---
 
