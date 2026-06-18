@@ -14,14 +14,18 @@ import {
   updateOperationalCase,
 } from "@agents/db";
 import {
+  SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID,
   isControlledE2EOperationalCase,
   isSettingsOperationalTestCase,
+  operationalCaseDocumentRequestTargetFromContext,
+  resolveOperationalCaseDocumentRequestTarget,
   type OperationalCase,
   type PendingConfirmation,
 } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
+import { telegramChatIdFromCase } from "@/lib/operational-cases/settings-test-telegram-lab";
 
 type PostAgentInvariantAction = Awaited<
   ReturnType<typeof applyPropertyOptioningPostAgentInvariants>
@@ -79,31 +83,55 @@ function buildCaseE2ETickMessage(
   }
   const settingsTestCase = isSettingsOperationalTestCase(opCase);
   const controlledE2ECase = isControlledE2EOperationalCase(opCase);
+  const context =
+    opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+      ? (opCase.context_jsonb as Record<string, unknown>)
+      : {};
   const externalChatId =
-    opCase.external_contact_jsonb?.channel === "telegram" &&
-    typeof opCase.external_contact_jsonb.chat_id === "number"
-      ? opCase.external_contact_jsonb.chat_id
-      : null;
+    telegramChatIdFromCase(opCase, context) ??
+    (settingsTestCase || controlledE2ECase
+        ? SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID
+      : null);
+  const documentRequestTarget = resolveOperationalCaseDocumentRequestTarget({
+    externalContact: opCase.external_contact_jsonb,
+    context,
+  });
+  const explicitDocumentRequestTarget =
+    operationalCaseDocumentRequestTargetFromContext(context);
   return [
     `Tick E2E controlado para el caso ${opCase.id} (case_type=${opCase.case_type}, status=${opCase.status}, current_step=${opCase.current_step ?? "(none)"}).`,
     settingsTestCase || controlledE2ECase
       ? "Ejecuta la siguiente acción según la skill del caso de prueba. En este tick de prueba controlada las tools operativas y Telegram al contacto están pre-autorizadas (sin HITL)."
       : "Ejecuta la siguiente acción según la skill del caso. Este tick reemplaza al cron para un recorrido E2E controlado; los mensajes entrantes por Telegram siguen siendo parte del flujo real.",
-    externalChatId
+    explicitDocumentRequestTarget === "external_contact" && externalChatId
       ? `Contacto externo Telegram del caso: usa exactamente chat_id=${externalChatId} al llamar telegram_send_message_to_contact.`
       : "",
     opCase.current_step === "awaiting_documents"
       ? [
-          "Acción esperada para este paso: usa request-property-documents, envía el mensaje inicial de solicitud de documentos al contacto por Telegram, registra reminder_sent con purpose=initial_request y deja el caso en waiting_external / awaiting_documents.",
-          "El mensaje inicial DEBE enumerar documentos específicos, no uses una frase genérica. Incluye estos bullets:",
+          explicitDocumentRequestTarget == null
+            ? "Acción esperada para este paso: antes de pedir documentos, solicita al asesor elegir destino («interno» o «externo») con notify_user(kind=case_update). No envíes solicitud documental todavía."
+            : documentRequestTarget === "external_contact"
+            ? "Acción esperada para este paso: usa request-property-documents, envía el mensaje inicial de solicitud de documentos al contacto por Telegram, registra reminder_sent con purpose=initial_request y deja el caso en waiting_external / awaiting_documents."
+            : "Acción esperada para este paso: NO contactes al dueño por Telegram. Usa notify_user(kind=case_update) para pedir al asesor interno que suba documentos al caso (web, Telegram interno o panel de casos) y confirme con “listo” cuando termine.",
+          explicitDocumentRequestTarget == null
+            ? "Si el asesor responde «interno», registra document_request_target=internal_user. Si responde «externo», registra document_request_target=external_contact y entonces sí solicita documentos al contacto."
+            : documentRequestTarget === "external_contact"
+            ? "El mensaje inicial DEBE enumerar documentos específicos, no uses una frase genérica. Incluye estos bullets:"
+            : "La notificación interna DEBE enumerar documentos específicos, no uses una frase genérica. Incluye estos bullets:",
           "• Boleta registral (referencia principal para confirmar titularidad)",
           "• Escritura: primera hoja o sección donde esté la descripción de la propiedad, y última hoja si la tiene a la mano",
           "• Último recibo de predial",
           "• Identificación oficial (anverso y reverso)",
           "• Comprobante de domicilio (≤ 3 meses)",
-          "Si falta alguno, pide que envíe lo disponible y aclara que pueden continuar por texto sin detener el proceso.",
+          explicitDocumentRequestTarget === "external_contact"
+            ? "Si falta alguno, pide que envíe lo disponible y aclara que pueden continuar por texto sin detener el proceso."
+            : "Si falta alguno, indica que puede subir lo disponible y continuar por texto sin detener el proceso.",
           "Incluye una frase breve de privacidad: solo se usan para verificar la propiedad y armar el contrato; no se comparten sin autorización.",
-          "No avances a documents_received, comparables, precio ni contrato sin external_response.",
+          explicitDocumentRequestTarget == null
+            ? "No avances de awaiting_documents hasta que exista elección explícita de document_request_target."
+            : documentRequestTarget === "external_contact"
+            ? "No avances a documents_received, comparables, precio ni contrato sin external_response."
+            : "No avances a documents_received, comparables, precio ni contrato hasta que el asesor confirme “listo” y exista al menos un documento registrado.",
         ].join(" ")
       : "",
     opCase.current_step === "comparables_in_progress"
@@ -168,6 +196,7 @@ export async function runSettingsTestCaseAgentTick(
   if (!fresh) {
     throw new Error("case_not_found");
   }
+  const caseWithTarget = fresh;
 
   await insertOperationalCaseEvent(db, {
     caseId: fresh.id,
@@ -208,7 +237,7 @@ export async function runSettingsTestCaseAgentTick(
   const settingsTestCase = isSettingsOperationalTestCase(fresh);
 
   const agentResult = await runAgent({
-    message: buildCaseE2ETickMessage(fresh, {
+    message: buildCaseE2ETickMessage(caseWithTarget, {
       ownerResponseText: options?.ownerResponseText,
     }),
     userId,
@@ -231,7 +260,7 @@ export async function runSettingsTestCaseAgentTick(
     toolApprovalPolicy: settingsTestCase || controlledE2ECase
       ? buildSettingsTestToolApprovalPolicy()
       : undefined,
-    caseId: fresh.id,
+    caseId: caseWithTarget.id,
     toolCallSource: "agent_e2e",
   });
 

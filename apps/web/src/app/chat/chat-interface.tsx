@@ -10,6 +10,7 @@ import {
   useMemo,
   type ChangeEvent,
   type FormEvent,
+  type KeyboardEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -34,6 +35,10 @@ interface PendingAttachment {
   sizeBytes: number;
   text: string;
   truncated: boolean;
+  storageBucket: string;
+  storagePath: string;
+  sha256: string;
+  suggestedKind: string;
 }
 
 interface Message {
@@ -1381,6 +1386,11 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
   );
 });
 
+function adjustTextareaHeight(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
+}
+
 const ChatComposer = memo(function ChatComposer({
   loading,
   hasConfirmation,
@@ -1395,12 +1405,12 @@ const ChatComposer = memo(function ChatComposer({
   hasConfirmation: boolean;
   hasPendingAttachments: boolean;
   fileInputRef: RefObject<HTMLInputElement | null>;
-  composerInputRef: RefObject<HTMLInputElement | null>;
+  composerInputRef: RefObject<HTMLTextAreaElement | null>;
   onAttachmentSelection: (event: ChangeEvent<HTMLInputElement>) => void;
   onComposingChange: (composing: boolean) => void;
   onSend: (text: string) => void;
 }) {
-  const textInputRef = useRef<HTMLInputElement>(null);
+  const textInputRef = useRef<HTMLTextAreaElement>(null);
   const disabled = loading || hasConfirmation;
 
   useEffect(() => {
@@ -1415,7 +1425,7 @@ const ChatComposer = memo(function ChatComposer({
     };
   }, [onComposingChange]);
 
-  function assignTextInput(el: HTMLInputElement | null) {
+  function assignTextInput(el: HTMLTextAreaElement | null) {
     textInputRef.current = el;
     composerInputRef.current = el;
   }
@@ -1427,12 +1437,24 @@ const ChatComposer = memo(function ChatComposer({
     onSend(text);
     if (textInputRef.current) {
       textInputRef.current.value = "";
+      adjustTextareaHeight(textInputRef.current);
+    }
+  }
+
+  function handleInput(event: ChangeEvent<HTMLTextAreaElement>) {
+    adjustTextareaHeight(event.target);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
     }
   }
 
   return (
     <form onSubmit={handleSubmit} className="mx-auto max-w-2xl space-y-2">
-      <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm dark:border-white/10 dark:bg-neutral-900">
+      <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm dark:border-white/10 dark:bg-neutral-900">
         <input
           ref={fileInputRef}
           type="file"
@@ -1462,10 +1484,12 @@ const ChatComposer = memo(function ChatComposer({
             <path d="M21.44 11.05 12.25 20.24a6 6 0 1 1-8.49-8.49l9.19-9.19a4 4 0 1 1 5.66 5.66l-9.2 9.19a2 2 0 1 1-2.83-2.83l8.49-8.48" />
           </svg>
         </button>
-        <input
+        <textarea
           ref={assignTextInput}
-          type="text"
+          rows={1}
           defaultValue=""
+          onChange={handleInput}
+          onKeyDown={handleKeyDown}
           onFocus={() => onComposingChange(true)}
           onBlur={() => onComposingChange(false)}
           placeholder={
@@ -1474,7 +1498,7 @@ const ChatComposer = memo(function ChatComposer({
               : "Dile a Gu qué necesitas..."
           }
           disabled={disabled}
-          className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:opacity-50 dark:text-white dark:placeholder:text-white/40"
+          className="max-h-32 min-h-[2.5rem] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-3 py-2 text-sm leading-5 text-slate-900 outline-none placeholder:text-slate-400 disabled:opacity-50 dark:text-white dark:placeholder:text-white/40"
         />
         <button
           type="button"
@@ -1566,7 +1590,7 @@ export function ChatInterface({
     string | null
   >(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const composerInputRef = useRef<HTMLInputElement | null>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingHref = pendingInboxCount > 0 ? "/chat/pending" : null;
   const [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(
@@ -1871,18 +1895,32 @@ export function ChatInterface({
         sizeBytes?: number;
         text?: string;
         truncated?: boolean;
+        storageBucket?: string;
+        storagePath?: string;
+        sha256?: string;
+        suggestedKind?: string;
         error?: string;
       };
       const extractedText =
         typeof data.text === "string" ? data.text : "";
       const extractedName =
         typeof data.fileName === "string" ? data.fileName : "";
-      if (!res.ok || !extractedText || !extractedName) {
+      if (
+        !res.ok ||
+        !extractedText ||
+        !extractedName ||
+        typeof data.storageBucket !== "string" ||
+        typeof data.storagePath !== "string" ||
+        typeof data.sha256 !== "string"
+      ) {
         setAttachmentUploadStatus(
           data.error ?? "No se pudo adjuntar el archivo."
         );
         return;
       }
+      const storageBucket = data.storageBucket;
+      const storagePath = data.storagePath;
+      const sha256 = data.sha256;
       setPendingAttachments((current) => [
         ...current,
         {
@@ -1891,6 +1929,13 @@ export function ChatInterface({
           sizeBytes: data.sizeBytes ?? file.size,
           text: extractedText,
           truncated: data.truncated === true,
+          storageBucket,
+          storagePath,
+          sha256,
+          suggestedKind:
+            typeof data.suggestedKind === "string" && data.suggestedKind.trim()
+              ? data.suggestedKind
+              : "unknown",
         },
       ]);
       setAttachmentUploadStatus(null);
@@ -1951,7 +1996,19 @@ export function ChatInterface({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: agentMessage, turnId: clientTurnId }),
+        body: JSON.stringify({
+          message: agentMessage,
+          turnId: clientTurnId,
+          attachments: attachmentsForTurn.map((attachment) => ({
+            fileName: attachment.fileName,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            storageBucket: attachment.storageBucket,
+            storagePath: attachment.storagePath,
+            sha256: attachment.sha256,
+            suggestedKind: attachment.suggestedKind,
+          })),
+        }),
       });
 
       const data = (await res.json()) as {

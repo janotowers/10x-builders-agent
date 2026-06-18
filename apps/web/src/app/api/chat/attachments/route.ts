@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
+import { createHash, randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
+import { CASE_DOCUMENTS_BUCKET } from "@agents/db";
 import {
   CHAT_ATTACHMENT_MAX_BYTES,
   extractAttachmentText,
 } from "@/lib/chat/extract-attachment-text";
+import {
+  documentExtensionFromPath,
+  inferCaseDocumentKind,
+  safeDocumentPathSegment,
+} from "@/lib/operational-cases/case-document-ingestion";
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -43,12 +50,36 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+    const sha256 = createHash("sha256").update(buffer).digest("hex");
+    const extension = documentExtensionFromPath(fileValue.name, "bin");
+    const baseName = safeDocumentPathSegment(fileValue.name.replace(/\.[^.]+$/, ""));
+    const storagePath = `${user.id}/chat-attachments/${randomUUID()}-${baseName}.${extension}`;
+    const { error: uploadError } = await supabase.storage
+      .from(CASE_DOCUMENTS_BUCKET)
+      .upload(storagePath, buffer, {
+        contentType: fileValue.type || "application/octet-stream",
+        upsert: false,
+      });
+    if (uploadError) {
+      return NextResponse.json(
+        { error: "No se pudo guardar el adjunto para el caso." },
+        { status: 500 }
+      );
+    }
+    const suggestedKind = inferCaseDocumentKind({
+      text,
+      fileName: fileValue.name,
+    });
     return NextResponse.json({
       fileName: fileValue.name,
       mimeType: fileValue.type || "application/octet-stream",
       sizeBytes: fileValue.size,
       text,
       truncated,
+      storageBucket: CASE_DOCUMENTS_BUCKET,
+      storagePath,
+      sha256,
+      suggestedKind,
     });
   } catch (error) {
     const message =

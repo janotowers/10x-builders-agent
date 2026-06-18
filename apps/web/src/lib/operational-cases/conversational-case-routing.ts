@@ -130,15 +130,32 @@ function looksLikeListingIntent(text: string) {
   );
 }
 
+function bindingCandidateTitle(
+  binding: OperationalCaseConversationBinding,
+  opCase: OperationalCase | null | undefined
+): string {
+  const context = opCase?.context_jsonb ?? {};
+  const candidates = [
+    context.property_title,
+    context.title,
+    context.property_name,
+    context.address,
+    context.property_zone,
+    context.zona,
+    context.zone,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return binding.case_type;
+}
+
 function formatBindingCandidate(
   binding: OperationalCaseConversationBinding,
   opCase: OperationalCase | null | undefined
 ) {
   const technical = `${opCase?.status ?? "unknown"} / ${opCase?.current_step ?? "sin_step"}`;
-  const title =
-    typeof opCase?.context_jsonb?.title === "string" && opCase.context_jsonb.title.trim()
-      ? opCase.context_jsonb.title.trim()
-      : binding.case_type;
+  const title = bindingCandidateTitle(binding, opCase);
   const shortId = opCase?.id ? `…${opCase.id.slice(-8)}` : "";
   return `${binding.case_type} · ${title} · ${technical}${shortId ? ` · ${shortId}` : ""}`;
 }

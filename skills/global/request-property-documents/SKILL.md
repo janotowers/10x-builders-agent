@@ -43,13 +43,28 @@ Más cualquier documento extra que la cuenta exija (revisa
 ## Workflow
 
 1. Lee el caso. Identifica:
+   - `context_jsonb.document_request_target`:
+     - `external_contact` (default sólo si hay contacto verificado) o
+     - `internal_user` (el asesor/equipo sube documentos).
    - `external_contact_jsonb.chat_id` y `display_name` del dueño.
    - `context_jsonb.required_documents`: si no existe, usa la lista
      default de arriba.
    - documentos ya registrados vía `operational_case_list_documents` y/o
      `context_jsonb.documents_received`.
 
-2. Si **aún no se ha mandado el primer mensaje** (no hay evento
+2. Si `document_request_target === internal_user`:
+
+   a. NO uses `telegram_send_message_to_contact`.
+
+   b. Llama `notify_user` al asesor con checklist de documentos pendientes y
+      la instrucción explícita de subirlos al caso (web/Telegram interno) y
+      confirmar con “listo” cuando termine.
+
+   c. Deja `status=waiting_internal`, `current_step=awaiting_documents`.
+
+   d. Registra `operational_case_add_event(reminder_sent, payload={purpose: internal_request})`.
+
+3. Si `document_request_target !== internal_user` y **aún no se ha mandado el primer mensaje** (no hay evento
    `reminder_sent` con `purpose=initial_request`):
 
    a. Compón un mensaje cordial en español pidiendo TODOS los documentos
@@ -66,7 +81,7 @@ Más cualquier documento extra que la cuenta exija (revisa
    d. Mueve `status=waiting_external`, deja `current_step=awaiting_documents`,
       pon `next_action_at = now() + remind_after_h[0]` (default 24h).
 
-3. Si **ya hay mensajes previos** y el cron te invocó porque venció
+4. Si `document_request_target !== internal_user` y **ya hay mensajes previos** y el cron te invocó porque venció
    `next_action_at`:
 
    a. Revisa últimos eventos: ¿hay `external_response` posterior al último
@@ -82,7 +97,7 @@ Más cualquier documento extra que la cuenta exija (revisa
       `notify_user(urgency=high, kind=case_escalation)` y mueve
       `status=paused` con un evento `escalated`.
 
-4. Si llegó respuesta del externo (`external_response`):
+5. Si llegó respuesta del externo (`external_response`):
 
    a. Lee el payload del evento. Si vienen documentos (URLs/IDs de archivos
       o documentos recibidos),

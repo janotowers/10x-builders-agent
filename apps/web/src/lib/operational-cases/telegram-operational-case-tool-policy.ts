@@ -1,18 +1,8 @@
-import type { OperationalCase, ToolApprovalPolicy } from "@agents/types";
-
-export function buildTelegramOperationalCaseToolApprovalPolicy(
-  opCase: Pick<OperationalCase, "current_step"> | null | undefined
-): ToolApprovalPolicy | undefined {
-  if (!opCase) return undefined;
-
-  const policy: ToolApprovalPolicy = {
-    operational_case_update_intake: "auto_execute",
-  };
-
-  if (opCase.current_step === "intake") {
-    policy.operational_case_create = "auto_execute";
-    policy.operational_case_update_state = "deny";
-  }
-
-  return policy;
-}
+/**
+ * @deprecated La política de aprobación de tools del caso es agnóstica de canal.
+ * La fuente única ahora vive en `conversational-case-orchestrator.ts` como
+ * `buildOperationalCaseToolApprovalPolicy`. Este archivo re-exporta con el
+ * nombre histórico para no romper los imports existentes (webhook de Telegram y
+ * su selftest). Prefiere importar `buildOperationalCaseToolApprovalPolicy`.
+ */
+export { buildOperationalCaseToolApprovalPolicy as buildTelegramOperationalCaseToolApprovalPolicy } from "./conversational-case-orchestrator";

@@ -46,6 +46,7 @@ import {
   generatedDocumentDedupKey,
   normalizeGeneratedDocumentArgs,
   normalizeTelegramSendText,
+  resolveOperationalCaseDocumentRequestTarget,
   SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID,
   telegramSendInputsMatch,
   type ToolCallSource,
@@ -64,6 +65,11 @@ const TELEGRAM_REPLY_EXPECTED_PURPOSES = new Set([
   "request_documents",
   "characteristics_pending",
 ]);
+const TELEGRAM_EXTERNAL_CONTACT_PURPOSES = new Set([
+  "request_documents",
+  "initial_request",
+  "characteristics_pending",
+]);
 
 function isSettingsOperationalTestCase(
   context: Record<string, unknown> | null | undefined
@@ -75,11 +81,25 @@ function isSettingsOperationalTestCase(
   );
 }
 
-function shouldSimulateSettingsTestTelegramSend(
+function isControlledConversationalE2ECase(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  if (!context) return false;
+  return (
+    context.created_from === "agent_conversation" &&
+    context.e2e_controlled === true
+  );
+}
+
+function shouldSimulateLabTelegramSend(
   chatId: number,
   toolCallSource?: ToolCallSource
 ): boolean {
-  if (toolCallSource !== "skill_test" && toolCallSource !== "step_test") {
+  if (
+    toolCallSource !== "skill_test" &&
+    toolCallSource !== "step_test" &&
+    toolCallSource !== "agent_e2e"
+  ) {
     return false;
   }
   if (chatId === SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID) return true;
@@ -245,7 +265,7 @@ async function applyTelegramSendCaseWiring(
     purpose?: string;
   },
   opCase: import("@agents/types").OperationalCase,
-  settingsTestCase: boolean
+  suppressExternalNotification: boolean
 ) {
   let caseForUpdate = opCase;
   const currentChatId = (caseForUpdate.external_contact_jsonb as Record<string, unknown>)
@@ -292,7 +312,7 @@ async function applyTelegramSendCaseWiring(
       text_preview: input.text.slice(0, 200),
     },
   });
-  if (!settingsTestCase) {
+  if (!suppressExternalNotification) {
     await createExternalContactNotification(ctx.db, {
       userId: ctx.userId,
       caseId: caseForUpdate.id,
@@ -322,7 +342,7 @@ async function applyTelegramSendCaseWiring(
           purpose === "characteristics_pending"
             ? "documents_received"
             : latest.current_step,
-        nextActionAt: settingsTestCase
+        nextActionAt: suppressExternalNotification
           ? null
           : new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
       });
@@ -387,6 +407,7 @@ export function addRealEstateTools(
 
           let opCase: import("@agents/types").OperationalCase | null = null;
           let settingsTestCase = false;
+          let controlledConversationalE2ECase = false;
           if (input.case_id) {
             try {
               const loaded = await getOperationalCase(ctx.db, input.case_id);
@@ -395,6 +416,10 @@ export function addRealEstateTools(
                 settingsTestCase = isSettingsOperationalTestCase(
                   loaded.context_jsonb as Record<string, unknown>
                 );
+                controlledConversationalE2ECase =
+                  isControlledConversationalE2ECase(
+                    loaded.context_jsonb as Record<string, unknown>
+                  );
               }
             } catch (e) {
               console.warn("[realestate] telegram_send: case preload failed:", e);
@@ -431,9 +456,34 @@ export function addRealEstateTools(
             }
           }
 
+          if (opCase) {
+            const target = resolveOperationalCaseDocumentRequestTarget({
+              externalContact: opCase.external_contact_jsonb,
+              context: opCase.context_jsonb as Record<string, unknown>,
+            });
+            const purpose = input.purpose ?? "outbound";
+            if (
+              target === "internal_user" &&
+              TELEGRAM_EXTERNAL_CONTACT_PURPOSES.has(purpose)
+            ) {
+              const out = {
+                ok: false,
+                status: "blocked_by_document_request_target",
+                document_request_target: target,
+                case_id: opCase.id,
+                purpose,
+                skipped_send: true,
+                hint:
+                  "Este caso está configurado para solicitar documentos al equipo interno. Usa notify_user o cambia document_request_target a external_contact antes de enviar al contacto externo.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "executed", out);
+              return JSON.stringify(out);
+            }
+          }
+
           const simulateLabSend =
-            settingsTestCase &&
-            shouldSimulateSettingsTestTelegramSend(
+            (settingsTestCase || controlledConversationalE2ECase) &&
+            shouldSimulateLabTelegramSend(
               input.chat_id,
               ctx.toolCallSource
             );
@@ -454,7 +504,7 @@ export function addRealEstateTools(
                   ctx,
                   input,
                   opCase,
-                  settingsTestCase
+                  true
                 );
               } catch (e) {
                 console.warn(
