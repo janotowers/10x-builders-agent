@@ -414,6 +414,16 @@ export interface OperationalCaseExternalContact {
   identifier?: string;
 }
 
+export type OperationalCaseDocumentRequestTarget =
+  | "internal_user"
+  | "external_contact";
+
+export type OperationalCaseExternalContactStatus =
+  | "missing"
+  | "pending_opt_in"
+  | "verified"
+  | "unreachable";
+
 export interface OperationalCase {
   id: string;
   user_id: string;
@@ -516,6 +526,59 @@ export function isCronSuppressedOperationalCase(opCase: {
     isSettingsOperationalTestCase(opCase) ||
     isControlledE2EOperationalCase(opCase)
   );
+}
+
+function positiveNumberOrNull(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+export function operationalCaseDocumentRequestTargetFromContext(
+  context: Record<string, unknown> | null | undefined
+): OperationalCaseDocumentRequestTarget | null {
+  if (!context) return null;
+  const raw = context.document_request_target;
+  if (raw === "internal_user" || raw === "external_contact") return raw;
+  return null;
+}
+
+export function hasOperationalCaseVerifiedExternalContact(params: {
+  externalContact?: OperationalCaseExternalContact | null;
+  context?: Record<string, unknown> | null;
+}): boolean {
+  const external = params.externalContact ?? {};
+  const context = params.context ?? {};
+  if (
+    (context.external_contact_status === "verified" ||
+      context.external_contact_status === true) &&
+    (external.channel || positiveNumberOrNull(external.chat_id))
+  ) {
+    return true;
+  }
+  if (positiveNumberOrNull(external.chat_id)) return true;
+  if (external.channel === "whatsapp") {
+    const identifier =
+      typeof external.identifier === "string" ? external.identifier.trim() : "";
+    if (identifier.length >= 8) return true;
+  }
+  return false;
+}
+
+export function resolveOperationalCaseDocumentRequestTarget(params: {
+  externalContact?: OperationalCaseExternalContact | null;
+  context?: Record<string, unknown> | null;
+}): OperationalCaseDocumentRequestTarget {
+  const explicit = operationalCaseDocumentRequestTargetFromContext(params.context);
+  if (explicit) return explicit;
+  return hasOperationalCaseVerifiedExternalContact(params)
+    ? "external_contact"
+    : "internal_user";
 }
 
 export interface OperationalCaseEvent {
