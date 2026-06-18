@@ -30,9 +30,11 @@ import {
 } from "@agents/db";
 import {
   buildOperationalCaseIntakeUpdateContext,
+  evaluatePropertyDataMinimumsForReview,
   isPropertyOptioningIntent,
   runAgent,
 } from "@agents/agent";
+import { extractOwnerCharacteristics } from "@/lib/operational-cases/owner-characteristics-extraction";
 import {
   downloadTelegramFile,
   getTelegramFile,
@@ -70,10 +72,7 @@ import {
   mergeIntakePatches,
   normalizeIntakePatchValues,
 } from "@/lib/operational-cases/property-optioning-intake-extraction";
-import {
-  parseOwnerCharacteristics,
-  syncIntakeFieldsFromPropertyData,
-} from "@/lib/operational-cases/parse-owner-characteristics";
+import { syncIntakeFieldsFromPropertyData } from "@/lib/operational-cases/parse-owner-characteristics";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -227,6 +226,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function derivePropertyTypeHint(
+  context: Record<string, unknown>,
+  propertyData: Record<string, unknown>
+): string | null {
+  const fromData = propertyData.property_type;
+  if (typeof fromData === "string" && fromData.trim()) return fromData.trim();
+  const fromContext = context.property_type;
+  if (typeof fromContext === "string" && fromContext.trim()) {
+    return fromContext.trim();
+  }
+  if (Array.isArray(fromContext)) {
+    const first = fromContext.find(
+      (value): value is string => typeof value === "string" && value.trim().length > 0
+    );
+    if (first) return first.trim();
+  }
+  return null;
+}
+
+/**
+ * Merge an owner's free-form characteristics reply into the case.
+ *
+ * Interpretation is delegated to the reusable LLM structured extractor
+ * (with a deterministic parser fallback); the case is always advanced to the
+ * documents_received review point so the deterministic invariants decide
+ * whether to request internal review or re-ask only the still-missing fields.
+ */
 async function mergeCharacteristicsOwnerResponseDeterministically(params: {
   db: ReturnType<typeof createServerClient>;
   opCase: OperationalCase;
@@ -234,19 +260,25 @@ async function mergeCharacteristicsOwnerResponseDeterministically(params: {
   source: string;
   nextActionAt: string | null;
 }): Promise<OperationalCase> {
-  const parsed = parseOwnerCharacteristics(params.text);
-  const parsedKeys = Object.keys(parsed);
-  if (parsedKeys.length === 0) return params.opCase;
-
   const currentContext = isRecord(params.opCase.context_jsonb)
     ? params.opCase.context_jsonb
     : {};
   const currentPropertyData = isRecord(currentContext.property_data)
     ? currentContext.property_data
     : {};
+
+  const missingFields = evaluatePropertyDataMinimumsForReview(currentContext).missing;
+  const extraction = await extractOwnerCharacteristics({
+    text: params.text,
+    propertyType: derivePropertyTypeHint(currentContext, currentPropertyData),
+    missingFields,
+    currentPropertyData,
+  });
+  const parsedKeys = Object.keys(extraction.patch);
+
   const propertyData = {
     ...currentPropertyData,
-    ...parsed,
+    ...extraction.patch,
   };
   const mergedContext = syncIntakeFieldsFromPropertyData(
     currentContext,
@@ -262,8 +294,17 @@ async function mergeCharacteristicsOwnerResponseDeterministically(params: {
       nextActionAt: params.nextActionAt,
       context: {
         ...mergedContext,
-        deterministic_owner_response_processed_at: new Date().toISOString(),
-        deterministic_owner_response_parsed_fields: parsedKeys,
+        owner_response_processed_at: new Date().toISOString(),
+        owner_response_extraction_method: extraction.method,
+        owner_response_extraction_confidence: extraction.confidence,
+        owner_response_extraction_parsed_fields: parsedKeys,
+        owner_response_extraction_unresolved: extraction.unresolved,
+        ...(extraction.assumptions.length > 0
+          ? { owner_response_extraction_assumptions: extraction.assumptions }
+          : {}),
+        ...(extraction.validationErrors
+          ? { owner_response_extraction_validation_errors: extraction.validationErrors }
+          : {}),
       },
     }
   );
@@ -275,6 +316,9 @@ async function mergeCharacteristicsOwnerResponseDeterministically(params: {
       kind: "owner_characteristics_merged",
       source: params.source,
       parsed_fields: parsedKeys,
+      extraction_method: extraction.method,
+      extraction_confidence: extraction.confidence,
+      unresolved: extraction.unresolved,
     },
   });
   return updated ?? params.opCase;
@@ -1666,6 +1710,11 @@ export async function POST(request: Request) {
         caseType: "property_optioning",
       })
     : null;
+  const activeE2ELabSessionCaseId =
+    typeof activeE2ELabSession?.case_id === "string" &&
+    activeE2ELabSession.case_id.trim().length > 0
+      ? activeE2ELabSession.case_id.trim()
+      : null;
   const pendingBindings = await findPendingConversationBindings(db, {
     userId,
     channel: "telegram",
@@ -1756,16 +1805,40 @@ export async function POST(request: Request) {
   if (text) {
     if (!conversationalCase && explicitPropertyIntent) {
       try {
-        const ensured = await ensureConversationalCase(db, {
-          userId,
-          caseType: "property_optioning",
-          channel: "telegram",
-          e2eControlled: Boolean(activeE2ELabSession),
-          labTelegramChatId: activeE2ELabSession ? chatId : undefined,
-          forceNew: looksLikeNewCaseIntent(text),
-        });
-        conversationalCase = ensured?.case ?? null;
-        if (conversationalCase && activeE2ELabSession) {
+        if (activeE2ELabSessionCaseId) {
+          const sessionCase = await getOperationalCase(
+            db,
+            activeE2ELabSessionCaseId
+          );
+          if (
+            sessionCase &&
+            sessionCase.user_id === userId &&
+            sessionCase.case_type === "property_optioning" &&
+            sessionCase.context_jsonb?.created_from === "agent_conversation" &&
+            sessionCase.status !== "completed" &&
+            sessionCase.status !== "failed"
+          ) {
+            conversationalCase = sessionCase;
+          }
+        }
+        const ensured = conversationalCase
+          ? null
+          : await ensureConversationalCase(db, {
+              userId,
+              caseType: "property_optioning",
+              channel: "telegram",
+              e2eControlled: Boolean(activeE2ELabSession),
+              labTelegramChatId: activeE2ELabSession ? chatId : undefined,
+              forceNew:
+                looksLikeNewCaseIntent(text) ||
+                Boolean(activeE2ELabSession && !activeE2ELabSessionCaseId),
+            });
+        conversationalCase = conversationalCase ?? ensured?.case ?? null;
+        if (
+          conversationalCase &&
+          activeE2ELabSession &&
+          activeE2ELabSession.case_id !== conversationalCase.id
+        ) {
           await linkE2ELabSessionToCase(db, {
             sessionId: activeE2ELabSession.id,
             caseId: conversationalCase.id,

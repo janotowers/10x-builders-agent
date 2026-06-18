@@ -54,7 +54,9 @@ import { deriveCommissionContractTemplateData } from "./commission-contract-temp
 import {
   buildPropertyDataMinimumsSummaryMessage,
   documentExtractionMinimumsContext,
+  evaluatePropertyAdvanceGate,
   evaluatePropertyDataMinimumsForReview,
+  ownerConsistencyStatusFromFields,
 } from "./operational-cases-adapters";
 
 /** Outbound Telegram messages that expect a reply from the external contact. */
@@ -836,6 +838,69 @@ export function addRealEstateTools(
           const record = await createTrackedToolCall(ctx, "generate_document_from_template",
             inputRecord,
             true);
+
+          // Gate determinístico de titularidad (WS4): el contrato es la
+          // transición donde la corroboración de identidad SÍ es precondición.
+          // Fuente única de verdad (PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION).
+          if (input.template_slug === "commission_contract") {
+            const contractCaseId =
+              typeof input.case_id === "string" && input.case_id.trim()
+                ? input.case_id.trim()
+                : typeof ctx.caseId === "string"
+                  ? ctx.caseId.trim()
+                  : "";
+            if (contractCaseId) {
+              const gateCase = await getOperationalCase(ctx.db, contractCaseId);
+              if (gateCase && gateCase.case_type === "property_optioning") {
+                const gateDocuments = await listOperationalCaseDocuments(ctx.db, {
+                  caseId: gateCase.id,
+                  statuses: ["received"],
+                });
+                const titularidadGate = evaluatePropertyAdvanceGate({
+                  documents: gateDocuments,
+                  context: gateCase.context_jsonb,
+                  targetTransition: "contract_pending",
+                });
+                const titularidadBlock = titularidadGate.blocks.find(
+                  (block) => block.reason === "titularidad_unverified"
+                );
+                const corroborationBlock = titularidadGate.blocks.find(
+                  (block) => block.reason === "owner_corroboration_extraction_pending"
+                );
+                if (corroborationBlock) {
+                  const out = {
+                    ok: false,
+                    status: "blocked",
+                    error: "owner_corroboration_extraction_incomplete",
+                    pending_owner_corroboration_document_ids:
+                      corroborationBlock.remediation.document_ids ?? [],
+                    hint:
+                      "Antes de generar el contrato, termina la extracción de identificación/comprobante con operational_case_extract_document_fields (force=true) para los pending_owner_corroboration_document_ids y reintenta.",
+                  };
+                  await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                  return JSON.stringify(out);
+                }
+                if (titularidadBlock) {
+                  const titularidadFields = documentExtractionMinimumsContext(gateDocuments);
+                  const out = {
+                    ok: false,
+                    status: "blocked",
+                    error: "titularidad_review_required",
+                    titularidad_status:
+                      titularidadBlock.remediation.titularidad_status ??
+                      ownerConsistencyStatusFromFields(titularidadFields),
+                    owner_consistency_note: titularidadFields.owner_consistency_note ?? null,
+                    owner_consistency_warning:
+                      titularidadFields.owner_consistency_warning ?? null,
+                    hint:
+                      "La titularidad no está verificada. Levanta notify_user(kind=\"titularidad_review\") describiendo el desajuste para que el asesor decida. Si el asesor aprueba avanzar, registra el override con operational_case_update_state (context.titularidad.override.approved=true) y reintenta. No generes el contrato hasta resolver esto.",
+                  };
+                  await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                  return JSON.stringify(out);
+                }
+              }
+            }
+          }
 
           try {
             const out = await renderDocumentFromTemplate(ctx, input);

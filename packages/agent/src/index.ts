@@ -6,8 +6,20 @@ export {
   buildPropertyDataMinimumsSummaryMessage,
   documentExtractionMinimumsContext,
   evaluatePropertyDataMinimumsForReview,
+  evaluatePropertyAdvanceGate,
+  ownerConsistencyStatusFromFields,
+  titularidadOverrideApproved,
+  runDocumentFieldExtraction,
   missingRequiredIntakeFields,
   operationalCaseIntakeSuccessStep,
+} from "./tools/operational-cases-adapters";
+export type {
+  PropertyAdvanceTransition,
+  PropertyAdvanceGateBlockReason,
+  PropertyAdvanceRemediationOwner,
+  PropertyAdvanceGateBlock,
+  PropertyAdvanceGateResult,
+  DocumentFieldExtractionResult,
 } from "./tools/operational-cases-adapters";
 export { TOOL_CATALOG } from "./tools/catalog";
 export { githubApi } from "./tools/github-api";

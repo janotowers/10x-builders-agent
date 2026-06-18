@@ -1,6 +1,6 @@
 # Catálogo de patrones reutilizables — Casos operacionales
 
-> **Estado:** v1.1 — catálogo operativo derivado del piloto `property_optioning` (Pasos 2–5; N4 Paso 5 con HITL de contrato completo).
+> **Estado:** v1.2 — añade patrones de gate único con remediación por dueño, auto-remediación determinística con circuit breaker y paridad skill↔gate (derivados del fix de extracción/titularidad en `property_optioning`).
 >
 > **Documentos relacionados**
 > - [`use-case-authoring-vision.md`](use-case-authoring-vision.md) — visión NL → propuesta implementable (hub).
@@ -78,6 +78,42 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Implementación** | Semilla/reparación en [`run-skill/route.ts`](../../apps/web/src/app/api/tool-readiness/run-skill/route.ts) (p. ej. `extract-property-characteristics`, `prepare-listing-price`) |
 | **Producción** | **No** — solo casos con `created_from: case_type_settings_test` |
 | **Ejemplo** | Completar `bedrooms`/`bathrooms`/`parking_spots` tras tick N3 de revisión interna |
+
+### `PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION`
+
+| | |
+|--|--|
+| **Capa** | `runtime` |
+| **Cuándo usar** | Toda transición de un caso que dependa de precondiciones de datos/documentos (avanzar de paso, generar un artefacto legal). Evita la divergencia de tener la misma regla copiada en el tool gate, el invariante post-agente y la skill |
+| **Implementación** | Predicado único `evaluatePropertyAdvanceGate` en [`operational-cases-adapters.ts`](../../packages/agent/src/tools/operational-cases-adapters.ts), consumido por el tool gate de `notify_user(property_data_review)`, el invariante [`property-optioning-post-agent-invariants.ts`](../../apps/web/src/lib/operational-cases/property-optioning-post-agent-invariants.ts) y el gate de contrato en [`realestate-adapters.ts`](../../packages/agent/src/tools/realestate-adapters.ts) |
+| **Comportamiento** | Una sola función decide `satisfied` y devuelve `blocks[]`; **cada bloqueo declara su `remediation.owner`** (`deterministic` \| `external` \| `human` \| `llm`). El caller enruta según el dueño, no reimplementa la condición. El `targetTransition` desacopla concerns: `comparables_in_progress` exige solo características del inmueble; `contract_pending` exige corroboración de titularidad |
+| **Producción** | Sí |
+| **Relacionado** | `PATTERN_DETERMINISTIC_AUTO_REMEDIATION_WITH_CIRCUIT_BREAKER`, `PATTERN_OPERATIONAL_WRITE_GATE` |
+| **Principio** | *Un guard solo determina si la precondición se cumple; quién la remedia es responsabilidad explícita y separada.* |
+
+### `PATTERN_DETERMINISTIC_AUTO_REMEDIATION_WITH_CIRCUIT_BREAKER`
+
+| | |
+|--|--|
+| **Capa** | `runtime` |
+| **Cuándo usar** | Un bloqueo cuya remediación es **mecánica** (no requiere juicio): re-OCR de un documento ya subido, recomputar un campo derivado. No dejes que el caso se congele esperando que el LLM lo haga |
+| **Implementación** | Invariante post-agente: para `blocks` con `remediation.owner === "deterministic"` dispara `runDocumentFieldExtraction(force=true)` ([`operational-cases-adapters.ts`](../../packages/agent/src/tools/operational-cases-adapters.ts)), re-evalúa el gate y persiste un contador `context.extraction_remediation_attempts` |
+| **Comportamiento** | Breaker de **N=3 intentos por documento** (`DOCUMENT_EXTRACTION_MAX_REMEDIATION_ATTEMPTS`). Mientras haya presupuesto: reintenta y difiere al próximo tick. Agotado: **escala a humano** (`notify(kind="document_extraction_failed")`, acción `escalated_extraction_to_human`). **Nunca** deja un estado terminal silencioso: todo bloqueo termina en reintento, espera accionable o escalado |
+| **Producción** | Sí |
+| **Relacionado** | `PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION`, `PATTERN_NOTIFY_USER_CHANNELS` |
+| **Principio** | *Trabajo mecánico → código; juicio → humano/LLM. Siempre con tope de reintentos y salida no-silenciosa.* |
+
+### `PATTERN_SKILL_GATE_CONTRACT_PARITY`
+
+| | |
+|--|--|
+| **Capa** | `runtime` + `test_contract` |
+| **Cuándo usar** | Siempre que un gate determinístico imponga una precondición que la skill (LLM) también debe entender. Evita el *split-brain* donde la skill cree haber terminado pero el gate sigue bloqueando |
+| **Implementación** | Las instrucciones de [`extract-property-characteristics`](../../skills/global/extract-property-characteristics/SKILL.md) y [`prepare-commission-contract`](../../skills/global/prepare-commission-contract/SKILL.md) describen exactamente lo que exige `evaluatePropertyAdvanceGate` para cada `targetTransition`, incluyendo qué error devuelve el tool y cómo remediarlo |
+| **Comportamiento** | Skill y gate comparten vocabulario: la skill sabe que titularidad NO bloquea comparables (solo advierte) pero SÍ bloquea contrato (HITL `titularidad_review` con override auditado en `context.titularidad.override`) |
+| **Producción** | Sí |
+| **Relacionado** | `PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION`, `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW` |
+| **Principio** | *La instrucción del LLM, el gate determinístico y el contrato de prueba deben coincidir en los requisitos.* |
 
 ---
 

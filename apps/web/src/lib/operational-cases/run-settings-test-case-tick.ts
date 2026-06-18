@@ -23,6 +23,38 @@ import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 
+type PostAgentInvariantAction = Awaited<
+  ReturnType<typeof applyPropertyOptioningPostAgentInvariants>
+>["action"];
+
+/**
+ * Translate the deterministic invariant outcome into an honest controlled-E2E
+ * status so the lab panel never reports a hollow "tick completed" when the case
+ * is actually waiting on the owner or blocked on document extraction.
+ */
+function deriveControlledE2EStatus(
+  action: PostAgentInvariantAction,
+  pendingConfirmation: boolean
+): string {
+  if (pendingConfirmation) return "pending_hitl";
+  switch (action) {
+    case "requested_property_data_review":
+    case "remediated_extraction":
+      return "manual_tick_completed";
+    case "asked_missing_characteristics":
+    case "asked_missing_characteristics_again":
+      return "waiting_external";
+    case "deferred_pending_extraction":
+      return "blocked_pending_extraction";
+    case "escalated_extraction_to_human":
+      return "extraction_escalated_to_human";
+    case "no_action":
+    case "not_applicable":
+    default:
+      return "manual_tick_completed";
+  }
+}
+
 export function isSettingsTestCase(opCase: OperationalCase): boolean {
   return isSettingsOperationalTestCase(opCase);
 }
@@ -211,6 +243,10 @@ export async function runSettingsTestCaseAgentTick(
   });
   const caseAfterDeterministicFallback = invariantResult.case ?? afterAgent;
   const version = caseAfterDeterministicFallback?.version ?? fresh.version;
+  const controlledStatus = deriveControlledE2EStatus(
+    invariantResult.action,
+    Boolean(agentResult.pendingConfirmation)
+  );
   const updated = await updateOperationalCase(db, fresh.id, version, {
     nextActionAt: controlledE2ECase ? null : undefined,
     context: {
@@ -233,9 +269,8 @@ export async function runSettingsTestCaseAgentTick(
             e2e_control_pending_confirmation: Boolean(
               agentResult.pendingConfirmation
             ),
-            e2e_control_status: agentResult.pendingConfirmation
-              ? "pending_hitl"
-              : "manual_tick_completed",
+            e2e_control_status: controlledStatus,
+            e2e_control_last_invariant_action: invariantResult.action,
           }
         : {}),
     },
@@ -251,6 +286,8 @@ export async function runSettingsTestCaseAgentTick(
         ? "e2e_pending_hitl"
         : "e2e_tick_completed",
       pending_confirmation: Boolean(agentResult.pendingConfirmation),
+      invariant_action: invariantResult.action,
+      controlled_status: controlledStatus,
       response_preview: agentResult.response?.slice(0, 500) ?? null,
     },
   });

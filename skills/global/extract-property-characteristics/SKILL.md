@@ -23,6 +23,11 @@ guardrails: |
   Antes de pasar a comparables, solicita validación interna del inmobiliario
   con `notify_user(kind="property_data_review")`. No avances si hay conflicto
   evidente entre intake, documentos y respuesta del dueño.
+  El gate para avanzar a comparables exige SOLO características del inmueble
+  (predial + mínimos por tipo). La corroboración de titularidad
+  (INE/comprobante) NO bloquea comparables: aquí es solo una advertencia; se
+  vuelve requisito (gate HITL `titularidad_review`) recién al preparar el
+  contrato. No detengas comparables por falta de INE/comprobante.
 ---
 
 # Extract property characteristics
@@ -75,6 +80,9 @@ Llenar `context_jsonb.property_data` con un objeto canónico:
    devuelto por `operational_case_list_documents`; nunca uses placeholders como
    `<document_id>` ni IDs abreviados.
    Usa esos datos como fuente, no como verdad absoluta.
+   Nota: si omites la extracción de un predial pendiente, el sistema la dispara
+   por sí mismo de forma determinística (texto + visión, hasta 3 intentos) antes
+   de escalar a humano. Aun así, extraer tú mismo es lo esperado y más rápido.
 3. Consolida primero `context_jsonb.property_data` con los datos extraídos de
    documentos de propiedad (`escritura_descripcion`, `predial`,
    `boleta_registral`): titulares, dirección legal y superficie/metraje. No

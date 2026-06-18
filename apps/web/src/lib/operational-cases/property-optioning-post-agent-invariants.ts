@@ -1,7 +1,10 @@
 import {
   buildPropertyDataMinimumsSummaryMessage,
   documentExtractionMinimumsContext,
+  evaluatePropertyAdvanceGate,
   evaluatePropertyDataMinimumsForReview,
+  runDocumentFieldExtraction,
+  type PropertyAdvanceGateBlock,
 } from "@agents/agent";
 import {
   createServerClient,
@@ -10,7 +13,7 @@ import {
   listOperationalCaseDocuments,
   updateOperationalCase,
 } from "@agents/db";
-import type { OperationalCase, OperationalCaseDocument } from "@agents/types";
+import type { OperationalCase } from "@agents/types";
 import { notify } from "@/lib/notify";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
 
@@ -20,138 +23,44 @@ type ApplyPropertyOptioningPostAgentInvariantsResult = {
     | "not_applicable"
     | "no_action"
     | "deferred_pending_extraction"
+    | "remediated_extraction"
+    | "escalated_extraction_to_human"
     | "asked_missing_characteristics"
+    | "asked_missing_characteristics_again"
     | "requested_property_data_review";
 };
 
-function normalizeDocSignalValue(value: unknown) {
-  return String(value ?? "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
+/**
+ * Circuit breaker para la auto-remediación determinística de extracción (WS3).
+ * Tras N intentos sin lograr extraer un documento, dejamos de reintentar y
+ * escalamos a humano en vez de congelar el caso (sub-decisión A).
+ */
+const MAX_EXTRACTION_REMEDIATION_ATTEMPTS = (() => {
+  const raw = Number(process.env.DOCUMENT_EXTRACTION_MAX_REMEDIATION_ATTEMPTS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 3;
+})();
+
+function remediationAttemptsFromContext(
+  context: Record<string, unknown> | null | undefined
+): Record<string, number> {
+  const raw = context?.extraction_remediation_attempts;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "number" && Number.isFinite(value)) out[key] = value;
+  }
+  return out;
 }
 
-function isPredialDocumentCandidate(document: OperationalCaseDocument) {
-  const normalized = normalizeDocSignalValue(
-    [document.kind, document.display_name, document.original_name].filter(Boolean).join(" ")
-  );
-  return /\bpredial\b|impuesto predial|cuenta predial|clave catastral/.test(normalized);
-}
-
-function isOwnerCorroborationDocumentCandidate(document: OperationalCaseDocument) {
-  const extraction = document.extraction_jsonb ?? {};
-  const normalized = normalizeDocSignalValue(
-    [
-      document.kind,
-      document.display_name,
-      document.original_name,
-      extraction.document_kind,
-      extraction.raw_text,
-      extraction.text,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .slice(0, 4000)
-  );
-  return /ine|instituto nacional electoral|identificacion|identidad|comprobante|domicilio|estado de cuenta|banco|bancario/.test(
-    normalized
-  );
-}
-
-function firstMeaningfulValue(...values: unknown[]) {
-  for (const value of values) {
-    if (value == null) continue;
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim()) return value.trim();
+function deterministicDocumentIdsFromBlocks(
+  blocks: PropertyAdvanceGateBlock[]
+): string[] {
+  const ids = new Set<string>();
+  for (const block of blocks) {
+    if (block.remediation.owner !== "deterministic") continue;
+    for (const id of block.remediation.document_ids ?? []) ids.add(id);
   }
-  return null;
-}
-
-function predialOrCorroborationExtractionGate(input: {
-  documents: OperationalCaseDocument[];
-  propertyType: string;
-}) {
-  const pendingStatuses = new Set(["pending", "failed", "not_applicable"]);
-  const usableStatuses = new Set(["ok", "low_confidence"]);
-
-  const predials = input.documents.filter(
-    (document) => document.status !== "superseded" && isPredialDocumentCandidate(document)
-  );
-  const pendingPredials = predials
-    .filter((document) => pendingStatuses.has(document.extraction_status))
-    .map((document) => document.id);
-  if (pendingPredials.length > 0) {
-    return {
-      blocked: true as const,
-      reason: "predial_extraction_pending",
-      pending_predial_document_ids: pendingPredials,
-      pending_owner_corroboration_document_ids: [] as string[],
-    };
-  }
-  const extractedPredials = predials.filter((document) =>
-    usableStatuses.has(document.extraction_status)
-  );
-  if (predials.length > 0) {
-    const hasTotal = extractedPredials.some((document) =>
-      firstMeaningfulValue(
-        document.extraction_jsonb?.area_total_m2,
-        document.extraction_jsonb?.area_m2,
-        document.extraction_jsonb?.surface_m2,
-        document.extraction_jsonb?.superficie_m2,
-        document.extraction_jsonb?.sup_terr,
-        document.extraction_jsonb?.superficie_terreno_m2
-      ) != null
-    );
-    if (!hasTotal) {
-      return {
-        blocked: true as const,
-        reason: "predial_area_total_missing",
-        pending_predial_document_ids: extractedPredials.map((document) => document.id),
-        pending_owner_corroboration_document_ids: [] as string[],
-      };
-    }
-    const requiresBuilt = normalizeDocSignalValue(input.propertyType).includes("casa");
-    const hasBuilt = extractedPredials.some((document) =>
-      firstMeaningfulValue(
-        document.extraction_jsonb?.area_construida_m2,
-        document.extraction_jsonb?.construction_area_m2,
-        document.extraction_jsonb?.built_area_m2,
-        document.extraction_jsonb?.sup_const,
-        document.extraction_jsonb?.superficie_construccion_m2
-      ) != null
-    );
-    if (requiresBuilt && !hasBuilt) {
-      return {
-        blocked: true as const,
-        reason: "predial_area_construida_missing",
-        pending_predial_document_ids: extractedPredials.map((document) => document.id),
-        pending_owner_corroboration_document_ids: [] as string[],
-      };
-    }
-  }
-
-  const corroborationDocs = input.documents.filter(
-    (document) =>
-      document.status !== "superseded" && isOwnerCorroborationDocumentCandidate(document)
-  );
-  const pendingCorroboration = corroborationDocs
-    .filter((document) => pendingStatuses.has(document.extraction_status))
-    .map((document) => document.id);
-  if (pendingCorroboration.length > 0) {
-    return {
-      blocked: true as const,
-      reason: "owner_corroboration_extraction_pending",
-      pending_predial_document_ids: [] as string[],
-      pending_owner_corroboration_document_ids: pendingCorroboration,
-    };
-  }
-
-  return {
-    blocked: false as const,
-    reason: null,
-    pending_predial_document_ids: [] as string[],
-    pending_owner_corroboration_document_ids: [] as string[],
-  };
+  return [...ids];
 }
 
 function isPropertyOptioningDocumentsReviewPoint(opCase: OperationalCase) {
@@ -236,57 +145,186 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
     return { case: opCase, action: "not_applicable" };
   }
 
-  const documents = await listOperationalCaseDocuments(db, {
-    caseId: opCase.id,
+  let workingCase: OperationalCase = opCase;
+  let workingDocuments = await listOperationalCaseDocuments(db, {
+    caseId: workingCase.id,
     statuses: ["received"],
   });
-  const documentFields = documentExtractionMinimumsContext(documents);
-  const propertyTypeRaw =
-    opCase.context_jsonb?.property_type ??
-    (opCase.context_jsonb &&
-    typeof opCase.context_jsonb.property_data === "object" &&
-    !Array.isArray(opCase.context_jsonb.property_data)
-      ? (opCase.context_jsonb.property_data as Record<string, unknown>).property_type
-      : null);
-  const extractionGate = predialOrCorroborationExtractionGate({
-    documents,
-    propertyType: typeof propertyTypeRaw === "string" ? propertyTypeRaw : "",
-  });
-  const minimums = evaluatePropertyDataMinimumsForReview(
-    opCase.context_jsonb,
-    documentFields
-  );
-  const recentEvents = await getRecentOperationalCaseEvents(db, opCase.id, 30);
+  const recentEvents = await getRecentOperationalCaseEvents(db, workingCase.id, 30);
 
-  if (extractionGate.blocked) {
-    const alreadyDeferred = recentEvents.some((event) => {
-      const payload = event.payload_jsonb as Record<string, unknown> | null;
-      return (
-        event.event_type === "state_changed" &&
-        payload?.kind === "property_data_review_deferred_pending_extraction" &&
-        payload?.reason === extractionGate.reason
+  // Fuente única de verdad: gate de avance a comparables (WS1/WS2). La
+  // corroboración de titularidad NO bloquea aquí; es gate de contract_pending.
+  let gate = evaluatePropertyAdvanceGate({
+    documents: workingDocuments,
+    context: workingCase.context_jsonb,
+    targetTransition: "comparables_in_progress",
+  });
+  let deterministicIds = deterministicDocumentIdsFromBlocks(gate.blocks);
+
+  // --- Auto-remediación determinística + circuit breaker (WS3) ------------
+  // El bloqueo por extracción ya no es terminal: el código intenta extraer él
+  // mismo (texto PDF + Vision) los documentos pendientes que aún tengan
+  // presupuesto, re-evalúa una vez, y solo escala a humano tras agotar N
+  // intentos. Nunca deja el caso en limbo silencioso.
+  if (deterministicIds.length > 0) {
+    const attempts = remediationAttemptsFromContext(workingCase.context_jsonb);
+    const remediable = deterministicIds.filter(
+      (id) => (attempts[id] ?? 0) < MAX_EXTRACTION_REMEDIATION_ATTEMPTS
+    );
+    if (remediable.length > 0) {
+      for (const documentId of remediable) {
+        attempts[documentId] = (attempts[documentId] ?? 0) + 1;
+        try {
+          await runDocumentFieldExtraction(db, {
+            userId: workingCase.user_id,
+            documentId,
+            force: true,
+          });
+        } catch {
+          // El fallo cuenta como intento; el breaker escalará si persiste.
+        }
+      }
+      const persisted = await updateOperationalCase(
+        db,
+        workingCase.id,
+        workingCase.version,
+        {
+          context: {
+            ...(workingCase.context_jsonb ?? {}),
+            extraction_remediation_attempts: attempts,
+          },
+        }
       );
-    });
-    if (!alreadyDeferred) {
+      workingCase = persisted ?? workingCase;
+      workingDocuments = await listOperationalCaseDocuments(db, {
+        caseId: workingCase.id,
+        statuses: ["received"],
+      });
       await insertOperationalCaseEvent(db, {
-        caseId: opCase.id,
+        caseId: workingCase.id,
         eventType: "state_changed",
         actor: "system",
         payload: {
-          kind: "property_data_review_deferred_pending_extraction",
+          kind: "extraction_auto_remediation_attempted",
           source,
-          reason: extractionGate.reason,
-          pending_predial_document_ids: extractionGate.pending_predial_document_ids,
-          pending_owner_corroboration_document_ids:
-            extractionGate.pending_owner_corroboration_document_ids,
+          document_ids: remediable,
+          attempts,
         },
       });
+      gate = evaluatePropertyAdvanceGate({
+        documents: workingDocuments,
+        context: workingCase.context_jsonb,
+        targetTransition: "comparables_in_progress",
+      });
+      deterministicIds = deterministicDocumentIdsFromBlocks(gate.blocks);
     }
-    return { case: opCase, action: "deferred_pending_extraction" };
+
+    if (deterministicIds.length > 0) {
+      const attemptsNow = remediationAttemptsFromContext(workingCase.context_jsonb);
+      const allExhausted = deterministicIds.every(
+        (id) => (attemptsNow[id] ?? 0) >= MAX_EXTRACTION_REMEDIATION_ATTEMPTS
+      );
+      if (allExhausted) {
+        const alreadyEscalated = recentEvents.some((event) => {
+          const payload = event.payload_jsonb as Record<string, unknown> | null;
+          return (
+            event.event_type === "escalated" &&
+            payload?.kind === "extraction_escalated_to_human"
+          );
+        });
+        if (!alreadyEscalated) {
+          const escalationText = [
+            "No pude leer automáticamente algunos documentos del caso tras varios intentos.",
+            "",
+            `Caso: ${String(
+              workingCase.context_jsonb?.property_title ??
+                workingCase.context_jsonb?.title ??
+                workingCase.case_type
+            )}`,
+            "Revisa los documentos en el caso y, si están ilegibles, pide al dueño que los reenvíe con mejor calidad.",
+          ].join("\n");
+          const notifyResult = await notify(
+            db,
+            workingCase.user_id,
+            {
+              text: escalationText,
+              kind: "document_extraction_failed",
+              data: {
+                case_id: workingCase.id,
+                title: "No pude leer documentos del caso",
+                source,
+                exhausted_document_ids: deterministicIds,
+              },
+            },
+            "high"
+          );
+          await insertOperationalCaseEvent(db, {
+            caseId: workingCase.id,
+            eventType: "escalated",
+            actor: "system",
+            payload: {
+              kind: "extraction_escalated_to_human",
+              source,
+              document_ids: deterministicIds,
+              max_attempts: MAX_EXTRACTION_REMEDIATION_ATTEMPTS,
+              notify_delivered: notifyResult.delivered,
+            },
+          });
+        }
+        const escalated = await updateOperationalCase(
+          db,
+          workingCase.id,
+          workingCase.version,
+          {
+            status: "waiting_internal",
+            currentStep: "documents_received",
+            nextActionAt: null,
+          }
+        );
+        return {
+          case: escalated ?? workingCase,
+          action: "escalated_extraction_to_human",
+        };
+      }
+
+      // Aún con presupuesto: diferir y reintentar en el próximo tick. No es
+      // terminal-silencioso porque el cron (caso real) reprograma el tick y el
+      // laboratorio expone el reintento manual con el contador de intentos.
+      const blockReason = gate.blocks[0]?.reason ?? "extraction_pending";
+      const alreadyDeferred = recentEvents.some((event) => {
+        const payload = event.payload_jsonb as Record<string, unknown> | null;
+        return (
+          event.event_type === "state_changed" &&
+          payload?.kind === "property_data_review_deferred_pending_extraction" &&
+          payload?.reason === blockReason
+        );
+      });
+      if (!alreadyDeferred) {
+        await insertOperationalCaseEvent(db, {
+          caseId: workingCase.id,
+          eventType: "state_changed",
+          actor: "system",
+          payload: {
+            kind: "property_data_review_deferred_pending_extraction",
+            source,
+            reason: blockReason,
+            pending_document_ids: deterministicIds,
+          },
+        });
+      }
+      return { case: workingCase, action: "deferred_pending_extraction" };
+    }
   }
 
+  // Recalcular tras la posible remediación determinística.
+  const documentFields = documentExtractionMinimumsContext(workingDocuments);
+  const minimums = evaluatePropertyDataMinimumsForReview(
+    workingCase.context_jsonb,
+    documentFields
+  );
+
   if (!minimums.ok) {
-    const alreadyAsked = recentEvents.some((event) => {
+    const characteristicsAsks = recentEvents.filter((event) => {
       const payload = event.payload_jsonb;
       return (
         event.event_type === "reminder_sent" &&
@@ -295,16 +333,43 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
         (payload as Record<string, unknown>).purpose === "characteristics_pending"
       );
     });
-    if (alreadyAsked) return { case: opCase, action: "no_action" };
+    const lastAskAt =
+      characteristicsAsks.length > 0
+        ? characteristicsAsks[characteristicsAsks.length - 1].created_at ?? null
+        : null;
+
+    // A fresh owner reply after the last ask means we must respond, not stay
+    // silent: re-ask only the fields that are still missing. Without a new
+    // reply we keep waiting (avoids re-asking on every cron tick).
+    const ownerRepliedSinceLastAsk =
+      lastAskAt != null &&
+      recentEvents.some((event) => {
+        const payload = event.payload_jsonb as Record<string, unknown> | null;
+        const isOwnerReply =
+          event.event_type === "external_response" ||
+          (event.event_type === "state_changed" &&
+            payload?.kind === "owner_characteristics_merged");
+        return (
+          isOwnerReply &&
+          typeof event.created_at === "string" &&
+          event.created_at > lastAskAt
+        );
+      });
+
+    if (lastAskAt != null && !ownerRepliedSinceLastAsk) {
+      return { case: workingCase, action: "no_action" };
+    }
+
+    const isReAsk = lastAskAt != null && ownerRepliedSinceLastAsk;
 
     const chatId =
-      opCase.external_contact_jsonb?.channel === "telegram" &&
-      typeof opCase.external_contact_jsonb.chat_id === "number"
-        ? opCase.external_contact_jsonb.chat_id
+      workingCase.external_contact_jsonb?.channel === "telegram" &&
+      typeof workingCase.external_contact_jsonb.chat_id === "number"
+        ? workingCase.external_contact_jsonb.chat_id
         : null;
     if (!chatId) {
       await insertOperationalCaseEvent(db, {
-        caseId: opCase.id,
+        caseId: workingCase.id,
         eventType: "state_changed",
         actor: "system",
         payload: {
@@ -316,17 +381,17 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           reason: "no_telegram_external_contact",
         },
       });
-      return { case: opCase, action: "no_action" };
+      return { case: workingCase, action: "no_action" };
     }
 
     const text = buildPropertyDataMinimumsSummaryMessage({
-      context: opCase.context_jsonb,
+      context: workingCase.context_jsonb,
       supplement: documentFields,
       missing: minimums.missing,
     });
     await sendTelegramMessage(chatId, text);
     await insertOperationalCaseEvent(db, {
-      caseId: opCase.id,
+      caseId: workingCase.id,
       eventType: "reminder_sent",
       actor: "system",
       payload: {
@@ -334,19 +399,22 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
         channel: "telegram",
         chat_id: chatId,
         purpose: "characteristics_pending",
+        reask: isReAsk,
         missing: minimums.missing,
         document_fields_used: documentFields,
         text_preview: text.slice(0, 200),
       },
     });
-    const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+    const updated = await updateOperationalCase(db, workingCase.id, workingCase.version, {
       status: "waiting_external",
       currentStep: "documents_received",
       nextActionAt: null,
     });
     return {
-      case: updated ?? opCase,
-      action: "asked_missing_characteristics",
+      case: updated ?? workingCase,
+      action: isReAsk
+        ? "asked_missing_characteristics_again"
+        : "asked_missing_characteristics",
     };
   }
 
@@ -359,17 +427,20 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
         (payload as Record<string, unknown>).kind === "property_data_review")
     );
   });
-  if (alreadyRequested) return { case: opCase, action: "no_action" };
+  if (alreadyRequested) return { case: workingCase, action: "no_action" };
 
-  const reviewText = propertyDataReviewTextFromContext({ opCase, documentFields });
+  const reviewText = propertyDataReviewTextFromContext({
+    opCase: workingCase,
+    documentFields,
+  });
   const notifyResult = await notify(
     db,
-    opCase.user_id,
+    workingCase.user_id,
     {
       text: reviewText,
       kind: "property_data_review",
       data: {
-        case_id: opCase.id,
+        case_id: workingCase.id,
         title: "Revisión de datos de propiedad",
         source,
       },
@@ -377,7 +448,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
     "normal"
   );
   await insertOperationalCaseEvent(db, {
-    caseId: opCase.id,
+    caseId: workingCase.id,
     eventType: "human_decision",
     actor: "system",
     payload: {
@@ -387,13 +458,13 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
       document_fields_used: documentFields,
     },
   });
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updated = await updateOperationalCase(db, workingCase.id, workingCase.version, {
     status: "waiting_internal",
     currentStep: "property_data_review",
     nextActionAt: null,
   });
   return {
-    case: updated ?? opCase,
+    case: updated ?? workingCase,
     action: "requested_property_data_review",
   };
 }

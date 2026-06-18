@@ -130,6 +130,20 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     intent: "reminder",
     reviewCtaLabel: "Reconectar integración",
   },
+  document_extraction_failed: {
+    kind: "document_extraction_failed",
+    label: "No pude leer documentos del caso",
+    visibleInInbox: true,
+    intent: "reminder",
+    reviewCtaLabel: "Revisar documentos",
+  },
+  titularidad_review: {
+    kind: "titularidad_review",
+    label: "Verificación de titularidad",
+    visibleInInbox: true,
+    intent: "review",
+    reviewCtaLabel: "Revisar titularidad",
+  },
   internal_notification_reminder: {
     kind: "internal_notification_reminder",
     label: "Recordatorio",

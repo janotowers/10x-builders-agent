@@ -29,6 +29,7 @@ import {
   listOperationalCaseDocuments,
   updateOperationalCaseDocumentExtraction,
   updateOperationalCase,
+  type DbClient,
 } from "@agents/db";
 import {
   buildComparablesAnalysisFromToolCalls,
@@ -2060,6 +2061,149 @@ function shouldUseCachedExtraction(input: {
   return true;
 }
 
+export type DocumentFieldExtractionResult =
+  | {
+      ok: true;
+      cached: boolean;
+      reused_from_document_id?: string;
+      document_id: string;
+      extraction_status: string;
+      extraction: Record<string, unknown> | null | undefined;
+    }
+  | { ok: false; error: string };
+
+/**
+ * Núcleo reutilizable de extracción documental multimodal (texto PDF + Vision).
+ *
+ * Antes vivía solo dentro del closure de la tool `operational_case_extract_document_fields`.
+ * Extraído para que tanto el LLM (vía la tool) como el código determinístico
+ * (invariante post-agente auto-remediante, WS3) puedan dispararla sin pasar por
+ * el grafo del agente. No registra auditoría de `tool_calls`: ese wrapper es
+ * responsabilidad del caller (la tool sí lo hace).
+ */
+export async function runDocumentFieldExtraction(
+  db: DbClient,
+  params: { userId: string; documentId: string; force?: boolean }
+): Promise<DocumentFieldExtractionResult> {
+  const document = await getOperationalCaseDocument(db, params.documentId);
+  if (!document || document.user_id !== params.userId) {
+    return { ok: false, error: "document_not_found_or_forbidden" };
+  }
+  const contentType = document.content_type ?? "";
+  if (
+    shouldUseCachedExtraction({
+      force: params.force,
+      contentType,
+      extractionStatus: document.extraction_status,
+      extraction: document.extraction_jsonb ?? {},
+    })
+  ) {
+    return {
+      ok: true,
+      cached: true,
+      document_id: document.id,
+      extraction_status: document.extraction_status,
+      extraction: document.extraction_jsonb,
+    };
+  }
+  if (!params.force && document.sha256) {
+    const previous = await findExtractedOperationalCaseDocumentByHash(db, {
+      caseId: document.case_id,
+      kind: document.kind,
+      sha256: document.sha256,
+      excludeDocumentId: document.id,
+    });
+    if (
+      previous &&
+      shouldUseCachedExtraction({
+        contentType,
+        extractionStatus: previous.extraction_status,
+        extraction: previous.extraction_jsonb ?? {},
+      })
+    ) {
+      const updated = await updateOperationalCaseDocumentExtraction(db, {
+        documentId: document.id,
+        status: previous.extraction_status,
+        model: previous.extraction_model,
+        extraction: {
+          ...previous.extraction_jsonb,
+          reused_from_document_id: previous.id,
+        },
+      });
+      return {
+        ok: true,
+        cached: true,
+        reused_from_document_id: previous.id,
+        document_id: document.id,
+        extraction_status: updated.extraction_status,
+        extraction: updated.extraction_jsonb,
+      };
+    }
+  }
+  const { data: blob, error: downloadError } = await db.storage
+    .from(document.storage_bucket)
+    .download(document.storage_path);
+  if (downloadError || !blob) {
+    return { ok: false, error: downloadError?.message ?? "storage_download_failed" };
+  }
+  const bytes = Buffer.from(await blob.arrayBuffer());
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    return { ok: false, error: "missing_openrouter_api_key" };
+  }
+
+  let extractionResult: { model: string; extraction: Record<string, unknown> };
+  try {
+    if (contentType === "application/pdf") {
+      extractionResult = await extractPdfDocumentFields({
+        apiKey,
+        documentKind: document.kind,
+        bytes,
+      });
+    } else if (contentType.startsWith("image/")) {
+      const dataUrl = `data:${contentType};base64,${bytes.toString("base64")}`;
+      extractionResult = {
+        model: VISION_EXTRACTION_MODEL,
+        extraction: {
+          ...(await extractDocumentFieldsFromImage({
+            apiKey,
+            documentKind: document.kind,
+            dataUrl,
+          })),
+          extraction_source: "image",
+        },
+      };
+    } else {
+      extractionResult = {
+        model: VISION_EXTRACTION_MODEL,
+        extraction: {
+          document_kind: document.kind,
+          confidence: "low",
+          extraction_source: "unsupported_content_type",
+          warnings: [
+            `Tipo de archivo no soportado para extracción: ${contentType || "sin content-type"}.`,
+          ],
+        },
+      };
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  const updated = await updateOperationalCaseDocumentExtraction(db, {
+    documentId: document.id,
+    status: extractionStatusFor(extractionResult.extraction),
+    model: extractionResult.model,
+    extraction: extractionResult.extraction,
+  });
+  return {
+    ok: true,
+    cached: false,
+    document_id: document.id,
+    extraction_status: updated.extraction_status,
+    extraction: updated.extraction_jsonb,
+  };
+}
+
 export type NotifyUserFn = (
   db: ToolContext["db"],
   userId: string,
@@ -2074,92 +2218,239 @@ interface NotifyDeps {
   notifyUser: NotifyUserFn;
 }
 
-function predialExtractionBlockForPropertyReview(input: {
+/**
+ * PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION — fuente única de verdad.
+ *
+ * Un solo predicado determinístico decide si un caso `property_optioning`
+ * puede avanzar a la transición destino, y para cada bloqueo declara QUIÉN es
+ * responsable de remediarlo (`remediation.owner`):
+ *  - `deterministic`: trabajo mecánico que el código puede disparar solo
+ *    (re-OCR de un documento ya subido con `force=true`, texto + Vision).
+ *  - `external`: falta un dato del inmueble que solo el dueño puede aportar.
+ *  - `human`: requiere juicio/responsabilidad del asesor (HITL).
+ *  - `llm`: requiere interpretación de lenguaje natural (merge con criterio).
+ *
+ * Consumido por el tool gate de `notify_user(property_data_review)` y por el
+ * invariante post-agente. Antes existían tres copias divergentes de esta
+ * lógica (regex vs señales documentales); esta función las reemplaza.
+ *
+ * Desacople por `targetTransition` (WS2/WS4):
+ *  - `comparables_in_progress`: solo características del inmueble (predial +
+ *    mínimos). La corroboración de titularidad NO bloquea aquí.
+ *  - `contract_pending`: corroboración de identidad + estado de titularidad.
+ */
+export type PropertyAdvanceTransition =
+  | "comparables_in_progress"
+  | "contract_pending";
+
+export type PropertyAdvanceGateBlockReason =
+  | "predial_extraction_pending"
+  | "predial_area_total_missing"
+  | "predial_area_construida_missing"
+  | "characteristics_minimums_missing"
+  | "owner_corroboration_extraction_pending"
+  | "titularidad_unverified";
+
+export type PropertyAdvanceRemediationOwner =
+  | "deterministic"
+  | "external"
+  | "human"
+  | "llm";
+
+export type PropertyAdvanceGateBlock = {
+  reason: PropertyAdvanceGateBlockReason;
+  remediation: {
+    owner: PropertyAdvanceRemediationOwner;
+    /** Documentos a re-extraer cuando `owner === "deterministic"`. */
+    document_ids?: string[];
+    /** Campos faltantes cuando `owner === "external"`. */
+    missing_fields?: Array<{ key: string; label: string }>;
+    /** Estado de titularidad cuando `owner === "human"`. */
+    titularidad_status?: OwnerConsistencyStatus;
+  };
+};
+
+export type PropertyAdvanceGateResult = {
+  satisfied: boolean;
+  blocks: PropertyAdvanceGateBlock[];
+};
+
+const PREDIAL_AREA_TOTAL_PATHS = [
+  "area_total_m2",
+  "area_m2",
+  "surface_m2",
+  "superficie_m2",
+  "sup_terr",
+  "superficie_terreno_m2",
+] as const;
+
+const PREDIAL_AREA_CONSTRUIDA_PATHS = [
+  "area_construida_m2",
+  "construction_area_m2",
+  "built_area_m2",
+  "sup_const",
+  "superficie_construccion_m2",
+] as const;
+
+const PENDING_EXTRACTION_STATUSES = ["pending", "failed", "not_applicable"];
+const USABLE_EXTRACTION_STATUSES = ["ok", "low_confidence"];
+
+function predialAdvanceBlocks(input: {
   propertyType: string;
   documents: OperationalCaseDocument[];
-}) {
+}): PropertyAdvanceGateBlock[] {
   const predials = input.documents.filter(
     (document) => document.status !== "superseded" && isPredialDocumentCandidate(document)
   );
-  if (predials.length === 0) {
-    return { blocked: false as const };
-  }
+  if (predials.length === 0) return [];
   const pending = predials.filter((document) =>
-    ["pending", "failed", "not_applicable"].includes(document.extraction_status)
+    PENDING_EXTRACTION_STATUSES.includes(document.extraction_status)
   );
   if (pending.length > 0) {
-    return {
-      blocked: true as const,
-      reason: "predial_extraction_pending",
-      pendingDocumentIds: pending.map((document) => document.id),
-    };
+    return [
+      {
+        reason: "predial_extraction_pending",
+        remediation: {
+          owner: "deterministic",
+          document_ids: pending.map((document) => document.id),
+        },
+      },
+    ];
   }
   const extractedPredials = predials.filter((document) =>
-    ["ok", "low_confidence"].includes(document.extraction_status)
+    USABLE_EXTRACTION_STATUSES.includes(document.extraction_status)
   );
+  const extractedIds = extractedPredials.map((document) => document.id);
   const hasTotal = extractedPredials.some((document) =>
     hasMeaningfulValue(
       firstMeaningfulValue(
-        document.extraction_jsonb?.area_total_m2,
-        document.extraction_jsonb?.area_m2,
-        document.extraction_jsonb?.surface_m2,
-        document.extraction_jsonb?.superficie_m2,
-        document.extraction_jsonb?.sup_terr,
-        document.extraction_jsonb?.superficie_terreno_m2
+        ...PREDIAL_AREA_TOTAL_PATHS.map((path) => document.extraction_jsonb?.[path])
       )
     )
   );
   if (!hasTotal) {
-    return {
-      blocked: true as const,
-      reason: "predial_area_total_missing",
-      pendingDocumentIds: extractedPredials.map((document) => document.id),
-    };
+    return [
+      {
+        reason: "predial_area_total_missing",
+        remediation: { owner: "deterministic", document_ids: extractedIds },
+      },
+    ];
   }
-  const requiresBuiltArea = input.propertyType === "casa";
+  const requiresBuiltArea = propertyTypeRequirementKey(input.propertyType) === "casa";
   const hasBuiltArea = extractedPredials.some((document) =>
     hasMeaningfulValue(
       firstMeaningfulValue(
-        document.extraction_jsonb?.area_construida_m2,
-        document.extraction_jsonb?.construction_area_m2,
-        document.extraction_jsonb?.built_area_m2,
-        document.extraction_jsonb?.sup_const,
-        document.extraction_jsonb?.superficie_construccion_m2
+        ...PREDIAL_AREA_CONSTRUIDA_PATHS.map(
+          (path) => document.extraction_jsonb?.[path]
+        )
       )
     )
   );
   if (requiresBuiltArea && !hasBuiltArea) {
-    return {
-      blocked: true as const,
-      reason: "predial_area_construida_missing",
-      pendingDocumentIds: extractedPredials.map((document) => document.id),
-    };
+    return [
+      {
+        reason: "predial_area_construida_missing",
+        remediation: { owner: "deterministic", document_ids: extractedIds },
+      },
+    ];
   }
-  return { blocked: false as const };
+  return [];
 }
 
-function ownerCorroborationExtractionBlockForPropertyReview(input: {
+function ownerCorroborationAdvanceBlocks(input: {
   documents: OperationalCaseDocument[];
-}) {
+}): PropertyAdvanceGateBlock[] {
   const corroborationDocuments = input.documents.filter((document) => {
     if (document.status === "superseded") return false;
     const signals = documentSignalsForMinimums(document, document.extraction_jsonb ?? {});
     return signals.identificacion || signals.comprobante;
   });
-  if (corroborationDocuments.length === 0) {
-    return { blocked: false as const };
-  }
+  if (corroborationDocuments.length === 0) return [];
   const pending = corroborationDocuments.filter((document) =>
-    ["pending", "failed", "not_applicable"].includes(document.extraction_status)
+    PENDING_EXTRACTION_STATUSES.includes(document.extraction_status)
   );
-  if (pending.length === 0) {
-    return { blocked: false as const };
+  if (pending.length === 0) return [];
+  return [
+    {
+      reason: "owner_corroboration_extraction_pending",
+      remediation: {
+        owner: "deterministic",
+        document_ids: pending.map((document) => document.id),
+      },
+    },
+  ];
+}
+
+export function evaluatePropertyAdvanceGate(input: {
+  documents: OperationalCaseDocument[];
+  context: Record<string, unknown> | null | undefined;
+  targetTransition: PropertyAdvanceTransition;
+}): PropertyAdvanceGateResult {
+  const context = input.context ?? {};
+  const propertyData = propertyDataRecord(context);
+  const propertyType =
+    propertyTypeRequirementKey(
+      propertyData.property_type ?? context.property_type
+    ) || "desconocido";
+  const documentFields = documentExtractionMinimumsContext(input.documents);
+  const blocks: PropertyAdvanceGateBlock[] = [];
+
+  if (input.targetTransition === "comparables_in_progress") {
+    blocks.push(...predialAdvanceBlocks({ propertyType, documents: input.documents }));
+    if (blocks.length === 0) {
+      const minimums = evaluatePropertyDataMinimumsForReview(context, documentFields);
+      if (!minimums.ok) {
+        blocks.push({
+          reason: "characteristics_minimums_missing",
+          remediation: {
+            owner: "external",
+            missing_fields: minimums.missing.map(({ key, label }) => ({ key, label })),
+          },
+        });
+      }
+    }
+  } else {
+    // contract_pending: titularidad debe estar corroborada (WS4).
+    blocks.push(...ownerCorroborationAdvanceBlocks({ documents: input.documents }));
+    if (blocks.length === 0) {
+      const titularidadStatus = ownerConsistencyStatusFromFields(documentFields);
+      if (titularidadStatus !== "match" && !titularidadOverrideApproved(context)) {
+        blocks.push({
+          reason: "titularidad_unverified",
+          remediation: { owner: "human", titularidad_status: titularidadStatus },
+        });
+      }
+    }
   }
-  return {
-    blocked: true as const,
-    reason: "owner_corroboration_extraction_pending",
-    pendingDocumentIds: pending.map((document) => document.id),
-  };
+
+  return { satisfied: blocks.length === 0, blocks };
+}
+
+/** Estado de titularidad consolidado por `documentExtractionMinimumsContext`. */
+export function ownerConsistencyStatusFromFields(
+  documentFields: Record<string, unknown>
+): OwnerConsistencyStatus {
+  const status = documentFields.owner_consistency_status;
+  if (
+    status === "match" ||
+    status === "partial_mismatch" ||
+    status === "mismatch" ||
+    status === "insufficient"
+  ) {
+    return status;
+  }
+  return "insufficient";
+}
+
+/** Override auditado del asesor que desbloquea el gate de titularidad (WS4). */
+export function titularidadOverrideApproved(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  const titularidad = context?.titularidad;
+  if (!titularidad || typeof titularidad !== "object") return false;
+  const override = (titularidad as Record<string, unknown>).override;
+  if (!override || typeof override !== "object") return false;
+  return (override as Record<string, unknown>).approved === true;
 }
 
 export function missingRequiredIntakeFields(
@@ -3242,145 +3533,12 @@ export function addOperationalCaseTools(
           const record = await createTrackedToolCall(ctx, "operational_case_extract_document_fields",
             input,
             false);
-          const document = await getOperationalCaseDocument(ctx.db, input.document_id);
-          if (!document || document.user_id !== ctx.userId) {
-            const out = { ok: false, error: "document_not_found_or_forbidden" };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
-          const contentType = document.content_type ?? "";
-          if (
-            shouldUseCachedExtraction({
-              force: input.force,
-              contentType,
-              extractionStatus: document.extraction_status,
-              extraction: document.extraction_jsonb ?? {},
-            })
-          ) {
-            const out = {
-              ok: true,
-              cached: true,
-              document_id: document.id,
-              extraction_status: document.extraction_status,
-              extraction: document.extraction_jsonb,
-            };
-            await updateToolCallStatus(ctx.db, record.id, "executed", out);
-            return JSON.stringify(out);
-          }
-          if (!input.force && document.sha256) {
-            const previous = await findExtractedOperationalCaseDocumentByHash(ctx.db, {
-              caseId: document.case_id,
-              kind: document.kind,
-              sha256: document.sha256,
-              excludeDocumentId: document.id,
-            });
-            if (
-              previous &&
-              shouldUseCachedExtraction({
-                contentType,
-                extractionStatus: previous.extraction_status,
-                extraction: previous.extraction_jsonb ?? {},
-              })
-            ) {
-              const updated = await updateOperationalCaseDocumentExtraction(ctx.db, {
-                documentId: document.id,
-                status: previous.extraction_status,
-                model: previous.extraction_model,
-                extraction: {
-                  ...previous.extraction_jsonb,
-                  reused_from_document_id: previous.id,
-                },
-              });
-              const out = {
-                ok: true,
-                cached: true,
-                reused_from_document_id: previous.id,
-                document_id: document.id,
-                extraction_status: updated.extraction_status,
-                extraction: updated.extraction_jsonb,
-              };
-              await updateToolCallStatus(ctx.db, record.id, "executed", out);
-              return JSON.stringify(out);
-            }
-          }
-          const { data: blob, error: downloadError } = await ctx.db.storage
-            .from(document.storage_bucket)
-            .download(document.storage_path);
-          if (downloadError || !blob) {
-            const out = {
-              ok: false,
-              error: downloadError?.message ?? "storage_download_failed",
-            };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
-          const bytes = Buffer.from(await blob.arrayBuffer());
-          const apiKey = process.env.OPENROUTER_API_KEY;
-          if (!apiKey) {
-            const out = { ok: false, error: "missing_openrouter_api_key" };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
-
-          let extractionResult: {
-            model: string;
-            extraction: Record<string, unknown>;
-          };
-          try {
-            if (contentType === "application/pdf") {
-              extractionResult = await extractPdfDocumentFields({
-                apiKey,
-                documentKind: document.kind,
-                bytes,
-              });
-            } else if (contentType.startsWith("image/")) {
-              const dataUrl = `data:${contentType};base64,${bytes.toString("base64")}`;
-              extractionResult = {
-                model: VISION_EXTRACTION_MODEL,
-                extraction: {
-                  ...(await extractDocumentFieldsFromImage({
-                    apiKey,
-                    documentKind: document.kind,
-                    dataUrl,
-                  })),
-                  extraction_source: "image",
-                },
-              };
-            } else {
-              extractionResult = {
-                model: VISION_EXTRACTION_MODEL,
-                extraction: {
-                  document_kind: document.kind,
-                  confidence: "low",
-                  extraction_source: "unsupported_content_type",
-                  warnings: [
-                    `Tipo de archivo no soportado para extracción: ${contentType || "sin content-type"}.`,
-                  ],
-                },
-              };
-            }
-          } catch (err) {
-            const out = {
-              ok: false,
-              error: err instanceof Error ? err.message : String(err),
-            };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
-          const updated = await updateOperationalCaseDocumentExtraction(ctx.db, {
-            documentId: document.id,
-            status: extractionStatusFor(extractionResult.extraction),
-            model: extractionResult.model,
-            extraction: extractionResult.extraction,
+          const out = await runDocumentFieldExtraction(ctx.db, {
+            userId: ctx.userId,
+            documentId: input.document_id,
+            force: input.force,
           });
-          const out = {
-            ok: true,
-            cached: false,
-            document_id: document.id,
-            extraction_status: updated.extraction_status,
-            extraction: updated.extraction_jsonb,
-          };
-          await updateToolCallStatus(ctx.db, record.id, "executed", out);
+          await updateToolCallStatus(ctx.db, record.id, out.ok ? "executed" : "failed", out);
           return JSON.stringify(out);
         },
         {
@@ -3419,71 +3577,63 @@ export function addOperationalCaseTools(
                 caseId: opCase.id,
                 statuses: ["received"],
               });
-              const propertyData = propertyDataRecord(opCase.context_jsonb ?? {});
-              const propertyType =
-                propertyTypeRequirementKey(
-                  propertyData.property_type ?? opCase.context_jsonb?.property_type
-                ) || "desconocido";
+              const documentMinimumsContext =
+                documentExtractionMinimumsContext(documents);
               if (opCase.case_type === "property_optioning") {
-                const predialGate = predialExtractionBlockForPropertyReview({
-                  propertyType,
+                // Fuente única de verdad (PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION).
+                // La corroboración de titularidad NO bloquea aquí (WS2): es
+                // precondición de contract_pending, no de comparables.
+                const gate = evaluatePropertyAdvanceGate({
                   documents,
+                  context: opCase.context_jsonb,
+                  targetTransition: "comparables_in_progress",
                 });
-                if (predialGate.blocked) {
+                const predialBlock = gate.blocks.find(
+                  (block) =>
+                    block.reason === "predial_extraction_pending" ||
+                    block.reason === "predial_area_total_missing" ||
+                    block.reason === "predial_area_construida_missing"
+                );
+                if (predialBlock) {
                   const out = {
                     ok: false,
                     error: "predial_extraction_incomplete",
-                    reason: predialGate.reason,
-                    pending_predial_document_ids: predialGate.pendingDocumentIds ?? [],
+                    reason: predialBlock.reason,
+                    pending_predial_document_ids:
+                      predialBlock.remediation.document_ids ?? [],
                     hint:
                       "Antes de enviar property_data_review al contacto, termina extracción del predial con operational_case_extract_document_fields (force=true) para los pending_predial_document_ids y reintenta notify_user.",
                   };
                   await updateToolCallStatus(ctx.db, record.id, "failed", out);
                   return JSON.stringify(out);
                 }
-                const ownerCorroborationGate =
-                  ownerCorroborationExtractionBlockForPropertyReview({
-                    documents,
-                  });
-                if (ownerCorroborationGate.blocked) {
+                const minimumsBlock = gate.blocks.find(
+                  (block) => block.reason === "characteristics_minimums_missing"
+                );
+                if (minimumsBlock) {
+                  const minimums = evaluatePropertyDataMinimumsForReview(
+                    opCase.context_jsonb,
+                    documentMinimumsContext
+                  );
+                  const suggestedExternalMessage =
+                    buildPropertyDataMinimumsSummaryMessage({
+                      context: opCase.context_jsonb,
+                      supplement: documentMinimumsContext,
+                      missing: minimums.missing,
+                    });
                   const out = {
                     ok: false,
-                    error: "owner_corroboration_extraction_incomplete",
-                    reason: ownerCorroborationGate.reason,
-                    pending_owner_corroboration_document_ids:
-                      ownerCorroborationGate.pendingDocumentIds ?? [],
+                    error: "property_data_minimums_missing",
+                    property_type: minimums.propertyType,
+                    missing: minimums.missing,
+                    document_fields_used: documentMinimumsContext,
+                    suggested_external_message: suggestedExternalMessage,
                     hint:
-                      "Antes de enviar property_data_review al contacto, termina extracción de identificación/comprobante con operational_case_extract_document_fields (force=true) para los pending_owner_corroboration_document_ids y reintenta notify_user.",
+                      "Antes de crear property_data_review, envía suggested_external_message al contacto externo con telegram_send_message_to_contact(purpose='characteristics_pending') y deja el caso en waiting_external/documents_received.",
                   };
                   await updateToolCallStatus(ctx.db, record.id, "failed", out);
                   return JSON.stringify(out);
                 }
-              }
-              const documentMinimumsContext =
-                documentExtractionMinimumsContext(documents);
-              const minimums = evaluatePropertyDataMinimumsForReview(
-                opCase.context_jsonb,
-                documentMinimumsContext
-              );
-              if (!minimums.ok) {
-                const suggestedExternalMessage =
-                  buildPropertyDataMinimumsSummaryMessage({
-                    context: opCase.context_jsonb,
-                    supplement: documentMinimumsContext,
-                    missing: minimums.missing,
-                  });
-                const out = {
-                  ok: false,
-                  error: "property_data_minimums_missing",
-                  property_type: minimums.propertyType,
-                  missing: minimums.missing,
-                  document_fields_used: documentMinimumsContext,
-                  suggested_external_message: suggestedExternalMessage,
-                  hint:
-                    "Antes de crear property_data_review, envía suggested_external_message al contacto externo con telegram_send_message_to_contact(purpose='characteristics_pending') y deja el caso en waiting_external/documents_received.",
-                };
-                await updateToolCallStatus(ctx.db, record.id, "failed", out);
-                return JSON.stringify(out);
               }
             }
             const notificationText =

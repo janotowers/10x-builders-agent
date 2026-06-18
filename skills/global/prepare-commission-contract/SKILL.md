@@ -7,6 +7,8 @@ allowed_tools:
   - notify_user
   - operational_case_update_state
   - operational_case_add_event
+  - operational_case_list_documents
+  - operational_case_extract_document_fields
   - telegram_send_message_to_contact
 requires_tenant_context: true
 memory_extraction: ephemeral
@@ -18,6 +20,9 @@ guardrails: |
   (HITL). Solo después se manda al dueño.
   Cuando el contrato esté firmado, registra evento human_decision con el
   hash o nombre del archivo final, no el contenido.
+  La titularidad debe estar verificada ANTES de generar el contrato. Esta es
+  la transición donde la corroboración de identidad (INE/comprobante) es
+  precondición real (a diferencia de comparables, donde solo es advertencia).
 ---
 
 # Prepare commission contract
@@ -36,6 +41,28 @@ guardrails: |
    - `context_jsonb.pricing_proposal` (debe estar `approval_status=approved`).
    - `external_contact_jsonb.display_name` (nombre del dueño).
    - `context_jsonb.commission_terms` (si no existe, usa defaults del tenant).
+
+1b. **Gate de titularidad (HITL) antes de generar.** El contrato solo procede
+   con la titularidad verificada. `generate_document_from_template` aplica este
+   gate de forma determinística y puede devolver:
+   - `owner_corroboration_extraction_incomplete`: corre
+     `operational_case_extract_document_fields(force=true)` sobre los
+     `pending_owner_corroboration_document_ids` (lista con
+     `operational_case_list_documents`) y reintenta. Si tras intentarlo el
+     documento sigue ilegible, trátalo como desajuste de titularidad abajo.
+   - `titularidad_review_required`: NO generes el contrato. Levanta
+     `notify_user(kind="titularidad_review")` con un texto accionable que
+     explique el desajuste (nombre en boleta vs. INE/comprobante, usando
+     `owner_consistency_note`/`owner_consistency_warning`) y pregunte si se
+     procede igual o se corrige. Esta notificación llega al asesor por inbox
+     web y Telegram. Mantén `current_step=contract_pending`,
+     `status=waiting_internal`.
+     - Si el asesor aprueba avanzar de todos modos, registra el override con
+       `operational_case_update_state` poniendo
+       `context.titularidad.override = { approved: true, by: <asesor>, reason: <texto> }`
+       y reintenta `generate_document_from_template`.
+     - Si el asesor pide corregir, solicita el documento correcto al dueño con
+       `telegram_send_message_to_contact` y espera.
 
 2. Llama `generate_document_from_template` exactamente una vez para este borrador:
    ```json

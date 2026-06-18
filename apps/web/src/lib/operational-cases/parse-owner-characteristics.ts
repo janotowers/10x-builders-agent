@@ -65,14 +65,27 @@ export function parseOwnerCharacteristics(text: string): Record<string, unknown>
   );
   if (matchedType) parsed.property_type = matchedType;
 
+  const floors = numberBefore(normalized, "pisos?|plantas?|niveles?");
+  if (floors != null) parsed.floors = floors;
+
   const bedrooms = numberBefore(normalized, "recamaras?|habitaciones?|cuartos?");
   if (bedrooms != null) parsed.bedrooms = bedrooms;
 
   const bathrooms = numberBefore(normalized, "banos?(?:\\s+completos?)?");
   if (bathrooms != null) parsed.bathrooms = bathrooms;
 
-  const halfBathrooms = numberBefore(normalized, "medios?\\s+banos?");
-  if (halfBathrooms != null) parsed.half_bathrooms = halfBathrooms;
+  if (/\b(?:sin|no\s+(?:tiene|hay))\s+medios?\s+banos?\b/.test(normalized)) {
+    parsed.half_bathrooms = 0;
+  } else {
+    const halfBathrooms = numberBefore(normalized, "medios?\\s+banos?");
+    if (halfBathrooms != null) parsed.half_bathrooms = halfBathrooms;
+  }
+
+  if (/\bcocina\s+integral\b/.test(normalized)) {
+    parsed.integral_kitchen = !/\b(?:sin|no\s+(?:tiene|hay|cuenta\s+con))\s+cocina\s+integral\b/.test(
+      normalized
+    );
+  }
 
   let parkingSpots = numberBefore(
     normalized,

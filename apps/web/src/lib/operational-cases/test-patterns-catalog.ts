@@ -57,6 +57,58 @@ export const OPERATIONAL_TEST_PATTERNS: TestPatternEntry[] = [
     docAnchor: `${DOC}#pattern_notify_user_channels`,
   },
   {
+    id: "PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION",
+    layer: "runtime",
+    label: "Gate único con remediación por dueño",
+    description:
+      "Predicado único evaluatePropertyAdvanceGate decide si un caso puede avanzar y cada bloqueo declara su remediation.owner (deterministic|external|human|llm). Consumido por tool gate, invariante y gate de contrato; targetTransition desacopla comparables vs contrato.",
+    implementationPaths: [
+      "packages/agent/src/tools/operational-cases-adapters.ts",
+      "apps/web/src/lib/operational-cases/property-optioning-post-agent-invariants.ts",
+      "packages/agent/src/tools/realestate-adapters.ts",
+    ],
+    appliesToTools: ["notify_user", "generate_document_from_template"],
+    appliesToSkills: [
+      "extract-property-characteristics",
+      "prepare-commission-contract",
+    ],
+    testLevels: ["n3", "n4"],
+    docAnchor: `${DOC}#pattern_gated_transition_with_owned_remediation`,
+  },
+  {
+    id: "PATTERN_DETERMINISTIC_AUTO_REMEDIATION_WITH_CIRCUIT_BREAKER",
+    layer: "runtime",
+    label: "Auto-remediación determinística con breaker",
+    description:
+      "El invariante post-agente re-OCR-ea documentos pendientes (runDocumentFieldExtraction force=true) con tope N=3 por documento y escala a humano al agotarse, sin dejar estados terminales silenciosos.",
+    implementationPaths: [
+      "packages/agent/src/tools/operational-cases-adapters.ts",
+      "apps/web/src/lib/operational-cases/property-optioning-post-agent-invariants.ts",
+    ],
+    appliesToTools: ["operational_case_extract_document_fields"],
+    appliesToSkills: ["extract-property-characteristics"],
+    testLevels: ["n3", "n4"],
+    docAnchor: `${DOC}#pattern_deterministic_auto_remediation_with_circuit_breaker`,
+  },
+  {
+    id: "PATTERN_SKILL_GATE_CONTRACT_PARITY",
+    layer: "runtime",
+    label: "Paridad skill ↔ gate",
+    description:
+      "Las instrucciones de la skill describen exactamente lo que exige el gate determinístico por transición, evitando split-brain (la skill cree terminar pero el gate sigue bloqueando).",
+    implementationPaths: [
+      "skills/global/extract-property-characteristics/SKILL.md",
+      "skills/global/prepare-commission-contract/SKILL.md",
+      "packages/agent/src/tools/operational-cases-adapters.ts",
+    ],
+    appliesToSkills: [
+      "extract-property-characteristics",
+      "prepare-commission-contract",
+    ],
+    testLevels: ["n3", "n4"],
+    docAnchor: `${DOC}#pattern_skill_gate_contract_parity`,
+  },
+  {
     id: "PATTERN_CASE_UPDATE_STATE_OPTIMISTIC_RETRY",
     layer: "runtime",
     label: "Update state con retry de versión",

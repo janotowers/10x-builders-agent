@@ -6848,12 +6848,30 @@ export function OperationalCaseTypesClient({
   const testStatus = agentTestCase?.context_jsonb?.controlled_test_status;
   const e2eControlStatus =
     agentTestCase?.context_jsonb?.e2e_control_status;
+  const e2eWaitingExternal = e2eControlStatus === "waiting_external";
+  const e2eBlockedPendingExtraction =
+    e2eControlStatus === "blocked_pending_extraction";
+  const e2eExtractionEscalatedToHuman =
+    e2eControlStatus === "extraction_escalated_to_human";
+  const extractionRemediationAttemptsLabel = (() => {
+    const raw = agentTestCase?.context_jsonb?.extraction_remediation_attempts;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const counts = Object.values(raw as Record<string, unknown>).filter(
+      (value): value is number => typeof value === "number" && Number.isFinite(value)
+    );
+    if (counts.length === 0) return null;
+    const maxAttempts = Math.max(...counts);
+    return `intento ${Math.min(maxAttempts, 3)}/3`;
+  })();
   const testPassed =
     testStatus === "passed_safe_checks" ||
     testStatus === "e2e_tick_completed" ||
     testStatus === "e2e_pending_hitl" ||
     e2eControlStatus === "manual_tick_completed" ||
-    e2eControlStatus === "pending_hitl";
+    e2eControlStatus === "pending_hitl" ||
+    e2eWaitingExternal ||
+    e2eBlockedPendingExtraction ||
+    e2eExtractionEscalatedToHuman;
   const e2ePendingHitl =
     testStatus === "e2e_pending_hitl" || e2eControlStatus === "pending_hitl";
   const e2eCompleted =
@@ -8809,9 +8827,19 @@ export function OperationalCaseTypesClient({
               ? "Intake conversacional en curso"
               : !isRealConversationalCase && e2ePendingHitl
                 ? "Pendiente aprobación humana"
-                : !isRealConversationalCase && e2eCompleted
-                  ? "Transición completada"
-                  : "Caso conversacional listo";
+                : !isRealConversationalCase && e2eWaitingExternal
+                  ? "Esperando respuesta del dueño"
+                  : !isRealConversationalCase && e2eExtractionEscalatedToHuman
+                    ? "Escalado a humano: no pude leer documentos tras varios intentos"
+                    : !isRealConversationalCase && e2eBlockedPendingExtraction
+                      ? `Reintentando extracción de documentos automáticamente${
+                          extractionRemediationAttemptsLabel
+                            ? ` (${extractionRemediationAttemptsLabel})`
+                            : ""
+                        }`
+                      : !isRealConversationalCase && e2eCompleted
+                        ? "Transición completada"
+                        : "Caso conversacional listo";
       return (
         <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900 dark:bg-violet-950/30">
           {conversationalLabMessage ? (
