@@ -201,6 +201,7 @@ export function partitionSettingsTestPendingActions(params: {
         action.status === "pending_confirmation" &&
         createdWithinWindow;
     } else if (action.kind === "internal_notification") {
+      const isCaseUpdateNotification = action.notification_kind === "case_update";
       const hasBusinessDecision = Boolean(
         internalNotificationKindConfig(action.notification_kind, {
           body: action.body,
@@ -215,6 +216,7 @@ export function partitionSettingsTestPendingActions(params: {
       const isLatestUnread = latestUnreadNotification?.id === action.id;
       blocking =
         !isHitlShadow &&
+        !isCaseUpdateNotification &&
         action.status === "unread" &&
         createdWithinWindow &&
         (hasBusinessDecision || (isLatestUnread && lastTransitionMs !== null));

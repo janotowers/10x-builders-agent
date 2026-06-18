@@ -165,6 +165,17 @@ function summarizeEventForStep(event: OperationalCaseEvent): string {
   if (kind === "step_test_completed") return "Prueba de paso completada";
   if (kind === "skill_test_started") return "Inicio prueba de habilidad";
   if (kind === "skill_test_completed") return "Prueba de habilidad completada";
+  if (kind === "documents_batch_completed") {
+    const count =
+      typeof payload.document_count === "number" ? payload.document_count : null;
+    return count !== null
+      ? `Documentos recibidos: lote completo (${count})`
+      : "Documentos recibidos: lote completo";
+  }
+  if (event.event_type === "external_response") {
+    if (kind === "document_registered") return "Documento recibido";
+    return "Respuesta del contacto externo";
+  }
   if (event.event_type === "state_changed") return "Cambio de estado del caso";
   if (event.event_type === "human_decision") return "Decisión / acción manual";
   return kind;
@@ -357,6 +368,8 @@ function isE2EEvent(item: FlowProgressEvidenceItem): boolean {
     return true;
   }
   if (item.event_kind === "controlled_test_e2e_started") return true;
+  if (item.event_type === "external_response") return true;
+  if (item.event_kind === "documents_batch_completed") return true;
   if (
     item.event_result === "e2e_tick_completed" ||
     item.event_result === "e2e_pending_hitl"

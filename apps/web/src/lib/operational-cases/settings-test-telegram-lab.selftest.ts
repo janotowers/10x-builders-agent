@@ -45,5 +45,18 @@ assert.equal(
   settingsTestTelegramChatIdForAgent(opCase, {}),
   SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID
 );
+assert.equal(
+  telegramChatIdFromCase(
+    {
+      external_contact_jsonb: {
+        channel: "telegram",
+        chat_id: SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID,
+      },
+      context_jsonb: { telegram_chat_id: "1213727697" },
+    } as unknown as Parameters<typeof telegramChatIdFromCase>[0],
+    { telegram_chat_id: "1213727697" }
+  ),
+  1213727697
+);
 
 console.log("settings-test-telegram-lab.selftest: ok");

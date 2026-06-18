@@ -13,6 +13,7 @@ import {
   listActiveAccountSkillsForUser,
   listOperationalCasesForUser,
   listOperationalCaseTypesForUser,
+  updateOperationalCase,
 } from "@agents/db";
 import { getSkillRegistryForUser } from "@agents/agent";
 import type {
@@ -23,6 +24,7 @@ import type {
   OperationalCaseStatus,
   OperationalCaseType,
 } from "@agents/types";
+import { resolveOperationalCaseDocumentRequestTarget } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { CreateCasePanel } from "./create-case-panel";
 import { OperationalCasesFilters } from "./operational-cases-filters";
@@ -42,6 +44,10 @@ import {
   OperationalCaseInstanceList,
 } from "@/lib/operational-cases/instance-list-ui";
 import { AppShell } from "@/components/app-shell";
+import {
+  caseDocumentRequestTargetLabel,
+  setCaseDocumentRequestTarget,
+} from "@/lib/operational-cases/document-request-target";
 
 export const dynamic = "force-dynamic";
 
@@ -133,6 +139,18 @@ async function createOperationalCaseAction(formData: FormData) {
       ...context,
       title: title || undefined,
       created_from: "web_operational_cases_ui",
+      document_request_target: resolveOperationalCaseDocumentRequestTarget({
+        externalContact:
+          externalName || Number.isFinite(telegramChatId)
+            ? {
+                channel: Number.isFinite(telegramChatId) ? "telegram" : undefined,
+                chat_id: Number.isFinite(telegramChatId) ? telegramChatId : undefined,
+                display_name: externalName || undefined,
+              }
+            : undefined,
+      }),
+      document_request_target_decided_by: "default",
+      document_request_target_decided_at: new Date().toISOString(),
     },
   });
 
@@ -229,6 +247,66 @@ async function uploadCaseDocumentAction(formData: FormData) {
       document_kind: document.kind,
     },
   });
+
+  revalidatePath("/operational-cases");
+  redirect(`/operational-cases?case=${caseId}`);
+}
+
+async function setDocumentRequestTargetAction(formData: FormData) {
+  "use server";
+
+  const auth = await createClient();
+  const {
+    data: { user },
+  } = await auth.auth.getUser();
+  if (!user) redirect("/login");
+
+  const caseId = String(formData.get("case_id") ?? "").trim();
+  const target = String(formData.get("document_request_target") ?? "").trim();
+  if (!caseId || (target !== "internal_user" && target !== "external_contact")) {
+    redirect(`/operational-cases?case=${caseId || ""}&error=invalid_document_target`);
+  }
+
+  const db = createServerClient();
+  const opCase = (await listOperationalCasesForUser(db, user.id, {
+    statuses: CASE_STATUSES,
+    limit: 100,
+  })).find((item) => item.id === caseId);
+  if (!opCase) redirect("/operational-cases?error=case_not_found");
+
+  const updated = await setCaseDocumentRequestTarget({
+    db,
+    opCase,
+    target,
+    decidedBy: "user",
+  });
+
+  await insertOperationalCaseEvent(db, {
+    caseId,
+    eventType: "state_changed",
+    actor: "user",
+    payload: {
+      source: "web_operational_cases_ui",
+      kind: "document_request_target_changed",
+      document_request_target: target,
+      previous_target:
+        typeof opCase.context_jsonb?.document_request_target === "string"
+          ? opCase.context_jsonb.document_request_target
+          : null,
+      case_version: updated.version,
+    },
+  });
+
+  if (
+    target === "internal_user" &&
+    opCase.current_step === "awaiting_documents" &&
+    opCase.status === "waiting_external"
+  ) {
+    await updateOperationalCase(db, opCase.id, updated.version, {
+      status: "waiting_internal",
+      nextActionAt: null,
+    });
+  }
 
   revalidatePath("/operational-cases");
   redirect(`/operational-cases?case=${caseId}`);
@@ -667,6 +745,10 @@ function CaseDetail({
   };
 }) {
   const skillSlug = type?.default_skill_slug ?? "(sin skill)";
+  const documentRequestTarget = resolveOperationalCaseDocumentRequestTarget({
+    externalContact: opCase.external_contact_jsonb,
+    context: opCase.context_jsonb,
+  });
   return (
     <section className="min-w-0 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -706,6 +788,10 @@ function CaseDetail({
         <Info label="Vencimiento" value={formatDate(opCase.due_at)} />
         <Info label="Versión" value={`v${opCase.version}`} />
         <Info
+          label="Solicitud de documentos"
+          value={caseDocumentRequestTargetLabel(documentRequestTarget)}
+        />
+        <Info
           label="Contacto externo"
           value={
             opCase.external_contact_jsonb.display_name ??
@@ -744,14 +830,51 @@ function CaseDetail({
           <div>
             <h3 className="text-sm font-semibold">Documentos del caso</h3>
             <p className="mt-1 text-xs text-neutral-500">
-              Si el dueño te mandó documentos por otro canal, súbelos aquí para
-              asociarlos al caso y permitir extracción con visión.
+              {documentRequestTarget === "external_contact"
+                ? "Si el dueño te mandó documentos por otro canal, súbelos aquí para asociarlos al caso y permitir extracción con visión."
+                : "Sube aquí los documentos del asesor/equipo interno para continuar el flujo sin depender del contacto externo."}
             </p>
           </div>
           <span className="rounded bg-neutral-100 px-2 py-1 text-xs font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
             {documents.length} recibido{documents.length === 1 ? "" : "s"}
           </span>
         </div>
+        <form action={setDocumentRequestTargetAction} className="mt-3 flex flex-wrap gap-2">
+          <input type="hidden" name="case_id" value={opCase.id} />
+          <input
+            type="hidden"
+            name="document_request_target"
+            value="internal_user"
+          />
+          <button
+            type="submit"
+            className={`rounded border px-2 py-1 text-xs font-semibold ${
+              documentRequestTarget === "internal_user"
+                ? "border-violet-600 bg-violet-50 text-violet-700"
+                : "border-neutral-300 bg-white text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+            }`}
+          >
+            Los sube el equipo interno
+          </button>
+        </form>
+        <form action={setDocumentRequestTargetAction} className="mt-2 flex flex-wrap gap-2">
+          <input type="hidden" name="case_id" value={opCase.id} />
+          <input
+            type="hidden"
+            name="document_request_target"
+            value="external_contact"
+          />
+          <button
+            type="submit"
+            className={`rounded border px-2 py-1 text-xs font-semibold ${
+              documentRequestTarget === "external_contact"
+                ? "border-violet-600 bg-violet-50 text-violet-700"
+                : "border-neutral-300 bg-white text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+            }`}
+          >
+            Pedir al contacto externo
+          </button>
+        </form>
         <form
           action={uploadCaseDocumentAction}
           encType="multipart/form-data"

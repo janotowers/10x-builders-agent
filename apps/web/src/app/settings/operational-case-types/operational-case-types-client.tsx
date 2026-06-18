@@ -30,6 +30,7 @@ import type {
   OperationalCaseTypeVisibility,
   ToolCall,
 } from "@agents/types";
+import { resolveOperationalCaseDocumentRequestTarget } from "@agents/types";
 import { AccountToolConnectionForm } from "@/components/account-tool-connection-form";
 import type { OwnerResponseBusinessOutcome } from "@/lib/operational-cases/evaluate-owner-response-outcome";
 import {
@@ -137,6 +138,7 @@ import {
 import type { LastE2ETransitionOutcome } from "@/lib/operational-cases/settings-test-e2e-transitions";
 import { buildE2ETransitionGroups } from "@/lib/operational-cases/settings-test-e2e-transitions";
 import {
+  buildObservedConversationalCaseLabel,
   buildOperationalStepLabelMap,
   cleanupTargetLabel,
   countSettingsTestActionsByKind,
@@ -6620,6 +6622,14 @@ export function OperationalCaseTypesClient({
   const [conversationalObservationUnpinned, setConversationalObservationUnpinned] =
     useState(false);
   const conversationalObservationUnpinnedRef = useRef(false);
+  // Armed only by "Abandonar recorrido" (not by manual deselect): when the next
+  // active conversational case appears after an abandon, the lab re-pins to it
+  // automatically (one-shot) so observation follows the fresh case.
+  const rePinOnNextConversationalCaseRef = useRef(false);
+  const abandonedConversationalCaseIdRef = useRef<string | null>(null);
+  const conversationalObservationUnpinnedAtRef = useRef(
+    observedCaseIdFromUrl() ? 0 : Date.now()
+  );
   const [testCaseLoading, setTestCaseLoading] = useState(false);
   const [testCaseRunningMode, setTestCaseRunningMode] = useState<
     "safe_check" | "agent_e2e" | null
@@ -6967,6 +6977,9 @@ export function OperationalCaseTypesClient({
       return current === normalized ? current : normalized;
     });
     setConversationalObservationUnpinned(!nextObservedCaseId);
+    if (!nextObservedCaseId) {
+      conversationalObservationUnpinnedAtRef.current = Date.now();
+    }
     if (nextCaseType && nextCaseType.id !== selectedCaseType?.id) {
       viewCaseType(nextCaseType, nextTab ?? "summary", {
         updateUrl: false,
@@ -7486,6 +7499,37 @@ export function OperationalCaseTypesClient({
       }
       const loadedCaseId = data.case.id;
       if (!targetCaseId && conversationalObservationUnpinnedRef.current) {
+        const sessionCaseId =
+          typeof nextResult.e2eLabSession?.case_id === "string" &&
+          nextResult.e2eLabSession.case_id.trim()
+            ? nextResult.e2eLabSession.case_id.trim()
+            : null;
+        const sessionUpdatedAtMs = nextResult.e2eLabSession?.updated_at
+          ? new Date(nextResult.e2eLabSession.updated_at).getTime()
+          : 0;
+        const sessionLinkedAfterUnpin =
+          sessionCaseId === loadedCaseId &&
+          Number.isFinite(sessionUpdatedAtMs) &&
+          sessionUpdatedAtMs > conversationalObservationUnpinnedAtRef.current;
+        // After "Abandonar recorrido" we stay unpinned but armed. Also re-pin
+        // when the active E2E lab session links to a new case after the selector
+        // was on "Sin caso en observación" (web or Telegram).
+        if (
+          (rePinOnNextConversationalCaseRef.current || sessionLinkedAfterUnpin) &&
+          data.case.status !== "paused" &&
+          loadedCaseId !== abandonedConversationalCaseIdRef.current
+        ) {
+          rePinOnNextConversationalCaseRef.current = false;
+          abandonedConversationalCaseIdRef.current = null;
+          conversationalObservationUnpinnedRef.current = false;
+          conversationalObservationUnpinnedAtRef.current = 0;
+          setConversationalObservationUnpinned(false);
+          setActiveConversationalCaseId(loadedCaseId);
+          replaceObservedCaseUrl(loadedCaseId);
+          setConversationalLabMessage(null);
+          setConversationalLabResult(nextResult);
+          return;
+        }
         setConversationalLabResult((current) => ({
           ...(current ?? nextResult),
           e2eLabSession: nextResult.e2eLabSession ?? null,
@@ -7615,6 +7659,12 @@ export function OperationalCaseTypesClient({
       }
       replaceObservedCaseUrl(null);
       setConversationalObservationUnpinned(true);
+      conversationalObservationUnpinnedRef.current = true;
+      conversationalObservationUnpinnedAtRef.current = Date.now();
+      // Arm one-shot auto re-pin: the next active conversational case (created
+      // from web or Telegram) will be observed automatically.
+      rePinOnNextConversationalCaseRef.current = true;
+      abandonedConversationalCaseIdRef.current = caseId;
       setActiveConversationalCaseId(null);
       setConversationalLabResult((current) => ({
         ...(current ?? {
@@ -8754,6 +8804,19 @@ export function OperationalCaseTypesClient({
         (step) => step.step_key === currentStepKey
       );
       const currentStepLabel = currentStepProgress?.step_label ?? null;
+      const documentRequestTarget =
+        agentTestCase
+          ? resolveOperationalCaseDocumentRequestTarget({
+              externalContact: agentTestCase.external_contact_jsonb,
+              context: agentTestCase.context_jsonb,
+            })
+          : null;
+      const documentRequestTargetLabel =
+        documentRequestTarget === "external_contact"
+          ? "Contacto externo"
+          : documentRequestTarget === "internal_user"
+            ? "Equipo interno"
+            : null;
       const missingRequired = Array.isArray(
         agentTestCase?.context_jsonb?.missing_required
       )
@@ -8785,34 +8848,13 @@ export function OperationalCaseTypesClient({
         agentTestCase?.context_jsonb?.created_from === "agent_conversation" &&
         caseIsControlledE2E &&
         !isAbandonedConversationalE2ECase(agentTestCase);
-      const stepLabelForObservedCase = (opCase: OperationalCase) => {
-        if (!opCase.current_step) return "sin paso";
-        return (
-          operationalStepLabels[opCase.current_step] ??
-          currentStepProgress?.step_label ??
-          opCase.current_step
-        );
-      };
-      const observedCaseModeTag = (opCase: OperationalCase) => {
-        if (opCase.context_jsonb?.e2e_controlled !== true) return "[Real]";
-        if (opCase.status === "paused") {
-          return opCase.context_jsonb?.e2e_control_status === "abandoned"
-            ? "[E2E abandonado]"
-            : "[E2E pausado]";
-        }
-        return "[E2E activo]";
-      };
-      const observedCaseLabel = (opCase: OperationalCase) => {
-        const modeTag = observedCaseModeTag(opCase);
-        const title =
-          typeof opCase.context_jsonb?.title === "string" &&
-          opCase.context_jsonb.title.trim()
-            ? opCase.context_jsonb.title.trim()
-            : `Caso ${opCase.id.slice(0, 8)}`;
-        const step = stepLabelForObservedCase(opCase);
-        const updated = formatDateTime(opCase.updated_at);
-        return `${modeTag} ${title} · ${step} · ${OPERATIONAL_CASE_STATUS_LABELS[opCase.status] ?? opCase.status} · ${updated}`;
-      };
+      const observedCaseLabel = (opCase: OperationalCase) =>
+        buildObservedConversationalCaseLabel({
+          opCase,
+          operationalStepLabels,
+          currentStepProgressLabel: currentStepProgress?.step_label,
+          formatDateTime,
+        });
       const activeE2ELabSession = conversationalLabResult?.e2eLabSession ?? null;
       const e2eLabModeActive = Boolean(activeE2ELabSession);
       const e2eLabModeExpiresAt = activeE2ELabSession?.expires_at
@@ -8942,11 +8984,16 @@ export function OperationalCaseTypesClient({
                 value={observedCaseSelectorValue}
                 onChange={(event) => {
                   const nextId = event.target.value.trim();
+                  // Manual selection/deselection is an explicit user choice, so
+                  // it must NOT trigger the abandon-driven auto re-pin.
+                  rePinOnNextConversationalCaseRef.current = false;
+                  abandonedConversationalCaseIdRef.current = null;
                   replaceObservedCaseUrl(nextId || null);
                   setConversationalObservationUnpinned(!nextId);
                   setActiveConversationalCaseId(nextId || null);
                   setConversationalLabMessage(null);
                   if (!nextId) {
+                    conversationalObservationUnpinnedAtRef.current = Date.now();
                     setConversationalLabResult((current) =>
                       current
                         ? {
@@ -9029,6 +9076,16 @@ export function OperationalCaseTypesClient({
                     title="Paso operativo donde está el caso ahora (define qué hará el agente en la siguiente transición)."
                   >
                     Paso: {currentStepLabel ?? currentStepKey}
+                  </span>
+                ) : null}
+                {hasCase &&
+                currentStepKey === "awaiting_documents" &&
+                documentRequestTargetLabel ? (
+                  <span
+                    className="inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-semibold text-indigo-900 dark:bg-indigo-950 dark:text-indigo-100"
+                    title="Destino actual para solicitud/carga de documentos."
+                  >
+                    Documentos: {documentRequestTargetLabel}
                   </span>
                 ) : null}
                 {hasCase && intakeIncomplete ? (
@@ -9154,6 +9211,14 @@ export function OperationalCaseTypesClient({
                     <span className="ml-1 text-amber-700">
                       Resuelve la acción humana pendiente antes de ejecutar otra
                       revisión.
+                    </span>
+                  ) : null}
+                  {!hasPendingLabActions &&
+                  currentStepKey === "awaiting_documents" &&
+                  documentRequestTarget === "internal_user" ? (
+                    <span className="ml-1 text-indigo-700">
+                      Ruta interna activa: el asesor sube documentos y confirma
+                      “listo”; no se envía Telegram al contacto externo.
                     </span>
                   ) : null}
                   {!canRunE2E && !toolsHaveBlocks ? (

@@ -24,22 +24,32 @@ export function telegramChatIdFromCase(
   opCase: OperationalCase,
   context: Record<string, unknown>
 ): number | null {
+  const parseChatId = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    }
+    return null;
+  };
   const external = isRecord(opCase.external_contact_jsonb)
     ? opCase.external_contact_jsonb
     : {};
-  const fromExternal = external.chat_id;
-  if (typeof fromExternal === "number" && Number.isFinite(fromExternal) && fromExternal > 0) {
-    return fromExternal;
-  }
-  const fromContext = context.telegram_chat_id ?? context.external_chat_id;
-  if (typeof fromContext === "number" && Number.isFinite(fromContext) && fromContext > 0) {
+  const fromExternal = parseChatId(external.chat_id);
+  const fromContext = parseChatId(
+    context.telegram_chat_id ?? context.external_chat_id
+  );
+  // Si el contacto externo quedó en sentinel pero ya existe un chat real en
+  // el contexto del caso, preferimos el chat real.
+  if (
+    fromContext &&
+    (!fromExternal || fromExternal === SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID)
+  ) {
     return fromContext;
   }
-  if (typeof fromContext === "string" && fromContext.trim()) {
-    const parsed = Number(fromContext);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  }
-  return null;
+  return fromExternal ?? fromContext ?? null;
 }
 
 export function shouldSimulateSettingsTestTelegram(params: {

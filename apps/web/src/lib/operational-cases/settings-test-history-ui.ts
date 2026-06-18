@@ -1,4 +1,9 @@
+import type { OperationalCase } from "@agents/types";
 import type { SettingsTestPendingAction } from "@/lib/operational-cases/settings-test-pending-actions";
+import {
+  OPERATIONAL_CASE_STATUS_LABELS,
+  operationalCaseDisplayTitle,
+} from "@/lib/operational-cases/instance-list-ui";
 
 export type SettingsTestCleanupTarget = "notifications" | "tool_calls" | "all";
 
@@ -283,4 +288,70 @@ export function formatLabToolArgsPreviewLine(
   }
 
   return parts.join(" · ");
+}
+
+const CONVERSATIONAL_CASE_STEP_FALLBACK_LABELS: OperationalStepLabelMap = {
+  intake: "Intake conversacional",
+  awaiting_documents: "Solicitar documentos",
+  documents_received: "Procesar documentos",
+  property_data_review: "Revisión de datos de la propiedad",
+};
+
+function observedCasePropertyHeadline(opCase: OperationalCase): string {
+  const title = operationalCaseDisplayTitle(opCase);
+  const context = opCase.context_jsonb ?? {};
+  const zone =
+    (typeof context.property_zone === "string" && context.property_zone.trim()) ||
+    (typeof context.zone === "string" && context.zone.trim()) ||
+    (typeof context.zona === "string" && context.zona.trim()) ||
+    null;
+  if (!zone) return title;
+  if (title.toLowerCase().includes(zone.toLowerCase())) return title;
+  return `${title} · ${zone}`;
+}
+
+export function observedConversationalCaseModeTag(opCase: OperationalCase): string {
+  if (opCase.context_jsonb?.e2e_controlled !== true) return "[Real]";
+  if (opCase.status === "paused") {
+    return opCase.context_jsonb?.e2e_control_status === "abandoned"
+      ? "[E2E abandonado]"
+      : "[E2E pausado]";
+  }
+  return "[E2E activo]";
+}
+
+function resolveObservedCaseStepLabel(params: {
+  opCase: OperationalCase;
+  operationalStepLabels?: OperationalStepLabelMap;
+  currentStepProgressLabel?: string | null;
+}): string {
+  const stepKey = params.opCase.current_step;
+  if (!stepKey) return "sin paso";
+  const mergedLabels: OperationalStepLabelMap = {
+    ...CONVERSATIONAL_CASE_STEP_FALLBACK_LABELS,
+    ...params.operationalStepLabels,
+  };
+  if (mergedLabels[stepKey]?.trim()) {
+    return formatOperationalStepArgValue(stepKey, mergedLabels);
+  }
+  if (params.currentStepProgressLabel?.trim()) {
+    return params.currentStepProgressLabel.trim();
+  }
+  return stepKey;
+}
+
+export function buildObservedConversationalCaseLabel(params: {
+  opCase: OperationalCase;
+  operationalStepLabels?: OperationalStepLabelMap;
+  currentStepProgressLabel?: string | null;
+  formatDateTime: (value: string | null | undefined) => string;
+}): string {
+  const modeTag = observedConversationalCaseModeTag(params.opCase);
+  const headline = observedCasePropertyHeadline(params.opCase);
+  const step = resolveObservedCaseStepLabel(params);
+  const status =
+    OPERATIONAL_CASE_STATUS_LABELS[params.opCase.status] ??
+    params.opCase.status;
+  const updated = params.formatDateTime(params.opCase.updated_at);
+  return `${modeTag} ${headline} · ${step} · ${status} · ${params.opCase.id} · ${updated}`;
 }
