@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- External contact linking for Real operational cases: `external_contact_link_tokens` table (migration `00049`), Telegram deep link `/start ec_<token>`, advisor setup message when choosing «externo» without verified contact; reuses existing external responder pipeline after verification
+- Shared document collection protocol (`case-document-collection.ts`): canonical checklist, per-type ack hints, media-group consolidated acks with optional kind detail, upload side-text detection
+- Telegram media-group ack batching (`telegram-media-group-ack-store.ts`) for internal document uploads
+- E2E/Real routing isolation helpers (`e2e-lab-routing-isolation.ts`) and routable binding resolution (`resolveRoutableConversationBindings`) with ignored-binding reasons for observability
+- Consolidated skill validation script (`scripts/validate-skills.mjs`) and slimmed skill-authoring reference docs
 - Configurable engagement policy overrides per account: `engagement_policy_overrides_jsonb` on `user_notification_preferences` (migration `00036_notification_engagement_policy_overrides.sql`), UI in Plantillas de flujos, API `GET/POST /api/notification-preferences`; delivery windows by weekday/time/timezone with cron deferral outside allowed hours
 - Telegram HITL reminders keep actionable Approve/Cancel buttons via `pending_tool_call_id`; stale `tool_confirmation_pending` notifications auto-resolve when the underlying tool call is no longer pending
 - Telegram multi-case clarification with numbered list selection; explicit new-case intent (`forceNew`) when user asks to open another property case
@@ -41,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Conversational property optioning (Telegram + web): intake data on a single active incomplete intake case continues that case instead of spurious multi-case clarification; explicit «otra propiedad» or post-intake start phrases still clarify or force new case
+- Post-intake message combines property confirmation, document checklist, privacy line, and interno/externo choice via `buildPostIntakeDocumentRequestMessage`
+- Document uploads from the advisor before choosing `document_request_target` infer `internal_user` (`decided_by=inferred`) and use unified batch acks instead of repeating interno/externo per file
+- Deterministic `documents_received` tick bypasses duplicate LLM `property_data_review` notifications; `notify_user` guardrail skips duplicate review when step or recent events indicate one was already sent
+- Owner characteristics extraction merges deterministic parser backfill with LLM patches for priority fields (`floors`, `bedrooms`, etc.)
 - Settings lab: separate E2E lab configuration from observed-case panel; case selector tags `[Real]` / `[E2E activo|pausado|abandonado]`; guide for starting a clean E2E run
 - Operational-cases cron: when a case has pending tool confirmations, skip `runAgent`, set `next_action_at = null`, upsert `tool_confirmation_pending`; resume case after approve/reject via `finalizeCaseAfterToolDecision`
 - Resolving internal notifications cascades closure of linked reminder rows; engagement policies extended with `maxReminderAttempts`, `escalateAfterHours`, and escalation priority

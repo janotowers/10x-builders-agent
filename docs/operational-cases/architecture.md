@@ -273,6 +273,82 @@ Reglas:
 - `paused` significa pausa deliberada; no representa intake pendiente. La espera
   conversacional se modela con el binding `awaiting_user`.
 
+### Bindings rutables vs bindings crudos
+
+Los adapters (Telegram y web) **no** enrutan contra la lista cruda de bindings
+pendientes. Primero hidratan cada binding con su `OperationalCase` y filtran a
+**bindings rutables** vía `resolveRoutableConversationBindings`:
+
+| Criterio | Efecto |
+|---|---|
+| Caso `paused`, `completed` o `failed` | Ignorado (`case_not_routable`) |
+| Caso de otro `case_type` cuando hay intención de property optioning | Ignorado |
+| Caso Real con sesión E2E lab activa | Ignorado (`e2e_isolation`) |
+| Caso E2E no adoptable por la sesión activa | Ignorado |
+
+El resultado incluye `ignoredBindings` con razón para telemetría. Las decisiones
+de creación, clarificación y fallback determinístico usan sólo `routableBindings`.
+
+Implementación: `conversational-routing-orchestrator.ts`,
+`e2e-lab-routing-isolation.ts`.
+
+### Precedencia de intake sobre aclaración
+
+Cuando hay **un único** binding rutable y el caso está en `intake` con
+`intake_status !== complete`, un mensaje con **datos de propiedad** (p. ej.
+«Casa en venta en Las Fuentes…») continúa ese caso directamente
+(`single_binding_intake_continuation`). **No** se pide aclaración «continuar vs
+nueva» en ese escenario.
+
+La aclaración sí aplica cuando:
+
+- el mensaje es una frase de inicio vacía («quiero opcionar») con caso(s) activos;
+- el usuario pide explícitamente otra propiedad (`looksLikeNewCaseIntent`);
+- hay **múltiples** casos candidatos.
+
+Motor: `resolveTelegramConversationRoute` en `conversational-case-routing.ts`.
+
+### Destino documental (`document_request_target`)
+
+Tras completar intake conversacional, el asesor elige quién aporta documentos:
+
+| Valor | Comportamiento |
+|---|---|
+| `internal_user` | El asesor sube por Telegram/web/panel y confirma con «listo». |
+| `external_contact` | El agente/cron solicita al contacto vía `telegram_send_message_to_contact`. |
+
+Reglas adicionales (2026-06):
+
+- Si el asesor **sube archivos antes** de elegir destino, el sistema **infiere**
+  `internal_user` (`document_request_target_decided_by=inferred`) y deja de
+  repetir la pregunta interno/externo por archivo.
+- Los acuses consolidados (álbum Telegram / varios archivos) pueden incluir pista
+  por tipo de documento; la lista canónica vive en `case-document-collection.ts`.
+- El mensaje post-intake combina confirmación de propiedad + checklist +
+  privacidad + elección (`buildPostIntakeDocumentRequestMessage`).
+
+### Vinculación de contacto externo (casos Real)
+
+Si el asesor elige «externo» pero el caso **no** tiene contacto verificado
+(`hasOperationalCaseVerifiedExternalContact`), no se rechaza la intención: entra
+un subflujo de setup:
+
+1. Se genera un token en `external_contact_link_tokens` (migración `00049`).
+2. El asesor recibe un deep link `https://t.me/<bot>?start=ec_<token>` para
+   reenviar al dueño/contacto.
+3. El contacto abre el enlace → webhook `/start ec_<token>` →
+   `verifyExternalContactLink` cablea `external_contact_jsonb.chat_id`, marca
+   `external_contact_status=verified` y fija `document_request_target=external_contact`.
+4. El pipeline existente (cron/agente + bloque «external responder» del webhook)
+   solicita documentos y procesa respuestas entrantes.
+
+Estado intermedio en contexto: `external_contact_setup_status=pending`.
+
+En **E2E lab**, el contacto externo se simula/cablea automáticamente
+(`ensureConversationalE2ELabExternalContact`); no requiere deep link.
+
+Implementación: `external-contact-link.ts`, `document-request-target.ts`.
+
 Este patrón es canal-agnóstico. Telegram usa `channel='telegram'` + `chat_id`;
 web chat puede usar `channel='web'` + `session_id`. Para canales futuros
 (WhatsApp, email), extender el check de `channel` en la migración y reutilizar el

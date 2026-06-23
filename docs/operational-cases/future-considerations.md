@@ -369,12 +369,30 @@ contacto externo).
 
 ---
 
-## 11. Solicitud de documentos: modo `both` (pendiente)
+## 11. Solicitud de documentos: rutas y vinculación externa
 
 **Estado (2026-06):** el MVP soporta `document_request_target` en dos rutas:
 
 - `internal_user` (sube documentos el asesor/equipo interno).
 - `external_contact` (se solicita al contacto externo por mensajería).
+
+El modo `both` queda explícitamente **fuera de alcance** por ahora (ver abajo).
+
+### Comportamiento actual (implementado)
+
+| Escenario | Qué pasa |
+|---|---|
+| Post-intake | Un solo mensaje: confirmación de propiedad + checklist + privacidad + «interno» / «externo». |
+| Asesor elige «interno» | `waiting_internal`; sube docs y confirma «listo». |
+| Asesor elige «externo» y **ya** hay contacto verificado | Cron/agente envía solicitud inicial al `chat_id` externo. |
+| Asesor elige «externo» **sin** contacto verificado (Real) | Subflujo de setup: token + deep link `t.me/<bot>?start=ec_<token>`; el asesor reenvía al contacto; al abrirlo queda verificado y continúa el flujo externo. **No** se responde «elige interno». |
+| Asesor sube documentos **antes** de elegir destino | Se infiere `internal_user` (`decided_by=inferred`); acuse consolidado; no se repite la pregunta por archivo. |
+| E2E lab + «externo» | Contacto externo simulado/cableado; no requiere deep link. |
+
+Referencias: `document-request-target.ts`, `case-document-collection.ts`,
+`external-contact-link.ts`, migración `00049_external_contact_link_tokens.sql`.
+
+### Modo `both` (pendiente)
 
 El modo `both` queda explícitamente **fuera de alcance** por ahora.
 

@@ -15,8 +15,9 @@ Este guion valida el patrón de producción: caso conversacional +
 
 1. `npm run dev` debe estar corriendo en el workspace `@agents/web`
    (debería estarlo según tu terminal `1.txt`).
-2. La migración `00044_operational_case_conversation_bindings.sql` debe estar
-   aplicada en la base de datos usada por el dev server.
+2. Las migraciones `00044_operational_case_conversation_bindings.sql` y
+   `00049_external_contact_link_tokens.sql` deben estar aplicadas en la base
+   de datos usada por el dev server.
 3. Ten abiertas dos pestañas:
    - Pestaña A: `/settings/operational-case-types` en `property_optioning`.
    - Pestaña B: `/operational-cases` (para auditar que el caso aparece).
@@ -67,29 +68,62 @@ intención inicial. Ejemplo:
 > Es un terreno en Valle de Bravo, venta, lote residencial llamado El Encino
 
 **Esperado:**
-- El mensaje se asocia al caso pendiente si la confianza es alta.
-- Si la confianza es media, el bot pregunta una aclaración que incluye tipo de
-  caso, resumen, estado técnico e ID corto.
-- Tras confirmar, el mensaje se procesa contra el caso original.
+- El mensaje se asocia al caso pendiente **sin** pedir aclaración «continuar vs
+  nueva» cuando sólo hay un caso en `intake` incompleto (precedencia de intake).
+- Si hay **varios** casos activos del mismo tipo, el bot puede pedir aclaración
+  con tipo de caso, resumen, estado técnico e ID corto.
+- Tras confirmar (si aplica), el mensaje se procesa contra el caso original.
 
-## Bloque 3 — Completar intake y pasar a transiciones manuales (5 min)
+## Bloque 3 — Completar intake, documentos y destino (5-10 min)
 
 **Paso 3.1.** Sigue respondiendo los campos required que falten.
 
 **Esperado:**
 - El caso conserva el mismo `case_id`.
-- Cuando el intake queda completo, el laboratorio deja de pedir "Completa intake
-  en Telegram" y habilita **Ejecutar una transición con agente**.
+- Al completar intake, un **solo** mensaje confirma la propiedad, lista
+  documentos requeridos, incluye la línea de privacidad y pregunta
+  «interno» / «externo».
 
-**Paso 3.2.** En Settings, da clic en **Ejecutar una transición con agente**.
+**Paso 3.2 (opcional — ruta interna).** Responde «interno» y sube uno o más
+documentos (individual o álbum). Escribe «listo» cuando termines.
+
+**Esperado:**
+- Acuse consolidado (un mensaje por lote, no uno por archivo con la pregunta
+  interno/externo repetida).
+- El acuse puede incluir pista por tipo de documento cuando el sistema lo
+  reconoce.
+
+**Paso 3.3 (opcional — inferencia interna).** En un caso nuevo en
+`awaiting_documents` **sin** haber elegido destino, sube un documento desde
+Telegram.
+
+**Esperado:**
+- El sistema infiere ruta interna y **no** repite «¿interno o externo?» en cada
+  archivo.
+
+**Paso 3.4 (opcional — ruta externa Real).** En un caso Real (no E2E lab),
+responde «externo» sin contacto verificado.
+
+**Esperado:**
+- El bot entrega un enlace `t.me/<bot>?start=ec_…` para reenviar al
+  dueño/contacto, más la opción de responder «interno» si cambias de idea.
+- Tras abrir el enlace desde otra cuenta/chat de Telegram, el contacto recibe
+  confirmación de vinculación y el asesor recibe aviso.
+
+## Bloque 4 — Transiciones manuales en Settings (5 min)
+
+**Paso 4.1.** Cuando el intake quedó completo, el laboratorio deja de pedir
+"Completa intake en Telegram" y habilita **Ejecutar una transición con agente**.
+
+**Paso 4.2.** En Settings, da clic en **Ejecutar una transición con agente**.
 
 **Esperado:**
 - La transición corre como tick manual de fondo.
-- El cron no debe avanzar este recorrido.
+- El cron no debe avanzar este recorrido controlado.
 - El resumen E2E muestra Paso 0 con actividad conversacional y los pasos
   operativos sólo conforme existan transiciones manuales.
 
-## Bloque 4 — Ambigüedad controlada (opcional, útil)
+## Bloque 5 — Ambigüedad controlada (opcional, útil)
 
 Si tienes dos casos conversacionales abiertos del mismo tipo, envía un dato
 que podría aplicar a ambos.
@@ -106,9 +140,12 @@ Marcar todos para cerrar:
 - [ ] Telegram crea/adopta un caso `property_optioning` en `intake`.
 - [ ] Se crea un binding conversacional `awaiting_user`.
 - [ ] Una pregunta no relacionada no consume ni cancela el binding.
-- [ ] Una respuesta tardía con datos de propiedad se asocia al caso correcto o
-      pide aclaración antes de asociar.
-- [ ] La aclaración muestra `case_type`, resumen, estado técnico e ID corto.
+- [ ] Una respuesta tardía con datos de propiedad se asocia al caso correcto sin
+      aclaración espuria cuando hay un solo intake incompleto.
+- [ ] Post-intake: un mensaje combina confirmación + checklist + interno/externo.
+- [ ] Subir docs antes de elegir destino infiere ruta interna (opcional).
+- [ ] «Externo» sin contacto entrega deep link de vinculación (opcional, Real).
+- [ ] La aclaración multi-caso muestra `case_type`, resumen, estado técnico e ID corto.
 - [ ] Settings muestra Paso 0 mientras el intake está incompleto.
 - [ ] Al completar required, se habilita la primera transición manual.
 - [ ] El cron no avanza el caso controlado; sólo lo hace Prueba con agente.
@@ -119,7 +156,9 @@ Marcar todos para cerrar:
 |---|---|---|
 | Error de tabla inexistente `operational_case_conversation_bindings` | Falta aplicar migración `00044`. | Aplicar migración en la base del dev server y reiniciar. |
 | `active=none` para "quiero opcionar una propiedad" | Selector LLM o capa determinística no enruta. | Reportar texto exacto del mensaje y logs. |
+| Se pide aclaración tras enviar datos de intake con un solo caso en intake | El router trataba intención explícita antes que continuación de intake. | Reportar conversación literal; verificar que el fix de precedencia está desplegado. |
 | Se crea otro caso al responder datos tardíos | Binding no fue creado/encontrado o resolver con confianza mal calibrada. | Reportar conversación literal y filas de binding. |
+| «Externo» responde «elige interno» sin enlace | Falta migración `00049` o contacto ya verificado. | Aplicar migración; revisar `external_contact_jsonb` del caso. |
 | Un mensaje no relacionado cancela el caso | El router está tratando todo binding pendiente como continuidad obligatoria. | Reportar mensaje exacto. |
 | El bot crea el caso con `context_jsonb` vacío o con valores erróneos | El LLM no está mapeando bien respuestas a campos. | Reportar la conversación literal y los valores en `context_jsonb`. |
 | Cae el dev server con error 500 | Bug nuevo. | Pegar el stack trace en la conversación. |

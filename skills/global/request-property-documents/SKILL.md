@@ -46,6 +46,11 @@ Más cualquier documento extra que la cuenta exija (revisa
    - `context_jsonb.document_request_target`:
      - `external_contact` (default sólo si hay contacto verificado) o
      - `internal_user` (el asesor/equipo sube documentos).
+   - `context_jsonb.external_contact_setup_status`: si es `pending`, el asesor
+     eligió «externo» pero el contacto **aún no** abrió el deep link de
+     vinculación. **NO** uses `telegram_send_message_to_contact` hasta que
+     `hasOperationalCaseVerifiedExternalContact` sea verdadero
+     (`external_contact_status=verified` y `chat_id` presente).
    - `external_contact_jsonb.chat_id` y `display_name` del dueño.
    - `context_jsonb.required_documents`: si no existe, usa la lista
      default de arriba.
