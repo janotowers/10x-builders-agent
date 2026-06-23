@@ -173,7 +173,15 @@ function summarizeEventForStep(event: OperationalCaseEvent): string {
       : "Documentos recibidos: lote completo";
   }
   if (event.event_type === "external_response") {
-    if (kind === "document_registered") return "Documento recibido";
+    if (kind === "document_registered") {
+      const originalName =
+        typeof payload.original_name === "string" && payload.original_name.trim()
+          ? payload.original_name.trim()
+          : null;
+      return originalName
+        ? `Documento recibido: ${originalName}`
+        : "Documento recibido";
+    }
     return "Respuesta del contacto externo";
   }
   if (event.event_type === "state_changed") return "Cambio de estado del caso";
@@ -225,6 +233,19 @@ export function eventBelongsToStep(
   ) {
     return true;
   }
+
+  // Los documentos registrados (interno/externo) no llevan `current_step` en su
+  // payload; se recaban durante "Solicitar documentos". Sin esta atribución, el
+  // panel no muestra actividad documental en ese paso (quedaba "Sin actividad").
+  const payloadKind = typeof payload?.kind === "string" ? payload.kind : null;
+  if (
+    stepKey === "awaiting_documents" &&
+    event.event_type === "external_response" &&
+    payloadKind === "document_registered"
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -407,11 +428,16 @@ export function flowProgressForE2ESummary<T extends FlowProgressLike>(
   return flowProgress.map((step) => {
     const evidenceItems = (step.evidenceItems ?? []).filter((item) => {
       const createdAtMs = new Date(item.created_at).getTime();
+      const isDocumentEvidence =
+        item.kind === "event" &&
+        (item.event_kind === "document_registered" ||
+          item.event_kind === "documents_batch_completed");
       const preTransitionConversationalIntake =
         item.kind === "event" &&
         (item.event_kind === "case_created" ||
           item.event_kind === "intake_fields_requested" ||
-          item.event_source === "operational_case_update_intake");
+          item.event_source === "operational_case_update_intake" ||
+          isDocumentEvidence);
       if (
         startedAt &&
         Number.isFinite(createdAtMs) &&

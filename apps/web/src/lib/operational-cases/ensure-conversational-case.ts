@@ -15,6 +15,7 @@ import type {
   OperationalCaseExternalContact,
   OperationalCaseIntakeField,
 } from "@agents/types";
+import { isAdoptableConversationalCaseForE2ELab } from "./e2e-lab-routing-isolation";
 
 type DbClient = Parameters<typeof getOperationalCaseTypeForUser>[0];
 
@@ -72,7 +73,11 @@ export async function ensureConversationalCase(
         caseType: params.caseType,
         statuses: ["active", "waiting_internal", "waiting_external"],
       });
-  if (existing && existing.status !== "paused") {
+  if (
+    existing &&
+    existing.status !== "paused" &&
+    isAdoptableConversationalCaseForE2ELab(existing, e2eControlled)
+  ) {
     const existingExternal = existing.external_contact_jsonb ?? {};
     if (
       labExternalContact &&

@@ -245,6 +245,8 @@ async function uploadCaseDocumentAction(formData: FormData) {
       source: "advisor_web",
       document_id: document.id,
       document_kind: document.kind,
+      current_step: opCase.current_step,
+      step_key: opCase.current_step,
     },
   });
 

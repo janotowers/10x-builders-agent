@@ -16,6 +16,7 @@ export * from "./queries/operational-cases";
 export * from "./queries/operational-case-conversation-bindings";
 export * from "./queries/operational-case-e2e-lab-sessions";
 export * from "./queries/operational-case-test-runs";
+export * from "./queries/external-contact-link-tokens";
 export * from "./queries/account-skills";
 export * from "./queries/notification-preferences";
 export * from "./queries/global-tool-requests";

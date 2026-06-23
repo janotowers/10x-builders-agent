@@ -225,6 +225,44 @@ assert.deepEqual(documentFieldsFromEscFilename.legal_addresses, [
 ]);
 assert.equal(documentFieldsFromEscFilename.area_total_m2, 116.93);
 
+const documentFieldsWithPendingBoletaAndEscritura = documentExtractionMinimumsContext([
+  {
+    kind: "boleta_registral",
+    display_name: "boleta",
+    original_name: "boleta-registral.pdf",
+    status: "received",
+    extraction_status: "pending",
+    extraction_jsonb: {},
+  } as unknown as OperationalCaseDocument,
+  {
+    kind: "escritura_descripcion",
+    display_name: "escritura",
+    original_name: "escritura-sucesion.pdf",
+    status: "received",
+    extraction_status: "ok",
+    extraction_jsonb: {
+      owner_names: ["Teresa Campos", "Sixto Elvira", "Celia García de Padilla"],
+      legal_address:
+        "Finca marcada con el número 185 de la calle Ribera del Lago, Jocotepec, Jalisco",
+      document_kind: "escritura_descripcion",
+    },
+  } as unknown as OperationalCaseDocument,
+]);
+assert.equal(
+  "owner_names" in documentFieldsWithPendingBoletaAndEscritura,
+  false,
+  "si hay boleta pendiente no debe canonizar titulares desde escritura"
+);
+assert.equal(
+  "legal_addresses" in documentFieldsWithPendingBoletaAndEscritura,
+  false,
+  "si hay boleta pendiente no debe canonizar dirección legal desde escritura"
+);
+assert.deepEqual(
+  documentFieldsWithPendingBoletaAndEscritura.owner_names_excluded_from_consistency,
+  ["Teresa Campos", "Sixto Elvira", "Celia García de Padilla"]
+);
+
 const documentFieldsWithBoletaAndIne = documentExtractionMinimumsContext([
   {
     kind: "boleta_registral",

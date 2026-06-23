@@ -74,7 +74,15 @@ export function parseOwnerCharacteristics(text: string): Record<string, unknown>
   const bathrooms = numberBefore(normalized, "banos?(?:\\s+completos?)?");
   if (bathrooms != null) parsed.bathrooms = bathrooms;
 
-  if (/\b(?:sin|no\s+(?:tiene|hay))\s+medios?\s+banos?\b/.test(normalized)) {
+  if (
+    /\b(?:sin|ningun(?:o|a)?|no\s+(?:tiene|hay)|cero|0)\s+medios?\s+banos?\b/.test(
+      normalized
+    ) ||
+    /\b(?:sin|ningun(?:o|a)?|no\s+(?:tiene|hay)|cero|0)\s+medio\s+bano\b/.test(
+      normalized
+    ) ||
+    /\bno\s+medio\s+bano(?:s)?\b/.test(normalized)
+  ) {
     parsed.half_bathrooms = 0;
   } else {
     const halfBathrooms = numberBefore(normalized, "medios?\\s+banos?");

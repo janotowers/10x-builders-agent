@@ -64,6 +64,7 @@ import {
   isControlledE2EOperationalCase,
   isCronSuppressedOperationalCase,
   isSettingsOperationalTestCase,
+  resolveOperationalCaseDocumentRequestTarget,
 } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { notify } from "@/lib/notify";
@@ -83,6 +84,8 @@ import {
   resolveEngagementPolicy,
 } from "@/lib/engagement-policies/registry";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
+import { buildMediaGroupReceivedAck } from "@/lib/operational-cases/case-document-collection";
+import { flushMediaGroupAcksForCase } from "@/lib/operational-cases/telegram-media-group-ack-store";
 import {
   buildToolConfirmationEscalationText,
   notificationMetadataPendingToolCallId,
@@ -923,6 +926,38 @@ async function processCase(
   }
 
   try {
+    if (opCase.current_step === "awaiting_documents") {
+      const requestTarget = resolveOperationalCaseDocumentRequestTarget({
+        externalContact: opCase.external_contact_jsonb,
+        context: opCase.context_jsonb,
+      });
+      const externalChatId =
+        opCase.external_contact_jsonb?.channel === "telegram" &&
+        typeof opCase.external_contact_jsonb.chat_id === "number"
+          ? opCase.external_contact_jsonb.chat_id
+          : null;
+      const targetChatId =
+        requestTarget === "internal_user"
+          ? await getTelegramChatId(db, opCase.user_id)
+          : externalChatId;
+      if (targetChatId) {
+        const flush = await flushMediaGroupAcksForCase({
+          db,
+          opCase,
+          chatId: targetChatId,
+          sendAck: async (files) => {
+            await sendTelegramMessage(
+              targetChatId,
+              buildMediaGroupReceivedAck(files)
+            );
+          },
+        });
+        if (flush.flushed > 0) {
+          return { case_id: opCase.id, status: "ok" };
+        }
+      }
+    }
+
     const pendingHitlCount = await countPendingToolCallsForCase(db, opCase.id);
     if (pendingHitlCount > 0) {
       const pendingCalls = await listPendingCaseToolCalls(

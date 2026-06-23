@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   createServerClient,
   decryptToken,
+  findLatestConversationalOperationalCase,
   findPendingConversationBindings,
   getConversationBindingForCase,
   setConversationBindingStatus,
@@ -13,11 +14,11 @@ import {
   getOperationalCase,
   getRecentOperationalCaseEvents,
   getActiveE2ELabSession,
+  getTelegramChatId,
   insertOperationalCaseEvent,
   listInternalUserNotifications,
   linkE2ELabSessionToCase,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
-  resolveInternalNotificationWithReminders,
   shortOperationalCaseId,
   updateOperationalCase,
   updateToolCallStatus,
@@ -41,9 +42,13 @@ import { parsePriceApprovalDecision } from "@/lib/business-decisions/price-appro
 import { parseContractReviewDecision } from "@/lib/business-decisions/contract-review";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
-import { looksLikeNewCaseIntent } from "@/lib/operational-cases/conversational-case-routing";
+import {
+  looksLikeNewCaseIntent,
+  shouldForceNewConversationalCaseOnExplicitStartIntent,
+} from "@/lib/operational-cases/conversational-case-routing";
 import {
   resolveConversationalClarificationReply,
+  resolveRoutableConversationBindings,
   routeConversationalMessageAgainstBindings,
 } from "@/lib/operational-cases/conversational-routing-orchestrator";
 import {
@@ -81,13 +86,34 @@ import {
   buildCaseDocumentRequestTargetPrompt,
   parseCaseDocumentRequestTargetChoice,
   resolveDocumentTargetReplyAgainstBindings,
+  resolveInternalDocumentMessageCase,
+  resolveInternalDocumentUploadCaseForMedia,
   setCaseDocumentRequestTarget,
   shouldPromptCaseDocumentRequestTarget,
 } from "@/lib/operational-cases/document-request-target";
 import {
+  isUsableE2ELabSessionCase,
+} from "@/lib/operational-cases/e2e-lab-routing-isolation";
+import {
+  beginExternalContactLink,
+  buildExternalContactDeepLink,
+  buildExternalContactSetupMessage,
+  parseExternalContactLinkPayload,
+  verifyExternalContactLink,
+} from "@/lib/operational-cases/external-contact-link";
+import {
   completeDocumentBatchForCase,
   looksLikeDocumentBatchComplete,
 } from "@/lib/operational-cases/document-batch-completion";
+import {
+  buildDocumentReceivedAck,
+  buildMediaGroupReceivedAck,
+  looksLikeDocumentUploadSideText,
+} from "@/lib/operational-cases/case-document-collection";
+import {
+  appendMediaGroupAckToCase,
+  flushMediaGroupAcksForCase,
+} from "@/lib/operational-cases/telegram-media-group-ack-store";
 
 const TELEGRAM_INTAKE_ROUTED: Record<ConversationalIntakeRoute, string> = {
   intake_missing_fields_requested: "operational_case_intake_missing_fields",
@@ -200,11 +226,26 @@ function shouldIgnoreConversationalE2EIntakeEcho(params: {
   return fieldMatches.length >= 2;
 }
 
+/**
+ * ¿El caso está esperando que el dueño (externo) o el asesor (interno) respondan
+ * los campos mínimos de características que el sistema pidió?
+ *
+ * Simétrico por ruta: el invariante post-agente emite `characteristics_pending`
+ * al contacto externo (`waiting_external`) o `characteristics_pending_internal`
+ * al asesor (`waiting_internal`). Reconocer ambos es lo que permite procesar la
+ * respuesta de forma determinística en cualquier ruta, sin delegar al LLM.
+ */
 async function isAwaitingCharacteristicsResponse(
   db: ReturnType<typeof createServerClient>,
   opCase: OperationalCase
 ) {
-  if (opCase.current_step !== "documents_received" || opCase.status !== "waiting_external") {
+  if (opCase.current_step !== "documents_received") return false;
+  let expectedPurpose: string;
+  if (opCase.status === "waiting_external") {
+    expectedPurpose = "characteristics_pending";
+  } else if (opCase.status === "waiting_internal") {
+    expectedPurpose = "characteristics_pending_internal";
+  } else {
     return false;
   }
   const events = await getRecentOperationalCaseEvents(db, opCase.id, 20);
@@ -214,8 +255,133 @@ async function isAwaitingCharacteristicsResponse(
       event.event_type === "reminder_sent" &&
       payload &&
       typeof payload === "object" &&
-      (payload as Record<string, unknown>).purpose === "characteristics_pending"
+      (payload as Record<string, unknown>).purpose === expectedPurpose
     );
+  });
+}
+
+/**
+ * Procesa de forma determinística una respuesta (interna o externa) a la
+ * solicitud de características faltantes. Punto único de verdad para las tres
+ * entradas (responder externo E2E, responder externo real, asesor interno):
+ *
+ *   1. Mezcla los campos en `property_data` con el extractor reutilizable.
+ *   2. Resuelve el pendiente interno `property_data_minimums_missing` (no-op si
+ *      la respuesta vino por canal externo, que no crea ese pendiente).
+ *   3. Acusa recibo en el chat.
+ *   4. Dispara el tick E2E sólo si el caso es controlado; en producción el cron
+ *      reanuda el caso con `next_action_at`.
+ *
+ * No duplica lógica de merge: reutiliza `mergeCharacteristicsOwnerResponseDeterministically`.
+ */
+async function processCharacteristicsReply(params: {
+  db: ReturnType<typeof createServerClient>;
+  opCase: OperationalCase;
+  chatId: number;
+  text: string;
+}): Promise<OperationalCase> {
+  const isE2EControlled = params.opCase.context_jsonb?.e2e_controlled === true;
+  const merged = await mergeCharacteristicsOwnerResponseDeterministically({
+    db: params.db,
+    opCase: params.opCase,
+    text: params.text,
+    source: "telegram_webhook_characteristics_response",
+    // E2E: el tick corre de inmediato (cron suprimido). Producción: el cron
+    // reanuda el caso, así que despertamos next_action_at = ahora.
+    nextActionAt: isE2EControlled ? null : new Date().toISOString(),
+  });
+  try {
+    await resolveUnreadInternalNotificationsByKindForCaseWithReminders(params.db, {
+      userId: merged.user_id,
+      caseId: merged.id,
+      kind: "property_data_minimums_missing",
+      status: "actioned",
+    });
+  } catch (resolveError) {
+    console.error(
+      "[telegram-webhook] failed to resolve property_data_minimums_missing pending:",
+      resolveError
+    );
+  }
+  await sendTelegramMessage(
+    params.chatId,
+    "Gracias, ya registré la información adicional. La voy a procesar y te aviso el siguiente paso."
+  );
+  if (isE2EControlled) {
+    void runSettingsTestCaseAgentTick(params.db, merged, merged.user_id, {
+      source: "telegram_webhook_conversational_e2e_characteristics_response",
+      ownerResponseText: params.text,
+    }).catch((tickError) => {
+      console.error(
+        "[telegram-webhook] characteristics response tick failed:",
+        tickError
+      );
+    });
+  }
+  return merged;
+}
+
+/**
+ * Completa el lote documental en ruta interna y dispara el procesamiento, con
+ * la MISMA mecánica que el chat web (`completeDocumentBatchForCase` + tick E2E).
+ * Evita el camino del responder externo y no delega al LLM.
+ */
+async function finalizeInternalDocumentBatch(params: {
+  db: ReturnType<typeof createServerClient>;
+  caseId: string;
+  chatId: number;
+  source: string;
+}) {
+  const { db, caseId, chatId, source } = params;
+  const completion = await completeDocumentBatchForCase({
+    db,
+    caseId,
+    channel: "telegram",
+    source,
+  });
+  if (completion.status === "no_documents") {
+    await sendTelegramMessage(
+      chatId,
+      "Aún no veo documentos registrados en el caso. Súbeme al menos uno y luego escribe «listo»."
+    );
+    return NextResponse.json({
+      ok: true,
+      routed: "operational_case_internal_documents_no_documents",
+      case_id: caseId,
+    });
+  }
+  if (completion.status === "failed") {
+    await sendTelegramMessage(
+      chatId,
+      "Registré tu confirmación, pero no pude avanzar el caso en este momento. Inténtalo de nuevo en unos segundos."
+    );
+    return NextResponse.json({
+      ok: true,
+      routed: "operational_case_internal_documents_failed",
+      case_id: caseId,
+    });
+  }
+  await sendTelegramMessage(
+    chatId,
+    "Gracias, ya registré que terminaste de enviar documentos. Voy a procesarlos y te aviso el siguiente paso."
+  );
+  if (completion.case.context_jsonb?.e2e_controlled === true) {
+    void runSettingsTestCaseAgentTick(
+      db,
+      completion.case,
+      completion.case.user_id,
+      { source }
+    ).catch((tickError) => {
+      console.error(
+        "[telegram-webhook] internal documents marked ready tick failed:",
+        tickError
+      );
+    });
+  }
+  return NextResponse.json({
+    ok: true,
+    routed: "operational_case_internal_documents_processing",
+    case_id: caseId,
   });
 }
 
@@ -325,6 +491,7 @@ interface TelegramUpdate {
   update_id: number;
   message?: {
     message_id: number;
+    media_group_id?: string;
     from: { id: number; first_name: string };
     chat: { id: number };
     text?: string;
@@ -372,38 +539,6 @@ function documentKindAckHint(kind: string | null | undefined) {
     default:
       return null;
   }
-}
-
-function parsePropertyDataReviewCorrection(text: string) {
-  const normalized = text
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
-  const patch: Record<string, unknown> = {};
-  if (/\boperacion\b/.test(normalized) && /\bventa\b/.test(normalized)) {
-    patch.operation_type = "Venta";
-  } else if (/\boperacion\b/.test(normalized) && /\brenta\b/.test(normalized)) {
-    patch.operation_type = "Renta";
-  }
-  if (/\btipo\b/.test(normalized) && /\bterreno\b/.test(normalized)) {
-    patch.property_type = "Terreno";
-  }
-  const zoneMatch = text.match(/zona\s*(?:es|:)\s*([^\n.]+)/i);
-  if (zoneMatch?.[1]?.trim()) {
-    patch.property_zone = zoneMatch[1].trim();
-  }
-  return patch;
-}
-
-function mergeReviewCorrectionPatch(
-  deterministicPatch: Record<string, unknown>,
-  llmPatch: Record<string, unknown> | undefined
-) {
-  return {
-    ...(llmPatch ?? {}),
-    ...deterministicPatch,
-  };
 }
 
 function isPropertyDataReviewCase(opCase: OperationalCase) {
@@ -782,6 +917,63 @@ export async function POST(request: Request) {
   const deterministicPropertyIntent = isPropertyOptioningIntent(text);
 
   if (command === "/start") {
+    const externalContactToken = parseExternalContactLinkPayload(args);
+    if (externalContactToken) {
+      const displayName =
+        typeof message.from.first_name === "string" &&
+        message.from.first_name.trim()
+          ? message.from.first_name.trim()
+          : null;
+      const verification = await verifyExternalContactLink(db, {
+        token: externalContactToken,
+        chatId,
+        displayName,
+      });
+      if (verification.ok) {
+        const label = verification.propertyTitle
+          ? `«${verification.propertyTitle}»`
+          : "la propiedad";
+        await sendTelegramMessage(
+          chatId,
+          `¡Listo! Quedaste vinculado al caso de ${label}. En breve te indicaré qué documentos necesito; puedes enviármelos aquí mismo como archivos.`
+        );
+        try {
+          const advisorChatId = verification.advisorUserId
+            ? await getTelegramChatId(db, verification.advisorUserId)
+            : null;
+          if (advisorChatId) {
+            await sendTelegramMessage(
+              advisorChatId,
+              `El contacto externo quedó vinculado${
+                verification.propertyTitle
+                  ? ` al caso de «${verification.propertyTitle}»`
+                  : ""
+              }. Le solicitaré los documentos y te aviso cuando responda.`
+            );
+          }
+        } catch (notifyError) {
+          console.warn(
+            "[telegram-webhook] external contact link advisor notify failed:",
+            notifyError
+          );
+        }
+        return NextResponse.json({
+          ok: true,
+          routed: "external_contact_linked",
+          case_id: verification.caseId,
+        });
+      }
+      await sendTelegramMessage(
+        chatId,
+        verification.reason === "expired" || verification.reason === "used"
+          ? "Este enlace de vinculación ya no es válido. Pídele al asesor que te genere uno nuevo."
+          : "No pude validar este enlace de vinculación. Pídele al asesor que te genere uno nuevo."
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "external_contact_link_failed",
+      });
+    }
     await sendTelegramMessage(
       chatId,
       "¡Hola! Soy tu agente personal.\n\nSi ya tienes cuenta web, ve a Ajustes → Telegram en la web, genera un código de vinculación y envíamelo así:\n/link TU_CODIGO"
@@ -866,8 +1058,19 @@ export async function POST(request: Request) {
         .limit(5);
       for (const binding of pendingBindings ?? []) {
         const candidate = await getOperationalCase(db, binding.case_id);
+        if (!candidate) continue;
+        // Los casos de ruta interna NO se procesan por el camino del responder
+        // externo: su "listo" lo maneja el handler interno (finalizeInternalDocumentBatch),
+        // que no registra external_response ni usa source externo.
         if (
-          candidate?.context_jsonb?.created_from === "agent_conversation" &&
+          operationalCaseDocumentRequestTargetFromContext(
+            candidate.context_jsonb
+          ) === "internal_user"
+        ) {
+          continue;
+        }
+        if (
+          candidate.context_jsonb?.created_from === "agent_conversation" &&
           candidate.context_jsonb?.e2e_controlled === true &&
           candidate.status !== "paused" &&
           candidate.status !== "completed" &&
@@ -943,6 +1146,35 @@ export async function POST(request: Request) {
       const conversationalE2ECase =
         refreshedCase?.context_jsonb?.created_from === "agent_conversation" &&
         refreshedCase.context_jsonb?.e2e_controlled === true;
+      if (media && message.media_group_id && refreshedCase) {
+        const withGroupedAck = await appendMediaGroupAckToCase({
+          db,
+          opCase: refreshedCase,
+          chatId,
+          mediaGroupId: message.media_group_id,
+          file: {
+            originalName: media.originalName,
+            kind: documentPayload?.kind ?? null,
+          },
+          markReady: false,
+        });
+        const flush = await flushMediaGroupAcksForCase({
+          db,
+          opCase: withGroupedAck,
+          chatId,
+          sendAck: async (files) => {
+            await sendTelegramMessage(chatId, buildMediaGroupReceivedAck(files));
+          },
+        });
+        return NextResponse.json({
+          ok: true,
+          routed:
+            flush.flushed > 0
+              ? "operational_case_external_document_group_ack_flushed"
+              : "operational_case_external_document_group_ack_queued",
+          case_id: matchedCase.id,
+        });
+      }
       const kindHint = documentKindAckHint(documentPayload?.kind);
       const cannedAck = media
         ? `Recibí ${describeReceivedTelegramFile(media)}, gracias. Lo registré en el caso.${
@@ -1019,13 +1251,15 @@ export async function POST(request: Request) {
           });
         }
         if (parsedChoice.reason === "external_unavailable") {
+          const { token } = await beginExternalContactLink(db, refreshedCase);
+          const deepLink = await buildExternalContactDeepLink(token);
           await sendTelegramMessage(
             chatId,
-            "No veo un contacto externo verificado para este caso. Elige «interno», o primero registra un contacto externo válido."
+            buildExternalContactSetupMessage({ deepLink })
           );
           return NextResponse.json({
             ok: true,
-            routed: "operational_case_document_target_choice_needed",
+            routed: "operational_case_external_contact_setup_requested",
             case_id: matchedCase.id,
           });
         }
@@ -1050,32 +1284,11 @@ export async function POST(request: Request) {
           awaitingCharacteristics &&
           !looksLikeDocumentBatchComplete(text);
         if (readyToProcessCharacteristics) {
-          await sendTelegramMessage(
-            chatId,
-            "Gracias, ya registré la información adicional. La voy a procesar y te aviso el siguiente paso."
-          );
-          const caseForTick =
-            await mergeCharacteristicsOwnerResponseDeterministically({
-              db,
-              opCase: refreshedCase,
-              text,
-              source: "telegram_webhook_characteristics_response",
-              nextActionAt: null,
-            });
-          void runSettingsTestCaseAgentTick(
+          await processCharacteristicsReply({
             db,
-            caseForTick,
-            caseForTick.user_id,
-            {
-              source:
-                "telegram_webhook_conversational_e2e_characteristics_response",
-              ownerResponseText: text,
-            }
-          ).catch((tickError) => {
-            console.error(
-              "[telegram-webhook] conversational E2E characteristics response tick failed:",
-              tickError
-            );
+            opCase: refreshedCase,
+            chatId,
+            text,
           });
           return NextResponse.json({
             ok: true,
@@ -1096,9 +1309,18 @@ export async function POST(request: Request) {
         }
         const readyToProcessDocuments = !media && looksLikeDocumentBatchComplete(text);
         if (readyToProcessDocuments) {
+          const flushedBeforeReady = await flushMediaGroupAcksForCase({
+            db,
+            opCase: refreshedCase,
+            chatId,
+            sendAck: async (files) => {
+              await sendTelegramMessage(chatId, buildMediaGroupReceivedAck(files));
+            },
+            force: true,
+          });
           const completion = await completeDocumentBatchForCase({
             db,
-            caseId: refreshedCase.id,
+            caseId: flushedBeforeReady.opCase.id,
             channel: "telegram",
             source: "telegram_webhook_conversational_e2e_external_response",
           });
@@ -1177,17 +1399,12 @@ export async function POST(request: Request) {
         (await isAwaitingCharacteristicsResponse(db, refreshedCase)) &&
         !looksLikeDocumentBatchComplete(text)
       ) {
-        await mergeCharacteristicsOwnerResponseDeterministically({
+        await processCharacteristicsReply({
           db,
           opCase: refreshedCase,
-          text,
-          source: "telegram_webhook_characteristics_response",
-          nextActionAt: new Date().toISOString(),
-        });
-        await sendTelegramMessage(
           chatId,
-          "Gracias, ya registré la información adicional. La voy a procesar y te aviso el siguiente paso."
-        );
+          text,
+        });
       } else {
         // Acuse de recibo cortés al externo. El procesamiento real lo hace el
         // próximo tick del cron (≤ 1 minuto típicamente).
@@ -1315,42 +1532,25 @@ export async function POST(request: Request) {
 
     if (propertyDataReviewCandidates.length === 1) {
       const { notification, opCase } = propertyDataReviewCandidates[0]!;
-      const llmReview = await classifyOperationalConversationMessage({
-        message: text,
-        stage: "property_data_review",
-        caseSummary: [
-          opCase.context_jsonb?.property_title,
-          opCase.context_jsonb?.property_zone,
-          opCase.context_jsonb?.operation_type,
-          opCase.context_jsonb?.property_type,
-        ]
-          .filter((value) => typeof value === "string" && value.trim())
-          .join(" · "),
+      const result = await handlePropertyDataReviewDecision(db, {
+        userId,
+        notificationId: notification.id,
+        text,
       });
-      const correctionPatch = mergeReviewCorrectionPatch(
-        parsePropertyDataReviewCorrection(text),
-        llmReview?.intent === "review_correction" ? llmReview.patch : undefined
-      );
-      let updatedCase = opCase;
-      if (Object.keys(correctionPatch).length > 0) {
-        updatedCase =
-          (await updateOperationalCase(db, opCase.id, opCase.version, {
-            context: {
-              ...opCase.context_jsonb,
-              ...correctionPatch,
-              property_data_review_corrections: [
-                ...(((opCase.context_jsonb?.property_data_review_corrections as unknown[]) ??
-                  []) as unknown[]),
-                {
-                  text,
-                  source: "telegram",
-                  received_at: new Date().toISOString(),
-                  patch: correctionPatch,
-                },
-              ],
-            },
-          })) ?? opCase;
+      if (!result.ok) {
+        await sendTelegramMessage(
+          chatId,
+          result.message ?? "No pude procesar esa respuesta todavía."
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "property_data_review_response_rejected",
+          case_id: opCase.id,
+          notification_id: notification.id,
+          status: result.status,
+        });
       }
+      const updatedCase = (await getOperationalCase(db, opCase.id)) ?? opCase;
       await associateExternalResponseWithCase(db, {
         caseId: updatedCase.id,
         channel: "telegram",
@@ -1361,69 +1561,8 @@ export async function POST(request: Request) {
           text,
           purpose: "property_data_review_response",
           received_at: new Date().toISOString(),
-          ...(Object.keys(correctionPatch).length > 0
-            ? { correction_patch: correctionPatch }
-            : {}),
         },
       });
-      await insertOperationalCaseEvent(db, {
-        caseId: updatedCase.id,
-        eventType: "human_decision",
-        actor: "user",
-        payload: {
-          kind: "property_data_review_response",
-          source: "telegram",
-          notification_id: notification.id,
-          text,
-          correction_patch: correctionPatch,
-        },
-      });
-      await resolveInternalNotificationWithReminders(db, {
-        id: notification.id,
-        userId,
-        status: "actioned",
-      });
-      const caseBeforeReviewAdvance =
-        (await getOperationalCase(db, updatedCase.id)) ?? updatedCase;
-      const reviewAdvanceNextActionAt =
-        caseBeforeReviewAdvance.context_jsonb?.e2e_controlled === true
-          ? null
-          : new Date().toISOString();
-      const advancedCase =
-        (await updateOperationalCase(
-          db,
-          caseBeforeReviewAdvance.id,
-          caseBeforeReviewAdvance.version,
-          {
-            status: "active",
-            currentStep: "comparables_in_progress",
-            nextActionAt: reviewAdvanceNextActionAt,
-            context: {
-              ...caseBeforeReviewAdvance.context_jsonb,
-              property_data_review_confirmed_at: new Date().toISOString(),
-              property_data_review_notification_id: notification.id,
-            },
-          }
-        )) ?? caseBeforeReviewAdvance;
-      await insertOperationalCaseEvent(db, {
-        caseId: advancedCase.id,
-        eventType: "state_changed",
-        actor: "system",
-        payload: {
-          kind: "property_data_review_confirmed",
-          source: "telegram",
-          notification_id: notification.id,
-          from: {
-            current_step: caseBeforeReviewAdvance.current_step,
-            status: caseBeforeReviewAdvance.status,
-          },
-          to: {
-            current_step: advancedCase.current_step,
-            status: advancedCase.status,
-          },
-        },
-      });
-      updatedCase = advancedCase;
       const { data: reviewBindings } = await db
         .from("operational_case_conversation_bindings")
         .select("id")
@@ -1448,15 +1587,15 @@ export async function POST(request: Request) {
       }
       await sendTelegramMessage(
         chatId,
-        Object.keys(correctionPatch).length > 0
-          ? "Gracias, registré la corrección en el caso. Ya puedes revisar el siguiente avance en el laboratorio E2E."
-          : "Gracias, registré tu confirmación en el caso. Ya puedes revisar el siguiente avance en el laboratorio E2E."
+        result.message ??
+          "Gracias, registré la revisión de datos del caso. Ya puedes revisar el siguiente avance en el laboratorio E2E."
       );
       return NextResponse.json({
         ok: true,
         routed: "property_data_review_response",
         case_id: updatedCase.id,
         notification_id: notification.id,
+        status: result.status,
       });
     }
   }
@@ -1554,25 +1693,44 @@ export async function POST(request: Request) {
     initialIntentClassification?.route === "property_optioning" &&
     initialIntentClassification.intent === "start_case" &&
     initialIntentClassification.confidence !== "low";
-  const explicitPropertyIntent =
+  let explicitPropertyIntent =
     deterministicPropertyIntent || llmPropertyIntent;
-  const activeE2ELabSession = explicitPropertyIntent
-    ? await getActiveE2ELabSession(db, {
-        userId,
-        caseType: "property_optioning",
-      })
-    : null;
-  const activeE2ELabSessionCaseId =
-    typeof activeE2ELabSession?.case_id === "string" &&
-    activeE2ELabSession.case_id.trim().length > 0
-      ? activeE2ELabSession.case_id.trim()
-      : null;
+  let forceNewConversationalCase = false;
   const pendingBindings = await findPendingConversationBindings(db, {
     userId,
     channel: "telegram",
     chatId,
   });
-  const pendingClarificationBinding = pendingBindings.find(
+  const activeE2ELabSession = await getActiveE2ELabSession(db, {
+    userId,
+    caseType: "property_optioning",
+  });
+  const e2eLabSessionActive = Boolean(activeE2ELabSession);
+  const routingResolution = await resolveRoutableConversationBindings({
+    db,
+    pendingBindings,
+    e2eLabSessionActive,
+    caseType: "property_optioning",
+  });
+  const routingBindings = routingResolution.routableBindings;
+  const routingCasesById = routingResolution.candidateCasesById;
+  if (text && explicitPropertyIntent) {
+    console.info("[telegram-webhook] routing bindings resolved", {
+      raw_bindings_count: pendingBindings.length,
+      routable_bindings_count: routingBindings.length,
+      ignored_binding_reasons: routingResolution.ignoredBindings.map(
+        (entry) => entry.reason
+      ),
+      active_e2e_session_id: activeE2ELabSession?.id ?? null,
+      deterministic_property_intent: deterministicPropertyIntent,
+    });
+  }
+  const activeE2ELabSessionCaseId =
+    typeof activeE2ELabSession?.case_id === "string" &&
+    activeE2ELabSession.case_id.trim().length > 0
+      ? activeE2ELabSession.case_id.trim()
+      : null;
+  const pendingClarificationBinding = routingBindings.find(
     (binding) => binding.status === "clarification_needed"
   );
   if (pendingClarificationBinding && text) {
@@ -1592,6 +1750,13 @@ export async function POST(request: Request) {
       await sendTelegramMessage(chatId, clarificationReply.responseText);
       return NextResponse.json({ ok: true, routed: "clarification_resolved_no" });
     }
+    if (clarificationReply.status === "resolved_new_case") {
+      forceNewConversationalCase = true;
+      explicitPropertyIntent = true;
+      if (clarificationReply.effectiveMessage) {
+        agentMessageText = clarificationReply.effectiveMessage;
+      }
+    }
     if (clarificationReply.status === "resolved_case") {
       if (clarificationReply.case) {
         conversationalCase = clarificationReply.case;
@@ -1601,23 +1766,83 @@ export async function POST(request: Request) {
       }
     }
   }
+  // Fase 1 (media-first): un mensaje con ARCHIVO en ruta interna nunca debe
+  // perderse por el routing de texto. Resolvemos el caso interno ANTES del
+  // bloque `if (text)`, de modo que un caption de álbum (p. ej. "Adjunto
+  // documentos" en el primer elemento) no dispare clarify ni descarte el
+  // archivo: con `conversationalCase` ya fijado, todo el routing de texto se
+  // omite y el flujo llega directo a la ingestión documental.
+  if (!conversationalCase && inboundMedia) {
+    try {
+      const mediaCase = await resolveInternalDocumentUploadCaseForMedia({
+        db,
+        pendingBindings: routingBindings,
+      });
+      if (mediaCase) conversationalCase = mediaCase;
+    } catch (err) {
+      console.error(
+        "[telegram-webhook] media-first internal case resolution failed:",
+        err
+      );
+    }
+  }
+  // Razón por la que un mensaje de TEXTO se asoció a un caso interno recabando
+  // documentos (gate barato o fallback LLM); dirige el manejo posterior
+  // (cierre de lote vs. acuse lateral) sin re-derivar de regex frágiles.
+  let internalDocumentTextReason:
+    | "batch_complete"
+    | "upload_side_text"
+    | null = null;
   if (text) {
-    if (!conversationalCase && explicitPropertyIntent) {
+    if (
+      !conversationalCase &&
+      explicitPropertyIntent &&
+      (routingBindings.length === 0 || forceNewConversationalCase)
+    ) {
       try {
-        if (activeE2ELabSessionCaseId) {
+        if (activeE2ELabSessionCaseId && !forceNewConversationalCase) {
           const sessionCase = await getOperationalCase(
             db,
             activeE2ELabSessionCaseId
           );
+          const usableSessionCase = isUsableE2ELabSessionCase({
+            opCase: sessionCase,
+            userId,
+            caseType: "property_optioning",
+          });
+          if (activeE2ELabSession && !usableSessionCase) {
+            forceNewConversationalCase = true;
+          } else if (sessionCase) {
+            if (
+              shouldForceNewConversationalCaseOnExplicitStartIntent(
+                text,
+                sessionCase
+              )
+            ) {
+              forceNewConversationalCase = true;
+            } else {
+              conversationalCase = sessionCase;
+            }
+          }
+        }
+        if (
+          !conversationalCase &&
+          !forceNewConversationalCase &&
+          deterministicPropertyIntent
+        ) {
+          const latestConversationalCase =
+            await findLatestConversationalOperationalCase(db, {
+              userId,
+              caseType: "property_optioning",
+              statuses: ["active", "waiting_internal", "waiting_external"],
+            });
           if (
-            sessionCase &&
-            sessionCase.user_id === userId &&
-            sessionCase.case_type === "property_optioning" &&
-            sessionCase.context_jsonb?.created_from === "agent_conversation" &&
-            sessionCase.status !== "completed" &&
-            sessionCase.status !== "failed"
+            shouldForceNewConversationalCaseOnExplicitStartIntent(
+              text,
+              latestConversationalCase
+            )
           ) {
-            conversationalCase = sessionCase;
+            forceNewConversationalCase = true;
           }
         }
         const ensured = conversationalCase
@@ -1629,6 +1854,7 @@ export async function POST(request: Request) {
               e2eControlled: Boolean(activeE2ELabSession),
               labTelegramChatId: activeE2ELabSession ? chatId : undefined,
               forceNew:
+                forceNewConversationalCase ||
                 looksLikeNewCaseIntent(text) ||
                 Boolean(activeE2ELabSession && !activeE2ELabSessionCaseId),
             });
@@ -1636,12 +1862,25 @@ export async function POST(request: Request) {
         if (
           conversationalCase &&
           activeE2ELabSession &&
+          conversationalCase.context_jsonb?.e2e_controlled === true &&
           activeE2ELabSession.case_id !== conversationalCase.id
         ) {
           await linkE2ELabSessionToCase(db, {
             sessionId: activeE2ELabSession.id,
             caseId: conversationalCase.id,
           });
+        } else if (
+          conversationalCase &&
+          activeE2ELabSession &&
+          conversationalCase.context_jsonb?.e2e_controlled !== true
+        ) {
+          console.warn(
+            "[telegram-webhook] skipped linking e2e session to non-e2e case",
+            {
+              sessionId: activeE2ELabSession.id,
+              caseId: conversationalCase.id,
+            }
+          );
         }
         if (conversationalCase) {
           await upsertConversationBinding(db, {
@@ -1657,16 +1896,20 @@ export async function POST(request: Request) {
             metadata: { source: "telegram_webhook_intent" },
           });
         }
-        if (
-          ensured?.created &&
-          conversationalCase?.current_step === "intake" &&
-          conversationalCase.context_jsonb?.intake_status !== "complete"
-        ) {
+        const intakePromptCase = conversationalCase;
+        const intakePromptIncomplete =
+          intakePromptCase !== null &&
+          intakePromptCase.current_step === "intake" &&
+          intakePromptCase.context_jsonb?.intake_status !== "complete";
+        const shouldSendFreshIntakePrompt =
+          intakePromptIncomplete &&
+          (ensured?.created === true || deterministicPropertyIntent);
+        if (shouldSendFreshIntakePrompt) {
           const firstPrompt = await resolveConversationalIntakeTurn({
             db,
             userId,
             sessionId: session.id,
-            opCase: conversationalCase,
+            opCase: intakePromptCase,
             message: text,
             channel: "telegram",
             justCreated: true,
@@ -1698,27 +1941,91 @@ export async function POST(request: Request) {
       const targetReply = await resolveDocumentTargetReplyAgainstBindings({
         db,
         message: agentMessageText,
-        pendingBindings,
+        pendingBindings: routingBindings,
       });
       if (targetReply.matchedCase) {
         conversationalCase = targetReply.matchedCase;
       }
     }
+    // Texto lateral de subida ("documentos adjuntos") o cierre de lote ("listo")
+    // en ruta interna: asociar al caso interno que está recabando documentos,
+    // sin pedir aclaración multi-caso ni delegar al LLM.
     if (!conversationalCase) {
+      const uploadReply = await resolveInternalDocumentMessageCase({
+        db,
+        message: agentMessageText,
+        pendingBindings: routingBindings,
+      });
+      if (uploadReply.matchedCase) {
+        conversationalCase = uploadReply.matchedCase;
+        internalDocumentTextReason = uploadReply.reason;
+      }
+    }
+    if (!conversationalCase && !forceNewConversationalCase) {
       const routeResult = await routeConversationalMessageAgainstBindings({
         db,
         channel: "telegram",
         message: agentMessageText,
-        pendingBindings,
+        pendingBindings: routingBindings,
         explicitIntent: explicitPropertyIntent,
+        candidateCasesById: routingCasesById,
       });
       if (routeResult.route === "clarify") {
-        await sendTelegramMessage(chatId, routeResult.responseText);
-        return NextResponse.json({ ok: true, routed: "clarification_requested" });
+        // Salvaguarda: si el mensaje trae archivo, NUNCA cortamos con clarify
+        // (el archivo se perdería). La ingestión documental de abajo lo maneja.
+        if (!inboundMedia) {
+          await sendTelegramMessage(chatId, routeResult.responseText);
+          return NextResponse.json({
+            ok: true,
+            routed: "clarification_requested",
+          });
+        }
       }
       if (routeResult.route === "case") {
         conversationalCase = routeResult.case;
       }
+    }
+  }
+
+  if (!conversationalCase && text && deterministicPropertyIntent) {
+    console.warn(
+      "[telegram-webhook] deterministic property intent without routable case; forcing deterministic ensure",
+      {
+        raw_bindings_count: pendingBindings.length,
+        routable_bindings_count: routingBindings.length,
+        force_new_requested: forceNewConversationalCase,
+        active_e2e_session_id: activeE2ELabSession?.id ?? null,
+      }
+    );
+    try {
+      const forcedEnsure = await ensureConversationalCase(db, {
+        userId,
+        caseType: "property_optioning",
+        channel: "telegram",
+        e2eControlled: Boolean(activeE2ELabSession),
+        labTelegramChatId: activeE2ELabSession ? chatId : undefined,
+        forceNew: true,
+      });
+      conversationalCase = forcedEnsure?.case ?? null;
+      if (conversationalCase) {
+        await upsertConversationBinding(db, {
+          userId,
+          caseId: conversationalCase.id,
+          caseType: conversationalCase.case_type,
+          channel: "telegram",
+          chatId,
+          sessionId: session.id,
+          status: "awaiting_user",
+          awaitingFields:
+            (conversationalCase.context_jsonb?.missing_required as unknown[]) ?? [],
+          metadata: { source: "telegram_webhook_intent_fallback_forced" },
+        });
+      }
+    } catch (fallbackEnsureError) {
+      console.error(
+        "[telegram-webhook] deterministic fallback ensure failed:",
+        fallbackEnsureError
+      );
     }
   }
 
@@ -1769,9 +2076,44 @@ export async function POST(request: Request) {
   }
 
   if (inboundMedia && conversationalCase) {
-    const requestTarget = operationalCaseDocumentRequestTargetFromContext(
+    let requestTarget = operationalCaseDocumentRequestTargetFromContext(
       conversationalCase.context_jsonb
     );
+    // Subida de documentos por el asesor ANTES de elegir destino: inferimos
+    // ruta interna (los archivos llegan del propio chat del asesor) en vez de
+    // re-preguntar interno/externo por cada archivo. Así la ingesta y el acuse
+    // siguen la misma rama interna de abajo (acuse en bloque, sin repetir la
+    // pregunta). El asesor puede cambiar a externo explícitamente más tarde.
+    if (
+      requestTarget == null &&
+      shouldPromptCaseDocumentRequestTarget(conversationalCase) &&
+      conversationalCase.current_step === "awaiting_documents"
+    ) {
+      const inferred = await setCaseDocumentRequestTarget({
+        db,
+        opCase: conversationalCase,
+        target: "internal_user",
+        decidedBy: "inferred",
+      });
+      conversationalCase =
+        (await updateOperationalCase(db, inferred.id, inferred.version, {
+          status: "waiting_internal",
+        })) ?? inferred;
+      await insertOperationalCaseEvent(db, {
+        caseId: conversationalCase.id,
+        eventType: "state_changed",
+        actor: "system",
+        payload: {
+          kind: "document_request_target_inferred",
+          source: "telegram_webhook",
+          target: "internal_user",
+          reason: "advisor_uploaded_documents_before_choice",
+          message_id: message.message_id,
+          media_group_id: message.media_group_id ?? null,
+        },
+      });
+      requestTarget = "internal_user";
+    }
     if (
       requestTarget === "internal_user" &&
       (conversationalCase.current_step === "awaiting_documents" ||
@@ -1814,29 +2156,77 @@ export async function POST(request: Request) {
           source: "advisor_telegram",
           document_id: ingested.document.id,
           document_kind: ingested.document.kind,
+          current_step: conversationalCase.current_step,
+          step_key: conversationalCase.current_step,
+          original_name: inboundMedia.originalName,
           message_id: message.message_id,
+          media_group_id: message.media_group_id ?? null,
+          telegram_file_unique_id: inboundMedia.uniqueId,
         },
       });
-      await sendTelegramMessage(
-        chatId,
-        "Documento interno registrado en el caso. Cuando termines de subirlos, responde “listo” para procesarlos."
+      console.info("[telegram-webhook] internal doc ingested", {
+        caseId: conversationalCase.id,
+        message_id: message.message_id,
+        media_group_id: message.media_group_id ?? null,
+        file_unique_id: inboundMedia.uniqueId,
+        original_name: inboundMedia.originalName,
+        kind: ingested.document.kind,
+      });
+      const markReadyFromCaption = Boolean(
+        text && looksLikeDocumentBatchComplete(text)
       );
-      if (text && looksLikeDocumentBatchComplete(text)) {
-        const moved =
-          (await updateOperationalCase(
+      if (message.media_group_id) {
+        conversationalCase = await appendMediaGroupAckToCase({
+          db,
+          opCase: conversationalCase,
+          chatId,
+          mediaGroupId: message.media_group_id,
+          file: {
+            originalName: inboundMedia.originalName,
+            kind: ingested.document.kind,
+          },
+          markReady: markReadyFromCaption,
+        });
+        const flush = await flushMediaGroupAcksForCase({
+          db,
+          opCase: conversationalCase,
+          chatId,
+          sendAck: async (files) => {
+            await sendTelegramMessage(chatId, buildMediaGroupReceivedAck(files));
+          },
+        });
+        conversationalCase = flush.opCase;
+        if (flush.markReady) {
+          return await finalizeInternalDocumentBatch({
             db,
-            conversationalCase.id,
-            conversationalCase.version,
-            {
-              status: "waiting_internal",
-              currentStep: "documents_received",
-              nextActionAt: new Date().toISOString(),
-            }
-          )) ?? conversationalCase;
+            caseId: conversationalCase.id,
+            chatId,
+            source: "telegram_internal_documents_marked_ready",
+          });
+        }
         return NextResponse.json({
           ok: true,
-          routed: "operational_case_internal_documents_processing",
-          case_id: moved.id,
+          routed:
+            flush.flushed > 0
+              ? "operational_case_internal_document_registered_group_ack_flushed"
+              : "operational_case_internal_document_registered_group_ack_queued",
+          case_id: conversationalCase.id,
+        });
+      }
+      await sendTelegramMessage(
+        chatId,
+        buildDocumentReceivedAck({
+          originalName: inboundMedia.originalName,
+          kind: ingested.document.kind,
+          channel: "telegram",
+        })
+      );
+      if (markReadyFromCaption) {
+        return await finalizeInternalDocumentBatch({
+          db,
+          caseId: conversationalCase.id,
+          chatId,
+          source: "telegram_internal_documents_marked_ready",
         });
       }
       return NextResponse.json({
@@ -1847,7 +2237,130 @@ export async function POST(request: Request) {
     }
   }
 
+  // "listo" como texto suelto en ruta interna (sin adjunto en este mensaje):
+  // completar el lote de forma determinística, igual que web chat, sin pasar
+  // por el LLM ni por el camino del responder externo.
+  if (
+    agentMessageText &&
+    conversationalCase &&
+    (looksLikeDocumentBatchComplete(agentMessageText) ||
+      internalDocumentTextReason === "batch_complete") &&
+    conversationalCase.current_step === "awaiting_documents" &&
+    operationalCaseDocumentRequestTargetFromContext(
+      conversationalCase.context_jsonb
+    ) === "internal_user"
+  ) {
+    const flush = await flushMediaGroupAcksForCase({
+      db,
+      opCase: conversationalCase,
+      chatId,
+      sendAck: async (files) => {
+        await sendTelegramMessage(
+          chatId,
+          buildMediaGroupReceivedAck(files, { expectMore: false })
+        );
+      },
+      force: true,
+    });
+    conversationalCase = flush.opCase;
+    return await finalizeInternalDocumentBatch({
+      db,
+      caseId: conversationalCase.id,
+      chatId,
+      source: "telegram_internal_documents_marked_ready",
+    });
+  }
+
+  // Texto lateral de subida ("documentos adjuntos") en ruta interna mientras se
+  // recaban documentos: acuse suave y cortar, sin delegar al LLM (evita que el
+  // agente liste documentos o pida de nuevo la decisión).
+  if (
+    agentMessageText &&
+    !inboundMedia &&
+    conversationalCase &&
+    (looksLikeDocumentUploadSideText(agentMessageText) ||
+      internalDocumentTextReason === "upload_side_text") &&
+    conversationalCase.current_step === "awaiting_documents" &&
+    operationalCaseDocumentRequestTargetFromContext(
+      conversationalCase.context_jsonb
+    ) === "internal_user"
+  ) {
+    const flush = await flushMediaGroupAcksForCase({
+      db,
+      opCase: conversationalCase,
+      chatId,
+      sendAck: async (files) => {
+        await sendTelegramMessage(chatId, buildMediaGroupReceivedAck(files));
+      },
+    });
+    conversationalCase = flush.opCase;
+    if (flush.flushed > 0) {
+      return NextResponse.json({
+        ok: true,
+        routed: "operational_case_internal_group_ack_flushed_on_side_text",
+        case_id: conversationalCase.id,
+      });
+    }
+    await sendTelegramMessage(
+      chatId,
+      'Ya registré los archivos que me llegaron. Cuando termines de enviar todo lo disponible, escribe «listo» para procesarlos.'
+    );
+    return NextResponse.json({
+      ok: true,
+      routed: "operational_case_internal_upload_side_text",
+      case_id: conversationalCase.id,
+    });
+  }
+
+  // Respuesta del asesor interno a la solicitud de características mínimas. El
+  // responder externo (waiting_external) nunca alcanza casos waiting_internal,
+  // así que esta es la entrada simétrica para la ruta interna: reutiliza el
+  // mismo procesamiento determinístico en vez de delegar al LLM (que intentaría
+  // operational_case_update_intake fuera de intake).
+  if (
+    agentMessageText &&
+    !inboundMedia &&
+    conversationalCase &&
+    conversationalCase.current_step === "documents_received" &&
+    conversationalCase.status === "waiting_internal" &&
+    operationalCaseDocumentRequestTargetFromContext(
+      conversationalCase.context_jsonb
+    ) === "internal_user" &&
+    !looksLikeDocumentBatchComplete(agentMessageText) &&
+    (await isAwaitingCharacteristicsResponse(db, conversationalCase))
+  ) {
+    conversationalCase = await processCharacteristicsReply({
+      db,
+      opCase: conversationalCase,
+      chatId,
+      text: agentMessageText,
+    });
+    return NextResponse.json({
+      ok: true,
+      routed: "operational_case_internal_characteristics_processing",
+      case_id: conversationalCase.id,
+    });
+  }
+
   if (agentMessageText && conversationalCase) {
+    if (
+      !inboundMedia &&
+      conversationalCase.current_step === "awaiting_documents" &&
+      operationalCaseDocumentRequestTargetFromContext(
+        conversationalCase.context_jsonb
+      ) === "internal_user"
+    ) {
+      const flush = await flushMediaGroupAcksForCase({
+        db,
+        opCase: conversationalCase,
+        chatId,
+        sendAck: async (files) => {
+          await sendTelegramMessage(chatId, buildMediaGroupReceivedAck(files));
+        },
+      });
+      conversationalCase = flush.opCase;
+    }
+
     const intakeTurn = await resolveConversationalIntakeTurn({
       db,
       userId,
@@ -1918,6 +2431,20 @@ export async function POST(request: Request) {
           );
         }
       }
+      if (choice.externalContactSetupToken) {
+        const deepLink = await buildExternalContactDeepLink(
+          choice.externalContactSetupToken
+        );
+        await sendTelegramMessage(
+          chatId,
+          buildExternalContactSetupMessage({ deepLink })
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "operational_case_external_contact_setup_requested",
+          case_id: conversationalCase.id,
+        });
+      }
       await sendTelegramMessage(chatId, choice.responseText);
       return NextResponse.json({
         ok: true,
@@ -1925,6 +2452,26 @@ export async function POST(request: Request) {
         case_id: conversationalCase.id,
       });
     }
+  }
+
+  if (!conversationalCase && text && deterministicPropertyIntent) {
+    console.error(
+      "[telegram-webhook] deterministic property intent unresolved; aborting LLM fallback",
+      {
+        raw_bindings_count: pendingBindings.length,
+        routable_bindings_count: routingBindings.length,
+        force_new_requested: forceNewConversationalCase,
+        active_e2e_session_id: activeE2ELabSession?.id ?? null,
+      }
+    );
+    await sendTelegramMessage(
+      chatId,
+      "No pude resolver el caso operativo de forma determinística en este momento. Intenta de nuevo en unos segundos para iniciar el intake."
+    );
+    return NextResponse.json({
+      ok: true,
+      routed: "operational_case_deterministic_routing_failed",
+    });
   }
 
   // Catch-up de memoria larga ANTES de runAgent. Ver comentario equivalente

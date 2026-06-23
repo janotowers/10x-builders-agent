@@ -41,7 +41,39 @@ async function main() {
     integral_kitchen: true,
   });
 
-  // 2) First attempt invalid, retry succeeds => method llm_retry.
+  // 2) LLM can be incomplete; deterministic parser backfills explicit fields.
+  const incompleteModel: OwnerCharacteristicsExtractorModel = {
+    async extract() {
+      return {
+        patch: {
+          bedrooms: 3,
+          bathrooms: 2,
+        },
+        confidence: "medium",
+        unresolved: [],
+        assumptions: [],
+      };
+    },
+  };
+  const completed = await extractOwnerCharacteristics(
+    { text: OWNER_MESSAGE },
+    incompleteModel
+  );
+  assert.equal(completed.method, "llm");
+  assert.deepEqual(completed.patch, {
+    floors: 2,
+    bedrooms: 3,
+    bathrooms: 2,
+    half_bathrooms: 0,
+    integral_kitchen: true,
+  });
+  assert.ok(
+    (completed.assumptions ?? []).includes(
+      "Se completaron campos explícitos con parser determinístico."
+    )
+  );
+
+  // 3) First attempt invalid, retry succeeds => method llm_retry.
   let calls = 0;
   const retryModel: OwnerCharacteristicsExtractorModel = {
     async extract() {
@@ -63,10 +95,16 @@ async function main() {
   );
   assert.equal(retried.method, "llm_retry");
   assert.equal(retried.attempts, 2);
-  assert.deepEqual(retried.patch, { bedrooms: 3, bathrooms: 2 });
+  assert.deepEqual(retried.patch, {
+    floors: 2,
+    bedrooms: 3,
+    bathrooms: 2,
+    half_bathrooms: 0,
+    integral_kitchen: true,
+  });
   assert.ok((retried.validationErrors ?? []).length === 1);
 
-  // 3) All attempts invalid => deterministic fallback parses what it can.
+  // 4) All attempts invalid => deterministic fallback parses what it can.
   const brokenModel: OwnerCharacteristicsExtractorModel = {
     async extract() {
       return { not: "a valid shape" };
@@ -84,12 +122,12 @@ async function main() {
   assert.equal(fallback.patch.integral_kitchen, true);
   assert.ok((fallback.validationErrors ?? []).length >= 1);
 
-  // 4) Empty input => no work, no crash.
+  // 5) Empty input => no work, no crash.
   const empty = await extractOwnerCharacteristics({ text: "   " }, validModel);
   assert.deepEqual(empty.patch, {});
   assert.equal(empty.attempts, 0);
 
-  // 5) Deterministic parser directly covers the regression case.
+  // 6) Deterministic parser directly covers the regression case.
   const parsed = parseOwnerCharacteristics(OWNER_MESSAGE);
   assert.equal(parsed.floors, 2);
   assert.equal(parsed.bedrooms, 3);
@@ -102,6 +140,7 @@ async function main() {
   );
   assert.equal(negatedKitchen.floors, 1);
   assert.equal(negatedKitchen.integral_kitchen, false);
+  assert.ok(!("half_bathrooms" in negatedKitchen));
 
   console.log("owner-characteristics-extraction.selftest.ts: ok");
 }

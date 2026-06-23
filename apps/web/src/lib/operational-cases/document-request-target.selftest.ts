@@ -5,6 +5,8 @@ import {
 } from "@agents/types";
 import type { OperationalCase } from "@agents/types";
 import {
+  buildCaseDocumentRequestTargetPrompt,
+  buildDocumentRouteConfirmationAck,
   messageLooksLikeDocumentTargetChoice,
   parseCaseDocumentRequestTargetChoice,
   shouldPromptCaseDocumentRequestTarget,
@@ -142,5 +144,51 @@ for (const negative of [
     `no esperaba choice para: ${negative}`
   );
 }
+
+// El prompt post-intake explica los documentos ANTES de preguntar quién los
+// aporta, y ofrece interno/externo cuando hay contacto externo verificado.
+const promptWithExternal = buildCaseDocumentRequestTargetPrompt(
+  conversationalAwaitingDocs({}, { channel: "telegram", chat_id: 12345 })
+);
+assert.ok(promptWithExternal.includes("Sobre [Real]"));
+assert.ok(promptWithExternal.includes("necesito estos documentos"));
+assert.ok(/escritura/i.test(promptWithExternal));
+assert.ok(promptWithExternal.includes("indispensable"));
+assert.ok(promptWithExternal.includes("«interno»"));
+assert.ok(promptWithExternal.includes("«externo»"));
+
+// Sin contacto externo verificado, el prompt encamina a interno (sin ofrecer
+// externo como opción abierta) pero igual explica los documentos.
+const promptInternalOnly = buildCaseDocumentRequestTargetPrompt(
+  conversationalAwaitingDocs({})
+);
+assert.ok(/escritura/i.test(promptInternalOnly));
+assert.ok(promptInternalOnly.includes("«interno»"));
+assert.ok(!promptInternalOnly.includes("«externo»"));
+
+// Acuse de confirmación de ruta: copy base no menciona un canal concreto; la
+// variante por canal aclara dónde subir; siempre recuerda "listo".
+const internalWebAck = buildDocumentRouteConfirmationAck({
+  target: "internal_user",
+  channel: "web",
+});
+assert.ok(internalWebAck.startsWith("Perfecto."));
+assert.ok(internalWebAck.includes("«listo»"));
+assert.ok(internalWebAck.includes("este chat"));
+assert.ok(!/telegram/i.test(internalWebAck));
+assert.ok(!/equipo interno/i.test(internalWebAck));
+
+const internalTelegramAck = buildDocumentRouteConfirmationAck({
+  target: "internal_user",
+  channel: "telegram",
+});
+assert.ok(internalTelegramAck.includes("«listo»"));
+assert.ok(internalTelegramAck.includes("aquí mismo"));
+
+const externalAck = buildDocumentRouteConfirmationAck({
+  target: "external_contact",
+  channel: "telegram",
+});
+assert.ok(/due[nñ]o|contacto/i.test(externalAck));
 
 console.log("document-request-target.selftest: ok");

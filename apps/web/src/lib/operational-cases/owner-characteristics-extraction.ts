@@ -90,6 +90,18 @@ export interface OwnerCharacteristicsExtractorModel {
   extract(input: OwnerCharacteristicsExtractorInput): Promise<unknown>;
 }
 
+const DETERMINISTIC_PRIORITY_FIELDS: ReadonlySet<keyof OwnerCharacteristicsPatch> =
+  new Set([
+    "floors",
+    "bedrooms",
+    "bathrooms",
+    "half_bathrooms",
+    "integral_kitchen",
+    "parking_spots",
+    "operation",
+    "land_context",
+  ]);
+
 function stripEmptyPatchValues(
   patch: OwnerCharacteristicsPatch
 ): OwnerCharacteristicsPatch {
@@ -100,6 +112,22 @@ function stripEmptyPatchValues(
     return true;
   });
   return Object.fromEntries(entries) as OwnerCharacteristicsPatch;
+}
+
+function mergeWithDeterministicBackfill(
+  llmPatch: OwnerCharacteristicsPatch,
+  deterministicPatch: OwnerCharacteristicsPatch
+): OwnerCharacteristicsPatch {
+  const merged: OwnerCharacteristicsPatch = { ...llmPatch };
+  for (const [rawKey, value] of Object.entries(deterministicPatch)) {
+    const key = rawKey as keyof OwnerCharacteristicsPatch;
+    const shouldOverride = DETERMINISTIC_PRIORITY_FIELDS.has(key);
+    const hasLlmValue = key in merged;
+    if (shouldOverride || !hasLlmValue) {
+      merged[key] = value as never;
+    }
+  }
+  return merged;
 }
 
 function parseJsonContent(content: unknown): unknown {
@@ -129,7 +157,7 @@ function buildExtractorPrompt(
     "- Only include a field in patch when the owner stated it explicitly. NEVER invent or guess values.",
     "- `floors` is the number of stories/levels (plantas, pisos, niveles) of a house.",
     "- `floor_number` is the floor an apartment is on; do not confuse it with `floors`.",
-    "- Negations set explicit values: 'sin medios baños' => half_bathrooms:0; 'no tiene cocina integral' => integral_kitchen:false; 'sí tiene cocina integral' => integral_kitchen:true.",
+    "- Negations set explicit values: 'sin medios baños', 'ningún medio baño', 'no hay medios baños' => half_bathrooms:0; 'no tiene cocina integral' => integral_kitchen:false; 'sí tiene cocina integral' => integral_kitchen:true.",
     "- Convert Spanish number words to digits (dos=2, tres=3).",
     "- `bathrooms` means full bathrooms; keep half bathrooms separate in `half_bathrooms`.",
     "- Map operation words: venta=>sale, renta/alquiler=>rent.",
@@ -226,6 +254,9 @@ export async function extractOwnerCharacteristics(
   model?: OwnerCharacteristicsExtractorModel
 ): Promise<OwnerCharacteristicsExtractionResult> {
   const text = input.text?.trim() ?? "";
+  const deterministicPatch = stripEmptyPatchValues(
+    (parseOwnerCharacteristics(text) as OwnerCharacteristicsPatch) ?? {}
+  );
   if (!text) {
     return {
       patch: {},
@@ -259,11 +290,24 @@ export async function extractOwnerCharacteristics(
     }
     const parsed = OwnerCharacteristicsExtractionSchema.safeParse(raw);
     if (parsed.success) {
+      const llmPatch = stripEmptyPatchValues(parsed.data.patch);
+      const mergedPatch = mergeWithDeterministicBackfill(
+        llmPatch,
+        deterministicPatch
+      );
       return {
         ...parsed.data,
-        patch: stripEmptyPatchValues(parsed.data.patch),
+        patch: mergedPatch,
         method: attempt === 1 ? "llm" : "llm_retry",
         attempts: attempt,
+        assumptions:
+          Object.keys(deterministicPatch).length > 0 &&
+          JSON.stringify(mergedPatch) !== JSON.stringify(llmPatch)
+            ? [
+                ...parsed.data.assumptions,
+                "Se completaron campos explícitos con parser determinístico.",
+              ]
+            : parsed.data.assumptions,
         ...(validationErrors.length > 0
           ? { validationErrors: validationErrors.slice() }
           : {}),

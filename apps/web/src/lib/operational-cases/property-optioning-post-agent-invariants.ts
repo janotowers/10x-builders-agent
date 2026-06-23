@@ -13,7 +13,10 @@ import {
   listOperationalCaseDocuments,
   updateOperationalCase,
 } from "@agents/db";
-import type { OperationalCase } from "@agents/types";
+import {
+  operationalCaseDocumentRequestTargetFromContext,
+  type OperationalCase,
+} from "@agents/types";
 import { notify } from "@/lib/notify";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
 
@@ -26,7 +29,9 @@ type ApplyPropertyOptioningPostAgentInvariantsResult = {
     | "remediated_extraction"
     | "escalated_extraction_to_human"
     | "asked_missing_characteristics"
+    | "asked_missing_characteristics_internal"
     | "asked_missing_characteristics_again"
+    | "asked_missing_characteristics_again_internal"
     | "requested_property_data_review";
 };
 
@@ -71,6 +76,18 @@ function isPropertyOptioningDocumentsReviewPoint(opCase: OperationalCase) {
   );
 }
 
+function operationLabel(value: unknown): string {
+  if (Array.isArray(value) && value.length > 0) {
+    return operationLabel(value[0]);
+  }
+  if (typeof value !== "string") return "pendiente";
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return "pendiente";
+  if (normalized === "sale" || normalized === "venta") return "Venta";
+  if (normalized === "rent" || normalized === "renta") return "Renta";
+  return value.trim();
+}
+
 function propertyDataReviewTextFromContext(params: {
   opCase: OperationalCase;
   documentFields: Record<string, unknown>;
@@ -92,16 +109,32 @@ function propertyDataReviewTextFromContext(params: {
     }
     return raw == null ? "" : String(raw).trim();
   };
+  const additionalProvided = [
+    ["Número de plantas o pisos", value("floors")],
+    ["Número de recámaras", value("bedrooms")],
+    ["Número de baños completos", value("bathrooms")],
+    ["Número de medios baños", value("half_bathrooms")],
+    [
+      "Cocina integral",
+      typeof merged.integral_kitchen === "boolean"
+        ? merged.integral_kitchen
+          ? "Sí"
+          : "No"
+        : "",
+    ],
+  ]
+    .filter(([, provided]) => provided && String(provided).trim())
+    .map(([label, provided]) => `- ${label}: ${String(provided).trim()}`);
   return [
     `Revisión de datos extraídos para el caso ${params.opCase.id}:`,
     "",
-    "Datos confirmados por intake:",
+    "Datos iniciales confirmados:",
     `- Título / propiedad: ${String(context.property_title ?? context.title ?? "pendiente")}`,
     `- Zona / colonia: ${String(context.property_zone ?? "pendiente")}`,
-    `- Operación: ${String(context.operation_type ?? "pendiente")}`,
+    `- Operación: ${operationLabel(context.operation_type)}`,
     `- Tipo de propiedad: ${String(context.property_type ?? "pendiente")}`,
     "",
-    "Datos encontrados en documentos y respuestas:",
+    "Datos encontrados en documentos:",
     `- Dueño/titular: ${value("owner_names") || "pendiente"}`,
     value("owner_names_source")
       ? `- Fuente de titularidad: ${value("owner_names_source")}`
@@ -124,6 +157,11 @@ function propertyDataReviewTextFromContext(params: {
     value("land_context")
       ? `- Contexto del terreno: ${value("land_context")}`
       : null,
+    "",
+    "Datos adicionales provistos:",
+    ...(additionalProvided.length > 0
+      ? additionalProvided
+      : ["- Sin datos adicionales confirmados aún."]),
     "",
     "Faltantes o dudas:",
     "- Ninguno mínimo detectado.",
@@ -324,13 +362,20 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
   );
 
   if (!minimums.ok) {
+    const requestTarget = operationalCaseDocumentRequestTargetFromContext(
+      workingCase.context_jsonb
+    );
+    const asksPurpose =
+      requestTarget === "internal_user"
+        ? "characteristics_pending_internal"
+        : "characteristics_pending";
     const characteristicsAsks = recentEvents.filter((event) => {
       const payload = event.payload_jsonb;
       return (
         event.event_type === "reminder_sent" &&
         payload &&
         typeof payload === "object" &&
-        (payload as Record<string, unknown>).purpose === "characteristics_pending"
+        (payload as Record<string, unknown>).purpose === asksPurpose
       );
     });
     const lastAskAt =
@@ -362,6 +407,61 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
 
     const isReAsk = lastAskAt != null && ownerRepliedSinceLastAsk;
 
+    const text = buildPropertyDataMinimumsSummaryMessage({
+      context: workingCase.context_jsonb,
+      supplement: documentFields,
+      missing: minimums.missing,
+    });
+    if (requestTarget === "internal_user") {
+      const notifyResult = await notify(
+        db,
+        workingCase.user_id,
+        {
+          text,
+          kind: "property_data_minimums_missing",
+          data: {
+            case_id: workingCase.id,
+            source,
+            missing: minimums.missing,
+            property_type: minimums.propertyType,
+          },
+        },
+        "normal"
+      );
+      await insertOperationalCaseEvent(db, {
+        caseId: workingCase.id,
+        eventType: "reminder_sent",
+        actor: "system",
+        payload: {
+          source,
+          channel: "notify_user",
+          purpose: "characteristics_pending_internal",
+          audience: "internal_user",
+          notify_delivered: notifyResult.delivered,
+          reask: isReAsk,
+          missing: minimums.missing,
+          document_fields_used: documentFields,
+          text_preview: text.slice(0, 200),
+        },
+      });
+      const updated = await updateOperationalCase(
+        db,
+        workingCase.id,
+        workingCase.version,
+        {
+          status: "waiting_internal",
+          currentStep: "documents_received",
+          nextActionAt: null,
+        }
+      );
+      return {
+        case: updated ?? workingCase,
+        action: isReAsk
+          ? "asked_missing_characteristics_again_internal"
+          : "asked_missing_characteristics_internal",
+      };
+    }
+
     const chatId =
       workingCase.external_contact_jsonb?.channel === "telegram" &&
       typeof workingCase.external_contact_jsonb.chat_id === "number"
@@ -384,11 +484,6 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
       return { case: workingCase, action: "no_action" };
     }
 
-    const text = buildPropertyDataMinimumsSummaryMessage({
-      context: workingCase.context_jsonb,
-      supplement: documentFields,
-      missing: minimums.missing,
-    });
     await sendTelegramMessage(chatId, text);
     await insertOperationalCaseEvent(db, {
       caseId: workingCase.id,

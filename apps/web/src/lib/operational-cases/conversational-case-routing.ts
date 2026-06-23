@@ -1,3 +1,4 @@
+import { isPropertyOptioningIntent } from "@agents/agent";
 import type {
   OperationalCase,
   OperationalCaseConversationBinding,
@@ -23,13 +24,19 @@ function looksLikeBusinessAnalyticsQuestion(text: string) {
   );
 }
 
-function looksLikePropertyOptioningContinuation(text: string) {
-  return (
-    /\b(propiedad|casa|depto|departamento|inmueble|terreno|direccion|dirección|dueno|dueño|propietario|precio|reforma|colonia|zona|operacion|operación|venta|renta|tipo|area|área|m2|metros|recamaras|recámaras|banos|baños|estacionamiento)\b/.test(
-      text
-    ) ||
-    text.length <= 180
+/**
+ * Tokens concretos de DATOS de propiedad (sin el fallback de longitud). Sirve
+ * para distinguir "Casa en venta en Las Fuentes…" (datos de intake) de una
+ * frase de inicio vacía como "Quiero opcionar" (que NO trae datos).
+ */
+function looksLikePropertyDataDetails(text: string) {
+  return /\b(propiedad|casa|depto|departamento|inmueble|terreno|direccion|dirección|dueno|dueño|propietario|precio|reforma|colonia|zona|operacion|operación|venta|renta|tipo|area|área|m2|metros|recamaras|recámaras|banos|baños|estacionamiento)\b/.test(
+    text
   );
+}
+
+function looksLikePropertyOptioningContinuation(text: string) {
+  return looksLikePropertyDataDetails(text) || text.length <= 180;
 }
 
 function looksLikePropertyDataReviewResponse(text: string) {
@@ -59,6 +66,22 @@ export function looksLikeNewCaseIntent(message: string): boolean {
   return /\b(propiedad|propiedades|casa|casas|depto|departamento|departamentos|inmueble|inmuebles|terreno|terrenos|caso|operacion|operación)\b/.test(
     text
   );
+}
+
+/**
+ * When the user sends a fresh property-optioning start phrase (e.g. "quiero
+ * opcionar una propiedad") but an existing conversational case is already past
+ * intake, we must not silently adopt that case — otherwise the agent runs on
+ * the wrong step and may trigger HITL for operational_case_update_state.
+ */
+export function shouldForceNewConversationalCaseOnExplicitStartIntent(
+  message: string,
+  existingCase: Pick<OperationalCase, "current_step"> | null | undefined
+): boolean {
+  if (!existingCase) return false;
+  if (looksLikeNewCaseIntent(message)) return true;
+  if (!isPropertyOptioningIntent(message)) return false;
+  return existingCase.current_step !== "intake";
 }
 
 export function shouldBindTelegramMessageToConversationalCase(params: {
@@ -215,14 +238,44 @@ export function resolveTelegramConversationRoute(params: {
   if (activeBindings.length === 1) {
     const binding = activeBindings[0]!;
     const opCase = params.candidateCasesById.get(binding.case_id);
-    if (params.explicitIntent && opCase) {
+    // Precedencia de intake: si el único caso activo aún recolecta intake y el
+    // mensaje trae DATOS de propiedad (no una frase de inicio vacía ni una
+    // intención explícita de "otra propiedad"), continúa ese caso en vez de
+    // pedir aclaración. El guard de "explicit intent" abajo es para casos que
+    // YA pasaron intake, no para el que apenas estamos llenando.
+    const intakeIncomplete =
+      opCase?.current_step === "intake" &&
+      opCase.context_jsonb?.intake_status !== "complete";
+    if (
+      opCase &&
+      intakeIncomplete &&
+      !looksLikeNewCaseIntent(params.message) &&
+      looksLikePropertyDataDetails(text)
+    ) {
       return {
         route: "case",
         confidence: "high",
-        reason: "explicit_intent_with_single_binding",
+        reason: "single_binding_intake_continuation",
         caseId: opCase.id,
         bindingId: binding.id,
         candidateSummaries,
+      };
+    }
+    // "Quiero opcionar" con caso(s) activos no debe adoptar silenciosamente el
+    // único binding. Pedimos confirmar: continuar ese caso o iniciar uno nuevo.
+    if (params.explicitIntent && opCase) {
+      return {
+        route: "clarify",
+        confidence: "medium",
+        reason: "explicit_intent_with_active_bindings",
+        candidateSummaries,
+        candidates: [
+          {
+            caseId: opCase.id,
+            bindingId: binding.id,
+            label: formatBindingCandidate(binding, opCase),
+          },
+        ],
       };
     }
     if (opCase && shouldBindTelegramMessageToConversationalCase({ message: text, opCase })) {
@@ -275,7 +328,9 @@ export function resolveTelegramConversationRoute(params: {
   return {
     route: "clarify",
     confidence: "medium",
-    reason: "multiple_binding_candidates",
+    reason: params.explicitIntent
+      ? "explicit_intent_with_active_bindings"
+      : "multiple_binding_candidates",
     candidateSummaries,
     candidates,
   };

@@ -20,6 +20,8 @@ export const OperationalConversationClassificationSchema = z.object({
     "provide_intake",
     "review_correction",
     "confirm_review",
+    "deliver_documents",
+    "mark_ready",
     "other",
   ]),
   patch: PatchSchema.optional(),
@@ -32,7 +34,12 @@ export type OperationalConversationClassification = z.infer<
 
 export interface OperationalConversationClassifierInput {
   message: string;
-  stage: "no_case" | "intake" | "property_data_review" | "active_case";
+  stage:
+    | "no_case"
+    | "intake"
+    | "property_data_review"
+    | "awaiting_documents"
+    | "active_case";
   caseSummary?: string | null;
 }
 
@@ -86,6 +93,17 @@ function buildClassifierPrompt(input: OperationalConversationClassifierInput) {
           "- If a field is unclear, omit it from patch.",
         ]
       : [];
+  const awaitingDocumentsRules =
+    input.stage === "awaiting_documents"
+      ? [
+          "- The current case is collecting property documents from the internal team.",
+          "- intent=deliver_documents when the user announces, attaches, or refers to sending/uploading documents (e.g. 'adjunto documentos', 'ahí te van', 'te paso lo que junté', 'aquí están los archivos', 'ya subí la escritura'). Use route=existing_case for these.",
+          "- intent=mark_ready when the user signals they finished uploading and want processing to start (e.g. 'listo', 'ya terminé', 'eso es todo', 'ya están todos'). Use route=existing_case.",
+          "- intent=start_case ONLY when the user clearly wants to open a DIFFERENT/new property case, not continue this one.",
+          "- Prefer existing_case over clarify; only use clarify if the message is genuinely unrelated and ambiguous.",
+          "- Never extract intake fields in this stage.",
+        ]
+      : [];
   return [
     "Classify this Spanish Telegram message for a real-estate operational case workflow.",
     "Return ONLY compact JSON matching this TypeScript shape:",
@@ -100,6 +118,7 @@ function buildClassifierPrompt(input: OperationalConversationClassifierInput) {
     "- Normalize common operation values to Venta or Renta when clear.",
     "- Do not invent missing intake fields.",
     ...intakeSpecificRules,
+    ...awaitingDocumentsRules,
     "",
     `stage: ${input.stage}`,
     input.caseSummary ? `case: ${input.caseSummary}` : "",

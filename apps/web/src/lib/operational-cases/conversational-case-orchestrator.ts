@@ -17,6 +17,7 @@
  * `docs/operational-cases/future-considerations.md` §10.
  */
 import {
+  findLatestConversationalOperationalCase,
   getActiveE2ELabSession,
   getOperationalCase,
   linkE2ELabSessionToCase,
@@ -24,7 +25,11 @@ import {
 import { isPropertyOptioningIntent } from "@agents/agent";
 import type { OperationalCase, ToolApprovalPolicy } from "@agents/types";
 import { ensureConversationalCase } from "./ensure-conversational-case";
-import { looksLikeNewCaseIntent } from "./conversational-case-routing";
+import {
+  looksLikeNewCaseIntent,
+  shouldForceNewConversationalCaseOnExplicitStartIntent,
+} from "./conversational-case-routing";
+import { isUsableE2ELabSessionCase } from "./e2e-lab-routing-isolation";
 import { classifyOperationalConversationMessage } from "./operational-conversation-classifier";
 
 type DbClient = Parameters<typeof getActiveE2ELabSession>[0];
@@ -84,6 +89,12 @@ export async function resolveConversationalCaseForChannel(params: {
   userId: string;
   channel: "web" | "telegram";
   message: string;
+  /**
+   * Fuerza abrir un caso nuevo (no adoptar el activo) y trata el turno como
+   * intención explícita de flujo operacional. Se usa tras una aclaración del
+   * tipo "continuar caso existente vs registrar otra propiedad".
+   */
+  forceNewCase?: boolean;
 }): Promise<ResolveConversationalCaseResult> {
   const message = params.message?.trim();
   if (!message) {
@@ -96,8 +107,9 @@ export async function resolveConversationalCaseForChannel(params: {
     };
   }
 
+  let forceNewCase = params.forceNewCase === true;
   const deterministicIntent = isPropertyOptioningIntent(message);
-  let explicitIntent = deterministicIntent;
+  let explicitIntent = forceNewCase || deterministicIntent;
   if (!explicitIntent) {
     const classification = await classifyOperationalConversationMessage({
       message,
@@ -131,31 +143,57 @@ export async function resolveConversationalCaseForChannel(params: {
       : null;
 
   let conversationalCase: OperationalCase | null = null;
-  if (activeE2ELabSessionCaseId) {
+  if (activeE2ELabSessionCaseId && !forceNewCase) {
     const sessionCase = await getOperationalCase(
       params.db,
       activeE2ELabSessionCaseId
     );
-    if (
-      sessionCase &&
-      sessionCase.user_id === params.userId &&
-      sessionCase.case_type === PROPERTY_OPTIONING_CASE_TYPE &&
-      sessionCase.context_jsonb?.created_from === "agent_conversation" &&
-      sessionCase.status !== "completed" &&
-      sessionCase.status !== "failed"
-    ) {
-      conversationalCase = sessionCase;
+    const usableSessionCase = isUsableE2ELabSessionCase({
+      opCase: sessionCase,
+      userId: params.userId,
+      caseType: PROPERTY_OPTIONING_CASE_TYPE,
+    });
+    if (activeE2ELabSession && !usableSessionCase) {
+      forceNewCase = true;
+    } else if (sessionCase) {
+      if (
+        shouldForceNewConversationalCaseOnExplicitStartIntent(
+          message,
+          sessionCase
+        )
+      ) {
+        forceNewCase = true;
+      } else {
+        conversationalCase = sessionCase;
+      }
     }
   }
 
   let created = false;
   if (!conversationalCase) {
+    if (!forceNewCase && deterministicIntent) {
+      const latestConversationalCase =
+        await findLatestConversationalOperationalCase(params.db, {
+          userId: params.userId,
+          caseType: PROPERTY_OPTIONING_CASE_TYPE,
+          statuses: ["active", "waiting_internal", "waiting_external"],
+        });
+      if (
+        shouldForceNewConversationalCaseOnExplicitStartIntent(
+          message,
+          latestConversationalCase
+        )
+      ) {
+        forceNewCase = true;
+      }
+    }
     const ensured = await ensureConversationalCase(params.db, {
       userId: params.userId,
       caseType: PROPERTY_OPTIONING_CASE_TYPE,
       channel: params.channel,
       e2eControlled: Boolean(activeE2ELabSession),
       forceNew:
+        forceNewCase ||
         looksLikeNewCaseIntent(message) ||
         Boolean(activeE2ELabSession && !activeE2ELabSessionCaseId),
     });
@@ -175,12 +213,24 @@ export async function resolveConversationalCaseForChannel(params: {
 
   if (
     activeE2ELabSession &&
+    conversationalCase.context_jsonb?.e2e_controlled === true &&
     activeE2ELabSession.case_id !== conversationalCase.id
   ) {
     await linkE2ELabSessionToCase(params.db, {
       sessionId: activeE2ELabSession.id,
       caseId: conversationalCase.id,
     });
+  } else if (
+    activeE2ELabSession &&
+    conversationalCase.context_jsonb?.e2e_controlled !== true
+  ) {
+    console.warn(
+      "[conversational-case-orchestrator] skipped linking e2e session to non-e2e case",
+      {
+        sessionId: activeE2ELabSession.id,
+        caseId: conversationalCase.id,
+      }
+    );
   }
 
   return {

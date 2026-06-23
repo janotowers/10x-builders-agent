@@ -66,6 +66,35 @@ assert.equal(filtered[0]?.status, "pending");
 assert.equal(filtered[1]?.evidenceItems.length, 2);
 assert.equal(filtered[1]?.status, "in_progress");
 
+const preE2EDocumentFlow = flowProgressForE2ESummary(
+  [
+    {
+      step_key: "awaiting_documents",
+      step_label: "Solicitar documentos",
+      status: "completed",
+      evidence: ["event:external_response"],
+      evidenceItems: [
+        {
+          kind: "event",
+          id: "doc-pre-e2e",
+          created_at: "2026-06-05T10:04:30.000Z",
+          event_type: "external_response",
+          event_kind: "document_registered",
+          summary: "Documento recibido",
+        },
+      ],
+    },
+  ],
+  {
+    e2eStartedAt: "2026-06-05T10:05:00.000Z",
+  }
+);
+assert.equal(
+  preE2EDocumentFlow[0]?.evidenceItems.some((item) => item.id === "doc-pre-e2e"),
+  true,
+  "los documentos previos al arranque E2E deben conservarse en el resumen"
+);
+
 const conversationalIntake = flowProgressForE2ESummary(
   [
     {
@@ -147,6 +176,55 @@ const approvalAndOwnedExecution = buildSettingsTestFlowProgress({
 assert.deepEqual(
   approvalAndOwnedExecution[0]?.evidenceItems.map((item) => item.id),
   ["owned-execution-row"]
+);
+
+// Documentos registrados (sin `current_step` en su payload) se atribuyen al
+// paso "Solicitar documentos" para que el panel muestre actividad documental.
+const docFlow: OperationalCaseFlowStep[] = [
+  { step_key: "intake", step_label: "Completar registro del caso" },
+  { step_key: "awaiting_documents", step_label: "Solicitar documentos" },
+];
+const docCase = {
+  current_step: "awaiting_documents",
+  context_jsonb: {},
+} as OperationalCase;
+const withDocs = buildSettingsTestFlowProgress({
+  opCase: docCase,
+  events: [
+    {
+      id: "doc-1",
+      case_id: "case-1",
+      event_type: "external_response",
+      actor: "user",
+      created_at: "2026-06-05T10:06:00.000Z",
+      payload_jsonb: {
+        kind: "document_registered",
+        source: "advisor_telegram",
+        original_name: "Boleta Registral.pdf",
+      },
+    },
+  ] as unknown as Parameters<typeof buildSettingsTestFlowProgress>[0]["events"],
+  flow: docFlow,
+});
+const documentsStep = withDocs.find(
+  (step) => step.step_key === "awaiting_documents"
+);
+assert.equal(
+  documentsStep?.evidenceItems.some((item) => item.id === "doc-1"),
+  true,
+  "el documento registrado debe aparecer en Solicitar documentos"
+);
+assert.ok(
+  documentsStep?.evidenceItems.some(
+    (item) => item.kind === "event" && item.summary.includes("Boleta Registral.pdf")
+  ),
+  "el panel debe mostrar el nombre del documento"
+);
+// No debe filtrarse al paso intake.
+const intakeStep = withDocs.find((step) => step.step_key === "intake");
+assert.equal(
+  intakeStep?.evidenceItems.some((item) => item.id === "doc-1"),
+  false
 );
 
 console.log("settings-test-flow-progress.selftest: ok");

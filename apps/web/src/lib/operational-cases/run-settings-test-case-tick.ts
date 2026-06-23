@@ -1,5 +1,10 @@
-import { runAgent } from "@agents/agent";
 import {
+  evaluatePropertyAdvanceGate,
+  runAgent,
+  runDocumentFieldExtraction,
+} from "@agents/agent";
+import {
+  createToolCall,
   createServerClient,
   decryptToken,
   getGoogleCalendarAccessToken,
@@ -10,8 +15,10 @@ import {
   getUserToolSettings,
   getOrCreateSession,
   insertOperationalCaseEvent,
+  listOperationalCaseDocuments,
   markCaseProcessing,
   updateOperationalCase,
+  updateToolCallStatus,
 } from "@agents/db";
 import {
   SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID,
@@ -20,9 +27,11 @@ import {
   operationalCaseDocumentRequestTargetFromContext,
   resolveOperationalCaseDocumentRequestTarget,
   type OperationalCase,
+  type OperationalCaseDocument,
   type PendingConfirmation,
 } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import { buildDocumentChecklistLines } from "@/lib/operational-cases/case-document-collection";
 import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 import { telegramChatIdFromCase } from "@/lib/operational-cases/settings-test-telegram-lab";
@@ -30,6 +39,123 @@ import { telegramChatIdFromCase } from "@/lib/operational-cases/settings-test-te
 type PostAgentInvariantAction = Awaited<
   ReturnType<typeof applyPropertyOptioningPostAgentInvariants>
 >["action"];
+
+function deterministicDocumentIdsFromBlocks(
+  blocks: ReturnType<typeof evaluatePropertyAdvanceGate>["blocks"]
+): string[] {
+  const ids = new Set<string>();
+  for (const block of blocks) {
+    if (block.remediation.owner !== "deterministic") continue;
+    for (const id of block.remediation.document_ids ?? []) ids.add(id);
+  }
+  return [...ids];
+}
+
+async function runAuditedDocumentExtraction(params: {
+  db: ReturnType<typeof createServerClient>;
+  sessionId: string;
+  opCase: OperationalCase;
+  userId: string;
+  documentId: string;
+  force: boolean;
+  source: string;
+}) {
+  const args = { document_id: params.documentId, force: params.force };
+  const record = await createToolCall(
+    params.db,
+    params.sessionId,
+    "operational_case_extract_document_fields",
+    args,
+    false,
+    null,
+    {
+      executorKind: "deterministic",
+      metadata: {
+        case_id: params.opCase.id,
+        operational_step_key: params.opCase.current_step ?? "documents_received",
+        channel: "case_runner",
+        source: "agent_e2e",
+      },
+    }
+  );
+  const out = await runDocumentFieldExtraction(params.db, {
+    userId: params.userId,
+    documentId: params.documentId,
+    force: params.force,
+  });
+  await updateToolCallStatus(params.db, record.id, out.ok ? "executed" : "failed", out);
+  return out;
+}
+
+async function ensureRequiredDocumentExtractionsForE2E(params: {
+  db: ReturnType<typeof createServerClient>;
+  sessionId: string;
+  opCase: OperationalCase;
+  userId: string;
+  source: string;
+}): Promise<{
+  status: "ready" | "blocked";
+  documents: OperationalCaseDocument[];
+  blockingDocumentIds: string[];
+  blockingReasons: string[];
+}> {
+  let documents = await listOperationalCaseDocuments(params.db, {
+    caseId: params.opCase.id,
+    statuses: ["received"],
+  });
+  const initialIds = new Set(documents.map((document) => document.id));
+
+  for (const document of documents) {
+    await runAuditedDocumentExtraction({
+      ...params,
+      documentId: document.id,
+      force: false,
+      source: `${params.source}:preflight_all_received_documents`,
+    });
+  }
+
+  documents = await listOperationalCaseDocuments(params.db, {
+    caseId: params.opCase.id,
+    statuses: ["received"],
+  });
+  let gate = evaluatePropertyAdvanceGate({
+    documents,
+    context: params.opCase.context_jsonb,
+    targetTransition: "comparables_in_progress",
+  });
+  const remediationIds = deterministicDocumentIdsFromBlocks(gate.blocks).filter((id) =>
+    initialIds.has(id)
+  );
+
+  for (const documentId of remediationIds) {
+    await runAuditedDocumentExtraction({
+      ...params,
+      documentId,
+      force: true,
+      source: `${params.source}:preflight_remediation`,
+    });
+  }
+
+  documents = await listOperationalCaseDocuments(params.db, {
+    caseId: params.opCase.id,
+    statuses: ["received"],
+  });
+  gate = evaluatePropertyAdvanceGate({
+    documents,
+    context: params.opCase.context_jsonb,
+    targetTransition: "comparables_in_progress",
+  });
+  const blockingDocumentIds = deterministicDocumentIdsFromBlocks(gate.blocks);
+  if (blockingDocumentIds.length > 0) {
+    return {
+      status: "blocked",
+      documents,
+      blockingDocumentIds,
+      blockingReasons: gate.blocks.map((block) => block.reason),
+    };
+  }
+  return { status: "ready", documents, blockingDocumentIds: [], blockingReasons: [] };
+}
 
 /**
  * Translate the deterministic invariant outcome into an honest controlled-E2E
@@ -48,6 +174,9 @@ function deriveControlledE2EStatus(
     case "asked_missing_characteristics":
     case "asked_missing_characteristics_again":
       return "waiting_external";
+    case "asked_missing_characteristics_internal":
+    case "asked_missing_characteristics_again_internal":
+      return "waiting_internal";
     case "deferred_pending_extraction":
       return "blocked_pending_extraction";
     case "escalated_extraction_to_human":
@@ -67,6 +196,12 @@ function buildCaseE2ETickMessage(
   opCase: OperationalCase,
   options?: { ownerResponseText?: string }
 ): string {
+  const context =
+    opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+      ? (opCase.context_jsonb as Record<string, unknown>)
+      : {};
+  const explicitDocumentRequestTarget =
+    operationalCaseDocumentRequestTargetFromContext(context);
   if (options?.ownerResponseText?.trim()) {
     return [
       `Procesa la respuesta reciente del dueño en el caso ${opCase.id}.`,
@@ -76,17 +211,15 @@ function buildCaseE2ETickMessage(
       "No avances a comparables, precio, contrato ni publicación en este tick.",
       "Antes de extraer, llama operational_case_list_documents y usa únicamente IDs UUID reales devueltos ahí; nunca uses placeholders como <document_id>.",
       "Antes de preguntar faltantes, consolida lo extraído de documentos de propiedad (escritura, predial, boleta): titulares, dirección legal y superficie/metraje. No uses dirección de IFE/comprobante como dirección del inmueble salvo que esté marcada como propiedad.",
-      "Si faltan campos mínimos, prepara preguntas al dueño (purpose=characteristics_pending). Mínimos comunes: dueño/titulares, dirección y superficie/metraje. Por tipo: casa requiere construcción m2, plantas, recámaras, baños completos, medios baños y cocina integral; departamento requiere recámaras, baños completos, medios baños, cajones, piso, elevador y amenidades; terreno requiere metraje y si está en coto/condominio/parque industrial o es independiente; bodega/nave requiere m2 de bodega, altura, oficinas si aplica, baños, cajones, KVA y transformador. Para terrenos/lotes no preguntes recámaras, baños ni estacionamientos salvo que exista construcción.",
+      explicitDocumentRequestTarget === "internal_user"
+        ? "Si faltan campos mínimos, notifícalos al asesor interno (notify_user) y conserva status=waiting_internal/current_step=documents_received. NO uses telegram_send_message_to_contact cuando document_request_target=internal_user."
+        : "Si faltan campos mínimos, prepara preguntas al dueño (purpose=characteristics_pending). Mínimos comunes: dueño/titulares, dirección y superficie/metraje. Por tipo: casa requiere construcción m2, plantas, recámaras, baños completos, medios baños y cocina integral; departamento requiere recámaras, baños completos, medios baños, cajones, piso, elevador y amenidades; terreno requiere metraje y si está en coto/condominio/parque industrial o es independiente; bodega/nave requiere m2 de bodega, altura, oficinas si aplica, baños, cajones, KVA y transformador. Para terrenos/lotes no preguntes recámaras, baños ni estacionamientos salvo que exista construcción.",
       "Al mezclar datos, conserva como canónicos los campos del intake ya confirmado (property_title, property_zone, operation_type, property_type). Los documentos pueden aportar dirección legal, superficie, folio, titular, medidas y colindancias, pero no deben reemplazar property_type='Terreno' por etiquetas notariales como 'Unidad Privativa' salvo que pidas confirmación explícita como posible conflicto.",
       "Si los mínimos están completos, solicita revisión interna con notify_user(kind=property_data_review). En ese mensaje separa claramente: datos confirmados por intake; datos encontrados en documentos; faltantes/advertencias/conflictos. No pongas tipo/operación/zona como datos extraídos si solo vienen del intake. No combines zona y dirección bajo un solo campo. Para terrenos/lotes muestra recámaras/baños/estacionamientos como 'No aplica' salvo que exista construcción.",
     ].join(" ");
   }
   const settingsTestCase = isSettingsOperationalTestCase(opCase);
   const controlledE2ECase = isControlledE2EOperationalCase(opCase);
-  const context =
-    opCase.context_jsonb && typeof opCase.context_jsonb === "object"
-      ? (opCase.context_jsonb as Record<string, unknown>)
-      : {};
   const externalChatId =
     telegramChatIdFromCase(opCase, context) ??
     (settingsTestCase || controlledE2ECase
@@ -96,8 +229,6 @@ function buildCaseE2ETickMessage(
     externalContact: opCase.external_contact_jsonb,
     context,
   });
-  const explicitDocumentRequestTarget =
-    operationalCaseDocumentRequestTargetFromContext(context);
   return [
     `Tick E2E controlado para el caso ${opCase.id} (case_type=${opCase.case_type}, status=${opCase.status}, current_step=${opCase.current_step ?? "(none)"}).`,
     settingsTestCase || controlledE2ECase
@@ -118,11 +249,7 @@ function buildCaseE2ETickMessage(
             : documentRequestTarget === "external_contact"
             ? "El mensaje inicial DEBE enumerar documentos específicos, no uses una frase genérica. Incluye estos bullets:"
             : "La notificación interna DEBE enumerar documentos específicos, no uses una frase genérica. Incluye estos bullets:",
-          "• Boleta registral (referencia principal para confirmar titularidad)",
-          "• Escritura: primera hoja o sección donde esté la descripción de la propiedad, y última hoja si la tiene a la mano",
-          "• Último recibo de predial",
-          "• Identificación oficial (anverso y reverso)",
-          "• Comprobante de domicilio (≤ 3 meses)",
+          ...buildDocumentChecklistLines(),
           explicitDocumentRequestTarget === "external_contact"
             ? "Si falta alguno, pide que envíe lo disponible y aclara que pueden continuar por texto sin detener el proceso."
             : "Si falta alguno, indica que puede subir lo disponible y continuar por texto sin detener el proceso.",
@@ -235,6 +362,119 @@ export async function runSettingsTestCaseAgentTick(
   const session = await getOrCreateSession(db, userId, "case_runner");
   const controlledE2ECase = isControlledE2EOperationalCase(fresh);
   const settingsTestCase = isSettingsOperationalTestCase(fresh);
+  const explicitDocumentRequestTarget =
+    operationalCaseDocumentRequestTargetFromContext(
+      (caseWithTarget.context_jsonb as Record<string, unknown>) ?? null
+    );
+  const deterministicDocumentsReceivedPath =
+    caseWithTarget.current_step === "documents_received";
+
+  if (deterministicDocumentsReceivedPath) {
+    const extractionReadiness = await ensureRequiredDocumentExtractionsForE2E({
+      db,
+      sessionId: session.id,
+      opCase: caseWithTarget,
+      userId,
+      source: options?.source ?? "settings_test_case_tick",
+    });
+    if (extractionReadiness.status === "blocked") {
+      const updated = await updateOperationalCase(db, fresh.id, fresh.version, {
+        nextActionAt: controlledE2ECase ? null : new Date().toISOString(),
+        context: {
+          ...(fresh.context_jsonb ?? {}),
+          ...(settingsTestCase
+            ? {
+                controlled_test_status: "blocked_pending_extraction",
+                controlled_test_e2e_last_run_at: new Date().toISOString(),
+              }
+            : {}),
+          ...(controlledE2ECase
+            ? {
+                e2e_control_status: "blocked_pending_extraction",
+                e2e_control_last_run_at: new Date().toISOString(),
+                e2e_control_last_invariant_action: "deferred_pending_extraction",
+              }
+            : {}),
+          extraction_preflight_blocked_document_ids:
+            extractionReadiness.blockingDocumentIds,
+          extraction_preflight_blocking_reasons:
+            extractionReadiness.blockingReasons,
+        },
+      });
+      await insertOperationalCaseEvent(db, {
+        caseId: fresh.id,
+        eventType: "state_changed",
+        actor: "system",
+        payload: {
+          source: options?.source ?? "settings_test_case_tick",
+          kind: "document_extraction_preflight_blocked",
+          result: "blocked_pending_extraction",
+          pending_document_ids: extractionReadiness.blockingDocumentIds,
+          reasons: extractionReadiness.blockingReasons,
+        },
+      });
+      return {
+        case: updated ?? fresh,
+        pending_confirmation: false,
+        pendingConfirmation: null,
+        response_preview: null,
+      };
+    }
+  }
+
+  if (deterministicDocumentsReceivedPath) {
+    const invariantResult = await applyPropertyOptioningPostAgentInvariants({
+      db,
+      opCase: caseWithTarget,
+      source: "post_agent_invariant_e2e",
+    });
+    const caseAfterDeterministicFallback = invariantResult.case ?? caseWithTarget;
+    const version = caseAfterDeterministicFallback.version ?? fresh.version;
+    const controlledStatus = deriveControlledE2EStatus(invariantResult.action, false);
+    const updated = await updateOperationalCase(db, fresh.id, version, {
+      nextActionAt: controlledE2ECase ? null : undefined,
+      context: {
+        ...(caseAfterDeterministicFallback.context_jsonb ?? fresh.context_jsonb),
+        ...(settingsTestCase
+          ? {
+              test_mode: true,
+              controlled_test_e2e_last_run_at: new Date().toISOString(),
+              controlled_test_e2e_pending_confirmation: false,
+              controlled_test_status: "e2e_tick_completed",
+            }
+          : {}),
+        ...(controlledE2ECase
+          ? {
+              e2e_control_last_run_at: new Date().toISOString(),
+              e2e_control_pending_confirmation: false,
+              e2e_control_status: controlledStatus,
+              e2e_control_last_invariant_action: invariantResult.action,
+            }
+          : {}),
+      },
+    });
+
+    await insertOperationalCaseEvent(db, {
+      caseId: fresh.id,
+      eventType: "state_changed",
+      actor: "system",
+      payload: {
+        source: options?.source ?? "settings_test_case_tick",
+        result: "e2e_tick_completed",
+        pending_confirmation: false,
+        invariant_action: invariantResult.action,
+        controlled_status: controlledStatus,
+        response_preview: null,
+      },
+    });
+
+    return {
+      case: updated ?? caseAfterDeterministicFallback ?? fresh,
+      pending_confirmation: false,
+      pendingConfirmation: null,
+      response_preview: null,
+    };
+  }
 
   const agentResult = await runAgent({
     message: buildCaseE2ETickMessage(caseWithTarget, {
@@ -258,7 +498,9 @@ export async function runSettingsTestCaseAgentTick(
     googleCalendarAccessToken,
     autoApproveTools: false,
     toolApprovalPolicy: settingsTestCase || controlledE2ECase
-      ? buildSettingsTestToolApprovalPolicy()
+      ? buildSettingsTestToolApprovalPolicy(undefined, {
+          documentRequestTarget: explicitDocumentRequestTarget,
+        })
       : undefined,
     caseId: caseWithTarget.id,
     toolCallSource: "agent_e2e",

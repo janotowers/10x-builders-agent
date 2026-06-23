@@ -7,9 +7,10 @@ import {
   decryptToken,
   findPendingConversationBindings,
   getGoogleCalendarAccessToken,
+  getActiveE2ELabSession,
   insertOperationalCaseEvent,
 } from "@agents/db";
-import { runAgent } from "@agents/agent";
+import { isPropertyOptioningIntent, runAgent } from "@agents/agent";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { publishTurnEvent } from "@/lib/agent-turn-events";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
@@ -20,6 +21,7 @@ import {
 import { resolveConversationalIntakeTurn } from "@/lib/operational-cases/conversational-intake-orchestrator";
 import {
   resolveConversationalClarificationReply,
+  resolveRoutableConversationBindings,
   routeConversationalMessageAgainstBindings,
 } from "@/lib/operational-cases/conversational-routing-orchestrator";
 import { maybeRunPostIntakeConversationalE2ETick } from "@/lib/operational-cases/conversational-e2e-post-intake";
@@ -29,12 +31,17 @@ import { resolveOperationalCaseDocumentRequestTarget } from "@agents/types";
 import {
   applyDocumentRequestTargetChoice,
   resolveDocumentTargetReplyAgainstBindings,
+  resolveInternalDocumentMessageCase,
   shouldPromptCaseDocumentRequestTarget,
 } from "@/lib/operational-cases/document-request-target";
 import {
   completeDocumentBatchForCase,
   looksLikeDocumentBatchComplete,
 } from "@/lib/operational-cases/document-batch-completion";
+import {
+  buildExternalContactDeepLink,
+  buildExternalContactSetupMessage,
+} from "@/lib/operational-cases/external-contact-link";
 
 type IncomingAttachment = {
   fileName: string;
@@ -119,6 +126,8 @@ async function registerInternalCaseAttachments(params: {
         source: "advisor_web_chat",
         document_id: document.id,
         document_kind: document.kind,
+        current_step: params.opCase.current_step,
+        step_key: params.opCase.current_step,
       },
     });
     registered += 1;
@@ -281,15 +290,40 @@ export async function POST(request: Request) {
       let conversationalCase: OperationalCase | null = null;
       let conversationalJustCreated = false;
       let explicitOperationalIntent = false;
+      let forceNewConversationalCase = false;
+      const deterministicPropertyIntent = isPropertyOptioningIntent(effectiveMessage);
 
       const pendingWebBindings = await findPendingConversationBindings(db, {
         userId: user.id,
         channel: "web",
         statuses: ["awaiting_user", "clarification_needed"],
       });
+      const activeE2ELabSession = await getActiveE2ELabSession(db, {
+        userId: user.id,
+        caseType: "property_optioning",
+      });
+      const routingResolution = await resolveRoutableConversationBindings({
+        db,
+        pendingBindings: pendingWebBindings,
+        e2eLabSessionActive: Boolean(activeE2ELabSession),
+        caseType: "property_optioning",
+      });
+      const routingWebBindings = routingResolution.routableBindings;
+      const routingCasesById = routingResolution.candidateCasesById;
+      if (effectiveMessage && deterministicPropertyIntent) {
+        console.info("[chat] routing bindings resolved", {
+          raw_bindings_count: pendingWebBindings.length,
+          routable_bindings_count: routingWebBindings.length,
+          ignored_binding_reasons: routingResolution.ignoredBindings.map(
+            (entry) => entry.reason
+          ),
+          active_e2e_session_id: activeE2ELabSession?.id ?? null,
+          deterministic_property_intent: deterministicPropertyIntent,
+        });
+      }
 
       // (1) Respuesta a una aclaración multi-caso pendiente.
-      const pendingClarification = pendingWebBindings.find(
+      const pendingClarification = routingWebBindings.find(
         (binding) => binding.status === "clarification_needed"
       );
       if (pendingClarification) {
@@ -300,6 +334,11 @@ export async function POST(request: Request) {
         });
         if (reply.status === "invalid_index" || reply.status === "resolved_no") {
           return await respondConversational(reply.responseText);
+        }
+        if (reply.status === "resolved_new_case") {
+          forceNewConversationalCase = true;
+          explicitOperationalIntent = true;
+          if (reply.effectiveMessage) effectiveMessage = reply.effectiveMessage;
         }
         if (reply.status === "resolved_case" && reply.case) {
           conversationalCase = reply.case;
@@ -314,10 +353,15 @@ export async function POST(request: Request) {
           userId: user.id,
           channel: "web",
           message: effectiveMessage,
+          forceNewCase: forceNewConversationalCase,
         });
-        explicitOperationalIntent = resolved.explicitIntent;
+        explicitOperationalIntent = explicitOperationalIntent || resolved.explicitIntent;
         conversationalCase = resolved.case;
-        conversationalJustCreated = resolved.created;
+        conversationalJustCreated =
+          resolved.created ||
+          (deterministicPropertyIntent &&
+            conversationalCase?.current_step === "intake" &&
+            conversationalCase.context_jsonb?.intake_status !== "complete");
       }
 
       // (2b) Respuesta interno/externo a un caso que espera esa decisión:
@@ -327,10 +371,24 @@ export async function POST(request: Request) {
         const targetReply = await resolveDocumentTargetReplyAgainstBindings({
           db,
           message: effectiveMessage,
-          pendingBindings: pendingWebBindings,
+          pendingBindings: routingWebBindings,
         });
         if (targetReply.matchedCase) {
           conversationalCase = targetReply.matchedCase;
+        }
+      }
+
+      // (2c) Texto de subida ("documentos adjuntos") o cierre de lote ("listo")
+      // en ruta interna: asociar al caso interno que recaba documentos, sin
+      // desambiguación multi-caso.
+      if (!conversationalCase) {
+        const uploadReply = await resolveInternalDocumentMessageCase({
+          db,
+          message: effectiveMessage,
+          pendingBindings: routingWebBindings,
+        });
+        if (uploadReply.matchedCase) {
+          conversationalCase = uploadReply.matchedCase;
         }
       }
 
@@ -340,8 +398,9 @@ export async function POST(request: Request) {
           db,
           channel: "web",
           message: effectiveMessage,
-          pendingBindings: pendingWebBindings,
+          pendingBindings: routingWebBindings,
           explicitIntent: explicitOperationalIntent,
+          candidateCasesById: routingCasesById,
         });
         if (routeResult.route === "clarify") {
           return await respondConversational(routeResult.responseText);
@@ -349,6 +408,33 @@ export async function POST(request: Request) {
         if (routeResult.route === "case") {
           conversationalCase = routeResult.case;
         }
+      }
+
+      if (!conversationalCase && deterministicPropertyIntent) {
+        console.warn(
+          "[chat] deterministic property intent without routable case; forcing deterministic ensure",
+          {
+            raw_bindings_count: pendingWebBindings.length,
+            routable_bindings_count: routingWebBindings.length,
+            force_new_requested: forceNewConversationalCase,
+            active_e2e_session_id: activeE2ELabSession?.id ?? null,
+          }
+        );
+        const forced = await resolveConversationalCaseForChannel({
+          db,
+          userId: user.id,
+          channel: "web",
+          message: effectiveMessage,
+          forceNewCase: true,
+        });
+        explicitOperationalIntent =
+          explicitOperationalIntent || forced.explicitIntent;
+        conversationalCase = forced.case;
+        conversationalJustCreated =
+          conversationalJustCreated ||
+          forced.created ||
+          (conversationalCase?.current_step === "intake" &&
+            conversationalCase.context_jsonb?.intake_status !== "complete");
       }
 
       // (4) Motor de intake determinístico.
@@ -399,6 +485,14 @@ export async function POST(request: Request) {
               } catch (tickError) {
                 console.error("[chat] post-choice E2E tick failed:", tickError);
               }
+            }
+            if (choice.externalContactSetupToken) {
+              const deepLink = await buildExternalContactDeepLink(
+                choice.externalContactSetupToken
+              );
+              return await respondConversational(
+                buildExternalContactSetupMessage({ deepLink })
+              );
             }
             return await respondConversational(choice.responseText);
           }
@@ -454,6 +548,20 @@ export async function POST(request: Request) {
         conversationalCaseId = conversationalCase.id;
         operationalToolApprovalPolicy =
           buildOperationalCaseToolApprovalPolicy(conversationalCase);
+      }
+      if (!conversationalCase && deterministicPropertyIntent) {
+        console.error(
+          "[chat] deterministic property intent unresolved; aborting LLM fallback",
+          {
+            raw_bindings_count: pendingWebBindings.length,
+            routable_bindings_count: routingWebBindings.length,
+            force_new_requested: forceNewConversationalCase,
+            active_e2e_session_id: activeE2ELabSession?.id ?? null,
+          }
+        );
+        return await respondConversational(
+          "No pude resolver el caso operativo de forma determinística en este momento. Intenta de nuevo en unos segundos para iniciar el intake."
+        );
       }
     } catch (err) {
       console.error(

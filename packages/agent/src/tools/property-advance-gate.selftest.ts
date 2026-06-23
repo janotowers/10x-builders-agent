@@ -18,6 +18,54 @@ const casaContext = {
   operation_type: "Venta",
 };
 
+// --- comparables_in_progress: boleta pendiente -> deterministic ----------
+{
+  const gate = evaluatePropertyAdvanceGate({
+    documents: [
+      doc({
+        id: "boleta-1",
+        kind: "boleta_registral",
+        display_name: "Boleta Registral",
+        original_name: "Boleta Registral Las Fuentes.pdf",
+        extraction_status: "pending",
+      }),
+    ],
+    context: casaContext,
+    targetTransition: "comparables_in_progress",
+  });
+  assert.equal(gate.satisfied, false);
+  assert.equal(gate.blocks.length, 1);
+  assert.equal(gate.blocks[0]!.reason, "boleta_extraction_pending");
+  assert.equal(gate.blocks[0]!.remediation.owner, "deterministic");
+  assert.deepEqual(gate.blocks[0]!.remediation.document_ids, ["boleta-1"]);
+}
+
+// --- comparables_in_progress: boleta extraída sin owner/address -> deterministic
+{
+  const gate = evaluatePropertyAdvanceGate({
+    documents: [
+      doc({
+        id: "boleta-1",
+        kind: "boleta_registral",
+        display_name: "Boleta Registral",
+        original_name: "Boleta Registral Las Fuentes.pdf",
+        extraction_status: "ok",
+        extraction_jsonb: {
+          document_kind: "boleta_registral",
+          folio_real: "12345",
+        },
+      }),
+    ],
+    context: casaContext,
+    targetTransition: "comparables_in_progress",
+  });
+  assert.equal(gate.satisfied, false);
+  assert.equal(gate.blocks.length, 1);
+  assert.equal(gate.blocks[0]!.reason, "boleta_owner_or_address_missing");
+  assert.equal(gate.blocks[0]!.remediation.owner, "deterministic");
+  assert.deepEqual(gate.blocks[0]!.remediation.document_ids, ["boleta-1"]);
+}
+
 // --- comparables_in_progress: predial pendiente -> deterministic ---------
 {
   const gate = evaluatePropertyAdvanceGate({
@@ -98,7 +146,11 @@ const casaContext = {
         display_name: "boleta",
         original_name: "boleta.pdf",
         extraction_status: "ok",
-        extraction_jsonb: { owner_names: ["Ana"], area_total_m2: 200 },
+        extraction_jsonb: {
+          owner_names: ["Ana"],
+          legal_address: "Las Fuentes, Zapopan, Jalisco",
+          area_total_m2: 200,
+        },
       }),
     ],
     context: { ...casaContext, property_data: { property_type: "Casa" } },

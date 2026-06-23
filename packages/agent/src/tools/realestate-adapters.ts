@@ -476,7 +476,7 @@ export function addRealEstateTools(
                 hint:
                   "Este caso está configurado para solicitar documentos al equipo interno. Usa notify_user o cambia document_request_target a external_contact antes de enviar al contacto externo.",
               };
-              await updateToolCallStatus(ctx.db, record.id, "executed", out);
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
               return JSON.stringify(out);
             }
           }

@@ -3,6 +3,7 @@ import {
   looksLikeNewCaseIntent,
   resolveTelegramConversationRoute,
   shouldBindTelegramMessageToConversationalCase,
+  shouldForceNewConversationalCaseOnExplicitStartIntent,
 } from "./conversational-case-routing";
 import type { OperationalCaseConversationBinding } from "@agents/types";
 import type { OperationalCase } from "@agents/types";
@@ -86,6 +87,37 @@ const decisionCase = resolveTelegramConversationRoute({
   explicitIntent: false,
 });
 assert.equal(decisionCase.route, "case");
+
+const explicitStartSingle = resolveTelegramConversationRoute({
+  message: "Quiero opcionar",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", intakeCase]]),
+  explicitIntent: true,
+});
+assert.equal(explicitStartSingle.route, "clarify");
+
+// Precedencia de intake: responder con DATOS de propiedad al único caso en
+// intake incompleto debe continuar ese caso, aunque el clasificador marque
+// intención explícita (no debe pedir aclaración «continuar vs nueva»).
+const intakeDataReply = resolveTelegramConversationRoute({
+  message: "Casa en venta en Las Fuentes, Zapopan, Jalisco",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", intakeCase]]),
+  explicitIntent: true,
+});
+assert.equal(intakeDataReply.route, "case");
+if (intakeDataReply.route === "case") {
+  assert.equal(intakeDataReply.reason, "single_binding_intake_continuation");
+}
+
+// Pero pedir explícitamente OTRA propiedad sí debe aclarar, incluso en intake.
+const explicitNewWhileIntake = resolveTelegramConversationRoute({
+  message: "Quiero opcionar otra propiedad",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", intakeCase]]),
+  explicitIntent: true,
+});
+assert.equal(explicitNewWhileIntake.route, "clarify");
 
 const decisionGeneral = resolveTelegramConversationRoute({
   message: "¿Cuántos leads tuvimos ayer?",
@@ -178,11 +210,44 @@ if (decisionMultiple.route === "clarify") {
   );
 }
 
+const explicitStartMultiple = resolveTelegramConversationRoute({
+  message: "Quiero opcionar",
+  bindings: [binding, bindingB],
+  candidateCasesById: new Map([
+    ["case-1", intakeCaseWithId],
+    ["case-2", intakeCaseB],
+  ]),
+  explicitIntent: true,
+});
+assert.equal(explicitStartMultiple.route, "clarify");
+
 // New-case intent detection (deterministic gate for forcing a fresh case).
 assert.equal(looksLikeNewCaseIntent("Quiero opcionar otra propiedad"), true);
 assert.equal(looksLikeNewCaseIntent("Es para un nuevo caso"), true);
 assert.equal(looksLikeNewCaseIntent("otra casa en venta"), true);
 assert.equal(looksLikeNewCaseIntent("La zona es Sendas"), false);
 assert.equal(looksLikeNewCaseIntent("Ana Pérez, 5 millones"), false);
+
+assert.equal(
+  shouldForceNewConversationalCaseOnExplicitStartIntent(
+    "quiero opcionar una propiedad",
+    { current_step: "awaiting_documents" }
+  ),
+  true
+);
+assert.equal(
+  shouldForceNewConversationalCaseOnExplicitStartIntent(
+    "quiero opcionar una propiedad",
+    { current_step: "intake" }
+  ),
+  false
+);
+assert.equal(
+  shouldForceNewConversationalCaseOnExplicitStartIntent(
+    "La zona es Las Fuentes, Zapopan",
+    { current_step: "awaiting_documents" }
+  ),
+  false
+);
 
 console.log("conversational-case-routing.route-selftest: ok");

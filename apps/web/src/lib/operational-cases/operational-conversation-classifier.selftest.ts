@@ -108,6 +108,51 @@ async function main() {
     }
   );
 
+  // Stage awaiting_documents: el esquema acepta los intents deliver_documents y
+  // mark_ready (fallback flexible para texto de subida sin regex frágil).
+  const deliverModel: OperationalConversationClassifierModel = {
+    async classify(input) {
+      assert.equal(input.stage, "awaiting_documents");
+      return {
+        route: "existing_case",
+        confidence: "high",
+        intent: "deliver_documents",
+        reason: "user is sending documents",
+      };
+    },
+  };
+  assert.deepEqual(
+    await classifyOperationalConversationMessage(
+      { message: "ahí te van los archivos que junté", stage: "awaiting_documents" },
+      deliverModel
+    ),
+    {
+      route: "existing_case",
+      confidence: "high",
+      intent: "deliver_documents",
+      reason: "user is sending documents",
+    }
+  );
+
+  const markReadyModel: OperationalConversationClassifierModel = {
+    async classify() {
+      return {
+        route: "existing_case",
+        confidence: "high",
+        intent: "mark_ready",
+      };
+    },
+  };
+  assert.equal(
+    (
+      await classifyOperationalConversationMessage(
+        { message: "ya quedaron todos", stage: "awaiting_documents" },
+        markReadyModel
+      )
+    )?.intent,
+    "mark_ready"
+  );
+
   console.log("operational-conversation-classifier.selftest.ts: ok");
 }
 

@@ -824,6 +824,15 @@ function isPredialDocumentCandidate(document: OperationalCaseDocument) {
   return /\bpredial\b|impuesto predial|cuenta predial|clave catastral/.test(normalized);
 }
 
+function isBoletaDocumentCandidate(document: OperationalCaseDocument) {
+  const normalized = normalizePropertyDataValue(
+    [document.kind, document.display_name, document.original_name].filter(Boolean).join(" ")
+  );
+  return /\bboleta\b|\bboleta registral\b|folio real|registro publico|registral/.test(
+    normalized
+  );
+}
+
 export function documentExtractionMinimumsContext(
   documents: OperationalCaseDocument[]
 ): Record<string, unknown> {
@@ -836,6 +845,9 @@ export function documentExtractionMinimumsContext(
   const legalAddressesBoleta: string[] = [];
   const legalAddressesEscritura: string[] = [];
   const legalAddressesOther: string[] = [];
+  const hasBoletaDocument = documents.some(
+    (document) => document.status !== "superseded" && isBoletaDocumentCandidate(document)
+  );
   const hasPredialDocument = documents.some(
     (document) => document.status !== "superseded" && isPredialDocumentCandidate(document)
   );
@@ -957,13 +969,19 @@ export function documentExtractionMinimumsContext(
   const uniqueOwnersOther = uniqueStrings(ownerNamesCorroborationDocs);
   const uniqueOwnersIgnored = uniqueStrings(ownerNamesIgnoredForConsistency);
   const canonicalOwners =
-    uniqueOwnersBoleta.length > 0 ? uniqueOwnersBoleta : uniqueOwnersAll;
+    uniqueOwnersBoleta.length > 0
+      ? uniqueOwnersBoleta
+      : hasBoletaDocument
+        ? uniqueOwnersOther
+        : uniqueOwnersAll;
   const uniqueAddressesBoleta = sanitizeAddressCandidates(legalAddressesBoleta);
   const uniqueAddressesEscritura = sanitizeAddressCandidates(legalAddressesEscritura);
   const uniqueAddressesOther = sanitizeAddressCandidates(legalAddressesOther);
   const canonicalAddresses =
     uniqueAddressesBoleta.length > 0
       ? uniqueAddressesBoleta
+      : hasBoletaDocument
+        ? uniqueAddressesOther
       : uniqueAddressesEscritura.length > 0
         ? uniqueAddressesEscritura
         : uniqueAddressesOther;
@@ -2244,6 +2262,8 @@ export type PropertyAdvanceTransition =
   | "contract_pending";
 
 export type PropertyAdvanceGateBlockReason =
+  | "boleta_extraction_pending"
+  | "boleta_owner_or_address_missing"
   | "predial_extraction_pending"
   | "predial_area_total_missing"
   | "predial_area_construida_missing"
@@ -2357,6 +2377,53 @@ function predialAdvanceBlocks(input: {
   return [];
 }
 
+function boletaAdvanceBlocks(input: {
+  documents: OperationalCaseDocument[];
+}): PropertyAdvanceGateBlock[] {
+  const boletas = input.documents.filter(
+    (document) => document.status !== "superseded" && isBoletaDocumentCandidate(document)
+  );
+  if (boletas.length === 0) return [];
+  const pending = boletas.filter((document) =>
+    PENDING_EXTRACTION_STATUSES.includes(document.extraction_status)
+  );
+  if (pending.length > 0) {
+    return [
+      {
+        reason: "boleta_extraction_pending",
+        remediation: {
+          owner: "deterministic",
+          document_ids: pending.map((document) => document.id),
+        },
+      },
+    ];
+  }
+  const extractedBoletas = boletas.filter((document) =>
+    USABLE_EXTRACTION_STATUSES.includes(document.extraction_status)
+  );
+  const extractedIds = extractedBoletas.map((document) => document.id);
+  const remediationIds =
+    extractedIds.length > 0 ? extractedIds : boletas.map((document) => document.id);
+  const hasBoletaOwner = extractedBoletas.some((document) =>
+    extractionOwnerNames(document.extraction_jsonb ?? {}).length > 0
+  );
+  const hasBoletaAddress = extractedBoletas.some((document) =>
+    extractionAddressCandidates(document.extraction_jsonb ?? {}).length > 0
+  );
+  if (!hasBoletaOwner || !hasBoletaAddress) {
+    return [
+      {
+        reason: "boleta_owner_or_address_missing",
+        remediation: {
+          owner: "deterministic",
+          document_ids: remediationIds,
+        },
+      },
+    ];
+  }
+  return [];
+}
+
 function ownerCorroborationAdvanceBlocks(input: {
   documents: OperationalCaseDocument[];
 }): PropertyAdvanceGateBlock[] {
@@ -2396,7 +2463,10 @@ export function evaluatePropertyAdvanceGate(input: {
   const blocks: PropertyAdvanceGateBlock[] = [];
 
   if (input.targetTransition === "comparables_in_progress") {
-    blocks.push(...predialAdvanceBlocks({ propertyType, documents: input.documents }));
+    blocks.push(...boletaAdvanceBlocks({ documents: input.documents }));
+    if (blocks.length === 0) {
+      blocks.push(...predialAdvanceBlocks({ propertyType, documents: input.documents }));
+    }
     if (blocks.length === 0) {
       const minimums = evaluatePropertyDataMinimumsForReview(context, documentFields);
       if (!minimums.ok) {
@@ -3634,6 +3704,30 @@ export function addOperationalCaseTools(
                   await updateToolCallStatus(ctx.db, record.id, "failed", out);
                   return JSON.stringify(out);
                 }
+              }
+              const recentEvents = await getRecentOperationalCaseEvents(
+                ctx.db,
+                opCase.id,
+                30
+              );
+              const alreadyRequested = recentEvents.some((event) => {
+                const payload = event.payload_jsonb;
+                if (!payload || typeof payload !== "object") return false;
+                const kind = (payload as Record<string, unknown>).kind;
+                return (
+                  kind === "property_data_review_requested" ||
+                  kind === "property_data_review"
+                );
+              });
+              if (alreadyRequested || opCase.current_step === "property_data_review") {
+                const out = {
+                  ok: true,
+                  status: "property_data_review_already_requested",
+                  skipped: true,
+                  case_id: opCase.id,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "executed", out);
+                return JSON.stringify(out);
               }
             }
             const notificationText =

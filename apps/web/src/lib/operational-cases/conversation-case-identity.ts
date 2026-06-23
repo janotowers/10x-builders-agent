@@ -6,6 +6,10 @@ export interface ConversationCaseIdentity {
   summary: string;
   technical: string;
   shortId: string;
+  /** "[E2E]" para casos de laboratorio, "[Real]" para casos productivos. */
+  mode: string;
+  /** Paso operativo en lenguaje humano (no técnico). */
+  stepLabel: string;
 }
 
 function firstNonEmptyString(
@@ -18,13 +22,47 @@ function firstNonEmptyString(
   return fallback;
 }
 
+const CASE_TYPE_LABELS: Record<string, string> = {
+  property_optioning: "Opción de propiedad",
+};
+
+/** Etiqueta humana del tipo de caso (fallback al slug técnico si no hay mapa). */
+export function humanCaseTypeLabel(caseType: string | null | undefined): string {
+  if (!caseType) return "Caso operacional";
+  return CASE_TYPE_LABELS[caseType] ?? caseType;
+}
+
+/** Paso operativo en lenguaje humano. Compartido por copys conversacionales. */
+export function conversationalStepLabel(step: string | null | undefined): string {
+  switch (step) {
+    case "intake":
+      return "Registro inicial";
+    case "awaiting_documents":
+      return "Solicitar documentos";
+    case "documents_received":
+      return "Revisión documental";
+    case "property_data_review":
+      return "Revisión de datos de propiedad";
+    case "comparables_in_progress":
+      return "Análisis de mercado";
+    default:
+      return step && step.trim() ? step.trim() : "Proceso en curso";
+  }
+}
+
+/** "[E2E]" si el caso es de laboratorio controlado; "[Real]" en otro caso. */
+export function operationalCaseModeLabel(opCase: OperationalCase): string {
+  return opCase.context_jsonb?.e2e_controlled === true ? "[E2E]" : "[Real]";
+}
+
 export function buildConversationCaseIdentity(params: {
   opCase: OperationalCase;
   caseTypeDisplayName?: string | null;
 }): ConversationCaseIdentity {
   const context = params.opCase.context_jsonb ?? {};
   const caseTypeLabel =
-    params.caseTypeDisplayName?.trim() || params.opCase.case_type || "Caso operacional";
+    params.caseTypeDisplayName?.trim() ||
+    humanCaseTypeLabel(params.opCase.case_type);
   const summary = firstNonEmptyString(
     [
       context.title,
@@ -43,5 +81,7 @@ export function buildConversationCaseIdentity(params: {
     summary,
     technical,
     shortId: shortOperationalCaseId(params.opCase.id),
+    mode: operationalCaseModeLabel(params.opCase),
+    stepLabel: conversationalStepLabel(params.opCase.current_step),
   };
 }

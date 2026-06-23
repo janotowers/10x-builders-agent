@@ -7,6 +7,30 @@ import {
   type DbClient,
 } from "@agents/db";
 import { classifyOperationalConversationMessage } from "@/lib/operational-cases/operational-conversation-classifier";
+import { parseOwnerCharacteristics } from "@/lib/operational-cases/parse-owner-characteristics";
+
+const PROPERTY_DATA_KEYS = new Set([
+  "operation",
+  "property_type",
+  "area_total_m2",
+  "area_construida_m2",
+  "floors",
+  "bedrooms",
+  "bathrooms",
+  "half_bathrooms",
+  "parking_spots",
+  "integral_kitchen",
+  "floor_number",
+  "has_elevator",
+  "amenities",
+  "land_context",
+  "warehouse_area_m2",
+  "warehouse_height_m",
+  "office_area_m2",
+  "kva",
+  "has_transformer",
+  "notes",
+]);
 
 function parsePropertyDataReviewCorrection(text: string) {
   const normalized = text
@@ -15,6 +39,7 @@ function parsePropertyDataReviewCorrection(text: string) {
     .toLowerCase()
     .trim();
   const patch: Record<string, unknown> = {};
+  const propertyDataPatch = parseOwnerCharacteristics(text);
   if (/\boperacion\b/.test(normalized) && /\bventa\b/.test(normalized)) {
     patch.operation_type = "Venta";
   } else if (/\boperacion\b/.test(normalized) && /\brenta\b/.test(normalized)) {
@@ -27,16 +52,35 @@ function parsePropertyDataReviewCorrection(text: string) {
   if (zoneMatch?.[1]?.trim()) {
     patch.property_zone = zoneMatch[1].trim();
   }
-  return patch;
+  return {
+    contextPatch: patch,
+    propertyDataPatch:
+      propertyDataPatch && typeof propertyDataPatch === "object"
+        ? (propertyDataPatch as Record<string, unknown>)
+        : {},
+  };
 }
 
 function mergeReviewCorrectionPatch(
-  deterministicPatch: Record<string, unknown>,
+  deterministicPatch: {
+    contextPatch: Record<string, unknown>;
+    propertyDataPatch: Record<string, unknown>;
+  },
   llmPatch: Record<string, unknown> | undefined
 ) {
-  return {
+  const mergedContextPatch = {
     ...(llmPatch ?? {}),
-    ...deterministicPatch,
+    ...deterministicPatch.contextPatch,
+  };
+  const mergedPropertyDataPatch: Record<string, unknown> = {
+    ...deterministicPatch.propertyDataPatch,
+  };
+  for (const [key, value] of Object.entries(llmPatch ?? {})) {
+    if (PROPERTY_DATA_KEYS.has(key)) mergedPropertyDataPatch[key] = value;
+  }
+  return {
+    contextPatch: mergedContextPatch,
+    propertyDataPatch: mergedPropertyDataPatch,
   };
 }
 
@@ -134,7 +178,9 @@ export async function handlePropertyDataReviewDecision(
     parsePropertyDataReviewCorrection(text),
     llmReview?.intent === "review_correction" ? llmReview.patch : undefined
   );
-  const hasPatch = Object.keys(correctionPatch).length > 0;
+  const hasPatch =
+    Object.keys(correctionPatch.contextPatch).length > 0 ||
+    Object.keys(correctionPatch.propertyDataPatch).length > 0;
   const context = (opCase.context_jsonb ?? {}) as Record<string, unknown>;
   const settingsTestCase = isSettingsTestCase(context);
 
@@ -143,22 +189,35 @@ export async function handlePropertyDataReviewDecision(
       ok: false,
       status: "unclear_correction",
       message:
-        "Detecté intención de corrección, pero no pude extraer campos claros. Especifica, por ejemplo: «Tipo: Terreno» o «Operación: Venta».",
+        "Detecté intención de corrección, pero no pude extraer campos claros. Especifica, por ejemplo: «Tipo: Terreno», «Operación: Venta» o «Recámaras: 3».",
     };
   }
 
+  const currentPropertyData =
+    context.property_data &&
+    typeof context.property_data === "object" &&
+    !Array.isArray(context.property_data)
+      ? (context.property_data as Record<string, unknown>)
+      : {};
   const caseWithPatch = hasPatch
     ? await updateOperationalCase(db, opCase.id, opCase.version, {
         context: {
           ...context,
-          ...correctionPatch,
+          ...correctionPatch.contextPatch,
+          property_data: {
+            ...currentPropertyData,
+            ...correctionPatch.propertyDataPatch,
+          },
           property_data_review_corrections: [
             ...(((context.property_data_review_corrections as unknown[]) ?? []) as unknown[]),
             {
               text,
               source: "web_pending_inbox",
               received_at: new Date().toISOString(),
-              patch: correctionPatch,
+              patch: {
+                context: correctionPatch.contextPatch,
+                property_data: correctionPatch.propertyDataPatch,
+              },
             },
           ],
         },
@@ -177,7 +236,10 @@ export async function handlePropertyDataReviewDecision(
       source: "web_pending_inbox",
       notification_id: notification.id,
       text,
-      correction_patch: correctionPatch,
+      correction_patch: {
+        context: correctionPatch.contextPatch,
+        property_data: correctionPatch.propertyDataPatch,
+      },
     },
   });
 
@@ -232,6 +294,9 @@ export async function handlePropertyDataReviewDecision(
     message: hasPatch
       ? "Correcciones guardadas. El caso avanzó a comparables."
       : "Datos confirmados. El caso avanzó a comparables.",
-    correctionPatch,
+    correctionPatch: {
+      context: correctionPatch.contextPatch,
+      property_data: correctionPatch.propertyDataPatch,
+    },
   };
 }

@@ -7,8 +7,13 @@ export const SETTINGS_TEST_AUTO_EXECUTE_TOOLS = [
   "operational_case_add_event",
 ] as const;
 
+type SettingsTestToolPolicyOptions = {
+  documentRequestTarget?: "internal_user" | "external_contact" | null;
+};
+
 export function buildSettingsTestToolApprovalPolicy(
-  extraToolIds?: Iterable<string>
+  extraToolIds?: Iterable<string>,
+  options?: SettingsTestToolPolicyOptions
 ): ToolApprovalPolicy {
   const policy: ToolApprovalPolicy = {};
   for (const toolId of SETTINGS_TEST_AUTO_EXECUTE_TOOLS) {
@@ -18,6 +23,9 @@ export function buildSettingsTestToolApprovalPolicy(
     for (const toolId of extraToolIds) {
       policy[toolId] = "auto_execute";
     }
+  }
+  if (options?.documentRequestTarget === "internal_user") {
+    policy.telegram_send_message_to_contact = "deny";
   }
   return policy;
 }

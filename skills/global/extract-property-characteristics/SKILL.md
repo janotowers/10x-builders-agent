@@ -108,16 +108,22 @@ Llenar `context_jsonb.property_data` con un objeto canónico:
      que exista construcción.
    - Bodega/nave industrial: m² de bodega/nave, altura, m² de oficinas si
      aplica, baños, cajones/estacionamientos, KVA y transformador sí/no.
-   - Compón un mensaje al dueño con **máximo 4 preguntas** específicas, en
-     formato bullet o numerado para fácil lectura.
-   - `telegram_send_message_to_contact` con
-     `purpose=characteristics_pending`.
-   - Si intentaste `notify_user(kind="property_data_review")` y la tool devolvió
-     `property_data_minimums_missing`, usa exactamente
-     `suggested_external_message` como texto al contacto externo. Ese mensaje ya
-     separa datos conocidos y faltantes reales.
-   - Inserta `operational_case_add_event(reminder_sent)`.
-   - Pon `status=waiting_external`, `next_action_at=now()+24h`.
+   - Si `document_request_target=external_contact`:
+     - Compón un mensaje al dueño con **máximo 4 preguntas** específicas, en
+       formato bullet o numerado para fácil lectura.
+     - `telegram_send_message_to_contact` con
+       `purpose=characteristics_pending`.
+     - Si intentaste `notify_user(kind="property_data_review")` y la tool devolvió
+       `property_data_minimums_missing`, usa exactamente
+       `suggested_external_message` como texto al contacto externo. Ese mensaje ya
+       separa datos conocidos y faltantes reales.
+     - Inserta `operational_case_add_event(reminder_sent)`.
+     - Pon `status=waiting_external`, `next_action_at=now()+24h`.
+   - Si `document_request_target=internal_user`:
+     - **NO** uses `telegram_send_message_to_contact`.
+     - Deja que la capa determinística del caso emita el faltante interno
+       (`notify_user` + `purpose=characteristics_pending_internal`) y mantenga
+       `status=waiting_internal/current_step=documents_received`.
 6. Si llegó `external_response`:
    - Parsea las respuestas y mergea en `property_data`.
    - Conserva como canónicos los campos ya confirmados en intake

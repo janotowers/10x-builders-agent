@@ -13,13 +13,58 @@ import {
   resolveOperationalCaseDocumentRequestTarget,
   operationalCaseDocumentRequestTargetFromContext,
 } from "@agents/types";
+import {
+  DOCUMENT_PRIVACY_LINE,
+  buildDocumentChecklistLines,
+  looksLikeDocumentBatchComplete,
+  looksLikeDocumentUploadSideText,
+} from "./case-document-collection";
+import {
+  classifyOperationalConversationMessage,
+  type OperationalConversationClassifierModel,
+} from "./operational-conversation-classifier";
+import {
+  conversationalStepLabel,
+  operationalCaseModeLabel,
+} from "./conversation-case-identity";
+import { buildTelegramIntakeCompletionMessage } from "./telegram-intake-completion-message";
+import {
+  beginExternalContactLink,
+  buildExternalContactSetupMessage,
+} from "./external-contact-link";
 
-type DocumentRequestTargetDecisionSource = "default" | "user" | "agent" | "test";
+type DocumentRequestTargetDecisionSource =
+  | "default"
+  | "user"
+  | "agent"
+  | "test"
+  | "inferred";
 
 function caseContext(opCase: OperationalCase): Record<string, unknown> {
   return opCase.context_jsonb && typeof opCase.context_jsonb === "object"
     ? (opCase.context_jsonb as Record<string, unknown>)
     : {};
+}
+
+function firstContextString(
+  context: Record<string, unknown>,
+  keys: string[]
+): string | null {
+  for (const key of keys) {
+    const value = context[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function buildCaseScopeLead(opCase: OperationalCase): string {
+  const context = caseContext(opCase);
+  const mode = operationalCaseModeLabel(opCase);
+  const title =
+    firstContextString(context, ["property_title", "title", "property_name"]) ??
+    firstContextString(context, ["property_zone", "zona", "zone"]) ??
+    "Propiedad sin título";
+  return `Sobre ${mode} ${title} (${conversationalStepLabel(opCase.current_step)}):`;
 }
 
 export function resolveCaseDocumentRequestTarget(
@@ -55,6 +100,34 @@ export function shouldPromptCaseDocumentRequestTarget(
   );
 }
 
+/**
+ * Pregunta de cierre interno/externo. Variante por canal sólo para el modo de
+ * envío; el cuerpo (documentos) es común y vive en el checklist compartido.
+ */
+function buildDocumentTargetChoiceQuestion(params: {
+  canUseExternal: boolean;
+}): string {
+  if (!params.canUseExternal) {
+    return [
+      "No veo un contacto externo verificado para este caso, así que por ahora la ruta sería interna (tú/tu equipo los aportan).",
+      "Confirma con «interno» para continuar.",
+    ].join("\n");
+  }
+  return [
+    "¿Quién prefieres que aporte esos documentos?",
+    "",
+    "• «interno» — tú o tu equipo los suben.",
+    "• «externo» — se los solicito al dueño/contacto.",
+    "",
+    "Respóndeme solo con «interno» o «externo».",
+  ].join("\n");
+}
+
+/**
+ * Mensaje post-intake: primero EXPLICA qué documentos se necesitan y luego
+ * pregunta quién los aportará. El cuerpo (checklist + privacidad) es común a
+ * todos los canales; sólo la pregunta final cambia si no hay contacto externo.
+ */
 export function buildCaseDocumentRequestTargetPrompt(
   opCase: OperationalCase
 ): string {
@@ -62,22 +135,66 @@ export function buildCaseDocumentRequestTargetPrompt(
     externalContact: opCase.external_contact_jsonb,
     context: caseContext(opCase),
   });
-  if (!canUseExternal) {
-    return [
-      "Antes de pedir documentos, dime cómo quieres recabarlos.",
-      "",
-      "No veo un contacto externo verificado para este caso, así que por ahora usaré la ruta interna.",
-      "Confirma con: «interno».",
-    ].join("\n");
-  }
   return [
-    "Antes de pedir documentos, necesito tu decisión:",
+    buildCaseScopeLead(opCase),
     "",
-    "1) Interno (tú/equipo inmobiliario suben documentos).",
-    "2) Externo (se solicitan al dueño/contacto externo).",
+    "Para avanzar necesito estos documentos de la propiedad:",
     "",
-    "Respóndeme solo con «interno» o «externo».",
+    ...buildDocumentChecklistLines(),
+    "",
+    DOCUMENT_PRIVACY_LINE,
+    "",
+    buildDocumentTargetChoiceQuestion({ canUseExternal }),
   ].join("\n");
+}
+
+/**
+ * Mensaje único post-intake: combina la confirmación de la propiedad (con sus
+ * datos) + la lista de documentos requeridos + la pregunta de destino, SIN
+ * repetir el "lead" de alcance (que sí es útil en re-prompts standalone). Es el
+ * mensaje que se envía justo al completar el intake conversacional.
+ */
+export function buildPostIntakeDocumentRequestMessage(
+  opCase: OperationalCase
+): string {
+  const canUseExternal = hasOperationalCaseVerifiedExternalContact({
+    externalContact: opCase.external_contact_jsonb,
+    context: caseContext(opCase),
+  });
+  return [
+    buildTelegramIntakeCompletionMessage(opCase),
+    "",
+    "Para avanzar necesitaré los siguientes documentos:",
+    "",
+    ...buildDocumentChecklistLines(),
+    "",
+    DOCUMENT_PRIVACY_LINE,
+    "",
+    buildDocumentTargetChoiceQuestion({ canUseExternal }),
+  ].join("\n");
+}
+
+/**
+ * Acuse al confirmar la ruta documental. El cuerpo es común; la variante de
+ * canal sólo aclara DÓNDE subir (Telegram/web/panel) sin filtrar el nombre de
+ * un canal en el copy base.
+ */
+export function buildDocumentRouteConfirmationAck(params: {
+  target: OperationalCaseDocumentRequestTarget;
+  channel: "web" | "telegram";
+}): string {
+  if (params.target === "external_contact") {
+    return "Perfecto: se los solicitaré al dueño/contacto externo y te aviso en cuanto responda.";
+  }
+  const whereToUpload =
+    params.channel === "telegram"
+      ? "Puedes enviarlos aquí mismo como archivos o subirlos desde el panel del caso."
+      : "Puedes adjuntarlos en este chat o subirlos desde el panel del caso.";
+  return [
+    "Perfecto.",
+    whereToUpload,
+    'Cuando tengas cargados todos los documentos disponibles, avísame con «listo» y empiezo a revisarlos.',
+  ].join(" ");
 }
 
 export type ParseDocumentRequestTargetChoiceResult = {
@@ -218,6 +335,147 @@ export async function resolveDocumentTargetReplyAgainstBindings(params: {
   return { matchedCase: candidates[0]!, ambiguous: candidates.length > 1 };
 }
 
+function isInternalDocumentCollectionCase(opCase: OperationalCase): boolean {
+  const target = operationalCaseDocumentRequestTargetFromContext(
+    caseContext(opCase)
+  );
+  return (
+    target === "internal_user" &&
+    (opCase.current_step === "awaiting_documents" ||
+      opCase.current_step === "documents_received") &&
+    opCase.status !== "paused" &&
+    opCase.status !== "completed" &&
+    opCase.status !== "failed"
+  );
+}
+
+/** Timestamp de la decisión de destino documental, como epoch ms (0 si falta). */
+function internalCollectionDecidedAt(opCase: OperationalCase): number {
+  const value = caseContext(opCase).document_request_target_decided_at;
+  const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Casos internos que están recabando documentos entre los bindings pendientes,
+ * ordenados del más reciente al más antiguo por la decisión de destino. Fuente
+ * única para resolver subidas (media o texto) hacia el caso correcto sin pedir
+ * aclaración multi-caso innecesaria.
+ */
+async function collectInternalDocumentCollectionCases(params: {
+  db: DbClient;
+  pendingBindings: OperationalCaseConversationBinding[];
+}): Promise<OperationalCase[]> {
+  const candidates: OperationalCase[] = [];
+  const seen = new Set<string>();
+  for (const binding of params.pendingBindings) {
+    if (seen.has(binding.case_id)) continue;
+    seen.add(binding.case_id);
+    const opCase = await getOperationalCase(params.db, binding.case_id);
+    if (opCase && isInternalDocumentCollectionCase(opCase)) {
+      candidates.push(opCase);
+    }
+  }
+  candidates.sort(
+    (a, b) => internalCollectionDecidedAt(b) - internalCollectionDecidedAt(a)
+  );
+  return candidates;
+}
+
+/**
+ * Fase 1 (media-first): resuelve el caso interno destino de un mensaje que trae
+ * ARCHIVO adjunto. No requiere ningún gate de texto: la sola presencia de media
+ * en ruta interna es señal inequívoca, de modo que un caption (p. ej. el del
+ * primer elemento de un álbum) nunca preempta la ingestión. Prefiere el caso
+ * interno con decisión de destino más reciente.
+ */
+export async function resolveInternalDocumentUploadCaseForMedia(params: {
+  db: DbClient;
+  pendingBindings: OperationalCaseConversationBinding[];
+}): Promise<OperationalCase | null> {
+  const candidates = await collectInternalDocumentCollectionCases(params);
+  return candidates[0] ?? null;
+}
+
+/**
+ * Resuelve a qué caso pertenece un mensaje de TEXTO relacionado con la subida de
+ * documentos en ruta interna: texto lateral ("adjunto documentos") o cierre de
+ * lote ("listo"). Evita desambiguación multi-caso o caer al LLM general.
+ *
+ * Estrategia de 2 niveles (sin regex frágil que haya que ir engordando):
+ *   1) Gate barato determinístico de alta confianza (`looksLikeDocumentBatchComplete`
+ *      / `looksLikeDocumentUploadSideText`).
+ *   2) Fallback LLM (`stage: "awaiting_documents"`) SOLO cuando hay un caso
+ *      interno recabando documentos y el gate barato no resolvió. Interpreta
+ *      frases impredecibles ("ahí te van", "te paso lo que junté") y distingue
+ *      la intención de abrir un caso nuevo (en cuyo caso NO adopta).
+ */
+export async function resolveInternalDocumentMessageCase(params: {
+  db: DbClient;
+  message: string;
+  pendingBindings: OperationalCaseConversationBinding[];
+  /** Inyectable para tests; en producción usa el clasificador OpenRouter. */
+  classifierModel?: OperationalConversationClassifierModel;
+  /** Permite desactivar el fallback LLM (p. ej. tests deterministas). */
+  useLlmFallback?: boolean;
+}): Promise<{
+  matchedCase: OperationalCase | null;
+  reason: "batch_complete" | "upload_side_text" | null;
+}> {
+  const candidates = await collectInternalDocumentCollectionCases(params);
+  if (candidates.length === 0) return { matchedCase: null, reason: null };
+  const target = candidates[0]!;
+
+  if (looksLikeDocumentBatchComplete(params.message)) {
+    return { matchedCase: target, reason: "batch_complete" };
+  }
+  if (looksLikeDocumentUploadSideText(params.message)) {
+    return { matchedCase: target, reason: "upload_side_text" };
+  }
+
+  const useLlm = params.useLlmFallback ?? true;
+  const trimmed = params.message.trim();
+  if (!useLlm || !trimmed || trimmed.length > 160) {
+    return { matchedCase: null, reason: null };
+  }
+
+  const classification = await classifyOperationalConversationMessage(
+    {
+      message: trimmed,
+      stage: "awaiting_documents",
+      caseSummary: buildInternalCollectionCaseSummary(target),
+    },
+    params.classifierModel
+  );
+  if (!classification) return { matchedCase: null, reason: null };
+  // Intención clara de abrir un caso distinto: no adoptar este caso.
+  if (
+    classification.route === "property_optioning" &&
+    classification.intent === "start_case"
+  ) {
+    return { matchedCase: null, reason: null };
+  }
+  if (classification.intent === "mark_ready") {
+    return { matchedCase: target, reason: "batch_complete" };
+  }
+  if (classification.intent === "deliver_documents") {
+    return { matchedCase: target, reason: "upload_side_text" };
+  }
+  return { matchedCase: null, reason: null };
+}
+
+function buildInternalCollectionCaseSummary(opCase: OperationalCase): string {
+  const context = caseContext(opCase);
+  return [
+    firstContextString(context, ["property_title", "title", "property_name"]),
+    firstContextString(context, ["property_zone", "zona", "zone"]),
+    firstContextString(context, ["operation_type"]),
+    firstContextString(context, ["property_type"]),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" · ");
+}
+
 export type ApplyDocumentRequestTargetChoiceResult =
   | {
       handled: true;
@@ -225,6 +483,12 @@ export type ApplyDocumentRequestTargetChoiceResult =
       responseText: string;
       /** El caller debe ejecutar el tick E2E post-decisión (sólo casos E2E externos). */
       shouldRunPostChoiceE2ETick: boolean;
+      /**
+       * Presente cuando el asesor eligió «externo» sin contacto verificado: el
+       * caller debe construir el deep link de vinculación con este token y
+       * entregar el mensaje de setup (en lugar de `responseText`).
+       */
+      externalContactSetupToken?: string;
     }
   | { handled: false; updatedCase: OperationalCase };
 
@@ -272,10 +536,10 @@ export async function applyDocumentRequestTargetChoice(params: {
     return {
       handled: true,
       updatedCase,
-      responseText:
-        parsedChoice.target === "internal_user"
-          ? "Perfecto: usaré ruta interna. Sube los documentos por web/Telegram interno y cuando termines escribe «listo»."
-          : "Perfecto: usaré ruta externa y solicitaré los documentos al contacto propietario.",
+      responseText: buildDocumentRouteConfirmationAck({
+        target: parsedChoice.target,
+        channel: params.channel,
+      }),
       shouldRunPostChoiceE2ETick: isExternal && isE2E,
     };
   }
@@ -290,12 +554,16 @@ export async function applyDocumentRequestTargetChoice(params: {
     };
   }
   if (parsedChoice.reason === "external_unavailable") {
+    // «externo» sin contacto verificado: no rechazamos la intención. Entramos al
+    // subflujo de vinculación (deep link de Telegram) y dejamos el caso en setup
+    // pendiente. El caller construye el enlace con el token y lo entrega.
+    const { updatedCase, token } = await beginExternalContactLink(db, params.opCase);
     return {
       handled: true,
-      updatedCase: params.opCase,
-      responseText:
-        "No veo un contacto externo verificado para este caso. Elige «interno», o primero registra un contacto externo válido.",
+      updatedCase,
+      responseText: buildExternalContactSetupMessage({ deepLink: null }),
       shouldRunPostChoiceE2ETick: false,
+      externalContactSetupToken: token,
     };
   }
   return {

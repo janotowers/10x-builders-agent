@@ -26,7 +26,10 @@ import {
   updateOperationalCase,
   upsertConversationBinding,
 } from "@agents/db";
-import { buildOperationalCaseIntakeUpdateContext } from "@agents/agent";
+import {
+  buildOperationalCaseIntakeUpdateContext,
+  isPropertyOptioningIntent,
+} from "@agents/agent";
 import type { OperationalCase, OperationalCaseIntakeField } from "@agents/types";
 import {
   extractConservativeIntakePatch,
@@ -39,7 +42,7 @@ import {
   isIntakeInProgress,
 } from "./telegram-intake-completion-message";
 import {
-  buildCaseDocumentRequestTargetPrompt,
+  buildPostIntakeDocumentRequestMessage,
   shouldPromptCaseDocumentRequestTarget,
 } from "./document-request-target";
 
@@ -216,10 +219,15 @@ export async function resolveConversationalIntakeTurn(params: {
     shouldRunPostIntakeE2ETick: false,
   });
 
-  // (A) Primer prompt al crear el caso: pide campos faltantes y no intenta
-  // extraer datos del mensaje creador (paridad con Telegram).
+  // (A) Primer prompt al crear el caso — o al re-expresar intención de inicio
+  // sin datos de intake en el mensaje (p. ej. "quiero opcionar una propiedad").
+  const startIntentWithoutIntakeData =
+    isPropertyOptioningIntent(message) &&
+    Object.keys(
+      normalizeIntakePatchValues(extractConservativeIntakePatch(message))
+    ).length === 0;
   if (
-    params.justCreated &&
+    (params.justCreated || startIntentWithoutIntakeData) &&
     opCase.current_step === "intake" &&
     opCase.context_jsonb?.intake_status !== "complete"
   ) {
@@ -238,9 +246,11 @@ export async function resolveConversationalIntakeTurn(params: {
       handled: true,
       route: "intake_missing_fields_requested",
       updatedCase: opCase,
-      responseText: buildMissingIntakeFieldsPrompt(
-        (opCase.context_jsonb?.missing_required as unknown[]) ?? []
-      ),
+      responseText: buildIntakeProgressPrompt({
+        context: opCase.context_jsonb,
+        missingFields:
+          (opCase.context_jsonb?.missing_required as unknown[]) ?? [],
+      }),
       intakeCompletedNow: false,
       shouldRunPostIntakeE2ETick: false,
     };
@@ -499,11 +509,7 @@ export async function resolveConversationalIntakeTurn(params: {
           handled: true,
           route: "intake_completed",
           updatedCase,
-          responseText: [
-            buildTelegramIntakeCompletionMessage(updatedCase),
-            "",
-            buildCaseDocumentRequestTargetPrompt(updatedCase),
-          ].join("\n"),
+          responseText: buildPostIntakeDocumentRequestMessage(updatedCase),
           intakeCompletedNow: true,
           shouldRunPostIntakeE2ETick: false,
         };

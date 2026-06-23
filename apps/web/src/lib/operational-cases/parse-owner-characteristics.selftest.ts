@@ -28,4 +28,21 @@ assert.deepEqual(merged.property_type, ["Departamento"]);
 assert.equal(merged.parking_spaces, 1);
 assert.equal(missingOwnerResponseCriticalFields(merged.property_data as Record<string, unknown>).length, 0);
 
+const noHalfBathVariants = [
+  "ningun medio baño",
+  "ninguna medio baño",
+  "sin medios baños",
+  "no hay medios baños",
+  "0 medios baños",
+  "cero medios baños",
+];
+for (const text of noHalfBathVariants) {
+  const parsedVariant = parseOwnerCharacteristics(text);
+  assert.equal(
+    parsedVariant.half_bathrooms,
+    0,
+    `debe interpretar como 0 medios baños: ${text}`
+  );
+}
+
 console.log("parse-owner-characteristics selftest ok");
