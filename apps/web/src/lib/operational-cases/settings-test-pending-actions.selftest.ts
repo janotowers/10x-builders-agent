@@ -76,6 +76,22 @@ function main() {
   assert.equal(withTransition.blockingActions[0]?.kind, "internal_notification");
   assert.equal(withTransition.blockingActions[0]?.blocking, true);
 
+  const informationalNotification = partitionSettingsTestPendingActions({
+    actions: [
+      pendingNotificationAction({
+        id: "notification:n-3",
+        notification_id: "n-3",
+        notification_kind: "comparables_insufficient_data",
+        created_at: "2026-06-16T10:30:00.000Z",
+      }),
+    ],
+    lastTransitionAt: "2026-06-16T10:00:00.000Z",
+    caseRunnerSessionIds: new Set(["session-1"]),
+  });
+  assert.equal(informationalNotification.blockingActions.length, 0);
+  assert.equal(informationalNotification.historicalActions.length, 1);
+  assert.equal(informationalNotification.historicalActions[0]?.blocking, false);
+
   console.log("settings-test-pending-actions.selftest.ts: ok");
 }
 

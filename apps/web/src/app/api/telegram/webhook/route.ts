@@ -73,6 +73,7 @@ import {
 } from "@/lib/operational-cases/telegram-intake-completion-message";
 import { classifyOperationalConversationMessage } from "@/lib/operational-cases/operational-conversation-classifier";
 import { syncIntakeFieldsFromPropertyData } from "@/lib/operational-cases/parse-owner-characteristics";
+import { processCharacteristicsReplyDeterministically } from "@/lib/operational-cases/characteristics-response";
 import {
   resolveConversationalIntakeTurn,
   type ConversationalIntakeRoute,
@@ -85,6 +86,7 @@ import {
   applyDocumentRequestTargetChoice,
   buildCaseDocumentRequestTargetPrompt,
   parseCaseDocumentRequestTargetChoice,
+  resolveCharacteristicsReplyAgainstBindings,
   resolveDocumentTargetReplyAgainstBindings,
   resolveInternalDocumentMessageCase,
   resolveInternalDocumentUploadCaseForMedia,
@@ -281,7 +283,7 @@ async function processCharacteristicsReply(params: {
   text: string;
 }): Promise<OperationalCase> {
   const isE2EControlled = params.opCase.context_jsonb?.e2e_controlled === true;
-  const merged = await mergeCharacteristicsOwnerResponseDeterministically({
+  const merged = await processCharacteristicsReplyDeterministically({
     db: params.db,
     opCase: params.opCase,
     text: params.text,
@@ -290,19 +292,6 @@ async function processCharacteristicsReply(params: {
     // reanuda el caso, así que despertamos next_action_at = ahora.
     nextActionAt: isE2EControlled ? null : new Date().toISOString(),
   });
-  try {
-    await resolveUnreadInternalNotificationsByKindForCaseWithReminders(params.db, {
-      userId: merged.user_id,
-      caseId: merged.id,
-      kind: "property_data_minimums_missing",
-      status: "actioned",
-    });
-  } catch (resolveError) {
-    console.error(
-      "[telegram-webhook] failed to resolve property_data_minimums_missing pending:",
-      resolveError
-    );
-  }
   await sendTelegramMessage(
     params.chatId,
     "Gracias, ya registré la información adicional. La voy a procesar y te aviso el siguiente paso."
@@ -1961,6 +1950,18 @@ export async function POST(request: Request) {
         internalDocumentTextReason = uploadReply.reason;
       }
     }
+    // Respuesta esperada de características: resolver antes del routing
+    // genérico para evitar aclaración multi-caso innecesaria.
+    if (!conversationalCase) {
+      const characteristicsReply = await resolveCharacteristicsReplyAgainstBindings({
+        db,
+        message: agentMessageText,
+        pendingBindings: routingBindings,
+      });
+      if (characteristicsReply.matchedCase) {
+        conversationalCase = characteristicsReply.matchedCase;
+      }
+    }
     if (!conversationalCase && !forceNewConversationalCase) {
       const routeResult = await routeConversationalMessageAgainstBindings({
         db,
@@ -2254,11 +2255,8 @@ export async function POST(request: Request) {
       db,
       opCase: conversationalCase,
       chatId,
-      sendAck: async (files) => {
-        await sendTelegramMessage(
-          chatId,
-          buildMediaGroupReceivedAck(files, { expectMore: false })
-        );
+      sendAck: async () => {
+        // Avoid double ack with finalizeInternalDocumentBatch message.
       },
       force: true,
     });

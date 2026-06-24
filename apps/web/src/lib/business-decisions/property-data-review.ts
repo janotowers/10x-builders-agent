@@ -6,6 +6,8 @@ import {
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { isControlledE2EOperationalCase } from "@agents/types";
+import { runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settings-test-case-tick";
 import { classifyOperationalConversationMessage } from "@/lib/operational-cases/operational-conversation-classifier";
 import { parseOwnerCharacteristics } from "@/lib/operational-cases/parse-owner-characteristics";
 
@@ -287,6 +289,14 @@ export async function handlePropertyDataReviewDecision(
       },
     },
   });
+
+  if (isControlledE2EOperationalCase(advancedCase)) {
+    void runSettingsTestCaseAgentTick(db, advancedCase, advancedCase.user_id, {
+      source: "property_data_review_confirmed",
+    }).catch((tickError) => {
+      console.error("[property-data-review] e2e tick failed:", tickError);
+    });
+  }
 
   return {
     ok: true,

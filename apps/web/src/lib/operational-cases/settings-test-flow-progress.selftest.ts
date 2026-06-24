@@ -227,4 +227,53 @@ assert.equal(
   false
 );
 
+const withToolPayloadDetails = buildSettingsTestFlowProgress({
+  opCase: {
+    current_step: "awaiting_documents",
+    context_jsonb: {},
+  } as OperationalCase,
+  events: [],
+  flow: [
+    {
+      step_key: "awaiting_documents",
+      step_label: "Solicitar documentos",
+      step_tools: [{ tool_id: "notify_user", tool_label: "Notificar" }],
+    },
+  ],
+  toolCalls: [
+    {
+      id: "tool-with-details",
+      session_id: "s1",
+      turn_id: "turn-2",
+      tool_name: "notify_user",
+      arguments_json: {
+        case_id: "case-1",
+        message: "x".repeat(1500),
+      },
+      result_json: {
+        ok: true,
+        rows: Array.from({ length: 30 }, (_, idx) => idx + 1),
+      },
+      status: "executed",
+      requires_confirmation: false,
+      created_at: "2026-06-05T10:07:00.000Z",
+    },
+  ] as ToolCall[],
+});
+const toolDetailItem = withToolPayloadDetails[0]?.evidenceItems.find(
+  (item) => item.kind === "tool" && item.id === "tool-with-details"
+);
+assert.ok(toolDetailItem && toolDetailItem.kind === "tool");
+assert.equal(
+  typeof toolDetailItem?.arguments_json === "object",
+  true,
+  "debe adjuntar arguments_json sanitizado al item de evidencia"
+);
+assert.equal(
+  Array.isArray(
+    (toolDetailItem?.result_json as { rows?: unknown[] } | undefined)?.rows
+  ),
+  true
+);
+
 console.log("settings-test-flow-progress.selftest: ok");

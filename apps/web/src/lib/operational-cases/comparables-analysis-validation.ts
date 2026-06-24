@@ -102,6 +102,13 @@ export function validateComparablesCaseOutcome(params: {
 }): ComparablesOutcomeValidation {
   const defensible = comparablesHasDefensibleSample(params.comparables_analysis);
   const usable_count = comparablesUsableCount(params.comparables_analysis);
+  const dq =
+    isRecord(params.comparables_analysis) &&
+    isRecord(params.comparables_analysis.data_quality)
+      ? params.comparables_analysis.data_quality
+      : null;
+  const searchValidity =
+    typeof dq?.search_validity === "string" ? dq.search_validity : "valid";
   const errors: string[] = [];
 
   if (defensible) {
@@ -131,7 +138,7 @@ export function validateComparablesCaseOutcome(params: {
         "Sin comparables usables se espera status=waiting_internal (asesor debe ampliar criterios)."
       );
     }
-    if (!params.notify_user_executed) {
+    if (searchValidity !== "invalid_filters" && !params.notify_user_executed) {
       errors.push(
         "Sin comparables usables debe ejecutarse notify_user al asesor con filtros y sugerencias."
       );

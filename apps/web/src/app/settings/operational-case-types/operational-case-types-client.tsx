@@ -5680,36 +5680,66 @@ function TestCaseFlowProgressSummary({
                     <summary className="cursor-pointer text-[11px] font-semibold text-violet-700 hover:underline">
                       Ver actividad ({step.evidence.length})
                     </summary>
-                    <ul className="mt-1.5 max-h-40 space-y-1 overflow-y-auto text-[11px] text-neutral-600 dark:text-neutral-300">
+                    <ul className="mt-1.5 max-h-72 space-y-1 overflow-y-auto text-[11px] text-neutral-600 dark:text-neutral-300">
                       {(step.evidenceItems ?? []).map((item) => (
                         <li
                           key={`${item.kind}:${item.id}`}
-                          className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 rounded border border-neutral-100 bg-neutral-50/80 px-2 py-1 dark:border-neutral-800 dark:bg-neutral-950/50"
+                          className="rounded border border-neutral-100 bg-neutral-50/80 px-2 py-1 dark:border-neutral-800 dark:bg-neutral-950/50"
                         >
-                          <span>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
                             {item.kind === "event" ? (
                               <span className="font-medium text-neutral-800 dark:text-neutral-100">
                                 {item.summary}
                               </span>
                             ) : (
                               <>
-                                <span className="font-mono text-neutral-800 dark:text-neutral-100">
-                                  {item.tool_name}
-                                </span>
-                                <span className="ml-1 text-neutral-500">
-                                  · {toolCallStatusLabel(item.status)}
-                                </span>
-                                {item.failure_detail ? (
-                                  <span className="ml-1 text-red-700 dark:text-red-300">
-                                    · {item.failure_detail}
+                                <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
+                                  <span className="font-mono text-neutral-800 dark:text-neutral-100">
+                                    {item.tool_name}
                                   </span>
+                                  <span className="text-neutral-500">
+                                    · {toolCallStatusLabel(item.status)}
+                                  </span>
+                                  {item.failure_detail ? (
+                                    <span className="text-red-700 dark:text-red-300">
+                                      · {item.failure_detail}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {item.arguments_json !== undefined ||
+                                item.result_json !== undefined ? (
+                                  <details className="mt-1 rounded border border-violet-100 bg-white/80 p-1 dark:border-violet-900 dark:bg-neutral-950/50">
+                                    <summary className="cursor-pointer text-[10px] font-semibold text-violet-700 hover:underline">
+                                      Ver detalle
+                                    </summary>
+                                    <div className="mt-1 grid gap-2 md:grid-cols-2">
+                                      <div>
+                                        <p className="text-[10px] font-semibold text-neutral-500">
+                                          arguments_json
+                                        </p>
+                                        <pre className="max-h-52 overflow-auto rounded border border-neutral-200 bg-white px-1.5 py-1 font-mono text-[10px] text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
+{JSON.stringify(item.arguments_json ?? null, null, 2)}
+                                        </pre>
+                                      </div>
+                                      <div>
+                                        <p className="text-[10px] font-semibold text-neutral-500">
+                                          result_json
+                                        </p>
+                                        <pre className="max-h-52 overflow-auto rounded border border-neutral-200 bg-white px-1.5 py-1 font-mono text-[10px] text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
+{JSON.stringify(item.result_json ?? null, null, 2)}
+                                        </pre>
+                                      </div>
+                                    </div>
+                                  </details>
                                 ) : null}
                               </>
                             )}
-                          </span>
-                          <span className="shrink-0 text-[10px] text-neutral-400">
-                            {formatDateTime(item.created_at)}
-                          </span>
+                            </div>
+                            <span className="shrink-0 text-[10px] text-neutral-400">
+                              {formatDateTime(item.created_at)}
+                            </span>
+                          </div>
                         </li>
                       ))}
                     </ul>

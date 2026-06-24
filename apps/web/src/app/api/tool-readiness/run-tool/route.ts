@@ -58,6 +58,8 @@ import {
 } from "@agents/db";
 import {
   buildLangChainTools,
+  deriveComparableAreaBand,
+  sanitizeComparableSearchFilters,
   deriveCommissionContractTemplateData,
   getBusinessBrainWarehouse,
   getSkillRegistryForUser,
@@ -803,26 +805,28 @@ function comparableOperationArgs(ctx: Record<string, unknown>) {
 }
 
 function comparableAreaArgs(ctx: Record<string, unknown>) {
-  const minAreaM2 = firstNumber(ctx, ["min_area_m2", "area_min_m2", "superficie_min"]);
-  const maxAreaM2 = firstNumber(ctx, ["max_area_m2", "area_max_m2", "superficie_max"]);
+  const merged = contextWithPropertyData(ctx);
+  const minAreaM2 = firstNumber(merged, [
+    "min_area_m2",
+    "area_min_m2",
+    "superficie_min",
+  ]);
+  const maxAreaM2 = firstNumber(merged, [
+    "max_area_m2",
+    "area_max_m2",
+    "superficie_max",
+  ]);
   if (minAreaM2 != null || maxAreaM2 != null) {
     return {
       min_area_m2: minAreaM2 ?? undefined,
       max_area_m2: maxAreaM2 ?? undefined,
     };
   }
-  const areaM2 = firstNumber(ctx, [
-    "area_m2",
-    "area_total_m2",
-    "construction_m2",
-    "construction_size",
-    "superficie",
-    "m2",
-  ]);
-  if (areaM2 == null || areaM2 <= 0) return {};
+  const areaBand = deriveComparableAreaBand({ propertyData: merged });
+  if (!areaBand) return {};
   return {
-    min_area_m2: Math.round(areaM2 * 0.7),
-    max_area_m2: Math.round(areaM2 * 1.3),
+    min_area_m2: areaBand.min_area_m2,
+    max_area_m2: areaBand.max_area_m2,
   };
 }
 
@@ -1152,12 +1156,13 @@ function telegramContactCaseRecipe(input: ToolRecipeInput): Record<string, unkno
 }
 
 function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+  const merged = contextWithPropertyData(ctx);
   const args: Record<string, unknown> = { limit: 50 };
-  const propertyTypes = comparablePropertyTypes(ctx);
+  const propertyTypes = comparablePropertyTypes(merged);
   const propertyKind = comparablePropertyKind(propertyTypes);
-  const easyBrokerPropertyTypes = easyBrokerComparablePropertyTypes(ctx, propertyTypes);
+  const easyBrokerPropertyTypes = easyBrokerComparablePropertyTypes(merged, propertyTypes);
 
-  const zona = firstString(ctx, [
+  const zona = firstString(merged, [
     "zona",
     "property_zone",
     "neighborhood",
@@ -1166,7 +1171,7 @@ function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
     "property_address",
   ]);
   if (zona) args.zona = zona;
-  const operationArgs = comparableOperationArgs(ctx);
+  const operationArgs = comparableOperationArgs(merged);
   if (operationArgs.operation) args.operation = operationArgs.operation;
   if (operationArgs.operations) args.operations = operationArgs.operations;
 
@@ -1176,33 +1181,40 @@ function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
   } else if (uniquePropertyTypes.length > 1) {
     args.property_types = uniquePropertyTypes;
   }
-  const priceArgs = comparablePriceArgs(ctx, propertyKind === "residential");
+  const priceArgs = comparablePriceArgs(merged, propertyKind === "residential");
   if (priceArgs.min_price != null) args.min_price = priceArgs.min_price;
   if (priceArgs.max_price != null) args.max_price = priceArgs.max_price;
 
-  const areaArgs = comparableAreaArgs(ctx);
+  const areaArgs = comparableAreaArgs(merged);
   if (areaArgs.min_area_m2 != null) args.min_area_m2 = areaArgs.min_area_m2;
   if (areaArgs.max_area_m2 != null) args.max_area_m2 = areaArgs.max_area_m2;
 
   const shouldUseResidentialRooms = propertyKind === "residential";
   if (shouldUseResidentialRooms) {
-    const bedrooms = firstNumber(ctx, ["bedrooms", "recamaras"]);
+    const bedrooms = firstNumber(merged, ["bedrooms", "recamaras"]);
     if (bedrooms != null) args.bedrooms = bedrooms;
-    const bathrooms = firstNumber(ctx, ["bathrooms", "banos"]);
+    const bathrooms = firstNumber(merged, ["bathrooms", "banos"]);
     if (bathrooms != null) args.bathrooms = bathrooms;
-    const parking = firstNumber(ctx, ["parking_spaces", "parking", "estacionamientos"]);
+    const parking = firstNumber(merged, ["parking_spaces", "parking", "estacionamientos"]);
     if (parking != null) args.parking_spaces = parking;
   }
-  return args;
+  const sanitized = sanitizeComparableSearchFilters({
+    raw: args,
+    propertyData: merged,
+  });
+  return sanitized.search_validity === "valid"
+    ? sanitized.filters
+    : sanitized.suggested_filters ?? sanitized.filters;
 }
 
 function bigQueryLocalComparablesCaseRecipe(
   ctx: Record<string, unknown>
 ): Record<string, unknown> {
+  const merged = contextWithPropertyData(ctx);
   const args: Record<string, unknown> = { months_back: 24, limit: 100 };
-  const propertyTypes = comparablePropertyTypes(ctx);
+  const propertyTypes = comparablePropertyTypes(merged);
   const propertyKind = comparablePropertyKind(propertyTypes);
-  const zona = firstString(ctx, [
+  const zona = firstString(merged, [
     "zona",
     "property_zone",
     "neighborhood",
@@ -1213,22 +1225,28 @@ function bigQueryLocalComparablesCaseRecipe(
   ]);
   if (zona) args.zona = zona;
 
-  const operationArgs = comparableOperationArgs(ctx);
+  const operationArgs = comparableOperationArgs(merged);
   if (operationArgs.operation) args.operation = operationArgs.operation;
 
   const propertyType = propertyTypes[0];
   if (propertyType) args.property_type = propertyType;
 
-  const priceArgs = comparablePriceArgs(ctx, propertyKind === "residential");
+  const priceArgs = comparablePriceArgs(merged, propertyKind === "residential");
   if (priceArgs.target_price != null) args.target_price = priceArgs.target_price;
   if (priceArgs.min_price != null) args.min_price = priceArgs.min_price;
   if (priceArgs.max_price != null) args.max_price = priceArgs.max_price;
 
-  const areaArgs = comparableAreaArgs(ctx);
+  const areaArgs = comparableAreaArgs(merged);
   if (areaArgs.min_area_m2 != null) args.min_area_m2 = areaArgs.min_area_m2;
   if (areaArgs.max_area_m2 != null) args.max_area_m2 = areaArgs.max_area_m2;
 
-  return args;
+  const sanitized = sanitizeComparableSearchFilters({
+    raw: args,
+    propertyData: merged,
+  });
+  return sanitized.search_validity === "valid"
+    ? sanitized.filters
+    : sanitized.suggested_filters ?? sanitized.filters;
 }
 
 function avaclickValuationCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
@@ -1327,7 +1345,7 @@ function avaclickValuationCaseRecipe(ctx: Record<string, unknown>): Record<strin
     "area_m2",
     "m2",
   ]);
-  if (areaM2 != null) args.construction_area_m2 = Math.max(20, Math.round(areaM2));
+  if (areaM2 != null && areaM2 > 0) args.construction_area_m2 = Math.round(areaM2);
   const landM2 = firstNumber(merged, ["land_area_m2", "area_total_m2", "terreno"]);
   if (landM2 != null) args.land_area_m2 = Math.round(landM2);
 

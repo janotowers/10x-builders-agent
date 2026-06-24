@@ -45,6 +45,90 @@ const MAX_EXTRACTION_REMEDIATION_ATTEMPTS = (() => {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 3;
 })();
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function positiveNumberOrNull(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.replace(/,/g, ""));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function surfaceSourceScore(value: unknown): number {
+  if (typeof value !== "string") return 0;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return 0;
+  if (normalized.includes("predial")) return 4;
+  if (normalized.includes("boleta")) return 3;
+  if (normalized.includes("escritura")) return 2;
+  if (normalized.includes("documento")) return 1;
+  return 0;
+}
+
+type MergeDocumentSurfacesResult = {
+  context: Record<string, unknown>;
+  changed: boolean;
+  adopted: {
+    area_total_m2?: number;
+    area_construida_m2?: number;
+  };
+};
+
+export function mergeDocumentSurfacesIntoContextPropertyData(input: {
+  context: Record<string, unknown> | null | undefined;
+  documentFields: Record<string, unknown>;
+}): MergeDocumentSurfacesResult {
+  const baseContext = asRecord(input.context) ?? {};
+  const basePropertyData = asRecord(baseContext.property_data) ?? {};
+  const documentFields = input.documentFields;
+  const nextContext: Record<string, unknown> = {
+    ...baseContext,
+    property_data: { ...basePropertyData },
+  };
+  const nextPropertyData = nextContext.property_data as Record<string, unknown>;
+  const adopted: MergeDocumentSurfacesResult["adopted"] = {};
+  let changed = false;
+
+  const maybeAdopt = (field: "area_total_m2" | "area_construida_m2") => {
+    const sourceField = `${field}_source` as const;
+    const incoming = positiveNumberOrNull(documentFields[field]);
+    if (incoming == null) return;
+    const existing = positiveNumberOrNull(nextPropertyData[field]);
+    const incomingSource = documentFields[sourceField];
+    const existingSource = nextPropertyData[sourceField];
+    const shouldAdopt =
+      existing == null ||
+      surfaceSourceScore(incomingSource) > surfaceSourceScore(existingSource) ||
+      (typeof incomingSource === "string" &&
+        incomingSource.toLowerCase().includes("predial") &&
+        incoming !== existing);
+    if (!shouldAdopt) return;
+
+    nextPropertyData[field] = incoming;
+    if (incomingSource != null && incomingSource !== "") {
+      nextPropertyData[sourceField] = incomingSource;
+    }
+    // Backfill top-level context for legacy readers outside property_data.
+    nextContext[field] = incoming;
+    if (incomingSource != null && incomingSource !== "") {
+      nextContext[sourceField] = incomingSource;
+    }
+    adopted[field] = incoming;
+    changed = true;
+  };
+
+  maybeAdopt("area_total_m2");
+  maybeAdopt("area_construida_m2");
+
+  return { context: nextContext, changed, adopted };
+}
+
 function remediationAttemptsFromContext(
   context: Record<string, unknown> | null | undefined
 ): Record<string, number> {
@@ -356,6 +440,29 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
 
   // Recalcular tras la posible remediación determinística.
   const documentFields = documentExtractionMinimumsContext(workingDocuments);
+  const mergedSurfaces = mergeDocumentSurfacesIntoContextPropertyData({
+    context: workingCase.context_jsonb,
+    documentFields,
+  });
+  if (mergedSurfaces.changed) {
+    const persisted = await updateOperationalCase(
+      db,
+      workingCase.id,
+      workingCase.version,
+      { context: mergedSurfaces.context }
+    );
+    workingCase = persisted ?? { ...workingCase, context_jsonb: mergedSurfaces.context };
+    await insertOperationalCaseEvent(db, {
+      caseId: workingCase.id,
+      eventType: "state_changed",
+      actor: "system",
+      payload: {
+        kind: "document_surfaces_consolidated_to_property_data",
+        source,
+        adopted: mergedSurfaces.adopted,
+      },
+    });
+  }
   const minimums = evaluatePropertyDataMinimumsForReview(
     workingCase.context_jsonb,
     documentFields

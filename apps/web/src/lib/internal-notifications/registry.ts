@@ -97,6 +97,20 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     visibleInInbox: true,
     intent: "reminder",
   },
+  comparables_insufficient_data: {
+    kind: "comparables_insufficient_data",
+    label: "Comparables insuficientes (informativo)",
+    visibleInInbox: true,
+    intent: "reminder",
+    informational: true,
+  },
+  comparables_search_expansion_decision: {
+    kind: "comparables_search_expansion_decision",
+    label: "Decision de ampliacion de busqueda",
+    visibleInInbox: true,
+    intent: "review",
+    reviewCtaLabel: "Elegir ampliacion en flujo",
+  },
   property_comparables: {
     kind: "property_comparables",
     label: "Comparables de propiedad",

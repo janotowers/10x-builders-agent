@@ -23,6 +23,8 @@ import {
   classifyOperationalConversationMessage,
   type OperationalConversationClassifierModel,
 } from "./operational-conversation-classifier";
+import { looksLikeNewCaseIntent } from "./conversational-case-routing";
+import { isAwaitingCharacteristicsResponse } from "./characteristics-response";
 import {
   conversationalStepLabel,
   operationalCaseModeLabel,
@@ -474,6 +476,37 @@ function buildInternalCollectionCaseSummary(opCase: OperationalCase): string {
   ]
     .filter((value): value is string => Boolean(value))
     .join(" · ");
+}
+
+
+export async function resolveCharacteristicsReplyAgainstBindings(params: {
+  db: DbClient;
+  message: string;
+  pendingBindings: OperationalCaseConversationBinding[];
+}): Promise<{ matchedCase: OperationalCase | null; ambiguous: boolean }> {
+  const text = params.message.trim();
+  if (!text || looksLikeDocumentBatchComplete(text) || looksLikeNewCaseIntent(text)) {
+    return { matchedCase: null, ambiguous: false };
+  }
+
+  const candidates: OperationalCase[] = [];
+  const seen = new Set<string>();
+  for (const binding of params.pendingBindings) {
+    if (seen.has(binding.case_id)) continue;
+    seen.add(binding.case_id);
+    const opCase = await getOperationalCase(params.db, binding.case_id);
+    if (!opCase) continue;
+    if (!isInternalDocumentCollectionCase(opCase)) continue;
+    if (opCase.current_step !== "documents_received" || opCase.status !== "waiting_internal") {
+      continue;
+    }
+    if (await isAwaitingCharacteristicsResponse(params.db, opCase)) {
+      candidates.push(opCase);
+    }
+  }
+
+  if (candidates.length === 0) return { matchedCase: null, ambiguous: false };
+  return { matchedCase: candidates[0]!, ambiguous: candidates.length > 1 };
 }
 
 export type ApplyDocumentRequestTargetChoiceResult =

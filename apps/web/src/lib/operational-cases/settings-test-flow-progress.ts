@@ -26,6 +26,8 @@ export type FlowProgressEvidenceItem =
       status: string;
       summary: string;
       failure_detail?: string;
+      arguments_json?: unknown;
+      result_json?: unknown;
     };
 
 export type SettingsTestFlowProgressStep = {
@@ -125,11 +127,43 @@ function normalizeToolCallFailureText(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+function sanitizeEvidencePayload(
+  value: unknown,
+  depth = 0
+): unknown {
+  if (value == null) return value;
+  if (depth > 4) return "[depth_limit]";
+  if (Array.isArray(value)) {
+    const sliced = value.slice(0, 20).map((item) => sanitizeEvidencePayload(item, depth + 1));
+    if (value.length > 20) {
+      sliced.push(`[+${value.length - 20} more items]`);
+    }
+    return sliced;
+  }
+  if (typeof value === "string") {
+    return value.length > 1200 ? `${value.slice(0, 1200)}… [truncated]` : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value !== "object") return String(value);
+  const record = value as Record<string, unknown>;
+  const entries = Object.entries(record).slice(0, 40);
+  const next: Record<string, unknown> = {};
+  for (const [key, item] of entries) {
+    next[key] = sanitizeEvidencePayload(item, depth + 1);
+  }
+  if (Object.keys(record).length > 40) {
+    next.__truncated_keys = Object.keys(record).length - 40;
+  }
+  return next;
+}
+
 function isExpectedNotifyUserGuardError(errorText: string | null) {
   if (!errorText) return false;
   return [
     "property_data_minimums_missing",
     "predial_extraction_incomplete",
+    "predial_data_quality_review_required",
+    "comparables_retry_required_before_notify",
     "owner_corroboration_extraction_incomplete",
   ].includes(errorText);
 }
@@ -352,6 +386,8 @@ export function buildSettingsTestFlowProgress(params: {
         status: call.status,
         summary: `${call.tool_name} · ${toolCallStatusLabel(call.status)}`,
         failure_detail: toolCallFailureDetail(call) ?? undefined,
+        arguments_json: sanitizeEvidencePayload(call.arguments_json ?? null),
+        result_json: sanitizeEvidencePayload(call.result_json ?? null),
       })),
     ].sort(
       (a, b) =>

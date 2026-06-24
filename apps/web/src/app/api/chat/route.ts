@@ -30,10 +30,16 @@ import type { OperationalCase, ToolApprovalPolicy } from "@agents/types";
 import { resolveOperationalCaseDocumentRequestTarget } from "@agents/types";
 import {
   applyDocumentRequestTargetChoice,
+  resolveCharacteristicsReplyAgainstBindings,
   resolveDocumentTargetReplyAgainstBindings,
   resolveInternalDocumentMessageCase,
   shouldPromptCaseDocumentRequestTarget,
 } from "@/lib/operational-cases/document-request-target";
+import {
+  isAwaitingCharacteristicsResponse,
+  isInternalCharacteristicsReplyCandidate,
+  processCharacteristicsReplyDeterministically,
+} from "@/lib/operational-cases/characteristics-response";
 import {
   completeDocumentBatchForCase,
   looksLikeDocumentBatchComplete,
@@ -392,6 +398,19 @@ export async function POST(request: Request) {
         }
       }
 
+      // (2d) Respuesta esperada a características faltantes en ruta interna:
+      // resolver ANTES del routing genérico para evitar clarificación innecesaria.
+      if (!conversationalCase) {
+        const characteristicsReply = await resolveCharacteristicsReplyAgainstBindings({
+          db,
+          message: effectiveMessage,
+          pendingBindings: routingWebBindings,
+        });
+        if (characteristicsReply.matchedCase) {
+          conversationalCase = characteristicsReply.matchedCase;
+        }
+      }
+
       // (3) Enrutamiento contra bindings pendientes (asociar o pedir aclaración).
       if (!conversationalCase) {
         const routeResult = await routeConversationalMessageAgainstBindings({
@@ -438,6 +457,40 @@ export async function POST(request: Request) {
       }
 
       // (4) Motor de intake determinístico.
+      if (
+        conversationalCase &&
+        isInternalCharacteristicsReplyCandidate({
+          opCase: conversationalCase,
+          text: effectiveMessage,
+        }) &&
+        (await isAwaitingCharacteristicsResponse(db, conversationalCase))
+      ) {
+        const isE2EControlled = conversationalCase.context_jsonb?.e2e_controlled === true;
+        conversationalCase = await processCharacteristicsReplyDeterministically({
+          db,
+          opCase: conversationalCase,
+          text: effectiveMessage,
+          source: "web_chat_characteristics_response",
+          nextActionAt: isE2EControlled ? null : new Date().toISOString(),
+        });
+        if (isE2EControlled) {
+          void runSettingsTestCaseAgentTick(
+            db,
+            conversationalCase,
+            conversationalCase.user_id,
+            {
+              source: "web_chat_conversational_e2e_characteristics_response",
+              ownerResponseText: effectiveMessage,
+            }
+          ).catch((tickError) => {
+            console.error("[chat] characteristics response tick failed:", tickError);
+          });
+        }
+        return await respondConversational(
+          "Gracias, ya registré la información adicional. La voy a procesar y te aviso el siguiente paso."
+        );
+      }
+
       if (conversationalCase) {
         const intakeTurn = await resolveConversationalIntakeTurn({
           db,

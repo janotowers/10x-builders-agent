@@ -51,6 +51,16 @@ function deterministicDocumentIdsFromBlocks(
   return [...ids];
 }
 
+function shouldSkipPreflightExtraction(document: OperationalCaseDocument): boolean {
+  const extraction =
+    document.extraction_jsonb && typeof document.extraction_jsonb === "object"
+      ? (document.extraction_jsonb as Record<string, unknown>)
+      : {};
+  if (Object.keys(extraction).length === 0) return false;
+  if (document.extraction_status === "ok") return true;
+  return document.extraction_status === "low_confidence" && Boolean(document.extracted_at);
+}
+
 async function runAuditedDocumentExtraction(params: {
   db: ReturnType<typeof createServerClient>;
   sessionId: string;
@@ -106,6 +116,7 @@ async function ensureRequiredDocumentExtractionsForE2E(params: {
   const initialIds = new Set(documents.map((document) => document.id));
 
   for (const document of documents) {
+    if (shouldSkipPreflightExtraction(document)) continue;
     await runAuditedDocumentExtraction({
       ...params,
       documentId: document.id,
@@ -146,11 +157,21 @@ async function ensureRequiredDocumentExtractionsForE2E(params: {
     targetTransition: "comparables_in_progress",
   });
   const blockingDocumentIds = deterministicDocumentIdsFromBlocks(gate.blocks);
-  if (blockingDocumentIds.length > 0) {
+  const humanQualityBlocks = gate.blocks.filter(
+    (block) =>
+      block.reason === "predial_area_construida_implausible" &&
+      block.remediation.owner === "human"
+  );
+  const humanQualityDocumentIds = humanQualityBlocks.flatMap(
+    (block) => block.remediation.document_ids ?? []
+  );
+  if (blockingDocumentIds.length > 0 || humanQualityBlocks.length > 0) {
     return {
       status: "blocked",
       documents,
-      blockingDocumentIds,
+      blockingDocumentIds: [
+        ...new Set([...blockingDocumentIds, ...humanQualityDocumentIds]),
+      ],
       blockingReasons: gate.blocks.map((block) => block.reason),
     };
   }
@@ -265,10 +286,13 @@ function buildCaseE2ETickMessage(
       ? [
           "Acción esperada para este paso: usa perform-comparable-analysis.",
           "No regreses a awaiting_documents ni documents_received.",
-          "Consulta comparables con easybroker_search_listings, easybroker_search_closed_deals y bigquery_lookup_local_comparables usando property_zone/property_data como filtros. Si el tipo es casa/departamento en condominio, incluye get_avaclick_valuation como fuente complementaria.",
-          "Si faltan coordenadas para Avaclick y la dirección es suficiente, intenta geocode_property_address antes de valorar. Si Avaclick devuelve missing_required_fields, continúa con las otras fuentes y deja warning en comparables_analysis.",
+          "Consulta comparables con easybroker_search_listings, easybroker_search_closed_deals y bigquery_lookup_local_comparables usando property_zone/property_data como filtros.",
+          "No uses placeholders con 0 en filtros opcionales (m², precio, cajones). Si el primer intento queda inválido por filtros, reintenta con filtros canónicos derivados del contrato.",
+          "Si el tipo es casa/departamento en condominio, intenta siempre get_avaclick_valuation antes de persistir comparables_analysis. Si faltan coordenadas pero hay dirección suficiente, intenta geocode_property_address primero.",
+          "Si Avaclick devuelve missing_required_fields, not_configured o validation_error, no bloquees el paso: continúa con las otras fuentes y deja warning explícito en comparables_analysis.",
           "Después llama operational_case_persist_comparables_analysis; no escribas comparables_analysis manualmente.",
-          "Si hay muestra defendible, avanza a price_proposal_pending con status=active y notifica al asesor. Si no hay comparables usables, permanece en comparables_in_progress con status=waiting_internal y notifica al asesor con sugerencias para ampliar criterios.",
+          "Si detectas que area_construida_m2 es implausible/no confiable, no avances a precio: permanece en comparables_in_progress, status=waiting_internal y notifica con notify_user(kind=property_data_quality_review) solicitando confirmación/corrección.",
+          "Si hay muestra defendible, avanza a price_proposal_pending con status=active y notifica al asesor. Si data_quality.search_validity=insufficient_market_data, permanece en comparables_in_progress con status=waiting_internal y notifica con notify_user(kind=comparables_insufficient_data). Si data_quality.search_validity=invalid_filters, corrige/reintenta y no notifiques insuficiencia.",
         ].join(" ")
       : "",
   ].join(" ");

@@ -49,5 +49,14 @@ assert.equal(
   }).businessDecision,
   "price_approval"
 );
+assert.equal(
+  internalNotificationKindConfig("comparables_insufficient_data").informational,
+  true
+);
+assert.equal(
+  internalNotificationKindConfig("comparables_search_expansion_decision")
+    .reviewCtaLabel,
+  "Elegir ampliacion en flujo"
+);
 
 console.log("internal-notifications registry selftest passed");
