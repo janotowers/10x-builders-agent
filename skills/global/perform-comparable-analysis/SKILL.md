@@ -105,6 +105,8 @@ Producir un objeto `context_jsonb.comparables_analysis`:
      la cuenta lo capture así.
   - `get_avaclick_valuation({...})` para opinión digital externa de valor cuando
     `property_type` sea casa/departamento en condominio.
+    - En ese tipo compatible, la llamada es esperada en este paso (no la
+      omitas silenciosamente): ejecútala antes de persistir comparables.
     - Si faltan lat/lng pero hay dirección suficiente en `property_data.address`,
       intenta primero `geocode_property_address`.
     - Si Avaclick devuelve `validation_error` con `missing_required_fields`,
@@ -115,7 +117,20 @@ Producir un objeto `context_jsonb.comparables_analysis`:
      publicado en BigQuery. Trátalo como `asking_price`, no como precio de
      cierre, salvo que la respuesta diga `is_closed_price=true`.
 
-3. Si alguna devuelve `status: "not_configured"` o `status: "validation_error"` por
+   Antes de ejecutar búsquedas, valida que `property_data.area_construida_m2` sea
+   confiable para tipo `casa/departamento`:
+   - si detectas valor implausible (ej. corrimiento decimal sospechado) y no hay
+     corroboración documental clara, NO sigas como si fuera dato válido.
+   - deja el caso en `comparables_in_progress` + `waiting_internal` y notifica
+     `notify_user(kind="property_data_quality_review")` para confirmación humana.
+
+3. Usa filtros canónicos del contrato determinístico (runtime), no placeholders:
+   - No envíes `0` en `min_area_m2`, `max_area_m2`, `min_price`, `max_price`,
+     `parking_spaces` como “default”.
+   - Si faltan rangos, reintenta con los filtros derivados desde `property_data`
+     (banda inicial ±15%, mínimo 20 m²; fallback automático ±25% antes de pedir decisión).
+
+4. Si alguna devuelve `status: "not_configured"` o `status: "validation_error"` por
    faltantes mínimos:
    - Reporta al inmobiliario via `notify_user` qué fuente falla y qué necesita
      configurar (API key, tabla del warehouse, etc.).
@@ -130,17 +145,17 @@ Producir un objeto `context_jsonb.comparables_analysis`:
    - Tras persistir, `operational_case_persist_comparables_analysis` reflejará
      `data_quality.needs_user_reauth=true` y `data_quality.integration_issues`.
 
-4. No escribas `comparables_analysis` manualmente. Después de ejecutar las tres
+5. No escribas `comparables_analysis` manualmente. Después de ejecutar las tres
    búsquedas, llama `operational_case_persist_comparables_analysis`. Esa tool
    construye el artefacto determinísticamente desde los `tool_calls` del turno:
    deduplica resultados, normaliza listas, calcula `stats`, `price`,
    `price_per_m2` y `data_quality.usable_count`.
 
-5. Lee el resultado de `operational_case_persist_comparables_analysis`
+6. Lee el resultado de `operational_case_persist_comparables_analysis`
    (`defensible_sample`, `usable_count`, `stats`, `data_quality`) para decidir
    el siguiente estado.
 
-6. La tool ya guarda `context_jsonb.comparables_analysis` (incluye
+7. La tool ya guarda `context_jsonb.comparables_analysis` (incluye
    `data_quality.usable_count` contando usables de **todas** las fuentes:
    EasyBroker activas, EasyBroker cerradas/referencia histórica e inventario
    BigQuery).
@@ -152,15 +167,20 @@ Producir un objeto `context_jsonb.comparables_analysis`:
      `status=waiting_internal` y pasa al paso 7 (notificación de datos
      insuficientes).
 
-7. Notifica al inmobiliario:
+8. Notifica al inmobiliario:
    - Con muestra defendible:
      `notify_user("Análisis de comparables listo para [propiedad]. N activas, M referencias históricas y K internas. Mediana de precio publicado: $X. Reviso contigo el precio.")`.
      - Si `data_quality.needs_user_reauth=true`, agrega aviso no bloqueante:
        EasyBroker MLS requiere reconexión para enriquecer futuras búsquedas.
-   - Sin comparables usables:
-     `notify_user` con datos de la propiedad, `filters_used`, resumen por fuente
+  - Sin comparables usables con `data_quality.search_validity="insufficient_market_data"`:
+    `notify_user(kind="comparables_insufficient_data")` con datos de la propiedad, `filters_used`, resumen por fuente
      (EB activas, EB cerradas, BQ interno) y sugerencias concretas para ampliar
      criterios (rango de precio, m², meses, zona adyacente).
+  - Si `data_quality.search_validity="invalid_filters"`:
+    no uses `comparables_insufficient_data`; corrige y reintenta búsqueda con filtros canónicos.
+  - Si se requiere decisión humana para ampliar más allá del fallback moderado:
+    usa `notify_user(kind="comparables_search_expansion_decision")` con pregunta resoluble
+    dentro del flujo (ej. ampliar a ±35% o colonias adyacentes).
      - Si `data_quality.needs_user_reauth=true`, usa
        `notify_user(kind="integration_reconnect")` con CTA claro:
        reconectar EasyBroker MLS en **Credenciales API → "Probar conexión"** y luego

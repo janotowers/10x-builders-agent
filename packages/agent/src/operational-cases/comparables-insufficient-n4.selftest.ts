@@ -39,4 +39,36 @@ assert.equal(
   0
 );
 
+const invalidFiltersAnalysis = buildComparablesAnalysisFromToolCalls([
+  {
+    tool_name: "easybroker_search_listings",
+    status: "executed",
+    result_json: {
+      ok: false,
+      status: "validation_error",
+      error: "invalid_comparable_filters",
+      invalid_fields: ["min_area_m2", "max_area_m2"],
+    },
+  },
+]);
+assert.equal(
+  (invalidFiltersAnalysis.data_quality as { search_validity?: string }).search_validity,
+  "invalid_filters"
+);
+
+const missingSourceAnalysis = buildComparablesAnalysisFromToolCalls([
+  {
+    tool_name: "get_avaclick_valuation",
+    status: "executed",
+    result_json: {
+      ok: false,
+      error: "missing_required_comparable_source",
+    },
+  },
+]);
+assert.equal(
+  (missingSourceAnalysis.data_quality as { search_validity?: string }).search_validity,
+  "missing_required_source"
+);
+
 console.log("comparables-insufficient-n4.selftest: ok");

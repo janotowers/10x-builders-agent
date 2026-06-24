@@ -1,3 +1,4 @@
+import { classifyComparableSearchOutcome } from "./comparable-search-contract";
 type RecordValue = Record<string, unknown>;
 
 const SOURCE_TOOL_NAMES = [
@@ -394,6 +395,18 @@ export function buildComparablesAnalysisFromToolCalls(
   const usableRows = deduped.rows.filter((row) => row.usable_as_comparable);
   const incompleteCount = deduped.rows.length - usableRows.length;
   const warnings: string[] = [];
+  let propertyDataUntrusted = false;
+  const invalidFiltersDetected = toolCalls.some((call) => {
+    if (!isRecord(call.result_json)) return false;
+    const status = cleanString(call.result_json.status);
+    const error = cleanString(call.result_json.error);
+    return status === "validation_error" && error === "invalid_comparable_filters";
+  });
+  const missingRequiredSourceDetected = toolCalls.some((call) => {
+    if (!isRecord(call.result_json)) return false;
+    const error = cleanString(call.result_json.error);
+    return error === "missing_required_comparable_source";
+  });
 
   if (!activeCall) warnings.push("No se ejecutó easybroker_search_listings en este turno.");
   if (!historicalCall) warnings.push("No se ejecutó easybroker_search_closed_deals en este turno.");
@@ -406,6 +419,22 @@ export function buildComparablesAnalysisFromToolCalls(
     warnings.push(
       avaclickOutcome.failure_warning ??
         "La valoración Avaclick no estuvo disponible o no fue exitosa; el análisis continúa con EasyBroker/BigQuery."
+    );
+    if ((avaclickOutcome.failure_warning ?? "").includes("construction_area_m2")) {
+      propertyDataUntrusted = true;
+      warnings.push(
+        "La superficie construida usada para valoración parece incompleta o no confiable; validar property_data antes de decidir precio."
+      );
+    }
+  }
+  if (invalidFiltersDetected) {
+    warnings.push(
+      "La búsqueda de comparables tuvo filtros inválidos; reintenta con filtros canónicos antes de concluir insuficiencia de mercado."
+    );
+  }
+  if (missingRequiredSourceDetected) {
+    warnings.push(
+      "Faltó una fuente obligatoria de comparables para este tipo de inmueble (Avaclick)."
     );
   }
   if (duplicateHistoricalCount > 0) {
@@ -424,6 +453,13 @@ export function buildComparablesAnalysisFromToolCalls(
   for (const issue of integrationIssues) {
     warnings.push(integrationIssueWarning(issue));
   }
+
+  const searchValidity = classifyComparableSearchOutcome({
+    usable_count: usableRows.length,
+    search_validity: invalidFiltersDetected ? "invalid_filters" : "valid",
+    property_data_untrusted: propertyDataUntrusted,
+    missing_required_source: missingRequiredSourceDetected,
+  });
 
   const analysis = {
     filters_used: filtersFromCalls(toolCalls),
@@ -444,11 +480,19 @@ export function buildComparablesAnalysisFromToolCalls(
       warnings,
       integration_issues: integrationIssues,
       needs_user_reauth: needsUserReauth,
+      property_data_untrusted: propertyDataUntrusted,
+      search_validity: searchValidity,
     },
     notes:
-      usableRows.length > 0
+      searchValidity === "valid"
         ? "Análisis construido determinísticamente desde resultados de tools del turno."
-        : "No se encontraron comparables usables en ninguna fuente; se requiere ampliar criterios.",
+        : searchValidity === "invalid_filters"
+          ? "La búsqueda fue inválida por filtros (no refleja insuficiencia real de mercado). Reintenta con filtros saneados/canónicos."
+          : searchValidity === "missing_required_source"
+            ? "Faltó una fuente obligatoria aplicable (Avaclick) para cerrar un análisis defendible."
+            : searchValidity === "property_data_untrusted"
+              ? "No se logró una muestra defendible y se detectaron señales de datos base no confiables (superficie construida). Confirmar/corregir property_data antes de ampliar criterios."
+              : "La búsqueda fue válida pero no hubo comparables suficientes en las fuentes consultadas.",
   };
 
   return analysis;
@@ -572,6 +616,13 @@ export function validateComparablesCaseOutcome(params: {
   const artifactErrors = validateComparablesAnalysisArtifact(params.comparables_analysis);
   const defensible = comparablesHasDefensibleSample(params.comparables_analysis);
   const usable_count = comparablesUsableCount(params.comparables_analysis);
+  const dq = isRecord(params.comparables_analysis)
+    ? (isRecord(params.comparables_analysis.data_quality)
+        ? params.comparables_analysis.data_quality
+        : null)
+    : null;
+  const searchValidity =
+    typeof dq?.search_validity === "string" ? dq.search_validity : "valid";
   const errors = [...artifactErrors];
 
   if (defensible) {
@@ -591,7 +642,7 @@ export function validateComparablesCaseOutcome(params: {
     if (params.status !== "waiting_internal") {
       errors.push("Sin comparables usables se espera status=waiting_internal (asesor debe ampliar criterios).");
     }
-    if (!params.notify_user_executed) {
+    if (searchValidity !== "invalid_filters" && !params.notify_user_executed) {
       errors.push("Sin comparables usables debe ejecutarse notify_user al asesor con filtros y sugerencias.");
     }
   }

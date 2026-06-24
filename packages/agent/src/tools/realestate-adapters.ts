@@ -59,6 +59,7 @@ import {
   evaluatePropertyDataMinimumsForReview,
   ownerConsistencyStatusFromFields,
 } from "./operational-cases-adapters";
+import { sanitizeComparableSearchFilters } from "../operational-cases/comparable-search-contract";
 
 /** Outbound Telegram messages that expect a reply from the external contact. */
 const TELEGRAM_REPLY_EXPECTED_PURPOSES = new Set([
@@ -2503,16 +2504,56 @@ function makeEasyBrokerSearchTool(
         );
         return JSON.stringify(out);
       }
+      const rawInput = input as unknown as Record<string, unknown>;
+      const inputPropertyData = asRecord(rawInput.property_data);
+      let casePropertyData: Record<string, unknown> | undefined;
+      if (!inputPropertyData && ctx.caseId) {
+        const opCase = await getOperationalCase(ctx.db, ctx.caseId);
+        const caseContext = asRecord(opCase?.context_jsonb);
+        const fromCase = asRecord(caseContext?.property_data) ?? caseContext;
+        casePropertyData = fromCase ?? undefined;
+      }
+      const normalizedInput = sanitizeComparableSearchFilters({
+        raw: rawInput,
+        propertyData: inputPropertyData ?? casePropertyData,
+      });
+      if (normalizedInput.search_validity === "invalid_filters") {
+        const out = {
+          ok: false,
+          status: "validation_error",
+          source: "easybroker_mls",
+          tool: toolId,
+          error: "invalid_comparable_filters",
+          invalid_fields: normalizedInput.invalid_fields,
+          warnings: normalizedInput.warnings,
+          suggested_filters: normalizedInput.suggested_filters ?? null,
+          fallback_filters: normalizedInput.fallback_filters ?? null,
+          filters_used: normalizedInput.filters,
+        };
+        await updateToolCallStatus(ctx.db, record.id, "executed", out);
+        return JSON.stringify(out);
+      }
       try {
-        const out = await searchEasyBrokerProperties(ctx, toolId, input, creds);
+        const out = await searchEasyBrokerProperties(
+          ctx,
+          toolId,
+          normalizedInput.filters as EasyBrokerSearchInput,
+          creds
+        );
+        const outWithFilters = {
+          ...out,
+          filters_used: normalizedInput.filters,
+          filter_warnings:
+            normalizedInput.warnings.length > 0 ? normalizedInput.warnings : undefined,
+        };
         if (out.ok !== false) {
           await markAccountSecretSuccess(
             ctx,
             ACCOUNT_TOOL_PROVIDERS_REALESTATE.easybroker_web
           );
         }
-        await updateToolCallStatus(ctx.db, record.id, "executed", out);
-        return JSON.stringify(out);
+        await updateToolCallStatus(ctx.db, record.id, "executed", outWithFilters);
+        return JSON.stringify(outWithFilters);
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
         const out = {
@@ -2878,7 +2919,8 @@ function normalizeAvaclickToolInput(raw: unknown): unknown {
   if (!root) return raw;
   const customer = asRecord(root.customer) ?? {};
   const property = asRecord(root.property) ?? {};
-  const merged: Record<string, unknown> = { ...property, ...root };
+  const propertyData = asRecord(root.property_data) ?? {};
+  const merged: Record<string, unknown> = { ...propertyData, ...property, ...root };
   return {
     customer_name:
       firstNonEmptyComparableString(
@@ -2958,7 +3000,11 @@ function normalizeAvaclickToolInput(raw: unknown): unknown {
       undefined,
     land_area_m2: comparablePositiveNumber(merged.land_area_m2 ?? merged.terreno),
     construction_area_m2: comparablePositiveNumber(
-      merged.construction_area_m2 ?? merged.construccion ?? merged.area_m2
+      merged.construction_area_m2 ??
+        merged.area_construida_m2 ??
+        merged.built_area_m2 ??
+        merged.construccion ??
+        merged.area_m2
     ),
     has_elevator:
       typeof merged.has_elevator === "boolean"

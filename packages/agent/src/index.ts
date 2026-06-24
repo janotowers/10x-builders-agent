@@ -119,6 +119,18 @@ export {
 } from "./tools/commission-contract-template-data";
 export type { CommissionContractPlaceholderKey } from "./tools/commission-contract-template-data";
 export { testAvaclickCredentials } from "./tools/avaclick";
+export {
+  buildComparableSearchFilters,
+  sanitizeComparableSearchFilters,
+  deriveComparableAreaBand,
+  requiresAvaclick,
+  classifyComparableSearchOutcome,
+} from "./operational-cases/comparable-search-contract";
+export type {
+  ComparableSearchValidity,
+  ComparableAreaBand,
+  ComparableFilterContractResult,
+} from "./operational-cases/comparable-search-contract";
 
 export {
   HEARTBEAT_CHECKLIST_TEMPLATES,
