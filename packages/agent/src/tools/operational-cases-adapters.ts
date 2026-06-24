@@ -37,6 +37,7 @@ import {
   normalizeComparablesAnalysisForInsufficientN4Test,
   validateComparablesAnalysisArtifact,
 } from "../operational-cases/comparables-analysis";
+import { requiresAvaclick } from "../operational-cases/comparable-search-contract";
 import type {
   OperationalCaseActivationPolicy,
   OperationalCaseDocument,
@@ -73,6 +74,15 @@ type PersistedToolCallRow = {
   result_json?: Record<string, unknown> | null;
   created_at?: string | null;
 };
+
+function positiveNumberFromUnknown(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.replace(/,/g, ""));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
 
 function normalizeExternalContactPatch(
   value: Record<string, unknown> | undefined
@@ -1471,6 +1481,83 @@ function looksLikePredialBuiltAreaDecimalMisread(
   return true;
 }
 
+type PredialBuiltAreaQuality = {
+  implausible: boolean;
+  observed_m2: number | null;
+  suggested_m2: number | null;
+  corroborated_m2: number | null;
+  corroboration_source: "predial_table_row_vision" | "predial_raw_column_vision" | null;
+};
+
+function listPredialCorroboratedBuiltAreas(
+  extraction: Record<string, unknown>
+): Array<{
+  value: number;
+  source: "predial_table_row_vision" | "predial_raw_column_vision";
+}> {
+  const candidates: Array<{
+    value: number;
+    source: "predial_table_row_vision" | "predial_raw_column_vision";
+  }> = [];
+  const rowValues =
+    extraction.predial_contribuyente_row_values ?? extraction.predial_table_values;
+  const fromRow = Array.isArray(rowValues)
+    ? predialSurfacesFromContribuyenteRowValuesForTest(rowValues)?.area_construida_m2 ?? null
+    : null;
+  if (fromRow != null && fromRow >= 1) {
+    candidates.push({ value: fromRow, source: "predial_table_row_vision" });
+  }
+  const fromRaw = parsePredialRawSurfaceValue(extraction.sup_const_raw) ?? null;
+  if (fromRaw != null && fromRaw >= 1) {
+    candidates.push({ value: fromRaw, source: "predial_raw_column_vision" });
+  }
+  return candidates;
+}
+
+export function evaluatePredialBuiltAreaQualityForTest(
+  extraction: Record<string, unknown>
+): PredialBuiltAreaQuality {
+  const areaTotalM2 = firstMeaningfulValue(
+    extraction.area_total_m2,
+    extraction.area_m2,
+    extraction.surface_m2,
+    extraction.superficie_m2,
+    extraction.sup_terr,
+    extraction.superficie_terreno_m2
+  );
+  const areaConstruidaM2 = firstMeaningfulValue(
+    extraction.area_construida_m2,
+    extraction.construction_area_m2,
+    extraction.built_area_m2,
+    extraction.sup_const,
+    extraction.superficie_construccion_m2
+  );
+  const observed_m2 = typeof areaConstruidaM2 === "number" ? areaConstruidaM2 : null;
+  const total_m2 = typeof areaTotalM2 === "number" ? areaTotalM2 : null;
+  if (!looksLikePredialBuiltAreaDecimalMisread(total_m2, observed_m2)) {
+    return {
+      implausible: false,
+      observed_m2,
+      suggested_m2: null,
+      corroborated_m2: null,
+      corroboration_source: null,
+    };
+  }
+  const suggested_m2 = observed_m2 != null ? observed_m2 * 10 : null;
+  const corroborated = listPredialCorroboratedBuiltAreas(extraction).find(
+    (candidate) =>
+      suggested_m2 != null && Math.abs(candidate.value - suggested_m2) <= 0.2
+  );
+  const corroboratesSuggestion = corroborated != null;
+  return {
+    implausible: !corroboratesSuggestion,
+    observed_m2,
+    suggested_m2,
+    corroborated_m2: corroborated?.value ?? null,
+    corroboration_source: corroborated?.source ?? null,
+  };
+}
+
 export function normalizePredialExtractionSurfacesForTest(
   extraction: Record<string, unknown>,
   documentKind: string
@@ -1536,6 +1623,47 @@ export function normalizePredialExtractionSurfacesForTest(
       enriched.area_construida_m2_source = "predial_raw_column_vision";
       enriched.sup_const = constRaw;
     }
+  }
+
+  const quality = evaluatePredialBuiltAreaQualityForTest(enriched);
+  if (!quality.implausible && quality.suggested_m2 != null) {
+    const currentBuilt =
+      typeof enriched.area_construida_m2 === "number" ? enriched.area_construida_m2 : null;
+    if (
+      currentBuilt != null &&
+      quality.corroborated_m2 != null &&
+      Math.abs(currentBuilt - quality.suggested_m2) <= 0.2 &&
+      Math.abs(quality.corroborated_m2 - quality.suggested_m2) <= 0.2
+    ) {
+      enriched.area_construida_m2 = quality.corroborated_m2;
+      enriched.area_construida_m2_source =
+        quality.corroboration_source === "predial_table_row_vision"
+          ? "predial_table_row_reconciled"
+          : "predial_raw_column_reconciled";
+      enriched.sup_const = quality.corroborated_m2;
+      warnings.push(
+        `Se corrigió SUP. CONST de ${currentBuilt} m² a ${quality.corroborated_m2} m² por corroboración tabular/raw del predial.`
+      );
+      enriched.predial_area_construida_quality = {
+        status: "reconciled_decimal_misread",
+        observed_m2: currentBuilt,
+        corrected_m2: quality.corroborated_m2,
+        source: quality.corroboration_source,
+      };
+    }
+  } else if (
+    quality.implausible &&
+    quality.suggested_m2 != null &&
+    quality.observed_m2 != null
+  ) {
+    warnings.push(
+      `SUP. CONST implausible (${quality.observed_m2} m²). Posible corrimiento decimal; revisar contra documento fuente (sugerido: ${quality.suggested_m2} m²).`
+    );
+    enriched.predial_area_construida_quality = {
+      status: "implausible_decimal_misread_suspected",
+      observed_m2: quality.observed_m2,
+      suggested_m2: quality.suggested_m2,
+    };
   }
 
   if (warnings.length > 0) {
@@ -1692,7 +1820,9 @@ function needsPdfVisionSupplement(input: {
     return typeof input.extraction.area_total_m2 !== "number";
   }
   if (isPredialKind(input.documentKind)) {
-    return typeof input.extraction.area_construida_m2 !== "number";
+    if (typeof input.extraction.area_construida_m2 !== "number") return true;
+    const quality = evaluatePredialBuiltAreaQualityForTest(input.extraction);
+    return quality.implausible;
   }
   return false;
 }
@@ -2267,6 +2397,7 @@ export type PropertyAdvanceGateBlockReason =
   | "predial_extraction_pending"
   | "predial_area_total_missing"
   | "predial_area_construida_missing"
+  | "predial_area_construida_implausible"
   | "characteristics_minimums_missing"
   | "owner_corroboration_extraction_pending"
   | "titularidad_unverified";
@@ -2287,6 +2418,10 @@ export type PropertyAdvanceGateBlock = {
     missing_fields?: Array<{ key: string; label: string }>;
     /** Estado de titularidad cuando `owner === "human"`. */
     titularidad_status?: OwnerConsistencyStatus;
+    /** Valor observado cuando hay implausibilidad de superficie construida. */
+    observed_value_m2?: number;
+    /** Valor sugerido cuando hay sospecha de corrimiento decimal. */
+    suggested_value_m2?: number;
   };
 };
 
@@ -2373,6 +2508,33 @@ function predialAdvanceBlocks(input: {
         remediation: { owner: "deterministic", document_ids: extractedIds },
       },
     ];
+  }
+  if (requiresBuiltArea) {
+    const implausibleDoc = extractedPredials
+      .map((document) => {
+        const extraction =
+          document.extraction_jsonb && typeof document.extraction_jsonb === "object"
+            ? (document.extraction_jsonb as Record<string, unknown>)
+            : {};
+        return {
+          document,
+          quality: evaluatePredialBuiltAreaQualityForTest(extraction),
+        };
+      })
+      .find(({ quality }) => quality.implausible);
+    if (implausibleDoc) {
+      return [
+        {
+          reason: "predial_area_construida_implausible",
+          remediation: {
+            owner: "human",
+            document_ids: [implausibleDoc.document.id],
+            observed_value_m2: implausibleDoc.quality.observed_m2 ?? undefined,
+            suggested_value_m2: implausibleDoc.quality.suggested_m2 ?? undefined,
+          },
+        },
+      ];
+    }
   }
   return [];
 }
@@ -3176,11 +3338,25 @@ export function addOperationalCaseTools(
               opCase.current_step === "comparables_in_progress" &&
               !comparablesHasDefensibleSample(comparablesAnalysis)
             ) {
+              const comparablesDq =
+                isRecord(comparablesAnalysis) && isRecord(comparablesAnalysis.data_quality)
+                  ? comparablesAnalysis.data_quality
+                  : null;
+              const searchValidity =
+                typeof comparablesDq?.search_validity === "string"
+                  ? comparablesDq.search_validity
+                  : "valid";
+              const validityHint =
+                searchValidity === "invalid_filters"
+                  ? "La búsqueda fue inválida por filtros (no insuficiencia real). Reintenta con filtros canónicos y persiste de nuevo."
+                  : searchValidity === "missing_required_source"
+                    ? "Falta una fuente obligatoria aplicable (Avaclick). Ejecuta get_avaclick_valuation y vuelve a persistir."
+                    : "No avances a price_proposal_pending hasta persistir comparables_analysis con data_quality.usable_count > 0. Si todas las fuentes tienen 0 usables, deja current_step=comparables_in_progress y status=waiting_internal con notify_user.";
               const out = {
                 ok: false,
                 error: "comparables_sample_not_defensible",
-                hint:
-                  "No avances a price_proposal_pending hasta persistir comparables_analysis con data_quality.usable_count > 0. Si todas las fuentes tienen 0 usables, deja current_step=comparables_in_progress y status=waiting_internal con notify_user.",
+                search_validity: searchValidity,
+                hint: validityHint,
               };
               await updateToolCallStatus(ctx.db, record.id, "failed", out);
               return JSON.stringify(out);
@@ -3276,23 +3452,6 @@ export function addOperationalCaseTools(
             input as unknown as Record<string, unknown>,
             false);
 
-          const opCase = await getOperationalCase(ctx.db, input.case_id);
-          if (!opCase || opCase.user_id !== ctx.userId) {
-            const out = { ok: false, error: "case_not_found_or_forbidden" };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
-          if (opCase.version !== input.expected_version) {
-            const out = {
-              ok: false,
-              error: "version_mismatch",
-              actual_version: opCase.version,
-              expected_version: input.expected_version,
-              hint: "Re-read the case and retry with the new version.",
-            };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
           if (!ctx.turnId) {
             const out = {
               ok: false,
@@ -3324,49 +3483,122 @@ export function addOperationalCaseTools(
             return JSON.stringify(out);
           }
 
-          const context =
-            opCase.context_jsonb && typeof opCase.context_jsonb === "object"
-              ? (opCase.context_jsonb as Record<string, unknown>)
-              : {};
-          let analysis: Record<string, unknown> = buildComparablesAnalysisFromToolCalls(
-            ((data ?? []) as PersistedToolCallRow[]).map((call) => ({
-              tool_name: call.tool_name,
-              status: call.status,
-              arguments_json: call.arguments_json ?? null,
-              result_json: call.result_json ?? null,
-              created_at: call.created_at ?? null,
-            }))
-          );
-          analysis = normalizeComparablesAnalysisForInsufficientN4Test(
-            analysis,
-            context
-          );
-          const artifactErrors = validateComparablesAnalysisArtifact(analysis);
-          if (artifactErrors.length > 0) {
-            const out = {
-              ok: false,
-              error: "invalid_comparables_analysis",
-              errors: artifactErrors,
-            };
-            await updateToolCallStatus(ctx.db, record.id, "failed", out);
-            return JSON.stringify(out);
-          }
-
-          const updated = await updateOperationalCase(
-            ctx.db,
-            opCase.id,
-            opCase.version,
-            {
-              context: {
-                ...context,
-                comparables_analysis: analysis,
-              },
+          let expectedVersion = input.expected_version;
+          let opCaseBefore: Awaited<ReturnType<typeof getOperationalCase>> = null;
+          let updated: Awaited<ReturnType<typeof updateOperationalCase>> = null;
+          let analysis: Record<string, unknown> | null = null;
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const opCase = await getOperationalCase(ctx.db, input.case_id);
+            if (!opCase || opCase.user_id !== ctx.userId) {
+              const out = { ok: false, error: "case_not_found_or_forbidden" };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
             }
-          );
-          if (!updated) {
+            if (opCase.version !== expectedVersion) {
+              if (attempt < 4) {
+                expectedVersion = opCase.version;
+                continue;
+              }
+              const out = {
+                ok: false,
+                error: "version_mismatch",
+                actual_version: opCase.version,
+                expected_version: input.expected_version,
+                hint: "Re-read the case and retry with the new version.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+            opCaseBefore = opCase;
+            const context =
+              opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                ? (opCase.context_jsonb as Record<string, unknown>)
+                : {};
+            const propertyData = isRecord(context.property_data)
+              ? context.property_data
+              : context;
+            analysis = buildComparablesAnalysisFromToolCalls(
+              ((data ?? []) as PersistedToolCallRow[]).map((call) => ({
+                tool_name: call.tool_name,
+                status: call.status,
+                arguments_json: call.arguments_json ?? null,
+                result_json: call.result_json ?? null,
+                created_at: call.created_at ?? null,
+              }))
+            );
+            analysis = normalizeComparablesAnalysisForInsufficientN4Test(
+              analysis,
+              context
+            );
+            const artifactErrors = validateComparablesAnalysisArtifact(analysis);
+            if (artifactErrors.length > 0) {
+              const out = {
+                ok: false,
+                error: "invalid_comparables_analysis",
+                errors: artifactErrors,
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+            const analysisDataQuality = isRecord(analysis.data_quality)
+              ? analysis.data_quality
+              : {};
+            const propertyDataUntrusted =
+              analysisDataQuality.property_data_untrusted === true;
+            const avaclickExecuted = ((data ?? []) as PersistedToolCallRow[]).some(
+              (call) =>
+                call.tool_name === "get_avaclick_valuation" &&
+                call.status === "executed"
+            );
+            const avaclickRequired = requiresAvaclick(propertyData);
+            const builtAreaReliable =
+              positiveNumberFromUnknown(
+                propertyData.area_construida_m2 ??
+                  propertyData.construction_area_m2 ??
+                  propertyData.built_area_m2
+              ) != null;
+            if (
+              avaclickRequired &&
+              builtAreaReliable &&
+              !propertyDataUntrusted &&
+              !avaclickExecuted
+            ) {
+              const out = {
+                ok: false,
+                error: "missing_required_comparable_source",
+                missing_source: "get_avaclick_valuation",
+                hint:
+                  "Para inmuebles residenciales con datos confiables debe ejecutarse Avaclick antes de persistir comparables_analysis.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+
+            updated = await updateOperationalCase(
+              ctx.db,
+              opCase.id,
+              opCase.version,
+              {
+                context: {
+                  ...context,
+                  comparables_analysis: analysis,
+                },
+              }
+            );
+            if (updated) break;
+            if (attempt < 4) {
+              const latest = await getOperationalCase(ctx.db, input.case_id);
+              expectedVersion = latest?.version ?? opCase.version + 1;
+              continue;
+            }
+          }
+          if (!updated || !opCaseBefore || !analysis) {
+            const latest = await getOperationalCase(ctx.db, input.case_id);
             const out = {
               ok: false,
               error: "concurrent_update",
+              actual_version: latest?.version ?? null,
+              expected_version: input.expected_version,
               hint: "Another worker updated the case between read and write. Re-read and retry.",
             };
             await updateToolCallStatus(ctx.db, record.id, "failed", out);
@@ -3382,7 +3614,7 @@ export function addOperationalCaseTools(
               : 0;
 
           await insertOperationalCaseEvent(ctx.db, {
-            caseId: opCase.id,
+            caseId: opCaseBefore.id,
             eventType: "step_completed",
             actor: "agent",
             payload: {
@@ -3397,6 +3629,8 @@ export function addOperationalCaseTools(
             ok: true,
             case_id: updated.id,
             version: updated.version,
+            initial_expected_version: input.expected_version,
+            actual_version_used: opCaseBefore.version,
             defensible_sample: comparablesHasDefensibleSample(analysis),
             usable_count: usableCount,
             stats: analysis.stats,
@@ -3639,7 +3873,9 @@ export function addOperationalCaseTools(
             false);
           try {
             const opCase =
-              input.kind === "property_data_review" && caseId
+              (input.kind === "property_data_review" ||
+                input.kind === "comparables_insufficient_data") &&
+              caseId
                 ? await getOperationalCase(ctx.db, caseId)
                 : null;
             if (input.kind === "property_data_review" && opCase) {
@@ -3662,9 +3898,27 @@ export function addOperationalCaseTools(
                   (block) =>
                     block.reason === "predial_extraction_pending" ||
                     block.reason === "predial_area_total_missing" ||
-                    block.reason === "predial_area_construida_missing"
+                    block.reason === "predial_area_construida_missing" ||
+                    block.reason === "predial_area_construida_implausible"
                 );
                 if (predialBlock) {
+                  if (predialBlock.reason === "predial_area_construida_implausible") {
+                    const out = {
+                      ok: false,
+                      error: "predial_data_quality_review_required",
+                      reason: predialBlock.reason,
+                      pending_predial_document_ids:
+                        predialBlock.remediation.document_ids ?? [],
+                      observed_area_construida_m2:
+                        predialBlock.remediation.observed_value_m2 ?? null,
+                      suggested_area_construida_m2:
+                        predialBlock.remediation.suggested_value_m2 ?? null,
+                      hint:
+                        "Antes de enviar property_data_review, confirma con el asesor la superficie construida correcta (notify_user kind=property_data_quality_review). No avances a comparables con este valor implausible.",
+                    };
+                    await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                    return JSON.stringify(out);
+                  }
                   const out = {
                     ok: false,
                     error: "predial_extraction_incomplete",
@@ -3727,6 +3981,34 @@ export function addOperationalCaseTools(
                   case_id: opCase.id,
                 };
                 await updateToolCallStatus(ctx.db, record.id, "executed", out);
+                return JSON.stringify(out);
+              }
+            }
+            if (input.kind === "comparables_insufficient_data" && opCase) {
+              const context =
+                opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                  ? (opCase.context_jsonb as Record<string, unknown>)
+                  : {};
+              const comparablesAnalysis = isRecord(context.comparables_analysis)
+                ? context.comparables_analysis
+                : null;
+              const dataQuality =
+                comparablesAnalysis && isRecord(comparablesAnalysis.data_quality)
+                  ? comparablesAnalysis.data_quality
+                  : null;
+              const searchValidity =
+                typeof dataQuality?.search_validity === "string"
+                  ? dataQuality.search_validity
+                  : "valid";
+              if (searchValidity === "invalid_filters") {
+                const out = {
+                  ok: false,
+                  error: "comparables_retry_required_before_notify",
+                  search_validity: searchValidity,
+                  hint:
+                    "No notifiques insuficiencia de mercado con filtros inválidos. Reintenta comparables con filtros canónicos (y fallback moderado) antes de pedir decisión humana.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
                 return JSON.stringify(out);
               }
             }

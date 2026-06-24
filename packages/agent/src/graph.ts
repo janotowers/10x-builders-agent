@@ -34,6 +34,7 @@ import type {
   AppliedMemory,
   ToolApprovalPolicy,
   ToolCallSource,
+  OperationalCaseFlowStep,
 } from "@agents/types";
 import {
   generatedDocumentDedupKey,
@@ -359,6 +360,45 @@ function buildOperationalCaseContextBlock(
     }
   }
   return lines.join("\n");
+}
+
+export function resolveStepBoundSkillSlugForTest(args: {
+  stepKey: string | null;
+  flow: OperationalCaseFlowStep[] | undefined;
+}): string | null {
+  if (!args.stepKey || !Array.isArray(args.flow) || args.flow.length === 0) {
+    return null;
+  }
+  const step = args.flow.find((item) => item.step_key === args.stepKey);
+  const skills = Array.isArray(step?.step_skills) ? step.step_skills : [];
+  if (skills.length !== 1) return null;
+  const slug = skills[0]?.skill_slug;
+  return typeof slug === "string" && slug.trim() ? slug.trim() : null;
+}
+
+export function operationalStepUsesTenantBigQueryForTest(args: {
+  stepKey: string | null;
+  flow: OperationalCaseFlowStep[] | undefined;
+}): boolean {
+  if (!args.stepKey) return false;
+  if (args.stepKey === "comparables_in_progress") return true;
+  const flow = Array.isArray(args.flow) ? args.flow : [];
+  if (flow.length === 0) return false;
+  const step = flow.find((item) => item.step_key === args.stepKey);
+  if (!step) return false;
+  const tools = new Set<string>();
+  for (const tool of step.step_tools ?? []) {
+    if (tool?.tool_id) tools.add(tool.tool_id);
+  }
+  for (const skill of step.step_skills ?? []) {
+    for (const tool of skill.skill_tools ?? []) {
+      if (tool?.tool_id) tools.add(tool.tool_id);
+    }
+  }
+  return (
+    tools.has("bigquery_lookup_local_comparables") ||
+    tools.has("bigquery_run_query")
+  );
 }
 
 function summarizeEventPayload(payload: Record<string, unknown>): string {
@@ -1063,6 +1103,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   let operationalCaseContextBlock = "";
   let resolvedForcedSkillId = input.forcedSkillId ?? null;
   let boundOperationalStepKey: string | null = null;
+  let boundOperationalFlow: OperationalCaseFlowStep[] | undefined;
   const resolvedToolCallSource = resolveToolCallSource(input);
   if (input.caseId) {
     try {
@@ -1091,6 +1132,19 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           caseTypeRow: caseType,
           events: recentEvents,
         });
+        boundOperationalFlow = Array.isArray(caseType?.operational_flow_jsonb)
+          ? caseType.operational_flow_jsonb
+          : undefined;
+        const stepSkillSlug = resolveStepBoundSkillSlugForTest({
+          stepKey: boundOperationalStepKey,
+          flow: boundOperationalFlow,
+        });
+        if (!resolvedForcedSkillId && stepSkillSlug) {
+          resolvedForcedSkillId = stepSkillSlug;
+          console.log(
+            `[ops-case] caseId=${opCase.id} step=${opCase.current_step ?? "(none)"} → forcing step skill=${stepSkillSlug}`
+          );
+        }
         if (caseType?.default_skill_slug) {
           if (!resolvedForcedSkillId) {
             resolvedForcedSkillId = caseType.default_skill_slug;
@@ -1327,10 +1381,15 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   });
 
   const businessBrainWarehouse = getBusinessBrainWarehouse(input.businessBrain);
+  const operationalStepNeedsTenantContext = operationalStepUsesTenantBigQueryForTest({
+    stepKey: boundOperationalStepKey,
+    flow: boundOperationalFlow,
+  });
   const skillNeedsTenantContext = Boolean(
     activeSkill?.requiresTenantContext ||
       activeSkill?.allowedTools.includes("bigquery_lookup_local_comparables") ||
-      activeSkill?.allowedTools.includes("bigquery_run_query")
+      activeSkill?.allowedTools.includes("bigquery_run_query") ||
+      operationalStepNeedsTenantContext
   );
   const lcTools = buildLangChainTools({
     db,

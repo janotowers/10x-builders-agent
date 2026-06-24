@@ -7,6 +7,7 @@ import {
   canonicalizePropertyDataReviewText,
   documentExtractionMinimumsContext,
   evaluatePropertyDataMinimumsForReview,
+  evaluatePredialBuiltAreaQualityForTest,
   extractPredialSurfacesFromTextForTest,
   extractSurfaceTotalM2FromTextForTest,
   missingRequiredIntakeFields,
@@ -585,6 +586,22 @@ assert.deepEqual(
       document_kind: "predial",
       area_total_m2: 138,
       area_construida_m2: 14.6,
+    },
+    "predial"
+  ).predial_area_construida_quality,
+  {
+    status: "implausible_decimal_misread_suspected",
+    observed_m2: 14.6,
+    suggested_m2: 146,
+  }
+);
+
+assert.deepEqual(
+  normalizePredialExtractionSurfacesForTest(
+    {
+      document_kind: "predial",
+      area_total_m2: 138,
+      area_construida_m2: 14.6,
       sup_const_raw: "146.00",
     },
     "predial"
@@ -596,6 +613,21 @@ assert.deepEqual(
     sup_const_raw: "146.00",
     area_construida_m2_source: "predial_raw_column_vision",
     sup_const: 146,
+  }
+);
+
+assert.deepEqual(
+  evaluatePredialBuiltAreaQualityForTest({
+    area_total_m2: 138,
+    area_construida_m2: 14.6,
+    sup_const_raw: "146.00",
+  }),
+  {
+    implausible: false,
+    observed_m2: 14.6,
+    suggested_m2: 146,
+    corroborated_m2: 146,
+    corroboration_source: "predial_raw_column_vision",
   }
 );
 

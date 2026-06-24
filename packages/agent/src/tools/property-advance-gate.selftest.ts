@@ -136,6 +136,32 @@ const casaContext = {
   );
 }
 
+// --- comparables_in_progress: predial implausible -> human ----------------
+{
+  const gate = evaluatePropertyAdvanceGate({
+    documents: [
+      doc({
+        id: "predial-implausible",
+        kind: "predial",
+        display_name: "PREDIAL 2023.pdf",
+        original_name: "PREDIAL 2023.pdf",
+        extraction_status: "ok",
+        extraction_jsonb: {
+          area_total_m2: 138,
+          area_construida_m2: 14.6,
+        },
+      }),
+    ],
+    context: casaContext,
+    targetTransition: "comparables_in_progress",
+  });
+  assert.equal(gate.satisfied, false);
+  assert.equal(gate.blocks.length, 1);
+  assert.equal(gate.blocks[0]!.reason, "predial_area_construida_implausible");
+  assert.equal(gate.blocks[0]!.remediation.owner, "human");
+  assert.deepEqual(gate.blocks[0]!.remediation.document_ids, ["predial-implausible"]);
+}
+
 // --- comparables_in_progress: faltan mínimos -> external -----------------
 {
   const gate = evaluatePropertyAdvanceGate({
