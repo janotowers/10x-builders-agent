@@ -1193,6 +1193,20 @@ async function extractResults(page, limit, input = {}) {
       });
       return rows.length >= maxItems ? rows : null;
     }
+    function addTextCandidate(text, id = null) {
+      const cleaned = String(text ?? "").replace(/\s+/g, " ").trim();
+      if (!cleaned || cleaned.length < 30) return null;
+      if (!looksLikePropertyText(cleaned)) return null;
+      const key = id || cleaned.slice(0, 160);
+      if (seen.has(key)) return null;
+      seen.add(key);
+      rows.push({
+        text: cleaned,
+        url: null,
+        id,
+      });
+      return rows.length >= maxItems ? rows : null;
+    }
     const propertyLinks = Array.from(
       document.querySelectorAll(
         'a[href*="/agent/mls_properties/"]'
@@ -1203,6 +1217,18 @@ async function extractResults(page, limit, input = {}) {
       if (!card) continue;
       const done = addCandidate(card);
       if (Array.isArray(done)) return done;
+    }
+    if (rows.length === 0) {
+      const bodyText = visibleText(document.body);
+      const matches = Array.from(bodyText.matchAll(/\bEB-[A-Z0-9]+\b/gi));
+      for (let i = 0; i < matches.length; i += 1) {
+        const id = matches[i][0];
+        const start = matches[i].index ?? 0;
+        const nextStart = matches[i + 1]?.index ?? Math.min(bodyText.length, start + 700);
+        const chunk = bodyText.slice(start, nextStart);
+        const done = addTextCandidate(chunk, id);
+        if (Array.isArray(done)) return done;
+      }
     }
     return rows;
   }, scanLimit);

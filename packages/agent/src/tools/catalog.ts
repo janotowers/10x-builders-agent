@@ -1085,7 +1085,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "generate_document_from_template",
     name: "generate_document_from_template",
     description:
-      "Renders a DOCX document by filling {{placeholders}} in a tenant template stored in account_assets. Use for the commission contract, property report, or listing description sheet. Placeholder values are derived automatically from the operational case (property_data, pricing_proposal, contact); `data` is optional and only needed to override or add fields. Requires HITL confirmation because the file is sent to a human.",
+      "Renders a DOCX document by filling {{placeholders}} in a tenant template stored in account_assets. Use for the commission contract, property report, or listing description sheet. Placeholder values are derived automatically from the operational case (property_data, pricing_proposal, contact); `data` is optional and only needed to override or add fields. This tool creates an internal draft; human approval applies to review/send decisions, not to draft rendering itself.",
     risk: "medium",
     parameters_schema: {
       type: "object",

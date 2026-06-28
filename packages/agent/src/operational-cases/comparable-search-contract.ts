@@ -15,6 +15,12 @@ export type ComparableAreaBand = {
   fallback_level: "strict" | "expanded" | "wide";
 };
 
+export type ComparableFallbackStep = {
+  level: "expanded" | "wide" | "location_only";
+  filters: RecordValue;
+  reason: string;
+};
+
 export type ComparableFilterContractResult = {
   filters: RecordValue;
   search_validity: ComparableSearchValidity;
@@ -22,7 +28,16 @@ export type ComparableFilterContractResult = {
   warnings: string[];
   suggested_filters?: RecordValue;
   fallback_filters?: RecordValue;
+  fallback_filter_ladder?: ComparableFallbackStep[];
 };
+
+const AREA_FILTER_KEYS = ["min_area_m2", "max_area_m2", "area_basis"] as const;
+
+function omitFilterKeys(source: RecordValue, keys: readonly string[]): RecordValue {
+  const next: RecordValue = { ...source };
+  for (const key of keys) delete next[key];
+  return next;
+}
 
 function isRecord(value: unknown): value is RecordValue {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -41,10 +56,7 @@ function positiveNumberOrNull(value: unknown): number | null {
   return null;
 }
 
-function firstPositiveNumber(
-  source: RecordValue,
-  keys: readonly string[]
-): number | null {
+function firstPositiveNumber(source: RecordValue, keys: readonly string[]): number | null {
   for (const key of keys) {
     const parsed = positiveNumberOrNull(source[key]);
     if (parsed != null) return parsed;
@@ -63,6 +75,17 @@ function operationOrNull(value: unknown): "sale" | "rent" | null {
 function normalizePropertyType(value: unknown): string | null {
   const cleaned = cleanString(value);
   return cleaned ?? null;
+}
+
+function isResidentialComparableType(value: unknown) {
+  const normalized = normalizePropertyType(value)?.toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("casa") ||
+    normalized.includes("departamento") ||
+    normalized.includes("depto") ||
+    normalized.includes("condo")
+  );
 }
 
 function normalizeComparableRange(params: {
@@ -86,11 +109,23 @@ function normalizeComparableRange(params: {
   if (minValue != null && maxValue != null && minValue >= maxValue) {
     invalidFields.push(params.minField, params.maxField);
     warnings.push(
-      `Rango inválido: ${params.minField} (${minValue}) debe ser menor que ${params.maxField} (${maxValue}).`
+      `Rango invalido: ${params.minField} (${minValue}) debe ser menor que ${params.maxField} (${maxValue}).`
     );
     return { minValue: null, maxValue: null, invalidFields, warnings };
   }
   return { minValue, maxValue, invalidFields, warnings };
+}
+
+function uniqueFallbackSteps(steps: ComparableFallbackStep[]): ComparableFallbackStep[] {
+  const seen = new Set<string>();
+  const out: ComparableFallbackStep[] = [];
+  for (const step of steps) {
+    const key = JSON.stringify(step.filters);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(step);
+  }
+  return out;
 }
 
 export function requiresAvaclick(propertyData: RecordValue): boolean {
@@ -113,10 +148,32 @@ export function deriveComparableAreaBand(input: {
   fallbackLevel?: "strict" | "expanded" | "wide";
 }): ComparableAreaBand | null {
   const fallbackLevel = input.fallbackLevel ?? "strict";
-  const ratio =
-    fallbackLevel === "strict" ? 0.15 : fallbackLevel === "expanded" ? 0.25 : 0.35;
-  const absoluteBand = fallbackLevel === "strict" ? 20 : fallbackLevel === "expanded" ? 30 : 40;
   const propertyData = input.propertyData;
+  const propertyType =
+    propertyData.property_type ??
+    propertyData.tipo_propiedad ??
+    propertyData.propertyType;
+  const residentialType = isResidentialComparableType(propertyType);
+  const lowerRatio =
+    fallbackLevel === "strict"
+      ? 0.15
+      : fallbackLevel === "expanded"
+        ? 0.2
+        : 0.25;
+  const upperRatio =
+    fallbackLevel === "strict"
+      ? residentialType
+        ? 0.85
+        : 0.35
+      : fallbackLevel === "expanded"
+        ? residentialType
+          ? 1.1
+          : 0.6
+        : residentialType
+          ? 1.4
+          : 0.9;
+  const absoluteLowerBand = fallbackLevel === "strict" ? 20 : fallbackLevel === "expanded" ? 25 : 35;
+  const absoluteUpperBand = fallbackLevel === "strict" ? 35 : fallbackLevel === "expanded" ? 50 : 75;
   const areaConstruida = firstPositiveNumber(propertyData, [
     "area_construida_m2",
     "construction_area_m2",
@@ -133,9 +190,10 @@ export function deriveComparableAreaBand(input: {
   if (sourceArea == null) return null;
   const area_basis: ComparableAreaBand["area_basis"] =
     areaConstruida != null ? "constructed" : "total";
-  const delta = Math.max(Math.round(sourceArea * ratio), absoluteBand);
-  const min_area_m2 = Math.max(1, Math.round(sourceArea - delta));
-  const max_area_m2 = Math.max(min_area_m2 + 1, Math.round(sourceArea + delta));
+  const lowerDelta = Math.max(Math.round(sourceArea * lowerRatio), absoluteLowerBand);
+  const upperDelta = Math.max(Math.round(sourceArea * upperRatio), absoluteUpperBand);
+  const min_area_m2 = Math.max(1, Math.round(sourceArea - lowerDelta));
+  const max_area_m2 = Math.max(min_area_m2 + 1, Math.round(sourceArea + upperDelta));
   return {
     min_area_m2,
     max_area_m2,
@@ -185,7 +243,7 @@ export function buildComparableSearchFilters(input: {
         ...(!operation ? ["operation"] : []),
         ...(!property_type ? ["property_type"] : []),
       ],
-      warnings: ["Faltan filtros base para búsqueda de comparables."],
+      warnings: ["Faltan filtros base para busqueda de comparables."],
     };
   }
   return {
@@ -225,8 +283,28 @@ export function sanitizeComparableSearchFilters(input: {
   });
   warnings.push(...normalizedPrice.warnings);
   invalid_fields.push(...normalizedPrice.invalidFields);
-  if (normalizedPrice.minValue != null) filters.min_price = normalizedPrice.minValue;
-  if (normalizedPrice.maxValue != null) filters.max_price = normalizedPrice.maxValue;
+  const propertyDataProvided = input.propertyData != null;
+  const trustedReferencePrice = input.propertyData
+    ? firstPositiveNumber(input.propertyData, [
+        "target_price",
+        "price",
+        "listing_price",
+        "asking_price",
+        "precio",
+        "precio_objetivo",
+        "precio_estimado",
+      ])
+    : null;
+  const providedPriceRange =
+    normalizedPrice.minValue != null || normalizedPrice.maxValue != null;
+  if (propertyDataProvided && providedPriceRange && trustedReferencePrice == null) {
+    warnings.push(
+      `Se descartaron filtros de precio provistos (${normalizedPrice.minValue ?? "?"}-${normalizedPrice.maxValue ?? "?"}) porque el caso aun no tiene precio objetivo confiable; la busqueda de mercado no debe autocensurarse por un tope inventado.`
+    );
+  } else {
+    if (normalizedPrice.minValue != null) filters.min_price = normalizedPrice.minValue;
+    if (normalizedPrice.maxValue != null) filters.max_price = normalizedPrice.maxValue;
+  }
 
   const minArea = positiveNumberOrNull(raw.min_area_m2);
   const maxArea = positiveNumberOrNull(raw.max_area_m2);
@@ -241,21 +319,9 @@ export function sanitizeComparableSearchFilters(input: {
   if (normalizedArea.minValue != null) filters.min_area_m2 = normalizedArea.minValue;
   if (normalizedArea.maxValue != null) filters.max_area_m2 = normalizedArea.maxValue;
 
-  const bedrooms = positiveNumberOrNull(raw.bedrooms);
-  if (bedrooms != null) filters.bedrooms = Math.trunc(bedrooms);
-  const bathrooms = positiveNumberOrNull(raw.bathrooms);
-  if (bathrooms != null) filters.bathrooms = Math.trunc(bathrooms);
-  const parking = positiveNumberOrNull(raw.parking_spaces);
-  if (parking != null) {
-    filters.parking_spaces = Math.trunc(parking);
-  } else if (
-    raw.parking_spaces === 0 &&
-    input.allowExactZeroParking === true
-  ) {
-    filters.parking_spaces = 0;
-  } else if (raw.parking_spaces === 0) {
+  if (raw.parking_spaces === 0 || raw.min_parking_spaces === 0) {
     warnings.push(
-      "Se descartó parking_spaces=0 como filtro exacto; se considera valor no confiable por default."
+      "Se descarto parking_spaces=0 como filtro exacto; se considera valor no confiable por default."
     );
   }
 
@@ -272,52 +338,39 @@ export function sanitizeComparableSearchFilters(input: {
     search_validity = "invalid_filters";
   }
 
-  // La banda de área canónica derivada de property_data confiable es la ÚNICA
-  // fuente válida para filtros de área. Nunca se confía en un rango provisto por
-  // el modelo sin respaldo: un rango fuera de escala (p. ej. 60-90 m² para una
-  // casa de 146 m², o un rango inventado cuando no se conoce la superficie)
-  // envenena la búsqueda y devuelve cero comparables.
   const strictAreaBand = input.propertyData
     ? deriveComparableAreaBand({ propertyData: input.propertyData })
     : null;
-  const propertyDataProvided = input.propertyData != null;
   const providedAreaRange =
     normalizedArea.minValue != null || normalizedArea.maxValue != null;
 
   if (strictAreaBand) {
-    // Caso con superficie confiable: imponer la banda canónica salvo que el rango
-    // provisto ya contenga el área confiable del caso.
     const trustedArea = strictAreaBand.source_area_m2;
-    const providedRangeContainsTrustedArea =
+    const providedRangeMatchesCanonicalStrict =
       normalizedArea.minValue != null &&
       normalizedArea.maxValue != null &&
-      trustedArea >= normalizedArea.minValue &&
-      trustedArea <= normalizedArea.maxValue;
-    if (!providedRangeContainsTrustedArea) {
+      normalizedArea.minValue === strictAreaBand.min_area_m2 &&
+      normalizedArea.maxValue === strictAreaBand.max_area_m2;
+    if (!providedRangeMatchesCanonicalStrict) {
       if (providedAreaRange) {
         warnings.push(
-          `Se reemplazó rango de área provisto (${normalizedArea.minValue ?? "?"}-${normalizedArea.maxValue ?? "?"} m²) por banda canónica (${strictAreaBand.min_area_m2}-${strictAreaBand.max_area_m2} m²) derivada del área confiable del caso (${trustedArea} m²).`
+          `Se reemplazo rango de area provisto (${normalizedArea.minValue ?? "?"}-${normalizedArea.maxValue ?? "?"} m2) por banda canonica estricta (${strictAreaBand.min_area_m2}-${strictAreaBand.max_area_m2} m2) derivada del area confiable del caso (${trustedArea} m2).`
         );
       } else {
         warnings.push(
-          `Se derivó rango de área automáticamente (${strictAreaBand.min_area_m2}-${strictAreaBand.max_area_m2} m²) desde property_data.`
+          `Se derivo rango de area canonico estricto (${strictAreaBand.min_area_m2}-${strictAreaBand.max_area_m2} m2) desde property_data.`
         );
       }
-      filters.min_area_m2 = strictAreaBand.min_area_m2;
-      filters.max_area_m2 = strictAreaBand.max_area_m2;
-      filters.area_basis = strictAreaBand.area_basis;
     }
+    filters.min_area_m2 = strictAreaBand.min_area_m2;
+    filters.max_area_m2 = strictAreaBand.max_area_m2;
+    filters.area_basis = strictAreaBand.area_basis;
   } else if (propertyDataProvided && providedAreaRange) {
-    // No hay superficie confiable en property_data y el modelo envió un rango de
-    // área (probablemente inferido/inventado). Se descarta para no sesgar la
-    // búsqueda: los comparables se obtienen sin restricción de área y la
-    // superficie se resuelve aguas abajo (precio/m² ya está protegido cuando el
-    // área no es confiable).
     delete filters.min_area_m2;
     delete filters.max_area_m2;
     delete filters.area_basis;
     warnings.push(
-      `Se descartaron filtros de área provistos (${normalizedArea.minValue ?? "?"}-${normalizedArea.maxValue ?? "?"} m²) porque no hay superficie confiable en property_data; la búsqueda se ejecuta sin restricción de área.`
+      `Se descartaron filtros de area provistos (${normalizedArea.minValue ?? "?"}-${normalizedArea.maxValue ?? "?"} m2) porque no hay superficie confiable en property_data; la busqueda se ejecuta sin restriccion de area.`
     );
   }
 
@@ -331,22 +384,68 @@ export function sanitizeComparableSearchFilters(input: {
     invalid_fields.push(...missingBaseFields);
   }
 
-  const suggestedResult = input.propertyData
-    ? buildComparableSearchFilters({ context: input.propertyData })
-    : null;
-  const fallbackResult = input.propertyData
-    ? buildComparableSearchFilters({
-        context: input.propertyData,
-        fallbackLevel: "expanded",
-      })
-    : null;
+  const fallbackSeedContext: RecordValue = {
+    ...(input.propertyData ?? {}),
+    property_zone:
+      filters.zona ??
+      cleanString(input.propertyData?.property_zone) ??
+      cleanString(input.propertyData?.zona) ??
+      undefined,
+    operation:
+      filters.operation ??
+      operationOrNull(input.propertyData?.operation ?? input.propertyData?.operation_type) ??
+      undefined,
+    property_type:
+      filters.property_type ??
+      normalizePropertyType(
+        input.propertyData?.property_type ??
+          input.propertyData?.tipo_propiedad ??
+          input.propertyData?.propertyType
+      ) ??
+      undefined,
+  };
+  const suggestedResult = buildComparableSearchFilters({ context: fallbackSeedContext });
+  const expandedFallbackResult = buildComparableSearchFilters({
+    context: fallbackSeedContext,
+    fallbackLevel: "expanded",
+  });
+  const wideFallbackResult = buildComparableSearchFilters({
+    context: fallbackSeedContext,
+    fallbackLevel: "wide",
+  });
+
+  const fallbackSteps: ComparableFallbackStep[] = [];
+  if (expandedFallbackResult?.search_validity === "valid") {
+    fallbackSteps.push({
+      level: "expanded",
+      filters: {
+        ...filters,
+        ...expandedFallbackResult.filters,
+      },
+      reason: "expand_area_preserving_soft_room_constraints",
+    });
+  }
+  if (wideFallbackResult?.search_validity === "valid") {
+    const wideBase = {
+      ...filters,
+      ...wideFallbackResult.filters,
+    };
+    fallbackSteps.push({
+      level: "wide",
+      filters: { ...wideBase },
+      reason: "expand_area_wide_and_drop_parking",
+    });
+    fallbackSteps.push({
+      level: "location_only",
+      filters: omitFilterKeys(wideBase, AREA_FILTER_KEYS),
+      reason: "location_and_type_only_no_area_or_room_constraints",
+    });
+  }
+
+  const dedupedFallbackSteps = uniqueFallbackSteps(fallbackSteps);
   const suggested_filters =
     search_validity === "invalid_filters" && suggestedResult?.search_validity === "valid"
       ? suggestedResult.filters
-      : undefined;
-  const fallback_filters =
-    fallbackResult?.search_validity === "valid"
-      ? fallbackResult.filters
       : undefined;
 
   return {
@@ -355,7 +454,12 @@ export function sanitizeComparableSearchFilters(input: {
     invalid_fields: Array.from(new Set(invalid_fields)),
     warnings,
     ...(suggested_filters ? { suggested_filters } : {}),
-    ...(fallback_filters ? { fallback_filters } : {}),
+    ...(dedupedFallbackSteps[0]
+      ? { fallback_filters: dedupedFallbackSteps[0].filters }
+      : {}),
+    ...(dedupedFallbackSteps.length > 0
+      ? { fallback_filter_ladder: dedupedFallbackSteps }
+      : {}),
   };
 }
 

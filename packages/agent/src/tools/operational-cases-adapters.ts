@@ -37,6 +37,11 @@ import {
   normalizeComparablesAnalysisForInsufficientN4Test,
   validateComparablesAnalysisArtifact,
 } from "../operational-cases/comparables-analysis";
+import { tryAdvanceComparablesAfterPersist } from "../operational-cases/comparables-advance";
+import {
+  formatPriceApprovalNotifyText,
+  type PricingProposal,
+} from "../operational-cases/pricing-proposal";
 import { requiresAvaclick } from "../operational-cases/comparable-search-contract";
 import type {
   OperationalCaseActivationPolicy,
@@ -82,6 +87,210 @@ function positiveNumberFromUnknown(value: unknown): number | null {
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   return null;
+}
+
+function avaclickAttemptedNonRecoverable(call: PersistedToolCallRow): boolean {
+  if (call.tool_name !== "get_avaclick_valuation") return false;
+  const result = isRecord(call.result_json) ? call.result_json : null;
+  if (!result) return false;
+  if (call.status === "executed") return true;
+  const status = typeof result.status === "string" ? result.status : null;
+  const retryable = result.retryable;
+  const explicitNoRetry = retryable === false;
+  return (
+    status === "quota_error" ||
+    status === "not_configured" ||
+    status === "not_connected" ||
+    (status === "validation_error" && explicitNoRetry) ||
+    explicitNoRetry
+  );
+}
+
+/**
+ * Kinds de notify_user que están ligados a un caso operativo y por tanto deben
+ * cargar el `opCase` para evaluar sus guards (HITL real vs. informativo).
+ */
+const CASE_BOUND_NOTIFY_KINDS = new Set([
+  "property_data_review",
+  "property_data_quality_review",
+  "comparables_insufficient_data",
+  "comparables_analysis",
+  "comparables_search_expansion_decision",
+  "price_approval",
+  "contract_pending",
+  "contract_review",
+  "titularidad_review",
+]);
+
+function normalizeNotifyKindKey(kind: string | undefined): string {
+  return (kind ?? "general").trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+/**
+ * Canonicaliza el `kind` recibido en notify_user antes de evaluar guards y de
+ * persistir la notificación. Las variantes de forma libre que significan
+ * "comparables listo" se mapean a `comparables_analysis` (informativo) para que
+ * el guard correspondiente las detecte y redirija al flujo de precio, en vez de
+ * convertirlas en un pendiente humano que detiene el caso. Las decisiones reales
+ * de comparables se preservan.
+ */
+function canonicalizeNotifyKind(rawKind: string | undefined): string {
+  const key = normalizeNotifyKindKey(rawKind);
+  if (
+    key === "price_proposal" ||
+    key === "priceproposal" ||
+    key === "pricing_proposal" ||
+    key === "proposal_price"
+  ) {
+    return "price_approval";
+  }
+  if (key === "price_approval") return key;
+  if (
+    key === "comparables_insufficient_data" ||
+    key === "comparables_search_expansion_decision"
+  ) {
+    return key;
+  }
+  if (key === "property_comparables") return "comparables_analysis";
+  if (
+    key.startsWith("comparable") &&
+    /(ready|analysis|analisis|complete|completo|completado|done|summary|resumen|listo)/.test(
+      key
+    )
+  ) {
+    return "comparables_analysis";
+  }
+  return key;
+}
+
+export function canonicalizeNotifyKindForTest(rawKind: string | undefined): string {
+  return canonicalizeNotifyKind(rawKind);
+}
+
+function normalizeNotificationText(value: string | undefined): string {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function looksLikeComparablesSummaryNotification(
+  canonicalKind: string,
+  text: string | undefined
+): boolean {
+  if (
+    canonicalKind === "price_approval" ||
+    canonicalKind === "comparables_insufficient_data" ||
+    canonicalKind === "comparables_search_expansion_decision"
+  ) {
+    return false;
+  }
+  if (canonicalKind === "comparables_analysis") return true;
+  const normalizedText = normalizeNotificationText(text);
+  return (
+    /\bcomparables?\b/.test(normalizedText) &&
+    /(analisis|completad|list[ao]|resumen|easybroker|bigquery|avaclick|propuesta de precio|avanzo a la propuesta)/.test(
+      normalizedText
+    )
+  );
+}
+
+export function looksLikeComparablesSummaryNotificationForTest(params: {
+  kind?: string;
+  text?: string;
+}): boolean {
+  return looksLikeComparablesSummaryNotification(
+    canonicalizeNotifyKind(params.kind),
+    params.text
+  );
+}
+
+function looksLikeCanonicalPriceApprovalNotifyText(text: string | undefined): boolean {
+  return normalizeNotificationText(text)
+    .trim()
+    .startsWith("propuesta de precio lista para revision");
+}
+
+/** Resumen narrativo post-comparables (p. ej. tras persist), distinto del copy canónico. */
+function looksLikeComparablesCompletionProse(text: string | undefined): boolean {
+  if (looksLikeCanonicalPriceApprovalNotifyText(text)) return false;
+  const normalizedText = normalizeNotificationText(text);
+  return (
+    /\bcomparables?\b/.test(normalizedText) &&
+    /(analisis|completad|list[ao]|resumen|easybroker|bigquery|avaclick|propuesta de precio|avanzo a la propuesta|comparables usables|se encontraron)/.test(
+      normalizedText
+    )
+  );
+}
+
+export function looksLikeComparablesCompletionProseForTest(text?: string): boolean {
+  return looksLikeComparablesCompletionProse(text);
+}
+
+function priceApprovalNotificationAlreadyDelivered(
+  recentEvents: Awaited<ReturnType<typeof getRecentOperationalCaseEvents>>
+): boolean {
+  return recentEvents.some((event) => {
+    const payload =
+      event.payload_jsonb &&
+      typeof event.payload_jsonb === "object" &&
+      !Array.isArray(event.payload_jsonb)
+        ? (event.payload_jsonb as Record<string, unknown>)
+        : null;
+    if (payload?.kind !== "price_approval_requested") return false;
+    const delivered = payload.notify_delivered;
+    if (!Array.isArray(delivered)) return false;
+    return delivered.some(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        (entry as { ok?: boolean }).ok === true
+    );
+  });
+}
+
+function priceApprovalRequestEventExists(
+  recentEvents: Awaited<ReturnType<typeof getRecentOperationalCaseEvents>>
+): boolean {
+  return recentEvents.some((event) => {
+    const payload =
+      event.payload_jsonb &&
+      typeof event.payload_jsonb === "object" &&
+      !Array.isArray(event.payload_jsonb)
+        ? (event.payload_jsonb as Record<string, unknown>)
+        : null;
+    return payload?.kind === "price_approval_requested";
+  });
+}
+
+export function priceApprovalNotificationAlreadyDeliveredForTest(
+  events: Array<{ payload_jsonb?: unknown }>
+): boolean {
+  return priceApprovalNotificationAlreadyDelivered(
+    events as Awaited<ReturnType<typeof getRecentOperationalCaseEvents>>
+  );
+}
+
+function comparablesSearchExpansionDecisionAlreadyRequested(
+  recentEvents: Awaited<ReturnType<typeof getRecentOperationalCaseEvents>>
+): boolean {
+  return recentEvents.some((event) => {
+    const payload =
+      event.payload_jsonb &&
+      typeof event.payload_jsonb === "object" &&
+      !Array.isArray(event.payload_jsonb)
+        ? (event.payload_jsonb as Record<string, unknown>)
+        : null;
+    return payload?.kind === "comparables_search_expansion_decision_requested";
+  });
+}
+
+export function comparablesSearchExpansionDecisionAlreadyRequestedForTest(
+  events: Array<{ payload_jsonb?: unknown }>
+): boolean {
+  return comparablesSearchExpansionDecisionAlreadyRequested(
+    events as Awaited<ReturnType<typeof getRecentOperationalCaseEvents>>
+  );
 }
 
 function normalizeExternalContactPatch(
@@ -291,6 +500,31 @@ function namesMatchFuzzy(a: string, b: string) {
   return recallA >= 0.8 && recallB >= 0.5;
 }
 
+function isLikelyNameFragmentOfBoleta(
+  candidate: string,
+  boletaNames: string[]
+) {
+  const candidateTokens = [...nameTokenSet(candidate)];
+  if (candidateTokens.length === 0) return false;
+  const informativeTokens = candidateTokens.filter((token) => token.length >= 4);
+  if (informativeTokens.length === 0) return true;
+  if (candidateTokens.length <= 2) {
+    for (const boletaName of boletaNames) {
+      const boletaTokens = [...nameTokenSet(boletaName)];
+      const isSubset = informativeTokens.every((token) =>
+        boletaTokens.some(
+          (boletaToken) =>
+            boletaToken === token ||
+            boletaToken.startsWith(token) ||
+            token.startsWith(boletaToken)
+        )
+      );
+      if (isSubset && boletaTokens.length > informativeTokens.length) return true;
+    }
+  }
+  return false;
+}
+
 function buildOwnerConsistency(params: {
   boletaOwners: string[];
   otherOwners: string[];
@@ -313,7 +547,22 @@ function buildOwnerConsistency(params: {
   }
 
   const boleta = uniqueByNormalizedName(params.boletaOwners).values;
-  const other = uniqueByNormalizedName(params.otherOwners).values;
+  const otherAll = uniqueByNormalizedName(params.otherOwners).values;
+  const ignoredFragments = new Set<string>();
+  const other = otherAll.filter((name) => {
+    const fragment = isLikelyNameFragmentOfBoleta(name, boleta);
+    if (fragment) ignoredFragments.add(name);
+    return !fragment;
+  });
+  if (other.length === 0) {
+    return {
+      status: "insufficient",
+      note:
+        ignoredFragments.size > 0
+          ? "Titularidad tomada de boleta registral; los nombres de apoyo disponibles parecen fragmentos OCR del titular y se ignoraron para evitar falsos positivos."
+          : "Titularidad tomada de boleta registral; no hay documentos de corroboración con nombres para cotejar.",
+    };
+  }
   const matchedBoleta = new Set<string>();
   const matchedOther = new Set<string>();
   const matchedSources = new Set<string>();
@@ -342,6 +591,16 @@ function buildOwnerConsistency(params: {
   const missingInOther = boleta.filter((name) => !matchedBoleta.has(name));
   const extraInOther = other.filter((name) => !matchedOther.has(name));
   if (missingInOther.length > 0 || extraInOther.length > 0) {
+    const unmatchedEntryDetails = (params.otherOwnerSources ?? [])
+      .filter((entry) =>
+        extraInOther.some((name) => namesMatchFuzzy(name, entry.name))
+      )
+      .map((entry) => `${entry.name} (${entry.source})`);
+    const uniqueUnmatchedEntryDetails = uniqueStrings(unmatchedEntryDetails).slice(0, 3);
+    const extraDetailsText =
+      uniqueUnmatchedEntryDetails.length > 0
+        ? ` Nombres adicionales detectados: ${uniqueUnmatchedEntryDetails.join("; ")}.`
+        : "";
     const details = [
       missingInOther.length > 0
         ? "Hay titulares de boleta sin corroboración en documentos de apoyo."
@@ -349,13 +608,16 @@ function buildOwnerConsistency(params: {
       extraInOther.length > 0
         ? "Hay nombres adicionales en documentos de apoyo que no coinciden con boleta."
         : null,
+      ignoredFragments.size > 0
+        ? "Se ignoraron fragmentos de nombre que parecen cortes OCR del titular."
+        : null,
     ].filter(Boolean);
     return {
       status: "partial_mismatch",
       warning:
         "La titularidad de boleta registral coincide parcialmente con otros documentos; revisar antes de contrato.",
       note:
-        details.join(" ") ||
+        `${details.join(" ")}${extraDetailsText}`.trim() ||
         "Coincidencia parcial de titulares entre boleta y documentos de corroboración.",
       matchedSources: [...matchedSources],
     };
@@ -393,7 +655,7 @@ function ownerConsistencyPublicSummary(
     const noteText = typeof note === "string" ? note.trim() : "";
     if (sourceList.length > 0) {
       if (noteText.includes("nombres adicionales")) {
-        return `Coincidencia encontrada en: ${sourceText}. También se detectaron otros nombres en documentos de apoyo que no corresponden al titular de boleta.`;
+        return `Coincidencia encontrada en: ${sourceText}. ${noteText}`;
       }
       if (noteText.includes("sin corroboración")) {
         return `Coincidencia encontrada en: ${sourceText}. Falta corroborar a todos los titulares de boleta en los documentos de apoyo.`;
@@ -956,18 +1218,40 @@ export function documentExtractionMinimumsContext(
       }
     }
 
+    // Una escritura multi-inmueble cuyo match con el inmueble del caso fue
+    // ambiguo o de baja confianza NO debe contaminar la direccion canonica:
+    // su "principal" suele ser otro inmueble. Preferimos quedarnos sin
+    // calle/numero (geocode_unresolved seguro) antes que adoptar la direccion
+    // equivocada de otra propiedad de la sucesion.
+    const ambiguousDeed =
+      signals.escritura === true &&
+      (extraction.multi_property_ambiguous === true ||
+        extraction.deed_property_match_low_confidence === true);
     if (propertyDocument && isRecord(extraction.address)) {
-      extracted.address = {
-        ...(isRecord(extracted.address) ? extracted.address : {}),
-        ...extraction.address,
-      };
+      if (ambiguousDeed) {
+        const { street: _s, exterior_number: _e, numero_exterior: _n, number: _num, ...safeAddress } =
+          extraction.address as Record<string, unknown>;
+        extracted.address = {
+          ...(isRecord(extracted.address) ? extracted.address : {}),
+          ...safeAddress,
+        };
+        extracted.address_from_ambiguous_deed = { ...extraction.address };
+        extracted.address_needs_review = true;
+      } else {
+        extracted.address = {
+          ...(isRecord(extracted.address) ? extracted.address : {}),
+          ...extraction.address,
+        };
+      }
     }
     if (propertyDocument) {
       const addressCandidates = extractionAddressCandidates(extraction);
       if (signals.boleta) {
         legalAddressesBoleta.push(...addressCandidates);
       } else if (signals.escritura) {
-        legalAddressesEscritura.push(...addressCandidates);
+        if (!ambiguousDeed) {
+          legalAddressesEscritura.push(...addressCandidates);
+        }
       } else {
         legalAddressesOther.push(...addressCandidates);
       }
@@ -1094,13 +1378,18 @@ export function canonicalizePropertyDataReviewText(
 const VISION_EXTRACTION_MODEL = "openai/gpt-4o-mini";
 const PDF_TEXT_EXTRACTION_MODEL = "openai/gpt-4o-mini";
 const DOCUMENT_EXTRACTION_JSON_SHAPE =
-  '{"document_kind":string,"property_description":string|null,"address":object|null,"area_total_m2":number|null,"area_construida_m2":number|null,"owner_names":string[],"folio_real":string|null,"predial_account":string|null,"confidence":"high"|"medium"|"low","warnings":string[]}';
+  '{"document_kind":string,"property_description":string|null,"legal_address":string|null,"address":object|null,"area_total_m2":number|null,"area_construida_m2":number|null,"owner_names":string[],"folio_real":string|null,"predial_account":string|null,"confidence":"high"|"medium"|"low","warnings":string[]}';
 const PREDIAL_VISION_EXTRACTION_JSON_SHAPE =
   `${DOCUMENT_EXTRACTION_JSON_SHAPE.slice(0, -1)},"predial_contribuyente_row_values":string[],"sup_terr_raw":string|null,"sup_const_raw":string|null}`;
 const PREDIAL_VISION_ROW_ONLY_JSON_SHAPE =
   '{"predial_contribuyente_row_values":string[],"sup_terr_raw":string|null,"sup_const_raw":string|null}';
+const DEED_EXTRACTION_JSON_SHAPE = `${DOCUMENT_EXTRACTION_JSON_SHAPE.slice(0, -1)},"properties":[{"property_description":string|null,"address":{"street":string|null,"exterior_number":string|null,"neighborhood":string|null,"municipality":string|null,"state":string|null,"postal_code":string|null}|null,"area_total_m2":number|null,"area_construida_m2":number|null}]}`;
+const DEED_MULTI_PROPERTY_GUIDANCE =
+  " Si la escritura describe MÁS DE UN inmueble (p. ej. escritura de sucesión/adjudicación o que enlista varias fincas), devuelve además un arreglo `properties` con un elemento por inmueble, cada uno con su dirección (calle, número exterior, colonia/fraccionamiento, municipio, estado, código postal) y superficies. Captura el número exterior/finca de cada inmueble (p. ej. 'Finca marcada con el número 3668'). Llena los campos planos (address, area_total_m2, area_construida_m2) con el inmueble principal. Si solo hay un inmueble, incluye ese único elemento en `properties`.";
 const PROPERTY_AREA_EXTRACTION_GUIDANCE =
   "En escrituras mexicanas, area_total_m2 debe capturar la superficie total/privativa del inmueble cuando aparezca como 'superficie total de X metros cuadrados', 'superficie privativa', 'area privativa' o 'superficie del terreno'. No uses medidas de linderos/colindancias como area_total_m2. area_construida_m2 debe llenarse cuando el texto diga construccion/superficie construida. En recibos prediales mexicanos (p. ej. Jalisco/Zapopan), mapea SUP. TERR o superficie de terreno a area_total_m2 y SUP. CONST o superficie construida a area_construida_m2 cuando aparezcan en tabla o renglón de valores.";
+const BOLETA_LEGAL_ADDRESS_GUIDANCE =
+  " En boleta registral extrae la direccion legal completa en `legal_address` sin truncar: incluye numero/finca, calle, colonia/fraccionamiento, municipio y estado cuando aparezcan en el texto.";
 const PREDIAL_VISION_TABLE_GUIDANCE =
   " En recibos prediales, localiza la seccion DATOS DEL CONTRIBUYENTE. Copia literalmente la fila de valores bajo las columnas TIPO, SUP. TERR, SUP. CONST (y columnas vecinas visibles) en predial_contribuyente_row_values en orden izquierda a derecha (ej. [\"U\",\"138.00\",\"146.00\",\"0.00\",\"0.00\"]). Llena sup_terr_raw y sup_const_raw con el texto exacto visible bajo SUP. TERR y SUP. CONST. Importante: 146.00 significa 146 metros cuadrados, no 14.6; conserva todos los digitos antes del punto decimal.";
 const requireFromHere = createRequire(import.meta.url);
@@ -1804,8 +2093,242 @@ function isPropertyDeedKind(value: unknown) {
   return typeof value === "string" && value.toLowerCase().includes("escritura");
 }
 
+type DeedPropertyHint = {
+  zone?: string | null;
+  exterior_number?: string | null;
+  municipality?: string | null;
+  street?: string | null;
+};
+
+const DEED_MIN_CONFIDENT_MATCH_SCORE = 4;
+
+function firstHintString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function normalizeForMatch(value: unknown): string {
+  return typeof value === "string"
+    ? value
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9 ]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+    : "";
+}
+
+async function deedTargetHintFromCase(
+  db: DbClient,
+  caseId: string | null | undefined
+): Promise<DeedPropertyHint> {
+  if (!caseId) return {};
+  const opCase = await getOperationalCase(db, caseId).catch(() => null);
+  const context = isRecord(opCase?.context_jsonb) ? opCase.context_jsonb : {};
+  const propertyData = isRecord(context.property_data)
+    ? context.property_data
+    : context;
+  const address = isRecord(propertyData.address) ? propertyData.address : {};
+  return {
+    zone: firstHintString(
+      propertyData.property_zone,
+      propertyData.zona,
+      address.neighborhood,
+      address.colonia,
+      propertyData.colonia,
+      propertyData.neighborhood,
+      context.property_zone
+    ),
+    exterior_number: firstHintString(
+      address.exterior_number,
+      address.numero_exterior,
+      propertyData.exterior_number,
+      propertyData.numero_exterior
+    ),
+    municipality: firstHintString(
+      address.municipality,
+      address.municipio,
+      propertyData.municipality,
+      propertyData.municipio,
+      propertyData.city
+    ),
+    street: firstHintString(address.street, propertyData.street, propertyData.calle),
+  };
+}
+
+function scoreDeedProperty(property: Record<string, unknown>, hint: DeedPropertyHint): number {
+  const addr = isRecord(property.address) ? property.address : {};
+  const haystack = [
+    property.property_description,
+    addr.street,
+    addr.neighborhood,
+    addr.colonia,
+    addr.municipality,
+    addr.state,
+  ]
+    .map(normalizeForMatch)
+    .filter(Boolean)
+    .join(" ");
+  let score = 0;
+  if (hint.exterior_number) {
+    const n = normalizeForMatch(hint.exterior_number);
+    const propNum = normalizeForMatch(addr.exterior_number);
+    if (n) {
+      if (propNum && propNum === n) score += 5;
+      else if (haystack.includes(` ${n} `) || haystack.includes(`numero ${n}`)) {
+        score += 4;
+      }
+    }
+  }
+  if (hint.zone) {
+    const z = normalizeForMatch(hint.zone);
+    if (z) {
+      if (haystack.includes(z)) score += 3;
+      else {
+        const tokens = z.split(" ").filter((t) => t.length >= 4);
+        if (tokens.length > 0 && tokens.every((t) => haystack.includes(t))) score += 2;
+      }
+    }
+  }
+  if (hint.street) {
+    const s = normalizeForMatch(hint.street);
+    if (s && haystack.includes(s)) score += 2;
+  }
+  if (hint.municipality) {
+    const m = normalizeForMatch(hint.municipality);
+    if (m && (normalizeForMatch(addr.municipality).includes(m) || haystack.includes(m))) {
+      score += 1;
+    }
+  }
+  return score;
+}
+
+function applyDeedProperty(
+  target: Record<string, unknown>,
+  property: Record<string, unknown>
+) {
+  if (isRecord(property.address)) {
+    target.address = {
+      ...(isRecord(target.address) ? target.address : {}),
+      ...property.address,
+    };
+  }
+  if (typeof property.area_total_m2 === "number") {
+    target.area_total_m2 = property.area_total_m2;
+  }
+  if (typeof property.area_construida_m2 === "number") {
+    target.area_construida_m2 = property.area_construida_m2;
+  }
+  if (
+    typeof property.property_description === "string" &&
+    property.property_description.trim().length > 0
+  ) {
+    target.property_description = property.property_description;
+  }
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return values.filter((item, index, items) => items.indexOf(item) === index);
+}
+
+/**
+ * Para escrituras que describen múltiples inmuebles (p. ej. sucesión), elige
+ * deterministamente el inmueble que coincide con el del caso usando un hint de
+ * dirección (número exterior/finca, zona/colonia, calle, municipio) y sobre-
+ * escribe los campos planos con ese inmueble. Preserva `all_properties` para
+ * auditoría y agrega warnings cuando hay ambigüedad o falta de coincidencia.
+ */
+function selectDeedPropertyFromExtraction(
+  extraction: Record<string, unknown>,
+  hint: DeedPropertyHint
+): Record<string, unknown> {
+  if (!isPropertyDeedKind(extraction.document_kind)) return extraction;
+  const properties = Array.isArray(extraction.properties)
+    ? extraction.properties.filter(isRecord)
+    : [];
+  if (properties.length === 0) return extraction;
+
+  const result: Record<string, unknown> = { ...extraction, all_properties: properties };
+  const warnings = Array.isArray(extraction.warnings)
+    ? extraction.warnings.filter((item): item is string => typeof item === "string")
+    : [];
+
+  if (properties.length === 1) {
+    applyDeedProperty(result, properties[0]);
+    result.selected_property_index = 0;
+    if (warnings.length > 0) result.warnings = dedupeStrings(warnings);
+    return result;
+  }
+
+  const hasHint = Boolean(hint.exterior_number || hint.zone || hint.street);
+  if (!hasHint) {
+    warnings.push(
+      "La escritura describe múltiples inmuebles y no hay datos del inmueble objetivo para desambiguar; se usó el principal. Verifica que corresponda al inmueble del caso."
+    );
+    result.multi_property_ambiguous = true;
+    result.warnings = dedupeStrings(warnings);
+    return result;
+  }
+
+  const scored = properties
+    .map((property, index) => ({ index, property, score: scoreDeedProperty(property, hint) }))
+    .sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  if (!best || best.score <= 0) {
+    warnings.push(
+      "La escritura describe múltiples inmuebles y ninguno coincide claramente con el inmueble del caso; se mantuvo el principal. Revisión humana recomendada."
+    );
+    result.multi_property_ambiguous = true;
+    result.deed_property_match_low_confidence = true;
+    result.selected_property_match_score = best?.score ?? 0;
+    result.warnings = dedupeStrings(warnings);
+    return result;
+  }
+  if (best.score < DEED_MIN_CONFIDENT_MATCH_SCORE) {
+    warnings.push(
+      "La escritura describe múltiples inmuebles pero la coincidencia con el inmueble objetivo no fue suficientemente confiable; se mantuvo el principal. Revisión humana recomendada."
+    );
+    result.multi_property_ambiguous = true;
+    result.deed_property_match_low_confidence = true;
+    result.selected_property_match_score = best.score;
+    result.warnings = dedupeStrings(warnings);
+    return result;
+  }
+
+  applyDeedProperty(result, best.property);
+  result.selected_property_index = best.index;
+  result.selected_property_match_score = best.score;
+  const hintLabel = [
+    hint.exterior_number ? `no. ext. ${hint.exterior_number}` : null,
+    hint.zone ?? null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  warnings.push(
+    `La escritura describe ${properties.length} inmuebles; se seleccionó el que coincide con el inmueble del caso${hintLabel ? ` (${hintLabel})` : ""}.`
+  );
+  const tie = scored.length > 1 && scored[1].score === best.score;
+  if (tie) {
+    warnings.push(
+      "Hubo empate al desambiguar inmuebles de la escritura; revisión humana recomendada."
+    );
+    result.multi_property_ambiguous = true;
+  }
+  result.warnings = dedupeStrings(warnings);
+  return result;
+}
+
 function isPredialKind(value: unknown) {
   return typeof value === "string" && value.toLowerCase().includes("predial");
+}
+
+function isBoletaRegistralKind(value: unknown) {
+  if (typeof value !== "string") return false;
+  const normalized = value.toLowerCase();
+  return normalized.includes("boleta") || normalized.includes("registral");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1968,10 +2491,16 @@ async function extractDocumentFieldsFromImage(input: {
   dataUrl: string;
 }) {
   const isPredial = isPredialKind(input.documentKind);
+  const isDeed = isPropertyDeedKind(input.documentKind);
+  const isBoleta = isBoletaRegistralKind(input.documentKind);
   const jsonShape = isPredial
     ? PREDIAL_VISION_EXTRACTION_JSON_SHAPE
-    : DOCUMENT_EXTRACTION_JSON_SHAPE;
+    : isDeed
+      ? DEED_EXTRACTION_JSON_SHAPE
+      : DOCUMENT_EXTRACTION_JSON_SHAPE;
   const predialGuidance = isPredial ? PREDIAL_VISION_TABLE_GUIDANCE : "";
+  const deedGuidance = isDeed ? DEED_MULTI_PROPERTY_GUIDANCE : "";
+  const boletaGuidance = isBoleta ? BOLETA_LEGAL_ADDRESS_GUIDANCE : "";
   const content = await callOpenRouterForJson({
     apiKey: input.apiKey,
     model: VISION_EXTRACTION_MODEL,
@@ -1981,7 +2510,9 @@ async function extractDocumentFieldsFromImage(input: {
         content:
           "Extrae datos inmobiliarios de documentos mexicanos. Devuelve exclusivamente JSON válido sin markdown. " +
           PROPERTY_AREA_EXTRACTION_GUIDANCE +
-          predialGuidance,
+          predialGuidance +
+          deedGuidance +
+          boletaGuidance,
       },
       {
         role: "user",
@@ -1990,7 +2521,7 @@ async function extractDocumentFieldsFromImage(input: {
             type: "text",
             text:
               `Documento tipo ${input.documentKind}. Extrae sólo lo visible con este shape: ` +
-              `${jsonShape}. ${PROPERTY_AREA_EXTRACTION_GUIDANCE}${predialGuidance} No inventes datos; usa null cuando no esté visible.`,
+              `${jsonShape}. ${PROPERTY_AREA_EXTRACTION_GUIDANCE}${predialGuidance}${deedGuidance}${boletaGuidance} No inventes datos; usa null cuando no esté visible.`,
           },
           { type: "image_url", image_url: { url: input.dataUrl } },
         ],
@@ -2027,6 +2558,13 @@ async function extractDocumentFieldsFromText(input: {
   documentKind: string;
   text: string;
 }) {
+  const isDeed = isPropertyDeedKind(input.documentKind);
+  const isBoleta = isBoletaRegistralKind(input.documentKind);
+  const jsonShape = isDeed
+    ? DEED_EXTRACTION_JSON_SHAPE
+    : DOCUMENT_EXTRACTION_JSON_SHAPE;
+  const deedGuidance = isDeed ? DEED_MULTI_PROPERTY_GUIDANCE : "";
+  const boletaGuidance = isBoleta ? BOLETA_LEGAL_ADDRESS_GUIDANCE : "";
   const content = await callOpenRouterForJson({
     apiKey: input.apiKey,
     model: PDF_TEXT_EXTRACTION_MODEL,
@@ -2035,13 +2573,15 @@ async function extractDocumentFieldsFromText(input: {
         role: "system",
         content:
           "Extrae datos inmobiliarios de documentos mexicanos a partir de texto OCR/PDF. Devuelve exclusivamente JSON válido sin markdown. " +
-          PROPERTY_AREA_EXTRACTION_GUIDANCE,
+          PROPERTY_AREA_EXTRACTION_GUIDANCE +
+          deedGuidance +
+          boletaGuidance,
       },
       {
         role: "user",
         content:
           `Documento tipo ${input.documentKind}. Extrae sólo datos presentes en el texto con este shape: ` +
-          `${DOCUMENT_EXTRACTION_JSON_SHAPE}. ${PROPERTY_AREA_EXTRACTION_GUIDANCE} No inventes datos; usa null cuando no esté visible.\n\n` +
+          `${jsonShape}. ${PROPERTY_AREA_EXTRACTION_GUIDANCE}${deedGuidance}${boletaGuidance} No inventes datos; usa null cuando no esté visible.\n\n` +
           input.text.slice(0, 24000),
       },
     ],
@@ -2336,6 +2876,15 @@ export async function runDocumentFieldExtraction(
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  // Escrituras multi-inmueble (p. ej. sucesión): seleccionar deterministamente
+  // el inmueble del caso usando un hint de dirección antes de persistir.
+  if (isPropertyDeedKind(document.kind)) {
+    const hint = await deedTargetHintFromCase(db, document.case_id);
+    extractionResult = {
+      model: extractionResult.model,
+      extraction: selectDeedPropertyFromExtraction(extractionResult.extraction, hint),
+    };
   }
   const updated = await updateOperationalCaseDocumentExtraction(db, {
     documentId: document.id,
@@ -3333,10 +3882,36 @@ export function addOperationalCaseTools(
                 return JSON.stringify(out);
               }
             }
+            const comparablesDecision =
+              typeof nextContext.comparables_decision === "string"
+                ? nextContext.comparables_decision
+                : null;
+            const hasAvaclickValuation =
+              isRecord(comparablesAnalysis) &&
+              isRecord(comparablesAnalysis.external_valuation) &&
+              typeof comparablesAnalysis.external_valuation.sale_average_mxn === "number";
+            const allowAvaclickOnlyAdvance =
+              comparablesDecision === "use_avaclick_primary" && hasAvaclickValuation;
+            if (
+              opCase.case_type === "property_optioning" &&
+              opCase.current_step === "comparables_in_progress" &&
+              input.current_step === "comparables_in_progress" &&
+              input.status === "waiting_internal" &&
+              !isRecord(comparablesAnalysis)
+            ) {
+              const out = {
+                ok: false,
+                error: "comparables_waiting_internal_requires_persist",
+                hint:
+                  "Antes de dejar comparables_in_progress en waiting_internal, ejecuta operational_case_persist_comparables_analysis. El artefacto persistido es la fuente de verdad para que el invariante emita una sola decisión de expansión.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
             if (
               input.current_step === "price_proposal_pending" &&
               opCase.current_step === "comparables_in_progress" &&
-              !comparablesHasDefensibleSample(comparablesAnalysis)
+              !allowAvaclickOnlyAdvance
             ) {
               const comparablesDq =
                 isRecord(comparablesAnalysis) && isRecord(comparablesAnalysis.data_quality)
@@ -3351,12 +3926,14 @@ export function addOperationalCaseTools(
                   ? "La búsqueda fue inválida por filtros (no insuficiencia real). Reintenta con filtros canónicos y persiste de nuevo."
                   : searchValidity === "missing_required_source"
                     ? "Falta una fuente obligatoria aplicable (Avaclick). Ejecuta get_avaclick_valuation y vuelve a persistir."
-                    : "No avances a price_proposal_pending hasta persistir comparables_analysis con data_quality.usable_count > 0. Si todas las fuentes tienen 0 usables, deja current_step=comparables_in_progress y status=waiting_internal con notify_user.";
+                    : "No avances a price_proposal_pending hasta persistir comparables_analysis con data_quality.usable_count > 0. Si todas las fuentes tienen 0 usables, deja current_step=comparables_in_progress y status=waiting_internal con notify_user. Solo se permite avanzar con Avaclick si existe decision humana explicita (context.comparables_decision=use_avaclick_primary).";
               const out = {
                 ok: false,
-                error: "comparables_sample_not_defensible",
+                error: "price_advance_must_use_persist",
                 search_validity: searchValidity,
-                hint: validityHint,
+                hint:
+                  "No avances directo a price_proposal_pending desde operational_case_update_state. Usa operational_case_persist_comparables_analysis para persistir comparables y dejar trazabilidad de Paso 4 (price_proposal_prepared + price_approval_requested).",
+                fallback_hint: validityHint,
               };
               await updateToolCallStatus(ctx.db, record.id, "failed", out);
               return JSON.stringify(out);
@@ -3545,10 +4122,8 @@ export function addOperationalCaseTools(
               : {};
             const propertyDataUntrusted =
               analysisDataQuality.property_data_untrusted === true;
-            const avaclickExecuted = ((data ?? []) as PersistedToolCallRow[]).some(
-              (call) =>
-                call.tool_name === "get_avaclick_valuation" &&
-                call.status === "executed"
+            const avaclickSatisfied = ((data ?? []) as PersistedToolCallRow[]).some(
+              (call) => avaclickAttemptedNonRecoverable(call)
             );
             const avaclickRequired = requiresAvaclick(propertyData);
             const builtAreaReliable =
@@ -3561,14 +4136,15 @@ export function addOperationalCaseTools(
               avaclickRequired &&
               builtAreaReliable &&
               !propertyDataUntrusted &&
-              !avaclickExecuted
+              !avaclickSatisfied
             ) {
               const out = {
                 ok: false,
-                error: "missing_required_comparable_source",
+                error: "avaclick_required_before_persist",
+                retryable: true,
                 missing_source: "get_avaclick_valuation",
                 hint:
-                  "Para inmuebles residenciales con datos confiables debe ejecutarse Avaclick antes de persistir comparables_analysis.",
+                  "Ejecuta get_avaclick_valuation antes de operational_case_persist_comparables_analysis para inmuebles residenciales con datos confiables.",
               };
               await updateToolCallStatus(ctx.db, record.id, "failed", out);
               return JSON.stringify(out);
@@ -3621,20 +4197,42 @@ export function addOperationalCaseTools(
               kind: "comparables_analysis_persisted",
               source: "operational_case_persist_comparables_analysis",
               usable_count: usableCount,
+              unique_comparable_count:
+                typeof analysisDataQuality.unique_comparable_count === "number"
+                  ? analysisDataQuality.unique_comparable_count
+                  : null,
               ...(input.note ? { note: input.note } : {}),
             },
           });
 
+          let advanceResult: Awaited<ReturnType<typeof tryAdvanceComparablesAfterPersist>> | null =
+            null;
+          if (
+            comparablesHasDefensibleSample(analysis) &&
+            updated.current_step === "comparables_in_progress"
+          ) {
+            advanceResult = await tryAdvanceComparablesAfterPersist({
+              db: ctx.db,
+              opCase: updated,
+              userId: ctx.userId,
+              source: "operational_case_persist_comparables_analysis",
+              notifyUser: deps.notifyUser,
+            });
+          }
+
           const out = {
             ok: true,
-            case_id: updated.id,
-            version: updated.version,
+            case_id: advanceResult?.case?.id ?? updated.id,
+            version: advanceResult?.case?.version ?? updated.version,
             initial_expected_version: input.expected_version,
             actual_version_used: opCaseBefore.version,
             defensible_sample: comparablesHasDefensibleSample(analysis),
             usable_count: usableCount,
             stats: analysis.stats,
             data_quality: analysisDataQuality,
+            advanced_to_price_proposal: advanceResult?.advanced === true,
+            price_approval_notified: advanceResult?.notified === true,
+            advance_skip_reason: advanceResult?.skipReason ?? null,
           };
           await updateToolCallStatus(ctx.db, record.id, "executed", out);
           return JSON.stringify(out);
@@ -3868,17 +4466,25 @@ export function addOperationalCaseTools(
           case_id?: string;
         }) => {
           const caseId = input.case_id ?? ctx.caseId ?? undefined;
+          const canonicalKind = canonicalizeNotifyKind(input.kind);
           const record = await createTrackedToolCall(ctx, "notify_user",
             input as unknown as Record<string, unknown>,
             false);
           try {
+            // Cargar el caso para TODOS los kinds ligados a caso, no solo dos:
+            // de lo contrario los guards de comparables_analysis/price_approval
+            // (que requieren `opCase`) nunca disparan y notificaciones
+            // informativas se vuelven pendientes humanos que detienen el flujo.
             const opCase =
-              (input.kind === "property_data_review" ||
-                input.kind === "comparables_insufficient_data") &&
+              (CASE_BOUND_NOTIFY_KINDS.has(canonicalKind) ||
+                looksLikeComparablesSummaryNotification(
+                  canonicalKind,
+                  input.text
+                )) &&
               caseId
                 ? await getOperationalCase(ctx.db, caseId)
                 : null;
-            if (input.kind === "property_data_review" && opCase) {
+            if (canonicalKind === "property_data_review" && opCase) {
               const documents = await listOperationalCaseDocuments(ctx.db, {
                 caseId: opCase.id,
                 statuses: ["received"],
@@ -3984,7 +4590,7 @@ export function addOperationalCaseTools(
                 return JSON.stringify(out);
               }
             }
-            if (input.kind === "comparables_insufficient_data" && opCase) {
+            if (canonicalKind === "comparables_insufficient_data" && opCase) {
               const context =
                 opCase.context_jsonb && typeof opCase.context_jsonb === "object"
                   ? (opCase.context_jsonb as Record<string, unknown>)
@@ -4011,20 +4617,279 @@ export function addOperationalCaseTools(
                 await updateToolCallStatus(ctx.db, record.id, "failed", out);
                 return JSON.stringify(out);
               }
+              const usableCount =
+                typeof dataQuality?.usable_count === "number"
+                  ? dataQuality.usable_count
+                  : 0;
+              const insufficientComparablesInProgress =
+                opCase.current_step === "comparables_in_progress" &&
+                searchValidity === "insufficient_market_data" &&
+                usableCount <= 0;
+              const requiresDecisionNotification =
+                insufficientComparablesInProgress &&
+                opCase.status === "waiting_internal";
+              if (requiresDecisionNotification) {
+                const out = {
+                  ok: false,
+                  error: "comparables_decision_required_before_notify",
+                  search_validity: searchValidity,
+                  usable_count: usableCount,
+                  expected_kind: "comparables_search_expansion_decision",
+                  hint:
+                    "Cuando el caso queda waiting_internal por insuficiencia real, no uses comparables_insufficient_data. Pide una decisión concreta con notify_user(kind=comparables_search_expansion_decision).",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+              if (insufficientComparablesInProgress) {
+                const out = {
+                  ok: false,
+                  error: "comparables_informational_copy_blocked",
+                  search_validity: searchValidity,
+                  usable_count: usableCount,
+                  expected_kind: "comparables_search_expansion_decision",
+                  hint:
+                    "En comparables_in_progress con muestra insuficiente no envíes copy genérico de insuficiencia. Usa notify_user(kind=comparables_search_expansion_decision) con opciones accionables.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
             }
-            const notificationText =
-              input.kind === "property_data_review"
-                ? canonicalizePropertyDataReviewText(opCase, input.text)
-                : input.text;
+            if (canonicalKind === "comparables_search_expansion_decision" && opCase) {
+              const context =
+                opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                  ? (opCase.context_jsonb as Record<string, unknown>)
+                  : {};
+              const comparablesAnalysis = isRecord(context.comparables_analysis)
+                ? context.comparables_analysis
+                : null;
+              const recentEvents = await getRecentOperationalCaseEvents(
+                ctx.db,
+                opCase.id,
+                40
+              );
+              if (comparablesSearchExpansionDecisionAlreadyRequested(recentEvents)) {
+                const out = {
+                  ok: true,
+                  status: "comparables_search_expansion_decision_already_requested",
+                  skipped: true,
+                  case_id: opCase.id,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "executed", out);
+                return JSON.stringify(out);
+              }
+              if (
+                opCase.case_type === "property_optioning" &&
+                opCase.current_step === "comparables_in_progress" &&
+                !comparablesAnalysis
+              ) {
+                const out = {
+                  ok: false,
+                  error: "comparables_analysis_required_before_decision_notify",
+                  expected_tool: "operational_case_persist_comparables_analysis",
+                  hint:
+                    "No notifiques decisión de expansión antes de persistir comparables_analysis. Ejecuta operational_case_persist_comparables_analysis; el invariante post-agent emitirá un único pendiente accionable si usable_count sigue en 0.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+              if (
+                opCase.case_type === "property_optioning" &&
+                opCase.current_step === "comparables_in_progress"
+              ) {
+                const out = {
+                  ok: false,
+                  error: "comparables_decision_notify_owned_by_invariant",
+                  hint:
+                    "No envíes notify_user(kind=comparables_search_expansion_decision) directamente en este paso. Deja que el invariante post-agent emita una sola notificación desde comparables_analysis.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
+            if (
+              looksLikeComparablesSummaryNotification(canonicalKind, input.text) &&
+              opCase
+            ) {
+              const context =
+                opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                  ? (opCase.context_jsonb as Record<string, unknown>)
+                  : {};
+              const recentEvents = await getRecentOperationalCaseEvents(
+                ctx.db,
+                opCase.id,
+                20
+              );
+              const priceApprovalAlreadyRequested = recentEvents.some((event) => {
+                const payload =
+                  event.payload_jsonb &&
+                  typeof event.payload_jsonb === "object" &&
+                  !Array.isArray(event.payload_jsonb)
+                    ? (event.payload_jsonb as Record<string, unknown>)
+                    : null;
+                return payload?.kind === "price_approval_requested";
+              });
+              const pricingProposal = isRecord(context.pricing_proposal)
+                ? context.pricing_proposal
+                : null;
+              const hasConcreteProposal =
+                pricingProposal != null &&
+                typeof pricingProposal.salida === "number" &&
+                typeof pricingProposal.ideal === "number" &&
+                typeof pricingProposal.minimo === "number";
+              if (
+                opCase.current_step === "comparables_in_progress" &&
+                !hasConcreteProposal
+              ) {
+                const out = {
+                  ok: false,
+                  error: "comparables_ready_summary_blocked",
+                  hint:
+                    "No envíes comparables_analysis como pendiente humano en comparables_in_progress. Avanza a price_proposal_pending y solicita aprobación con notify_user(kind=price_approval) cuando exista pricing_proposal concreto (minimo/ideal/salida).",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+              if (
+                opCase.current_step === "price_proposal_pending" &&
+                (hasConcreteProposal || priceApprovalAlreadyRequested)
+              ) {
+                const out = {
+                  ok: false,
+                  error: "comparables_summary_after_price_approval_blocked",
+                  hint:
+                    "Ya existe propuesta de precio en revisión. Evita resend de comparables_analysis; usa únicamente price_approval con la propuesta canónica.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
+            if (canonicalKind === "property_data_quality_review" && opCase) {
+              const lowerText = `${input.text ?? ""}`.toLowerCase();
+              const looksComparablesOrAvaclick =
+                /(avaclick|avaluo|avaluos|valuacion|comparables?|easybroker|bigquery|precio)/.test(
+                  lowerText
+                );
+              if (looksComparablesOrAvaclick) {
+                const out = {
+                  ok: false,
+                  error: "wrong_notification_kind_for_comparables",
+                  hint:
+                    "property_data_quality_review solo aplica a validación de m²/superficie predial. Para temas de comparables/Avaclick usa price_approval (si ya hay propuesta) o deja warning en comparables_analysis.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
+            if (canonicalKind === "price_approval" && opCase) {
+              const context =
+                opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                  ? (opCase.context_jsonb as Record<string, unknown>)
+                  : {};
+              const pricingProposal = isRecord(context.pricing_proposal)
+                ? context.pricing_proposal
+                : null;
+              const salida = positiveNumberFromUnknown(pricingProposal?.salida);
+              const ideal = positiveNumberFromUnknown(pricingProposal?.ideal);
+              const minimo = positiveNumberFromUnknown(pricingProposal?.minimo);
+              const hasConcreteProposal =
+                salida != null && ideal != null && minimo != null;
+              if (opCase.current_step === "comparables_in_progress") {
+                const out = {
+                  ok: false,
+                  error: "price_approval_blocked_before_advance",
+                  hint:
+                    "No solicites price_approval en comparables_in_progress. Tras operational_case_persist_comparables_analysis con muestra defendible el sistema avanza a price_proposal_pending, genera pricing_proposal y notifica price_approval con números concretos.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+              if (
+                opCase.current_step === "price_proposal_pending" &&
+                !hasConcreteProposal
+              ) {
+                const out = {
+                  ok: false,
+                  error: "pricing_proposal_required_before_price_approval",
+                  hint:
+                    "Antes de solicitar price_approval debes persistir pricing_proposal con valores concretos (salida, ideal, minimo) y rationale/comparables_used.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+
+              const recentEvents = await getRecentOperationalCaseEvents(
+                ctx.db,
+                opCase.id,
+                20
+              );
+              if (priceApprovalNotificationAlreadyDelivered(recentEvents)) {
+                const out = {
+                  ok: false,
+                  error: "price_approval_already_notified",
+                  hint:
+                    "El sistema ya solicitó aprobación de precio con la propuesta canónica. No reenvíes notify_user(kind=price_approval); resuelve el pendiente existente o espera la decisión del asesor.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+              if (
+                opCase.current_step === "price_proposal_pending" &&
+                hasConcreteProposal &&
+                looksLikeComparablesCompletionProse(input.text) &&
+                (priceApprovalNotificationAlreadyDelivered(recentEvents) ||
+                  priceApprovalRequestEventExists(recentEvents))
+              ) {
+                const out = {
+                  ok: false,
+                  error: "price_approval_prose_summary_blocked",
+                  hint:
+                    "No envíes un resumen libre de comparables como price_approval. Tras operational_case_persist_comparables_analysis el sistema notifica automáticamente con salida/ideal/mínimo.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
+            let notificationText = input.text;
+            if (canonicalKind === "property_data_review") {
+              notificationText = canonicalizePropertyDataReviewText(opCase, input.text);
+            } else if (canonicalKind === "price_approval" && opCase) {
+              const priceContext =
+                opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                  ? (opCase.context_jsonb as Record<string, unknown>)
+                  : {};
+              const pricingProposalForNotify = isRecord(priceContext.pricing_proposal)
+                ? priceContext.pricing_proposal
+                : null;
+              const notifySalida = positiveNumberFromUnknown(
+                pricingProposalForNotify?.salida
+              );
+              const notifyIdeal = positiveNumberFromUnknown(pricingProposalForNotify?.ideal);
+              const notifyMinimo = positiveNumberFromUnknown(
+                pricingProposalForNotify?.minimo
+              );
+              if (
+                notifySalida != null &&
+                notifyIdeal != null &&
+                notifyMinimo != null &&
+                pricingProposalForNotify
+              ) {
+                notificationText = formatPriceApprovalNotifyText(
+                  pricingProposalForNotify as PricingProposal
+                );
+              }
+            }
             const result = await deps.notifyUser(
               ctx.db,
               ctx.userId,
               {
                 text: notificationText,
-                kind: input.kind,
+                // Persistimos el kind canónico para que la config del inbox
+                // (informational vs. actionable) se aplique correctamente.
+                kind: canonicalKind,
                 data: {
                   ...(caseId ? { case_id: caseId } : {}),
-                  ...(input.kind === "price_approval"
+                  ...(canonicalKind === "price_approval"
                     ? {
                         artifact_key: "pricing_proposal",
                         actions: ["approve", "adjust", "reject"],

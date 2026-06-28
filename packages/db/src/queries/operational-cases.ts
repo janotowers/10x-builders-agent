@@ -400,19 +400,31 @@ export interface InsertOperationalCaseEventInput {
   eventType: OperationalCaseEventType;
   actor: OperationalCaseEventActor;
   payload?: Record<string, unknown>;
+  /**
+   * Paso del flujo al que el evento pertenece de forma autoritativa.
+   * Cuando se provee, se persiste en `payload_jsonb.step_key` y la UI lo usa
+   * como única fuente de verdad para atribuir el evento a un paso (sin heurística
+   * por enumeración). Los eventos sin este campo (históricos) caen al fallback.
+   */
+  stepKey?: string;
 }
 
 export async function insertOperationalCaseEvent(
   db: DbClient,
   input: InsertOperationalCaseEventInput
 ): Promise<OperationalCaseEvent> {
+  const basePayload = input.payload ?? {};
+  const payload =
+    typeof input.stepKey === "string" && input.stepKey.trim()
+      ? { ...basePayload, step_key: input.stepKey.trim() }
+      : basePayload;
   const { data, error } = await db
     .from("operational_case_events")
     .insert({
       case_id: input.caseId,
       event_type: input.eventType,
       actor: input.actor,
-      payload_jsonb: input.payload ?? {},
+      payload_jsonb: payload,
     })
     .select("*")
     .single();

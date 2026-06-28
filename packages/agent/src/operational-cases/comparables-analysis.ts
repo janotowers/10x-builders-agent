@@ -69,6 +69,16 @@ function latestExecutedToolCall(
     .at(-1);
 }
 
+function latestToolCall(
+  toolCalls: ComparableToolCallInput[],
+  toolName: ComparableSourceToolName
+) {
+  return [...toolCalls]
+    .filter((call) => call.tool_name === toolName)
+    .sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")))
+    .at(-1);
+}
+
 function resultArray(result: RecordValue | null | undefined, key: "results" | "rows") {
   const value = result?.[key];
   return Array.isArray(value) ? value.filter(isRecord) : [];
@@ -77,6 +87,53 @@ function resultArray(result: RecordValue | null | undefined, key: "results" | "r
 function comparableKey(row: ComparableRow) {
   if (row.id) return `${row.source}:${row.id}`;
   return `${row.source}:${row.url ?? ""}:${row.title ?? ""}:${row.price ?? ""}:${row.area_m2 ?? ""}`;
+}
+
+/** Mínimo de comparables ÚNICOS (cross-source) para una muestra defendible. */
+export const MIN_DEFENSIBLE_UNIQUE_COMPARABLES = 3;
+
+function normalizeUrlForKey(url: string): string {
+  return url.trim().toLowerCase().replace(/[?#].*$/, "").replace(/\/+$/, "");
+}
+
+/**
+ * Clave canónica que IGNORA la fuente para deduplicar el mismo inmueble cuando
+ * aparece en varias fuentes (p. ej. EasyBroker activas + cerradas, o EasyBroker
+ * + inventario interno). Prioriza identificadores estables (url, id de
+ * EasyBroker) y cae a una firma fuerte (dirección/título + precio + área) solo
+ * cuando los tres componentes están presentes, para evitar fusiones falsas.
+ */
+function canonicalComparableKey(row: ComparableRow): string {
+  const url = cleanString(row.url);
+  if (url) return `u:${normalizeUrlForKey(url)}`;
+  const id = cleanString(row.id)?.toLowerCase();
+  if (id) {
+    // EasyBroker activas/cerradas comparten el mismo espacio de ids.
+    if (row.source === "easybroker_active" || row.source === "easybroker_historical") {
+      return `eb:${id}`;
+    }
+    return `${row.source}:${id}`;
+  }
+  const addr = cleanString(row.address) ?? cleanString(row.title);
+  if (addr && positiveNumber(row.price) && positiveNumber(row.area_m2)) {
+    return `s:${addr.toLowerCase().replace(/\s+/g, " ")}|${row.price}|${row.area_m2}`;
+  }
+  // Sin identificadores ni firma fuerte: mantener único por fuente.
+  return `weak:${comparableKey(row)}`;
+}
+
+/** Filas usables deduplicadas cross-source por clave canónica. */
+function uniqueUsableComparables(rows: ComparableRow[]): ComparableRow[] {
+  const seen = new Set<string>();
+  const out: ComparableRow[] = [];
+  for (const row of rows) {
+    if (!row.usable_as_comparable) continue;
+    const key = canonicalComparableKey(row);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
 }
 
 function easyBrokerQualityReasons(row: Pick<ComparableRow, "price" | "id" | "url">) {
@@ -352,7 +409,7 @@ function collectIntegrationIssues(
   for (const toolName of SOURCE_TOOL_NAMES) {
     const issue = detectIntegrationIssue(
       toolName,
-      latestExecutedToolCall(toolCalls, toolName)?.result_json
+      latestToolCall(toolCalls, toolName)?.result_json
     );
     if (issue) issues.push(issue);
   }
@@ -369,13 +426,109 @@ function integrationIssueWarning(issue: ComparableIntegrationIssue): string {
   return `${issue.label} falló${issue.hint ? `: ${issue.hint}` : "."} El análisis continúa con las fuentes disponibles.`;
 }
 
+export type ComparableSourceConflict = {
+  market_price_per_m2: number;
+  avaclick_price_per_m2: number;
+  ratio: number;
+  divergence_pct: number;
+  severity: "warn" | "high";
+  detail: string;
+};
+
+/** Umbral de divergencia (±%) entre mediana de mercado y Avaclick por m². */
+const SOURCE_CONFLICT_DIVERGENCE_PCT = 30;
+const SOURCE_CONFLICT_HIGH_DIVERGENCE_PCT = 60;
+
+/**
+ * Detecta discrepancia material entre el precio por m² mediano del mercado
+ * (EasyBroker/BigQuery) y Avaclick, y también entre precios totales cuando hay
+ * área del sujeto y valuación Avaclick. Sirve para alertar al asesor en vez de
+ * elegir ciegamente una fuente cuando difieren mucho.
+ */
+function detectSourceConflict(params: {
+  marketPricePerM2P50: number | null;
+  marketTotalP50: number | null;
+  avaclick: RecordValue | null;
+}): ComparableSourceConflict | null {
+  const market = params.marketPricePerM2P50;
+  const ava = params.avaclick;
+  if (!isRecord(ava)) return null;
+
+  const divergences: Array<{ pct: number; detail: string }> = [];
+
+  if (positiveNumber(market)) {
+    const avaMin = numberOrNull(ava.price_per_m2_min_mxn);
+    const avaMax = numberOrNull(ava.price_per_m2_max_mxn);
+    const avaCandidates = [avaMin, avaMax].filter((v): v is number => positiveNumber(v));
+    if (avaCandidates.length > 0) {
+      const avaMid =
+        avaCandidates.reduce((sum, value) => sum + value, 0) / avaCandidates.length;
+      if (positiveNumber(avaMid)) {
+        const ratio = market / avaMid;
+        const divergencePct = Math.round(Math.abs(ratio - 1) * 100);
+        if (divergencePct >= SOURCE_CONFLICT_DIVERGENCE_PCT) {
+          divergences.push({
+            pct: divergencePct,
+            detail:
+              `El precio por m² de mercado (~${Math.round(market).toLocaleString("es-MX")}) ` +
+              `difiere ${divergencePct}% del de Avaclick (~${Math.round(avaMid).toLocaleString("es-MX")}).`,
+          });
+        }
+      }
+    }
+  }
+
+  const avaclickAvg = numberOrNull(ava.sale_average_mxn);
+  const marketTotal = params.marketTotalP50;
+  if (positiveNumber(avaclickAvg) && positiveNumber(marketTotal)) {
+    const totalDivergencePct = Math.round(
+      (Math.abs(marketTotal - avaclickAvg) / Math.max(marketTotal, avaclickAvg)) * 100
+    );
+    if (totalDivergencePct >= SOURCE_CONFLICT_DIVERGENCE_PCT) {
+      divergences.push({
+        pct: totalDivergencePct,
+        detail:
+          `El precio total de mercado (~${Math.round(marketTotal).toLocaleString("es-MX")}) ` +
+          `difiere ${totalDivergencePct}% del promedio Avaclick (~${Math.round(avaclickAvg).toLocaleString("es-MX")}).`,
+      });
+    }
+  }
+
+  if (divergences.length === 0) return null;
+
+  const worst = divergences.reduce((max, item) => (item.pct > max.pct ? item : max), divergences[0]!);
+  const severity: "warn" | "high" =
+    worst.pct >= SOURCE_CONFLICT_HIGH_DIVERGENCE_PCT ? "high" : "warn";
+  const avaMin = numberOrNull(ava.price_per_m2_min_mxn);
+  const avaMax = numberOrNull(ava.price_per_m2_max_mxn);
+  const avaMidPpm2 =
+    [avaMin, avaMax].filter((v): v is number => positiveNumber(v)).length > 0
+      ? [avaMin, avaMax]
+          .filter((v): v is number => positiveNumber(v))
+          .reduce((sum, value) => sum + value, 0) /
+        [avaMin, avaMax].filter((v): v is number => positiveNumber(v)).length
+      : null;
+
+  return {
+    market_price_per_m2: positiveNumber(market) ? Math.round(market) : 0,
+    avaclick_price_per_m2: positiveNumber(avaMidPpm2) ? Math.round(avaMidPpm2) : 0,
+    ratio:
+      positiveNumber(market) && positiveNumber(avaMidPpm2)
+        ? Math.round((market / avaMidPpm2) * 100) / 100
+        : 0,
+    divergence_pct: worst.pct,
+    severity,
+    detail: `${worst.detail} Revisar supuestos antes de fijar precio.`,
+  };
+}
+
 export function buildComparablesAnalysisFromToolCalls(
   toolCalls: ComparableToolCallInput[]
 ) {
   const activeCall = latestExecutedToolCall(toolCalls, "easybroker_search_listings");
   const historicalCall = latestExecutedToolCall(toolCalls, "easybroker_search_closed_deals");
   const bqCall = latestExecutedToolCall(toolCalls, "bigquery_lookup_local_comparables");
-  const avaclickCall = latestExecutedToolCall(toolCalls, "get_avaclick_valuation");
+  const avaclickCall = latestToolCall(toolCalls, "get_avaclick_valuation");
 
   const active = resultArray(activeCall?.result_json, "results").map((row) =>
     normalizeEasyBrokerRow(row, "easybroker_active")
@@ -387,13 +540,25 @@ export function buildComparablesAnalysisFromToolCalls(
   const avaclickOutcome = normalizeAvaclickValuation(avaclickCall?.result_json);
   const avaclickValuation = avaclickOutcome.valuation;
 
-  const activeKeys = new Set(active.map(comparableKey));
-  const historical = historicalRaw.filter((row) => !activeKeys.has(comparableKey(row)));
+  const activeKeys = new Set(active.map(canonicalComparableKey));
+  const historical = historicalRaw.filter(
+    (row) => !activeKeys.has(canonicalComparableKey(row))
+  );
   const duplicateHistoricalCount = historicalRaw.length - historical.length;
   const allRows = [...active, ...historical, ...internal];
   const deduped = dedupeComparableRows(allRows);
   const usableRows = deduped.rows.filter((row) => row.usable_as_comparable);
   const incompleteCount = deduped.rows.length - usableRows.length;
+  const uniqueUsableRows = uniqueUsableComparables(deduped.rows);
+  const uniqueComparableCount = uniqueUsableRows.length;
+  const crossSourceDuplicates = usableRows.length - uniqueComparableCount;
+  const uniquePricePerM2Stats = pricePerM2Stats(uniqueUsableRows);
+  const uniquePriceStats = priceStats(uniqueUsableRows);
+  const sourceConflict = detectSourceConflict({
+    marketPricePerM2P50: uniquePricePerM2Stats.p50,
+    marketTotalP50: uniquePriceStats.p50,
+    avaclick: avaclickValuation,
+  });
   const warnings: string[] = [];
   let propertyDataUntrusted = false;
   const invalidFiltersDetected = toolCalls.some((call) => {
@@ -405,7 +570,14 @@ export function buildComparablesAnalysisFromToolCalls(
   const missingRequiredSourceDetected = toolCalls.some((call) => {
     if (!isRecord(call.result_json)) return false;
     const error = cleanString(call.result_json.error);
-    return error === "missing_required_comparable_source";
+    return (
+      error === "missing_required_comparable_source" ||
+      error === "avaclick_required_before_persist"
+    );
+  });
+  const fallbackModeradoAttempted = toolCalls.some((call) => {
+    if (!isRecord(call.result_json)) return false;
+    return isRecord(call.result_json.search_attempts);
   });
 
   if (!activeCall) warnings.push("No se ejecutó easybroker_search_listings en este turno.");
@@ -437,6 +609,11 @@ export function buildComparablesAnalysisFromToolCalls(
       "Faltó una fuente obligatoria de comparables para este tipo de inmueble (Avaclick)."
     );
   }
+  if (fallbackModeradoAttempted && usableRows.length === 0) {
+    warnings.push(
+      "Se agotó fallback moderado de búsqueda (área expandida y relajación de exactitud) sin obtener comparables usables."
+    );
+  }
   if (duplicateHistoricalCount > 0) {
     warnings.push(
       `${duplicateHistoricalCount} resultado(s) de EasyBroker cerradas ya estaban presentes en activas y se deduplicaron.`
@@ -444,6 +621,26 @@ export function buildComparablesAnalysisFromToolCalls(
   }
   if (deduped.duplicates > 0) {
     warnings.push(`${deduped.duplicates} comparable(s) duplicados adicionales se omitieron.`);
+  }
+  if (crossSourceDuplicates > 0) {
+    warnings.push(
+      `${crossSourceDuplicates} comparable(s) usables aparecían en más de una fuente y se contaron una sola vez.`
+    );
+  }
+  if (
+    uniqueComparableCount > 0 &&
+    uniqueComparableCount < MIN_DEFENSIBLE_UNIQUE_COMPARABLES
+  ) {
+    warnings.push(
+      `Muestra insuficiente: solo ${uniqueComparableCount} comparable(s) único(s) (mínimo defendible: ${MIN_DEFENSIBLE_UNIQUE_COMPARABLES}). Ampliar criterios o pedir decisión al asesor.`
+    );
+  } else if (uniqueComparableCount === MIN_DEFENSIBLE_UNIQUE_COMPARABLES) {
+    warnings.push(
+      `Muestra en el mínimo defendible (${MIN_DEFENSIBLE_UNIQUE_COMPARABLES} comparables únicos); el rango de precio tiene mayor incertidumbre.`
+    );
+  }
+  if (sourceConflict) {
+    warnings.push(sourceConflict.detail);
   }
 
   const integrationIssues = collectIntegrationIssues(toolCalls);
@@ -476,7 +673,12 @@ export function buildComparablesAnalysisFromToolCalls(
     },
     data_quality: {
       usable_count: usableRows.length,
+      unique_comparable_count: uniqueComparableCount,
+      min_defensible_unique_comparables: MIN_DEFENSIBLE_UNIQUE_COMPARABLES,
+      at_minimum_sample: uniqueComparableCount === MIN_DEFENSIBLE_UNIQUE_COMPARABLES,
+      cross_source_duplicates: crossSourceDuplicates,
       incomplete_count: incompleteCount,
+      source_conflict: sourceConflict,
       warnings,
       integration_issues: integrationIssues,
       needs_user_reauth: needsUserReauth,
@@ -573,6 +775,10 @@ export function normalizeComparablesAnalysisForInsufficientN4Test(
     data_quality: {
       ...(isRecord(analysis.data_quality) ? analysis.data_quality : {}),
       usable_count: 0,
+      unique_comparable_count: 0,
+      at_minimum_sample: false,
+      cross_source_duplicates: 0,
+      source_conflict: null,
       incomplete_count:
         active.length + historical.length + internal.length,
       warnings: mergedWarnings,
@@ -592,8 +798,27 @@ export function comparablesUsableCount(analysis: unknown): number {
   return 0;
 }
 
+/**
+ * Comparables ÚNICOS (cross-source) usables. Para artefactos nuevos lee
+ * `data_quality.unique_comparable_count`; para artefactos antiguos sin ese campo
+ * cae a `usable_count` para no romper compatibilidad.
+ */
+export function comparablesUniqueCount(analysis: unknown): number {
+  if (!isRecord(analysis)) return 0;
+  const dq = isRecord(analysis.data_quality) ? analysis.data_quality : null;
+  if (dq && typeof dq.unique_comparable_count === "number") {
+    return Math.max(0, dq.unique_comparable_count);
+  }
+  return comparablesUsableCount(analysis);
+}
+
+/**
+ * Muestra defendible = al menos `MIN_DEFENSIBLE_UNIQUE_COMPARABLES` comparables
+ * únicos (cross-source). Avaclick es una valoración, no un comparable, y no
+ * cuenta para este umbral.
+ */
 export function comparablesHasDefensibleSample(analysis: unknown): boolean {
-  return comparablesUsableCount(analysis) > 0;
+  return comparablesUniqueCount(analysis) >= MIN_DEFENSIBLE_UNIQUE_COMPARABLES;
 }
 
 export function validateComparablesAnalysisArtifact(value: unknown) {

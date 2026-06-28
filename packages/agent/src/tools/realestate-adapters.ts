@@ -611,7 +611,11 @@ export function addRealEstateTools(
             input as unknown as Record<string, unknown>,
             false
           );
-          const out = await geocodePropertyAddress(input);
+          const enrichedInput = await enrichGeocodeInputFromCaseContext(ctx, input);
+          const out = await geocodePropertyAddress(enrichedInput);
+          if (out.ok && out.status === "ok" && out.confidence === "high") {
+            await persistGeocodeResultToCaseContext(ctx, enrichedInput, out);
+          }
           await updateToolCallStatus(
             ctx.db,
             record.id,
@@ -627,7 +631,7 @@ export function addRealEstateTools(
           schema: z
             .object({
               street: z.string().min(1).optional(),
-              exterior_number: z.string().min(1).optional(),
+              exterior_number: z.string().optional(),
               neighborhood: z.string().min(1).optional(),
               municipality: z.string().min(1).optional(),
               state: z.string().min(1).optional(),
@@ -662,12 +666,40 @@ export function addRealEstateTools(
     tools.push(
       tool(
         async (input: AvaclickValuationInput) => {
+          // Enriquecemos ANTES de persistir el tool_call para que arguments_json
+          // refleje exactamente lo que se envió a Avaclick (superficies,
+          // dirección, conservación), no solo el input parcial del agente.
+          let enrichedInput = input;
+          try {
+            enrichedInput = await enrichAvaclickInputFromCaseContext(ctx, input);
+          } catch {
+            enrichedInput = input;
+          }
           const record = await createTrackedToolCall(
             ctx,
             "get_avaclick_valuation",
-            input as unknown as Record<string, unknown>,
+            enrichedInput as unknown as Record<string, unknown>,
             false
           );
+          if (enrichedInput.latitude == null || enrichedInput.longitude == null) {
+            const out = {
+              ok: false,
+              status: "geocode_unresolved",
+              message:
+                "No se resolvieron coordenadas para Avaclick. Ejecuta geocode_property_address con direccion canonica o confirma candidato antes de reintentar.",
+              retryable: true,
+              missing_required_fields: ["latitude", "longitude"],
+              hint:
+                "Completa geocoding del inmueble objetivo y vuelve a ejecutar get_avaclick_valuation.",
+            };
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              "failed",
+              out as unknown as Record<string, unknown>
+            );
+            return JSON.stringify(out);
+          }
           const creds = await resolveAvaclickCredentials(ctx);
           if (!creds) {
             const out = {
@@ -686,7 +718,7 @@ export function addRealEstateTools(
             return JSON.stringify(out);
           }
           try {
-            const out = await getAvaclickValuation(input, creds);
+            const out = await getAvaclickValuation(enrichedInput, creds);
             if (out.ok) {
               await markAccountSecretSuccess(
                 ctx,
@@ -2480,6 +2512,14 @@ function errorMessageFromPayload(payload: Record<string, unknown>) {
   return "error sin detalle";
 }
 
+function comparableResultCount(payload: Record<string, unknown>) {
+  if (typeof payload.count === "number" && Number.isFinite(payload.count)) {
+    return payload.count;
+  }
+  const results = Array.isArray(payload.results) ? payload.results : [];
+  return results.length;
+}
+
 function makeEasyBrokerSearchTool(
   ctx: ToolContext,
   toolId: "easybroker_search_listings" | "easybroker_search_closed_deals"
@@ -2534,17 +2574,87 @@ function makeEasyBrokerSearchTool(
         return JSON.stringify(out);
       }
       try {
-        const out = await searchEasyBrokerProperties(
+        const primaryFilters = normalizedInput.filters as EasyBrokerSearchInput;
+        const fallbackLadder = Array.isArray(normalizedInput.fallback_filter_ladder)
+          ? normalizedInput.fallback_filter_ladder
+              .filter((step) => isRecord(step) && isRecord(step.filters))
+              .map((step) => ({
+                level:
+                  typeof step.level === "string" ? step.level : "expanded",
+                reason:
+                  typeof step.reason === "string" ? step.reason : "fallback",
+                filters: step.filters as EasyBrokerSearchInput,
+              }))
+          : [];
+
+        let out = await searchEasyBrokerProperties(
           ctx,
           toolId,
-          normalizedInput.filters as EasyBrokerSearchInput,
+          primaryFilters,
           creds
         );
+        let appliedFallbackLevel: string | null = null;
+        const searchAttempts: Array<Record<string, unknown>> = [
+          {
+            level: "strict",
+            reason: "canonical_strict",
+            filters: primaryFilters,
+            count: comparableResultCount(out),
+          },
+        ];
+
+        if (out.ok !== false && comparableResultCount(out) === 0) {
+          for (const step of fallbackLadder) {
+            if (JSON.stringify(step.filters) === JSON.stringify(primaryFilters)) continue;
+            const retryOut = await searchEasyBrokerProperties(
+              ctx,
+              toolId,
+              step.filters,
+              creds
+            );
+            searchAttempts.push({
+              level: step.level,
+              reason: step.reason,
+              filters: step.filters,
+              count: comparableResultCount(retryOut),
+            });
+            if (retryOut.ok !== false) {
+              out = retryOut;
+            }
+            if (retryOut.ok !== false && comparableResultCount(retryOut) > 0) {
+              appliedFallbackLevel = step.level;
+              break;
+            }
+          }
+        }
+
+        const filtersUsed =
+          appliedFallbackLevel == null
+            ? normalizedInput.filters
+            : (searchAttempts.find((attempt) => attempt.level === appliedFallbackLevel)
+                ?.filters as EasyBrokerSearchInput | undefined) ?? normalizedInput.filters;
+
         const outWithFilters = {
           ...out,
-          filters_used: normalizedInput.filters,
+          filters_used: filtersUsed,
           filter_warnings:
-            normalizedInput.warnings.length > 0 ? normalizedInput.warnings : undefined,
+            normalizedInput.warnings.length > 0 || appliedFallbackLevel != null
+              ? [
+                  ...normalizedInput.warnings,
+                  ...(appliedFallbackLevel != null
+                    ? [
+                        `Se aplico fallback de comparables en nivel ${appliedFallbackLevel} tras 0 resultados iniciales en banda estricta.`,
+                      ]
+                    : []),
+                ]
+              : undefined,
+          search_attempts:
+            searchAttempts.length > 1
+              ? {
+                  strict_filters: normalizedInput.filters,
+                  attempts: searchAttempts,
+                }
+              : undefined,
         };
         if (out.ok !== false) {
           await markAccountSecretSuccess(
@@ -2920,6 +3030,10 @@ function normalizeAvaclickToolInput(raw: unknown): unknown {
   const customer = asRecord(root.customer) ?? {};
   const property = asRecord(root.property) ?? {};
   const propertyData = asRecord(root.property_data) ?? {};
+  const address = asRecord(root.address) ??
+    asRecord(property.address) ??
+    asRecord(propertyData.address) ??
+    {};
   const merged: Record<string, unknown> = { ...propertyData, ...property, ...root };
   return {
     customer_name:
@@ -2945,50 +3059,67 @@ function normalizeAvaclickToolInput(raw: unknown): unknown {
     ),
     latitude:
       typeof merged.latitude === "number"
-        ? merged.latitude
+        ? merged.latitude !== 0
+          ? merged.latitude
+          : undefined
         : (() => {
             const parsed = Number(merged.latitude ?? merged.lat);
-            return Number.isFinite(parsed) ? parsed : undefined;
+            return Number.isFinite(parsed) && parsed !== 0 ? parsed : undefined;
           })(),
     longitude:
       typeof merged.longitude === "number"
-        ? merged.longitude
+        ? merged.longitude !== 0
+          ? merged.longitude
+          : undefined
         : (() => {
             const parsed = Number(merged.longitude ?? merged.lng ?? merged.lon);
-            return Number.isFinite(parsed) ? parsed : undefined;
+            return Number.isFinite(parsed) && parsed !== 0 ? parsed : undefined;
           })(),
     state_name:
       firstNonEmptyComparableString(
         merged.state_name,
         merged.estado,
-        property.state_name
+        property.state_name,
+        address.state,
+        address.estado
       ) ?? undefined,
     municipality_name:
       firstNonEmptyComparableString(
         merged.municipality_name,
         merged.municipio,
-        property.municipality_name
+        property.municipality_name,
+        address.municipality,
+        address.municipio,
+        address.city
       ) ?? undefined,
     neighborhood_name:
       firstNonEmptyComparableString(
         merged.neighborhood_name,
         merged.colonia,
         merged.neighborhood,
-        property.neighborhood_name
+        property.neighborhood_name,
+        address.neighborhood,
+        address.colonia
       ) ?? undefined,
     zip_code:
       firstNonEmptyComparableString(
         merged.zip_code,
         merged.postal_code,
         merged.cp,
-        property.zip_code
+        property.zip_code,
+        address.postal_code,
+        address.cp,
+        address.zip_code
       ) ?? undefined,
     street:
       firstNonEmptyComparableString(
         merged.street,
         merged.calle,
         merged.address_line,
-        property.street
+        property.street,
+        address.street,
+        address.full,
+        address.formatted
       ) ?? undefined,
     lot: firstNonEmptyComparableString(merged.lot, merged.lote) ?? undefined,
     block: firstNonEmptyComparableString(merged.block, merged.manzana) ?? undefined,
@@ -2996,8 +3127,13 @@ function normalizeAvaclickToolInput(raw: unknown): unknown {
       firstNonEmptyComparableString(merged.interior_number, merged.numero_interior) ??
       undefined,
     exterior_number:
-      firstNonEmptyComparableString(merged.exterior_number, merged.numero_exterior) ??
-      undefined,
+      firstNonEmptyComparableString(
+        merged.exterior_number,
+        merged.numero_exterior,
+        address.exterior_number,
+        address.numero_exterior,
+        address.number
+      ) ?? undefined,
     land_area_m2: comparablePositiveNumber(merged.land_area_m2 ?? merged.terreno),
     construction_area_m2: comparablePositiveNumber(
       merged.construction_area_m2 ??
@@ -3061,6 +3197,502 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+async function enrichGeocodeInputFromCaseContext(
+  ctx: ToolContext,
+  input: {
+    street?: string;
+    exterior_number?: string;
+    neighborhood?: string;
+    municipality?: string;
+    state?: string;
+    postal_code?: string;
+    country?: string;
+  }
+) {
+  const normalizedInput = {
+    street: cleanString(input.street),
+    exterior_number: cleanString(input.exterior_number),
+    neighborhood: cleanString(input.neighborhood),
+    municipality: cleanString(input.municipality),
+    state: cleanString(input.state),
+    postal_code: cleanString(input.postal_code),
+    country: cleanString(input.country),
+  };
+  if (!ctx.caseId) return normalizedInput;
+
+  const opCase = await getOperationalCase(ctx.db, ctx.caseId);
+  const caseContext = asRecord(opCase?.context_jsonb);
+  const propertyData = asRecord(caseContext?.property_data) ?? caseContext ?? {};
+  const address = asRecord(propertyData.address) ?? {};
+
+  return {
+    street:
+      normalizedInput.street ??
+      firstNonEmptyComparableString(
+        address.street,
+        address.full,
+        address.formatted,
+        propertyData.street,
+        propertyData.calle
+      ) ??
+      undefined,
+    exterior_number:
+      normalizedInput.exterior_number ??
+      firstNonEmptyComparableString(
+        address.exterior_number,
+        address.numero_exterior,
+        address.number,
+        propertyData.exterior_number,
+        propertyData.numero_exterior
+      ) ??
+      undefined,
+    neighborhood:
+      normalizedInput.neighborhood ??
+      firstNonEmptyComparableString(
+        propertyData.neighborhood,
+        propertyData.colonia,
+        address.neighborhood,
+        address.colonia
+      ) ??
+      undefined,
+    municipality:
+      normalizedInput.municipality ??
+      firstNonEmptyComparableString(
+        propertyData.municipality,
+        propertyData.municipio,
+        propertyData.city,
+        address.municipality,
+        address.municipio,
+        address.city
+      ) ??
+      undefined,
+    state:
+      normalizedInput.state ??
+      firstNonEmptyComparableString(
+        propertyData.state,
+        propertyData.estado,
+        address.state,
+        address.estado
+      ) ??
+      undefined,
+    postal_code:
+      normalizedInput.postal_code ??
+      firstNonEmptyComparableString(
+        propertyData.postal_code,
+        propertyData.cp,
+        propertyData.zip_code,
+        address.postal_code,
+        address.cp,
+        address.zip_code
+      ) ??
+      undefined,
+    country:
+      normalizedInput.country ??
+      firstNonEmptyComparableString(propertyData.country, propertyData.pais, address.country) ??
+      undefined,
+  };
+}
+
+function geocodePostalMunicipalityFromFormattedAddress(formattedAddress: string): {
+  geocoded_postal_code?: string;
+  geocoded_municipality?: string;
+} {
+  const cleaned = cleanString(formattedAddress);
+  if (!cleaned) return {};
+  const postalAndMunicipality = cleaned.match(/\b(\d{5})\s+([^,]+?)(?:,\s*[^,]+)?(?:,\s*Mexico|,\s*M[eé]xico)?$/i);
+  if (!postalAndMunicipality) return {};
+  const postal = cleanString(postalAndMunicipality[1]);
+  const municipality = cleanString(postalAndMunicipality[2]);
+  return {
+    geocoded_postal_code: postal,
+    geocoded_municipality: municipality,
+  };
+}
+
+function normalizeAddressComparable(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function isGeocodeAlignedWithCanonicalAddress(params: {
+  canonicalStreet?: unknown;
+  canonicalExterior?: unknown;
+  requestStreet?: unknown;
+  requestExterior?: unknown;
+  formattedAddress?: unknown;
+}) {
+  const canonicalStreet = normalizeAddressComparable(params.canonicalStreet);
+  const canonicalExterior = normalizeAddressComparable(params.canonicalExterior);
+  if (!canonicalStreet && !canonicalExterior) return true;
+  const requestStreet = normalizeAddressComparable(params.requestStreet);
+  const requestExterior = normalizeAddressComparable(params.requestExterior);
+  const formattedAddress = normalizeAddressComparable(params.formattedAddress);
+  if (canonicalStreet && requestStreet && canonicalStreet !== requestStreet) return false;
+  if (canonicalExterior && requestExterior && canonicalExterior !== requestExterior) return false;
+  if (canonicalStreet && formattedAddress && !formattedAddress.includes(canonicalStreet)) return false;
+  if (canonicalExterior && formattedAddress && !formattedAddress.includes(canonicalExterior)) return false;
+  return true;
+}
+
+async function latestSuccessfulGeocodeFromCurrentTurn(ctx: ToolContext): Promise<{
+  latitude?: number;
+  longitude?: number;
+  formatted_address?: string;
+  geocode_provider?: string;
+  geocode_confidence?: string;
+  place_id?: string;
+  geocoded_postal_code?: string;
+  geocoded_municipality?: string;
+} | null> {
+  if (!ctx.turnId) return null;
+  const { data, error } = await ctx.db
+    .from("tool_calls")
+    .select("result_json,created_at")
+    .eq("turn_id", ctx.turnId)
+    .eq("tool_name", "geocode_property_address")
+    .eq("status", "executed")
+    .order("created_at", { ascending: false })
+    .limit(5);
+  if (error) return null;
+  const firstSuccessful = (data ?? [])
+    .map((row) => asRecord((row as { result_json?: unknown }).result_json))
+    .find(
+      (result) =>
+        result?.ok === true &&
+        result?.status === "ok" &&
+        typeof result.latitude === "number" &&
+        typeof result.longitude === "number"
+    );
+  if (!firstSuccessful) return null;
+  const formatted_address = cleanString(firstSuccessful.formatted_address);
+  const parsedAddress = formatted_address
+    ? geocodePostalMunicipalityFromFormattedAddress(formatted_address)
+    : {};
+  return {
+    latitude: numberOrUndefined(firstSuccessful.latitude),
+    longitude: numberOrUndefined(firstSuccessful.longitude),
+    formatted_address,
+    geocode_provider: cleanString(firstSuccessful.provider),
+    geocode_confidence: cleanString(firstSuccessful.confidence),
+    place_id:
+      Array.isArray(firstSuccessful.candidates) && firstSuccessful.candidates.length > 0
+        ? cleanString(asRecord(firstSuccessful.candidates[0])?.place_id)
+        : undefined,
+    geocoded_postal_code: parsedAddress.geocoded_postal_code,
+    geocoded_municipality: parsedAddress.geocoded_municipality,
+  };
+}
+
+async function persistGeocodeResultToCaseContext(
+  ctx: ToolContext,
+  requestInput: {
+    street?: string;
+    exterior_number?: string;
+    neighborhood?: string;
+    municipality?: string;
+    state?: string;
+    postal_code?: string;
+    country?: string;
+  },
+  out: {
+    latitude: number;
+    longitude: number;
+    formatted_address: string;
+    provider: string;
+    confidence: "high" | "medium" | "low";
+    candidates: Array<{ place_id?: string | null }>;
+  }
+) {
+  if (!ctx.caseId) return;
+  const opCase = await getOperationalCase(ctx.db, ctx.caseId);
+  if (!opCase || opCase.user_id !== ctx.userId) return;
+  const context = asRecord(opCase.context_jsonb) ?? {};
+  const propertyData = asRecord(context.property_data) ?? {};
+  const address = asRecord(propertyData.address) ?? {};
+  const canonicalStreet =
+    firstNonEmptyComparableString(address.street, propertyData.street, propertyData.calle) ?? null;
+  const canonicalExterior =
+    firstNonEmptyComparableString(
+      address.exterior_number,
+      address.numero_exterior,
+      propertyData.exterior_number,
+      propertyData.numero_exterior
+    ) ?? null;
+  const aligned = isGeocodeAlignedWithCanonicalAddress({
+    canonicalStreet,
+    canonicalExterior,
+    requestStreet: requestInput.street,
+    requestExterior: requestInput.exterior_number,
+    formattedAddress: out.formatted_address,
+  });
+  if (!aligned) {
+    await insertOperationalCaseEvent(ctx.db, {
+      caseId: opCase.id,
+      eventType: "state_changed",
+      actor: "system",
+      payload: {
+        kind: "property_address_geocode_discarded_mismatch",
+        source: "geocode_property_address",
+        request_input: requestInput,
+        canonical_street: canonicalStreet,
+        canonical_exterior_number: canonicalExterior,
+        formatted_address: out.formatted_address,
+      },
+    });
+    return;
+  }
+  const geocodedParts = geocodePostalMunicipalityFromFormattedAddress(out.formatted_address);
+  const nextAddress: Record<string, unknown> = {
+    ...address,
+    latitude: out.latitude,
+    longitude: out.longitude,
+    formatted_address: out.formatted_address,
+    geocode_provider: out.provider,
+    geocode_confidence: out.confidence,
+    geocoded_at: new Date().toISOString(),
+    ...(out.candidates[0]?.place_id ? { place_id: out.candidates[0]?.place_id } : {}),
+    ...(geocodedParts.geocoded_postal_code
+      ? { geocoded_postal_code: geocodedParts.geocoded_postal_code }
+      : {}),
+    ...(geocodedParts.geocoded_municipality
+      ? { geocoded_municipality: geocodedParts.geocoded_municipality }
+      : {}),
+  };
+  const nextPropertyData: Record<string, unknown> = {
+    ...propertyData,
+    address: nextAddress,
+  };
+  const updated = await updateOperationalCase(ctx.db, opCase.id, opCase.version, {
+    context: {
+      ...context,
+      property_data: nextPropertyData,
+    },
+  });
+  if (!updated) return;
+  await insertOperationalCaseEvent(ctx.db, {
+    caseId: updated.id,
+    eventType: "state_changed",
+    actor: "system",
+    payload: {
+      kind: "property_address_geocoded",
+      source: "geocode_property_address",
+      confidence: out.confidence,
+      provider: out.provider,
+      formatted_address: out.formatted_address,
+      request_input: requestInput,
+      geocoded_postal_code: geocodedParts.geocoded_postal_code ?? null,
+      geocoded_municipality: geocodedParts.geocoded_municipality ?? null,
+    },
+  });
+}
+
+async function enrichAvaclickInputFromCaseContext(
+  ctx: ToolContext,
+  input: AvaclickValuationInput
+): Promise<AvaclickValuationInput> {
+  const enriched: AvaclickValuationInput = { ...input };
+  let canonicalStreet: string | undefined;
+  let canonicalExterior: string | undefined;
+  const coordinateFromUnknown = (value: unknown): number | undefined => {
+    if (typeof value === "number" && Number.isFinite(value) && value !== 0) return value;
+    if (typeof value === "string" && value.trim().length > 0) {
+      const parsed = Number(value.trim().replace(/,/g, ""));
+      return Number.isFinite(parsed) && parsed !== 0 ? parsed : undefined;
+    }
+    return undefined;
+  };
+  let contextAddress: Record<string, unknown> = {};
+  if (ctx.caseId) {
+    const opCase = await getOperationalCase(ctx.db, ctx.caseId);
+    const caseContext = asRecord(opCase?.context_jsonb);
+    const propertyData = asRecord(caseContext?.property_data) ?? caseContext ?? {};
+    contextAddress = asRecord(propertyData.address) ?? {};
+    canonicalStreet = firstNonEmptyComparableString(
+      contextAddress.street,
+      contextAddress.full,
+      contextAddress.formatted,
+      propertyData.street,
+      propertyData.calle
+    );
+    canonicalExterior = firstNonEmptyComparableString(
+      contextAddress.exterior_number,
+      contextAddress.numero_exterior,
+      contextAddress.number,
+      propertyData.exterior_number,
+      propertyData.numero_exterior
+    );
+    if (enriched.latitude == null) {
+      enriched.latitude = coordinateFromUnknown(contextAddress.latitude);
+    }
+    if (enriched.longitude == null) {
+      enriched.longitude = coordinateFromUnknown(contextAddress.longitude);
+    }
+    enriched.street =
+      enriched.street ??
+      firstNonEmptyComparableString(
+        contextAddress.street,
+        contextAddress.full,
+        contextAddress.formatted,
+        propertyData.street,
+        propertyData.calle
+      );
+    enriched.exterior_number =
+      enriched.exterior_number ??
+      firstNonEmptyComparableString(
+        contextAddress.exterior_number,
+        contextAddress.numero_exterior,
+        contextAddress.number,
+        propertyData.exterior_number,
+        propertyData.numero_exterior
+      );
+    enriched.neighborhood_name =
+      enriched.neighborhood_name ??
+      firstNonEmptyComparableString(
+        contextAddress.neighborhood,
+        contextAddress.colonia,
+        propertyData.neighborhood,
+        propertyData.colonia
+      );
+    enriched.municipality_name =
+      enriched.municipality_name ??
+      firstNonEmptyComparableString(
+        contextAddress.geocoded_municipality,
+        contextAddress.municipality,
+        contextAddress.municipio,
+        propertyData.municipality,
+        propertyData.municipio,
+        propertyData.city
+      );
+    enriched.zip_code =
+      enriched.zip_code ??
+      firstNonEmptyComparableString(
+        contextAddress.geocoded_postal_code,
+        contextAddress.postal_code,
+        contextAddress.cp,
+        contextAddress.zip_code,
+        propertyData.postal_code,
+        propertyData.cp,
+        propertyData.zip_code
+      );
+    enriched.state_name =
+      enriched.state_name ??
+      firstNonEmptyComparableString(
+        contextAddress.state,
+        contextAddress.estado,
+        propertyData.state,
+        propertyData.estado
+      );
+    // Superficies: Avaclick rechaza valoraciones (validation_error) cuando
+    // falta land_area_m2 (terreno) en casas. Tomamos las superficies canónicas
+    // de property_data cuando el agente no las proporcionó.
+    if (enriched.land_area_m2 == null) {
+      enriched.land_area_m2 = comparablePositiveNumber(
+        propertyData.area_total_m2 ??
+          propertyData.terreno ??
+          propertyData.area_terreno_m2 ??
+          propertyData.lot_area_m2 ??
+          propertyData.surface_m2 ??
+          propertyData.sup_terr
+      );
+    }
+    if (enriched.construction_area_m2 == null) {
+      const constructionFromContext = comparablePositiveNumber(
+        propertyData.area_construida_m2 ??
+          propertyData.construction_area_m2 ??
+          propertyData.built_area_m2 ??
+          propertyData.sup_const
+      );
+      if (constructionFromContext != null) {
+        enriched.construction_area_m2 = constructionFromContext;
+      }
+    }
+    if (enriched.conservation == null) {
+      const conservationHint = normalizeAvaclickConservation(
+        propertyData.conservation ??
+          propertyData.estado_conservacion ??
+          propertyData.conservation_state
+      );
+      // Default neutro: Avaclick puede requerir conservation; "good" es el
+      // punto medio defendible cuando no hay señal explícita en el caso.
+      enriched.conservation = conservationHint ?? "good";
+    }
+  }
+
+  if (enriched.latitude == null || enriched.longitude == null) {
+    const geocodeFromTurn = await latestSuccessfulGeocodeFromCurrentTurn(ctx);
+    const geocodeFromTurnAligned = geocodeFromTurn
+      ? isGeocodeAlignedWithCanonicalAddress({
+          canonicalStreet,
+          canonicalExterior,
+          formattedAddress: geocodeFromTurn.formatted_address,
+        })
+      : false;
+    if (geocodeFromTurn && geocodeFromTurnAligned) {
+      enriched.latitude = enriched.latitude ?? geocodeFromTurn.latitude;
+      enriched.longitude = enriched.longitude ?? geocodeFromTurn.longitude;
+      enriched.municipality_name =
+        enriched.municipality_name ?? geocodeFromTurn.geocoded_municipality;
+      enriched.zip_code = enriched.zip_code ?? geocodeFromTurn.geocoded_postal_code;
+    }
+  }
+
+  if (enriched.latitude == null || enriched.longitude == null) {
+    const geocodeInput = {
+      street: enriched.street,
+      exterior_number: enriched.exterior_number,
+      neighborhood: enriched.neighborhood_name,
+      municipality: enriched.municipality_name,
+      state: enriched.state_name,
+      postal_code: enriched.zip_code,
+      country: "MX",
+    };
+    const filledComponents = [
+      geocodeInput.street,
+      geocodeInput.neighborhood,
+      geocodeInput.municipality,
+      geocodeInput.state,
+      geocodeInput.postal_code,
+    ].filter((item) => typeof item === "string" && item.trim().length > 0).length;
+    if (filledComponents >= 2) {
+      try {
+        const geocodeOut = await geocodePropertyAddress(geocodeInput);
+        if (
+          geocodeOut.ok &&
+          geocodeOut.status === "ok" &&
+          isUnequivocalGeocodeForAvaclick(geocodeOut) &&
+          typeof geocodeOut.latitude === "number" &&
+          typeof geocodeOut.longitude === "number"
+        ) {
+          enriched.latitude = geocodeOut.latitude;
+          enriched.longitude = geocodeOut.longitude;
+          if (ctx.caseId) {
+            await persistGeocodeResultToCaseContext(ctx, geocodeInput, geocodeOut);
+          }
+        }
+      } catch {
+        // Avaclick seguirá con validation_error si faltan coordenadas.
+      }
+    }
+  }
+
+  return enriched;
+}
+
+function isUnequivocalGeocodeForAvaclick(geocodeOut: {
+  confidence: "high" | "medium" | "low";
+  candidates: Array<{ confidence: "high" | "medium" | "low" }>;
+}) {
+  if (geocodeOut.confidence === "high") return true;
+  if (geocodeOut.confidence !== "medium") return false;
+  return !geocodeOut.candidates
+    .slice(1)
+    .some((candidate) => candidate.confidence === "high" || candidate.confidence === "medium");
+}
+
 function firstNonEmptyComparableString(...values: unknown[]): string | undefined {
   for (const value of values) {
     const cleaned = cleanString(value);
@@ -3068,6 +3700,7 @@ function firstNonEmptyComparableString(...values: unknown[]): string | undefined
   }
   return undefined;
 }
+
 
 function comparablePositiveNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;

@@ -131,6 +131,25 @@ export type {
   ComparableAreaBand,
   ComparableFilterContractResult,
 } from "./operational-cases/comparable-search-contract";
+export {
+  buildComparablesAnalysisFromToolCalls,
+  comparablesHasDefensibleSample,
+  comparablesUniqueCount,
+  comparablesUsableCount,
+  MIN_DEFENSIBLE_UNIQUE_COMPARABLES,
+  validateComparablesAnalysisArtifact,
+} from "./operational-cases/comparables-analysis";
+export type { ComparableSourceConflict } from "./operational-cases/comparables-analysis";
+export { buildPricingProposalFromComparables, formatPriceApprovalNotifyText } from "./operational-cases/pricing-proposal";
+export {
+  advanceComparablesToPriceProposalWithRetry,
+  subjectAreaFromCaseContext,
+  tryAdvanceComparablesAfterPersist,
+} from "./operational-cases/comparables-advance";
+export type {
+  PricingProposal,
+  PricingProposalPerSource,
+} from "./operational-cases/pricing-proposal";
 
 export {
   HEARTBEAT_CHECKLIST_TEMPLATES,

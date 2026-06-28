@@ -62,13 +62,37 @@ const missingSourceAnalysis = buildComparablesAnalysisFromToolCalls([
     status: "executed",
     result_json: {
       ok: false,
-      error: "missing_required_comparable_source",
+      error: "avaclick_required_before_persist",
     },
   },
 ]);
 assert.equal(
   (missingSourceAnalysis.data_quality as { search_validity?: string }).search_validity,
   "missing_required_source"
+);
+
+const fallbackExhaustedAnalysis = buildComparablesAnalysisFromToolCalls([
+  {
+    tool_name: "easybroker_search_listings",
+    status: "executed",
+    result_json: {
+      ok: true,
+      count: 0,
+      results: [],
+      search_attempts: {
+        strict_filters: { min_area_m2: 124, max_area_m2: 168 },
+        fallback_filters: { min_area_m2: 109, max_area_m2: 183 },
+      },
+    },
+  },
+]);
+assert.ok(
+  Array.isArray((fallbackExhaustedAnalysis.data_quality as { warnings?: unknown }).warnings)
+);
+assert.ok(
+  (
+    (fallbackExhaustedAnalysis.data_quality as { warnings?: string[] }).warnings ?? []
+  ).some((warning) => warning.includes("Se agotó fallback moderado"))
 );
 
 console.log("comparables-insufficient-n4.selftest: ok");

@@ -4,12 +4,17 @@ import {
   buildPropertyDataMinimumsSummaryMessage,
   buildOperationalCaseIntakeUpdateContext,
   buildOperationalCaseCreateContext,
+  canonicalizeNotifyKindForTest,
   canonicalizePropertyDataReviewText,
   documentExtractionMinimumsContext,
   evaluatePropertyDataMinimumsForReview,
   evaluatePredialBuiltAreaQualityForTest,
   extractPredialSurfacesFromTextForTest,
   extractSurfaceTotalM2FromTextForTest,
+  looksLikeComparablesSummaryNotificationForTest,
+  looksLikeComparablesCompletionProseForTest,
+  comparablesSearchExpansionDecisionAlreadyRequestedForTest,
+  priceApprovalNotificationAlreadyDeliveredForTest,
   missingRequiredIntakeFields,
   normalizePredialExtractionSurfacesForTest,
   operationalCaseIntakeSuccessStep,
@@ -63,6 +68,72 @@ assert.equal(context.e2e_control_source, "telegram");
 assert.equal(context.e2e_control_status, "intake");
 assert.equal(context.intake_status, "incomplete");
 assert.deepEqual(context.missing_required, missing);
+assert.equal(canonicalizeNotifyKindForTest("price proposal"), "price_approval");
+assert.equal(canonicalizeNotifyKindForTest("pricing_proposal"), "price_approval");
+assert.equal(
+  looksLikeComparablesSummaryNotificationForTest({
+    text: "El análisis de comparables ha sido completado. El caso ha avanzado a la propuesta de precio.",
+  }),
+  true
+);
+assert.equal(
+  looksLikeComparablesSummaryNotificationForTest({
+    kind: "price_approval",
+    text: "Propuesta de precio lista para revisión. Lectura por fuente: EasyBroker comparables.",
+  }),
+  false
+);
+assert.equal(
+  looksLikeComparablesCompletionProseForTest(
+    "El análisis de comparables ha sido completado. Se encontraron 3 comparables usables y el caso ha avanzado a la propuesta de precio. Sin embargo, no se pudo obtener la valoración de Avaclick debido a que se alcanzó el límite de avaluos."
+  ),
+  true
+);
+assert.equal(
+  looksLikeComparablesCompletionProseForTest(
+    "Propuesta de precio lista para revisión:\n\nRecomendación:\n- Salida (publicación): $6,784,000"
+  ),
+  false
+);
+assert.equal(
+  priceApprovalNotificationAlreadyDeliveredForTest([
+    {
+      payload_jsonb: {
+        kind: "price_approval_requested",
+        notify_delivered: [{ channel: "telegram", ok: true }],
+      },
+    },
+  ]),
+  true
+);
+assert.equal(
+  priceApprovalNotificationAlreadyDeliveredForTest([
+    {
+      payload_jsonb: {
+        kind: "price_approval_requested",
+        notify_delivered: [],
+      },
+    },
+  ]),
+  false
+);
+assert.equal(
+  comparablesSearchExpansionDecisionAlreadyRequestedForTest([
+    {
+      payload_jsonb: {
+        kind: "comparables_search_expansion_decision_requested",
+        notify_delivered: [{ channel: "telegram", ok: true }],
+      },
+    },
+  ]),
+  true
+);
+assert.equal(
+  comparablesSearchExpansionDecisionAlreadyRequestedForTest([
+    { payload_jsonb: { kind: "comparables_insufficient_data" } },
+  ]),
+  false
+);
 
 const completeContext = buildOperationalCaseCreateContext({
   context: { property_address: "Av. Siempre Viva 123", owner_name: "Ana" },
@@ -226,6 +297,32 @@ assert.deepEqual(documentFieldsFromEscFilename.legal_addresses, [
 ]);
 assert.equal(documentFieldsFromEscFilename.area_total_m2, 116.93);
 
+const documentFieldsFromBoletaLegalAddress = documentExtractionMinimumsContext([
+  {
+    kind: "boleta_registral",
+    display_name: "boleta",
+    original_name: "boleta-las-fuentes.pdf",
+    status: "received",
+    extraction_status: "ok",
+    extraction_jsonb: {
+      owner_names: ["MARIA CONCEPCION CASTANEDA GARCIA"],
+      legal_address:
+        "FRACCION C DEL LOTE 5-B, FINCA MARCADA CON EL NUMERO 3668, DE LA CALLE CIRCUNVALACION SUR, LAS FUENTES, ZAPOPAN, JALISCO",
+      document_kind: "boleta_registral",
+    },
+  } as unknown as OperationalCaseDocument,
+]);
+assert.equal(
+  (documentFieldsFromBoletaLegalAddress.legal_addresses as string[])[0]?.includes(
+    "CIRCUNVALACION SUR"
+  ),
+  true
+);
+assert.equal(
+  documentFieldsFromBoletaLegalAddress.legal_addresses_source,
+  "boleta_registral"
+);
+
 const documentFieldsWithPendingBoletaAndEscritura = documentExtractionMinimumsContext([
   {
     kind: "boleta_registral",
@@ -263,6 +360,56 @@ assert.deepEqual(
   documentFieldsWithPendingBoletaAndEscritura.owner_names_excluded_from_consistency,
   ["Teresa Campos", "Sixto Elvira", "Celia García de Padilla"]
 );
+
+const documentFieldsWithAmbiguousDeedAddress = documentExtractionMinimumsContext([
+  {
+    kind: "boleta_registral",
+    display_name: "boleta",
+    original_name: "boleta-las-fuentes.pdf",
+    status: "received",
+    extraction_status: "ok",
+    extraction_jsonb: {
+      owner_names: ["MARIA CONCEPCION CASTANEDA GARCIA"],
+      legal_address:
+        "FRACCION C DEL LOTE 5-B, FINCA MARCADA CON EL NUMERO 3668, DE LA CALLE CIRCUNVALACION SUR, LAS FUENTES, ZAPOPAN, JALISCO",
+      document_kind: "boleta_registral",
+    },
+  } as unknown as OperationalCaseDocument,
+  {
+    kind: "escritura_descripcion",
+    display_name: "escritura",
+    original_name: "escritura-sucesion.pdf",
+    status: "received",
+    extraction_status: "ok",
+    extraction_jsonb: {
+      document_kind: "escritura_descripcion",
+      multi_property_ambiguous: true,
+      deed_property_match_low_confidence: true,
+      address: {
+        street: "Ribera del Lago",
+        exterior_number: "185",
+        neighborhood: "Las Fuentes",
+        municipality: "Zapopan",
+      },
+    },
+  } as unknown as OperationalCaseDocument,
+]);
+{
+  const consolidatedAddress =
+    (documentFieldsWithAmbiguousDeedAddress.address as Record<string, unknown> | undefined) ??
+    {};
+  assert.notEqual(
+    consolidatedAddress.street,
+    "Ribera del Lago",
+    "una escritura multi-inmueble ambigua no debe poblar street canónico"
+  );
+  assert.notEqual(
+    consolidatedAddress.exterior_number,
+    "185",
+    "una escritura multi-inmueble ambigua no debe poblar exterior_number canónico"
+  );
+  assert.equal(documentFieldsWithAmbiguousDeedAddress.address_needs_review, true);
+}
 
 const documentFieldsWithBoletaAndIne = documentExtractionMinimumsContext([
   {
@@ -478,6 +625,39 @@ const ownerMatchMessage = buildPropertyDataMinimumsSummaryMessage({
 assert.match(ownerMatchMessage, /Coincidencia encontrada en: identificacion oficial\./);
 assert.doesNotMatch(ownerMatchMessage, /Teresa Campos|Sixto Elvira/);
 
+const documentFieldsWithFragmentedIneNames = documentExtractionMinimumsContext([
+  {
+    kind: "boleta_registral",
+    display_name: "boleta",
+    original_name: "boleta.pdf",
+    status: "received",
+    extraction_status: "ok",
+    extraction_jsonb: {
+      owner_names: ["MARIA CONCEPCION CASTAÑEDA GARCIA"],
+      document_kind: "boleta_registral",
+    },
+  } as unknown as OperationalCaseDocument,
+  {
+    kind: "ine",
+    display_name: "ine",
+    original_name: "ine.pdf",
+    status: "received",
+    extraction_status: "ok",
+    extraction_jsonb: {
+      owner_names: ["CASTANEDA", "GARCIA", "MARIA", "CONCEP"],
+      document_kind: "identificacion_oficial",
+    },
+  } as unknown as OperationalCaseDocument,
+]);
+assert.equal(
+  documentFieldsWithFragmentedIneNames.owner_consistency_status,
+  "insufficient"
+);
+assert.match(
+  String(documentFieldsWithFragmentedIneNames.owner_consistency_note ?? ""),
+  /fragmentos OCR/i
+);
+
 assert.deepEqual(
   extractPredialSurfacesFromTextForTest(
     [
@@ -653,7 +833,7 @@ const partialOwnerMessage = buildPropertyDataMinimumsSummaryMessage({
   missing: [{ key: "area_construida_m2", label: "Metros cuadrados de construcción", question: "Metros cuadrados de construcción." }],
 });
 assert.match(partialOwnerMessage, /Coincidencia encontrada en: predial; identificacion oficial; comprobante de domicilio\./);
-assert.match(partialOwnerMessage, /otros nombres en documentos de apoyo que no corresponden al titular de boleta/i);
+assert.match(partialOwnerMessage, /nombres adicionales en documentos de apoyo que no coinciden con boleta/i);
 assert.doesNotMatch(partialOwnerMessage, /Teresa Campos|Sixto Elvira/);
 
 assert.equal(
