@@ -271,7 +271,7 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Capa** | `runtime` |
 | **Cuándo usar** | `operational_case_update_state` o cualquier escritura que cambie `current_step`/`status` con precondiciones de negocio |
 | **Regla** | El adapter de escritura valida el artefacto y la transición antes de tocar BD; si falla, la tool falla con `hint` accionable |
-| **Implementación inicial** | `operational_case_update_state` rechaza `comparables_analysis` sin `stats/data_quality` y bloquea `price_proposal_pending` desde `comparables_in_progress` sin muestra defendible |
+| **Implementación inicial** | `operational_case_update_state` rechaza `comparables_analysis` sin `stats/data_quality` y bloquea avance directo `comparables_in_progress -> price_proposal_pending` (`price_advance_must_use_persist`) para forzar ruta determinística (`operational_case_persist_comparables_analysis`) |
 | **Autoría** | Las skills deben llamar tools de persistencia dedicadas antes de avanzar pasos críticos |
 
 ### `PATTERN_TOOL_AUDIT_SINGLE_OWNER`

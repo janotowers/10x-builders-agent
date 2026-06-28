@@ -451,11 +451,11 @@ Escenarios N4 actuales en `property_optioning`:
 | `awaiting_documents` | `awaiting_documents_outreach` | Solicitud inicial de documentos al contacto externo |
 | `documents_received` | `documents_received_property_data_review` | Datos suficientes → `property_data_review` / `waiting_internal` |
 | `documents_received` | `documents_received_characteristics_pending` | Faltantes críticos → Telegram al contacto / `waiting_external` |
-| `comparables_in_progress` | `comparables_in_progress_complete` | Muestra defendible → `price_proposal_pending` / `comparables_analysis` (`PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE`) |
+| `comparables_in_progress` | `comparables_in_progress_complete` | Muestra defendible → `price_proposal_pending` con `comparables_analysis_completed`; preparación de precio auditable por `price_proposal_prepared` + `price_approval_requested` |
 | `comparables_in_progress` | `comparables_in_progress_insufficient_data` | 0 usables en EB + BQ → permanece en paso + `waiting_internal` + `notify_user` |
-| `price_proposal_pending` | `price_proposal_pending_hitl` | `pricing_proposal` pending + `notify_user` + `human_decision:price_proposed` / `waiting_internal` |
-| `price_proposal_pending` | `price_proposal_pending_advisor_approves` | Handler HITL «Aprobar» → `contract_pending` / `paused` + `price_approved` (caso de prueba) |
-| `price_proposal_pending` | `price_proposal_pending_advisor_adjusts` | Handler HITL ajuste → montos nuevos + `price_adjusted_and_approved` + `contract_pending` / `paused` |
+| `price_proposal_pending` | `price_proposal_pending_hitl` | `pricing_proposal` pending + `price_approval_requested` + decisión humana de precio (`price_approved`/`price_adjusted_and_approved`) |
+| `price_proposal_pending` | `price_proposal_pending_advisor_approves` | Handler HITL «Aprobar» → `contract_pending` + `price_approved`; en E2E conversacional controlado dispara tick para preparar contrato (en settings puro puede quedar `paused`) |
+| `price_proposal_pending` | `price_proposal_pending_advisor_adjusts` | Handler HITL ajuste → montos nuevos + `price_adjusted_and_approved` + `contract_pending`; en E2E conversacional controlado dispara tick para preparar contrato |
 | `contract_pending` | `contract_pending_draft_review` | Borrador o aviso de plantilla faltante / `waiting_internal` o `paused` (`PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`) |
 | `contract_pending` | `contract_pending_advisor_approves_send` | HITL «mándalo al dueño» → `contract_approved_for_owner` + envío simulado / `paused` |
 | `contract_pending` | `contract_pending_advisor_requests_changes` | HITL cambios → `contract_changes_requested` / `waiting_internal` |

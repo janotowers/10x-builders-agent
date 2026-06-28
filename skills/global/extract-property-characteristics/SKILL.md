@@ -88,6 +88,9 @@ Llenar `context_jsonb.property_data` con un objeto canónico:
    `boleta_registral`): titulares, dirección legal y superficie/metraje. No
    uses la dirección de IFE/comprobante de domicilio como dirección del
    inmueble salvo que el documento lo indique explícitamente.
+   - Prioridad de dirección canónica: `boleta_registral` > `predial` > intake.
+     Una escritura con múltiples inmuebles solo puede sobrescribir dirección si
+     hay match confiable del inmueble objetivo (número/calle/zona).
 4. Calcula los campos faltantes contra el shape canónico de arriba y la matriz
    mínima por tipo de inmueble.
    - Para `address.latitude` / `address.longitude`, intenta primero

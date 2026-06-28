@@ -144,7 +144,9 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
    hay, integra la información en `context_jsonb` y avanza el paso, en vez
    de mandar otro recordatorio.
 4. **Mueve el caso** con `operational_case_update_state` (siempre con
-   `expected_version`). Inserta eventos descriptivos con
+   `expected_version`) excepto en la transición
+   `comparables_in_progress -> price_proposal_pending`, que debe ocurrir por
+   la ruta determinística de persistencia de comparables. Inserta eventos descriptivos con
    `operational_case_add_event` cuando algo notable pasa fuera de un
    cambio de estado.
 5. **Comunica**:

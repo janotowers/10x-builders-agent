@@ -107,10 +107,10 @@ Producir un objeto `context_jsonb.comparables_analysis`:
     `property_type` sea casa/departamento en condominio.
     - En ese tipo compatible, la llamada es esperada en este paso (no la
       omitas silenciosamente): ejecútala antes de persistir comparables.
-    - Si faltan lat/lng pero hay dirección suficiente en `property_data.address`,
-      intenta primero `geocode_property_address`.
-    - Si Avaclick devuelve `validation_error` con `missing_required_fields`,
-      NO bloquees el paso: continúa con EasyBroker/BigQuery y deja warning.
+    - Si faltan lat/lng, resuelve primero `geocode_property_address` con la
+      dirección canónica del inmueble (boleta/predial/intake).
+    - Si Avaclick devuelve `status="geocode_unresolved"`, NO trates eso como
+      fallo del proveedor: deja warning de geocoding y continúa con EasyBroker/BigQuery.
     - Si el tipo no es compatible o la cuenta no está configurada, continúa con
       las demás fuentes.
    - `bigquery_lookup_local_comparables({...filters})` para inventario interno
@@ -127,6 +127,9 @@ Producir un objeto `context_jsonb.comparables_analysis`:
 3. Usa filtros canónicos del contrato determinístico (runtime), no placeholders:
    - No envíes `0` en `min_area_m2`, `max_area_m2`, `min_price`, `max_price`,
      `parking_spaces` como “default”.
+   - Con `area_construida_m2` confiable, el primer intento debe usar banda
+     canónica estricta (±15%, mínimo absoluto 20 m²), aunque el modelo proponga
+     otro rango.
    - Si faltan rangos, reintenta con los filtros derivados desde `property_data`
      (banda inicial ±15%, mínimo 20 m²; fallback automático ±25% antes de pedir decisión).
 
@@ -160,8 +163,10 @@ Producir un objeto `context_jsonb.comparables_analysis`:
    EasyBroker activas, EasyBroker cerradas/referencia histórica e inventario
    BigQuery).
 
-   - Si `usable_count > 0` (muestra defendible): mueve el caso a
-     `current_step=price_proposal_pending`, `status=active`, `next_action_at=now()`.
+   - Si `usable_count > 0` (muestra defendible): usa la ruta determinística
+     (`operational_case_persist_comparables_analysis` + invariantes post-agent).
+     No uses `operational_case_update_state` para saltar directo a
+     `price_proposal_pending`.
    - Si `usable_count === 0` en **todas** las fuentes: **no** avances a
      `price_proposal_pending`. Deja `current_step=comparables_in_progress`,
      `status=waiting_internal` y pasa al paso 7 (notificación de datos
@@ -169,15 +174,20 @@ Producir un objeto `context_jsonb.comparables_analysis`:
 
 8. Notifica al inmobiliario:
    - Con muestra defendible:
-     `notify_user("Análisis de comparables listo para [propiedad]. N activas, M referencias históricas y K internas. Mediana de precio publicado: $X. Reviso contigo el precio.")`.
-     - Si `data_quality.needs_user_reauth=true`, agrega aviso no bloqueante:
-       EasyBroker MLS requiere reconexión para enriquecer futuras búsquedas.
-  - Sin comparables usables con `data_quality.search_validity="insufficient_market_data"`:
-    `notify_user(kind="comparables_insufficient_data")` con datos de la propiedad, `filters_used`, resumen por fuente
-     (EB activas, EB cerradas, BQ interno) y sugerencias concretas para ampliar
-     criterios (rango de precio, m², meses, zona adyacente).
+     - No envíes resumen libre de comparables ni `kind=comparables_analysis` cuando
+       ya exista `pricing_proposal`.
+     - Usa el mensaje canónico de `price_approval` (con `salida/ideal/mínimo` y
+       desglose por fuente) para abrir la decisión humana del precio.
+   - Sin comparables usables con `data_quality.search_validity="insufficient_market_data"`:
+    si el caso quedará en `waiting_internal`, pide decisión concreta con
+    `notify_user(kind="comparables_search_expansion_decision")` y opciones
+    accionables dentro del flujo. Usa `comparables_insufficient_data` solo para
+    resumen informativo no bloqueante.
   - Si `data_quality.search_validity="invalid_filters"`:
     no uses `comparables_insufficient_data`; corrige y reintenta búsqueda con filtros canónicos.
+  - Si Avaclick falla por cuota/no recuperable:
+    no levantes `property_data_quality_review` (ese kind es solo para m² predial).
+    Persiste comparables con warning de integración y continúa con fuentes de mercado.
   - Si se requiere decisión humana para ampliar más allá del fallback moderado:
     usa `notify_user(kind="comparables_search_expansion_decision")` con pregunta resoluble
     dentro del flujo (ej. ampliar a ±35% o colonias adyacentes).
