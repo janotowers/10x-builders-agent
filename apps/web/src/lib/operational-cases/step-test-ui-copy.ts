@@ -4,9 +4,10 @@
  */
 
 import {
-  businessDecisionHandler,
+  BUSINESS_DECISION_LABELS,
+  businessDecisionLabel,
   type BusinessDecisionKind,
-} from "@/lib/business-decisions/registry";
+} from "@/lib/business-decisions/business-decision-kinds";
 import type { StepTestExecutionMode } from "./step-test-scenarios";
 
 export type StepTestScenarioUiCopy = {
@@ -40,17 +41,16 @@ const AGENT_COPY: ResolvedStepTestUiCopy = {
   resultMetaSuffix: "Escenario con habilidad raíz",
 };
 
-function businessDecisionLabel(kind?: string) {
+function resolveBusinessDecisionLabel(kind?: string) {
   if (!kind) return "negocio";
-  try {
-    return businessDecisionHandler(kind as BusinessDecisionKind).label.toLocaleLowerCase("es");
-  } catch {
-    return kind.replace(/_/g, " ");
+  if (kind in BUSINESS_DECISION_LABELS) {
+    return businessDecisionLabel(kind as BusinessDecisionKind).toLocaleLowerCase("es");
   }
+  return kind.replace(/_/g, " ");
 }
 
 function defaultBusinessDecisionCopy(kind?: string): ResolvedStepTestUiCopy {
-  const detail = businessDecisionLabel(kind);
+  const detail = resolveBusinessDecisionLabel(kind);
   return {
     panelIntro: `Simula la respuesta del asesor (${detail}) con el mismo flujo que Telegram e inbox. No ejecuta la habilidad raíz del agente.`,
     runningHint: "Aplicando la decisión del asesor en el caso de prueba…",

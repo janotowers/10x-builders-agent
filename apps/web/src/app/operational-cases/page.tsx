@@ -555,7 +555,7 @@ export default async function OperationalCasesPage({
   const listQuery = operationalCasesListQuerySuffix(listFilters);
 
   const selectedEvents = selectedCase
-    ? await getRecentOperationalCaseEvents(db, selectedCase.id, 50)
+    ? await getRecentOperationalCaseEvents(db, selectedCase.id, 200)
     : [];
   const selectedDocuments = selectedCase
     ? await listOperationalCaseDocuments(db, {

@@ -18,4 +18,12 @@ const externalPolicy = buildSettingsTestToolApprovalPolicy(undefined, {
 });
 assert.equal(externalPolicy.telegram_send_message_to_contact, "auto_execute");
 
+const contractDraftAutoExecutePolicy = buildSettingsTestToolApprovalPolicy(undefined, {
+  autoExecuteContractDraftGeneration: true,
+});
+assert.equal(
+  contractDraftAutoExecutePolicy.generate_document_from_template,
+  "auto_execute"
+);
+
 console.log("settings-test-tool-policy.selftest: ok");

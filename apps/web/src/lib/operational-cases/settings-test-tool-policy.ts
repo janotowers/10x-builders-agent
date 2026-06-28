@@ -9,6 +9,7 @@ export const SETTINGS_TEST_AUTO_EXECUTE_TOOLS = [
 
 type SettingsTestToolPolicyOptions = {
   documentRequestTarget?: "internal_user" | "external_contact" | null;
+  autoExecuteContractDraftGeneration?: boolean;
 };
 
 export function buildSettingsTestToolApprovalPolicy(
@@ -26,6 +27,9 @@ export function buildSettingsTestToolApprovalPolicy(
   }
   if (options?.documentRequestTarget === "internal_user") {
     policy.telegram_send_message_to_contact = "deny";
+  }
+  if (options?.autoExecuteContractDraftGeneration) {
+    policy.generate_document_from_template = "auto_execute";
   }
   return policy;
 }

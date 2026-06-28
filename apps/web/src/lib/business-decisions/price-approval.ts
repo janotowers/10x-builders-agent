@@ -2,10 +2,12 @@ import {
   getInternalUserNotification,
   getOperationalCase,
   insertOperationalCaseEvent,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   resolveInternalNotificationWithReminders,
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { isControlledE2EOperationalCase } from "@agents/types";
 
 type PriceDecisionIntent = "approve" | "adjust" | "reject" | "unclear";
 
@@ -90,6 +92,17 @@ function isSettingsTestCase(context: Record<string, unknown>) {
   );
 }
 
+async function triggerControlledE2EAgentTick(
+  db: DbClient,
+  updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
+  source: string
+) {
+  const { runSettingsTestCaseAgentTick } = await import(
+    "@/lib/operational-cases/run-settings-test-case-tick"
+  );
+  await runSettingsTestCaseAgentTick(db, updated, updated.user_id, { source });
+}
+
 export async function handlePriceApprovalDecision(
   db: DbClient,
   params: {
@@ -143,14 +156,16 @@ export async function handlePriceApprovalDecision(
       approved_by: params.userId,
     };
     const settingsTestCase = isSettingsTestCase(context);
+    const controlledE2ECase = isControlledE2EOperationalCase(opCase);
+    const shouldPauseBeforeContract = settingsTestCase && !controlledE2ECase;
     const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-      status: settingsTestCase ? "paused" : "active",
+      status: shouldPauseBeforeContract ? "paused" : "active",
       currentStep: "contract_pending",
-      nextActionAt: settingsTestCase ? null : new Date().toISOString(),
+      nextActionAt: shouldPauseBeforeContract ? null : new Date().toISOString(),
       context: {
         ...context,
         pricing_proposal: nextProposal,
-        ...(settingsTestCase
+        ...(shouldPauseBeforeContract
           ? {
               controlled_test_status: "price_approved_stopped_before_next_step",
               controlled_test_note:
@@ -164,17 +179,47 @@ export async function handlePriceApprovalDecision(
       caseId: opCase.id,
       eventType: "human_decision",
       actor: "user",
-      payload: { kind: "price_approved", pricing_proposal: nextProposal },
+      stepKey: "price_proposal_pending",
+      payload: {
+        kind: "price_approved",
+        current_step: "price_proposal_pending",
+        to: { current_step: "contract_pending", status: updated.status },
+        pricing_proposal: nextProposal,
+      },
     });
+    if (!shouldPauseBeforeContract) {
+      await insertOperationalCaseEvent(db, {
+        caseId: opCase.id,
+        eventType: "state_changed",
+        actor: "system",
+        stepKey: "contract_pending",
+        payload: {
+          kind: "contract_preparation_entered",
+          current_step: "contract_pending",
+          via: "price_approved",
+        },
+      });
+    }
     await resolveInternalNotificationWithReminders(db, {
       id: notification.id,
       userId: params.userId,
       status: "actioned",
     });
+    await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+      userId: params.userId,
+      caseId: opCase.id,
+      kind: "property_data_quality_review",
+      status: "dismissed",
+    });
+    if (controlledE2ECase) {
+      void triggerControlledE2EAgentTick(db, updated, "price_approved").catch((tickError) => {
+        console.error("[price-approval] e2e tick failed:", tickError);
+      });
+    }
     return {
       ok: true,
       status: "approved",
-      message: settingsTestCase
+      message: shouldPauseBeforeContract
         ? "Precio aprobado. El caso de prueba quedó detenido antes del siguiente paso."
         : "Precio aprobado. El caso avanzó a contrato.",
     };
@@ -199,7 +244,12 @@ export async function handlePriceApprovalDecision(
       caseId: opCase.id,
       eventType: "human_decision",
       actor: "user",
-      payload: { kind: "price_rejected", reason: parsed.reason ?? params.text },
+      stepKey: "price_proposal_pending",
+      payload: {
+        kind: "price_rejected",
+        current_step: "price_proposal_pending",
+        reason: parsed.reason ?? params.text,
+      },
     });
     await resolveInternalNotificationWithReminders(db, {
       id: notification.id,
@@ -223,14 +273,16 @@ export async function handlePriceApprovalDecision(
     approved_by: params.userId,
   };
   const settingsTestCase = isSettingsTestCase(context);
+  const controlledE2ECase = isControlledE2EOperationalCase(opCase);
+  const shouldPauseBeforeContract = settingsTestCase && !controlledE2ECase;
   const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    status: settingsTestCase ? "paused" : "active",
+    status: shouldPauseBeforeContract ? "paused" : "active",
     currentStep: "contract_pending",
-    nextActionAt: settingsTestCase ? null : new Date().toISOString(),
+    nextActionAt: shouldPauseBeforeContract ? null : new Date().toISOString(),
     context: {
       ...context,
       pricing_proposal: nextProposal,
-      ...(settingsTestCase
+      ...(shouldPauseBeforeContract
         ? {
             controlled_test_status: "price_adjusted_approved_stopped_before_next_step",
             controlled_test_note:
@@ -244,21 +296,50 @@ export async function handlePriceApprovalDecision(
     caseId: opCase.id,
     eventType: "human_decision",
     actor: "user",
+    stepKey: "price_proposal_pending",
     payload: {
       kind: "price_adjusted_and_approved",
+      current_step: "price_proposal_pending",
+      to: { current_step: "contract_pending", status: updated.status },
       patch: parsed.patch,
       pricing_proposal: nextProposal,
     },
   });
+  if (!shouldPauseBeforeContract) {
+    await insertOperationalCaseEvent(db, {
+      caseId: opCase.id,
+      eventType: "state_changed",
+      actor: "system",
+      stepKey: "contract_pending",
+      payload: {
+        kind: "contract_preparation_entered",
+        current_step: "contract_pending",
+        via: "price_adjusted_and_approved",
+      },
+    });
+  }
   await resolveInternalNotificationWithReminders(db, {
     id: notification.id,
     userId: params.userId,
     status: "actioned",
   });
+  await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+    userId: params.userId,
+    caseId: opCase.id,
+    kind: "property_data_quality_review",
+    status: "dismissed",
+  });
+  if (controlledE2ECase) {
+    void triggerControlledE2EAgentTick(db, updated, "price_adjusted_and_approved").catch(
+      (tickError) => {
+        console.error("[price-approval] e2e tick failed:", tickError);
+      }
+    );
+  }
   return {
     ok: true,
     status: "adjusted_and_approved",
-    message: settingsTestCase
+    message: shouldPauseBeforeContract
       ? "Ajuste aplicado y precio aprobado. El caso de prueba quedó detenido antes del siguiente paso."
       : "Ajuste aplicado y precio aprobado. El caso avanzó a contrato.",
     pricing_proposal: nextProposal,

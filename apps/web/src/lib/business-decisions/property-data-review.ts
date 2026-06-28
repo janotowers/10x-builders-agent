@@ -63,6 +63,29 @@ function parsePropertyDataReviewCorrection(text: string) {
   };
 }
 
+function firstPositiveNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.replace(/,/g, "."));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+export function extractManualBuiltAreaM2FromTextForTest(text: string): number | null {
+  const withUnits = Array.from(
+    text.matchAll(/(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:m2|m²|metros?\s*cuadrados?)/gi)
+  );
+  const candidates = withUnits.length > 0 ? withUnits : Array.from(text.matchAll(/\d{1,4}(?:[.,]\d{1,2})?/g));
+  for (const match of candidates) {
+    const value = firstPositiveNumber(match[1] ?? match[0]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
 function mergeReviewCorrectionPatch(
   deterministicPatch: {
     contextPatch: Record<string, unknown>;
@@ -131,7 +154,10 @@ export async function handlePropertyDataReviewDecision(
   if (!notification || notification.user_id !== params.userId) {
     return { ok: false, status: "not_found", message: "No encontré el pendiente." };
   }
-  if (notification.kind !== "property_data_review") {
+  if (
+    notification.kind !== "property_data_review" &&
+    notification.kind !== "property_data_quality_review"
+  ) {
     return {
       ok: false,
       status: "wrong_kind",
@@ -151,6 +177,20 @@ export async function handlePropertyDataReviewDecision(
     return { ok: false, status: "case_not_found", message: "No encontré el caso." };
   }
   if (!isPropertyDataReviewCase(opCase)) {
+    const advancedBeyondReview =
+      opCase.current_step === "comparables_in_progress" ||
+      opCase.current_step === "price_proposal_pending" ||
+      opCase.current_step === "contract_pending" ||
+      opCase.current_step === "photos_scheduled" ||
+      opCase.current_step === "package_ready" ||
+      opCase.current_step === "completed";
+    if (advancedBeyondReview) {
+      return {
+        ok: true,
+        status: "already_processed",
+        message: "Ya registré la confirmación; estoy avanzando con comparables.",
+      };
+    }
     return {
       ok: false,
       status: "wrong_stage",
@@ -162,6 +202,7 @@ export async function handlePropertyDataReviewDecision(
   if (!text) {
     return { ok: false, status: "missing_text", message: "Escribe una respuesta." };
   }
+  const isQualityReview = notification.kind === "property_data_quality_review";
 
   const llmReview = await classifyOperationalConversationMessage({
     message: text,
@@ -180,6 +221,30 @@ export async function handlePropertyDataReviewDecision(
     parsePropertyDataReviewCorrection(text),
     llmReview?.intent === "review_correction" ? llmReview.patch : undefined
   );
+  if (isQualityReview) {
+    const parsedManualArea =
+      firstPositiveNumber(correctionPatch.propertyDataPatch.area_construida_m2) ??
+      extractManualBuiltAreaM2FromTextForTest(text);
+    if (parsedManualArea == null) {
+      return {
+        ok: false,
+        status: "missing_area_value",
+        message:
+          "Para continuar necesito el dato de superficie construida en m². Ejemplo: «146 m2».",
+      };
+    }
+    correctionPatch.propertyDataPatch.area_construida_m2 = parsedManualArea;
+    correctionPatch.propertyDataPatch.area_construida_m2_source =
+      "human_confirmed_predial_decimal_review";
+    correctionPatch.propertyDataPatch.surface_quality = {
+      area_construida_m2: {
+        status: "human_confirmed",
+        confirmed_at: new Date().toISOString(),
+        confirmed_via: "property_data_quality_review",
+      },
+    };
+    correctionPatch.contextPatch.area_construida_m2 = parsedManualArea;
+  }
   const hasPatch =
     Object.keys(correctionPatch.contextPatch).length > 0 ||
     Object.keys(correctionPatch.propertyDataPatch).length > 0;
@@ -201,6 +266,22 @@ export async function handlePropertyDataReviewDecision(
     !Array.isArray(context.property_data)
       ? (context.property_data as Record<string, unknown>)
       : {};
+  if (isQualityReview) {
+    const existingSurfaceQuality =
+      currentPropertyData.surface_quality &&
+      typeof currentPropertyData.surface_quality === "object" &&
+      !Array.isArray(currentPropertyData.surface_quality)
+        ? (currentPropertyData.surface_quality as Record<string, unknown>)
+        : {};
+    correctionPatch.propertyDataPatch.surface_quality = {
+      ...existingSurfaceQuality,
+      area_construida_m2: {
+        status: "human_confirmed",
+        confirmed_at: new Date().toISOString(),
+        confirmed_via: "property_data_quality_review",
+      },
+    };
+  }
   const caseWithPatch = hasPatch
     ? await updateOperationalCase(db, opCase.id, opCase.version, {
         context: {
@@ -257,7 +338,10 @@ export async function handlePropertyDataReviewDecision(
     caseWithPatch.id,
     caseWithPatch.version,
     {
-      status: settingsTestCase ? "paused" : "active",
+      status:
+        settingsTestCase && !isControlledE2EOperationalCase(caseWithPatch)
+          ? "paused"
+          : "active",
       currentStep: "comparables_in_progress",
       nextActionAt: reviewAdvanceNextActionAt,
       context: {

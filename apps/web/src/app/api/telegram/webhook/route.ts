@@ -538,6 +538,33 @@ function isPropertyDataReviewCase(opCase: OperationalCase) {
   );
 }
 
+type ComparablesExpansionIntent =
+  | "use_avaclick_primary"
+  | "expand_search"
+  | "manual_comparables"
+  | "unclear";
+
+function parseComparablesExpansionDecision(text: string): ComparablesExpansionIntent {
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+  if (!normalized) return "unclear";
+  if (
+    /^(1|uno|opcion 1|usar avaclick|avaclick|avanzar con avaclick)\b/.test(normalized)
+  ) {
+    return "use_avaclick_primary";
+  }
+  if (/^(2|dos|opcion 2|ampliar|expandir|expand search)\b/.test(normalized)) {
+    return "expand_search";
+  }
+  if (/^(3|tres|opcion 3|manual|cargar comparables)\b/.test(normalized)) {
+    return "manual_comparables";
+  }
+  return "unclear";
+}
+
 function bestTelegramMedia(message: NonNullable<TelegramUpdate["message"]>) {
   if (message.document) {
     return {
@@ -1494,10 +1521,178 @@ export async function POST(request: Request) {
   }
 
   if (text) {
+    const parsedComparablesDecision = parseComparablesExpansionDecision(text);
+    if (parsedComparablesDecision !== "unclear") {
+      const comparablesDecisionCandidates = (
+        await Promise.all(
+          pendingInternal
+            .filter(
+              (notification) =>
+                notification.kind === "comparables_search_expansion_decision"
+            )
+            .map(async (notification) => {
+              if (!notification.case_id) return null;
+              const opCase = await getOperationalCase(db, notification.case_id);
+              if (!opCase || opCase.user_id !== userId) return null;
+              const external = opCase.external_contact_jsonb ?? {};
+              if (
+                String(external.chat_id ?? "") !== String(chatId) ||
+                opCase.current_step !== "comparables_in_progress"
+              ) {
+                return null;
+              }
+              return { notification, opCase };
+            })
+        )
+      ).filter(
+        (candidate): candidate is {
+          notification: (typeof pendingInternal)[number];
+          opCase: OperationalCase;
+        } => Boolean(candidate)
+      );
+
+      if (comparablesDecisionCandidates.length === 1) {
+        const { notification, opCase } = comparablesDecisionCandidates[0]!;
+        const context =
+          opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+            ? (opCase.context_jsonb as Record<string, unknown>)
+            : {};
+        const comparablesAnalysis =
+          context.comparables_analysis &&
+          typeof context.comparables_analysis === "object" &&
+          !Array.isArray(context.comparables_analysis)
+            ? (context.comparables_analysis as Record<string, unknown>)
+            : null;
+        const avaclickValuation =
+          comparablesAnalysis &&
+          comparablesAnalysis.external_valuation &&
+          typeof comparablesAnalysis.external_valuation === "object" &&
+          !Array.isArray(comparablesAnalysis.external_valuation)
+            ? (comparablesAnalysis.external_valuation as Record<string, unknown>)
+            : null;
+        const hasAvaclickValuation =
+          typeof avaclickValuation?.sale_average_mxn === "number";
+
+        const nextActionAt = new Date().toISOString();
+        let updatePayload:
+          | {
+              status: "active" | "waiting_internal";
+              currentStep: string;
+              nextActionAt: string | null;
+              context: Record<string, unknown>;
+            }
+          | null = null;
+        let userMessage = "";
+
+        if (parsedComparablesDecision === "use_avaclick_primary") {
+          if (!hasAvaclickValuation) {
+            await sendTelegramMessage(
+              chatId,
+              "Aun no tengo una valuacion Avaclick valida para este caso. Primero debo ejecutarla correctamente y despues podremos usarla como base principal."
+            );
+            return NextResponse.json({
+              ok: true,
+              routed: "comparables_expansion_decision_missing_avaclick",
+              case_id: opCase.id,
+              notification_id: notification.id,
+            });
+          }
+          updatePayload = {
+            status: "active",
+            currentStep: "price_proposal_pending",
+            nextActionAt,
+            context: {
+              ...context,
+              comparables_decision: "use_avaclick_primary",
+              comparables_decision_at: nextActionAt,
+              comparables_decision_source: "telegram",
+            },
+          };
+          userMessage =
+            "Perfecto. Registro tu decision: avanzar usando Avaclick como base principal. El caso pasa a preparacion de precio.";
+        } else if (parsedComparablesDecision === "expand_search") {
+          updatePayload = {
+            status: "active",
+            currentStep: "comparables_in_progress",
+            nextActionAt,
+            context: {
+              ...context,
+              comparables_decision: "expand_search",
+              comparables_decision_at: nextActionAt,
+              comparables_decision_source: "telegram",
+            },
+          };
+          userMessage =
+            "Entendido. Registro tu decision de ampliar busqueda y relanzo el analisis de comparables.";
+        } else {
+          updatePayload = {
+            status: "waiting_internal",
+            currentStep: "comparables_in_progress",
+            nextActionAt: null,
+            context: {
+              ...context,
+              comparables_decision: "manual_comparables",
+              comparables_decision_at: nextActionAt,
+              comparables_decision_source: "telegram",
+            },
+          };
+          userMessage =
+            "Perfecto. Registro que cargaran comparables manuales en el panel. Cuando esten listos, avisa para continuar.";
+        }
+
+        const updated = await updateOperationalCase(db, opCase.id, opCase.version, updatePayload);
+        if (!updated) {
+          await sendTelegramMessage(
+            chatId,
+            "El caso cambio mientras procesaba tu decision. Intenta de nuevo, por favor."
+          );
+          return NextResponse.json({
+            ok: true,
+            routed: "comparables_expansion_decision_version_conflict",
+            case_id: opCase.id,
+            notification_id: notification.id,
+          });
+        }
+
+        await insertOperationalCaseEvent(db, {
+          caseId: updated.id,
+          eventType: "human_decision",
+          actor: "user",
+          payload: {
+            kind: "comparables_search_expansion_decision_response",
+            source: "telegram",
+            notification_id: notification.id,
+            text,
+            decision: parsedComparablesDecision,
+          },
+        });
+        await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+          userId,
+          caseId: updated.id,
+          kind: "comparables_search_expansion_decision",
+          status: "actioned",
+        });
+        await sendTelegramMessage(chatId, userMessage);
+        return NextResponse.json({
+          ok: true,
+          routed: "comparables_expansion_decision",
+          case_id: updated.id,
+          notification_id: notification.id,
+          decision: parsedComparablesDecision,
+        });
+      }
+    }
+  }
+
+  if (text) {
     const propertyDataReviewCandidates = (
       await Promise.all(
         pendingInternal
-          .filter((notification) => notification.kind === "property_data_review")
+          .filter(
+            (notification) =>
+              notification.kind === "property_data_review" ||
+              notification.kind === "property_data_quality_review"
+          )
           .map(async (notification) => {
             if (!notification.case_id) return null;
             const opCase = await getOperationalCase(db, notification.case_id);
@@ -2246,7 +2441,8 @@ export async function POST(request: Request) {
     conversationalCase &&
     (looksLikeDocumentBatchComplete(agentMessageText) ||
       internalDocumentTextReason === "batch_complete") &&
-    conversationalCase.current_step === "awaiting_documents" &&
+    (conversationalCase.current_step === "awaiting_documents" ||
+      conversationalCase.current_step === "documents_received") &&
     operationalCaseDocumentRequestTargetFromContext(
       conversationalCase.context_jsonb
     ) === "internal_user"

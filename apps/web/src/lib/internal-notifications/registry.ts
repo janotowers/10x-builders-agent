@@ -91,11 +91,19 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     intent: "review",
     reviewCtaLabel: "Confirmar o corregir en flujo",
   },
+  property_data_quality_review: {
+    kind: "property_data_quality_review",
+    label: "Validar calidad de superficie predial",
+    visibleInInbox: true,
+    intent: "review",
+    reviewCtaLabel: "Confirmar m² correctos",
+  },
   comparables_analysis: {
     kind: "comparables_analysis",
     label: "Analisis de comparables",
     visibleInInbox: true,
     intent: "reminder",
+    informational: true,
   },
   comparables_insufficient_data: {
     kind: "comparables_insufficient_data",
@@ -186,6 +194,42 @@ const COMPARABLES_NOTIFICATION_KINDS = new Set([
   "property_comparables",
 ]);
 
+/**
+ * Canonicaliza variantes de forma libre que el agente puede emitir para
+ * "análisis de comparables listo" (p. ej. "comparables_ready",
+ * "comparables analysis ready", "property_comparables") al kind canónico
+ * `comparables_analysis`, que está marcado como `informational` y por tanto NO
+ * bloquea el flujo como pendiente humano. Las decisiones reales de comparables
+ * (`comparables_insufficient_data`, `comparables_search_expansion_decision`) se
+ * preservan intactas.
+ */
+function canonicalizeComparablesNotificationKind(kind: string): string {
+  if (
+    kind === "price_proposal" ||
+    kind === "priceproposal" ||
+    kind === "pricing_proposal" ||
+    kind === "proposal_price"
+  ) {
+    return "price_approval";
+  }
+  if (
+    kind === "comparables_insufficient_data" ||
+    kind === "comparables_search_expansion_decision"
+  ) {
+    return kind;
+  }
+  if (kind === "property_comparables") return "comparables_analysis";
+  if (
+    kind.startsWith("comparable") &&
+    /(ready|analysis|analisis|complete|completo|completado|done|summary|resumen|listo)/.test(
+      kind
+    )
+  ) {
+    return "comparables_analysis";
+  }
+  return kind;
+}
+
 function notificationDecisionText(params: {
   kind: string;
   body?: string | null;
@@ -200,7 +244,9 @@ export function effectiveInternalNotificationKind(params: {
   body?: string | null;
   title?: string | null;
 }): string {
-  const kind = normalizeNotificationKindKey(params.kind || "general");
+  const kind = canonicalizeComparablesNotificationKind(
+    normalizeNotificationKindKey(params.kind || "general")
+  );
   if (kind === "price_approval") return kind;
   if (!COMPARABLES_NOTIFICATION_KINDS.has(kind)) return kind;
 

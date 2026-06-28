@@ -276,4 +276,166 @@ assert.equal(
   true
 );
 
+// `step_key` autoritativo: la atribución es EXCLUSIVA al paso indicado, aunque
+// el payload contenga `to.current_step` de otro paso (transición). Esto evita
+// que un mismo evento se cuente en dos pasos a la vez.
+const authoritativeFlow: OperationalCaseFlowStep[] = [
+  { step_key: "price_proposal_pending", step_label: "Preparar precio" },
+  { step_key: "contract_pending", step_label: "Preparar contrato" },
+];
+const authoritativeCase = {
+  current_step: "contract_pending",
+  context_jsonb: {},
+} as OperationalCase;
+const withAuthoritative = buildSettingsTestFlowProgress({
+  opCase: authoritativeCase,
+  events: [
+    {
+      id: "price-approved-1",
+      case_id: "case-1",
+      event_type: "human_decision",
+      actor: "user",
+      created_at: "2026-06-05T10:10:00.000Z",
+      payload_jsonb: {
+        kind: "price_approved",
+        step_key: "price_proposal_pending",
+        current_step: "price_proposal_pending",
+        to: { current_step: "contract_pending", status: "active" },
+      },
+    },
+    {
+      id: "contract-entered-1",
+      case_id: "case-1",
+      event_type: "state_changed",
+      actor: "system",
+      created_at: "2026-06-05T10:10:01.000Z",
+      payload_jsonb: {
+        kind: "contract_preparation_entered",
+        step_key: "contract_pending",
+        current_step: "contract_pending",
+      },
+    },
+  ] as unknown as Parameters<typeof buildSettingsTestFlowProgress>[0]["events"],
+  flow: authoritativeFlow,
+});
+const priceStep = withAuthoritative.find(
+  (step) => step.step_key === "price_proposal_pending"
+);
+const contractStep = withAuthoritative.find(
+  (step) => step.step_key === "contract_pending"
+);
+assert.deepEqual(
+  priceStep?.evidenceItems.map((item) => item.id),
+  ["price-approved-1"],
+  "price_approved debe atribuirse SOLO a Preparar precio (paso autoritativo)"
+);
+assert.deepEqual(
+  contractStep?.evidenceItems.map((item) => item.id),
+  ["contract-entered-1"],
+  "contract_preparation_entered debe atribuirse SOLO a Preparar contrato"
+);
+
+// El resumen E2E conserva eventos con paso autoritativo aunque su `source` no
+// esté en el allowlist heredado (esto es lo que dejaba el Paso 4 "sin actividad").
+const e2eWithAuthoritative = flowProgressForE2ESummary(
+  [
+    {
+      step_key: "price_proposal_pending",
+      step_label: "Preparar precio",
+      status: "completed",
+      evidence: ["event:state_changed"],
+      evidenceItems: [
+        {
+          kind: "event",
+          id: "price-prepared-evt",
+          created_at: "2026-06-05T10:10:30.000Z",
+          event_type: "state_changed",
+          event_kind: "price_proposal_prepared",
+          event_source: "operational_case_persist_comparables_analysis",
+          event_step_key: "price_proposal_pending",
+          summary: "Propuesta de precio preparada",
+        },
+      ],
+    },
+  ],
+  { e2eStartedAt: "2026-06-05T10:05:00.000Z" }
+);
+assert.equal(
+  e2eWithAuthoritative[0]?.evidenceItems.some(
+    (item) => item.id === "price-prepared-evt"
+  ),
+  true,
+  "el resumen E2E debe conservar eventos con event_step_key autoritativo"
+);
+
+const contractToolSummary = buildSettingsTestFlowProgress({
+  opCase: {
+    current_step: "contract_pending",
+    context_jsonb: {},
+  } as OperationalCase,
+  events: [
+    {
+      id: "contract-review-requested",
+      case_id: "case-1",
+      event_type: "human_decision",
+      actor: "system",
+      created_at: "2026-06-05T10:20:00.000Z",
+      payload_jsonb: {
+        kind: "contract_review_requested",
+        step_key: "contract_pending",
+      },
+    },
+  ] as unknown as Parameters<typeof buildSettingsTestFlowProgress>[0]["events"],
+  flow: [
+    {
+      step_key: "contract_pending",
+      step_label: "Preparar contrato",
+      step_tools: [
+        { tool_id: "generate_document_from_template", tool_label: "Generar" },
+      ],
+    },
+  ],
+  toolCalls: [
+    {
+      id: "contract-doc-pending",
+      session_id: "s1",
+      turn_id: "turn-contract",
+      tool_name: "generate_document_from_template",
+      arguments_json: { case_id: "case-1", template_slug: "commission_contract" },
+      status: "pending_confirmation",
+      requires_confirmation: true,
+      created_at: "2026-06-05T10:20:01.000Z",
+      metadata_jsonb: { operational_step_key: "contract_pending" },
+    },
+    {
+      id: "contract-doc-executed",
+      session_id: "s1",
+      turn_id: "turn-contract",
+      tool_name: "generate_document_from_template",
+      arguments_json: { case_id: "case-1", template_slug: "commission_contract" },
+      status: "executed",
+      requires_confirmation: false,
+      created_at: "2026-06-05T10:20:02.000Z",
+      metadata_jsonb: { operational_step_key: "contract_pending" },
+    },
+  ] as ToolCall[],
+});
+const contractEvidenceSummaries = (
+  contractToolSummary[0]?.evidenceItems.filter((item) => item.kind === "tool") ?? []
+).map((item) => item.summary);
+assert.ok(
+  contractEvidenceSummaries.includes("Borrador de contrato generado"),
+  "cuando generate_document_from_template se ejecuta en contract_pending debe mostrar resumen de borrador generado"
+);
+assert.ok(
+  contractEvidenceSummaries.includes("Generando borrador interno (pendiente)"),
+  "cuando generate_document_from_template queda pending_confirmation debe mostrar resumen de generación interna pendiente"
+);
+assert.ok(
+  contractToolSummary[0]?.evidenceItems.some(
+    (item) => item.kind === "event" && item.summary === "Revisión de contrato solicitada"
+  ),
+  "contract_review_requested debe tener summary legible en Paso 5"
+);
+
 console.log("settings-test-flow-progress.selftest: ok");

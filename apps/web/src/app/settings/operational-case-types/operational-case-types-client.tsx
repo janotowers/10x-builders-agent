@@ -136,7 +136,10 @@ import {
   toolCallStatusLabel,
 } from "@/lib/operational-cases/settings-test-flow-progress";
 import type { LastE2ETransitionOutcome } from "@/lib/operational-cases/settings-test-e2e-transitions";
-import { buildE2ETransitionGroups } from "@/lib/operational-cases/settings-test-e2e-transitions";
+import {
+  buildE2ETransitionGroups,
+  buildE2ETransitionStepSubgroups,
+} from "@/lib/operational-cases/settings-test-e2e-transitions";
 import {
   buildObservedConversationalCaseLabel,
   buildOperationalStepLabelMap,
@@ -5875,8 +5878,10 @@ function LabPendingActionItem({
             ) : (
               <>
                 Ejecución pendiente:{" "}
-                <span>{labPendingToolDisplay(action.tool_name)}</span>. Resuélvela en
-                Pendientes o Telegram.
+                <span>{labPendingToolDisplay(action.tool_name)}</span>.{" "}
+                {action.telegram_delivered
+                  ? "Resuélvela en Pendientes o Telegram."
+                  : "Resuélvela en Pendientes."}
               </>
             )}
           </p>
@@ -6100,6 +6105,9 @@ function LabPendingActionPanel({
   const [cleanupTarget, setCleanupTarget] = useState<SettingsTestCleanupTarget>("all");
   const prevTransitionCountRef = useRef(transitionCount);
   const hasBlocking = blockingActions.length > 0;
+  const hasBlockingTelegramDelivery = blockingActions.some(
+    (action) => action.telegram_delivered
+  );
   const hasHistorical = historicalActions.length > 0;
   const historicalCounts = countSettingsTestActionsByKind(historicalActions);
   const transitionSummary = realCaseMode
@@ -6171,7 +6179,9 @@ function LabPendingActionPanel({
             }`}
           >
             {hasBlocking
-              ? "Resuélvela en el mismo canal que usarías en operación real antes de revisar de nuevo el caso."
+              ? hasBlockingTelegramDelivery
+                ? "Resuélvela en Pendientes o Telegram antes de revisar de nuevo el caso."
+                : "Resuélvela en Pendientes antes de revisar de nuevo el caso."
               : intakeIncomplete
                 ? "Sin pendientes HITL activas. El recorrido sigue en Paso 0: completa el intake por Telegram antes de revisar avance."
                 : hasHistorical
@@ -6381,6 +6391,27 @@ function controlledTestAuditSummary(event: OperationalCaseEvent): string {
   if (kind === "controlled_test_e2e_started") {
     return "Transición con agente iniciada";
   }
+  if (kind === "price_proposal_prepared") {
+    return "Propuesta de precio preparada";
+  }
+  if (kind === "price_approval_requested") {
+    return "Aprobación de precio solicitada";
+  }
+  if (kind === "price_approved") {
+    return "Precio aprobado";
+  }
+  if (kind === "price_adjusted_and_approved") {
+    return "Precio ajustado y aprobado";
+  }
+  if (kind === "contract_review_requested") {
+    return "Revisión de contrato solicitada";
+  }
+  if (kind === "contract_generation_unverified") {
+    return "Contrato no verificado: falta render real";
+  }
+  if (kind === "contract_preparation_entered") {
+    return "Preparación de contrato iniciada";
+  }
   return `${kind} · ${event.actor}`;
 }
 
@@ -6437,7 +6468,8 @@ function TestCaseAuditPanel({
           : ""}
       </summary>
       <p className="mt-2 text-[11px] text-neutral-500">
-        Actividad agrupada por cada revisión manual del runner
+        Actividad agrupada por cada revisión manual del runner y subagrupada por
+        paso operativo autoritativo cuando está disponible
         {conversationalMode
           ? " en este recorrido conversacional E2E."
           : playthroughAnchorAt
@@ -6463,79 +6495,108 @@ function TestCaseAuditPanel({
 
       {transitionGroups.length > 0 ? (
         <ol className="mt-3 space-y-2">
-          {[...transitionGroups].reverse().map((group) => (
-            <li
-              key={`transition-${group.index}-${group.startedAt}`}
-              className="rounded border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
-            >
-              <details className="group" open={group.index === transitionGroups.length}>
-                <summary className="cursor-pointer px-2 py-1.5 text-xs font-semibold text-neutral-800 dark:text-neutral-100">
-                  Transición {group.index}
-                  {group.stepLabel ? ` · ${group.stepLabel}` : ""}
-                  <span className="ml-2 font-normal text-neutral-500">
-                    {formatDateTime(group.startedAt)}
-                  </span>
-                  <span className="ml-2 font-normal text-neutral-400">
-                    ({group.events.length} evento
-                    {group.events.length === 1 ? "" : "s"},{" "}
-                    {group.toolCalls.length} tool
-                    {group.toolCalls.length === 1 ? "" : "s"})
-                  </span>
-                </summary>
-                <div className="border-t border-neutral-100 px-2 py-2 dark:border-neutral-800">
-                  {group.events.length > 0 ? (
-                    <ul className="space-y-1">
-                      {group.events.map((event) => (
-                        <li key={event.id}>
-                          <details className="rounded border border-neutral-100 bg-neutral-50/80 dark:border-neutral-800 dark:bg-neutral-950/50">
-                            <summary className="cursor-pointer px-2 py-1 text-[11px]">
-                              <span className="font-medium text-neutral-800 dark:text-neutral-100">
-                                {controlledTestAuditSummary(event)}
+          {[...transitionGroups].reverse().map((group) => {
+            const stepSubgroups = buildE2ETransitionStepSubgroups({
+              group,
+              stepLabels: operationalStepLabels,
+            });
+            return (
+              <li
+                key={`transition-${group.index}-${group.startedAt}`}
+                className="rounded border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+              >
+                <details className="group" open={group.index === transitionGroups.length}>
+                  <summary className="cursor-pointer px-2 py-1.5 text-xs font-semibold text-neutral-800 dark:text-neutral-100">
+                    Transición {group.index}
+                    {group.stepLabel ? ` · ${group.stepLabel}` : ""}
+                    <span className="ml-2 font-normal text-neutral-500">
+                      {formatDateTime(group.startedAt)}
+                    </span>
+                    <span className="ml-2 font-normal text-neutral-400">
+                      ({group.events.length} evento
+                      {group.events.length === 1 ? "" : "s"},{" "}
+                      {group.toolCalls.length} tool
+                      {group.toolCalls.length === 1 ? "" : "s"})
+                    </span>
+                  </summary>
+                  <div className="border-t border-neutral-100 px-2 py-2 dark:border-neutral-800">
+                    {stepSubgroups.length > 0 ? (
+                      <div className="space-y-2">
+                        {stepSubgroups.map((subgroup) => (
+                          <section
+                            key={`transition-${group.index}-subgroup-${subgroup.stepKey ?? "legacy"}`}
+                            className="rounded border border-neutral-100 bg-neutral-50/60 p-2 dark:border-neutral-800 dark:bg-neutral-950/40"
+                          >
+                            <p className="text-[11px] font-semibold text-neutral-700 dark:text-neutral-200">
+                              {subgroup.stepLabel}
+                              {subgroup.bucket === "legacy" ? " · fallback temporal" : ""}
+                              <span className="ml-2 font-normal text-neutral-500">
+                                ({subgroup.events.length} evento
+                                {subgroup.events.length === 1 ? "" : "s"},{" "}
+                                {subgroup.toolCalls.length} tool
+                                {subgroup.toolCalls.length === 1 ? "" : "s"})
                               </span>
-                              <span className="ml-2 text-neutral-500">
-                                {formatDateTime(event.created_at)}
-                              </span>
-                            </summary>
-                            <pre className="max-h-32 overflow-auto whitespace-pre-wrap border-t border-neutral-100 px-2 py-1 font-mono text-[10px] text-neutral-600 dark:border-neutral-800">
-                              {JSON.stringify(event.payload_jsonb, null, 2)}
-                            </pre>
-                          </details>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-[11px] text-neutral-500">Sin eventos en esta transición.</p>
-                  )}
-                  {group.toolCalls.length > 0 ? (
-                    <ul className="mt-2 space-y-1">
-                      {group.toolCalls.map((call) => (
-                        <li
-                          key={call.id}
-                          className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-1 text-[11px] ${
-                            call.status === "pending_confirmation"
-                              ? "border-amber-200 bg-amber-50 text-amber-900"
-                              : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
-                          }`}
-                        >
-                          <span className="font-mono text-neutral-800 dark:text-neutral-100">
-                            {call.tool_name}
-                          </span>
-                          <span className="text-neutral-500">
-                            {toolCallStatusLabel(call.status)}
-                            {" · "}
-                            {formatDateTime(call.created_at)}
-                            {toolCallFailureDetail(call)
-                              ? ` · ${toolCallFailureDetail(call)}`
-                              : ""}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-              </details>
-            </li>
-          ))}
+                            </p>
+                            {subgroup.events.length > 0 ? (
+                              <ul className="mt-1 space-y-1">
+                                {subgroup.events.map((event) => (
+                                  <li key={event.id}>
+                                    <details className="rounded border border-neutral-100 bg-white/80 dark:border-neutral-800 dark:bg-neutral-950/50">
+                                      <summary className="cursor-pointer px-2 py-1 text-[11px]">
+                                        <span className="font-medium text-neutral-800 dark:text-neutral-100">
+                                          {controlledTestAuditSummary(event)}
+                                        </span>
+                                        <span className="ml-2 text-neutral-500">
+                                          {formatDateTime(event.created_at)}
+                                        </span>
+                                      </summary>
+                                      <pre className="max-h-32 overflow-auto whitespace-pre-wrap border-t border-neutral-100 px-2 py-1 font-mono text-[10px] text-neutral-600 dark:border-neutral-800">
+                                        {JSON.stringify(event.payload_jsonb, null, 2)}
+                                      </pre>
+                                    </details>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                            {subgroup.toolCalls.length > 0 ? (
+                              <ul className="mt-1 space-y-1">
+                                {subgroup.toolCalls.map((call) => (
+                                  <li
+                                    key={call.id}
+                                    className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-1 text-[11px] ${
+                                      call.status === "pending_confirmation"
+                                        ? "border-amber-200 bg-amber-50 text-amber-900"
+                                        : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+                                    }`}
+                                  >
+                                    <span className="font-mono text-neutral-800 dark:text-neutral-100">
+                                      {call.tool_name}
+                                    </span>
+                                    <span className="text-neutral-500">
+                                      {toolCallStatusLabel(call.status)}
+                                      {" · "}
+                                      {formatDateTime(call.created_at)}
+                                      {toolCallFailureDetail(call)
+                                        ? ` · ${toolCallFailureDetail(call)}`
+                                        : ""}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                          </section>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-neutral-500">
+                        Sin eventos ni tools en esta transición.
+                      </p>
+                    )}
+                  </div>
+                </details>
+              </li>
+            );
+          })}
         </ol>
       ) : (
         <p className="mt-2 text-xs text-neutral-500">

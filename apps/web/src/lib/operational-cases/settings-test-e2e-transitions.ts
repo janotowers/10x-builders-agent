@@ -9,6 +9,14 @@ export type E2ETransitionGroup = {
   toolCalls: ToolCall[];
 };
 
+export type E2ETransitionStepSubgroup = {
+  stepKey: string | null;
+  stepLabel: string;
+  bucket: "authoritative" | "legacy";
+  events: OperationalCaseEvent[];
+  toolCalls: ToolCall[];
+};
+
 export function filterActivitySincePlaythroughAnchor<T extends { created_at: string }>(
   items: T[],
   anchorAt: string | null
@@ -37,6 +45,75 @@ function e2eStepKeyFromEvent(event: OperationalCaseEvent): string | null {
   const payload = event.payload_jsonb as Record<string, unknown> | null;
   const step = payload?.current_step;
   return typeof step === "string" && step.trim() ? step.trim() : null;
+}
+
+function authoritativeEventStepKey(event: OperationalCaseEvent): string | null {
+  const payload = event.payload_jsonb as Record<string, unknown> | null;
+  const step = payload?.step_key;
+  return typeof step === "string" && step.trim() ? step.trim() : null;
+}
+
+function authoritativeToolCallStepKey(call: ToolCall): string | null {
+  const value = call.metadata_jsonb?.operational_step_key;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function subgroupSortWeight(
+  subgroup: Pick<E2ETransitionStepSubgroup, "stepKey" | "bucket">,
+  anchorStepKey: string | null
+): number {
+  if (subgroup.stepKey && anchorStepKey && subgroup.stepKey === anchorStepKey) return 0;
+  if (subgroup.stepKey) return 1;
+  return subgroup.bucket === "legacy" ? 2 : 1;
+}
+
+/**
+ * Within one transition window, subgroups activity by authoritative operational step.
+ * Events/tools without authoritative step are placed in a legacy fallback bucket.
+ */
+export function buildE2ETransitionStepSubgroups(params: {
+  group: E2ETransitionGroup;
+  stepLabels?: Record<string, string>;
+}): E2ETransitionStepSubgroup[] {
+  const map = new Map<string, E2ETransitionStepSubgroup>();
+  const upsert = (stepKey: string | null, bucket: "authoritative" | "legacy") => {
+    const normalizedStepKey = stepKey && stepKey.trim() ? stepKey.trim() : null;
+    const key = normalizedStepKey ? `step:${normalizedStepKey}` : "legacy";
+    const existing = map.get(key);
+    if (existing) return existing;
+    const stepLabel = normalizedStepKey
+      ? (params.stepLabels?.[normalizedStepKey] ?? normalizedStepKey)
+      : "Sin paso autoritativo / legacy";
+    const created: E2ETransitionStepSubgroup = {
+      stepKey: normalizedStepKey,
+      stepLabel,
+      bucket,
+      events: [],
+      toolCalls: [],
+    };
+    map.set(key, created);
+    return created;
+  };
+
+  for (const event of params.group.events) {
+    const stepKey = authoritativeEventStepKey(event);
+    const subgroup = upsert(stepKey, stepKey ? "authoritative" : "legacy");
+    subgroup.events.push(event);
+  }
+  for (const toolCall of params.group.toolCalls) {
+    const stepKey = authoritativeToolCallStepKey(toolCall);
+    const subgroup = upsert(stepKey, stepKey ? "authoritative" : "legacy");
+    subgroup.toolCalls.push(toolCall);
+  }
+
+  return Array.from(map.values()).sort((a, b) => {
+    const weightDiff =
+      subgroupSortWeight(a, params.group.stepKey) -
+      subgroupSortWeight(b, params.group.stepKey);
+    if (weightDiff !== 0) return weightDiff;
+    if (a.stepLabel === b.stepLabel) return 0;
+    return a.stepLabel.localeCompare(b.stepLabel, "es");
+  });
 }
 
 /**

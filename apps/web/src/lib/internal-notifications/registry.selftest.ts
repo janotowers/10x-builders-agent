@@ -44,6 +44,18 @@ assert.equal(
   "price_approval"
 );
 assert.equal(
+  effectiveInternalNotificationKind({
+    kind: "price_proposal",
+  }),
+  "price_approval"
+);
+assert.equal(
+  effectiveInternalNotificationKind({
+    kind: "pricing_proposal",
+  }),
+  "price_approval"
+);
+assert.equal(
   internalNotificationKindConfig("comparables_analysis", {
     body: "Revisemos el precio propuesto.",
   }).businessDecision,
@@ -51,6 +63,10 @@ assert.equal(
 );
 assert.equal(
   internalNotificationKindConfig("comparables_insufficient_data").informational,
+  true
+);
+assert.equal(
+  internalNotificationKindConfig("comparables_analysis").informational,
   true
 );
 assert.equal(

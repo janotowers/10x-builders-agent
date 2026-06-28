@@ -924,17 +924,18 @@ async function processCase(
   if (!locked) {
     return { case_id: opCase.id, status: "skipped" };
   }
+  const lockedCase = { ...opCase, version: opCase.version + 1 };
 
   try {
-    if (opCase.current_step === "awaiting_documents") {
+    if (lockedCase.current_step === "awaiting_documents") {
       const requestTarget = resolveOperationalCaseDocumentRequestTarget({
-        externalContact: opCase.external_contact_jsonb,
-        context: opCase.context_jsonb,
+        externalContact: lockedCase.external_contact_jsonb,
+        context: lockedCase.context_jsonb,
       });
       const externalChatId =
-        opCase.external_contact_jsonb?.channel === "telegram" &&
-        typeof opCase.external_contact_jsonb.chat_id === "number"
-          ? opCase.external_contact_jsonb.chat_id
+        lockedCase.external_contact_jsonb?.channel === "telegram" &&
+        typeof lockedCase.external_contact_jsonb.chat_id === "number"
+          ? lockedCase.external_contact_jsonb.chat_id
           : null;
       const targetChatId =
         requestTarget === "internal_user"
@@ -943,7 +944,7 @@ async function processCase(
       if (targetChatId) {
         const flush = await flushMediaGroupAcksForCase({
           db,
-          opCase,
+          opCase: lockedCase,
           chatId: targetChatId,
           sendAck: async (files) => {
             await sendTelegramMessage(
@@ -953,6 +954,9 @@ async function processCase(
           },
         });
         if (flush.flushed > 0) {
+          await updateOperationalCase(db, opCase.id, flush.opCase.version, {
+            nextActionAt: new Date(Date.now() + 15_000).toISOString(),
+          });
           return { case_id: opCase.id, status: "ok" };
         }
       }

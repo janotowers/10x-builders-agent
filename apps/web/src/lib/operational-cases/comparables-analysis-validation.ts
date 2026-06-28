@@ -75,8 +75,17 @@ export function comparablesUsableCount(analysis: unknown): number {
   );
 }
 
+/** Mínimo de comparables únicos (cross-source) para una muestra defendible. */
+export const MIN_DEFENSIBLE_UNIQUE_COMPARABLES = 3;
+
 export function comparablesHasDefensibleSample(analysis: unknown): boolean {
   if (!isRecord(analysis)) return false;
+  // Artefactos nuevos traen unique_comparable_count: exigir el umbral mínimo.
+  const dq = isRecord(analysis.data_quality) ? analysis.data_quality : null;
+  if (dq && typeof dq.unique_comparable_count === "number") {
+    return dq.unique_comparable_count >= MIN_DEFENSIBLE_UNIQUE_COMPARABLES;
+  }
+  // Compat: artefactos antiguos/seeds sin unique_comparable_count.
   if (comparablesUsableCount(analysis) > 0) return true;
   const stats = analysis.stats;
   if (!isRecord(stats)) return false;

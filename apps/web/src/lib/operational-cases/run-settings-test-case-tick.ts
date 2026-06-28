@@ -31,7 +31,13 @@ import {
   type PendingConfirmation,
 } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import { notify } from "@/lib/notify";
 import { buildDocumentChecklistLines } from "@/lib/operational-cases/case-document-collection";
+import {
+  buildContractDraftDownloadUrl,
+  parseContractDraftFromContext,
+  parseGenerateDocumentRenderResult,
+} from "@/lib/operational-cases/contract-draft-document";
 import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 import { telegramChatIdFromCase } from "@/lib/operational-cases/settings-test-telegram-lab";
@@ -39,6 +45,16 @@ import { telegramChatIdFromCase } from "@/lib/operational-cases/settings-test-te
 type PostAgentInvariantAction = Awaited<
   ReturnType<typeof applyPropertyOptioningPostAgentInvariants>
 >["action"];
+
+type TurnToolCallRow = {
+  tool_name: string;
+  status: string;
+  result_json: Record<string, unknown> | null;
+};
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function deterministicDocumentIdsFromBlocks(
   blocks: ReturnType<typeof evaluatePropertyAdvanceGate>["blocks"]
@@ -59,6 +75,62 @@ function shouldSkipPreflightExtraction(document: OperationalCaseDocument): boole
   if (Object.keys(extraction).length === 0) return false;
   if (document.extraction_status === "ok") return true;
   return document.extraction_status === "low_confidence" && Boolean(document.extracted_at);
+}
+
+function contextRecord(opCase: OperationalCase): Record<string, unknown> {
+  return opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+    ? (opCase.context_jsonb as Record<string, unknown>)
+    : {};
+}
+
+function shouldAutoExecuteContractDraftGeneration(opCase: OperationalCase): boolean {
+  if (opCase.case_type !== "property_optioning") return false;
+  if (opCase.current_step !== "contract_pending") return false;
+  const context = contextRecord(opCase);
+  const pricingProposal =
+    context.pricing_proposal && typeof context.pricing_proposal === "object"
+      ? (context.pricing_proposal as Record<string, unknown>)
+      : null;
+  return pricingProposal?.approval_status === "approved";
+}
+
+async function listTurnToolCalls(
+  db: ReturnType<typeof createServerClient>,
+  turnId: string | null | undefined
+): Promise<TurnToolCallRow[]> {
+  if (!turnId) return [];
+  const { data, error } = await db
+    .from("tool_calls")
+    .select("tool_name,status,result_json")
+    .eq("turn_id", turnId);
+  if (error) return [];
+  return (data ?? []) as TurnToolCallRow[];
+}
+
+function hasRenderedContractDraftFromToolCalls(toolCalls: TurnToolCallRow[]): boolean {
+  return toolCalls.some((call) => {
+    if (call.tool_name !== "generate_document_from_template") return false;
+    if (call.status !== "executed") return false;
+    return parseGenerateDocumentRenderResult(call.result_json ?? undefined) != null;
+  });
+}
+
+async function hasUnreadContractReviewNotification(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  caseId: string
+) {
+  const { data, error } = await db
+    .from("internal_user_notifications")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("case_id", caseId)
+    .eq("kind", "contract_review")
+    .eq("status", "unread")
+    .limit(1)
+    .maybeSingle();
+  if (error) return false;
+  return Boolean(data?.id);
 }
 
 async function runAuditedDocumentExtraction(params: {
@@ -157,21 +229,17 @@ async function ensureRequiredDocumentExtractionsForE2E(params: {
     targetTransition: "comparables_in_progress",
   });
   const blockingDocumentIds = deterministicDocumentIdsFromBlocks(gate.blocks);
-  const humanQualityBlocks = gate.blocks.filter(
-    (block) =>
-      block.reason === "predial_area_construida_implausible" &&
-      block.remediation.owner === "human"
-  );
-  const humanQualityDocumentIds = humanQualityBlocks.flatMap(
-    (block) => block.remediation.document_ids ?? []
-  );
-  if (blockingDocumentIds.length > 0 || humanQualityBlocks.length > 0) {
+  // Importante: los bloqueos de calidad predial con owner=human NO deben
+  // detener aquí el tick E2E como "blocked_pending_extraction". Esos casos
+  // se atienden en applyPropertyOptioningPostAgentInvariants, que emite
+  // notify_user(kind=property_data_quality_review) y deja el caso en
+  // waiting_internal con acción humana clara. Si bloqueamos en preflight,
+  // el panel queda en limbo sin pendiente accionable.
+  if (blockingDocumentIds.length > 0) {
     return {
       status: "blocked",
       documents,
-      blockingDocumentIds: [
-        ...new Set([...blockingDocumentIds, ...humanQualityDocumentIds]),
-      ],
+      blockingDocumentIds: [...new Set(blockingDocumentIds)],
       blockingReasons: gate.blocks.map((block) => block.reason),
     };
   }
@@ -197,9 +265,14 @@ function deriveControlledE2EStatus(
       return "waiting_external";
     case "asked_missing_characteristics_internal":
     case "asked_missing_characteristics_again_internal":
+    case "requested_comparables_decision":
+    case "requested_property_data_quality_review":
       return "waiting_internal";
     case "deferred_pending_extraction":
       return "blocked_pending_extraction";
+    case "remediated_comparables":
+    case "advanced_to_price_proposal":
+      return "manual_tick_completed";
     case "escalated_extraction_to_human":
       return "extraction_escalated_to_human";
     case "no_action":
@@ -287,12 +360,12 @@ function buildCaseE2ETickMessage(
           "Acción esperada para este paso: usa perform-comparable-analysis.",
           "No regreses a awaiting_documents ni documents_received.",
           "Consulta comparables con easybroker_search_listings, easybroker_search_closed_deals y bigquery_lookup_local_comparables usando property_zone/property_data como filtros.",
-          "No uses placeholders con 0 en filtros opcionales (m², precio, cajones). Si el primer intento queda inválido por filtros, reintenta con filtros canónicos derivados del contrato.",
+          "No uses placeholders con 0 en filtros opcionales (m², precio, cajones). La búsqueda debe correr en escalera determinística strict -> expanded -> wide -> location_only (sin área) antes de concluir insuficiencia real.",
           "Si el tipo es casa/departamento en condominio, intenta siempre get_avaclick_valuation antes de persistir comparables_analysis. Si faltan coordenadas pero hay dirección suficiente, intenta geocode_property_address primero.",
           "Si Avaclick devuelve missing_required_fields, not_configured o validation_error, no bloquees el paso: continúa con las otras fuentes y deja warning explícito en comparables_analysis.",
-          "Después llama operational_case_persist_comparables_analysis; no escribas comparables_analysis manualmente.",
+          "No llames operational_case_persist_comparables_analysis hasta tener get_avaclick_valuation ejecutado (o un resultado no recuperable documentado de Avaclick). Después persiste comparables_analysis; no lo escribas manualmente.",
           "Si detectas que area_construida_m2 es implausible/no confiable, no avances a precio: permanece en comparables_in_progress, status=waiting_internal y notifica con notify_user(kind=property_data_quality_review) solicitando confirmación/corrección.",
-          "Si hay muestra defendible, avanza a price_proposal_pending con status=active y notifica al asesor. Si data_quality.search_validity=insufficient_market_data, permanece en comparables_in_progress con status=waiting_internal y notifica con notify_user(kind=comparables_insufficient_data). Si data_quality.search_validity=invalid_filters, corrige/reintenta y no notifiques insuficiencia.",
+          "Si hay muestra defendible, avanza a price_proposal_pending con status=active y notifica al asesor. Si data_quality.search_validity=insufficient_market_data y el caso quedará en waiting_internal, solicita decisión concreta con notify_user(kind=comparables_search_expansion_decision). Usa comparables_insufficient_data solo como resumen informativo no bloqueante. Si data_quality.search_validity=invalid_filters, corrige/reintenta y no notifiques insuficiencia.",
         ].join(" ")
       : "",
   ].join(" ");
@@ -337,9 +410,27 @@ export async function runSettingsTestCaseAgentTick(
   }
 
   if (!options?.skipLock) {
-    const locked = await markCaseProcessing(db, opCase.id, opCase.version, 1);
-    if (!locked) {
-      throw new Error("case_busy");
+    let caseForLock = opCase;
+    const maxLockAttempts = isControlledE2EOperationalCase(opCase) ? 4 : 1;
+    for (let attempt = 0; attempt < maxLockAttempts; attempt += 1) {
+      const locked = await markCaseProcessing(
+        db,
+        caseForLock.id,
+        caseForLock.version,
+        1
+      );
+      if (locked) {
+        break;
+      }
+      if (attempt === maxLockAttempts - 1) {
+        throw new Error("case_busy");
+      }
+      await sleep(750 * (attempt + 1));
+      const reread = await getOperationalCase(db, opCase.id);
+      if (!reread) {
+        throw new Error("case_not_found");
+      }
+      caseForLock = reread;
     }
   }
 
@@ -524,6 +615,8 @@ export async function runSettingsTestCaseAgentTick(
     toolApprovalPolicy: settingsTestCase || controlledE2ECase
       ? buildSettingsTestToolApprovalPolicy(undefined, {
           documentRequestTarget: explicitDocumentRequestTarget,
+          autoExecuteContractDraftGeneration:
+            shouldAutoExecuteContractDraftGeneration(caseWithTarget),
         })
       : undefined,
     caseId: caseWithTarget.id,
@@ -537,6 +630,70 @@ export async function runSettingsTestCaseAgentTick(
     source: "post_agent_invariant_e2e",
   });
   const caseAfterDeterministicFallback = invariantResult.case ?? afterAgent;
+  const turnToolCalls = await listTurnToolCalls(db, agentResult.turnId);
+  const hasRenderedContractDraft = hasRenderedContractDraftFromToolCalls(turnToolCalls);
+  const contractDraft = parseContractDraftFromContext(
+    caseAfterDeterministicFallback?.context_jsonb ?? null
+  );
+  const hasContractDraftOutputPath = Boolean(contractDraft?.output_path?.trim());
+  let responsePreviewForEvent = agentResult.response?.slice(0, 500) ?? null;
+  if (
+    caseAfterDeterministicFallback?.current_step === "contract_pending" &&
+    !hasContractDraftOutputPath &&
+    !hasRenderedContractDraft
+  ) {
+    responsePreviewForEvent = null;
+    await insertOperationalCaseEvent(db, {
+      caseId: fresh.id,
+      eventType: "state_changed",
+      actor: "system",
+      stepKey: "contract_pending",
+      payload: {
+        kind: "contract_generation_unverified",
+        source: options?.source ?? "settings_test_case_tick",
+        reason: "missing_generate_document_render",
+      },
+    });
+  }
+  if (
+    caseAfterDeterministicFallback?.current_step === "contract_pending" &&
+    hasContractDraftOutputPath &&
+    !agentResult.pendingConfirmation
+  ) {
+    const hasUnreadReview = await hasUnreadContractReviewNotification(
+      db,
+      userId,
+      fresh.id
+    );
+    if (!hasUnreadReview) {
+      const contractUrl = buildContractDraftDownloadUrl(fresh.id);
+      await notify(
+        db,
+        userId,
+        {
+          text: `Borrador de contrato listo para revisión.\n\nDescargar borrador del contrato: ${contractUrl}\n\nResponde “mándalo al dueño” o “pedir cambios”, o usa los botones.`,
+          kind: "contract_review",
+          data: {
+            case_id: fresh.id,
+            contract_draft_ready: true,
+            contract_draft_url: contractUrl,
+          },
+        },
+        "normal"
+      );
+      await insertOperationalCaseEvent(db, {
+        caseId: fresh.id,
+        eventType: "human_decision",
+        actor: "system",
+        stepKey: "contract_pending",
+        payload: {
+          kind: "contract_review_requested",
+          source: options?.source ?? "settings_test_case_tick",
+          doc_url: contractUrl,
+        },
+      });
+    }
+  }
   const version = caseAfterDeterministicFallback?.version ?? fresh.version;
   const controlledStatus = deriveControlledE2EStatus(
     invariantResult.action,
@@ -583,7 +740,7 @@ export async function runSettingsTestCaseAgentTick(
       pending_confirmation: Boolean(agentResult.pendingConfirmation),
       invariant_action: invariantResult.action,
       controlled_status: controlledStatus,
-      response_preview: agentResult.response?.slice(0, 500) ?? null,
+      response_preview: responsePreviewForEvent,
     },
   });
 

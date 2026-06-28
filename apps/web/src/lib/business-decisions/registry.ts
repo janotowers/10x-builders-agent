@@ -7,12 +7,13 @@ import {
   parseContractReviewDecision,
 } from "./contract-review";
 import { handleContractOwnerSignedDecision } from "./contract-owner-signed";
+import {
+  BUSINESS_DECISION_LABELS,
+  type BusinessDecisionKind,
+} from "./business-decision-kinds";
 import type { DbClient } from "@agents/db";
 
-export type BusinessDecisionKind =
-  | "price_approval"
-  | "contract_review"
-  | "contract_owner_signed";
+export type { BusinessDecisionKind } from "./business-decision-kinds";
 
 export interface BusinessDecisionHandlerInput {
   userId: string;
@@ -45,21 +46,21 @@ export const BUSINESS_DECISION_HANDLERS: Record<
   price_approval: {
     kind: "price_approval",
     notificationKind: "price_approval",
-    label: "Aprobación de precio",
+    label: BUSINESS_DECISION_LABELS.price_approval,
     parse: parsePriceApprovalDecision,
     handle: handlePriceApprovalDecision,
   },
   contract_review: {
     kind: "contract_review",
     notificationKind: "contract_review",
-    label: "Revisión de contrato",
+    label: BUSINESS_DECISION_LABELS.contract_review,
     parse: parseContractReviewDecision,
     handle: handleContractReviewDecision,
   },
   contract_owner_signed: {
     kind: "contract_owner_signed",
     notificationKind: "contract_owner_signed",
-    label: "Contrato firmado por el dueño",
+    label: BUSINESS_DECISION_LABELS.contract_owner_signed,
     parse: (text: string) => ({
       intent: text.trim() ? "signed" : "unclear",
       reason: text.trim() ? undefined : "Respuesta vacía.",

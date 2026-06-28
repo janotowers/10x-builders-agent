@@ -17,6 +17,7 @@ export type FlowProgressEvidenceItem =
       event_kind?: string;
       event_result?: string;
       event_source?: string;
+      event_step_key?: string;
     }
   | {
       kind: "tool";
@@ -194,6 +195,21 @@ function summarizeEventForStep(event: OperationalCaseEvent): string {
   if (kind === "case_created") return "Caso conversacional creado";
   if (kind === "intake_fields_requested") return "Campos de intake solicitados";
   if (kind === "controlled_test_e2e_started") return "Transición con agente iniciada";
+  if (kind === "comparables_analysis_completed")
+    return "Análisis de comparables completado";
+  if (kind === "price_proposal_prepared") return "Propuesta de precio preparada";
+  if (kind === "price_approval_requested")
+    return "Aprobación de precio solicitada";
+  if (kind === "price_approved") return "Precio aprobado";
+  if (kind === "price_adjusted_and_approved")
+    return "Precio ajustado y aprobado";
+  if (kind === "price_rejected") return "Precio rechazado";
+  if (kind === "contract_preparation_entered")
+    return "Preparación de contrato iniciada";
+  if (kind === "contract_review_requested")
+    return "Revisión de contrato solicitada";
+  if (kind === "contract_generation_unverified")
+    return "Contrato no verificado: falta render real";
   if (kind === "controlled_test_started") return "Prueba segura iniciada";
   if (kind === "step_test_started") return "Inicio prueba de paso";
   if (kind === "step_test_completed") return "Prueba de paso completada";
@@ -229,7 +245,21 @@ function parseEventMeta(event: OperationalCaseEvent) {
     kind: typeof payload.kind === "string" ? payload.kind : undefined,
     result: typeof payload.result === "string" ? payload.result : undefined,
     source: typeof payload.source === "string" ? payload.source : undefined,
+    stepKey: authoritativeEventStepKey(payload) ?? undefined,
   };
+}
+
+/**
+ * Paso autoritativo del evento, escrito en `payload_jsonb.step_key` por el
+ * emisor. Es la única fuente de verdad para la atribución a un paso. Cuando
+ * está presente, la atribución es exclusiva (el evento pertenece solo a ese
+ * paso). Los eventos históricos sin este campo caen al fallback heurístico.
+ */
+function authoritativeEventStepKey(
+  payload: Record<string, unknown> | null
+): string | null {
+  const value = payload?.step_key;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function stepKeysFromEventPayload(
@@ -237,7 +267,9 @@ function stepKeysFromEventPayload(
 ): string[] {
   if (!payload) return [];
   const keys: string[] = [];
-  for (const key of ["current_step", "step", "step_key"] as const) {
+  // `step_key` se maneja de forma autoritativa antes de llegar aquí; este
+  // fallback solo cubre eventos históricos vía `current_step`/`step`/`to`/`from`.
+  for (const key of ["current_step", "step"] as const) {
     const value = payload[key];
     if (typeof value === "string" && value.trim()) keys.push(value.trim());
   }
@@ -256,6 +288,13 @@ export function eventBelongsToStep(
   stepIndex: number
 ): boolean {
   const payload = event.payload_jsonb as Record<string, unknown> | null;
+
+  // Fuente única de verdad: si el emisor escribió un `step_key` autoritativo,
+  // la atribución es exclusiva a ese paso y no se aplica heurística alguna.
+  const authoritative = authoritativeEventStepKey(payload);
+  if (authoritative) return authoritative === stepKey;
+
+  // Fallback temporal para eventos históricos sin `step_key` autoritativo.
   const keys = stepKeysFromEventPayload(payload);
   if (keys.includes(stepKey)) return true;
 
@@ -272,6 +311,18 @@ export function eventBelongsToStep(
   // payload; se recaban durante "Solicitar documentos". Sin esta atribución, el
   // panel no muestra actividad documental en ese paso (quedaba "Sin actividad").
   const payloadKind = typeof payload?.kind === "string" ? payload.kind : null;
+  if (
+    stepKey === "price_proposal_pending" &&
+    (payloadKind === "price_proposal_prepared" ||
+      payloadKind === "price_approval_requested" ||
+      payloadKind === "price_approved" ||
+      payloadKind === "price_adjusted_and_approved" ||
+      payloadKind === "price_rejected" ||
+      (payloadKind === "comparables_analysis_completed" &&
+        keys.includes("price_proposal_pending")))
+  ) {
+    return true;
+  }
   if (
     stepKey === "awaiting_documents" &&
     event.event_type === "external_response" &&
@@ -296,6 +347,18 @@ function toolCallBelongsToStep(
     return currentStep === stepKey;
   }
   return false;
+}
+
+function summarizeToolEvidenceItem(call: ToolCall, stepKey: string): string {
+  if (
+    stepKey === "contract_pending" &&
+    call.tool_name === "generate_document_from_template"
+  ) {
+    if (call.status === "executed") return "Borrador de contrato generado";
+    if (call.status === "pending_confirmation")
+      return "Generando borrador interno (pendiente)";
+  }
+  return `${call.tool_name} · ${toolCallStatusLabel(call.status)}`;
 }
 
 function stableToolArgsKey(call: ToolCall): string {
@@ -376,6 +439,7 @@ export function buildSettingsTestFlowProgress(params: {
           event_kind: meta.kind,
           event_result: meta.result,
           event_source: meta.source,
+          event_step_key: meta.stepKey,
         };
       }),
       ...stepTools.map((call) => ({
@@ -384,7 +448,7 @@ export function buildSettingsTestFlowProgress(params: {
         created_at: call.created_at,
         tool_name: call.tool_name,
         status: call.status,
-        summary: `${call.tool_name} · ${toolCallStatusLabel(call.status)}`,
+        summary: summarizeToolEvidenceItem(call, step.step_key),
         failure_detail: toolCallFailureDetail(call) ?? undefined,
         arguments_json: sanitizeEvidencePayload(call.arguments_json ?? null),
         result_json: sanitizeEvidencePayload(call.result_json ?? null),
@@ -418,6 +482,10 @@ export function buildSettingsTestFlowProgress(params: {
 
 function isE2EEvent(item: FlowProgressEvidenceItem): boolean {
   if (item.kind !== "event") return true;
+  // Cualquier evento con paso autoritativo es actividad legítima del recorrido
+  // operativo y no debe filtrarse del resumen E2E (p. ej. Paso 4 "Preparar
+  // precio" y entrada al Paso 5 "Preparar contrato").
+  if (item.event_step_key) return true;
   if (
     item.event_kind === "case_created" ||
     item.event_kind === "intake_fields_requested"

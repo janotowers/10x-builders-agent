@@ -92,6 +92,28 @@ function main() {
   assert.equal(informationalNotification.historicalActions.length, 1);
   assert.equal(informationalNotification.historicalActions[0]?.blocking, false);
 
+  const expansionDecisionNotification = partitionSettingsTestPendingActions({
+    actions: [
+      pendingNotificationAction({
+        id: "notification:n-4",
+        notification_id: "n-4",
+        notification_kind: "comparables_search_expansion_decision",
+        created_at: "2026-06-16T10:30:00.000Z",
+      }),
+    ],
+    lastTransitionAt: "2026-06-16T10:00:00.000Z",
+    caseRunnerSessionIds: new Set(["session-1"]),
+  });
+  assert.equal(expansionDecisionNotification.blockingActions.length, 1);
+  assert.equal(expansionDecisionNotification.blockingActions[0]?.blocking, true);
+  const expansionBlockingAction = expansionDecisionNotification.blockingActions[0] as
+    | Extract<SettingsTestPendingAction, { kind: "internal_notification" }>
+    | undefined;
+  assert.equal(
+    expansionBlockingAction?.notification_kind,
+    "comparables_search_expansion_decision"
+  );
+
   console.log("settings-test-pending-actions.selftest.ts: ok");
 }
 
