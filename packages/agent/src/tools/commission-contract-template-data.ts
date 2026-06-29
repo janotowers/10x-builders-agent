@@ -48,6 +48,15 @@ function firstString(source: Record<string, unknown>, keys: readonly string[]): 
   return "";
 }
 
+function firstStringFromArray(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  for (const item of value) {
+    const cleaned = cleanString(item);
+    if (cleaned) return cleaned;
+  }
+  return null;
+}
+
 const ADDRESS_TOP_LEVEL_FIELD_SOURCES: Array<[string, readonly string[]]> = [
   ["street", ["street", "street_name", "calle"]],
   ["exterior_number", ["exterior_number", "numero_exterior", "number"]],
@@ -101,6 +110,46 @@ export function readablePropertyAddress(
   ].filter((part) => part.length > 0);
 
   return parts.join(", ");
+}
+
+function legalAddressFromContext(
+  caseContext: Record<string, unknown>,
+  propertyData: Record<string, unknown>
+): string {
+  const legalAddressCandidates = [
+    propertyData.legal_address,
+    firstStringFromArray(propertyData.legal_addresses),
+    caseContext.legal_address,
+    firstStringFromArray(caseContext.legal_addresses),
+  ];
+  for (const candidate of legalAddressCandidates) {
+    const cleaned = cleanString(candidate);
+    if (cleaned) return cleaned;
+  }
+  return "";
+}
+
+function resolveContractOwnerName(input: {
+  caseContext: Record<string, unknown>;
+  propertyData: Record<string, unknown>;
+  contact: Record<string, unknown>;
+}): string {
+  const ownerNamesFromDocuments = firstStringFromArray(input.propertyData.owner_names);
+  const ownerNameCandidates = [
+    ownerNamesFromDocuments,
+    cleanString(input.propertyData.owner_name),
+    firstStringFromArray(input.caseContext.owner_names),
+    cleanString(input.caseContext.owner_name),
+    cleanString(input.caseContext.owner_full_name),
+    cleanString(input.contact.display_name),
+    cleanString(input.contact.name),
+    cleanString(input.caseContext.lead_name),
+    cleanString(input.caseContext.contact_name),
+  ];
+  for (const candidate of ownerNameCandidates) {
+    if (candidate) return candidate;
+  }
+  return "";
 }
 
 function templateScalar(value: unknown): string | number | boolean {
@@ -292,14 +341,8 @@ export function deriveCommissionContractTemplateData(input: {
   const pricing = input.pricing_proposal ?? {};
   const commission = input.commission_terms ?? {};
   const contact = input.external_contact ?? {};
-
-  const ownerName =
-    (typeof contact.display_name === "string" && contact.display_name.trim()) ||
-    (typeof contact.name === "string" && contact.name.trim()) ||
-    (typeof caseContext.owner_name === "string" && caseContext.owner_name.trim()) ||
-    (typeof caseContext.lead_name === "string" && caseContext.lead_name.trim()) ||
-    (typeof caseContext.contact_name === "string" && caseContext.contact_name.trim()) ||
-    "";
+  const ownerName = resolveContractOwnerName({ caseContext, propertyData, contact });
+  const legalAddress = legalAddressFromContext(caseContext, propertyData);
 
   const salida =
     pricing.salida ?? pricing.salida_price ?? pricing.list_price ?? "";
@@ -307,7 +350,7 @@ export function deriveCommissionContractTemplateData(input: {
   return {
     owner_name: ownerName,
     owner_email: resolveOwnerEmail({ caseContext, propertyData, contact }),
-    property_address: readablePropertyAddress(propertyData),
+    property_address: legalAddress || readablePropertyAddress(propertyData),
     property_type: templateScalar(
       propertyData.property_type ?? propertyData.type ?? ""
     ) as string,

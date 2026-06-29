@@ -988,7 +988,12 @@ export function addRealEstateTools(
           try {
             const out = await renderDocumentFromTemplate(ctx, input);
             deferred.resolve(out);
-            await updateToolCallStatus(ctx.db, record.id, "executed", out);
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              out.ok === true ? "executed" : "failed",
+              out
+            );
             const caseIdForEvent =
               typeof input.case_id === "string" && input.case_id.trim()
                 ? input.case_id.trim()
@@ -1467,6 +1472,33 @@ type GenerateDocumentInput = {
   case_id?: string;
 };
 
+const COMMISSION_CONTRACT_CRITICAL_FIELDS = [
+  "owner_name",
+  "owner_email",
+  "property_address",
+  "salida_price_formatted",
+  "area_m2",
+] as const;
+
+function isMissingCriticalTemplateValue(value: unknown): boolean {
+  if (value == null) return true;
+  if (typeof value === "string") return value.trim().length === 0;
+  if (typeof value === "number") return !Number.isFinite(value);
+  return false;
+}
+
+export function missingRequiredCommissionContractFields(
+  templateFields: string[],
+  effectiveData: Record<string, unknown>
+): string[] {
+  const requiredFields = COMMISSION_CONTRACT_CRITICAL_FIELDS.filter((field) =>
+    templateFields.includes(field)
+  );
+  return requiredFields.filter((field) =>
+    isMissingCriticalTemplateValue(effectiveData[field])
+  );
+}
+
 async function deriveTemplateDataFromCase(
   ctx: ToolContext,
   caseId: string | null | undefined
@@ -1548,6 +1580,33 @@ async function renderDocumentFromTemplate(
   const effectiveData: Record<string, unknown> = { ...derivedData, ...modelData };
 
   const inputFields = Object.keys(effectiveData);
+  if (
+    input.template_slug === "commission_contract" &&
+    templateFields.length > 0
+  ) {
+    const requiredFields = COMMISSION_CONTRACT_CRITICAL_FIELDS.filter((field) =>
+      templateFields.includes(field)
+    );
+    const missingRequiredFields = missingRequiredCommissionContractFields(
+      templateFields,
+      effectiveData
+    );
+    if (missingRequiredFields.length > 0) {
+      return {
+        ok: false,
+        status: "blocked",
+        error: "commission_contract_missing_required_data",
+        message:
+          "Faltan datos contractuales obligatorios para generar el contrato.",
+        missing_required_fields: missingRequiredFields,
+        required_fields_checked: requiredFields,
+        template_fields_detected: templateFields,
+        received_fields: inputFields,
+        hint:
+          "Completa los campos faltantes en el caso (por ejemplo owner_email del comitente) y reintenta generate_document_from_template.",
+      };
+    }
+  }
   const doc = new Docxtemplater(zip, {
     paragraphLoop: true,
     linebreaks: true,

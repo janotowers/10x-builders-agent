@@ -11,6 +11,7 @@ import {
 const data = deriveCommissionContractTemplateData({
   property_data: {
     property_type: "departamento",
+    owner_names: ["Titular Documental"],
     area_m2: 95,
     address: {
       street: "Av. Test",
@@ -29,7 +30,7 @@ const data = deriveCommissionContractTemplateData({
 for (const key of COMMISSION_CONTRACT_TEMPLATE_PLACEHOLDERS) {
   assert.ok(key in data, `missing placeholder ${key}`);
 }
-assert.equal(data.owner_name, "María Dueña");
+assert.equal(data.owner_name, "Titular Documental");
 assert.equal(data.owner_email, "maria@example.com");
 assert.match(String(data.property_address), /Colomos/);
 assert.match(String(data.property_address), /44660/);
@@ -58,7 +59,7 @@ const aliasedData = deriveCommissionContractTemplateData({
   },
   external_contact: { name: "Dueño Alias" },
 });
-assert.equal(aliasedData.owner_name, "Dueño Alias");
+assert.equal(aliasedData.owner_name, "Dueño del intake");
 assert.equal(aliasedData.owner_email, "dueno@example.com");
 assert.equal(aliasedData.property_address, "Colomos Providencia, Guadalajara");
 assert.equal(aliasedData.area_m2, 116.93);
@@ -135,5 +136,24 @@ const leadFallbackData = deriveCommissionContractTemplateData({
   external_contact: {},
 });
 assert.equal(leadFallbackData.owner_name, "Lead dueño");
+
+const legalAddressPreferredData = deriveCommissionContractTemplateData({
+  case_context: {
+    legal_address: "CIRCUNVALACION SUR 3668, LAS FUENTES, ZAPOPAN, JALISCO",
+  },
+  property_data: {
+    address: {
+      street: "CIRCUNVALACION SUR",
+      exterior_number: "3668",
+      neighborhood: "Las Fuentes",
+      municipality: "Zapopan",
+      state: "Jalisco",
+    },
+  },
+});
+assert.equal(
+  legalAddressPreferredData.property_address,
+  "CIRCUNVALACION SUR 3668, LAS FUENTES, ZAPOPAN, JALISCO"
+);
 
 console.log("commission-contract-template-data.selftest: ok");
