@@ -40,6 +40,7 @@ import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { parsePriceApprovalDecision } from "@/lib/business-decisions/price-approval";
 import { parseContractReviewDecision } from "@/lib/business-decisions/contract-review";
+import { parseContractDataReviewReply } from "@/lib/business-decisions/contract-data-review";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
@@ -155,6 +156,22 @@ function toolCallCaseId(toolCall: {
     if (caseId) return caseId;
   }
   return null;
+}
+
+function notificationMissingContractFields(notification: {
+  metadata_jsonb?: unknown;
+}): string[] {
+  const metadata =
+    notification.metadata_jsonb &&
+    typeof notification.metadata_jsonb === "object" &&
+    !Array.isArray(notification.metadata_jsonb)
+      ? (notification.metadata_jsonb as Record<string, unknown>)
+      : {};
+  const raw = metadata.missing_required_fields;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (field): field is string => typeof field === "string" && field.trim().length > 0
+  );
 }
 
 async function finalizeCaseAfterToolDecision(
@@ -464,6 +481,7 @@ async function mergeCharacteristicsOwnerResponseDeterministically(params: {
     caseId: params.opCase.id,
     eventType: "state_changed",
     actor: "system",
+    stepKey: (updated ?? params.opCase).current_step ?? undefined,
     payload: {
       kind: "owner_characteristics_merged",
       source: params.source,
@@ -1492,12 +1510,39 @@ export async function POST(request: Request) {
     }
   }
 
+  const pendingContractData = pendingInternal.find(
+    (notification) => notification.kind === "contract_data_review"
+  );
+  if (pendingContractData && text) {
+    const parsedContractData = parseContractDataReviewReply(text);
+    if (parsedContractData.intent !== "unclear") {
+      const result = await businessDecisionHandler("contract_data_review").handle(db, {
+        userId,
+        notificationId: pendingContractData.id,
+        text,
+      });
+      await sendTelegramMessage(
+        chatId,
+        result.message ??
+          (result.ok
+            ? "Listo, registré los datos contractuales."
+            : "No pude registrar los datos contractuales.")
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "contract_data_review",
+        notification_id: pendingContractData.id,
+      });
+    }
+  }
+
   const parsedContractDecision = parseContractReviewDecision(text);
   if (parsedContractDecision.intent !== "unclear") {
     const pendingContractReview = pendingInternal.find(
       (notification) =>
         notification.kind === "contract_review" ||
-        notification.kind === "contract_pending"
+        (notification.kind === "contract_pending" &&
+          notificationMissingContractFields(notification).length === 0)
     );
     if (pendingContractReview) {
       const result = await businessDecisionHandler("contract_review").handle(db, {
@@ -2299,6 +2344,7 @@ export async function POST(request: Request) {
         caseId: conversationalCase.id,
         eventType: "state_changed",
         actor: "system",
+        stepKey: conversationalCase.current_step ?? undefined,
         payload: {
           kind: "document_request_target_inferred",
           source: "telegram_webhook",

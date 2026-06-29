@@ -213,6 +213,21 @@ export async function handleContractReviewDecision(
       message: "Este pendiente no es una revisión de contrato.",
     };
   }
+  const metadata = isRecord(notification.metadata_jsonb)
+    ? notification.metadata_jsonb
+    : {};
+  if (
+    notification.kind === "contract_pending" &&
+    Array.isArray(metadata.missing_required_fields) &&
+    metadata.missing_required_fields.length > 0
+  ) {
+    return {
+      ok: false,
+      status: "wrong_kind",
+      message:
+        "Este pendiente pide datos contractuales faltantes, no revisión del borrador.",
+    };
+  }
   if (!notification.case_id) {
     return {
       ok: false,

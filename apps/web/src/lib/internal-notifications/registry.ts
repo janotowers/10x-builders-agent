@@ -17,7 +17,7 @@ export interface InternalNotificationKindConfig {
   visibleInInbox: boolean;
   autoStatusOnCreate?: InternalNotificationActionStatus;
   intent?: EngagementIntent;
-  businessDecision?: "price_approval" | "contract_review";
+  businessDecision?: "price_approval" | "contract_review" | "contract_data_review";
   technical?: boolean;
   /**
    * Pure FYI notifications: no decision/action expected from the user, so the
@@ -56,6 +56,14 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     visibleInInbox: true,
     intent: "review",
     businessDecision: "contract_review",
+  },
+  contract_data_review: {
+    kind: "contract_data_review",
+    label: "Datos contractuales faltantes",
+    visibleInInbox: true,
+    intent: "review",
+    businessDecision: "contract_data_review",
+    reviewCtaLabel: "Capturar datos del comitente",
   },
   contract_owner_signed: {
     kind: "contract_owner_signed",

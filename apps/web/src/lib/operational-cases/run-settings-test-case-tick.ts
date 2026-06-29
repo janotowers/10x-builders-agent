@@ -115,6 +115,21 @@ function hasRenderedContractDraftFromToolCalls(toolCalls: TurnToolCallRow[]): bo
   });
 }
 
+export function missingContractFieldsFromToolCalls(toolCalls: TurnToolCallRow[]): string[] {
+  const fields = new Set<string>();
+  for (const call of toolCalls) {
+    if (call.tool_name !== "generate_document_from_template") continue;
+    const result = call.result_json ?? {};
+    if (result.error !== "commission_contract_missing_required_data") continue;
+    const missing = result.missing_required_fields;
+    if (!Array.isArray(missing)) continue;
+    for (const field of missing) {
+      if (typeof field === "string" && field.trim()) fields.add(field.trim());
+    }
+  }
+  return [...fields];
+}
+
 async function hasUnreadContractReviewNotification(
   db: ReturnType<typeof createServerClient>,
   userId: string,
@@ -126,6 +141,24 @@ async function hasUnreadContractReviewNotification(
     .eq("user_id", userId)
     .eq("case_id", caseId)
     .eq("kind", "contract_review")
+    .eq("status", "unread")
+    .limit(1)
+    .maybeSingle();
+  if (error) return false;
+  return Boolean(data?.id);
+}
+
+async function hasUnreadContractDataNotification(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  caseId: string
+) {
+  const { data, error } = await db
+    .from("internal_user_notifications")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("case_id", caseId)
+    .eq("kind", "contract_data_review")
     .eq("status", "unread")
     .limit(1)
     .maybeSingle();
@@ -444,6 +477,7 @@ export async function runSettingsTestCaseAgentTick(
     caseId: fresh.id,
     eventType: "step_completed",
     actor: "system",
+    stepKey: fresh.current_step ?? undefined,
     payload: {
       kind: "controlled_test_e2e_started",
       source: options?.source ?? "settings_test_case_tick",
@@ -520,6 +554,7 @@ export async function runSettingsTestCaseAgentTick(
         caseId: fresh.id,
         eventType: "state_changed",
         actor: "system",
+        stepKey: fresh.current_step ?? undefined,
         payload: {
           source: options?.source ?? "settings_test_case_tick",
           kind: "document_extraction_preflight_blocked",
@@ -573,6 +608,7 @@ export async function runSettingsTestCaseAgentTick(
       caseId: fresh.id,
       eventType: "state_changed",
       actor: "system",
+      stepKey: (updated ?? caseAfterDeterministicFallback ?? fresh).current_step ?? undefined,
       payload: {
         source: options?.source ?? "settings_test_case_tick",
         result: "e2e_tick_completed",
@@ -632,6 +668,7 @@ export async function runSettingsTestCaseAgentTick(
   const caseAfterDeterministicFallback = invariantResult.case ?? afterAgent;
   const turnToolCalls = await listTurnToolCalls(db, agentResult.turnId);
   const hasRenderedContractDraft = hasRenderedContractDraftFromToolCalls(turnToolCalls);
+  const missingContractFields = missingContractFieldsFromToolCalls(turnToolCalls);
   const contractDraft = parseContractDraftFromContext(
     caseAfterDeterministicFallback?.context_jsonb ?? null
   );
@@ -639,6 +676,7 @@ export async function runSettingsTestCaseAgentTick(
   let responsePreviewForEvent = agentResult.response?.slice(0, 500) ?? null;
   if (
     caseAfterDeterministicFallback?.current_step === "contract_pending" &&
+    missingContractFields.length === 0 &&
     !hasContractDraftOutputPath &&
     !hasRenderedContractDraft
   ) {
@@ -657,6 +695,50 @@ export async function runSettingsTestCaseAgentTick(
   }
   if (
     caseAfterDeterministicFallback?.current_step === "contract_pending" &&
+    missingContractFields.length > 0 &&
+    !agentResult.pendingConfirmation
+  ) {
+    responsePreviewForEvent = null;
+    const hasUnreadContractData = await hasUnreadContractDataNotification(
+      db,
+      userId,
+      fresh.id
+    );
+    if (!hasUnreadContractData) {
+      const missingFieldsLabel = missingContractFields.join(", ");
+      const needsOwnerEmail = missingContractFields.includes("owner_email");
+      await notify(
+        db,
+        userId,
+        {
+          text: needsOwnerEmail
+            ? `Falta correo electrónico del propietario para generar el contrato de comisión. Captura el correo del comitente (campos faltantes: ${missingFieldsLabel}).`
+            : `No pude generar el borrador de contrato porque faltan datos obligatorios: ${missingFieldsLabel}. Completa esos campos para continuar.`,
+          kind: "contract_data_review",
+          data: {
+            case_id: fresh.id,
+            missing_required_fields: missingContractFields,
+            source: options?.source ?? "settings_test_case_tick",
+          },
+        },
+        "high"
+      );
+      await insertOperationalCaseEvent(db, {
+        caseId: fresh.id,
+        eventType: "human_decision",
+        actor: "system",
+        stepKey: "contract_pending",
+        payload: {
+          kind: "contract_data_review_requested",
+          source: options?.source ?? "settings_test_case_tick",
+          missing_required_fields: missingContractFields,
+        },
+      });
+    }
+  }
+  if (
+    caseAfterDeterministicFallback?.current_step === "contract_pending" &&
+    missingContractFields.length === 0 &&
     hasContractDraftOutputPath &&
     !agentResult.pendingConfirmation
   ) {
@@ -732,6 +814,7 @@ export async function runSettingsTestCaseAgentTick(
     caseId: fresh.id,
     eventType: "state_changed",
     actor: "system",
+    stepKey: (updated ?? caseAfterDeterministicFallback ?? fresh).current_step ?? undefined,
     payload: {
       source: options?.source ?? "settings_test_case_tick",
       result: agentResult.pendingConfirmation

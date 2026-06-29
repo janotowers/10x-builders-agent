@@ -449,6 +449,7 @@ function shouldReuseActiveNotification(payload: NotifyPayload, caseId: string | 
   if (!caseId || !payload.kind) return false;
   return [
     "contract_pending",
+    "contract_data_review",
     "contract_review",
     "missing_requirements",
     "price_approval",

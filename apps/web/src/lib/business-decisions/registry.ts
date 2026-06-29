@@ -6,6 +6,10 @@ import {
   handleContractReviewDecision,
   parseContractReviewDecision,
 } from "./contract-review";
+import {
+  handleContractDataReviewDecision,
+  parseContractDataReviewReply,
+} from "./contract-data-review";
 import { handleContractOwnerSignedDecision } from "./contract-owner-signed";
 import {
   BUSINESS_DECISION_LABELS,
@@ -56,6 +60,13 @@ export const BUSINESS_DECISION_HANDLERS: Record<
     label: BUSINESS_DECISION_LABELS.contract_review,
     parse: parseContractReviewDecision,
     handle: handleContractReviewDecision,
+  },
+  contract_data_review: {
+    kind: "contract_data_review",
+    notificationKind: "contract_data_review",
+    label: BUSINESS_DECISION_LABELS.contract_data_review,
+    parse: parseContractDataReviewReply,
+    handle: handleContractDataReviewDecision,
   },
   contract_owner_signed: {
     kind: "contract_owner_signed",

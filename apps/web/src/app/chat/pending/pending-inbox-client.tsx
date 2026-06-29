@@ -439,6 +439,37 @@ export function PendingInboxClient({
     }
   }
 
+  async function submitContractDataReviewDecision(
+    notificationId: string,
+    payload: { text?: string }
+  ) {
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]: "Procesando...",
+    }));
+    const res = await fetch("/api/business-decisions/contract-data-review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        notification_id: notificationId,
+        text: payload.text ?? "",
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      message?: string;
+      error?: string;
+    };
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]:
+        data.message ?? data.error ?? (res.ok ? "Listo." : "No se pudo procesar."),
+    }));
+    if (res.ok && data.ok !== false) {
+      await refreshNotifications();
+    }
+  }
+
   async function submitPropertyDataReviewDecision(
     notificationId: string,
     payload: { action?: "confirm"; text?: string }
@@ -1288,6 +1319,51 @@ export function PendingInboxClient({
                             className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
                           >
                             Pedir cambios
+                          </button>
+                        </div>
+                        {notificationActionStatus[notification.id] ? (
+                          <p className="text-[11px] text-slate-500 dark:text-white/60">
+                            {notificationActionStatus[notification.id]}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {inlineActionKind === "contract_data_review" ? (
+                      <div className="mt-3 space-y-2 rounded-2xl border border-amber-100 bg-amber-50/70 p-2 dark:border-amber-300/20 dark:bg-amber-300/10">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-100">
+                          Datos contractuales faltantes
+                        </p>
+                        <div className="flex flex-col gap-1 sm:flex-row">
+                          <input
+                            value={notificationInputs[notification.id] ?? ""}
+                            onChange={(event) =>
+                              setNotificationInputs((current) => ({
+                                ...current,
+                                [notification.id]: event.target.value,
+                              }))
+                            }
+                            placeholder="Correo del comitente, ej. maria.castaneda@example.com"
+                            className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const email = (notificationInputs[notification.id] ?? "").trim();
+                              if (!email) {
+                                setNotificationActionStatus((current) => ({
+                                  ...current,
+                                  [notification.id]:
+                                    "Escribe el correo del comitente para continuar.",
+                                }));
+                                return;
+                              }
+                              void submitContractDataReviewDecision(notification.id, {
+                                text: email,
+                              });
+                            }}
+                            className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
+                          >
+                            Guardar y continuar
                           </button>
                         </div>
                         {notificationActionStatus[notification.id] ? (
