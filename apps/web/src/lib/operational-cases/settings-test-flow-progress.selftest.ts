@@ -438,4 +438,59 @@ assert.ok(
   "contract_review_requested debe tener summary legible en Paso 5"
 );
 
+const chronologicalOrder = buildSettingsTestFlowProgress({
+  opCase: {
+    current_step: "comparables_in_progress",
+    context_jsonb: {},
+  } as OperationalCase,
+  events: [
+    {
+      id: "event-later",
+      case_id: "case-1",
+      event_type: "state_changed",
+      actor: "system",
+      created_at: "2026-06-05T10:30:02.000Z",
+      payload_jsonb: {
+        kind: "comparables_analysis_completed",
+        step_key: "comparables_in_progress",
+      },
+    },
+    {
+      id: "event-earlier",
+      case_id: "case-1",
+      event_type: "state_changed",
+      actor: "system",
+      created_at: "2026-06-05T10:30:00.000Z",
+      payload_jsonb: {
+        kind: "controlled_test_e2e_started",
+        step_key: "comparables_in_progress",
+      },
+    },
+  ] as unknown as Parameters<typeof buildSettingsTestFlowProgress>[0]["events"],
+  flow: [
+    {
+      step_key: "comparables_in_progress",
+      step_label: "Análisis de comparables",
+    },
+  ],
+  toolCalls: [
+    {
+      id: "tool-middle",
+      session_id: "s1",
+      turn_id: "turn-1",
+      tool_name: "easybroker_search_listings",
+      arguments_json: { case_id: "case-1" },
+      status: "executed",
+      requires_confirmation: false,
+      created_at: "2026-06-05T10:30:01.000Z",
+      metadata_jsonb: { operational_step_key: "comparables_in_progress" },
+    },
+  ] as ToolCall[],
+});
+assert.deepEqual(
+  chronologicalOrder[0]?.evidenceItems.map((item) => item.id),
+  ["event-earlier", "tool-middle", "event-later"],
+  "Ver actividad debe listar evidencia en orden cronológico (antiguo arriba, reciente abajo)"
+);
+
 console.log("settings-test-flow-progress.selftest: ok");

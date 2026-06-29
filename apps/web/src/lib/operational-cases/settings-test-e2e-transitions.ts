@@ -17,6 +17,83 @@ export type E2ETransitionStepSubgroup = {
   toolCalls: ToolCall[];
 };
 
+export type E2ETransitionTimelineItem =
+  | { kind: "event"; id: string; created_at: string; event: OperationalCaseEvent }
+  | { kind: "tool"; id: string; created_at: string; call: ToolCall };
+
+function compareActivityChronologically(
+  a: { created_at: string; id: string },
+  b: { created_at: string; id: string }
+): number {
+  return (
+    new Date(a.created_at).getTime() - new Date(b.created_at).getTime() ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+/** Infer the operational step after a transition window from state change events. */
+export function inferE2ETransitionStepAfter(
+  group: Pick<E2ETransitionGroup, "stepKey" | "events">
+): string | null {
+  let stepAfter = group.stepKey;
+  const chronological = [...group.events].sort(compareActivityChronologically);
+  for (const event of chronological) {
+    const payload = event.payload_jsonb as Record<string, unknown> | null;
+    if (!payload) continue;
+    const to = payload.to;
+    if (!to || typeof to !== "object" || Array.isArray(to)) continue;
+    const step = (to as Record<string, unknown>).current_step;
+    if (typeof step === "string" && step.trim()) {
+      stepAfter = step.trim();
+    }
+  }
+  return stepAfter;
+}
+
+export function formatE2ETransitionGroupTitle(params: {
+  index: number;
+  stepBefore: string | null;
+  stepAfter: string | null;
+  stepLabels?: Record<string, string>;
+}): string {
+  const label = (key: string | null) => {
+    if (!key) return null;
+    return params.stepLabels?.[key] ?? key;
+  };
+  const before = label(params.stepBefore);
+  const after = label(params.stepAfter);
+  if (before && after && before !== after) {
+    return `Transición ${params.index} · ${before} → ${after}`;
+  }
+  if (before) {
+    return `Transición ${params.index} · ${before}`;
+  }
+  return `Transición ${params.index}`;
+}
+
+export function buildE2ETransitionSubgroupTimeline(
+  subgroup: E2ETransitionStepSubgroup
+): E2ETransitionTimelineItem[] {
+  return [
+    ...subgroup.events.map(
+      (event): E2ETransitionTimelineItem => ({
+        kind: "event",
+        id: event.id,
+        created_at: event.created_at,
+        event,
+      })
+    ),
+    ...subgroup.toolCalls.map(
+      (call): E2ETransitionTimelineItem => ({
+        kind: "tool",
+        id: call.id,
+        created_at: call.created_at,
+        call,
+      })
+    ),
+  ].sort(compareActivityChronologically);
+}
+
 export function filterActivitySincePlaythroughAnchor<T extends { created_at: string }>(
   items: T[],
   anchorAt: string | null
@@ -58,18 +135,20 @@ function authoritativeToolCallStepKey(call: ToolCall): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function subgroupSortWeight(
-  subgroup: Pick<E2ETransitionStepSubgroup, "stepKey" | "bucket">,
-  anchorStepKey: string | null
-): number {
-  if (subgroup.stepKey && anchorStepKey && subgroup.stepKey === anchorStepKey) return 0;
-  if (subgroup.stepKey) return 1;
-  return subgroup.bucket === "legacy" ? 2 : 1;
+function subgroupEarliestActivityMs(subgroup: E2ETransitionStepSubgroup): number {
+  const times = [
+    ...subgroup.events.map((event) => new Date(event.created_at).getTime()),
+    ...subgroup.toolCalls.map((call) => new Date(call.created_at).getTime()),
+  ].filter(Number.isFinite);
+  return times.length > 0 ? Math.min(...times) : Number.POSITIVE_INFINITY;
 }
+
+export const UNATTRIBUTED_E2E_STEP_SUBGROUP_LABEL =
+  "Actividad sin paso asociado";
 
 /**
  * Within one transition window, subgroups activity by authoritative operational step.
- * Events/tools without authoritative step are placed in a legacy fallback bucket.
+ * Events/tools without authoritative step metadata go to an unclassified bucket.
  */
 export function buildE2ETransitionStepSubgroups(params: {
   group: E2ETransitionGroup;
@@ -83,7 +162,7 @@ export function buildE2ETransitionStepSubgroups(params: {
     if (existing) return existing;
     const stepLabel = normalizedStepKey
       ? (params.stepLabels?.[normalizedStepKey] ?? normalizedStepKey)
-      : "Sin paso autoritativo / legacy";
+      : UNATTRIBUTED_E2E_STEP_SUBGROUP_LABEL;
     const created: E2ETransitionStepSubgroup = {
       stepKey: normalizedStepKey,
       stepLabel,
@@ -107,10 +186,8 @@ export function buildE2ETransitionStepSubgroups(params: {
   }
 
   return Array.from(map.values()).sort((a, b) => {
-    const weightDiff =
-      subgroupSortWeight(a, params.group.stepKey) -
-      subgroupSortWeight(b, params.group.stepKey);
-    if (weightDiff !== 0) return weightDiff;
+    const timeDiff = subgroupEarliestActivityMs(a) - subgroupEarliestActivityMs(b);
+    if (timeDiff !== 0) return timeDiff;
     if (a.stepLabel === b.stepLabel) return 0;
     return a.stepLabel.localeCompare(b.stepLabel, "es");
   });
@@ -179,14 +256,8 @@ export function buildE2ETransitionGroups(params: {
       stepLabel: stepKey
         ? (params.stepLabels?.[stepKey] ?? stepKey)
         : null,
-      events: groupEvents.sort(
-        (a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      ),
-      toolCalls: groupTools.sort(
-        (a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      ),
+      events: groupEvents.sort(compareActivityChronologically),
+      toolCalls: groupTools.sort(compareActivityChronologically),
     });
   }
 

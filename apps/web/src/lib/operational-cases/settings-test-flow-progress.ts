@@ -4,6 +4,7 @@ import type {
   OperationalCaseFlowStep,
   ToolCall,
 } from "@agents/types";
+import { formatOperationalCaseEventSummary } from "@/lib/operational-cases/operational-case-event-display";
 import { settingsTestPlaythroughAnchorAt } from "@/lib/operational-cases/settings-test-pending-actions";
 import { filterActivitySincePlaythroughAnchor } from "@/lib/operational-cases/settings-test-e2e-transitions";
 
@@ -190,53 +191,7 @@ export function toolCallFailureDetail(
 }
 
 function summarizeEventForStep(event: OperationalCaseEvent): string {
-  const payload = (event.payload_jsonb ?? {}) as Record<string, unknown>;
-  const kind = typeof payload.kind === "string" ? payload.kind : event.event_type;
-  if (kind === "case_created") return "Caso conversacional creado";
-  if (kind === "intake_fields_requested") return "Campos de intake solicitados";
-  if (kind === "controlled_test_e2e_started") return "Transición con agente iniciada";
-  if (kind === "comparables_analysis_completed")
-    return "Análisis de comparables completado";
-  if (kind === "price_proposal_prepared") return "Propuesta de precio preparada";
-  if (kind === "price_approval_requested")
-    return "Aprobación de precio solicitada";
-  if (kind === "price_approved") return "Precio aprobado";
-  if (kind === "price_adjusted_and_approved")
-    return "Precio ajustado y aprobado";
-  if (kind === "price_rejected") return "Precio rechazado";
-  if (kind === "contract_preparation_entered")
-    return "Preparación de contrato iniciada";
-  if (kind === "contract_review_requested")
-    return "Revisión de contrato solicitada";
-  if (kind === "contract_generation_unverified")
-    return "Contrato no verificado: falta render real";
-  if (kind === "controlled_test_started") return "Prueba segura iniciada";
-  if (kind === "step_test_started") return "Inicio prueba de paso";
-  if (kind === "step_test_completed") return "Prueba de paso completada";
-  if (kind === "skill_test_started") return "Inicio prueba de habilidad";
-  if (kind === "skill_test_completed") return "Prueba de habilidad completada";
-  if (kind === "documents_batch_completed") {
-    const count =
-      typeof payload.document_count === "number" ? payload.document_count : null;
-    return count !== null
-      ? `Documentos recibidos: lote completo (${count})`
-      : "Documentos recibidos: lote completo";
-  }
-  if (event.event_type === "external_response") {
-    if (kind === "document_registered") {
-      const originalName =
-        typeof payload.original_name === "string" && payload.original_name.trim()
-          ? payload.original_name.trim()
-          : null;
-      return originalName
-        ? `Documento recibido: ${originalName}`
-        : "Documento recibido";
-    }
-    return "Respuesta del contacto externo";
-  }
-  if (event.event_type === "state_changed") return "Cambio de estado del caso";
-  if (event.event_type === "human_decision") return "Decisión / acción manual";
-  return kind;
+  return formatOperationalCaseEventSummary(event);
 }
 
 function parseEventMeta(event: OperationalCaseEvent) {
@@ -455,7 +410,8 @@ export function buildSettingsTestFlowProgress(params: {
       })),
     ].sort(
       (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime() ||
+        a.id.localeCompare(b.id)
     );
 
     const evidence = [

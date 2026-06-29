@@ -647,6 +647,7 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
             caseId: workingCase.id,
             eventType: "state_changed",
             actor: "system",
+            stepKey: workingCase.current_step ?? undefined,
             payload: {
               kind: "comparables_analysis_auto_persisted",
               source,
@@ -682,6 +683,7 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
           caseId: workingCase.id,
           eventType: "state_changed",
           actor: "system",
+          stepKey: workingCase.current_step ?? undefined,
           payload: {
             kind: "comparables_advance_skipped",
             source,
@@ -772,6 +774,7 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
     caseId: workingCase.id,
     eventType: "human_decision",
     actor: "system",
+    stepKey: workingCase.current_step ?? undefined,
     payload: {
       kind: "comparables_search_expansion_decision_requested",
       source,
@@ -937,6 +940,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           caseId: workingCase.id,
           eventType: "state_changed",
           actor: "system",
+          stepKey: workingCase.current_step ?? undefined,
           payload: {
             kind: "document_surfaces_consolidated_to_property_data",
             source,
@@ -949,6 +953,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           caseId: workingCase.id,
           eventType: "state_changed",
           actor: "system",
+          stepKey: workingCase.current_step ?? undefined,
           payload: {
             kind: "document_address_consolidated_to_property_data",
             source,
@@ -1009,6 +1014,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
         caseId: workingCase.id,
         eventType: "state_changed",
         actor: "system",
+        stepKey: workingCase.current_step ?? undefined,
         payload: {
           kind: "predial_area_quality_remediation_attempted",
           source,
@@ -1067,6 +1073,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           caseId: workingCase.id,
           eventType: "human_decision",
           actor: "system",
+          stepKey: workingCase.current_step ?? undefined,
           payload: {
             kind: "predial_area_quality_review_requested",
             source,
@@ -1132,6 +1139,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
         caseId: workingCase.id,
         eventType: "state_changed",
         actor: "system",
+        stepKey: workingCase.current_step ?? undefined,
         payload: {
           kind: "extraction_auto_remediation_attempted",
           source,
@@ -1190,6 +1198,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
             caseId: workingCase.id,
             eventType: "escalated",
             actor: "system",
+            stepKey: workingCase.current_step ?? undefined,
             payload: {
               kind: "extraction_escalated_to_human",
               source,
@@ -1232,6 +1241,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           caseId: workingCase.id,
           eventType: "state_changed",
           actor: "system",
+          stepKey: workingCase.current_step ?? undefined,
           payload: {
             kind: "property_data_review_deferred_pending_extraction",
             source,
@@ -1322,6 +1332,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
         caseId: workingCase.id,
         eventType: "reminder_sent",
         actor: "system",
+        stepKey: workingCase.current_step ?? undefined,
         payload: {
           source,
           channel: "notify_user",
@@ -1362,6 +1373,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
         caseId: workingCase.id,
         eventType: "state_changed",
         actor: "system",
+        stepKey: workingCase.current_step ?? undefined,
         payload: {
           kind: "property_data_minimums_missing",
           source,
@@ -1379,6 +1391,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
       caseId: workingCase.id,
       eventType: "reminder_sent",
       actor: "system",
+      stepKey: workingCase.current_step ?? undefined,
       payload: {
         source,
         channel: "telegram",
@@ -1436,6 +1449,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
     caseId: workingCase.id,
     eventType: "human_decision",
     actor: "system",
+    stepKey: workingCase.current_step ?? undefined,
     payload: {
       kind: "property_data_review_requested",
       source,

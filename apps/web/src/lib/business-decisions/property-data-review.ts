@@ -314,6 +314,7 @@ export async function handlePropertyDataReviewDecision(
     caseId: caseWithPatch.id,
     eventType: "human_decision",
     actor: "user",
+    stepKey: caseWithPatch.current_step ?? undefined,
     payload: {
       kind: "property_data_review_response",
       source: "web_pending_inbox",
@@ -359,6 +360,7 @@ export async function handlePropertyDataReviewDecision(
     caseId: advancedCase.id,
     eventType: "state_changed",
     actor: "system",
+    stepKey: caseWithPatch.current_step ?? "property_data_review",
     payload: {
       kind: "property_data_review_confirmed",
       source: "web_pending_inbox",

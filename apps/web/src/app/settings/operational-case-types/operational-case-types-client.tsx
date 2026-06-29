@@ -135,10 +135,15 @@ import {
   toolCallFailureDetail,
   toolCallStatusLabel,
 } from "@/lib/operational-cases/settings-test-flow-progress";
+import { formatE2EActivityDateTime } from "@/lib/operational-cases/settings-test-datetime";
+import { formatOperationalCaseEventSummary } from "@/lib/operational-cases/operational-case-event-display";
 import type { LastE2ETransitionOutcome } from "@/lib/operational-cases/settings-test-e2e-transitions";
 import {
   buildE2ETransitionGroups,
   buildE2ETransitionStepSubgroups,
+  buildE2ETransitionSubgroupTimeline,
+  formatE2ETransitionGroupTitle,
+  inferE2ETransitionStepAfter,
 } from "@/lib/operational-cases/settings-test-e2e-transitions";
 import {
   buildObservedConversationalCaseLabel,
@@ -5599,10 +5604,11 @@ function TestCaseFlowProgressSummary({
             ) : null}
           </div>
           <p className="mt-2 text-xs text-neutral-500">
-            Actividad E2E agrupada por paso del flujo operativo. Incluye Paso 0
-            conversacional y revisiones manuales del runner; excluye
-            preparación/safe_check y pruebas aisladas de tools, habilidades o
-            pasos.
+            Vista operativa por paso del flujo: qué ocurrió en cada etapa. Para
+            depuración cruda por revisión del agente, usa el log técnico más
+            abajo. Incluye Paso 0 conversacional y revisiones manuales del
+            runner; excluye preparación/safe_check y pruebas aisladas de tools,
+            habilidades o pasos.
           </p>
           {!hasTransitions ? (
             <p className="mt-1 text-xs text-neutral-500">
@@ -5649,7 +5655,7 @@ function TestCaseFlowProgressSummary({
                           <span className="font-medium">{item.label}</span>
                           {item.createdAt ? (
                             <span className="text-[10px] text-sky-700 dark:text-sky-300">
-                              {formatDateTime(item.createdAt)}
+                              {formatAuditDateTime(item.createdAt)}
                             </span>
                           ) : null}
                         </div>
@@ -5683,7 +5689,7 @@ function TestCaseFlowProgressSummary({
                     <summary className="cursor-pointer text-[11px] font-semibold text-violet-700 hover:underline">
                       Ver actividad ({step.evidence.length})
                     </summary>
-                    <ul className="mt-1.5 max-h-72 space-y-1 overflow-y-auto text-[11px] text-neutral-600 dark:text-neutral-300">
+                    <ul className="mt-1.5 max-h-[32rem] space-y-1 overflow-y-auto text-[11px] text-neutral-600 dark:text-neutral-300">
                       {(step.evidenceItems ?? []).map((item) => (
                         <li
                           key={`${item.kind}:${item.id}`}
@@ -5721,7 +5727,7 @@ function TestCaseFlowProgressSummary({
                                         <p className="text-[10px] font-semibold text-neutral-500">
                                           arguments_json
                                         </p>
-                                        <pre className="max-h-52 overflow-auto rounded border border-neutral-200 bg-white px-1.5 py-1 font-mono text-[10px] text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
+                                        <pre className="max-h-96 overflow-auto rounded border border-neutral-200 bg-white px-1.5 py-1 font-mono text-[10px] text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
 {JSON.stringify(item.arguments_json ?? null, null, 2)}
                                         </pre>
                                       </div>
@@ -5729,7 +5735,7 @@ function TestCaseFlowProgressSummary({
                                         <p className="text-[10px] font-semibold text-neutral-500">
                                           result_json
                                         </p>
-                                        <pre className="max-h-52 overflow-auto rounded border border-neutral-200 bg-white px-1.5 py-1 font-mono text-[10px] text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
+                                        <pre className="max-h-96 overflow-auto rounded border border-neutral-200 bg-white px-1.5 py-1 font-mono text-[10px] text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
 {JSON.stringify(item.result_json ?? null, null, 2)}
                                         </pre>
                                       </div>
@@ -5740,7 +5746,7 @@ function TestCaseFlowProgressSummary({
                             )}
                             </div>
                             <span className="shrink-0 text-[10px] text-neutral-400">
-                              {formatDateTime(item.created_at)}
+                              {formatAuditDateTime(item.created_at)}
                             </span>
                           </div>
                         </li>
@@ -6348,6 +6354,10 @@ function formatDateTime(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
+function formatAuditDateTime(value: string | null | undefined) {
+  return formatE2EActivityDateTime(value);
+}
+
 function controlledTestAuditSummary(event: OperationalCaseEvent): string {
   const payload = event.payload_jsonb ?? {};
   const kind = typeof payload.kind === "string" ? payload.kind : event.event_type;
@@ -6388,31 +6398,7 @@ function controlledTestAuditSummary(event: OperationalCaseEvent): string {
           : (status ?? "completada");
     return `Prueba de habilidad · ${skillSlug ?? stepKey ?? "habilidad"} · ${outcome}`;
   }
-  if (kind === "controlled_test_e2e_started") {
-    return "Transición con agente iniciada";
-  }
-  if (kind === "price_proposal_prepared") {
-    return "Propuesta de precio preparada";
-  }
-  if (kind === "price_approval_requested") {
-    return "Aprobación de precio solicitada";
-  }
-  if (kind === "price_approved") {
-    return "Precio aprobado";
-  }
-  if (kind === "price_adjusted_and_approved") {
-    return "Precio ajustado y aprobado";
-  }
-  if (kind === "contract_review_requested") {
-    return "Revisión de contrato solicitada";
-  }
-  if (kind === "contract_generation_unverified") {
-    return "Contrato no verificado: falta render real";
-  }
-  if (kind === "contract_preparation_entered") {
-    return "Preparación de contrato iniciada";
-  }
-  return `${kind} · ${event.actor}`;
+  return formatOperationalCaseEventSummary(event, { includeTechnicalKind: true });
 }
 
 function TestCaseAuditPanel({
@@ -6462,14 +6448,15 @@ function TestCaseAuditPanel({
       } p-2 text-sm`}
     >
       <summary className="cursor-pointer list-none marker:content-none text-[11px] font-semibold text-violet-800 [&::-webkit-details-marker]:hidden dark:text-violet-200">
-        {realCaseMode ? "Auditoría de caso" : "Auditoría técnica del caso"}
+        {realCaseMode ? "Auditoría de caso" : "Log técnico por revisión del agente"}
         {transitionGroups.length > 0
           ? ` · ${transitionGroups.length} transición${transitionGroups.length === 1 ? "" : "es"}`
           : ""}
       </summary>
       <p className="mt-2 text-[11px] text-neutral-500">
-        Actividad agrupada por cada revisión manual del runner y subagrupada por
-        paso operativo autoritativo cuando está disponible
+        Actividad técnica agrupada por cada revisión manual del runner y
+        subagrupada por paso operativo autoritativo cuando está disponible.
+        Incluye eventos y tools crudos para depuración del flujo
         {conversationalMode
           ? " en este recorrido conversacional E2E."
           : playthroughAnchorAt
@@ -6495,11 +6482,12 @@ function TestCaseAuditPanel({
 
       {transitionGroups.length > 0 ? (
         <ol className="mt-3 space-y-2">
-          {[...transitionGroups].reverse().map((group) => {
+          {transitionGroups.map((group) => {
             const stepSubgroups = buildE2ETransitionStepSubgroups({
               group,
               stepLabels: operationalStepLabels,
             });
+            const stepAfter = inferE2ETransitionStepAfter(group);
             return (
               <li
                 key={`transition-${group.index}-${group.startedAt}`}
@@ -6507,10 +6495,14 @@ function TestCaseAuditPanel({
               >
                 <details className="group" open={group.index === transitionGroups.length}>
                   <summary className="cursor-pointer px-2 py-1.5 text-xs font-semibold text-neutral-800 dark:text-neutral-100">
-                    Transición {group.index}
-                    {group.stepLabel ? ` · ${group.stepLabel}` : ""}
+                    {formatE2ETransitionGroupTitle({
+                      index: group.index,
+                      stepBefore: group.stepKey,
+                      stepAfter,
+                      stepLabels: operationalStepLabels,
+                    })}
                     <span className="ml-2 font-normal text-neutral-500">
-                      {formatDateTime(group.startedAt)}
+                      {formatAuditDateTime(group.startedAt)}
                     </span>
                     <span className="ml-2 font-normal text-neutral-400">
                       ({group.events.length} evento
@@ -6522,14 +6514,20 @@ function TestCaseAuditPanel({
                   <div className="border-t border-neutral-100 px-2 py-2 dark:border-neutral-800">
                     {stepSubgroups.length > 0 ? (
                       <div className="space-y-2">
-                        {stepSubgroups.map((subgroup) => (
+                        {stepSubgroups.map((subgroup) => {
+                          const timeline = buildE2ETransitionSubgroupTimeline(subgroup);
+                          return (
                           <section
                             key={`transition-${group.index}-subgroup-${subgroup.stepKey ?? "legacy"}`}
                             className="rounded border border-neutral-100 bg-neutral-50/60 p-2 dark:border-neutral-800 dark:bg-neutral-950/40"
                           >
                             <p className="text-[11px] font-semibold text-neutral-700 dark:text-neutral-200">
                               {subgroup.stepLabel}
-                              {subgroup.bucket === "legacy" ? " · fallback temporal" : ""}
+                              {subgroup.bucket === "legacy" ? (
+                                <span className="ml-1 font-normal text-neutral-500">
+                                  · sin metadata de paso
+                                </span>
+                              ) : null}
                               <span className="ml-2 font-normal text-neutral-500">
                                 ({subgroup.events.length} evento
                                 {subgroup.events.length === 1 ? "" : "s"},{" "}
@@ -6537,55 +6535,53 @@ function TestCaseAuditPanel({
                                 {subgroup.toolCalls.length === 1 ? "" : "s"})
                               </span>
                             </p>
-                            {subgroup.events.length > 0 ? (
+                            {timeline.length > 0 ? (
                               <ul className="mt-1 space-y-1">
-                                {subgroup.events.map((event) => (
-                                  <li key={event.id}>
+                                {timeline.map((item) =>
+                                  item.kind === "event" ? (
+                                  <li key={`event-${item.id}`}>
                                     <details className="rounded border border-neutral-100 bg-white/80 dark:border-neutral-800 dark:bg-neutral-950/50">
                                       <summary className="cursor-pointer px-2 py-1 text-[11px]">
                                         <span className="font-medium text-neutral-800 dark:text-neutral-100">
-                                          {controlledTestAuditSummary(event)}
+                                          {controlledTestAuditSummary(item.event)}
                                         </span>
                                         <span className="ml-2 text-neutral-500">
-                                          {formatDateTime(event.created_at)}
+                                          {formatAuditDateTime(item.event.created_at)}
                                         </span>
                                       </summary>
                                       <pre className="max-h-32 overflow-auto whitespace-pre-wrap border-t border-neutral-100 px-2 py-1 font-mono text-[10px] text-neutral-600 dark:border-neutral-800">
-                                        {JSON.stringify(event.payload_jsonb, null, 2)}
+                                        {JSON.stringify(item.event.payload_jsonb, null, 2)}
                                       </pre>
                                     </details>
                                   </li>
-                                ))}
-                              </ul>
-                            ) : null}
-                            {subgroup.toolCalls.length > 0 ? (
-                              <ul className="mt-1 space-y-1">
-                                {subgroup.toolCalls.map((call) => (
+                                  ) : (
                                   <li
-                                    key={call.id}
+                                    key={`tool-${item.id}`}
                                     className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-1 text-[11px] ${
-                                      call.status === "pending_confirmation"
+                                      item.call.status === "pending_confirmation"
                                         ? "border-amber-200 bg-amber-50 text-amber-900"
                                         : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
                                     }`}
                                   >
                                     <span className="font-mono text-neutral-800 dark:text-neutral-100">
-                                      {call.tool_name}
+                                      {item.call.tool_name}
                                     </span>
                                     <span className="text-neutral-500">
-                                      {toolCallStatusLabel(call.status)}
+                                      {toolCallStatusLabel(item.call.status)}
                                       {" · "}
-                                      {formatDateTime(call.created_at)}
-                                      {toolCallFailureDetail(call)
-                                        ? ` · ${toolCallFailureDetail(call)}`
+                                      {formatAuditDateTime(item.call.created_at)}
+                                      {toolCallFailureDetail(item.call)
+                                        ? ` · ${toolCallFailureDetail(item.call)}`
                                         : ""}
                                     </span>
                                   </li>
-                                ))}
+                                  )
+                                )}
                               </ul>
                             ) : null}
                           </section>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
                       <p className="text-[11px] text-neutral-500">

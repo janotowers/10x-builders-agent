@@ -139,6 +139,7 @@ export async function mergeCharacteristicsOwnerResponseDeterministically(params:
     caseId: mergedCase.id,
     eventType: "state_changed",
     actor: "system",
+    stepKey: mergedCase.current_step ?? undefined,
     payload: {
       kind: "owner_characteristics_merged",
       source: params.source,
