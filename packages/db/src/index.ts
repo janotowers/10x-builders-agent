@@ -31,3 +31,9 @@ export {
   getGoogleCalendarAccessToken,
   type GoogleOAuthTokenPayload,
 } from "./google-calendar-oauth";
+export {
+  GOOGLE_GMAIL_PROVIDER,
+  GOOGLE_GMAIL_SCOPES,
+  getGoogleGmailAccessToken,
+  type GoogleGmailOAuthTokenPayload,
+} from "./google-gmail-oauth";
