@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { randomBytes } from "crypto";
-import { GOOGLE_CALENDAR_SCOPES } from "@agents/db";
+import { GOOGLE_GMAIL_SCOPES } from "@agents/db";
 
 export async function GET() {
   const supabase = await createClient();
@@ -22,13 +22,15 @@ export async function GET() {
   }
 
   const state = randomBytes(20).toString("hex");
-  const redirectUri = `${process.env.NEXT_PUBLIC_SITE_URL ?? ""}/api/integrations/google/callback`;
+  const redirectUri = `${
+    process.env.NEXT_PUBLIC_SITE_URL ?? ""
+  }/api/integrations/google/callback`;
 
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: "code",
-    scope: GOOGLE_CALENDAR_SCOPES.join(" "),
+    scope: GOOGLE_GMAIL_SCOPES.join(" "),
     state,
     access_type: "offline",
     prompt: "consent",
@@ -39,14 +41,21 @@ export async function GET() {
     `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
   );
 
-  response.cookies.set("google_calendar_oauth_state", state, {
+  response.cookies.set("google_gmail_oauth_state", state, {
     httpOnly: true,
     sameSite: "lax",
     maxAge: 600,
     path: "/",
     secure: process.env.NODE_ENV === "production",
   });
-  response.cookies.set("google_oauth_last_flow", "google_calendar", {
+  response.cookies.set("google_gmail_oauth_redirect_uri", "google", {
+    httpOnly: true,
+    sameSite: "lax",
+    maxAge: 600,
+    path: "/",
+    secure: process.env.NODE_ENV === "production",
+  });
+  response.cookies.set("google_oauth_last_flow", "gmail", {
     httpOnly: true,
     sameSite: "lax",
     maxAge: 600,

@@ -117,7 +117,7 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `COMPACTION_MODEL_ID` | *(Opcional)* Override del modelo usado por compaction/memory flush. Default: `anthropic/claude-3-5-haiku` |
    | `ENCRYPTION_KEY` | 64 caracteres hexadecimales (32 bytes) para cifrar tokens de integraciones en base de datos. Generar: `openssl rand -hex 32` |
    | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(Opcional)* OAuth GitHub; redirect `{NEXT_PUBLIC_SITE_URL}/api/integrations/github/callback` |
-   | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | *(Opcional)* OAuth Google Calendar; redirect `{NEXT_PUBLIC_SITE_URL}/api/integrations/google/callback` |
+   | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | *(Opcional)* OAuth Google por usuario (Calendar + Gmail + futuras integraciones OAuth); redirect `{NEXT_PUBLIC_SITE_URL}/api/integrations/google/callback` |
    | `TELEGRAM_BOT_TOKEN` | *(Opcional)* Token del bot |
    | `TELEGRAM_WEBHOOK_SECRET` | *(Opcional)* Secreto que Telegram enviará en cabecera; debe coincidir con el configurado al registrar el webhook |
    | `TELEGRAM_WEBHOOK_BASE_URL` | *(Opcional)* URL HTTPS pública para `setWebhook` (p. ej. ngrok); a veces innecesaria si el proxy envía `x-forwarded-host` |
@@ -129,6 +129,8 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `CHECKPOINTER_DNS_ORDER` | *(Opcional)* `ipv4first` (default) \| `verbatim` \| `ipv6first` \| `off`. Fuerza el orden de resolución DNS al conectar al pooler de Supabase. Útil en redes que no rutean IPv6 a AWS y producen `ETIMEDOUT` al puerto 6543/5432. |
 
 Referencia de nombres: [apps/web/.env.example](apps/web/.env.example). Guía detallada (plantilla para `.env.local`, permisos IAM, encadenamiento con `business_brain`): [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md).
+
+**Importante (OAuth Google):** usa el mismo origen durante todo el flujo. Si `NEXT_PUBLIC_SITE_URL` apunta a ngrok, abre Ajustes desde ngrok. Si trabajas en local, usa `http://localhost:3000` (no `https://localhost:3000`) y registra ese redirect en Google Cloud.
 
 ---
 

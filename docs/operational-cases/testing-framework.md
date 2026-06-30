@@ -457,9 +457,9 @@ Escenarios N4 actuales en `property_optioning`:
 | `price_proposal_pending` | `price_proposal_pending_advisor_approves` | Handler HITL «Aprobar» → `contract_pending` + `price_approved`; en E2E conversacional controlado dispara tick para preparar contrato (en settings puro puede quedar `paused`) |
 | `price_proposal_pending` | `price_proposal_pending_advisor_adjusts` | Handler HITL ajuste → montos nuevos + `price_adjusted_and_approved` + `contract_pending`; en E2E conversacional controlado dispara tick para preparar contrato |
 | `contract_pending` | `contract_pending_draft_review` | Borrador o aviso de plantilla faltante / `waiting_internal` o `paused` (`PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`) |
-| `contract_pending` | `contract_pending_advisor_approves_send` | HITL «mándalo al dueño» → `contract_approved_for_owner` + envío simulado / `paused` |
-| `contract_pending` | `contract_pending_advisor_requests_changes` | HITL cambios → `contract_changes_requested` / `waiting_internal` |
-| `contract_pending` | `contract_pending_owner_signed` | Simulación firma → `photos_scheduled` / `step_completed:contract_signed` |
+| `contract_pending` | `contract_pending_advisor_approves_send` | HITL «enviar por email» → `contract_approved_for_email_send` + envío simulado por email / `paused` |
+| `contract_pending` | `contract_pending_advisor_requests_changes` | HITL «subir contrato corregido y enviar» → `contract_revision_upload_requested` / `waiting_internal` |
+| `contract_pending` | `contract_pending_owner_signed` | Simulación de firma (opcional/futuro): `photos_scheduled` / `step_completed:contract_signed`; no bloquea el hito principal mientras la firma esté fuera del flujo |
 | `photos_scheduled` | `photos_scheduled_propose_slots` | Propuesta de horarios al contacto / `waiting_external` + Telegram |
 | `package_ready` | `package_ready_preflight_blocked` | Preflight sin fotos → `paused` + `notify_user` (no publicar) |
 

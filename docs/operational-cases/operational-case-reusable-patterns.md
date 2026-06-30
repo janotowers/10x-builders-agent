@@ -299,6 +299,8 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Ejemplo binding** | `CONTRACT_DRAFT_DOCUMENT_BINDING` → wrapper [`contract-draft-document.ts`](../../apps/web/src/lib/operational-cases/contract-draft-document.ts); alias legacy `/contract-draft/download` → redirect |
 | **Nuevo caso de uso** | 1) Añadir binding al registro `GENERATED_CASE_DOCUMENT_BINDINGS`. 2) Registrar `kind` de notify si aplica. 3) Escenarios N4 Salida A (render + output_path) / Salida B (plantilla faltante). 4) Reutilizar dedup `PATTERN_GENERATED_DOCUMENT_DEDUP` |
 
+> Mejora futura explícita: acortador DB-backed `/d/{shortToken}` revocable (tabla de tokens + endpoint dedicado) para reemplazar el token público largo cuando prioricemos UX de links.
+
 ### `PATTERN_GENERATED_DOCUMENT_DEDUP`
 
 | | |
@@ -316,12 +318,14 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 |--|--|
 | **Capa** | `runtime` + `test_contract` |
 | **Cuándo usar** | Paso `contract_pending`: borrador generado (N3/N4 agente), revisión interna del asesor, envío al dueño y cierre por firma |
-| **Flujo producto** | **Tick 1 (skill):** `generate_document_from_template` + `notify_user(kind=contract_review)` + evento `contract_drafted`; **no** enviar al dueño. **HITL:** `parseContractReviewDecision` → `approve_send` \| `request_changes` \| `approve_send_after_revision`. **Producción:** `telegram_send_message_to_contact` al `chat_id` del dueño si existe. **Prueba:** caso `case_type_settings_test` → `paused` + `controlled_test_status` (no mezclar con operación real) |
+| **Flujo producto** | **Tick 1 (skill):** `generate_document_from_template` + `notify_user(kind=contract_review)` + evento `contract_drafted`; **no** enviar al dueño. **HITL:** `parseContractReviewDecision` → `approve_send` \| `request_changes`. **Aprobar envío:** manda por Gmail OAuth del asesor a `owner_email` con **adjunto** (y link de respaldo), registra `contract_sent_to_owner` (`channel=email`) y avanza a `photos_scheduled`. **Pedir cambios:** crea pendiente `contract_revision_upload`; el siguiente DOCX/PDF subido por el asesor por chat web o Telegram reemplaza `contract_draft` y se envía automáticamente por email, sin segunda revisión. **Firma:** por ahora se trata fuera del flujo operativo (no bloquea avance a fotos/publicación). **Prueba:** caso `case_type_settings_test` → `paused` + `controlled_test_status` (no mezclar con operación real) |
 | **Handlers** | [`contract-review.ts`](../../apps/web/src/lib/business-decisions/contract-review.ts), [`contract-owner-signed.ts`](../../apps/web/src/lib/business-decisions/contract-owner-signed.ts), registro en [`registry.ts`](../../apps/web/src/lib/business-decisions/registry.ts) |
-| **Canales** | Telegram (botones `contract_approve_send` / `contract_request_changes` + texto libre), inbox web [`/api/business-decisions/contract-review`](../../apps/web/src/app/api/business-decisions/contract-review/route.ts) |
-| **N4 laboratorio** | `contract_pending_draft_review` (Salida A, borrador real) + `contract_pending_template_missing` (Salida B) + tres escenarios HITL (requieren `output_path` previo) — ver matriz §7 |
+| **Canales** | Telegram (botones `contract_send_email` / `contract_upload_adjusted_send` + texto libre), inbox web [`/api/business-decisions/contract-review`](../../apps/web/src/app/api/business-decisions/contract-review/route.ts) |
+| **N4 laboratorio** | `contract_pending_draft_review` (Salida A, borrador real) + `contract_pending_template_missing` (Salida B) + dos escenarios HITL principales (aprobar envío / pedir cambios). `contract_pending_owner_signed` queda como escenario opcional/futuro (firma fuera del flujo principal) — ver matriz §7 |
 | **Enlaces borrador** | `PATTERN_GENERATED_CASE_DOCUMENT_ACCESS` con `CONTRACT_DRAFT_DOCUMENT_BINDING` |
 | **Relacionado** | `PATTERN_GENERATED_CASE_DOCUMENT_ACCESS`, `PATTERN_STEP_TEST_BUSINESS_DECISION`, `PATTERN_NOTIFY_USER_CHANNELS`, `PATTERN_TOOL_AUDIT_SINGLE_OWNER`, `PATTERN_GENERATED_DOCUMENT_DEDUP` |
+
+**Auth Gmail:** usa OAuth por usuario (`provider=gmail` en `user_integrations`, scope `gmail.send`) igual que Calendar. No depende de `GOOGLE_APPLICATION_CREDENTIALS_JSON` (service account).
 
 ---
 

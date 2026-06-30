@@ -7,20 +7,95 @@ import {
   decryptToken,
   GOOGLE_CALENDAR_PROVIDER,
   GOOGLE_CALENDAR_SCOPES,
-  type GoogleOAuthTokenPayload,
+  GOOGLE_GMAIL_PROVIDER,
+  GOOGLE_GMAIL_SCOPES,
 } from "@agents/db";
+
+type Flow = "google_calendar" | "gmail";
+type TokenPayload = {
+  access_token: string;
+  refresh_token?: string;
+  expires_at: number;
+};
+
+const FLOW_CONFIG: Record<
+  Flow,
+  {
+    stateCookie: string;
+    provider: typeof GOOGLE_CALENDAR_PROVIDER | typeof GOOGLE_GMAIL_PROVIDER;
+    scopes: string[];
+    statusParam: "google_calendar" | "gmail";
+  }
+> = {
+  google_calendar: {
+    stateCookie: "google_calendar_oauth_state",
+    provider: GOOGLE_CALENDAR_PROVIDER,
+    scopes: GOOGLE_CALENDAR_SCOPES,
+    statusParam: "google_calendar",
+  },
+  gmail: {
+    stateCookie: "google_gmail_oauth_state",
+    provider: GOOGLE_GMAIL_PROVIDER,
+    scopes: GOOGLE_GMAIL_SCOPES,
+    statusParam: "gmail",
+  },
+};
+
+function inferFlowFromCookies(request: NextRequest): Flow {
+  const lastFlowCookie = request.cookies.get("google_oauth_last_flow")?.value;
+  if (lastFlowCookie === "gmail") return "gmail";
+  if (lastFlowCookie === "google_calendar") return "google_calendar";
+  const hasGmailCookie = Boolean(
+    request.cookies.get(FLOW_CONFIG.gmail.stateCookie)?.value
+  );
+  return hasGmailCookie ? "gmail" : "google_calendar";
+}
+
+function findFlowByState(request: NextRequest, state: string): Flow | null {
+  for (const flow of Object.keys(FLOW_CONFIG) as Flow[]) {
+    const cookieValue = request.cookies.get(FLOW_CONFIG[flow].stateCookie)?.value;
+    if (cookieValue && cookieValue === state) return flow;
+  }
+  return null;
+}
+
+function getTokenExchangeRedirectUri(request: NextRequest, flow: Flow): string {
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "";
+  if (flow !== "gmail") {
+    return `${siteUrl}/api/integrations/google/callback`;
+  }
+  const gmailRedirectMode =
+    request.cookies.get("google_gmail_oauth_redirect_uri")?.value ?? "google";
+  return gmailRedirectMode === "gmail"
+    ? `${siteUrl}/api/integrations/gmail/callback`
+    : `${siteUrl}/api/integrations/google/callback`;
+}
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
   const state = searchParams.get("state");
-  const storedState = request.cookies.get("google_calendar_oauth_state")?.value;
+  const fallbackFlow = inferFlowFromCookies(request);
+  const fallbackStatusParam = FLOW_CONFIG[fallbackFlow].statusParam;
 
-  if (!code || !state || state !== storedState) {
+  if (!code || !state) {
     return NextResponse.redirect(
-      new URL("/settings?google_calendar=error&reason=invalid_state", request.url)
+      new URL(
+        `/settings?${fallbackStatusParam}=error&reason=invalid_state`,
+        request.url
+      )
     );
   }
+  const flow = findFlowByState(request, state);
+  if (!flow) {
+    return NextResponse.redirect(
+      new URL(
+        `/settings?${fallbackStatusParam}=error&reason=invalid_state`,
+        request.url
+      )
+    );
+  }
+  const flowConfig = FLOW_CONFIG[flow];
 
   const supabase = await createClient();
   const {
@@ -33,11 +108,14 @@ export async function GET(request: NextRequest) {
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const redirectUri = `${process.env.NEXT_PUBLIC_SITE_URL ?? ""}/api/integrations/google/callback`;
+  const redirectUri = getTokenExchangeRedirectUri(request, flow);
 
   if (!clientId || !clientSecret) {
     return NextResponse.redirect(
-      new URL("/settings?google_calendar=error&reason=not_configured", request.url)
+      new URL(
+        `/settings?${flowConfig.statusParam}=error&reason=not_configured`,
+        request.url
+      )
     );
   }
 
@@ -56,9 +134,12 @@ export async function GET(request: NextRequest) {
   const tokenData = (await tokenRes.json()) as Record<string, unknown>;
 
   if (!tokenRes.ok || typeof tokenData.access_token !== "string") {
-    console.error("Google token exchange failed:", tokenData);
+    console.error(`Google ${flow} token exchange failed:`, tokenData);
     return NextResponse.redirect(
-      new URL("/settings?google_calendar=error&reason=token_exchange", request.url)
+      new URL(
+        `/settings?${flowConfig.statusParam}=error&reason=token_exchange`,
+        request.url
+      )
     );
   }
 
@@ -69,14 +150,14 @@ export async function GET(request: NextRequest) {
     .from("user_integrations")
     .select("encrypted_tokens")
     .eq("user_id", user.id)
-    .eq("provider", GOOGLE_CALENDAR_PROVIDER)
+    .eq("provider", flowConfig.provider)
     .maybeSingle();
 
   if (existing?.encrypted_tokens) {
     try {
       const prev = JSON.parse(
         decryptToken(existing.encrypted_tokens as string)
-      ) as GoogleOAuthTokenPayload;
+      ) as TokenPayload;
       previousRefresh = prev.refresh_token;
     } catch {
       /* ignore */
@@ -89,7 +170,7 @@ export async function GET(request: NextRequest) {
       : previousRefresh;
 
   const expiresIn = Number(tokenData.expires_in ?? 3600);
-  const payload: GoogleOAuthTokenPayload = {
+  const payload: TokenPayload = {
     access_token: tokenData.access_token as string,
     refresh_token: newRefresh,
     expires_at: Date.now() + expiresIn * 1000,
@@ -98,22 +179,36 @@ export async function GET(request: NextRequest) {
   const scopesFromGoogle =
     typeof tokenData.scope === "string"
       ? tokenData.scope.split(" ").filter(Boolean)
-      : GOOGLE_CALENDAR_SCOPES;
+      : flowConfig.scopes;
 
   const encrypted = encryptToken(JSON.stringify(payload));
   await upsertIntegration(
     db,
     user.id,
-    GOOGLE_CALENDAR_PROVIDER,
-    scopesFromGoogle.length ? scopesFromGoogle : GOOGLE_CALENDAR_SCOPES,
+    flowConfig.provider,
+    scopesFromGoogle.length ? scopesFromGoogle : flowConfig.scopes,
     encrypted
   );
 
   const response = NextResponse.redirect(
-    new URL("/settings?google_calendar=connected", request.url)
+    new URL(`/settings?${flowConfig.statusParam}=connected`, request.url)
   );
 
-  response.cookies.set("google_calendar_oauth_state", "", {
+  response.cookies.set(flowConfig.stateCookie, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    maxAge: 0,
+    path: "/",
+  });
+  if (flow === "gmail") {
+    response.cookies.set("google_gmail_oauth_redirect_uri", "", {
+      httpOnly: true,
+      sameSite: "lax",
+      maxAge: 0,
+      path: "/",
+    });
+  }
+  response.cookies.set("google_oauth_last_flow", "", {
     httpOnly: true,
     sameSite: "lax",
     maxAge: 0,

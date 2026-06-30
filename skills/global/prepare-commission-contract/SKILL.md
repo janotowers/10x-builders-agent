@@ -1,6 +1,6 @@
 ---
 name: prepare-commission-contract
-description: Genera el DOCX del contrato de comisión (exclusiva o no exclusiva) a partir de la plantilla del tenant, lo manda al inmobiliario para revisión y registra cuando se firma. Usado como sub-skill de property-optioning-coach durante el step `contract_pending`.
+description: Genera el DOCX del contrato de comisión (exclusiva o no exclusiva) a partir de la plantilla del tenant y lo entrega al inmobiliario para revisión (HITL). El envío al propietario por email y el avance del caso los ejecuta la app cuando el inmobiliario decide; el agente NO envía el contrato al dueño. Usado como sub-skill de property-optioning-coach durante el step `contract_pending`.
 scope: business
 allowed_tools:
   - generate_document_from_template
@@ -17,9 +17,12 @@ guardrails: |
   El contrato es un documento legal: NO modifiques el cuerpo de la
   plantilla. Solo rellena placeholders.
   El borrador SIEMPRE se entrega primero al inmobiliario para revisión
-  (HITL). Solo después se manda al dueño.
-  Cuando el contrato esté firmado, registra evento human_decision con el
-  hash o nombre del archivo final, no el contenido.
+  (HITL) con notify_user(kind="contract_review"). El agente NO manda el
+  contrato al dueño: el envío al propietario por email (con la cuenta Gmail
+  conectada del asesor) y el avance del caso a `photos_scheduled` los ejecuta
+  la app cuando el inmobiliario aprueba desde la bandeja/Telegram ("Enviar por
+  email" o "Subir contrato corregido y enviar"). No uses
+  telegram_send_message_to_contact para enviar el contrato.
   La titularidad debe estar verificada ANTES de generar el contrato. Esta es
   la transición donde la corroboración de identidad (INE/comprobante) es
   precondición real (a diferencia de comparables, donde solo es advertencia).
@@ -30,9 +33,14 @@ guardrails: |
 ## Objetivo
 
 1. Renderizar el DOCX del contrato con los datos del caso.
-2. Entregarlo al inmobiliario para revisar.
-3. Una vez aprobado, mandarlo al dueño por Telegram para firma.
-4. Registrar la firma cuando llegue.
+2. Entregarlo al inmobiliario para revisión (HITL) con
+   `notify_user(kind="contract_review")` y un enlace de descarga estable.
+3. Detenerte ahí: el inmobiliario decide desde la bandeja/Telegram ("Enviar
+   por email" o "Subir contrato corregido y enviar"). El envío al propietario
+   por email y el avance del caso a `photos_scheduled` los ejecuta la app, no
+   el agente.
+4. Tratar la firma del propietario fuera de este flujo por ahora (no bloquear
+   el avance operativo a fotos/publicación desde esta skill).
 
 ## Workflow
 
@@ -87,32 +95,33 @@ guardrails: |
    qué configuración falta y pausa el caso.
 
 4. Inserta evento `operational_case_add_event(human_decision, payload={kind: contract_drafted, doc_url: "<mismo enlace corto>", output_path, output_bucket})` usando `output_path`/`output_bucket` de la tool.
-5. Mantén `current_step=contract_pending`, `status=waiting_internal` hasta
-   que el inmobiliario revise. Esta espera es interna; `waiting_external` sólo
-   aplica cuando ya se mandó algo al dueño/lead y esperamos su respuesta.
+5. Mantén `current_step=contract_pending`, `status=waiting_internal` y
+   **termina tu turno**. Esta espera es interna: el inmobiliario revisa y
+   decide. El agente NO envía el contrato al dueño ni avanza el caso.
 
-6. Cuando el inmobiliario aprueba (mensaje normal):
-   - Manda al dueño por Telegram con
-     `telegram_send_message_to_contact` y un texto del estilo:
-     ```
-     [nombre], te paso el contrato de comisión para que lo revises.
-     Cuando estés conforme, fírmalo y mándame el PDF firmado por aquí.
-     ```
-     Adjunta el archivo (Telegram bot puede enviar `sendDocument`; si solo
-     usamos sendMessage, manda el link al archivo).
-   - Inserta `operational_case_add_event(reminder_sent, payload={purpose: contract_sent_to_owner})`.
-
-7. Cuando llega `external_response` con el contrato firmado:
-   - Verifica que el archivo está adjunto.
-   - Mueve `current_step=photos_scheduled`, `status=active`.
-   - Inserta `operational_case_add_event(step_completed, payload={kind: contract_signed, file_id: "..."})`.
-   - Notifica al inmobiliario:
-     `notify_user("Contrato firmado por el dueño. Empiezo a coordinar la sesión de fotos.")`.
+6. Decisión humana (HITL), la ejecuta la app — no el agente:
+   - Si el inmobiliario elige **"Enviar por email"**, la app manda el
+     contrato al `owner_email` del caso desde la cuenta **Gmail** conectada
+     del asesor, registra los eventos
+     (`contract_approved_for_email_send`, `reminder_sent`,
+     `step_completed`) y avanza el caso a `current_step=photos_scheduled`.
+   - Si elige **"Subir contrato corregido y enviar"**, la app espera el DOCX/PDF
+     corregido, lo envía por email al propietario y avanza igual a
+     `photos_scheduled`.
+   - Requisitos del envío: que exista **Gmail conectado** (cuenta remitente del
+     asesor, en Ajustes) y `owner_email` (destinatario) en el contexto del
+     caso. Si falta `owner_email`, el dato se solicita por el HITL de datos
+     contractuales, no por el agente desde aquí.
 
 ## Antipatrones
 
+- Enviar el contrato al dueño desde el agente (por Telegram o email): el envío
+  al propietario es una decisión humana (HITL) que ejecuta la app tras la
+  aprobación del inmobiliario.
+- Avanzar el caso a `photos_scheduled` desde el agente: ese avance lo hace la
+  app cuando se confirma el envío por email.
 - Mandar el contrato al dueño SIN aprobación previa del inmobiliario.
 - Llenar campos del contrato con datos no verificados
   (`pricing_proposal.salida` debe estar `approved`).
-- Continuar al siguiente paso con `human_decision(kind: contract_drafted)`
-  sin `human_decision(kind: contract_signed)` posterior.
+- Usar `telegram_send_message_to_contact` para mandar el contrato (solo es
+  válido para pedir documentos al dueño, p. ej. corregir titularidad).
