@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   CONTRACT_DRAFT_DOCUMENT_BINDING,
   buildCaseDocumentDownloadUrl,
+  buildFriendlyGeneratedDocumentFilename,
   buildGeneratedDocumentContextPatch,
   caseDocumentDownloadPath,
   dedupeConcatenatedSiteOriginInUrl,
@@ -90,6 +91,53 @@ assert.equal(
     CONTRACT_DRAFT_DOCUMENT_BINDING
   )?.template_slug,
   "commission_contract"
+);
+
+const friendlyWithAddress = buildFriendlyGeneratedDocumentFilename({
+  opCase: {
+    id: "11112222-3333-4444-5555-666677778888",
+    context_jsonb: {
+      property_data: { address: "Av. Reforma 123, Cuauhtémoc" },
+    },
+    external_contact_jsonb: { display_name: "Juan Pérez" },
+    created_at: "2026-06-29T10:00:00.000Z",
+  },
+  binding: CONTRACT_DRAFT_DOCUMENT_BINDING,
+  storagePath: "u1/generated-documents/commission_contract/171-case.docx",
+});
+assert.equal(
+  friendlyWithAddress,
+  "contrato-comision-av-reforma-123-cuauhtemoc-11112222-2026-06-29.docx"
+);
+
+const friendlyWithContactFallback = buildFriendlyGeneratedDocumentFilename({
+  opCase: {
+    id: "abcd1234efgh",
+    context_jsonb: {},
+    external_contact_jsonb: { display_name: "María José" },
+    created_at: "2026-01-05T00:00:00.000Z",
+  },
+  binding: CONTRACT_DRAFT_DOCUMENT_BINDING,
+  storagePath: "u1/generated-documents/commission_contract/x.docx",
+});
+assert.equal(
+  friendlyWithContactFallback,
+  "contrato-comision-maria-jose-abcd1234-2026-01-05.docx"
+);
+
+const friendlyNoLabel = buildFriendlyGeneratedDocumentFilename({
+  opCase: {
+    id: "zzzz9999",
+    context_jsonb: {},
+    external_contact_jsonb: null,
+    created_at: "2026-03-10T00:00:00.000Z",
+  },
+  binding: CONTRACT_DRAFT_DOCUMENT_BINDING,
+  storagePath: "u1/generated-documents/commission_contract/x.docx",
+});
+assert.equal(
+  friendlyNoLabel,
+  "contrato-comision-zzzz9999-2026-03-10.docx"
 );
 
 console.log("generated-case-document.selftest: ok");

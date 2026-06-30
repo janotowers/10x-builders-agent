@@ -7,9 +7,11 @@ import {
 import {
   GENERATED_CASE_DOCUMENT_BINDINGS,
   GENERATED_DOCUMENT_BUCKET,
+  buildFriendlyGeneratedDocumentFilename,
   resolveGeneratedDocumentOutputPathFromCase,
   safeGeneratedDocumentFilename,
 } from "@/lib/operational-cases/generated-case-document";
+import type { OperationalCase } from "@agents/types";
 
 const DOCX_CONTENT_TYPE =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -32,9 +34,10 @@ export async function GET(request: Request) {
 
   try {
     const db = createServerClient();
+    let opCase: OperationalCase | null = null;
     let outputPath = payload.outputPath?.trim() ?? "";
     if (!outputPath) {
-      const opCase = await getOperationalCase(db, payload.caseId);
+      opCase = await getOperationalCase(db, payload.caseId);
       if (!opCase || opCase.user_id !== payload.userId) {
         return NextResponse.json({ error: "not_found" }, { status: 404 });
       }
@@ -70,13 +73,26 @@ export async function GET(request: Request) {
       );
     }
 
+    if (!opCase) {
+      opCase = await getOperationalCase(db, payload.caseId).catch(() => null);
+    }
+    const filename =
+      opCase && opCase.user_id === payload.userId
+        ? buildFriendlyGeneratedDocumentFilename({
+            opCase,
+            binding,
+            storagePath: outputPath,
+            fallbackName: `${binding.documentKey}.docx`,
+          })
+        : safeGeneratedDocumentFilename(
+            outputPath,
+            `${binding.documentKey}.docx`
+          );
+
     return new Response(data, {
       headers: {
         "Content-Type": DOCX_CONTENT_TYPE,
-        "Content-Disposition": `attachment; filename="${safeGeneratedDocumentFilename(
-          outputPath,
-          `${binding.documentKey}.docx`
-        )}"`,
+        "Content-Disposition": `attachment; filename="${filename}"`,
         "Cache-Control": "private, no-store",
       },
     });

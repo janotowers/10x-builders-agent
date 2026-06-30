@@ -38,6 +38,11 @@ export type GeneratedCaseDocumentBinding = {
   documentKey: string;
   defaultTemplateSlug?: string;
   defaultDownloadLabel: string;
+  /**
+   * Prefijo legible del nombre de archivo al descargar (sin extensión).
+   * Si no se define, se deriva de documentKey. No afecta el storage path.
+   */
+  downloadBaseName?: string;
   /** Si se define, sync inserta human_decision cuando aún no existe */
   draftedEventKind?: string;
   draftedEventSource?: string;
@@ -48,6 +53,7 @@ export const CONTRACT_DRAFT_DOCUMENT_BINDING: GeneratedCaseDocumentBinding = {
   documentKey: "contract_draft",
   defaultTemplateSlug: "commission_contract",
   defaultDownloadLabel: "Descargar borrador del contrato",
+  downloadBaseName: "contrato-comision",
   draftedEventKind: "contract_drafted",
   draftedEventSource: "generated_case_document_sync",
 };
@@ -484,6 +490,96 @@ export function safeGeneratedDocumentFilename(
   return base.endsWith(".docx") ? base : `${base}.docx`;
 }
 
+function stripDiacriticsForFilename(input: string): string {
+  return input.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function slugifyForFilename(input: string, maxLength = 48): string {
+  const slug = stripDiacriticsForFilename(input)
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase()
+    .slice(0, maxLength)
+    .replace(/-+$/g, "");
+  return slug;
+}
+
+function shortCaseIdForFilename(caseId: string): string {
+  const cleaned = caseId.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  return cleaned.slice(0, 8);
+}
+
+function downloadDateStamp(createdAt?: string | null): string {
+  const parsed = createdAt ? new Date(createdAt) : new Date();
+  const valid = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  return valid.toISOString().slice(0, 10);
+}
+
+function extensionFromStoragePath(storagePath: string): string {
+  const ext = path.extname(storagePath).replace(/^\./, "").toLowerCase();
+  return ext || "docx";
+}
+
+/** Etiqueta legible del caso (propiedad o contacto) para el nombre de archivo. */
+function friendlyCaseLabelForFilename(opCase: {
+  context_jsonb?: unknown;
+  external_contact_jsonb?: { display_name?: string } | null;
+}): string {
+  const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
+  const propertyData = isRecord(context.property_data)
+    ? context.property_data
+    : {};
+  const candidates: unknown[] = [
+    propertyData.title,
+    typeof propertyData.address === "string" ? propertyData.address : undefined,
+    context.property_title,
+    opCase.external_contact_jsonb?.display_name,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      const slug = slugifyForFilename(candidate);
+      if (slug) return slug;
+    }
+  }
+  return "";
+}
+
+/**
+ * Nombre de archivo legible para la descarga (prefijo + propiedad/contacto +
+ * id corto + fecha). No cambia el storage path; solo el Content-Disposition.
+ */
+export function buildFriendlyGeneratedDocumentFilename(params: {
+  opCase: {
+    id: string;
+    context_jsonb?: unknown;
+    external_contact_jsonb?: { display_name?: string } | null;
+    created_at?: string | null;
+  };
+  binding: GeneratedCaseDocumentBinding;
+  storagePath: string;
+  fallbackName?: string;
+}): string {
+  const ext = extensionFromStoragePath(params.storagePath);
+  const base =
+    params.binding.downloadBaseName?.trim() ||
+    params.binding.documentKey.replace(/_/g, "-");
+  const caseLabel = friendlyCaseLabelForFilename(params.opCase);
+  const shortId = shortCaseIdForFilename(params.opCase.id);
+  const dateStamp = downloadDateStamp(params.opCase.created_at);
+
+  const segments = [base, caseLabel, shortId, dateStamp].filter(
+    (segment) => segment && segment.length > 0
+  );
+  const name = segments.join("-");
+  if (!name) {
+    return safeGeneratedDocumentFilename(
+      params.storagePath,
+      params.fallbackName ?? `${params.binding.documentKey}.${ext}`
+    );
+  }
+  return name.endsWith(`.${ext}`) ? name : `${name}.${ext}`;
+}
+
 /** Descarga un documento generado del caso si el usuario es dueño y el path es válido. */
 export async function downloadGeneratedCaseDocumentForUser(params: {
   db: DbClient;
@@ -518,9 +614,11 @@ export async function downloadGeneratedCaseDocumentForUser(params: {
 
   return {
     data,
-    filename: safeGeneratedDocumentFilename(
+    filename: buildFriendlyGeneratedDocumentFilename({
+      opCase,
+      binding: params.binding,
       storagePath,
-      `${params.binding.documentKey}.docx`
-    ),
+      fallbackName: `${params.binding.documentKey}.docx`,
+    }),
   };
 }
