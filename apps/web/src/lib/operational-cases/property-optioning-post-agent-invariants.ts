@@ -156,10 +156,134 @@ type MergeDocumentAddressResult = {
   adopted: CanonicalAddress;
 };
 
+type MergeDocumentLegalIdentityResult = {
+  context: Record<string, unknown>;
+  changed: boolean;
+  adopted: {
+    owner_names?: string[];
+    owner_name?: string;
+    owner_names_source?: string;
+    legal_addresses?: string[];
+    legal_address?: string;
+    legal_addresses_source?: string;
+  };
+};
+
 function cleanAddressString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const cleaned = value.trim().replace(/\s+/g, " ");
   return cleaned.length > 0 ? cleaned : null;
+}
+
+function cleanStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    const cleaned = cleanAddressString(item);
+    if (cleaned) out.push(cleaned);
+  }
+  return out;
+}
+
+function legalIdentitySourceScore(value: unknown): number {
+  if (typeof value !== "string") return 0;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return 0;
+  if (normalized.includes("boleta")) return 5;
+  if (normalized.includes("escritura")) return 4;
+  if (normalized.includes("predial")) return 3;
+  if (normalized.includes("document")) return 2;
+  return 1;
+}
+
+export function mergeDocumentLegalIdentityIntoContextPropertyData(input: {
+  context: Record<string, unknown> | null | undefined;
+  documentFields: Record<string, unknown>;
+}): MergeDocumentLegalIdentityResult {
+  const baseContext = asRecord(input.context) ?? {};
+  const basePropertyData = asRecord(baseContext.property_data) ?? {};
+  const nextContext: Record<string, unknown> = {
+    ...baseContext,
+    property_data: { ...basePropertyData },
+  };
+  const nextPropertyData = nextContext.property_data as Record<string, unknown>;
+  const adopted: MergeDocumentLegalIdentityResult["adopted"] = {};
+  let changed = false;
+
+  const incomingOwnerNames = cleanStringArray(input.documentFields.owner_names);
+  const incomingOwnerSource =
+    cleanAddressString(input.documentFields.owner_names_source) ??
+    cleanAddressString(input.documentFields.owner_source) ??
+    "";
+  const existingOwnerNames = cleanStringArray(nextPropertyData.owner_names);
+  const existingOwnerSource =
+    cleanAddressString(nextPropertyData.owner_names_source) ??
+    cleanAddressString(nextPropertyData.owner_source) ??
+    cleanAddressString(nextContext.owner_names_source) ??
+    "";
+  const shouldAdoptOwners =
+    incomingOwnerNames.length > 0 &&
+    (existingOwnerNames.length === 0 ||
+      legalIdentitySourceScore(incomingOwnerSource) >=
+        legalIdentitySourceScore(existingOwnerSource));
+  if (shouldAdoptOwners) {
+    nextPropertyData.owner_names = incomingOwnerNames;
+    nextPropertyData.owner_name = incomingOwnerNames[0];
+    if (incomingOwnerSource) {
+      nextPropertyData.owner_names_source = incomingOwnerSource;
+    }
+    nextContext.owner_names = incomingOwnerNames;
+    nextContext.owner_name = incomingOwnerNames[0];
+    if (incomingOwnerSource) {
+      nextContext.owner_names_source = incomingOwnerSource;
+    }
+    adopted.owner_names = incomingOwnerNames;
+    adopted.owner_name = incomingOwnerNames[0];
+    if (incomingOwnerSource) adopted.owner_names_source = incomingOwnerSource;
+    changed = true;
+  }
+
+  const incomingLegalAddresses = [
+    ...cleanStringArray(input.documentFields.legal_addresses),
+    ...(() => {
+      const one = cleanAddressString(input.documentFields.legal_address);
+      return one ? [one] : [];
+    })(),
+  ];
+  const dedupedIncomingLegalAddresses = [...new Set(incomingLegalAddresses)];
+  const incomingLegalSource =
+    cleanAddressString(input.documentFields.legal_addresses_source) ??
+    cleanAddressString(input.documentFields.legal_address_source) ??
+    "";
+  const existingLegalAddresses = cleanStringArray(nextPropertyData.legal_addresses);
+  const existingLegalSource =
+    cleanAddressString(nextPropertyData.legal_addresses_source) ??
+    cleanAddressString(nextPropertyData.legal_address_source) ??
+    cleanAddressString(nextContext.legal_addresses_source) ??
+    "";
+  const shouldAdoptLegalAddress =
+    dedupedIncomingLegalAddresses.length > 0 &&
+    (existingLegalAddresses.length === 0 ||
+      legalIdentitySourceScore(incomingLegalSource) >=
+        legalIdentitySourceScore(existingLegalSource));
+  if (shouldAdoptLegalAddress) {
+    nextPropertyData.legal_addresses = dedupedIncomingLegalAddresses;
+    nextPropertyData.legal_address = dedupedIncomingLegalAddresses[0];
+    if (incomingLegalSource) {
+      nextPropertyData.legal_addresses_source = incomingLegalSource;
+    }
+    nextContext.legal_addresses = dedupedIncomingLegalAddresses;
+    nextContext.legal_address = dedupedIncomingLegalAddresses[0];
+    if (incomingLegalSource) {
+      nextContext.legal_addresses_source = incomingLegalSource;
+    }
+    adopted.legal_addresses = dedupedIncomingLegalAddresses;
+    adopted.legal_address = dedupedIncomingLegalAddresses[0];
+    if (incomingLegalSource) adopted.legal_addresses_source = incomingLegalSource;
+    changed = true;
+  }
+
+  return { context: nextContext, changed, adopted };
 }
 
 function firstAddressString(source: Record<string, unknown>, keys: readonly string[]) {
@@ -590,13 +714,17 @@ function comparablesDecisionText(params: {
     `No encontre comparables usables suficientes en mercado para ${propertyTitle}.`,
     saleAverage
       ? `Avaclick si devolvio una referencia de venta promedio: ${saleAverage}.`
-      : null,
+      : "Avaclick no devolvio una referencia util en este intento.",
     `Comparables usables actuales: ${usableCount}.`,
     "",
     "Para continuar, elige una opcion dentro del flujo:",
-    "1) Avanzar usando Avaclick como base principal.",
-    "2) Ampliar busqueda (rango amplio o colonias adyacentes).",
-    "3) Cargar comparables manuales en el panel.",
+    usableCount > 0
+      ? `1) Avanzar con los comparables actuales (muestra limitada: ${usableCount}).`
+      : "1) Avanzar con los comparables actuales (no disponible: no hay comparables usables).",
+    saleAverage
+      ? "2) Avanzar usando Avaclick como base principal."
+      : "2) Avanzar usando Avaclick como base principal (no disponible en este momento).",
+    "3) Ampliar busqueda (rango amplio o colonias adyacentes).",
   ]
     .filter((line): line is string => line != null)
     .join("\n");
@@ -696,11 +824,20 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
         const payload = asRecord(event.payload_jsonb);
         return payload?.kind === "price_proposal_prepared";
       });
-      const hasPriceApprovalRequestedEvent = recentEvents.some((event) => {
-        const payload = asRecord(event.payload_jsonb);
-        return payload?.kind === "price_approval_requested";
-      });
       const pricingProposal = asRecord(workingCase.context_jsonb?.pricing_proposal);
+      if (pricingProposal) {
+        const ensureApprovalResult = await tryAdvanceComparablesAfterPersist({
+          db,
+          opCase: workingCase,
+          userId: workingCase.user_id,
+          source: `${source}_ensure_price_approval`,
+          notifyUser: async (notifyDb, userId, payload, urgency) =>
+            notify(notifyDb, userId, payload, urgency),
+        });
+        if (ensureApprovalResult.case) {
+          workingCase = ensureApprovalResult.case;
+        }
+      }
       if (!hasPricePreparedEvent && pricingProposal) {
         await insertOperationalCaseEvent(db, {
           caseId: workingCase.id,
@@ -717,20 +854,6 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
               typeof pricingProposal.subject_area_m2 === "number"
                 ? pricingProposal.subject_area_m2
                 : null,
-          },
-        });
-      }
-      if (!hasPriceApprovalRequestedEvent && pricingProposal) {
-        await insertOperationalCaseEvent(db, {
-          caseId: workingCase.id,
-          eventType: "human_decision",
-          actor: "system",
-          stepKey: "price_proposal_pending",
-          payload: {
-            kind: "price_approval_requested",
-            source: `${source}_backfill`,
-            current_step: "price_proposal_pending",
-            notify_delivered: [],
           },
         });
       }
@@ -926,8 +1049,16 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
       context: mergedSurfaces.context,
       documentFields,
     });
-    if (mergedSurfaces.changed || mergedAddress.changed) {
-      const mergedContext = mergedAddress.context;
+    const mergedLegalIdentity = mergeDocumentLegalIdentityIntoContextPropertyData({
+      context: mergedAddress.context,
+      documentFields,
+    });
+    if (
+      mergedSurfaces.changed ||
+      mergedAddress.changed ||
+      mergedLegalIdentity.changed
+    ) {
+      const mergedContext = mergedLegalIdentity.context;
       const persisted = await updateOperationalCase(
         db,
         workingCase.id,
@@ -958,6 +1089,19 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
             kind: "document_address_consolidated_to_property_data",
             source,
             adopted: mergedAddress.adopted,
+          },
+        });
+      }
+      if (mergedLegalIdentity.changed) {
+        await insertOperationalCaseEvent(db, {
+          caseId: workingCase.id,
+          eventType: "state_changed",
+          actor: "system",
+          stepKey: workingCase.current_step ?? undefined,
+          payload: {
+            kind: "document_legal_identity_consolidated_to_property_data",
+            source,
+            adopted: mergedLegalIdentity.adopted,
           },
         });
       }

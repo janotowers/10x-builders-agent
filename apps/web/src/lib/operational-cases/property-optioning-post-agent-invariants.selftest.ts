@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   mergeDocumentAddressIntoContextPropertyData,
+  mergeDocumentLegalIdentityIntoContextPropertyData,
   mergeDocumentSurfacesIntoContextPropertyData,
 } from "./property-optioning-post-agent-invariants";
 
@@ -76,6 +77,46 @@ function propertyDataOf(result: {
   assert.equal(result.changed, false);
   const propertyData = propertyDataOf(result);
   assert.equal(propertyData.floors, 2);
+}
+
+{
+  const result = mergeDocumentLegalIdentityIntoContextPropertyData({
+    context: { property_data: {} },
+    documentFields: {
+      owner_names: ["Juan Pérez", "María Pérez"],
+      owner_names_source: "boleta_registral",
+      legal_addresses: [
+        "FINCA 3668 CALLE CIRCUNVALACION SUR, FRACCIONAMIENTO LAS FUENTES, ZAPOPAN, JALISCO",
+      ],
+      legal_addresses_source: "boleta_registral",
+    },
+  });
+  assert.equal(result.changed, true);
+  const propertyData = propertyDataOf(result);
+  assert.deepEqual(propertyData.owner_names, ["Juan Pérez", "María Pérez"]);
+  assert.equal(propertyData.owner_name, "Juan Pérez");
+  assert.equal(
+    propertyData.legal_address,
+    "FINCA 3668 CALLE CIRCUNVALACION SUR, FRACCIONAMIENTO LAS FUENTES, ZAPOPAN, JALISCO"
+  );
+}
+
+{
+  const result = mergeDocumentLegalIdentityIntoContextPropertyData({
+    context: {
+      property_data: {
+        owner_names: ["Titular Escritura"],
+        owner_names_source: "escritura",
+      },
+    },
+    documentFields: {
+      owner_names: ["Titular Predial"],
+      owner_names_source: "predial",
+    },
+  });
+  assert.equal(result.changed, false);
+  const propertyData = propertyDataOf(result);
+  assert.deepEqual(propertyData.owner_names, ["Titular Escritura"]);
 }
 
 {

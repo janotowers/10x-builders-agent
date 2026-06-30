@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { missingContractFieldsFromToolCalls } from "./run-settings-test-case-tick";
+import {
+  deriveControlledE2EStatusForTest,
+  missingContractFieldsFromToolCalls,
+  shouldProcessOwnerResponseAsDocumentsReplyForTest,
+} from "./run-settings-test-case-tick";
 
 const missing = missingContractFieldsFromToolCalls([
   {
@@ -35,6 +39,25 @@ assert.deepEqual(
     },
   ]),
   []
+);
+
+assert.equal(
+  shouldProcessOwnerResponseAsDocumentsReplyForTest({
+    currentStep: "documents_received",
+    ownerResponseText: "listo",
+  }),
+  true
+);
+assert.equal(
+  shouldProcessOwnerResponseAsDocumentsReplyForTest({
+    currentStep: "price_proposal_pending",
+    ownerResponseText: "1",
+  }),
+  false
+);
+assert.equal(
+  deriveControlledE2EStatusForTest("advanced_to_price_proposal", false),
+  "waiting_internal"
 );
 
 console.log("run-settings-test-case-tick.selftest: ok");

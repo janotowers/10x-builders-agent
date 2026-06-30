@@ -155,15 +155,31 @@ async function hasUnreadContractDataNotification(
 ) {
   const { data, error } = await db
     .from("internal_user_notifications")
-    .select("id")
+    .select("id,kind")
     .eq("user_id", userId)
     .eq("case_id", caseId)
-    .eq("kind", "contract_data_review")
+    .in("kind", ["contract_data_review", "contract_generation_error"])
     .eq("status", "unread")
-    .limit(1)
-    .maybeSingle();
+    .limit(10);
   if (error) return false;
-  return Boolean(data?.id);
+  return Array.isArray(data) && data.length > 0;
+}
+
+async function dismissUnreadContractGenerationErrorNotifications(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  caseId: string
+) {
+  await db
+    .from("internal_user_notifications")
+    .update({
+      status: "read",
+      read_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .eq("case_id", caseId)
+    .eq("kind", "contract_generation_error")
+    .eq("status", "unread");
 }
 
 async function runAuditedDocumentExtraction(params: {
@@ -304,8 +320,9 @@ function deriveControlledE2EStatus(
     case "deferred_pending_extraction":
       return "blocked_pending_extraction";
     case "remediated_comparables":
-    case "advanced_to_price_proposal":
       return "manual_tick_completed";
+    case "advanced_to_price_proposal":
+      return "waiting_internal";
     case "escalated_extraction_to_human":
       return "extraction_escalated_to_human";
     case "no_action":
@@ -313,6 +330,23 @@ function deriveControlledE2EStatus(
     default:
       return "manual_tick_completed";
   }
+}
+
+export function deriveControlledE2EStatusForTest(
+  action: PostAgentInvariantAction,
+  pendingConfirmation: boolean
+): string {
+  return deriveControlledE2EStatus(action, pendingConfirmation);
+}
+
+export function shouldProcessOwnerResponseAsDocumentsReplyForTest(params: {
+  currentStep: OperationalCase["current_step"];
+  ownerResponseText?: string;
+}): boolean {
+  return (
+    params.currentStep === "documents_received" &&
+    Boolean(params.ownerResponseText?.trim())
+  );
 }
 
 export function isSettingsTestCase(opCase: OperationalCase): boolean {
@@ -329,7 +363,12 @@ function buildCaseE2ETickMessage(
       : {};
   const explicitDocumentRequestTarget =
     operationalCaseDocumentRequestTargetFromContext(context);
-  if (options?.ownerResponseText?.trim()) {
+  if (
+    shouldProcessOwnerResponseAsDocumentsReplyForTest({
+      currentStep: opCase.current_step,
+      ownerResponseText: options?.ownerResponseText,
+    })
+  ) {
     return [
       `Procesa la respuesta reciente del dueño en el caso ${opCase.id}.`,
       `Estado actual: status=${opCase.status}, current_step=${opCase.current_step ?? "(none)"}.`,
@@ -517,6 +556,16 @@ export async function runSettingsTestCaseAgentTick(
     );
   const deterministicDocumentsReceivedPath =
     caseWithTarget.current_step === "documents_received";
+  const deterministicPriceProposalPath =
+    caseWithTarget.current_step === "price_proposal_pending" &&
+    Boolean(
+      caseWithTarget.context_jsonb &&
+        typeof caseWithTarget.context_jsonb === "object" &&
+        !Array.isArray(caseWithTarget.context_jsonb) &&
+        (caseWithTarget.context_jsonb as Record<string, unknown>).pricing_proposal &&
+        typeof (caseWithTarget.context_jsonb as Record<string, unknown>).pricing_proposal ===
+          "object"
+    );
 
   if (deterministicDocumentsReceivedPath) {
     const extractionReadiness = await ensureRequiredDocumentExtractionsForE2E({
@@ -627,6 +676,61 @@ export async function runSettingsTestCaseAgentTick(
     };
   }
 
+  if (deterministicPriceProposalPath) {
+    const invariantResult = await applyPropertyOptioningPostAgentInvariants({
+      db,
+      opCase: caseWithTarget,
+      source: "post_agent_invariant_e2e",
+    });
+    const caseAfterDeterministicFallback = invariantResult.case ?? caseWithTarget;
+    const version = caseAfterDeterministicFallback.version ?? fresh.version;
+    const controlledStatus = deriveControlledE2EStatus(invariantResult.action, false);
+    const updated = await updateOperationalCase(db, fresh.id, version, {
+      nextActionAt: controlledE2ECase ? null : undefined,
+      context: {
+        ...(caseAfterDeterministicFallback.context_jsonb ?? fresh.context_jsonb),
+        ...(settingsTestCase
+          ? {
+              test_mode: true,
+              controlled_test_e2e_last_run_at: new Date().toISOString(),
+              controlled_test_e2e_pending_confirmation: false,
+              controlled_test_status: "e2e_tick_completed",
+            }
+          : {}),
+        ...(controlledE2ECase
+          ? {
+              e2e_control_last_run_at: new Date().toISOString(),
+              e2e_control_pending_confirmation: false,
+              e2e_control_status: controlledStatus,
+              e2e_control_last_invariant_action: invariantResult.action,
+            }
+          : {}),
+      },
+    });
+
+    await insertOperationalCaseEvent(db, {
+      caseId: fresh.id,
+      eventType: "state_changed",
+      actor: "system",
+      stepKey: (updated ?? caseAfterDeterministicFallback ?? fresh).current_step ?? undefined,
+      payload: {
+        source: options?.source ?? "settings_test_case_tick",
+        result: "e2e_tick_completed",
+        pending_confirmation: false,
+        invariant_action: invariantResult.action,
+        controlled_status: controlledStatus,
+        response_preview: null,
+      },
+    });
+
+    return {
+      case: updated ?? caseAfterDeterministicFallback ?? fresh,
+      pending_confirmation: false,
+      pendingConfirmation: null,
+      response_preview: null,
+    };
+  }
+
   const agentResult = await runAgent({
     message: buildCaseE2ETickMessage(caseWithTarget, {
       ownerResponseText: options?.ownerResponseText,
@@ -673,7 +777,8 @@ export async function runSettingsTestCaseAgentTick(
     caseAfterDeterministicFallback?.context_jsonb ?? null
   );
   const hasContractDraftOutputPath = Boolean(contractDraft?.output_path?.trim());
-  let responsePreviewForEvent = agentResult.response?.slice(0, 500) ?? null;
+  let responsePreviewForEvent: string | null =
+    agentResult.response?.slice(0, 500) ?? null;
   if (
     caseAfterDeterministicFallback?.current_step === "contract_pending" &&
     missingContractFields.length === 0 &&
@@ -705,6 +810,7 @@ export async function runSettingsTestCaseAgentTick(
       fresh.id
     );
     if (!hasUnreadContractData) {
+      await dismissUnreadContractGenerationErrorNotifications(db, userId, fresh.id);
       const missingFieldsLabel = missingContractFields.join(", ");
       const needsOwnerEmail = missingContractFields.includes("owner_email");
       await notify(
