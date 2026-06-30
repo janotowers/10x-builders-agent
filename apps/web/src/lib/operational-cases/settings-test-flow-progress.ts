@@ -167,6 +167,9 @@ function isExpectedNotifyUserGuardError(errorText: string | null) {
     "predial_data_quality_review_required",
     "comparables_retry_required_before_notify",
     "owner_corroboration_extraction_incomplete",
+    "price_approval_already_notified",
+    "price_approval_prose_summary_blocked",
+    "comparables_summary_after_price_approval_blocked",
   ].includes(errorText);
 }
 
@@ -177,6 +180,9 @@ export function toolCallFailureDetail(
   const result = call.result_json as Record<string, unknown> | undefined;
   const errorText = normalizeToolCallFailureText(result?.error);
   if (isExpectedNotifyUserGuardError(errorText)) {
+    if (errorText === "price_approval_already_notified") {
+      return "Omitida: aprobación de precio ya enviada por el sistema";
+    }
     return `Bloqueada por política (${errorText})`;
   }
   if (errorText === "case_not_in_intake") {
@@ -282,6 +288,16 @@ export function eventBelongsToStep(
     stepKey === "awaiting_documents" &&
     event.event_type === "external_response" &&
     payloadKind === "document_registered"
+  ) {
+    return true;
+  }
+  if (
+    stepKey === "awaiting_documents" &&
+    event.event_type === "reminder_sent" &&
+    (payload?.purpose === "documents_checklist_post_intake" ||
+      payload?.purpose === "internal_upload_instructions" ||
+      payload?.purpose === "external_documents_routed" ||
+      payload?.purpose === "initial_request")
   ) {
     return true;
   }
@@ -451,6 +467,7 @@ function isE2EEvent(item: FlowProgressEvidenceItem): boolean {
   if (item.event_kind === "controlled_test_e2e_started") return true;
   if (item.event_type === "external_response") return true;
   if (item.event_kind === "documents_batch_completed") return true;
+  if (isDocumentRequestReminderEvidence(item)) return true;
   if (
     item.event_result === "e2e_tick_completed" ||
     item.event_result === "e2e_pending_hitl"
@@ -478,6 +495,17 @@ type FlowProgressLike = {
   evidenceItems?: FlowProgressEvidenceItem[];
 };
 
+function isDocumentRequestReminderEvidence(item: FlowProgressEvidenceItem): boolean {
+  if (item.kind !== "event") return false;
+  if (item.event_type !== "reminder_sent") return false;
+  return (
+    item.event_kind === "documents_checklist_post_intake" ||
+    item.event_kind === "internal_upload_instructions" ||
+    item.event_kind === "external_documents_routed" ||
+    item.event_kind === "initial_request"
+  );
+}
+
 export function flowProgressForE2ESummary<T extends FlowProgressLike>(
   flowProgress: T[],
   options?: { e2eStartedAt?: string | null }
@@ -497,7 +525,8 @@ export function flowProgressForE2ESummary<T extends FlowProgressLike>(
         (item.event_kind === "case_created" ||
           item.event_kind === "intake_fields_requested" ||
           item.event_source === "operational_case_update_intake" ||
-          isDocumentEvidence);
+          isDocumentEvidence ||
+          isDocumentRequestReminderEvidence(item));
       if (
         startedAt &&
         Number.isFinite(createdAtMs) &&

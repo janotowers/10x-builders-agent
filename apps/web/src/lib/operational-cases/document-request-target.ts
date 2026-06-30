@@ -1,5 +1,7 @@
 import {
   getOperationalCase,
+  getRecentOperationalCaseEvents,
+  insertOperationalCaseEvent,
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
@@ -244,6 +246,48 @@ export function buildDocumentRouteConfirmationAck(params: {
     whereToUpload,
     'Cuando tengas cargados todos los documentos disponibles, avísame con «listo» y empiezo a revisarlos.',
   ].join(" ");
+}
+
+export type DocumentFlowReminderPurpose =
+  | "documents_checklist_post_intake"
+  | "internal_upload_instructions"
+  | "external_documents_routed";
+
+/**
+ * Registra en el audit trail que se solicitó documentación al asesor/contacto.
+ * Idempotente por propósito: no duplica el mismo recordatorio reciente.
+ */
+export async function recordDocumentFlowReminder(params: {
+  db: DbClient;
+  caseId: string;
+  purpose: DocumentFlowReminderPurpose;
+  channel: "web" | "telegram";
+  source: string;
+  audience?: "internal_user" | "external_contact";
+}): Promise<void> {
+  const recent = await getRecentOperationalCaseEvents(params.db, params.caseId, 12);
+  const alreadyLogged = recent.some((event) => {
+    if (event.event_type !== "reminder_sent") return false;
+    const payload = event.payload_jsonb;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    return (payload as Record<string, unknown>).purpose === params.purpose;
+  });
+  if (alreadyLogged) return;
+
+  await insertOperationalCaseEvent(params.db, {
+    caseId: params.caseId,
+    eventType: "reminder_sent",
+    actor: "system",
+    stepKey: "awaiting_documents",
+    payload: {
+      kind: "reminder_sent",
+      purpose: params.purpose,
+      channel: params.channel,
+      source: params.source,
+      step_key: "awaiting_documents",
+      audience: params.audience ?? "internal_user",
+    },
+  });
 }
 
 export type ParseDocumentRequestTargetChoiceResult = {
@@ -613,6 +657,14 @@ export async function applyDocumentRequestTargetChoice(params: {
         nextActionAt,
       })) ?? updatedCase;
     updatedCase = withStatus;
+    await recordDocumentFlowReminder({
+      db,
+      caseId: updatedCase.id,
+      purpose: isExternal ? "external_documents_routed" : "internal_upload_instructions",
+      channel: params.channel,
+      source: "document_request_target_choice",
+      audience: isExternal ? "external_contact" : "internal_user",
+    });
     return {
       handled: true,
       updatedCase,

@@ -95,6 +95,37 @@ assert.equal(
   "los documentos previos al arranque E2E deben conservarse en el resumen"
 );
 
+const preE2EDocumentReminderFlow = flowProgressForE2ESummary(
+  [
+    {
+      step_key: "awaiting_documents",
+      step_label: "Solicitar documentos",
+      status: "completed",
+      evidence: ["event:reminder_sent"],
+      evidenceItems: [
+        {
+          kind: "event",
+          id: "doc-reminder-pre-e2e",
+          created_at: "2026-06-05T10:04:20.000Z",
+          event_type: "reminder_sent",
+          event_kind: "internal_upload_instructions",
+          summary: "Instrucciones de carga interna enviadas",
+        },
+      ],
+    },
+  ],
+  {
+    e2eStartedAt: "2026-06-05T10:05:00.000Z",
+  }
+);
+assert.equal(
+  preE2EDocumentReminderFlow[0]?.evidenceItems.some(
+    (item) => item.id === "doc-reminder-pre-e2e"
+  ),
+  true,
+  "los recordatorios documentales previos al arranque E2E deben conservarse en el resumen"
+);
+
 const conversationalIntake = flowProgressForE2ESummary(
   [
     {

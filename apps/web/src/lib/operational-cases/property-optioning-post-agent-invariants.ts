@@ -5,6 +5,7 @@ import {
   documentExtractionMinimumsContext,
   evaluatePropertyAdvanceGate,
   evaluatePropertyDataMinimumsForReview,
+  resolveSubjectAreaM2FromPropertyData,
   runDocumentFieldExtraction,
   tryAdvanceComparablesAfterPersist,
   validateComparablesAnalysisArtifact,
@@ -185,6 +186,14 @@ function cleanStringArray(value: unknown): string[] {
   return out;
 }
 
+function sameStringArray(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 function legalIdentitySourceScore(value: unknown): number {
   if (typeof value !== "string") return 0;
   const normalized = value.trim().toLowerCase();
@@ -226,7 +235,15 @@ export function mergeDocumentLegalIdentityIntoContextPropertyData(input: {
     (existingOwnerNames.length === 0 ||
       legalIdentitySourceScore(incomingOwnerSource) >=
         legalIdentitySourceScore(existingOwnerSource));
-  if (shouldAdoptOwners) {
+  const ownerValuesDiffer = !sameStringArray(incomingOwnerNames, existingOwnerNames);
+  const ownerSourceImproves =
+    legalIdentitySourceScore(incomingOwnerSource) >
+    legalIdentitySourceScore(existingOwnerSource);
+  const ownerSourceChanges =
+    incomingOwnerSource.length > 0 && incomingOwnerSource !== existingOwnerSource;
+  const ownersMateriallyChanged =
+    ownerValuesDiffer || (ownerSourceChanges && ownerSourceImproves);
+  if (shouldAdoptOwners && ownersMateriallyChanged) {
     nextPropertyData.owner_names = incomingOwnerNames;
     nextPropertyData.owner_name = incomingOwnerNames[0];
     if (incomingOwnerSource) {
@@ -266,7 +283,18 @@ export function mergeDocumentLegalIdentityIntoContextPropertyData(input: {
     (existingLegalAddresses.length === 0 ||
       legalIdentitySourceScore(incomingLegalSource) >=
         legalIdentitySourceScore(existingLegalSource));
-  if (shouldAdoptLegalAddress) {
+  const legalValuesDiffer = !sameStringArray(
+    dedupedIncomingLegalAddresses,
+    existingLegalAddresses
+  );
+  const legalSourceImproves =
+    legalIdentitySourceScore(incomingLegalSource) >
+    legalIdentitySourceScore(existingLegalSource);
+  const legalSourceChanges =
+    incomingLegalSource.length > 0 && incomingLegalSource !== existingLegalSource;
+  const legalMateriallyChanged =
+    legalValuesDiffer || (legalSourceChanges && legalSourceImproves);
+  if (shouldAdoptLegalAddress && legalMateriallyChanged) {
     nextPropertyData.legal_addresses = dedupedIncomingLegalAddresses;
     nextPropertyData.legal_address = dedupedIncomingLegalAddresses[0];
     if (incomingLegalSource) {
@@ -692,6 +720,24 @@ function comparablesDecisionText(params: {
   opCase: OperationalCase;
   comparablesAnalysis: Record<string, unknown>;
 }): string {
+  const formatMxn = (value: number | null) =>
+    typeof value === "number" && Number.isFinite(value)
+      ? value.toLocaleString("es-MX", {
+          style: "currency",
+          currency: "MXN",
+          maximumFractionDigits: 0,
+        })
+      : null;
+  const usableCountIn = (key: "active_listings" | "historical_references" | "internal_inventory") => {
+    const rows = params.comparablesAnalysis[key];
+    if (!Array.isArray(rows)) return 0;
+    return rows.filter(
+      (row) =>
+        row &&
+        typeof row === "object" &&
+        (row as Record<string, unknown>).usable_as_comparable === true
+    ).length;
+  };
   const context = asRecord(params.opCase.context_jsonb) ?? {};
   const propertyTitle =
     (typeof context.property_title === "string" && context.property_title.trim()) ||
@@ -700,22 +746,43 @@ function comparablesDecisionText(params: {
   const dataQuality = asRecord(params.comparablesAnalysis.data_quality) ?? {};
   const usableCount =
     typeof dataQuality.usable_count === "number" ? dataQuality.usable_count : 0;
+  const activeUsable = usableCountIn("active_listings");
+  const historicalUsable = usableCountIn("historical_references");
+  const internalUsable = usableCountIn("internal_inventory");
+  const warningLines = Array.isArray(dataQuality.warnings)
+    ? dataQuality.warnings
+        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .slice(0, 3)
+    : [];
   const valuation = asRecord(params.comparablesAnalysis.external_valuation) ?? {};
   const saleAverage =
     typeof valuation.sale_average_mxn === "number"
-      ? valuation.sale_average_mxn.toLocaleString("es-MX", {
-          style: "currency",
-          currency: "MXN",
-          maximumFractionDigits: 0,
-        })
+      ? formatMxn(valuation.sale_average_mxn)
+      : null;
+  const saleMin =
+    typeof valuation.sale_min_mxn === "number" ? formatMxn(valuation.sale_min_mxn) : null;
+  const saleMax =
+    typeof valuation.sale_max_mxn === "number" ? formatMxn(valuation.sale_max_mxn) : null;
+  const avaclickPdf =
+    typeof valuation.pdf_url === "string" && /^https?:\/\//i.test(valuation.pdf_url)
+      ? valuation.pdf_url
       : null;
 
   return [
     `No encontre comparables usables suficientes en mercado para ${propertyTitle}.`,
-    saleAverage
-      ? `Avaclick si devolvio una referencia de venta promedio: ${saleAverage}.`
-      : "Avaclick no devolvio una referencia util en este intento.",
     `Comparables usables actuales: ${usableCount}.`,
+    "",
+    "Lectura por fuente:",
+    `- EasyBroker activas/publicadas: ${activeUsable} comparable(s) usable(s).`,
+    `- EasyBroker cerradas/historico: ${historicalUsable} comparable(s) usable(s).`,
+    `- Ungga / BigQuery: ${internalUsable} comparable(s) usable(s).`,
+    saleAverage
+      ? `- Avaclick (opinion digital): ${saleMin && saleMax ? `${saleMin}-${saleMax}` : "Rango N/D"}; promedio ~${saleAverage}.`
+      : "- Avaclick: sin referencia util en este intento.",
+    avaclickPdf ? `- PDF Avaclick: ${avaclickPdf}` : null,
+    "",
+    warningLines.length > 0 ? "Alertas relevantes:" : null,
+    ...warningLines.map((warning) => `- ${warning}`),
     "",
     "Para continuar, elige una opcion dentro del flujo:",
     usableCount > 0
@@ -745,6 +812,7 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
   if (!comparablesAnalysis) {
     const toolCalls = await listComparableToolCallsForCase(db, workingCase.id);
     if (toolCalls.length > 0) {
+      const propertyData = asRecord(context.property_data) ?? context;
       const analysis = buildComparablesAnalysisFromToolCalls(
         toolCalls.map((call) => ({
           tool_name: call.tool_name,
@@ -752,7 +820,10 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
           arguments_json: call.arguments_json,
           result_json: call.result_json,
           created_at: call.created_at,
-        }))
+        })),
+        {
+          subject_area_m2: resolveSubjectAreaM2FromPropertyData(propertyData),
+        }
       );
       const artifactErrors = validateComparablesAnalysisArtifact(analysis);
       if (artifactErrors.length === 0) {

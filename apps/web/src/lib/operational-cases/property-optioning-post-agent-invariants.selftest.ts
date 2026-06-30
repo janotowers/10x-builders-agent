@@ -120,6 +120,54 @@ function propertyDataOf(result: {
 }
 
 {
+  const result = mergeDocumentLegalIdentityIntoContextPropertyData({
+    context: {
+      property_data: {
+        owner_names: ["MARIA CONCEPCION CASTAÑEDA GARCIA"],
+        owner_names_source: "boleta_registral",
+        legal_addresses: [
+          "CALLE CIRCUNVALACION SUR, NUMERO 3668, FRACCIONAMIENTO LAS FUENTES, ZAPOPAN, JALISCO",
+        ],
+        legal_addresses_source: "boleta_registral",
+      },
+    },
+    documentFields: {
+      owner_names: ["MARIA CONCEPCION CASTAÑEDA GARCIA"],
+      owner_names_source: "boleta_registral",
+      legal_addresses: [
+        "CALLE CIRCUNVALACION SUR, NUMERO 3668, FRACCIONAMIENTO LAS FUENTES, ZAPOPAN, JALISCO",
+      ],
+      legal_addresses_source: "boleta_registral",
+    },
+  });
+  assert.equal(
+    result.changed,
+    false,
+    "si titularidad y fuente son equivalentes, no debe marcar cambio"
+  );
+}
+
+{
+  const result = mergeDocumentLegalIdentityIntoContextPropertyData({
+    context: {
+      property_data: {
+        owner_names: ["MARIA CONCEPCION CASTAÑEDA GARCIA"],
+        owner_names_source: "predial",
+      },
+    },
+    documentFields: {
+      owner_names: ["MARIA CONCEPCION CASTAÑEDA GARCIA"],
+      owner_names_source: "boleta_registral",
+    },
+  });
+  assert.equal(
+    result.changed,
+    true,
+    "si la fuente mejora con mismo valor, debe marcar cambio una sola vez"
+  );
+}
+
+{
   const result = mergeDocumentAddressIntoContextPropertyData({
     context: { property_data: {} },
     documentFields: {

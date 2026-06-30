@@ -30,6 +30,84 @@ function withTechnicalKind(
   return `${label} (${technicalKind})`;
 }
 
+function truncateDetail(value: string, max = 72): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max - 1)}…`;
+}
+
+function formatAddressDetail(adopted: Record<string, unknown>): string | null {
+  const street = typeof adopted.street === "string" ? adopted.street.trim() : "";
+  const exterior =
+    typeof adopted.exterior_number === "string" ? adopted.exterior_number.trim() : "";
+  const neighborhood =
+    typeof adopted.neighborhood === "string" ? adopted.neighborhood.trim() : "";
+  const municipality =
+    typeof adopted.municipality === "string" ? adopted.municipality.trim() : "";
+  const parts = [
+    [street, exterior].filter(Boolean).join(" "),
+    neighborhood,
+    municipality,
+  ].filter(Boolean);
+  return parts.length > 0 ? truncateDetail(parts.join(", ")) : null;
+}
+
+function formatConsolidatedSurfacesDetail(adopted: unknown): string | null {
+  if (!isRecord(adopted)) return null;
+  const parts: string[] = [];
+  if (typeof adopted.area_total_m2 === "number" && Number.isFinite(adopted.area_total_m2)) {
+    parts.push(`terreno ${adopted.area_total_m2} m²`);
+  }
+  if (
+    typeof adopted.area_construida_m2 === "number" &&
+    Number.isFinite(adopted.area_construida_m2)
+  ) {
+    parts.push(`construcción ${adopted.area_construida_m2} m²`);
+  }
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function formatConsolidatedLegalIdentityDetail(adopted: unknown): string | null {
+  if (!isRecord(adopted)) return null;
+  const owner =
+    typeof adopted.owner_name === "string" && adopted.owner_name.trim()
+      ? adopted.owner_name.trim()
+      : Array.isArray(adopted.owner_names) &&
+          typeof adopted.owner_names[0] === "string" &&
+          adopted.owner_names[0].trim()
+        ? adopted.owner_names[0].trim()
+        : null;
+  const legalAddress =
+    typeof adopted.legal_address === "string" && adopted.legal_address.trim()
+      ? adopted.legal_address.trim()
+      : Array.isArray(adopted.legal_addresses) &&
+          typeof adopted.legal_addresses[0] === "string" &&
+          adopted.legal_addresses[0].trim()
+        ? adopted.legal_addresses[0].trim()
+        : null;
+  if (owner && legalAddress) {
+    return truncateDetail(`${owner} · ${legalAddress}`);
+  }
+  if (owner) return truncateDetail(owner);
+  if (legalAddress) return truncateDetail(legalAddress);
+  return null;
+}
+
+function documentFlowReminderLabel(purpose: string): string | null {
+  switch (purpose) {
+    case "documents_checklist_post_intake":
+      return "Documentos solicitados al asesor (checklist post-intake)";
+    case "internal_upload_instructions":
+      return "Instrucciones de carga interna enviadas";
+    case "external_documents_routed":
+      return "Solicitud de documentos enrutada al contacto externo";
+    case "initial_request":
+      return "Solicitud inicial de documentos enviada";
+    default:
+      return null;
+  }
+}
+
 export function formatOperationalCaseEventSummary(
   event: OperationalCaseEvent,
   opts?: { includeTechnicalKind?: boolean }
@@ -68,12 +146,32 @@ export function formatOperationalCaseEventSummary(
       technicalKind,
       includeTechnicalKind
     );
-  if (
-    technicalKind === "document_surfaces_consolidated_to_property_data" ||
-    technicalKind === "document_address_consolidated_to_property_data"
-  ) {
+  if (technicalKind === "document_surfaces_consolidated_to_property_data") {
+    const detail = formatConsolidatedSurfacesDetail(payload.adopted);
     return withTechnicalKind(
-      "Datos documentales consolidados en la ficha de propiedad",
+      detail
+        ? `Superficies consolidadas en ficha: ${detail}`
+        : "Superficies consolidadas en la ficha de propiedad",
+      technicalKind,
+      includeTechnicalKind
+    );
+  }
+  if (technicalKind === "document_address_consolidated_to_property_data") {
+    const detail = isRecord(payload.adopted) ? formatAddressDetail(payload.adopted) : null;
+    return withTechnicalKind(
+      detail
+        ? `Dirección consolidada en ficha: ${detail}`
+        : "Dirección consolidada en la ficha de propiedad",
+      technicalKind,
+      includeTechnicalKind
+    );
+  }
+  if (technicalKind === "document_legal_identity_consolidated_to_property_data") {
+    const detail = formatConsolidatedLegalIdentityDetail(payload.adopted);
+    return withTechnicalKind(
+      detail
+        ? `Titularidad consolidada en ficha: ${detail}`
+        : "Titularidad consolidada en la ficha de propiedad",
       technicalKind,
       includeTechnicalKind
     );
@@ -97,6 +195,14 @@ export function formatOperationalCaseEventSummary(
   if (event.event_type === "reminder_sent") {
     const purpose = typeof payload.purpose === "string" ? payload.purpose.trim() : "";
     const channel = typeof payload.channel === "string" ? payload.channel.trim() : "";
+    const friendlyPurpose = documentFlowReminderLabel(purpose);
+    if (friendlyPurpose) {
+      return withTechnicalKind(
+        channel ? `${friendlyPurpose} · canal ${channel}` : friendlyPurpose,
+        technicalKind,
+        includeTechnicalKind
+      );
+    }
     const descriptor = [
       purpose ? `propósito ${purpose}` : "",
       channel ? `canal ${channel}` : "",

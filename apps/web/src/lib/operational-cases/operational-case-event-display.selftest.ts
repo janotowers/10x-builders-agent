@@ -57,4 +57,30 @@ assert.equal(
   "Cambio de estado del caso (contract_drafted)"
 );
 
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "reminder_sent",
+      payload: {
+        purpose: "internal_upload_instructions",
+        channel: "telegram",
+      },
+    })
+  ),
+  "Instrucciones de carga interna enviadas · canal telegram"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "state_changed",
+      payload: {
+        kind: "document_surfaces_consolidated_to_property_data",
+        adopted: { area_total_m2: 138, area_construida_m2: 146 },
+      },
+    })
+  ),
+  "Superficies consolidadas en ficha: terreno 138 m², construcción 146 m²"
+);
+
 console.log("operational-case-event-display.selftest: ok");
