@@ -422,3 +422,70 @@ origen para evitar falsos positivos de avance.
   expediente completo.
 - Mostrar en UI qué documentos faltan y de qué fuente se espera cada uno.
 
+---
+
+## 12. Contrato por email y Gmail: evoluciones diferidas
+
+**Estado (2026-06):** el paso `contract_pending` envía el borrador al dueño por
+Gmail OAuth del asesor (`gmail.send`), con adjunto y link de respaldo. Tras el
+envío HITL el caso avanza a `photos_scheduled`; la firma del dueño queda fuera
+del flujo operativo por ahora. Las correcciones del asesor entran por chat web o
+Telegram (adjunto conversacional), no por formulario en el inbox.
+
+Referencias del comportamiento actual: [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) (patrón contrato), [`testing-framework.md`](testing-framework.md) (escenarios N4), `contract-review.ts`, `send-message.ts`.
+
+### Gmail read / bandeja (fuera de alcance V1)
+
+Hoy sólo se pide scope `gmail.send` para enviar correos aprobados por HITL. **No**
+hay lectura de bandeja ni tools de agente sobre threads entrantes.
+
+| Opción futura | Cuándo considerarla |
+|---|---|
+| Scope `gmail.readonly` + tool `gmail_list_threads` / `gmail_get_message` | Cuando el producto necesite detectar respuestas del dueño (p. ej. «firmado», adjunto devuelto) sin intervención manual |
+| Cron / webhook de inbound | Cuando el volumen o la latencia hagan inviable polling desde el agente |
+| Confirmación HITL antes de enviar (ya existe) | Mantener para cualquier `gmail.send`; no auto-enviar desde el LLM |
+
+**Guardrails:** separar OAuth de envío (`provider=gmail`) de una futura integración
+de lectura si los scopes divergen; documentar en GCP que hay que habilitar Gmail
+API además de Calendar (ver README). No mezclar envío de contrato con tools
+genéricas de bandeja hasta definir riesgo y auditoría.
+
+### Firma del dueño in-flow (diferida)
+
+El hito principal de N4 es **envío por email** (`contract_sent_to_owner_email`),
+no la firma. Tras aprobar envío, el caso pasa a `photos_scheduled` y la
+publicación exige ese evento, no `contract_signed`.
+
+Queda preparado para laboratorio:
+
+- Decisión HITL `contract_owner_signed` y escenario `contract_pending_owner_signed`
+  (`counts_toward_step_milestone: false` en el registry de pruebas).
+- Handler en `contract-owner-signed.ts` para simular cierre por firma en N4.
+
+**Cuándo reabrir:** si el negocio exige bloquear fotos o publicación hasta firma
+registrada en sistema (upload del contrato firmado, e-sign externo, o señal
+verificada por email). Entonces habría que reintroducir `contract_signed` como
+gate, definir fuente de verdad (manual vs. detección inbound) y alinear skills de
+publicación.
+
+### Links cortos de descarga en BD (mejora UX)
+
+Hoy los correos incluyen URL firmada de Storage con nombre de archivo amigable
+(`generated-case-document.ts`). Funciona, pero la URL puede ser larga y expira.
+
+**Diseño recomendado para más adelante:**
+
+1. Tabla `operational_case_document_links` (token opaco, `document_id`, `expires_at`, uso opcional único).
+2. Ruta pública corta `/d/<token>` que redirige o sirve el archivo con el mismo
+   nombre amigable.
+3. Rotación / revocación al reemplazar `contract_draft` en una revisión.
+
+No es bloqueante para el flujo actual; priorizar si usuarios se quejan de links
+rotos en clientes de correo o si se necesita analytics de apertura.
+
+### Correcciones por inbox web (explícitamente no)
+
+El producto **no** incluye formulario en pending inbox para subir contrato
+corregido. Si en el futuro se pide, tratarlo como feature aparte (duplicaría
+canales con chat/Telegram y habría que unificar validación MIME y reenvío).
+
