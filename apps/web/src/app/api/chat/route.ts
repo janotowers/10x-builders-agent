@@ -48,6 +48,7 @@ import {
   buildExternalContactDeepLink,
   buildExternalContactSetupMessage,
 } from "@/lib/operational-cases/external-contact-link";
+import { handleContractRevisionUploadAndSend } from "@/lib/business-decisions/contract-review";
 
 type IncomingAttachment = {
   fileName: string;
@@ -58,6 +59,26 @@ type IncomingAttachment = {
   sha256: string;
   suggestedKind?: string;
 };
+
+function fileExtensionFromName(fileName: string): string {
+  const parts = fileName.toLowerCase().split(".");
+  return parts.length > 1 ? parts[parts.length - 1] : "";
+}
+
+function isAllowedContractRevisionAttachment(fileName: string): boolean {
+  const extension = fileExtensionFromName(fileName);
+  return extension === "pdf" || extension === "doc" || extension === "docx";
+}
+
+function caseWaitingContractRevisionUpload(opCase: OperationalCase): boolean {
+  if (opCase.current_step !== "contract_pending") return false;
+  if (opCase.status !== "waiting_internal") return false;
+  const context = opCase.context_jsonb;
+  if (!context || typeof context !== "object" || Array.isArray(context)) return false;
+  const review = (context as Record<string, unknown>).contract_review;
+  if (!review || typeof review !== "object" || Array.isArray(review)) return false;
+  return (review as Record<string, unknown>).status === "awaiting_revision_upload";
+}
 
 function normalizeIncomingAttachments(raw: unknown): IncomingAttachment[] {
   if (!Array.isArray(raw)) return [];
@@ -555,6 +576,33 @@ export async function POST(request: Request) {
           opCase: conversationalCase,
           attachments: incomingAttachments,
         });
+        if (
+          incomingAttachments.length > 0 &&
+          caseWaitingContractRevisionUpload(conversationalCase)
+        ) {
+          const contractAttachment = incomingAttachments.find((attachment) =>
+            isAllowedContractRevisionAttachment(attachment.fileName)
+          );
+          if (!contractAttachment) {
+            return await respondConversational(
+              "Para enviar el contrato corregido necesito un archivo DOCX o PDF."
+            );
+          }
+          const sent = await handleContractRevisionUploadAndSend(db, {
+            userId: user.id,
+            caseId: conversationalCase.id,
+            storagePath: contractAttachment.storagePath,
+            storageBucket: contractAttachment.storageBucket,
+            fileName: contractAttachment.fileName,
+          });
+          return await respondConversational(
+            sent.ok
+              ? sent.message ??
+                  "Contrato corregido recibido y enviado por email al propietario."
+              : sent.message ??
+                  "Recibí el archivo, pero no pude enviarlo por email. Revisa Gmail y owner_email."
+          );
+        }
         const target = resolveOperationalCaseDocumentRequestTarget({
           externalContact: conversationalCase.external_contact_jsonb,
           context: conversationalCase.context_jsonb,
