@@ -44,6 +44,7 @@ import {
 import {
   buildOperationalCaseContinuationReprompt,
   buildPostIntakeDocumentRequestMessage,
+  recordDocumentFlowReminder,
   shouldPromptCaseDocumentRequestTarget,
 } from "./document-request-target";
 
@@ -527,6 +528,14 @@ export async function resolveConversationalIntakeTurn(params: {
 
     if (intakeCompletedNow) {
       if (shouldPromptCaseDocumentRequestTarget(updatedCase)) {
+        await recordDocumentFlowReminder({
+          db,
+          caseId: updatedCase.id,
+          purpose: "documents_checklist_post_intake",
+          channel,
+          source: `${base}_deterministic_intake_completed`,
+          audience: "internal_user",
+        });
         return {
           handled: true,
           route: "intake_completed",

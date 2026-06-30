@@ -28,10 +28,10 @@ import {
   evaluatePropertyDataMinimumsForReview,
   isPropertyOptioningIntent,
   runAgent,
-  tryAdvanceComparablesAfterPersist,
 } from "@agents/agent";
 import { extractOwnerCharacteristics } from "@/lib/operational-cases/owner-characteristics-extraction";
 import {
+  answerTelegramCallbackQuery,
   downloadTelegramFile,
   getTelegramFile,
   sendTelegramMessage,
@@ -41,6 +41,10 @@ import { notify } from "@/lib/notify";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { parsePriceApprovalDecision } from "@/lib/business-decisions/price-approval";
+import {
+  handleComparablesExpansionDecision,
+  parseComparablesExpansionDecision,
+} from "@/lib/business-decisions/comparables-expansion-decision";
 import {
   handleContractRevisionUploadAndSend,
   parseContractReviewDecision,
@@ -564,43 +568,6 @@ function isPropertyDataReviewCase(opCase: OperationalCase) {
   );
 }
 
-type ComparablesExpansionIntent =
-  | "use_current_comparables"
-  | "use_avaclick_primary"
-  | "expand_search"
-  | "manual_unavailable"
-  | "unclear";
-
-function parseComparablesExpansionDecision(text: string): ComparablesExpansionIntent {
-  const normalized = text
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
-  if (!normalized) return "unclear";
-  if (
-    /^(1|uno|opcion 1|avanzar con los comparables|comparables actuales|aceptar comparables)\b/.test(
-      normalized
-    )
-  ) {
-    return "use_current_comparables";
-  }
-  if (
-    /^(2|dos|opcion 2|usar avaclick|avaclick|avanzar con avaclick)\b/.test(
-      normalized
-    )
-  ) {
-    return "use_avaclick_primary";
-  }
-  if (/^(3|tres|opcion 3|ampliar|expandir|expand search)\b/.test(normalized)) {
-    return "expand_search";
-  }
-  if (/^(4|cuatro|opcion 4|manual|cargar comparables)\b/.test(normalized)) {
-    return "manual_unavailable";
-  }
-  return "unclear";
-}
-
 function bestTelegramMedia(message: NonNullable<TelegramUpdate["message"]>) {
   if (message.document) {
     return {
@@ -639,17 +606,6 @@ function parseBotCommand(messageText: string): {
   const at = head.indexOf("@");
   const command = (at === -1 ? head : head.slice(0, at)).toLowerCase();
   return { command, args: tail };
-}
-
-async function answerCallbackQuery(callbackQueryId: string, text: string) {
-  await fetch(
-    `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
-    }
-  );
 }
 
 async function resumeAgentFromCallback(
@@ -796,7 +752,7 @@ export async function POST(request: Request) {
     const [action, targetId] = cb.data.split(":");
 
     if (!targetId) {
-      await answerCallbackQuery(cb.id, "Datos inválidos");
+      await answerTelegramCallbackQuery(cb.id, "Datos inválidos");
       return NextResponse.json({ ok: true });
     }
 
@@ -808,7 +764,7 @@ export async function POST(request: Request) {
       .single();
 
     if (!telegramAccount) {
-      await answerCallbackQuery(cb.id, "Cuenta no vinculada");
+      await answerTelegramCallbackQuery(cb.id, "Cuenta no vinculada");
       return NextResponse.json({ ok: true });
     }
 
@@ -819,7 +775,7 @@ export async function POST(request: Request) {
         notificationId: targetId,
         text: action === "price_approve" ? "APROBAR PRECIO" : "RECHAZAR PRECIO",
       });
-      await answerCallbackQuery(
+      await answerTelegramCallbackQuery(
         cb.id,
         result.ok
           ? action === "price_approve"
@@ -842,7 +798,7 @@ export async function POST(request: Request) {
     }
 
     if (action === "price_adjust") {
-      await answerCallbackQuery(cb.id, "Envia el ajuste para aprobar");
+      await answerTelegramCallbackQuery(cb.id, "Envia el ajuste para aprobar");
       await sendTelegramMessage(
         cb.message.chat.id,
         "Claro. Respondeme con los montos para ajustar y aprobar, por ejemplo:\nAJUSTAR PRECIO salida=23500 ideal=22000 minimo=18000"
@@ -866,7 +822,7 @@ export async function POST(request: Request) {
             ? "enviar por email al propietario"
             : "subir contrato corregido y enviar",
       });
-      await answerCallbackQuery(
+      await answerTelegramCallbackQuery(
         cb.id,
         result.ok
           ? action === "contract_send_email"
@@ -890,7 +846,7 @@ export async function POST(request: Request) {
 
     if (action === "property_data_confirm" || action === "property_data_correct") {
       if (action === "property_data_correct") {
-        await answerCallbackQuery(cb.id, "Escribe la corrección");
+        await answerTelegramCallbackQuery(cb.id, "Escribe la corrección");
         await sendTelegramMessage(
           cb.message.chat.id,
           "Perfecto. Envíame la corrección en texto, por ejemplo:\nTipo: Terreno · Operación: Venta · Zona: Bucerías"
@@ -906,7 +862,7 @@ export async function POST(request: Request) {
         notificationId: targetId,
         text: "Confirmo la información",
       });
-      await answerCallbackQuery(
+      await answerTelegramCallbackQuery(
         cb.id,
         result.ok ? "Datos confirmados" : "No pude procesarlo"
       );
@@ -925,7 +881,7 @@ export async function POST(request: Request) {
     }
 
     if (action === "approve") {
-      await answerCallbackQuery(cb.id, "✅ Aprobado");
+      await answerTelegramCallbackQuery(cb.id, "✅ Aprobado");
       await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Procesando...");
       const result = await withTypingHeartbeat(cb.message.chat.id, () =>
         resumeAgentFromCallback(db, targetId, "approve")
@@ -950,7 +906,7 @@ export async function POST(request: Request) {
         await sendTelegramMessage(cb.message.chat.id, result.message ?? "Hecho.");
       }
     } else if (action === "reject") {
-      await answerCallbackQuery(cb.id, "❌ Cancelado");
+      await answerTelegramCallbackQuery(cb.id, "❌ Cancelado");
       await sendTelegramMessage(cb.message.chat.id, "Acción cancelada.");
       await resumeAgentFromCallback(db, targetId, "reject");
     }
@@ -1586,255 +1542,59 @@ export async function POST(request: Request) {
     }
   }
 
-  if (text) {
-    const parsedComparablesDecision = parseComparablesExpansionDecision(text);
-    if (parsedComparablesDecision !== "unclear") {
-      const comparablesDecisionCandidates = (
-        await Promise.all(
-          pendingInternal
-            .filter(
-              (notification) =>
-                notification.kind === "comparables_search_expansion_decision"
-            )
-            .map(async (notification) => {
-              if (!notification.case_id) return null;
-              const opCase = await getOperationalCase(db, notification.case_id);
-              if (!opCase || opCase.user_id !== userId) return null;
-              const external = opCase.external_contact_jsonb ?? {};
-              if (
-                String(external.chat_id ?? "") !== String(chatId) ||
-                opCase.current_step !== "comparables_in_progress"
-              ) {
-                return null;
-              }
-              return { notification, opCase };
-            })
-        )
-      ).filter(
-        (candidate): candidate is {
-          notification: (typeof pendingInternal)[number];
-          opCase: OperationalCase;
-        } => Boolean(candidate)
-      );
-
-      if (comparablesDecisionCandidates.length === 1) {
-        const { notification, opCase } = comparablesDecisionCandidates[0]!;
-        const context =
-          opCase.context_jsonb && typeof opCase.context_jsonb === "object"
-            ? (opCase.context_jsonb as Record<string, unknown>)
-            : {};
-        const comparablesAnalysis =
-          context.comparables_analysis &&
-          typeof context.comparables_analysis === "object" &&
-          !Array.isArray(context.comparables_analysis)
-            ? (context.comparables_analysis as Record<string, unknown>)
-            : null;
-        const avaclickValuation =
-          comparablesAnalysis &&
-          comparablesAnalysis.external_valuation &&
-          typeof comparablesAnalysis.external_valuation === "object" &&
-          !Array.isArray(comparablesAnalysis.external_valuation)
-            ? (comparablesAnalysis.external_valuation as Record<string, unknown>)
-            : null;
-        const hasAvaclickValuation =
-          typeof avaclickValuation?.sale_average_mxn === "number";
-        const dataQuality =
-          comparablesAnalysis &&
-          comparablesAnalysis.data_quality &&
-          typeof comparablesAnalysis.data_quality === "object" &&
-          !Array.isArray(comparablesAnalysis.data_quality)
-            ? (comparablesAnalysis.data_quality as Record<string, unknown>)
-            : null;
-        const usableComparablesCount =
-          typeof dataQuality?.usable_count === "number" &&
-          Number.isFinite(dataQuality.usable_count)
-            ? dataQuality.usable_count
-            : 0;
-        const hasUsableComparables = usableComparablesCount > 0;
-        const isE2EControlled = opCase.context_jsonb?.e2e_controlled === true;
-
-        const nextActionAt = new Date().toISOString();
-        let updatePayload:
-          | {
-              status: "active" | "waiting_internal";
-              currentStep: string;
-              nextActionAt: string | null;
-              context: Record<string, unknown>;
+  if (text && parseComparablesExpansionDecision(text) !== "unclear") {
+    const comparablesDecisionCandidates = (
+      await Promise.all(
+        pendingInternal
+          .filter(
+            (notification) =>
+              notification.kind === "comparables_search_expansion_decision"
+          )
+          .map(async (notification) => {
+            if (!notification.case_id) return null;
+            const opCase = await getOperationalCase(db, notification.case_id);
+            if (!opCase || opCase.user_id !== userId) return null;
+            const external = opCase.external_contact_jsonb ?? {};
+            if (
+              String(external.chat_id ?? "") !== String(chatId) ||
+              opCase.current_step !== "comparables_in_progress"
+            ) {
+              return null;
             }
-          | null = null;
-        let userMessage = "";
-        if (parsedComparablesDecision === "manual_unavailable") {
-          await sendTelegramMessage(
-            chatId,
-            "Esa opción ya no está disponible en Telegram. Usa una de estas rutas: 1) avanzar con comparables actuales (si hay al menos 1), 2) Avaclick como base principal, 3) ampliar búsqueda."
-          );
-          return NextResponse.json({
-            ok: true,
-            routed: "comparables_expansion_decision_manual_unavailable",
-            case_id: opCase.id,
-            notification_id: notification.id,
-          });
-        }
+            return { notification, opCase };
+          })
+      )
+    ).filter(
+      (candidate): candidate is {
+        notification: (typeof pendingInternal)[number];
+        opCase: OperationalCase;
+      } => Boolean(candidate)
+    );
 
-        if (parsedComparablesDecision === "use_current_comparables") {
-          if (!hasUsableComparables) {
-            await sendTelegramMessage(
-              chatId,
-              "Aun no tengo comparables usables para avanzar con muestra limitada. Elige ampliar busqueda."
-            );
-            return NextResponse.json({
-              ok: true,
-              routed: "comparables_expansion_decision_missing_usable",
-              case_id: opCase.id,
-              notification_id: notification.id,
-            });
-          }
-          updatePayload = {
-            status: "active",
-            currentStep: "comparables_in_progress",
-            nextActionAt,
-            context: {
-              ...context,
-              comparables_decision: "accept_limited_sample",
-              comparables_decision_at: nextActionAt,
-              comparables_decision_source: "telegram",
-            },
-          };
-          userMessage =
-            "Entendido. Registro tu decisión de avanzar con los comparables actuales y prepararé la propuesta de precio con muestra limitada para aprobación interna.";
-        } else if (parsedComparablesDecision === "use_avaclick_primary") {
-          if (!hasAvaclickValuation) {
-            await sendTelegramMessage(
-              chatId,
-              "Aun no tengo una valuacion Avaclick valida para este caso. Primero debo ejecutarla correctamente y despues podremos usarla como base principal."
-            );
-            return NextResponse.json({
-              ok: true,
-              routed: "comparables_expansion_decision_missing_avaclick",
-              case_id: opCase.id,
-              notification_id: notification.id,
-            });
-          }
-          updatePayload = {
-            status: "active",
-            currentStep: "comparables_in_progress",
-            nextActionAt,
-            context: {
-              ...context,
-              comparables_decision: "use_avaclick_primary",
-              comparables_decision_at: nextActionAt,
-              comparables_decision_source: "telegram",
-            },
-          };
-          userMessage =
-            "Perfecto. Registro tu decisión: usar Avaclick como base principal para preparar la propuesta de precio y solicitar aprobación interna.";
-        } else if (parsedComparablesDecision === "expand_search") {
-          updatePayload = {
-            status: "active",
-            currentStep: "comparables_in_progress",
-            nextActionAt,
-            context: {
-              ...context,
-              comparables_decision: "expand_search",
-              comparables_decision_at: nextActionAt,
-              comparables_decision_source: "telegram",
-            },
-          };
-          userMessage =
-            "Entendido. Registro tu decision de ampliar busqueda y relanzo el analisis de comparables.";
-        }
-
-        if (!updatePayload) {
-          await sendTelegramMessage(
-            chatId,
-            "No pude interpretar esa opción. Elige 1, 2 o 3 para continuar."
-          );
-          return NextResponse.json({
-            ok: true,
-            routed: "comparables_expansion_decision_unrecognized",
-            case_id: opCase.id,
-            notification_id: notification.id,
-          });
-        }
-
-        const updated = await updateOperationalCase(
-          db,
-          opCase.id,
-          opCase.version,
-          updatePayload
-        );
-        if (!updated) {
-          await sendTelegramMessage(
-            chatId,
-            "El caso cambio mientras procesaba tu decision. Intenta de nuevo, por favor."
-          );
-          return NextResponse.json({
-            ok: true,
-            routed: "comparables_expansion_decision_version_conflict",
-            case_id: opCase.id,
-            notification_id: notification.id,
-          });
-        }
-        let decisionCase = updated;
-        let decisionRoute = "comparables_expansion_decision";
-        if (
-          parsedComparablesDecision === "use_current_comparables" ||
-          parsedComparablesDecision === "use_avaclick_primary"
-        ) {
-          const advanceResult = await tryAdvanceComparablesAfterPersist({
-            db,
-            opCase: updated,
-            userId: updated.user_id,
-            source:
-              parsedComparablesDecision === "use_avaclick_primary"
-                ? "telegram_webhook_comparables_decision_use_avaclick"
-                : "telegram_webhook_comparables_decision_use_current",
-            notifyUser: async (notifyDb, notifyUserId, payload, urgency) =>
-              notify(notifyDb, notifyUserId, payload, urgency),
-            allowLimitedSample: parsedComparablesDecision === "use_current_comparables",
-            preferAvaclickPrimary:
-              parsedComparablesDecision === "use_avaclick_primary",
-          });
-          if (!advanceResult.case || !advanceResult.pricingProposal) {
-            await sendTelegramMessage(
-              chatId,
-              parsedComparablesDecision === "use_avaclick_primary"
-                ? "Registré tu decisión, pero no pude preparar precio usando Avaclick en este intento. Puedes elegir ampliar búsqueda o reintentar."
-                : "Registré tu decisión, pero no pude avanzar a preparación de precio en este intento. Puedes elegir ampliar búsqueda o reintentar."
-            );
-            return NextResponse.json({
-              ok: true,
-              routed: "comparables_expansion_decision_advance_failed",
-              case_id: updated.id,
-              notification_id: notification.id,
-            });
-          }
-          decisionCase = advanceResult.case;
-        }
-
-        await insertOperationalCaseEvent(db, {
-          caseId: decisionCase.id,
-          eventType: "human_decision",
-          actor: "user",
-          payload: {
-            kind: "comparables_search_expansion_decision_response",
-            source: "telegram",
-            notification_id: notification.id,
-            text,
-            decision: parsedComparablesDecision,
-          },
-        });
-        await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
-          userId,
-          caseId: decisionCase.id,
-          kind: "comparables_search_expansion_decision",
-          status: "actioned",
-        });
-        if (isE2EControlled && parsedComparablesDecision === "expand_search") {
-          const sourceByDecision =
-            "telegram_webhook_conversational_e2e_comparables_expand_search";
-          void runSettingsTestCaseAgentTick(db, decisionCase, decisionCase.user_id, {
-            source: sourceByDecision,
+    if (comparablesDecisionCandidates.length === 1) {
+      const { notification, opCase } = comparablesDecisionCandidates[0]!;
+      const result = await handleComparablesExpansionDecision(db, {
+        userId,
+        notificationId: notification.id,
+        text,
+        source: "telegram",
+        expectedChatId: chatId,
+      });
+      await sendTelegramMessage(
+        chatId,
+        result.message ?? "No pude procesar esa decisión todavía."
+      );
+      if (
+        result.ok &&
+        result.status === "processed" &&
+        result.decision === "expand_search" &&
+        opCase.context_jsonb?.e2e_controlled === true &&
+        result.case_id
+      ) {
+        const refreshedCase = await getOperationalCase(db, result.case_id);
+        if (refreshedCase) {
+          void runSettingsTestCaseAgentTick(db, refreshedCase, refreshedCase.user_id, {
+            source: "telegram_webhook_conversational_e2e_comparables_expand_search",
             ownerResponseText: text,
           }).catch((tickError) => {
             console.error(
@@ -1843,15 +1603,17 @@ export async function POST(request: Request) {
             );
           });
         }
-        await sendTelegramMessage(chatId, userMessage);
-        return NextResponse.json({
-          ok: true,
-          routed: decisionRoute,
-          case_id: decisionCase.id,
-          notification_id: notification.id,
-          decision: parsedComparablesDecision,
-        });
       }
+      return NextResponse.json({
+        ok: true,
+        routed:
+          result.ok && result.status === "processed"
+            ? "comparables_expansion_decision"
+            : "comparables_expansion_decision_rejected",
+        case_id: result.case_id ?? opCase.id,
+        notification_id: result.notification_id ?? notification.id,
+        decision: result.decision,
+      });
     }
   }
 
@@ -2180,7 +1942,9 @@ export async function POST(request: Request) {
     if (
       !conversationalCase &&
       explicitPropertyIntent &&
-      (routingBindings.length === 0 || forceNewConversationalCase)
+      (routingBindings.length === 0 ||
+        forceNewConversationalCase ||
+        Boolean(activeE2ELabSession))
     ) {
       try {
         if (activeE2ELabSessionCaseId && !forceNewConversationalCase) {
@@ -2449,23 +2213,27 @@ export async function POST(request: Request) {
   }
 
   if (!conversationalCase && inboundMedia) {
-    const pendingTelegramBindings = await findPendingConversationBindings(db, {
-      userId,
-      channel: "telegram",
-      chatId,
-      statuses: ["awaiting_user", "clarification_needed"],
-      limit: 5,
-    });
-    for (const binding of pendingTelegramBindings) {
-      const candidate = await getOperationalCase(db, binding.case_id);
-      if (!candidate || candidate.user_id !== userId) continue;
+    if (activeE2ELabSessionCaseId) {
+      const sessionCase = await getOperationalCase(db, activeE2ELabSessionCaseId);
       if (
-        candidate.current_step === "awaiting_documents" ||
-        candidate.current_step === "documents_received"
+        isUsableE2ELabSessionCase({
+          opCase: sessionCase,
+          userId,
+          caseType: "property_optioning",
+        }) &&
+        sessionCase &&
+        (sessionCase.current_step === "awaiting_documents" ||
+          sessionCase.current_step === "documents_received")
       ) {
-        conversationalCase = candidate;
-        break;
+        conversationalCase = sessionCase;
       }
+    }
+    if (!conversationalCase) {
+      const mediaCase = await resolveInternalDocumentUploadCaseForMedia({
+        db,
+        pendingBindings: routingBindings,
+      });
+      if (mediaCase) conversationalCase = mediaCase;
     }
   }
 
