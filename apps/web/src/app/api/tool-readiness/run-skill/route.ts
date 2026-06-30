@@ -1048,9 +1048,9 @@ function buildSkillTestMessage(params: {
   }
   if (params.skill.skill_slug === "publish-listing-package") {
     lines.push(
-      "Preflight obligatorio: verifica pricing_proposal.approval_status=approved, evento human_decision kind=contract_signed en el timeline y raw_photos con al menos 5 fotos.",
+      "Preflight obligatorio: verifica pricing_proposal.approval_status=approved, evidencia de contrato enviado por email al dueño (context_jsonb.contract_review.status=sent_by_email o evento step_completed kind=contract_sent_to_owner_email) y raw_photos con al menos 5 fotos.",
       "Si falla algún gate (en esta prueba raw_photos está vacío o insuficiente): NO uses image_watermark, easybroker_create_listing, easybroker_upload_images ni ungga_publish_listing.",
-      "En preflight bloqueado: notify_user al asesor listando qué falta (fotos crudas, contrato firmado si aplica), luego operational_case_update_state con current_step=package_ready y status=paused (no waiting_internal ni completed). operational_case_add_event es opcional en este escenario.",
+      "En preflight bloqueado: notify_user al asesor listando qué falta (fotos crudas, evidencia de contrato enviado por email, etc.), luego operational_case_update_state con current_step=package_ready y status=paused (no waiting_internal ni completed). operational_case_add_event es opcional en este escenario.",
       "No avances a published ni marques el caso completed en este escenario."
     );
   }

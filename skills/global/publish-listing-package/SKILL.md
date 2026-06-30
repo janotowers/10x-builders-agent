@@ -20,7 +20,9 @@ guardrails: |
   pasa por HITL: el inmobiliario aprueba "publicar en X" antes de cada
   destino, no en bloque.
   Nunca publiques sin confirmar que `pricing_proposal.approval_status=approved`
-  Y `human_decision(kind: contract_signed)` están en el timeline del caso.
+  y que el contrato ya fue enviado por email al propietario
+  (`context_jsonb.contract_review.status=sent_by_email` o evento
+  `step_completed(kind: contract_sent_to_owner_email)` en timeline).
   Para portales sin API, NO automatices con browser; entrega el paquete
   formateado y pide al inmobiliario que suba manualmente.
 ---
@@ -41,7 +43,9 @@ Producir y entregar:
 
 1. **Preflight**: verifica gates legales/comerciales:
    - `context_jsonb.pricing_proposal.approval_status === "approved"`.
-   - Existe evento `human_decision(kind: contract_signed)` en el timeline.
+   - Existe evidencia de contrato enviado por email al propietario:
+     `context_jsonb.contract_review.status === "sent_by_email"` **o**
+     evento `step_completed(kind=contract_sent_to_owner_email)` en timeline.
    - `context_jsonb.raw_photos[].length >= 5`.
    Si falla algún gate, `notify_user` al inmobiliario explicando qué falta y
    `status=paused`.

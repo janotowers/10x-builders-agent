@@ -331,7 +331,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
         seed_summary:
           "Entrada: contract_pending / waiting_internal; requiere contract_draft.output_path del escenario «Borrador de contrato para revisión».",
         expect_summary:
-          "Salida: contract_pending / paused (caso de prueba) con eventos de aprobación y envío al dueño.",
+          "Salida: photos_scheduled / paused (caso de prueba) con eventos de aprobación y envío por email.",
         seed: {
           current_step: "contract_pending",
           status: "waiting_internal",
@@ -340,16 +340,16 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           },
         },
         expect: {
-          current_step: "contract_pending",
+          current_step: "photos_scheduled",
           status: "paused",
           expected_events: [
-            "human_decision:contract_approved_for_owner",
+            "human_decision:contract_approved_for_email_send",
             "reminder_sent",
           ],
         },
         message:
           "Escenario N4 HITL: el asesor aprueba enviar el borrador al dueño.",
-        decision_text: "mándalo al dueño",
+        decision_text: "enviar por email al propietario",
       },
       {
         id: "contract_pending_advisor_requests_changes",
@@ -361,7 +361,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
         seed_summary:
           "Entrada: contract_pending / waiting_internal; requiere borrador real previo (output_path).",
         expect_summary:
-          "Salida: contract_pending / waiting_internal con contract_changes_requested.",
+          "Salida: contract_pending / waiting_internal con contract_revision_upload_requested.",
         seed: {
           current_step: "contract_pending",
           status: "waiting_internal",
@@ -372,23 +372,24 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
         expect: {
           current_step: "contract_pending",
           status: "waiting_internal",
-          expected_events: ["human_decision:contract_changes_requested"],
+          expected_events: ["human_decision:contract_revision_upload_requested"],
         },
         message:
           "Escenario N4 HITL: el asesor pide cambios al borrador antes de enviarlo al dueño.",
-        decision_text: "necesita cambios en la cláusula de comisión",
+        decision_text: "subir contrato corregido y enviar",
       },
       {
         id: "contract_pending_owner_signed",
         label: "Dueño devuelve contrato firmado",
+        counts_toward_step_milestone: false,
         execution: "business_decision",
         business_decision_kind: "contract_owner_signed",
         summary:
-          "Simula la firma del dueño y el avance a coordinación de fotos (laboratorio N4).",
+          "Opcional/futuro: simula la firma del dueño (fuera del flujo principal actual).",
         seed_summary:
-          "Entrada: contract_pending tras envío al dueño (waiting_external o paused en prueba).",
+          "Entrada de laboratorio: contract_pending tras envío al dueño (flujo legado o simulación).",
         expect_summary:
-          "Salida: photos_scheduled / paused con step_completed kind=contract_signed.",
+          "Salida esperada en laboratorio: photos_scheduled / paused con step_completed kind=contract_signed.",
         seed: {
           current_step: "contract_pending",
           status: "paused",
