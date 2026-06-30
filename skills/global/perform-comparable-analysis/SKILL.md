@@ -176,8 +176,11 @@ Producir un objeto `context_jsonb.comparables_analysis`:
    - Con muestra defendible:
      - No envíes resumen libre de comparables ni `kind=comparables_analysis` cuando
        ya exista `pricing_proposal`.
-     - Usa el mensaje canónico de `price_approval` (con `salida/ideal/mínimo` y
-       desglose por fuente) para abrir la decisión humana del precio.
+     - Usa el mensaje canónico de `price_approval` (con `salida/ideal/mínimo`,
+       desglose por fuente, **Contraste Avaclick** informativo y **Advertencia**
+       sólo si `data_quality.source_conflict` ≥30%) para abrir la decisión humana del precio.
+     - `source_conflict` compara la mediana de mercado por m² y el **total implícito**
+       del sujeto (p50 × m²) contra Avaclick — no la mediana de precio total de comparables más grandes.
    - Sin comparables usables con `data_quality.search_validity="insufficient_market_data"`:
     si el caso quedará en `waiting_internal`, pide decisión concreta con
     `notify_user(kind="comparables_search_expansion_decision")` y opciones

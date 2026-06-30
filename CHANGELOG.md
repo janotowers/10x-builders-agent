@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Business decision **comparables search expansion**: `POST /api/business-decisions/comparables-expansion-decision`, handler compartido, acciones inline en Pendientes y callbacks Telegram
+- Informative **Contraste Avaclick** line in canonical price approval message (`formatPricingProposalForApproval`); **Advertencia** reserved for `source_conflict` ≥30%
+- Deterministic document-flow reminder events (`recordDocumentFlowReminder`) for post-intake checklist and interno/externo routing
 - External contact linking for Real operational cases: `external_contact_link_tokens` table (migration `00049`), Telegram deep link `/start ec_<token>`, advisor setup message when choosing «externo» without verified contact; reuses existing external responder pipeline after verification
 - Shared document collection protocol (`case-document-collection.ts`): canonical checklist, per-type ack hints, media-group consolidated acks with optional kind detail, upload side-text detection
 - Telegram media-group ack batching (`telegram-media-group-ack-store.ts`) for internal document uploads
@@ -46,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- E2E activity log preserves pre-transition document reminder events; idempotent legal-identity consolidation avoids duplicate «Titularidad consolidada» entries
+- `detectSourceConflict` compares implied subject total (market p50 × m²) vs Avaclick average instead of median total of larger comparables
+- Telegram outbound reliability: IPv4-first DNS (`instrumentation.ts`) and retries on connect timeout in `send-message.ts`
 - Conversational property optioning (Telegram + web): intake data on a single active incomplete intake case continues that case instead of spurious multi-case clarification; explicit «otra propiedad» or post-intake start phrases still clarify or force new case
 - Post-intake message combines property confirmation, document checklist, privacy line, and interno/externo choice via `buildPostIntakeDocumentRequestMessage`
 - Document uploads from the advisor before choosing `document_request_target` infer `internal_user` (`decided_by=inferred`) and use unified batch acks instead of repeating interno/externo per file

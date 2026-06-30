@@ -149,6 +149,8 @@ Marcar todos para cerrar:
 - [ ] Settings muestra Paso 0 mientras el intake está incompleto.
 - [ ] Al completar required, se habilita la primera transición manual.
 - [ ] El cron no avanza el caso controlado; sólo lo hace Prueba con agente.
+- [ ] Tras refrescar Settings, el Paso 1 conserva eventos de checklist/recordatorio documental pre-transición (no sólo `document_registered`).
+- [ ] La propuesta de precio en Telegram incluye línea **Contraste Avaclick** cuando hay `sale_average_mxn`; **Advertencia** sólo si divergencia ≥30% (`source_conflict`).
 
 ## Qué hacer si algo falla
 

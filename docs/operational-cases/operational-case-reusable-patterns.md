@@ -356,6 +356,8 @@ IDs conceptuales para `testPlan` y futuro `test_pattern` en el flow. Detalle pro
 
 **Telegram:** contacto **externo** (`purpose` `initial_request` / `requesting_documents`). **No** confundir con `notify_user`.
 
+**Eventos documentales en E2E:** post-intake y ruteo interno/externo registran `reminder_sent` con `purpose` determinístico (`documents_checklist_post_intake`, `internal_upload_instructions`, `external_documents_routed`); el resumen E2E los conserva aunque ocurran antes del primer tick manual.
+
 ### Paso 3 — `documents_received`
 
 | Prueba | Escenario | Patrones | Salida esperada |

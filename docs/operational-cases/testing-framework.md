@@ -547,6 +547,16 @@ Para caso conversacional:
 
 **UI:** resumen por paso, auditoría agrupada por transición, diff post-transición (paso/estado antes→después). Atribución de eventos/tools al `current_step` del tick.
 
+**Registro de actividad E2E (`flowProgressForE2ESummary`):** el panel «Ver actividad» filtra eventos anteriores a la primera transición manual (`e2eStartedAt`), **excepto** evidencia conversacional pre-transición que debe seguir visible:
+
+| Tipo | `event_type` / `event_kind` | Por qué se conserva |
+|------|-----------------------------|---------------------|
+| Intake | `case_created`, `intake_fields_requested`, `operational_case_update_intake` | Paso 0 conversacional |
+| Documentos | `document_registered`, `documents_batch_completed` | Subidas antes del primer tick |
+| Recordatorios documentales | `reminder_sent` con `purpose` en `documents_checklist_post_intake`, `internal_upload_instructions`, `external_documents_routed`, `initial_request` | Checklist post-intake y ruteo interno/externo no deben desaparecer al refrescar |
+
+La consolidación de titularidad (`property-optioning-post-agent-invariants`) es **idempotente**: re-ejecutar con los mismos valores no genera eventos duplicados de «Titularidad consolidada…».
+
 **Estado (v1.2):** laboratorio E2E controlado **implementado**:
 
 | Pieza | Ubicación | Qué hace |

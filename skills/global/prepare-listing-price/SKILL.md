@@ -80,7 +80,8 @@ Producir y persistir en `context_jsonb.pricing_proposal`:
    - cuántas activas, referencias históricas e internas se usaron,
    - factores conocidos (ubicación, m², estado).
 4. Guarda en `context_jsonb.pricing_proposal` con `approval_status=pending`.
-5. Pide HITL al inmobiliario via `notify_user(urgency=normal, kind=price_approval)`:
+5. Pide HITL al inmobiliario via `notify_user(urgency=normal, kind=price_approval)`.
+   Usa el texto canónico de `formatPricingProposalForApproval` (no improvises):
 
    ```
    📊 Propuesta de precio para [propiedad]
@@ -89,9 +90,14 @@ Producir y persistir en `context_jsonb.pricing_proposal`:
    - Mínimo: $18,000
    - Base: N comparables (p25=$A, p50=$B, p75=$C; indicar si es precio/m² o precio total)
    - Razón: [rationale]
+   Contraste Avaclick: el ideal sugerido ($22,000) está ~11% por encima del promedio Avaclick ($19,800).
+   Advertencia: [solo si source_conflict ≥30%; omitir si no aplica]
 
    ¿Apruebas? Si quieres ajustar, dime cuál y a cuánto.
    ```
+
+   Si la propuesta ya se persistió en el mismo tick (`operational_case_persist_comparables_analysis`)
+   y ya se registró `price_approval_requested`, **no** vuelvas a llamar `notify_user` para precio.
 
 6. Inserta evento `operational_case_add_event(human_decision, payload={kind: price_proposed})`.
 7. Mueve `current_step` se queda en `price_proposal_pending`,

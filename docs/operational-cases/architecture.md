@@ -454,6 +454,8 @@ Reglas de producto actuales:
 - **Aprobar precio**: aprueba la propuesta tal cual y avanza a `contract_pending`.
 - **Ajustar y aprobar**: el asesor envía montos concretos; se aplican, se aprueban y avanza (un solo paso, sin segunda confirmación).
 - **Rechazar / pedir revisión**: no expuesto en UI/Telegram en este MVP; requiere rama completa (motivo → skill replantea → nueva notificación) antes de activarse.
+- **Mensaje canónico de propuesta** (`formatPricingProposalForApproval`): incluye salida/ideal/mínimo, desglose por fuente, línea **Contraste Avaclick** (informativa, siempre que exista promedio Avaclick) y **Advertencia** sólo cuando `data_quality.source_conflict` supera el umbral (≥30% entre mediana de mercado por m² o total implícito del sujeto vs promedio Avaclick).
+- **Idempotencia post-persist**: si `operational_case_persist_comparables_analysis` ya dejó `pricing_proposal` y disparó `price_approval_requested`, un tick posterior no re-notifica (`price_approval_already_notified`).
 
 Handler compartido: [`apps/web/src/lib/business-decisions/price-approval.ts`](../../apps/web/src/lib/business-decisions/price-approval.ts). Telegram enruta callbacks `price_approve:*` / `price_adjust:*` y respuestas textuales parseadas en el webhook.
 

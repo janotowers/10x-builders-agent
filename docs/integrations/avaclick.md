@@ -37,6 +37,11 @@ Para una ejecución consistente se observaron como mínimos:
    enviar payload incompleto al proveedor.
 4. En `perform-comparable-analysis`, Avaclick es fuente complementaria:
    si faltan mínimos, se registra warning y se continúa con EasyBroker/BigQuery.
+5. En la propuesta de precio (`formatPricingProposalForApproval`):
+   - **`Contraste Avaclick`**: línea informativa siempre que exista `sale_average_mxn`
+     (por encima/por debajo/alineado vs ideal sugerido).
+   - **`Advertencia` / `source_conflict`**: sólo si divergencia ≥30% entre mediana
+     de mercado por m² o total implícito del sujeto y promedio Avaclick.
 
 ## Credenciales y Config
 
