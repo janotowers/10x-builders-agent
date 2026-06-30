@@ -29,6 +29,7 @@
     "test:bigquery-sql": "tsx src/tools/bigquery-sql.selftest.ts",
     "test:bigquery-params": "tsx src/tools/bigquery-params.selftest.ts",
     "test:property-advance-gate": "tsx src/tools/property-advance-gate.selftest.ts",
+    "test:comparables-advance": "tsx src/operational-cases/comparables-advance.selftest.ts",
     "test:comparables-pricing": "tsx src/operational-cases/comparables-pricing.selftest.ts",
     "test:skill-aware-tools": "tsx src/tools/skill-aware.selftest.ts",
     "test:skill-references": "tsx src/tools/skill-references.selftest.ts",

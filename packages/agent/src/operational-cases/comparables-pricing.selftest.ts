@@ -98,6 +98,19 @@ assert.match(priceApprovalCopy, /Criterio usado:/);
 assert.match(priceApprovalCopy, /Advertencia:/);
 assert.doesNotMatch(priceApprovalCopy, /Base: precio por m² de mercado/);
 
+const avaclickPrimaryProposal = buildPricingProposalFromComparables({
+  analysis,
+  subjectAreaM2: 100,
+  areaBasis: "construction",
+  preferAvaclickPrimary: true,
+});
+assert.ok(avaclickPrimaryProposal, "debe generar propuesta al preferir Avaclick");
+assert.equal(
+  avaclickPrimaryProposal!.basis,
+  "avaclick_only",
+  "al preferir Avaclick debe usar base avaclick_only"
+);
+
 // --- Muestra insuficiente (<3 únicos) NO es defendible ---
 const weak = buildComparablesAnalysisFromToolCalls([
   {

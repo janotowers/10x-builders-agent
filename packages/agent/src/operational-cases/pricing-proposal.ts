@@ -236,6 +236,7 @@ export function buildPricingProposalFromComparables(params: {
   analysis: unknown;
   subjectAreaM2?: number | null;
   areaBasis?: "construction" | "total" | null;
+  preferAvaclickPrimary?: boolean;
 }): PricingProposal | null {
   const analysis = params.analysis;
   if (!isRecord(analysis)) return null;
@@ -275,7 +276,15 @@ export function buildPricingProposalFromComparables(params: {
   let salida: number | null = null;
   let basis: PricingProposal["basis"];
 
-  if (
+  const preferAvaclickPrimary =
+    params.preferAvaclickPrimary === true && positiveNumber(avaclickAvg);
+
+  if (preferAvaclickPrimary) {
+    basis = "avaclick_only";
+    minimo = positiveNumber(avaclickMin) ? avaclickMin : (avaclickAvg as number) * 0.92;
+    ideal = avaclickAvg as number;
+    salida = positiveNumber(avaclickMax) ? avaclickMax : (avaclickAvg as number) * 1.06;
+  } else if (
     positiveNumber(marketPpm2.p50) &&
     positiveNumber(subjectAreaM2) &&
     marketPpm2.sample_size >= 1

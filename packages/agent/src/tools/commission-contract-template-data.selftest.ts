@@ -137,6 +137,16 @@ const leadFallbackData = deriveCommissionContractTemplateData({
 });
 assert.equal(leadFallbackData.owner_name, "Lead dueño");
 
+const ignoresLabContactPlaceholder = deriveCommissionContractTemplateData({
+  property_data: {},
+  case_context: { owner_name: "Contacto de prueba E2E", lead_name: "Asesor interno" },
+  external_contact: {
+    display_name: "Contacto de prueba E2E",
+    email: "lab@example.com",
+  },
+});
+assert.equal(ignoresLabContactPlaceholder.owner_name, "Asesor interno");
+
 const legalAddressPreferredData = deriveCommissionContractTemplateData({
   case_context: {
     legal_address: "CIRCUNVALACION SUR 3668, LAS FUENTES, ZAPOPAN, JALISCO",

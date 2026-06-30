@@ -145,6 +145,7 @@ function canonicalizeNotifyKind(rawKind: string | undefined): string {
     return "price_approval";
   }
   if (key === "price_approval") return key;
+  if (key === "contract_generation_error") return "contract_data_review";
   if (
     key === "comparables_insufficient_data" ||
     key === "comparables_search_expansion_decision"
@@ -165,6 +166,38 @@ function canonicalizeNotifyKind(rawKind: string | undefined): string {
 
 export function canonicalizeNotifyKindForTest(rawKind: string | undefined): string {
   return canonicalizeNotifyKind(rawKind);
+}
+
+function extractMissingContractFieldsFromText(text: string): string[] {
+  const match = text.match(/campos?\s+faltantes?\s*:\s*([^)\\n.]+)/i);
+  if (!match?.[1]) return [];
+  return match[1]
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+function canonicalizeContractDataReviewText(text: string): string {
+  const missing = extractMissingContractFieldsFromText(text);
+  const hasOwnerEmail =
+    missing.includes("owner_email") ||
+    /\bowner_email\b|correo electr[oó]nico|correo del propietario|correo del due[nñ]o/i.test(
+      text
+    );
+  if (hasOwnerEmail) {
+    const missingLabel =
+      missing.length > 0 ? missing.join(", ") : "owner_email";
+    return `Falta correo electrónico del propietario para generar el contrato de comisión. Captura el correo del comitente (campos faltantes: ${missingLabel}).`;
+  }
+  if (missing.length > 0) {
+    return `No pude generar el borrador de contrato porque faltan datos obligatorios: ${missing.join(", ")}. Completa esos campos para continuar.`;
+  }
+  return "No pude generar el borrador de contrato porque faltan datos obligatorios. Completa los campos contractuales requeridos para continuar.";
+}
+
+function canonicalContractReviewNotifyText(opCase: { id: string }): string {
+  const stableUrl = `/api/operational-cases/${opCase.id}/documents/contract_draft/download`;
+  return `Borrador de contrato listo para revisión.\n\nDescargar borrador del contrato: ${stableUrl}\n\nResponde “mándalo al dueño” o “pedir cambios”, o usa los botones.`;
 }
 
 function normalizeNotificationText(value: string | undefined): string {
@@ -4878,6 +4911,10 @@ export function addOperationalCaseTools(
                   pricingProposalForNotify as PricingProposal
                 );
               }
+            } else if (canonicalKind === "contract_data_review") {
+              notificationText = canonicalizeContractDataReviewText(input.text);
+            } else if (canonicalKind === "contract_review" && opCase) {
+              notificationText = canonicalContractReviewNotifyText(opCase);
             }
             const result = await deps.notifyUser(
               ctx.db,

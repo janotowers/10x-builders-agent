@@ -31,6 +31,12 @@ function cleanString(value: unknown): string | null {
   return cleaned.length > 0 ? cleaned : null;
 }
 
+function looksLikeOperationalLabPlaceholder(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized.includes("contacto de prueba e2e");
+}
+
 function positiveNumberOrNull(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
   if (typeof value === "string" && value.trim()) {
@@ -141,13 +147,11 @@ function resolveContractOwnerName(input: {
     firstStringFromArray(input.caseContext.owner_names),
     cleanString(input.caseContext.owner_name),
     cleanString(input.caseContext.owner_full_name),
-    cleanString(input.contact.display_name),
-    cleanString(input.contact.name),
     cleanString(input.caseContext.lead_name),
     cleanString(input.caseContext.contact_name),
   ];
   for (const candidate of ownerNameCandidates) {
-    if (candidate) return candidate;
+    if (candidate && !looksLikeOperationalLabPlaceholder(candidate)) return candidate;
   }
   return "";
 }
@@ -176,12 +180,11 @@ function resolveOwnerEmail(input: {
   contact: Record<string, unknown>;
 }): string {
   const candidates = [
-    input.contact.email,
     input.caseContext.owner_email,
     input.propertyData.owner_email,
     input.propertyData.email,
-    input.contact.identifier,
     input.caseContext.email,
+    input.contact.email,
   ];
   for (const candidate of candidates) {
     if (looksLikeEmail(candidate)) return candidate.trim();

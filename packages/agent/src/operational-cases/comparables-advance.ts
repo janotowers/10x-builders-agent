@@ -5,7 +5,10 @@ import {
   type DbClient,
 } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
-import { comparablesHasDefensibleSample } from "./comparables-analysis";
+import {
+  comparablesHasDefensibleSample,
+  comparablesUsableCount,
+} from "./comparables-analysis";
 import {
   buildPricingProposalFromComparables,
   formatPriceApprovalNotifyText,
@@ -23,6 +26,22 @@ function positiveNumberOrNull(value: unknown): number | null {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
   return null;
+}
+
+function priceApprovalEventHasDeliveredNotification(payload: unknown): boolean {
+  if (!isRecord(payload) || payload.kind !== "price_approval_requested") return false;
+  const delivered = payload.notify_delivered;
+  if (!Array.isArray(delivered)) return false;
+  return delivered.some(
+    (entry) =>
+      entry &&
+      typeof entry === "object" &&
+      (entry as { ok?: boolean }).ok === true
+  );
+}
+
+export function priceApprovalEventHasDeliveredNotificationForTest(payload: unknown): boolean {
+  return priceApprovalEventHasDeliveredNotification(payload);
 }
 
 /** Área del inmueble para base de precio por m² (construida preferida). */
@@ -66,6 +85,8 @@ export async function advanceComparablesToPriceProposalWithRetry(params: {
   opCase: OperationalCase;
   source: string;
   maxAttempts?: number;
+  allowLimitedSample?: boolean;
+  preferAvaclickPrimary?: boolean;
 }): Promise<AdvanceComparablesResult> {
   const { db, source } = params;
   const maxAttempts = params.maxAttempts ?? 4;
@@ -92,12 +113,36 @@ export async function advanceComparablesToPriceProposalWithRetry(params: {
     const freshAnalysis = isRecord(freshContext.comparables_analysis)
       ? freshContext.comparables_analysis
       : null;
-    if (!freshAnalysis || !comparablesHasDefensibleSample(freshAnalysis)) {
+    const hasDefensibleSample = freshAnalysis
+      ? comparablesHasDefensibleSample(freshAnalysis)
+      : false;
+    const hasUsableComparables = freshAnalysis
+      ? comparablesUsableCount(freshAnalysis) > 0
+      : false;
+    const avaclick =
+      freshAnalysis && isRecord(freshAnalysis.external_valuation)
+        ? freshAnalysis.external_valuation
+        : null;
+    const hasAvaclickValuation =
+      positiveNumberOrNull(avaclick?.sale_average_mxn) != null;
+    const wantsAvaclickPrimary = params.preferAvaclickPrimary === true;
+    const preferAvaclickPrimary = Boolean(
+      wantsAvaclickPrimary && hasAvaclickValuation
+    );
+    const allowLimitedSample = Boolean(
+      params.allowLimitedSample && hasUsableComparables
+    );
+    if (
+      !freshAnalysis ||
+      (!hasDefensibleSample && !allowLimitedSample && !preferAvaclickPrimary)
+    ) {
       return {
         case: current,
         advanced: false,
         pricingProposal: null,
-        skipReason: "sample_not_defensible",
+        skipReason: wantsAvaclickPrimary && !hasAvaclickValuation
+          ? "avaclick_valuation_missing"
+          : "sample_not_defensible",
       };
     }
 
@@ -106,6 +151,7 @@ export async function advanceComparablesToPriceProposalWithRetry(params: {
       analysis: freshAnalysis,
       subjectAreaM2: subject.area,
       areaBasis: subject.basis,
+      preferAvaclickPrimary,
     });
     if (!pricingProposal) {
       await insertOperationalCaseEvent(db, {
@@ -128,7 +174,7 @@ export async function advanceComparablesToPriceProposalWithRetry(params: {
     }
 
     const updated = await updateOperationalCase(db, current.id, current.version, {
-      status: "active",
+      status: "waiting_internal",
       currentStep: "price_proposal_pending",
       nextActionAt: new Date().toISOString(),
       context: { ...freshContext, pricing_proposal: pricingProposal },
@@ -148,7 +194,7 @@ export async function advanceComparablesToPriceProposalWithRetry(params: {
           pricing_proposal_basis: pricingProposal.basis,
           to: {
             current_step: "price_proposal_pending",
-            status: "active",
+            status: "waiting_internal",
           },
         },
       });
@@ -224,36 +270,55 @@ export async function tryAdvanceComparablesAfterPersist(params: {
   userId: string;
   source: string;
   notifyUser?: NotifyUserFn;
+  allowLimitedSample?: boolean;
+  preferAvaclickPrimary?: boolean;
 }): Promise<AdvanceComparablesResult & { notified: boolean }> {
   const advance = await advanceComparablesToPriceProposalWithRetry({
     db: params.db,
     opCase: params.opCase,
     source: params.source,
+    allowLimitedSample: params.allowLimitedSample,
+    preferAvaclickPrimary: params.preferAvaclickPrimary,
   });
-  if (!advance.advanced || !advance.case || !advance.pricingProposal) {
+  if (!advance.case || !advance.pricingProposal) {
     return { ...advance, notified: false };
   }
 
   if (!params.notifyUser) {
     return { ...advance, notified: false };
   }
+  const caseId = advance.case.id;
+
+  const hasUnreadPriceApprovalNotification = async (): Promise<boolean> => {
+    const { data, error } = await params.db
+      .from("internal_user_notifications")
+      .select("id")
+      .eq("user_id", params.userId)
+      .eq("case_id", caseId)
+      .eq("kind", "price_approval")
+      .eq("status", "unread")
+      .limit(1);
+    if (error) return false;
+    return Array.isArray(data) && data.length > 0;
+  };
 
   const recentEvents = await params.db
     .from("operational_case_events")
     .select("payload_jsonb,created_at")
-    .eq("case_id", advance.case.id)
+    .eq("case_id", caseId)
     .order("created_at", { ascending: false })
     .limit(15);
-  const alreadyNotified = (recentEvents.data ?? []).some((row) => {
+  const alreadyNotifiedByEvent = (recentEvents.data ?? []).some((row) => {
     const payload = isRecord((row as { payload_jsonb?: unknown }).payload_jsonb)
       ? ((row as { payload_jsonb: Record<string, unknown> }).payload_jsonb as Record<
           string,
           unknown
         >)
       : null;
-    return payload?.kind === "price_approval_requested";
+    return priceApprovalEventHasDeliveredNotification(payload);
   });
-  if (alreadyNotified) {
+  const alreadyNotifiedByUnread = await hasUnreadPriceApprovalNotification();
+  if (alreadyNotifiedByEvent || alreadyNotifiedByUnread) {
     return { ...advance, notified: false };
   }
 
@@ -265,7 +330,7 @@ export async function tryAdvanceComparablesAfterPersist(params: {
       text,
       kind: "price_approval",
       data: {
-        case_id: advance.case.id,
+        case_id: caseId,
         artifact_key: "pricing_proposal",
         actions: ["approve", "adjust", "reject"],
       },
@@ -274,7 +339,7 @@ export async function tryAdvanceComparablesAfterPersist(params: {
   );
 
   await insertOperationalCaseEvent(params.db, {
-    caseId: advance.case.id,
+    caseId,
     eventType: "human_decision",
     actor: "system",
     stepKey: "price_proposal_pending",

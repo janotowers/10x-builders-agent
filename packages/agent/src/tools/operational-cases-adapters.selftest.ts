@@ -71,6 +71,10 @@ assert.deepEqual(context.missing_required, missing);
 assert.equal(canonicalizeNotifyKindForTest("price proposal"), "price_approval");
 assert.equal(canonicalizeNotifyKindForTest("pricing_proposal"), "price_approval");
 assert.equal(
+  canonicalizeNotifyKindForTest("contract_generation_error"),
+  "contract_data_review"
+);
+assert.equal(
   looksLikeComparablesSummaryNotificationForTest({
     text: "El análisis de comparables ha sido completado. El caso ha avanzado a la propuesta de precio.",
   }),
