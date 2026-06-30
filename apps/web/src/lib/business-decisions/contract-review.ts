@@ -3,15 +3,19 @@ import {
   getOperationalCase,
   getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   resolveInternalNotificationWithReminders,
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
-import { sendTelegramMessage } from "@/lib/telegram/send-message";
+import { sendGmailMessage } from "@/lib/gmail/send-message";
+import { notify } from "@/lib/notify";
 import { buildExternalCaseDocumentDownloadUrl } from "@/lib/operational-cases/case-document-download-token";
 import { resolveContractDraftDeliveryUrl } from "@/lib/operational-cases/contract-draft-document";
 import {
   CONTRACT_DRAFT_DOCUMENT_BINDING,
+  GENERATED_DOCUMENT_BUCKET,
+  buildFriendlyGeneratedDocumentFilename,
   dedupeConcatenatedSiteOriginInUrl,
   resolveGeneratedDocumentOutputPathFromCase,
 } from "@/lib/operational-cases/generated-case-document";
@@ -19,7 +23,6 @@ import {
 export type ContractReviewIntent =
   | "approve_send"
   | "request_changes"
-  | "approve_send_after_revision"
   | "unclear";
 
 export type ParsedContractReviewDecision = {
@@ -52,28 +55,19 @@ export function parseContractReviewDecision(text: string): ParsedContractReviewD
     /no\s+necesita\s+cambios.*(m[aá]ndar|enviar)/i,
     /sin\s+cambios.*(m[aá]ndar|enviar)/i,
     /listo.*(m[aá]ndar|enviar)/i,
+    /enviar\s+por\s+email/i,
+    /enviar\s+por\s+correo/i,
   ];
   if (approveSendPatterns.some((pattern) => pattern.test(normalized))) {
     return { intent: "approve_send" };
-  }
-
-  const revisionApprovePatterns = [
-    /(ya\s+lo\s+ajust|ya\s+lo\s+corr|adjunto|anexo|te\s+adjunto|versi[oó]n\s+corregida)/i,
-    /(contrato\s+modificado|contrato\s+corregido|borrador\s+actualizado)/i,
-  ];
-  const wantsSend =
-    /(m[aá]ndalo|env[ií]alo|enviar|mandar|al\s+due[nñ]o)/i.test(normalized);
-  if (revisionApprovePatterns.some((pattern) => pattern.test(normalized)) && wantsSend) {
-    return {
-      intent: "approve_send_after_revision",
-      change_notes: text.trim(),
-    };
   }
 
   const changePatterns = [
     /(necesita\s+cambios|haz\s+cambios|hay\s+que\s+cambiar|ajusta|corrige|modifica)/i,
     /(no\s+lo\s+mandes|no\s+env[ií]es|espera|detente)/i,
     /(revisar\s+de\s+nuevo|vuelve\s+a\s+generar)/i,
+    /(subir|sube|cargar|carga)\s+contrato\s+corregido/i,
+    /contrato\s+corregido\s+y\s+enviar/i,
   ];
   if (changePatterns.some((pattern) => pattern.test(normalized))) {
     return {
@@ -89,7 +83,7 @@ export function parseContractReviewDecision(text: string): ParsedContractReviewD
   return {
     intent: "unclear",
     reason:
-      "No entendí si quieres enviar el contrato al dueño o pedir cambios. Ejemplos: «mándalo al dueño» o «necesita cambios en la cláusula de comisión».",
+      "No entendí si quieres enviarlo por email o subir una versión corregida. Ejemplos: «enviar por email» o «subir contrato corregido y enviar».",
   };
 }
 
@@ -168,27 +162,128 @@ async function resolveContractDocUrl(
   return null;
 }
 
-function externalContactChatId(
-  externalContact: Record<string, unknown> | null | undefined
-): number | null {
-  if (!externalContact) return null;
-  const raw = externalContact.chat_id;
-  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-  if (typeof raw === "string" && raw.trim()) {
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
+function cleanString(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.trim();
 }
 
-async function sendContractToOwner(params: {
-  chatId: number;
+function resolveOwnerEmail(context: Record<string, unknown>): string {
+  const propertyData = isRecord(context.property_data) ? context.property_data : {};
+  return (
+    cleanString(context.owner_email) ||
+    cleanString(propertyData.owner_email) ||
+    cleanString(propertyData.email) ||
+    cleanString(context.email)
+  );
+}
+
+function resolveOwnerName(context: Record<string, unknown>): string {
+  const propertyData = isRecord(context.property_data) ? context.property_data : {};
+  return (
+    cleanString(context.owner_name) ||
+    cleanString(context.owner_full_name) ||
+    cleanString(propertyData.owner_name) ||
+    cleanString(propertyData.owner_full_name)
+  );
+}
+
+const MAX_GMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+
+type ContractEmailAttachment = {
+  filename: string;
+  contentType: string;
+  content: Buffer;
+};
+
+function contentTypeForAttachmentName(fileName: string): string {
+  const normalized = fileName.trim().toLowerCase();
+  if (normalized.endsWith(".pdf")) return "application/pdf";
+  if (normalized.endsWith(".doc"))
+    return "application/msword";
+  return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+}
+
+async function loadContractAttachment(params: {
+  db: DbClient;
+  opCase: {
+    id: string;
+    context_jsonb?: unknown;
+    external_contact_jsonb?: { display_name?: string } | null;
+    created_at?: string | null;
+  };
+  storagePath: string;
+  storageBucket?: string;
+  originalName?: string | null;
+}): Promise<{ ok: true; attachment: ContractEmailAttachment } | { ok: false; message: string }> {
+  const bucket = params.storageBucket?.trim() || GENERATED_DOCUMENT_BUCKET;
+  const { data, error } = await params.db.storage
+    .from(bucket)
+    .download(params.storagePath);
+  if (error || !data) {
+    return {
+      ok: false,
+      message: "No pude descargar el contrato desde storage para adjuntarlo al correo.",
+    };
+  }
+  const bytes = Buffer.from(await data.arrayBuffer());
+  if (bytes.byteLength <= 0) {
+    return {
+      ok: false,
+      message: "El archivo del contrato está vacío; no pude adjuntarlo al correo.",
+    };
+  }
+  if (bytes.byteLength > MAX_GMAIL_ATTACHMENT_BYTES) {
+    return {
+      ok: false,
+      message:
+        "El contrato excede el tamaño permitido para adjunto por email. Reduce el archivo y vuelve a intentarlo.",
+    };
+  }
+  const filename =
+    cleanString(params.originalName) ||
+    buildFriendlyGeneratedDocumentFilename({
+      opCase: params.opCase,
+      binding: CONTRACT_DRAFT_DOCUMENT_BINDING,
+      storagePath: params.storagePath,
+      fallbackName: `${CONTRACT_DRAFT_DOCUMENT_BINDING.documentKey}.docx`,
+    });
+  return {
+    ok: true,
+    attachment: {
+      filename,
+      contentType: contentTypeForAttachmentName(filename),
+      content: bytes,
+    },
+  };
+}
+
+async function sendContractByEmail(params: {
+  db: DbClient;
+  userId: string;
+  ownerEmail: string;
   ownerName: string;
   docUrl: string;
+  attachment: ContractEmailAttachment;
 }) {
-  const greeting = params.ownerName.trim() ? `${params.ownerName.trim()}, ` : "";
-  const text = `${greeting}te paso el contrato de comisión para que lo revises. Cuando estés conforme, fírmalo y mándame el PDF firmado por aquí.\n\n${params.docUrl}`;
-  await sendTelegramMessage(params.chatId, text, undefined, { throwOnError: true });
+  const recipient = params.ownerName || "Hola";
+  return sendGmailMessage({
+    db: params.db,
+    userId: params.userId,
+    to: params.ownerEmail,
+    subject: "Contrato de comision para revision",
+    body: [
+      `${recipient},`,
+      "",
+      "Te comparto el contrato de comision para tu revision.",
+      "Puedes descargarlo aqui:",
+      params.docUrl,
+      "",
+      "Tambien te lo adjunto en este correo para que lo revises facilmente.",
+      "",
+      "Cuando este firmado, por favor compartelo con nosotros.",
+    ].join("\n"),
+    attachments: [params.attachment],
+  });
 }
 
 export async function handleContractReviewDecision(
@@ -250,6 +345,7 @@ export async function handleContractReviewDecision(
   const settingsTestCase = isSettingsTestCase(context);
 
   if (parsed.intent === "request_changes") {
+    const ownerEmail = resolveOwnerEmail(context);
     const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
       status: "waiting_internal",
       currentStep: "contract_pending",
@@ -257,7 +353,7 @@ export async function handleContractReviewDecision(
       context: {
         ...context,
         contract_review: {
-          status: "changes_requested",
+          status: "awaiting_revision_upload",
           notes: parsed.change_notes ?? params.text.trim(),
           requested_at: new Date().toISOString(),
         },
@@ -271,7 +367,7 @@ export async function handleContractReviewDecision(
       eventType: "human_decision",
       actor: "user",
       payload: {
-        kind: "contract_changes_requested",
+        kind: "contract_revision_upload_requested",
         notes: parsed.change_notes ?? params.text.trim(),
       },
     });
@@ -280,11 +376,27 @@ export async function handleContractReviewDecision(
       userId: params.userId,
       status: "actioned",
     });
+    await notify(
+      db,
+      params.userId,
+      {
+        kind: "contract_revision_upload",
+        text: ownerEmail
+          ? `Sube el contrato corregido en DOCX o PDF para enviarlo automaticamente por email a ${ownerEmail}.`
+          : "Sube el contrato corregido en DOCX o PDF para enviarlo automaticamente por email al propietario.",
+        data: {
+          case_id: opCase.id,
+          owner_email: ownerEmail || null,
+        },
+      },
+      "normal"
+    );
     return {
       ok: true,
       status: "changes_requested",
-      message:
-        "Quedó registrado: el borrador necesita cambios. El caso sigue en contract_pending esperando tu nueva instrucción.",
+      message: ownerEmail
+        ? `Listo. Sube el contrato corregido (DOCX/PDF) por este chat o por Telegram y lo enviaré automaticamente por email a ${ownerEmail}.`
+        : "Listo. Sube el contrato corregido (DOCX/PDF) por este chat o por Telegram y lo enviaré automaticamente por email al propietario.",
     };
   }
 
@@ -297,46 +409,66 @@ export async function handleContractReviewDecision(
         "No encontré el enlace del borrador (contract_drafted). Vuelve a generar el contrato antes de enviarlo al dueño.",
     };
   }
-
-  const external = isRecord(opCase.external_contact_jsonb)
-    ? (opCase.external_contact_jsonb as Record<string, unknown>)
-    : null;
-  const chatId = externalContactChatId(external);
-  const ownerName =
-    typeof external?.display_name === "string" ? external.display_name : "estimado/a";
-
-  if (!settingsTestCase && chatId == null) {
+  const contractRef = await resolveGeneratedDocumentOutputPathFromCase(db, {
+    caseId: opCase.id,
+    context,
+    binding: CONTRACT_DRAFT_DOCUMENT_BINDING,
+  });
+  const storagePath = contractRef?.output_path?.trim() ?? "";
+  if (!storagePath) {
     return {
       ok: false,
-      status: "missing_owner_chat",
+      status: "missing_contract_attachment",
       message:
-        "El caso no tiene chat_id del dueño en external_contact_jsonb; no puedo enviar el contrato por Telegram.",
+        "No encontré el archivo del contrato para adjuntarlo al correo. Vuelve a generar el borrador antes de enviarlo.",
+    };
+  }
+  const attachmentResult = await loadContractAttachment({
+    db,
+    opCase,
+    storagePath,
+    storageBucket: contractRef?.output_bucket,
+    originalName: isRecord(context.contract_draft)
+      ? cleanString(context.contract_draft.original_name)
+      : "",
+  });
+  if (!attachmentResult.ok) {
+    return {
+      ok: false,
+      status: "contract_attachment_error",
+      message: attachmentResult.message,
     };
   }
 
-  if (!settingsTestCase && chatId != null) {
-    try {
-      await sendContractToOwner({ chatId, ownerName, docUrl });
-    } catch (error) {
-      return {
-        ok: false,
-        status: "telegram_failed",
-        message:
-          error instanceof Error
-            ? error.message
-            : "No pude enviar el contrato al dueño por Telegram.",
-      };
-    }
+  const ownerEmail = resolveOwnerEmail(context);
+  if (!ownerEmail) {
+    return {
+      ok: false,
+      status: "missing_owner_email",
+      message:
+        "Falta owner_email en el caso para enviar el contrato por email.",
+    };
+  }
+  const ownerName = resolveOwnerName(context);
+  const sent = await sendContractByEmail({
+    db,
+    userId: params.userId,
+    ownerEmail,
+    ownerName,
+    docUrl,
+    attachment: attachmentResult.attachment,
+  });
+  if (!sent.ok) {
+    return {
+      ok: false,
+      status: sent.status,
+      message: sent.message,
+    };
   }
 
-  const revisionNote =
-    parsed.intent === "approve_send_after_revision"
-      ? parsed.change_notes ?? params.text.trim()
-      : undefined;
-
   const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    status: settingsTestCase ? "paused" : "waiting_external",
-    currentStep: "contract_pending",
+    status: settingsTestCase ? "paused" : "active",
+    currentStep: "photos_scheduled",
     nextActionAt: settingsTestCase ? null : new Date().toISOString(),
     context: {
       ...context,
@@ -345,15 +477,17 @@ export async function handleContractReviewDecision(
         doc_url: docUrl,
       },
       contract_review: {
-        status: "approved_for_owner",
+        status: "sent_by_email",
         approved_at: new Date().toISOString(),
-        ...(revisionNote ? { revision_notes: revisionNote } : {}),
+        sent_channel: "email",
+        sent_message_id: sent.messageId,
+        owner_email: ownerEmail,
       },
       ...(settingsTestCase
         ? {
-            controlled_test_status: "contract_sent_to_owner_stopped_before_external_wait",
+            controlled_test_status: "contract_sent_to_owner_email_and_advanced",
             controlled_test_note:
-              "Contrato aprobado para envío al dueño en caso de prueba; detenido en paused para no mezclar settings con operación real.",
+              "Contrato enviado por email al propietario en caso de prueba; flujo avanzado y detenido en paused para no mezclar settings con operación real.",
           }
         : {}),
     },
@@ -367,12 +501,10 @@ export async function handleContractReviewDecision(
     eventType: "human_decision",
     actor: "user",
     payload: {
-      kind:
-        parsed.intent === "approve_send_after_revision"
-          ? "contract_revised_and_approved"
-          : "contract_approved_for_owner",
+      kind: "contract_approved_for_email_send",
       doc_url: docUrl,
-      ...(revisionNote ? { revision_notes: revisionNote } : {}),
+      owner_email: ownerEmail,
+      message_id: sent.messageId,
     },
   });
   await insertOperationalCaseEvent(db, {
@@ -381,8 +513,19 @@ export async function handleContractReviewDecision(
     actor: "system",
     payload: {
       purpose: "contract_sent_to_owner",
-      channel: settingsTestCase ? "simulated" : "telegram",
+      channel: "email",
       doc_url: docUrl,
+      owner_email: ownerEmail,
+      message_id: sent.messageId,
+    },
+  });
+  await insertOperationalCaseEvent(db, {
+    caseId: opCase.id,
+    eventType: "step_completed",
+    actor: "system",
+    payload: {
+      kind: "contract_sent_to_owner_email",
+      advanced_to_step: "photos_scheduled",
     },
   });
   await resolveInternalNotificationWithReminders(db, {
@@ -395,9 +538,164 @@ export async function handleContractReviewDecision(
     ok: true,
     status: settingsTestCase ? "approved_send_simulated" : "approved_send",
     message: settingsTestCase
-      ? "Contrato aprobado para envío al dueño (simulado en caso de prueba). El caso quedó en paused."
-      : parsed.intent === "approve_send_after_revision"
-        ? "Listo: registré tu versión revisada y envié el contrato al dueño por Telegram."
-        : "Listo: envié el contrato al dueño por Telegram. El caso queda esperando su respuesta.",
+      ? "Contrato enviado por email (simulado) y flujo avanzado a photos_scheduled. El caso quedó en paused."
+      : "Listo: envié el contrato por email al propietario y avancé el caso al siguiente paso.",
+  };
+}
+
+export async function handleContractRevisionUploadAndSend(
+  db: DbClient,
+  params: {
+    userId: string;
+    caseId: string;
+    storagePath: string;
+    storageBucket?: string;
+    fileName?: string;
+  }
+) {
+  const opCase = await getOperationalCase(db, params.caseId);
+  if (!opCase || opCase.user_id !== params.userId) {
+    return { ok: false, status: "case_not_found", message: "No encontré el caso." };
+  }
+  const context = (opCase.context_jsonb ?? {}) as Record<string, unknown>;
+  const review = isRecord(context.contract_review) ? context.contract_review : {};
+  if (review.status !== "awaiting_revision_upload") {
+    return {
+      ok: false,
+      status: "not_waiting_revision_upload",
+      message: "El caso no está esperando un contrato corregido.",
+    };
+  }
+
+  const mergedContext: Record<string, unknown> = {
+    ...context,
+    contract_draft: {
+      ...(isRecord(context.contract_draft) ? context.contract_draft : {}),
+      output_path: params.storagePath,
+      output_bucket: params.storageBucket ?? "case-documents",
+      source: "advisor_revision_upload",
+      original_name: params.fileName ?? null,
+    },
+  };
+
+  const docUrl = await resolveContractDocUrl(db, opCase.id, mergedContext);
+  if (!docUrl) {
+    return {
+      ok: false,
+      status: "missing_doc_url",
+      message: "No pude resolver el enlace del contrato corregido.",
+    };
+  }
+  const attachmentResult = await loadContractAttachment({
+    db,
+    opCase,
+    storagePath: params.storagePath,
+    storageBucket: params.storageBucket ?? "case-documents",
+    originalName: params.fileName ?? null,
+  });
+  if (!attachmentResult.ok) {
+    return {
+      ok: false,
+      status: "contract_attachment_error",
+      message: attachmentResult.message,
+    };
+  }
+
+  const ownerEmail = resolveOwnerEmail(mergedContext);
+  if (!ownerEmail) {
+    return {
+      ok: false,
+      status: "missing_owner_email",
+      message: "Falta owner_email para enviar el contrato corregido.",
+    };
+  }
+
+  const ownerName = resolveOwnerName(mergedContext);
+  const sent = await sendContractByEmail({
+    db,
+    userId: params.userId,
+    ownerEmail,
+    ownerName,
+    docUrl,
+    attachment: attachmentResult.attachment,
+  });
+  if (!sent.ok) {
+    return {
+      ok: false,
+      status: sent.status,
+      message: sent.message,
+    };
+  }
+
+  const settingsTestCase = isSettingsTestCase(mergedContext);
+  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+    status: settingsTestCase ? "paused" : "active",
+    currentStep: "photos_scheduled",
+    nextActionAt: settingsTestCase ? null : new Date().toISOString(),
+    context: {
+      ...mergedContext,
+      contract_review: {
+        ...(isRecord(mergedContext.contract_review)
+          ? mergedContext.contract_review
+          : {}),
+        status: "sent_by_email",
+        sent_channel: "email",
+        sent_message_id: sent.messageId,
+        sent_after_revision_upload: true,
+        owner_email: ownerEmail,
+      },
+    },
+  });
+  if (!updated) {
+    return { ok: false, status: "version_conflict", message: "El caso cambió; intenta de nuevo." };
+  }
+
+  await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+    userId: params.userId,
+    caseId: opCase.id,
+    kind: "contract_revision_upload",
+    status: "actioned",
+  });
+  await insertOperationalCaseEvent(db, {
+    caseId: opCase.id,
+    eventType: "human_decision",
+    actor: "user",
+    payload: {
+      kind: "contract_revised_uploaded_and_sent",
+      owner_email: ownerEmail,
+      doc_url: docUrl,
+      message_id: sent.messageId,
+      storage_path: params.storagePath,
+    },
+  });
+  await insertOperationalCaseEvent(db, {
+    caseId: opCase.id,
+    eventType: "reminder_sent",
+    actor: "system",
+    payload: {
+      purpose: "contract_sent_to_owner",
+      channel: "email",
+      owner_email: ownerEmail,
+      doc_url: docUrl,
+      message_id: sent.messageId,
+    },
+  });
+  await insertOperationalCaseEvent(db, {
+    caseId: opCase.id,
+    eventType: "step_completed",
+    actor: "system",
+    payload: {
+      kind: "contract_sent_to_owner_email",
+      advanced_to_step: "photos_scheduled",
+      from_revision_upload: true,
+    },
+  });
+
+  return {
+    ok: true,
+    status: "revision_uploaded_and_sent",
+    message:
+      "Contrato corregido recibido y enviado por email al propietario. Avancé el caso al siguiente paso.",
+    ownerEmail,
   };
 }
