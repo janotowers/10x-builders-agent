@@ -28,6 +28,7 @@ import {
   evaluatePropertyDataMinimumsForReview,
   isPropertyOptioningIntent,
   runAgent,
+  tryAdvanceComparablesAfterPersist,
 } from "@agents/agent";
 import { extractOwnerCharacteristics } from "@/lib/operational-cases/owner-characteristics-extraction";
 import {
@@ -36,10 +37,14 @@ import {
   sendTelegramMessage,
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
+import { notify } from "@/lib/notify";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { parsePriceApprovalDecision } from "@/lib/business-decisions/price-approval";
-import { parseContractReviewDecision } from "@/lib/business-decisions/contract-review";
+import {
+  handleContractRevisionUploadAndSend,
+  parseContractReviewDecision,
+} from "@/lib/business-decisions/contract-review";
 import { parseContractDataReviewReply } from "@/lib/business-decisions/contract-data-review";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
@@ -86,6 +91,7 @@ import {
 import {
   applyDocumentRequestTargetChoice,
   buildCaseDocumentRequestTargetPrompt,
+  messageLooksLikeDocumentTargetChoice,
   parseCaseDocumentRequestTargetChoice,
   resolveCharacteristicsReplyAgainstBindings,
   resolveDocumentTargetReplyAgainstBindings,
@@ -94,6 +100,7 @@ import {
   setCaseDocumentRequestTarget,
   shouldPromptCaseDocumentRequestTarget,
 } from "@/lib/operational-cases/document-request-target";
+import { shouldSendTelegramAgentResponse } from "@/lib/operational-cases/telegram-agent-response-policy";
 import {
   isUsableE2ELabSessionCase,
 } from "@/lib/operational-cases/e2e-lab-routing-isolation";
@@ -124,6 +131,7 @@ const TELEGRAM_INTAKE_ROUTED: Record<ConversationalIntakeRoute, string> = {
   intake_still_missing: "operational_case_intake_still_missing",
   intake_updated_incomplete: "operational_case_intake_updated_incomplete",
   intake_completed: "operational_case_intake_completed",
+  case_continuation_reprompt: "operational_case_continuation_reprompt",
   delegate_to_agent: "operational_case_intake_delegate_to_agent",
 };
 
@@ -557,9 +565,10 @@ function isPropertyDataReviewCase(opCase: OperationalCase) {
 }
 
 type ComparablesExpansionIntent =
+  | "use_current_comparables"
   | "use_avaclick_primary"
   | "expand_search"
-  | "manual_comparables"
+  | "manual_unavailable"
   | "unclear";
 
 function parseComparablesExpansionDecision(text: string): ComparablesExpansionIntent {
@@ -570,15 +579,24 @@ function parseComparablesExpansionDecision(text: string): ComparablesExpansionIn
     .trim();
   if (!normalized) return "unclear";
   if (
-    /^(1|uno|opcion 1|usar avaclick|avaclick|avanzar con avaclick)\b/.test(normalized)
+    /^(1|uno|opcion 1|avanzar con los comparables|comparables actuales|aceptar comparables)\b/.test(
+      normalized
+    )
+  ) {
+    return "use_current_comparables";
+  }
+  if (
+    /^(2|dos|opcion 2|usar avaclick|avaclick|avanzar con avaclick)\b/.test(
+      normalized
+    )
   ) {
     return "use_avaclick_primary";
   }
-  if (/^(2|dos|opcion 2|ampliar|expandir|expand search)\b/.test(normalized)) {
+  if (/^(3|tres|opcion 3|ampliar|expandir|expand search)\b/.test(normalized)) {
     return "expand_search";
   }
-  if (/^(3|tres|opcion 3|manual|cargar comparables)\b/.test(normalized)) {
-    return "manual_comparables";
+  if (/^(4|cuatro|opcion 4|manual|cargar comparables)\b/.test(normalized)) {
+    return "manual_unavailable";
   }
   return "unclear";
 }
@@ -836,21 +854,24 @@ export async function POST(request: Request) {
       });
     }
 
-    if (action === "contract_approve_send" || action === "contract_request_changes") {
+    if (
+      action === "contract_send_email" ||
+      action === "contract_upload_adjusted_send"
+    ) {
       const result = await businessDecisionHandler("contract_review").handle(db, {
         userId,
         notificationId: targetId,
         text:
-          action === "contract_approve_send"
-            ? "mándalo al dueño"
-            : "necesita cambios en el contrato",
+          action === "contract_send_email"
+            ? "enviar por email al propietario"
+            : "subir contrato corregido y enviar",
       });
       await answerCallbackQuery(
         cb.id,
         result.ok
-          ? action === "contract_approve_send"
-            ? "Contrato enviado al dueño"
-            : "Cambios registrados"
+          ? action === "contract_send_email"
+            ? "Contrato enviado por email"
+            : "Sube el contrato corregido"
           : "No pude procesarlo"
       );
       await sendTelegramMessage(
@@ -1617,6 +1638,20 @@ export async function POST(request: Request) {
             : null;
         const hasAvaclickValuation =
           typeof avaclickValuation?.sale_average_mxn === "number";
+        const dataQuality =
+          comparablesAnalysis &&
+          comparablesAnalysis.data_quality &&
+          typeof comparablesAnalysis.data_quality === "object" &&
+          !Array.isArray(comparablesAnalysis.data_quality)
+            ? (comparablesAnalysis.data_quality as Record<string, unknown>)
+            : null;
+        const usableComparablesCount =
+          typeof dataQuality?.usable_count === "number" &&
+          Number.isFinite(dataQuality.usable_count)
+            ? dataQuality.usable_count
+            : 0;
+        const hasUsableComparables = usableComparablesCount > 0;
+        const isE2EControlled = opCase.context_jsonb?.e2e_controlled === true;
 
         const nextActionAt = new Date().toISOString();
         let updatePayload:
@@ -1628,8 +1663,46 @@ export async function POST(request: Request) {
             }
           | null = null;
         let userMessage = "";
+        if (parsedComparablesDecision === "manual_unavailable") {
+          await sendTelegramMessage(
+            chatId,
+            "Esa opción ya no está disponible en Telegram. Usa una de estas rutas: 1) avanzar con comparables actuales (si hay al menos 1), 2) Avaclick como base principal, 3) ampliar búsqueda."
+          );
+          return NextResponse.json({
+            ok: true,
+            routed: "comparables_expansion_decision_manual_unavailable",
+            case_id: opCase.id,
+            notification_id: notification.id,
+          });
+        }
 
-        if (parsedComparablesDecision === "use_avaclick_primary") {
+        if (parsedComparablesDecision === "use_current_comparables") {
+          if (!hasUsableComparables) {
+            await sendTelegramMessage(
+              chatId,
+              "Aun no tengo comparables usables para avanzar con muestra limitada. Elige ampliar busqueda."
+            );
+            return NextResponse.json({
+              ok: true,
+              routed: "comparables_expansion_decision_missing_usable",
+              case_id: opCase.id,
+              notification_id: notification.id,
+            });
+          }
+          updatePayload = {
+            status: "active",
+            currentStep: "comparables_in_progress",
+            nextActionAt,
+            context: {
+              ...context,
+              comparables_decision: "accept_limited_sample",
+              comparables_decision_at: nextActionAt,
+              comparables_decision_source: "telegram",
+            },
+          };
+          userMessage =
+            "Entendido. Registro tu decisión de avanzar con los comparables actuales y prepararé la propuesta de precio con muestra limitada para aprobación interna.";
+        } else if (parsedComparablesDecision === "use_avaclick_primary") {
           if (!hasAvaclickValuation) {
             await sendTelegramMessage(
               chatId,
@@ -1644,7 +1717,7 @@ export async function POST(request: Request) {
           }
           updatePayload = {
             status: "active",
-            currentStep: "price_proposal_pending",
+            currentStep: "comparables_in_progress",
             nextActionAt,
             context: {
               ...context,
@@ -1654,7 +1727,7 @@ export async function POST(request: Request) {
             },
           };
           userMessage =
-            "Perfecto. Registro tu decision: avanzar usando Avaclick como base principal. El caso pasa a preparacion de precio.";
+            "Perfecto. Registro tu decisión: usar Avaclick como base principal para preparar la propuesta de precio y solicitar aprobación interna.";
         } else if (parsedComparablesDecision === "expand_search") {
           updatePayload = {
             status: "active",
@@ -1669,23 +1742,27 @@ export async function POST(request: Request) {
           };
           userMessage =
             "Entendido. Registro tu decision de ampliar busqueda y relanzo el analisis de comparables.";
-        } else {
-          updatePayload = {
-            status: "waiting_internal",
-            currentStep: "comparables_in_progress",
-            nextActionAt: null,
-            context: {
-              ...context,
-              comparables_decision: "manual_comparables",
-              comparables_decision_at: nextActionAt,
-              comparables_decision_source: "telegram",
-            },
-          };
-          userMessage =
-            "Perfecto. Registro que cargaran comparables manuales en el panel. Cuando esten listos, avisa para continuar.";
         }
 
-        const updated = await updateOperationalCase(db, opCase.id, opCase.version, updatePayload);
+        if (!updatePayload) {
+          await sendTelegramMessage(
+            chatId,
+            "No pude interpretar esa opción. Elige 1, 2 o 3 para continuar."
+          );
+          return NextResponse.json({
+            ok: true,
+            routed: "comparables_expansion_decision_unrecognized",
+            case_id: opCase.id,
+            notification_id: notification.id,
+          });
+        }
+
+        const updated = await updateOperationalCase(
+          db,
+          opCase.id,
+          opCase.version,
+          updatePayload
+        );
         if (!updated) {
           await sendTelegramMessage(
             chatId,
@@ -1698,9 +1775,45 @@ export async function POST(request: Request) {
             notification_id: notification.id,
           });
         }
+        let decisionCase = updated;
+        let decisionRoute = "comparables_expansion_decision";
+        if (
+          parsedComparablesDecision === "use_current_comparables" ||
+          parsedComparablesDecision === "use_avaclick_primary"
+        ) {
+          const advanceResult = await tryAdvanceComparablesAfterPersist({
+            db,
+            opCase: updated,
+            userId: updated.user_id,
+            source:
+              parsedComparablesDecision === "use_avaclick_primary"
+                ? "telegram_webhook_comparables_decision_use_avaclick"
+                : "telegram_webhook_comparables_decision_use_current",
+            notifyUser: async (notifyDb, notifyUserId, payload, urgency) =>
+              notify(notifyDb, notifyUserId, payload, urgency),
+            allowLimitedSample: parsedComparablesDecision === "use_current_comparables",
+            preferAvaclickPrimary:
+              parsedComparablesDecision === "use_avaclick_primary",
+          });
+          if (!advanceResult.case || !advanceResult.pricingProposal) {
+            await sendTelegramMessage(
+              chatId,
+              parsedComparablesDecision === "use_avaclick_primary"
+                ? "Registré tu decisión, pero no pude preparar precio usando Avaclick en este intento. Puedes elegir ampliar búsqueda o reintentar."
+                : "Registré tu decisión, pero no pude avanzar a preparación de precio en este intento. Puedes elegir ampliar búsqueda o reintentar."
+            );
+            return NextResponse.json({
+              ok: true,
+              routed: "comparables_expansion_decision_advance_failed",
+              case_id: updated.id,
+              notification_id: notification.id,
+            });
+          }
+          decisionCase = advanceResult.case;
+        }
 
         await insertOperationalCaseEvent(db, {
-          caseId: updated.id,
+          caseId: decisionCase.id,
           eventType: "human_decision",
           actor: "user",
           payload: {
@@ -1713,15 +1826,28 @@ export async function POST(request: Request) {
         });
         await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
           userId,
-          caseId: updated.id,
+          caseId: decisionCase.id,
           kind: "comparables_search_expansion_decision",
           status: "actioned",
         });
+        if (isE2EControlled && parsedComparablesDecision === "expand_search") {
+          const sourceByDecision =
+            "telegram_webhook_conversational_e2e_comparables_expand_search";
+          void runSettingsTestCaseAgentTick(db, decisionCase, decisionCase.user_id, {
+            source: sourceByDecision,
+            ownerResponseText: text,
+          }).catch((tickError) => {
+            console.error(
+              "[telegram-webhook] comparables decision tick failed:",
+              tickError
+            );
+          });
+        }
         await sendTelegramMessage(chatId, userMessage);
         return NextResponse.json({
           ok: true,
-          routed: "comparables_expansion_decision",
-          case_id: updated.id,
+          routed: decisionRoute,
+          case_id: decisionCase.id,
           notification_id: notification.id,
           decision: parsedComparablesDecision,
         });
@@ -1962,7 +2088,35 @@ export async function POST(request: Request) {
   const pendingClarificationBinding = routingBindings.find(
     (binding) => binding.status === "clarification_needed"
   );
-  if (pendingClarificationBinding && text) {
+  if (
+    !conversationalCase &&
+    text &&
+    messageLooksLikeDocumentTargetChoice(text)
+  ) {
+    const targetChoiceFromClarification =
+      await resolveDocumentTargetReplyAgainstBindings({
+        db,
+        message: text,
+        pendingBindings: routingBindings,
+      });
+    if (targetChoiceFromClarification.matchedCase) {
+      conversationalCase = targetChoiceFromClarification.matchedCase;
+      if (pendingClarificationBinding) {
+        await setConversationBindingStatus(db, {
+          bindingId: pendingClarificationBinding.id,
+          status: "awaiting_user",
+          pendingMessage: {},
+          candidateRoutes: [],
+          metadataMerge: {
+            clarification_bypassed_at: new Date().toISOString(),
+            clarification_bypassed_reason: "document_target_choice",
+          },
+          lastUserMessageAt: new Date().toISOString(),
+        });
+      }
+    }
+  }
+  if (!conversationalCase && pendingClarificationBinding && text) {
     const clarificationReply = await resolveConversationalClarificationReply({
       db,
       binding: pendingClarificationBinding,
@@ -2270,16 +2424,15 @@ export async function POST(request: Request) {
     }
   }
 
-  // En el laboratorio E2E el chat del operador hace de "contacto externo"
-  // simulado: cuando luego suba documentos (con el caso en waiting_external),
-  // el responder externo debe reconocer su chat_id. Persistimos ese chat_id en
-  // el caso en cuanto lo asociamos a este chat —durante el intake, mucho antes
-  // de waiting_external— para no depender del auto-advance ni de la sesión de
-  // laboratorio. Sin esto, external_contact_jsonb queda vacío y los adjuntos
-  // caen al flujo normal del agente ("Hubo un error…" / clarificación).
+  // En laboratorio E2E sólo cableamos chat externo cuando el caso realmente
+  // está en ruta "external_contact". En flujos internos no se debe contaminar
+  // `external_contact_jsonb`, para evitar fallbacks incorrectos en contrato.
   if (
     conversationalCase &&
-    conversationalCase.context_jsonb?.e2e_controlled === true
+    conversationalCase.context_jsonb?.e2e_controlled === true &&
+    operationalCaseDocumentRequestTargetFromContext(
+      conversationalCase.context_jsonb
+    ) === "external_contact"
   ) {
     try {
       conversationalCase = await ensureConversationalE2ELabExternalContact(
@@ -2317,6 +2470,88 @@ export async function POST(request: Request) {
   }
 
   if (inboundMedia && conversationalCase) {
+    const caseContext = (conversationalCase.context_jsonb ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const contractReviewContext =
+      caseContext.contract_review &&
+      typeof caseContext.contract_review === "object" &&
+      !Array.isArray(caseContext.contract_review)
+        ? (caseContext.contract_review as Record<string, unknown>)
+        : null;
+    const waitingRevisionUpload =
+      conversationalCase.current_step === "contract_pending" &&
+      conversationalCase.status === "waiting_internal" &&
+      contractReviewContext?.status === "awaiting_revision_upload";
+
+    if (waitingRevisionUpload) {
+      const fileInfo = await getTelegramFile(inboundMedia.fileId);
+      if (!fileInfo.file_path) {
+        throw new Error("telegram_file_path_missing");
+      }
+      const extension = documentExtensionFromPath(
+        fileInfo.file_path,
+        inboundMedia.fallbackExtension
+      );
+      const allowedExtensions = new Set(["pdf", "doc", "docx"]);
+      if (!allowedExtensions.has(extension)) {
+        await sendTelegramMessage(
+          chatId,
+          "Para enviar el contrato corregido necesito un archivo DOCX o PDF."
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "operational_case_contract_revision_upload_invalid_type",
+          case_id: conversationalCase.id,
+        });
+      }
+      const bytes = Buffer.from(await downloadTelegramFile(fileInfo.file_path));
+      const ingested = await ingestCaseDocument({
+        db,
+        caseId: conversationalCase.id,
+        userId: conversationalCase.user_id,
+        source: "advisor_telegram",
+        fileName: inboundMedia.originalName,
+        contentType: inboundMedia.contentType,
+        bytes,
+        captionText: text || null,
+        extension,
+        fileSizeBytes: inboundMedia.fileSize ?? bytes.byteLength,
+        sourceMetadata: {
+          message_id: message.message_id,
+          from: message.from,
+          telegram_file_id: inboundMedia.fileId,
+          telegram_file_unique_id: inboundMedia.uniqueId,
+          caption: text || null,
+          source: "advisor_telegram",
+          purpose: "contract_revision_upload",
+        },
+      });
+      const sent = await handleContractRevisionUploadAndSend(db, {
+        userId,
+        caseId: conversationalCase.id,
+        storagePath: ingested.document.storage_path,
+        storageBucket: ingested.document.storage_bucket,
+        fileName: inboundMedia.originalName,
+      });
+      await sendTelegramMessage(
+        chatId,
+        sent.ok
+          ? sent.message ??
+              "Contrato corregido recibido y enviado por email al propietario."
+          : sent.message ??
+              "Recibí el archivo, pero no pude enviarlo por email. Revisa Gmail y owner_email."
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: sent.ok
+          ? "operational_case_contract_revision_uploaded_and_sent"
+          : "operational_case_contract_revision_uploaded_send_failed",
+        case_id: conversationalCase.id,
+      });
+    }
+
     let requestTarget = operationalCaseDocumentRequestTargetFromContext(
       conversationalCase.context_jsonb
     );
@@ -2837,7 +3072,14 @@ export async function POST(request: Request) {
         }
       }
 
-      if (!intakeCompletedThisTurn) {
+      if (
+        !intakeCompletedThisTurn &&
+        shouldSendTelegramAgentResponse({
+          response: result.response,
+          toolCalls: result.toolCalls,
+          hasConversationalCase: Boolean(conversationalCaseBeforeAgent),
+        })
+      ) {
         await sendTelegramMessage(chatId, result.response);
       }
       // Flush POST fire-and-forget: solo si el turno cerró limpio.
