@@ -67,6 +67,7 @@ export type PricingProposalPerSource = {
   sale_max_mxn?: number | null;
   price_per_m2_min_mxn?: number | null;
   price_per_m2_max_mxn?: number | null;
+  pdf_url?: string | null;
   note?: string;
 };
 
@@ -212,6 +213,10 @@ function avaclickPerSource(avaclick: RecordValue): PricingProposalPerSource {
     sale_max_mxn: numberOrNull(avaclick.sale_max_mxn),
     price_per_m2_min_mxn: numberOrNull(avaclick.price_per_m2_min_mxn),
     price_per_m2_max_mxn: numberOrNull(avaclick.price_per_m2_max_mxn),
+    pdf_url:
+      typeof avaclick.pdf_url === "string" && avaclick.pdf_url.trim()
+        ? avaclick.pdf_url.trim()
+        : null,
     note: "Opinión digital de valor (no avalúo legal/fiscal/bancario).",
   };
 }
@@ -398,12 +403,21 @@ export function formatPriceApprovalNotifyText(proposal: PricingProposal): string
   const historical = sourceById(proposal, "easybroker_historical");
   const internal = sourceById(proposal, "bigquery_internal_inventory");
   const avaclick = sourceById(proposal, "avaclick");
+  const activeCount = active?.sample_size ?? 0;
+  const historicalCount = historical?.sample_size ?? 0;
+  const internalCount = internal?.sample_size ?? 0;
+  const marketPrimarySource =
+    activeCount >= historicalCount && activeCount >= internalCount
+      ? "EasyBroker MLS (activas/publicadas)"
+      : historicalCount >= internalCount
+        ? "EasyBroker MLS (cerradas/histórico)"
+        : "inventario interno (Ungga/BigQuery)";
   const basisLine =
     proposal.basis === "price_per_m2"
-      ? `Base principal: mediana por m² de EasyBroker MLS (activas/publicadas) aplicada a ${proposal.subject_area_m2 ?? "N/D"} m² del inmueble.`
+      ? `Base principal: mediana por m² de ${marketPrimarySource} aplicada a ${proposal.subject_area_m2 ?? "N/D"} m² del inmueble.`
       : proposal.basis === "total_price"
-        ? "Base principal: precios totales de comparables de mercado (sin señal suficiente de precio por m²)."
-        : "Base principal: opinión Avaclick (sin muestra de mercado suficiente).";
+        ? `Base principal: precios totales de ${marketPrimarySource} (sin señal suficiente de precio por m²).`
+        : "Base principal: opinión Avaclick (sin muestra comparable suficiente en EasyBroker/Ungga).";
   const activeLine = active
     ? active.sample_size > 0
       ? `- EasyBroker activas/publicadas: ${active.sample_size} comparable(s) único(s). Mediana publicada: ${active.total_p50 != null ? formatMxn(active.total_p50) : "N/D"}; mediana por m²: ${active.price_per_m2_p50 != null ? `~${formatNumber(active.price_per_m2_p50)}/m²` : "N/D"}${active.implied_total_from_ppm2 != null ? `; total implícito para el inmueble: ${formatMxn(active.implied_total_from_ppm2)}.` : "."}`
@@ -422,16 +436,39 @@ export function formatPriceApprovalNotifyText(proposal: PricingProposal): string
   const avaclickLine = avaclick
     ? `- Avaclick (opinión digital): ${avaclick.sale_min_mxn != null && avaclick.sale_max_mxn != null ? `${formatMxn(avaclick.sale_min_mxn)}–${formatMxn(avaclick.sale_max_mxn)}` : "N/D"}${avaclick.sale_average_mxn != null ? `; promedio ~${formatMxn(avaclick.sale_average_mxn)}.` : "."} ${avaclick.note ?? "No sustituye un avalúo legal/fiscal/bancario."}`
     : "- Avaclick: Sin valuación disponible.";
+  const avaclickPdfLine =
+    avaclick?.pdf_url && /^https?:\/\//i.test(avaclick.pdf_url)
+      ? `- PDF Avaclick: ${avaclick.pdf_url}`
+      : null;
   const warningLine = proposal.consolidated.source_conflict
     ? `Advertencia: ${proposal.consolidated.source_conflict.detail}`
     : null;
+  const avaclickContrastLine =
+    avaclick?.sale_average_mxn != null && proposal.ideal > 0
+      ? (() => {
+          const avg = avaclick.sale_average_mxn;
+          const divergencePct = Math.round(
+            (Math.abs(proposal.ideal - avg) / Math.max(proposal.ideal, avg)) * 100
+          );
+          if (divergencePct <= 2) {
+            return `Contraste Avaclick: el ideal sugerido (${formatMxn(proposal.ideal)}) está alineado con el promedio Avaclick (${formatMxn(avg)}).`;
+          }
+          const direction =
+            proposal.ideal > avg ? "por encima" : "por debajo";
+          return `Contraste Avaclick: el ideal sugerido (${formatMxn(proposal.ideal)}) está ~${divergencePct}% ${direction} del promedio Avaclick (${formatMxn(avg)}).`;
+        })()
+      : null;
   const sampleLine =
     proposal.comparables_used.length > 0
       ? `Muestra usable: ${proposal.comparables_used.length} comparable(s) único(s).`
       : null;
+  const minimumSampleWarning =
+    proposal.comparables_used.length === 3
+      ? "Advertencia de muestra: estás en el mínimo defendible (3 comparables únicos); confirma supuestos antes de fijar precio final."
+      : null;
   const avaclickDegradedLine =
     !avaclick && proposal.basis !== "avaclick_only"
-      ? "Nota de integración: Avaclick no estuvo disponible en este turno; la propuesta se construyó con fuentes de mercado disponibles."
+      ? "Nota de integración: Avaclick no estuvo disponible en este turno; la propuesta se construyó con EasyBroker/Ungga disponibles."
       : null;
   return [
     "Propuesta de precio lista para revisión:",
@@ -443,18 +480,24 @@ export function formatPriceApprovalNotifyText(proposal: PricingProposal): string
     "",
     "Lectura por fuente:",
     activeLine,
+    "",
     historicalLine,
+    "",
     internalLine,
+    "",
     avaclickLine,
+    avaclickPdfLine,
     "",
     "Criterio usado:",
     basisLine,
     sampleLine,
+    avaclickContrastLine,
+    minimumSampleWarning,
     avaclickDegradedLine,
     warningLine,
     "",
     "Confirma si apruebas estos valores o indícame ajustes puntuales.",
   ]
-    .filter((line): line is string => Boolean(line))
+    .filter((line): line is string => line != null)
     .join("\n");
 }

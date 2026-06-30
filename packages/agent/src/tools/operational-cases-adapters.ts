@@ -35,6 +35,7 @@ import {
   buildComparablesAnalysisFromToolCalls,
   comparablesHasDefensibleSample,
   normalizeComparablesAnalysisForInsufficientN4Test,
+  resolveSubjectAreaM2FromPropertyData,
   validateComparablesAnalysisArtifact,
 } from "../operational-cases/comparables-analysis";
 import { tryAdvanceComparablesAfterPersist } from "../operational-cases/comparables-advance";
@@ -4134,7 +4135,10 @@ export function addOperationalCaseTools(
                 arguments_json: call.arguments_json ?? null,
                 result_json: call.result_json ?? null,
                 created_at: call.created_at ?? null,
-              }))
+              })),
+              {
+                subject_area_m2: resolveSubjectAreaM2FromPropertyData(propertyData),
+              }
             );
             analysis = normalizeComparablesAnalysisForInsufficientN4Test(
               analysis,
@@ -4266,6 +4270,12 @@ export function addOperationalCaseTools(
             advanced_to_price_proposal: advanceResult?.advanced === true,
             price_approval_notified: advanceResult?.notified === true,
             advance_skip_reason: advanceResult?.skipReason ?? null,
+            ...(advanceResult?.notified === true
+              ? {
+                  agent_hint:
+                    "No llames notify_user(kind=price_approval|price_proposal): el sistema ya envió la propuesta canónica con salida/ideal/mínimo.",
+                }
+              : {}),
           };
           await updateToolCallStatus(ctx.db, record.id, "executed", out);
           return JSON.stringify(out);
@@ -4273,7 +4283,7 @@ export function addOperationalCaseTools(
         {
           name: "operational_case_persist_comparables_analysis",
           description:
-            "Builds and persists context_jsonb.comparables_analysis deterministically from this turn's EasyBroker, BigQuery and Avaclick results. Use after running comparable search/valuation tools; do not hand-write comparables_analysis via operational_case_update_state.",
+            "Builds and persists context_jsonb.comparables_analysis deterministically from this turn's EasyBroker, BigQuery and Avaclick results. Use after running comparable search/valuation tools; do not hand-write comparables_analysis via operational_case_update_state. When advanced_to_price_proposal and price_approval_notified are true, do NOT call notify_user for price approval—the system sends the canonical proposal automatically.",
           schema: z.object({
             case_id: z.string().min(1),
             expected_version: z.number().int().nonnegative(),

@@ -435,26 +435,76 @@ export type ComparableSourceConflict = {
   detail: string;
 };
 
-/** Umbral de divergencia (±%) entre mediana de mercado y Avaclick por m². */
+/** Umbral de divergencia (±%) entre señales comparables y Avaclick. */
 const SOURCE_CONFLICT_DIVERGENCE_PCT = 30;
 const SOURCE_CONFLICT_HIGH_DIVERGENCE_PCT = 60;
 
+export type ComparablesAnalysisBuildOptions = {
+  /** Superficie del inmueble sujeto (m²) para total implícito en alertas. */
+  subject_area_m2?: number | null;
+};
+
+/** Superficie confiable del sujeto para pricing y alertas de divergencia. */
+export function resolveSubjectAreaM2FromPropertyData(
+  propertyData: RecordValue | null | undefined
+): number | null {
+  if (!isRecord(propertyData)) return null;
+  for (const key of [
+    "area_construida_m2",
+    "construction_area_m2",
+    "built_area_m2",
+    "area_total_m2",
+  ] as const) {
+    const value = numberOrNull(propertyData[key]);
+    if (positiveNumber(value)) return value;
+  }
+  return null;
+}
+
+function resolvePrimaryComparableSourceLabel(params: {
+  activeUsableCount: number;
+  historicalUsableCount: number;
+  internalUsableCount: number;
+}): string {
+  const { activeUsableCount, historicalUsableCount, internalUsableCount } = params;
+  if (
+    activeUsableCount >= historicalUsableCount &&
+    activeUsableCount >= internalUsableCount &&
+    activeUsableCount > 0
+  ) {
+    return "EasyBroker MLS (activas/publicadas)";
+  }
+  if (historicalUsableCount >= internalUsableCount && historicalUsableCount > 0) {
+    return "EasyBroker MLS (cerradas/histórico)";
+  }
+  if (internalUsableCount > 0) {
+    return "Ungga / BigQuery";
+  }
+  return "comparables consultados";
+}
+
+function formatMxnRounded(value: number): string {
+  return `$${Math.round(value).toLocaleString("es-MX")}`;
+}
+
 /**
- * Detecta discrepancia material entre el precio por m² mediano del mercado
- * (EasyBroker/BigQuery) y Avaclick, y también entre precios totales cuando hay
- * área del sujeto y valuación Avaclick. Sirve para alertar al asesor en vez de
- * elegir ciegamente una fuente cuando difieren mucho.
+ * Detecta discrepancia material entre la señal comparable principal
+ * (EasyBroker/Ungga) y Avaclick, comparando peras con peras:
+ * - precio/m² mediano vs rango/m² Avaclick
+ * - total implícito del sujeto (mediana/m² × m² del caso) vs promedio Avaclick
  */
 function detectSourceConflict(params: {
   marketPricePerM2P50: number | null;
-  marketTotalP50: number | null;
+  subjectAreaM2: number | null;
   avaclick: RecordValue | null;
+  primaryMarketSourceLabel: string;
 }): ComparableSourceConflict | null {
   const market = params.marketPricePerM2P50;
   const ava = params.avaclick;
   if (!isRecord(ava)) return null;
 
   const divergences: Array<{ pct: number; detail: string }> = [];
+  const sourceLabel = params.primaryMarketSourceLabel;
 
   if (positiveNumber(market)) {
     const avaMin = numberOrNull(ava.price_per_m2_min_mxn);
@@ -470,8 +520,8 @@ function detectSourceConflict(params: {
           divergences.push({
             pct: divergencePct,
             detail:
-              `El precio por m² de mercado (~${Math.round(market).toLocaleString("es-MX")}) ` +
-              `difiere ${divergencePct}% del de Avaclick (~${Math.round(avaMid).toLocaleString("es-MX")}).`,
+              `La mediana por m² de ${sourceLabel} (~${Math.round(market).toLocaleString("es-MX")}/m²) ` +
+              `difiere ${divergencePct}% de Avaclick (~${Math.round(avaMid).toLocaleString("es-MX")}/m²).`,
           });
         }
       }
@@ -479,17 +529,23 @@ function detectSourceConflict(params: {
   }
 
   const avaclickAvg = numberOrNull(ava.sale_average_mxn);
-  const marketTotal = params.marketTotalP50;
-  if (positiveNumber(avaclickAvg) && positiveNumber(marketTotal)) {
+  const subjectArea = params.subjectAreaM2;
+  const impliedSubjectTotal =
+    positiveNumber(market) && positiveNumber(subjectArea)
+      ? Math.round(market * subjectArea)
+      : null;
+  if (positiveNumber(avaclickAvg) && positiveNumber(impliedSubjectTotal)) {
     const totalDivergencePct = Math.round(
-      (Math.abs(marketTotal - avaclickAvg) / Math.max(marketTotal, avaclickAvg)) * 100
+      (Math.abs(impliedSubjectTotal - avaclickAvg) /
+        Math.max(impliedSubjectTotal, avaclickAvg)) *
+        100
     );
     if (totalDivergencePct >= SOURCE_CONFLICT_DIVERGENCE_PCT) {
       divergences.push({
         pct: totalDivergencePct,
         detail:
-          `El precio total de mercado (~${Math.round(marketTotal).toLocaleString("es-MX")}) ` +
-          `difiere ${totalDivergencePct}% del promedio Avaclick (~${Math.round(avaclickAvg).toLocaleString("es-MX")}).`,
+          `El total implícito para este inmueble según ${sourceLabel} (${formatMxnRounded(impliedSubjectTotal)}) ` +
+          `difiere ${totalDivergencePct}% del promedio Avaclick (${formatMxnRounded(avaclickAvg)}).`,
       });
     }
   }
@@ -523,7 +579,8 @@ function detectSourceConflict(params: {
 }
 
 export function buildComparablesAnalysisFromToolCalls(
-  toolCalls: ComparableToolCallInput[]
+  toolCalls: ComparableToolCallInput[],
+  options?: ComparablesAnalysisBuildOptions
 ) {
   const activeCall = latestExecutedToolCall(toolCalls, "easybroker_search_listings");
   const historicalCall = latestExecutedToolCall(toolCalls, "easybroker_search_closed_deals");
@@ -553,11 +610,21 @@ export function buildComparablesAnalysisFromToolCalls(
   const uniqueComparableCount = uniqueUsableRows.length;
   const crossSourceDuplicates = usableRows.length - uniqueComparableCount;
   const uniquePricePerM2Stats = pricePerM2Stats(uniqueUsableRows);
-  const uniquePriceStats = priceStats(uniqueUsableRows);
+  const activeUsableCount = active.filter((row) => row.usable_as_comparable).length;
+  const historicalUsableCount = historical.filter((row) => row.usable_as_comparable).length;
+  const internalUsableCount = internal.filter((row) => row.usable_as_comparable).length;
+  const primaryMarketSourceLabel = resolvePrimaryComparableSourceLabel({
+    activeUsableCount,
+    historicalUsableCount,
+    internalUsableCount,
+  });
+  const rawSubjectArea = options?.subject_area_m2 ?? null;
+  const subjectAreaM2 = positiveNumber(rawSubjectArea) ? rawSubjectArea : null;
   const sourceConflict = detectSourceConflict({
     marketPricePerM2P50: uniquePricePerM2Stats.p50,
-    marketTotalP50: uniquePriceStats.p50,
+    subjectAreaM2,
     avaclick: avaclickValuation,
+    primaryMarketSourceLabel,
   });
   const warnings: string[] = [];
   let propertyDataUntrusted = false;

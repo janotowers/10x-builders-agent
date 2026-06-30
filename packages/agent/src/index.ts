@@ -137,9 +137,13 @@ export {
   comparablesUniqueCount,
   comparablesUsableCount,
   MIN_DEFENSIBLE_UNIQUE_COMPARABLES,
+  resolveSubjectAreaM2FromPropertyData,
   validateComparablesAnalysisArtifact,
 } from "./operational-cases/comparables-analysis";
-export type { ComparableSourceConflict } from "./operational-cases/comparables-analysis";
+export type {
+  ComparableSourceConflict,
+  ComparablesAnalysisBuildOptions,
+} from "./operational-cases/comparables-analysis";
 export { buildPricingProposalFromComparables, formatPriceApprovalNotifyText } from "./operational-cases/pricing-proposal";
 export {
   advanceComparablesToPriceProposalWithRetry,

@@ -45,6 +45,7 @@ const analysis = buildComparablesAnalysisFromToolCalls([
       sale_max_mxn: 1700000,
       price_per_m2_min_mxn: 15000,
       price_per_m2_max_mxn: 17000,
+      pdf_url: "https://avaclick.example/report.pdf",
     },
   },
 ]);
@@ -96,7 +97,9 @@ assert.match(priceApprovalCopy, /EasyBroker activas\/publicadas:/);
 assert.match(priceApprovalCopy, /Ungga \/ BigQuery:/);
 assert.match(priceApprovalCopy, /Criterio usado:/);
 assert.match(priceApprovalCopy, /Advertencia:/);
-assert.doesNotMatch(priceApprovalCopy, /Base: precio por m² de mercado/);
+assert.match(priceApprovalCopy, /Base principal: mediana por m² de EasyBroker MLS \(activas\/publicadas\)/);
+assert.match(priceApprovalCopy, /PDF Avaclick:/);
+assert.match(priceApprovalCopy, /Contraste Avaclick:/);
 
 const avaclickPrimaryProposal = buildPricingProposalFromComparables({
   analysis,
@@ -155,8 +158,9 @@ assert.ok(
   "warning de muestra en el mínimo"
 );
 
-// --- Conflicto por precio total aunque m² esté cerca (escenario Las Fuentes) ---
-const lasFuentesLike = buildComparablesAnalysisFromToolCalls([
+// --- Las Fuentes: con área del sujeto, comparación peras/peras no debe alarmar ---
+const lasFuentesLike = buildComparablesAnalysisFromToolCalls(
+  [
   {
     tool_name: "easybroker_search_listings",
     status: "executed",
@@ -179,14 +183,63 @@ const lasFuentesLike = buildComparablesAnalysisFromToolCalls([
       price_per_m2_max_mxn: 43345,
     },
   },
-]);
-const lfConflict = (lasFuentesLike.data_quality as Record<string, unknown>).source_conflict as
-  | { divergence_pct?: number }
-  | null;
-assert.ok(lfConflict, "debe detectar conflicto total ~12M vs ~5.7M");
+  ],
+  { subject_area_m2: 146 }
+);
+const lfConflict = (lasFuentesLike.data_quality as Record<string, unknown>).source_conflict;
+assert.equal(
+  lfConflict,
+  null,
+  "Las Fuentes con área del sujeto: no debe alertar por mediana total de comparables más grandes"
+);
+const lasFuentesProposal = buildPricingProposalFromComparables({
+  analysis: lasFuentesLike,
+  subjectAreaM2: 146,
+  areaBasis: "construction",
+});
+assert.ok(lasFuentesProposal, "debe generar propuesta para escenario Las Fuentes");
+const lasFuentesCopy = formatPriceApprovalNotifyText(lasFuentesProposal!);
+assert.match(lasFuentesCopy, /Contraste Avaclick:/);
+assert.doesNotMatch(
+  lasFuentesCopy,
+  /Advertencia:/,
+  "sin source_conflict no debe emitir Advertencia en el copy"
+);
+
+// --- Total implícito del sujeto vs Avaclick cuando sí diverge ---
+const impliedTotalConflict = buildComparablesAnalysisFromToolCalls(
+  [
+    {
+      tool_name: "easybroker_search_listings",
+      status: "executed",
+      result_json: {
+        results: [
+          { id: "X1", url: "https://eb.com/x/1", price: 9000000, area_m2: 100 },
+          { id: "X2", url: "https://eb.com/x/2", price: 9600000, area_m2: 100 },
+          { id: "X3", url: "https://eb.com/x/3", price: 9300000, area_m2: 100 },
+        ],
+      },
+    },
+    {
+      tool_name: "get_avaclick_valuation",
+      status: "executed",
+      result_json: {
+        ok: true,
+        status: "success",
+        sale_average_mxn: 4000000,
+        price_per_m2_min_mxn: 35000,
+        price_per_m2_max_mxn: 42000,
+      },
+    },
+  ],
+  { subject_area_m2: 100 }
+);
+const impliedConflict = (impliedTotalConflict.data_quality as Record<string, unknown>)
+  .source_conflict as { divergence_pct?: number } | null;
+assert.ok(impliedConflict, "debe detectar conflicto en total implícito vs Avaclick");
 assert.ok(
-  (lfConflict?.divergence_pct ?? 0) >= 30,
-  "divergencia total debe superar umbral"
+  (impliedConflict?.divergence_pct ?? 0) >= 30,
+  "divergencia total implícita debe superar umbral"
 );
 
 // --- Avaclick quota: persiste análisis sin valuación y con warning de integración ---
