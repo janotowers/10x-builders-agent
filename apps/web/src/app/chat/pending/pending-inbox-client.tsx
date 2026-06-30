@@ -408,6 +408,40 @@ export function PendingInboxClient({
     }
   }
 
+  async function submitComparablesExpansionDecision(
+    notificationId: string,
+    payload: {
+      action?: "use_current_comparables" | "use_avaclick_primary" | "expand_search";
+      text?: string;
+    }
+  ) {
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]: "Procesando...",
+    }));
+    const res = await fetch("/api/business-decisions/comparables-expansion-decision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        notification_id: notificationId,
+        ...payload,
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      message?: string;
+      error?: string;
+    };
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]:
+        data.message ?? data.error ?? (res.ok ? "Listo." : "No se pudo procesar."),
+    }));
+    if (res.ok && data.ok !== false) {
+      await refreshNotifications();
+    }
+  }
+
   async function submitContractReviewDecision(
     notificationId: string,
     payload: { action?: "approve_send" | "request_changes"; text?: string }
@@ -1262,6 +1296,77 @@ export function PendingInboxClient({
                             className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
                           >
                             Ajustar
+                          </button>
+                        </div>
+                        {notificationActionStatus[notification.id] ? (
+                          <p className="text-[11px] text-slate-500 dark:text-white/60">
+                            {notificationActionStatus[notification.id]}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {inlineActionKind === "comparables_search_expansion_decision" ? (
+                      <div className="mt-3 space-y-2 rounded-2xl border border-cyan-100 bg-cyan-50/70 p-2 dark:border-cyan-300/20 dark:bg-cyan-300/10">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-100">
+                          Decisión de comparables
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void submitComparablesExpansionDecision(notification.id, {
+                                action: "use_current_comparables",
+                              })
+                            }
+                            className="rounded-full bg-violet-600 px-2 py-1 font-semibold text-white hover:bg-violet-700"
+                          >
+                            1) Muestra actual
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void submitComparablesExpansionDecision(notification.id, {
+                                action: "use_avaclick_primary",
+                              })
+                            }
+                            className="rounded-full bg-blue-600 px-2 py-1 font-semibold text-white hover:bg-blue-700"
+                          >
+                            2) Avaclick base
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void submitComparablesExpansionDecision(notification.id, {
+                                action: "expand_search",
+                              })
+                            }
+                            className="rounded-full bg-slate-700 px-2 py-1 font-semibold text-white hover:bg-slate-800"
+                          >
+                            3) Ampliar búsqueda
+                          </button>
+                        </div>
+                        <div className="flex flex-col gap-1 sm:flex-row">
+                          <input
+                            value={notificationInputs[notification.id] ?? ""}
+                            onChange={(event) =>
+                              setNotificationInputs((current) => ({
+                                ...current,
+                                [notification.id]: event.target.value,
+                              }))
+                            }
+                            placeholder="Opcional: responde 1, 2, 3 o texto corto"
+                            className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void submitComparablesExpansionDecision(notification.id, {
+                                text: notificationInputs[notification.id] ?? "",
+                              })
+                            }
+                            className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
+                          >
+                            Enviar texto
                           </button>
                         </div>
                         {notificationActionStatus[notification.id] ? (

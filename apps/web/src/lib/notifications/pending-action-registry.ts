@@ -3,6 +3,7 @@ import type { InternalNotificationDisplay } from "@/lib/notifications/pending-in
 
 export type PendingInlineActionKind =
   | "price_approval"
+  | "comparables_search_expansion_decision"
   | "contract_review"
   | "contract_data_review"
   | "property_data_review";
@@ -24,6 +25,9 @@ export function pendingInlineActionKind(
     title: notification.title,
   });
   if (effectiveKind === "price_approval") return "price_approval";
+  if (notification.kind === "comparables_search_expansion_decision") {
+    return "comparables_search_expansion_decision";
+  }
   if (notification.kind === "property_data_review") return "property_data_review";
   if (notification.kind === "contract_data_review") return "contract_data_review";
   if (notification.kind === "contract_review") return "contract_review";
