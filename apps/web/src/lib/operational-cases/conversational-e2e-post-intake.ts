@@ -20,6 +20,7 @@ import {
 } from "@agents/db";
 import { runSettingsTestCaseAgentTick } from "./run-settings-test-case-tick";
 import {
+  operationalCaseDocumentRequestTargetFromContext,
   SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID,
   type OperationalCase,
 } from "@agents/types";
@@ -38,6 +39,10 @@ export async function ensureConversationalE2ELabExternalContact(
   chatId?: number
 ): Promise<OperationalCase> {
   if (opCase.context_jsonb?.e2e_controlled !== true) return opCase;
+  const requestTarget = operationalCaseDocumentRequestTargetFromContext(
+    opCase.context_jsonb
+  );
+  if (requestTarget !== "external_contact") return opCase;
   const context =
     opCase.context_jsonb && typeof opCase.context_jsonb === "object"
       ? (opCase.context_jsonb as Record<string, unknown>)

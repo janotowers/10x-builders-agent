@@ -42,6 +42,7 @@ import {
   isIntakeInProgress,
 } from "./telegram-intake-completion-message";
 import {
+  buildOperationalCaseContinuationReprompt,
   buildPostIntakeDocumentRequestMessage,
   shouldPromptCaseDocumentRequestTarget,
 } from "./document-request-target";
@@ -54,6 +55,7 @@ export type ConversationalIntakeRoute =
   | "intake_still_missing"
   | "intake_updated_incomplete"
   | "intake_completed"
+  | "case_continuation_reprompt"
   | "delegate_to_agent";
 
 export interface ResolveConversationalIntakeTurnResult {
@@ -251,6 +253,26 @@ export async function resolveConversationalIntakeTurn(params: {
         missingFields:
           (opCase.context_jsonb?.missing_required as unknown[]) ?? [],
       }),
+      intakeCompletedNow: false,
+      shouldRunPostIntakeE2ETick: false,
+    };
+  }
+
+  // (A2) Re-expresión de intención de inicio sobre un caso que YA pasó intake
+  // (p. ej. "quiero opcionar una propiedad" tras confirmar "continuar este
+  // caso"). No reabrimos intake ni delegamos al LLM —que improvisaría un
+  // formulario de intake equivocado—: reconfirmamos el estado del caso y la
+  // acción esperada del paso actual de forma determinística.
+  if (
+    startIntentWithoutIntakeData &&
+    opCase.current_step !== "intake" &&
+    opCase.context_jsonb?.intake_status === "complete"
+  ) {
+    return {
+      handled: true,
+      route: "case_continuation_reprompt",
+      updatedCase: opCase,
+      responseText: buildOperationalCaseContinuationReprompt(opCase),
       intakeCompletedNow: false,
       shouldRunPostIntakeE2ETick: false,
     };

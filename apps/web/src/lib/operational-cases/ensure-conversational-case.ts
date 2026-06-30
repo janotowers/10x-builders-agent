@@ -15,6 +15,7 @@ import type {
   OperationalCaseExternalContact,
   OperationalCaseIntakeField,
 } from "@agents/types";
+import { operationalCaseDocumentRequestTargetFromContext } from "@agents/types";
 import { isAdoptableConversationalCaseForE2ELab } from "./e2e-lab-routing-isolation";
 
 type DbClient = Parameters<typeof getOperationalCaseTypeForUser>[0];
@@ -55,7 +56,7 @@ export async function ensureConversationalCase(
   }
 ): Promise<EnsureConversationalCaseResult | null> {
   const e2eControlled = params.e2eControlled === true;
-  const labExternalContact: OperationalCaseExternalContact | undefined =
+  const labExternalContactCandidate: OperationalCaseExternalContact | undefined =
     e2eControlled &&
     params.channel !== "web" &&
     typeof params.labTelegramChatId === "number" &&
@@ -78,17 +79,22 @@ export async function ensureConversationalCase(
     existing.status !== "paused" &&
     isAdoptableConversationalCaseForE2ELab(existing, e2eControlled)
   ) {
+    const existingRequestTarget = operationalCaseDocumentRequestTargetFromContext(
+      existing.context_jsonb
+    );
+    const shouldWireLabExternal = existingRequestTarget === "external_contact";
     const existingExternal = existing.external_contact_jsonb ?? {};
     if (
-      labExternalContact &&
-      String(existingExternal.chat_id ?? "") !== String(labExternalContact.chat_id)
+      shouldWireLabExternal &&
+      labExternalContactCandidate &&
+      String(existingExternal.chat_id ?? "") !== String(labExternalContactCandidate.chat_id)
     ) {
       await db
         .from("operational_cases")
         .update({
           external_contact_jsonb: {
             ...existingExternal,
-            ...labExternalContact,
+            ...labExternalContactCandidate,
           },
           updated_at: new Date().toISOString(),
         })
@@ -96,7 +102,7 @@ export async function ensureConversationalCase(
         .eq("user_id", params.userId);
       existing.external_contact_jsonb = {
         ...existingExternal,
-        ...labExternalContact,
+        ...labExternalContactCandidate,
       };
     }
     await upsertConversationBinding(db, {
@@ -133,7 +139,9 @@ export async function ensureConversationalCase(
     caseType: caseType.case_type,
     status: incompleteDraft ? "waiting_internal" : "active",
     currentStep: "intake",
-    externalContact: labExternalContact,
+    // No sembrar contacto externo automático en intake: el destino
+    // (interno/externo) se decide explícitamente después.
+    externalContact: undefined,
     nextActionAt: e2eControlled || incompleteDraft ? null : new Date().toISOString(),
     context: buildOperationalCaseCreateContext({
       context: {},

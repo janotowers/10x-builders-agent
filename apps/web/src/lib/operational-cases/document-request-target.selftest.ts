@@ -7,6 +7,7 @@ import type { OperationalCase } from "@agents/types";
 import {
   buildCaseDocumentRequestTargetPrompt,
   buildDocumentRouteConfirmationAck,
+  buildOperationalCaseContinuationReprompt,
   messageLooksLikeDocumentTargetChoice,
   parseCaseDocumentRequestTargetChoice,
   shouldPromptCaseDocumentRequestTarget,
@@ -157,14 +158,15 @@ assert.ok(promptWithExternal.includes("indispensable"));
 assert.ok(promptWithExternal.includes("«interno»"));
 assert.ok(promptWithExternal.includes("«externo»"));
 
-// Sin contacto externo verificado, el prompt encamina a interno (sin ofrecer
-// externo como opción abierta) pero igual explica los documentos.
+// Sin contacto externo verificado, el prompt sigue ofreciendo interno/externo:
+// si el asesor elige externo, el subflujo posterior vincula al contacto.
 const promptInternalOnly = buildCaseDocumentRequestTargetPrompt(
   conversationalAwaitingDocs({})
 );
 assert.ok(/escritura/i.test(promptInternalOnly));
 assert.ok(promptInternalOnly.includes("«interno»"));
-assert.ok(!promptInternalOnly.includes("«externo»"));
+assert.ok(promptInternalOnly.includes("«externo»"));
+assert.ok(/enlace/i.test(promptInternalOnly));
 
 // Acuse de confirmación de ruta: copy base no menciona un canal concreto; la
 // variante por canal aclara dónde subir; siempre recuerda "listo".
@@ -190,5 +192,38 @@ const externalAck = buildDocumentRouteConfirmationAck({
   channel: "telegram",
 });
 assert.ok(/due[nñ]o|contacto/i.test(externalAck));
+
+// buildOperationalCaseContinuationReprompt: re-expresar intención de inicio
+// sobre un caso ya pasado de intake NO debe pedir datos de intake; debe
+// reconfirmar el estado del caso y la acción esperada del paso actual.
+const continuationInternal = buildOperationalCaseContinuationReprompt(
+  conversationalAwaitingDocs({ document_request_target: "internal_user" })
+);
+assert.ok(continuationInternal.includes("ya está registrado"));
+assert.ok(/escritura/i.test(continuationInternal));
+assert.ok(continuationInternal.includes("«listo»"));
+// Nunca debe pedir los campos de intake (título/zona/operación/tipo).
+assert.ok(
+  !/Título \/ propiedad:|Zona \/ colonia:|Operación aplicable:|Tipo de propiedad:/.test(
+    continuationInternal
+  ),
+  "no debe re-pedir campos de intake en un caso ya registrado"
+);
+
+const continuationExternal = buildOperationalCaseContinuationReprompt(
+  conversationalAwaitingDocs(
+    { document_request_target: "external_contact" },
+    { channel: "telegram", chat_id: 12345 }
+  )
+);
+assert.ok(continuationExternal.includes("ya está registrado"));
+assert.ok(/contacto externo/i.test(continuationExternal));
+
+// Sin destino elegido todavía: re-pregunta interno/externo (no campos intake).
+const continuationNoTarget = buildOperationalCaseContinuationReprompt(
+  conversationalAwaitingDocs({}, { channel: "telegram", chat_id: 12345 })
+);
+assert.ok(continuationNoTarget.includes("«interno»"));
+assert.ok(continuationNoTarget.includes("«externo»"));
 
 console.log("document-request-target.selftest: ok");

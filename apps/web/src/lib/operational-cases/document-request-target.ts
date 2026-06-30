@@ -111,8 +111,12 @@ function buildDocumentTargetChoiceQuestion(params: {
 }): string {
   if (!params.canUseExternal) {
     return [
-      "No veo un contacto externo verificado para este caso, así que por ahora la ruta sería interna (tú/tu equipo los aportan).",
-      "Confirma con «interno» para continuar.",
+      "¿Quién prefieres que aporte esos documentos?",
+      "",
+      "• «interno» — tú o tu equipo los suben.",
+      "• «externo» — se los solicito al dueño/contacto. Si aún no está vinculado, primero te daré un enlace para conectarlo.",
+      "",
+      "Respóndeme solo con «interno» o «externo».",
     ].join("\n");
   }
   return [
@@ -173,6 +177,49 @@ export function buildPostIntakeDocumentRequestMessage(
     DOCUMENT_PRIVACY_LINE,
     "",
     buildDocumentTargetChoiceQuestion({ canUseExternal }),
+  ].join("\n");
+}
+
+/**
+ * Re-prompt determinístico cuando el asesor re-expresa intención de inicio
+ * («quiero opcionar una propiedad») sobre un caso que YA pasó el intake. No
+ * reabrimos intake ni delegamos al LLM (que improvisaría un formulario de
+ * intake): le recordamos que el caso ya está registrado y cuál es la acción
+ * esperada del paso actual. Es channel-agnóstico (sólo compone texto).
+ */
+export function buildOperationalCaseContinuationReprompt(
+  opCase: OperationalCase
+): string {
+  const lead = buildCaseScopeLead(opCase);
+  if (opCase.current_step === "awaiting_documents") {
+    const target = explicitCaseDocumentRequestTarget(opCase);
+    if (target == null) {
+      // Aún no se eligió interno/externo: re-pregunta el destino documental.
+      return buildCaseDocumentRequestTargetPrompt(opCase);
+    }
+    if (target === "external_contact") {
+      return [
+        lead,
+        "",
+        "Este caso ya está registrado y estamos esperando que el contacto externo envíe los documentos. Te aviso en cuanto reciba algo.",
+      ].join("\n");
+    }
+    return [
+      lead,
+      "",
+      "Este caso ya está registrado y está en la etapa de documentos. Cuando puedas, súbeme:",
+      "",
+      ...buildDocumentChecklistLines(),
+      "",
+      DOCUMENT_PRIVACY_LINE,
+      "",
+      'Puedes enviarlos aquí mismo o desde el panel del caso y confirmar con «listo» cuando termines.',
+    ].join("\n");
+  }
+  return [
+    lead,
+    "",
+    "Este caso ya está registrado y sigue en curso. Continúo con el proceso desde el punto actual; te aviso el siguiente paso.",
   ].join("\n");
 }
 
