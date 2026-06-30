@@ -10,6 +10,7 @@ type Search = {
   view?: string;
   section?: string;
   google_calendar?: string;
+  gmail?: string;
   reason?: string;
 };
 
@@ -81,6 +82,14 @@ export default async function SettingsPage({
     .eq("status", "active")
     .maybeSingle();
 
+  const { data: gmailIntegration } = await supabase
+    .from("user_integrations")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("provider", "gmail")
+    .eq("status", "active")
+    .maybeSingle();
+
   const { data: heartbeatRuns } = await supabase
     .from("heartbeat_runs")
     .select("*")
@@ -132,10 +141,12 @@ export default async function SettingsPage({
           telegramLinked={!!telegramAccount}
           githubConnected={!!githubIntegration}
           googleCalendarConnected={!!googleCalendarIntegration}
+          gmailConnected={!!gmailIntegration}
           heartbeatRuns={heartbeatRuns ?? []}
           scheduledTasks={scheduledTasks ?? []}
           heartbeatChecklistTemplates={heartbeatChecklistTemplates}
           googleOAuthStatus={sp.google_calendar}
+          gmailOAuthStatus={sp.gmail}
           googleOAuthReason={sp.reason}
           engagementPolicyTimezone={
             typeof profile?.timezone === "string" && profile.timezone.trim()

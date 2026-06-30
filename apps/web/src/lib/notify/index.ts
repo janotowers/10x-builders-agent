@@ -242,14 +242,14 @@ async function deliverTelegram(
       inline_keyboard: [
         [
           {
-            text: "Mandar al dueño",
-            callback_data: `contract_approve_send:${actionNotificationId}`,
+            text: "Enviar por email",
+            callback_data: `contract_send_email:${actionNotificationId}`,
           },
         ],
         [
           {
-            text: "Pedir cambios",
-            callback_data: `contract_request_changes:${actionNotificationId}`,
+            text: "Subir contrato corregido y enviar",
+            callback_data: `contract_upload_adjusted_send:${actionNotificationId}`,
           },
         ],
       ],
@@ -449,6 +449,7 @@ function shouldReuseActiveNotification(payload: NotifyPayload, caseId: string | 
   if (!caseId || !payload.kind) return false;
   return [
     "contract_pending",
+    "contract_revision_upload",
     "contract_data_review",
     "contract_review",
     "missing_requirements",

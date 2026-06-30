@@ -15,10 +15,12 @@ assert.equal(
   "request_changes"
 );
 assert.equal(
-  parseContractReviewDecision(
-    "ya lo ajusté, te adjunto el contrato corregido, mándalo al dueño"
-  ).intent,
-  "approve_send_after_revision"
+  parseContractReviewDecision("enviar por email al propietario").intent,
+  "approve_send"
+);
+assert.equal(
+  parseContractReviewDecision("subir contrato corregido y enviar").intent,
+  "request_changes"
 );
 assert.equal(businessDecisionHandler("contract_review").notificationKind, "contract_review");
 assert.equal(

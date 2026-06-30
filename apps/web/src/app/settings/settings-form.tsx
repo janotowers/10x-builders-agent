@@ -41,11 +41,14 @@ interface Props {
   telegramLinked: boolean;
   githubConnected: boolean;
   googleCalendarConnected: boolean;
+  gmailConnected: boolean;
   heartbeatRuns: HeartbeatRun[];
   scheduledTasks: ScheduledTaskItem[];
   heartbeatChecklistTemplates: HeartbeatChecklistTemplateRow[];
   /** Query `google_calendar` tras OAuth (connected | error). */
   googleOAuthStatus?: string;
+  /** Query `gmail` tras OAuth (connected | error). */
+  gmailOAuthStatus?: string;
   googleOAuthReason?: string;
   engagementPolicyTimezone?: string;
   engagementPolicyOverrides?: EngagementPolicyOverrides;
@@ -515,10 +518,12 @@ export function SettingsForm({
   telegramLinked,
   githubConnected,
   googleCalendarConnected,
+  gmailConnected,
   heartbeatRuns = [],
   scheduledTasks = [],
   heartbeatChecklistTemplates = [],
   googleOAuthStatus,
+  gmailOAuthStatus,
   googleOAuthReason,
   engagementPolicyTimezone = "UTC",
   engagementPolicyOverrides = {},
@@ -641,8 +646,10 @@ export function SettingsForm({
   const [linkCode, setLinkCode] = useState<string | null>(null);
   const [ghConnected, setGhConnected] = useState(githubConnected);
   const [gCalConnected, setGCalConnected] = useState(googleCalendarConnected);
+  const [gmailIsConnected, setGmailIsConnected] = useState(gmailConnected);
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectingGCal, setDisconnectingGCal] = useState(false);
+  const [disconnectingGmail, setDisconnectingGmail] = useState(false);
   const [bookingBusy, setBookingBusy] = useState(false);
   const [bookingUrl, setBookingUrl] = useState<string | null>(null);
   const initialBrain = readBusinessBrain(profile);
@@ -816,6 +823,10 @@ export function SettingsForm({
   useEffect(() => {
     setGCalConnected(googleCalendarConnected);
   }, [googleCalendarConnected]);
+
+  useEffect(() => {
+    setGmailIsConnected(gmailConnected);
+  }, [gmailConnected]);
 
   useEffect(() => {
     async function signExistingAssets() {
@@ -1402,6 +1413,17 @@ export function SettingsForm({
     }
   }
 
+  async function disconnectGmail() {
+    setDisconnectingGmail(true);
+    try {
+      await fetch("/api/integrations/gmail/disconnect", { method: "POST" });
+      setGmailIsConnected(false);
+      router.refresh();
+    } finally {
+      setDisconnectingGmail(false);
+    }
+  }
+
   async function createPublicBookingLink() {
     setBookingBusy(true);
     setBookingUrl(null);
@@ -1593,9 +1615,22 @@ export function SettingsForm({
           Google Calendar se conectó correctamente. Si no ves el estado abajo, recarga la página (F5).
         </div>
       )}
+      {gmailOAuthStatus === "connected" && (
+        <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-200">
+          Gmail se conectó correctamente. Si no ves el estado abajo, recarga la página (F5).
+        </div>
+      )}
       {googleOAuthStatus === "error" && (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
           No se pudo completar la conexión con Google
+          {googleOAuthReason ? ` (${googleOAuthReason})` : ""}. Revisa{" "}
+          <code className="text-xs">GOOGLE_CLIENT_*</code>,{" "}
+          <code className="text-xs">NEXT_PUBLIC_SITE_URL</code> y el redirect en Google Cloud.
+        </div>
+      )}
+      {gmailOAuthStatus === "error" && (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+          No se pudo completar la conexión con Gmail
           {googleOAuthReason ? ` (${googleOAuthReason})` : ""}. Revisa{" "}
           <code className="text-xs">GOOGLE_CLIENT_*</code>,{" "}
           <code className="text-xs">NEXT_PUBLIC_SITE_URL</code> y el redirect en Google Cloud.
@@ -2788,6 +2823,35 @@ export function SettingsForm({
             </a>
           </div>
         )}
+        </section>
+
+        <section className="space-y-4">
+          <h4 className="text-sm font-semibold">Gmail</h4>
+          {gmailIsConnected ? (
+            <div className="space-y-2">
+              <p className="text-sm text-green-600">Cuenta de Gmail conectada.</p>
+              <button
+                type="button"
+                onClick={() => void disconnectGmail()}
+                disabled={disconnectingGmail}
+                className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+              >
+                {disconnectingGmail ? "Desconectando…" : "Desconectar Gmail"}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm text-neutral-500">
+                Conecta Gmail para gestionar correos desde tu cuenta cuando lo apruebes.
+              </p>
+              <a
+                href="/api/integrations/gmail/authorize"
+                className="inline-block rounded-md bg-neutral-800 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 dark:bg-neutral-200 dark:text-neutral-900 dark:hover:bg-neutral-300"
+              >
+                Conectar Gmail
+              </a>
+            </div>
+          )}
         </section>
 
         <section className="space-y-4">

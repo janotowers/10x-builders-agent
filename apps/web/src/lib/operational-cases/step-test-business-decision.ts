@@ -142,7 +142,7 @@ export async function ensurePreDecisionEventsForCase(
       const payload = event.payload_jsonb;
       return (
         isRecord(payload) &&
-        (payload.kind === "contract_approved_for_owner" ||
+        (payload.kind === "contract_approved_for_email_send" ||
           payload.purpose === "contract_sent_to_owner")
       );
     });

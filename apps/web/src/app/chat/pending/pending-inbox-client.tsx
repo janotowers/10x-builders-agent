@@ -1285,7 +1285,7 @@ export function PendingInboxClient({
                           }
                           className="rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700"
                         >
-                          Aprobar y enviar
+                          Enviar por email
                         </button>
                         <div className="flex flex-col gap-1 sm:flex-row">
                           <input
@@ -1296,29 +1296,21 @@ export function PendingInboxClient({
                                 [notification.id]: event.target.value,
                               }))
                             }
-                            placeholder="Describe los cambios que necesita el contrato"
+                            placeholder="Opcional: comentario para la version corregida"
                             className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
                           />
                           <button
                             type="button"
                             onClick={() => {
                               const notes = (notificationInputs[notification.id] ?? "").trim();
-                              if (!notes) {
-                                setNotificationActionStatus((current) => ({
-                                  ...current,
-                                  [notification.id]:
-                                    "Escribe qué cambios necesita el contrato antes de enviar.",
-                                }));
-                                return;
-                              }
                               void submitContractReviewDecision(notification.id, {
                                 action: "request_changes",
-                                text: notes,
+                                text: notes || "subir contrato corregido y enviar",
                               });
                             }}
                             className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
                           >
-                            Pedir cambios
+                            Subir contrato corregido y enviar
                           </button>
                         </div>
                         {notificationActionStatus[notification.id] ? (

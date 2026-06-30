@@ -395,8 +395,7 @@ function validateStepExpect(
         status: after.status ?? "",
         approved_event: events.some(
           (event) =>
-            eventMatchesSpec(event, "human_decision:contract_approved_for_owner") ||
-            eventMatchesSpec(event, "human_decision:contract_revised_and_approved")
+            eventMatchesSpec(event, "human_decision:contract_approved_for_email_send")
         ),
         sent_event: events.some((event) => eventMatchesSpec(event, "reminder_sent")),
       });
@@ -406,7 +405,7 @@ function validateStepExpect(
         current_step: after.current_step ?? "",
         status: after.status ?? "",
         changes_event: events.some((event) =>
-          eventMatchesSpec(event, "human_decision:contract_changes_requested")
+          eventMatchesSpec(event, "human_decision:contract_revision_upload_requested")
         ),
       });
       step_outcome_errors = outcome.errors;

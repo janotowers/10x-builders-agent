@@ -25,9 +25,9 @@ export async function POST(request: Request) {
     typeof body.text === "string" && body.text.trim()
       ? body.text.trim()
       : action === "approve_send"
-        ? "mándalo al dueño"
+        ? "enviar por email al propietario"
         : action === "request_changes"
-          ? "necesita cambios en el contrato"
+          ? "subir contrato corregido y enviar"
           : "";
   if (!notificationId || !text) {
     return NextResponse.json(

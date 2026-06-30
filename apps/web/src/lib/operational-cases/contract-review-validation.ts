@@ -130,17 +130,17 @@ export function validateContractApprovedSendStepOutcome(params: {
   sent_event: boolean;
 }) {
   const errors: string[] = [];
-  if (params.current_step !== "contract_pending") {
-    errors.push("current_step debe permanecer en contract_pending.");
+  if (params.current_step !== "photos_scheduled") {
+    errors.push("current_step debe avanzar a photos_scheduled tras envío por email.");
   }
   if (params.status !== "paused") {
     errors.push(
-      "status debe ser paused en caso de prueba de settings tras aprobar envío al dueño."
+      "status debe ser paused en caso de prueba de settings tras enviar contrato por email."
     );
   }
   if (!params.approved_event) {
     errors.push(
-      "Debe existir human_decision contract_approved_for_owner o contract_revised_and_approved."
+      "Debe existir human_decision con kind=contract_approved_for_email_send."
     );
   }
   if (!params.sent_event) {

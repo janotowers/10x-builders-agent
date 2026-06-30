@@ -85,6 +85,13 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     intent: "review",
     reviewCtaLabel: "Revisar y confirmar en flujo",
   },
+  contract_revision_upload: {
+    kind: "contract_revision_upload",
+    label: "Subir contrato corregido",
+    visibleInInbox: true,
+    intent: "review",
+    reviewCtaLabel: "Subir DOCX/PDF corregido",
+  },
   contract_drafted: {
     kind: "contract_drafted",
     label: "Borrador de contrato listo",
