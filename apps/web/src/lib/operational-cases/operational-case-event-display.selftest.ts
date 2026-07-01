@@ -83,4 +83,38 @@ assert.equal(
   "Superficies consolidadas en ficha: terreno 138 m², construcción 146 m²"
 );
 
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "state_changed",
+      payload: {
+        kind: "document_address_conflict_detected",
+        conflicts: [
+          {
+            field: "exterior_number",
+            existing: "3668",
+            incoming: "368",
+            existing_source: "boleta_registral",
+            incoming_source: "escritura",
+          },
+        ],
+      },
+    })
+  ),
+  "Conflicto de dirección detectado: número exterior: «3668» vs «368»"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "state_changed",
+      payload: {
+        kind: "document_address_conflict_detected",
+        conflicts: [],
+      },
+    })
+  ),
+  "Conflicto de dirección detectado entre fuentes"
+);
+
 console.log("operational-case-event-display.selftest: ok");

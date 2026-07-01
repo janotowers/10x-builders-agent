@@ -151,11 +151,50 @@ type CanonicalAddress = {
   source?: string;
 };
 
+type AddressConflict = {
+  field: string;
+  existing: string;
+  incoming: string;
+  existing_source: string | null;
+  incoming_source: string | null;
+  detected_at: string;
+};
+
 type MergeDocumentAddressResult = {
   context: Record<string, unknown>;
   changed: boolean;
   adopted: CanonicalAddress;
+  /** Conflictos NUEVOS detectados en esta ejecución (excluye los ya presentes). */
+  newConflicts: AddressConflict[];
 };
+
+/**
+ * Clave de deduplicación de un conflicto de dirección. Excluye `detected_at`
+ * (varía en cada corrida) para que re-ejecutar la consolidación con los mismos
+ * insumos no genere conflictos "nuevos" ni dispare escrituras/eventos.
+ */
+function addressConflictDedupeKey(conflict: Record<string, unknown>): string {
+  return [
+    String(conflict.field ?? ""),
+    String(conflict.existing ?? ""),
+    String(conflict.incoming ?? ""),
+    String(conflict.existing_source ?? ""),
+    String(conflict.incoming_source ?? ""),
+  ].join("|");
+}
+
+/** ¿`adopted` trae al menos un campo de dirección visible para el operador? */
+function addressAdoptedHasVisibleField(adopted: CanonicalAddress): boolean {
+  return Boolean(
+    cleanAddressString(adopted.street) ||
+      cleanAddressString(adopted.exterior_number) ||
+      cleanAddressString(adopted.neighborhood) ||
+      cleanAddressString(adopted.municipality) ||
+      cleanAddressString(adopted.state) ||
+      cleanAddressString(adopted.postal_code) ||
+      cleanAddressString(adopted.country)
+  );
+}
 
 type MergeDocumentLegalIdentityResult = {
   context: Record<string, unknown>;
@@ -434,6 +473,25 @@ export function mergeDocumentAddressIntoContextPropertyData(input: {
   const addressConflicts = Array.isArray(nextPropertyData.address_conflicts)
     ? [...nextPropertyData.address_conflicts]
     : [];
+  // Dedup contra conflictos ya persistidos: re-ejecutar la consolidación con los
+  // mismos insumos NO debe re-disparar "conflicto nuevo" (idempotencia).
+  const existingConflictKeys = new Set(
+    addressConflicts.map((conflict) =>
+      addressConflictDedupeKey(conflict as Record<string, unknown>)
+    )
+  );
+  const newConflicts: AddressConflict[] = [];
+  const recordConflict = (conflict: Omit<AddressConflict, "detected_at">) => {
+    const key = addressConflictDedupeKey(conflict);
+    if (existingConflictKeys.has(key)) return;
+    existingConflictKeys.add(key);
+    const full: AddressConflict = {
+      ...conflict,
+      detected_at: new Date().toISOString(),
+    };
+    addressConflicts.push(full);
+    newConflicts.push(full);
+  };
 
   if (
     legalSourceIsBoleta &&
@@ -441,23 +499,21 @@ export function mergeDocumentAddressIntoContextPropertyData(input: {
     documentStreet &&
     legalStreet.toLowerCase() !== documentStreet.toLowerCase()
   ) {
-    addressConflicts.push({
+    recordConflict({
       field: "street",
       existing: legalStreet,
       incoming: documentStreet,
       existing_source: legalAddressSource ?? null,
       incoming_source: documentAddressSource ?? null,
-      detected_at: new Date().toISOString(),
     });
   }
   if (legalSourceIsBoleta && legalExterior && documentExterior && legalExterior !== documentExterior) {
-    addressConflicts.push({
+    recordConflict({
       field: "exterior_number",
       existing: legalExterior,
       incoming: documentExterior,
       existing_source: legalAddressSource ?? null,
       incoming_source: documentAddressSource ?? null,
-      detected_at: new Date().toISOString(),
     });
   }
 
@@ -527,13 +583,12 @@ export function mergeDocumentAddressIntoContextPropertyData(input: {
       incomingExterior != null &&
       canonicalExterior !== incomingExterior;
     if (blockDeedOverwriteOnExteriorConflict) {
-      addressConflicts.push({
+      recordConflict({
         field,
         existing: canonicalExterior,
         incoming: incomingExterior,
         existing_source: existingSource ?? null,
         incoming_source: incomingSource ?? null,
-        detected_at: new Date().toISOString(),
       });
       continue;
     }
@@ -541,13 +596,12 @@ export function mergeDocumentAddressIntoContextPropertyData(input: {
     const shouldSet = shouldPreferIncoming || !existingValue;
     if (!shouldSet) {
       if (existingValue && existingValue !== incomingValue) {
-        addressConflicts.push({
+        recordConflict({
           field,
           existing: existingValue,
           incoming: incomingValue,
           existing_source: existingSource ?? null,
           incoming_source: incomingSource ?? null,
-          detected_at: new Date().toISOString(),
         });
       }
       continue;
@@ -571,6 +625,12 @@ export function mergeDocumentAddressIntoContextPropertyData(input: {
     }
   }
 
+  // Un conflicto NUEVO es un cambio material (hay que persistirlo y auditarlo).
+  // Conflictos ya presentes NO re-disparan `changed` en corridas repetidas.
+  if (newConflicts.length > 0) {
+    changed = true;
+  }
+
   if (changed) {
     nextPropertyData.address = nextAddress;
     // Backfill for legacy readers that still expect top-level address fields.
@@ -581,13 +641,13 @@ export function mergeDocumentAddressIntoContextPropertyData(input: {
     nextContext.street = nextAddress.street;
     nextContext.exterior_number = nextAddress.exterior_number;
     nextContext.postal_code = nextAddress.postal_code;
-  }
-  if (addressConflicts.length > 0) {
-    nextPropertyData.address_conflicts = addressConflicts;
-    changed = true;
+    // Preserva la unión de conflictos (previos + nuevos) cuando persistimos.
+    if (addressConflicts.length > 0) {
+      nextPropertyData.address_conflicts = addressConflicts;
+    }
   }
 
-  return { context: nextContext, changed, adopted };
+  return { context: nextContext, changed, adopted, newConflicts };
 }
 
 function remediationAttemptsFromContext(
@@ -1150,7 +1210,10 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           },
         });
       }
-      if (mergedAddress.changed) {
+      // Evento de consolidación SOLO si se adoptó un campo de dirección visible.
+      // Evita "Dirección consolidada" genérico cuando el único delta fue metadata
+      // (source) o un conflicto sin adopción de calle/número.
+      if (mergedAddress.changed && addressAdoptedHasVisibleField(mergedAddress.adopted)) {
         await insertOperationalCaseEvent(db, {
           caseId: workingCase.id,
           eventType: "state_changed",
@@ -1160,6 +1223,22 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
             kind: "document_address_consolidated_to_property_data",
             source,
             adopted: mergedAddress.adopted,
+          },
+        });
+      }
+      // Evento dedicado para conflictos NUEVOS de dirección: hace visible la
+      // discrepancia real (calle/número entre fuentes) sin reusar el label de
+      // consolidación. No se emite para conflictos ya registrados (idempotente).
+      if (mergedAddress.newConflicts.length > 0) {
+        await insertOperationalCaseEvent(db, {
+          caseId: workingCase.id,
+          eventType: "state_changed",
+          actor: "system",
+          stepKey: workingCase.current_step ?? undefined,
+          payload: {
+            kind: "document_address_conflict_detected",
+            source,
+            conflicts: mergedAddress.newConflicts,
           },
         });
       }

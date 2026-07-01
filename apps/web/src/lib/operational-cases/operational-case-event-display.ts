@@ -67,6 +67,31 @@ function formatConsolidatedSurfacesDetail(adopted: unknown): string | null {
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
+const ADDRESS_CONFLICT_FIELD_LABELS: Record<string, string> = {
+  street: "calle",
+  exterior_number: "número exterior",
+  neighborhood: "colonia",
+  municipality: "municipio",
+  state: "estado",
+  postal_code: "código postal",
+};
+
+function formatAddressConflictDetail(conflicts: unknown): string | null {
+  if (!Array.isArray(conflicts) || conflicts.length === 0) return null;
+  const parts: string[] = [];
+  for (const entry of conflicts) {
+    if (!isRecord(entry)) continue;
+    const field = typeof entry.field === "string" ? entry.field.trim() : "";
+    const existing = typeof entry.existing === "string" ? entry.existing.trim() : "";
+    const incoming = typeof entry.incoming === "string" ? entry.incoming.trim() : "";
+    if (!existing || !incoming) continue;
+    const label = ADDRESS_CONFLICT_FIELD_LABELS[field] ?? field ?? "campo";
+    parts.push(`${label}: «${existing}» vs «${incoming}»`);
+  }
+  if (parts.length === 0) return null;
+  return truncateDetail(parts.join("; "), 100);
+}
+
 function formatConsolidatedLegalIdentityDetail(adopted: unknown): string | null {
   if (!isRecord(adopted)) return null;
   const owner =
@@ -162,6 +187,16 @@ export function formatOperationalCaseEventSummary(
       detail
         ? `Dirección consolidada en ficha: ${detail}`
         : "Dirección consolidada en la ficha de propiedad",
+      technicalKind,
+      includeTechnicalKind
+    );
+  }
+  if (technicalKind === "document_address_conflict_detected") {
+    const detail = formatAddressConflictDetail(payload.conflicts);
+    return withTechnicalKind(
+      detail
+        ? `Conflicto de dirección detectado: ${detail}`
+        : "Conflicto de dirección detectado entre fuentes",
       technicalKind,
       includeTechnicalKind
     );

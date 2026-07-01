@@ -312,4 +312,102 @@ function propertyDataOf(result: {
   assert.equal(address.exterior_number, undefined);
 }
 
+// ── Idempotencia de consolidación de dirección ──────────────────────────────
+// Re-ejecutar el merge con los mismos insumos NO debe re-marcar `changed`,
+// re-emitir conflictos ni re-adoptar campos. Esto evita el churn real de
+// escrituras/eventos (causa raíz de las "Dirección consolidada" repetidas).
+{
+  const documentFields = {
+    legal_addresses: [
+      "FRACCION C DEL LOTE 5-B, FINCA MARCADA CON EL NUMERO 3668, DE LA CALLE CIRCUNVALACION SUR, ZAPOPAN, JALISCO",
+    ],
+    legal_addresses_source: "boleta_registral",
+    address: {
+      neighborhood: "Las Fuentes",
+      municipality: "Zapopan",
+      state: "Jalisco",
+    },
+  };
+  const first = mergeDocumentAddressIntoContextPropertyData({
+    context: { property_data: {} },
+    documentFields,
+  });
+  assert.equal(first.changed, true, "primera consolidación adopta dirección");
+  assert.equal(first.newConflicts.length, 0, "sin conflictos en la primera");
+  const firstAddress =
+    (propertyDataOf(first).address as Record<string, unknown> | undefined) ?? {};
+  assert.equal(firstAddress.street, "CIRCUNVALACION SUR");
+  assert.equal(firstAddress.exterior_number, "3668");
+
+  const second = mergeDocumentAddressIntoContextPropertyData({
+    context: first.context,
+    documentFields,
+  });
+  assert.equal(
+    second.changed,
+    false,
+    "re-ejecutar con los mismos insumos no debe marcar cambio (idempotente)"
+  );
+  assert.equal(second.newConflicts.length, 0, "sin conflictos nuevos en la segunda");
+  assert.deepEqual(
+    second.adopted,
+    {},
+    "la segunda pasada no debe adoptar ningún campo"
+  );
+}
+
+// Un conflicto ya registrado NO se vuelve a emitir ni dispara `changed`.
+{
+  const context = {
+    property_data: {
+      address: {
+        street: "Circunvalacion Sur",
+        exterior_number: "3668",
+        source: "boleta_registral",
+      },
+    },
+  };
+  const documentFields = {
+    legal_addresses_source: "documentos_compartidos",
+    address: {
+      street: "Circunvalacion Sur",
+      number: "368",
+    },
+  };
+  const firstConflict = mergeDocumentAddressIntoContextPropertyData({
+    context,
+    documentFields,
+  });
+  assert.equal(firstConflict.changed, true, "conflicto nuevo marca cambio");
+  assert.equal(
+    firstConflict.newConflicts.length,
+    1,
+    "se detecta exactamente un conflicto nuevo"
+  );
+  assert.equal(firstConflict.newConflicts[0]?.field, "exterior_number");
+  const conflictAddress =
+    (propertyDataOf(firstConflict).address as Record<string, unknown> | undefined) ??
+    {};
+  assert.equal(
+    conflictAddress.exterior_number,
+    "3668",
+    "no se sobrescribe el exterior ante conflicto de fuente más débil"
+  );
+
+  const secondConflict = mergeDocumentAddressIntoContextPropertyData({
+    context: firstConflict.context,
+    documentFields,
+  });
+  assert.equal(
+    secondConflict.newConflicts.length,
+    0,
+    "un conflicto ya registrado no se repite (idempotente)"
+  );
+  assert.equal(
+    secondConflict.changed,
+    false,
+    "re-ejecutar con el mismo conflicto no marca cambio"
+  );
+}
+
 console.log("property-optioning-post-agent-invariants.selftest: ok");
