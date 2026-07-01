@@ -94,9 +94,7 @@ import {
 } from "@/lib/operational-cases/conversational-e2e-post-intake";
 import {
   applyDocumentRequestTargetChoice,
-  buildCaseDocumentRequestTargetPrompt,
   messageLooksLikeDocumentTargetChoice,
-  parseCaseDocumentRequestTargetChoice,
   resolveCharacteristicsReplyAgainstBindings,
   resolveDocumentTargetReplyAgainstBindings,
   resolveInternalDocumentMessageCase,
@@ -109,7 +107,6 @@ import {
   isUsableE2ELabSessionCase,
 } from "@/lib/operational-cases/e2e-lab-routing-isolation";
 import {
-  beginExternalContactLink,
   buildExternalContactDeepLink,
   buildExternalContactSetupMessage,
   parseExternalContactLinkPayload,
@@ -1198,38 +1195,25 @@ export async function POST(request: Request) {
         !media &&
         text.trim()
       ) {
-        const parsedChoice = parseCaseDocumentRequestTargetChoice({
+        // Handler de negocio compartido (paridad con web y con el camino
+        // conversacional): persiste el destino, registra `recordDocumentFlowReminder`
+        // y devuelve el ack canónico. Evita la divergencia de audit trail que tenía
+        // este bloque inline (no registraba el recordatorio documental).
+        const choice = await applyDocumentRequestTargetChoice({
+          db,
           opCase: refreshedCase,
           message: text,
+          channel: "telegram",
         });
-        if (parsedChoice.target) {
-          let withTarget = await setCaseDocumentRequestTarget({
-            db,
-            opCase: refreshedCase,
-            target: parsedChoice.target,
-            decidedBy: "user",
-          });
-          const withStatus =
-            (await updateOperationalCase(db, withTarget.id, withTarget.version, {
-              status:
-                parsedChoice.target === "external_contact" ? "active" : "waiting_internal",
-              nextActionAt:
-                parsedChoice.target === "external_contact" &&
-                withTarget.context_jsonb?.e2e_controlled !== true
-                  ? new Date().toISOString()
-                  : null,
-            })) ?? withTarget;
-          withTarget = withStatus;
-          if (
-            parsedChoice.target === "external_contact" &&
-            withTarget.context_jsonb?.e2e_controlled === true
-          ) {
+        if (choice.handled) {
+          if (choice.shouldRunPostChoiceE2ETick) {
             try {
               await maybeRunPostIntakeConversationalE2ETick({
                 db,
-                opCase: withTarget,
-                userId: withTarget.user_id,
+                opCase: choice.updatedCase,
+                userId: choice.updatedCase.user_id,
                 channel: "telegram",
+                chatId,
               });
             } catch (tickError) {
               console.error(
@@ -1238,51 +1222,27 @@ export async function POST(request: Request) {
               );
             }
           }
-          await sendTelegramMessage(
-            chatId,
-            parsedChoice.target === "internal_user"
-              ? "Perfecto: usaré ruta interna. Sube documentos por web o Telegram interno y confirma con «listo»."
-              : "Perfecto: usaré ruta externa. Solicitaré los documentos al contacto propietario."
-          );
+          if (choice.externalContactSetupToken) {
+            const deepLink = await buildExternalContactDeepLink(
+              choice.externalContactSetupToken
+            );
+            await sendTelegramMessage(
+              chatId,
+              buildExternalContactSetupMessage({ deepLink })
+            );
+            return NextResponse.json({
+              ok: true,
+              routed: "operational_case_external_contact_setup_requested",
+              case_id: matchedCase.id,
+            });
+          }
+          await sendTelegramMessage(chatId, choice.responseText);
           return NextResponse.json({
             ok: true,
             routed: "operational_case_document_target_set",
             case_id: matchedCase.id,
           });
         }
-        if (parsedChoice.reason === "both_not_supported") {
-          await sendTelegramMessage(
-            chatId,
-            "Por ahora el modo «ambos» aún no está habilitado. Elige una ruta: «interno» o «externo»."
-          );
-          return NextResponse.json({
-            ok: true,
-            routed: "operational_case_document_target_choice_needed",
-            case_id: matchedCase.id,
-          });
-        }
-        if (parsedChoice.reason === "external_unavailable") {
-          const { token } = await beginExternalContactLink(db, refreshedCase);
-          const deepLink = await buildExternalContactDeepLink(token);
-          await sendTelegramMessage(
-            chatId,
-            buildExternalContactSetupMessage({ deepLink })
-          );
-          return NextResponse.json({
-            ok: true,
-            routed: "operational_case_external_contact_setup_requested",
-            case_id: matchedCase.id,
-          });
-        }
-        await sendTelegramMessage(
-          chatId,
-          buildCaseDocumentRequestTargetPrompt(refreshedCase)
-        );
-        return NextResponse.json({
-          ok: true,
-          routed: "operational_case_document_target_choice_needed",
-          case_id: matchedCase.id,
-        });
       }
       if (refreshedCase && conversationalE2ECase) {
         const awaitingCharacteristics = await isAwaitingCharacteristicsResponse(
