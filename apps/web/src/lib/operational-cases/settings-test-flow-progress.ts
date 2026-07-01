@@ -8,6 +8,20 @@ import { formatOperationalCaseEventSummary } from "@/lib/operational-cases/opera
 import { settingsTestPlaythroughAnchorAt } from "@/lib/operational-cases/settings-test-pending-actions";
 import { filterActivitySincePlaythroughAnchor } from "@/lib/operational-cases/settings-test-e2e-transitions";
 
+/**
+ * Propósitos de `reminder_sent` que representan actividad documental legítima
+ * del paso `awaiting_documents` (checklist post-intake, ruteo interno/externo,
+ * solicitud inicial). Viven en `payload.purpose`, NO en `payload.kind` (que es
+ * `"reminder_sent"`). Fuente única para atribución por paso y para conservar el
+ * evento en el resumen E2E aunque ocurra antes de la primera transición manual.
+ */
+const DOCUMENT_FLOW_REMINDER_PURPOSES: ReadonlySet<string> = new Set([
+  "documents_checklist_post_intake",
+  "internal_upload_instructions",
+  "external_documents_routed",
+  "initial_request",
+]);
+
 export type FlowProgressEvidenceItem =
   | {
       kind: "event";
@@ -19,6 +33,7 @@ export type FlowProgressEvidenceItem =
       event_result?: string;
       event_source?: string;
       event_step_key?: string;
+      event_purpose?: string;
     }
   | {
       kind: "tool";
@@ -207,6 +222,7 @@ function parseEventMeta(event: OperationalCaseEvent) {
     result: typeof payload.result === "string" ? payload.result : undefined,
     source: typeof payload.source === "string" ? payload.source : undefined,
     stepKey: authoritativeEventStepKey(payload) ?? undefined,
+    purpose: typeof payload.purpose === "string" ? payload.purpose : undefined,
   };
 }
 
@@ -294,10 +310,8 @@ export function eventBelongsToStep(
   if (
     stepKey === "awaiting_documents" &&
     event.event_type === "reminder_sent" &&
-    (payload?.purpose === "documents_checklist_post_intake" ||
-      payload?.purpose === "internal_upload_instructions" ||
-      payload?.purpose === "external_documents_routed" ||
-      payload?.purpose === "initial_request")
+    typeof payload?.purpose === "string" &&
+    DOCUMENT_FLOW_REMINDER_PURPOSES.has(payload.purpose)
   ) {
     return true;
   }
@@ -411,6 +425,7 @@ export function buildSettingsTestFlowProgress(params: {
           event_result: meta.result,
           event_source: meta.source,
           event_step_key: meta.stepKey,
+          event_purpose: meta.purpose,
         };
       }),
       ...stepTools.map((call) => ({
@@ -468,6 +483,7 @@ function isE2EEvent(item: FlowProgressEvidenceItem): boolean {
   if (item.event_type === "external_response") return true;
   if (item.event_kind === "documents_batch_completed") return true;
   if (isDocumentRequestReminderEvidence(item)) return true;
+  if (isDocumentRequestTargetInferredEvidence(item)) return true;
   if (
     item.event_result === "e2e_tick_completed" ||
     item.event_result === "e2e_pending_hitl"
@@ -498,12 +514,23 @@ type FlowProgressLike = {
 function isDocumentRequestReminderEvidence(item: FlowProgressEvidenceItem): boolean {
   if (item.kind !== "event") return false;
   if (item.event_type !== "reminder_sent") return false;
+  // El subtipo del recordatorio vive en `payload.purpose` (proyectado como
+  // `event_purpose`), no en `event_kind` (que es `"reminder_sent"`).
   return (
-    item.event_kind === "documents_checklist_post_intake" ||
-    item.event_kind === "internal_upload_instructions" ||
-    item.event_kind === "external_documents_routed" ||
-    item.event_kind === "initial_request"
+    typeof item.event_purpose === "string" &&
+    DOCUMENT_FLOW_REMINDER_PURPOSES.has(item.event_purpose)
   );
+}
+
+/**
+ * Inferencia determinística de ruta interna cuando el asesor sube documentos
+ * antes de elegir interno/externo. Es actividad documental legítima del paso
+ * y debe conservarse en el resumen E2E aunque ocurra antes del primer tick.
+ */
+function isDocumentRequestTargetInferredEvidence(
+  item: FlowProgressEvidenceItem
+): boolean {
+  return item.kind === "event" && item.event_kind === "document_request_target_inferred";
 }
 
 export function flowProgressForE2ESummary<T extends FlowProgressLike>(
@@ -526,7 +553,8 @@ export function flowProgressForE2ESummary<T extends FlowProgressLike>(
           item.event_kind === "intake_fields_requested" ||
           item.event_source === "operational_case_update_intake" ||
           isDocumentEvidence ||
-          isDocumentRequestReminderEvidence(item));
+          isDocumentRequestReminderEvidence(item) ||
+          isDocumentRequestTargetInferredEvidence(item));
       if (
         startedAt &&
         Number.isFinite(createdAtMs) &&

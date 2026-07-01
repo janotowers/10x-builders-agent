@@ -95,6 +95,10 @@ assert.equal(
   "los documentos previos al arranque E2E deben conservarse en el resumen"
 );
 
+// Forma REAL de producción: los recordatorios documentales se persisten con
+// `payload.kind = "reminder_sent"` y el subtipo en `payload.purpose`. La
+// proyección expone `event_kind = "reminder_sent"` y `event_purpose` con el
+// valor real. El resumen E2E debe conservarlos pre-transición usando el purpose.
 const preE2EDocumentReminderFlow = flowProgressForE2ESummary(
   [
     {
@@ -105,11 +109,39 @@ const preE2EDocumentReminderFlow = flowProgressForE2ESummary(
       evidenceItems: [
         {
           kind: "event",
+          id: "doc-reminder-checklist-pre-e2e",
+          created_at: "2026-06-05T10:04:10.000Z",
+          event_type: "reminder_sent",
+          event_kind: "reminder_sent",
+          event_purpose: "documents_checklist_post_intake",
+          summary: "Documentos solicitados al asesor (checklist post-intake)",
+        },
+        {
+          kind: "event",
           id: "doc-reminder-pre-e2e",
           created_at: "2026-06-05T10:04:20.000Z",
           event_type: "reminder_sent",
-          event_kind: "internal_upload_instructions",
+          event_kind: "reminder_sent",
+          event_purpose: "internal_upload_instructions",
           summary: "Instrucciones de carga interna enviadas",
+        },
+        {
+          kind: "event",
+          id: "doc-target-inferred-pre-e2e",
+          created_at: "2026-06-05T10:04:25.000Z",
+          event_type: "state_changed",
+          event_kind: "document_request_target_inferred",
+          summary: "Ruta interna inferida por subida de documentos",
+        },
+        // Recordatorio NO documental: no debe conservarse pre-transición.
+        {
+          kind: "event",
+          id: "unrelated-reminder-pre-e2e",
+          created_at: "2026-06-05T10:04:30.000Z",
+          event_type: "reminder_sent",
+          event_kind: "reminder_sent",
+          event_purpose: "characteristics_pending_internal",
+          summary: "Recordatorio de características",
         },
       ],
     },
@@ -124,6 +156,27 @@ assert.equal(
   ),
   true,
   "los recordatorios documentales previos al arranque E2E deben conservarse en el resumen"
+);
+assert.equal(
+  preE2EDocumentReminderFlow[0]?.evidenceItems.some(
+    (item) => item.id === "doc-reminder-checklist-pre-e2e"
+  ),
+  true,
+  "el checklist post-intake previo al arranque E2E debe conservarse"
+);
+assert.equal(
+  preE2EDocumentReminderFlow[0]?.evidenceItems.some(
+    (item) => item.id === "doc-target-inferred-pre-e2e"
+  ),
+  true,
+  "la inferencia de ruta interna previa al arranque E2E debe conservarse"
+);
+assert.equal(
+  preE2EDocumentReminderFlow[0]?.evidenceItems.some(
+    (item) => item.id === "unrelated-reminder-pre-e2e"
+  ),
+  false,
+  "un recordatorio NO documental previo al arranque E2E no debe conservarse"
 );
 
 const conversationalIntake = flowProgressForE2ESummary(
@@ -256,6 +309,51 @@ const intakeStep = withDocs.find((step) => step.step_key === "intake");
 assert.equal(
   intakeStep?.evidenceItems.some((item) => item.id === "doc-1"),
   false
+);
+
+// Proyección de `payload.purpose`: un `reminder_sent` documental con la forma
+// real de producción (kind="reminder_sent", purpose en payload) debe (a) quedar
+// atribuido al paso awaiting_documents y (b) exponer `event_purpose` para que el
+// resumen E2E pueda conservarlo pre-transición.
+const reminderProjection = buildSettingsTestFlowProgress({
+  opCase: {
+    current_step: "awaiting_documents",
+    context_jsonb: {},
+  } as OperationalCase,
+  events: [
+    {
+      id: "reminder-internal-1",
+      case_id: "case-1",
+      event_type: "reminder_sent",
+      actor: "system",
+      created_at: "2026-06-05T10:06:30.000Z",
+      payload_jsonb: {
+        kind: "reminder_sent",
+        purpose: "internal_upload_instructions",
+        channel: "telegram",
+        step_key: "awaiting_documents",
+      },
+    },
+  ] as unknown as Parameters<typeof buildSettingsTestFlowProgress>[0]["events"],
+  flow: [
+    { step_key: "intake", step_label: "Completar registro del caso" },
+    { step_key: "awaiting_documents", step_label: "Solicitar documentos" },
+  ],
+});
+const reminderStep = reminderProjection.find(
+  (step) => step.step_key === "awaiting_documents"
+);
+const reminderItem = reminderStep?.evidenceItems.find(
+  (item) => item.id === "reminder-internal-1"
+);
+assert.ok(
+  reminderItem && reminderItem.kind === "event",
+  "el recordatorio documental debe atribuirse a awaiting_documents"
+);
+assert.equal(
+  reminderItem?.kind === "event" ? reminderItem.event_purpose : undefined,
+  "internal_upload_instructions",
+  "la proyección debe exponer event_purpose desde payload.purpose"
 );
 
 const withToolPayloadDetails = buildSettingsTestFlowProgress({
