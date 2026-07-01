@@ -2232,6 +2232,31 @@ async function runEasyBrokerMlsCliFallback(
     if (lastResponse.ok !== false) return lastResponse;
     const recoverable = lastResponse.status === "needs_manual_login";
     if (!recoverable || attempt >= maxAttempts) {
+      if (recoverable && attempt >= maxAttempts) {
+        const assisted = await maybeRunEasyBrokerAssistedLogin(pocDir, creds);
+        if (assisted?.attempted) {
+          if (!assisted.ok) {
+            return {
+              ...lastResponse,
+              recovery_attempts: attempt,
+              assisted_login: assisted,
+            };
+          }
+          const assistedRetryAttempt = attempt + 1;
+          const assistedRetry = await executeEasyBrokerMlsCliOnce(
+            pocDir,
+            input,
+            toolId,
+            creds,
+            assistedRetryAttempt
+          );
+          return {
+            ...assistedRetry,
+            recovery_attempts: assistedRetryAttempt,
+            assisted_login: assisted,
+          };
+        }
+      }
       return { ...lastResponse, recovery_attempts: attempt };
     }
   }
@@ -2279,13 +2304,7 @@ async function executeEasyBrokerMlsCliOnce(
         cwd: pocDir,
         timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 120_000,
         maxBuffer: 4 * 1024 * 1024,
-        env: {
-          ...process.env,
-          EASYBROKER_WEB_URL: creds.loginUrl,
-          EASYBROKER_WEB_EMAIL: creds.email,
-          EASYBROKER_WEB_PASSWORD: creds.password,
-          EASYBROKER_MLS_HEADLESS: process.env.EASYBROKER_MLS_HEADLESS ?? "false",
-        },
+        env: easyBrokerMlsCliEnv(creds),
       }
     );
     const parsed = parseCliJson(stdout);
@@ -2338,6 +2357,90 @@ function isEasyBrokerManualLoginRequired(value: string) {
   return /captcha|recaptcha|403|forbidden|access denied|login manual|sesi[oó]n persistente|storage[- ]?state|mfa|did not reach mls|authenticated page|login did not reach|no se pudo navegar a bolsa|inicia sesi[oó]n|account\/authentication/i.test(
     value
   );
+}
+
+function easyBrokerMlsCliEnv(creds: EasyBrokerWebCredentials): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    EASYBROKER_WEB_URL: creds.loginUrl,
+    EASYBROKER_WEB_EMAIL: creds.email,
+    EASYBROKER_WEB_PASSWORD: creds.password,
+    EASYBROKER_MLS_HEADLESS: process.env.EASYBROKER_MLS_HEADLESS ?? "false",
+  };
+}
+
+function easyBrokerAutoAssistedLoginEnabled() {
+  const raw = process.env.EASYBROKER_MLS_AUTO_ASSISTED_LOGIN?.trim().toLowerCase();
+  if (raw) {
+    return raw === "1" || raw === "true" || raw === "yes";
+  }
+  const ci = process.env.CI?.trim().toLowerCase();
+  const ciLike = ci === "1" || ci === "true" || ci === "yes";
+  const headless = process.env.EASYBROKER_MLS_HEADLESS?.trim().toLowerCase();
+  return process.stdout.isTTY && !ciLike && headless !== "true";
+}
+
+function easyBrokerAutoAssistedTimeoutMs() {
+  const raw = Number(process.env.EASYBROKER_MLS_AUTO_ASSISTED_TIMEOUT_MS ?? "300000");
+  if (!Number.isFinite(raw) || raw <= 0) return 300_000;
+  return Math.min(Math.max(Math.trunc(raw), 60_000), 900_000);
+}
+
+async function maybeRunEasyBrokerAssistedLogin(
+  pocDir: string,
+  creds: EasyBrokerWebCredentials
+): Promise<Record<string, unknown> | null> {
+  if (!easyBrokerAutoAssistedLoginEnabled()) return null;
+  if (!(await fileExists(path.join(pocDir, "src", "login-assisted.mjs")))) {
+    return {
+      attempted: false,
+      ok: false,
+      reason: "login_assisted_script_not_found",
+    };
+  }
+
+  const assistedTimeout = easyBrokerAutoAssistedTimeoutMs();
+  const env = {
+    ...easyBrokerMlsCliEnv(creds),
+    EASYBROKER_MLS_HEADLESS: "false",
+    EASYBROKER_ASSISTED_TIMEOUT_MS: String(assistedTimeout),
+  };
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      ["src/login-assisted.mjs"],
+      {
+        cwd: pocDir,
+        timeout: assistedTimeout + 30_000,
+        maxBuffer: 4 * 1024 * 1024,
+        env,
+      }
+    );
+    const parsed = parseCliJson(stdout);
+    return {
+      attempted: true,
+      ok: parsed.ok === true,
+      timeout_ms: assistedTimeout,
+      ...(parsed && Object.keys(parsed).length > 0 ? { result: parsed } : {}),
+      ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
+    };
+  } catch (err) {
+    const error = err as {
+      message?: string;
+      stdout?: string;
+      stderr?: string;
+    };
+    const parsed = error.stdout ? parseCliJson(error.stdout) : null;
+    const assistedOk = parsed?.ok === true;
+    return {
+      attempted: true,
+      ok: assistedOk,
+      timeout_ms: assistedTimeout,
+      error: error.message ?? String(err),
+      ...(parsed ? { result: parsed } : {}),
+      ...(error.stderr?.trim() ? { stderr: error.stderr.trim().slice(0, 2000) } : {}),
+    };
+  }
 }
 
 async function resolveEasyBrokerMlsCliDir() {
