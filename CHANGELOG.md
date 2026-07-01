@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- E2E activity projection (`flowProgressForE2ESummary`) keys document reminders off `payload.purpose` (projected as `event_purpose`), not `payload.kind`; pre-transition `document_request_target_inferred` events are preserved too, so Paso 1 shows checklist/internal-routing activity that already existed in the audit trail
+- Idempotent address consolidation (`mergeDocumentAddressIntoContextPropertyData`): existing `address_conflicts` no longer re-trigger `changed`; re-running with identical inputs yields no writes/events. Consolidation event emits only when a visible address field is adopted; new conflicts emit a dedicated `document_address_conflict_detected` event (visible in panel) instead of a generic «Dirección consolidada»
+- Telegram document target choice (interno/externo) in the external-responder path now routes through the shared `applyDocumentRequestTargetChoice` handler, closing the audit-trail gap (records `recordDocumentFlowReminder`) and using the canonical ack — full parity with web and the conversational path
 - E2E activity log preserves pre-transition document reminder events; idempotent legal-identity consolidation avoids duplicate «Titularidad consolidada» entries
 - `detectSourceConflict` compares implied subject total (market p50 × m²) vs Avaclick average instead of median total of larger comparables
 - Telegram outbound reliability: IPv4-first DNS (`instrumentation.ts`) and retries on connect timeout in `send-message.ts`
