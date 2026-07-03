@@ -91,6 +91,10 @@ import {
   notificationMetadataPendingToolCallId,
   shouldRefreshToolConfirmationNotification,
 } from "@/lib/operational-cases/hitl-reminder-selfheal";
+import {
+  OperationalStepLabelResolver,
+  humanizeOperationalStepKey,
+} from "@/lib/operational-cases/operational-step-labels";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
@@ -134,37 +138,13 @@ type PendingCaseToolCall = {
   created_at: string;
 };
 
-const OPERATIONAL_STEP_LABELS: Record<string, string> = {
-  intake: "Completar registro del caso",
-  awaiting_documents: "Solicitud de documentos",
-  documents_received: "Extracción de características",
-  comparables_in_progress: "Análisis de comparables",
-  price_proposal_pending: "Propuesta de precio",
-  contract_pending: "Borrador y revisión de contrato",
-  photos_scheduled: "Programación de fotos",
-  package_ready: "Paquete final listo",
-};
-
 const PENDING_TOOL_LABELS: Record<string, string> = {
   telegram_send_message_to_contact: "Enviar mensaje por Telegram",
 };
 
-function humanizeTechnicalSlug(value: string): string {
-  return value
-    .replace(/_/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function formatOperationalStepForReminder(step: string | null | undefined): string {
-  if (!step) return "(sin paso)";
-  const friendly = OPERATIONAL_STEP_LABELS[step] ?? humanizeTechnicalSlug(step);
-  return `${friendly} (${step})`;
-}
-
 function formatPendingToolForReminder(toolName: string): string {
   const trimmed = toolName.trim();
-  const friendly = PENDING_TOOL_LABELS[trimmed] ?? humanizeTechnicalSlug(trimmed);
+  const friendly = PENDING_TOOL_LABELS[trimmed] ?? humanizeOperationalStepKey(trimmed);
   return `${friendly} (${trimmed})`;
 }
 
@@ -241,7 +221,8 @@ async function listPendingCaseToolCalls(
   return [...byId.values()].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
-function buildPendingToolDescription(
+async function buildPendingToolDescription(
+  stepLabelResolver: OperationalStepLabelResolver,
   opCase: OperationalCase,
   call: PendingCaseToolCall,
   pendingCount: number
@@ -255,12 +236,16 @@ function buildPendingToolDescription(
       ? opCase.context_jsonb.property_zone.trim()
       : "";
   const link = buildPendingCaseUrl(opCase.id);
+  const stepLabel = await stepLabelResolver.formatForCase(
+    opCase,
+    opCase.current_step
+  );
   const baseLines = [
     pendingCount === 1
       ? "Tienes 1 aprobación del agente pendiente para continuar este caso."
       : `Tienes ${pendingCount} aprobaciones del agente pendientes para continuar este caso.`,
     `Caso: ${title || opCase.case_type}${zone ? ` (${zone})` : ""}`,
-    `Paso: ${formatOperationalStepForReminder(opCase.current_step)}`,
+    `Paso: ${stepLabel}`,
     `Ejecución pendiente: ${formatPendingToolForReminder(call.tool_name)}`,
   ];
   if (call.tool_name === "telegram_send_message_to_contact") {
@@ -314,6 +299,7 @@ function buildPendingToolFallbackText(
 
 async function maybeSendPendingToolButtonsToAdvisor(
   db: ReturnType<typeof createServerClient>,
+  stepLabelResolver: OperationalStepLabelResolver,
   opCase: OperationalCase,
   pendingCalls: PendingCaseToolCall[]
 ) {
@@ -335,7 +321,8 @@ async function maybeSendPendingToolButtonsToAdvisor(
   });
   if (alreadySent) return;
 
-  const { text, link } = buildPendingToolDescription(
+  const { text, link } = await buildPendingToolDescription(
+    stepLabelResolver,
     opCase,
     firstPending,
     pendingCalls.length
@@ -560,6 +547,7 @@ async function resolveStaleToolConfirmationNotification(
 
 async function maybeSelfHealToolConfirmationNotification(
   db: ReturnType<typeof createServerClient>,
+  stepLabelResolver: OperationalStepLabelResolver,
   notification: InternalUserNotification
 ): Promise<InternalUserNotification> {
   if (
@@ -587,10 +575,13 @@ async function maybeSelfHealToolConfirmationNotification(
   const opCase = await getOperationalCase(db, notification.case_id);
   if (!opCase || opCase.user_id !== notification.user_id) return notification;
 
-  const refreshedBody = buildPendingToolDescription(
-    opCase,
-    pendingReference,
-    pendingCalls.length
+  const refreshedBody = (
+    await buildPendingToolDescription(
+      stepLabelResolver,
+      opCase,
+      pendingReference,
+      pendingCalls.length
+    )
   ).text;
   const refreshed = await refreshInternalUserNotificationContent(
     db,
@@ -608,6 +599,7 @@ async function maybeSelfHealToolConfirmationNotification(
 
 async function processInternalNotificationReminder(
   db: ReturnType<typeof createServerClient>,
+  stepLabelResolver: OperationalStepLabelResolver,
   notification: InternalUserNotification,
   deliveryContextCache: Map<string, ReminderDeliveryContext>
 ) {
@@ -617,6 +609,7 @@ async function processInternalNotificationReminder(
   }
   currentNotification = await maybeSelfHealToolConfirmationNotification(
     db,
+    stepLabelResolver,
     currentNotification
   );
   const deliveryContext = await loadReminderDeliveryContext(
@@ -859,7 +852,8 @@ async function processExternalContactReminder(
 }
 
 async function processNotificationReminders(
-  db: ReturnType<typeof createServerClient>
+  db: ReturnType<typeof createServerClient>,
+  stepLabelResolver: OperationalStepLabelResolver
 ) {
   const deliveryContextCache = new Map<string, ReminderDeliveryContext>();
   const [internalDue, externalDue] = await Promise.all([
@@ -871,6 +865,7 @@ async function processNotificationReminders(
     internalResults.push(
       await processInternalNotificationReminder(
         db,
+        stepLabelResolver,
         notification,
         deliveryContextCache
       )
@@ -891,6 +886,7 @@ async function processNotificationReminders(
 
 async function processCase(
   db: ReturnType<typeof createServerClient>,
+  stepLabelResolver: OperationalStepLabelResolver,
   opCase: OperationalCase
 ): Promise<CaseProcessResult> {
   if (isCronSuppressedOperationalCase(opCase)) {
@@ -972,7 +968,14 @@ async function processCase(
       const pendingReference =
         pendingCalls.length > 0 ? pendingCalls[0] : null;
       const pendingReferenceText = pendingReference
-        ? buildPendingToolDescription(opCase, pendingReference, pendingHitlCount).text
+        ? (
+            await buildPendingToolDescription(
+              stepLabelResolver,
+              opCase,
+              pendingReference,
+              pendingHitlCount
+            )
+          ).text
         : buildPendingToolFallbackText(opCase, pendingHitlCount);
       await notify(
         db,
@@ -993,7 +996,12 @@ async function processCase(
         { pushChannels: [] }
       );
       if (pendingCalls.length > 0) {
-        await maybeSendPendingToolButtonsToAdvisor(db, opCase, pendingCalls);
+        await maybeSendPendingToolButtonsToAdvisor(
+          db,
+          stepLabelResolver,
+          opCase,
+          pendingCalls
+        );
       }
       const fresh = await getOperationalCase(db, opCase.id);
       if (fresh) {
@@ -1148,6 +1156,7 @@ async function processCase(
 
 async function processWithConcurrency(
   db: ReturnType<typeof createServerClient>,
+  stepLabelResolver: OperationalStepLabelResolver,
   cases: OperationalCase[],
   concurrency: number
 ): Promise<CaseProcessResult[]> {
@@ -1157,7 +1166,7 @@ async function processWithConcurrency(
     while (queue.length > 0) {
       const next = queue.shift();
       if (!next) break;
-      const r = await processCase(db, next);
+      const r = await processCase(db, stepLabelResolver, next);
       results.push(r);
     }
   });
@@ -1177,12 +1186,16 @@ export async function POST(request: Request) {
 
   ensureAgentToolDepsWired();
   const db = createServerClient();
+  const stepLabelResolver = new OperationalStepLabelResolver(db);
 
   let notificationReminderResults: Awaited<
     ReturnType<typeof processNotificationReminders>
   > = { internal: [], external: [] };
   try {
-    notificationReminderResults = await processNotificationReminders(db);
+    notificationReminderResults = await processNotificationReminders(
+      db,
+      stepLabelResolver
+    );
   } catch (e) {
     console.error("[ops-case-cron] notification reminders failed:", e);
   }
@@ -1255,7 +1268,12 @@ export async function POST(request: Request) {
       ? Math.max(1, Math.min(20, Math.floor(Number(concurrencyEnv))))
       : DEFAULT_CONCURRENCY;
 
-  const results = await processWithConcurrency(db, dueCases, concurrency);
+  const results = await processWithConcurrency(
+    db,
+    stepLabelResolver,
+    dueCases,
+    concurrency
+  );
 
   console.log(
     `[ops-case-cron] processed ${results.length}/${dueCases.length} cases (concurrency=${concurrency}):`,

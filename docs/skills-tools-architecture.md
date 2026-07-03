@@ -58,7 +58,7 @@ Incluye sub-skills como:
 - `perform-comparable-analysis`;
 - `prepare-listing-price`;
 - `prepare-commission-contract`;
-- `coordinate-photo-session`;
+- `request-property-photos`;
 - `publish-listing-package`.
 
 La skill compuesta no hace todo en una sola instrucción. Orquesta etapas.

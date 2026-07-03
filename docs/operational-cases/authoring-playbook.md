@@ -120,7 +120,7 @@ documents_received
 comparables_in_progress
 price_proposal_pending
 contract_pending
-photos_scheduled
+photos_requested
 package_ready
 ```
 

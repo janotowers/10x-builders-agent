@@ -479,7 +479,7 @@ flowchart TB
   A3["perform-comparable-analysis"]
   A4["prepare-listing-price"]
   A5["prepare-commission-contract"]
-  A6["coordinate-photo-session"]
+  A6["request-property-photos"]
   A7["publish-listing-package"]
 
   COMP --> A1

@@ -459,8 +459,8 @@ Escenarios N4 actuales en `property_optioning`:
 | `contract_pending` | `contract_pending_draft_review` | Borrador o aviso de plantilla faltante / `waiting_internal` o `paused` (`PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`) |
 | `contract_pending` | `contract_pending_advisor_approves_send` | HITL «enviar por email» → `contract_approved_for_email_send` + envío simulado por email / `paused` |
 | `contract_pending` | `contract_pending_advisor_requests_changes` | HITL «subir contrato corregido y enviar» → `contract_revision_upload_requested` / `waiting_internal` |
-| `contract_pending` | `contract_pending_owner_signed` | Simulación de firma (opcional/futuro): `photos_scheduled` / `step_completed:contract_signed`; no bloquea el hito principal mientras la firma esté fuera del flujo |
-| `photos_scheduled` | `photos_scheduled_propose_slots` | Propuesta de horarios al contacto / `waiting_external` + Telegram |
+| `contract_pending` | `contract_pending_owner_signed` | Simulación de firma (opcional/futuro): `photos_requested` / `step_completed:contract_signed`; no bloquea el hito principal mientras la firma esté fuera del flujo |
+| `photos_requested` | `photos_requested_request_internal_photos` | Solicitud interna de fotos al asesor / `waiting_internal` + notify_user |
 | `package_ready` | `package_ready_preflight_blocked` | Preflight sin fotos → `paused` + `notify_user` (no publicar) |
 
 Para artefactos críticos como `comparables_analysis`, N3/N4 deben validar la ruta

@@ -874,7 +874,7 @@ Skill compuesta de referencia:
 - `skills/global/property-optioning-coach/SKILL.md` + 7 atómicas
   (`request-property-documents`, `extract-property-characteristics`,
   `perform-comparable-analysis`, `prepare-listing-price`,
-  `prepare-commission-contract`, `coordinate-photo-session`,
+  `prepare-commission-contract`, `request-property-photos`,
   `publish-listing-package`).
 
 Documentos:

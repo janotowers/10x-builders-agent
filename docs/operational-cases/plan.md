@@ -187,7 +187,7 @@ Composite con `includes` de skills atómicas:
 - `perform-comparable-analysis` (EasyBroker + warehouse propio).
 - `prepare-listing-price` (precios salida/ideal/mínimo, HITL fuerte).
 - `prepare-commission-contract` (genera DOCX desde plantilla, HITL).
-- `coordinate-photo-session` (calendar + recordatorios).
+- `request-property-photos` (solicitud interna y seguimiento de fotos).
 - `publish-listing-package` (sube a EasyBroker y a Ungga; para Inmuebles24 entrega "paquete listo" para subida manual).
 
 Cada atómica vive como SKILL.md con `allowed_tools` acotado. La composite `property-optioning-coach` se publica primero como global durante desarrollo; **se mueve a `account_skills` de Alebrixe antes del piloto real**.

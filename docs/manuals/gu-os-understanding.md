@@ -376,7 +376,7 @@ property-optioning-coach              ← user-facing / case binding
 │   ├── perform-comparable-analysis
 │   ├── prepare-listing-price
 │   ├── prepare-commission-contract
-│   ├── coordinate-photo-session
+│   ├── request-property-photos
 │   └── publish-listing-package
 ├── requires_tenant_context: true
 ├── guardrails: HITL en decisiones comerciales
