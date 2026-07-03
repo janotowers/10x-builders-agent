@@ -19,7 +19,7 @@ guardrails: |
   El borrador SIEMPRE se entrega primero al inmobiliario para revisión
   (HITL) con notify_user(kind="contract_review"). El agente NO manda el
   contrato al dueño: el envío al propietario por email (con la cuenta Gmail
-  conectada del asesor) y el avance del caso a `photos_scheduled` los ejecuta
+  conectada del asesor) y el avance del caso a `photos_requested` los ejecuta
   la app cuando el inmobiliario aprueba desde la bandeja/Telegram ("Enviar por
   email" o "Subir contrato corregido y enviar"). No uses
   telegram_send_message_to_contact para enviar el contrato.
@@ -37,7 +37,7 @@ guardrails: |
    `notify_user(kind="contract_review")` y un enlace de descarga estable.
 3. Detenerte ahí: el inmobiliario decide desde la bandeja/Telegram ("Enviar
    por email" o "Subir contrato corregido y enviar"). El envío al propietario
-   por email y el avance del caso a `photos_scheduled` los ejecuta la app, no
+   por email y el avance del caso a `photos_requested` los ejecuta la app, no
    el agente.
 4. Tratar la firma del propietario fuera de este flujo por ahora (no bloquear
    el avance operativo a fotos/publicación desde esta skill).
@@ -104,10 +104,10 @@ guardrails: |
      contrato al `owner_email` del caso desde la cuenta **Gmail** conectada
      del asesor, registra los eventos
      (`contract_approved_for_email_send`, `reminder_sent`,
-     `step_completed`) y avanza el caso a `current_step=photos_scheduled`.
+    `step_completed`) y avanza el caso a `current_step=photos_requested`.
    - Si elige **"Subir contrato corregido y enviar"**, la app espera el DOCX/PDF
      corregido, lo envía por email al propietario y avanza igual a
-     `photos_scheduled`.
+    `photos_requested`.
    - Requisitos del envío: que exista **Gmail conectado** (cuenta remitente del
      asesor, en Ajustes) y `owner_email` (destinatario) en el contexto del
      caso. Si falta `owner_email`, el dato se solicita por el HITL de datos
@@ -118,7 +118,7 @@ guardrails: |
 - Enviar el contrato al dueño desde el agente (por Telegram o email): el envío
   al propietario es una decisión humana (HITL) que ejecuta la app tras la
   aprobación del inmobiliario.
-- Avanzar el caso a `photos_scheduled` desde el agente: ese avance lo hace la
+- Avanzar el caso a `photos_requested` desde el agente: ese avance lo hace la
   app cuando se confirma el envío por email.
 - Mandar el contrato al dueño SIN aprobación previa del inmobiliario.
 - Llenar campos del contrato con datos no verificados

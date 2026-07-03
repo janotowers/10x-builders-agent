@@ -130,8 +130,8 @@ export function validateContractApprovedSendStepOutcome(params: {
   sent_event: boolean;
 }) {
   const errors: string[] = [];
-  if (params.current_step !== "photos_scheduled") {
-    errors.push("current_step debe avanzar a photos_scheduled tras envío por email.");
+  if (params.current_step !== "photos_requested") {
+    errors.push("current_step debe avanzar a photos_requested tras envío por email.");
   }
   if (params.status !== "paused") {
     errors.push(
@@ -173,8 +173,8 @@ export function validateContractSignedStepOutcome(params: {
   contract_signed_event: boolean;
 }) {
   const errors: string[] = [];
-  if (params.current_step !== "photos_scheduled") {
-    errors.push("current_step debe avanzar a photos_scheduled tras firma.");
+  if (params.current_step !== "photos_requested") {
+    errors.push("current_step debe avanzar a photos_requested tras firma.");
   }
   if (params.status !== "paused") {
     errors.push(

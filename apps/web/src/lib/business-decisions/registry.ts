@@ -12,6 +12,10 @@ import {
 } from "./contract-data-review";
 import { handleContractOwnerSignedDecision } from "./contract-owner-signed";
 import {
+  handleTitularidadReviewDecision,
+  parseTitularidadReviewDecision,
+} from "./titularidad-review";
+import {
   BUSINESS_DECISION_LABELS,
   type BusinessDecisionKind,
 } from "./business-decision-kinds";
@@ -23,6 +27,11 @@ export interface BusinessDecisionHandlerInput {
   userId: string;
   notificationId: string;
   text: string;
+  /**
+   * Sólo lo usa `price_approval`: difiere el tick del agente E2E para que el
+   * caller (webhook de Telegram) envíe primero la confirmación al usuario.
+   */
+  deferControlledE2ETick?: boolean;
 }
 
 export interface BusinessDecisionResult {
@@ -77,6 +86,13 @@ export const BUSINESS_DECISION_HANDLERS: Record<
       reason: text.trim() ? undefined : "Respuesta vacía.",
     }),
     handle: handleContractOwnerSignedDecision,
+  },
+  titularidad_review: {
+    kind: "titularidad_review",
+    notificationKind: "titularidad_review",
+    label: BUSINESS_DECISION_LABELS.titularidad_review,
+    parse: parseTitularidadReviewDecision,
+    handle: handleTitularidadReviewDecision,
   },
 };
 

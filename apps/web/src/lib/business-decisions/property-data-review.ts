@@ -181,7 +181,7 @@ export async function handlePropertyDataReviewDecision(
       opCase.current_step === "comparables_in_progress" ||
       opCase.current_step === "price_proposal_pending" ||
       opCase.current_step === "contract_pending" ||
-      opCase.current_step === "photos_scheduled" ||
+      opCase.current_step === "photos_requested" ||
       opCase.current_step === "package_ready" ||
       opCase.current_step === "completed";
     if (advancedBeyondReview) {

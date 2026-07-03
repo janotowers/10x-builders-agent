@@ -61,7 +61,7 @@ export async function handleContractOwnerSignedDecision(
 
   const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
     status: settingsTestCase ? "paused" : "active",
-    currentStep: "photos_scheduled",
+    currentStep: "photos_requested",
     nextActionAt: settingsTestCase ? null : new Date().toISOString(),
     context: {
       ...context,
@@ -103,7 +103,7 @@ export async function handleContractOwnerSignedDecision(
     ok: true,
     status: "contract_signed",
     message: settingsTestCase
-      ? "Contrato firmado registrado (simulado). El caso avanzó a photos_scheduled en paused."
+      ? "Contrato firmado registrado (simulado). El caso avanzó a photos_requested en paused."
       : "Contrato firmado por el dueño. El caso avanzó a coordinación de fotos.",
   };
 }

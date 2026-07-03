@@ -1,13 +1,16 @@
 import {
+  getProfile,
   getInternalUserNotification,
   getOperationalCase,
   getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   resolveInternalNotificationWithReminders,
+  shortOperationalCaseId,
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { isControlledE2EOperationalCase } from "@agents/types";
 import { sendGmailMessage } from "@/lib/gmail/send-message";
 import { notify } from "@/lib/notify";
 import { buildExternalCaseDocumentDownloadUrl } from "@/lib/operational-cases/case-document-download-token";
@@ -40,6 +43,27 @@ function isSettingsTestCase(context: Record<string, unknown>) {
     context.created_from === "case_type_settings_test" ||
     context.test_mode === true
   );
+}
+
+async function triggerControlledE2EAgentTick(
+  db: DbClient,
+  updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
+  source: string
+) {
+  const { runSettingsTestCaseAgentTick } = await import(
+    "@/lib/operational-cases/run-settings-test-case-tick"
+  );
+  await runSettingsTestCaseAgentTick(db, updated, updated.user_id, { source });
+}
+
+export async function runDeferredContractControlledE2ETick(
+  db: DbClient,
+  caseId: string,
+  source: string
+): Promise<void> {
+  const opCase = await getOperationalCase(db, caseId);
+  if (!opCase) return;
+  await triggerControlledE2EAgentTick(db, opCase, source);
 }
 
 export function parseContractReviewDecision(text: string): ParsedContractReviewDecision {
@@ -167,6 +191,21 @@ function cleanString(value: unknown): string {
   return value.trim();
 }
 
+function firstNonEmptyString(values: unknown[]): string {
+  for (const value of values) {
+    const cleaned = cleanString(value);
+    if (cleaned) return cleaned;
+  }
+  return "";
+}
+
+function cleanStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => cleanString(item))
+    .filter((item): item is string => Boolean(item));
+}
+
 function resolveOwnerEmail(context: Record<string, unknown>): string {
   const propertyData = isRecord(context.property_data) ? context.property_data : {};
   return (
@@ -179,12 +218,80 @@ function resolveOwnerEmail(context: Record<string, unknown>): string {
 
 function resolveOwnerName(context: Record<string, unknown>): string {
   const propertyData = isRecord(context.property_data) ? context.property_data : {};
+  const ownerNames = [
+    ...cleanStringArray(context.owner_names),
+    ...cleanStringArray(propertyData.owner_names),
+  ];
   return (
     cleanString(context.owner_name) ||
     cleanString(context.owner_full_name) ||
+    ownerNames[0] ||
+    cleanString(context.lead_name) ||
+    cleanString(context.contact_name) ||
     cleanString(propertyData.owner_name) ||
-    cleanString(propertyData.owner_full_name)
+    cleanString(propertyData.owner_full_name) ||
+    cleanString(propertyData.lead_name) ||
+    cleanString(propertyData.contact_name)
   );
+}
+
+function resolvePropertyReference(context: Record<string, unknown>): string {
+  const propertyData = isRecord(context.property_data) ? context.property_data : {};
+  const street = cleanString(propertyData.street);
+  const exterior = cleanString(propertyData.exterior_number);
+  const neighborhood = cleanString(propertyData.neighborhood);
+  const municipality = cleanString(propertyData.municipality);
+  const legalAddress =
+    cleanString(propertyData.legal_address) ||
+    (Array.isArray(propertyData.legal_addresses)
+      ? cleanString(propertyData.legal_addresses[0])
+      : "");
+  const shortAddress = [street, exterior].filter(Boolean).join(" ");
+  if (shortAddress && neighborhood) return `${shortAddress}, ${neighborhood}`;
+  if (shortAddress && municipality) return `${shortAddress}, ${municipality}`;
+  if (shortAddress) return shortAddress;
+  if (legalAddress) return legalAddress;
+  return "";
+}
+
+function resolveLegalPropertyAddress(context: Record<string, unknown>): string {
+  const propertyData = isRecord(context.property_data) ? context.property_data : {};
+  const directLegalAddress = firstNonEmptyString([
+    propertyData.legal_address,
+    cleanStringArray(propertyData.legal_addresses)[0],
+    context.legal_address,
+    cleanStringArray(context.legal_addresses)[0],
+  ]);
+  if (directLegalAddress) return directLegalAddress;
+
+  const street = firstNonEmptyString([propertyData.street, propertyData.address_street]);
+  const exterior = firstNonEmptyString([
+    propertyData.exterior_number,
+    propertyData.outdoor_number,
+    propertyData.number,
+  ]);
+  const interior = firstNonEmptyString([
+    propertyData.interior_number,
+    propertyData.indoor_number,
+    propertyData.apartment_number,
+  ]);
+  const neighborhood = firstNonEmptyString([
+    propertyData.neighborhood,
+    propertyData.fraccionamiento,
+    propertyData.suburb,
+  ]);
+  const municipality = firstNonEmptyString([propertyData.municipality, propertyData.city]);
+  const state = cleanString(propertyData.state);
+
+  const components = [
+    street ? `CALLE ${street}` : "",
+    exterior ? `NUMERO ${exterior}` : "",
+    interior ? `INTERIOR ${interior}` : "",
+    neighborhood ? `FRACCIONAMIENTO ${neighborhood}` : "",
+    municipality,
+    state,
+  ].filter(Boolean);
+  return components.join(", ");
 }
 
 const MAX_GMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -260,27 +367,64 @@ async function loadContractAttachment(params: {
 async function sendContractByEmail(params: {
   db: DbClient;
   userId: string;
+  caseId: string;
+  context: Record<string, unknown>;
   ownerEmail: string;
   ownerName: string;
   docUrl: string;
   attachment: ContractEmailAttachment;
 }) {
-  const recipient = params.ownerName || "Hola";
+  const recipientName = params.ownerName || "Propietario/a";
+  const propertyReference = resolvePropertyReference(params.context);
+  const legalAddress = resolveLegalPropertyAddress(params.context) || propertyReference;
+  const caseRef = shortOperationalCaseId(params.caseId);
+  let senderName = "Alejandro Torres Padilla";
+  try {
+    const profile = await getProfile(params.db, params.userId);
+    senderName = cleanString(profile.name) || senderName;
+  } catch {
+    // No bloqueamos envío por un fallo de perfil; usamos firma por defecto.
+  }
+  const subject = [
+    "Contrato de comisión para revisión",
+    propertyReference ? `Propiedad: ${propertyReference}` : null,
+    caseRef ? `Caso ${caseRef}` : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+  const intro = legalAddress
+    ? `Te comparto el contrato de comisión para revisión de tu propiedad en ${legalAddress}.`
+    : "Te comparto el contrato de comisión para revisión.";
   return sendGmailMessage({
     db: params.db,
     userId: params.userId,
     to: params.ownerEmail,
-    subject: "Contrato de comision para revision",
+    subject,
     body: [
-      `${recipient},`,
+      `Estimada ${recipientName},`,
       "",
-      "Te comparto el contrato de comision para tu revision.",
-      "Puedes descargarlo aqui:",
+      intro,
+      caseRef ? `Referencia interna: caso ${caseRef}.` : "",
+      "",
+      "Puedes descargarlo aquí:",
       params.docUrl,
       "",
-      "Tambien te lo adjunto en este correo para que lo revises facilmente.",
+      "También te lo adjunto en este correo para que lo revises fácilmente.",
       "",
-      "Cuando este firmado, por favor compartelo con nosotros.",
+      "Cuando esté firmado, por favor compártelo conmigo.",
+      "",
+      "Saludos,",
+      senderName,
+      "Ungga",
+      "",
+      "Av. Del Tule 839 L-11,",
+      "Col. Puertas del Tule,",
+      "45017 Zapopan, Jalisco, México.",
+      "",
+      "Tel. (+52) 33 - 3110 0083",
+      "Sitio Web: https://ungga.com",
+      "",
+      "La informacion contenida en este correo electronico esta destinada unicamente al uso del destinatario. Queda prohibido a cualquier persona o entidad que no sea el destinatario realizar cualquier modificacion, copia o distribucion de esta informacion. Si lo recibe por error, elimine el mensaje y notifique al remitente.",
     ].join("\n"),
     attachments: [params.attachment],
   });
@@ -292,6 +436,7 @@ export async function handleContractReviewDecision(
     userId: string;
     notificationId: string;
     text: string;
+    deferControlledE2ETick?: boolean;
   }
 ) {
   const notification = await getInternalUserNotification(db, params.notificationId);
@@ -335,6 +480,7 @@ export async function handleContractReviewDecision(
   if (!opCase || opCase.user_id !== params.userId) {
     return { ok: false, status: "case_not_found", message: "No encontré el caso." };
   }
+  const controlledE2ECase = isControlledE2EOperationalCase(opCase);
 
   const parsed = parseContractReviewDecision(params.text);
   if (parsed.intent === "unclear") {
@@ -449,16 +595,51 @@ export async function handleContractReviewDecision(
         "Falta owner_email en el caso para enviar el contrato por email.",
     };
   }
-  const ownerName = resolveOwnerName(context);
+  const externalContact = isRecord(opCase.external_contact_jsonb)
+    ? opCase.external_contact_jsonb
+    : {};
+  const ownerName =
+    resolveOwnerName(context) ||
+    cleanString(externalContact.display_name) ||
+    cleanString(externalContact.name);
+  await insertOperationalCaseEvent(db, {
+    caseId: opCase.id,
+    eventType: "human_decision",
+    actor: "user",
+    stepKey: "contract_pending",
+    payload: {
+      kind: "contract_email_send_attempted",
+      channel: "email",
+      owner_email: ownerEmail,
+      doc_url: docUrl,
+      attachment_name: attachmentResult.attachment.filename,
+    },
+  });
   const sent = await sendContractByEmail({
     db,
     userId: params.userId,
+    caseId: opCase.id,
+    context,
     ownerEmail,
     ownerName,
     docUrl,
     attachment: attachmentResult.attachment,
   });
   if (!sent.ok) {
+    await insertOperationalCaseEvent(db, {
+      caseId: opCase.id,
+      eventType: "state_changed",
+      actor: "system",
+      stepKey: "contract_pending",
+      payload: {
+        kind: "contract_email_send_failed",
+        channel: "email",
+        owner_email: ownerEmail,
+        status: sent.status,
+        error_code: sent.errorCode ?? null,
+        error_reason: sent.errorReason ?? null,
+      },
+    });
     return {
       ok: false,
       status: sent.status,
@@ -466,10 +647,11 @@ export async function handleContractReviewDecision(
     };
   }
 
+  const shouldPauseAfterContractSent = settingsTestCase && !controlledE2ECase;
   const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    status: settingsTestCase ? "paused" : "active",
-    currentStep: "photos_scheduled",
-    nextActionAt: settingsTestCase ? null : new Date().toISOString(),
+    status: shouldPauseAfterContractSent ? "paused" : "active",
+    currentStep: "photos_requested",
+    nextActionAt: shouldPauseAfterContractSent ? null : new Date().toISOString(),
     context: {
       ...context,
       contract_draft: {
@@ -483,7 +665,7 @@ export async function handleContractReviewDecision(
         sent_message_id: sent.messageId,
         owner_email: ownerEmail,
       },
-      ...(settingsTestCase
+      ...(shouldPauseAfterContractSent
         ? {
             controlled_test_status: "contract_sent_to_owner_email_and_advanced",
             controlled_test_note:
@@ -500,6 +682,7 @@ export async function handleContractReviewDecision(
     caseId: opCase.id,
     eventType: "human_decision",
     actor: "user",
+    stepKey: "contract_pending",
     payload: {
       kind: "contract_approved_for_email_send",
       doc_url: docUrl,
@@ -511,6 +694,7 @@ export async function handleContractReviewDecision(
     caseId: opCase.id,
     eventType: "reminder_sent",
     actor: "system",
+    stepKey: "contract_pending",
     payload: {
       purpose: "contract_sent_to_owner",
       channel: "email",
@@ -523,9 +707,10 @@ export async function handleContractReviewDecision(
     caseId: opCase.id,
     eventType: "step_completed",
     actor: "system",
+    stepKey: "contract_pending",
     payload: {
       kind: "contract_sent_to_owner_email",
-      advanced_to_step: "photos_scheduled",
+      advanced_to_step: "photos_requested",
     },
   });
   await resolveInternalNotificationWithReminders(db, {
@@ -533,13 +718,25 @@ export async function handleContractReviewDecision(
     userId: params.userId,
     status: "actioned",
   });
+  const deferTick = controlledE2ECase && params.deferControlledE2ETick === true;
+  if (controlledE2ECase && !deferTick) {
+    void triggerControlledE2EAgentTick(db, updated, "contract_email_sent").catch(
+      (tickError) => {
+        console.error("[contract-review] e2e tick failed:", tickError);
+      }
+    );
+  }
 
   return {
     ok: true,
-    status: settingsTestCase ? "approved_send_simulated" : "approved_send",
-    message: settingsTestCase
-      ? "Contrato enviado por email (simulado) y flujo avanzado a photos_scheduled. El caso quedó en paused."
+    status: shouldPauseAfterContractSent ? "approved_send_simulated" : "approved_send",
+    message: shouldPauseAfterContractSent
+      ? "Contrato enviado por email (simulado) y flujo avanzado a photos_requested. El caso quedó en paused."
       : "Listo: envié el contrato por email al propietario y avancé el caso al siguiente paso.",
+    case_id: opCase.id,
+    deferredControlledE2ETick: deferTick
+      ? { source: "contract_email_sent" as const }
+      : null,
   };
 }
 
@@ -551,12 +748,14 @@ export async function handleContractRevisionUploadAndSend(
     storagePath: string;
     storageBucket?: string;
     fileName?: string;
+    deferControlledE2ETick?: boolean;
   }
 ) {
   const opCase = await getOperationalCase(db, params.caseId);
   if (!opCase || opCase.user_id !== params.userId) {
     return { ok: false, status: "case_not_found", message: "No encontré el caso." };
   }
+  const controlledE2ECase = isControlledE2EOperationalCase(opCase);
   const context = (opCase.context_jsonb ?? {}) as Record<string, unknown>;
   const review = isRecord(context.contract_review) ? context.contract_review : {};
   if (review.status !== "awaiting_revision_upload") {
@@ -610,16 +809,53 @@ export async function handleContractRevisionUploadAndSend(
     };
   }
 
-  const ownerName = resolveOwnerName(mergedContext);
+  const externalContact = isRecord(opCase.external_contact_jsonb)
+    ? opCase.external_contact_jsonb
+    : {};
+  const ownerName =
+    resolveOwnerName(mergedContext) ||
+    cleanString(externalContact.display_name) ||
+    cleanString(externalContact.name);
+  await insertOperationalCaseEvent(db, {
+    caseId: opCase.id,
+    eventType: "human_decision",
+    actor: "user",
+    stepKey: "contract_pending",
+    payload: {
+      kind: "contract_email_send_attempted",
+      channel: "email",
+      owner_email: ownerEmail,
+      doc_url: docUrl,
+      attachment_name: attachmentResult.attachment.filename,
+      from_revision_upload: true,
+    },
+  });
   const sent = await sendContractByEmail({
     db,
     userId: params.userId,
+    caseId: opCase.id,
+    context: mergedContext,
     ownerEmail,
     ownerName,
     docUrl,
     attachment: attachmentResult.attachment,
   });
   if (!sent.ok) {
+    await insertOperationalCaseEvent(db, {
+      caseId: opCase.id,
+      eventType: "state_changed",
+      actor: "system",
+      stepKey: "contract_pending",
+      payload: {
+        kind: "contract_email_send_failed",
+        channel: "email",
+        owner_email: ownerEmail,
+        status: sent.status,
+        error_code: sent.errorCode ?? null,
+        error_reason: sent.errorReason ?? null,
+        from_revision_upload: true,
+      },
+    });
     return {
       ok: false,
       status: sent.status,
@@ -628,10 +864,11 @@ export async function handleContractRevisionUploadAndSend(
   }
 
   const settingsTestCase = isSettingsTestCase(mergedContext);
+  const shouldPauseAfterContractSent = settingsTestCase && !controlledE2ECase;
   const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    status: settingsTestCase ? "paused" : "active",
-    currentStep: "photos_scheduled",
-    nextActionAt: settingsTestCase ? null : new Date().toISOString(),
+    status: shouldPauseAfterContractSent ? "paused" : "active",
+    currentStep: "photos_requested",
+    nextActionAt: shouldPauseAfterContractSent ? null : new Date().toISOString(),
     context: {
       ...mergedContext,
       contract_review: {
@@ -660,6 +897,7 @@ export async function handleContractRevisionUploadAndSend(
     caseId: opCase.id,
     eventType: "human_decision",
     actor: "user",
+    stepKey: "contract_pending",
     payload: {
       kind: "contract_revised_uploaded_and_sent",
       owner_email: ownerEmail,
@@ -672,6 +910,7 @@ export async function handleContractRevisionUploadAndSend(
     caseId: opCase.id,
     eventType: "reminder_sent",
     actor: "system",
+    stepKey: "contract_pending",
     payload: {
       purpose: "contract_sent_to_owner",
       channel: "email",
@@ -684,12 +923,21 @@ export async function handleContractRevisionUploadAndSend(
     caseId: opCase.id,
     eventType: "step_completed",
     actor: "system",
+    stepKey: "contract_pending",
     payload: {
       kind: "contract_sent_to_owner_email",
-      advanced_to_step: "photos_scheduled",
+      advanced_to_step: "photos_requested",
       from_revision_upload: true,
     },
   });
+  const deferTick = controlledE2ECase && params.deferControlledE2ETick === true;
+  if (controlledE2ECase && !deferTick) {
+    void triggerControlledE2EAgentTick(db, updated, "contract_revision_uploaded_and_sent").catch(
+      (tickError) => {
+        console.error("[contract-review] e2e tick failed:", tickError);
+      }
+    );
+  }
 
   return {
     ok: true,
@@ -697,5 +945,9 @@ export async function handleContractRevisionUploadAndSend(
     message:
       "Contrato corregido recibido y enviado por email al propietario. Avancé el caso al siguiente paso.",
     ownerEmail,
+    case_id: opCase.id,
+    deferredControlledE2ETick: deferTick
+      ? { source: "contract_revision_uploaded_and_sent" as const }
+      : null,
   };
 }
