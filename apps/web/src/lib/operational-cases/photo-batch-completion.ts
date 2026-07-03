@@ -1,0 +1,173 @@
+import {
+  createServerClient,
+  getOperationalCase,
+  insertOperationalCaseEvent,
+  updateOperationalCase,
+} from "@agents/db";
+import type { OperationalCase } from "@agents/types";
+import { looksLikeDocumentBatchComplete } from "./document-batch-completion";
+
+type DbClient = ReturnType<typeof createServerClient>;
+
+export const RAW_PHOTOS_MIN_COUNT = 5;
+
+export { looksLikeDocumentBatchComplete as looksLikePhotoBatchComplete };
+
+export function countRawPhotos(
+  context: Record<string, unknown> | null | undefined
+): number {
+  if (!context || !Array.isArray(context.raw_photos)) return 0;
+  return context.raw_photos.length;
+}
+
+export function photosUploadProgressAckText(photoCount: number): string {
+  return [
+    `Recibí la foto. Van ${photoCount} registrada(s).`,
+    `Mínimo ${RAW_PHOTOS_MIN_COUNT} para publicar.`,
+    "Cuando termines de subir todas las fotos, escribe «listo».",
+  ].join(" ");
+}
+
+export function photosBatchInsufficientAckText(photoCount: number): string {
+  const missing = Math.max(0, RAW_PHOTOS_MIN_COUNT - photoCount);
+  if (photoCount === 0) {
+    return `Aún no veo fotos registradas en el caso. Sube al menos ${RAW_PHOTOS_MIN_COUNT} y luego escribe «listo».`;
+  }
+  return `Van ${photoCount}/${RAW_PHOTOS_MIN_COUNT} fotos; faltan ${missing}. Sigue subiendo y escribe «listo» cuando termines.`;
+}
+
+export function photosBatchAdvancedAckText(photoCount: number): string {
+  return `Gracias, registré ${photoCount} foto(s). Avancé el caso a Gestionar publicación.`;
+}
+
+export function formatPhotosUploadRequestNotifyText(params: {
+  propertyLabel?: string | null;
+  caseId: string;
+  appUrl?: string | null;
+}): string {
+  const property =
+    params.propertyLabel?.trim() || "el inmueble del caso";
+  const caseRef = params.caseId.trim();
+  const shortCaseRef =
+    caseRef.length > 12 ? `…${caseRef.slice(-8)}` : caseRef;
+  const panelLine =
+    params.appUrl && /^https?:\/\//i.test(params.appUrl)
+      ? `Panel: ${params.appUrl.replace(/\/$/, "")}/chat/pending?case=${encodeURIComponent(caseRef)}`
+      : `Referencia del caso: ${shortCaseRef}`;
+
+  return [
+    `Solicitud de fotos — ${property}`,
+    "",
+    `Sube al menos ${RAW_PHOTOS_MIN_COUNT} fotos del inmueble por web o por este chat (puedes enviar más si lo consideras útil).`,
+    "",
+    "Fotos sugeridas:",
+    "• Fachada",
+    "• Sala / comedor",
+    "• Cocina",
+    "• Recámara principal",
+    "• Baño principal",
+    "• Extras opcionales: jardín, estacionamiento, amenidades, detalles",
+    "",
+    "Cuando termines de subir todas las fotos, responde «listo».",
+    "",
+    panelLine,
+  ].join("\n");
+}
+
+export type PhotoBatchCompletionStatus =
+  | "advanced"
+  | "already_advanced"
+  | "insufficient_photos"
+  | "no_photos"
+  | "wrong_step"
+  | "failed";
+
+export interface PhotoBatchCompletionResult {
+  status: PhotoBatchCompletionStatus;
+  case: OperationalCase;
+  photoCount: number;
+}
+
+const MAX_TRANSITION_ATTEMPTS = 4;
+
+/**
+ * Cierra el lote de fotos cuando el asesor escribe «listo» (mismo patrón que
+ * documentos). Avanza a package_ready solo si raw_photos >= RAW_PHOTOS_MIN_COUNT.
+ */
+export async function completePhotoBatchForCase(params: {
+  db: DbClient;
+  caseId: string;
+  channel: "web" | "telegram";
+  source: string;
+}): Promise<PhotoBatchCompletionResult> {
+  const { db, caseId, channel, source } = params;
+
+  let current = await getOperationalCase(db, caseId);
+  if (!current) {
+    throw new Error("case_not_found");
+  }
+
+  if (current.current_step === "package_ready") {
+    return {
+      status: "already_advanced",
+      case: current,
+      photoCount: countRawPhotos(current.context_jsonb),
+    };
+  }
+  if (current.current_step !== "photos_requested") {
+    return {
+      status: "wrong_step",
+      case: current,
+      photoCount: countRawPhotos(current.context_jsonb),
+    };
+  }
+
+  const photoCount = countRawPhotos(current.context_jsonb);
+  if (photoCount === 0) {
+    return { status: "no_photos", case: current, photoCount: 0 };
+  }
+  if (photoCount < RAW_PHOTOS_MIN_COUNT) {
+    return { status: "insufficient_photos", case: current, photoCount };
+  }
+
+  for (let attempt = 0; attempt < MAX_TRANSITION_ATTEMPTS; attempt += 1) {
+    const updated = await updateOperationalCase(db, current.id, current.version, {
+      status: "active",
+      currentStep: "package_ready",
+      nextActionAt: new Date().toISOString(),
+    });
+    if (updated) {
+      await insertOperationalCaseEvent(db, {
+        caseId: updated.id,
+        eventType: "step_completed",
+        actor: "user",
+        stepKey: "photos_requested",
+        payload: {
+          source,
+          channel,
+          kind: "photos_uploaded",
+          from_step: "photos_requested",
+          to_step: "package_ready",
+          photos_count: photoCount,
+          minimum_required: RAW_PHOTOS_MIN_COUNT,
+        },
+      });
+      return { status: "advanced", case: updated, photoCount };
+    }
+
+    const reread = await getOperationalCase(db, caseId);
+    if (!reread) {
+      throw new Error("case_not_found");
+    }
+    current = reread;
+    if (current.current_step === "package_ready") {
+      return {
+        status: "already_advanced",
+        case: current,
+        photoCount: countRawPhotos(current.context_jsonb),
+      };
+    }
+  }
+
+  return { status: "failed", case: current, photoCount };
+}

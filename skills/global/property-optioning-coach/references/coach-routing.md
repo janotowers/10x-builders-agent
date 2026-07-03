@@ -9,7 +9,7 @@ Referencia mínima para el flujo `property_optioning`. El coach delega en sub-sk
 | Comparables | `perform-comparable-analysis` |
 | Precio de salida | `prepare-listing-price` |
 | Contrato de comisión | `prepare-commission-contract` |
-| Sesión de fotos | `coordinate-photo-session` |
+| Solicitar fotos | `request-property-photos` |
 | Publicación | `publish-listing-package` |
 
 En pruebas N1 del laboratorio, `read_skill_reference` con `name=coach-routing` valida que la skill raíz y sus includes resuelven referencias en disco.

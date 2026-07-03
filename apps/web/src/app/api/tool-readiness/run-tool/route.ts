@@ -886,7 +886,7 @@ function instantAtTestTimezone(
   );
 }
 
-/** Mañana 8:00 → +5 días 20:00 (coordinate-photo-session). */
+/** Mañana 8:00 → +5 días 20:00 (request-property-photos, legado N1 calendar). */
 function photoSessionCalendarListWindow(now = new Date()) {
   const { year, month, day } = calendarPartsInTestTimezone(now);
   return {

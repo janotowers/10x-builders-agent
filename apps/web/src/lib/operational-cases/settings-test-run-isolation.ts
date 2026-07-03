@@ -30,7 +30,7 @@ const SKILL_OUTPUT_KEYS: Record<string, readonly string[]> = {
   ],
   "prepare-listing-price": ["pricing_proposal"],
   "prepare-commission-contract": ["contract_draft", "contract_review"],
-  "coordinate-photo-session": ["photo_session"],
+  "request-property-photos": ["photo_session"],
   "publish-listing-package": [
     "listing_publication",
     "publication_result",
@@ -56,7 +56,7 @@ const STEP_OUTPUT_KEYS: Array<{
     keys: ["contract_draft", "contract_review"],
   },
   {
-    match: (scenarioId) => scenarioId.startsWith("photos_scheduled_"),
+    match: (scenarioId) => scenarioId.startsWith("photos_requested_"),
     keys: ["photo_session"],
   },
   {

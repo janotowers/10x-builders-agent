@@ -174,6 +174,13 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     intent: "reminder",
     reviewCtaLabel: "Revisar documentos",
   },
+  photos_upload_requested: {
+    kind: "photos_upload_requested",
+    label: "Solicitar fotos al asesor",
+    visibleInInbox: true,
+    intent: "reminder",
+    reviewCtaLabel: "Subir fotos del inmueble",
+  },
   titularidad_review: {
     kind: "titularidad_review",
     label: "Verificación de titularidad",

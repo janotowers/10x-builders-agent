@@ -528,7 +528,35 @@ function namesMatchFuzzy(a: string, b: string) {
   const aTokens = nameTokenSet(a);
   const bTokens = nameTokenSet(b);
   if (aTokens.size === 0 || bTokens.size === 0) return false;
-  const common = [...aTokens].filter((token) => bTokens.has(token)).length;
+  const boundedLevenshtein = (left: string, right: string, maxDistance = 1) => {
+    if (left === right) return 0;
+    if (Math.abs(left.length - right.length) > maxDistance) return maxDistance + 1;
+    const prev = new Array(right.length + 1)
+      .fill(0)
+      .map((_, idx) => idx);
+    for (let i = 1; i <= left.length; i += 1) {
+      let current = i;
+      let diagonal = i - 1;
+      for (let j = 1; j <= right.length; j += 1) {
+        const insert = current + 1;
+        const remove = prev[j] + 1;
+        const replace = diagonal + (left[i - 1] === right[j - 1] ? 0 : 1);
+        diagonal = prev[j];
+        current = Math.min(insert, remove, replace);
+        prev[j] = current;
+      }
+      if (Math.min(...prev) > maxDistance) return maxDistance + 1;
+      prev[0] = i;
+    }
+    return prev[right.length];
+  };
+  const tokensEquivalent = (left: string, right: string) =>
+    left === right ||
+    boundedLevenshtein(left, right, left.length >= 7 && right.length >= 7 ? 2 : 1) <=
+      (left.length >= 7 && right.length >= 7 ? 2 : 1);
+  const common = [...aTokens].filter((token) =>
+    [...bTokens].some((other) => tokensEquivalent(token, other))
+  ).length;
   const recallA = common / aTokens.size;
   const recallB = common / bTokens.size;
   return recallA >= 0.8 && recallB >= 0.5;
@@ -3356,8 +3384,9 @@ const PROPERTY_OPTIONING_STEP_ORDER = [
   "comparables_in_progress",
   "price_proposal_pending",
   "contract_pending",
-  "photos_scheduled",
-  "publication_pending",
+  "photos_requested",
+  "package_ready",
+  "published",
 ] as const;
 
 function propertyOptioningStepRank(step: string | null | undefined) {

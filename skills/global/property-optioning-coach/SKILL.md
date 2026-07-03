@@ -8,7 +8,7 @@ description: |
   una propiedad / una casa / un depto", "conseguir la exclusiva",
   "firmar contrato de comisión", "nueva captación", "pedir documentos al
   dueño", "preparar precio de salida", "hacer análisis de comparables",
-  "coordinar sesión de fotos", "publicar la propiedad en EasyBroker", o
+  "solicitar fotos al asesor", "publicar la propiedad en EasyBroker", o
   cualquier continuación de una conversación donde el usuario ya está
   capturando una propiedad. También úsala cuando el cron la dispare vía
   case binding porque el case_type es `property_optioning` (verás un
@@ -36,15 +36,13 @@ allowed_tools:
   - easybroker_create_listing
   - easybroker_upload_images
   - ungga_publish_listing
-  - calendar_list_events
-  - calendar_create_event
 includes:
   - request-property-documents
   - extract-property-characteristics
   - perform-comparable-analysis
   - prepare-listing-price
   - prepare-commission-contract
-  - coordinate-photo-session
+  - request-property-photos
   - publish-listing-package
 requires_tenant_context: true
 memory_extraction: ephemeral
@@ -127,7 +125,7 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
 | `comparables_in_progress` | `perform-comparable-analysis` | `easybroker_search_*`, `bigquery_lookup_local_comparables` (N1); `operational_case_persist_comparables_analysis` y `operational_case_update_state` son **internas** (N3/N4, no N1) |
 | `price_proposal_pending` | `prepare-listing-price` | `notify_user` (HITL) |
 | `contract_pending` | `prepare-commission-contract` | `generate_document_from_template`, `notify_user` |
-| `photos_scheduled` | `coordinate-photo-session` | `calendar_create_event`, `telegram_send_message_to_contact` |
+| `photos_requested` | `request-property-photos` | `notify_user`, `operational_case_update_state` |
 | `package_ready` | `publish-listing-package` | `image_watermark`, `easybroker_create_listing`, `ungga_publish_listing` |
 
 ## Workflow (alto nivel)

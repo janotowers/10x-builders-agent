@@ -452,18 +452,36 @@ function validateStepExpect(
       }
     }
   }
-  if (options?.step_key === "photos_scheduled") {
-    if (after.status !== "waiting_external") {
-      step_outcome_errors.push("status debe ser waiting_external tras proponer horarios.");
+  if (options?.step_key === "photos_requested") {
+    if (after.status !== "waiting_internal") {
+      step_outcome_errors.push("status debe ser waiting_internal tras solicitar fotos.");
     }
-    const telegramExecuted = toolCalls.some(
+    const notifyExecuted = toolCalls.some(
       (call) =>
-        call.tool_name === "telegram_send_message_to_contact" &&
+        call.tool_name === "notify_user" &&
         (call.status === "executed" || call.status === "pending_confirmation")
     );
-    if (!telegramExecuted) {
+    if (!notifyExecuted) {
       step_outcome_errors.push(
-        "telegram_send_message_to_contact debe ejecutarse para proponer horarios."
+        "notify_user debe ejecutarse para solicitar fotos al asesor."
+      );
+    }
+    const blockedTools = [
+      "telegram_send_message_to_contact",
+      "calendar_list_events",
+      "calendar_create_event",
+      "calendar_update_event",
+    ];
+    const blockedUsed = blockedTools.filter((toolName) =>
+      toolCalls.some(
+        (call) =>
+          call.tool_name === toolName &&
+          (call.status === "executed" || call.status === "pending_confirmation")
+      )
+    );
+    if (blockedUsed.length > 0) {
+      step_outcome_errors.push(
+        `No deben usarse tools de contacto externo/calendario en este paso: ${blockedUsed.join(", ")}.`
       );
     }
   }

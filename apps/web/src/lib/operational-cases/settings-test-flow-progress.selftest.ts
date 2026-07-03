@@ -622,4 +622,50 @@ assert.deepEqual(
   "Ver actividad debe listar evidencia en orden cronológico (antiguo arriba, reciente abajo)"
 );
 
+const comparablesDecisionAttribution = buildSettingsTestFlowProgress({
+  opCase: {
+    current_step: "price_proposal_pending",
+    context_jsonb: {},
+  } as OperationalCase,
+  events: [
+    {
+      id: "evt-comparables-decision",
+      case_id: "case-1",
+      event_type: "human_decision",
+      actor: "user",
+      created_at: "2026-06-05T10:31:00.000Z",
+      payload_jsonb: {
+        kind: "comparables_search_expansion_decision_response",
+        decision: "use_avaclick_primary",
+        step_key: "comparables_in_progress",
+      },
+    },
+    {
+      id: "evt-price-prepared",
+      case_id: "case-1",
+      event_type: "state_changed",
+      actor: "system",
+      created_at: "2026-06-05T10:31:02.000Z",
+      payload_jsonb: {
+        kind: "price_proposal_prepared",
+        step_key: "price_proposal_pending",
+      },
+    },
+  ] as unknown as Parameters<typeof buildSettingsTestFlowProgress>[0]["events"],
+  flow: [
+    { step_key: "comparables_in_progress", step_label: "Análisis de comparables" },
+    { step_key: "price_proposal_pending", step_label: "Preparar precio" },
+  ],
+});
+assert.deepEqual(
+  comparablesDecisionAttribution[0]?.evidenceItems.map((item) => item.id),
+  ["evt-comparables-decision"],
+  "la decisión de comparables debe atribuirse al paso comparables_in_progress"
+);
+assert.deepEqual(
+  comparablesDecisionAttribution[1]?.evidenceItems.map((item) => item.id),
+  ["evt-price-prepared"],
+  "la propuesta de precio preparada debe atribuirse al paso price_proposal_pending"
+);
+
 console.log("settings-test-flow-progress.selftest: ok");

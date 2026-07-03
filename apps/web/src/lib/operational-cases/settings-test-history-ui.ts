@@ -4,6 +4,15 @@ import {
   OPERATIONAL_CASE_STATUS_LABELS,
   operationalCaseDisplayTitle,
 } from "@/lib/operational-cases/instance-list-ui";
+import {
+  buildOperationalStepLabelMap,
+  type OperationalStepLabelMap,
+} from "@/lib/operational-cases/operational-step-labels";
+
+export {
+  buildOperationalStepLabelMap,
+  type OperationalStepLabelMap,
+} from "@/lib/operational-cases/operational-step-labels";
 
 export type SettingsTestCleanupTarget = "notifications" | "tool_calls" | "all";
 
@@ -168,20 +177,6 @@ const LAB_TOOL_ARG_LABELS: Record<string, string> = {
   text: "Texto",
   chat_id: "Chat",
 };
-
-export type OperationalStepLabelMap = Record<string, string>;
-
-export function buildOperationalStepLabelMap(
-  steps: Array<{ step_key: string; step_label?: string | null }>
-): OperationalStepLabelMap {
-  const map: OperationalStepLabelMap = {};
-  for (const step of steps) {
-    const key = step.step_key?.trim();
-    const label = step.step_label?.trim();
-    if (key && label) map[key] = label;
-  }
-  return map;
-}
 
 export function formatOperationalStepArgValue(
   stepKey: string,

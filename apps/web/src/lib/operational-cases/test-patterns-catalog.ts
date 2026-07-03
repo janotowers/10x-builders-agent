@@ -564,10 +564,10 @@ export const PROPERTY_OPTIONING_STEP_PATTERNS: Record<
       "PATTERN_SKILL_TEST_CALL_DETAILS",
     ],
   },
-  photos_scheduled: {
-    stepKey: "photos_scheduled",
-    n3Skills: ["coordinate-photo-session"],
-    n4ScenarioIds: ["photos_scheduled_propose_slots"],
+  photos_requested: {
+    stepKey: "photos_requested",
+    n3Skills: ["request-property-photos"],
+    n4ScenarioIds: ["photos_requested_request_internal_photos"],
     patternIds: [
       "PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS",
       "PATTERN_STEP_STATUS_N3_VS_N4",

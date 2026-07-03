@@ -146,6 +146,25 @@ export function formatOperationalCaseEventSummary(
   if (technicalKind === "controlled_test_e2e_started") return "Transición con agente iniciada";
   if (technicalKind === "comparables_analysis_completed")
     return "Análisis de comparables completado";
+  if (technicalKind === "comparables_search_expansion_decision_response") {
+    const decision =
+      typeof payload.decision === "string" ? payload.decision : "";
+    const decisionLabel =
+      decision === "use_avaclick_primary"
+        ? "usar Avaclick como base"
+        : decision === "use_current_comparables"
+          ? "avanzar con comparables actuales"
+          : decision === "expand_search"
+            ? "ampliar búsqueda"
+            : null;
+    return withTechnicalKind(
+      decisionLabel
+        ? `Decisión de comparables: ${decisionLabel}`
+        : "Decisión de comparables registrada",
+      technicalKind,
+      includeTechnicalKind
+    );
+  }
   if (technicalKind === "price_proposal_prepared") return "Propuesta de precio preparada";
   if (technicalKind === "price_approval_requested") return "Aprobación de precio solicitada";
   if (technicalKind === "price_approved") return "Precio aprobado";
@@ -153,6 +172,45 @@ export function formatOperationalCaseEventSummary(
   if (technicalKind === "price_rejected") return "Precio rechazado";
   if (technicalKind === "contract_preparation_entered") return "Preparación de contrato iniciada";
   if (technicalKind === "contract_review_requested") return "Revisión de contrato solicitada";
+  if (technicalKind === "contract_email_send_attempted")
+    return withTechnicalKind(
+      "Enviando contrato por email al propietario",
+      technicalKind,
+      includeTechnicalKind
+    );
+  if (technicalKind === "contract_email_send_failed") {
+    const reason =
+      typeof payload.error_reason === "string" && payload.error_reason.trim()
+        ? payload.error_reason.trim()
+        : typeof payload.status === "string" && payload.status.trim()
+          ? payload.status.trim()
+          : null;
+    return withTechnicalKind(
+      reason
+        ? `Falló el envío del contrato por email (${truncateDetail(reason)})`
+        : "Falló el envío del contrato por email",
+      technicalKind,
+      includeTechnicalKind
+    );
+  }
+  if (technicalKind === "contract_approved_for_email_send")
+    return withTechnicalKind(
+      "Contrato aprobado para envío por email",
+      technicalKind,
+      includeTechnicalKind
+    );
+  if (technicalKind === "contract_sent_to_owner_email")
+    return withTechnicalKind(
+      "Contrato enviado por email al propietario",
+      technicalKind,
+      includeTechnicalKind
+    );
+  if (technicalKind === "contract_revised_uploaded_and_sent")
+    return withTechnicalKind(
+      "Contrato corregido recibido y enviado al propietario",
+      technicalKind,
+      includeTechnicalKind
+    );
   if (technicalKind === "contract_data_review_requested")
     return "Datos contractuales solicitados al asesor";
   if (technicalKind === "contract_data_review_response")

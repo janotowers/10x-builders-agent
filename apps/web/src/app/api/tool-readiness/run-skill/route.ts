@@ -32,7 +32,7 @@ import {
   validateComparablesCaseOutcome,
 } from "@/lib/operational-cases/comparables-analysis-validation";
 import { validatePackageReadyPreflightOutcome } from "@/lib/operational-cases/package-ready-preflight-validation";
-import { validatePhotosScheduledProposeSlotsOutcome } from "@/lib/operational-cases/photos-scheduled-propose-slots-validation";
+import { validatePhotosRequestedInternalOutcome } from "@/lib/operational-cases/photos-requested-internal-validation";
 import { settingsTestPropertyDataSeed } from "@/lib/operational-cases/property-search-zone";
 import { settingsTestApprovedPricingProposalSeed } from "@/lib/operational-cases/step-test-seeds";
 import { isolateContextForSkillTest } from "@/lib/operational-cases/settings-test-run-isolation";
@@ -126,19 +126,13 @@ const SKILL_TEST_CONTRACTS: Record<string, SkillTestContract> = {
     tool_coverage_policy: "expected_only",
     required_tools_policy: "all_ready_and_tested",
   },
-  "coordinate-photo-session": {
+  "request-property-photos": {
     expected_context_keys: [],
-    expected_events: ["reminder_sent"],
-    expected_tool_calls: [
-      "calendar_list_events",
-      "telegram_send_message_to_contact",
-    ],
+    expected_tool_calls: ["notify_user"],
     expected_internal_tool_calls: ["operational_case_update_state"],
     optional_tool_calls: [
-      "calendar_create_event",
-      "calendar_update_event",
-      "notify_user",
       "operational_case_add_event",
+      "operational_case_register_document",
     ],
     tool_coverage_policy: "expected_only",
     required_tools_policy: "all_ready_and_tested",
@@ -502,7 +496,7 @@ async function applyRequestPropertyDocumentsSkillTestSeed(
   return updated ?? opCase;
 }
 
-async function applyPhotosScheduledSkillTestSeed(
+async function applyPhotosRequestedSkillTestSeed(
   db: ReturnType<typeof createServerClient>,
   opCase: OperationalCase
 ): Promise<OperationalCase> {
@@ -511,7 +505,7 @@ async function applyPhotosScheduledSkillTestSeed(
     : {};
   const context = isolateContextForSkillTest(
     rawContext,
-    "coordinate-photo-session"
+    "request-property-photos"
   );
   const propertyData = settingsTestPropertyDataSeed(context);
   const ownerName =
@@ -543,12 +537,13 @@ async function applyPhotosScheduledSkillTestSeed(
   };
 
   const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    currentStep: "photos_scheduled",
+    currentStep: "photos_requested",
     status: "active" as OperationalCaseStatus,
     externalContact,
     context: mergeSkillTestContext(context, {
       property_data: propertyData,
-      skill_test_n3_seed: "photos_scheduled_propose_slots",
+      raw_photos: [],
+      skill_test_n3_seed: "photos_requested_request_internal_photos",
     }),
   });
   return updated ?? opCase;
@@ -880,7 +875,7 @@ function validateContract(
       ? [`al menos una de: ${skillToolIds.join(", ")}`]
       : [];
   let package_ready_outcome_errors: string[] = [];
-  let photos_scheduled_outcome_errors: string[] = [];
+  let photos_requested_outcome_errors: string[] = [];
   let comparables_outcome_errors: string[] = [];
   let comparables_usable_count: number | null = null;
   let comparables_defensible: boolean | null = null;
@@ -898,14 +893,18 @@ function validateContract(
     });
     package_ready_outcome_errors = outcome.errors;
   }
-  if (skillSlug === "coordinate-photo-session") {
-    const outcome = validatePhotosScheduledProposeSlotsOutcome({
+  if (skillSlug === "request-property-photos") {
+    const outcome = validatePhotosRequestedInternalOutcome({
       current_step: after.current_step ?? "",
       status: after.status ?? "",
       toolCalls,
-      reminder_sent_event: events.some((event) => event.event_type === "reminder_sent"),
+      notify_user_executed: toolCalls.some(
+        (call) =>
+          call.tool_name === "notify_user" &&
+          (call.status === "executed" || call.status === "pending_confirmation")
+      ),
     });
-    photos_scheduled_outcome_errors = outcome.errors;
+    photos_requested_outcome_errors = outcome.errors;
   }
   if (skillSlug === "perform-comparable-analysis") {
     const outcome = validateComparablesCaseOutcome({
@@ -932,7 +931,7 @@ function validateContract(
       missing_any_tool_call.length === 0 &&
       comparables_outcome_errors.length === 0 &&
       package_ready_outcome_errors.length === 0 &&
-      photos_scheduled_outcome_errors.length === 0,
+      photos_requested_outcome_errors.length === 0,
     expected_tool_calls,
     expected_internal_tool_calls: contract.expected_internal_tool_calls ?? [],
     optional_tool_calls: contract.optional_tool_calls ?? [],
@@ -947,7 +946,7 @@ function validateContract(
     comparables_usable_count,
     comparables_defensible,
     package_ready_outcome_errors,
-    photos_scheduled_outcome_errors,
+    photos_requested_outcome_errors,
   };
 }
 
@@ -958,8 +957,8 @@ function buildSkillTestMessage(params: {
   contract: SkillTestContract;
 }) {
   const objectiveLine =
-    params.skill.skill_slug === "coordinate-photo-session"
-      ? "Objetivo de prueba: consultar calendario, proponer 3 ventanas diurnas al contacto por Telegram y dejar waiting_external. No hace falta photo_session previo ni claves nuevas en context_jsonb."
+    params.skill.skill_slug === "request-property-photos"
+      ? "Objetivo de prueba: solicitar fotos al asesor interno, dejar waiting_internal y evitar Telegram externo/calendario."
       : params.contract.expected_context_keys.length > 0
         ? `Objetivo de prueba: generar o actualizar en context_jsonb estas claves: ${params.contract.expected_context_keys.join(", ")}.`
         : "Objetivo de prueba: cubrir el contrato operativo del paso aunque no haya artefacto context_jsonb nuevo.";
@@ -1038,17 +1037,17 @@ function buildSkillTestMessage(params: {
       "Llama generate_document_from_template exactamente una vez en este tick. Reutiliza el signed_url/output_path devuelto para notify_user y operational_case_add_event; no generes el mismo contrato dos veces."
     );
   }
-  if (params.skill.skill_slug === "coordinate-photo-session") {
+  if (params.skill.skill_slug === "request-property-photos") {
     lines.push(
-      "Flujo de este escenario: calendar_list_events (ventana mañana +5 días, calendar_id=primary) para ver disponibilidad; propone 3 ventanas diurnas al dueño con telegram_send_message_to_contact(purpose=propose_photo_slots) usando external_contact_jsonb.chat_id del caso.",
-      "Inserta operational_case_add_event(reminder_sent, payload con purpose=propose_photo_slots y las opciones). operational_case_update_state: current_step=photos_scheduled, status=waiting_external.",
-      "NO uses calendar_create_event ni calendar_update_event en este tick (el dueño aún no confirmó horario).",
-      "Invoca telegram_send_message_to_contact como máximo una vez en este tick."
+      "Flujo de este escenario: solicita al asesor interno la subida de fotos con notify_user(kind=photos_upload_requested), mínimo 5 fotos útiles (fachada, sala/comedor, cocina, recámara principal, baño principal) e indica que responda «listo» al terminar.",
+      "Inserta operational_case_add_event(reminder_sent, payload con purpose=photos_upload_requested) y ejecuta operational_case_update_state con current_step=photos_requested y status=waiting_internal. NO avances a package_ready en este tick.",
+      "NO uses telegram_send_message_to_contact ni ninguna tool de calendario en este tick."
     );
   }
   if (params.skill.skill_slug === "publish-listing-package") {
     lines.push(
       "Preflight obligatorio: verifica pricing_proposal.approval_status=approved, evidencia de contrato enviado por email al dueño (context_jsonb.contract_review.status=sent_by_email o evento step_completed kind=contract_sent_to_owner_email) y raw_photos con al menos 5 fotos.",
+      "Antes de preparar/publicar, confirma mínimos de ficha EasyBroker: property_type, operation_type, target_price>0, currency, municipio/estado y dirección usable; para casa/departamento exige bedrooms, bathrooms, parking_spots y m2 útiles (construcción o total). Para terreno/lote exige area_total_m2.",
       "Si falla algún gate (en esta prueba raw_photos está vacío o insuficiente): NO uses image_watermark, easybroker_create_listing, easybroker_upload_images ni ungga_publish_listing.",
       "En preflight bloqueado: notify_user al asesor listando qué falta (fotos crudas, evidencia de contrato enviado por email, etc.), luego operational_case_update_state con current_step=package_ready y status=paused (no waiting_internal ni completed). operational_case_add_event es opcional en este escenario.",
       "No avances a published ni marques el caso completed en este escenario."
@@ -1155,10 +1154,10 @@ export async function POST(request: Request) {
       opCase = await applyPackageReadySkillTestSeed(db, opCase);
     }
     if (
-      skillSlug === "coordinate-photo-session" &&
+      skillSlug === "request-property-photos" &&
       isSettingsTestCase(opCase)
     ) {
-      opCase = await applyPhotosScheduledSkillTestSeed(db, opCase);
+      opCase = await applyPhotosRequestedSkillTestSeed(db, opCase);
     }
     if (
       skillSlug === "request-property-documents" &&

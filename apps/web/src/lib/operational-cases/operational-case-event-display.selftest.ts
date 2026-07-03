@@ -117,4 +117,100 @@ assert.equal(
   "Conflicto de dirección detectado entre fuentes"
 );
 
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      actor: "user",
+      payload: {
+        kind: "comparables_search_expansion_decision_response",
+        decision: "use_avaclick_primary",
+      },
+    })
+  ),
+  "Decisión de comparables: usar Avaclick como base"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      actor: "user",
+      payload: {
+        kind: "comparables_search_expansion_decision_response",
+        decision: "expand_search",
+      },
+    })
+  ),
+  "Decisión de comparables: ampliar búsqueda"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      actor: "user",
+      payload: {
+        kind: "comparables_search_expansion_decision_response",
+        decision: "use_current_comparables",
+      },
+    })
+  ),
+  "Decisión de comparables: avanzar con comparables actuales"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      actor: "user",
+      payload: {
+        kind: "contract_email_send_attempted",
+        channel: "email",
+        owner_email: "alex@example.com",
+      },
+    })
+  ),
+  "Enviando contrato por email al propietario"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "state_changed",
+      payload: {
+        kind: "contract_email_send_failed",
+        channel: "email",
+        status: "gmail_send_failed",
+        error_reason: "insufficientPermissions",
+      },
+    })
+  ),
+  "Falló el envío del contrato por email (insufficientPermissions)"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "state_changed",
+      payload: {
+        kind: "contract_email_send_failed",
+        channel: "email",
+        status: "gmail_send_failed",
+      },
+    })
+  ),
+  "Falló el envío del contrato por email (gmail_send_failed)"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "step_completed",
+      payload: { kind: "contract_sent_to_owner_email" },
+    })
+  ),
+  "Contrato enviado por email al propietario"
+);
+
 console.log("operational-case-event-display.selftest: ok");

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   blockedAwaitingDocumentsTransitionReason,
+  blockedPropertyOptioningStepRegressionReason,
   buildPropertyDataMinimumsSummaryMessage,
   buildOperationalCaseIntakeUpdateContext,
   buildOperationalCaseCreateContext,
@@ -225,6 +226,30 @@ assert.equal(
     currentStep: "awaiting_documents",
     nextStep: "awaiting_documents",
     recentEventTypes: [],
+  }),
+  null
+);
+assert.equal(
+  blockedPropertyOptioningStepRegressionReason({
+    caseType: "property_optioning",
+    currentStep: "package_ready",
+    nextStep: "photos_requested",
+  }),
+  "property_optioning_step_regression_blocked"
+);
+assert.equal(
+  blockedPropertyOptioningStepRegressionReason({
+    caseType: "property_optioning",
+    currentStep: "photos_requested",
+    nextStep: "package_ready",
+  }),
+  null
+);
+assert.equal(
+  blockedPropertyOptioningStepRegressionReason({
+    caseType: "property_optioning",
+    currentStep: "package_ready",
+    nextStep: "published",
   }),
   null
 );

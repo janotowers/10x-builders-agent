@@ -9,6 +9,7 @@ import {
   getGoogleCalendarAccessToken,
   getActiveE2ELabSession,
   insertOperationalCaseEvent,
+  updateOperationalCase,
 } from "@agents/db";
 import { isPropertyOptioningIntent, runAgent } from "@agents/agent";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
@@ -45,6 +46,12 @@ import {
   looksLikeDocumentBatchComplete,
 } from "@/lib/operational-cases/document-batch-completion";
 import {
+  completePhotoBatchForCase,
+  photosBatchAdvancedAckText,
+  photosBatchInsufficientAckText,
+  photosUploadProgressAckText,
+} from "@/lib/operational-cases/photo-batch-completion";
+import {
   buildExternalContactDeepLink,
   buildExternalContactSetupMessage,
 } from "@/lib/operational-cases/external-contact-link";
@@ -59,6 +66,8 @@ type IncomingAttachment = {
   sha256: string;
   suggestedKind?: string;
 };
+
+const PHOTO_ATTACHMENT_EXTENSION = /\.(jpe?g|png|webp|heic|heif|gif|bmp|tiff?)$/i;
 
 function fileExtensionFromName(fileName: string): string {
   const parts = fileName.toLowerCase().split(".");
@@ -78,6 +87,15 @@ function caseWaitingContractRevisionUpload(opCase: OperationalCase): boolean {
   const review = (context as Record<string, unknown>).contract_review;
   if (!review || typeof review !== "object" || Array.isArray(review)) return false;
   return (review as Record<string, unknown>).status === "awaiting_revision_upload";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function looksLikePhotoAttachment(attachment: IncomingAttachment): boolean {
+  if (attachment.mimeType.toLowerCase().startsWith("image/")) return true;
+  return PHOTO_ATTACHMENT_EXTENSION.test(attachment.fileName);
 }
 
 function normalizeIncomingAttachments(raw: unknown): IncomingAttachment[] {
@@ -116,20 +134,44 @@ async function registerInternalCaseAttachments(params: {
   db: ReturnType<typeof createServerClient>;
   opCase: OperationalCase;
   attachments: IncomingAttachment[];
-}): Promise<number> {
-  if (params.attachments.length === 0) return 0;
+}): Promise<{
+  registered: number;
+  opCase: OperationalCase;
+  photosAdded: number;
+  rawPhotosCount: number;
+}> {
+  if (params.attachments.length === 0) {
+    return {
+      registered: 0,
+      opCase: params.opCase,
+      photosAdded: 0,
+      rawPhotosCount: 0,
+    };
+  }
   const target = resolveOperationalCaseDocumentRequestTarget({
     externalContact: params.opCase.external_contact_jsonb,
     context: params.opCase.context_jsonb,
   });
-  if (target !== "internal_user" || params.opCase.current_step !== "awaiting_documents") {
-    return 0;
+  let currentCase = params.opCase;
+  const supportsInternalDocs =
+    target === "internal_user" && params.opCase.current_step === "awaiting_documents";
+  const supportsInternalPhotos = params.opCase.current_step === "photos_requested";
+  if (!supportsInternalDocs && !supportsInternalPhotos) {
+    return {
+      registered: 0,
+      opCase: params.opCase,
+      photosAdded: 0,
+      rawPhotosCount: 0,
+    };
   }
+
   let registered = 0;
+  let photosAdded = 0;
+  let rawPhotosCount = 0;
   for (const attachment of params.attachments) {
     const document = await createOperationalCaseDocument(params.db, {
-      caseId: params.opCase.id,
-      userId: params.opCase.user_id,
+      caseId: currentCase.id,
+      userId: currentCase.user_id,
       kind: attachment.suggestedKind ?? "unknown",
       displayName: attachment.suggestedKind ?? "unknown",
       storageBucket: attachment.storageBucket,
@@ -145,7 +187,7 @@ async function registerInternalCaseAttachments(params: {
       blocking: (attachment.suggestedKind ?? "unknown") === "escritura_descripcion",
     });
     await insertOperationalCaseEvent(params.db, {
-      caseId: params.opCase.id,
+      caseId: currentCase.id,
       eventType: "external_response",
       actor: "user",
       payload: {
@@ -153,13 +195,61 @@ async function registerInternalCaseAttachments(params: {
         source: "advisor_web_chat",
         document_id: document.id,
         document_kind: document.kind,
-        current_step: params.opCase.current_step,
-        step_key: params.opCase.current_step,
+        current_step: currentCase.current_step,
+        step_key: currentCase.current_step,
       },
     });
     registered += 1;
+
+    if (!supportsInternalPhotos || !looksLikePhotoAttachment(attachment)) {
+      continue;
+    }
+    const context = isRecord(currentCase.context_jsonb)
+      ? (currentCase.context_jsonb as Record<string, unknown>)
+      : {};
+    const existingRawPhotos = Array.isArray(context.raw_photos)
+      ? context.raw_photos.filter((item): item is Record<string, unknown> => isRecord(item))
+      : [];
+    const duplicate = existingRawPhotos.some((item) => {
+      const sameDocument = typeof item.document_id === "string" && item.document_id === document.id;
+      const samePath =
+        typeof item.storage_path === "string" && item.storage_path === attachment.storagePath;
+      return sameDocument || samePath;
+    });
+    if (duplicate) continue;
+
+    const nextRawPhotos = [
+      ...existingRawPhotos,
+      {
+        document_id: document.id,
+        storage_bucket: attachment.storageBucket,
+        storage_path: attachment.storagePath,
+        original_name: attachment.fileName,
+        content_type: attachment.mimeType,
+        sha256: attachment.sha256,
+        source: "advisor_web",
+        uploaded_at: new Date().toISOString(),
+      },
+    ];
+    const updated = await updateOperationalCase(params.db, currentCase.id, currentCase.version, {
+      currentStep: "photos_requested",
+      status: "waiting_internal",
+      context: {
+        ...context,
+        raw_photos: nextRawPhotos,
+      },
+    });
+    if (!updated) continue;
+    currentCase = updated;
+    photosAdded += 1;
+    rawPhotosCount = nextRawPhotos.length;
   }
-  return registered;
+  return {
+    registered,
+    opCase: currentCase,
+    photosAdded,
+    rawPhotosCount,
+  };
 }
 
 export async function POST(request: Request) {
@@ -571,11 +661,21 @@ export async function POST(request: Request) {
             return await respondConversational(choice.responseText);
           }
         }
-        await registerInternalCaseAttachments({
+        const attachmentRegistration = await registerInternalCaseAttachments({
           db,
           opCase: conversationalCase,
           attachments: incomingAttachments,
         });
+        conversationalCase = attachmentRegistration.opCase;
+        if (
+          incomingAttachments.length > 0 &&
+          attachmentRegistration.photosAdded > 0 &&
+          conversationalCase.current_step === "photos_requested"
+        ) {
+          return await respondConversational(
+            photosUploadProgressAckText(attachmentRegistration.rawPhotosCount)
+          );
+        }
         if (
           incomingAttachments.length > 0 &&
           caseWaitingContractRevisionUpload(conversationalCase)
@@ -644,6 +744,47 @@ export async function POST(request: Request) {
           }
           return await respondConversational(
             "Perfecto, marqué el caso como documentos recibidos y continúo con la extracción."
+          );
+        }
+        if (
+          conversationalCase.current_step === "photos_requested" &&
+          looksLikeDocumentBatchComplete(effectiveMessage)
+        ) {
+          const completion = await completePhotoBatchForCase({
+            db,
+            caseId: conversationalCase.id,
+            channel: "web",
+            source: "web_chat_internal_photos_marked_ready",
+          });
+          if (
+            completion.status === "no_photos" ||
+            completion.status === "insufficient_photos"
+          ) {
+            return await respondConversational(
+              photosBatchInsufficientAckText(completion.photoCount)
+            );
+          }
+          if (completion.status === "failed") {
+            return await respondConversational(
+              "Registré tu confirmación, pero no pude avanzar el caso en este momento. Intenta de nuevo en unos segundos."
+            );
+          }
+          conversationalCase = completion.case;
+          if (conversationalCase.context_jsonb?.e2e_controlled === true) {
+            void runSettingsTestCaseAgentTick(
+              db,
+              conversationalCase,
+              conversationalCase.user_id,
+              { source: "web_chat_internal_photos_marked_ready" }
+            ).catch((tickError) => {
+              console.error(
+                "[chat] internal photos marked ready tick failed:",
+                tickError
+              );
+            });
+          }
+          return await respondConversational(
+            photosBatchAdvancedAckText(completion.photoCount)
           );
         }
         conversationalCaseId = conversationalCase.id;

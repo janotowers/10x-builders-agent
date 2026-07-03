@@ -193,9 +193,10 @@ export function stepTestContextEnrichment(
         ),
         skill_test_n4_seed: scenarioId,
       };
-    case "photos_scheduled_propose_slots":
+    case "photos_requested_request_internal_photos":
       return {
         property_data: propertyData,
+        raw_photos: [],
         skill_test_n4_seed: scenarioId,
       };
     case "package_ready_preflight_blocked":

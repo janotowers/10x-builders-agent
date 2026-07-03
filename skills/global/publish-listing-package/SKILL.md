@@ -47,6 +47,11 @@ Producir y entregar:
      `context_jsonb.contract_review.status === "sent_by_email"` **o**
      evento `step_completed(kind=contract_sent_to_owner_email)` en timeline.
    - `context_jsonb.raw_photos[].length >= 5`.
+   - Campos mínimos de ficha EasyBroker: `property_type`, `operation_type`,
+     `target_price > 0`, `currency`, dirección usable (`municipality`, `state`
+     y calle o dirección legal). Para casa/departamento exige también
+     `bedrooms`, `bathrooms`, `parking_spots` y m2 (construcción o total).
+     Para terreno/lote exige `area_total_m2`.
    Si falla algún gate, `notify_user` al inmobiliario explicando qué falta y
    `status=paused`.
 
@@ -58,10 +63,16 @@ Producir y entregar:
    con `template_slug=listing_description, format=docx, data=...`. Si la
    plantilla no está, genera la descripción inline en markdown y persístela
    en `context_jsonb.listing_description_md`.
+   - Antes de redactar, solicita con `notify_user` si el asesor quiere agregar
+     highlights de venta (máximo 5 bullets) y persístelos en
+     `context_jsonb.listing_highlights`.
+   - Usa solo ingredientes verificados: property_data, fotos, zona validada y
+     highlights del asesor. No inventes amenidades ni cercanías no respaldadas.
 
 4. **HITL: publicar en EasyBroker**:
-   - Notifica al inmobiliario con un resumen completo del paquete.
-   - Cuando confirma, llama `easybroker_create_listing(...)`. Captura el
+   - Notifica al inmobiliario con un resumen completo del paquete y solicita
+     aprobación explícita para publicar.
+   - Solo cuando confirme, llama `easybroker_create_listing(...)`. Captura el
      `listing_id` retornado en `context_jsonb.published.easybroker.listing_id`.
    - Llama `easybroker_upload_images(listing_id, image_paths=watermarked_photos)`.
    - Inserta `operational_case_add_event(step_completed, payload={destination: "easybroker", listing_id})`.

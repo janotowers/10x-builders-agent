@@ -319,7 +319,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           expected_tool_calls: ["generate_document_from_template", "notify_user"],
         },
         message:
-          "Prueba controlada de paso (N4) para contract_pending — borrador real (Salida A). Actúa como property-optioning-coach. En este tick SOLO el flujo de contrato: enruta a prepare-commission-contract y usa únicamente generate_document_from_template y notify_user (no uses ungga_publish_listing, easybroker_*, image_watermark ni herramientas de package_ready). Verifica pricing_proposal.approval_status=approved. Llama generate_document_from_template(template_slug=commission_contract, format=docx, case_id=...) exactamente una vez; los placeholders del DOCX se rellenan desde el caso (no hace falta pasar data). Debe devolver status=rendered con output_path. NO uses la signed_url larga de Supabase en el mensaje: en notify_user(kind=contract_review) escribe «Descargar borrador del contrato» seguido del enlace estable /api/operational-cases/{case_id}/documents/contract_draft/download (URL completa con el dominio del sitio si lo conoces). Inserta human_decision kind=contract_drafted con ese mismo enlace corto. Deja current_step=contract_pending y status=waiting_internal. NO mandes el contrato al dueño por Telegram en este tick. NO avances a photos_scheduled.",
+          "Prueba controlada de paso (N4) para contract_pending — borrador real (Salida A). Actúa como property-optioning-coach. En este tick SOLO el flujo de contrato: enruta a prepare-commission-contract y usa únicamente generate_document_from_template y notify_user (no uses ungga_publish_listing, easybroker_*, image_watermark ni herramientas de package_ready). Verifica pricing_proposal.approval_status=approved. Llama generate_document_from_template(template_slug=commission_contract, format=docx, case_id=...) exactamente una vez; los placeholders del DOCX se rellenan desde el caso (no hace falta pasar data). Debe devolver status=rendered con output_path. NO uses la signed_url larga de Supabase en el mensaje: en notify_user(kind=contract_review) escribe «Descargar borrador del contrato» seguido del enlace estable /api/operational-cases/{case_id}/documents/contract_draft/download (URL completa con el dominio del sitio si lo conoces). Inserta human_decision kind=contract_drafted con ese mismo enlace corto. Deja current_step=contract_pending y status=waiting_internal. NO mandes el contrato al dueño por Telegram en este tick. NO avances a photos_requested.",
       },
       {
         id: "contract_pending_advisor_approves_send",
@@ -331,7 +331,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
         seed_summary:
           "Entrada: contract_pending / waiting_internal; requiere contract_draft.output_path del escenario «Borrador de contrato para revisión».",
         expect_summary:
-          "Salida: photos_scheduled / paused (caso de prueba) con eventos de aprobación y envío por email.",
+          "Salida: photos_requested / paused (caso de prueba) con eventos de aprobación y envío por email.",
         seed: {
           current_step: "contract_pending",
           status: "waiting_internal",
@@ -340,7 +340,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           },
         },
         expect: {
-          current_step: "photos_scheduled",
+          current_step: "photos_requested",
           status: "paused",
           expected_events: [
             "human_decision:contract_approved_for_email_send",
@@ -389,7 +389,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
         seed_summary:
           "Entrada de laboratorio: contract_pending tras envío al dueño (flujo legado o simulación).",
         expect_summary:
-          "Salida esperada en laboratorio: photos_scheduled / paused con step_completed kind=contract_signed.",
+          "Salida esperada en laboratorio: photos_requested / paused con step_completed kind=contract_signed.",
         seed: {
           current_step: "contract_pending",
           status: "paused",
@@ -399,7 +399,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           },
         },
         expect: {
-          current_step: "photos_scheduled",
+          current_step: "photos_requested",
           status: "paused",
           expected_events: ["step_completed:contract_signed"],
         },
@@ -408,29 +408,29 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
         decision_text: "contrato firmado file_id=test_signed_contract.pdf",
       },
     ],
-    photos_scheduled: [
+    photos_requested: [
       {
-        id: "photos_scheduled_propose_slots",
-        label: "Proponer horarios de fotos al dueño",
+        id: "photos_requested_request_internal_photos",
+        label: "Solicitar fotos al asesor interno",
         summary:
-          "Caso en photos_scheduled: la raíz revisa calendario, propone ventanas al contacto externo y deja el caso esperando respuesta.",
-        seed_summary: "Entrada: photos_scheduled / active con property_data.",
+          "Caso en photos_requested: la raíz solicita fotos al asesor interno y deja el caso en espera de subida.",
+        seed_summary: "Entrada: photos_requested / active con property_data y raw_photos vacío.",
         expect_summary:
-          "Salida: photos_scheduled / waiting_external con telegram_send_message_to_contact.",
+          "Salida: photos_requested / waiting_internal con notify_user.",
         seed: {
-          current_step: "photos_scheduled",
+          current_step: "photos_requested",
           status: "active",
-          context_patch: { skill_test_n4_seed: "photos_scheduled_propose_slots" },
+          context_patch: { skill_test_n4_seed: "photos_requested_request_internal_photos" },
         },
         expect: {
-          current_step: "photos_scheduled",
-          status: "waiting_external",
-          expected_context_keys: ["property_data"],
+          current_step: "photos_requested",
+          status: "waiting_internal",
+          expected_context_keys: ["property_data", "raw_photos"],
           expected_events: ["reminder_sent"],
-          expected_tool_calls: ["telegram_send_message_to_contact"],
+          expected_tool_calls: ["notify_user"],
         },
         message:
-          "Prueba controlada de paso (N4) para photos_scheduled — proponer horarios. Actúa como property-optioning-coach. Enruta a coordinate-photo-session. Consulta calendar_list_events para disponibilidad y propone 3 ventanas diurnas al contacto externo con telegram_send_message_to_contact(purpose=propose_photo_slots). Inserta reminder_sent con purpose=propose_photo_slots. Deja status=waiting_external y current_step=photos_scheduled. NO crees calendar_create_event antes de confirmación del dueño. Invoca telegram_send_message_to_contact como máximo una vez en este tick.",
+          "Prueba controlada de paso (N4) para photos_requested — solicitar fotos internas. Actúa como property-optioning-coach. Enruta a request-property-photos. Envía notify_user(kind=photos_upload_requested) pidiendo al asesor subir al menos 5 fotos del inmueble por web o Telegram interno (fachada, sala/comedor, cocina, recámara principal, baño principal) e indica que responda «listo» al terminar. Inserta reminder_sent con purpose=photos_upload_requested. Deja status=waiting_internal y current_step=photos_requested. NO avances a package_ready en este tick. NO uses telegram_send_message_to_contact ni herramientas de calendario en este tick.",
       },
     ],
     package_ready: [
