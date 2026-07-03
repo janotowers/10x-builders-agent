@@ -150,7 +150,8 @@ function statsFor(
 
 function perSourceBreakdown(
   rows: NormalizedComparable[],
-  subjectAreaM2: number | null
+  subjectAreaM2: number | null,
+  integrationIssues: Array<RecordValue>
 ): PricingProposalPerSource[] {
   const out: PricingProposalPerSource[] = [];
   const knownSources = new Set(CORE_MARKET_SOURCES);
@@ -176,6 +177,24 @@ function perSourceBreakdown(
             : source === "easybroker_active"
               ? "Sin comparables activos usables en EasyBroker."
               : "Sin comparables usables en esta fuente.";
+    const integrationNote =
+      source === "easybroker_active"
+        ? integrationIssueNoteForSource(
+            integrationIssues,
+            "easybroker_search_listings"
+          )
+        : source === "easybroker_historical"
+          ? integrationIssueNoteForSource(
+              integrationIssues,
+              "easybroker_search_closed_deals"
+            )
+          : source === "bigquery_internal_inventory"
+            ? integrationIssueNoteForSource(
+                integrationIssues,
+                "bigquery_lookup_local_comparables"
+              )
+            : undefined;
+    const sourceNote = integrationNote ?? emptySourceNote;
     out.push({
       source,
       label: SOURCE_LABELS[source] ?? source,
@@ -190,10 +209,32 @@ function perSourceBreakdown(
         positiveNumber(ppm2.p50) && positiveNumber(subjectAreaM2)
           ? roundPrice(ppm2.p50 * subjectAreaM2)
           : null,
-      ...(emptySourceNote ? { note: emptySourceNote } : {}),
+      ...(sourceNote ? { note: sourceNote } : {}),
     });
   }
   return out;
+}
+
+function integrationIssueNoteForSource(
+  integrationIssues: Array<RecordValue>,
+  sourceTool: string
+): string | undefined {
+  const issue = integrationIssues.find(
+    (item) => item.source_tool === sourceTool
+  );
+  if (!issue) return undefined;
+  const status = typeof issue.status === "string" ? issue.status : "";
+  const hint = typeof issue.hint === "string" ? issue.hint : "";
+  if (status === "session_refreshed_retry_recommended") {
+    return "Esta fuente falló por sesión en un intento previo, pero la sesión se refrescó en este turno. Reintenta para recuperar cobertura completa.";
+  }
+  if (status === "needs_manual_login") {
+    return "No se pudo consultar esta fuente por sesión/login de EasyBroker. Reconecta EasyBroker MLS y vuelve a intentar.";
+  }
+  if (status === "not_configured") {
+    return hint ? `Fuente no configurada: ${hint}` : "Fuente no configurada.";
+  }
+  return hint ? `Fuente no disponible: ${hint}` : "Fuente no disponible en este turno.";
 }
 
 function avaclickPerSource(avaclick: RecordValue): PricingProposalPerSource {
@@ -264,7 +305,11 @@ export function buildPricingProposalFromComparables(params: {
   const marketPpm2 = statsFor(usableRows, (r) => r.price_per_m2);
   const marketTotal = statsFor(usableRows, (r) => r.price);
 
-  const perSource = perSourceBreakdown(rows, subjectAreaM2);
+  const integrationIssues =
+    dataQuality && Array.isArray(dataQuality.integration_issues)
+      ? dataQuality.integration_issues.filter(isRecord)
+      : [];
+  const perSource = perSourceBreakdown(rows, subjectAreaM2, integrationIssues);
   if (avaclick) perSource.push(avaclickPerSource(avaclick));
 
   const comparablesUsed = usableRows

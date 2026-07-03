@@ -128,6 +128,7 @@ El subsistema de casos vive sobre **Postgres + cron + LangGraph checkpointer**. 
 
 - **Sistemas propios** (Ungga): ver POC Ungga CLI/API en [`plan.md`](plan.md) sección 6. Aquí Gu OS es dueño del sistema, no hay terceros.
 - **EasyBroker MLS (bolsa inmobiliaria)**: la API pública no cubre búsqueda en la bolsa completa; Gu OS usa Playwright con credenciales web del cliente (`easybroker_web` en `account_tool_secrets`, POC `pocs/easybroker-mls-cli/`). Mismos guardrails que abajo: cifrado, prueba de conexión, storage state, HITL en writes, fallback manual si rompe UI o reCAPTCHA. **No** extender este patrón a Inmuebles24 u otros portales sin partnership.
+- **Evolución cercana (EasyBroker MLS)**: hoy `easybroker_search_listings` y `easybroker_search_closed_deals` pueden abrir sesiones Playwright separadas en el mismo tick. Evaluar un modo batch/sesión compartida (abrir login una vez, correr ambas búsquedas con filtros distintos, persistir storage una vez) para reducir latencia y variabilidad por anti-bot. Mantener trazabilidad separada por búsqueda en el artefacto final.
 - **Partnerships oficiales**: si Inmuebles24 ofrece API B2B/partner program, esa es la vía correcta. Buscar antes de automatizar.
 
 **Si en el futuro se decide automatizar (con aprobación explícita y documentada del cliente):**
@@ -428,7 +429,7 @@ origen para evitar falsos positivos de avance.
 
 **Estado (2026-06):** el paso `contract_pending` envía el borrador al dueño por
 Gmail OAuth del asesor (`gmail.send`), con adjunto y link de respaldo. Tras el
-envío HITL el caso avanza a `photos_scheduled`; la firma del dueño queda fuera
+envío HITL el caso avanza a `photos_requested`; la firma del dueño queda fuera
 del flujo operativo por ahora. Las correcciones del asesor entran por chat web o
 Telegram (adjunto conversacional), no por formulario en el inbox.
 
@@ -453,7 +454,7 @@ genéricas de bandeja hasta definir riesgo y auditoría.
 ### Firma del dueño in-flow (diferida)
 
 El hito principal de N4 es **envío por email** (`contract_sent_to_owner_email`),
-no la firma. Tras aprobar envío, el caso pasa a `photos_scheduled` y la
+no la firma. Tras aprobar envío, el caso pasa a `photos_requested` y la
 publicación exige ese evento, no `contract_signed`.
 
 Queda preparado para laboratorio:

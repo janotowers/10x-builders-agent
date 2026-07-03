@@ -405,15 +405,54 @@ function detectIntegrationIssue(
 function collectIntegrationIssues(
   toolCalls: ComparableToolCallInput[]
 ): ComparableIntegrationIssue[] {
+  const easyBrokerSessionRefreshed = SOURCE_TOOL_NAMES
+    .filter(
+      (name): name is "easybroker_search_listings" | "easybroker_search_closed_deals" =>
+        name === "easybroker_search_listings" ||
+        name === "easybroker_search_closed_deals"
+    )
+    .some((toolName) =>
+      hasEasyBrokerStorageRefresh(latestToolCall(toolCalls, toolName)?.result_json)
+    );
   const issues: ComparableIntegrationIssue[] = [];
   for (const toolName of SOURCE_TOOL_NAMES) {
-    const issue = detectIntegrationIssue(
+    const detectedIssue = detectIntegrationIssue(
       toolName,
       latestToolCall(toolCalls, toolName)?.result_json
     );
-    if (issue) issues.push(issue);
+    if (!detectedIssue) continue;
+    const isEasyBrokerTool =
+      toolName === "easybroker_search_listings" ||
+      toolName === "easybroker_search_closed_deals";
+    if (
+      isEasyBrokerTool &&
+      detectedIssue.status === "needs_manual_login" &&
+      easyBrokerSessionRefreshed
+    ) {
+      issues.push({
+        ...detectedIssue,
+        status: "session_refreshed_retry_recommended",
+        action: "retry_or_check",
+        recoverable_via_reauth: false,
+        hint:
+          "Otra búsqueda de EasyBroker refrescó la sesión en este turno. Reintenta esta fuente para recuperar cobertura completa sin pedir reconexión manual.",
+      });
+      continue;
+    }
+    issues.push(detectedIssue);
   }
   return issues;
+}
+
+function hasEasyBrokerStorageRefresh(result: RecordValue | null | undefined): boolean {
+  if (!isRecord(result)) return false;
+  const cliResult = isRecord(result.cli_result) ? result.cli_result : null;
+  const metrics = Array.isArray(cliResult?.metrics)
+    ? cliResult.metrics.filter(isRecord)
+    : [];
+  return metrics.some(
+    (metric) => metric.step === "save_storage_state" && metric.ok === true
+  );
 }
 
 function integrationIssueWarning(issue: ComparableIntegrationIssue): string {

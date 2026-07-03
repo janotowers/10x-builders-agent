@@ -2234,7 +2234,7 @@ async function runEasyBrokerMlsCliFallback(
     if (!recoverable || attempt >= maxAttempts) {
       if (recoverable && attempt >= maxAttempts) {
         const assisted = await maybeRunEasyBrokerAssistedLogin(pocDir, creds);
-        if (assisted?.attempted) {
+        if (assisted.attempted) {
           if (!assisted.ok) {
             return {
               ...lastResponse,
@@ -2256,6 +2256,11 @@ async function runEasyBrokerMlsCliFallback(
             assisted_login: assisted,
           };
         }
+        return {
+          ...lastResponse,
+          recovery_attempts: attempt,
+          assisted_login: assisted,
+        };
       }
       return { ...lastResponse, recovery_attempts: attempt };
     }
@@ -2369,15 +2374,34 @@ function easyBrokerMlsCliEnv(creds: EasyBrokerWebCredentials): NodeJS.ProcessEnv
   };
 }
 
-function easyBrokerAutoAssistedLoginEnabled() {
+type AssistedLoginGate =
+  | { enabled: true; reason: "enabled_by_env" | "auto_interactive" }
+  | {
+      enabled: false;
+      reason:
+        | "disabled_by_env"
+        | "ci_like"
+        | "headless"
+        | "non_interactive_stdout";
+    };
+
+function easyBrokerAutoAssistedLoginGate(): AssistedLoginGate {
   const raw = process.env.EASYBROKER_MLS_AUTO_ASSISTED_LOGIN?.trim().toLowerCase();
   if (raw) {
-    return raw === "1" || raw === "true" || raw === "yes";
+    if (raw === "1" || raw === "true" || raw === "yes") {
+      return { enabled: true, reason: "enabled_by_env" };
+    }
+    return { enabled: false, reason: "disabled_by_env" };
   }
   const ci = process.env.CI?.trim().toLowerCase();
   const ciLike = ci === "1" || ci === "true" || ci === "yes";
+  if (ciLike) return { enabled: false, reason: "ci_like" };
   const headless = process.env.EASYBROKER_MLS_HEADLESS?.trim().toLowerCase();
-  return process.stdout.isTTY && !ciLike && headless !== "true";
+  if (headless === "true") return { enabled: false, reason: "headless" };
+  if (!process.stdout.isTTY) {
+    return { enabled: false, reason: "non_interactive_stdout" };
+  }
+  return { enabled: true, reason: "auto_interactive" };
 }
 
 function easyBrokerAutoAssistedTimeoutMs() {
@@ -2389,8 +2413,23 @@ function easyBrokerAutoAssistedTimeoutMs() {
 async function maybeRunEasyBrokerAssistedLogin(
   pocDir: string,
   creds: EasyBrokerWebCredentials
-): Promise<Record<string, unknown> | null> {
-  if (!easyBrokerAutoAssistedLoginEnabled()) return null;
+): Promise<Record<string, unknown>> {
+  const gate = easyBrokerAutoAssistedLoginGate();
+  if (!gate.enabled) {
+    return {
+      attempted: false,
+      ok: false,
+      reason: gate.reason,
+      hint:
+        gate.reason === "disabled_by_env"
+          ? "EASYBROKER_MLS_AUTO_ASSISTED_LOGIN está desactivado por configuración."
+          : gate.reason === "ci_like"
+            ? "Entorno tipo CI detectado; login asistido requiere interacción humana local."
+            : gate.reason === "headless"
+              ? "EASYBROKER_MLS_HEADLESS=true bloquea login asistido (requiere navegador visible)."
+              : "stdout no interactivo; define EASYBROKER_MLS_AUTO_ASSISTED_LOGIN=true para forzar el asistido en entorno local.",
+    };
+  }
   if (!(await fileExists(path.join(pocDir, "src", "login-assisted.mjs")))) {
     return {
       attempted: false,
@@ -2420,6 +2459,7 @@ async function maybeRunEasyBrokerAssistedLogin(
     return {
       attempted: true,
       ok: parsed.ok === true,
+      gate_reason: gate.reason,
       timeout_ms: assistedTimeout,
       ...(parsed && Object.keys(parsed).length > 0 ? { result: parsed } : {}),
       ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
@@ -2435,6 +2475,7 @@ async function maybeRunEasyBrokerAssistedLogin(
     return {
       attempted: true,
       ok: assistedOk,
+      gate_reason: gate.reason,
       timeout_ms: assistedTimeout,
       error: error.message ?? String(err),
       ...(parsed ? { result: parsed } : {}),
@@ -2468,6 +2509,15 @@ function buildEasyBrokerMlsToolResponse(
   credentialSource: "account" | "env"
 ): Record<string, unknown> {
   const isHistoricalReference = toolId === "easybroker_search_closed_deals";
+  const cliMetrics = Array.isArray(parsed.metrics)
+    ? parsed.metrics.filter(
+        (entry): entry is Record<string, unknown> =>
+          Boolean(entry) && typeof entry === "object" && !Array.isArray(entry)
+      )
+    : [];
+  const sessionRefreshed = cliMetrics.some(
+    (metric) => metric.step === "save_storage_state" && metric.ok === true
+  );
   const cliResult =
     parsed.result && typeof parsed.result === "object"
       ? (parsed.result as Record<string, unknown>)
@@ -2506,6 +2556,7 @@ function buildEasyBrokerMlsToolResponse(
     caveat: isHistoricalReference
       ? "La búsqueda intenta usar propiedades vendidas/rentadas/cerradas en EasyBroker MLS cuando la UI lo permite. El precio visible puede ser precio publicado o capturado, no necesariamente precio final real de cierre."
       : "Resultados provenientes de EasyBroker MLS/bolsa inmobiliaria, filtrados por características del caso.",
+    session_refreshed: sessionRefreshed,
     cli_result: filteredCliResult,
     ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
   };
@@ -3687,11 +3738,32 @@ async function enrichAvaclickInputFromCaseContext(
       propertyData.exterior_number,
       propertyData.numero_exterior
     );
-    if (enriched.latitude == null) {
-      enriched.latitude = coordinateFromUnknown(contextAddress.latitude);
-    }
-    if (enriched.longitude == null) {
-      enriched.longitude = coordinateFromUnknown(contextAddress.longitude);
+    const contextGeocodeConfidence = firstNonEmptyComparableString(
+      contextAddress.geocode_confidence,
+      contextAddress.confidence
+    );
+    const contextGeocodeTrusted =
+      typeof contextGeocodeConfidence === "string" &&
+      contextGeocodeConfidence.trim().toLowerCase() === "high";
+    if (contextGeocodeTrusted && (enriched.latitude == null || enriched.longitude == null)) {
+      const contextFormattedAddress = firstNonEmptyComparableString(
+        contextAddress.formatted_address,
+        contextAddress.full,
+        contextAddress.formatted
+      );
+      const aligned = isGeocodeAlignedWithCanonicalAddress({
+        canonicalStreet,
+        canonicalExterior,
+        formattedAddress: contextFormattedAddress,
+      });
+      if (aligned) {
+        if (enriched.latitude == null) {
+          enriched.latitude = coordinateFromUnknown(contextAddress.latitude);
+        }
+        if (enriched.longitude == null) {
+          enriched.longitude = coordinateFromUnknown(contextAddress.longitude);
+        }
+      }
     }
     enriched.street =
       enriched.street ??
@@ -3771,6 +3843,58 @@ async function enrichAvaclickInputFromCaseContext(
       if (constructionFromContext != null) {
         enriched.construction_area_m2 = constructionFromContext;
       }
+    }
+    if (enriched.bedrooms == null) {
+      enriched.bedrooms = comparablePositiveNumber(
+        propertyData.bedrooms ?? propertyData.recamaras ?? propertyData.habitaciones
+      );
+    }
+    if (enriched.full_bathrooms == null) {
+      enriched.full_bathrooms = comparablePositiveNumber(
+        propertyData.full_bathrooms ?? propertyData.bathrooms ?? propertyData.banios
+      );
+    }
+    if (enriched.half_bathrooms == null) {
+      if (
+        typeof propertyData.half_bathrooms === "number" &&
+        Number.isFinite(propertyData.half_bathrooms)
+      ) {
+        enriched.half_bathrooms = Math.max(0, propertyData.half_bathrooms);
+      } else if (
+        typeof propertyData.medios_banos === "number" &&
+        Number.isFinite(propertyData.medios_banos)
+      ) {
+        enriched.half_bathrooms = Math.max(0, propertyData.medios_banos);
+      }
+    }
+    if (enriched.parking_spaces == null) {
+      enriched.parking_spaces = comparablePositiveNumber(
+        propertyData.parking_spots ?? propertyData.parking_spaces ?? propertyData.cochera
+      );
+    }
+    if (enriched.floors == null) {
+      enriched.floors = comparablePositiveNumber(
+        propertyData.floors ?? propertyData.numero_pisos ?? propertyData.plantas
+      );
+    }
+    if (propertyData.integral_kitchen === true || propertyData.cocina_integral === true) {
+      const currentPrivateAmenities = Array.isArray(enriched.private_amenities)
+        ? [...enriched.private_amenities]
+        : [];
+      if (
+        !currentPrivateAmenities.some(
+          (value) =>
+            typeof value === "string" &&
+            value
+              .normalize("NFD")
+              .replace(/\p{Diacritic}/gu, "")
+              .toLowerCase()
+              .includes("cocina integral")
+        )
+      ) {
+        currentPrivateAmenities.push("Cocina Integral");
+      }
+      enriched.private_amenities = currentPrivateAmenities;
     }
     if (enriched.conservation == null) {
       const conservationHint = normalizeAvaclickConservation(

@@ -143,6 +143,8 @@ Producir un objeto `context_jsonb.comparables_analysis`:
    EasyBroker pidió CAPTCHA/MFA aun después de los reintentos automáticos del
    adapter):
    - Es un estado **recuperable**, no un error técnico. Continúa con BigQuery/Avaclick.
+   - Revisa `assisted_login` en el `result_json` para saber si el login asistido se
+     intentó o se omitió (y por qué). Si `attempted=false`, sigue la razón/hint.
    - No decidas severidad todavía; persiste primero y decide con base en
      `defensible_sample` / `usable_count`.
    - Tras persistir, `operational_case_persist_comparables_analysis` reflejará

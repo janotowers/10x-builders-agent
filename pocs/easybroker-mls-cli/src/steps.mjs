@@ -22,6 +22,10 @@ function storageStatePath() {
   return "storage-state.json";
 }
 
+function storageStateSource() {
+  return process.env.EASYBROKER_MLS_STORAGE_STATE?.trim() ? "env" : "default";
+}
+
 async function fileExists(p) {
   if (!p) return false;
   try {
@@ -30,6 +34,47 @@ async function fileExists(p) {
   } catch {
     return false;
   }
+}
+
+async function collectCaptchaSignals(page) {
+  const body = await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "");
+  const normalized = body
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  const recaptchaIframe = await page
+    .locator('iframe[src*="recaptcha" i], iframe[title*="recaptcha" i]')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  const robotCheckbox = await page
+    .locator('text=/no\\s+soy\\s+un\\s+robot/i')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  const challengeText =
+    /no soy un robot|verifica que no eres un robot|recaptcha|captcha/.test(
+      normalized
+    );
+  const detected = recaptchaIframe || robotCheckbox || challengeText;
+  return {
+    detected,
+    recaptcha_iframe_visible: recaptchaIframe,
+    robot_checkbox_visible: robotCheckbox,
+    challenge_text_detected: challengeText,
+  };
+}
+
+async function recordCaptchaMetric(page, metrics, stage) {
+  const signals = await collectCaptchaSignals(page);
+  if (!signals.detected) return;
+  metrics.push({
+    step: "captcha_detected",
+    ok: false,
+    stage,
+    url: page.url(),
+    ...signals,
+  });
 }
 
 export async function launchEasyBrokerContext({ headless, useStorageState = true } = {}) {
@@ -83,6 +128,14 @@ export async function loginToEasyBroker(creds, metrics = [], options = {}) {
     useStorageState: options.useStorageState !== false,
   });
   const { browser, context, page, usedStorage } = session;
+  const statePath = storageStatePath();
+  metrics.push({
+    step: "storage_state_context",
+    ok: true,
+    path: statePath,
+    source: storageStateSource(),
+    used_storage_state: usedStorage,
+  });
   const push = (step, ok, duration_ms, error) => {
     metrics.push({ step, ok, duration_ms, ...(error ? { error } : {}) });
   };
@@ -261,6 +314,7 @@ export async function loginToEasyBroker(creds, metrics = [], options = {}) {
       timeout: timeoutMs("EASYBROKER_MLS_TIMEOUT_MS", 60_000),
     }).catch(() => {});
     await page.waitForTimeout(2500);
+    await recordCaptchaMetric(page, metrics, "post_password_submit");
 
     await page.goto(targetMlsUrl, {
       waitUntil: "domcontentloaded",
@@ -270,6 +324,7 @@ export async function loginToEasyBroker(creds, metrics = [], options = {}) {
     await page.waitForTimeout(1200);
 
     if (!(await isLoggedIn(page, targetMlsUrl))) {
+      await recordCaptchaMetric(page, metrics, "post_mls_navigation");
       const body = await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "");
       throw new Error(`EasyBroker login did not reach MLS/authenticated page: ${body.slice(0, 300)}`);
     }
@@ -277,6 +332,7 @@ export async function loginToEasyBroker(creds, metrics = [], options = {}) {
     push("login", true, Date.now() - tLogin, undefined);
     return { browser, context, page };
   } catch (e) {
+    await recordCaptchaMetric(page, metrics, "login_catch");
     push("login", false, Date.now() - tLogin, e?.message ?? String(e));
     await maybeCapture(page, "login-failed", metrics);
     await browser.close();

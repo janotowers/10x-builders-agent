@@ -251,7 +251,7 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Regla de negocio** | Reintentos automáticos primero; si la fuente sigue pidiendo reconexión, tratarlo como estado recuperable y **evaluar con muestra total** (`usable_count`) antes de bloquear el caso |
 | **Con muestra defendible** | Avanzar a `price_proposal_pending`; notificación no bloqueante (fuente degradada, reconectar después) |
 | **Sin muestra defendible** | Mantener `comparables_in_progress` + `waiting_internal`; `notify_user(kind=integration_reconnect)` con CTA explícito de reconexión |
-| **Implementación** | `realestate-adapters.ts` (reintento acotado + `needs_manual_login`), `comparables-analysis.ts` (`data_quality.needs_user_reauth`, `integration_issues`), skill [`perform-comparable-analysis/SKILL.md`](../../skills/global/perform-comparable-analysis/SKILL.md) |
+| **Implementación** | `realestate-adapters.ts` (reintento acotado + `needs_manual_login` + `assisted_login` explícito), `comparables-analysis.ts` (`data_quality.needs_user_reauth`, `integration_issues`, estado `session_refreshed_retry_recommended`), skill [`perform-comparable-analysis/SKILL.md`](../../skills/global/perform-comparable-analysis/SKILL.md) |
 | **No hacer en esta fase** | Bypass CAPTCHA, automatizaciones "human-like", bloqueo duro por falla aislada de una sola fuente |
 
 ### `PATTERN_DETERMINISTIC_ARTIFACT_FROM_TOOL_RESULTS`
@@ -318,7 +318,7 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 |--|--|
 | **Capa** | `runtime` + `test_contract` |
 | **Cuándo usar** | Paso `contract_pending`: borrador generado (N3/N4 agente), revisión interna del asesor, envío al dueño por email; la firma queda fuera del flujo operativo por ahora |
-| **Flujo producto** | **Tick 1 (skill):** `generate_document_from_template` + `notify_user(kind=contract_review)` + evento `contract_drafted`; **no** enviar al dueño. **HITL:** `parseContractReviewDecision` → `approve_send` \| `request_changes`. **Aprobar envío:** manda por Gmail OAuth del asesor a `owner_email` con **adjunto** (y link de respaldo), registra `contract_sent_to_owner` (`channel=email`) y avanza a `photos_scheduled`. **Pedir cambios:** crea pendiente `contract_revision_upload`; el siguiente DOCX/PDF subido por el asesor por chat web o Telegram reemplaza `contract_draft` y se envía automáticamente por email, sin segunda revisión. **Firma:** por ahora se trata fuera del flujo operativo (no bloquea avance a fotos/publicación). **Prueba:** caso `case_type_settings_test` → `paused` + `controlled_test_status` (no mezclar con operación real) |
+| **Flujo producto** | **Tick 1 (skill):** `generate_document_from_template` + `notify_user(kind=contract_review)` + evento `contract_drafted`; **no** enviar al dueño. **HITL:** `parseContractReviewDecision` → `approve_send` \| `request_changes`. **Aprobar envío:** manda por Gmail OAuth del asesor a `owner_email` con **adjunto** (y link de respaldo), registra `contract_sent_to_owner` (`channel=email`) y avanza a `photos_requested`. **Pedir cambios:** crea pendiente `contract_revision_upload`; el siguiente DOCX/PDF subido por el asesor por chat web o Telegram reemplaza `contract_draft` y se envía automáticamente por email, sin segunda revisión. **Firma:** por ahora se trata fuera del flujo operativo (no bloquea avance a fotos/publicación). **Prueba:** caso `case_type_settings_test` → `paused` + `controlled_test_status` (no mezclar con operación real) |
 | **Handlers** | [`contract-review.ts`](../../apps/web/src/lib/business-decisions/contract-review.ts), [`contract-owner-signed.ts`](../../apps/web/src/lib/business-decisions/contract-owner-signed.ts), registro en [`registry.ts`](../../apps/web/src/lib/business-decisions/registry.ts) |
 | **Canales** | Telegram (botones `contract_send_email` / `contract_upload_adjusted_send` + texto libre), inbox web [`/api/business-decisions/contract-review`](../../apps/web/src/app/api/business-decisions/contract-review/route.ts) |
 | **N4 laboratorio** | `contract_pending_draft_review` (Salida A, borrador real) + `contract_pending_template_missing` (Salida B) + dos escenarios HITL principales (aprobar envío / pedir cambios). `contract_pending_owner_signed` queda como escenario opcional/futuro (firma fuera del flujo principal) — ver matriz §7 |
@@ -396,11 +396,11 @@ Orden sugerido en laboratorio: **HITL** → (opcional N3 si falta) → **Aprobar
 | `contract_pending_draft_review` | Borrador + `notify_user` + `contract_drafted`; permanece en revisión interna | Agente raíz → `prepare-commission-contract` |
 | `contract_pending_advisor_approves_send` | Aprobación para dueño + `reminder_sent` (envío simulado en prueba) | `handleContractReviewDecision` («mándalo al dueño») |
 | `contract_pending_advisor_requests_changes` | `contract_changes_requested` + `waiting_internal` | Idem («necesita cambios…») |
-| `contract_pending_owner_signed` | Avance a `photos_scheduled` + `step_completed:contract_signed` | `handleContractOwnerSignedDecision` (simulación N4) |
+| `contract_pending_owner_signed` | Avance a `photos_requested` + `step_completed:contract_signed` | `handleContractOwnerSignedDecision` (simulación N4) |
 
 Orden sugerido en laboratorio: **N3** `prepare-commission-contract` → **N4 borrador** (si no cubierto por N3) → **aprobar envío** o **pedir cambios** → (opcional) **firma simulada**. Patrones: `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`, `PATTERN_STEP_TEST_BUSINESS_DECISION`, `PATTERN_TOOL_AUDIT_SINGLE_OWNER`, `PATTERN_GENERATED_DOCUMENT_DEDUP`, `PATTERN_NOTIFY_USER_CHANNELS`.
 
-### Pasos 6–7 (`photos_scheduled` … `package_ready`)
+### Pasos 6–7 (`photos_requested` … `package_ready`)
 
 | Prueba | Patrones clave | Pill del paso tras N3 OK |
 |--------|----------------|---------------------------|
