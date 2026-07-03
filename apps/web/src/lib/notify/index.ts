@@ -60,6 +60,8 @@ import { resolvePendingToolCallId } from "@/lib/notify/pending-tool-call-id";
 export type NotifyUrgency = "low" | "normal" | "high";
 
 const DEFAULT_PRIORITY: NotificationChannel[] = ["web", "telegram"];
+const CONTRACT_CALLBACK_EMAIL = "contract_email";
+const CONTRACT_CALLBACK_UPLOAD = "contract_upload";
 
 /** Botones HITL de contrato solo cuando hay borrador real para revisar. */
 function contractReviewOffersHitlActions(payload: NotifyPayload): boolean {
@@ -243,13 +245,13 @@ async function deliverTelegram(
         [
           {
             text: "Enviar por email",
-            callback_data: `contract_send_email:${actionNotificationId}`,
+            callback_data: `${CONTRACT_CALLBACK_EMAIL}:${actionNotificationId}`,
           },
         ],
         [
           {
             text: "Subir contrato corregido y enviar",
-            callback_data: `contract_upload_adjusted_send:${actionNotificationId}`,
+            callback_data: `${CONTRACT_CALLBACK_UPLOAD}:${actionNotificationId}`,
           },
         ],
       ],
@@ -271,17 +273,34 @@ async function deliverTelegram(
         ],
       ],
     };
+  } else if (actionKind === "titularidad_review" && actionNotificationId) {
+    replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: "Aprobar titularidad",
+            callback_data: `titularidad_approve:${actionNotificationId}`,
+          },
+        ],
+      ],
+    };
   }
   const text = truncateTelegramText(payload.text);
   let lastError: string | undefined;
+  let attemptedReplyMarkup = replyMarkup;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await sendTelegramMessage(chatId, text, replyMarkup, {
+      await sendTelegramMessage(chatId, text, attemptedReplyMarkup, {
         throwOnError: true,
       });
       return { channel: "telegram", ok: true, status: "delivered" };
     } catch (e) {
       lastError = (e as Error).message ?? String(e);
+      // Telegram rejects the full send when a button callback_data is invalid.
+      // Retry once without buttons so the user still gets the message text/link.
+      if (attemptedReplyMarkup && /BUTTON_DATA_INVALID/i.test(lastError)) {
+        attemptedReplyMarkup = undefined;
+      }
     }
   }
   return {

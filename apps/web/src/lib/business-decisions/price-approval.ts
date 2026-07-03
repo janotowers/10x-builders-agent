@@ -103,12 +103,36 @@ async function triggerControlledE2EAgentTick(
   await runSettingsTestCaseAgentTick(db, updated, updated.user_id, { source });
 }
 
+/**
+ * Dispara el tick del agente E2E para un caso ya actualizado, recargándolo por
+ * id. Se usa desde el webhook de Telegram para ejecutar el avance del caso
+ * *después* de haber enviado la confirmación al usuario (ver
+ * `deferControlledE2ETick`).
+ */
+export async function runDeferredControlledE2ETick(
+  db: DbClient,
+  caseId: string,
+  source: string
+): Promise<void> {
+  const opCase = await getOperationalCase(db, caseId);
+  if (!opCase) return;
+  await triggerControlledE2EAgentTick(db, opCase, source);
+}
+
 export async function handlePriceApprovalDecision(
   db: DbClient,
   params: {
     userId: string;
     notificationId: string;
     text: string;
+    /**
+     * Cuando el caller es Telegram, difiere el tick del agente E2E para que
+     * el webhook envíe primero la confirmación ("Precio aprobado…") y sólo
+     * después dispare el avance (que puede producir sus propios mensajes,
+     * p.ej. "Falta correo del propietario"). Evita que el chat muestre el
+     * mensaje del siguiente paso antes que la confirmación del ack.
+     */
+    deferControlledE2ETick?: boolean;
   }
 ) {
   const notification = await getInternalUserNotification(db, params.notificationId);
@@ -211,7 +235,8 @@ export async function handlePriceApprovalDecision(
       kind: "property_data_quality_review",
       status: "dismissed",
     });
-    if (controlledE2ECase) {
+    const deferTick = controlledE2ECase && params.deferControlledE2ETick === true;
+    if (controlledE2ECase && !deferTick) {
       void triggerControlledE2EAgentTick(db, updated, "price_approved").catch((tickError) => {
         console.error("[price-approval] e2e tick failed:", tickError);
       });
@@ -222,6 +247,10 @@ export async function handlePriceApprovalDecision(
       message: shouldPauseBeforeContract
         ? "Precio aprobado. El caso de prueba quedó detenido antes del siguiente paso."
         : "Precio aprobado. El caso avanzó a contrato.",
+      case_id: opCase.id,
+      deferredControlledE2ETick: deferTick
+        ? { source: "price_approved" as const }
+        : null,
     };
   }
 
@@ -329,7 +358,8 @@ export async function handlePriceApprovalDecision(
     kind: "property_data_quality_review",
     status: "dismissed",
   });
-  if (controlledE2ECase) {
+  const deferTick = controlledE2ECase && params.deferControlledE2ETick === true;
+  if (controlledE2ECase && !deferTick) {
     void triggerControlledE2EAgentTick(db, updated, "price_adjusted_and_approved").catch(
       (tickError) => {
         console.error("[price-approval] e2e tick failed:", tickError);
@@ -343,5 +373,9 @@ export async function handlePriceApprovalDecision(
       ? "Ajuste aplicado y precio aprobado. El caso de prueba quedó detenido antes del siguiente paso."
       : "Ajuste aplicado y precio aprobado. El caso avanzó a contrato.",
     pricing_proposal: nextProposal,
+    case_id: opCase.id,
+    deferredControlledE2ETick: deferTick
+      ? { source: "price_adjusted_and_approved" as const }
+      : null,
   };
 }

@@ -6,7 +6,10 @@ import {
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
-import { tryAdvanceComparablesAfterPersist } from "@agents/agent";
+import {
+  tryAdvanceComparablesAfterPersist,
+  type PricingProposal,
+} from "@agents/agent";
 import { notify } from "@/lib/notify";
 
 type ComparablesExpansionIntent =
@@ -59,7 +62,15 @@ export async function handleComparablesExpansionDecision(
     notificationId: string;
     text: string;
     source: "web" | "telegram";
-    expectedChatId?: string | number;
+    /**
+     * Si es `true`, el avance a propuesta de precio NO envía la notificación
+     * `price_approval` dentro de este handler: el caller es responsable de
+     * dispararla después (usando `notifyPriceApprovalForCase` con la
+     * `pricingProposal` devuelta). Sirve para controlar el orden de mensajes
+     * en canales de chat (Telegram) donde la confirmación de la decisión debe
+     * llegar antes que la propuesta de precio.
+     */
+    deferPriceApprovalNotify?: boolean;
   }
 ) {
   const notification = await getInternalUserNotification(db, params.notificationId);
@@ -83,18 +94,6 @@ export async function handleComparablesExpansionDecision(
   const opCase = await getOperationalCase(db, notification.case_id);
   if (!opCase || opCase.user_id !== params.userId) {
     return { ok: false, status: "case_not_found", message: "No encontre el caso." };
-  }
-  if (params.expectedChatId != null) {
-    const external = isRecord(opCase.external_contact_jsonb)
-      ? opCase.external_contact_jsonb
-      : null;
-    if (String(external?.chat_id ?? "") !== String(params.expectedChatId)) {
-      return {
-        ok: false,
-        status: "chat_mismatch",
-        message: "No pude asociar esta respuesta al caso correcto.",
-      };
-    }
   }
 
   const parsedComparablesDecision = parseComparablesExpansionDecision(params.text);
@@ -225,6 +224,9 @@ export async function handleComparablesExpansionDecision(
   }
 
   let decisionCase = updated;
+  // Cuando el caller difiere la notificación, devolvemos la propuesta para que
+  // dispare `price_approval` después (control de orden de mensajes en chat).
+  let deferredPriceApprovalProposal: PricingProposal | null = null;
   if (
     parsedComparablesDecision === "use_current_comparables" ||
     parsedComparablesDecision === "use_avaclick_primary"
@@ -237,8 +239,12 @@ export async function handleComparablesExpansionDecision(
         parsedComparablesDecision === "use_avaclick_primary"
           ? `comparables_decision_${params.source}_use_avaclick`
           : `comparables_decision_${params.source}_use_current`,
-      notifyUser: async (notifyDb, notifyUserId, payload, urgency) =>
-        notify(notifyDb, notifyUserId, payload, urgency),
+      // Diferido: no pasamos notifyUser, así el avance persiste la propuesta y
+      // el evento `price_proposal_prepared` sin enviar aún `price_approval`.
+      notifyUser: params.deferPriceApprovalNotify
+        ? undefined
+        : async (notifyDb, notifyUserId, payload, urgency) =>
+            notify(notifyDb, notifyUserId, payload, urgency),
       allowLimitedSample: parsedComparablesDecision === "use_current_comparables",
       preferAvaclickPrimary: parsedComparablesDecision === "use_avaclick_primary",
     });
@@ -255,12 +261,16 @@ export async function handleComparablesExpansionDecision(
       };
     }
     decisionCase = advanceResult.case;
+    if (params.deferPriceApprovalNotify) {
+      deferredPriceApprovalProposal = advanceResult.pricingProposal;
+    }
   }
 
   await insertOperationalCaseEvent(db, {
     caseId: decisionCase.id,
     eventType: "human_decision",
     actor: "user",
+    stepKey: "comparables_in_progress",
     payload: {
       kind: "comparables_search_expansion_decision_response",
       source: params.source,
@@ -290,5 +300,10 @@ export async function handleComparablesExpansionDecision(
     case_id: decisionCase.id,
     notification_id: notification.id,
     decision: parsedComparablesDecision,
+    // Presente solo cuando el caller pidió diferir la notificación de precio y
+    // el avance produjo una propuesta: debe llamar a `notifyPriceApprovalForCase`.
+    deferredPriceApproval: deferredPriceApprovalProposal
+      ? { pricingProposal: deferredPriceApprovalProposal }
+      : null,
   };
 }

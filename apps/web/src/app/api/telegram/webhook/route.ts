@@ -4,7 +4,6 @@ import {
   decryptToken,
   findLatestConversationalOperationalCase,
   findPendingConversationBindings,
-  getConversationBindingForCase,
   setConversationBindingStatus,
   getPendingToolCall,
   getGoogleCalendarAccessToken,
@@ -19,17 +18,15 @@ import {
   listInternalUserNotifications,
   linkE2ELabSessionToCase,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
-  shortOperationalCaseId,
   updateOperationalCase,
   updateToolCallStatus,
   upsertConversationBinding,
 } from "@agents/db";
 import {
-  evaluatePropertyDataMinimumsForReview,
   isPropertyOptioningIntent,
+  notifyPriceApprovalForCase,
   runAgent,
 } from "@agents/agent";
-import { extractOwnerCharacteristics } from "@/lib/operational-cases/owner-characteristics-extraction";
 import {
   answerTelegramCallbackQuery,
   downloadTelegramFile,
@@ -40,7 +37,10 @@ import {
 import { notify } from "@/lib/notify";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
-import { parsePriceApprovalDecision } from "@/lib/business-decisions/price-approval";
+import {
+  parsePriceApprovalDecision,
+  runDeferredControlledE2ETick,
+} from "@/lib/business-decisions/price-approval";
 import {
   handleComparablesExpansionDecision,
   parseComparablesExpansionDecision,
@@ -48,8 +48,10 @@ import {
 import {
   handleContractRevisionUploadAndSend,
   parseContractReviewDecision,
+  runDeferredContractControlledE2ETick,
 } from "@/lib/business-decisions/contract-review";
 import { parseContractDataReviewReply } from "@/lib/business-decisions/contract-data-review";
+import { parseTitularidadReviewDecision } from "@/lib/business-decisions/titularidad-review";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
@@ -82,7 +84,6 @@ import {
   intakeJustCompleted,
 } from "@/lib/operational-cases/telegram-intake-completion-message";
 import { classifyOperationalConversationMessage } from "@/lib/operational-cases/operational-conversation-classifier";
-import { syncIntakeFieldsFromPropertyData } from "@/lib/operational-cases/parse-owner-characteristics";
 import { processCharacteristicsReplyDeterministically } from "@/lib/operational-cases/characteristics-response";
 import {
   resolveConversationalIntakeTurn,
@@ -117,6 +118,12 @@ import {
   looksLikeDocumentBatchComplete,
 } from "@/lib/operational-cases/document-batch-completion";
 import {
+  completePhotoBatchForCase,
+  photosBatchAdvancedAckText,
+  photosBatchInsufficientAckText,
+  photosUploadProgressAckText,
+} from "@/lib/operational-cases/photo-batch-completion";
+import {
   buildDocumentReceivedAck,
   buildMediaGroupReceivedAck,
   looksLikeDocumentUploadSideText,
@@ -125,6 +132,58 @@ import {
   appendMediaGroupAckToCase,
   flushMediaGroupAcksForCase,
 } from "@/lib/operational-cases/telegram-media-group-ack-store";
+
+/**
+ * Ejecuta el tick del agente E2E que quedó diferido por la aprobación de
+ * precio (ver `deferControlledE2ETick`). Debe llamarse *después* de haber
+ * enviado la confirmación al usuario, para que el mensaje del siguiente paso
+ * no se adelante al ack.
+ */
+async function maybeRunDeferredPriceTick(
+  db: ReturnType<typeof createServerClient>,
+  result: {
+    ok?: boolean;
+    case_id?: unknown;
+    deferredControlledE2ETick?: unknown;
+  }
+): Promise<void> {
+  if (!result.ok) return;
+  const deferred = result.deferredControlledE2ETick;
+  const caseId = typeof result.case_id === "string" ? result.case_id : null;
+  if (!deferred || !caseId) return;
+  const source =
+    typeof (deferred as { source?: unknown }).source === "string"
+      ? (deferred as { source: string }).source
+      : "price_approved";
+  try {
+    await runDeferredControlledE2ETick(db, caseId, source);
+  } catch (tickError) {
+    console.error("[telegram-webhook] deferred price tick failed:", tickError);
+  }
+}
+
+async function maybeRunDeferredContractTick(
+  db: ReturnType<typeof createServerClient>,
+  result: {
+    ok?: boolean;
+    case_id?: unknown;
+    deferredControlledE2ETick?: unknown;
+  }
+): Promise<void> {
+  if (!result.ok) return;
+  const deferred = result.deferredControlledE2ETick;
+  const caseId = typeof result.case_id === "string" ? result.case_id : null;
+  if (!deferred || !caseId) return;
+  const source =
+    typeof (deferred as { source?: unknown }).source === "string"
+      ? (deferred as { source: string }).source
+      : "contract_email_sent";
+  try {
+    await runDeferredContractControlledE2ETick(db, caseId, source);
+  } catch (tickError) {
+    console.error("[telegram-webhook] deferred contract tick failed:", tickError);
+  }
+}
 
 const TELEGRAM_INTAKE_ROUTED: Record<ConversationalIntakeRoute, string> = {
   intake_missing_fields_requested: "operational_case_intake_missing_fields",
@@ -136,9 +195,109 @@ const TELEGRAM_INTAKE_ROUTED: Record<ConversationalIntakeRoute, string> = {
   delegate_to_agent: "operational_case_intake_delegate_to_agent",
 };
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
 const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
+const PHOTO_FILE_EXTENSION = /\.(jpe?g|png|webp|heic|heif|gif|bmp|tiff?)$/i;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function looksLikeRawPhotoUpload(params: {
+  contentType: string;
+  fileName: string;
+}): boolean {
+  const contentType = params.contentType.toLowerCase();
+  if (contentType.startsWith("image/")) return true;
+  return PHOTO_FILE_EXTENSION.test(params.fileName);
+}
+
+async function appendRawPhoto(params: {
+  db: ReturnType<typeof createServerClient>;
+  opCase: OperationalCase;
+  ingested: Awaited<ReturnType<typeof ingestCaseDocument>>;
+}): Promise<{
+  opCase: OperationalCase;
+  photoAdded: boolean;
+  photoCount: number;
+}> {
+  if (params.opCase.current_step !== "photos_requested") {
+    return { opCase: params.opCase, photoAdded: false, photoCount: 0 };
+  }
+  if (
+    !looksLikeRawPhotoUpload({
+      contentType: params.ingested.document.content_type,
+      fileName: params.ingested.document.original_name ?? "",
+    })
+  ) {
+    return { opCase: params.opCase, photoAdded: false, photoCount: 0 };
+  }
+
+  const currentContext = isObjectRecord(params.opCase.context_jsonb)
+    ? (params.opCase.context_jsonb as Record<string, unknown>)
+    : {};
+  const existingRawPhotos = Array.isArray(currentContext.raw_photos)
+    ? currentContext.raw_photos.filter((item): item is Record<string, unknown> =>
+        isObjectRecord(item)
+      )
+    : [];
+  const duplicate = existingRawPhotos.some((item) => {
+    const sameDocument =
+      typeof item.document_id === "string" && item.document_id === params.ingested.document.id;
+    const samePath =
+      typeof item.storage_path === "string" &&
+      item.storage_path === params.ingested.document.storage_path;
+    return sameDocument || samePath;
+  });
+  if (duplicate) {
+    return {
+      opCase: params.opCase,
+      photoAdded: false,
+      photoCount: existingRawPhotos.length,
+    };
+  }
+
+  const nextRawPhotos = [
+    ...existingRawPhotos,
+    {
+      document_id: params.ingested.document.id,
+      storage_bucket: params.ingested.document.storage_bucket,
+      storage_path: params.ingested.document.storage_path,
+      original_name: params.ingested.document.original_name,
+      content_type: params.ingested.document.content_type,
+      sha256: params.ingested.sha256,
+      source: params.ingested.document.source,
+      uploaded_at: new Date().toISOString(),
+    },
+  ];
+  const photoCount = nextRawPhotos.length;
+  const nextCase = await updateOperationalCase(
+    params.db,
+    params.opCase.id,
+    params.opCase.version,
+    {
+      currentStep: "photos_requested",
+      status: "waiting_internal",
+      context: {
+        ...currentContext,
+        raw_photos: nextRawPhotos,
+      },
+    }
+  );
+  if (!nextCase) {
+    return {
+      opCase: params.opCase,
+      photoAdded: false,
+      photoCount: existingRawPhotos.length,
+    };
+  }
+
+  return {
+    opCase: nextCase,
+    photoAdded: true,
+    photoCount,
+  };
+}
 
 function toolCallCaseId(toolCall: {
   arguments_json?: unknown;
@@ -300,7 +459,7 @@ async function isAwaitingCharacteristicsResponse(
  *   4. Dispara el tick E2E sólo si el caso es controlado; en producción el cron
  *      reanuda el caso con `next_action_at`.
  *
- * No duplica lógica de merge: reutiliza `mergeCharacteristicsOwnerResponseDeterministically`.
+ * No duplica lógica de merge: reutiliza `processCharacteristicsReplyDeterministically`.
  */
 async function processCharacteristicsReply(params: {
   db: ReturnType<typeof createServerClient>;
@@ -400,107 +559,68 @@ async function finalizeInternalDocumentBatch(params: {
   });
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function derivePropertyTypeHint(
-  context: Record<string, unknown>,
-  propertyData: Record<string, unknown>
-): string | null {
-  const fromData = propertyData.property_type;
-  if (typeof fromData === "string" && fromData.trim()) return fromData.trim();
-  const fromContext = context.property_type;
-  if (typeof fromContext === "string" && fromContext.trim()) {
-    return fromContext.trim();
-  }
-  if (Array.isArray(fromContext)) {
-    const first = fromContext.find(
-      (value): value is string => typeof value === "string" && value.trim().length > 0
-    );
-    if (first) return first.trim();
-  }
-  return null;
-}
-
-/**
- * Merge an owner's free-form characteristics reply into the case.
- *
- * Interpretation is delegated to the reusable LLM structured extractor
- * (with a deterministic parser fallback); the case is always advanced to the
- * documents_received review point so the deterministic invariants decide
- * whether to request internal review or re-ask only the still-missing fields.
- */
-async function mergeCharacteristicsOwnerResponseDeterministically(params: {
+async function finalizeInternalPhotoBatch(params: {
   db: ReturnType<typeof createServerClient>;
-  opCase: OperationalCase;
-  text: string;
+  caseId: string;
+  chatId: number;
   source: string;
-  nextActionAt: string | null;
-}): Promise<OperationalCase> {
-  const currentContext = isRecord(params.opCase.context_jsonb)
-    ? params.opCase.context_jsonb
-    : {};
-  const currentPropertyData = isRecord(currentContext.property_data)
-    ? currentContext.property_data
-    : {};
-
-  const missingFields = evaluatePropertyDataMinimumsForReview(currentContext).missing;
-  const extraction = await extractOwnerCharacteristics({
-    text: params.text,
-    propertyType: derivePropertyTypeHint(currentContext, currentPropertyData),
-    missingFields,
-    currentPropertyData,
+}) {
+  const { db, caseId, chatId, source } = params;
+  const completion = await completePhotoBatchForCase({
+    db,
+    caseId,
+    channel: "telegram",
+    source,
   });
-  const parsedKeys = Object.keys(extraction.patch);
-
-  const propertyData = {
-    ...currentPropertyData,
-    ...extraction.patch,
-  };
-  const mergedContext = syncIntakeFieldsFromPropertyData(
-    currentContext,
-    propertyData
+  if (
+    completion.status === "no_photos" ||
+    completion.status === "insufficient_photos"
+  ) {
+    await sendTelegramMessage(
+      chatId,
+      photosBatchInsufficientAckText(completion.photoCount)
+    );
+    return NextResponse.json({
+      ok: true,
+      routed: "operational_case_internal_photos_insufficient",
+      case_id: caseId,
+      photos_count: completion.photoCount,
+    });
+  }
+  if (completion.status === "failed") {
+    await sendTelegramMessage(
+      chatId,
+      "Registré tu confirmación, pero no pude avanzar el caso en este momento. Inténtalo de nuevo en unos segundos."
+    );
+    return NextResponse.json({
+      ok: true,
+      routed: "operational_case_internal_photos_failed",
+      case_id: caseId,
+    });
+  }
+  await sendTelegramMessage(
+    chatId,
+    photosBatchAdvancedAckText(completion.photoCount)
   );
-  const updated = await updateOperationalCase(
-    params.db,
-    params.opCase.id,
-    params.opCase.version,
-    {
-      status: "waiting_internal",
-      currentStep: "documents_received",
-      nextActionAt: params.nextActionAt,
-      context: {
-        ...mergedContext,
-        owner_response_processed_at: new Date().toISOString(),
-        owner_response_extraction_method: extraction.method,
-        owner_response_extraction_confidence: extraction.confidence,
-        owner_response_extraction_parsed_fields: parsedKeys,
-        owner_response_extraction_unresolved: extraction.unresolved,
-        ...(extraction.assumptions.length > 0
-          ? { owner_response_extraction_assumptions: extraction.assumptions }
-          : {}),
-        ...(extraction.validationErrors
-          ? { owner_response_extraction_validation_errors: extraction.validationErrors }
-          : {}),
-      },
-    }
-  );
-  await insertOperationalCaseEvent(params.db, {
-    caseId: params.opCase.id,
-    eventType: "state_changed",
-    actor: "system",
-    stepKey: (updated ?? params.opCase).current_step ?? undefined,
-    payload: {
-      kind: "owner_characteristics_merged",
-      source: params.source,
-      parsed_fields: parsedKeys,
-      extraction_method: extraction.method,
-      extraction_confidence: extraction.confidence,
-      unresolved: extraction.unresolved,
-    },
+  if (completion.case.context_jsonb?.e2e_controlled === true) {
+    void runSettingsTestCaseAgentTick(
+      db,
+      completion.case,
+      completion.case.user_id,
+      { source }
+    ).catch((tickError) => {
+      console.error(
+        "[telegram-webhook] internal photos marked ready tick failed:",
+        tickError
+      );
+    });
+  }
+  return NextResponse.json({
+    ok: true,
+    routed: "operational_case_internal_photos_processing",
+    case_id: caseId,
+    photos_count: completion.photoCount,
   });
-  return updated ?? params.opCase;
 }
 
 interface TelegramUpdate {
@@ -771,6 +891,8 @@ export async function POST(request: Request) {
         userId,
         notificationId: targetId,
         text: action === "price_approve" ? "APROBAR PRECIO" : "RECHAZAR PRECIO",
+        // Diferimos el avance del caso para enviar primero la confirmación.
+        deferControlledE2ETick: true,
       });
       await answerTelegramCallbackQuery(
         cb.id,
@@ -787,6 +909,9 @@ export async function POST(request: Request) {
             ? "Listo, procese tu decision de precio."
             : "No pude procesar la decision de precio.")
       );
+      // Tras enviar la confirmación, disparamos el tick del agente E2E que
+      // quedó diferido (puede producir sus propios mensajes del siguiente paso).
+      await maybeRunDeferredPriceTick(db, result);
       return NextResponse.json({
         ok: true,
         routed: "price_approval",
@@ -807,22 +932,24 @@ export async function POST(request: Request) {
       });
     }
 
-    if (
-      action === "contract_send_email" ||
-      action === "contract_upload_adjusted_send"
-    ) {
+    const isContractSendEmailAction =
+      action === "contract_email" || action === "contract_send_email";
+    const isContractUploadAction =
+      action === "contract_upload" || action === "contract_upload_adjusted_send";
+    if (isContractSendEmailAction || isContractUploadAction) {
       const result = await businessDecisionHandler("contract_review").handle(db, {
         userId,
         notificationId: targetId,
         text:
-          action === "contract_send_email"
+          isContractSendEmailAction
             ? "enviar por email al propietario"
             : "subir contrato corregido y enviar",
+        deferControlledE2ETick: true,
       });
       await answerTelegramCallbackQuery(
         cb.id,
         result.ok
-          ? action === "contract_send_email"
+          ? isContractSendEmailAction
             ? "Contrato enviado por email"
             : "Sube el contrato corregido"
           : "No pude procesarlo"
@@ -834,6 +961,7 @@ export async function POST(request: Request) {
             ? "Listo, procesé tu decisión sobre el contrato."
             : "No pude procesar la decisión del contrato.")
       );
+      await maybeRunDeferredContractTick(db, result);
       return NextResponse.json({
         ok: true,
         routed: "contract_review",
@@ -873,6 +1001,30 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         routed: "property_data_review",
+        notification_id: targetId,
+      });
+    }
+
+    if (action === "titularidad_approve") {
+      const result = await businessDecisionHandler("titularidad_review").handle(db, {
+        userId,
+        notificationId: targetId,
+        text: "aprobar titularidad",
+      });
+      await answerTelegramCallbackQuery(
+        cb.id,
+        result.ok ? "Titularidad aprobada" : "No pude procesarlo"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Titularidad aprobada. Reintentaré generar el contrato."
+            : "No pude procesar la decisión de titularidad.")
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "titularidad_review",
         notification_id: targetId,
       });
     }
@@ -1431,6 +1583,8 @@ export async function POST(request: Request) {
         userId,
         notificationId: pendingPriceApproval.id,
         text,
+        // Diferimos el avance del caso para enviar primero la confirmación.
+        deferControlledE2ETick: true,
       });
       await sendTelegramMessage(
         chatId,
@@ -1439,6 +1593,9 @@ export async function POST(request: Request) {
             ? "Listo, procese tu decision de precio."
             : "No pude procesar la decision de precio.")
       );
+      // Tras enviar la confirmación, disparamos el tick del agente E2E que
+      // quedó diferido (puede producir sus propios mensajes del siguiente paso).
+      await maybeRunDeferredPriceTick(db, result);
       return NextResponse.json({
         ok: true,
         routed: "price_approval",
@@ -1486,6 +1643,7 @@ export async function POST(request: Request) {
         userId,
         notificationId: pendingContractReview.id,
         text,
+        deferControlledE2ETick: true,
       });
       await sendTelegramMessage(
         chatId,
@@ -1494,10 +1652,37 @@ export async function POST(request: Request) {
             ? "Listo, procesé tu decisión sobre el contrato."
             : "No pude procesar la decisión del contrato.")
       );
+      await maybeRunDeferredContractTick(db, result);
       return NextResponse.json({
         ok: true,
         routed: "contract_review",
         notification_id: pendingContractReview.id,
+      });
+    }
+  }
+
+  const parsedTitularidadDecision = parseTitularidadReviewDecision(text);
+  if (parsedTitularidadDecision.intent !== "unclear") {
+    const pendingTitularidadReview = pendingInternal.find(
+      (notification) => notification.kind === "titularidad_review"
+    );
+    if (pendingTitularidadReview) {
+      const result = await businessDecisionHandler("titularidad_review").handle(db, {
+        userId,
+        notificationId: pendingTitularidadReview.id,
+        text,
+      });
+      await sendTelegramMessage(
+        chatId,
+        result.message ??
+          (result.ok
+            ? "Titularidad aprobada. Reintentaré generar el contrato."
+            : "No pude procesar la decisión de titularidad.")
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "titularidad_review",
+        notification_id: pendingTitularidadReview.id,
       });
     }
   }
@@ -1514,11 +1699,7 @@ export async function POST(request: Request) {
             if (!notification.case_id) return null;
             const opCase = await getOperationalCase(db, notification.case_id);
             if (!opCase || opCase.user_id !== userId) return null;
-            const external = opCase.external_contact_jsonb ?? {};
-            if (
-              String(external.chat_id ?? "") !== String(chatId) ||
-              opCase.current_step !== "comparables_in_progress"
-            ) {
+            if (opCase.current_step !== "comparables_in_progress") {
               return null;
             }
             return { notification, opCase };
@@ -1531,19 +1712,48 @@ export async function POST(request: Request) {
       } => Boolean(candidate)
     );
 
-    if (comparablesDecisionCandidates.length === 1) {
+    if (comparablesDecisionCandidates.length > 0) {
+      // pendingInternal ya viene en orden de recencia; tomamos el primer pendiente vigente.
       const { notification, opCase } = comparablesDecisionCandidates[0]!;
       const result = await handleComparablesExpansionDecision(db, {
         userId,
         notificationId: notification.id,
         text,
         source: "telegram",
-        expectedChatId: chatId,
+        // Diferimos la notificación de precio para enviar primero la
+        // confirmación de la decisión y después la propuesta de precio.
+        deferPriceApprovalNotify: true,
       });
       await sendTelegramMessage(
         chatId,
         result.message ?? "No pude procesar esa decisión todavía."
       );
+      // Orden de mensajes: tras confirmar la decisión, disparamos ahora la
+      // notificación de aprobación de precio (propuesta), que quedó diferida
+      // dentro del handler para no adelantarse a la confirmación.
+      if (
+        result.ok &&
+        result.status === "processed" &&
+        result.deferredPriceApproval &&
+        result.case_id
+      ) {
+        try {
+          await notifyPriceApprovalForCase({
+            db,
+            caseId: result.case_id,
+            userId,
+            pricingProposal: result.deferredPriceApproval.pricingProposal,
+            source: `comparables_decision_telegram_${result.decision}`,
+            notifyUser: async (notifyDb, notifyUserId, payload, urgency) =>
+              notify(notifyDb, notifyUserId, payload, urgency),
+          });
+        } catch (notifyError) {
+          console.error(
+            "[telegram-webhook] deferred price approval notify failed:",
+            notifyError
+          );
+        }
+      }
       if (
         result.ok &&
         result.status === "processed" &&
@@ -2262,6 +2472,7 @@ export async function POST(request: Request) {
         storagePath: ingested.document.storage_path,
         storageBucket: ingested.document.storage_bucket,
         fileName: inboundMedia.originalName,
+        deferControlledE2ETick: true,
       });
       await sendTelegramMessage(
         chatId,
@@ -2271,6 +2482,7 @@ export async function POST(request: Request) {
           : sent.message ??
               "Recibí el archivo, pero no pude enviarlo por email. Revisa Gmail y owner_email."
       );
+      await maybeRunDeferredContractTick(db, sent);
       return NextResponse.json({
         ok: true,
         routed: sent.ok
@@ -2319,11 +2531,12 @@ export async function POST(request: Request) {
       });
       requestTarget = "internal_user";
     }
-    if (
+    const isInternalDocumentStep =
       requestTarget === "internal_user" &&
       (conversationalCase.current_step === "awaiting_documents" ||
-        conversationalCase.current_step === "documents_received")
-    ) {
+        conversationalCase.current_step === "documents_received");
+    const isInternalPhotosStep = conversationalCase.current_step === "photos_requested";
+    if (isInternalDocumentStep || isInternalPhotosStep) {
       const fileInfo = await getTelegramFile(inboundMedia.fileId);
       if (!fileInfo.file_path) {
         throw new Error("telegram_file_path_missing");
@@ -2377,8 +2590,16 @@ export async function POST(request: Request) {
         original_name: inboundMedia.originalName,
         kind: ingested.document.kind,
       });
+      const photoResult = await appendRawPhoto({
+        db,
+        opCase: conversationalCase,
+        ingested,
+      });
+      conversationalCase = photoResult.opCase;
       const markReadyFromCaption = Boolean(
-        text && looksLikeDocumentBatchComplete(text)
+        text &&
+          looksLikeDocumentBatchComplete(text) &&
+          (isInternalDocumentStep || isInternalPhotosStep)
       );
       if (message.media_group_id) {
         conversationalCase = await appendMediaGroupAckToCase({
@@ -2402,6 +2623,14 @@ export async function POST(request: Request) {
         });
         conversationalCase = flush.opCase;
         if (flush.markReady) {
+          if (isInternalPhotosStep) {
+            return await finalizeInternalPhotoBatch({
+              db,
+              caseId: conversationalCase.id,
+              chatId,
+              source: "telegram_internal_photos_marked_ready",
+            });
+          }
           return await finalizeInternalDocumentBatch({
             db,
             caseId: conversationalCase.id,
@@ -2416,6 +2645,28 @@ export async function POST(request: Request) {
               ? "operational_case_internal_document_registered_group_ack_flushed"
               : "operational_case_internal_document_registered_group_ack_queued",
           case_id: conversationalCase.id,
+          photos_added: photoResult.photoAdded,
+          photos_count: photoResult.photoCount,
+        });
+      }
+      if (photoResult.photoAdded && isInternalPhotosStep) {
+        await sendTelegramMessage(
+          chatId,
+          photosUploadProgressAckText(photoResult.photoCount)
+        );
+        if (markReadyFromCaption) {
+          return await finalizeInternalPhotoBatch({
+            db,
+            caseId: conversationalCase.id,
+            chatId,
+            source: "telegram_internal_photos_marked_ready",
+          });
+        }
+        return NextResponse.json({
+          ok: true,
+          routed: "operational_case_internal_photo_registered",
+          case_id: conversationalCase.id,
+          photos_count: photoResult.photoCount,
         });
       }
       await sendTelegramMessage(
@@ -2427,6 +2678,14 @@ export async function POST(request: Request) {
         })
       );
       if (markReadyFromCaption) {
+        if (isInternalPhotosStep) {
+          return await finalizeInternalPhotoBatch({
+            db,
+            caseId: conversationalCase.id,
+            chatId,
+            source: "telegram_internal_photos_marked_ready",
+          });
+        }
         return await finalizeInternalDocumentBatch({
           db,
           caseId: conversationalCase.id,
@@ -2445,6 +2704,31 @@ export async function POST(request: Request) {
   // "listo" como texto suelto en ruta interna (sin adjunto en este mensaje):
   // completar el lote de forma determinística, igual que web chat, sin pasar
   // por el LLM ni por el camino del responder externo.
+  if (
+    agentMessageText &&
+    conversationalCase &&
+    (looksLikeDocumentBatchComplete(agentMessageText) ||
+      internalDocumentTextReason === "batch_complete") &&
+    conversationalCase.current_step === "photos_requested"
+  ) {
+    const flush = await flushMediaGroupAcksForCase({
+      db,
+      opCase: conversationalCase,
+      chatId,
+      sendAck: async () => {
+        // Avoid double ack with finalizeInternalPhotoBatch message.
+      },
+      force: true,
+    });
+    conversationalCase = flush.opCase;
+    return await finalizeInternalPhotoBatch({
+      db,
+      caseId: conversationalCase.id,
+      chatId,
+      source: "telegram_internal_photos_marked_ready",
+    });
+  }
+
   if (
     agentMessageText &&
     conversationalCase &&
@@ -2483,10 +2767,12 @@ export async function POST(request: Request) {
     conversationalCase &&
     (looksLikeDocumentUploadSideText(agentMessageText) ||
       internalDocumentTextReason === "upload_side_text") &&
-    conversationalCase.current_step === "awaiting_documents" &&
-    operationalCaseDocumentRequestTargetFromContext(
-      conversationalCase.context_jsonb
-    ) === "internal_user"
+    (conversationalCase.current_step === "awaiting_documents" ||
+      conversationalCase.current_step === "photos_requested") &&
+    (conversationalCase.current_step === "photos_requested" ||
+      operationalCaseDocumentRequestTargetFromContext(
+        conversationalCase.context_jsonb
+      ) === "internal_user")
   ) {
     const flush = await flushMediaGroupAcksForCase({
       db,
@@ -2506,7 +2792,9 @@ export async function POST(request: Request) {
     }
     await sendTelegramMessage(
       chatId,
-      'Ya registré los archivos que me llegaron. Cuando termines de enviar todo lo disponible, escribe «listo» para procesarlos.'
+      conversationalCase.current_step === "photos_requested"
+        ? 'Ya registré los archivos que me llegaron. Cuando termines de enviar todas las fotos, escribe «listo».'
+        : 'Ya registré los archivos que me llegaron. Cuando termines de enviar todo lo disponible, escribe «listo» para procesarlos.'
     );
     return NextResponse.json({
       ok: true,
@@ -2776,10 +3064,9 @@ export async function POST(request: Request) {
         );
       }
 
-      let postIntakeAutoAdvanced = false;
       if (conversationalCase?.context_jsonb?.e2e_controlled === true) {
         try {
-          postIntakeAutoAdvanced = await maybeRunPostIntakeConversationalE2ETick({
+          await maybeRunPostIntakeConversationalE2ETick({
             db,
             opCase: conversationalCase,
             userId,

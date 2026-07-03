@@ -261,6 +261,89 @@ export type NotifyUserFn = (
 }>;
 
 /**
+ * Notifica `price_approval` para un caso que ya tiene `pricing_proposal`
+ * preparada, con dedupe idempotente (por evento entregado y por notificación
+ * sin leer) y registra el evento `price_approval_requested` en el paso de
+ * precio. Reutilizable por el avance automático y por los flujos que difieren
+ * la notificación para controlar el orden de mensajes (p. ej. Telegram, donde
+ * la confirmación de la decisión debe llegar antes que la propuesta).
+ */
+export async function notifyPriceApprovalForCase(params: {
+  db: DbClient;
+  caseId: string;
+  userId: string;
+  pricingProposal: PricingProposal;
+  source: string;
+  notifyUser: NotifyUserFn;
+}): Promise<{ notified: boolean }> {
+  const { db, caseId, userId, pricingProposal, source, notifyUser } = params;
+
+  const hasUnreadPriceApprovalNotification = async (): Promise<boolean> => {
+    const { data, error } = await db
+      .from("internal_user_notifications")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("case_id", caseId)
+      .eq("kind", "price_approval")
+      .eq("status", "unread")
+      .limit(1);
+    if (error) return false;
+    return Array.isArray(data) && data.length > 0;
+  };
+
+  const recentEvents = await db
+    .from("operational_case_events")
+    .select("payload_jsonb,created_at")
+    .eq("case_id", caseId)
+    .order("created_at", { ascending: false })
+    .limit(15);
+  const alreadyNotifiedByEvent = (recentEvents.data ?? []).some((row) => {
+    const payload = isRecord((row as { payload_jsonb?: unknown }).payload_jsonb)
+      ? ((row as { payload_jsonb: Record<string, unknown> }).payload_jsonb as Record<
+          string,
+          unknown
+        >)
+      : null;
+    return priceApprovalEventHasDeliveredNotification(payload);
+  });
+  const alreadyNotifiedByUnread = await hasUnreadPriceApprovalNotification();
+  if (alreadyNotifiedByEvent || alreadyNotifiedByUnread) {
+    return { notified: false };
+  }
+
+  const text = formatPriceApprovalNotifyText(pricingProposal);
+  const notifyResult = await notifyUser(
+    db,
+    userId,
+    {
+      text,
+      kind: "price_approval",
+      data: {
+        case_id: caseId,
+        artifact_key: "pricing_proposal",
+        actions: ["approve", "adjust", "reject"],
+      },
+    },
+    "normal"
+  );
+
+  await insertOperationalCaseEvent(db, {
+    caseId,
+    eventType: "human_decision",
+    actor: "system",
+    stepKey: "price_proposal_pending",
+    payload: {
+      kind: "price_approval_requested",
+      source,
+      current_step: "price_proposal_pending",
+      notify_delivered: notifyResult.delivered,
+    },
+  });
+
+  return { notified: notifyResult.delivered.length > 0 };
+}
+
+/**
  * Tras persistir comparables con muestra defendible: avanza paso, genera
  * pricing_proposal y (opcional) notifica price_approval con números concretos.
  */
@@ -287,69 +370,15 @@ export async function tryAdvanceComparablesAfterPersist(params: {
   if (!params.notifyUser) {
     return { ...advance, notified: false };
   }
-  const caseId = advance.case.id;
 
-  const hasUnreadPriceApprovalNotification = async (): Promise<boolean> => {
-    const { data, error } = await params.db
-      .from("internal_user_notifications")
-      .select("id")
-      .eq("user_id", params.userId)
-      .eq("case_id", caseId)
-      .eq("kind", "price_approval")
-      .eq("status", "unread")
-      .limit(1);
-    if (error) return false;
-    return Array.isArray(data) && data.length > 0;
-  };
-
-  const recentEvents = await params.db
-    .from("operational_case_events")
-    .select("payload_jsonb,created_at")
-    .eq("case_id", caseId)
-    .order("created_at", { ascending: false })
-    .limit(15);
-  const alreadyNotifiedByEvent = (recentEvents.data ?? []).some((row) => {
-    const payload = isRecord((row as { payload_jsonb?: unknown }).payload_jsonb)
-      ? ((row as { payload_jsonb: Record<string, unknown> }).payload_jsonb as Record<
-          string,
-          unknown
-        >)
-      : null;
-    return priceApprovalEventHasDeliveredNotification(payload);
-  });
-  const alreadyNotifiedByUnread = await hasUnreadPriceApprovalNotification();
-  if (alreadyNotifiedByEvent || alreadyNotifiedByUnread) {
-    return { ...advance, notified: false };
-  }
-
-  const text = formatPriceApprovalNotifyText(advance.pricingProposal);
-  const notifyResult = await params.notifyUser(
-    params.db,
-    params.userId,
-    {
-      text,
-      kind: "price_approval",
-      data: {
-        case_id: caseId,
-        artifact_key: "pricing_proposal",
-        actions: ["approve", "adjust", "reject"],
-      },
-    },
-    "normal"
-  );
-
-  await insertOperationalCaseEvent(params.db, {
-    caseId,
-    eventType: "human_decision",
-    actor: "system",
-    stepKey: "price_proposal_pending",
-    payload: {
-      kind: "price_approval_requested",
-      source: params.source,
-      current_step: "price_proposal_pending",
-      notify_delivered: notifyResult.delivered,
-    },
+  const { notified } = await notifyPriceApprovalForCase({
+    db: params.db,
+    caseId: advance.case.id,
+    userId: params.userId,
+    pricingProposal: advance.pricingProposal,
+    source: params.source,
+    notifyUser: params.notifyUser,
   });
 
-  return { ...advance, notified: notifyResult.delivered.length > 0 };
+  return { ...advance, notified };
 }

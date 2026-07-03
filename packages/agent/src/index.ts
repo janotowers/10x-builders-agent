@@ -147,6 +147,7 @@ export type {
 export { buildPricingProposalFromComparables, formatPriceApprovalNotifyText } from "./operational-cases/pricing-proposal";
 export {
   advanceComparablesToPriceProposalWithRetry,
+  notifyPriceApprovalForCase,
   subjectAreaFromCaseContext,
   tryAdvanceComparablesAfterPersist,
 } from "./operational-cases/comparables-advance";
