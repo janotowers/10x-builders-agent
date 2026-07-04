@@ -151,59 +151,54 @@ extension points**, for example `beforeToolExecute`, `afterToolExecute`,
 contracts. Customer-authored hook scripts should remain out of scope until
 there is sandboxing, permissions, quotas, observability, and rollback.
 
-### Inspiration 2: Karpathy-style Personal Knowledge OS
+### Inspiration 2: Karpathy LLM Wiki pattern
 
-**Source:** user-provided post/image attributed to Stanislav Beliaev, describing
-Andrej Karpathy's workflow for an LLM-maintained personal knowledge base:
-raw ingest, LLM compilation into a wiki, Obsidian as frontend, index-based
-querying, generated outputs, linting passes, self-improving loops, extra tools,
-and possible fine-tuning on synthetic data.
+**Primary source:** Andrej Karpathy, [LLM Wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — an *idea file* for LLM-maintained persistent wikis (not a product). Describes three layers (**raw sources**, **wiki**, **schema** such as `CLAUDE.md` / `AGENTS.md`) and three operations (**Ingest**, **Query**, **Lint**).
 
-**Why consider it:** it is a strong model for deep research workflows: capture
-evidence quickly, compile it into durable knowledge, maintain structure over
-time, and let each query improve the corpus.
+**Secondary sources:**
+
+- Earlier user-provided post/image attributed to Stanislav Beliaev (pre-gist summary; included fine-tuning on synthetic data — **not** in the official gist).
+- Cobus Greyling, *LLM Wiki* (Jul 2026) — practical onboarding guide restating the gist (`raw/` + `wiki/` + `index.md` + `log.md` + schema file; ingest → query → lint rhythm).
+
+**Core thesis (gist):** Most document+LLM setups behave like RAG — rediscover knowledge on every question. The LLM Wiki pattern instead **compiles knowledge once and keeps it current**: interlinked markdown pages, cross-references maintained, contradictions flagged, synthesis that compounds with every source and every good query. Karpathy’s line: *“Obsidian is the IDE; the LLM is the programmer; the wiki is the codebase.”* The human curates sources and asks questions; the LLM does summarizing, cross-referencing, filing, and bookkeeping.
+
+**Why consider it for Gu OS:** Strong model for **business/team** knowledge too (gist explicitly lists Slack, meetings, transcripts, customer calls — with humans in the loop). Maps directly to Brain Layer goals: evidence → compiled entity state → maintenance loops. Detailed Gu OS mapping and genealogy with G Brain: [`brain/gbrain-evaluation-and-plan.md`](brain/gbrain-evaluation-and-plan.md) §1.1.
 
 **Gu OS mapping:**
 
-| Knowledge OS idea | Gu OS equivalent | Status | Notes |
-|-------------------|------------------|--------|-------|
-| Raw data ingest | Future Ingestion Layer, source connectors, `source_id` / `source_meta`, uploads/connectors | Planned | Strong fit if modeled as evidence inbox with provenance and tenant ownership, not as a shared folder. |
-| LLM compiles wiki | Brain Layer `compiled_truth + timeline + versions` | Planned | Strong fit, but Gu OS compiles operational entity knowledge, not a free-form research wiki. Synthetic/destructive updates require HITL initially. |
-| Obsidian frontend | Gu console, Settings, future Brain review UI/dashboards | Rejected as primary UX | Obsidian is good for personal research. Gu OS needs operational dashboards, review queues, approvals, and actions. |
-| No RAG / no vector DB | Hybrid Brain search + structured queries + optional human-readable index pages | Rejected for now | Gu OS should keep retrieval and structured access. Index pages may help explain and navigate knowledge, but should not replace search in a multi-tenant app. |
-| Outputs filed back into wiki | Generated artifacts, reports, decks, charts, document skills, Brain timeline entries | Planned/optional | Useful when outputs have durable value and provenance. Not every answer should become memory. |
-| Self-improving loop | Dream Cycle, Brain maintenance runs, memory/skill curation | Planned | Good fit if split into mechanical autonomous checks and HITL-gated synthesis/promotions. |
-| Linting passes | Brain health checks: inconsistency, gaps, stale chunks, orphan pages, duplicate candidates, missing links | Planned | Strong fit. This should be framed as operational hygiene, not “make a prettier wiki.” |
-| CLI/search/web UI | Web product first; internal CLI/dev tooling optional | Optional | Customers need product UI. CLI can help engineering, migrations, evals, and operations. |
-| Fine-tuning on synthetic data | Eval fixtures, routing/extraction tests, synthetic regression sets | Rejected as product goal for now | Synthetic data is useful for evals. Putting customer knowledge into model weights is not a near-term Gu OS goal. |
+| LLM Wiki idea (gist) | Gu OS equivalent | Status | Notes |
+|----------------------|------------------|--------|-------|
+| **Raw sources** (immutable `raw/`) | Future Ingestion Layer, evidence inbox, `source_id` / `source_meta` | Planned | Sources are never overwritten; compiled layer updates on top. Tenant-owned, not a shared folder. |
+| **Wiki** (LLM-maintained interlinked pages) | Brain Layer `brain_pages`: `compiled_truth + timeline + versions` | Planned | Operational entity knowledge (lead, property, deal…), not a free-form research garden. Destructive/synthetic updates require HITL initially. |
+| **Schema** (`CLAUDE.md` co-evolved) | Brain conventions in code + governance (§13.2 fixed 8 `kind`s MVP); `business_brain` slots; page frontmatter rules | Planned / partial | MVP = fixed domain schema, not per-tenant markdown constitution. Co-evolution deferred post-MVP. |
+| **Ingest** workflow | Ingestion Layer connectors + normalize → route to inbox / pages / signals | Planned | On ingest: update entity pages, note contradictions vs existing compiled truth, append timeline — HITL for destructive merges. |
+| **Query** workflow | Hybrid Brain search (Bloque 3) + **`think_brain`** synthesis (Bloque 3b) | Planned | At personal scale gist uses `index.md` first; Gu OS adds hybrid retrieval for multi-tenant scale. |
+| **Lint** workflow | Dream Cycle health checks (Bloque 5): orphans, stale, contradictions, missing links, dedupe proposals | Planned | Operational hygiene, not “prettier wiki.” |
+| **`index.md`** (content catalog) | Generated index / catalog views over `brain_pages`; complement to search | Planned/optional | Karpathy: sufficient ~100 sources / hundreds of pages **personal**. Gu OS: complement only — not sole navigation. |
+| **`log.md`** (chronological append-only) | `brain_timeline` + ingest/query/lint audit rows (dream cycle runs, promotion events) | Planned | Same spirit: parseable evolution log; not a loose markdown file in product UI. |
+| Obsidian as read/browse frontend | Gu console, Settings, future Brain review UI/dashboards | Rejected as primary UX | Obsidian fits personal vaults. Gu OS needs operational dashboards, review queues, approvals, actions. |
+| Index-only query (no embeddings) | Hybrid Brain search + structured filters + optional index pages | Rejected for product | Valid at personal moderate scale; multi-tenant ops needs permissions, hybrid retrieval, auditability. |
+| **Query → file back** (good answers become pages) | Query-to-Knowledge Feedback → timeline / synthesis proposals / artifacts | Planned/optional | High-value answers with provenance only; not every chat turn becomes memory. |
+| Contradiction flagging (on ingest + lint) | Ingest contradiction detection + lint + `brain_synthesis_proposals` HITL | Planned | Gist: flag when new source contradicts old claims. Gu OS: conservative — HITL before overwriting compiled truth. |
+| Self-improving / compounding corpus | Dream Cycle, Brain maintenance, selective promotions from signals | Planned | Split: mechanical autonomous checks vs HITL-gated synthesis. |
+| Optional CLI search (e.g. qmd hybrid) | Internal dev CLI optional; product = web + RPC hybrid search | Optional | Gist’s optional tooling aligns with our Bloque 3 hybrid BM25+vector direction. |
+| Fine-tuning on synthetic data | Eval fixtures, routing/extraction regression sets | Rejected | **Not in official gist** — appeared in Beliaev summary only. Synthetic data for evals yes; customer facts in model weights no. |
 
 #### Ideas worth carrying forward
 
-1. **Raw Evidence Inbox:** new external information should first be captured as
-   evidence with provenance, owner, source metadata, and review state. It should
-   not jump directly into `memories` or `compiled_truth`.
-2. **Compiled Knowledge Pages:** the Brain Layer should keep the Karpathy/G Brain
-   insight that logs are not enough. Operational entities need current compiled
-   state plus append-only evidence.
-3. **Brain Health Checks:** maintenance should find contradictions, stale data,
-   missing links, duplicate pages, orphan pages, and unreviewed signal clusters.
-4. **Query-to-Knowledge Feedback:** a high-value answer, report, chart, or deck
-   can become an artifact or candidate memory, but only when it has durable
-   operational value and enough provenance.
-5. **Index Pages as a complement:** human-readable index pages can help the
-   model and users navigate a domain, but they should be generated from or linked
-   to structured Brain data rather than becoming the source of truth.
+1. **Raw Evidence Inbox:** external information lands first as immutable evidence with provenance, owner, source metadata, and review state — never jumps straight into `memories` or `compiled_truth`.
+2. **Compiled Knowledge Pages:** logs alone are not enough (Karpathy/G Brain insight). Operational entities need current compiled state plus append-only evidence.
+3. **Ingest / Query / Lint triad:** name and design Brain Layer workflows explicitly around these three operations (see [`gbrain-evaluation-and-plan.md`](brain/gbrain-evaluation-and-plan.md) §1.1).
+4. **Brain Health Checks:** contradictions, stale claims, orphan pages, missing concept pages, missing cross-refs, unreviewed signal clusters.
+5. **Query-to-Knowledge Feedback:** a high-value answer, report, chart, or deck can become an artifact or candidate memory when it has durable operational value and provenance.
+6. **Index pages as complement:** human-readable catalogs generated from structured Brain data — navigation aid, not source of truth.
 
 #### Ideas not adopted as-is
 
-- Gu OS should not become an Obsidian clone. The governing principle from the
-  Brain Layer plan remains: **operational, not Obsidian**.
-- Gu OS should not remove retrieval just because a personal wiki can sometimes
-  fit into context or index files. Multi-tenant operational search needs
-  structured filters, permissions, hybrid retrieval, and auditability.
-- Gu OS should not train customer-specific facts into model weights. If synthetic
-  data is generated, use it first for evals, regression tests, skill QA, routing,
-  extraction, and safety review.
+- Gu OS should not become an Obsidian clone. Governing principle: **operational, not Obsidian** ([`gbrain-evaluation-and-plan.md`](brain/gbrain-evaluation-and-plan.md) §1.5.1).
+- Gu OS should not drop hybrid retrieval because a personal wiki fits in context or an index file. Multi-tenant operational search needs structured filters, permissions, hybrid retrieval, and auditability.
+- Gu OS should not train customer-specific facts into model weights. Synthetic data belongs in evals, regression tests, skill QA, routing, extraction, and safety review.
+- Gu OS should not expose a per-tenant `CLAUDE.md` wiki constitution in MVP. Domain schema is product-defined (real estate `kind`s); tenant customization stays in `business_brain`, skills, and future Brain UI — not co-evolved markdown rules files.
 
 ### Inspiration 3: Garry Tan / GStack (Thin Harness, Fat Skills; Homebrew for Personal AI; Skill Development Cycle)
 
@@ -226,7 +221,7 @@ distribution ("markdown is code") as a future packaging model.
 | Thin harness | `runAgent` + LangGraph + tool catalog + HITL + channels | Today | **Not** ~200 LOC by design — multi-tenant product invariants (RLS, audit, approvals). Thin in responsibilities, not file size. |
 | Resolver | Pre-graph `selectSkillForTurn` + skill `description` + deterministic guards + forced bindings | Today | Differs from Claude Code (main model loads skills); see [`skill-routing.md`](tools-design/skill-routing.md). |
 | Latent vs deterministic | Skills vs tools/adapters/prefetchers | Today | Documented in [`skills-tools-architecture.md`](skills-tools-architecture.md) §4.1. |
-| Diarization | Brain Layer `compiled_truth + timeline` on entity pages | Planned | Bloques 1–4 in [`gbrain-evaluation-and-plan.md`](brain/gbrain-evaluation-and-plan.md). |
+| Diarization | Brain Layer `compiled_truth + timeline` on entity pages | Planned | Bloques 1–4 in [`gbrain-evaluation-and-plan.md`](brain/gbrain-evaluation-and-plan.md). Alineado con patrón Karpathy LLM Wiki (Inspiration 2) y G Brain. |
 | Self-learning loop (`/improve`) | Pattern Layer → HITL → Skill; Brain maintenance / skill curation | Planned | Must not skip HITL; G Brain `cycle/patterns.ts` is **not** organizational playbook mining. |
 | Recipe / `gbrain install` | Capability packs; internal recipe bundles | Optional V3+ | No open marketplace until sandbox + permissions. `account_skills` V2 is nearer-term customization. |
 | "Ask twice, you failed" discipline | Skill authoring, scheduled tasks, operational cases | Partial today | Codify repeat work into skills or automation; see `skill-authoring` skill. |

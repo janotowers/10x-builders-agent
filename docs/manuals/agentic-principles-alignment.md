@@ -3,7 +3,7 @@
 > **Estado:** referencia viva (no plan de implementacion)
 > **Audiencia:** Janot (arquitecto/dueño), autores de skills, reviewers de roadmap
 > **Fuentes:** ensayos de Garry Tan sobre GStack / G Brain (abril 2026), contrastados con el repo y docs actuales de Gu OS
-> **Relacion:** complementa [`gu-os-understanding.md`](gu-os-understanding.md) (narrativa), [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) (roadmap), [`brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) (Brain Layer) y [`skills-tools-architecture.md`](../skills-tools-architecture.md) (skills vs tools)
+> **Relacion:** complementa [`gu-os-understanding.md`](gu-os-understanding.md) (narrativa), [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) (roadmap; Inspiration 2 = Karpathy LLM Wiki, Inspiration 3 = GStack), [`brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) (Brain Layer; §1.1 genealogía) y [`skills-tools-architecture.md`](../skills-tools-architecture.md) (skills vs tools)
 
 ---
 
@@ -28,6 +28,7 @@ Este documento captura:
 
 | Fuente | Tesis central | Relevancia para Gu OS |
 |--------|---------------|------------------------|
+| **LLM Wiki** (Andrej Karpathy, [gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)) | Wiki persistente mantenido por LLM: raw inmutable, compilación, Ingest/Query/Lint; conocimiento que **compone** en lugar de redescubrirse cada query | Informa Brain Layer (compiled truth, timeline, dream cycle, ingestion). Mapping en [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) Inspiration 2 y [`gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) §1.1. Gu OS rechaza Obsidian-as-product y index-only-without-RAG. |
 | **Thin Harness, Fat Skills** (Garry Tan, 2026-04-09) | Cinco definiciones (skill, harness, resolver, latent/deterministic, diarization); arquitectura de tres capas; loop de auto-mejora; guia skill vs code | Valida skills + tools + routing + separacion juicio/ejecucion. Brain Layer y Pattern→Skill son la frontera pendiente. |
 | **Homebrew for Personal AI** (Garry Tan, 2026-04-11) | Markdown como codigo; recipes como paquetes distribuibles; el agente implementa capacidades nativas desde una spec | Valida `SKILL.md` + `references/` + `account_skills`. Capability packs (V3+) y recipe distribution quedan como direccion futura, no como producto hoy. |
 | **Skill Development Cycle** (GBrain repo, `skill-development.md`) | Discovery → draft → quality bar → activation; MECE ownership; no promover sin evidencia | Mapea a Skill Lab + N0–N5 + rúbrica `skill-authoring`; quality bar instrumentable en [`testing-framework.md`](../operational-cases/testing-framework.md) §13. |

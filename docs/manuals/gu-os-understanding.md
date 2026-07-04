@@ -456,9 +456,15 @@ Sí, pero cumplen roles distintos:
 
 | Documento | Qué cubre | Estado |
 |-----------|-----------|--------|
-| `business-brain-evolution-roadmap.md` | Evolución del agente actual: skills, skill registry, `business_brain`, Heartbeat, BigQuery, UI, futuro `account_skills`, futuro `organizations`. | Es el roadmap del sistema existente. |
-| `brain/gbrain-evaluation-and-plan.md` | Nueva Brain Layer inspirada en G Brain: Ingestion, Memory, Graph, Signal, Pattern, Skill, Workflow. | Es el plan para agregar memoria/cognición operacional del negocio. |
+| `business-brain-evolution-roadmap.md` | Evolución del agente actual: skills, skill registry, `business_brain`, Heartbeat, BigQuery, UI, futuro `account_skills`, futuro `organizations`. Incluye **Inspiration 2: Karpathy LLM Wiki** ([gist oficial](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)). | Es el roadmap del sistema existente. |
+| `brain/gbrain-evaluation-and-plan.md` | Nueva Brain Layer inspirada en G Brain: Ingestion, Memory, Graph, Signal, Pattern, Skill, Workflow. Genealogía Karpathy → G Brain → Gu OS en §1.1. | Es el plan para agregar memoria/cognición operacional del negocio. |
 | `manuals/agentic-principles-alignment.md` | Ensayos GStack (Thin Harness / Homebrew) mapeados a Gu OS: matriz de alineación, skill vs code, qué no copiar. | Referencia filosófica transversal; no sustituye al plan Brain. |
+
+La conexión entre las tres fuentes de inspiración externa:
+
+- **Karpathy LLM Wiki** — *qué* tipo de memoria (compilar wiki persistente, no RAG efímero); triada Ingest / Query / Lint.
+- **G Brain** — *cómo* productizar ese patrón (compiled truth, dream cycle, hybrid search, `think`).
+- **GStack / ensayos Garry Tan** — *cómo* empaquetar capacidades (thin harness, fat skills, skill development cycle).
 
 La conexión clave es esta:
 
@@ -595,7 +601,8 @@ Personal interna (Ungga) puede tener modo especial para ver varias organizacione
 | Producto / negocio | Secciones 1–8 de este documento; [`gu-os-glossary-commercial.md`](gu-os-glossary-commercial.md) para demos; resumen del roadmap en [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md). |
 | Diseño de skills / operación | Sección 5 de este documento (especialmente §5.9 diagrama) + `company-data` / `memory-curate` en `skills/global/`. |
 | Ingeniería | [`architecture-manual.md`](architecture-manual.md) + [`architecture.md`](../architecture.md). |
-| Brain Layer / G Brain | [`docs/brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) (plan, no guía divulgativa). |
+| Brain Layer / G Brain | [`docs/brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) (plan, no guía divulgativa). §1.1 = genealogía Karpathy LLM Wiki. |
+| Patrón LLM Wiki (Karpathy) | [Gist oficial](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) + [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) Inspiration 2. |
 | Principios agenticos (GStack / alineación) | [`agentic-principles-alignment.md`](agentic-principles-alignment.md) — ensayos Garry Tan mapeados a Gu OS. |
 | Glosario comercial (una página) | [`gu-os-glossary-commercial.md`](gu-os-glossary-commercial.md) — términos para ventas, alianzas y demos. |
 

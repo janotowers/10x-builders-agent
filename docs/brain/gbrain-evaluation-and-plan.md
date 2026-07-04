@@ -1,10 +1,40 @@
 # Evaluación de G Brain y plan de integración con Ungga / Gu OS
 
-> **Estado:** propuesta para revisión
-> **Versión:** 1.4.1 (mantiene el modelo arquitectural de **7 capas / 4 dominios** de v1.4 y aclara que las futuras `account_skills` deben contemplar procedimientos personales propios, no solo playbooks de negocio)
+> **Estado:** propuesta para revisión (actualizada julio 2026)
+> **Versión:** 1.5.1 (v1.5 + genealogía **Karpathy LLM Wiki** alineada al [gist oficial](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f); enlaces cruzados roadmap / guía / glosario comercial)
 > **Audiencia:** Janot (arquitecto/dueño)
-> **Decide:** si arrancamos la "Brain Layer" como capa nueva paralela a `memories`, siguiendo Opción B (portar 5 ideas de G Brain sin importar su código)
-> **No decide:** si en el futuro lejano se integra G Brain como microservicio (Opción C) — eso queda como puerta abierta
+> **Decide:** si arrancamos la "Brain Layer" como capa nueva paralela a `memories`, siguiendo Opción B (portar **8 ideas** de G Brain sin importar su código), en convivencia explícita con `operational_cases` y `account_skills`
+> **No decide:** si en el futuro lejano se integra G Brain como microservicio (Opción C) — eso queda como puerta abierta, con matiz post-company-brain (ver [§8](#8-recomendación-y-razones))
+
+### Cambios v1.5.1 vs v1.5
+
+> Marcadores `[v1.5.1]` en sub-secciones nuevas/modificadas. Alineación documental con el patrón **Karpathy LLM Wiki** (gist canónico) — sin cambio de scope MVP ni migraciones.
+
+- Nueva [§1.1](#11-genealogía-intelectual-karpathy-llm-wiki--g-brain--gu-os-v151) — genealogía Karpathy → G Brain → Gu OS; triada Ingest/Query/Lint; mapeo `index.md` / `log.md` / schema layer.
+- Glosario (Apéndice C): **LLM Wiki**, **Raw Evidence Inbox**, **Query-to-Knowledge Feedback**, **Index page (complement)**.
+- Bloque 3b: regla **Query-to-Knowledge Feedback** (respuestas durables → timeline/proposals).
+- Apéndice B: link al gist Karpathy junto a G Brain.
+- Enlaces cruzados a [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) Inspiration 2, [`gu-os-understanding.md`](../manuals/gu-os-understanding.md), [`gu-os-glossary-commercial.md`](../manuals/gu-os-glossary-commercial.md).
+
+### Cambios v1.5 vs v1.4.1
+
+> Marcadores `[v1.5]` en sub-secciones nuevas/modificadas. Esta ronda es una **revisión de contexto** tras re-leer G Brain en GitHub (v0.42.56.0, julio 2026) y auditar el repo Gu OS: Brain Layer sigue sin implementarse; el subsistema de casos operacionales y `account_skills` V1 sí.
+
+- **Referencia G Brain:** v0.28.3 → **v0.42.56.0**; nueva [§1.2](#12-evolución-de-g-brain-v028--v042-lo-relevante-para-gu-os) con deltas significativos (company brain, `gbrain think`, schema packs, facts/takes, dream cycle expandido, ingestion first-class, skillopt).
+- Nueva [§1.3](#13-estado-de-gu-os-desde-v141-lo-construido-en-paralelo) — Brain Layer **no iniciada**; migraciones brain desde **00053+** (00019–00052 ya ocupadas); subsistema **casos operacionales como plataforma reutilizable** (`property_optioning` = primer flujo piloto, no el producto); `account_skills` V1 parcialmente implementada.
+- **Modelo 7 capas (§1.4):** capa 7 ampliada con `operational_cases` como primitiva existente; capa 6 incluye `account_skills`; nueva [§1.4.8](#148-casos-operacionales-vs-brain-layer-frontera-de-responsabilidades-v15) — reglas de no-duplicación entre expediente multi-día y cognición de entidades.
+- Flecha de promoción Pattern → Skill actualizada: destino **`SKILL.md` global OR `account_skills`** (§1.4.3).
+- **Ficha comparativa (§2):** company brain multi-usuario, síntesis, reranker, schema packs, 43 skills, evals BrainBench, madurez Gu OS V1.6–V1.7.
+- **Complementariedad (§4):** nuevas §4.8 (capa de síntesis / `think`), §4.9 (facts/takes), §4.4 dream cycle actualizado a ~25 fases; §4.3 nota reranker v1.1.
+- **§5 "Lo que Gu OS ya tiene mejor":** reescrito — multi-tenancy matizado vs company brain G Brain; casos operacionales plataforma; account_skills; Telegram externo; warehouse BigQuery.
+- **§6 discrepancia #6:** matizado — G Brain ya tiene company brain OAuth-scoped; Gu OS sigue con ventaja en RLS producto + runtime integrado.
+- **Opción B:** **5 → 8 ideas** (§7, §8, §9); nuevo **Bloque 3b** (síntesis con gap analysis); dream cycle ampliado; integración explícita con operational_cases.
+- **Migraciones renumeradas:** `00053`–`00059` (+ hooks `00055b`) en lugar de `00019`–`00024`.
+- **§12.1:** contraste con modelo facts/takes de G Brain v0.31+.
+- **§12.2:** referencia al contrato `IngestionSource` publicado en G Brain (`gbrain/ingestion`).
+- **§12.3:** distinción **skill discovery** vs **skill optimization** (`skillopt`); `account_skills` como destino de promoción; scope note actualizada (V1 ya existe).
+- **§13.2:** nota decisión **dominio fijo real estate** vs schema packs genéricos de G Brain.
+- **Apéndices A/B** y glosario ampliados; próximos pasos actualizados.
 
 ### Cambios v1.4.1 vs v1.4
 
@@ -68,7 +98,11 @@
 ## Tabla de contenidos
 
 1. [Contexto y objetivo](#1-contexto-y-objetivo)
+1.1. [Genealogía: Karpathy LLM Wiki → G Brain → Gu OS](#11-genealogía-intelectual-karpathy-llm-wiki--g-brain--gu-os-v151) `[v1.5.1]`
+1.2. [Evolución de G Brain v0.28 → v0.42](#12-evolución-de-g-brain-v028--v042-lo-relevante-para-gu-os) `[v1.5]`
+1.3. [Estado de Gu OS desde v1.4.1](#13-estado-de-gu-os-desde-v141-lo-construido-en-paralelo) `[v1.5]`
 1.4. [Modelo de capas: 7 capas, 4 dominios](#14-modelo-de-capas-7-capas-4-dominios) `[v1.4]`
+   - 1.4.8. [Casos operacionales vs Brain Layer (frontera)](#148-casos-operacionales-vs-brain-layer-frontera-de-responsabilidades-v15) `[v1.5]`
 1.5. [Principios rectores de la Brain Layer](#15-principios-rectores-de-la-brain-layer) `[v1.1]`
 2. [Ficha técnica comparativa](#2-ficha-técnica-comparativa)
 3. [Traslapes reales](#3-traslapes-reales)
@@ -88,9 +122,9 @@
 
 ## 1. Contexto y objetivo
 
-**G Brain** ([github.com/garrytan/gbrain](https://github.com/garrytan/gbrain), v0.28.3 al momento de esta evaluación) es un proyecto open source de Garry Tan (CEO de Y Combinator). Es una **infraestructura de cognición** para agentes de IA: memoria persistente estructurada, knowledge graph, retrieval híbrido, ciclos autónomos de mantenimiento, y un sistema de skills declarativas.
+**G Brain** ([github.com/garrytan/gbrain](https://github.com/garrytan/gbrain), **v0.42.56.0** al momento de esta revisión — julio 2026; referencia inicial del doc: v0.28.3) es un proyecto open source de Garry Tan (CEO de Y Combinator). Es una **infraestructura de cognición** para agentes de IA: memoria persistente estructurada, knowledge graph, retrieval híbrido + **capa de síntesis** (`gbrain think`), ciclos autónomos de mantenimiento (dream cycle / autopilot), ingestion con contrato versionado, y un sistema de skills declarativas (~43 skills). Desde v0.40+ promueve explícitamente el shape de **company brain** (memoria institucional multi-usuario con OAuth y sources federados).
 
-Está localizado localmente en `C:\Users\janot\develop\gbrain-master\gbrain-master`.
+Referencia local opcional: `C:\Users\janot\develop\gbrain-master\gbrain-master`. Para auditoría de cambios, el repo público en GitHub es la fuente de verdad ([`CHANGELOG.md`](https://github.com/garrytan/gbrain/blob/master/CHANGELOG.md), [`src/core/cycle.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/cycle.ts)).
 
 ### Pregunta de la evaluación
 
@@ -126,11 +160,11 @@ flowchart TD
 
   subgraph Procedural
     L5[5. Pattern<br/>brain_skill_candidates<br/>mineable, no validados]
-    L6[6. Skill<br/>SKILL.md<br/>validated procedures]
+    L6[6. Skill<br/>SKILL.md + account_skills<br/>validated procedures]
   end
 
   subgraph Execution
-    L7[7. Workflow<br/>LangGraph runtime<br/>+ Heartbeat + HITL]
+    L7[7. Workflow<br/>LangGraph + Heartbeat<br/>+ operational_cases + HITL]
   end
 
   L1 --> L2
@@ -147,9 +181,200 @@ flowchart TD
   style L5 stroke-dasharray: 5 5
 ```
 
-> Las cajas con borde **punteado** (Ingestion, Pattern) son **forward-looking**: en v1 tienen solo lightweight hooks de schema (sin implementación). El resto se construye en los Bloques 1-6 del plan o ya existe en Ungga.
 
-G Brain ocupa principalmente las capas 2-4 (Memory + Graph + Signal) con touches en 1 (importadores) y 6 (skills). Ungga hoy ocupa principalmente las capas 6-7 (Skills + Workflow) con una versión limitada de la capa 2 (`memories` planas + `business_brain` JSONB). Esta evaluación trata de cómo construir las capas 2-4 inspirándose en G Brain, dejar lightweight hooks para 1 y 5, mantener intactas 6 y 7, y reconocer arquitecturalmente las 7 capas como modelo único.
+
+> Las cajas con borde **punteado** (Ingestion, Pattern) son **forward-looking**: en v1 tienen solo lightweight hooks de schema (sin implementación). Las capas 6–7 **ya existen** en Gu OS (skills + workflow, incluyendo casos operacionales). Las capas 2–4 se construyen en los Bloques 1–6 del plan.
+
+G Brain ocupa principalmente las capas 2–4 (Memory + Graph + Signal) con touches en 1 (ingestion), 6 (skills) y síntesis cross-page (`think`). Gu OS hoy ocupa las capas 6–7 con profundidad real (`operational_cases` como plataforma, Heartbeat, scheduled_tasks) y una versión limitada de memoria personal (`memories` + `business_brain` JSONB). Esta evaluación trata de cómo construir las capas 2–4 inspirándose en G Brain v0.42, dejar hooks para 1 y 5, **integrar sin colisionar** con lo ya construido en 6–7, y reconocer las 7 capas como modelo único. La genealogía intelectual completa (Karpathy → G Brain → Gu OS) está en [§1.1](#11-genealogía-intelectual-karpathy-llm-wiki--g-brain--gu-os-v151).
+
+---
+
+## 1.1 Genealogía intelectual: Karpathy LLM Wiki → G Brain → Gu OS `[v1.5.1]`
+
+> *Este plan detalla **cómo implementar** la Brain Layer vía G Brain como referencia técnica. El patrón cognitivo subyacente viene antes — del [LLM Wiki gist de Andrej Karpathy](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). Mapping extendido en [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) Inspiration 2.*
+
+### Cadena de influencia
+
+```text
+Karpathy LLM Wiki (gist, idea file)
+  → compilar wiki persistente; raw inmutable; operaciones Ingest / Query / Lint
+G Brain / Garry Tan (implementación OSS, v0.42+)
+  → productiza: compiled_truth, timeline, dream cycle, hybrid search, think, company brain
+Gu OS Opción B (Brain Layer en Postgres + RLS)
+  → mismo espíritu cognitivo; verticalizado a brokerage inmobiliario;
+     operacional (no Obsidian); multi-tenant; convive con operational_cases + account_skills
+```
+
+G Brain y Karpathy comparten el **medium** (markdown interlinkado + síntesis compilada). G Brain **productiza** lo que el gist deja abierto; Gu OS **verticaliza** con tenant safety, HITL comercial, warehouse tabular y plataforma de casos multi-día.
+
+### Tres capas del gist → Gu OS
+
+| Capa gist | Artefactos gist | Equivalente Gu OS (plan) |
+|-----------|-----------------|--------------------------|
+| Raw sources | `raw/` inmutable | Ingestion Layer + evidence inbox; `source_id` / `source_meta`; nunca overwrite de fuente |
+| Wiki | `wiki/` mantenido por LLM | `brain_pages` (`compiled_truth` + `brain_timeline` + versions) + `brain_links` + `brain_signals` |
+| Schema | `CLAUDE.md` / `AGENTS.md` co-evolucionado | Convenciones Brain en código + governance HITL; 8 `kind`s fijos MVP (§13.2); **no** markdown constitution por tenant en v1 |
+
+### Triada Ingest / Query / Lint
+
+| Operación gist | Qué hace | Bloque / artefacto Gu OS |
+|----------------|----------|--------------------------|
+| **Ingest** | Lee fuente → integra en wiki → actualiza entidades → flag contradicciones → append log | Ingestion Layer (§12.2); timeline append; contradicciones → `brain_synthesis_proposals` HITL |
+| **Query** | Lee índice/páginas → sintetiza con citas; buenas respuestas pueden archivarse | Bloque 3 hybrid search + Bloque 3b `think_brain`; ver Query-to-Knowledge Feedback abajo |
+| **Lint** | Orphans, stale, contradicciones, gaps, missing pages/links | Bloque 5 Dream Cycle (5a mecánico + 5b HITL) |
+
+Karpathy usa `index.md` (catálogo) + `log.md` (cronología) como artefactos de navegación. En Gu OS:
+
+- **`index.md` → Index pages (complement):** vistas/catálogos generados desde `brain_pages`; ayudan al modelo y al usuario; **no** reemplazan hybrid search multi-tenant.
+- **`log.md` → Timeline + audit:** `brain_timeline` por entidad + filas de audit de ingest/query/lint (dream cycle runs, promotions) — mismo espíritu append-only.
+
+### Ideas Karpathy explícitas en este plan
+
+| Idea | Dónde en este doc | Nota |
+|------|-------------------|------|
+| Raw Evidence Inbox | §12.2, glosario | Evidencia con provenance antes de `compiled_truth` |
+| Compiled Knowledge Pages | Bloque 1, §1.5.2 | Logs ≠ suficiente; estado compilado + evidencia |
+| Query-to-Knowledge Feedback | Bloque 3b, glosario | Respuesta durable → timeline / proposal con provenance |
+| Contradiction on ingest | Bloque 1 governance, Bloque 5 | Nuevo source vs compiled truth → flag/HITL, no silent overwrite |
+| Index pages complement | §1.1, glosario | Post-MVP UI; generadas desde DB |
+| Rechazo index-only (sin RAG) | Bloque 3, §5 | Válido personal ~100 fuentes; producto multi-tenant necesita hybrid |
+
+**Fuentes secundarias:** post Beliaev (pre-gist; incluía fine-tuning — no en gist oficial); Cobus Greyling *LLM Wiki* (jul 2026) — guía práctica del mismo patrón.
+
+---
+
+## 1.2 Evolución de G Brain v0.28 → v0.42: lo relevante para Gu OS `[v1.5]`
+
+> *Revisión julio 2026 contra [github.com/garrytan/gbrain](https://github.com/garrytan/gbrain) `master` (v0.42.56.0). No es changelog exhaustivo — solo deltas que cambian qué vale la pena portar o cómo leer la ficha comparativa.*
+
+### 1.2.1 Company brain (multi-usuario) — ya no es "single-tenant only"
+
+Entre v0.28 y v0.42, G Brain shipping un producto explícito de **memoria institucional compartida**:
+
+- **Sources federados** dentro de un mismo brain (`shared`, `customers`, `internal`, etc.) con sync paralelo por source.
+- **OAuth clients por persona** con `--source` (write scope) + `--federated-read` (read scope); aislamiento fuzz-tested en read paths.
+- Tutorial [`docs/tutorials/company-brain.md`](https://github.com/garrytan/gbrain/blob/master/docs/tutorials/company-brain.md) (~90 min para 10–50 personas).
+- Alineado con el [YC RFS de company brain](https://www.ycombinator.com/rfs#company-brain).
+
+**Implicación para Gu OS:** la sección 5 ya no puede decir "G Brain es single-tenant por despliegue" sin matiz. G Brain **sí** resolvió multi-usuario — pero con un modelo distinto al nuestro (OAuth por source vs RLS Supabase por `auth.uid()`, markdown git como SOR vs BigQuery warehouse, runtime externo OpenClaw/Hermes vs LangGraph integrado). **Opción B sigue siendo la recomendada**; Opción C merece nota de reevaluación parcial para casos de "memoria institucional read-only" (ver [§8](#8-recomendación-y-razones)).
+
+### 1.2.2 Capa de síntesis (`gbrain think`) — diferenciador de producto
+
+G Brain ya no se posiciona solo como "search mejor que grep". El par explícito:
+
+| Comando | Qué devuelve | Costo LLM |
+|---------|--------------|-----------|
+| `gbrain search` | Top páginas/chunks por hybrid score + evidence tags | Bajo (retrieval) |
+| `gbrain think` | **Respuesta sintetizada** cross-page con citas + **gap analysis** ("qué no sabe el brain / qué está stale") | Alto (retrieval + composición) |
+
+**Implicación:** nuestro Bloque 3 (hybrid search RPC) es necesario pero **insuficiente** como experiencia de producto. v1.5 añade **Bloque 3b** — capa de síntesis inspirada en `think`, no importación de código.
+
+### 1.2.3 Schema packs y taxonomía evolutiva (v0.40.7+, `gbrain-base-v2`)
+
+G Brain dejó de asumir un layout fijo de tipos de página. Ahora shippea:
+
+- **`gbrain-base-v2`** — taxonomía DRY/MECE de 15 tipos canónicos (default desde v0.41.22).
+- **Schema packs custom** — `gbrain schema detect/suggest/review-candidates`, mutaciones agent-authored vía MCP.
+- Migración entre packs (`unify-types` job).
+
+**Implicación:** nuestra decisión de **8 entidades fijas** de real estate (§13.2) sigue siendo válida para MVP, pero el doc debe registrar explícitamente que **no** adoptamos schema packs genéricos en v1 — dominio acotado a brokerage inmobiliario.
+
+### 1.2.4 Modelo Facts / Takes / Consolidation (v0.31+)
+
+G Brain separó first-class:
+
+- **Facts** — hechos estructurados en fence `## Facts`, reconciliados en dream cycle (`extract_facts`).
+- **Takes** — afirmaciones graduables con evidencia (`propose_takes` → `grade_takes` → `calibration_profile`).
+- **Consolidate** — promoción facts → takes con audit trail (nunca DELETE).
+
+Esto es **más sofisticado** que nuestra distinción forward-looking Operational Truth vs Cognitive Interpretation (§12.1). G Brain resolvió parte del problema con tablas y fases dedicadas, no solo governance de `compiled_truth`.
+
+**Implicación:** MVP mantiene `brain_signals` + `compiled_truth`; v2 evalúa `brain_facts` / `brain_takes` si el dolor de mezcla aparece antes de lo previsto.
+
+### 1.2.5 Dream cycle expandido (~25 fases)
+
+El doc v1.4 describía 9 fases. v0.42 (`src/core/cycle.ts`) tiene **~25 fases**, incluyendo las más relevantes para portar ideas:
+
+| Fase G Brain | ¿Portar idea a Gu OS? | Notas |
+|--------------|----------------------|-------|
+| `extract_facts` | **Sí (alta)** | Alinea con governance de compiled_truth |
+| `consolidate` | Considerar v1.1 | Facts → síntesis auditables |
+| `propose_takes` / `grade_takes` | Forward-looking | Similar a Signal → HITL → Memory |
+| `enrich_thin` | **Sí para onboarding** | Páginas stub cuando brain está vacío |
+| `skillopt` | Interesante | Optimiza SKILL.md existente — **no** descubre playbooks nuevos |
+| `patterns` | **No para SMB ops** | Sigue siendo journaling introspectivo (análisis v1.4 vigente) |
+| Split global vs per-source | Post-MVP | Relevante si ingestion multi-fuente |
+
+También: reranker (ZeroEntropy default), modos de búsqueda (`conservative` / `balanced` / `tokenmax`), graph signals (adjacency boost, cross-source boost), evals en repo [`gbrain-evals`](https://github.com/garrytan/gbrain-evals).
+
+### 1.2.6 Ingestion first-class + SkillOpt
+
+- **Ingestion:** export `gbrain/ingestion`, contrato `IngestionSource`, `gbrain capture`, webhooks `/ingest` — ya no es solo "recipes en docs". Informa nuestro §12.2 como benchmark de diseño.
+- **SkillOpt (v0.41.20):** optimización medible de SKILL.md con benchmarks — complementa (no sustituye) nuestro Operational/Playbook Mining (§12.3).
+
+### 1.2.7 Lo que NO cambió (valida el plan v1.4)
+
+- Runtime **Bun**; auto-link **off** en escrituras MCP remotas.
+- G Brain **no es agent runtime** — loop en cliente externo.
+- Fase **`patterns`** NO resuelve mining operacional de brokerage.
+- Markdown git como SOR — sigue en conflicto con nuestro modelo Supabase-first.
+
+---
+
+## 1.3 Estado de Gu OS desde v1.4.1: lo construido en paralelo `[v1.5]`
+
+> *Auditoría del repo `10x-builders-agent` julio 2026. El plan Brain Layer v1.4.1 **no se implementó**; en su lugar el equipo avanzó V1.6–V1.7 del [business-brain-evolution-roadmap.md](../business-brain-evolution-roadmap.md). En paralelo construyó la **plataforma de casos operacionales** — no un flujo aislado: `property_optioning` fue el **primer piloto** que validó patrones replicables (cron, expediente, HITL externo, autoría Skill Lab) sobre los cuales los siguientes flujos inmobiliarios deben apoyarse.*
+
+### 1.3.1 Brain Layer: sin iniciar
+
+| Artefacto planificado | Estado real |
+|---------------------|-------------|
+| Tablas `brain_*` | **No existen** — cero migraciones brain en `packages/db/supabase/migrations/` |
+| `packages/agent/src/brain/` | **No existe** |
+| Feature flag `profiles.feature_flags.brain_enabled` | **No implementado** (solo propuesto en §13.3) |
+
+**Renumeración de migraciones:** el plan v1.4 reservaba `00019`–`00024` para brain. Esas secuencias están **ocupadas**:
+
+| Migración | Contenido real (jul 2026) |
+|-----------|---------------------------|
+| 00019 | `operational_cases` (subsistema base) |
+| 00020 | `account_skills` V1 |
+| 00021–00052 | Extensiones operational_cases, property optioning, Telegram, notificaciones, etc. |
+
+**Próxima migración brain:** **`00053+`** (ver calendario §10).
+
+### 1.3.2 Subsistema de casos operacionales — plataforma, no un solo flujo
+
+Desde v1.4.1 se construyó un **subsistema reutilizable** para procedimientos multi-día con esperas humanas externas. Documentación: [`docs/operational-cases/architecture.md`](../operational-cases/architecture.md), [`authoring-playbook.md`](../operational-cases/authoring-playbook.md).
+
+**`property_optioning` es el primer flujo piloto**, no el alcance del subsistema. Su valor estratégico es haber validado la **plataforma** sobre la cual nuevos flujos inmobiliarios deben construirse más rápido:
+
+| Pieza reutilizable | Qué aporta a flujos futuros |
+|--------------------|----------------------------|
+| `operational_case_types` + `operational_flow_jsonb` | Catálogo + documentación/UI del procedimiento |
+| `operational_cases` + `operational_case_events` | Expediente vivo + timeline append-only |
+| Cron `/api/cron/operational-cases` + lock optimista | Motor durable sin Temporal |
+| Binding directo `case_type → default_skill_slug` | Orquestación por skill compuesta |
+| `waiting_external` / `waiting_internal` + webhooks | Esperas humanas (Telegram hoy; WhatsApp mañana) |
+| Skill Lab N0–N5 + E2E lab | Readiness antes de activar un nuevo `case_type` |
+| Patrones documentados ([`operational-case-reusable-patterns.md`](../operational-cases/operational-case-reusable-patterns.md)) | Autoría acelerada: reutilizar tools, sub-skills, políticas de recordatorio |
+
+**Segundo, tercer y N-ésimo flujo** (ej. seguimiento de lead caliente, coordinación de firma, onboarding de listing en otro portal) deben **reusar** cron, tablas, notify, HITL y patrones de autoría — construyendo solo lo particular (nuevo `case_type`, skill raíz compuesta, intake, tools específicas).
+
+**Implicación para Brain Layer:** casos operacionales resuelven **ejecución procedural multi-día**; Brain Layer resuelve **cognición cross-entidad** (lead/property/deal como pages, relaciones, señales). Son complementarios — ver [§1.4.8](#148-casos-operacionales-vs-brain-layer-frontera-de-responsabilidades-v15).
+
+### 1.3.3 `account_skills` V1 — parcialmente implementado
+
+Migración [`00020_account_skills.sql`](../../packages/db/supabase/migrations/00020_account_skills.sql): skills propias por cuenta (`body_md`, `metadata_jsonb`, `status`). Runtime compone `account_skills(active) ∪ skills/global/*`; slug gana account.
+
+v1.4.1 hablaba de `account_skills` como futuro V2+. **Hoy existe V1 mínima** (sin draft/review/rollback org-level). Destino válido de promoción Pattern → Skill además de `skills/global/*/SKILL.md`.
+
+### 1.3.4 Otros avances relevantes al plan Brain
+
+- **~29 skills globales** en `skills/global/` (umbral ~30 del selector en [`future-considerations.md`](../operational-cases/future-considerations.md) §2 se acerca).
+- **Telegram externo** para contactos de casos (`waiting_external`, link tokens, conversation bindings) — conector operacional, aún no Ingestion Layer brain.
+- **Notificaciones persistentes** (`internal_user_notifications`) — infra de notify reutilizable.
+- **BigQuery + business_brain** intactos como warehouse/config — Brain Layer no los reemplaza.
 
 ---
 
@@ -159,26 +384,30 @@ G Brain ocupa principalmente las capas 2-4 (Memory + Graph + Signal) con touches
 
 ### 1.4.1 Las 7 capas con responsabilidades, lifecycles y v1 status
 
-| # | Dominio | Capa | Responsabilidad | Lifecycle / governance | Implementación en v1 |
-|---|---|---|---|---|---|
-| 1 | **Acquisition** | **Ingestion** | Conectores externos (WhatsApp, EasyBroker, Drive, Calendar, Outlook, voice notes) + normalización + dedupe + identity resolution + clasificación por destino | Append-only (raw), normalized routing | **Solo hooks**: `source_id` + `source_meta` en `brain_pages`/`brain_links`, tabla vacía `brain_source_connectors`. Sin implementación de conectores en MVP |
-| 2 | **Cognition** | **Memory** | "Qué sabemos sobre cada entidad del negocio" — Compiled Truth (estado actual editable) + Timeline (evidencia append-only) + Versions (snapshots) | Compiled Truth con HITL para destructive/synthetic; Timeline append-only; Versions automáticas | ✅ **Bloque 1** del plan (`brain_pages`, `brain_timeline`, `brain_page_versions`) |
-| 3 | **Cognition** | **Graph** | "Qué relaciones tipadas hard-edge existen entre entidades" — queryable, traversable | Append-only; auto-extracción determinística (sin LLM); reconciliación stale | ✅ **Bloque 2** del plan (`brain_links`) |
-| 4 | **Cognition** | **Signal** | "Qué observaciones débiles capturamos pasivamente" — intent, objection, trend, relationship warmth | Lifecycle `raw → cluster → HITL review → promoted` (a Memory.timeline o Graph) | ✅ **Bloque 4** del plan (`brain_signals` con `cluster_key`) |
-| 5 | **Procedural** | **Pattern** | "Qué patrones operacionales emergen del comportamiento agregado" — candidatos de skills mineables, no validados aún | Append-only candidates; HITL **obligatorio** para promover a Skill | **Solo hook**: tabla vacía `brain_skill_candidates`. Sin miner en MVP |
-| 6 | **Procedural** | **Skill** | "Qué procedimientos validados puede ejecutar el agente" — markdown skills con frontmatter | Versionados en git; explicit (humano escribe) o implicit (mineado + HITL'd) | ✅ **Ya existe en Ungga** (skills system con `allowed_tools`, `heartbeat`, `requires_tenant_context`) |
-| 7 | **Execution** | **Workflow** | "Cómo se orquesta todo turn-by-turn" — LangGraph runtime + Heartbeat + scheduled_tasks + HITL approvals | Stateful por sesión; checkpointed; HITL via `interrupt` | ✅ **Ya existe en Ungga** (LangGraph `memory_injection -> compaction -> agent -> tools -> compaction`) |
+
+| #   | Dominio         | Capa          | Responsabilidad                                                                                                                                              | Lifecycle / governance                                                                         | Implementación en v1                                                                                                                                       |
+| --- | --------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Acquisition** | **Ingestion** | Conectores externos (WhatsApp, EasyBroker, Drive, Calendar, Outlook, voice notes) + normalización + dedupe + identity resolution + clasificación por destino | Append-only (raw), normalized routing                                                          | **Solo hooks**: `source_id` + `source_meta` en `brain_pages`/`brain_links`, tabla vacía `brain_source_connectors`. Sin implementación de conectores en MVP |
+| 2   | **Cognition**   | **Memory**    | "Qué sabemos sobre cada entidad del negocio" — Compiled Truth (estado actual editable) + Timeline (evidencia append-only) + Versions (snapshots)             | Compiled Truth con HITL para destructive/synthetic; Timeline append-only; Versions automáticas | ✅ **Bloque 1** del plan (`brain_pages`, `brain_timeline`, `brain_page_versions`)                                                                           |
+| 3   | **Cognition**   | **Graph**     | "Qué relaciones tipadas hard-edge existen entre entidades" — queryable, traversable                                                                          | Append-only; auto-extracción determinística (sin LLM); reconciliación stale                    | ✅ **Bloque 2** del plan (`brain_links`)                                                                                                                    |
+| 4   | **Cognition**   | **Signal**    | "Qué observaciones débiles capturamos pasivamente" — intent, objection, trend, relationship warmth                                                           | Lifecycle `raw → cluster → HITL review → promoted` (a Memory.timeline o Graph)                 | ✅ **Bloque 4** del plan (`brain_signals` con `cluster_key`)                                                                                                |
+| 5   | **Procedural**  | **Pattern**   | "Qué patrones operacionales emergen del comportamiento agregado" — candidatos de skills mineables, no validados aún                                          | Append-only candidates; HITL **obligatorio** para promover a Skill                             | **Solo hook**: tabla vacía `brain_skill_candidates`. Sin miner en MVP                                                                                      |
+| 6   | **Procedural**  | **Skill**     | "Qué procedimientos validados puede ejecutar el agente" — markdown skills con frontmatter + skills de cuenta                                                                 | Versionados en git y/o `account_skills`; explicit (humano escribe) o implicit (mineado + HITL'd)                    | ✅ **Ya existe** — `skills/global/*` + **`account_skills` V1** ([00020](../../packages/db/supabase/migrations/00020_account_skills.sql)) `[v1.5]` |
+| 7   | **Execution**   | **Workflow**  | "Cómo se orquesta todo turn-by-turn y multi-día" — LangGraph + Heartbeat + scheduled_tasks + **operational_cases** + HITL                                                  | Stateful por sesión/caso; checkpointed; HITL via `interrupt`                                                        | ✅ **Ya existe** — LangGraph + Heartbeat + **`operational_cases` plataforma** ([00019+](../../packages/db/supabase/migrations/00019_operational_cases.sql)) `[v1.5]` |
+
 
 ### 1.4.2 Por qué las 4 cajas de Cognition no son una sola
 
-Tentación frecuente: "Memory + Graph + Signal viven en `brain_*` tables, son una sola Brain Layer". **No.** Cada una tiene un perfil de riesgo y governance cualitativamente distinto:
+Tentación frecuente: "Memory + Graph + Signal viven en `brain_`* tables, son una sola Brain Layer". **No.** Cada una tiene un perfil de riesgo y governance cualitativamente distinto:
 
-| Capa | Confianza | Mutabilidad | Riesgo principal | Quién la escribe |
-|---|---|---|---|---|
-| Memory | Alta (con governance) | Editable con HITL | Drift semántico (compiled_truth diverge de la realidad) | Synthesizer + usuario |
-| Graph | Muy alta (verificable) | Append-only | Ruido si se mezclan soft signals como hard edges (ver principio [1.5.5](#155-hard-edges-links-vs-soft-signals--nunca-mezclarlos-v12)) | Auto-extractor determinístico |
-| Signal | Baja-media | Append-only hasta promoción | Sobre-confianza (promover prematuramente como hecho) | Signal Detector (sub-agente paralelo) |
-| Pattern | Candidata (no es verdad aún) | HITL obligatorio para promover | "Behavior ≠ best practice" (codificar malas prácticas accidentales) | Skill miner (futuro) |
+
+| Capa    | Confianza                    | Mutabilidad                    | Riesgo principal                                                                                                                      | Quién la escribe                      |
+| ------- | ---------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| Memory  | Alta (con governance)        | Editable con HITL              | Drift semántico (compiled_truth diverge de la realidad)                                                                               | Synthesizer + usuario                 |
+| Graph   | Muy alta (verificable)       | Append-only                    | Ruido si se mezclan soft signals como hard edges (ver principio [1.5.5](#155-hard-edges-links-vs-soft-signals--nunca-mezclarlos-v12)) | Auto-extractor determinístico         |
+| Signal  | Baja-media                   | Append-only hasta promoción    | Sobre-confianza (promover prematuramente como hecho)                                                                                  | Signal Detector (sub-agente paralelo) |
+| Pattern | Candidata (no es verdad aún) | HITL obligatorio para promover | "Behavior ≠ best practice" (codificar malas prácticas accidentales)                                                                   | Skill miner (futuro)                  |
+
 
 Aplanar las 4 en "Brain Layer" pierde exactamente la nuance que los principios 1.5.2 (governance del Compiled Truth), 1.5.4 (HITL obligatorio) y 1.5.5 (hard edges vs soft signals) trabajaron en construir. Las 4 son capas hermanas dentro del dominio Cognition, no una sola caja.
 
@@ -188,7 +417,7 @@ El modelo de 7 capas tiene **dos flechas críticas de promoción**, ambas con HI
 
 ```
 Signal  ──HITL──>  Memory   (cluster maduro entra a compiled_truth/timeline)
-Pattern ──HITL──>  Skill    (candidate aprobado se vuelve SKILL.md ejecutable)
+Pattern ──HITL──>  Skill    (candidate → SKILL.md global OR account_skills) `[v1.5]`
 ```
 
 Es el **mismo patrón** en ambos lugares: **observación pasiva → candidato corroborado → revisión humana → realidad ejecutable/citable**. Esa simetría no es coincidencia; es la aplicación del principio "you EARN autonomy, you do not assume it" ([1.5.4](#154-hitl-obligatorio-para-todo-cambio-destructivo-o-sintético)) en dos puntos del sistema. Cualquier intento futuro de saltarse HITL en cualquiera de las dos promociones debe pasar por evidencia de approval rate sostenido (>95% en N runs) y permanecer revocable.
@@ -197,29 +426,33 @@ Es el **mismo patrón** en ambos lugares: **observación pasiva → candidato co
 
 Para el reviewer técnico que quiere ubicar dónde vive cada capa en el repo:
 
-| Capa | Tablas | Módulos TS principales | Status |
-|---|---|---|---|
-| 1. Ingestion | `brain_source_connectors` (vacía MVP) + columnas `source_id`/`source_meta` | _futuro:_ `packages/agent/src/ingestion/` (no existe) | Hook only |
-| 2. Memory | `brain_pages` + `brain_timeline` + `brain_page_versions` | `packages/agent/src/brain/page.ts`, `packages/db/src/queries/brain-pages.ts` | Bloque 1 |
-| 3. Graph | `brain_links` | `packages/agent/src/brain/link-extraction.ts`, `packages/agent/src/brain/graph.ts` | Bloque 2 |
-| 4. Signal | `brain_signals` | `packages/agent/src/brain/signal-detector.ts` | Bloque 4 |
-| 5. Pattern | `brain_skill_candidates` (vacía MVP) | _futuro:_ `packages/agent/src/brain/maintenance/pattern-mine.ts` | Hook only |
-| 6. Skill | `skills/global/*/SKILL.md` (filesystem) + `skills` (DB query lazy) | `packages/agent/src/skills/{select,runtime,frontmatter}.ts` | Existing |
-| 7. Workflow | `agent_sessions`, `agent_messages`, `tool_calls`, `scheduled_tasks` | `packages/agent/src/graph.ts`, `packages/agent/src/nodes/*`, `packages/agent/src/heartbeat/*` | Existing |
+
+| Capa         | Tablas                                                                     | Módulos TS principales                                                                        | Status    |
+| ------------ | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------- |
+| 1. Ingestion | `brain_source_connectors` (vacía MVP) + columnas `source_id`/`source_meta` | *futuro:* `packages/agent/src/ingestion/` (no existe)                                         | Hook only |
+| 2. Memory    | `brain_pages` + `brain_timeline` + `brain_page_versions`                   | `packages/agent/src/brain/page.ts`, `packages/db/src/queries/brain-pages.ts`                  | Bloque 1  |
+| 3. Graph     | `brain_links`                                                              | `packages/agent/src/brain/link-extraction.ts`, `packages/agent/src/brain/graph.ts`            | Bloque 2  |
+| 4. Signal    | `brain_signals`                                                            | `packages/agent/src/brain/signal-detector.ts`                                                 | Bloque 4  |
+| 5. Pattern   | `brain_skill_candidates` (vacía MVP)                                       | *futuro:* `packages/agent/src/brain/maintenance/pattern-mine.ts`                              | Hook only |
+| 6. Skill     | `skills/global/*/SKILL.md` + **`account_skills`** ([00020](../../packages/db/supabase/migrations/00020_account_skills.sql)) | `packages/agent/src/skills/{select,runtime,parse}.ts`                                         | Existing `[v1.5]` |
+| 7. Workflow  | `agent_sessions`, `agent_messages`, `tool_calls`, `scheduled_tasks`, **`operational_cases`**, **`operational_case_events`** | `packages/agent/src/graph.ts`, `packages/agent/src/heartbeat/*`, cron operational-cases       | Existing `[v1.5]` |
+
 
 ### 1.4.5 Trace end-to-end (un evento atravesando las 7 capas)
 
 > **Evento ilustrativo:** llega un audio de WhatsApp del lead Julieta a Carlos: *"Sí me late la propiedad pero me preocupa el crédito. Y oye, ¿podemos verla el sábado a las 11?"*
 
-| Paso | Capa(s) que tocan | Qué pasa |
-|---|---|---|
-| 1 | **Ingestion** (futuro) | Descarga audio del WA Cloud API, transcribe (Whisper/Gemini), clasifica como "lead conversation" + intents `financing_concern`, `scheduling_request`, resuelve identidades (Carlos = `agent/carlos`, número = `lead/julieta`), emite `SourceItem` con `source_id='wa:msg:abc'` |
-| 2 | **Memory** | Append a `brain_timeline` de `lead/julieta`: "expressed financing concern + requested visit Sat 11am [^t12]". Posible update incremental al `compiled_truth` si la duda es nueva información |
-| 3 | **Graph** | Refuerzo (no nuevo) del link `lead/julieta --interested_in--> property/luxury-waves`; posible nuevo link `lead/julieta --requested_visit_for--> property/luxury-waves` con `link_source='chat'` |
-| 4 | **Signal** | Insert en `brain_signals` con `signal_type='financing_concern'`, `cluster_key='lead/julieta:financing'`, `confidence=0.72`. Si el cluster crece, encola HITL review para promover a `compiled_truth` |
-| 5 | **Pattern** (futuro) | Contribuye +1 evidencia al candidate `financing-concern-followup` (no escribe nada nuevo aún; solo incrementa el contador de evidencia para futuro mining) |
-| 6 | **Skill** | Si ya existe el SKILL `financing-concern-followup` (porque pasó por HITL en el pasado), el agente lo invoca proactivamente al detectar los triggers en el turno actual |
-| 7 | **Workflow** | LangGraph: inyecta contexto desde Memory + Graph al system prompt; consulta slots de visita; ejecuta el SKILL si aplica; responde turno; agenda visita con HITL approval (`interrupt`) si tools de envío externo lo requieren |
+
+| Paso | Capa(s) que tocan      | Qué pasa                                                                                                                                                                                                                                                                       |
+| ---- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1    | **Ingestion** (futuro) | Descarga audio del WA Cloud API, transcribe (Whisper/Gemini), clasifica como "lead conversation" + intents `financing_concern`, `scheduling_request`, resuelve identidades (Carlos = `agent/carlos`, número = `lead/julieta`), emite `SourceItem` con `source_id='wa:msg:abc'` |
+| 2    | **Memory**             | Append a `brain_timeline` de `lead/julieta`: "expressed financing concern + requested visit Sat 11am [^t12]". Posible update incremental al `compiled_truth` si la duda es nueva información                                                                                   |
+| 3    | **Graph**              | Refuerzo (no nuevo) del link `lead/julieta --interested_in--> property/luxury-waves`; posible nuevo link `lead/julieta --requested_visit_for--> property/luxury-waves` con `link_source='chat'`                                                                                |
+| 4    | **Signal**             | Insert en `brain_signals` con `signal_type='financing_concern'`, `cluster_key='lead/julieta:financing'`, `confidence=0.72`. Si el cluster crece, encola HITL review para promover a `compiled_truth`                                                                           |
+| 5    | **Pattern** (futuro)   | Contribuye +1 evidencia al candidate `financing-concern-followup` (no escribe nada nuevo aún; solo incrementa el contador de evidencia para futuro mining)                                                                                                                     |
+| 6    | **Skill**              | Si ya existe el SKILL `financing-concern-followup` (porque pasó por HITL en el pasado), el agente lo invoca proactivamente al detectar los triggers en el turno actual                                                                                                         |
+| 7    | **Workflow**           | LangGraph: inyecta contexto desde Memory + Graph al system prompt; consulta slots de visita; ejecuta el SKILL si aplica; responde turno; agenda visita con HITL approval (`interrupt`) si tools de envío externo lo requieren                                                  |
+
 
 **Lo crítico:** un mismo evento contribuye a **múltiples capas distintas con destinos distintos**, no se aplana todo en "memoria". Las dos flechas dotadas (`Signal -.HITL.-> Memory` y `Pattern -.HITL.-> Skill`) son la **gobierno duro** del sistema: nada se promueve sin humano, nunca.
 
@@ -235,7 +468,67 @@ Para el reviewer técnico que quiere ubicar dónde vive cada capa en el repo:
 1. **Evita el colapso "todo a memoria"** — el riesgo más común en sistemas de "AI memory" es aplanar conocimiento procedural y operacional en pages textuales que el agente lee pero no ejecuta. El modelo de 7 capas hace explícito que **conocimiento procedural va a Skills, no a Memory**.
 2. **Hace el bootstrap problem first-class** — separar Ingestion como capa 1 reconoce que "de dónde sale el conocimiento" es un problema arquitectural distinto de "cómo se modela", y obliga a diseñar conectores con criterio (no como parches puntuales).
 3. **Establece el patrón de promoción HITL** — las dos flechas (Signal→Memory, Pattern→Skill) codifican como invariante arquitectural que la autonomía se gana, no se asume. Cualquier nueva capa o promoción futura debe encajar en este patrón.
-4. **Respeta lo que ya funciona** — las capas 6 y 7 (Skill, Workflow) ya existen en Ungga y NO se tocan. La intervención de Brain Layer es quirúrgica en las capas 2-4, con hooks ligeros para 1 y 5.
+4. **Respeta lo que ya funciona** — las capas 6 y 7 (Skill, Workflow) ya existen en Gu OS y **no se reemplazan**. La intervención de Brain Layer es quirúrgica en las capas 2–4, con hooks ligeros para 1 y 5, e **integración explícita** con `operational_cases` y `account_skills` (§1.4.8).
+
+### 1.4.8 Casos operacionales vs Brain Layer: frontera de responsabilidades `[v1.5]`
+
+> *El subsistema de casos operacionales no estaba en el modelo v1.4. v1.5 lo incorpora como primitiva existente de la capa 7. **`property_optioning` validó la plataforma**; flujos futuros reutilizan componentes y solo construyen lo particular.*
+
+#### Dos problemas distintos
+
+
+| Pregunta | Capa que responde | Primitiva Gu OS hoy |
+|----------|-------------------|---------------------|
+| "¿Cómo ejecuto este procedimiento multi-día con esperas externas?" | **Workflow (7)** + **Skill (6)** | `operational_cases` + skill raíz por `case_type` |
+| "¿Qué sabemos sobre esta entidad y sus relaciones en el negocio?" | **Cognition (2–4)** | `brain_*` (planificado) + BigQuery on-demand |
+| "¿Qué procedimiento validado invoco en este turno?" | **Skill (6)** | `selectSkillForTurn` / binding directo en case_runner |
+| "¿Qué señales débiles acumulamos sobre leads/zonas?" | **Signal (4)** | `brain_signals` (planificado) |
+
+
+#### Reglas de no-duplicación (obligatorias antes de implementar brain)
+
+1. **Estado de un flujo multi-día** vive en `operational_cases` (`current_step`, `status`, `context_jsonb`, `next_action_at`) — **no** duplicar como `brain_pages` salvo que la entidad del negocio (lead/property) necesite cognición **cross-flujo** consultable fuera del caso.
+2. **Timeline del flujo** vive en `operational_case_events` — **no** copiar eventos operacionales del caso a `brain_timeline` automáticamente. Promoción selectiva post-HITL: solo hechos de negocio duraderos ("lead confirmó precio mínimo") → `brain_pages.timeline` de la entidad relacionada.
+3. **Procedimiento ejecutable** vive en SKILL.md / `account_skills` — el `operational_flow_jsonb` documenta y prueba; **no** es source of truth del runtime (ver [`authoring-playbook.md`](../operational-cases/authoring-playbook.md)).
+4. **BigQuery** sigue siendo SOR tabular transaccional — Brain Layer **sintetiza y relaciona**, no reemplaza warehouse.
+
+#### Diagrama de convivencia
+
+```mermaid
+flowchart LR
+  subgraph Workflow_Existente
+    OC[operational_cases<br/>expediente multi-día]
+    EVT[operational_case_events]
+    SK[Skill raíz por case_type]
+  end
+
+  subgraph Brain_Planificado
+    BP[brain_pages]
+    BL[brain_links]
+    BS[brain_signals]
+  end
+
+  subgraph Datos
+    BQ[BigQuery warehouse]
+  end
+
+  OC --> SK
+  SK --> BQ
+  SK -.consulta contexto.-> BP
+  SK -.consulta relaciones.-> BL
+  BS -.HITL promote.-> BP
+  EVT -.promoción selectiva HITL.-> BP
+```
+
+#### Cuándo un nuevo flujo inmobiliario usa qué
+
+| Tipo de flujo | Plataforma | Brain Layer |
+|---------------|------------|-------------|
+| Opcionar propiedad, coordinar firma multi-día, onboarding listing | **`operational_cases`** (nuevo `case_type`) | Consulta entidades; no orquesta el expediente |
+| "¿Qué leads mencionaron financiamiento este mes?" | — | **`brain_signals`** + graph |
+| "¿Qué relación tiene Julieta con estas 3 propiedades?" | — | **`brain_links`** + pages |
+| "Recordatorio one-shot el lunes 9am" | **`scheduled_tasks`** | — |
+| "Revisar checklist cada hora" | **Heartbeat** | — |
 
 ---
 
@@ -296,10 +589,12 @@ Tu sistema actual de `tool_approval_policy` por skill/canal es perfecto para est
 
 Dos tipos de información sobre relaciones, dos tablas distintas, dos pipelines distintos:
 
-| Tipo | Tabla | Naturaleza | Confianza | Quién la crea |
-|---|---|---|---|---|
-| **Hard edge** | `brain_links` | Relación operacional verificable | Alta (cuasi-cierta) | Auto-extractor determinístico (regex + dictionary) o usuario explícito |
-| **Soft signal** | `brain_signals` | Observación probabilística sobre intent/objection/trend/relationship | Baja-media (revisable) | Signal Detector (sub-agente paralelo) |
+
+| Tipo            | Tabla           | Naturaleza                                                           | Confianza              | Quién la crea                                                          |
+| --------------- | --------------- | -------------------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------- |
+| **Hard edge**   | `brain_links`   | Relación operacional verificable                                     | Alta (cuasi-cierta)    | Auto-extractor determinístico (regex + dictionary) o usuario explícito |
+| **Soft signal** | `brain_signals` | Observación probabilística sobre intent/objection/trend/relationship | Baja-media (revisable) | Signal Detector (sub-agente paralelo)                                  |
+
 
 **Regla dura:** **NUNCA** modelar señales como aristas con `confidence` baja en `brain_links`. Suena pragmático ("¿no podemos ahorrarnos una tabla?") y es exactamente el camino al desastre:
 
@@ -319,12 +614,14 @@ Si la respuesta es "ninguna en concreto, pero por completitud ontológica lo mod
 
 **Ejemplos:**
 
-| Propuesta | ¿Qué workflow real habilita? | Decisión |
-|---|---|---|
-| `link_type='interested_in'` (Lead → Property) | Recommendation: "muéstrame pipeline de propiedades por lead"; follow-up: "lead vio 3 props sin agendar visita" | **Agregar** |
-| `link_type='casually_mentioned'` (Lead → Neighborhood) | Ninguna decisión clara; ruido potencial | **No agregar** (capturar como signal si acaso) |
-| `kind='ejido'` | Workflow real: ¿el agente clasifica deals por régimen legal? Si la respuesta es no por ahora → **No agregar** | Diferir |
-| Columna `Lead.preferred_color` | Probablemente ninguna decisión operacional | **No agregar** |
+
+| Propuesta                                              | ¿Qué workflow real habilita?                                                                                   | Decisión                                       |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `link_type='interested_in'` (Lead → Property)          | Recommendation: "muéstrame pipeline de propiedades por lead"; follow-up: "lead vio 3 props sin agendar visita" | **Agregar**                                    |
+| `link_type='casually_mentioned'` (Lead → Neighborhood) | Ninguna decisión clara; ruido potencial                                                                        | **No agregar** (capturar como signal si acaso) |
+| `kind='ejido'`                                         | Workflow real: ¿el agente clasifica deals por régimen legal? Si la respuesta es no por ahora → **No agregar**  | Diferir                                        |
+| Columna `Lead.preferred_color`                         | Probablemente ninguna decisión operacional                                                                     | **No agregar**                                 |
+
 
 Anti-patrón a evitar: diseñar la "ontología real estate completa" antes de validar qué queries el agente realmente necesita responder. Las taxonomías exhaustivas son knowledge-engineering hell. Empieza con el subset operacional, agrega cuando el dolor del workflow lo justifique.
 
@@ -338,23 +635,27 @@ Anti-patrón a evitar: diseñar la "ontología real estate completa" antes de va
 
 #### Cinco destinos para conocimiento del NEGOCIO (Brain Layer + Skill Layer)
 
-| # | Tipo de conocimiento | Destino | Capa del modelo 1.4 | Ejemplo concreto |
-|---|---|---|---|---|
-| 1 | **Semantic** (sobre entidad) | `brain_pages.compiled_truth` | Memory (capa 2) | "Property/luxury-waves: 3 recámaras, 12M MXN, terminada Q3" |
-| 2 | **Episodic** (evento pasado) | `brain_pages.timeline` | Memory (capa 2) | "2026-05-12: visita confirmada de Lead/julieta a Property/luxury-waves" |
-| 3 | **Relational** (entre entidades) | `brain_links` | Graph (capa 3) | `lead/julieta --interested_in--> property/luxury-waves` |
-| 4 | **Soft observational** (probabilístico) | `brain_signals` (con lifecycle a HITL) | Signal (capa 4) | "Lead/julieta parece ansiosa por financiamiento (cluster, conf 0.72)" |
-| 5 | **Operational/Playbook** (cómo opera el negocio) | `brain_skill_candidates` → SKILL.md (vía HITL) | Pattern → Skill (capas 5→6) | "Mandar video de financing en <2h cuando lead expresa duda" |
+
+| #   | Tipo de conocimiento                             | Destino                                        | Capa del modelo 1.4         | Ejemplo concreto                                                        |
+| --- | ------------------------------------------------ | ---------------------------------------------- | --------------------------- | ----------------------------------------------------------------------- |
+| 1   | **Semantic** (sobre entidad)                     | `brain_pages.compiled_truth`                   | Memory (capa 2)             | "Property/luxury-waves: 3 recámaras, 12M MXN, terminada Q3"             |
+| 2   | **Episodic** (evento pasado)                     | `brain_pages.timeline`                         | Memory (capa 2)             | "2026-05-12: visita confirmada de Lead/julieta a Property/luxury-waves" |
+| 3   | **Relational** (entre entidades)                 | `brain_links`                                  | Graph (capa 3)              | `lead/julieta --interested_in--> property/luxury-waves`                 |
+| 4   | **Soft observational** (probabilístico)          | `brain_signals` (con lifecycle a HITL)         | Signal (capa 4)             | "Lead/julieta parece ansiosa por financiamiento (cluster, conf 0.72)"   |
+| 5   | **Operational/Playbook** (cómo opera el negocio) | `brain_skill_candidates` → SKILL.md (vía HITL) | Pattern → Skill (capas 5→6) | "Mandar video de financing en <2h cuando lead expresa duda"             |
+
 
 #### Tres destinos para conocimiento PERSONAL del usuario (intactos en v1.4)
 
 Ungga ya tiene su sistema de memoria personal del usuario en `memories` (migración 00005). **NADA en v1.4 lo cambia.** Coexiste con la Brain Layer en una dimensión paralela: captura al usuario operador, no al negocio.
 
-| # | Tipo de conocimiento | Destino | Ejemplo concreto (verificado en `memory_flush.ts`) |
-|---|---|---|---|
-| 6 | **Semantic-personal** (sobre el usuario) | `memories.type='semantic'` | "Es asesor inmobiliario en Mazatlán con 8 años de experiencia" |
-| 7 | **Episodic-personal** (evento del usuario) | `memories.type='episodic'` | "Mudó su negocio a Guadalajara en enero" |
-| 8 | **Personal-procedural** (preferencias del usuario sobre el agente) | `memories.type='procedural'` | "Prefiere respuestas en bullets cortos y firma 'Saludos, Juan'" |
+
+| #   | Tipo de conocimiento                                               | Destino                      | Ejemplo concreto (verificado en `memory_flush.ts`)              |
+| --- | ------------------------------------------------------------------ | ---------------------------- | --------------------------------------------------------------- |
+| 6   | **Semantic-personal** (sobre el usuario)                           | `memories.type='semantic'`   | "Es asesor inmobiliario en Mazatlán con 8 años de experiencia"  |
+| 7   | **Episodic-personal** (evento del usuario)                         | `memories.type='episodic'`   | "Mudó su negocio a Guadalajara en enero"                        |
+| 8   | **Procedural-personal** (preferencias del usuario sobre el agente) | `memories.type='procedural'` | "Prefiere respuestas en bullets cortos y firma 'Saludos, Juan'" |
+
 
 #### Nota v1.4.1 — personal playbooks no son memoria procedural
 
@@ -370,7 +671,7 @@ Esto mantiene intacta la separación central: `memories` captura facts/preferenc
 
 #### Regla de no-colisión `procedural` (CRÍTICA)
 
-> **`memories.type='procedural'` (existente, intacto) y "Operational/Playbook Knowledge" (nuevo) NO son lo mismo.**
+> `memories.type='procedural'` **(existente, intacto) y "Operational/Playbook Knowledge" NO son lo mismo.**
 >
 > El primero es **personalización del agente** ("así me gusta que TÚ trabajes conmigo, agente"). Captura preferencias del usuario operador sobre cómo el agente debe responderle. Vive en `memories` con su check constraint actual.
 >
@@ -410,23 +711,25 @@ Cuando llegue cualquier nueva pieza de información (de Ingestion, de un turno d
 
 ## 2. Ficha técnica comparativa
 
-| Dimensión | **G Brain** (`gbrain-master`) | **10x-builders-agent** (Ungga / Gu) |
-|---|---|---|
-| Runtime base | TypeScript + **Bun** (>=1.3.10) | TypeScript + **Node** (Next.js 16) |
-| Producto | CLI + servidor MCP (stdio + HTTP+OAuth) + librería | App web Next.js + paquete `agent` (LangGraph) |
-| Orquestador del agente | **No existe en el repo** — el loop vive en el cliente externo (Claude Code, OpenClaw, Hermes); G Brain expone *operaciones* | **LangGraph JS**: `memory_injection -> compaction -> agent -> tools -> compaction` con HITL `interrupt` |
-| Persistencia primaria | **Markdown en git + Postgres/PGLite (índice)** + `pgvector` | **Supabase Postgres + `pgvector`** (sin markdown como source of truth) |
-| Modelo de página | `frontmatter YAML` + `compiled_truth` + `<!-- timeline -->` + `page_versions` | Filas relacionales (`memories`, `agent_messages`, `profiles.business_brain` JSONB) |
-| Knowledge graph | **Sí** — tabla `links` con `link_type`, auto-extracción determinística + traversals | **No** — solo entidades planas y similitud coseno |
-| Retrieval | **Híbrido**: keyword + vector + RRF + boost compiled_truth + boost backlinks + expansión LLM multi-query | **Solo vector**: `match_memories` (cosine sobre `memories`) |
-| Loops autónomos | **Dream cycle** de 9 fases: lint -> backlinks -> sync -> synthesize -> extract -> patterns -> embed -> orphans -> purge | **Heartbeat** + `scheduled_tasks` (cron HTTP a `/api/cron/*`) |
-| Background workers | **Minions** (cola Postgres durable) + **Subagents** (LLM con persistencia de turnos) | **Prefetchers determinísticos** del Heartbeat (`tool_calls.executor_kind='deterministic'`) |
-| Skills | Markdown con frontmatter; convención **brain-first** explícita; ~34 skills built-in; se inyectan al prompt del cliente | Markdown con frontmatter (`allowed_tools`, `heartbeat`, `requires_tenant_context`); registry lazy; selección pre-grafo |
-| Multi-tenancy | **Single-tenant por despliegue**. Multi-user/RLS aparece como dirección futura en `docs/ENGINES.md` | **Multi-tenant por usuario** (RLS sobre `auth.uid()`); B2B organizacional en roadmap |
-| LLM provider | AI Gateway con OpenAI / Anthropic / Google / OpenAI-compatible | **Solo OpenRouter** (multi-provider en diseño) |
-| Embedding default | `openai:text-embedding-3-large` (1536 dims) | `google/gemini-embedding-001` (1536 dims) |
-| Auth / UI | OAuth 2.1 para MCP HTTP + dashboard React embebido (`admin/`); **sin UI de producto** | Supabase Auth + UI completa (login, onboarding, chat, settings, memory, booking público) |
-| Madurez | v0.28.3, en producción según Garry Tan; `gbrain eval` reproducible | Fases 1-9 del plan completas; Fase 10 (CI/CD, monitoring, rate limiting) pendiente |
+
+| Dimensión              | **G Brain** (v0.42.56.0, [github.com/garrytan/gbrain](https://github.com/garrytan/gbrain)) | **Gu OS** (`10x-builders-agent`)                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Runtime base           | TypeScript + **Bun** (>=1.3.10)                                                             | TypeScript + **Node** (Next.js 16)                                                                                     |
+| Producto               | CLI + servidor MCP (stdio + HTTP+OAuth) + librería + plugin OpenClaw                        | App web Next.js + paquete `agent` (LangGraph) + UI producto                                                            |
+| Orquestador del agente | **No existe en el repo** — loop en cliente (Claude Code, OpenClaw, Hermes); G Brain expone operaciones + síntesis | **LangGraph JS**: `memory_injection -> compaction -> agent -> tools -> compaction` + **`operational_cases` cron** + HITL |
+| Persistencia primaria  | **Markdown en git + Postgres/PGLite (índice)** + `pgvector`                                 | **Supabase Postgres + `pgvector`** (sin markdown como SOR) + **BigQuery** warehouse                                    |
+| Modelo de página       | Schema packs + `frontmatter` + `compiled_truth` + timeline + `page_versions` + **facts/takes** | Filas relacionales (`memories`, `agent_messages`, `profiles.business_brain` JSONB); **`brain_*` planificado**          |
+| Knowledge graph        | **Sí** — `links` tipados, auto-link determinístico, traversals, graph signals en search       | **No** (plan: `brain_links`) — entidades planas + cosine en `memories`                                                 |
+| Retrieval + respuesta  | **Híbrido** (keyword + vector + RRF + reranker + graph signals) + **`gbrain think`** (síntesis + gap analysis) | **Solo vector** en `match_memories`; hybrid + síntesis planificados (Bloques 3 + 3b)                                   |
+| Loops autónomos        | **Dream cycle / autopilot** ~25 fases (lint, sync, extract_facts, consolidate, embed, skillopt, …) | **Heartbeat** + `scheduled_tasks` + **cron operational-cases** (expedientes multi-día)                                 |
+| Background workers     | **Minions** (cola Postgres) + Subagents LLM                                                 | Prefetchers Heartbeat (`executor_kind='deterministic'`) + case_runner                                                  |
+| Skills                 | ~**43** skills; brain-first; skillopt; RESOLVER.md                                          | ~**29** skills globales + **`account_skills` V1**; `allowed_tools`, `heartbeat`, `requires_tenant_context`             |
+| Multi-tenancy          | **Company brain**: OAuth por source + federated-read; PGLite personal / Postgres compartido `[v1.5]` | **RLS por `auth.uid()`** en producto; org-level V3 roadmap                                                             |
+| LLM provider           | AI Gateway multi-provider                                                                   | **OpenRouter** (multi-provider en diseño)                                                                              |
+| Embedding default      | ZeroEntropy / OpenAI / Voyage / etc. (matriz de providers)                                   | `google/gemini-embedding-001` (1536 dims)                                                                              |
+| Auth / UI              | OAuth 2.1 MCP + admin dashboard; sin UI chat producto                                         | Supabase Auth + UI completa (chat, settings, casos, memory, booking)                                                   |
+| Madurez                | v0.42.56.0 producción Garry Tan; evals BrainBench + [`gbrain-evals`](https://github.com/garrytan/gbrain-evals) | V1.6–**V1.7** (account_skills + **operational_cases plataforma**); Brain Layer **pendiente** `[v1.5]`                  |
+
 
 ---
 
@@ -434,7 +737,7 @@ Cuando llegue cualquier nueva pieza de información (de Ingestion, de un turno d
 
 ChatGPT te dijo que el solapamiento es "substancial". Es cierto a nivel filosófico. A nivel de código, esto es lo que **ya tienes implementado** y G Brain también:
 
-1. **Skills como Markdown con frontmatter inyectado al prompt.** Filosofía idéntica ("thin harness, fat skills"). Tu `selectSkillForTurn` + `buildPlaybookInjection` cumple lo mismo que el `RESOLVER.md` de G Brain. Formato sutilmente distinto pero conceptualmente isomorfo. Mapping ampliado a los ensayos GStack (2026): [`docs/manuals/agentic-principles-alignment.md`](../manuals/agentic-principles-alignment.md).
+1. **Skills como Markdown con frontmatter inyectado al prompt.** Filosofía idéntica ("thin harness, fat skills"). Tu `selectSkillForTurn` + `buildPlaybookInjection` cumple lo mismo que el `RESOLVER.md` de G Brain. Formato sutilmente distinto pero conceptualmente isomorfo. Mapping ampliado a los ensayos GStack (2026): `[docs/manuals/agentic-principles-alignment.md](../manuals/agentic-principles-alignment.md)`.
 2. **pgvector como vector store.** Tú con `memories` (1536 dims, `ivfflat`); G Brain con `content_chunks` (1536 dims también).
 3. **Brain-first.** Tu `memory_injection_node` corre **antes** de cualquier tool. La convención `brain-first.md` de G Brain dice exactamente lo mismo: `search -> query -> get_page` antes de APIs externas.
 4. **Determinístico vs LLM.** Ya tienes la distinción operacional: tus prefetchers de Heartbeat son `executor_kind='deterministic'`, registrados en `tool_calls`. G Brain le llama Minions vs Subagents. Mismo patrón.
@@ -454,6 +757,7 @@ Aquí está el oro. Estos son los conceptos donde G Brain te lleva ventaja medib
 **En G Brain:** tabla `links` con columnas `link_type` (`works_at`, `attended`, `invested_in`, `founded`, `advises`, `mentions`, `source`...), `context`, `link_source` (`markdown` | `frontmatter` | `manual`), origin/target page, `resolution_type`. Más auto-extracción determinística (regex sobre `[[wikilinks]]` + reglas de prioridad en `inferLinkType`, sin gastar LLM).
 
 **Archivos de referencia:**
+
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\src\core\schema-embedded.ts` líneas 233-253 (esquema de tabla `links`)
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\src\core\link-extraction.ts` líneas 401-570 (`inferLinkType` con prioridades)
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\src\commands\graph-query.ts` líneas 50-79 (CLI `gbrain graph-query`)
@@ -465,6 +769,7 @@ Aquí está el oro. Estos son los conceptos donde G Brain te lleva ventaja medib
 **En G Brain:** toda página se parsea con `parseMarkdown` en dos secciones: arriba el "estado compilado actual" (verdad sintetizada), abajo `<!-- timeline -->` con evidencia append-only. Más una tabla `page_versions` con snapshots históricos.
 
 **Archivos de referencia:**
+
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\src\core\markdown.ts` líneas 40-59 (estructura del documento)
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\src\core\schema-embedded.ts` líneas 306-314 (tabla `page_versions`)
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\docs\GBRAIN_RECOMMENDED_SCHEMA.md` líneas 37-47 (justificación del patrón)
@@ -491,31 +796,44 @@ flowchart TD
   ct -.actualizada cuando hay nuevos eventos.-> ct
 ```
 
+
+
 ### 4.3 Hybrid Search con RRF + boosts
 
 **En G Brain:** `src/core/search/hybrid.ts` ejecuta keyword + vector en paralelo, fusiona con **Reciprocal Rank Fusion** (`RRF_K=60`), boostea chunks de `compiled_truth` x2.0, re-scorea por coseno y aplica un **boost por backlinks** (entidades muy referenciadas suben). Más expansión multi-query con LLM (Haiku por defecto, sanitizada contra inyección).
 
 **Archivos de referencia:**
+
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\src\core\search\hybrid.ts` líneas 1-31 (constantes y pipeline)
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\src\core\search\hybrid.ts` líneas 111-170 (ejecución en paralelo y fusión)
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\src\core\search\expansion.ts` líneas 56-80 (sanitización anti-inyección)
 
-**Por qué te importa:** tu retrieval actual es solo cosine sobre `memories`. En cuanto el corpus crezca (y crece rápido en B2B), vas a degradar precisión. RRF es trivial de portar a una RPC de Postgres.
+**Por qué te importa:** tu retrieval actual es solo cosine sobre `memories`. En cuanto el corpus crezca (y crece rápido en B2B), vas a degradar precisión. RRF es trivial de portar a una RPC de Postgres. **v1.5:** G Brain v0.42 añade **reranker** (ZeroEntropy default), modos `conservative`/`balanced`/`tokenmax`, y **graph signals** — marcar como mejoras v1.1 post-MVP, no sorpresa futura.
 
-### 4.4 Dream Cycle (mantenimiento autónomo de la memoria)
+### 4.4 Dream Cycle (mantenimiento autónomo de la memoria) `[v1.5 actualizado]`
 
-**En G Brain:** `gbrain dream` corre 9 fases ordenadas: `lint -> backlinks -> sync -> synthesize -> extract -> patterns -> embed -> orphans -> purge`. Reindexa stale embeddings, deduplica, sintetiza páginas, extrae patrones. Puede ejecutarse como Minion programado.
+**En G Brain v0.42:** `gbrain dream` / `gbrain autopilot` ejecuta **~25 fases** orquestadas en [`src/core/cycle.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/cycle.ts). Núcleo heredado del doc v1.4: `lint → backlinks → sync → synthesize → extract → embed → orphans → purge`. Fases añadidas relevantes:
+
+- `extract_facts` — reconcilia fence `## Facts` con índice DB (governance de verdad estructurada).
+- `consolidate` — promueve facts → takes con audit trail.
+- `propose_takes` / `grade_takes` / `calibration_profile` — calibración de afirmaciones graduables.
+- `enrich_thin` — desarrolla páginas stub (útil en brain vacío).
+- `skillopt` — optimiza SKILL.md existentes con benchmarks (**no** descubre playbooks nuevos).
+- `patterns` — **sigue siendo** journaling introspectivo (§12.3, análisis v1.4 vigente).
 
 **Archivos de referencia:**
-- `C:\Users\janot\develop\gbrain-master\gbrain-master\src\core\cycle.ts` líneas 1-70 (orquestación de fases)
 
-**Por qué te importa:** tu Heartbeat ejecuta una checklist *del usuario*. No tienes un loop que mantenga tu propia memoria sana. Sin esto, tu pgvector se va a llenar de duplicados y embeddings stale en 6-12 meses.
+- [`src/core/cycle.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/cycle.ts) — `ALL_PHASES`, split global vs per-source
+- [`src/core/cycle/extract-facts.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/cycle/extract-facts.ts)
+
+**Por qué te importa:** tu Heartbeat ejecuta checklist *del usuario*; operational_cases mantiene *expedientes* multi-día. **Ninguno** sustituye un loop que mantenga el índice cognitivo (`brain_chunks`, links stale, dedupe). Portar ideas de `extract_facts` + embed stale en Bloque 5a; `enrich_thin` como opción post-MVP para onboarding.
 
 ### 4.5 Signal Detector (skill always-on en sub-agente paralelo)
 
 **En G Brain:** skill que corre **en paralelo** a la conversación principal con un sub-agente barato, captura ideas/entidades sueltas que el agente principal no atendería ("el mercado de Puerta de Hierro se está enfriando"), y persiste señales con guardrails contra inyección.
 
 **Archivos de referencia:**
+
 - `C:\Users\janot\develop\gbrain-master\gbrain-master\skills\signal-detector\SKILL.md` líneas 1-76
 
 **Por qué te importa:** ChatGPT acertó completamente aquí. En real estate y ventas en general, **el intent leak es continuo**: el cliente filtra constantemente intent de compra, urgencia, financiamiento, objeciones, lifestyle, comparaciones con competencia, frustraciones — y se pierde si no hay un detector pasivo. Tu `memory_flush.ts` extrae al final del turno con criterio conservador (Regla 5 prohíbe entidades transaccionales); no hay un detector latente paralelo que capture señales débiles para revisión posterior.
@@ -525,23 +843,19 @@ flowchart TD
 **Ejemplos concretos en real estate `[v1.2]`:** los siguientes 5 casos muestran el tipo de señales que un detector pasivo capturaría y que hoy se pierden. Cada uno termina como una fila en `brain_signals` con `signal_type`, `content`, `related_slugs` y `confidence`.
 
 1. **Urgencia oculta.** El cliente dice casualmente: *"idealmente nos mudaríamos antes de que los niños empiecen el ciclo escolar."* Esto rara vez se convierte en `move_deadline = "2026-08-15"` en un CRM, pero es estratégicamente clave para priorización y tono de follow-up.
-   - `{ signal_type: "urgency", content: "Cliente prefiere mudarse antes del inicio del año escolar", related_slugs: ["lead/julieta-evelia"], confidence: 0.81 }`
-
+  - `{ signal_type: "urgency", content: "Cliente prefiere mudarse antes del inicio del año escolar", related_slugs: ["lead/julieta-evelia"], confidence: 0.81 }`
 2. **Ansiedad de financiamiento.** El cliente dice: *"no estoy seguro de que el banco nos apruebe."* Implica baja confianza, fricción potencial, hesitación emocional, o un issue de calificación oculto.
-   - `{ signal_type: "financing_concern", content: "Lead duda sobre aprobación de hipoteca", related_slugs: ["lead/julieta-evelia"], confidence: 0.78 }`
-   - Acción posterior: una skill puede sugerir proactivamente prequalificación con un mortgage broker, ajustar rango de propiedades recomendadas.
-
+  - `{ signal_type: "financing_concern", content: "Lead duda sobre aprobación de hipoteca", related_slugs: ["lead/julieta-evelia"], confidence: 0.78 }`
+  - Acción posterior: una skill puede sugerir proactivamente prequalificación con un mortgage broker, ajustar rango de propiedades recomendadas.
 3. **Fuerza de relación.** El cliente repetidamente dice cosas como: *"gracias Carlos, de verdad agradezco tu ayuda."* Acumulación de varias señales de este tipo permite inferir alta confianza, calidez relacional, responsiveness alta.
-   - `{ signal_type: "relationship_strength", content: "Lead expresa agradecimiento explícito al agente Carlos", related_slugs: ["lead/julieta-evelia", "agent/carlos"], confidence: 0.65 }`
-   - Útil para: priorizar agentes con historial de buenas relaciones para nuevos leads similares; alertar cuando una relación previamente fuerte se está enfriando.
-
+  - `{ signal_type: "relationship_strength", content: "Lead expresa agradecimiento explícito al agente Carlos", related_slugs: ["lead/julieta-evelia", "agent/carlos"], confidence: 0.65 }`
+  - Útil para: priorizar agentes con historial de buenas relaciones para nuevos leads similares; alertar cuando una relación previamente fuerte se está enfriando.
 4. **Inteligencia de mercado.** Múltiples agentes mencionan en distintas conversaciones: *"el inventario de lujo en Puerta de Hierro se está moviendo más lento."* Individualmente son señales débiles; agregadas son intelligence organizacional accionable.
-   - `{ signal_type: "market_trend", content: "Inventario de lujo en Puerta de Hierro percibido como lento", related_slugs: ["zone/puerta-de-hierro"], confidence: 0.55 }`
-   - Tras corroboración (3+ señales similares en 30 días) se promueve a una observación de mercado consultable.
-
+  - `{ signal_type: "market_trend", content: "Inventario de lujo en Puerta de Hierro percibido como lento", related_slugs: ["zone/puerta-de-hierro"], confidence: 0.55 }`
+  - Tras corroboración (3+ señales similares en 30 días) se promueve a una observación de mercado consultable.
 5. **Objeciones emocionales.** El lead dice: *"la casa se siente muy aislada."* Tradicionalmente se pierde porque no encaja en ningún campo CRM. Como señal queda disponible para mejorar futuras recomendaciones.
-   - `{ signal_type: "lifestyle_objection", content: "Lead percibe propiedad como aislada", related_slugs: ["lead/julieta-evelia", "property/reforma-123"], confidence: 0.72 }`
-   - Acción posterior: el agente filtra siguientes recomendaciones excluyendo zonas con baja densidad/walkability.
+  - `{ signal_type: "lifestyle_objection", content: "Lead percibe propiedad como aislada", related_slugs: ["lead/julieta-evelia", "property/reforma-123"], confidence: 0.72 }`
+  - Acción posterior: el agente filtra siguientes recomendaciones excluyendo zonas con baja densidad/walkability.
 
 **Principio de diseño crítico:** Signal Detector NO debe optimizar para "extraer todo lo extraíble" (eso degenera en garbage rápido). Debe optimizar para **valor estratégico futuro potencial**. Los ejemplos de arriba comparten una propiedad: cada uno informa una decisión operacional concreta más adelante (priorización, tono, recomendación, alerta). Si una señal candidata no tiene ese caminito hacia "esto cambia algo después", probablemente no vale la pena capturarla.
 
@@ -553,22 +867,58 @@ flowchart TD
 
 ### 4.7 Eval reproducible (`gbrain eval`)
 
-Suite de evaluación de retrieval. Puedes medir "retrieval quality" antes/después de cambios. Tú no tienes eso.
+Suite de evaluación de retrieval y calidad. G Brain v0.42 incluye LongMemEval, BrainBench, NamedThingBench en CI, repo hermano [`gbrain-evals`](https://github.com/garrytan/gbrain-evals). Tú no tienes eso — el germen en Bloque 3 sigue siendo el punto de partida.
+
+### 4.8 Capa de síntesis (`gbrain think`) `[v1.5]`
+
+**En G Brain:** además de `search` (retrieval crudo), `think` ejecuta retrieval + **composición LLM** de respuesta cross-page con:
+
+- Citas explícitas a source pages
+- **Gap analysis** — qué no sabe el brain, qué está stale, qué canales no ve
+
+**Por qué te importa:** en Gu OS el agente ya responde en chat, pero la tool `query_brain` planificada en Bloque 3 devolvía chunks. Para preguntas tipo *"¿qué necesito saber antes de la reunión con Julieta?"*, chunks ≠ respuesta. **Bloque 3b** porta la *idea* (síntesis + gaps + HITL donde aplique), no el código de G Brain.
+
+**Referencia:** README sección "Two ways to query your brain"; [`docs/architecture/RETRIEVAL.md`](https://github.com/garrytan/gbrain/blob/master/docs/architecture/RETRIEVAL.md).
+
+### 4.9 Facts / Takes (separación verdad vs interpretación) `[v1.5]`
+
+**En G Brain v0.31+:** modelo first-class distinto de `compiled_truth` monolítico:
+
+- **Facts** — hechos en fence estructurado, reconciliados en dream cycle
+- **Takes** — afirmaciones graduables con evidencia y calibración
+- **Consolidate** — facts → takes sin borrar audit trail
+
+**Por qué te importa:** complementa §12.1 (Operational Truth vs Cognitive Interpretation). MVP Gu OS puede empezar con `brain_signals` + governance de `compiled_truth`; si el dolor aparece antes, evaluar tablas análogas en v1.5+ del brain (no confundir con versión de *este* documento).
+
+**Referencia:** [`docs/takes-vs-facts.md`](https://github.com/garrytan/gbrain/blob/master/docs/takes-vs-facts.md).
 
 ---
 
-## 5. Lo que Ungga ya tiene mejor
+## 5. Lo que Gu OS ya tiene mejor `[v1.5 reescrito]`
 
-Para que no te deslumbres con G Brain, esto es real y es valioso:
+Para que no te deslumbres con G Brain, esto es real y valioso — **actualizado** tras v0.42 y V1.7:
 
-1. **Multi-tenancy real con RLS por `auth.uid()`** en todas las tablas de usuario. G Brain es single-tenant por despliegue.
-2. **UI de producto end-to-end** (login, onboarding, chat, memoria, booking público). G Brain tiene un dashboard admin para OAuth y nada más.
-3. **Integraciones de negocio reales**: Google Calendar (CRUD), GitHub OAuth, Telegram (webhook + link codes + inline confirmaciones), booking público con tokens opacos. G Brain tiene "recipes" en docs, no integraciones de runtime.
-4. **HITL nativo en el runtime** vía `interrupt` de LangGraph + `tool_approval_policy` por skill. G Brain no tiene sistema de aprobaciones humanas.
-5. **Prefetchers determinísticos atados a checklists templates** (migraciones 00017, 00018) y `scheduled_tasks` con política de aprobaciones por tool. Tu Heartbeat es más sofisticado *operacionalmente* que el dream cycle de G Brain.
-6. **Modelo de negocio**: Business Brain JSONB, BigQuery para warehouse cross-tenant, `is_ungga_admin` para staff, skills `business-data-core` / `company-data` con esquema CRM real estate. G Brain es genérico (people/companies/deals/meetings), no tiene dominio.
-7. **Tool catalog tipado con Zod** + políticas de canal (web vs cron vs heartbeat vs telegram).
-8. **Selección de skill pre-grafo** (cero costo de LLM extra para router).
+1. **Producto multi-tenant integrado con RLS Supabase.** G Brain shipping **company brain** (OAuth + sources federados, ver §1.2.1), pero Gu OS tiene **UI + runtime + datos** en un solo producto con `auth.uid()` en todas las tablas de usuario. No dependes de OpenClaw/Hermes + MCP thin-client por teammate.
+
+2. **Runtime agéntico completo en el repo.** LangGraph + HITL nativo + canales (`web`, `telegram`, `heartbeat`, `case_runner`, cron). G Brain expone operaciones; **no** reemplaza tu loop conversacional ni tus políticas de aprobación por tool/skill.
+
+3. **Subsistema de casos operacionales como plataforma reutilizable.** [`operational_cases`](../operational-cases/architecture.md) resuelve workflows **multi-día** con esperas externas, timeline append-only, binding skill, notify multi-canal. **`property_optioning` es el primer piloto** que validó patrones (autoría compuesta, Telegram externo, HITL comercial, Skill Lab N0–N5) — **no** el límite del subsistema. G Brain no tiene equivalente first-class; sus crons operan sobre el brain, no sobre expedientes de negocio con `waiting_external`.
+
+4. **`account_skills` V1.** Skills propias por cuenta en Postgres ([00020](../../packages/db/supabase/migrations/00020_account_skills.sql)) — destino real de playbooks personales/de negocio sin pasar por git. G Brain skills viven en workspace del agente externo.
+
+5. **HITL nativo** vía `interrupt` + `tool_approval_policy` + aprobaciones en flujos operacionales (`waiting_internal`, price approval). G Brain no tiene sistema de aprobaciones humanas en el runtime.
+
+6. **Integraciones de negocio en runtime:** Google Calendar CRUD, GitHub OAuth, **Telegram** (webhook + contactos externos de casos + link tokens), booking público, BigQuery warehouse, EasyBroker tools en property optioning. G Brain tiene recipes/docs e ingestion genérica — tú tienes **tools productivas** acopladas al dominio inmobiliario.
+
+7. **Modelo de datos de negocio:** `business_brain` JSONB + BigQuery con skills `company-data` / `business-data-core` y esquema CRM real estate. G Brain es genérico (people/companies/deals); tú tienes **dominio vertical**.
+
+8. **Heartbeat operacional** con prefetchers determinísticos, checklists templates, métricas por run — checklist *del usuario*, no solo mantenimiento de índice cognitivo.
+
+9. **Tool catalog tipado con Zod** + políticas por canal (web vs cron vs heartbeat vs telegram vs case_runner).
+
+10. **Selección de skill pre-grafo** (~29 skills globales hoy; umbral de escalado ~30 en [`future-considerations.md`](../operational-cases/future-considerations.md)).
+
+**Matiz multi-tenancy:** G Brain ya no es "solo single-tenant" — pero su modelo (OAuth source scoping + markdown git) **no sustituye** tu RLS producto + warehouse. Ventaja Gu OS: un brokerage = una app, no N clientes MCP configurados a mano por agente.
 
 ---
 
@@ -577,16 +927,11 @@ Para que no te deslumbres con G Brain, esto es real y es valioso:
 ChatGPT te pintó G Brain como una "infraestructura de cognición lista para enchufar". Técnicamente hay varios matices que él no podía ver porque no leyó el código:
 
 1. **G Brain corre en Bun, no en Node.** No es un detalle menor. Tu stack es Node 20 + Next.js 16. Para "embeber" G Brain necesitarías o (a) correrlo como proceso aparte (MCP/HTTP), o (b) portar a Node, o (c) usarlo solo vía CLI/MCP. La fricción es real.
-
 2. **El "auto-linking" automático no funciona desde callers MCP remotos.** Esto es crítico y ChatGPT no lo mencionó. En `src/core/operations.ts` líneas 391-415, el post-hook de auto-link **se omite explícitamente para escrituras MCP remotas** por modelo de amenaza (prompt injection que mete `[[people/X]]` en cuerpos de mensajes). O corres ciclos "trusted" o llamas `gbrain extract links` aparte. Si integras vía MCP, **pierdes la magia del grafo automático**.
-
 3. **G Brain no es un agent runtime.** El loop conversacional vive en el cliente (Claude Code, OpenClaw). G Brain expone ~30 operaciones MCP. Tu LangGraph no lo necesita: ya tiene su loop. Lo que G Brain ofrece es **memoria + retrieval + grafo + dream cycle**, no "el cerebro pensante".
-
 4. **Las "skills" no son ejecutables por sí mismas** ni en G Brain ni en Ungga. Son markdown que el agente lee. La diferencia entre los dos formatos de skill es real pero menor; no se pueden "trasplantar" sin reescritura porque tu frontmatter incluye conceptos (`heartbeat`, `requires_tenant_context`, `allowed_tools`) que G Brain no tiene.
-
 5. **"OpenClaw/Hermes + GBrain"** que ChatGPT menciona como su modelo mental — esos no están en este repo. Son productos separados de Garry Tan. G Brain solo, sin un cliente que lo orqueste, no hace nada por sí mismo.
-
-6. **Single-tenant por despliegue.** Para tu modelo B2B (un brokerage = N agentes = N brains), tendrías que correr **un proceso/DB G Brain por tenant** o forkear el esquema con `tenant_id`. No es trivial. Tu modelo RLS es objetivamente más maduro para multi-tenant que G Brain hoy.
+6. **Multi-tenancy: modelos distintos, no "G Brain = single-tenant".** `[v1.5]` G Brain v0.42 shipping **company brain** (OAuth clients, sources federados, tutorial multi-usuario). Para B2B brokerage **sigue habiendo fricción** si intentas subordinar Gu OS a G Brain tal cual: OAuth por source ≠ RLS Supabase producto; markdown git SOR ≠ BigQuery + operational_cases; un brain compartido ≠ expedientes multi-día por usuario. Tu RLS integrado en app sigue siendo ventaja operacional para **producto SaaS**; G Brain es ventaja para **memoria institucional MCP-first** desplegada aparte.
 
 ChatGPT acertó al 100% en lo conceptual y arquitectural. Donde subestimó es en la **fricción de integración técnica**.
 
@@ -598,30 +943,40 @@ ChatGPT acertó al 100% en lo conceptual y arquitectural. Donde subestimó es en
 
 Importar `@garrytan/gbrain` como dependencia y/o desplegar `gbrain serve` como proceso lateral. Migrar `memories` a páginas markdown. Construir un "brain repo" por tenant.
 
-| Pros | Contras | Esfuerzo |
-|---|---|---|
+
+| Pros                                                                                                              | Contras                                                                                                                                                                                                                                                                      | Esfuerzo                                          |
+| ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
 | Acceso inmediato a hybrid search, KG, dream cycle, signal detector, page versioning, ~30 operations battle-tested | Bun runtime aparte; multi-tenancy a resolver tú (un brain por usuario = N procesos o N DBs); perder Supabase como source of truth para entidades operativas (leads, properties, bookings); conflicto filosófico (markdown en disco vs Postgres); MCP remoto pierde auto-link | **Alto** (3-6 meses de integración + operaciones) |
 
-### Opción B — Portar las 5 ideas clave a tu stack (sin código de G Brain)
+
+### Opción B — Portar las 8 ideas clave a tu stack (sin código de G Brain) `[v1.5]`
 
 Implementar dentro de `packages/agent` y `packages/db`:
+
 1. KG schema en Supabase con auto-extracción regex
 2. Compiled Truth + Timeline + Versions
-3. Hybrid search RPC con RRF
-4. Dream cycle runner
-5. Signal detector skill
+3. Hybrid search RPC con RRF (+ reranker opcional v1.1)
+4. **Query synthesis con gap analysis** (inspirado en `gbrain think`) — **Bloque 3b**
+5. Dream cycle runner (mantenimiento cognitivo; distinto de Heartbeat y operational_cases)
+6. Signal detector skill
+7. **Integración explícita con `operational_cases`** — frontera §1.4.8; promoción selectiva evento → brain
+8. Ingestion hooks + contrato connector (post-MVP; benchmark G Brain `IngestionSource`)
 
-| Pros | Contras | Esfuerzo |
-|---|---|---|
-| Un solo runtime (Node/Next.js), una sola DB (Supabase), RLS multi-tenant intacto, sin Bun, sin OAuth doble. Ganas las 5 capacidades sin la fricción | Trabajo de implementación real (no copy-paste); no te beneficias de bug fixes upstream; tienes que mantenerlo tú | **Medio** (4-8 semanas para las 5 ideas en orden de prioridad) |
+
+| Pros                                                                                                                                                | Contras                                                                                                          | Esfuerzo                                                       |
+| --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Un solo runtime (Node/Next.js), una sola DB (Supabase), RLS multi-tenant intacto, sin Bun, sin OAuth doble. Convive con **plataforma operational_cases** ya validada | Trabajo de implementación real (no copy-paste); no bug fixes upstream; mantener tú; **8 semanas** apretadas si incluyes 3b | **Medio** (6–10 semanas para las 8 ideas en orden de prioridad) |
+
 
 ### Opción C — Bridge MCP por tenant (híbrido)
 
 Desplegar un proceso `gbrain serve --http` por tenant (o un proceso compartido con esquema `tenant_id`) y exponer sus operations como tools al agente LangGraph vía un cliente MCP en `packages/agent`. Supabase sigue siendo la fuente de verdad para entidades transaccionales. G Brain solo para "memoria + retrieval + grafo + síntesis".
 
-| Pros | Contras | Esfuerzo |
-|---|---|---|
+
+| Pros                                                                                                                       | Contras                                                                                                                                                                                                      | Esfuerzo                                          |
+| -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------- |
 | Separación limpia de responsabilidades; aprovechas G Brain donde es fuerte sin tocar tu stack Next.js/Supabase; reversible | Un proceso Bun por tenant es operacionalmente caro; doble vector store; doble fuente de verdad; auto-link no aplica en MCP remoto; sincronización entre datos transaccionales y brain pages es trabajo nuevo | **Medio-alto** (6-10 semanas + ops de N procesos) |
+
 
 ---
 
@@ -631,18 +986,25 @@ Desplegar un proceso `gbrain serve --http` por tenant (o un proceso compartido c
 
 ### Por qué B y no A o C (todavía)
 
-- Tu **multi-tenant con RLS** es más maduro que G Brain hoy. Subordinarlo a un sistema single-tenant por despliegue es un retroceso operacional.
-- Tu **HITL + tool_approval_policy + canales** no existe en G Brain y es crítico para B2B real estate (no puedes auto-enviar mensajes a leads sin aprobación).
-- Tu **runtime LangGraph** ya está integrado con tu UI y tus integraciones (Calendar, Telegram, GitHub). Reemplazarlo o duplicarlo es cirugía mayor.
-- **Bun + multi-tenant + MCP remoto sin auto-link** = tres frentes de fricción simultáneos.
+- Tu **producto integrado** (RLS + UI + LangGraph + operational_cases + BigQuery) es más maduro que embeber G Brain como subsistema Bun/markdown.
+- G Brain **company brain** (§1.2.1) hace Opción C *ligeramente* más viable para memoria institucional MCP — pero **no** resuelve expedientes multi-día, HITL comercial, ni warehouse tabular. Sigue habiendo doble SOR y auto-link off en MCP remoto.
+- Tu **HITL + tool_approval_policy + canales** no existe en G Brain y es crítico para B2B real estate.
+- Tu **runtime LangGraph** ya está integrado con UI, Calendar, Telegram, **case_runner**. Reemplazarlo es cirugía mayor.
+- **Bun + MCP remoto sin auto-link + sync brain↔BigQuery** = fricción operacional si Opción C es default.
 
 ### Frase rectora
 
-Las **ideas** de G Brain valen oro. El **código** de G Brain encaja mal con tu stack hoy. **Toma las ideas, no el código.**
+Las **ideas** de G Brain valen oro. El **código** de G Brain encaja mal con tu stack producto hoy. **Toma las ideas, no el código** — en convivencia con la **plataforma operational_cases** ya construida.
 
-### Puerta abierta
+### Puerta abierta `[v1.5 ampliada]`
 
-Si en 6-12 meses validas mucho valor en la Brain Layer y aparecen casos donde tus brokers usan Claude Code o similar contra el brain del brokerage, evaluar **Opción C como complemento** (no reemplazo): exponer la Brain Layer como MCP server delgado para clientes externos. Eso es trabajo de 1-2 semanas si la Brain Layer ya está bien encapsulada.
+Escenarios donde **Opción C** (MCP bridge) podría reevaluarse **sin reemplazar** Brain Layer nativa:
+
+- Memoria **institucional read-only** cross-brokerage (playbooks, notas de mercado) mientras Cognition operacional por usuario vive en Supabase.
+- Clientes avanzados que ya corren OpenClaw + G Brain y quieren **leer** contexto Ungga vía MCP delgado.
+- Piloto "company brain" interno Ungga staff antes de V3 organizations.
+
+Requisito: Brain Layer Gu OS **bien encapsulada** (tools `brain-*` + RPC) para no duplicar lógica si más tarde expones MCP propio.
 
 ---
 
@@ -650,7 +1012,9 @@ Si en 6-12 meses validas mucho valor en la Brain Layer y aparecen casos donde tu
 
 ### Filosofía rectora
 
-Una sola DB (Supabase), un solo runtime (Node/Next.js), RLS multi-tenant intacto. Las **5 ideas** de G Brain se implementan como **una nueva capa de "Brain"** *paralela a `memories`* — sin tocar el pipeline existente de memoria larga, que ya está validado y conservador a propósito.
+Una sola DB (Supabase), un solo runtime (Node/Next.js), RLS multi-tenant intacto. Las **8 ideas** de G Brain (§7) se implementan como **Brain Layer** paralela a `memories` — sin tocar memoria larga personal ni **sin reemplazar** `operational_cases` / `account_skills`. Ver [§1.4.8](#148-casos-operacionales-vs-brain-layer-frontera-de-responsabilidades-v15).
+
+**Migraciones brain:** `00053`–`00059` (+ `00055b` hooks). Las secuencias `00019`–`00024` del plan v1.4 están ocupadas (§1.3.1).
 
 ### Hallazgo crítico que justifica la separación
 
@@ -668,32 +1032,41 @@ flowchart TB
     mem[memories\nhechos durables del usuario]
     bb[business_brain JSONB\nidentidad del negocio]
     flush[memory_flush\nconservador]
+    oc[operational_cases\nplataforma multi-día]
+    ask[account_skills V1]
   end
 
   subgraph new [Brain Layer nueva]
     pages[brain_pages\ncompiled truth + timeline]
     links[brain_links\nrelaciones tipadas]
     chunks[brain_chunks\ntsvector + pgvector]
-    sigs[brain_signals\nseales pasivas]
+    sigs[brain_signals\nseñales pasivas]
     runs[brain_maintenance_runs]
+    think[think_brain\nsíntesis + gaps]
   end
 
   agent[LangGraph agent]
   agent --> mem
   agent --> bb
+  agent --> oc
+  agent --> ask
   agent --> pages
   agent --> links
   agent --> chunks
   agent --> sigs
+  agent --> think
 
   cron[Cron diario y semanal] --> runs
-  runs -.lint backlinks embed dedupe synthesize.-> pages
+  runs -.embed dedupe synthesize.-> pages
   runs -.reindex.-> chunks
 
   turn[Post-turn hook] --> sigs
   turn --> pages
   turn --> links
+  oc -.promoción selectiva HITL.-> pages
 ```
+
+
 
 ---
 
@@ -703,7 +1076,7 @@ flowchart TB
 
 #### Migración SQL completa
 
-**`packages/db/supabase/migrations/00019_brain_pages.sql`**
+`**packages/db/supabase/migrations/00053_brain_pages.sql`**
 
 ```sql
 create extension if not exists pgcrypto;
@@ -821,15 +1194,17 @@ create trigger brain_pages_snapshot
 
 #### Código nuevo
 
-| Archivo | Propósito |
-|---|---|
-| `packages/agent/src/brain/page.ts` | `renderPage()`, `parsePage()` (compiled_truth + timeline a markdown opcional), `computeBodyHash()` |
-| `packages/agent/src/brain/slug.ts` | Slugify determinístico con namespace (`lead/`, `property/`, ...); resolve por `slug` o `frontmatter.aliases` |
-| `packages/db/src/queries/brain-pages.ts` | `getPage`, `upsertPage`, `appendTimeline`, `listPages`, `searchPagesByText` (ILIKE), `getVersions`, `revertVersion` |
-| `packages/agent/src/tools/brain-page-tools.ts` | Tools tipados con Zod: `get_brain_page`, `list_brain_pages`, `append_brain_timeline`, `update_brain_compiled_truth` (este último con HITL: `risk: 'medium'`) |
-| `apps/web/src/app/api/brain/pages/route.ts` | GET (list) / POST (create) |
-| `apps/web/src/app/api/brain/pages/[id]/route.ts` | GET / PUT / DELETE (archive) |
-| `apps/web/src/app/api/brain/pages/[id]/versions/route.ts` | GET versions / POST revert |
+
+| Archivo                                                   | Propósito                                                                                                                                                    |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `packages/agent/src/brain/page.ts`                        | `renderPage()`, `parsePage()` (compiled_truth + timeline a markdown opcional), `computeBodyHash()`                                                           |
+| `packages/agent/src/brain/slug.ts`                        | Slugify determinístico con namespace (`lead/`, `property/`, ...); resolve por `slug` o `frontmatter.aliases`                                                 |
+| `packages/db/src/queries/brain-pages.ts`                  | `getPage`, `upsertPage`, `appendTimeline`, `listPages`, `searchPagesByText` (ILIKE), `getVersions`, `revertVersion`                                          |
+| `packages/agent/src/tools/brain-page-tools.ts`            | Tools tipados con Zod: `get_brain_page`, `list_brain_pages`, `append_brain_timeline`, `update_brain_compiled_truth` (este último con HITL: `risk: 'medium'`) |
+| `apps/web/src/app/api/brain/pages/route.ts`               | GET (list) / POST (create)                                                                                                                                   |
+| `apps/web/src/app/api/brain/pages/[id]/route.ts`          | GET / PUT / DELETE (archive)                                                                                                                                 |
+| `apps/web/src/app/api/brain/pages/[id]/versions/route.ts` | GET versions / POST revert                                                                                                                                   |
+
 
 #### Wiring en el agente
 
@@ -846,13 +1221,15 @@ create trigger brain_pages_snapshot
 
 Las columnas operacionales (`stage`, `health`, `next_action`, `due_at`, `priority`) son opcionales en el schema pero su semántica vive por convención por `kind`. Tabla inicial sugerida (iterable):
 
-| Kind | Stages típicos | Health | Notas |
-|---|---|---|---|
-| `lead` | `nuevo`, `calificado`, `visita_agendada`, `oferta_presentada`, `cerrado_ganado`, `cerrado_perdido` | `hot` (interés activo <7d) / `warm` (<30d) / `cold` (>30d) / `stale` (sin contacto >90d) | `next_action` = próximo touchpoint |
-| `property` | `disponible`, `apartada`, `en_oferta`, `bajo_contrato`, `vendida`, `retirada` | n/a típicamente | `due_at` = fecha de retiro / renovación de contrato |
-| `deal` | `negociacion`, `oferta`, `acepteado`, `due_diligence`, `firma`, `cerrado` | n/a | `due_at` = fecha objetivo de firma; `priority` = monto / probabilidad |
-| `developer` | n/a | `warm` (proyecto activo) / `cold` (sin proyecto) | `next_action` = próxima reunión / actualización |
-| `visit` | `agendada`, `realizada`, `cancelada`, `no_show` | n/a | `due_at` = fecha de la visita |
+
+| Kind        | Stages típicos                                                                                     | Health                                                                                   | Notas                                                                 |
+| ----------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `lead`      | `nuevo`, `calificado`, `visita_agendada`, `oferta_presentada`, `cerrado_ganado`, `cerrado_perdido` | `hot` (interés activo <7d) / `warm` (<30d) / `cold` (>30d) / `stale` (sin contacto >90d) | `next_action` = próximo touchpoint                                    |
+| `property`  | `disponible`, `apartada`, `en_oferta`, `bajo_contrato`, `vendida`, `retirada`                      | n/a típicamente                                                                          | `due_at` = fecha de retiro / renovación de contrato                   |
+| `deal`      | `negociacion`, `oferta`, `acepteado`, `due_diligence`, `firma`, `cerrado`                          | n/a                                                                                      | `due_at` = fecha objetivo de firma; `priority` = monto / probabilidad |
+| `developer` | n/a                                                                                                | `warm` (proyecto activo) / `cold` (sin proyecto)                                         | `next_action` = próxima reunión / actualización                       |
+| `visit`     | `agendada`, `realizada`, `cancelada`, `no_show`                                                    | n/a                                                                                      | `due_at` = fecha de la visita                                         |
+
 
 Esta tabla es **convención**, no enum. Ningún check constraint impone valores — el schema deja flexibilidad para evolucionar el dominio sin migración. Validación vive en los adapters de tools por kind.
 
@@ -861,17 +1238,12 @@ Esta tabla es **convención**, no enum. Ningún check constraint impone valores 
 Estas reglas aplican a TODO escritor de `brain_pages.compiled_truth` (agente, usuario, dream cycle synthesize). Implementación es responsabilidad de los call sites + selftests.
 
 1. **Trazabilidad de evidencia.** Convención: cada afirmación no-trivial en `compiled_truth` debe ser respaldada por uno o más `brain_timeline` entries. Dos opciones de implementación:
-   - **Liviana (MVP, Bloque 1):** convención de footnote markers tipo `[^t<id>]` al final de cada oración significativa, donde `t<id>` referencia un `brain_timeline.id`. El selftest valida que los IDs referenciados existan en `brain_timeline` para esa page.
-   - **Estructurada (v2, evaluable en Bloque 5):** columna nueva `brain_pages.compiled_truth_evidence jsonb` mapeando `statement_id -> [timeline_entry_id, ...]`. Más estricto pero más caro de mantener.
-
+  - **Liviana (MVP, Bloque 1):** convención de footnote markers tipo `[^t<id>]` al final de cada oración significativa, donde `t<id>` referencia un `brain_timeline.id`. El selftest valida que los IDs referenciados existan en `brain_timeline` para esa page.
+  - **Estructurada (v2, evaluable en Bloque 5):** columna nueva `brain_pages.compiled_truth_evidence jsonb` mapeando `statement_id -> [timeline_entry_id, ...]`. Más estricto pero más caro de mantener.
    Para el MVP: liviana. Si el dream cycle synthesize lo necesita, evaluar estructurada en Bloque 5b.
-
 2. **Synthesizer produce DIFF, no rewrite.** El LLM devuelve `{additions: [...], removals: [...], modifications: [...]}`. Las **removals y modifications requieren HITL approval**; las additions pueden auto-aplicarse si caben dentro del cap del punto 4. Esta regla es la que garantiza "progressive synthesis, not creative rewriting" (principio 1.5.2).
-
 3. **Preservar marcadores de incertidumbre.** El system prompt del synthesizer incluye reglas duras: "no conviertas en certeza lo que era duda; preserva 'probablemente', 'según una conversación', 'sin confirmar'". Selftest sobre fixture: dado un compiled_truth con N hedges, el output del synthesizer debe contener al menos N hedges (puede agregar, no quitar).
-
 4. **Cap de cambios por run.** Máximo **30%** del texto puede ser eliminado o sustituido en un solo run del synthesizer. Si el diff propuesto excede el cap, se descarta el diff completo, se persiste en `brain_synthesis_proposals` con `cap_exceeded=true, status='auto_rejected'`, y se loguea como `synthesizer_drift_detected`. Esto previene drift catastrófico por una mala generación.
-
 5. **Auditoría siempre disponible.** El trigger `snapshot_brain_page` ya creado garantiza que toda versión previa de `compiled_truth` queda en `brain_page_versions`. Revert es one-click. Esta es la red de seguridad final cuando todo lo demás falla.
 
 #### Definition of done
@@ -888,7 +1260,7 @@ Estas reglas aplican a TODO escritor de `brain_pages.compiled_truth` (agente, us
 
 #### Migración SQL completa
 
-**`packages/db/supabase/migrations/00020_brain_links.sql`**
+`**packages/db/supabase/migrations/00054_brain_links.sql`**
 
 ```sql
 create table public.brain_links (
@@ -925,28 +1297,32 @@ create policy "Users manage own links"
 
 #### Catálogo de relaciones por dominio (sugerencia inicial — itérala)
 
-| Origin -> Target | link_type | Ejemplo |
-|---|---|---|
-| Lead -> Agent | `assigned_to` | "Julieta es lead de Carlos" |
-| Lead -> Property | `interested_in` | "Julieta vio la casa de Reforma" |
-| Lead -> MortgageBroker | `financing_with` | "está pre-aprobada por BBVA" |
-| Visit -> Lead, Visit -> Property, Visit -> Agent | `attendee`, `subject`, `host` | tres aristas por visita |
-| Property -> Developer | `developed_by` | |
-| Property -> Listing | `listed_as` | |
-| Deal -> Lead, Deal -> Property, Deal -> Agent | `buyer`, `subject`, `representative` | |
-| Brokerage -> Agent | `employs` | |
-| Brokerage -> Brokerage | `collaborates_with` | acuerdos de inventario compartido |
-| Page -> Page | `mentions` | fallback genérico |
+
+| Origin -> Target                                 | link_type                            | Ejemplo                           |
+| ------------------------------------------------ | ------------------------------------ | --------------------------------- |
+| Lead -> Agent                                    | `assigned_to`                        | "Julieta es lead de Carlos"       |
+| Lead -> Property                                 | `interested_in`                      | "Julieta vio la casa de Reforma"  |
+| Lead -> MortgageBroker                           | `financing_with`                     | "está pre-aprobada por BBVA"      |
+| Visit -> Lead, Visit -> Property, Visit -> Agent | `attendee`, `subject`, `host`        | tres aristas por visita           |
+| Property -> Developer                            | `developed_by`                       |                                   |
+| Property -> Listing                              | `listed_as`                          |                                   |
+| Deal -> Lead, Deal -> Property, Deal -> Agent    | `buyer`, `subject`, `representative` |                                   |
+| Brokerage -> Agent                               | `employs`                            |                                   |
+| Brokerage -> Brokerage                           | `collaborates_with`                  | acuerdos de inventario compartido |
+| Page -> Page                                     | `mentions`                           | fallback genérico                 |
+
 
 #### Código nuevo
 
-| Archivo | Propósito |
-|---|---|
-| `packages/agent/src/brain/link-extraction.ts` | **Sin LLM**. Regex sobre wikilinks `[[lead/julieta-evelia]]`, regex sobre menciones nombradas con dictionary lookup contra `brain_pages` por usuario, reglas de `inferLinkType` por verbos cercanos ("le mostré", "está interesada en", "asignado a"). Inspirado directamente en `src/core/link-extraction.ts` de G Brain. |
-| `packages/agent/src/brain/graph.ts` | `getBacklinks(pageId)`, `getLinks(pageId, types?)`, `traverseGraph(startSlug, edges, maxDepth)` con CTE recursivo en SQL |
-| `packages/agent/src/brain/extract-from-turn.ts` | Hook post-turno: dado el último `assistant`+`tool` output, intenta crear/actualizar pages y links. Corre **fuera del grafo** (igual que `flushSessionMemory`), fire-and-forget desde `apps/web/src/app/api/chat/route.ts`. |
-| `packages/db/src/queries/brain-links.ts` | CRUD + queries del grafo |
-| `packages/agent/src/tools/brain-graph-tools.ts` | Tools: `search_brain_entities` (por nombre/alias/ILIKE), `traverse_brain_graph`, `get_entity_backlinks` |
+
+| Archivo                                         | Propósito                                                                                                                                                                                                                                                                                                                  |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/agent/src/brain/link-extraction.ts`   | **Sin LLM**. Regex sobre wikilinks `[[lead/julieta-evelia]]`, regex sobre menciones nombradas con dictionary lookup contra `brain_pages` por usuario, reglas de `inferLinkType` por verbos cercanos ("le mostré", "está interesada en", "asignado a"). Inspirado directamente en `src/core/link-extraction.ts` de G Brain. |
+| `packages/agent/src/brain/graph.ts`             | `getBacklinks(pageId)`, `getLinks(pageId, types?)`, `traverseGraph(startSlug, edges, maxDepth)` con CTE recursivo en SQL                                                                                                                                                                                                   |
+| `packages/agent/src/brain/extract-from-turn.ts` | Hook post-turno: dado el último `assistant`+`tool` output, intenta crear/actualizar pages y links. Corre **fuera del grafo** (igual que `flushSessionMemory`), fire-and-forget desde `apps/web/src/app/api/chat/route.ts`.                                                                                                 |
+| `packages/db/src/queries/brain-links.ts`        | CRUD + queries del grafo                                                                                                                                                                                                                                                                                                   |
+| `packages/agent/src/tools/brain-graph-tools.ts` | Tools: `search_brain_entities` (por nombre/alias/ILIKE), `traverse_brain_graph`, `get_entity_backlinks`                                                                                                                                                                                                                    |
+
 
 #### Modos de auto-extracción `[v1.1]`
 
@@ -954,11 +1330,9 @@ create policy "Users manage own links"
 
 Configurable vía env `BRAIN_AUTOEXTRACT_MODE`. Niveles, en orden de agresividad creciente:
 
-- **`manual`** (default inicial al desplegar Bloque 2): solo extrae links cuando hay `[[wikilink]]` explícito en el texto del agente, usuario o tool output. **Cero regex sobre nombres propios. Cero dictionary lookup.** Esto valida el pipeline de pages + links sin generar ruido. El agente puede crear wikilinks intencionalmente al redactar resúmenes; el usuario puede usarlos al teclear; el tool output enriquecido puede incluirlos. Todo lo demás se ignora. Recomendado mantener este modo durante 2-4 semanas.
-
-- **`conservative`** (activable cuando se valide que `manual` no produce ruido): regex sobre nombres propios + dictionary lookup contra `brain_pages` que **YA existen** del usuario. Si "Julieta" aparece y existe `lead/julieta-evelia-mtz` con alias "Julieta" en frontmatter, se crea el link. Si "Julieta" aparece y NO existe ninguna page, se persiste como `brain_signal` con `signal_type='potential_entity'` para revisión humana en Bloque 4 (no se crea page automática).
-
-- **`aggressive`** (futuro, opt-in por usuario avanzado): regex amplio + creación automática de pages huérfanas a partir de menciones. **No se planea para v1**; queda como puerta abierta.
+- `**manual`** (default inicial al desplegar Bloque 2): solo extrae links cuando hay `[[wikilink]]` explícito en el texto del agente, usuario o tool output. **Cero regex sobre nombres propios. Cero dictionary lookup.** Esto valida el pipeline de pages + links sin generar ruido. El agente puede crear wikilinks intencionalmente al redactar resúmenes; el usuario puede usarlos al teclear; el tool output enriquecido puede incluirlos. Todo lo demás se ignora. Recomendado mantener este modo durante 2-4 semanas.
+- `**conservative`** (activable cuando se valide que `manual` no produce ruido): regex sobre nombres propios + dictionary lookup contra `brain_pages` que **YA existen** del usuario. Si "Julieta" aparece y existe `lead/julieta-evelia-mtz` con alias "Julieta" en frontmatter, se crea el link. Si "Julieta" aparece y NO existe ninguna page, se persiste como `brain_signal` con `signal_type='potential_entity'` para revisión humana en Bloque 4 (no se crea page automática).
+- `**aggressive`** (futuro, opt-in por usuario avanzado): regex amplio + creación automática de pages huérfanas a partir de menciones. **No se planea para v1**; queda como puerta abierta.
 
 Cambio de modo es trivial: env var + restart. Ningún cambio de schema.
 
@@ -991,7 +1365,7 @@ Cambio de modo es trivial: env var + restart. Ningún cambio de schema.
 
 #### Migración SQL completa
 
-**`packages/db/supabase/migrations/00020b_brain_layer_hooks.sql`**
+`**packages/db/supabase/migrations/00055b_brain_layer_hooks.sql*`*
 
 ```sql
 -- ============================================================
@@ -1065,7 +1439,7 @@ create policy "Users manage own skill candidates"
 - **Tablas vacías en MVP.** No hay código en MVP que escriba a ellas. Su existencia es **defensiva**: prevenir migración disruptiva post-MVP cuando se construyan Ingestion y el Miner.
 - **No agrega tools nuevas en MVP.** Las tools que escriben a estas tablas son parte de las secciones forward-looking [12.2](#122-forward-looking-ingestion-layer-v14) y [12.3](#123-forward-looking-operationalplaybook-mining-v14).
 - **RLS desde día 1.** Mismo patrón que el resto de Brain Layer: `auth.uid() = user_id`. Cuando llegue el modelo `organizations` será cambio mecánico.
-- **Hooks de provenance ya en `brain_pages` y `brain_links`.** Los campos `source_id` + `source_meta` agregados en migraciones 00019 y 00020 son los que usarán los Source Connectors para trazabilidad. Hoy NULL; cuando llegue Ingestion Layer, se llenan automáticamente.
+- **Hooks de provenance ya en `brain_pages` y `brain_links`.** Los campos `source_id` + `source_meta` agregados en migraciones **00053** y **00054** son los que usarán los Source Connectors para trazabilidad. Hoy NULL; cuando llegue Ingestion Layer, se llenan automáticamente.
 
 #### Selftest mínimo
 
@@ -1079,7 +1453,7 @@ create policy "Users manage own skill candidates"
 
 #### Migración SQL completa
 
-**`packages/db/supabase/migrations/00021_brain_chunks_hybrid.sql`**
+`**packages/db/supabase/migrations/00056_brain_chunks_hybrid.sql`**
 
 ```sql
 create table public.brain_chunks (
@@ -1196,13 +1570,15 @@ grant execute on function public.hybrid_brain_search(uuid, text, vector, int, te
 
 #### Código nuevo
 
-| Archivo | Propósito |
-|---|---|
-| `packages/agent/src/brain/chunker.ts` | Chunking determinístico de `compiled_truth` y `timeline` (<=500 tokens, ~1800 chars; preserva oraciones) |
-| `packages/agent/src/brain/reindex.ts` | `reindexPage(pageId)`: borra chunks + recrea + embeddings (batch). Llamado desde el caller post-update y desde dream cycle |
-| `packages/db/src/queries/brain-search.ts` | `hybridSearch(userId, query, opts)` con cliente Supabase RPC |
-| `packages/agent/src/tools/brain-search-tools.ts` | Tool `query_brain` (la "operation" análoga a `gbrain query`) |
+
+| Archivo                                             | Propósito                                                                                                                                                                                                                         |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/agent/src/brain/chunker.ts`               | Chunking determinístico de `compiled_truth` y `timeline` (<=500 tokens, ~1800 chars; preserva oraciones)                                                                                                                          |
+| `packages/agent/src/brain/reindex.ts`               | `reindexPage(pageId)`: borra chunks + recrea + embeddings (batch). Llamado desde el caller post-update y desde dream cycle                                                                                                        |
+| `packages/db/src/queries/brain-search.ts`           | `hybridSearch(userId, query, opts)` con cliente Supabase RPC                                                                                                                                                                      |
+| `packages/agent/src/tools/brain-search-tools.ts`    | Tool `query_brain` (la "operation" análoga a `gbrain query`)                                                                                                                                                                      |
 | `packages/agent/src/nodes/memory_injection_node.ts` | **EDITAR** — agregar paso opcional `hybridBrainSearch` con `BRAIN_INJECTION_ENABLED` env flag. Se inyecta en un bloque adicional `[CONOCIMIENTO RELEVANTE — entidades de tu negocio]` separado del bloque `[MEMORIA DEL USUARIO]` |
+
 
 #### Wiring importante
 
@@ -1212,6 +1588,7 @@ grant execute on function public.hybrid_brain_search(uuid, text, vector, int, te
 #### Eval mínimo (germen del `gbrain eval`)
 
 `packages/agent/src/brain/eval/retrieval.eval.ts`:
+
 - Fixture: 50 brain pages sintéticas + 20 queries con expected page_ids.
 - Métricas: `MRR@10`, `Recall@10`, comparación cosine-only vs hybrid.
 - CI gate suave (warning, no fail).
@@ -1223,13 +1600,49 @@ grant execute on function public.hybrid_brain_search(uuid, text, vector, int, te
 
 ---
 
-### Bloque 4 — Semana 6: Signal Detector skill
+### Bloque 3b — Semana 5–6 (paralelo o inmediato post-3): Query synthesis + gap analysis `[v1.5]`
+
+**Objetivo:** no devolver solo chunks — devolver **respuesta compuesta** con citas y honestidad sobre lagunas (inspirado en `gbrain think`, §4.8). Distinto de la respuesta conversacional del agente: esta tool es **consulta estructurada al brain**.
+
+#### Sin migración SQL nueva
+
+Reutiliza `hybrid_brain_search` + `brain_pages` + `brain_links`. Opcional: tabla `brain_query_log` post-MVP para eval replay.
+
+#### Código nuevo
+
+
+| Archivo | Propósito |
+| ------- | --------- |
+| `packages/agent/src/brain/synthesize-answer.ts` | Pipeline: hybrid search → selección top-K chunks → LLM composición con citas `[slug]` → sección **Gaps** (páginas stale, entidades mencionadas sin page, canales no ingeridos) |
+| `packages/agent/src/tools/brain-think-tools.ts` | Tool `think_brain` (análoga operacional a `gbrain think`; nombre interno configurable) |
+| `packages/agent/src/brain/eval/synthesis.eval.ts` | Fixture: 10 preguntas + rubric (citas presentes, gaps honestos, no alucinación fuera de retrieval) |
+
+#### Reglas de governance
+
+- **Grounded-only:** cada afirmación debe citar chunk/page recuperado; si retrieval vacío → decirlo explícitamente.
+- **Gaps obligatorios:** si última evidencia en timeline > N días (configurable), marcar stale.
+- **No sustituye HITL comercial** en operational_cases — síntesis es lectura, no envío a leads.
+- **Cost cap:** env `BRAIN_THINK_MAX_CHUNKS=12`, modelo barato default (mismo tier que compaction).
+- **Query-to-Knowledge Feedback `[v1.5.1]`:** respuestas de alto valor (análisis cross-entidad, comparaciones, informes) pueden proponerse como entrada en `brain_timeline` o `brain_synthesis_proposals` — solo con provenance explícita y aprobación HITL si tocan `compiled_truth`. No toda respuesta de chat se archiva (patrón gist Query → file back; ver [§1.1](#11-genealogía-intelectual-karpathy-llm-wiki--g-brain--gu-os-v151)).
+
+#### Wiring con operational_cases
+
+Skills de case_runner pueden llamar `think_brain` para **contexto cross-entidad** ("¿qué sabemos de este lead fuera de este expediente?") sin duplicar estado del caso en `brain_pages`.
+
+#### Definition of done
+
+- Pregunta *"¿qué necesito saber antes de reunión con lead X?"* devuelve prosa citada + al menos un gap cuando falte evidencia reciente.
+- Eval synthesis: 0 afirmaciones sin cita en fixture de 10 preguntas.
+
+---
+
+### Bloque 4 — Semana 6–7: Signal Detector skill
 
 **Objetivo:** capturar señales sueltas que el agente principal ignora ("el mercado de Puerta de Hierro se está enfriando").
 
 #### Migración SQL completa
 
-**`packages/db/supabase/migrations/00022_brain_signals.sql`**
+`**packages/db/supabase/migrations/00057_brain_signals.sql`**
 
 ```sql
 create table public.brain_signals (
@@ -1280,16 +1693,18 @@ flowchart LR
   hitl -.descarta.-> raw
 ```
 
+
+
 **Reglas operacionales del lifecycle:**
 
 1. **Raw signal:** detector extrae y persiste. `confidence` baja-media. Sin efectos en `brain_pages` ni `brain_links`.
 2. **Cluster:** múltiples señales con el mismo `cluster_key` se agrupan automáticamente en la UI. Convención de naming: `<slug_principal>:<signal_type>` (ej. `lead/julieta:financing_concern`, `zone/puerta-de-hierro:market_trend`). Si el detector no puede determinar un slug principal, deja `cluster_key=null`.
 3. **HITL Review:** UI muestra clusters ordenados por (cantidad de señales, confidence promedio, recencia). Humano decide: promover, ignorar, o seguir esperando.
 4. **Promoted:** la promoción aplica el cambio según el tipo:
-   - Si la señal aporta un hecho operacional (`urgency`, `financing_concern`, `lifestyle_objection`) → se agrega como `brain_timeline` entry de la `brain_page` relevante (más, opcionalmente, propuesta de update a compiled_truth siguiendo gobernanza Bloque 1).
-   - Si la señal sugiere una nueva relación (`potential_entity`) → se promueve a `brain_link` en `brain_links`.
-   - Si la señal es agregada/organizacional (`market_trend`) → puede generar una `brain_page` de tipo `market_observation` o quedar como insight registrado.
-   - Marcar `promoted_to_page=true` en TODAS las señales del cluster.
+  - Si la señal aporta un hecho operacional (`urgency`, `financing_concern`, `lifestyle_objection`) → se agrega como `brain_timeline` entry de la `brain_page` relevante (más, opcionalmente, propuesta de update a compiled_truth siguiendo gobernanza Bloque 1).
+  - Si la señal sugiere una nueva relación (`potential_entity`) → se promueve a `brain_link` en `brain_links`.
+  - Si la señal es agregada/organizacional (`market_trend`) → puede generar una `brain_page` de tipo `market_observation` o quedar como insight registrado.
+  - Marcar `promoted_to_page=true` en TODAS las señales del cluster.
 
 **Lo que NO se implementa en MVP (queda como evolución v1.5+):**
 
@@ -1301,12 +1716,14 @@ flowchart LR
 
 #### Código nuevo
 
-| Archivo | Propósito |
-|---|---|
-| `skills/global/signal-detector/SKILL.md` | Skill always-on. Frontmatter: `scope: passive`, `mutating: true`, `writes_to: brain_signals` |
-| `packages/agent/src/brain/signal-detector.ts` | Sub-llamada paralela con `createCompactionModel()` (Haiku barato), prompt corto que devuelve JSON array tipo `flushSessionMemory` |
-| `packages/agent/src/tools/brain-signal-tools.ts` | Tool `list_unpromoted_signals` (para que skills de revisión humana las suban) |
-| `apps/web/src/app/api/chat/route.ts` | **EDITAR** — agregar `void detectSignals(...)` fire-and-forget tras `runAgent` (junto al `flushSessionMemory` actual) |
+
+| Archivo                                          | Propósito                                                                                                                         |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `skills/global/signal-detector/SKILL.md`         | Skill always-on. Frontmatter: `scope: passive`, `mutating: true`, `writes_to: brain_signals`                                      |
+| `packages/agent/src/brain/signal-detector.ts`    | Sub-llamada paralela con `createCompactionModel()` (Haiku barato), prompt corto que devuelve JSON array tipo `flushSessionMemory` |
+| `packages/agent/src/tools/brain-signal-tools.ts` | Tool `list_unpromoted_signals` (para que skills de revisión humana las suban)                                                     |
+| `apps/web/src/app/api/chat/route.ts`             | **EDITAR** — agregar `void detectSignals(...)` fire-and-forget tras `runAgent` (junto al `flushSessionMemory` actual)             |
+
 
 #### Wiring importante
 
@@ -1323,13 +1740,13 @@ flowchart LR
 
 ### Bloque 5 — Semanas 7-8: Dream Cycle (mantenimiento autónomo)
 
-> *Refinado en v1.1: dividido en **5a** (mecánico autónomo, sin HITL) y **5b** (sintético con HITL **obligatorio**); corrección crítica: HITL en `synthesize` es ahora **obligatorio**, no "opcional"; tablas `brain_dedupe_proposals` y `brain_synthesis_proposals` añadidas en migración 00024. Implementa el principio 1.5.4 (HITL obligatorio para todo cambio destructivo o sintético).*
+> *Refinado en v1.1: dividido en **5a** (mecánico autónomo, sin HITL) y **5b** (sintético con HITL **obligatorio**); corrección crítica: HITL en `synthesize` es ahora **obligatorio**, no "opcional"; tablas `brain_dedupe_proposals` y `brain_synthesis_proposals` añadidas en migración **00059**. Implementa el principio 1.5.4 (HITL obligatorio para todo cambio destructivo o sintético).*
 
 **Objetivo:** mantener el cerebro sano sin intervención. Sin esto, en 6-12 meses tu pgvector se llena de duplicados y stale. Pero — y esto es el matiz crítico — **autonomía total solo para operaciones no-destructivas y no-sintéticas**. Todo lo que reescribe `compiled_truth` o fusiona pages requiere approval humano inicial.
 
 #### Migración SQL completa — runs
 
-**`packages/db/supabase/migrations/00023_brain_maintenance_runs.sql`**
+`**packages/db/supabase/migrations/00058_brain_maintenance_runs.sql`**
 
 ```sql
 create table public.brain_maintenance_runs (
@@ -1353,7 +1770,7 @@ create policy "Users read own maintenance runs"
 
 #### Migración SQL adicional — propuestas de HITL `[v1.1]`
 
-**`packages/db/supabase/migrations/00024_brain_proposals.sql`**
+`**packages/db/supabase/migrations/00059_brain_proposals.sql**`
 
 ```sql
 -- ============================================================
@@ -1415,32 +1832,36 @@ create policy "Users manage own synthesis proposals"
 
 **Fases que corren sin intervención humana** porque son no-destructivas o detection-only:
 
-| Fase | Archivo | Propósito |
-|---|---|---|
-| `lint` | `packages/agent/src/brain/maintenance/lint.ts` | Pages sin título, sin compiled_truth, slugs duplicados con aliases — solo reporta |
-| `backlinks_repair` | `packages/agent/src/brain/maintenance/backlinks.ts` | Re-resuelve `target_slug -> target_page_id` cuando páginas huérfanas se crean — write-only resolución, no destructivo |
-| `embed_stale` | `packages/agent/src/brain/maintenance/embed.ts` | Re-embedea chunks con `embedding IS NULL` o con `embedding_model` viejo — no destructivo |
-| `orphan_report` | `packages/agent/src/brain/maintenance/orphans.ts` | Reporta links huérfanos y pages sin backlinks — solo reporta |
-| `dedupe_detect` | `packages/agent/src/brain/maintenance/dedupe-detect.ts` | Detecta pages potencialmente duplicadas (mismo kind, similaridad coseno > 0.95 sobre títulos), las **encola** en `brain_dedupe_proposals` con `status='pending'` para revisión humana — **NO fusiona** |
+
+| Fase               | Archivo                                                 | Propósito                                                                                                                                                                                              |
+| ------------------ | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `lint`             | `packages/agent/src/brain/maintenance/lint.ts`          | Pages sin título, sin compiled_truth, slugs duplicados con aliases — solo reporta                                                                                                                      |
+| `backlinks_repair` | `packages/agent/src/brain/maintenance/backlinks.ts`     | Re-resuelve `target_slug -> target_page_id` cuando páginas huérfanas se crean — write-only resolución, no destructivo                                                                                  |
+| `embed_stale`      | `packages/agent/src/brain/maintenance/embed.ts`         | Re-embedea chunks con `embedding IS NULL` o con `embedding_model` viejo — no destructivo                                                                                                               |
+| `orphan_report`    | `packages/agent/src/brain/maintenance/orphans.ts`       | Reporta links huérfanos y pages sin backlinks — solo reporta                                                                                                                                           |
+| `dedupe_detect`    | `packages/agent/src/brain/maintenance/dedupe-detect.ts` | Detecta pages potencialmente duplicadas (mismo kind, similaridad coseno > 0.95 sobre títulos), las **encola** en `brain_dedupe_proposals` con `status='pending'` para revisión humana — **NO fusiona** |
+
 
 **Cron sugerido:** diario 03:00 hora del usuario (tomada de `profiles.timezone`).
 
-**`packages/agent/src/brain/maintenance/run-mechanical.ts`** — orquestador del 5a, persiste en `brain_maintenance_runs` con `cycle_kind='5a_mechanical'`.
+`**packages/agent/src/brain/maintenance/run-mechanical.ts`** — orquestador del 5a, persiste en `brain_maintenance_runs` con `cycle_kind='5a_mechanical'`.
 
-**`apps/web/src/app/api/cron/brain-maintenance/route.ts`** — endpoint con `CRON_SECRET`, parámetro `?kind=mechanical|synthetic` o ruta dedicada `/cron/brain-maintenance-mechanical` y `/cron/brain-maintenance-synthetic`.
+`**apps/web/src/app/api/cron/brain-maintenance/route.ts**` — endpoint con `CRON_SECRET`, parámetro `?kind=mechanical|synthetic` o ruta dedicada `/cron/brain-maintenance-mechanical` y `/cron/brain-maintenance-synthetic`.
 
 #### Bloque 5b — Semana 8: Síntesis y consolidación (HITL obligatorio) `[v1.1]`
 
 **Fases que producen propuestas pero requieren approval humano** antes de aplicar cambios destructivos o sintéticos:
 
-| Fase | Archivo | Propósito | Approval |
-|---|---|---|---|
-| `synthesize_propose` | `packages/agent/src/brain/maintenance/synthesize.ts` | Para pages con N+ timeline entries nuevos desde el último synthesize, llama LLM y produce **diff** `{additions, removals, modifications}` siguiendo las reglas de gobierno (sección 1.5.2 + Bloque 1). Encola en `brain_synthesis_proposals`. **Sample**: 5 pages por run. Cap del 30%: diffs grandes → `cap_exceeded=true, status='auto_rejected'` inmediatamente | **Obligatorio** para `removals` y `modifications`; `additions` auto-apply si caben en cap |
-| `dedupe_merge` | `packages/agent/src/brain/maintenance/dedupe-merge.ts` | Toma propuestas de `brain_dedupe_proposals` con `status='approved'` y aplica el merge: copia timeline de `loser` a `winner` (`merge_target_id`), redirige links, snapshot previo en `brain_page_versions`, marca page perdedora como `archived_at`, propuesta a `status='applied'` | **Obligatorio** antes de cualquier merge |
+
+| Fase                 | Archivo                                                | Propósito                                                                                                                                                                                                                                                                                                                                                          | Approval                                                                                  |
+| -------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `synthesize_propose` | `packages/agent/src/brain/maintenance/synthesize.ts`   | Para pages con N+ timeline entries nuevos desde el último synthesize, llama LLM y produce **diff** `{additions, removals, modifications}` siguiendo las reglas de gobierno (sección 1.5.2 + Bloque 1). Encola en `brain_synthesis_proposals`. **Sample**: 5 pages por run. Cap del 30%: diffs grandes → `cap_exceeded=true, status='auto_rejected'` inmediatamente | **Obligatorio** para `removals` y `modifications`; `additions` auto-apply si caben en cap |
+| `dedupe_merge`       | `packages/agent/src/brain/maintenance/dedupe-merge.ts` | Toma propuestas de `brain_dedupe_proposals` con `status='approved'` y aplica el merge: copia timeline de `loser` a `winner` (`merge_target_id`), redirige links, snapshot previo en `brain_page_versions`, marca page perdedora como `archived_at`, propuesta a `status='applied'`                                                                                 | **Obligatorio** antes de cualquier merge                                                  |
+
 
 **Cron sugerido:** semanal domingos 04:00 hora del usuario.
 
-**`packages/agent/src/brain/maintenance/run-synthetic.ts`** — orquestador del 5b, persiste en `brain_maintenance_runs` con `cycle_kind='5b_synthetic'`.
+`**packages/agent/src/brain/maintenance/run-synthetic.ts`** — orquestador del 5b, persiste en `brain_maintenance_runs` con `cycle_kind='5b_synthetic'`.
 
 **UI mínima de revisión:** `apps/web/src/app/brain/proposals/page.tsx` — lista paginada de pending proposals (synthesis + dedupe), botones approve/reject por propuesta, diff viewer para synthesis. Reusar el patrón de aprobación del HITL del agente.
 
@@ -1455,16 +1876,20 @@ create policy "Users manage own synthesis proposals"
 
 ## 10. Calendario visual
 
-| Semana | Entrega | Migración | Desplegable |
-|---|---|---|---|
-| 1 | Schema pages/timeline/versions + queries | 00019 | Sí (UI manual + tools básicas) |
-| 2 | Tools `update_compiled_truth` con HITL + UI básica de pages | — | Sí (uso interno) |
-| 3 | Schema links + extracción regex + traversal | 00020 | Sí (auto-extracción en chat) |
-| 4 | Tools `traverse_graph`, `search_entities` + selftests | — | Sí |
-| 5 | Hybrid search RPC + chunker + reindex + eval | 00021 | Sí (mejora retrieval) |
-| 6 | Signal detector skill + UI de revisión | 00022 | Sí (señales pasivas) |
-| 7 | Bloque 5a: lint, backlinks_repair, embed_stale, orphan_report, dedupe_detect | 00023 | Sí (cron diario, sin HITL) `[v1.1]` |
-| 8 | Bloque 5b: synthesize_propose, dedupe_merge + UI de revisión + métricas | 00024 | Sí (cron semanal, HITL obligatorio) `[v1.1]` |
+
+| Semana | Entrega                                                                      | Migración | Desplegable                                  |
+| ------ | ---------------------------------------------------------------------------- | --------- | -------------------------------------------- |
+| 1      | Schema pages/timeline/versions + queries                                     | 00053     | Sí (UI manual + tools básicas)               |
+| 2      | Tools `update_compiled_truth` con HITL + UI básica de pages                  | —         | Sí (uso interno)                             |
+| 3      | Schema links + extracción regex + traversal + hooks (`00055b`)               | 00054     | Sí (auto-extracción en chat)                 |
+| 4      | Tools `traverse_graph`, `search_entities` + selftests                        | —         | Sí                                           |
+| 5      | Hybrid search RPC + chunker + reindex + eval (Bloque 3)                      | 00056     | Sí (mejora retrieval)                        |
+| 6      | Query synthesis + gap analysis (Bloque 3b) + Signal detector (inicio)        | 00057     | Sí (think + señales) `[v1.5]`                |
+| 7      | Signal UI + Bloque 5a: embed_stale, orphan_report, dedupe_detect               | 00058     | Sí (cron diario, sin HITL)                   |
+| 8      | Bloque 5b: synthesize_propose, dedupe_merge + UI propuestas + métricas        | 00059     | Sí (cron semanal, HITL obligatorio)          |
+
+> **Nota `[v1.5]`:** calendario extendido a **8 semanas efectivas** con Bloque 3b; si el equipo prefiere MVP mínimo, Bloque 3b puede diferirse una semana sin desbloquear Bloque 4. Migraciones `00019`–`00052` ya ocupadas por operational_cases (ver §1.3.1).
+
 
 ```mermaid
 gantt
@@ -1482,27 +1907,32 @@ gantt
 
   section Bloque 3
   Hybrid search RPC y eval         :b3, after b2b, 7d
+  Query synthesis Bloque 3b        :b3b, after b3, 5d
 
   section Bloque 4
-  Signal detector skill            :b4, after b3, 7d
+  Signal detector skill            :b4, after b3b, 7d
 
   section Bloque 5
   Dream cycle ligero               :b5a, after b4, 7d
   Dream cycle pesado y metricas    :b5b, after b5a, 7d
 ```
 
+
+
 ---
 
 ## 11. Riesgos y mitigaciones
 
-| Riesgo | Mitigación |
-|---|---|
-| Auto-extracción crea ruido (slugs falsos en menciones triviales) | Whitelist por kind. Solo extraer link si `target_page` ya existe o si la mención es nominal con `[[wikilink]]` explícito. Conservador como tu `memory_flush.ts` |
-| Cost de embeddings del KG se dispara | Embedea solo `compiled_truth`, no timeline. Reembed solo si `body_hash` cambió. Cap por usuario por día (env `BRAIN_MAX_EMBEDDINGS_PER_DAY=200`) |
-| Dream cycle synthesize alucina y borra info real | Synthesize escribe `compiled_truth` nuevo + snapshot anterior automático en `brain_page_versions`. Trigger ya creado. Revert de un click |
-| Cron `/api/cron/brain-maintenance` se cae a la mitad | `phases` jsonb persiste avance parcial; el siguiente run reanuda desde fase pendiente |
-| Multi-tenant: brain de tenant A leakea a B | Toda RPC y query filtra por `p_user_id`. Tests RLS dedicados por tabla nueva (replicar pattern de `memories.selftest.ts`) |
+
+| Riesgo                                                                               | Mitigación                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Auto-extracción crea ruido (slugs falsos en menciones triviales)                     | Whitelist por kind. Solo extraer link si `target_page` ya existe o si la mención es nominal con `[[wikilink]]` explícito. Conservador como tu `memory_flush.ts`                                 |
+| Cost de embeddings del KG se dispara                                                 | Embedea solo `compiled_truth`, no timeline. Reembed solo si `body_hash` cambió. Cap por usuario por día (env `BRAIN_MAX_EMBEDDINGS_PER_DAY=200`)                                                |
+| Dream cycle synthesize alucina y borra info real                                     | Synthesize escribe `compiled_truth` nuevo + snapshot anterior automático en `brain_page_versions`. Trigger ya creado. Revert de un click                                                        |
+| Cron `/api/cron/brain-maintenance` se cae a la mitad                                 | `phases` jsonb persiste avance parcial; el siguiente run reanuda desde fase pendiente                                                                                                           |
+| Multi-tenant: brain de tenant A leakea a B                                           | Toda RPC y query filtra por `p_user_id`. Tests RLS dedicados por tabla nueva (replicar pattern de `memories.selftest.ts`)                                                                       |
 | Tu `memory_flush.ts` y `extract-from-turn.ts` extraen lo mismo y entran en conflicto | Por contrato: `memory_flush` solo extrae **hechos sobre el usuario**. `extract-from-turn` solo extrae **entidades de negocio + relaciones**. Audita en code review que las reglas no se solapen |
+
 
 ---
 
@@ -1516,7 +1946,8 @@ Decisiones conscientes de descartar para esta fase:
 4. **Importar código de G Brain** — todo es nuevo en tu stack. Las ideas vienen de leer los archivos del repo G Brain como referencia conceptual. **No hay copy-paste** ni dependencia de `@garrytan/gbrain`.
 5. **Migración del modelo `organizations`** — multi-tenant se mantiene por usuario (RLS sobre `auth.uid()`). Cuando llegue el modelo organizacional (V3 del roadmap), las tablas `brain_*` se ajustan mecánicamente agregando `organization_id` y políticas RLS sin cambio estructural.
 6. **Reemplazo del `memory_injection_node`** — solo se **extiende** (Bloque 3) para sumar un bloque adicional de "conocimiento del negocio". El bloque `[MEMORIA DEL USUARIO]` actual se mantiene intacto.
-7. **Operational Truth vs Cognitive Interpretation como concepto first-class** `[v1.3]` — distinción **arquitectural diferida** para v1, documentada explícitamente como consideración futura. Ver detalle abajo.
+7. **Operational Truth vs Cognitive Interpretation como concepto first-class** `[v1.3]` — distinción **arquitectural diferida** para v1, documentada explícitamente como consideración futura. Ver detalle abajo. Contraste G Brain facts/takes en §12.1.
+8. **Reemplazo de `operational_cases` por brain pages** `[v1.5]` — descartado. Los expedientes multi-día siguen en la plataforma operational_cases; Brain Layer complementa con cognición cross-entidad (§1.4.8).
 
 ### 12.1 Forward-looking: Operational Truth vs Cognitive Interpretation `[v1.3]`
 
@@ -1524,10 +1955,12 @@ Decisiones conscientes de descartar para esta fase:
 
 **Dos tipos de información cualitativamente distintos** conviven dentro de una page:
 
-| Tipo | Ejemplos | Naturaleza | Estabilidad esperada |
-|---|---|---|---|
-| **Operational Truth** (hechos) | "Lead asignado a Carlos", "Visit agendada 12-may", "Property price = 12M MXN", "Mortgage preaprobada", "Contrato firmado el 3-mar" | Concreta, externamente verificable, transaccional | Alta (cambios trazables a evento operacional) |
-| **Cognitive Interpretation** (lecturas) | "Lead parece ansioso por financiamiento", "Relación con Carlos enfriándose", "Posible señal de urgencia por mudanza", "Interés cooling tras visita de hoy" | Inferida, probabilística, interpretativa | Baja (revisable conforme llega más evidencia) |
+
+| Tipo                                    | Ejemplos                                                                                                                                                   | Naturaleza                                        | Estabilidad esperada                          |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------- |
+| **Operational Truth** (hechos)          | "Lead asignado a Carlos", "Visit agendada 12-may", "Property price = 12M MXN", "Mortgage preaprobada", "Contrato firmado el 3-mar"                         | Concreta, externamente verificable, transaccional | Alta (cambios trazables a evento operacional) |
+| **Cognitive Interpretation** (lecturas) | "Lead parece ansioso por financiamiento", "Relación con Carlos enfriándose", "Posible señal de urgencia por mudanza", "Interés cooling tras visita de hoy" | Inferida, probabilística, interpretativa          | Baja (revisable conforme llega más evidencia) |
+
 
 **Cómo el v1 las separa parcialmente (estado actual del plan):**
 
@@ -1553,9 +1986,13 @@ Decisiones conscientes de descartar para esta fase:
 
 **Acción para el MVP:** ninguna. Este punto queda documentado y los reviewers de PRs futuros sobre `compiled_truth` deben verificar si están introduciendo esta mezcla y si vale la pena anticipar la migración.
 
-### 12.2 Forward-looking: Ingestion Layer `[v1.4]`
+**Contraste G Brain v0.31+ `[v1.5]`:** G Brain implementó separación más explícita con **Facts** (fence `## Facts`, fase `extract_facts`) y **Takes** (`propose_takes` → `grade_takes` → `calibration_profile`). Ver §4.9 y [`docs/takes-vs-facts.md`](https://github.com/garrytan/gbrain/blob/master/docs/takes-vs-facts.md). Si el dolor aparece antes del mes 6–12 estimado, la opción 3 de arriba puede evolucionar hacia tablas análogas (`brain_facts` / `brain_takes`) en lugar de solo marcar `compiled_truth`.
+
+### 12.2 Forward-looking: Ingestion Layer `[v1.4]` `[v1.5: benchmark G Brain]`
 
 > *Capa 1 del modelo de 7 capas (sec [1.4](#14-modelo-de-capas-7-capas-4-dominios)). NO se construye en MVP. Esta sección documenta el problema, propone un patrón arquitectural, y da el orden recomendado de bootstrap por fuente para SMB real estate. Los lightweight hooks ya están en v1 (Bloque [2b](#bloque-2b--lightweight-hooks-v14-ingestion--pattern-layer-placeholders-v14)): `source_id`/`source_meta` en pages/links + tabla vacía `brain_source_connectors`.*
+>
+> **Benchmark upstream `[v1.5]`:** G Brain v0.42 exporta contrato publicado [`gbrain/ingestion`](https://github.com/garrytan/gbrain/blob/master/src/core/ingestion/index.ts) (`IngestionSource`), CLI `gbrain capture`, webhook `/ingest`, inbox folder, skillpacks por fuente ([`docs/skillpack-anatomy.md`](https://github.com/garrytan/gbrain/blob/master/docs/skillpack-anatomy.md)). Nuestro `SourceConnector` (abajo) debe ser **isomorfo en responsabilidades**, no copy-paste de API. Telegram externo de operational_cases hoy es conector **operacional**, no brain ingestion — no confundir.
 
 #### Por qué es una capa, no un parche por fuente
 
@@ -1602,15 +2039,17 @@ Después del normalizer, un **classifier** decide a qué destino del modelo de 7
 
 > *Justificación: el principio rector es maximizar valor operacional inmediato sin caer en "ingest everything". Cada fuente se prioriza por la pregunta "¿qué decisión operacional habilita en las primeras 2 semanas del cliente?".*
 
-| Orden | Fuente | Por qué primero | Connector kind | Riesgo / safety gate |
-|---|---|---|---|---|
-| 1 | **CRM operacional** (EasyBroker u otro) | Trae el seed inmediato de las 8 entidades canónicas (`lead`, `property`, `deal`, `agent`, etc.). Sin esto el brain está vacío y el agente "parece tonto" en día 1 | `easybroker` (o equivalente) | Bajo: API estructurada con scopes claros |
-| 2 | **Calendar** (Google Calendar / Outlook) | Episodic + relacional barato (visitas, reuniones con desarrolladores, citas con notario). Corrobora identity resolution con el CRM | `gcal` / `outlook` | Bajo: OAuth, scopes read-only |
-| 3 | **WhatsApp** (Cloud API o Twilio Business) | Es donde vive el 60-80% de la conversación de SMB real estate. Pero tiene la complejidad más alta (privacidad, voice notes, identity resolution con leads que no están en CRM) | `whatsapp` | **Medio-alto**: mensajes privados, requiere consent explícito por chat group |
-| 4 | **Google Drive / Dropbox** (PDFs, brochures, contracts) | Catálogo de propiedades + documentos legales. Habilita queries del tipo "muéstrame el contrato de Property X" | `gdrive` / `dropbox` | **Medio**: requiere safety gate al estilo `archive-crawler` (allow-list explícita de carpetas) |
-| 5 | **Voice notes** (transcripción de audios WhatsApp / llamadas grabadas) | Después de WhatsApp text, agrega valor incremental porque captura tono / intent que el texto pierde | `voice_notes` | **Alto**: voice biometrics + privacidad de terceros que no consintieron |
-| 6 | **Email** (Gmail / Outlook threads relevantes) | Útil para coordinación con desarrolladores / notarios / financiamiento. Bajo valor en lead-facing | `gmail` / `outlook_mail` | **Medio**: filtrar threads relevantes evita ruido masivo |
-| 7 | **Excel / sheets dispersos** | Catch-all para datos legacy (listings históricos, base de leads viejos). Bootstrap puntual, no continuo | `excel_import` (one-shot) | Bajo: explícito por archivo |
+
+| Orden | Fuente                                                                 | Por qué primero                                                                                                                                                                | Connector kind               | Riesgo / safety gate                                                                           |
+| ----- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| 1     | **CRM operacional** (EasyBroker u otro)                                | Trae el seed inmediato de las 8 entidades canónicas (`lead`, `property`, `deal`, `agent`, etc.). Sin esto el brain está vacío y el agente "parece tonto" en día 1              | `easybroker` (o equivalente) | Bajo: API estructurada con scopes claros                                                       |
+| 2     | **Calendar** (Google Calendar / Outlook)                               | Episodic + relacional barato (visitas, reuniones con desarrolladores, citas con notario). Corrobora identity resolution con el CRM                                             | `gcal` / `outlook`           | Bajo: OAuth, scopes read-only                                                                  |
+| 3     | **WhatsApp** (Cloud API o Twilio Business)                             | Es donde vive el 60-80% de la conversación de SMB real estate. Pero tiene la complejidad más alta (privacidad, voice notes, identity resolution con leads que no están en CRM) | `whatsapp`                   | **Medio-alto**: mensajes privados, requiere consent explícito por chat group                   |
+| 4     | **Google Drive / Dropbox** (PDFs, brochures, contracts)                | Catálogo de propiedades + documentos legales. Habilita queries del tipo "muéstrame el contrato de Property X"                                                                  | `gdrive` / `dropbox`         | **Medio**: requiere safety gate al estilo `archive-crawler` (allow-list explícita de carpetas) |
+| 5     | **Voice notes** (transcripción de audios WhatsApp / llamadas grabadas) | Después de WhatsApp text, agrega valor incremental porque captura tono / intent que el texto pierde                                                                            | `voice_notes`                | **Alto**: voice biometrics + privacidad de terceros que no consintieron                        |
+| 6     | **Email** (Gmail / Outlook threads relevantes)                         | Útil para coordinación con desarrolladores / notarios / financiamiento. Bajo valor en lead-facing                                                                              | `gmail` / `outlook_mail`     | **Medio**: filtrar threads relevantes evita ruido masivo                                       |
+| 7     | **Excel / sheets dispersos**                                           | Catch-all para datos legacy (listings históricos, base de leads viejos). Bootstrap puntual, no continuo                                                                        | `excel_import` (one-shot)    | Bajo: explícito por archivo                                                                    |
+
 
 #### Safety gate al estilo `archive-crawler` de G Brain
 
@@ -1645,7 +2084,23 @@ Cuando se active un connector nuevo, el primer pull obligatoriamente corre en sa
 
 > *Capas 5 → 6 del modelo de 7 capas (sec [1.4](#14-modelo-de-capas-7-capas-4-dominios)) — la flecha de promoción `Pattern → Skill` mediada por HITL. NO se construye en MVP. Esta sección documenta el problema, el pipeline propuesto, los anti-patrones críticos, y advierte explícitamente sobre por qué la fase `patterns` del Dream Cycle de G Brain NO resuelve esto.*
 
-> **Scope note `[v1.4.1]`:** esta sección describe mining de **Operational/Playbook Knowledge del negocio**. No pretende excluir skills personales propias del usuario. Esas deberán existir en el modelo V2+ de `account_skills` como `scope: personal` o `scope: shared`, pero el miner de esta sección se mantiene enfocado en comportamiento operacional del negocio porque sus fuentes, métricas de outcome y riesgos son distintos.
+> **Scope note `[v1.4.1]` / actualizado `[v1.5]`:** esta sección describe mining de **Operational/Playbook Knowledge del negocio**. Skills personales/de negocio propias pueden vivir hoy en **`account_skills` V1** ([00020](../../packages/db/supabase/migrations/00020_account_skills.sql)) con `scope` en metadata — el miner de esta sección sigue enfocado en comportamiento operacional agregado porque sus fuentes, métricas de outcome y riesgos son distintos.
+
+#### Skill discovery vs skill optimization `[v1.5]`
+
+Dos problemas que G Brain v0.42 trata por separado y que **no debemos confundir**:
+
+
+| | **Skill discovery** (esta sección) | **Skill optimization** (G Brain `skillopt`) |
+|--|-----------------------------------|---------------------------------------------|
+| Pregunta | "¿Qué procedimiento nuevo debería existir?" | "¿Cómo mejorar un SKILL.md que ya existe?" |
+| Fuente | Sesiones agregadas + outcomes | Benchmark `skillopt-benchmark.jsonl` del skill |
+| Destino | `brain_skill_candidates` → HITL → SKILL.md / `account_skills` | Ediciones propuestas al SKILL.md (bundled: review only) |
+| En G Brain | **No resuelto** para SMB ops (`patterns` ≠ esto) | Dream cycle fase `skillopt` (v0.41.20+) |
+| En Gu OS MVP | Forward-looking post-Bloque 6 | Forward-looking; Skill Lab N0–N5 cubre readiness manual |
+
+
+**Implicación:** portar `skillopt` es complementario y posterior a tener skills + evals estables; **no** sustituye Operational/Playbook Mining ni la autoría de nuevos `case_type` en la plataforma operational_cases.
 
 #### El problema: cómo aprender cómo opera el negocio (no solo qué sabe el negocio)
 
@@ -1678,14 +2133,18 @@ flowchart LR
   E1 --> F
 ```
 
+
+
 #### Distinción explicit vs implicit skills
 
 Después de v1.4 hay dos PATHs para que un SKILL.md exista en el sistema:
 
-| Tipo | Cómo nace | Quién lo escribe | Trazabilidad |
-|---|---|---|---|
-| **Explicit skill** | Humano escribe directamente el SKILL.md (lo que pasa hoy en Ungga) | Desarrollador / dueño del producto | Git history del archivo |
-| **Implicit skill** | Pattern candidate aprobado en HITL → miner genera SKILL.md derivado | Miner + humano que aprobó | Row en `brain_skill_candidates` con `promoted_skill_path` |
+
+| Tipo               | Cómo nace                                                           | Quién lo escribe                   | Trazabilidad                                              |
+| ------------------ | ------------------------------------------------------------------- | ---------------------------------- | --------------------------------------------------------- |
+| **Explicit skill** | Humano escribe directamente el SKILL.md (lo que pasa hoy en Ungga)  | Desarrollador / dueño del producto | Git history del archivo                                   |
+| **Implicit skill** | Pattern candidate aprobado en HITL → miner genera SKILL.md derivado | Miner + humano que aprobó          | Row en `brain_skill_candidates` con `promoted_skill_path` |
+
 
 **Ambos coexisten.** El skills system actual de Ungga (capa 6) los recibe igual: una vez que existe el SKILL.md, el `select.ts` y `runtime.ts` no distinguen origen.
 
@@ -1700,12 +2159,13 @@ El sistema puede aprender:
 - **Anti-patterns:** "se prometen plazos imposibles de cierre para empujar deals" — mala práctica corrosiva.
 
 **Por eso HITL es OBLIGATORIO en la promoción Pattern → Skill.** El humano que revisa el candidate debe responderse:
+
 1. ¿El patrón es **causal** o solo correlacional con el outcome (deal cerrado)?
 2. ¿Es **ético** y compatible con la marca / valores del brokerage?
 3. ¿Es **generalizable** o solo aplica al agente específico que lo originó?
 4. ¿Los **side effects** del patrón son aceptables (e.g. no satura al lead, no contradice otra skill activa)?
 5. ¿El patrón **escala** (qué pasa si TODOS los agentes lo aplican)?
-6. ¿Es **MECE** con skills activas? ¿Qué skill deja de hacer este trabajo o cuál es la frontera con near-miss evals? Ver [`skills-tools-architecture.md`](../skills-tools-architecture.md) §12.3.
+6. ¿Es **MECE** con skills activas? ¿Qué skill deja de hacer este trabajo o cuál es la frontera con near-miss evals? Ver `[skills-tools-architecture.md](../skills-tools-architecture.md)` §12.3.
 
 Si cualquiera de las 6 respuestas es "no claro", el candidate se rechaza o se devuelve para más evidencia. Mismo patrón que el HITL del Bloque 5b para `synthesize`: la autonomía se gana, no se asume.
 
@@ -1714,6 +2174,7 @@ Si cualquiera de las 6 respuestas es "no claro", el candidate se rechaza o se de
 > **Observación del miner (futuro):** Analizando 47 deals cerrados vs 156 deals perdidos en los últimos 6 meses, encuentra que en 12 de los 47 deals cerrados, el lead expresó preocupación de financiamiento dentro de la primera conversación, y el agente respondió mandando un **video explicativo de opciones de financiamiento dentro de las 2h siguientes**, antes de insistir con propiedades. Conversion rate observado: **38% en ese subgrupo vs 12% baseline**.
 >
 > **Insert en `brain_skill_candidates`:**
+>
 > ```yaml
 > candidate_kind: lead_followup_sequence
 > observation: "Cuando lead expresa duda de financiamiento en primera conversación,
@@ -1732,6 +2193,7 @@ Si cualquiera de las 6 respuestas es "no claro", el candidate se rechaza o se de
 > **HITL UI muestra al usuario:** "El sistema observó este patrón con evidencia X. ¿Quieres convertirlo en una skill que el agente invoque automáticamente cuando detecte los triggers?"
 >
 > **Si usuario aprueba:** miner genera el SKILL.md siguiente y guarda el path en `promoted_skill_path`:
+>
 > ```markdown
 > ---
 > name: financing-concern-followup
@@ -1763,6 +2225,7 @@ Si cualquiera de las 6 respuestas es "no claro", el candidate se rechaza o se de
 Verificado en código (`C:\Users\janot\develop\gbrain-master\gbrain-master\src\core\cycle\patterns.ts` líneas 1-211): la fase `patterns` del Dream Cycle de G Brain (v0.23+) es **introspective journaling pattern detection**, NO organizational behavior mining.
 
 Lo que realmente hace, citando el comentario del archivo y el prompt al LLM:
+
 - Lee solo páginas con prefijo `wiki/personal/reflections/%` (escritos introspectivos del usuario tipo journal)
 - Detecta "recurring themes, anxieties, decision patterns, relationship dynamics, self-knowledge motifs"
 - Escribe a `wiki/personal/patterns/<topic-slug>` para que el usuario los lea como reflexión
@@ -1770,6 +2233,7 @@ Lo que realmente hace, citando el comentario del archivo y el prompt al LLM:
 **Eso es para un knowledge worker que escribe diario y quiere meta-insights de sí mismo.** No es para un brokerage que quiere mineable practices de cómo operan sus agentes top.
 
 **Anti-pattern explícito documentado:** un futuro contributor podría intentar "portar la fase patterns de G Brain" pensando que resuelve este problema. **No lo hace.** Si alguien lo propone:
+
 1. Confirmar que entendió la diferencia (lee el archivo y los ejemplos de cada uno)
 2. Si insiste, requerir evidencia explícita de que el algoritmo de G Brain (single LLM subagent leyendo reflexiones para detectar temas) aplica a comportamiento agregado de sesiones operacionales (no aplica)
 3. Diseñar el miner desde cero con principios distintos: análisis cuantitativo de outcomes (deals cerrados/perdidos), correlación de secuencias de acciones con outcomes, threshold de evidencia robustos, HITL obligatorio
@@ -1781,19 +2245,21 @@ Lo que realmente hace, citando el comentario del archivo y el prompt al LLM:
   1. Suficientes sesiones operacionales reales (estimado: 200+ sesiones con outcomes etiquetados)
   2. Acuerdo sobre métrica primaria de "outcome" (deal cerrado, lead retenido, etc.)
   3. UI de HITL review diseñada
-- En el ínterim, los skills siguen siendo **explicit only** (humano escribe SKILL.md directamente). Ese path sigue funcionando perfectamente.
+- En el ínterim, los skills siguen siendo **explicit only** (humano escribe SKILL.md o `account_skills` directamente). Ese path sigue funcionando perfectamente — incluyendo **nuevos flujos inmobiliarios** vía plataforma operational_cases sin esperar al miner.
 
 #### Extensión futura separada: Personal Pattern → Personal Skill
 
 Es razonable que Gu OS eventualmente sugiera skills personales propias del usuario (por ejemplo, rutina de recoger hijos, preparación de una cita médica, checklist de viaje familiar, cierre personal del día). Pero ese flujo debe tratarse como una extensión hermana, no como parte del miner operacional de brokerage:
 
-| Dimensión | Operational/Playbook Mining | Personal Pattern Mining futuro |
-|---|---|---|
-| Fuente principal | Sesiones operacionales, deals, outcomes, signals de negocio | Rutinas personales, calendario, preferencias explícitas, patrones de tareas personales |
-| Métrica de calidad | Conversión, follow-up, retención de lead, eficiencia operacional | Utilidad percibida por el usuario, reducción de olvidos, consistencia de rutina |
-| Riesgo principal | Codificar mala práctica de negocio o sesgos | Invadir privacidad o automatizar vida personal sin consentimiento |
-| Destino | `brain_skill_candidates` → business/shared Skill | `account_skills` futuro con `scope='personal'` o `shared` |
-| Gobernanza | HITL obligatorio | HITL obligatorio, opt-in todavía más explícito |
+
+| Dimensión          | Operational/Playbook Mining                                      | Personal Pattern Mining futuro                                                         |
+| ------------------ | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Fuente principal   | Sesiones operacionales, deals, outcomes, signals de negocio      | Rutinas personales, calendario, preferencias explícitas, patrones de tareas personales |
+| Métrica de calidad | Conversión, follow-up, retención de lead, eficiencia operacional | Utilidad percibida por el usuario, reducción de olvidos, consistencia de rutina        |
+| Riesgo principal   | Codificar mala práctica de negocio o sesgos                      | Invadir privacidad o automatizar vida personal sin consentimiento                      |
+| Destino            | `brain_skill_candidates` → business/shared Skill (git o `account_skills`) | **`account_skills`** con `scope='personal'` o `shared` (V1 hoy; V2 versioning después) |
+| Gobernanza         | HITL obligatorio                                                 | HITL obligatorio, opt-in todavía más explícito                                         |
+
 
 Regla: una rutina personal observada nunca debe guardarse como `memories.type='procedural'` si lo que realmente se quiere es un procedimiento ejecutable. Debe convertirse, con aprobación humana, en una skill personal.
 
@@ -1803,17 +2269,21 @@ Regla: una rutina personal observada nunca debe guardarse como `memories.type='p
 
 Antes de tocar código necesito confirmación explícita en estos puntos. Si discrepas en alguno cambia migraciones y nombres; mejor decidirlo ahora.
 
-### 13.1 Las 5 decisiones rectoras
+### 13.1 Las decisiones rectoras `[v1.5: +1]`
 
 1. **`memories` queda intacto** (preferencias/hechos durables del usuario). El KG vive en tablas nuevas `brain_*`.
-2. **Multi-tenant desde día 1**: cada tabla nueva lleva `user_id uuid not null references profiles(id)` + RLS por `auth.uid()`. Cuando llegue el modelo `organizations` (V3 del roadmap) será cambio mecánico.
-3. **Source of truth = Postgres**, no markdown en disco (al revés que G Brain). Renderizar a `.md` es opcional para auditar/exportar.
-4. **Embeddings con la misma stack actual**: `google/gemini-embedding-001` (1536 dims) vía `generateEmbedding` en [packages/agent/src/embeddings.ts](../../packages/agent/src/embeddings.ts). Sin nuevo provider.
-5. **Dominio**: las entidades canónicas iniciales son **8** `[v1.2]`: `lead`, `property`, `deal`, `developer`, `brokerage`, `agent` (interno del brokerage), `mortgage_broker`, `visit`. Schema extensible vía `kind text` (no enum) para no requerir migración por cada nuevo tipo.
+2. **`operational_cases` queda intacto** — Brain Layer no orquesta expedientes multi-día; conviven con reglas §1.4.8.
+3. **Multi-tenant desde día 1**: cada tabla nueva lleva `user_id uuid not null references profiles(id)` + RLS por `auth.uid()`. Cuando llegue el modelo `organizations` (V3 del roadmap) será cambio mecánico.
+4. **Source of truth = Postgres**, no markdown en disco (al revés que G Brain). Renderizar a `.md` es opcional para auditar/exportar.
+5. **Embeddings con la misma stack actual**: `google/gemini-embedding-001` (1536 dims) vía `generateEmbedding` en [packages/agent/src/embeddings.ts](../../packages/agent/src/embeddings.ts). Sin nuevo provider en MVP.
+6. **Dominio**: las entidades canónicas iniciales son **8** `[v1.2]`: `lead`, `property`, `deal`, `developer`, `brokerage`, `agent` (interno del brokerage), `mortgage_broker`, `visit`. Schema extensible vía `kind text` (no enum) para no requerir migración por cada nuevo tipo.
+7. **No schema packs genéricos en MVP** — dominio fijo real estate; G Brain `gbrain-base-v2` es referencia, no target de port (ver §13.2).
 
 ### 13.2 Dominio inicial de entidades `[v1.2]`
 
 > *Refinado en v1.2 aplicando el principio 1.5.6 (workflows first, not ontology first).*
+
+**Decisión schema packs vs dominio fijo `[v1.5]`:** G Brain v0.42 usa **schema packs** evolutivos (`gbrain-base-v2`, detección custom). Gu OS MVP elige **taxonomía fija de 8 `kind`s** acotada a brokerage inmobiliario porque: (a) ya tenemos dominio vertical en BigQuery/skills; (b) operational_cases modela flujos, no tipos de página genéricos; (c) schema packs genéricos retrasan MVP sin beneficio inmediato. Reevaluar packs solo si aparecen >15 kinds distintos con workflows reales que no caben en extensión `kind text`.
 
 **Dominio inicial reducido a 8 entidades** (de 10 originales en v1.1):
 
@@ -1828,10 +2298,12 @@ Antes de tocar código necesito confirmación explícita en estos puntos. Si dis
 
 **Entidades dropeadas en v1.2 (vs v1.1):**
 
-| Entidad | Por qué se drop |
-|---|---|
+
+| Entidad   | Por qué se drop                                                                                                                                                                                                                                                                                                                                                 |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `listing` | El distinción `property` (activo) vs `listing` (oferta puntual con precio/términos) es real en real estate. Pero para MVP **ningún workflow se rompe colapsando listing dentro de property**: cambios de precio/términos van al timeline. Reintroducir si aparece un workflow concreto que lo requiera (ej. histórico de listings cruzando agentes/brokerages). |
-| `note` | Catch-all genérico. Como `kind` es `text` libre (no enum), si necesitas una nota suelta puedes crear `kind='thought'`, `kind='market_intel'`, `kind='reminder'` ad-hoc sin migración. **Tener `note` como built-in es innecesario** y rompe el principio 1.5.6 (no aporta workflow específico). |
+| `note`    | Catch-all genérico. Como `kind` es `text` libre (no enum), si necesitas una nota suelta puedes crear `kind='thought'`, `kind='market_intel'`, `kind='reminder'` ad-hoc sin migración. **Tener `note` como built-in es innecesario** y rompe el principio 1.5.6 (no aporta workflow específico).                                                                 |
+
 
 **Entidades a evaluar más adelante (NO en MVP):**
 
@@ -1857,9 +2329,9 @@ Alternativa: env var global `BRAIN_LAYER_ENABLED=true` (más simple, menos granu
 
 Tres perfiles posibles, en orden de agresividad creciente:
 
-- **`manual` (recomendado como default Bloque 2 inicial):** solo extraer links cuando hay `[[wikilink]]` explícito en texto del agente, usuario o tool output. Cero regex sobre nombres propios. Cero dictionary lookup. Cero ruido. Validas el pipeline de pages + links sin contaminar el grafo. Mantener 2-4 semanas. Subir a `conservative` cuando se valide que el pipeline funciona y el dominio de pages está estable.
-- **`conservative`:** regex sobre nombres propios + dictionary lookup contra `brain_pages` que **YA existen** del usuario. No crea pages nuevas a partir de menciones (las menciones a páginas inexistentes se loguean en `brain_signals` con `signal_type='potential_entity'` para revisión humana en el flujo del Bloque 4).
-- **`aggressive`:** regex amplio + creación automática de pages huérfanas. **No** se planea para v1; opt-in futuro por usuario avanzado, no default.
+- `**manual` (recomendado como default Bloque 2 inicial):** solo extraer links cuando hay `[[wikilink]]` explícito en texto del agente, usuario o tool output. Cero regex sobre nombres propios. Cero dictionary lookup. Cero ruido. Validas el pipeline de pages + links sin contaminar el grafo. Mantener 2-4 semanas. Subir a `conservative` cuando se valide que el pipeline funciona y el dominio de pages está estable.
+- `**conservative`:** regex sobre nombres propios + dictionary lookup contra `brain_pages` que **YA existen** del usuario. No crea pages nuevas a partir de menciones (las menciones a páginas inexistentes se loguean en `brain_signals` con `signal_type='potential_entity'` para revisión humana en el flujo del Bloque 4).
+- `**aggressive`:** regex amplio + creación automática de pages huérfanas. **No** se planea para v1; opt-in futuro por usuario avanzado, no default.
 
 **Default propuesto:** `manual` para Bloque 2 inicial, transición a `conservative` cuando se valide que el pipeline no genera ruido. Configurable vía env `BRAIN_AUTOEXTRACT_MODE=manual|conservative|aggressive` (cambio de modo es restart, sin migración).
 
@@ -1873,9 +2345,11 @@ Tres perfiles posibles, en orden de agresividad creciente:
 
 Verificados en el repo (paths reales):
 
-**Migraciones (próxima sería 00019):**
+**Migraciones existentes (última: 00052, jul 2026). Próximas brain: 00053+:**
+
+- [packages/db/supabase/migrations/00019_operational_cases.sql](../../packages/db/supabase/migrations/00019_operational_cases.sql) — plataforma casos operacionales
+- [packages/db/supabase/migrations/00020_account_skills.sql](../../packages/db/supabase/migrations/00020_account_skills.sql) — skills propias V1
 - [packages/db/supabase/migrations/00001_initial_schema.sql](../../packages/db/supabase/migrations/00001_initial_schema.sql)
-- [packages/db/supabase/migrations/00003_scheduled_tasks.sql](../../packages/db/supabase/migrations/00003_scheduled_tasks.sql)
 - [packages/db/supabase/migrations/00005_memories.sql](../../packages/db/supabase/migrations/00005_memories.sql)
 - [packages/db/supabase/migrations/00009_business_brain.sql](../../packages/db/supabase/migrations/00009_business_brain.sql)
 - [packages/db/supabase/migrations/00014_heartbeat_runs.sql](../../packages/db/supabase/migrations/00014_heartbeat_runs.sql)
@@ -1883,7 +2357,14 @@ Verificados en el repo (paths reales):
 - [packages/db/supabase/migrations/00017_heartbeat_checklist_templates.sql](../../packages/db/supabase/migrations/00017_heartbeat_checklist_templates.sql)
 - [packages/db/supabase/migrations/00018_tool_calls_executor_kind.sql](../../packages/db/supabase/migrations/00018_tool_calls_executor_kind.sql)
 
+**Subsistema operational_cases (referencia):**
+
+- [docs/operational-cases/architecture.md](../operational-cases/architecture.md)
+- [docs/operational-cases/authoring-playbook.md](../operational-cases/authoring-playbook.md)
+- [apps/web/src/app/api/cron/operational-cases/route.ts](../../apps/web/src/app/api/cron/operational-cases/route.ts)
+
 **Runtime del agente:**
+
 - [packages/agent/src/graph.ts](../../packages/agent/src/graph.ts) — orquestador LangGraph
 - [packages/agent/src/nodes/memory_injection_node.ts](../../packages/agent/src/nodes/memory_injection_node.ts) — nodo brain-first
 - [packages/agent/src/memory_flush.ts](../../packages/agent/src/memory_flush.ts) — extracción post-sesión (con la Regla 5 que justifica la separación de capas)
@@ -1901,6 +2382,7 @@ Verificados en el repo (paths reales):
 - [packages/agent/src/business-brain/tenant-context.ts](../../packages/agent/src/business-brain/tenant-context.ts)
 
 **Queries DB:**
+
 - [packages/db/src/queries/memories.ts](../../packages/db/src/queries/memories.ts) — `searchMemories`, `saveMemory`
 - [packages/db/src/queries/sessions.ts](../../packages/db/src/queries/sessions.ts)
 - [packages/db/src/queries/scheduled-tasks.ts](../../packages/db/src/queries/scheduled-tasks.ts)
@@ -1909,6 +2391,7 @@ Verificados en el repo (paths reales):
 - [packages/db/src/queries/profiles.ts](../../packages/db/src/queries/profiles.ts)
 
 **API routes relevantes:**
+
 - [apps/web/src/app/api/chat/route.ts](../../apps/web/src/app/api/chat/route.ts)
 - [apps/web/src/app/api/chat/confirm/route.ts](../../apps/web/src/app/api/chat/confirm/route.ts)
 - [apps/web/src/app/api/cron/scheduled-tasks/route.ts](../../apps/web/src/app/api/cron/scheduled-tasks/route.ts)
@@ -1916,6 +2399,7 @@ Verificados en el repo (paths reales):
 - [apps/web/src/app/api/telegram/webhook/route.ts](../../apps/web/src/app/api/telegram/webhook/route.ts)
 
 **Documentación previa relevante:**
+
 - [docs/architecture.md](../architecture.md)
 - [docs/plan.md](../plan.md)
 - [docs/heartbeat/implementation-plan.md](../heartbeat/implementation-plan.md)
@@ -1925,63 +2409,67 @@ Verificados en el repo (paths reales):
 - [docs/memory/extractor_hardening_proposal.md](../memory/extractor_hardening_proposal.md)
 - [docs/memory/short_memory_plan.md](../memory/short_memory_plan.md)
 - [docs/business-brain-evolution-roadmap.md](../business-brain-evolution-roadmap.md)
+- [docs/manuals/architecture-manual.md](../manuals/architecture-manual.md)
+- [docs/manuals/gu-os-understanding.md](../manuals/gu-os-understanding.md)
 - [docs/tools-design/hitl.md](../tools-design/hitl.md)
 - [docs/tools-design/skill-routing.md](../tools-design/skill-routing.md)
 - [docs/tools-design/model-providers.md](../tools-design/model-providers.md)
 
-### Apéndice B — Mapa de archivos de G Brain referenciados
+### Apéndice B — Mapa de archivos referenciados: G Brain + Karpathy LLM Wiki `[v1.5.1 actualizado]`
 
-Localizados en `C:\Users\janot\develop\gbrain-master\gbrain-master\`. Paths absolutos para que puedas abrirlos directamente en tu IDE.
+**Karpathy LLM Wiki (patrón cognitivo — idea file, no código):**
+
+- [gist.github.com/karpathy/442a6bf555914893e9891c11519de94f](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — fuente canónica: raw/wiki/schema, Ingest/Query/Lint, `index.md`, `log.md`
+- Mapping Gu OS: [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) Inspiration 2; genealogía [§1.1](#11-genealogía-intelectual-karpathy-llm-wiki--g-brain--gu-os-v151)
+
+**G Brain v0.42.56.0** — [github.com/garrytan/gbrain](https://github.com/garrytan/gbrain). Paths locales opcionales en `C:\Users\janot\develop\gbrain-master\gbrain-master\`.
 
 **Configuración y entrada:**
-- `package.json` — runtime Bun, dependencias (`@electric-sql/pglite`, `@modelcontextprotocol/sdk`, `ai`, `gray-matter`)
-- `src\cli.ts` — punto de entrada CLI
-- `src\mcp\server.ts` — servidor MCP (stdio y HTTP)
 
-**Modelo de página (Compiled Truth + Timeline):**
-- `src\core\markdown.ts` — parser; ver líneas 40-59 para la estructura del documento
-- `src\core\schema-embedded.ts` — esquemas SQL embebidos
-  - líneas 233-253: tabla `links` (KG)
-  - líneas 306-314: tabla `page_versions`
-- `src\core\operations.ts` — ~30 operaciones expuestas como tools MCP
-  - líneas 391-415: skip de auto-link en escrituras MCP remotas
-  - líneas 1597-1611: `get_versions`, `revert_version`
-  - líneas 1622-1626: operaciones de jobs/Minions
+- [`package.json`](https://github.com/garrytan/gbrain/blob/master/package.json) — v0.42.56.0, Bun >=1.3.10, export `gbrain/ingestion`
+- [`src/cli.ts`](https://github.com/garrytan/gbrain/blob/master/src/cli.ts) — `gbrain think`, `gbrain capture`, `gbrain dream`
+- [`src/mcp/server.ts`](https://github.com/garrytan/gbrain/blob/master/src/mcp/server.ts) — MCP stdio + HTTP + OAuth
 
-**Knowledge graph y extracción:**
-- `src\core\link-extraction.ts` — auto-extracción determinística (sin LLM)
-  - líneas 401-570: `inferLinkType` con prioridades
-- `src\commands\graph-query.ts` — CLI `gbrain graph-query`
-  - líneas 50-79: tipos de aristas y traversals
+**Modelo de página (Compiled Truth + Timeline + Facts):**
 
-**Retrieval híbrido:**
-- `src\core\search\hybrid.ts` — pipeline keyword + vector + RRF + boosts
-  - líneas 1-31: constantes (`RRF_K=60`, `COMPILED_TRUTH_BOOST=2.0`)
-  - líneas 111-170: ejecución y fusión
-  - líneas 177-185: backlink boost
-- `src\core\search\expansion.ts` — query expansion con LLM
-  - líneas 56-80: sanitización anti-inyección
-- `src\core\ai\gateway.ts` — abstracción multi-provider
-  - líneas 40-44: defaults
+- [`src/core/markdown.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/markdown.ts)
+- [`src/core/schema-embedded.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/schema-embedded.ts) — `links`, `page_versions`
+- [`src/core/operations.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/operations.ts) — skip auto-link MCP remoto (~391–415)
+- [`docs/takes-vs-facts.md`](https://github.com/garrytan/gbrain/blob/master/docs/takes-vs-facts.md)
 
-**Loops autónomos:**
-- `src\core\cycle.ts` — dream cycle
-  - líneas 55-70: orden de fases (lint -> backlinks -> sync -> synthesize -> extract -> patterns -> embed -> orphans -> purge)
-- `src\core\cycle\patterns.ts` — fase `patterns` (v0.23+)
-  - **⚠️ Nota crítica `[v1.4]`:** verificado en código (líneas 1-211). Esta fase es **introspective journaling pattern detection**, NO organizational behavior mining. Lee solo páginas con prefijo `wiki/personal/reflections/%` (escritos introspectivos del usuario tipo journal, en `gatherReflections` líneas 160-179) y detecta "recurring themes, anxieties, decision patterns, relationship dynamics, self-knowledge motifs" (literal del prompt en `buildPatternsPrompt` líneas 183-211). Está pensada para un knowledge worker que escribe diario y quiere meta-insights de sí mismo. **NO resuelve el problema de Operational/Playbook Mining** descrito en la sección [12.3](#123-forward-looking-operationalplaybook-mining-v14) (mineable practices de cómo operan los agentes de un brokerage). Si un futuro contributor propone "portar la fase patterns" para resolver el problema procedural, **rechazar**: el algoritmo (single LLM subagent leyendo reflexiones para detectar temas) NO aplica a comportamiento agregado de sesiones operacionales con outcomes correlacionados.
+**Knowledge graph:**
 
-**Skills:**
-- `skills\signal-detector\SKILL.md` — skill always-on con sub-agente paralelo
-- `skills\skill-creator\SKILL.md` — plantilla
-- `skills\minion-orchestrator\SKILL.md` — enrutamiento determinista vs juicio
-- `skills\conventions\brain-first.md` — convención `search -> query -> get_page` antes de tools externas
-- `skills\conventions\subagent-routing.md` — `minion_mode: always | pain_triggered | off`
-- `docs\ethos\THIN_HARNESS_FAT_SKILLS.md` — filosofía rectora
+- [`src/core/link-extraction.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/link-extraction.ts)
+- [`src/commands/graph-query.ts`](https://github.com/garrytan/gbrain/blob/master/src/commands/graph-query.ts)
 
-**Documentación operativa:**
-- `docs\GBRAIN_RECOMMENDED_SCHEMA.md` — layout del repo cerebral
-- `docs\ENGINES.md` — modos de despliegue (PGLite vs Postgres)
-- `SECURITY.md` — modelo de amenaza, OAuth, rate limiting
+**Retrieval + síntesis:**
+
+- [`src/core/search/hybrid.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/search/hybrid.ts) — RRF, reranker hooks, graph signals
+- [`src/core/search/expansion.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/search/expansion.ts)
+- Comando `think` — ver README sección "Two ways to query your brain"
+
+**Dream cycle (~25 fases):**
+
+- [`src/core/cycle.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/cycle.ts) — `ALL_PHASES`, `GLOBAL_PHASES` / `NON_GLOBAL_PHASES`
+- [`src/core/cycle/extract-facts.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/cycle/extract-facts.ts)
+- [`src/core/cycle/patterns.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/cycle/patterns.ts) — **⚠️ journaling introspectivo, NO SMB ops mining** (análisis v1.4 vigente)
+- [`src/skillopt/`](https://github.com/garrytan/gbrain/tree/master/src/skillopt) — skill optimization (≠ skill discovery)
+
+**Ingestion + company brain:**
+
+- [`src/core/ingestion/index.ts`](https://github.com/garrytan/gbrain/blob/master/src/core/ingestion/index.ts) — contrato `IngestionSource`
+- [`docs/tutorials/company-brain.md`](https://github.com/garrytan/gbrain/blob/master/docs/tutorials/company-brain.md)
+- [`docs/architecture/schema-packs.md`](https://github.com/garrytan/gbrain/blob/master/docs/architecture/schema-packs.md)
+
+**Skills y ethos:**
+
+- [`skills/signal-detector/SKILL.md`](https://github.com/garrytan/gbrain/blob/master/skills/signal-detector/SKILL.md)
+- [`skills/conventions/brain-first.md`](https://github.com/garrytan/gbrain/blob/master/skills/conventions/brain-first.md)
+- [`docs/ethos/THIN_HARNESS_FAT_SKILLS.md`](https://github.com/garrytan/gbrain/blob/master/docs/ethos/THIN_HARNESS_FAT_SKILLS.md)
+
+**Evals:**
+
+- [`github.com/garrytan/gbrain-evals`](https://github.com/garrytan/gbrain-evals) — BrainBench, metodología retrieval
 
 ### Apéndice C — Glosario
 
@@ -1991,7 +2479,23 @@ Localizados en `C:\Users\janot\develop\gbrain-master\gbrain-master\`. Paths abso
 
 **RRF (Reciprocal Rank Fusion)** — algoritmo para fusionar resultados de múltiples rankings (p. ej. keyword + vector). Score de un documento = sum(1 / (k + rank_i)) para cada ranking i. `k` típicamente 60. No requiere normalizar scores entre rankings.
 
-**Dream Cycle** — proceso periódico de mantenimiento de la memoria (lint, dedupe, re-embed, synthesize). Inspirado en consolidación de memoria durante el sueño biológico.
+**Dream Cycle** — proceso periódico de mantenimiento del índice cognitivo (embed stale, dedupe, synthesize pages, extract_facts en G Brain v0.42+). Distinto de **Heartbeat** (checklist usuario) y de **cron operational-cases** (expedientes multi-día). `[v1.5]`
+
+**Query synthesis / `think_brain`** `[v1.5]` — capa que transforma retrieval en **respuesta compuesta** con citas y gap analysis (inspirado en `gbrain think`). Bloque 3b del plan. Distinto de la respuesta conversacional libre del agente en chat.
+
+**Company brain** `[v1.5]` — shape G Brain v0.40+ para memoria institucional multi-usuario: sources federados + OAuth scoped + tutorial dedicado. Modelo distinto al RLS producto de Gu OS (ver §1.2.1).
+
+**Casos operacionales (plataforma)** `[v1.5]` — subsistema Gu OS (`operational_cases`, `operational_case_events`, cron case_runner) para workflows multi-día. **`property_optioning` = primer piloto**; nuevos flujos reutilizan la plataforma. Complementa Brain Layer; no la sustituye (§1.4.8).
+
+**Skill discovery vs Skill optimization** `[v1.5]` — discovery: inferir playbooks nuevos desde comportamiento → `brain_skill_candidates`. Optimization (G Brain `skillopt`): mejorar SKILL.md existente con benchmarks. Problemas distintos (§12.3).
+
+**LLM Wiki (patrón Karpathy)** `[v1.5.1]` — patrón de knowledge base donde el LLM **compila y mantiene** un wiki persistente (no RAG efímero por query). Tres capas: raw inmutable, wiki interlinkado, schema (`CLAUDE.md`). Tres operaciones: Ingest, Query, Lint. Fuente: [gist Karpathy](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). Gu OS lo implementa como Brain Layer Postgres + HITL — ver [§1.1](#11-genealogía-intelectual-karpathy-llm-wiki--g-brain--gu-os-v151).
+
+**Raw Evidence Inbox** `[v1.5.1]` — destino inicial de información externa: evidencia con provenance y review state antes de promover a `compiled_truth` o `memories`. Inspirado en capa `raw/` del LLM Wiki gist. Ver §12.2.
+
+**Query-to-Knowledge Feedback** `[v1.5.1]` — respuestas de consulta de alto valor (análisis, comparaciones, informes) pueden archivarse en el brain como timeline entries o synthesis proposals — solo con provenance y HITL si afectan compiled truth. Patrón gist: *good answers filed back into wiki*. Ver Bloque 3b.
+
+**Index page (complement)** `[v1.5.1]` — catálogo human-readable de entidades/pages (equivalente espiritual a `index.md` del gist). Generado desde `brain_pages`; complementa hybrid search — no es SOR ni reemplazo de retrieval multi-tenant.
 
 **Signal Detector** — skill always-on que corre en paralelo a la conversación principal con un sub-agente barato, detectando información latente que el agente principal no procesaría directamente.
 
@@ -2000,6 +2504,8 @@ Localizados en `C:\Users\janot\develop\gbrain-master\gbrain-master\`. Paths abso
 **Hard edges vs Soft signals** `[v1.2]` — distinción arquitectural: relaciones operacionales verificables van a `brain_links` (alta confianza, queryables como grafo), observaciones probabilísticas van a `brain_signals` (baja-media confianza, sujetas a corroboración antes de promoción). NUNCA se mezclan modelando señales como links con `confidence` baja. Ver [principio 1.5.5](#155-hard-edges-links-vs-soft-signals--nunca-mezclarlos-v12).
 
 **Operational Truth vs Cognitive Interpretation** `[v1.3]` — distinción **forward-looking** entre dos tipos de información cualitativamente distintos dentro de una page: hechos operacionales verificables ("Lead asignado a Carlos", "Visit agendada 12-may") vs interpretaciones cognitivas inferidas ("Lead parece ansioso por financiamiento", "Relación enfriándose"). El v1 las separa parcialmente (operational truth en columnas operacionales + `brain_links`; interpretations en `brain_signals`), pero `compiled_truth` puede mezclarlas tras síntesis. Documentado como consideración arquitectural diferida — no es cambio de schema en MVP. Ver [sección 12.1](#121-forward-looking-operational-truth-vs-cognitive-interpretation-v13) para 3 opciones de implementación futura.
+
+**Facts / Takes** `[v1.5]` — modelo G Brain v0.31+ para separar verdad estructurada de interpretación graduable. **Facts:** hechos en fence `## Facts`, reconciliados en dream cycle (`extract_facts`). **Takes:** afirmaciones con evidencia y calibración (`propose_takes` → `grade_takes`). Referencia para evolucionar §12.1 si el dolor de mezcla en `compiled_truth` aparece antes del mes 6–12; MVP Gu OS puede bastar con `brain_signals` + governance de síntesis.
 
 **Brain-first** — convención arquitectural: el agente debe consultar la memoria/brain **antes** de invocar tools externas o APIs. Reduce calls innecesarias y aumenta coherencia con contexto histórico.
 
@@ -2023,11 +2529,11 @@ Localizados en `C:\Users\janot\develop\gbrain-master\gbrain-master\`. Paths abso
 
 **Skill Candidate** `[v1.4]` — patrón operacional mineado por el Pattern Layer, con evidencia (`evidence_refs`), confianza estimada y status `pending_review`. Aún no es ejecutable. Pasa por HITL review obligatorio (sec [12.3](#123-forward-looking-operationalplaybook-mining-v14)) antes de promoverse a SKILL.md. Mismo patrón de governance que `Signal -> Memory.compiled_truth`.
 
-**Implicit vs Explicit Skill** `[v1.4]` — dos PATHs por los cuales un SKILL.md llega al sistema. **Explicit:** humano escribe directamente el SKILL.md (lo que pasa hoy en Ungga). **Implicit:** Skill Candidate aprobado en HITL → miner genera SKILL.md derivado, con `source: implicit_mined` en frontmatter y referencia al `brain_skill_candidates.id` que lo originó. Coexisten; el skills system no distingue origen una vez que el SKILL.md existe.
+**Implicit vs Explicit Skill** `[v1.4]` — dos PATHs por los cuales un procedimiento ejecutable llega al sistema. **Explicit:** humano escribe SKILL.md en git o **`account_skills`**. **Implicit:** Skill Candidate aprobado en HITL → miner genera body en git o `account_skills`. Coexisten; el runtime no distingue origen una vez activo.
 
-**Operational/Playbook Knowledge** `[v1.4]` — el 5to destino del conocimiento del negocio (principio [1.5.7](#157-cinco-destinos-para-conocimiento-del-negocio--tres-personales-intactos-v14)): *cómo opera el negocio*. Captura playbooks, mejores prácticas, secuencias de workflow exitosas, manejo de objections. Destino correcto: `brain_skill_candidates` → HITL → SKILL.md (capas 5→6 del modelo de 7 capas). **NO confundir con `memories.type='procedural'`** que sigue significando preferencias personales del usuario sobre cómo el agente debe trabajar con él (verificado en `memory_flush.ts` líneas 74-77). Mismo nombre clásico ("procedural" en cognitive science cubre ambos significados de Tulving), problemas distintos, destinos distintos. Ver regla de no-colisión en principio [1.5.7](#157-cinco-destinos-para-conocimiento-del-negocio--tres-personales-intactos-v14).
+**Operational/Playbook Knowledge** `[v1.4]` — el 5to destino del conocimiento del negocio (principio [1.5.7](#157-cinco-destinos-para-conocimiento-del-negocio--tres-personales-intactos-v14)): *cómo opera el negocio*. Destino: `brain_skill_candidates` → HITL → SKILL.md / `account_skills`. **NO confundir** con `memories.type='procedural'` (preferencias personales del operador). Flujos multi-día explícitos viven en **operational_cases**, no aquí.
 
-**Modelo de 7 capas / 4 dominios** `[v1.4]` — modelo arquitectural completo (sec [1.4](#14-modelo-de-capas-7-capas-4-dominios)) en el que la "Brain Layer" del v1.3 es UNA porción (capas 2-4 del dominio Cognition). Las 7 capas: **Ingestion** (1) → **Memory** + **Graph** + **Signal** (2-4) → **Pattern** + **Skill** (5-6) → **Workflow** (7). Los 4 dominios: **Acquisition** (1), **Cognition** (2-4), **Procedural** (5-6), **Execution** (7). Las dos flechas de promoción HITL: `Signal → Memory` y `Pattern → Skill`. En v1: capas 2-4 son los Bloques 1-4 del plan; capas 6-7 ya existen en Ungga; capas 1 y 5 tienen lightweight hooks pero NO implementación.
+**Modelo de 7 capas / 4 dominios** `[v1.4]` `[v1.5]` — modelo arquitectural completo (sec [1.4](#14-modelo-de-capas-7-capas-4-dominios)). Capas 2–4 = Brain Layer planificada; capas 6–7 **existen** (skills + `account_skills`, LangGraph + Heartbeat + **operational_cases plataforma**); capas 1 y 5 = hooks forward-looking. Flechas HITL: `Signal → Memory`, `Pattern → Skill (git | account_skills)`.
 
 ### Apéndice D — Lecturas recomendadas sobre diseño de Knowledge Graphs `[v1.2]`
 
@@ -2047,8 +2553,9 @@ Material complementario que **no es prerequisito** para implementar el plan, per
 
 **Específico a sistemas agénticos / cognición:**
 
-- [G Brain README + docs](https://github.com/garrytan/gbrain) — fuente conceptual de las primitivas portadas en este plan. Lectura útil para entender la genealogía intelectual de Compiled Truth + Timeline + KG + Dream Cycle + Signal Detector como un sistema integrado.
-- **Garry Tan — *Thin Harness, Fat Skills*** (GStack, abril 2026) — cinco definiciones (skill, harness, resolver, latent/deterministic, diarization), arquitectura de tres capas y guía skill-vs-code. Mapping explícito a Gu OS: [`docs/manuals/agentic-principles-alignment.md`](../manuals/agentic-principles-alignment.md).
+- [G Brain README v0.42+](https://github.com/garrytan/gbrain) — fuente conceptual actualizada (think, company brain, ingestion, skillopt). Genealogía de Compiled Truth + Timeline + KG + Dream Cycle + Signal Detector.
+- [Karpathy LLM Wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — patrón cognitivo upstream (Ingest/Query/Lint, raw/wiki/schema). Mapping Gu OS: [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) Inspiration 2, §1.1 de este doc.
+- **Garry Tan — *Thin Harness, Fat Skills*** (GStack, abril 2026) — cinco definiciones (skill, harness, resolver, latent/deterministic, diarization), arquitectura de tres capas y guía skill-vs-code. Mapping explícito a Gu OS: `[docs/manuals/agentic-principles-alignment.md](../manuals/agentic-principles-alignment.md)`.
 - **Garry Tan — *Homebrew for Personal AI*** (GStack, abril 2026) — markdown como paquete distribuible, recipes y "agent as package manager". Complementa la sección de capability packs en `business-brain-evolution-roadmap.md`; mismo doc de alineación arriba.
 - Anthropic blog: ["Building effective agents"](https://www.anthropic.com/research/building-effective-agents) — patrón "augmented LLM" (memoria + retrieval + tools); coincide con el frame brain-first del plan.
 
@@ -2066,14 +2573,15 @@ Material complementario que **no es prerequisito** para implementar el plan, per
 
 ---
 
-## Próximos pasos concretos
+## Próximos pasos concretos `[v1.5]`
 
 Después de tu revisión:
 
-1. Confirma o ajusta las **5 decisiones rectoras** del punto 13.1.
-2. Confirma o ajusta el **dominio inicial de entidades** del punto 13.2.
-3. Decide la **estrategia de feature flag** del punto 13.3.
-4. Decide la **agresividad de auto-extracción** del punto 13.4.
-5. Cuando me digas "go", abro la rama `brain-layer-bloque-1` y empiezo por la migración 00019 + `packages/agent/src/brain/page.ts` con sus selftests.
+1. Confirmar las **7 decisiones rectoras** del punto [13.1](#131-las-decisiones-rectoras-v15-1) (incluye frontera operational_cases y no schema packs).
+2. Confirmar el **dominio inicial de entidades** del punto [13.2](#132-dominio-inicial-de-entidades-v12).
+3. Decidir la **estrategia de feature flag** del punto [13.3](#133-estrategia-de-feature-flag).
+4. Decidir la **agresividad de auto-extracción** del punto [13.4](#134-auto-extracción-modo-inicial-v11).
+5. Validar que **Bloque 3b** (síntesis) entra en el primer rollout o se difiere una semana.
+6. Cuando digas "go", abrir rama `brain-layer-bloque-1` y empezar por migración **`00053_brain_pages.sql`** + `packages/agent/src/brain/page.ts` con selftests — **después** de revisar §1.4.8 para no duplicar estado de operational_cases.
 
-Si tienes preguntas o quieres profundizar en algún punto específico (p. ej. el SQL de hybrid search, el dominio de entidades, el patrón de signal detector, la estrategia de cron, etc.), avísame y lo ampliamos sobre este mismo documento.
+Si tienes preguntas o quieres profundizar (SQL hybrid search, frontera brain vs case, signal detector, cron maintenance), avísame y lo ampliamos sobre este documento.

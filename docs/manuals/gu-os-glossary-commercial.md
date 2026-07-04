@@ -2,7 +2,7 @@
 
 > **Audiencia:** ventas, alianzas, producto, onboarding de clientes  
 > **No sustituye:** [`gu-os-understanding.md`](gu-os-understanding.md) (guía completa) ni [`architecture-manual.md`](architecture-manual.md) (técnico)  
-> **Versión:** 2026-06 — alineado con skills V1, `account_skills` V1, casos operacionales y Brain Layer en roadmap
+> **Versión:** 2026-07 — alineado con skills V1, `account_skills` V1, casos operacionales, Brain Layer en roadmap y patrón Karpathy LLM Wiki
 
 ---
 
@@ -26,7 +26,8 @@
 | **Business Brain** | Ficha de la cuenta: nombre de la inmobiliaria, tono, contexto estable y enlace al warehouse (`organization_id`). Alimenta skills de negocio. |
 | **Memoria personal** | Preferencias y datos sobre **ti** (estilo, rutinas, contactos personales relevantes). No sustituye al CRM ni al inventario. |
 | **Warehouse (BigQuery)** | Copia analítica de leads, propiedades, mensajes, deals, etc. Fuente de verdad **tabular** para preguntas de negocio. |
-| **Brain Layer (roadmap)** | Memoria **operacional del negocio** futura: entidades (lead, propiedad…), historial, relaciones y señales — con revisión humana antes de promover hechos. |
+| **Brain Layer (roadmap)** | Memoria **operacional del negocio** futura: entidades (lead, propiedad…), historial, relaciones y señales — con revisión humana antes de promover hechos. Inspirada en el patrón [LLM Wiki de Karpathy](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f): el sistema **compila y mantiene** conocimiento (no solo “busca en documentos” cada vez). |
+| **Memoria que compila (vs solo buscar)** | En lugar de releer todo en cada pregunta, Gu OS (roadmap Brain) guarda un **estado actual** por entidad más un **historial de evidencia** — como un wiki de negocio que se actualiza con aprobación humana cuando hace falta. Ver [gist LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). |
 | **HITL (aprobación humana)** | “Human in the loop”: antes de acciones sensibles (publicar, contratos, comandos riesgosos) el sistema **pide tu confirmación** en web o Telegram. |
 | **Tarea programada** | “Haz *esto* a *esta hora*” (o recurrente). Tú apruebas al crearla; cuando suena, puede ejecutar sin que estés en línea. |
 | **Heartbeat (pulso)** | Revisión periódica según **lista de chequeo** (reuniones, pendientes, alertas). Más conservador que una tarea libre; enfoque lectura y aviso. |
@@ -58,7 +59,7 @@ Las acciones sensibles pasan por **HITL**. Los recetarios de captación y public
 
 | No es | Por qué importa decirlo |
 |-------|-------------------------|
-| Wiki personal tipo Obsidian | Optimizamos **operación** (cerrar deals, no perder leads), no jardín de notas. |
+| Wiki personal tipo Obsidian | Optimizamos **operación** (cerrar deals, no perder leads), no jardín de notas. Tomamos la *idea* de wiki compilado ([Karpathy LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)), no la UX de Obsidian. |
 | Reemplazo del CRM | Consulta y actúa sobre datos; el warehouse y sistemas operativos siguen siendo la base tabular. |
 | Agente 100 % autónomo | Priorizamos control, trazabilidad y aprobación humana en acciones de impacto. |
 | Marketplace de plugins abiertos | Skills y integraciones pasan por gates de permiso y revisión del producto. |
@@ -73,4 +74,5 @@ Las acciones sensibles pasan por **HITL**. Los recetarios de captación y public
 | Presentación negocio / capas | [`gu-os-business-architecture-view.md`](gu-os-business-architecture-view.md) |
 | Principios agenticos (GStack) | [`agentic-principles-alignment.md`](agentic-principles-alignment.md) |
 | Casos operacionales (captación) | [`../operational-cases/architecture.md`](../operational-cases/architecture.md) |
-| Roadmap producto | [`../business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) |
+| Roadmap producto | [`../business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) (Inspiration 2 = Karpathy LLM Wiki) |
+| Patrón LLM Wiki (referencia) | [Gist Andrej Karpathy](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) |
