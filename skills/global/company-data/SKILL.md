@@ -222,16 +222,29 @@ LIMIT 100;
 
 When `status: "ok"`:
 
+Write for the **same user** on web chat and Telegram: one consistent voice, not
+channel-specific formatting.
+
 ```markdown
-**<one-line answer including the headline number>**
+**<one-line answer with the headline number>**
 
-- If the result is a single scalar KPI (one number), do NOT render a markdown table.
-- Use a compact sentence with the metric and period.
-- Use a markdown table only for true multi-row outputs (rankings, series, breakdowns).
-
-<2-4 sentences of context: which period, segment, caveats — e.g. "incluye solo
-leads no eliminados", "los datos de hoy están parciales">
+<1-2 short sentences of context: period, segment, caveats>
 ```
+
+Rules for every user-visible reply:
+
+- **Persona:** use inclusive first-person plural when reporting the user's org
+  metrics (e.g. "En junio **tuvimos** 255 leads creados"), not detached third
+  person ("tuvieron") unless Alma explicitly says otherwise.
+- **Timezone:** describe in human language (e.g. "horario de México CDMX",
+  "zona horaria de México"). Never show IANA ids (`America/Mexico_City`) or
+  wrap timezone names in backticks.
+- **No technical markup in prose:** no backticks, no inline code, no SQL, no
+  JSON, no column names in the answer body.
+- **Scalar KPI:** one headline sentence + context; do **not** render a markdown
+  table for a single number.
+- **Multi-row results only:** use a markdown table for rankings, series, or
+  breakdowns with 2+ rows.
 
 For non-`ok` statuses, skip the table; explain in plain
 language why the answer is not available and what would unblock it. Do not

@@ -31,6 +31,7 @@ import {
   answerTelegramCallbackQuery,
   downloadTelegramFile,
   getTelegramFile,
+  sendTelegramAgentMessage,
   sendTelegramMessage,
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
@@ -3195,7 +3196,7 @@ export async function POST(request: Request) {
           hasConversationalCase: Boolean(conversationalCaseBeforeAgent),
         })
       ) {
-        await sendTelegramMessage(chatId, result.response);
+        await sendTelegramAgentMessage(chatId, result.response);
       }
       // Flush POST fire-and-forget: solo si el turno cerró limpio.
       // Callbacks (resume HITL) no entran aquí — ese branch retorna antes.

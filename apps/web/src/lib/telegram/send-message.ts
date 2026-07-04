@@ -91,17 +91,106 @@ export function truncateTelegramText(text: string): string {
   return text.slice(0, Math.max(0, max)) + suffix;
 }
 
+function escapeTelegramHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/**
+ * Converts a subset of GitHub-style Markdown (as the agent emits for web chat)
+ * into Telegram HTML. Supports **bold** and `inline code`; other text is escaped.
+ */
+export function agentMarkdownToTelegramHtml(text: string): string {
+  let html = "";
+  let cursor = 0;
+  const pattern = /(\*\*([\s\S]+?)\*\*|`([^`]+)`)/g;
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    html += escapeTelegramHtml(text.slice(cursor, index));
+    if (match[2] !== undefined) {
+      html += `<b>${escapeTelegramHtml(match[2])}</b>`;
+    } else if (match[3] !== undefined) {
+      html += `<code>${escapeTelegramHtml(match[3])}</code>`;
+    }
+    cursor = index + match[0].length;
+  }
+  html += escapeTelegramHtml(text.slice(cursor));
+  return html;
+}
+
+function isTelegramParseEntityError(description: string): boolean {
+  const lower = description.toLowerCase();
+  return (
+    lower.includes("can't parse") ||
+    lower.includes("cant parse") ||
+    lower.includes("parse entities") ||
+    lower.includes("entity") ||
+    lower.includes("character")
+  );
+}
+
+export type TelegramParseMode = "HTML" | "Markdown";
+
 export async function sendTelegramMessage(
   chatId: number,
   text: string,
   replyMarkup?: Record<string, unknown>,
-  options?: { throwOnError?: boolean }
+  options?: {
+    throwOnError?: boolean;
+    parseMode?: TelegramParseMode;
+  }
 ): Promise<void> {
   const token = BOT_TOKEN().trim();
   if (!token) {
     throw new Error("Telegram sendMessage not configured: TELEGRAM_BOT_TOKEN is empty");
   }
 
+  const payload: Record<string, unknown> = {
+    chat_id: chatId,
+    text,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    ...(options?.parseMode ? { parse_mode: options.parseMode } : {}),
+  };
+
+  const res = await telegramBotFetch(
+    `https://api.telegram.org/bot${token}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { throwOnError: options?.throwOnError, label: "sendMessage" }
+  );
+  if (!res?.ok && options?.throwOnError) {
+    const body = (await res?.json().catch(() => ({}))) as Record<string, unknown>;
+    const desc = typeof body.description === "string" ? body.description : "";
+    throw new Error(
+      `Telegram sendMessage HTTP ${res?.status ?? "unknown"}${desc ? `: ${desc}` : ""}`
+    );
+  }
+}
+
+/**
+ * Sends an agent narrative (Markdown from the LLM) with Telegram HTML rendering.
+ * Falls back to plain text if Telegram rejects the formatted payload.
+ */
+export async function sendTelegramAgentMessage(
+  chatId: number,
+  text: string,
+  replyMarkup?: Record<string, unknown>,
+  options?: { throwOnError?: boolean }
+): Promise<void> {
+  const trimmed = truncateTelegramText(text.trim());
+  if (!trimmed) return;
+
+  const token = BOT_TOKEN().trim();
+  if (!token) {
+    throw new Error("Telegram sendMessage not configured: TELEGRAM_BOT_TOKEN is empty");
+  }
+
+  const html = agentMarkdownToTelegramHtml(trimmed);
   const res = await telegramBotFetch(
     `https://api.telegram.org/bot${token}/sendMessage`,
     {
@@ -109,15 +198,28 @@ export async function sendTelegramMessage(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text,
+        text: html,
+        parse_mode: "HTML",
         ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       }),
     },
-    { throwOnError: options?.throwOnError, label: "sendMessage" }
+    { label: "sendMessage" }
   );
-  if (!res?.ok && options?.throwOnError) {
-    const body = (await res?.json().catch(() => ({}))) as Record<string, unknown>;
-    const desc = typeof body.description === "string" ? body.description : "";
+
+  if (res?.ok) return;
+
+  const body = (await res?.json().catch(() => ({}))) as Record<string, unknown>;
+  const desc = typeof body.description === "string" ? body.description : "";
+  if (res && isTelegramParseEntityError(desc)) {
+    console.warn(
+      "[telegram] sendMessage HTML parse failed; retrying plain text:",
+      desc
+    );
+    await sendTelegramMessage(chatId, trimmed, replyMarkup, options);
+    return;
+  }
+
+  if (options?.throwOnError) {
     throw new Error(
       `Telegram sendMessage HTTP ${res?.status ?? "unknown"}${desc ? `: ${desc}` : ""}`
     );
