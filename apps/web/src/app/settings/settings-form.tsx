@@ -13,6 +13,7 @@ import {
 import type { HeartbeatChecklistTemplate } from "@agents/agent/src/heartbeat/checklist";
 import type {
   BusinessBrain,
+  BusinessBrainEffectiveSoul,
   BusinessBrainWarehouseSource,
   EngagementPolicyOverrides,
   GlobalToolRequest,
@@ -100,6 +101,7 @@ interface SectionReviewResult {
   warnings: string[];
   moved_suggestions: Array<{ target_slot: string; text: string }>;
   rejected_items: Array<{ text: string; reason: string }>;
+  effective_soul?: BusinessBrainEffectiveSoul;
   used_llm: boolean;
 }
 
@@ -1568,6 +1570,19 @@ export function SettingsForm({
                     />
                   </label>
                 ))}
+              </div>
+            )}
+            {section === "soul" && state.result.effective_soul?.summary && (
+              <div className="mt-2 rounded-md border border-blue-200 bg-blue-50 p-2 text-[11px] text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-100">
+                <p className="font-semibold">Alma efectiva (preview)</p>
+                <p className="mt-1 whitespace-pre-wrap">
+                  {state.result.effective_soul.summary}
+                </p>
+                {state.result.effective_soul.source ? (
+                  <p className="mt-1 text-blue-700 dark:text-blue-200">
+                    Fuente: {state.result.effective_soul.source}
+                  </p>
+                ) : null}
               </div>
             )}
             {!okNoSuggestions && !correctionApplied && (

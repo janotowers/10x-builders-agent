@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  compileBusinessBrainSoul,
   reviewBusinessBrainFields,
   reviewBusinessBrainSlot,
   runDeterministicReview,
@@ -241,6 +242,56 @@ it("section review aggregates normalized fields and warnings", async () => {
     "business_context.notes"
   );
   assert.ok(result.normalized_fields["soul.voice"] !== undefined);
+});
+
+it("compileBusinessBrainSoul returns default fallback when all soul fields are empty", async () => {
+  const result = await compileBusinessBrainSoul({
+    soul: {
+      voice: "",
+      tone: "",
+      style: "",
+      brevity: "",
+    },
+  });
+  assert.equal(result.effective_soul.source, "default");
+  assert.match(result.effective_soul.summary ?? "", /Voz:/);
+  assert.match(result.effective_soul.summary ?? "", /Brevedad:/);
+});
+
+it("compileBusinessBrainSoul warns and resolves brevity/detail tension", async () => {
+  const result = await compileBusinessBrainSoul({
+    soul: {
+      voice: "casual y cercano",
+      tone: "profesional",
+      style: "siempre detallado y extenso",
+      brevity: "ultra breve",
+    },
+  });
+  assert.equal(result.effective_soul.source, "mixed");
+  assert.match(result.warnings.join(" "), /brevedad y detalle/i);
+  assert.match(
+    result.normalized_fields["soul.brevity"] ?? "",
+    /profundiza cuando el usuario lo pida/i
+  );
+});
+
+it("compileBusinessBrainSoul falls back deterministically on invalid LLM JSON", async () => {
+  const model: BusinessBrainReviewerModel = {
+    async invoke() {
+      return { content: "no-json-response" };
+    },
+  };
+  const result = await compileBusinessBrainSoul({
+    soul: {
+      voice: "directa",
+      tone: "cercana",
+      style: "bullets cuando ayuden",
+      brevity: "breve por defecto",
+    },
+    model,
+  });
+  assert.equal(result.used_llm, false);
+  assert.match(result.effective_soul.summary ?? "", /Voz:/);
 });
 
 async function main() {

@@ -5,6 +5,14 @@ export interface CompileBusinessBrainOptions {
   readonly agentName?: string | null;
 }
 
+const DEFAULT_SOUL = {
+  voice: "Directa, clara, cálida y orientada a negocio.",
+  tone: "Profesional y cercana, sin sonar corporativa.",
+  style: "Respuestas escaneables; usa bullets solo cuando ayuden.",
+  brevity:
+    "Breve por defecto; profundiza cuando el usuario lo pida o cuando haga falta para precisión.",
+};
+
 function clean(value: unknown, max = 700): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.replace(/\s+/g, " ").trim();
@@ -34,14 +42,45 @@ export function buildBusinessBrainContextBlock(
   businessBrain: BusinessBrain | undefined | null,
   options: CompileBusinessBrainOptions = {}
 ): string {
-  if (!businessBrain) return "";
-
+  const safeBrain = businessBrain ?? {};
   const sections: string[] = [];
-  const agentIdentity = businessBrain.agent_identity ?? {};
-  const soul = businessBrain.soul ?? {};
-  const context = businessBrain.business_context ?? {};
-  const operating = businessBrain.operating_preferences ?? {};
-  const warehouse = getBusinessBrainWarehouse(businessBrain);
+  const agentIdentity = safeBrain.agent_identity ?? {};
+  const soul = safeBrain.soul ?? {};
+  const context = safeBrain.business_context ?? {};
+  const operating = safeBrain.operating_preferences ?? {};
+  const warehouse = getBusinessBrainWarehouse(safeBrain);
+
+  const communicationLines: string[] = [];
+  const effectiveSummary = clean(safeBrain.soul_effective?.summary, 700);
+  const effectiveWarnings = Array.isArray(safeBrain.soul_effective?.warnings)
+    ? safeBrain.soul_effective.warnings
+        .map((warning) => clean(warning, 220))
+        .filter((warning): warning is string => !!warning)
+        .slice(0, 2)
+    : [];
+  const source =
+    safeBrain.soul_effective?.source === "default" ||
+    safeBrain.soul_effective?.source === "user" ||
+    safeBrain.soul_effective?.source === "mixed"
+      ? safeBrain.soul_effective.source
+      : undefined;
+  const mergedSoul = {
+    voice: clean(soul.voice, 220) ?? DEFAULT_SOUL.voice,
+    tone: clean(soul.tone, 220) ?? DEFAULT_SOUL.tone,
+    style: clean(soul.style, 260) ?? DEFAULT_SOUL.style,
+    brevity: clean(soul.brevity, 160) ?? DEFAULT_SOUL.brevity,
+  };
+  communicationLines.push(
+    `- Alma efectiva: ${
+      effectiveSummary ??
+      `Voz: ${mergedSoul.voice} Tono: ${mergedSoul.tone} Estilo: ${mergedSoul.style} Brevedad: ${mergedSoul.brevity}`
+    }`
+  );
+  if (source) communicationLines.push(`- Fuente alma efectiva: ${source}`);
+  if (effectiveWarnings.length > 0) {
+    communicationLines.push(`- Advertencias de armonización: ${effectiveWarnings.join(" | ")}`);
+  }
+  sections.push(["### Comunicación Del Agente", ...communicationLines].join("\n"));
 
   const identityLines: string[] = [];
   addLine(identityLines, "Nombre", clean(agentIdentity.name) ?? options.agentName);

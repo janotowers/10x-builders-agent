@@ -103,6 +103,19 @@ export interface BusinessBrainSoul {
   brevity?: string;
 }
 
+export interface BusinessBrainEffectiveSoul {
+  /** Instrucción compacta y coherente usada en runtime para estilo. */
+  summary?: string;
+  /** Origen principal de la síntesis aplicada. */
+  source?: "default" | "user" | "mixed";
+  /** Advertencias no bloqueantes detectadas al armonizar campos. */
+  warnings?: string[];
+  /** Timestamp ISO de la última generación/aprobación. */
+  generated_at?: string;
+  /** Modelo usado para generar la versión efectiva, si aplica. */
+  model_id?: string;
+}
+
 export interface BusinessBrainBusinessContext {
   /** Tipo de cuenta/negocio: inmobiliaria, personal, mixto, etc. */
   kind?: string;
@@ -169,6 +182,8 @@ export interface BusinessBrain {
   agent_identity?: BusinessBrainAgentIdentity;
   /** V1 nueva: persona, tono, voz y estilo. */
   soul?: BusinessBrainSoul;
+  /** V1 nueva: síntesis coherente para runtime de voz/tono/estilo/brevedad. */
+  soul_effective?: BusinessBrainEffectiveSoul;
   /** V1 nueva: contexto de negocio/trabajo, no reglas operativas duras. */
   business_context?: BusinessBrainBusinessContext;
   /** V1 nueva: preferencias compatibles con seguridad/tools/HITL/tenant. */

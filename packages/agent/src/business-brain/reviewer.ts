@@ -1,12 +1,16 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import type { BusinessBrainEffectiveSoul, BusinessBrainSoul } from "@agents/types";
 import {
   BUSINESS_BRAIN_SLOT_DESCRIPTIONS,
   BUSINESS_BRAIN_TEXT_LIMITS,
   type BusinessBrainReviewSlot,
   truncateBusinessBrainText,
 } from "./schema";
-import { createBusinessBrainReviewerModel } from "../model";
+import {
+  createBusinessBrainReviewerModel,
+  DEFAULT_BUSINESS_BRAIN_REVIEWER_MODEL_ID,
+} from "../model";
 
 export type BusinessBrainReviewSeverity = "ok" | "warning" | "blocked";
 
@@ -45,8 +49,43 @@ export interface BusinessBrainSectionReviewResult {
   readonly warnings: readonly string[];
   readonly moved_suggestions: readonly BusinessBrainMovedSuggestion[];
   readonly rejected_items: readonly BusinessBrainRejectedItem[];
+  readonly effective_soul?: BusinessBrainEffectiveSoul;
   readonly used_llm: boolean;
 }
+
+type SoulSlot = "soul.voice" | "soul.tone" | "soul.style" | "soul.brevity";
+
+export interface CompileBusinessBrainSoulInput {
+  readonly soul: BusinessBrainSoul | undefined;
+  readonly model?: BusinessBrainReviewerModel;
+}
+
+export interface CompileBusinessBrainSoulResult {
+  readonly effective_soul: BusinessBrainEffectiveSoul;
+  readonly normalized_fields: Partial<Record<SoulSlot, string>>;
+  readonly warnings: readonly string[];
+  readonly used_llm: boolean;
+}
+
+const DEFAULT_SOUL: Required<BusinessBrainSoul> = {
+  voice: "Directa, clara, cálida y orientada a negocio.",
+  tone: "Profesional y cercana, sin sonar corporativa.",
+  style: "Respuestas escaneables; usa bullets solo cuando ayuden.",
+  brevity:
+    "Breve por defecto; profundiza cuando el usuario lo pida o cuando haga falta para precisión.",
+};
+
+const SOUL_SYSTEM_PROMPT = [
+  "Eres el compilador de Alma efectiva de Gu.",
+  "Recibes Voz/Tono/Estilo/Brevedad del usuario y defaults de fallback.",
+  "Tu trabajo es producir una síntesis corta y coherente para runtime.",
+  "No inventes capacidades, permisos, políticas ni playbooks.",
+  "No cambies la intención del usuario sin razón.",
+  "Si hay contradicciones (por ejemplo, ultra breve vs muy detallado), resuélvelas en un criterio práctico y reporta warning.",
+  "Devuelve JSON estricto con llaves:",
+  "{\"effective_text\":\"...\",\"warnings\":[\"...\"],\"source\":\"default|user|mixed\",\"normalized_fields\":{\"soul.voice\":\"...\",\"soul.tone\":\"...\",\"soul.style\":\"...\",\"soul.brevity\":\"...\"}}",
+  "Sin markdown y sin texto fuera del JSON.",
+].join("\n");
 
 const SYSTEM_PROMPT = [
   "Eres el Business Brain Instruction Reviewer de Gu.",
@@ -217,6 +256,12 @@ export async function reviewBusinessBrainFields(input: {
   const rejectedItems: BusinessBrainRejectedItem[] = [];
   let severity: BusinessBrainReviewSeverity = "ok";
   let usedLlm = false;
+  const includesSoulFields = ([
+    "soul.voice",
+    "soul.tone",
+    "soul.style",
+    "soul.brevity",
+  ] as const).some((slot) => typeof input.fields[slot] === "string");
 
   for (const [slot, text] of Object.entries(input.fields) as Array<
     [BusinessBrainReviewSlot, string | undefined]
@@ -238,13 +283,168 @@ export async function reviewBusinessBrainFields(input: {
     }
   }
 
+  const soulCompile = includesSoulFields
+    ? await compileBusinessBrainSoul({
+        soul: {
+          voice: normalizedFields["soul.voice"],
+          tone: normalizedFields["soul.tone"],
+          style: normalizedFields["soul.style"],
+          brevity: normalizedFields["soul.brevity"],
+        },
+        model: input.model,
+      })
+    : null;
+  if (soulCompile) {
+    usedLlm = usedLlm || soulCompile.used_llm;
+    warnings.push(...soulCompile.warnings);
+    normalizedFields["soul.voice"] =
+      soulCompile.normalized_fields["soul.voice"] ??
+      normalizedFields["soul.voice"] ??
+      "";
+    normalizedFields["soul.tone"] =
+      soulCompile.normalized_fields["soul.tone"] ??
+      normalizedFields["soul.tone"] ??
+      "";
+    normalizedFields["soul.style"] =
+      soulCompile.normalized_fields["soul.style"] ??
+      normalizedFields["soul.style"] ??
+      "";
+    normalizedFields["soul.brevity"] =
+      soulCompile.normalized_fields["soul.brevity"] ??
+      normalizedFields["soul.brevity"] ??
+      "";
+  }
+
   return {
     severity,
     normalized_fields: normalizedFields,
     warnings: dedupeWarnings(warnings),
     moved_suggestions: dedupeSuggestions(movedSuggestions).slice(0, 12),
     rejected_items: dedupeRejectedItems(rejectedItems).slice(0, 12),
+    effective_soul: soulCompile?.effective_soul,
     used_llm: usedLlm,
+  };
+}
+
+export async function compileBusinessBrainSoul(
+  input: CompileBusinessBrainSoulInput
+): Promise<CompileBusinessBrainSoulResult> {
+  const deterministic = compileBusinessBrainSoulDeterministic(input.soul);
+  const model = input.model ?? tryCreateReviewerModel();
+  if (!model) return deterministic;
+
+  try {
+    const response = await model.invoke([
+      new SystemMessage(SOUL_SYSTEM_PROMPT),
+      new HumanMessage(
+        JSON.stringify(
+          {
+            user_soul: normalizeSoulFields(input.soul),
+            fallback_soul: DEFAULT_SOUL,
+            deterministic: {
+              effective_text: deterministic.effective_soul.summary,
+              warnings: deterministic.warnings,
+              source: deterministic.effective_soul.source,
+            },
+          },
+          null,
+          2
+        )
+      ),
+    ]);
+    const parsed = parseEffectiveSoulJson(stringifyContent(response.content));
+    if (!parsed) return deterministic;
+    const mergedWarnings = dedupeWarnings([
+      ...deterministic.warnings,
+      ...parsed.warnings,
+    ]);
+    const summary =
+      parsed.effective_text.trim() ||
+      deterministic.effective_soul.summary ||
+      buildEffectiveSoulSummary(DEFAULT_SOUL);
+    const source = resolveEffectiveSoulSource({
+      userSoul: input.soul,
+      preferred: parsed.source,
+    });
+    return {
+      effective_soul: {
+        summary,
+        source,
+        warnings: mergedWarnings,
+        generated_at: new Date().toISOString(),
+        model_id:
+          process.env.BUSINESS_BRAIN_REVIEWER_MODEL_ID?.trim() ||
+          DEFAULT_BUSINESS_BRAIN_REVIEWER_MODEL_ID,
+      },
+      normalized_fields: {
+        ...deterministic.normalized_fields,
+        ...parsed.normalized_fields,
+      },
+      warnings: mergedWarnings,
+      used_llm: true,
+    };
+  } catch {
+    return deterministic;
+  }
+}
+
+function compileBusinessBrainSoulDeterministic(
+  soul: BusinessBrainSoul | undefined
+): CompileBusinessBrainSoulResult {
+  const normalized = normalizeSoulFields(soul);
+  const warnings: string[] = [];
+  const hasUserSoul = Object.values(normalized).some(Boolean);
+  const brevityText = normalized["soul.brevity"] ?? "";
+  const styleText = normalized["soul.style"] ?? "";
+  const voiceText = normalized["soul.voice"] ?? "";
+  const toneText = normalized["soul.tone"] ?? "";
+
+  const shortPreferred = /\b(breve|cort[oa]|concis[oa]|resumen)\b/i.test(brevityText);
+  const longPreferred = /\b(detallad\w*|extens\w*|profund\w*)\b/i.test(
+    [styleText, brevityText].join(" ")
+  );
+  const conditionalDepth = /\b(cuando|si)\s+(se\s+)?(pida|haga\s+falta)\b/i.test(brevityText);
+  if (shortPreferred && longPreferred && !conditionalDepth) {
+    warnings.push(
+      "Se detectó tensión entre brevedad y detalle; se prioriza brevedad por defecto y profundidad cuando se pida."
+    );
+    normalized["soul.brevity"] =
+      "Breve por defecto; profundiza cuando el usuario lo pida o cuando haga falta para precisión.";
+  }
+
+  const veryCasual = /\b(casual|coloquial|informal|relajad[oa])\b/i.test(voiceText);
+  const veryFormal = /\b(seri[oa]|sobri[oa]|formal|corporativ[oa])\b/i.test(toneText);
+  if (veryCasual && veryFormal) {
+    warnings.push(
+      "Voz y tono apuntan a registros distintos; se armoniza a profesional y cercano."
+    );
+    if (!normalized["soul.tone"]) {
+      normalized["soul.tone"] =
+        "Profesional y cercana, sin sonar corporativa.";
+    }
+  }
+
+  const merged = {
+    voice: normalized["soul.voice"] || DEFAULT_SOUL.voice,
+    tone: normalized["soul.tone"] || DEFAULT_SOUL.tone,
+    style: normalized["soul.style"] || DEFAULT_SOUL.style,
+    brevity: normalized["soul.brevity"] || DEFAULT_SOUL.brevity,
+  };
+  const source = resolveEffectiveSoulSource({
+    userSoul: soul,
+    preferred: hasUserSoul ? "mixed" : "default",
+  });
+  return {
+    effective_soul: {
+      summary: buildEffectiveSoulSummary(merged),
+      source,
+      warnings,
+      generated_at: new Date().toISOString(),
+      model_id: source === "default" ? "deterministic-default" : "deterministic-mixed",
+    },
+    normalized_fields: normalized,
+    warnings,
+    used_llm: false,
   };
 }
 
@@ -418,6 +618,102 @@ function parseReviewerJson(
   } catch {
     return null;
   }
+}
+
+function parseEffectiveSoulJson(raw: string): {
+  readonly effective_text: string;
+  readonly warnings: string[];
+  readonly source?: "default" | "user" | "mixed";
+  readonly normalized_fields: Partial<Record<SoulSlot, string>>;
+} | null {
+  const trimmed = raw.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const value = JSON.parse(trimmed.slice(start, end + 1)) as Record<
+      string,
+      unknown
+    >;
+    const normalizedFieldsRaw =
+      value.normalized_fields &&
+      typeof value.normalized_fields === "object" &&
+      !Array.isArray(value.normalized_fields)
+        ? (value.normalized_fields as Record<string, unknown>)
+        : {};
+    const normalized_fields: Partial<Record<SoulSlot, string>> = {};
+    for (const slot of [
+      "soul.voice",
+      "soul.tone",
+      "soul.style",
+      "soul.brevity",
+    ] as const) {
+      if (typeof normalizedFieldsRaw[slot] === "string") {
+        normalized_fields[slot] = truncateBusinessBrainText(
+          slot,
+          normalizedFieldsRaw[slot]
+        );
+      }
+    }
+    return {
+      effective_text:
+        typeof value.effective_text === "string" ? value.effective_text : "",
+      warnings: stringArray(value.warnings),
+      source:
+        value.source === "default" ||
+        value.source === "user" ||
+        value.source === "mixed"
+          ? value.source
+          : undefined,
+      normalized_fields,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSoulFields(
+  soul: BusinessBrainSoul | undefined
+): Partial<Record<SoulSlot, string>> {
+  const voice = truncateBusinessBrainText("soul.voice", (soul?.voice ?? "").trim());
+  const tone = truncateBusinessBrainText("soul.tone", (soul?.tone ?? "").trim());
+  const style = truncateBusinessBrainText("soul.style", (soul?.style ?? "").trim());
+  const brevity = truncateBusinessBrainText(
+    "soul.brevity",
+    (soul?.brevity ?? "").trim()
+  );
+  return {
+    "soul.voice": voice,
+    "soul.tone": tone,
+    "soul.style": style,
+    "soul.brevity": brevity,
+  };
+}
+
+function buildEffectiveSoulSummary(soul: {
+  voice: string;
+  tone: string;
+  style: string;
+  brevity: string;
+}): string {
+  return [
+    `Voz: ${soul.voice}`,
+    `Tono: ${soul.tone}`,
+    `Estilo: ${soul.style}`,
+    `Brevedad: ${soul.brevity}`,
+  ].join(" ");
+}
+
+function resolveEffectiveSoulSource(args: {
+  userSoul: BusinessBrainSoul | undefined;
+  preferred: "default" | "user" | "mixed" | undefined;
+}): "default" | "user" | "mixed" {
+  const normalized = normalizeSoulFields(args.userSoul);
+  const values = Object.values(normalized).map((value) => value?.trim() ?? "");
+  const presentCount = values.filter(Boolean).length;
+  if (presentCount === 0) return "default";
+  if (presentCount === 4 && args.preferred !== "mixed") return "user";
+  return args.preferred ?? "mixed";
 }
 
 function stringArray(value: unknown): string[] {

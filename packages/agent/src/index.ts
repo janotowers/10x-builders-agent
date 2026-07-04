@@ -206,6 +206,7 @@ export {
 export {
   reviewBusinessBrainSlot,
   reviewBusinessBrainFields,
+  compileBusinessBrainSoul,
   runDeterministicReview,
 } from "./business-brain/reviewer";
 export type {
@@ -220,4 +221,6 @@ export type {
   BusinessBrainReviewSeverity,
   BusinessBrainMovedSuggestion,
   BusinessBrainRejectedItem,
+  CompileBusinessBrainSoulInput,
+  CompileBusinessBrainSoulResult,
 } from "./business-brain/reviewer";

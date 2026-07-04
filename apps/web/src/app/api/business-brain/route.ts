@@ -6,9 +6,11 @@ import {
 } from "@agents/db";
 import {
   buildWarehouseCompatibilityPatch,
+  compileBusinessBrainSoul,
 } from "@agents/agent";
 import type {
   BusinessBrain,
+  BusinessBrainSoul,
   BusinessBrainWarehouseSource,
 } from "@agents/types";
 
@@ -48,9 +50,22 @@ export async function PATCH(request: Request) {
     const normalizedPatch: Partial<BusinessBrain> = warehouse
       ? { ...patch, ...buildWarehouseCompatibilityPatch(warehouse) }
       : patch;
+    const soulPatch =
+      isRecord(normalizedPatch.soul) ? (normalizedPatch.soul as BusinessBrainSoul) : undefined;
+    const patchWithEffectiveSoul: Partial<BusinessBrain> = soulPatch
+      ? {
+          ...normalizedPatch,
+          soul_effective: (await compileBusinessBrainSoul({ soul: soulPatch }))
+            .effective_soul,
+        }
+      : normalizedPatch;
 
     const db = createServerClient();
-    const businessBrain = await updateBusinessBrain(db, user.id, normalizedPatch);
+    const businessBrain = await updateBusinessBrain(
+      db,
+      user.id,
+      patchWithEffectiveSoul
+    );
     return NextResponse.json({ ok: true, business_brain: businessBrain });
   } catch (err) {
     console.error("[PATCH /api/business-brain] failed:", err);

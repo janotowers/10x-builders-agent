@@ -74,6 +74,31 @@ it("agent avatar URLs are not injected into the prompt", () => {
   assert.doesNotMatch(block, /https:\/\/example\.com/);
 });
 
+it("includes fallback communication guidance when business brain is empty", () => {
+  const block = buildBusinessBrainContextBlock({});
+  assert.match(block, /Comunicación Del Agente/);
+  assert.match(block, /Alma efectiva:/);
+  assert.match(block, /Voz:/);
+});
+
+it("prefers soul_effective summary over raw soul composition", () => {
+  const block = buildBusinessBrainContextBlock({
+    soul: {
+      voice: "directa",
+      tone: "profesional",
+      style: "escaneable",
+      brevity: "breve",
+    },
+    soul_effective: {
+      summary:
+        "Comunícate de forma directa y cálida; breve por defecto y profunda cuando se pida.",
+      source: "mixed",
+    },
+  });
+  assert.match(block, /Alma efectiva: Comunícate de forma directa y cálida/);
+  assert.match(block, /Fuente alma efectiva: mixed/);
+});
+
 async function main() {
   for (const [name, fn] of cases) {
     await fn();
