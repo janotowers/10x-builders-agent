@@ -288,7 +288,7 @@ async function inferScheduledTaskAutomationBinding(args: {
  */
 export function prepareBigQueryRunArgs(
   input: BigQueryToolInput,
-  ctx: Pick<ToolContext, "tenantOrganizationId">
+  ctx: Pick<ToolContext, "tenantOrganizationId" | "lastUserMessage">
 ): BigQueryRunArgs | BigQueryRunResult {
   const tenantOrgId = ctx.tenantOrganizationId?.trim();
   if (!tenantOrgId) {
@@ -314,6 +314,41 @@ export function prepareBigQueryRunArgs(
     params.organization_id = tenantOrgId;
   }
 
+  const namedParams = listNamedParams(input.sql);
+  if (namedParams.length > 0) {
+    let missing = namedParams.filter((name) => params[name] == null);
+    if (
+      missing.length > 0 &&
+      canAutofillMonthlyDateParams({
+        missing,
+        namedParams,
+        lastUserMessage: ctx.lastUserMessage,
+      })
+    ) {
+      const inferred = inferSingleSpanishMonthRange(ctx.lastUserMessage ?? "");
+      if (inferred) {
+        if (params.start_date == null) params.start_date = inferred.start_date;
+        if (params.end_date == null) params.end_date = inferred.end_date;
+        missing = namedParams.filter((name) => params[name] == null);
+      }
+    }
+    if (missing.length > 0) {
+      const monthlyHint =
+        missing.includes("start_date") || missing.includes("end_date")
+          ? " For month/range queries, pass both start_date and end_date (exclusive end) as ISO dates."
+          : "";
+      return {
+        status: "validation_error",
+        error:
+          `missing named query parameter(s): ${missing
+            .map((name) => `@${name}`)
+            .join(", ")}. ` +
+          "When SQL uses @params, include each one under `params` (without @), e.g. `params: { start_date: '2026-06-01', end_date: '2026-07-01' }`." +
+          monthlyHint,
+      };
+    }
+  }
+
   return {
     sql: input.sql,
     projectId: input.project_id,
@@ -323,8 +358,181 @@ export function prepareBigQueryRunArgs(
   };
 }
 
+type MissingMonthlyAutofillArgs = {
+  missing: string[];
+  namedParams: string[];
+  lastUserMessage?: string;
+};
+
+function canAutofillMonthlyDateParams(args: MissingMonthlyAutofillArgs): boolean {
+  if (!args.lastUserMessage?.trim()) return false;
+  if (!args.namedParams.includes("start_date") || !args.namedParams.includes("end_date")) {
+    return false;
+  }
+  if (args.missing.some((name) => name !== "start_date" && name !== "end_date")) {
+    return false;
+  }
+  const text = args.lastUserMessage.toLowerCase();
+  if (
+    /\b(vs|versus|contra|compar|entre|del?\s+\d{1,2}|al?\s+\d{1,2}|desde|hasta|rango|trimestre|q[1-4])\b/i.test(
+      text
+    )
+  ) {
+    return false;
+  }
+  const months = uniqueSpanishMonthMentions(text);
+  return months.size === 1;
+}
+
+const MONTH_ALIASES = new Map<string, number>([
+  ["enero", 0],
+  ["febrero", 1],
+  ["marzo", 2],
+  ["abril", 3],
+  ["mayo", 4],
+  ["junio", 5],
+  ["julio", 6],
+  ["agosto", 7],
+  ["septiembre", 8],
+  ["setiembre", 8],
+  ["octubre", 9],
+  ["noviembre", 10],
+  ["diciembre", 11],
+]);
+
+function uniqueSpanishMonthMentions(text: string): Set<number> {
+  const out = new Set<number>();
+  const re =
+    /\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const idx = MONTH_ALIASES.get(match[1].toLowerCase());
+    if (idx != null) out.add(idx);
+  }
+  return out;
+}
+
+function inferSingleSpanishMonthRange(
+  message: string,
+  now = new Date()
+): { start_date: string; end_date: string } | null {
+  const text = message.toLowerCase();
+  const months = uniqueSpanishMonthMentions(text);
+  if (months.size !== 1) return null;
+  const monthIndex = [...months][0];
+  if (!Number.isInteger(monthIndex) || monthIndex < 0 || monthIndex > 11) {
+    return null;
+  }
+  const yearMatches = text.match(/\b(20\d{2})\b/g) ?? [];
+  const uniqueYears = [...new Set(yearMatches)];
+  if (uniqueYears.length > 1) return null;
+  const year =
+    uniqueYears.length === 1
+      ? Number.parseInt(uniqueYears[0], 10)
+      : now.getUTCFullYear();
+  if (!Number.isFinite(year) || year < 2000 || year > 2100) return null;
+  const start = new Date(Date.UTC(year, monthIndex, 1));
+  const end = new Date(Date.UTC(year, monthIndex + 1, 1));
+  return {
+    start_date: formatIsoDate(start),
+    end_date: formatIsoDate(end),
+  };
+}
+
+function formatIsoDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
 function sqlUsesNamedParam(sql: string, name: string): boolean {
   return new RegExp(`@${name}(?![A-Za-z0-9_])`, "i").test(sql);
+}
+
+function listNamedParams(sql: string): string[] {
+  const codeOnly = stripSqlCommentsAndLiterals(sql);
+  const out = new Set<string>();
+  const re = /@([A-Za-z_][A-Za-z0-9_]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(codeOnly)) !== null) {
+    out.add(m[1]);
+  }
+  return [...out];
+}
+
+function stripSqlCommentsAndLiterals(sql: string): string {
+  const out: string[] = [];
+  let i = 0;
+  while (i < sql.length) {
+    const ch = sql[i] ?? "";
+    const next = sql[i + 1] ?? "";
+
+    if (ch === "-" && next === "-") {
+      out.push(" ", " ");
+      i += 2;
+      while (i < sql.length && sql[i] !== "\n") {
+        out.push(" ");
+        i += 1;
+      }
+      continue;
+    }
+
+    if (ch === "/" && next === "*") {
+      out.push(" ", " ");
+      i += 2;
+      while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) {
+        out.push(sql[i] === "\n" ? "\n" : " ");
+        i += 1;
+      }
+      if (i < sql.length) {
+        out.push(" ", " ");
+        i += 2;
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      const triple = sql.slice(i, i + 3) === quote.repeat(3);
+      out.push(" ");
+      i += 1;
+      if (triple) {
+        out.push(" ", " ");
+        i += 2;
+        while (i < sql.length && sql.slice(i, i + 3) !== quote.repeat(3)) {
+          out.push(sql[i] === "\n" ? "\n" : " ");
+          i += 1;
+        }
+        if (i < sql.length) {
+          out.push(" ", " ", " ");
+          i += 3;
+        }
+      } else {
+        while (i < sql.length) {
+          if (sql[i] === "\\" && i + 1 < sql.length) {
+            out.push(" ", " ");
+            i += 2;
+            continue;
+          }
+          if (sql[i] === quote && sql[i + 1] === quote) {
+            out.push(" ", " ");
+            i += 2;
+            continue;
+          }
+          if (sql[i] === quote) {
+            out.push(" ");
+            i += 1;
+            break;
+          }
+          out.push(sql[i] === "\n" ? "\n" : " ");
+          i += 1;
+        }
+      }
+      continue;
+    }
+
+    out.push(ch);
+    i += 1;
+  }
+  return out.join("");
 }
 
 function sqlContainsLiteral(sql: string, literal: string): boolean {

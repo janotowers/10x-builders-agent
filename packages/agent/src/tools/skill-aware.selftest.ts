@@ -179,6 +179,94 @@ function testBigQueryFillsMissingTenantParam(): void {
   });
 }
 
+// ── Test 10: missing named params fail fast (validation_error) instead of
+//    consuming a BigQuery execution attempt.
+function testBigQueryRejectsMissingNamedParams(): void {
+  const result = prepareBigQueryRunArgs(
+    {
+      sql: "SELECT COUNT(*) FROM `proj.ds.leads` WHERE DATE(created_at) >= @start_date AND DATE(created_at) < @end_date",
+      params: {},
+    },
+    { tenantOrganizationId: "users/abc" }
+  );
+  assert.ok("status" in result);
+  assert.equal(result.status, "validation_error");
+  assert.match(result.error, /@start_date/i);
+  assert.match(result.error, /@end_date/i);
+}
+
+// ── Test 11: named params inside string/comment do not require params.
+function testBigQueryIgnoresNamedParamsInCommentsAndStrings(): void {
+  const result = prepareBigQueryRunArgs(
+    {
+      sql: `
+-- mention @start_date in a comment should be ignored
+SELECT '@end_date literal' AS note
+FROM \`proj.ds.table\`
+WHERE u.organization_id = @organization_id
+`,
+    },
+    { tenantOrganizationId: "users/abc" }
+  );
+  assert.ok(!("status" in result));
+  assert.deepEqual(result.params, { organization_id: "users/abc" });
+}
+
+// ── Test 12: month-only prompt can auto-fill start/end dates when missing.
+function testBigQueryAutofillsMonthlyDateParamsFromPrompt(): void {
+  const result = prepareBigQueryRunArgs(
+    {
+      sql: "SELECT COUNT(*) FROM `proj.ds.leads` WHERE DATE(created_at) >= @start_date AND DATE(created_at) < @end_date AND organization_id = @organization_id",
+      params: {},
+    },
+    {
+      tenantOrganizationId: "users/abc",
+      lastUserMessage: "cuantos leads tuvimos en mayo 2026?",
+    }
+  );
+  assert.ok(!("status" in result));
+  assert.deepEqual(result.params, {
+    organization_id: "users/abc",
+    start_date: "2026-05-01",
+    end_date: "2026-06-01",
+  });
+}
+
+// ── Test 13: multi-period comparisons should NOT auto-fill.
+function testBigQueryDoesNotAutofillMultiPeriodPrompt(): void {
+  const result = prepareBigQueryRunArgs(
+    {
+      sql: "SELECT COUNT(*) FROM `proj.ds.leads` WHERE DATE(created_at) >= @start_date AND DATE(created_at) < @end_date AND organization_id = @organization_id",
+      params: {},
+    },
+    {
+      tenantOrganizationId: "users/abc",
+      lastUserMessage: "comparame abril vs mayo 2026",
+    }
+  );
+  assert.ok("status" in result);
+  assert.equal(result.status, "validation_error");
+  assert.match(result.error, /@start_date/i);
+  assert.match(result.error, /@end_date/i);
+}
+
+// ── Test 14: if another param is missing, keep failing fast.
+function testBigQueryDoesNotAutofillWhenOtherNamedParamMissing(): void {
+  const result = prepareBigQueryRunArgs(
+    {
+      sql: "SELECT COUNT(*) FROM `proj.ds.leads` WHERE DATE(created_at) >= @start_date AND DATE(created_at) < @end_date AND source = @source",
+      params: {},
+    },
+    {
+      tenantOrganizationId: "users/abc",
+      lastUserMessage: "cuantos leads tuvimos en mayo 2026?",
+    }
+  );
+  assert.ok("status" in result);
+  assert.equal(result.status, "validation_error");
+  assert.match(result.error, /@source/i);
+}
+
 function main(): void {
   testNoSkillDoesNotNarrow();
   testEmptyAllowlistDoesNotNarrow();
@@ -189,7 +277,12 @@ function main(): void {
   testHeartbeatDoesNotExposeBigQuery();
   testBigQueryRejectsLiteralTenantId();
   testBigQueryFillsMissingTenantParam();
-  console.log("tools/skill-aware.selftest: all 9 cases passed");
+  testBigQueryRejectsMissingNamedParams();
+  testBigQueryIgnoresNamedParamsInCommentsAndStrings();
+  testBigQueryAutofillsMonthlyDateParamsFromPrompt();
+  testBigQueryDoesNotAutofillMultiPeriodPrompt();
+  testBigQueryDoesNotAutofillWhenOtherNamedParamMissing();
+  console.log("tools/skill-aware.selftest: all 14 cases passed");
 }
 
 main();

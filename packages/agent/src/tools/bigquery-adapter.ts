@@ -34,6 +34,8 @@ export const MAX_RESULTS_HARD_CAP = 1000;
 const BQ_SCOPE = "https://www.googleapis.com/auth/bigquery.readonly";
 /** Tokens are valid for 1h; refresh slightly earlier to dodge clock skew. */
 const TOKEN_TTL_SAFETY_MARGIN_SEC = 60;
+const BIGQUERY_FETCH_MAX_ATTEMPTS = 3;
+const BIGQUERY_FETCH_BACKOFF_MS = [500, 1500];
 
 /**
  * Allowed types for parameterized queries (`@name` placeholders in SQL).
@@ -168,7 +170,7 @@ export async function executeBigQueryQuery(
 
   let response: Response;
   try {
-    response = await fetch(
+    response = await fetchWithRetry(
       `https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(projectId)}/queries`,
       {
         method: "POST",
@@ -177,7 +179,8 @@ export async function executeBigQueryQuery(
           "Content-Type": "application/json",
         },
         body: JSON.stringify(requestBody),
-      }
+      },
+      { label: "jobs.query" }
     );
   } catch (err) {
     return {
@@ -314,14 +317,18 @@ async function getAccessToken(sa: ServiceAccountKey): Promise<string> {
   const signature = signer.sign(key).toString("base64url");
   const jwt = `${unsigned}.${signature}`;
 
-  const response = await fetch(tokenUri, {
+  const response = await fetchWithRetry(
+    tokenUri,
+    {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
       assertion: jwt,
     }),
-  });
+    },
+    { label: "oauth.token" }
+  );
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(`HTTP ${response.status}: ${extractErrorSummary(text)}`);
@@ -339,6 +346,65 @@ async function getAccessToken(sa: ServiceAccountKey): Promise<string> {
     expiresAt: now + expiresIn,
   });
   return json.access_token;
+}
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  options?: { label?: string }
+): Promise<Response> {
+  const label = options?.label ?? "fetch";
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= BIGQUERY_FETCH_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, init);
+      if (
+        attempt < BIGQUERY_FETCH_MAX_ATTEMPTS &&
+        isRetriableHttpStatus(response.status)
+      ) {
+        await sleep(BIGQUERY_FETCH_BACKOFF_MS[attempt - 1] ?? 1500);
+        continue;
+      }
+      return response;
+    } catch (err) {
+      lastError = err;
+      if (
+        attempt < BIGQUERY_FETCH_MAX_ATTEMPTS &&
+        isRetriableNetworkError(err)
+      ) {
+        await sleep(BIGQUERY_FETCH_BACKOFF_MS[attempt - 1] ?? 1500);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(
+    `BigQuery ${label} failed after ${BIGQUERY_FETCH_MAX_ATTEMPTS} attempts: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`
+  );
+}
+
+function isRetriableHttpStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function isRetriableNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = `${error.message} ${(error.cause as Error | undefined)?.message ?? ""}`.toLowerCase();
+  return (
+    msg.includes("fetch failed") ||
+    msg.includes("timeout") ||
+    msg.includes("socket") ||
+    msg.includes("econnreset") ||
+    msg.includes("und_err")
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function loadServiceAccount(): Promise<ServiceAccountKey> {

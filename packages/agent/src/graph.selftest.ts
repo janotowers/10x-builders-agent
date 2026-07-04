@@ -3,7 +3,9 @@ import type { OperationalCaseFlowStep } from "@agents/types";
 import {
   operationalStepUsesTenantBigQueryForTest,
   resolveStepBoundSkillSlugForTest,
+  shouldBlockCompanyDataAnswerWithoutSuccessfulBigQueryForTest,
 } from "./graph";
+import type { ResolvedSkill } from "./skills/types";
 
 const flow: OperationalCaseFlowStep[] = [
   {
@@ -91,6 +93,38 @@ assert.equal(
     ],
   }),
   true
+);
+
+const companyDataSkill = { rootName: "company-data" } as ResolvedSkill;
+
+assert.equal(
+  shouldBlockCompanyDataAnswerWithoutSuccessfulBigQueryForTest({
+    activeSkill: companyDataSkill,
+    message: "cuantos leads tuvimos en mayo?",
+    toolNamesAvailable: new Set(["bigquery_run_query"]),
+    successfulBigQueryCalls: 0,
+  }),
+  true
+);
+
+assert.equal(
+  shouldBlockCompanyDataAnswerWithoutSuccessfulBigQueryForTest({
+    activeSkill: companyDataSkill,
+    message: "cuantos leads tuvimos en mayo?",
+    toolNamesAvailable: new Set(["bigquery_run_query"]),
+    successfulBigQueryCalls: 1,
+  }),
+  false
+);
+
+assert.equal(
+  shouldBlockCompanyDataAnswerWithoutSuccessfulBigQueryForTest({
+    activeSkill: companyDataSkill,
+    message: "hola",
+    toolNamesAvailable: new Set(["bigquery_run_query"]),
+    successfulBigQueryCalls: 0,
+  }),
+  false
 );
 
 console.log("graph.selftest: ok");

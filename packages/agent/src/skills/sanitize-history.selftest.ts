@@ -98,6 +98,46 @@ function run(): void {
     assert.equal(after[1].content, before[1].content);
   }
 
+  // 7. Historical BigQuery parameter failure should be sanitized.
+  {
+    const before = [
+      msg("user", "cuantos leads tuvimos en mayo?"),
+      msg(
+        "assistant",
+        "No pude completar la consulta porque BigQuery requiere start_date y end_date, y aqui no los acepta."
+      ),
+    ];
+    const after = sanitizeCompanyDataHistory(before);
+    assert.match(after[1].content, /respuesta historica descartada/i);
+    assert.match(after[1].content, /bigquery/i);
+  }
+
+  // 8. Mixed hallucinated number + failure explanation should be sanitized.
+  {
+    const before = [
+      msg("user", "cuantos leads tuvimos en mayo?"),
+      msg(
+        "assistant",
+        "**En mayo tuvieron 0 leads.** No pude completar la consulta por parametros faltantes."
+      ),
+    ];
+    const after = sanitizeCompanyDataHistory(before);
+    assert.match(after[1].content, /respuesta historica descartada/i);
+  }
+
+  // 9. Normal successful single-month answer stays untouched.
+  {
+    const before = [
+      msg("user", "cuantos leads tuvimos en mayo?"),
+      msg(
+        "assistant",
+        "**En mayo tuvieron 255 leads.** Es el total del periodo solicitado."
+      ),
+    ];
+    const after = sanitizeCompanyDataHistory(before);
+    assert.equal(after[1].content, before[1].content);
+  }
+
   console.log("sanitize-history.selftest.ts: ok");
 }
 

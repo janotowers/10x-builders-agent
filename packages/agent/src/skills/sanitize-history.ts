@@ -33,6 +33,12 @@ const MONTHS_PATTERN =
 const METRIC_HINT_RE =
   /(total\s+de\s+leads|leads\s+creados|\|\s*leads|\bleads?\b)/i;
 
+const BIGQUERY_FAILURE_HINT_RE =
+  /(no\s+pude\s+completar\s+la\s+consulta|no\s+pude\s+obtener|bigquery|start_date|end_date|validation_error|param(etro|etros)|missing named query parameter)/i;
+
+const HAS_NUMERIC_METRIC_RE =
+  /(\d+[\d.,]*\s+leads?|en\s+\w+\s+tuvieron\s+\d+|tuvimos\s+\d+)/i;
+
 function uniqueMonths(text: string): Set<string> {
   const set = new Set<string>();
   const matches = text.match(MONTHS_PATTERN);
@@ -70,12 +76,21 @@ export function sanitizeCompanyDataHistory(
     }
     if (!prevUser) return { ...msg };
 
+    const assistantContent = msg.content;
     const userMonths = uniqueMonths(prevUser.content);
-    const assistantMonths = uniqueMonths(msg.content);
+    const assistantMonths = uniqueMonths(assistantContent);
+
+    if (isFailedBigQueryAssistantReply(assistantContent)) {
+      return {
+        ...msg,
+        content:
+          "[respuesta historica descartada — este turno fallo por ejecucion/parametros de BigQuery. Ignora este ejemplo y no respondas metricas sin una consulta BigQuery exitosa en el turno actual.]",
+      };
+    }
 
     if (userMonths.size !== 1) return { ...msg };
     if (assistantMonths.size < 2) return { ...msg };
-    if (!METRIC_HINT_RE.test(msg.content)) return { ...msg };
+    if (!METRIC_HINT_RE.test(assistantContent)) return { ...msg };
 
     const askedMonth = [...userMonths][0];
     const extras = [...assistantMonths]
@@ -86,4 +101,10 @@ export function sanitizeCompanyDataHistory(
       content: `[respuesta histórica descartada — el usuario preguntó por ${askedMonth} pero la respuesta mezcló además ${extras}. Ignora este turno como ejemplo de formato; no copies el patrón de devolver varios meses.]`,
     };
   });
+}
+
+function isFailedBigQueryAssistantReply(content: string): boolean {
+  if (!BIGQUERY_FAILURE_HINT_RE.test(content)) return false;
+  if (HAS_NUMERIC_METRIC_RE.test(content)) return true;
+  return /\b(leads?|consulta|sql)\b/i.test(content);
 }

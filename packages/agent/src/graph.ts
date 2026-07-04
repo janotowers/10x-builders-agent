@@ -587,6 +587,22 @@ function shouldRequireMemoryCurateToolForTurn(args: {
   return !args.toolCallNames.some((name) => MEMORY_CURATE_TOOL_NAMES.has(name));
 }
 
+export function shouldBlockCompanyDataAnswerWithoutSuccessfulBigQueryForTest(args: {
+  readonly activeSkill: ResolvedSkill | undefined;
+  readonly message: string | undefined;
+  readonly toolNamesAvailable: Set<string>;
+  readonly successfulBigQueryCalls: number;
+}): boolean {
+  if (args.activeSkill?.rootName !== "company-data") return false;
+  if (args.successfulBigQueryCalls > 0) return false;
+  return shouldRequireCompanyDataQueryForTurn({
+    activeSkill: args.activeSkill,
+    message: args.message,
+    toolNamesAvailable: args.toolNamesAvailable,
+    toolCallNames: [],
+  });
+}
+
 function isInternalCorrectionMessage(message: BaseMessage): boolean {
   if (!(message instanceof HumanMessage)) return false;
   const content = normalizeMessageContentToString(message.content);
@@ -1695,6 +1711,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const toolCallNames: string[] = [];
   const appliedSkills = buildAppliedSkills(activeSkill);
   let bigQueryExecutionErrorCount = 0;
+  let companyDataBigQueryOkCount = 0;
   let companyDataQueryCorrectionCount = 0;
   let leadContextQueryCorrectionCount = 0;
   let memoryCurateCorrectionCount = 0;
@@ -2300,6 +2317,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         ) {
           try {
             const parsed = JSON.parse(resultStr) as Record<string, unknown>;
+            if (parsed.status === "ok") {
+              companyDataBigQueryOkCount += 1;
+            }
             if (parsed.status === "execution_error") {
               bigQueryExecutionErrorCount += 1;
             }
@@ -2675,6 +2695,18 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     if (!responseText.trim()) {
       responseText =
         "No pude generar una respuesta en este turno. Revisa integraciones y herramientas en Ajustes e inténtalo de nuevo.";
+    }
+
+    if (
+      shouldBlockCompanyDataAnswerWithoutSuccessfulBigQueryForTest({
+        activeSkill,
+        message,
+        toolNamesAvailable,
+        successfulBigQueryCalls: companyDataBigQueryOkCount,
+      })
+    ) {
+      responseText =
+        "No pude completar la consulta de datos porque BigQuery no devolvió un resultado valido en este turno. Ya registre el detalle tecnico para revision.";
     }
 
     if (responseText.trim().length > 0) {

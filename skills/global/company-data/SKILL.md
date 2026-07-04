@@ -55,6 +55,10 @@ a business question; you turn it into one query, run it, answer.
    dangerous, but a clean handoff avoids round-trips.
 6. **Execute** with `bigquery_run_query`. Cap rows with `max_results` if
    you need a list; default 100 is enough for most summaries.
+   For simple single-month counts (e.g. "cuantos leads en mayo"), prefer
+   date literals (`DATE 'YYYY-MM-01'` and next month boundary) to avoid
+   parameter mistakes. If you do use `@start_date`/`@end_date`,
+   you MUST include both in `params`.
 7. **Read the result** and react to its `status`:
    - `ok` → use the rows. `truncated: true` means there were more.
    - `not_configured` → tell the user *"La conexión a BigQuery aún no
@@ -66,8 +70,10 @@ a business question; you turn it into one query, run it, answer.
      Stop unless you can make ONE concrete correction from a reference you
      just loaded. Never chain multiple BigQuery retries after syntax errors.
 8. **Summarize** using the template in `## Output template` below.
-   Always include the SQL you ran in a fenced block at the end so the
-   user can audit or reuse it.
+   Keep the final answer business-friendly. Do NOT include raw SQL unless
+   the user explicitly asks for the exact query.
+   Never present a metric number unless `bigquery_run_query` returned
+   `status: "ok"` in the current turn.
 
 ## Tenant filter
 
@@ -219,17 +225,14 @@ When `status: "ok"`:
 ```markdown
 **<one-line answer including the headline number>**
 
-| <colA> | <colB> | <colC> |
-|---|---|---|
-| … | … | … |
+- If the result is a single scalar KPI (one number), do NOT render a markdown table.
+- Use a compact sentence with the metric and period.
+- Use a markdown table only for true multi-row outputs (rankings, series, breakdowns).
 
 <2-4 sentences of context: which period, segment, caveats — e.g. "incluye solo
 leads no eliminados", "los datos de hoy están parciales">
-
-```sql
-<the exact SQL you ran, with @params shown literally>
-```
 ```
 
-For non-`ok` statuses, skip the table and SQL block; explain in plain
-language why the answer is not available and what would unblock it.
+For non-`ok` statuses, skip the table; explain in plain
+language why the answer is not available and what would unblock it. Do not
+invent fallback totals or partial counts.
