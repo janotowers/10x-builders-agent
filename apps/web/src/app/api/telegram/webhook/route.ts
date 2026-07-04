@@ -226,7 +226,7 @@ async function appendRawPhoto(params: {
   }
   if (
     !looksLikeRawPhotoUpload({
-      contentType: params.ingested.document.content_type,
+      contentType: params.ingested.document.content_type ?? "",
       fileName: params.ingested.document.original_name ?? "",
     })
   ) {
@@ -653,6 +653,87 @@ interface TelegramUpdate {
     message: { chat: { id: number }; message_id: number };
     data: string;
   };
+}
+
+type WebhookClaimState = "claimed" | "duplicate_completed" | "duplicate_in_progress";
+
+const TELEGRAM_WEBHOOK_CLAIM_LEASE_MS = 10 * 60 * 1000;
+
+async function claimTelegramWebhookUpdate(params: {
+  db: ReturnType<typeof createServerClient>;
+  updateId: number;
+  userId: string;
+  chatId: number;
+  messageId?: number;
+}): Promise<WebhookClaimState> {
+  const nowIso = new Date().toISOString();
+  const { data: inserted, error: insertError } = await params.db
+    .from("telegram_webhook_updates")
+    .insert({
+      update_id: params.updateId,
+      user_id: params.userId,
+      chat_id: params.chatId,
+      message_id: params.messageId ?? null,
+      status: "processing",
+      claimed_at: nowIso,
+      updated_at: nowIso,
+    })
+    .select("update_id")
+    .maybeSingle();
+  if (insertError && insertError.code !== "23505") {
+    throw insertError;
+  }
+  if (inserted) return "claimed";
+
+  const { data: existing, error: existingError } = await params.db
+    .from("telegram_webhook_updates")
+    .select("status, claimed_at")
+    .eq("update_id", params.updateId)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (!existing) return "claimed";
+  if (existing.status === "completed") return "duplicate_completed";
+
+  const leaseCutoffIso = new Date(
+    Date.now() - TELEGRAM_WEBHOOK_CLAIM_LEASE_MS
+  ).toISOString();
+  const { data: takeover, error: takeoverError } = await params.db
+    .from("telegram_webhook_updates")
+    .update({
+      user_id: params.userId,
+      chat_id: params.chatId,
+      message_id: params.messageId ?? null,
+      claimed_at: nowIso,
+      updated_at: nowIso,
+      status: "processing",
+    })
+    .eq("update_id", params.updateId)
+    .eq("status", "processing")
+    .lt("claimed_at", leaseCutoffIso)
+    .select("update_id")
+    .maybeSingle();
+  if (takeoverError) throw takeoverError;
+  return takeover ? "claimed" : "duplicate_in_progress";
+}
+
+async function completeTelegramWebhookUpdate(params: {
+  db: ReturnType<typeof createServerClient>;
+  updateId: number;
+  turnId?: string | null;
+}): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const { error } = await params.db
+    .from("telegram_webhook_updates")
+    .update({
+      status: "completed",
+      completed_at: nowIso,
+      turn_id: params.turnId ?? null,
+      updated_at: nowIso,
+    })
+    .eq("update_id", params.updateId);
+  if (error) {
+    console.warn("[telegram-webhook] could not mark update completed:", error);
+  }
 }
 
 function describeReceivedTelegramFile(media: ReturnType<typeof bestTelegramMedia>) {
@@ -2968,6 +3049,23 @@ export async function POST(request: Request) {
   // Catch-up de memoria larga ANTES de runAgent. Ver comentario equivalente
   // en `apps/web/src/app/api/chat/route.ts`. En callbacks (resume HITL) NO
   // se ejecuta — ese branch sale mucho antes.
+  const webhookClaimState = await claimTelegramWebhookUpdate({
+    db,
+    updateId: update.update_id,
+    userId,
+    chatId,
+    messageId: message.message_id,
+  });
+  if (webhookClaimState !== "claimed") {
+    return NextResponse.json({
+      ok: true,
+      routed:
+        webhookClaimState === "duplicate_completed"
+          ? "telegram_duplicate_update_completed"
+          : "telegram_duplicate_update_in_progress",
+    });
+  }
+
   await maybeCatchUpFlush({
     db,
     userId,
@@ -2976,6 +3074,7 @@ export async function POST(request: Request) {
   });
 
   const conversationalCaseBeforeAgent = conversationalCase;
+  let processedTurnId: string | null = null;
 
   try {
     const result = await withTypingHeartbeat(chatId, () =>
@@ -3029,6 +3128,7 @@ export async function POST(request: Request) {
           buildTelegramOperationalCaseToolApprovalPolicy(conversationalCase),
       })
     );
+    processedTurnId = result.turnId ?? null;
 
     if (result.pendingConfirmation) {
       const pc = result.pendingConfirmation;
@@ -3112,6 +3212,12 @@ export async function POST(request: Request) {
       chatId,
       "Hubo un error procesando tu mensaje. Intenta de nuevo."
     );
+  } finally {
+    await completeTelegramWebhookUpdate({
+      db,
+      updateId: update.update_id,
+      turnId: processedTurnId,
+    });
   }
 
   return NextResponse.json({ ok: true });
