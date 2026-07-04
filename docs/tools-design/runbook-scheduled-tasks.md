@@ -65,31 +65,69 @@ supabase db push
 
 ### 2. Variables de entorno
 
-Agrega a tu `.env.local`:
-```
+Agrega a tu `apps/web/.env.local`:
+
+```bash
+# Secreto compartido con el scheduler externo (Supabase pg_cron, Cloud Scheduler, etc.).
+# Debe coincidir con Authorization: Bearer <CRON_SECRET> en cada POST /api/cron/*.
 CRON_SECRET=un-token-secreto-largo-y-aleatorio
+
+# Límite de tareas programadas vencidas que el cron procesa en paralelo por tick.
+# Default 5, mínimo 1, máximo 20. Evita ráfagas de runAgent si muchas tareas vencen a la vez.
+# SCHEDULED_TASKS_CONCURRENCY=5
+
+# Límite de casos operacionales procesados en paralelo por tick del cron de casos.
+# Default 5, mínimo 1, máximo 20. Ver docs/operational-cases/architecture.md §4.
+# OPERATIONAL_CASES_CONCURRENCY=5
 ```
+
+Generar un secreto seguro: `openssl rand -hex 32`.
 
 ### 3. Configurar el runner cron
 
-`scheduled-tasks` y `heartbeat` usan el mismo patrón operativo: un scheduler externo hace `POST` a un endpoint público de Next.js con `Authorization: Bearer <CRON_SECRET>`. El endpoint valida el secreto, toma los registros vencidos y ejecuta el agente con el canal correspondiente.
+Los endpoints `/api/cron/*` comparten el mismo patrón operativo: un scheduler externo hace `POST` a una URL pública de Next.js con `Authorization: Bearer <CRON_SECRET>`. Cada handler valida el secreto, toma registros vencidos y ejecuta el agente con el canal correspondiente.
 
-En despliegues GCP, la opción recomendada es **Cloud Scheduler**:
+| Endpoint | Propósito | Concurrencia en código |
+|----------|-----------|------------------------|
+| `POST /api/cron/scheduled-tasks` | Tareas que el usuario programó (`schedule_task`) | `SCHEDULED_TASKS_CONCURRENCY` (default 5) |
+| `POST /api/cron/heartbeat` | Pulso proactivo por checklist | `HEARTBEAT_CONCURRENCY` = 5 (fijo) |
+| `POST /api/cron/operational-cases` | Casos operacionales vencidos + recordatorios | `OPERATIONAL_CASES_CONCURRENCY` (default 5) |
 
-- `POST https://TU_DOMINIO/api/cron/scheduled-tasks` cada minuto.
-- `POST https://TU_DOMINIO/api/cron/heartbeat` cada 1-5 minutos.
-- Header: `Authorization: Bearer TU_CRON_SECRET`.
-- Header: `Content-Type: application/json`.
-- Body: `{}`.
+En despliegues GCP, la opción recomendada es **Cloud Scheduler**. En Supabase, **pg_cron + pg_net**.
 
-Si prefieres operar desde Supabase, también puedes usar **Supabase Cron** (`pg_cron + pg_net`). En el panel de Supabase → **Database → Extensions**, activa `pg_cron` y `pg_net`.
+Headers comunes en todos los jobs:
 
-Luego en **Database → Cron Jobs**, crea un job para tareas programadas:
+- `Authorization: Bearer TU_CRON_SECRET`
+- `Content-Type: application/json`
+- Body: `{}`
+
+#### Stagger de schedules (recomendado)
+
+Los tres runners son subsistemas distintos y deben seguir separados. El problema a evitar no es que coexistan, sino que **disparen exactamente al mismo segundo** y generen picos de CPU, LLM y DB.
+
+`pg_cron` usa cron de 5 campos (sin segundos). Desfasa por **minuto**:
+
+| Job | Expresión pg_cron | Frecuencia efectiva |
+|-----|-------------------|---------------------|
+| `run-scheduled-tasks` | `* * * * *` | Cada minuto (prioridad: puntualidad de tareas one-time) |
+| `run-operational-cases` | `1-59/2 * * * *` | Cada minuto impar (:01, :03, :05…) — latencia máx. ~1 min extra, aceptable para casos multi-día |
+| `run-heartbeat` | `2-57/5 * * * *` | Cada 5 min en :02, :07, :12… — el handler filtra usuarios vencidos por `interval_minutes` |
+
+En **GCP Cloud Scheduler** puedes usar las mismas expresiones de minuto o, si tu job admite cron de 6 campos, desfasar por segundo (`20 * * * * *`, `40 * * * * *`, etc.).
+
+Si ya tienes jobs en `* * * * *` para los tres, no es incorrecto funcionalmente; solo aumenta la probabilidad de picos. Al migrar, desactiva el job viejo antes de crear el nuevo (`SELECT cron.unschedule('nombre-viejo');`).
+
+#### Supabase Cron (`pg_cron + pg_net`)
+
+En el panel de Supabase → **Database → Extensions**, activa `pg_cron` y `pg_net`.
+
+Luego en **Database → Cron Jobs** (o SQL Editor):
 
 ```sql
+-- Tareas programadas: cada minuto
 SELECT cron.schedule(
-  'run-scheduled-tasks',          -- nombre del job
-  '* * * * *',                    -- cada minuto
+  'run-scheduled-tasks',
+  '* * * * *',
   $$
     SELECT net.http_post(
       url := 'https://TU_DOMINIO/api/cron/scheduled-tasks',
@@ -98,16 +136,24 @@ SELECT cron.schedule(
     );
   $$
 );
-```
 
-> Reemplaza `TU_DOMINIO` con tu dominio de producción y `TU_CRON_SECRET` con el valor de `CRON_SECRET`.
+-- Casos operacionales: minutos impares (stagger respecto a scheduled-tasks)
+SELECT cron.schedule(
+  'run-operational-cases',
+  '1-59/2 * * * *',
+  $$
+    SELECT net.http_post(
+      url := 'https://TU_DOMINIO/api/cron/operational-cases',
+      headers := '{"Authorization": "Bearer TU_CRON_SECRET", "Content-Type": "application/json"}'::jsonb,
+      body := '{}'::jsonb
+    );
+  $$
+);
 
-Para Heartbeat, crea un segundo job equivalente:
-
-```sql
+-- Heartbeat: cada 5 min con offset :02 (handler decide usuarios vencidos)
 SELECT cron.schedule(
   'run-heartbeat',
-  '*/5 * * * *',                    -- cada 5 minutos; el handler decide usuarios vencidos
+  '2-57/5 * * * *',
   $$
     SELECT net.http_post(
       url := 'https://TU_DOMINIO/api/cron/heartbeat',
@@ -118,14 +164,28 @@ SELECT cron.schedule(
 );
 ```
 
+> Reemplaza `TU_DOMINIO` con tu dominio de producción y `TU_CRON_SECRET` con el valor de `CRON_SECRET`.
+
 > El intervalo por usuario de Heartbeat vive en `profiles.business_brain.heartbeat.interval_minutes`. El scheduler solo hace un tick global; el endpoint decide qué usuarios están vencidos usando `last_run_at + interval_minutes`.
+
+#### GCP Cloud Scheduler (resumen)
+
+Crea tres jobs HTTP `POST` con el mismo `CRON_SECRET` y las URLs anteriores. Usa las mismas expresiones de stagger o equivalentes en la zona horaria del despliegue.
 
 ### Desarrollo local
 
-Los schedulers en la nube no pueden llamar `http://localhost:3000`. Opciones:
+Los schedulers en la nube no pueden llamar `http://localhost:3000`.
 
-- Exponer el dev server con **ngrok** (u otro túnel) y usar la URL pública en el job, por ejemplo `https://TU_SUBDOMINIO.ngrok-free.app/api/cron/scheduled-tasks` o `/api/cron/heartbeat`.
-- O, cuando quieras probar sin cron, llamar el endpoint a mano con `curl` (ver más abajo) **después** de la hora en `next_run_at`.
+**Desarrollo normal (UI, chat, settings):**
+
+- Usa `http://localhost:3000` directamente.
+- **No dejes ngrok + jobs de Supabase apuntando a tu máquina** salvo que estés probando cron/Telegram/webhooks en ese momento. Si el scheduler externo sigue activo mientras desarrollas, tu `next dev` recibirá `POST /api/cron/*` cada minuto y competirá con compilación/HMR.
+
+**Pruebas de integraciones externas:**
+
+- **Telegram / webhooks:** expón con ngrok solo mientras pruebas; registra el webhook y apágalo al terminar si no lo necesitas.
+- **Cron:** expón con ngrok **temporalmente** o dispara a mano con `curl` (ver abajo) después de la hora en `next_run_at`.
+- **Alternativa robusta en local:** usa un `CRON_SECRET` distinto al de producción/Supabase para que los jobs en la nube no autoricen contra tu `.env.local` aunque el túnel siga abierto.
 
 El servidor Next debe estar en marcha en el momento en que se dispare el POST.
 

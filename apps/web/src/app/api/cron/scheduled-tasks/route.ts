@@ -2,7 +2,7 @@
  * POST /api/cron/scheduled-tasks
  *
  * Called every minute by Supabase Cron (pg_cron + pg_net).
- * Finds due tasks, runs the agent for each one, and sends the result to Telegram.
+ * Finds due tasks, runs the agent for each one (with bounded concurrency), and sends the result to Telegram.
  *
  * Auth: Bearer token in Authorization header matching CRON_SECRET env var.
  * This route is excluded from the Supabase session middleware (see middleware.ts).
@@ -56,6 +56,7 @@ const CRON_SECRET = process.env.CRON_SECRET ?? "";
 // cae en +2 min aunque el cron natural sea mañana.
 const MAX_CONSECUTIVE_FAILURES = 3;
 const RETRY_GAP_MINUTES = 2;
+const DEFAULT_SCHEDULED_TASKS_CONCURRENCY = 5;
 
 function isAuthorized(request: Request): boolean {
   const auth = request.headers.get("authorization") ?? "";
@@ -138,6 +139,36 @@ interface TaskResult {
   task_id: string;
   status: "ok" | "skipped" | "error";
   error?: string;
+}
+
+function parseScheduledTasksConcurrency(raw: string | undefined): number {
+  const trimmed = raw?.trim();
+  if (!trimmed) return DEFAULT_SCHEDULED_TASKS_CONCURRENCY;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return DEFAULT_SCHEDULED_TASKS_CONCURRENCY;
+  return Math.max(1, Math.min(20, Math.floor(parsed)));
+}
+
+async function runWithConcurrency(
+  tasks: ScheduledTask[],
+  worker: (task: ScheduledTask) => Promise<TaskResult>,
+  concurrency: number
+): Promise<TaskResult[]> {
+  const safeConcurrency = Math.max(1, Math.min(concurrency, 20));
+  const queue = [...tasks];
+  const results: TaskResult[] = [];
+
+  const runners = Array.from({ length: safeConcurrency }, async () => {
+    while (queue.length > 0) {
+      const next = queue.shift();
+      if (!next) break;
+      const result = await worker(next);
+      results.push(result);
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
 }
 
 async function runTask(
@@ -362,13 +393,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ processed: 0, results: [] });
   }
 
-  // Run tasks concurrently (limit by the minute budget, tasks are lightweight)
-  const results: TaskResult[] = await Promise.all(
-    dueTasks.map((task) => runTask(db, task))
+  const concurrency = parseScheduledTasksConcurrency(
+    process.env.SCHEDULED_TASKS_CONCURRENCY
+  );
+  const results = await runWithConcurrency(
+    dueTasks,
+    (task) => runTask(db, task),
+    concurrency
   );
 
   console.log(
-    `[cron] processed ${results.length} tasks:`,
+    `[cron] processed ${results.length}/${dueTasks.length} tasks (concurrency=${concurrency}):`,
     results.map((r) => `${r.task_id}=${r.status}`).join(", ")
   );
 

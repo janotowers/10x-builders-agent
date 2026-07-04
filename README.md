@@ -108,7 +108,9 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave `anon` |
    | `SUPABASE_SERVICE_ROLE_KEY` | Clave `service_role` (solo servidor; la usa la API del agente y Telegram contra Postgres) |
    | `DATABASE_URL` | *(Opcional)* URI Postgres directa para checkpoints de LangGraph; ver comentarios en `.env.example` |
-   | `CRON_SECRET` | *(Opcional)* Secreto compartido con el runner externo que llama a `POST /api/cron/scheduled-tasks` y `POST /api/cron/heartbeat`; debe coincidir con el header `Authorization: Bearer <CRON_SECRET>`. Runbook: [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) |
+   | `CRON_SECRET` | *(Opcional)* Secreto compartido con el runner externo que llama a `POST /api/cron/scheduled-tasks`, `POST /api/cron/heartbeat` y `POST /api/cron/operational-cases`; debe coincidir con el header `Authorization: Bearer <CRON_SECRET>`. Runbook: [docs/tools-design/runbook-scheduled-tasks.md](docs/tools-design/runbook-scheduled-tasks.md) |
+   | `SCHEDULED_TASKS_CONCURRENCY` | *(Opcional)* Máximo de tareas programadas vencidas procesadas en paralelo por tick del cron (default `5`, rango 1–20). |
+   | `OPERATIONAL_CASES_CONCURRENCY` | *(Opcional)* Máximo de casos operacionales procesados en paralelo por tick del cron (default `5`, rango 1–20). |
    | `NEXT_PUBLIC_SITE_URL` | URL pública base **sin barra final** (OAuth redirect y enlaces de reserva). Ej.: `http://localhost:3000` o `https://tu-dominio.com` |
    | `EASYBROKER_PUBLIC_ASSET_BASE_URL` | *(Opcional, necesario para probar upload real de fotos EasyBroker en local)* URL pública base **sin barra final** que EasyBroker puede abrir para descargar imágenes privadas vía redirect corto. En local usa ngrok, ej. `https://abc123.ngrok-free.app`; en producción normalmente basta `NEXT_PUBLIC_SITE_URL`. |
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |

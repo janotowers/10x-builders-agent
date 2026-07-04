@@ -134,6 +134,7 @@ sequenceDiagram
 
 **Reglas duras del cron:**
 
+- El scheduler externo debe invocar `POST /api/cron/operational-cases` con el mismo `CRON_SECRET` que los otros runners. Conviene **desfasar** este job respecto a `scheduled-tasks` y `heartbeat` (p. ej. minutos impares en pg_cron) para evitar picos simultáneos; ver **[docs/tools-design/runbook-scheduled-tasks.md](../tools-design/runbook-scheduled-tasks.md)** § Stagger.
 - El cron es **determinístico**. No usa LLM. Solo decide "este caso vence" e invoca `runAgent` con `caseId`.
 - El cron **siempre re-lee la fuente** antes de actuar para evitar recordatorios molestos sobre estado obsoleto.
 - El cron toma **lock por caso** con `select ... for update skip locked`; nunca dos workers procesan el mismo caso a la vez.
