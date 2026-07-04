@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "type-check": "next typegen && tsc --noEmit",
+    "type-check": "next typegen && tsc -p tsconfig.typecheck.json --noEmit",
     "test:business-decisions": "tsx src/lib/business-decisions/price-approval.selftest.ts && tsx src/lib/business-decisions/contract-review.selftest.ts",
     "test:step-scenario-evidence": "tsx src/lib/operational-cases/step-test-scenario-evidence.selftest.ts",
     "test:readiness-test-ui": "tsx src/lib/operational-cases/readiness-test-ui.selftest.ts && tsx src/lib/operational-cases/readiness-step-section-ui.selftest.ts && tsx src/lib/operational-cases/settings-test-safe-check.selftest.ts && tsx src/lib/operational-cases/controlled-e2e-case.selftest.ts && tsx src/lib/operational-cases/e2e-lab-session.selftest.ts && tsx src/lib/operational-cases/telegram-operational-case-tool-policy.selftest.ts && tsx src/lib/operational-cases/conversational-case-routing.selftest.ts && tsx src/lib/operational-cases/conversation-case-identity.selftest.ts && tsx src/lib/operational-cases/settings-test-flow-progress.selftest.ts && tsx src/lib/operational-cases/telegram-intake-completion-message.selftest.ts && tsx src/lib/operational-cases/property-optioning-intake-extraction.selftest.ts && tsx src/lib/operational-cases/operational-conversation-classifier.selftest.ts && tsx src/lib/operational-cases/settings-test-pending-actions.selftest.ts && tsx src/lib/operational-cases/document-request-target.selftest.ts && tsx src/lib/operational-cases/document-batch-completion.selftest.ts && tsx src/lib/operational-cases/case-document-collection.selftest.ts && tsx src/lib/operational-cases/telegram-agent-response-policy.selftest.ts",
