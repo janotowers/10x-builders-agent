@@ -21,7 +21,7 @@ const TOOL_LABELS_ES: Record<string, string> = {
   edit_file: "Editar un archivo del proyecto",
   schedule_task: "Programar una tarea automática",
   manage_scheduled_tasks: "Ver o pausar tareas programadas",
-  read_skill_reference: "Abrir documentación de una habilidad",
+  read_skill_reference: "Abrir referencia de una habilidad",
   bigquery_run_query: "Consultar datos en BigQuery",
   list_user_memories: "Listar memorias guardadas sobre ti",
   search_user_memories: "Buscar en tus memorias",

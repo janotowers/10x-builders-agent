@@ -57,6 +57,27 @@ import {
 } from "@/lib/operational-cases/external-contact-link";
 import { handleContractRevisionUploadAndSend } from "@/lib/business-decisions/contract-review";
 
+const TOOL_CALL_SELECT =
+  "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind";
+
+async function loadTurnToolCalls(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  params: { sessionId: string; turnId?: string | null }
+): Promise<Array<Record<string, unknown>>> {
+  if (!params.turnId) return [];
+  const { data, error } = await supabase
+    .from("tool_calls")
+    .select(TOOL_CALL_SELECT)
+    .eq("session_id", params.sessionId)
+    .eq("turn_id", params.turnId)
+    .order("created_at", { ascending: true });
+  if (error) {
+    console.error("[chat] load turn tool calls failed:", error);
+    return [];
+  }
+  return (data ?? []) as Array<Record<string, unknown>>;
+}
+
 type IncomingAttachment = {
   fileName: string;
   mimeType: string;
@@ -878,7 +899,10 @@ export async function POST(request: Request) {
       appliedSkills: result.appliedSkills,
       memoryUsed: result.memoryUsed,
       pendingConfirmation: result.pendingConfirmation,
-      toolCalls: result.toolCalls,
+      toolCalls: await loadTurnToolCalls(supabase, {
+        sessionId: session.id,
+        turnId: result.turnId,
+      }),
     });
   } catch (error) {
     console.error("Chat API error:", error);

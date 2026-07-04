@@ -21,6 +21,26 @@ import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { findPendingConfirmationCheckpoint } from "@/lib/agent/pending-confirmation-checkpoint";
 
 const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
+const TOOL_CALL_SELECT =
+  "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind";
+
+async function loadTurnToolCalls(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  params: { sessionId: string; turnId?: string | null }
+): Promise<Array<Record<string, unknown>>> {
+  if (!params.turnId) return [];
+  const { data, error } = await supabase
+    .from("tool_calls")
+    .select(TOOL_CALL_SELECT)
+    .eq("session_id", params.sessionId)
+    .eq("turn_id", params.turnId)
+    .order("created_at", { ascending: true });
+  if (error) {
+    console.error("[chat-confirm] load turn tool calls failed:", error);
+    return [];
+  }
+  return (data ?? []) as Array<Record<string, unknown>>;
+}
 
 function toolCallCaseId(toolCall: {
   arguments_json?: unknown;
@@ -124,13 +144,17 @@ export async function POST(request: Request) {
         source: "chat_confirm",
       });
       await finalizeCaseAfterToolDecision(db, { toolCall, userId: user.id });
+      const turnId = (toolCall.turn_id as string | null) ?? undefined;
       return NextResponse.json({
         ok: true,
         response: "Acción cancelada.",
-        turnId: (toolCall.turn_id as string | null) ?? undefined,
+        turnId,
         appliedSkills: [],
         memoryUsed: [],
-        toolCalls: [],
+        toolCalls: await loadTurnToolCalls(supabase, {
+          sessionId: session.id,
+          turnId,
+        }),
         pendingConfirmation: null,
       });
     }
@@ -166,13 +190,17 @@ export async function POST(request: Request) {
           task_id: existingTask.id,
           next_run_at: existingTask.next_run_at,
         });
+        const turnId = (toolCall.turn_id as string | null) ?? undefined;
         return NextResponse.json({
           ok: true,
           response: "Listo, esa tarea ya estaba programada.",
-          turnId: (toolCall.turn_id as string | null) ?? undefined,
+          turnId,
           appliedSkills: [],
           memoryUsed: [],
-          toolCalls: ["schedule_task"],
+          toolCalls: await loadTurnToolCalls(supabase, {
+            sessionId: session.id,
+            turnId,
+          }),
           pendingConfirmation: null,
         });
       }
@@ -306,7 +334,10 @@ export async function POST(request: Request) {
       turnId: result.turnId,
       appliedSkills: result.appliedSkills,
       memoryUsed: result.memoryUsed,
-      toolCalls: result.toolCalls,
+      toolCalls: await loadTurnToolCalls(supabase, {
+        sessionId: session.id,
+        turnId: result.turnId,
+      }),
       pendingConfirmation,
     });
   } catch (error) {

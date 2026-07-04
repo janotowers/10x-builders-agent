@@ -295,9 +295,111 @@ function toolExecutorBadgeClass(tone: "agent" | "deterministic"): string {
     : "bg-violet-100 text-violet-700 dark:bg-violet-400/10 dark:text-violet-200";
 }
 
+const REDACTED_TECHNICAL_KEY_RE =
+  /(token|secret|password|authorization|api[_-]?key|cookie)/i;
+
+function isRecordLike(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function redactTechnicalPayload(value: unknown, depth = 0): unknown {
+  if (depth > 8) return "[truncated]";
+  if (Array.isArray(value)) {
+    return value.map((item) => redactTechnicalPayload(item, depth + 1));
+  }
+  if (isRecordLike(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (REDACTED_TECHNICAL_KEY_RE.test(key)) {
+        out[key] = "[REDACTED]";
+      } else {
+        out[key] = redactTechnicalPayload(item, depth + 1);
+      }
+    }
+    return out;
+  }
+  if (typeof value === "string" && value.length > 4000) {
+    return `${value.slice(0, 4000)}…[truncated]`;
+  }
+  return value;
+}
+
+function formatTechnicalJson(value: unknown): string {
+  try {
+    return JSON.stringify(redactTechnicalPayload(value), null, 2) ?? "null";
+  } catch {
+    return "\"[unserializable]\"";
+  }
+}
+
+function hasTechnicalToolDetail(tool: RecentToolCall): boolean {
+  return Boolean(tool.arguments_json || tool.result_json);
+}
+
+function renderToolTechnicalDetail(tool: RecentToolCall): ReactNode {
+  const args = tool.arguments_json ?? null;
+  const result = tool.result_json ?? null;
+  if (tool.tool_name === "bigquery_run_query") {
+    const argsRecord = isRecordLike(args) ? args : {};
+    const sql = typeof argsRecord.sql === "string" ? argsRecord.sql : "";
+    const params =
+      argsRecord.params !== undefined ? argsRecord.params : null;
+    return (
+      <div className="mt-2 space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-white/10 dark:bg-white/5">
+        <div className="space-y-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-white/70">
+            Consulta
+          </p>
+          <pre className="max-h-56 overflow-auto rounded border border-slate-200 bg-white p-2 font-mono text-[10px] text-slate-700 dark:border-white/10 dark:bg-neutral-950 dark:text-white/80">
+            {sql || "-- SQL no disponible --"}
+          </pre>
+        </div>
+        <div className="space-y-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-white/70">
+            Params
+          </p>
+          <pre className="max-h-40 overflow-auto rounded border border-slate-200 bg-white p-2 font-mono text-[10px] text-slate-700 dark:border-white/10 dark:bg-neutral-950 dark:text-white/80">
+            {formatTechnicalJson(params)}
+          </pre>
+        </div>
+        <div className="space-y-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-white/70">
+            Resultado
+          </p>
+          <pre className="max-h-56 overflow-auto rounded border border-slate-200 bg-white p-2 font-mono text-[10px] text-slate-700 dark:border-white/10 dark:bg-neutral-950 dark:text-white/80">
+            {formatTechnicalJson(result)}
+          </pre>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-white/10 dark:bg-white/5">
+      <div className="space-y-1">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-white/70">
+          Arguments
+        </p>
+        <pre className="max-h-48 overflow-auto rounded border border-slate-200 bg-white p-2 font-mono text-[10px] text-slate-700 dark:border-white/10 dark:bg-neutral-950 dark:text-white/80">
+          {formatTechnicalJson(args)}
+        </pre>
+      </div>
+      <div className="space-y-1">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-white/70">
+          Result
+        </p>
+        <pre className="max-h-48 overflow-auto rounded border border-slate-200 bg-white p-2 font-mono text-[10px] text-slate-700 dark:border-white/10 dark:bg-neutral-950 dark:text-white/80">
+          {formatTechnicalJson(result)}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
 function toolDetailText(tool: RecentToolCall): string {
   const args = tool.arguments_json;
   if (!args) return "";
+  if (tool.tool_name === "bigquery_run_query") return "";
+  if (tool.tool_name === "read_skill_reference") return "";
   if (tool.tool_name === "bash") {
     const terminal =
       typeof args.terminal === "string" && args.terminal.trim()
@@ -347,6 +449,20 @@ function toolResultSummary(tool: RecentToolCall): string {
     else if (stderr.trim() && exitCode !== 0)
       parts.push(`stderr: ${stderr.trim().slice(0, 120)}`);
     return parts.join(" · ");
+  }
+  if (tool.tool_name === "bigquery_run_query") {
+    const status = typeof result.status === "string" ? result.status : "";
+    if (status === "ok") return "";
+    const error = typeof result.error === "string" ? result.error : "";
+    if (error) return `error: ${error.slice(0, 120)}`;
+    if (status) return `status ${status}`;
+  }
+  if (tool.tool_name === "read_skill_reference") {
+    const status = typeof result.status === "string" ? result.status : "";
+    if (status === "ok") return "";
+    const message = typeof result.message === "string" ? result.message : "";
+    if (message) return message.slice(0, 120);
+    if (status) return `status ${status}`;
   }
   if (tool.tool_name === "calendar_list_events") {
     const events = Array.isArray(result.events) ? result.events : [];
@@ -1103,21 +1219,86 @@ function mergeToolCalls(
     }
   };
 
+  const isOptimisticDuplicateOfServerRow = (row: RecentToolCall): boolean => {
+    if (!row.id.startsWith("turn-")) return false;
+    const tOpt = new Date(row.created_at).getTime();
+    if (Number.isNaN(tOpt)) return false;
+    return additions.some((serverRow) => {
+      if (serverRow.id.startsWith("turn-")) return false;
+      if (serverRow.tool_name !== row.tool_name) return false;
+      if (serverRow.turn_id && row.turn_id && serverRow.turn_id !== row.turn_id) {
+        return false;
+      }
+      const tServer = new Date(serverRow.created_at).getTime();
+      if (Number.isNaN(tServer)) return false;
+      return Math.abs(tServer - tOpt) <= fuzzyMatchMs;
+    });
+  };
+
   for (const row of additions) {
     stripOptimisticDuplicate(row);
     push(row);
   }
-  for (const row of prev) push(row);
+  for (const row of prev) {
+    if (isOptimisticDuplicateOfServerRow(row)) continue;
+    push(row);
+  }
   return out.slice(0, maxTotal);
 }
 
+function normalizeResponseToolCalls(
+  values: Array<RecentToolCall | string> | undefined,
+  fallbackTurnId: string | null | undefined,
+  fallbackCreatedAt: string
+): RecentToolCall[] {
+  if (!Array.isArray(values) || values.length === 0) return [];
+  return values
+    .map((value, index): RecentToolCall | null => {
+      if (typeof value === "string") {
+        return {
+          id: `turn-${fallbackCreatedAt}-${index}-${value}`,
+          turn_id: fallbackTurnId ?? null,
+          tool_name: value,
+          status: "executed",
+          requires_confirmation: false,
+          created_at: fallbackCreatedAt,
+          finished_at: fallbackCreatedAt,
+        };
+      }
+      if (!isRecordLike(value)) return null;
+      if (
+        typeof value.id !== "string" ||
+        typeof value.tool_name !== "string" ||
+        typeof value.created_at !== "string"
+      ) {
+        return null;
+      }
+      return {
+        id: value.id,
+        turn_id: typeof value.turn_id === "string" ? value.turn_id : null,
+        tool_name: value.tool_name,
+        arguments_json: isRecordLike(value.arguments_json)
+          ? value.arguments_json
+          : null,
+        result_json: isRecordLike(value.result_json) ? value.result_json : null,
+        status: typeof value.status === "string" ? value.status : "executed",
+        requires_confirmation: value.requires_confirmation === true,
+        created_at: value.created_at,
+        finished_at:
+          typeof value.finished_at === "string" ? value.finished_at : null,
+        executor_kind:
+          value.executor_kind === "deterministic" ? "deterministic" : "agent",
+      };
+    })
+    .filter((value): value is RecentToolCall => value !== null);
+}
+
 function toolCallSignature(call: RecentToolCall): string {
-  // Cheap identity check: avoid JSON.stringify of potentially large result_json
-  // on every poll. status/finished_at flip when a call completes, which is the
-  // only transition the panel needs to react to.
+  // Cheap identity check: avoid JSON.stringify of potentially large payloads
+  // on every poll, but still notice when technical details become available.
   return `${call.id}|${call.status}|${call.finished_at ?? ""}|${
     call.requires_confirmation ? 1 : 0
-  }`;
+  }|${call.arguments_json ? 1 : 0}|${call.result_json ? 1 : 0}`;
 }
 
 function messageDedupKey(message: Message): string {
@@ -1583,6 +1764,9 @@ export function ChatInterface({
   const [shortTermExpanded, setShortTermExpanded] = useState(false);
   const [heartbeatHistoryExpanded, setHeartbeatHistoryExpanded] = useState(false);
   const [scheduledTasksExpanded, setScheduledTasksExpanded] = useState(false);
+  const [expandedToolCallId, setExpandedToolCallId] = useState<string | null>(
+    null
+  );
   const [pendingAttachments, setPendingAttachments] = useState<
     PendingAttachment[]
   >([]);
@@ -1721,6 +1905,10 @@ export function ChatInterface({
       setConfirming(false);
     }
   }, [confirmation, scheduledTasks]);
+
+  useEffect(() => {
+    setExpandedToolCallId(null);
+  }, [inspectedTurnId]);
 
   useLayoutEffect(() => {
     const viewport = messagesViewportRef.current;
@@ -2017,7 +2205,7 @@ export function ChatInterface({
         appliedSkills?: AppliedSkillDisplay[];
         memoryUsed?: AppliedMemoryDisplay[];
         pendingConfirmation?: PendingConfirmation | null;
-        toolCalls?: string[];
+        toolCalls?: Array<RecentToolCall | string>;
         error?: string;
       };
 
@@ -2090,17 +2278,13 @@ export function ChatInterface({
         setSelectedTurnId(data.turnId ?? clientTurnId);
       }
 
-      if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
-        const optimistic = data.toolCalls.map((name, index) => ({
-          id: `turn-${assistantIso}-${index}-${name}`,
-          turn_id: data.turnId ?? clientTurnId,
-          tool_name: name,
-          status: "executed",
-          requires_confirmation: false,
-          created_at: assistantIso,
-          finished_at: assistantIso,
-        }));
-        setToolCalls((prev) => mergeToolCalls(prev, optimistic));
+      const responseToolCalls = normalizeResponseToolCalls(
+        data.toolCalls,
+        data.turnId ?? clientTurnId,
+        assistantIso
+      );
+      if (responseToolCalls.length > 0) {
+        setToolCalls((prev) => mergeToolCalls(prev, responseToolCalls));
       }
     } catch {
       const errIso = new Date().toISOString();
@@ -2159,7 +2343,7 @@ export function ChatInterface({
         appliedSkills?: AppliedSkillDisplay[];
         memoryUsed?: AppliedMemoryDisplay[];
         pendingConfirmation?: PendingConfirmation | null;
-        toolCalls?: string[];
+        toolCalls?: Array<RecentToolCall | string>;
         error?: string;
       };
 
@@ -2227,18 +2411,13 @@ export function ChatInterface({
         setSelectedTurnId(data.turnId ?? confirmation.turnId ?? null);
       }
 
-      if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
-        const turnId = data.turnId ?? confirmation.turnId ?? null;
-        const optimistic = data.toolCalls.map((name, index) => ({
-          id: `turn-${assistantIso}-${index}-${name}`,
-          turn_id: turnId,
-          tool_name: name,
-          status: "executed",
-          requires_confirmation: false,
-          created_at: assistantIso,
-          finished_at: assistantIso,
-        }));
-        setToolCalls((prev) => mergeToolCalls(prev, optimistic));
+      const responseToolCalls = normalizeResponseToolCalls(
+        data.toolCalls,
+        data.turnId ?? confirmation.turnId ?? null,
+        assistantIso
+      );
+      if (responseToolCalls.length > 0) {
+        setToolCalls((prev) => mergeToolCalls(prev, responseToolCalls));
       }
     } catch {
       const errIso = new Date().toISOString();
@@ -2940,10 +3119,29 @@ export function ChatInterface({
                                 {resultSummary}
                               </p>
                             ) : null}
-                            <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
-                              {formatToolStatus(tool.status)}
-                              {tool.requires_confirmation ? " · HITL" : ""}
-                            </p>
+                            <div className="mt-1 flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-white/60">
+                              <p className="min-w-0">
+                                {formatToolStatus(tool.status)}
+                                {tool.requires_confirmation ? " · HITL" : ""}
+                              </p>
+                              {hasTechnicalToolDetail(tool) ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedToolCallId((current) =>
+                                      current === tool.id ? null : tool.id
+                                    )
+                                  }
+                                  className="shrink-0 font-semibold text-violet-700 hover:text-violet-900 dark:text-violet-200 dark:hover:text-violet-100"
+                                >
+                                  Ver detalle técnico{" "}
+                                  {expandedToolCallId === tool.id ? "▾" : "▸"}
+                                </button>
+                              ) : null}
+                            </div>
+                            {expandedToolCallId === tool.id
+                              ? renderToolTechnicalDetail(tool)
+                              : null}
                           </div>
                         </div>
                       );
