@@ -407,7 +407,8 @@ Slots importantes:
 | Slot | Uso |
 |---|---|
 | `agent_identity` | Quien es el agente para esta cuenta |
-| `soul` | Voz, tono, estilo |
+| `soul` | Voz, tono, estilo, brevedad (campos editables en Settings) |
+| `soul_effective` | Resumen compilado y coherente inyectado al prompt (`summary`, `source`, warnings); se genera al guardar/revisar Alma |
 | `business_context` | Contexto estable del negocio |
 | `operating_preferences` | Preferencias operativas editables |
 | `data_sources.warehouse` | Binding moderno a BigQuery |
@@ -684,9 +685,11 @@ Runner:
 - Protegido con `CRON_SECRET`.
 - Usa service role.
 - Selecciona tareas vencidas.
+- Procesa con concurrencia acotada (`SCHEDULED_TASKS_CONCURRENCY`, default 5).
 - Crea sesion `channel='cron'`.
 - Llama `runAgent({ autoApproveTools: true })`.
 - Registra resultado y notifica por Telegram si esta vinculado.
+- Operacion: desfasar schedules respecto a heartbeat y operational-cases (runbook § Stagger).
 
 Diferencia con Heartbeat:
 
@@ -791,6 +794,9 @@ Webhook entrante:
   caso `waiting_external` y, en ese caso, inserta evento
   `external_response` y mueve `next_action_at = now()` para que el cron lo
   procese inmediatamente.
+- Idempotencia: `telegram_webhook_updates` (migration `00052`) registra cada
+  `update_id` con claim `processing` / `completed` para no ejecutar dos veces
+  el mismo mensaje de Telegram (reentregas del webhook o doble POST).
 
 Comunicación con el humano interno (`notify_user`):
 

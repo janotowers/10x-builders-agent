@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Alma efectiva (`soul_effective`)**: reviewer LLM compila voz/tono/estilo/brevedad en un resumen coherente con defaults; el compiler lo inyecta en cada prompt; preview en Settings → Perfil del agente → Alma
+- **Telegram webhook idempotency**: tabla `telegram_webhook_updates` (migration `00052`) evita procesar dos veces el mismo `update_id` / respuestas duplicadas
+- **Cron hardening**: `SCHEDULED_TASKS_CONCURRENCY` (default 5) en `POST /api/cron/scheduled-tasks`; runbook con stagger recomendado para `scheduled-tasks`, `operational-cases` y `heartbeat`
 - Business decision **comparables search expansion**: `POST /api/business-decisions/comparables-expansion-decision`, handler compartido, acciones inline en Pendientes y callbacks Telegram
 - Informative **Contraste Avaclick** line in canonical price approval message (`formatPricingProposalForApproval`); **Advertencia** reserved for `source_conflict` ≥30%
 - Deterministic document-flow reminder events (`recordDocumentFlowReminder`) for post-intake checklist and interno/externo routing
@@ -49,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Company-data / BigQuery**: autofill de `@params` (`start_date`/`end_date`), reintentos OAuth en el adapter, guard en el grafo que bloquea respuestas numéricas sin `bigquery_run_query` exitoso, saneo de historial con fallos BQ previos; skill `company-data` reforzada (sin SQL en chat, KPI escalar sin tablas)
+- **Chat web — panel de herramientas**: `/api/chat` y `/api/chat/confirm` devuelven `tool_calls` completos; tarjetas compactas con «Ver detalle técnico» expandible; sin duplicados por stubs optimistas; `read_skill_reference` y `bigquery_run_query` sin resumen redundante en éxito
+- **Type-check web**: script `next typegen && tsc --noEmit` regenera tipos de rutas antes de chequear (evita artefactos `.next/dev/types` truncados tras crash de dev)
 - E2E activity projection (`flowProgressForE2ESummary`) keys document reminders off `payload.purpose` (projected as `event_purpose`), not `payload.kind`; pre-transition `document_request_target_inferred` events are preserved too, so Paso 1 shows checklist/internal-routing activity that already existed in the audit trail
 - Idempotent address consolidation (`mergeDocumentAddressIntoContextPropertyData`): existing `address_conflicts` no longer re-trigger `changed`; re-running with identical inputs yields no writes/events. Consolidation event emits only when a visible address field is adopted; new conflicts emit a dedicated `document_address_conflict_detected` event (visible in panel) instead of a generic «Dirección consolidada»
 - Telegram document target choice (interno/externo) in the external-responder path now routes through the shared `applyDocumentRequestTargetChoice` handler, closing the audit-trail gap (records `recordDocumentFlowReminder`) and using the canonical ack — full parity with web and the conversational path
