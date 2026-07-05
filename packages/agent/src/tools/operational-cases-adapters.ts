@@ -120,6 +120,11 @@ const CASE_BOUND_NOTIFY_KINDS = new Set([
   "price_approval",
   "contract_pending",
   "contract_review",
+  "listing_description_review",
+  "easybroker_publish_approval",
+  "ungga_publish_approval",
+  "manual_publish_package_approval",
+  "listing_published_summary",
   "titularidad_review",
 ]);
 
@@ -199,6 +204,98 @@ function canonicalizeContractDataReviewText(text: string): string {
 function canonicalContractReviewNotifyText(opCase: { id: string }): string {
   const stableUrl = `/api/operational-cases/${opCase.id}/documents/contract_draft/download`;
   return `Borrador de contrato listo para revisión.\n\nDescargar borrador del contrato: ${stableUrl}\n\nResponde “mándalo al dueño” o “pedir cambios”, o usa los botones.`;
+}
+
+function formatPriceForSummary(
+  amount: number | null,
+  currency: string | null
+): string | null {
+  if (amount == null || !(amount > 0)) return null;
+  const normalizedCurrency = (currency ?? "MXN").trim() || "MXN";
+  return `${amount.toLocaleString("es-MX")} ${normalizedCurrency}`;
+}
+
+function listingPublishedSummaryAlreadySent(
+  recentEvents: Awaited<ReturnType<typeof getRecentOperationalCaseEvents>>
+): boolean {
+  return recentEvents.some((event) => {
+    const payload =
+      event.payload_jsonb &&
+      typeof event.payload_jsonb === "object" &&
+      !Array.isArray(event.payload_jsonb)
+        ? (event.payload_jsonb as Record<string, unknown>)
+        : null;
+    return payload?.kind === "listing_published_summary_sent";
+  });
+}
+
+function buildListingPublishedSummaryText(opCase: {
+  id: string;
+  context_jsonb: unknown;
+}): string {
+  const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
+  const propertyData = isRecord(context.property_data) ? context.property_data : {};
+  const pricingProposal = isRecord(context.pricing_proposal)
+    ? context.pricing_proposal
+    : {};
+  const approvedDescription = isRecord(context.listing_description_approved)
+    ? context.listing_description_approved
+    : {};
+  const published = isRecord(context.published) ? context.published : {};
+  const easybroker = isRecord(published.easybroker) ? published.easybroker : {};
+  const ungga = isRecord(published.ungga) ? published.ungga : {};
+  const manualPackage = isRecord(context.manual_publish_package)
+    ? context.manual_publish_package
+    : {};
+
+  const headline = contextString(approvedDescription, "headline")
+    ?? contextString(propertyData, "property_title")
+    ?? "Publicacion finalizada";
+  const addressSummary = contextString(propertyData, "legal_address")
+    ?? contextString(propertyData, "address")
+    ?? contextString(manualPackage, "address_summary");
+  const targetPrice = positiveNumberFromUnknown(
+    pricingProposal.target_price ?? propertyData.target_price
+  );
+  const currency = contextString(pricingProposal, "currency")
+    ?? contextString(propertyData, "currency")
+    ?? "MXN";
+  const price = formatPriceForSummary(targetPrice, currency);
+
+  const easybrokerUrl = contextString(easybroker, "public_url")
+    ?? contextString(easybroker, "url")
+    ?? contextString(easybroker, "agent_url");
+  const easybrokerListingId = contextString(easybroker, "listing_id");
+  const unggaUrl = contextString(ungga, "published_url");
+  const unggaPropertyId = contextString(ungga, "ungga_property_id");
+  const manualHeadline = contextString(manualPackage, "headline");
+  const manualDescription = contextString(manualPackage, "description");
+
+  const lines: string[] = [
+    `Flujo de publicacion completado para el caso ${opCase.id}.`,
+    "",
+    `Titulo: ${headline}`,
+  ];
+  if (addressSummary) lines.push(`Direccion: ${addressSummary}`);
+  if (price) lines.push(`Precio objetivo: ${price}`);
+  lines.push("");
+  lines.push("Resultado por destino:");
+  lines.push(
+    easybrokerUrl || easybrokerListingId
+      ? `- EasyBroker: ${easybrokerUrl ?? `listing_id ${easybrokerListingId}`}`
+      : "- EasyBroker: sin publicacion final registrada."
+  );
+  lines.push(
+    unggaUrl || unggaPropertyId
+      ? `- Ungga: ${unggaUrl ?? `propiedad ${unggaPropertyId}`}`
+      : "- Ungga: sin publicacion final registrada."
+  );
+  if (manualDescription || manualHeadline) {
+    lines.push(
+      `- Paquete manual: disponible (${manualHeadline ?? "sin titular"}).`
+    );
+  }
+  return lines.join("\n");
 }
 
 function normalizeNotificationText(value: string | undefined): string {
@@ -3410,6 +3507,57 @@ export function blockedPropertyOptioningStepRegressionReason(params: {
   return null;
 }
 
+function canCompletePropertyOptioningFromContext(
+  context: Record<string, unknown>,
+  recentEvents?: Awaited<ReturnType<typeof getRecentOperationalCaseEvents>>
+): { ok: boolean; reason?: string } {
+  const published = isRecord(context.published) ? context.published : {};
+  const easybroker = isRecord(published.easybroker) ? published.easybroker : {};
+  const ungga = isRecord(published.ungga) ? published.ungga : {};
+  const manualPackage = isRecord(context.manual_publish_package)
+    ? context.manual_publish_package
+    : {};
+  const easybrokerPublished = Boolean(
+    (typeof easybroker.listing_id === "string" && easybroker.listing_id.trim()) ||
+      (typeof easybroker.public_url === "string" && easybroker.public_url.trim())
+  );
+  const unggaPublished = Boolean(
+    (typeof ungga.ungga_property_id === "string" && ungga.ungga_property_id.trim()) ||
+      (typeof ungga.published_url === "string" && ungga.published_url.trim())
+  );
+  const manualDelivered = Boolean(
+    typeof manualPackage.description === "string" &&
+      manualPackage.description.trim().length > 0 &&
+      (typeof manualPackage.headline === "string"
+        ? manualPackage.headline.trim().length > 0
+        : true)
+  );
+  const easybrokerFromEvents =
+    recentEvents?.some((event) => {
+      const payload = isRecord(event.payload_jsonb) ? event.payload_jsonb : null;
+      return payload?.kind === "easybroker_published";
+    }) ?? false;
+  const unggaFromEvents =
+    recentEvents?.some((event) => {
+      const payload = isRecord(event.payload_jsonb) ? event.payload_jsonb : null;
+      return payload?.kind === "ungga_published";
+    }) ?? false;
+  if (
+    easybrokerPublished ||
+    unggaPublished ||
+    manualDelivered ||
+    easybrokerFromEvents ||
+    unggaFromEvents
+  ) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    reason:
+      "Para cerrar en published/completed debe existir al menos un destino publicado (EasyBroker/Ungga) o un manual_publish_package entregable.",
+  };
+}
+
 function sanitizeIntakePatch(
   intakeSchema: readonly OperationalCaseIntakeField[] | undefined,
   patch: Record<string, unknown>
@@ -4001,6 +4149,21 @@ export function addOperationalCaseTools(
               await updateToolCallStatus(ctx.db, record.id, "failed", out);
               return JSON.stringify(out);
             }
+            if (
+              opCase.case_type === "property_optioning" &&
+              (input.current_step === "published" || input.status === "completed")
+            ) {
+              const completion = canCompletePropertyOptioningFromContext(nextContext);
+              if (!completion.ok) {
+                const out = {
+                  ok: false,
+                  error: "property_optioning_publish_completion_blocked",
+                  hint: completion.reason,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
 
             updated = await updateOperationalCase(
               ctx.db,
@@ -4049,6 +4212,49 @@ export function addOperationalCaseTools(
               ...(input.note ? { reason: input.note } : {}),
             },
           });
+
+          if (
+            opCaseBefore.case_type === "property_optioning" &&
+            updated.current_step === "published" &&
+            updated.status === "completed"
+          ) {
+            const recentEvents = await getRecentOperationalCaseEvents(
+              ctx.db,
+              updated.id,
+              30
+            );
+            const alreadySent = listingPublishedSummaryAlreadySent(recentEvents);
+            const completionGate = canCompletePropertyOptioningFromContext(
+              isRecord(updated.context_jsonb) ? updated.context_jsonb : {},
+              recentEvents
+            );
+            if (!alreadySent && completionGate.ok) {
+              try {
+                const summaryText = buildListingPublishedSummaryText(updated);
+                const result = await deps.notifyUser(
+                  ctx.db,
+                  ctx.userId,
+                  {
+                    text: summaryText,
+                    kind: "listing_published_summary",
+                    data: { case_id: updated.id },
+                  },
+                  "normal"
+                );
+                if (result.delivered.length > 0) {
+                  await insertOperationalCaseEvent(ctx.db, {
+                    caseId: updated.id,
+                    eventType: "step_completed",
+                    actor: "agent",
+                    stepKey: "published",
+                    payload: { kind: "listing_published_summary_sent" },
+                  });
+                }
+              } catch {
+                // El cierre de estado no debe fallar por errores de notificacion.
+              }
+            }
+          }
 
           const out = {
             ok: true,
@@ -4922,6 +5128,41 @@ export function addOperationalCaseTools(
                 return JSON.stringify(out);
               }
             }
+            if (canonicalKind === "listing_published_summary" && opCase) {
+              const recentEvents = await getRecentOperationalCaseEvents(
+                ctx.db,
+                opCase.id,
+                30
+              );
+              const context =
+                opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                  ? (opCase.context_jsonb as Record<string, unknown>)
+                  : {};
+              const completionGate = canCompletePropertyOptioningFromContext(
+                context,
+                recentEvents
+              );
+              if (!completionGate.ok) {
+                const out = {
+                  ok: false,
+                  error: "listing_published_summary_blocked",
+                  hint: completionGate.reason,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+              const alreadySent = listingPublishedSummaryAlreadySent(recentEvents);
+              if (alreadySent) {
+                const out = {
+                  ok: true,
+                  status: "listing_published_summary_already_sent",
+                  skipped: true,
+                  case_id: opCase.id,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "executed", out);
+                return JSON.stringify(out);
+              }
+            }
             let notificationText = input.text;
             if (canonicalKind === "property_data_review") {
               notificationText = canonicalizePropertyDataReviewText(opCase, input.text);
@@ -4954,6 +5195,8 @@ export function addOperationalCaseTools(
               notificationText = canonicalizeContractDataReviewText(input.text);
             } else if (canonicalKind === "contract_review" && opCase) {
               notificationText = canonicalContractReviewNotifyText(opCase);
+            } else if (canonicalKind === "listing_published_summary" && opCase) {
+              notificationText = buildListingPublishedSummaryText(opCase);
             }
             const result = await deps.notifyUser(
               ctx.db,
@@ -4980,6 +5223,19 @@ export function addOperationalCaseTools(
               attempted: result.attempted,
               delivered: result.delivered,
             };
+            if (
+              canonicalKind === "listing_published_summary" &&
+              caseId &&
+              result.delivered.length > 0
+            ) {
+              await insertOperationalCaseEvent(ctx.db, {
+                caseId,
+                eventType: "step_completed",
+                actor: "agent",
+                stepKey: "published",
+                payload: { kind: "listing_published_summary_sent" },
+              });
+            }
             await updateToolCallStatus(ctx.db, record.id, "executed", out);
             return JSON.stringify(out);
           } catch (e) {

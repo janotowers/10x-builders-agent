@@ -1180,6 +1180,92 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "analyze_property_images",
+    name: "analyze_property_images",
+    description:
+      "Analyzes property photos/images with a vision model and returns structured, evidence-based observations (coverage, visible spaces/features, quality notes, and do-not-claim constraints). This does not infer that unseen features do not exist.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        image_paths: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Storage paths or URLs for images to analyze (e.g. raw_photos).",
+        },
+        purpose: {
+          type: "string",
+          description:
+            "Optional context for analysis (default: listing_description).",
+        },
+        case_id: {
+          type: "string",
+          description:
+            "Operational case id for context persistence and audit linkage.",
+        },
+      },
+      required: ["image_paths"],
+    },
+  },
+  {
+    id: "lookup_property_surroundings",
+    name: "lookup_property_surroundings",
+    description:
+      "Builds verified surroundings context for a property (points of interest, mobility cues, and area summary) from address/coordinates using geocoding + nearby place lookup. Results are persisted for listing copy generation.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        address: { type: "string" },
+        neighborhood: { type: "string" },
+        municipality: { type: "string" },
+        state: { type: "string" },
+        country: { type: "string" },
+        latitude: { type: "number" },
+        longitude: { type: "number" },
+        radius_meters: {
+          type: "number",
+          description: "Search radius in meters for nearby places (default 1500).",
+        },
+        max_results_per_category: {
+          type: "number",
+          description:
+            "Max POIs per category to include in output (default 4, max 8).",
+        },
+        case_id: {
+          type: "string",
+          description:
+            "Operational case id for context persistence and audit linkage.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    id: "prepare_listing_description_draft",
+    name: "prepare_listing_description_draft",
+    description:
+      "Generates a structured real-estate listing description draft from verified ingredients in the operational case (property_data, pricing, photo_analysis, zone_context, advisor highlights).",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        case_id: {
+          type: "string",
+          description:
+            "Operational case id used to read ingredients and persist draft outputs.",
+        },
+        purpose: {
+          type: "string",
+          description:
+            "Optional purpose tag (default: listing_description).",
+        },
+      },
+      required: ["case_id"],
+    },
+  },
+  {
     id: "easybroker_create_listing",
     name: "easybroker_create_listing",
     description:

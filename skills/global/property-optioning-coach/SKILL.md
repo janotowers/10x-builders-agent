@@ -32,6 +32,9 @@ allowed_tools:
   - operational_case_persist_comparables_analysis
   - get_avaclick_valuation
   - generate_document_from_template
+  - analyze_property_images
+  - lookup_property_surroundings
+  - prepare_listing_description_draft
   - image_watermark
   - easybroker_create_listing
   - easybroker_upload_images
@@ -126,7 +129,7 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
 | `price_proposal_pending` | `prepare-listing-price` | `notify_user` (HITL) |
 | `contract_pending` | `prepare-commission-contract` | `generate_document_from_template`, `notify_user` |
 | `photos_requested` | `request-property-photos` | `notify_user`, `operational_case_update_state` |
-| `package_ready` | `publish-listing-package` | `image_watermark`, `easybroker_create_listing`, `ungga_publish_listing` |
+| `package_ready` | `publish-listing-package` | `analyze_property_images`, `lookup_property_surroundings`, `prepare_listing_description_draft`, `image_watermark`, `easybroker_create_listing`, `easybroker_upload_images`, `ungga_publish_listing` |
 
 ## Workflow (alto nivel)
 

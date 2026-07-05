@@ -256,6 +256,198 @@ const execFileAsync = promisify(execFile);
 
 const LOCAL_COMPARABLES_BIGQUERY_PROJECT_ID = "ungga-full";
 const LOCAL_COMPARABLES_BIGQUERY_LOCATION = "US";
+const IMAGE_VISION_MODEL_ID =
+  process.env.IMAGE_VISION_MODEL_ID?.trim() || "openai/gpt-4.1-mini";
+const IMAGE_VISION_MAX_TOKENS = Number(
+  process.env.IMAGE_VISION_MAX_TOKENS?.trim() || "1500"
+);
+const IMAGE_VISION_TEMPERATURE = Number(
+  process.env.IMAGE_VISION_TEMPERATURE?.trim() || "0"
+);
+const LISTING_COPY_MODEL_ID =
+  process.env.LISTING_COPY_MODEL_ID?.trim() || "openai/gpt-4.1-mini";
+const LISTING_COPY_MAX_TOKENS = Number(
+  process.env.LISTING_COPY_MAX_TOKENS?.trim() || "1200"
+);
+const LISTING_COPY_TEMPERATURE = Number(
+  process.env.LISTING_COPY_TEMPERATURE?.trim() || "0.1"
+);
+
+type OpenRouterMessage = {
+  role: "system" | "user" | "assistant";
+  content: unknown;
+};
+
+async function callOpenRouterJsonTool(input: {
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  messages: OpenRouterMessage[];
+}) {
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("missing_openrouter_api_key");
+  }
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://agents.local",
+    },
+    body: JSON.stringify({
+      model: input.model,
+      temperature: Number.isFinite(input.temperature) ? input.temperature : 0,
+      max_tokens: Number.isFinite(input.maxTokens) ? input.maxTokens : 1000,
+      messages: input.messages,
+    }),
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    error?: { message?: string };
+  };
+  const content = body.choices?.[0]?.message?.content;
+  if (!res.ok || !content) {
+    throw new Error(body.error?.message ?? `model_request_failed_${res.status}`);
+  }
+  return parseLenientJson(content);
+}
+
+function parseLenientJson(content: string): Record<string, unknown> {
+  const trimmed = content.trim();
+  if (!trimmed) return {};
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+    if (fenced) {
+      try {
+        return JSON.parse(fenced) as Record<string, unknown>;
+      } catch {
+        // continue
+      }
+    }
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(trimmed.slice(start, end + 1)) as Record<string, unknown>;
+      } catch {
+        // continue
+      }
+    }
+  }
+  throw new Error("invalid_json_response");
+}
+
+function ensureStringArray(value: unknown, max = 24): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter((item) => item.length > 0)
+    .slice(0, max);
+}
+
+function asPlainRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+async function persistCaseContextPatch(
+  ctx: ToolContext,
+  caseId: string,
+  patch: Record<string, unknown>,
+  eventPayload?: Record<string, unknown>
+) {
+  let current = await getOperationalCase(ctx.db, caseId);
+  if (!current || current.user_id !== ctx.userId) return null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const mergedContext = {
+      ...(asPlainRecord(current.context_jsonb) ?? {}),
+      ...patch,
+    };
+    const updated = await updateOperationalCase(ctx.db, current.id, current.version, {
+      context: mergedContext,
+    });
+    if (updated) {
+      if (eventPayload) {
+        await insertOperationalCaseEvent(ctx.db, {
+          caseId: updated.id,
+          eventType: "state_changed",
+          actor: "agent",
+          payload: eventPayload,
+        });
+      }
+      return updated;
+    }
+    const reread = await getOperationalCase(ctx.db, caseId);
+    if (!reread || reread.user_id !== ctx.userId) return null;
+    current = reread;
+  }
+  return null;
+}
+
+async function persistPublishedDestination(
+  ctx: ToolContext,
+  caseId: string,
+  destination: "easybroker" | "ungga",
+  payload: Record<string, unknown>
+) {
+  const opCase = await getOperationalCase(ctx.db, caseId);
+  if (!opCase || opCase.user_id !== ctx.userId) return null;
+  const currentContext = asPlainRecord(opCase.context_jsonb);
+  const published = asPlainRecord(currentContext.published);
+  const destinationCurrent = asPlainRecord(published[destination]);
+  const destinationPatch = {
+    ...destinationCurrent,
+    ...payload,
+    updated_at: new Date().toISOString(),
+  };
+  const nextPublished = {
+    ...published,
+    [destination]: destinationPatch,
+  };
+  return persistCaseContextPatch(
+    ctx,
+    caseId,
+    { published: nextPublished },
+    {
+      kind: "listing_publish_destination_persisted",
+      destination,
+      ...payload,
+    }
+  );
+}
+
+function safeNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function haversineMeters(
+  fromLat: number,
+  fromLon: number,
+  toLat: number,
+  toLon: number
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const r = 6371_000;
+  const dLat = toRad(toLat - fromLat);
+  const dLon = toRad(toLon - fromLon);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(fromLat)) *
+      Math.cos(toRad(toLat)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(r * c);
+}
 
 async function applyTelegramSendCaseWiring(
   ctx: ToolContext,
@@ -659,6 +851,17 @@ export function addRealEstateTools(
         }
       )
     );
+  }
+
+  // ── Listing package preparation tools (read) ───────────────────────────
+  if (toolEnabled("analyze_property_images", ctx)) {
+    tools.push(makeAnalyzePropertyImagesTool(ctx));
+  }
+  if (toolEnabled("lookup_property_surroundings", ctx)) {
+    tools.push(makeLookupPropertySurroundingsTool(ctx));
+  }
+  if (toolEnabled("prepare_listing_description_draft", ctx)) {
+    tools.push(makePrepareListingDescriptionDraftTool(ctx));
   }
 
   // ── Avaclick valuation (read) ───────────────────────────────────────
@@ -1217,13 +1420,76 @@ export function addRealEstateTools(
           const record = await createTrackedToolCall(ctx, "ungga_publish_listing",
             input,
             true);
-          const out = await executeUnggaPublishListing(ctx, input, deps);
+          const caseId =
+            typeof input.case_id === "string" && input.case_id.trim()
+              ? input.case_id.trim()
+              : ctx.caseId ?? null;
+          let inputForExecution = { ...input };
+          if (caseId) {
+            const gate = await enforcePublishGateForCase({
+              ctx,
+              caseId,
+              destination: "ungga",
+            });
+            if (!gate.ok) {
+              await updateToolCallStatus(ctx.db, record.id, "failed", gate);
+              return JSON.stringify(gate);
+            }
+            const approvedCopy = await approvedListingCopyFromCase(ctx, caseId);
+            if (approvedCopy) {
+              inputForExecution = {
+                ...inputForExecution,
+                title:
+                  typeof inputForExecution.title === "string" &&
+                  inputForExecution.title.trim().length > 0
+                    ? inputForExecution.title
+                    : approvedCopy.headline,
+                description: approvedCopy.description,
+              };
+            }
+          }
+          const out = await executeUnggaPublishListing(ctx, inputForExecution, deps);
           await updateToolCallStatus(
             ctx.db,
             record.id,
             out.ok ? "executed" : "failed",
             out as unknown as Record<string, unknown>
           );
+          if (caseId && out.ok) {
+            if (out.action === "publish_draft") {
+              await persistPublishedDestination(ctx, caseId, "ungga", {
+                ungga_property_id:
+                  typeof out.ungga_property_id === "string"
+                    ? out.ungga_property_id
+                    : null,
+                published_url:
+                  typeof out.published_url === "string" ? out.published_url : null,
+                draft_url:
+                  typeof out.draft_url === "string" ? out.draft_url : null,
+                status: "published",
+              });
+            }
+            const kind =
+              out.action === "publish_draft" ? "ungga_published" : "ungga_draft_ready";
+            await insertOperationalCaseEvent(ctx.db, {
+              caseId,
+              eventType: "step_completed",
+              actor: "agent",
+              stepKey: "package_ready",
+              payload: {
+                kind,
+                destination: "ungga",
+                ungga_property_id:
+                  typeof out.ungga_property_id === "string"
+                    ? out.ungga_property_id
+                    : null,
+                draft_url:
+                  typeof out.draft_url === "string" ? out.draft_url : null,
+                published_url:
+                  typeof out.published_url === "string" ? out.published_url : null,
+              },
+            });
+          }
           return JSON.stringify(out);
         },
         {
@@ -1707,6 +1973,563 @@ async function resolveDocumentTemplateAsset(
         asset.asset_key.includes("template") && isDocxTemplate(asset)
     ) ??
     null
+  );
+}
+
+type AnalyzePropertyImagesInput = {
+  image_paths: string[];
+  purpose?: string;
+  case_id?: string;
+};
+
+function makeAnalyzePropertyImagesTool(ctx: ToolContext) {
+  return tool(
+    async (input: AnalyzePropertyImagesInput) => {
+      const record = await createTrackedToolCall(
+        ctx,
+        "analyze_property_images",
+        input as unknown as Record<string, unknown>,
+        false
+      );
+      const maxImages = Math.min(input.image_paths.length, 8);
+      const selectedPaths = input.image_paths.slice(0, maxImages);
+      const imageMessages: Array<Record<string, unknown>> = [];
+      for (const imagePath of selectedPaths) {
+        try {
+          const loaded = await loadImageInput(ctx, imagePath);
+          const normalized = await sharp(loaded.buffer, { failOn: "none" })
+            .rotate()
+            .resize({ width: 1400, withoutEnlargement: true })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+          const dataUrl = `data:image/jpeg;base64,${normalized.toString("base64")}`;
+          imageMessages.push({ type: "image_url", image_url: { url: dataUrl } });
+        } catch {
+          // Si una imagen falla seguimos con el resto; el modelo recibirá menos entradas.
+        }
+      }
+      if (imageMessages.length === 0) {
+        const out = {
+          ok: false,
+          status: "no_images_loaded",
+          hint: "No se pudieron cargar imágenes válidas para análisis.",
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+      try {
+        const parsed = await callOpenRouterJsonTool({
+          model: IMAGE_VISION_MODEL_ID,
+          maxTokens: IMAGE_VISION_MAX_TOKENS,
+          temperature: IMAGE_VISION_TEMPERATURE,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Eres analista visual de inmobiliaria. Devuelve JSON válido sin markdown. " +
+                "Regla estricta: ausencia visual NO implica ausencia real. " +
+                "Nunca afirmar que la propiedad no tiene algo por no verse en fotos.",
+            },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text:
+                    `Analiza estas imágenes para ${input.purpose ?? "listing_description"}. ` +
+                    "Devuelve este shape JSON exacto: " +
+                    '{ "visible_features": string[], "visible_spaces": string[], "photo_coverage": { "facade": "visible|unclear|not_visible", "kitchen": "visible|unclear|not_visible", "living_room": "visible|unclear|not_visible", "primary_bedroom": "visible|unclear|not_visible", "bathroom": "visible|unclear|not_visible" }, "quality_notes": string[], "uncertain_observations": string[], "do_not_claim": string[], "recommended_missing_photos": string[] }. ' +
+                    "Responde solo con JSON.",
+                },
+                ...imageMessages,
+              ],
+            },
+          ],
+        });
+        const photoCoverage = asRecord(parsed.photo_coverage) ?? {};
+        const out = {
+          ok: true,
+          status: "analyzed",
+          model: IMAGE_VISION_MODEL_ID,
+          image_count: imageMessages.length,
+          visible_features: ensureStringArray(parsed.visible_features),
+          visible_spaces: ensureStringArray(parsed.visible_spaces),
+          photo_coverage: {
+            facade: normalizeCoverageValue(photoCoverage.facade),
+            kitchen: normalizeCoverageValue(photoCoverage.kitchen),
+            living_room: normalizeCoverageValue(photoCoverage.living_room),
+            primary_bedroom: normalizeCoverageValue(photoCoverage.primary_bedroom),
+            bathroom: normalizeCoverageValue(photoCoverage.bathroom),
+          },
+          quality_notes: ensureStringArray(parsed.quality_notes),
+          uncertain_observations: ensureStringArray(parsed.uncertain_observations),
+          do_not_claim: ensureStringArray(parsed.do_not_claim),
+          recommended_missing_photos: ensureStringArray(parsed.recommended_missing_photos),
+          source_paths: selectedPaths,
+        };
+        const caseId = input.case_id ?? ctx.caseId ?? null;
+        if (caseId) {
+          await persistCaseContextPatch(
+            ctx,
+            caseId,
+            { photo_analysis: out },
+            {
+              kind: "property_images_analyzed",
+              tool: "analyze_property_images",
+              image_count: out.image_count,
+            }
+          );
+        }
+        await updateToolCallStatus(
+          ctx.db,
+          record.id,
+          "executed",
+          out as unknown as Record<string, unknown>
+        );
+        return JSON.stringify(out);
+      } catch (err) {
+        const out = {
+          ok: false,
+          status: "failed",
+          error: err instanceof Error ? err.message : String(err),
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+    },
+    {
+      name: "analyze_property_images",
+      description:
+        "Analyzes property images and returns structured visual evidence for listing copy (never infers absent features from missing photos).",
+      schema: z.object({
+        image_paths: z.array(z.string().min(1)).min(1).max(30),
+        purpose: z.string().min(1).optional(),
+        case_id: z.string().min(1).optional(),
+      }),
+    }
+  );
+}
+
+type LookupPropertySurroundingsInput = {
+  address?: string;
+  neighborhood?: string;
+  municipality?: string;
+  state?: string;
+  country?: string;
+  latitude?: number;
+  longitude?: number;
+  radius_meters?: number;
+  max_results_per_category?: number;
+  case_id?: string;
+};
+
+async function resolveSurroundingsCoordinates(
+  ctx: ToolContext,
+  input: LookupPropertySurroundingsInput
+) {
+  const lat = safeNumber(input.latitude);
+  const lon = safeNumber(input.longitude);
+  if (lat != null && lon != null) {
+    return { latitude: lat, longitude: lon, source: "input" as const };
+  }
+  if (input.case_id || ctx.caseId) {
+    const caseId = input.case_id ?? ctx.caseId ?? "";
+    const opCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
+    const caseContext = asRecord(opCase?.context_jsonb) ?? {};
+    const propertyData = asRecord(caseContext.property_data) ?? {};
+    const address = asRecord(propertyData.address) ?? {};
+    const caseLat = safeNumber(address.latitude ?? propertyData.latitude);
+    const caseLon = safeNumber(address.longitude ?? propertyData.longitude);
+    if (caseLat != null && caseLon != null) {
+      return { latitude: caseLat, longitude: caseLon, source: "case_context" as const };
+    }
+    const geocodeInput = {
+      street:
+        (typeof address.street === "string" && address.street.trim()) ||
+        (typeof input.address === "string" && input.address.trim()) ||
+        undefined,
+      neighborhood:
+        (typeof address.neighborhood === "string" && address.neighborhood.trim()) ||
+        (typeof input.neighborhood === "string" && input.neighborhood.trim()) ||
+        undefined,
+      municipality:
+        (typeof address.municipality === "string" && address.municipality.trim()) ||
+        (typeof input.municipality === "string" && input.municipality.trim()) ||
+        (typeof propertyData.municipality === "string" && propertyData.municipality.trim()) ||
+        undefined,
+      state:
+        (typeof address.state === "string" && address.state.trim()) ||
+        (typeof input.state === "string" && input.state.trim()) ||
+        (typeof propertyData.state === "string" && propertyData.state.trim()) ||
+        undefined,
+      country: (typeof input.country === "string" && input.country.trim()) || "MX",
+    };
+    const geocoded = await geocodePropertyAddress(geocodeInput);
+    if (
+      geocoded.ok &&
+      geocoded.status === "ok" &&
+      typeof geocoded.latitude === "number" &&
+      typeof geocoded.longitude === "number"
+    ) {
+      return {
+        latitude: geocoded.latitude,
+        longitude: geocoded.longitude,
+        source: "geocode_property_address" as const,
+      };
+    }
+  }
+  return null;
+}
+
+function normalizeCoverageValue(value: unknown): "visible" | "unclear" | "not_visible" {
+  const normalized =
+    typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : "";
+  if (normalized === "visible") return "visible";
+  if (normalized === "not_visible" || normalized === "missing") return "not_visible";
+  return "unclear";
+}
+
+function makeLookupPropertySurroundingsTool(ctx: ToolContext) {
+  return tool(
+    async (input: LookupPropertySurroundingsInput) => {
+      const record = await createTrackedToolCall(
+        ctx,
+        "lookup_property_surroundings",
+        input as unknown as Record<string, unknown>,
+        false
+      );
+      const apiKey = process.env.GOOGLE_MAPS_API_KEY?.trim();
+      if (!apiKey) {
+        const out = {
+          ok: false,
+          status: "not_configured",
+          hint: "Falta GOOGLE_MAPS_API_KEY para lookup de entorno.",
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+      const coordinates = await resolveSurroundingsCoordinates(ctx, input);
+      if (!coordinates) {
+        const out = {
+          ok: false,
+          status: "missing_coordinates",
+          hint:
+            "No pude resolver coordenadas para consultar entorno. Proporciona lat/lng o dirección suficiente.",
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+      const radius = Math.max(300, Math.min(3000, Math.round(safeNumber(input.radius_meters) ?? 1500)));
+      const perCategory = Math.max(
+        1,
+        Math.min(8, Math.round(safeNumber(input.max_results_per_category) ?? 4))
+      );
+      const categories = [
+        { key: "park", label: "Parques" },
+        { key: "school", label: "Escuelas" },
+        { key: "hospital", label: "Hospitales" },
+        { key: "shopping_mall", label: "Centros comerciales" },
+        { key: "transit_station", label: "Transporte" },
+      ];
+      const points: Array<Record<string, unknown>> = [];
+      const warnings: string[] = [];
+      for (const category of categories) {
+        const url =
+          "https://maps.googleapis.com/maps/api/place/nearbysearch/json" +
+          `?location=${coordinates.latitude},${coordinates.longitude}` +
+          `&radius=${radius}&type=${encodeURIComponent(category.key)}` +
+          `&language=es&key=${encodeURIComponent(apiKey)}`;
+        try {
+          const res = await fetch(url);
+          const body = (await res.json().catch(() => ({}))) as {
+            results?: Array<Record<string, unknown>>;
+            status?: string;
+            error_message?: string;
+          };
+          if (!res.ok || (body.status && body.status !== "OK" && body.status !== "ZERO_RESULTS")) {
+            warnings.push(
+              `${category.label}: ${body.error_message || body.status || `HTTP_${res.status}`}`
+            );
+            continue;
+          }
+          for (const poi of (body.results ?? []).slice(0, perCategory)) {
+            const geometry = asRecord(poi.geometry) ?? {};
+            const location = asRecord(geometry.location) ?? {};
+            const poiLat = safeNumber(location.lat);
+            const poiLon = safeNumber(location.lng);
+            const distanceMeters =
+              poiLat != null && poiLon != null
+                ? haversineMeters(coordinates.latitude, coordinates.longitude, poiLat, poiLon)
+                : null;
+            points.push({
+              category: category.key,
+              category_label: category.label,
+              name: typeof poi.name === "string" ? poi.name.trim() : "POI",
+              vicinity:
+                typeof poi.vicinity === "string"
+                  ? poi.vicinity.trim()
+                  : typeof poi.formatted_address === "string"
+                    ? poi.formatted_address.trim()
+                    : "",
+              distance_meters: distanceMeters,
+              rating: safeNumber(poi.rating),
+            });
+          }
+        } catch (err) {
+          warnings.push(
+            `${category.label}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+      points.sort((a, b) => {
+        const aDistance = safeNumber(a.distance_meters) ?? Number.MAX_SAFE_INTEGER;
+        const bDistance = safeNumber(b.distance_meters) ?? Number.MAX_SAFE_INTEGER;
+        return aDistance - bDistance;
+      });
+      const pointsOfInterest = points
+        .slice(0, 20)
+        .map((poi) => {
+          const name = typeof poi.name === "string" ? poi.name : "POI";
+          const label =
+            typeof poi.category_label === "string" ? poi.category_label : "POI";
+          const distance = safeNumber(poi.distance_meters);
+          return distance != null ? `${name} (${label}, ~${distance} m)` : `${name} (${label})`;
+        });
+      const out = {
+        ok: true,
+        status: "ok",
+        source: "google_places_nearby",
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude,
+        coordinate_source: coordinates.source,
+        radius_meters: radius,
+        points,
+        points_of_interest: pointsOfInterest,
+        mobility: points
+          .filter((poi) => poi.category === "transit_station")
+          .slice(0, 5)
+          .map((poi) => poi.name),
+        area_summary:
+          pointsOfInterest.length > 0
+            ? `Entorno con ${pointsOfInterest.length} puntos de interés verificados en radio de ${radius} m.`
+            : "No se encontraron puntos de interés verificados en el radio consultado.",
+        warnings,
+      };
+      const caseId = input.case_id ?? ctx.caseId ?? null;
+      if (caseId) {
+        await persistCaseContextPatch(
+          ctx,
+          caseId,
+          { zone_context: out, zone_points_of_interest: pointsOfInterest },
+          {
+            kind: "property_surroundings_enriched",
+            tool: "lookup_property_surroundings",
+            points_count: pointsOfInterest.length,
+          }
+        );
+      }
+      await updateToolCallStatus(
+        ctx.db,
+        record.id,
+        "executed",
+        out as unknown as Record<string, unknown>
+      );
+      return JSON.stringify(out);
+    },
+    {
+      name: "lookup_property_surroundings",
+      description:
+        "Builds surroundings context (POIs + area summary) around a property using coordinates/address.",
+      schema: z.object({
+        address: z.string().optional(),
+        neighborhood: z.string().optional(),
+        municipality: z.string().optional(),
+        state: z.string().optional(),
+        country: z.string().optional(),
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+        radius_meters: z.number().optional(),
+        max_results_per_category: z.number().optional(),
+        case_id: z.string().optional(),
+      }),
+    }
+  );
+}
+
+function makePrepareListingDescriptionDraftTool(ctx: ToolContext) {
+  return tool(
+    async (input: { case_id: string; purpose?: string }) => {
+      const record = await createTrackedToolCall(
+        ctx,
+        "prepare_listing_description_draft",
+        input as unknown as Record<string, unknown>,
+        false
+      );
+      const opCase = await getOperationalCase(ctx.db, input.case_id);
+      if (!opCase || opCase.user_id !== ctx.userId) {
+        const out = { ok: false, status: "case_not_found" };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+      const context = asRecord(opCase.context_jsonb) ?? {};
+      const propertyData = asRecord(context.property_data) ?? {};
+      const pricingProposal = asRecord(context.pricing_proposal) ?? {};
+      const photoAnalysis = asRecord(context.photo_analysis) ?? {};
+      const zoneContext = asRecord(context.zone_context) ?? {};
+      const highlights = ensureStringArray(context.listing_highlights).slice(0, 8);
+      const missingIngredients: string[] = [];
+      const targetPrice = safeNumber(pricingProposal.target_price ?? propertyData.target_price);
+      if (!targetPrice || targetPrice <= 0) missingIngredients.push("target_price");
+      if (!propertyData.property_type && !context.property_type) {
+        missingIngredients.push("property_type");
+      }
+      if (!propertyData.operation && !context.operation_type) {
+        missingIngredients.push("operation_type");
+      }
+      const rawPhotosCount = Array.isArray(context.raw_photos) ? context.raw_photos.length : 0;
+      if (rawPhotosCount < 5) missingIngredients.push("raw_photos>=5");
+      if (Object.keys(photoAnalysis).length === 0) missingIngredients.push("photo_analysis");
+      if (Object.keys(zoneContext).length === 0) missingIngredients.push("zone_context");
+      if (missingIngredients.length > 0) {
+        const out = {
+          ok: false,
+          status: "missing_required_ingredients",
+          missing_ingredients: missingIngredients,
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+      const ingredientPayload = {
+        property_type: propertyData.property_type ?? context.property_type ?? "propiedad",
+        operation_type: propertyData.operation ?? context.operation_type ?? "N/D",
+        legal_address:
+          propertyData.legal_address ??
+          propertyData.address ??
+          (asRecord(propertyData.address)?.formatted_address as string | undefined) ??
+          "N/D",
+        municipality: propertyData.municipality ?? propertyData.city ?? "N/D",
+        state: propertyData.state ?? "N/D",
+        neighborhood:
+          propertyData.neighborhood ?? propertyData.fraccionamiento ?? "N/D",
+        target_price: targetPrice,
+        currency:
+          pricingProposal.currency ?? propertyData.currency ?? context.currency ?? "MXN",
+        bedrooms: propertyData.bedrooms ?? null,
+        bathrooms: propertyData.bathrooms ?? null,
+        parking_spots: propertyData.parking_spots ?? null,
+        area_total_m2: propertyData.area_total_m2 ?? null,
+        area_built_m2: propertyData.area_built_m2 ?? null,
+        raw_photos_count: rawPhotosCount,
+        photo_analysis: {
+          visible_spaces: ensureStringArray(photoAnalysis.visible_spaces),
+          visible_features: ensureStringArray(photoAnalysis.visible_features),
+          quality_notes: ensureStringArray(photoAnalysis.quality_notes),
+          do_not_claim: ensureStringArray(photoAnalysis.do_not_claim),
+          recommended_missing_photos: ensureStringArray(
+            photoAnalysis.recommended_missing_photos
+          ),
+        },
+        zone_context: {
+          points_of_interest: ensureStringArray(zoneContext.points_of_interest),
+          mobility: ensureStringArray(zoneContext.mobility),
+          area_summary:
+            typeof zoneContext.area_summary === "string"
+              ? zoneContext.area_summary
+              : "",
+        },
+        advisor_highlights: highlights,
+      };
+      try {
+        const parsed = await callOpenRouterJsonTool({
+          model: LISTING_COPY_MODEL_ID,
+          maxTokens: LISTING_COPY_MAX_TOKENS,
+          temperature: LISTING_COPY_TEMPERATURE,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Eres copywriter inmobiliario LATAM. Devuelve JSON válido sin markdown. " +
+                "No inventes amenidades ni cercanías; usa solo ingredientes provistos.",
+            },
+            {
+              role: "user",
+              content:
+                "Con estos ingredientes genera un borrador comercial con este shape exacto: " +
+                '{ "headline": string, "short_description": string, "description": string, "ingredients_used": string[], "excluded_claims": string[], "missing_ingredients": string[] }. ' +
+                "El cuerpo description debe tener entre 120 y 220 palabras y tono sobrio." +
+                `\n\nIngredientes:\n${JSON.stringify(ingredientPayload)}`,
+            },
+          ],
+        });
+        const draft = {
+          headline:
+            typeof parsed.headline === "string" && parsed.headline.trim()
+              ? parsed.headline.trim().slice(0, 140)
+              : "Borrador de publicación",
+          short_description:
+            typeof parsed.short_description === "string" && parsed.short_description.trim()
+              ? parsed.short_description.trim().slice(0, 220)
+              : "",
+          description:
+            typeof parsed.description === "string" && parsed.description.trim()
+              ? parsed.description.trim()
+              : "",
+          ingredients_used: ensureStringArray(parsed.ingredients_used),
+          excluded_claims: ensureStringArray(parsed.excluded_claims),
+          missing_ingredients: ensureStringArray(parsed.missing_ingredients),
+          model: LISTING_COPY_MODEL_ID,
+          generated_at: new Date().toISOString(),
+          purpose: input.purpose ?? "listing_description",
+        };
+        if (!draft.description) {
+          const out = {
+            ok: false,
+            status: "empty_description",
+            hint: "El modelo no devolvió descripción utilizable.",
+          };
+          await updateToolCallStatus(ctx.db, record.id, "failed", out);
+          return JSON.stringify(out);
+        }
+        const patch = {
+          listing_copy_ingredients: ingredientPayload,
+          listing_description_draft: draft,
+          listing_description_md: draft.description,
+        };
+        await persistCaseContextPatch(ctx, opCase.id, patch, {
+          kind: "listing_description_drafted",
+          tool: "prepare_listing_description_draft",
+        });
+        const out = {
+          ok: true,
+          status: "drafted",
+          ...draft,
+        };
+        await updateToolCallStatus(
+          ctx.db,
+          record.id,
+          "executed",
+          out as unknown as Record<string, unknown>
+        );
+        return JSON.stringify(out);
+      } catch (err) {
+        const out = {
+          ok: false,
+          status: "failed",
+          error: err instanceof Error ? err.message : String(err),
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+    },
+    {
+      name: "prepare_listing_description_draft",
+      description:
+        "Prepares a structured listing description draft from verified ingredients in the operational case.",
+      schema: z.object({
+        case_id: z.string().min(1),
+        purpose: z.string().min(1).optional(),
+      }),
+    }
   );
 }
 
@@ -2933,6 +3756,124 @@ type EasyBrokerListingLocationInput = {
   [key: string]: unknown;
 };
 
+type PublishDestination = "easybroker" | "ungga" | "manual";
+
+function collectPublishGateMissing(
+  context: Record<string, unknown>,
+  destination: PublishDestination
+) {
+  const propertyData = asRecord(context.property_data) ?? {};
+  const pricingProposal = asRecord(context.pricing_proposal) ?? {};
+  const contractReview = asRecord(context.contract_review) ?? {};
+  const missing: string[] = [];
+  const approvalStatus =
+    typeof pricingProposal.approval_status === "string"
+      ? pricingProposal.approval_status
+      : typeof context.approval_status === "string"
+        ? context.approval_status
+        : "";
+  if (approvalStatus !== "approved") {
+    missing.push("pricing_proposal.approval_status=approved");
+  }
+  if (
+    typeof contractReview.status !== "string" ||
+    contractReview.status !== "sent_by_email"
+  ) {
+    missing.push("contract_review.status=sent_by_email");
+  }
+  const rawPhotos = Array.isArray(context.raw_photos) ? context.raw_photos.length : 0;
+  if (rawPhotos < 5) missing.push("raw_photos>=5");
+  if (!asRecord(context.photo_analysis) || Object.keys(asRecord(context.photo_analysis) ?? {}).length === 0) {
+    missing.push("photo_analysis");
+  }
+  if (!asRecord(context.zone_context) || Object.keys(asRecord(context.zone_context) ?? {}).length === 0) {
+    missing.push("zone_context");
+  }
+  const descriptionApproved = asRecord(context.listing_description_approved) ?? {};
+  if (
+    typeof descriptionApproved.description !== "string" ||
+    !descriptionApproved.description.trim()
+  ) {
+    missing.push("listing_description_approved");
+  }
+  const publishApprovals = asRecord(context.publish_approvals) ?? {};
+  if (destination !== "manual") {
+    const destinationState = publishApprovals[destination];
+    if (destinationState !== "approved") {
+      missing.push(`publish_approvals.${destination}=approved`);
+    }
+  }
+  const propertyType =
+    typeof propertyData.property_type === "string"
+      ? propertyData.property_type.trim()
+      : typeof context.property_type === "string"
+        ? context.property_type.trim()
+        : "";
+  const operationType =
+    typeof propertyData.operation === "string"
+      ? propertyData.operation.trim()
+      : typeof context.operation_type === "string"
+        ? context.operation_type.trim()
+        : "";
+  const currency =
+    (typeof propertyData.currency === "string" && propertyData.currency.trim()) ||
+    (typeof pricingProposal.currency === "string" && pricingProposal.currency.trim()) ||
+    (typeof context.currency === "string" && context.currency.trim()) ||
+    "";
+  if (!propertyType) missing.push("property_type");
+  if (!operationType) missing.push("operation_type");
+  if (!currency) missing.push("currency");
+  return missing;
+}
+
+async function enforcePublishGateForCase(params: {
+  ctx: ToolContext;
+  caseId: string;
+  destination: PublishDestination;
+}) {
+  const opCase = await getOperationalCase(params.ctx.db, params.caseId);
+  if (!opCase || opCase.user_id !== params.ctx.userId) {
+    return {
+      ok: false,
+      status: "case_not_found",
+      hint: "No encontré el caso asociado para validar publicación.",
+    };
+  }
+  if (opCase.case_type !== "property_optioning") {
+    return { ok: true as const, opCase };
+  }
+  const context = asRecord(opCase.context_jsonb) ?? {};
+  const missing = collectPublishGateMissing(context, params.destination);
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      status: "publish_gate_blocked",
+      case_id: opCase.id,
+      destination: params.destination,
+      missing,
+      hint:
+        "No se puede publicar aún. Completa preflight, aprueba descripción y registra aprobación del destino.",
+    };
+  }
+  return { ok: true as const, opCase };
+}
+
+async function approvedListingCopyFromCase(
+  ctx: ToolContext,
+  caseId: string
+): Promise<{ headline: string; description: string } | null> {
+  const opCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
+  if (!opCase || opCase.user_id !== ctx.userId) return null;
+  const context = asRecord(opCase.context_jsonb) ?? {};
+  const approved = asRecord(context.listing_description_approved) ?? {};
+  const headline =
+    typeof approved.headline === "string" ? approved.headline.trim() : "";
+  const description =
+    typeof approved.description === "string" ? approved.description.trim() : "";
+  if (!description) return null;
+  return { headline, description };
+}
+
 type EasyBrokerCreateListingInput = {
   title: string;
   description: string;
@@ -3012,6 +3953,17 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
       const record = await createTrackedToolCall(ctx, "easybroker_create_listing",
         input as unknown as Record<string, unknown>,
         true);
+      if (input.case_id) {
+        const gate = await enforcePublishGateForCase({
+          ctx,
+          caseId: input.case_id,
+          destination: "easybroker",
+        });
+        if (!gate.ok) {
+          await updateToolCallStatus(ctx.db, record.id, "failed", gate);
+          return JSON.stringify(gate);
+        }
+      }
       const creds = await resolveEasyBrokerCredentials(ctx);
       if (!creds) {
         const out = {
@@ -3029,12 +3981,38 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
       }
       let attemptedPayload: Record<string, unknown> | undefined;
       try {
-        const inputForExecution = await applyDefaultEasyBrokerAgent(ctx, input);
+        let inputForExecution = await applyDefaultEasyBrokerAgent(ctx, input);
+        if (input.case_id) {
+          const approvedCopy = await approvedListingCopyFromCase(ctx, input.case_id);
+          if (approvedCopy) {
+            inputForExecution = {
+              ...inputForExecution,
+              title: approvedCopy.headline || inputForExecution.title,
+              description: approvedCopy.description,
+            };
+          }
+        }
         attemptedPayload = buildEasyBrokerCreatePayload(inputForExecution);
         const out = await createEasyBrokerListing(ctx, inputForExecution, creds, attemptedPayload);
         await markEasyBrokerCredentialResult(ctx, creds, out.ok !== false, out.status);
         await updateToolCallStatus(ctx.db, record.id, out.ok === false ? "failed" : "executed", out);
         if (input.case_id && out.ok !== false) {
+          await persistPublishedDestination(ctx, input.case_id, "easybroker", {
+            listing_id:
+              typeof out.listing_id === "string" ? out.listing_id : null,
+            public_id:
+              typeof out.public_id === "string" ? out.public_id : null,
+            public_url:
+              typeof out.public_url === "string"
+                ? out.public_url
+                : typeof out.url === "string"
+                  ? out.url
+                  : null,
+            agent_url:
+              typeof out.agent_url === "string" ? out.agent_url : null,
+            status:
+              typeof out.status === "string" ? out.status : "not_published",
+          });
           await insertOperationalCaseEvent(ctx.db, {
             caseId: input.case_id,
             eventType: "state_changed",
@@ -3047,6 +4025,18 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
               public_url: out.public_url,
               agent_url: out.agent_url,
               status: out.status,
+            },
+          });
+          await insertOperationalCaseEvent(ctx.db, {
+            caseId: input.case_id,
+            eventType: "step_completed",
+            actor: "agent",
+            stepKey: "package_ready",
+            payload: {
+              kind: "easybroker_published",
+              destination: "easybroker",
+              listing_id: out.listing_id ?? null,
+              public_url: out.public_url ?? out.url ?? null,
             },
           });
         }
@@ -3132,6 +4122,17 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
       const record = await createTrackedToolCall(ctx, "easybroker_upload_images",
         input as unknown as Record<string, unknown>,
         true);
+      if (input.case_id) {
+        const gate = await enforcePublishGateForCase({
+          ctx,
+          caseId: input.case_id,
+          destination: "easybroker",
+        });
+        if (!gate.ok) {
+          await updateToolCallStatus(ctx.db, record.id, "failed", gate);
+          return JSON.stringify(gate);
+        }
+      }
       const creds = await resolveEasyBrokerCredentials(ctx);
       if (!creds) {
         const out = {
