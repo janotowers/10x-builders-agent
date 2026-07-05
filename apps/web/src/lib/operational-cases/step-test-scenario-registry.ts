@@ -457,6 +457,134 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
         message:
           "Prueba controlada de paso (N4) para package_ready — preflight bloqueado. Actúa como property-optioning-coach. Enruta a publish-listing-package. El contexto sembrado tiene raw_photos vacío o insuficiente: NO publiques en EasyBroker ni Ungga. notify_user al asesor listando qué falta (fotos crudas, contrato firmado en timeline si aplica). Deja current_step=package_ready y status=paused.",
       },
+      {
+        id: "package_ready_description_review_requested",
+        label: "Solicitar revisión de descripción",
+        summary:
+          "Con prerequisitos completos en package_ready, la raíz prepara borrador y solicita revisión humana de la descripción.",
+        seed_summary:
+          "Entrada: package_ready / active con fotos, contrato enviado y precio aprobado.",
+        expect_summary:
+          "Salida: package_ready / waiting_internal con notify_user(kind=listing_description_review).",
+        seed: {
+          current_step: "package_ready",
+          status: "active",
+          context_patch: { skill_test_n4_seed: "package_ready_description_review_requested" },
+        },
+        expect: {
+          current_step: "package_ready",
+          status: "waiting_internal",
+          expected_context_keys: [
+            "photo_analysis",
+            "zone_context",
+            "listing_description_draft",
+          ],
+          expected_tool_calls: [
+            "analyze_property_images",
+            "lookup_property_surroundings",
+            "prepare_listing_description_draft",
+            "notify_user",
+          ],
+        },
+        message:
+          "Prueba controlada de paso (N4) para package_ready — solicitud de revisión de descripción. Actúa como property-optioning-coach y ejecuta publish-listing-package. Debes analizar imágenes, enriquecer entorno, preparar borrador y enviar notify_user(kind=listing_description_review). No publiques en destinos en este tick.",
+      },
+      {
+        id: "package_ready_description_approved",
+        label: "Asesor aprueba descripción",
+        execution: "business_decision",
+        business_decision_kind: "listing_description_review",
+        summary:
+          "Simula la decisión HITL que aprueba la descripción borrador y habilita publicación.",
+        seed_summary:
+          "Entrada: package_ready / waiting_internal con listing_description_draft.",
+        expect_summary:
+          "Salida: package_ready / active con listing_description_approved persistida.",
+        seed: {
+          current_step: "package_ready",
+          status: "waiting_internal",
+          context_patch: { skill_test_n4_seed: "package_ready_description_approved" },
+        },
+        expect: {
+          current_step: "package_ready",
+          status: "active",
+          expected_context_keys: ["listing_description_draft", "listing_description_approved"],
+          expected_events: ["human_decision:listing_description_approved"],
+        },
+        message: "Escenario N4 HITL: el asesor aprueba la descripción comercial.",
+        decision_text: "aprobar descripción",
+      },
+      {
+        id: "package_ready_easybroker_approval_requested",
+        label: "Solicitar aprobación de destino EasyBroker",
+        summary:
+          "Con descripción aprobada, la raíz solicita aprobación de negocio para destino EasyBroker.",
+        seed_summary:
+          "Entrada: package_ready / active con listing_description_approved y publish_approvals.easybroker=pending.",
+        expect_summary:
+          "Salida: package_ready / waiting_internal con notify_user(kind=easybroker_publish_approval).",
+        seed: {
+          current_step: "package_ready",
+          status: "active",
+          context_patch: { skill_test_n4_seed: "package_ready_easybroker_approval_requested" },
+        },
+        expect: {
+          current_step: "package_ready",
+          status: "waiting_internal",
+          expected_context_keys: ["listing_description_approved", "publish_approvals"],
+          expected_tool_calls: ["notify_user"],
+        },
+        message:
+          "Prueba controlada de paso (N4) para package_ready — aprobación por destino EasyBroker. Solicita notify_user(kind=easybroker_publish_approval) antes de publicar.",
+      },
+      {
+        id: "package_ready_easybroker_published",
+        label: "Aprobación y publicación en EasyBroker",
+        execution: "business_decision",
+        business_decision_kind: "publish_destination_approval",
+        summary:
+          "Simula aprobación del destino EasyBroker; deja el caso listo para ejecutar tools de publicación.",
+        seed_summary:
+          "Entrada: package_ready / waiting_internal con pending de easybroker.",
+        expect_summary:
+          "Salida: package_ready / active con publish_approvals.easybroker=approved.",
+        seed: {
+          current_step: "package_ready",
+          status: "waiting_internal",
+          context_patch: { skill_test_n4_seed: "package_ready_easybroker_published" },
+        },
+        expect: {
+          current_step: "package_ready",
+          status: "active",
+          expected_context_keys: ["publish_approvals"],
+          expected_events: ["human_decision:publish_destination_decision"],
+        },
+        message: "Escenario N4 HITL: el asesor aprueba publicar en EasyBroker.",
+        decision_text: "aprobar",
+      },
+      {
+        id: "package_ready_completed_summary_sent",
+        label: "Resumen final enviado",
+        summary:
+          "Con al menos un destino publicado o paquete manual entregado, el caso cierra y se envía resumen final idempotente.",
+        seed_summary:
+          "Entrada: package_ready / active con published.easybroker o manual_publish_package.",
+        expect_summary:
+          "Salida: published / completed con notificación listing_published_summary.",
+        seed: {
+          current_step: "package_ready",
+          status: "active",
+          context_patch: { skill_test_n4_seed: "package_ready_completed_summary_sent" },
+        },
+        expect: {
+          current_step: "published",
+          status: "completed",
+          expected_context_keys: ["published"],
+          expected_tool_calls: ["notify_user"],
+        },
+        message:
+          "Prueba controlada de cierre (N4) para package_ready. Si hay destino publicado o paquete manual, mueve a published/completed y envía notify_user(kind=listing_published_summary) una sola vez.",
+      },
     ],
   },
 };

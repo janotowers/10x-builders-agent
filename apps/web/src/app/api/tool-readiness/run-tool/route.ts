@@ -97,6 +97,8 @@ type ToolRunBody = {
   /** Paso/skill desde el que se abrió la prueba en Preparación operativa. */
   readiness_skill_slug?: string;
   readiness_flow_step_key?: string;
+  /** Desambigua entradas repetidas del mismo tool_id en skill_tools. */
+  readiness_flow_tool_label?: string;
 };
 
 type ToolRecipeInput = {
@@ -189,6 +191,21 @@ const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
       duration_months: 6,
     },
   },
+  analyze_property_images: {
+    image_paths: ["test/property-photo-1.jpg", "test/property-photo-2.jpg"],
+    purpose: "listing_description",
+  },
+  lookup_property_surroundings: {
+    address: "Colomos Providencia, Guadalajara, Jalisco, México",
+    municipality: "Guadalajara",
+    state: "Jalisco",
+    country: "MX",
+    radius_meters: 1500,
+    max_results_per_category: 3,
+  },
+  prepare_listing_description_draft: {
+    purpose: "listing_description",
+  },
   // Catálogo sin properties (schema vacío): smoke/caso envían {} a propósito.
   get_user_preferences: {},
   list_enabled_tools: {},
@@ -258,6 +275,11 @@ const TOOL_TEST_ARG_RECIPES: Record<
     opacity: 0.6,
     scale: 0.18,
   }),
+  analyze_property_images: (input) => analyzePropertyImagesCaseRecipe(input.ctx),
+  lookup_property_surroundings: (input) =>
+    lookupPropertySurroundingsCaseRecipe(input.ctx),
+  prepare_listing_description_draft: (input) =>
+    prepareListingDescriptionDraftCaseRecipe(input.ctx, input.testCase?.id),
   easybroker_create_listing: (input) => easyBrokerCreateCaseRecipe(input.ctx),
   easybroker_upload_images: (input) =>
     easyBrokerUploadImagesCaseRecipe(input.ctx),
@@ -1457,6 +1479,83 @@ function geocodeAddressCaseRecipe(ctx: Record<string, unknown>): Record<string, 
   return args;
 }
 
+function analyzePropertyImagesCaseRecipe(
+  ctx: Record<string, unknown>
+): Record<string, unknown> {
+  const defaults = TEST_DEFAULTS.analyze_property_images ?? {};
+  const rawPhotos = Array.isArray(ctx.raw_photos)
+    ? (ctx.raw_photos.filter((item): item is string => typeof item === "string") as string[])
+    : [];
+  return {
+    image_paths:
+      rawPhotos.length > 0
+        ? rawPhotos.slice(0, 8)
+        : ((defaults.image_paths as string[] | undefined) ?? []),
+    purpose:
+      firstString(ctx, ["purpose", "listing_copy_purpose"]) ??
+      (typeof defaults.purpose === "string" ? defaults.purpose : "listing_description"),
+  };
+}
+
+function lookupPropertySurroundingsCaseRecipe(
+  ctx: Record<string, unknown>
+): Record<string, unknown> {
+  const defaults = TEST_DEFAULTS.lookup_property_surroundings ?? {};
+  const merged = contextWithPropertyData(ctx);
+  const addressRecord = isRecord(merged.address)
+    ? (merged.address as Record<string, unknown>)
+    : {};
+  const args: Record<string, unknown> = {
+    radius_meters:
+      firstNumber(merged, ["radius_meters"]) ??
+      Number(defaults.radius_meters ?? 1500),
+    max_results_per_category:
+      firstNumber(merged, ["max_results_per_category"]) ??
+      Number(defaults.max_results_per_category ?? 3),
+  };
+  const latitude = firstNumber(merged, ["latitude", "lat"]) ?? firstNumber(addressRecord, ["latitude", "lat"]);
+  const longitude = firstNumber(merged, ["longitude", "lng", "lon"]) ?? firstNumber(addressRecord, ["longitude", "lng", "lon"]);
+  if (latitude != null && longitude != null) {
+    args.latitude = latitude;
+    args.longitude = longitude;
+  }
+  const address =
+    firstString(merged, ["address", "property_address"]) ??
+    firstString(addressRecord, ["formatted_address", "street"]);
+  const neighborhood =
+    firstString(merged, ["neighborhood", "colonia", "property_zone"]) ??
+    firstString(addressRecord, ["neighborhood", "colonia"]);
+  const municipality =
+    firstString(merged, ["municipality", "municipio", "city"]) ??
+    firstString(addressRecord, ["municipality", "municipio", "city"]);
+  const state =
+    firstString(merged, ["state", "estado"]) ??
+    firstString(addressRecord, ["state", "estado"]);
+  const country =
+    firstString(merged, ["country", "pais"]) ??
+    firstString(addressRecord, ["country", "pais"]) ??
+    (typeof defaults.country === "string" ? defaults.country : "MX");
+  if (address) args.address = address;
+  if (neighborhood) args.neighborhood = neighborhood;
+  if (municipality) args.municipality = municipality;
+  if (state) args.state = state;
+  args.country = country;
+  return args;
+}
+
+function prepareListingDescriptionDraftCaseRecipe(
+  ctx: Record<string, unknown>,
+  caseId?: string | null
+): Record<string, unknown> {
+  const defaults = TEST_DEFAULTS.prepare_listing_description_draft ?? {};
+  return {
+    ...(caseId ? { case_id: caseId } : {}),
+    purpose:
+      firstString(ctx, ["purpose", "listing_copy_purpose"]) ??
+      (typeof defaults.purpose === "string" ? defaults.purpose : "listing_description"),
+  };
+}
+
 function unggaPublishCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
   const args: Record<string, unknown> = { action: "prepare_draft" };
   const propertyType =
@@ -1895,6 +1994,36 @@ function flattenFlow(flow: OperationalCaseFlowStep[]): OperationalCaseFlowTool[]
   return out;
 }
 
+function resolveFlowToolForTest(
+  flow: OperationalCaseFlowStep[],
+  params: {
+    toolId: string;
+    flowStepKey?: string;
+    skillSlug?: string;
+    toolLabel?: string;
+  }
+): OperationalCaseFlowTool | undefined {
+  const candidates: OperationalCaseFlowTool[] = [];
+  for (const step of flow) {
+    if (params.flowStepKey && step.step_key !== params.flowStepKey) continue;
+    for (const skill of step.step_skills ?? []) {
+      if (params.skillSlug && skill.skill_slug !== params.skillSlug) continue;
+      for (const tool of skill.skill_tools ?? []) {
+        if (tool.tool_id === params.toolId) candidates.push(tool);
+      }
+    }
+    for (const tool of step.step_tools ?? []) {
+      if (tool.tool_id === params.toolId) candidates.push(tool);
+    }
+  }
+  if (candidates.length === 0) return undefined;
+  if (params.toolLabel) {
+    const byLabel = candidates.find((tool) => tool.tool_label === params.toolLabel);
+    if (byLabel) return byLabel;
+  }
+  return candidates[0];
+}
+
 async function loadLatestTestCase(
   db: ReturnType<typeof createServerClient>,
   userId: string,
@@ -2046,6 +2175,7 @@ async function resolveArgsForMode(params: {
   userArgs: Record<string, unknown>;
   readinessSkillSlug?: string;
   readinessFlowStepKey?: string;
+  readinessFlowToolLabel?: string;
 }): Promise<ArgResolution> {
   const {
     db,
@@ -2058,7 +2188,16 @@ async function resolveArgsForMode(params: {
     userArgs,
     readinessSkillSlug,
     readinessFlowStepKey,
+    readinessFlowToolLabel,
   } = params;
+
+  const flow = await effectiveFlowForCaseType(db, caseType);
+  const scopedFlowTool = resolveFlowToolForTest(flow, {
+    toolId,
+    flowStepKey: readinessFlowStepKey,
+    skillSlug: readinessSkillSlug,
+    toolLabel: readinessFlowToolLabel,
+  });
 
   if (mode === "manual") {
     return {
@@ -2112,7 +2251,13 @@ async function resolveArgsForMode(params: {
           )
         : ctxRaw;
     const flow = await effectiveFlowForCaseType(db, caseType);
-    const flowTool = flattenFlow(flow).find((tool) => tool.tool_id === toolId);
+    const flowTool =
+      scopedFlowTool ??
+      resolveFlowToolForTest(flow, {
+        toolId,
+        flowStepKey: readinessFlowStepKey,
+        skillSlug: readinessSkillSlug,
+      });
     const mapping = flowTool?.test_inputs_mapping;
     const recipe = TOOL_TEST_ARG_RECIPES[toolId];
 
@@ -2213,7 +2358,14 @@ async function resolveArgsForMode(params: {
 
   const normalized = applyUserOverrideSemantics(
     toolId,
-    { ...smokeDefaultsForTool(toolId, caseType), ...userArgs },
+    {
+      ...smokeDefaultsForTool(toolId, caseType),
+      ...(scopedFlowTool?.test_inputs_mapping &&
+      Object.keys(scopedFlowTool.test_inputs_mapping).length > 0
+        ? applyTestInputsMapping(scopedFlowTool.test_inputs_mapping, {})
+        : {}),
+      ...userArgs,
+    },
     userArgs
   );
   return {
@@ -2688,6 +2840,7 @@ export async function POST(request: Request) {
       userArgs,
       readinessSkillSlug: readinessSkillSlug || undefined,
       readinessFlowStepKey: cleanText(body.readiness_flow_step_key) || undefined,
+      readinessFlowToolLabel: cleanText(body.readiness_flow_tool_label) || undefined,
     });
     let resolvedArgs = await hydrateEasyBrokerUploadListingId({
       db,

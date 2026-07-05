@@ -461,7 +461,12 @@ Escenarios N4 actuales en `property_optioning`:
 | `contract_pending` | `contract_pending_advisor_requests_changes` | HITL «subir contrato corregido y enviar» → `contract_revision_upload_requested` / `waiting_internal` |
 | `contract_pending` | `contract_pending_owner_signed` | Simulación de firma (opcional/futuro): `photos_requested` / `step_completed:contract_signed`; no bloquea el hito principal mientras la firma esté fuera del flujo |
 | `photos_requested` | `photos_requested_request_internal_photos` | Solicitud interna de fotos al asesor / `waiting_internal` + notify_user |
-| `package_ready` | `package_ready_preflight_blocked` | Preflight sin fotos → `paused` + `notify_user` (no publicar) |
+| `package_ready` | `package_ready_preflight_blocked` | Preflight incompleto → `paused` + `notify_user` (sin publicación) |
+| `package_ready` | `package_ready_description_review_requested` | Flujo positivo inicial: análisis de imágenes + entorno + borrador + `notify_user(kind=listing_description_review)` |
+| `package_ready` | `package_ready_description_approved` | HITL de descripción: aprueba borrador y persiste `listing_description_approved` |
+| `package_ready` | `package_ready_easybroker_approval_requested` | Solicita aprobación de negocio por destino (`easybroker_publish_approval`) |
+| `package_ready` | `package_ready_easybroker_published` | HITL de destino: `publish_approvals.easybroker=approved` |
+| `package_ready` | `package_ready_completed_summary_sent` | Cierre: `published/completed` + `notify_user(kind=listing_published_summary)` idempotente |
 
 Para artefactos críticos como `comparables_analysis`, N3/N4 deben validar la ruta
 runtime real: primero se ejecutan las tools de búsqueda, luego una tool de

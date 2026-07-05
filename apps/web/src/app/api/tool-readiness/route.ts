@@ -171,6 +171,9 @@ const ADAPTER_TOOLS = new Set([
   "geocode_property_address",
   "generate_document_from_template",
   "image_watermark",
+  "analyze_property_images",
+  "lookup_property_surroundings",
+  "prepare_listing_description_draft",
   "easybroker_create_listing",
   "easybroker_upload_images",
   "ungga_publish_listing",
@@ -312,6 +315,15 @@ function envConfigured(toolId: string) {
   }
   if (toolId === "geocode_property_address") {
     return Boolean(process.env.GOOGLE_MAPS_API_KEY?.trim());
+  }
+  if (toolId === "lookup_property_surroundings") {
+    return Boolean(process.env.GOOGLE_MAPS_API_KEY?.trim());
+  }
+  if (toolId === "analyze_property_images") {
+    return Boolean(process.env.OPENROUTER_API_KEY?.trim());
+  }
+  if (toolId === "prepare_listing_description_draft") {
+    return Boolean(process.env.OPENROUTER_API_KEY?.trim());
   }
   return true;
 }

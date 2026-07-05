@@ -1444,16 +1444,16 @@ function testCaseStatusPillClass(tone: "pending" | "attention" | "ready") {
 }
 
 function countReadinessVisibleToolsInStep(step: ToolReadinessFlowStep) {
-  const ids = new Set<string>();
+  let count = 0;
   for (const skill of step.step_skills ?? []) {
     for (const tool of skill.skill_tools ?? []) {
-      if (isReadinessVisibleTool(tool.tool_id)) ids.add(tool.tool_id);
+      if (isReadinessVisibleTool(tool.tool_id)) count += 1;
     }
   }
   for (const tool of step.step_tools ?? []) {
-    if (isReadinessVisibleTool(tool.tool_id)) ids.add(tool.tool_id);
+    if (isReadinessVisibleTool(tool.tool_id)) count += 1;
   }
-  return ids.size;
+  return count;
 }
 
 function stepExpandableSummaryHint(step: ToolReadinessFlowStep) {
@@ -2330,6 +2330,7 @@ function ToolTestPanel({
   caseContextVersion,
   readinessSkillSlug,
   readinessFlowStepKey,
+  readinessFlowToolLabel,
   onFinished,
   onTestCaseUpdated,
   easyBrokerCreatedListingId,
@@ -2344,6 +2345,7 @@ function ToolTestPanel({
   caseContextVersion?: string | null;
   readinessSkillSlug?: string;
   readinessFlowStepKey?: string;
+  readinessFlowToolLabel?: string;
   onFinished: () => Promise<void>;
   onTestCaseUpdated?: (result: OperationalCaseTestResult) => Promise<void>;
   easyBrokerCreatedListingId?: string | null;
@@ -2437,6 +2439,7 @@ function ToolTestPanel({
           preview: true,
           readiness_skill_slug: readinessSkillSlug,
           readiness_flow_step_key: readinessFlowStepKey,
+          readiness_flow_tool_label: readinessFlowToolLabel,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as ToolTestResponse & {
@@ -2518,6 +2521,7 @@ function ToolTestPanel({
             options?.controlledRealWrite === true ? controlledWriteText : undefined,
           readiness_skill_slug: readinessSkillSlug,
           readiness_flow_step_key: readinessFlowStepKey,
+          readiness_flow_tool_label: readinessFlowToolLabel,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as ToolTestResponse & {
@@ -5275,6 +5279,7 @@ function renderFlowToolReadiness(params: {
   caseContextVersion?: string | null;
   readinessSkillSlug?: string;
   readinessFlowStepKey?: string;
+  readinessFlowToolLabel?: string;
   onEditSkill: () => void;
   onToggleExpand: () => void;
   onRequestGlobal: () => void;
@@ -5391,6 +5396,7 @@ function renderFlowToolReadiness(params: {
             caseContextVersion={params.caseContextVersion}
             readinessSkillSlug={params.readinessSkillSlug}
             readinessFlowStepKey={params.readinessFlowStepKey}
+            readinessFlowToolLabel={params.readinessFlowToolLabel}
             onFinished={async () => {
               await params.refreshToolReadiness(row);
               if (params.refreshTestCase) {
@@ -9734,12 +9740,14 @@ export function OperationalCaseTypesClient({
                   flowContext?: {
                     flowStepKey?: string;
                     skillSlug?: string;
+                    toolIndex?: number;
                   }
                 ) => {
                   const expansionKey = [
                     flowContext?.flowStepKey ?? "transversal_tools",
                     flowContext?.skillSlug ?? keyPrefix,
                     tool.tool_id,
+                    String(flowContext?.toolIndex ?? 0),
                   ].join("::");
 
                   return tool.readiness ? (
@@ -9771,6 +9779,7 @@ export function OperationalCaseTypesClient({
                         caseContextVersion: `${testCaseResult?.case?.updated_at ?? ""}:${testContextVersion}`,
                         readinessSkillSlug: flowContext?.skillSlug,
                         readinessFlowStepKey: flowContext?.flowStepKey,
+                        readinessFlowToolLabel: tool.tool_label,
                         onEditSkill: () => startEdit(row),
                         onToggleExpand: () =>
                           toggleReadinessToolExpand(expansionKey),
@@ -10025,10 +10034,11 @@ export function OperationalCaseTypesClient({
                                     }
                                     return (
                                       <>
-                                        {readinessVisible.map((tool) =>
+                                        {readinessVisible.map((tool, toolIndex) =>
                                           renderToolCard(tool, skill.skill_slug, {
                                             flowStepKey: step.step_key,
                                             skillSlug: skill.skill_slug,
+                                            toolIndex,
                                           })
                                         )}
                                         {renderInternalToolsBlock(internal)}
@@ -10062,9 +10072,10 @@ export function OperationalCaseTypesClient({
                                   partitionSkillTools(step.step_tools);
                                 return (
                                   <>
-                                    {readinessVisible.map((tool) =>
+                                    {readinessVisible.map((tool, toolIndex) =>
                                       renderToolCard(tool, step.step_key, {
                                         flowStepKey: step.step_key,
+                                        toolIndex,
                                       })
                                     )}
                                     {renderInternalToolsBlock(internal)}

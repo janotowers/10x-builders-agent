@@ -17,7 +17,12 @@ export interface InternalNotificationKindConfig {
   visibleInInbox: boolean;
   autoStatusOnCreate?: InternalNotificationActionStatus;
   intent?: EngagementIntent;
-  businessDecision?: "price_approval" | "contract_review" | "contract_data_review";
+  businessDecision?:
+    | "price_approval"
+    | "contract_review"
+    | "contract_data_review"
+    | "listing_description_review"
+    | "publish_destination_approval";
   technical?: boolean;
   /**
    * Pure FYI notifications: no decision/action expected from the user, so the
@@ -180,6 +185,45 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     visibleInInbox: true,
     intent: "reminder",
     reviewCtaLabel: "Subir fotos del inmueble",
+  },
+  listing_description_review: {
+    kind: "listing_description_review",
+    label: "Revisión de descripción comercial",
+    visibleInInbox: true,
+    intent: "review",
+    businessDecision: "listing_description_review",
+    reviewCtaLabel: "Aprobar o pedir cambios",
+  },
+  easybroker_publish_approval: {
+    kind: "easybroker_publish_approval",
+    label: "Aprobar publicación en EasyBroker",
+    visibleInInbox: true,
+    intent: "approval",
+    businessDecision: "publish_destination_approval",
+    reviewCtaLabel: "Aprobar o rechazar destino",
+  },
+  ungga_publish_approval: {
+    kind: "ungga_publish_approval",
+    label: "Aprobar publicación en Ungga",
+    visibleInInbox: true,
+    intent: "approval",
+    businessDecision: "publish_destination_approval",
+    reviewCtaLabel: "Aprobar o rechazar destino",
+  },
+  manual_publish_package_approval: {
+    kind: "manual_publish_package_approval",
+    label: "Aprobar paquete manual",
+    visibleInInbox: true,
+    intent: "approval",
+    businessDecision: "publish_destination_approval",
+    reviewCtaLabel: "Aprobar o rechazar destino",
+  },
+  listing_published_summary: {
+    kind: "listing_published_summary",
+    label: "Resumen final de publicación",
+    visibleInInbox: true,
+    intent: "reminder",
+    informational: true,
   },
   titularidad_review: {
     kind: "titularidad_review",

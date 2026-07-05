@@ -16,6 +16,14 @@ import {
   parseTitularidadReviewDecision,
 } from "./titularidad-review";
 import {
+  handleListingDescriptionReviewDecision,
+  parseListingDescriptionReviewDecision,
+} from "./listing-description-review";
+import {
+  handlePublishDestinationApprovalDecision,
+  parsePublishDestinationApprovalDecision,
+} from "./publish-destination-approval";
+import {
   BUSINESS_DECISION_LABELS,
   type BusinessDecisionKind,
 } from "./business-decision-kinds";
@@ -93,6 +101,20 @@ export const BUSINESS_DECISION_HANDLERS: Record<
     label: BUSINESS_DECISION_LABELS.titularidad_review,
     parse: parseTitularidadReviewDecision,
     handle: handleTitularidadReviewDecision,
+  },
+  listing_description_review: {
+    kind: "listing_description_review",
+    notificationKind: "listing_description_review",
+    label: BUSINESS_DECISION_LABELS.listing_description_review,
+    parse: parseListingDescriptionReviewDecision,
+    handle: handleListingDescriptionReviewDecision,
+  },
+  publish_destination_approval: {
+    kind: "publish_destination_approval",
+    notificationKind: "easybroker_publish_approval",
+    label: BUSINESS_DECISION_LABELS.publish_destination_approval,
+    parse: parsePublishDestinationApprovalDecision,
+    handle: handlePublishDestinationApprovalDecision,
   },
 };
 

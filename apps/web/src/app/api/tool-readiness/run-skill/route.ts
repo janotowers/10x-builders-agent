@@ -568,8 +568,16 @@ async function applyPackageReadySkillTestSeed(
     context: mergeSkillTestContext(context, {
       property_data: propertyData,
       pricing_proposal: settingsTestApprovedPricingProposalSeed(),
-      raw_photos: [],
-      skill_test_n3_seed: "package_ready_preflight_blocked",
+      contract_review: { status: "sent_by_email" },
+      raw_photos: [
+        "account-assets:test/photo-1.jpg",
+        "account-assets:test/photo-2.jpg",
+        "account-assets:test/photo-3.jpg",
+        "account-assets:test/photo-4.jpg",
+        "account-assets:test/photo-5.jpg",
+      ],
+      publish_approvals: { easybroker: "pending", ungga: "pending", manual: "pending" },
+      skill_test_n3_seed: "package_ready_description_review_requested",
     }),
   });
   return updated ?? opCase;
@@ -880,18 +888,21 @@ function validateContract(
   let comparables_usable_count: number | null = null;
   let comparables_defensible: boolean | null = null;
   if (skillSlug === "publish-listing-package") {
-    const outcome = validatePackageReadyPreflightOutcome({
-      current_step: after.current_step ?? "",
-      status: after.status ?? "",
-      context,
-      notify_user_executed: toolCalls.some(
-        (call) =>
-          call.tool_name === "notify_user" &&
-          (call.status === "executed" || call.status === "pending_confirmation")
-      ),
-      toolCalls,
-    });
-    package_ready_outcome_errors = outcome.errors;
+    const seed = cleanText(context.skill_test_n3_seed);
+    if (seed === "package_ready_preflight_blocked") {
+      const outcome = validatePackageReadyPreflightOutcome({
+        current_step: after.current_step ?? "",
+        status: after.status ?? "",
+        context,
+        notify_user_executed: toolCalls.some(
+          (call) =>
+            call.tool_name === "notify_user" &&
+            (call.status === "executed" || call.status === "pending_confirmation")
+        ),
+        toolCalls,
+      });
+      package_ready_outcome_errors = outcome.errors;
+    }
   }
   if (skillSlug === "request-property-photos") {
     const outcome = validatePhotosRequestedInternalOutcome({
@@ -1045,13 +1056,20 @@ function buildSkillTestMessage(params: {
     );
   }
   if (params.skill.skill_slug === "publish-listing-package") {
+    const seed = cleanText(
+      (params.opCase.context_jsonb as Record<string, unknown>)?.skill_test_n3_seed
+    );
     lines.push(
       "Preflight obligatorio: verifica pricing_proposal.approval_status=approved, evidencia de contrato enviado por email al dueño (context_jsonb.contract_review.status=sent_by_email o evento step_completed kind=contract_sent_to_owner_email) y raw_photos con al menos 5 fotos.",
-      "Antes de preparar/publicar, confirma mínimos de ficha EasyBroker: property_type, operation_type, target_price>0, currency, municipio/estado y dirección usable; para casa/departamento exige bedrooms, bathrooms, parking_spots y m2 útiles (construcción o total). Para terreno/lote exige area_total_m2.",
-      "Si falla algún gate (en esta prueba raw_photos está vacío o insuficiente): NO uses image_watermark, easybroker_create_listing, easybroker_upload_images ni ungga_publish_listing.",
-      "En preflight bloqueado: notify_user al asesor listando qué falta (fotos crudas, evidencia de contrato enviado por email, etc.), luego operational_case_update_state con current_step=package_ready y status=paused (no waiting_internal ni completed). operational_case_add_event es opcional en este escenario.",
-      "No avances a published ni marques el caso completed en este escenario."
+      "Ejecuta secuencia de package_ready: analyze_property_images → lookup_property_surroundings → prepare_listing_description_draft → notify_user(kind=listing_description_review).",
+      "No publiques en EasyBroker/Ungga sin listing_description_approved y publish_approvals por destino.",
+      "Si falta algún gate, pausa en package_ready y notifica faltantes."
     );
+    if (seed === "package_ready_preflight_blocked") {
+      lines.push(
+        "Escenario específico preflight bloqueado: NO uses image_watermark, easybroker_create_listing, easybroker_upload_images ni ungga_publish_listing; deja current_step=package_ready y status=paused."
+      );
+    }
   }
   return lines.join(" ");
 }

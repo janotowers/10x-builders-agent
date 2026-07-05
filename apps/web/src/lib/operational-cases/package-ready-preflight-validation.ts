@@ -47,6 +47,21 @@ export function collectPackageReadyPreflightMissingData(
   if (rawPhotosCount(context) < 5) {
     missing.push("raw_photos>=5");
   }
+  const photoAnalysis = asRecord(context.photo_analysis);
+  if (Object.keys(photoAnalysis).length === 0) {
+    missing.push("photo_analysis");
+  }
+  const zoneContext = asRecord(context.zone_context);
+  if (Object.keys(zoneContext).length === 0) {
+    missing.push("zone_context");
+  }
+  const approvedDescription = asRecord(context.listing_description_approved);
+  if (
+    typeof approvedDescription.description !== "string" ||
+    approvedDescription.description.trim().length === 0
+  ) {
+    missing.push("listing_description_approved");
+  }
 
   const propertyType = cleanText(propertyData.property_type || context.property_type);
   const operationType = cleanText(propertyData.operation || context.operation_type);
