@@ -562,7 +562,7 @@ function evaluateGenericToolReadinessResult(
   toolId: string
 ): { ok: boolean; hint?: string } {
   if (!isRecord(parsed)) {
-    return { ok: false, hint: "La tool no devolvió un resultado JSON interpretable." };
+    return { ok: false, hint: "La herramienta no devolvió un resultado JSON interpretable." };
   }
   if (parsed.ok === false) {
     return {
@@ -570,7 +570,7 @@ function evaluateGenericToolReadinessResult(
       hint:
         typeof parsed.error === "string" && parsed.error.trim()
           ? parsed.error
-          : "La tool devolvió ok: false.",
+          : "La herramienta devolvió ok: false.",
     };
   }
   if (typeof parsed.error === "string" && parsed.error.trim()) {
@@ -596,7 +596,7 @@ function evaluateGenericToolReadinessResult(
   if (parsed.needs_period === true) {
     return {
       ok: true,
-      hint: "Integración OK: la tool pidió un período (comportamiento esperado sin time_min/time_max).",
+      hint: "Integración OK: la herramienta pidió un período (comportamiento esperado sin time_min/time_max).",
     };
   }
   if (toolId === "read_skill_reference") {
@@ -684,7 +684,7 @@ function evaluateDocumentExtractionTest(parsed: unknown) {
         (missingDeedArea
           ? "La extracción no capturó area_total_m2 de la escritura. Verifica que la página con superficie esté legible o prueba con force=true tras reemplazar el archivo."
           : warningText) ||
-        "La tool respondió, pero no extrajo campos estructurados. Sube una imagen legible (jpg/png) de la escritura-descripción o usa Avanzado con force=true tras reemplazar el archivo.",
+        "La herramienta respondió, pero no extrajo campos estructurados. Sube una imagen legible (jpg/png) de la escritura-descripción o usa Avanzado con force=true tras reemplazar el archivo.",
     };
   }
   return { ok: true as const, hint: undefined as string | undefined };
@@ -1038,7 +1038,7 @@ function calendarUpdateEventCaseRecipe(input: ToolRecipeInput): Record<string, u
     end_datetime: shiftedEnd.toISOString(),
     description: eventId
       ? String(base.description ?? "")
-      : `${base.description ?? ""} Sin calendar_event_id en el caso: usa «Crear evento de prueba en Google Calendar» en la tool de crear evento o pega event_id en Avanzado.`.trim(),
+      : `${base.description ?? ""} Sin calendar_event_id en el caso: usa «Crear evento de prueba en Google Calendar» en la herramienta de crear evento o pega event_id en Avanzado.`.trim(),
   };
 }
 
@@ -2664,7 +2664,8 @@ function buildRunResolutionMetadata(input: {
     argResolutionSteps.push("case_mode_fell_back_to_smoke=true");
   }
   return {
-    user_facing_test_type: behavior.user_facing_test_type ?? "Tool de readiness",
+    user_facing_test_type:
+      behavior.user_facing_test_type ?? "Herramienta de preparación operativa",
     recommended_mode_label: behavior.recommended_mode_label ?? "Con formulario/caso",
     data_sources_used: behavior.data_sources ?? [],
     artifacts_read: behavior.reads_from_case,
@@ -3794,7 +3795,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error: "controlled_real_write_not_allowed",
-          hint: `Esta prueba real controlada requiere una tool permitida y escribir "${expectedControlledConfirmation}".`,
+          hint: `Esta prueba real controlada requiere una herramienta permitida y escribir "${expectedControlledConfirmation}".`,
           ...baseResolutionMetadata,
         },
         { status: 400 }
@@ -3916,10 +3917,10 @@ export async function POST(request: Request) {
         ...resolutionMetadata,
         hint:
           policy.reason === "medium_risk_requires_confirm"
-            ? "Esta tool es de riesgo medio; envía confirm:true para ejecutarla desde la prueba individual."
+            ? "Esta herramienta es de riesgo medio; envía confirm:true para ejecutarla desde la prueba individual."
             : toolId === "telegram_send_message_to_contact"
-              ? "Esta tool enviaría un mensaje real a un contacto externo. En prueba individual sólo se validan los args; usa «Prueba real controlada por Telegram» con un chat de prueba, o ejecuta «Probar habilidad» / tick E2E para pasar por HITL del flow."
-              : "Esta tool es de riesgo alto. Por seguridad sólo se ejecuta dentro del flow con HITL.",
+              ? "Esta herramienta enviaría un mensaje real a un contacto externo. En prueba individual sólo se validan los args; usa «Prueba real controlada por Telegram» con un chat de prueba, o ejecuta «Probar habilidad» / tick E2E para pasar por HITL del flow."
+              : "Esta herramienta es de riesgo alto. Por seguridad sólo se ejecuta dentro del flow con HITL.",
       });
     }
 
@@ -3997,7 +3998,7 @@ export async function POST(request: Request) {
           (row as { enabled?: boolean }).enabled === true
       );
       let hint =
-        "La tool existe en el catálogo pero no está disponible para esta cuenta. Revisa que la tool esté activada en Ajustes → Herramientas.";
+        "La herramienta existe en el catálogo pero no está disponible para esta cuenta. Revisa que la herramienta esté activada en Ajustes → Herramientas.";
       if (calendarTool && !calendarToolEnabled) {
         hint = `Activa «${toolId}» en Ajustes → Herramientas antes de probarla aquí.`;
       } else if (calendarTool && !calendarIntegrationActive) {
@@ -4213,7 +4214,7 @@ export async function POST(request: Request) {
         : controlledRealWriteRequested && ok && toolId === "calendar_create_event"
           ? persistedCalendarEventId
             ? `Evento creado en Google Calendar (id ${persistedCalendarEventId}). Quedó en photo_session.calendar_event_id del caso de prueba; abre «Actualizar evento» y vuelve a probar (recarga el panel si la vista previa sigue con el marcador). Borra el evento en Calendar cuando termines.`
-            : "La tool respondió OK pero no devolvió id; revisa el JSON. Si hay id, pégalo en Avanzado de Actualizar evento."
+            : "La herramienta respondió OK pero no devolvió id; revisa el JSON. Si hay id, pégalo en Avanzado de Actualizar evento."
           : controlledRealWriteRequested
           ? toolId === "telegram_send_message_to_contact"
             ? "Prueba real controlada ejecutada: se intentó enviar el mensaje al chat_id externo indicado por Telegram."

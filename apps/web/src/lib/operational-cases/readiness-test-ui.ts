@@ -70,7 +70,7 @@ export const ACCOUNT_RESOURCES_PANEL_HINT =
   "Plantillas y activos de la cuenta para operación real; la prueba de herramienta los usa como prerequisito.";
 
 export const TEST_ASSETS_PANEL_HINT =
-  "Solo para validar esta tool en el laboratorio; no sustituyen los recursos de cuenta.";
+  "Solo para validar esta herramienta en el laboratorio; no sustituyen los recursos de cuenta.";
 
 export type StepTestProgressSummary = {
   scenarios_total: number;
@@ -377,7 +377,7 @@ export {
 /** Badge de progreso del flujo (vista resumida / referencia). */
 export function flowStepProgressBadgeLabel(status?: string) {
   if (status === "completed") return "Completado";
-  if (status === "blocked") return "Pendiente probar tools";
+  if (status === "blocked") return "Pendiente probar herramientas";
   if (status === "in_progress") return "En curso";
   return "Pendiente";
 }
@@ -392,7 +392,7 @@ export function flowProgressRuntimeBadgeLabel(status?: string) {
 
 export function flowProgressRuntimeBadgeTitle(status?: string): string {
   if (status === "completed") {
-    return "Hay eventos o tools registrados y atribuidos a este paso del flujo.";
+    return "Hay eventos o herramientas registrados y atribuidos a este paso del flujo.";
   }
   if (status === "in_progress") {
     return "El caso operativo está en este paso ahora (no confundir con las tarjetas del laboratorio).";
@@ -460,7 +460,7 @@ export function formatFlowStepEvidenceSummaryLine(
   }
   if (summary.toolExecuted > 0) {
     parts.push(
-      `${summary.toolExecuted} tool${summary.toolExecuted === 1 ? "" : "s"} ejecutada${summary.toolExecuted === 1 ? "" : "s"}`
+      `${summary.toolExecuted} herramienta${summary.toolExecuted === 1 ? "" : "s"} ejecutada${summary.toolExecuted === 1 ? "" : "s"}`
     );
   }
   if (summary.toolPending > 0) {

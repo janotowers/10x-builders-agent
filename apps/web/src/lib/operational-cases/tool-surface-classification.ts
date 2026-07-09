@@ -3,9 +3,9 @@
  * Patrones: PATTERN_TOOL_SURFACE_CLASSIFICATION, PATTERN_CASE_INTAKE_PRECONDITION
  *
  * - `allowed_tools` en SKILL.md = runtime (el agente puede invocarlas).
- * - readiness-visible = tarjeta «Probar tool» y prerequisitos de habilidad/paso.
- * - internal = bloque UI «Herramientas internas» en un hito; sin «Probar tool» (se validan con «Probar habilidad» / «Probar paso»).
- * - infrastructure = soporte transversal; tarjeta «Probar tool» propia.
+ * - readiness-visible = tarjeta «Probar herramienta» y prerequisitos de habilidad/paso.
+ * - internal = bloque UI «Herramientas internas» en un hito; sin «Probar herramienta» (se validan con «Probar habilidad» / «Probar paso»).
+ * - infrastructure = soporte transversal; tarjeta «Probar herramienta» propia.
  */
 
 export type ToolSurfaceKind =

@@ -177,19 +177,30 @@ Ejemplos típicos en `property_optioning`:
 | Modo | Uso |
 |------|-----|
 | **Smoke test** | Args mínimos del catálogo (o sintéticos por `case_type` para `operational_case_create`); no requiere caso aislado salvo excepciones. La tool recibe **sólo** el JSON resuelto. **Con caso aislado presente**, smoke también enlaza `case_id` (y versión/recipe cuando aplica) para `operational_case_update_state`, `operational_case_list_documents`, `operational_case_extract_document_fields` y `operational_case_register_document`. Sin caso aislado, esas tools pueden mostrar `{}` en vista previa. |
-| **Caso de prueba** | Args derivados del `context_jsonb` del caso aislado (+ activos hidratados en args cuando aplica). La tool recibe **sólo** ese JSON; no hay lectura paralela del “formulario” en runtime. |
+| **Caso de prueba** | Args derivados del `context_jsonb` del caso aislado (+ activos hidratados en args cuando aplica). La herramienta recibe **sólo** ese JSON; no hay lectura paralela del “formulario” en runtime. |
 
 **Comparar Smoke vs Caso en UI:** la vista previa ordena claves de forma estable (p. ej. alfabético dentro de `context`) sin cambiar valores, para ver diferencias campo a campo.
 
 ### Taxonomía operativa de ejecución (Readiness Lab)
 
-Esta taxonomía clasifica **cómo se ejecuta una prueba**, no cómo está implementada una tool.
+Esta taxonomía clasifica **cómo se ejecuta una prueba**, no cómo está implementada una herramienta.
 
-| Tipo | Usa formulario | Usa tools previas | Orden importa | Orquestación |
-|------|----------------|-------------------|---------------|--------------|
+**Dos etiquetas en la tarjeta N1 (complementarias):**
+
+| Campo (`tool-test-behavior.ts`) | Rol en UI | Ejemplo |
+|---------------------------------|-----------|---------|
+| `label` | Qué valida **esta** herramienta en el flujo | `Crea instancia de caso`, `Consulta documentos registrados` |
+| `user_facing_test_type` | Patrón genérico de ejecución N1 (taxonomía de la tabla siguiente) | `Herramienta autocontenida con caso`, `Herramienta respaldada por caso` |
+
+El `label` debe ser específico por herramienta/escenario; el tipo genérico no debe repetir el mismo texto. La vista previa de args muestra `modo` y `fuente`; el tipo genérico vive en el bloque «Tipo de prueba», no se duplica en el JSON preview.
+
+| Tipo | Usa formulario | Usa herramientas previas | Orden importa | Orquestación |
+|------|----------------|--------------------------|---------------|--------------|
 | Smoke | No | No | No | Automática (defaults) |
-| Tool autocontenida con caso | Sí | No | No | Automática |
-| Tool dependiente con preparación | Sí | Sí | Sí | Automática con dependencias visibles |
+| Herramienta autocontenida con caso | Sí | No | No | Automática |
+| Herramienta respaldada por caso | Sí | No | No | Automática |
+| Herramienta dependiente con preparación | Sí | Sí | Sí | Automática con dependencias visibles |
+| Herramienta con prerequisito previo | Sí | Sí | Sí | Automática |
 | N4 (escenario de paso) | Sí | Sí | Sí | Automática por escenario |
 | Playthrough secuencial | Sí | Sí | Sí | Flujo secuencial |
 | E2E | Sí | Sí | Sí | Flujo secuencial completo |
@@ -200,7 +211,7 @@ Notas de producto/UI:
 - En JSON/debug conservar slugs y payloads sin traducción.
 - Si una prueba reutiliza artefactos persistidos del caso (ej. `photo_analysis`, `zone_context`), debe mostrarse de forma explícita.
 
-**Excepción `operational_case_create`:** en ambos modos la ejecución crea una fila **nueva** en `operational_cases` con `created_from=tool_readiness_test`. El caso aislado de Preparación operativa sólo sirve como **fuente al armar args** en modo Caso de prueba; no se reemplaza. Esta tool usa perfil `intake_only`: sólo copia campos declarados en `intake_schema_jsonb` y auxiliares permitidos, no artefactos de readiness ni historial del caso.
+**Excepción `operational_case_create`:** en ambos modos la ejecución crea una fila **nueva** en `operational_cases` con `created_from=tool_readiness_test`. El caso aislado de Preparación operativa sólo sirve como **fuente al armar args** en modo Caso de prueba; no se reemplaza. Esta herramienta usa perfil `intake_only`: sólo copia campos declarados en `intake_schema_jsonb` y auxiliares permitidos, no artefactos de readiness ni historial del caso.
 
 **Regenerar y validar registro:** restablece el `context_jsonb` y el paso del mismo caso aislado, fija `controlled_test_playthrough_anchor_at` y ejecuta la validación segura del registro. Conserva eventos históricos de auditoría. Si la UI muestra respuestas externas antiguas después de regenerar, son historial, no datos activos de intake.
 
@@ -222,9 +233,9 @@ Para tools de **riesgo alto**, el smoke puede devolver `high_risk_requires_hitl`
 
 Son tools **permitidas por el grafo de skills** (`property-optioning-coach` + includes) que **no** están listadas en `operational_flow_jsonb` de ningún paso. La UI las agrupa para no mezclar soporte técnico con el relato operativo paso a paso.
 
-Las **internas de un hito** (p. ej. `operational_case_persist_comparables_analysis` en comparables) deben declararse en el **paso correspondiente** bajo «Herramientas internas», no dejarse solo en transversales. Las de **infraestructura** (`get_user_preferences`, `read_skill_reference`) viven en transversales con «Probar tool» propia.
+Las **internas de un hito** (p. ej. `operational_case_persist_comparables_analysis` en comparables) deben declararse en el **paso correspondiente** bajo «Herramientas internas», no dejarse solo en transversales. Las de **infraestructura** (`get_user_preferences`, `read_skill_reference`) viven en transversales con «Probar herramienta» propia.
 
-| Tool típica | Rol | ¿Obligatoria en readiness? |
+| Herramienta típica | Rol | ¿Obligatoria en readiness? |
 |-------------|-----|----------------------------|
 | `get_user_preferences` | Contexto del usuario (`{}` en N1; sin recipe) | Opcional |
 | `read_skill_reference` | Leer referencia de la skill activa (`name`, p. ej. `coach-routing` en optioning) | Opcional; N1 arma args y skill raíz del case type |
@@ -305,7 +316,7 @@ Cualquier otro uso de `telegram_send_message_to_contact` con caso de prueba sigu
 
 #### 5.5 Documentos — listado y extracción (N1 por tool)
 
-Las tools documentales se prueban como **N1** en su tarjeta del paso (botón **Probar tool**), sin letras A/B/C globales:
+Las herramientas documentales se prueban como **N1** en su tarjeta del paso (botón **Probar herramienta**), sin letras A/B/C globales:
 
 | Tool | Paso típico (`property_optioning`) | Patrón | Notas |
 |------|-----------------------------------|--------|-------|

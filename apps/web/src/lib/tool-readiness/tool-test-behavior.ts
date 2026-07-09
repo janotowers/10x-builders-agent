@@ -31,7 +31,7 @@ type FlowToolBehaviorInput = {
 
 const SELF_CONTAINED: ToolTestBehavior = {
   kind: "self_contained",
-  label: "Autocontenida",
+  label: "Prueba desde argumentos",
   summary:
     "La prueba se entiende principalmente desde los args mostrados. El caso de prueba puede ayudar a derivarlos, pero no es la fuente principal de ingredientes persistidos.",
   mode_hint:
@@ -45,7 +45,7 @@ const SELF_CONTAINED: ToolTestBehavior = {
 
 const NOTIFY_LISTING_DESCRIPTION_REVIEW: ToolTestBehavior = {
   kind: "case_backed",
-  label: "Solicitud HITL ligada al caso",
+  label: "Solicita revisión del borrador comercial",
   summary:
     "En package_ready solicita al asesor revisar el borrador comercial y crea un pendiente accionable de listing_description_review.",
   mode_hint:
@@ -73,7 +73,7 @@ const NOTIFY_LISTING_DESCRIPTION_REVIEW: ToolTestBehavior = {
 
 const NOTIFY_LISTING_PUBLISHED_SUMMARY: ToolTestBehavior = {
   kind: "case_backed",
-  label: "Resumen final de cierre",
+  label: "Envía resumen final de cierre",
   summary:
     "Al finalizar package_ready notifica al asesor el cierre del caso con links, IDs y estado del paquete de publicación.",
   mode_hint:
@@ -102,7 +102,7 @@ const NOTIFY_LISTING_PUBLISHED_SUMMARY: ToolTestBehavior = {
 const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   operational_case_create: {
     kind: "self_contained",
-    label: "Autocontenida; crea caso",
+    label: "Crea instancia de caso",
     summary:
       "La prueba usa los args mostrados para crear una fila de prueba nueva. No consume el caso de laboratorio existente.",
     mode_hint:
@@ -115,7 +115,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   operational_case_update_state: {
     kind: "case_backed",
-    label: "Respaldada por caso",
+    label: "Actualiza estado del caso",
     summary:
       "La prueba necesita un case_id real para actualizar estado/version del caso de laboratorio.",
     mode_hint:
@@ -130,7 +130,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   notify_user: NOTIFY_LISTING_DESCRIPTION_REVIEW,
   operational_case_register_document: {
     kind: "case_backed",
-    label: "Respaldada por caso",
+    label: "Registra documento en el caso",
     summary:
       "Registra documentos dentro del caso de prueba; los archivos de prueba se hidratan antes de ejecutar.",
     mode_hint:
@@ -143,7 +143,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   operational_case_list_documents: {
     kind: "case_backed",
-    label: "Respaldada por caso",
+    label: "Consulta documentos registrados",
     summary:
       "Lista documentos ya asociados al caso de prueba; no es una consulta autocontenida.",
     mode_hint:
@@ -156,7 +156,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   operational_case_extract_document_fields: {
     kind: "case_backed",
-    label: "Respaldada por caso",
+    label: "Extrae campos de documento",
     summary:
       "Extrae campos desde documentos registrados en el caso de prueba.",
     mode_hint:
@@ -169,7 +169,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   generate_document_from_template: {
     kind: "case_assembler",
-    label: "Ensambladora del caso",
+    label: "Genera documento desde plantilla",
     summary:
       "Renderiza una plantilla con datos persistidos del caso; data en args sólo sirve para overrides.",
     mode_hint:
@@ -182,7 +182,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   prepare_listing_description_draft: {
     kind: "case_assembler",
-    label: "Ensambladora del caso",
+    label: "Prepara borrador comercial",
     summary:
       "Lee ingredientes verificados desde context_jsonb del caso y persiste el borrador en ese mismo caso.",
     mode_hint:
@@ -227,7 +227,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   easybroker_upload_images: {
     kind: "prior_artifact",
-    label: "Depende de artefacto previo",
+    label: "Sube imágenes a listing EasyBroker",
     summary:
       "Sube imágenes a un listing existente; en cadena N4/skill prioriza watermarked_photos y en N1 puede usar fotos crudas de prueba.",
     mode_hint:
@@ -244,7 +244,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   calendar_update_event: {
     kind: "prior_artifact",
-    label: "Depende de artefacto previo",
+    label: "Actualiza evento de calendario",
     summary:
       "Actualiza un evento existente; necesita event_id generado o capturado previamente.",
     mode_hint:
@@ -257,8 +257,8 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   image_watermark: {
     kind: "prior_artifact",
-    label: "Procesa assets de imagen",
-    user_facing_test_type: "Tool con assets de imagen",
+    label: "Aplica marca de agua a fotos",
+    user_facing_test_type: "Herramienta con assets de imagen",
     summary:
       "Marca imágenes usando el watermark configurado y rutas de imagen provistas por assets de prueba o args.",
     mode_hint:
@@ -271,8 +271,8 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   analyze_property_images: {
     kind: "prior_artifact",
-    label: "Procesa fotos del caso",
-    user_facing_test_type: "Tool con fotos/assets de prueba",
+    label: "Analiza fotos del inmueble",
+    user_facing_test_type: "Herramienta con fotos/assets de prueba",
     summary:
       "Analiza fotos del inmueble; en modo Con formulario/caso las rutas se hidratan desde fotos del inmueble (raw_photos) o assets cargados.",
     mode_hint:
@@ -285,11 +285,11 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   lookup_property_surroundings: {
     kind: "self_contained",
-    label: "Contexto de zona",
+    label: "Consulta entorno de la zona",
     summary:
       "Puede resolver entorno con dirección/coords en args, sin requerir contexto profundo del caso.",
     mode_hint:
-      "Con formulario/caso es recomendable para persistir zone_context en el fixture y reutilizarlo en tools downstream.",
+      "Con formulario/caso es recomendable para persistir zone_context en el fixture y reutilizarlo en herramientas posteriores.",
     prerequisites: ["address o latitude/longitude", "GOOGLE_MAPS_API_KEY"],
     reads_from_case: ["property_data.address"],
     persists_to_case: ["zone_context", "zone_points_of_interest"],
@@ -299,7 +299,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   easybroker_create_listing: {
     kind: "case_assembler",
-    label: "Publicadora con datos del caso",
+    label: "Crea ficha EasyBroker",
     summary:
       "Arma la ficha de EasyBroker usando datos del caso y del borrador aprobado antes de publicar.",
     mode_hint:
@@ -321,7 +321,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
   },
   ungga_publish_listing: {
     kind: "case_assembler",
-    label: "Publicadora con datos del caso",
+    label: "Publica o prepara en Ungga",
     summary:
       "Publica o prepara borrador en Ungga usando datos ensamblados del caso y validación humana.",
     mode_hint:
@@ -395,7 +395,7 @@ function defaultsForKind(kind: ToolTestBehaviorKind): Pick<
   switch (kind) {
     case "self_contained":
       return {
-        user_facing_test_type: "Tool autocontenida con caso",
+        user_facing_test_type: "Herramienta autocontenida con caso",
         recommended_mode_label: "Con formulario/caso",
         data_sources: ["case_form", "manual_overrides"],
         required_artifacts: [],
@@ -405,7 +405,7 @@ function defaultsForKind(kind: ToolTestBehaviorKind): Pick<
       };
     case "case_backed":
       return {
-        user_facing_test_type: "Tool respaldada por caso",
+        user_facing_test_type: "Herramienta respaldada por caso",
         recommended_mode_label: "Con formulario/caso",
         data_sources: ["case_context", "case_form", "manual_overrides"],
         required_artifacts: ["case_id"],
@@ -415,7 +415,7 @@ function defaultsForKind(kind: ToolTestBehaviorKind): Pick<
       };
     case "case_assembler":
       return {
-        user_facing_test_type: "Tool dependiente con preparación",
+        user_facing_test_type: "Herramienta dependiente con preparación",
         recommended_mode_label: "Con formulario/caso",
         data_sources: ["case_context", "prior_artifacts", "manual_overrides"],
         required_artifacts: [],
@@ -425,7 +425,7 @@ function defaultsForKind(kind: ToolTestBehaviorKind): Pick<
       };
     case "prior_artifact":
       return {
-        user_facing_test_type: "Tool con prerequisito previo",
+        user_facing_test_type: "Herramienta con prerequisito previo",
         recommended_mode_label: "Con formulario/caso",
         data_sources: ["prior_artifacts", "case_context", "manual_overrides"],
         required_artifacts: [],

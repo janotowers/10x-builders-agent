@@ -532,7 +532,7 @@ function classifyTool(params: {
       action_label: "Editar skill",
       action_available: true,
       action_message:
-        "La tool no existe en el catálogo. Quita esta tool de la habilidad o crea/registra la tool antes de activar.",
+        "La herramienta no existe en el catálogo. Quita esta herramienta de la habilidad o crea/registra la herramienta antes de activar.",
       action_url: null,
       action_anchor: null,
       request_kind: null,
@@ -554,7 +554,7 @@ function classifyTool(params: {
       action_label: "Solicitar incorporación al producto",
       action_available: true,
       action_message:
-        "La tool está en catálogo, pero todavía no tiene un adapter runtime verificado en el producto. Solicita su incorporación al equipo de Ungga para usarla en operación real.",
+        "La herramienta está en catálogo, pero todavía no tiene un adapter runtime verificado en el producto. Solicita su incorporación al equipo de Ungga para usarla en operación real.",
       action_url: null,
       action_anchor: null,
       request_kind: "incorporate_to_catalog",
@@ -604,7 +604,7 @@ function classifyTool(params: {
         action_label: null,
         action_available: false,
         action_message:
-          "La tool está disponible para prueba controlada. Requiere confirmación humana por ser de riesgo alto.",
+          "La herramienta está disponible para prueba controlada. Requiere confirmación humana por ser de riesgo alto.",
         action_url: null,
         action_anchor: null,
         request_kind: null,
@@ -629,7 +629,7 @@ function classifyTool(params: {
         action_label: null,
         action_available: false,
         action_message:
-          "La tool está disponible para prueba controlada. Requiere confirmación humana por ser de riesgo alto.",
+          "La herramienta está disponible para prueba controlada. Requiere confirmación humana por ser de riesgo alto.",
         action_url: null,
         action_anchor: null,
         request_kind: null,
@@ -798,7 +798,7 @@ function classifyTool(params: {
     if (accountSatisfied) {
       if (easyBrokerWebOperationalFailure) {
         notes.push(
-          `EasyBroker MLS tiene credenciales guardadas, pero la última ejecución falló por automatización/sesión: ${accountSecret?.last_error ?? "error sin detalle"}. Puedes volver a probar la tool sin reingresar credenciales.`
+          `EasyBroker MLS tiene credenciales guardadas, pero la última ejecución falló por automatización/sesión: ${accountSecret?.last_error ?? "error sin detalle"}. Puedes volver a probar la herramienta sin reingresar credenciales.`
         );
       } else {
         notes.push(
@@ -811,7 +811,7 @@ function classifyTool(params: {
       // (form inline en Phase 2b). El campo account_provider le dice al UI
       // qué form abrir.
       notes.push(
-        `Falta credencial para ${accountProviderId}. Conecta tu cuenta para usar esta tool.`
+        `Falta credencial para ${accountProviderId}. Conecta tu cuenta para usar esta herramienta.`
       );
       return {
         tool_id: params.toolId,
@@ -821,7 +821,7 @@ function classifyTool(params: {
         action_kind: "configure_account",
         action_label: `Conectar ${accountProviderLabel(accountProviderId)}`,
         action_available: true,
-        action_message: `Esta tool necesita credenciales de ${accountProviderLabel(accountProviderId)} para esta cuenta. Conéctala desde aquí mismo o desde Ajustes.`,
+        action_message: `Esta herramienta necesita credenciales de ${accountProviderLabel(accountProviderId)} para esta cuenta. Conéctala desde aquí mismo o desde Ajustes.`,
         action_url: null,
         action_anchor: null,
         request_kind: null,
@@ -846,7 +846,7 @@ function classifyTool(params: {
         ? "Ungga"
         : isAvaclick
           ? "Avaclick"
-        : "esta tool";
+        : "esta herramienta";
     return {
       tool_id: params.toolId,
       status: "needs_config",
@@ -885,7 +885,7 @@ function classifyTool(params: {
           : "Subir recursos",
       action_available: true,
       action_message:
-        "Esta tool requiere archivos de tu cuenta. Sube o reemplaza los recursos aquí mismo; quedarán guardados para este usuario y se podrán reutilizar en el flujo.",
+        "Esta herramienta requiere archivos de tu cuenta. Sube o reemplaza los recursos aquí mismo; quedarán guardados para este usuario y se podrán reutilizar en el flujo.",
       action_url: null,
       action_anchor: null,
       request_kind: null,
@@ -907,7 +907,7 @@ function classifyTool(params: {
     const isEasyBrokerWrite = EASYBROKER_WRITE_TOOLS.has(params.toolId);
     notes.push(
       tenantAssetsConfigured
-        ? "Recursos de cuenta configurados; queda pendiente completar el adapter real de la tool."
+        ? "Recursos de cuenta configurados; queda pendiente completar el adapter real de la herramienta."
         : isTenantAsset
         ? "Requiere un recurso o configuración específica de esta cuenta."
         : isEasyBrokerWrite
@@ -925,9 +925,9 @@ function classifyTool(params: {
         : "Solicitar prioridad a Ungga",
       action_available: true,
       action_message: tenantAssetsConfigured
-        ? "Los recursos de esta cuenta ya están cargados. Para operación real falta que Ungga conecte esta tool al handler final que use esos assets; mientras tanto no bloquea la prueba segura."
+        ? "Los recursos de esta cuenta ya están cargados. Para operación real falta que Ungga conecte esta herramienta al handler final que use esos assets; mientras tanto no bloquea la prueba segura."
         : isTenantAsset
-        ? "Esta tool necesita templates/assets por cuenta (ej. plantilla de documento o watermark). La prueba puede validar pasos seguros, pero operación real requiere que el equipo configure ese recurso para tu cuenta."
+        ? "Esta herramienta necesita templates/assets por cuenta (ej. plantilla de documento o watermark). La prueba puede validar pasos seguros, pero operación real requiere que el equipo configure ese recurso para tu cuenta."
         : isEasyBrokerWrite
           ? "La conexión EasyBroker ya puede estar lista, pero esta operación de escritura todavía funciona como stub técnico. No requiere otra configuración del usuario: requiere que Ungga implemente el adapter real. Cuando esté implementada, el agente preparará la acción y pedirá aprobación HITL antes de crear o subir contenido."
           : "La conexión o el catálogo ya existen, pero esta operación todavía funciona como stub técnico. No requiere otra configuración del usuario: requiere que el equipo de Ungga complete el adapter/mapeo en el producto. Si esta capacidad es importante para tu caso de uso, puedes solicitar prioridad.",
@@ -957,7 +957,7 @@ function classifyTool(params: {
     action_kind: "none",
     action_label: null,
     action_available: false,
-    action_message: "La tool está lista para prueba controlada.",
+    action_message: "La herramienta está lista para prueba controlada.",
     action_url: null,
     action_anchor: null,
     request_kind: null,
@@ -1058,7 +1058,7 @@ function providerActionMeta(
     action_kind: "request_global",
     action_label: `Solicitar incorporación de ${provider}`,
     action_available: true,
-    action_message: `La tool ${toolId} requiere la integración "${provider}" que todavía no está disponible en el producto. Crea una solicitud para que el equipo de Ungga la incorpore o configure por tu cuenta.`,
+    action_message: `La herramienta ${toolId} requiere la integración "${provider}" que todavía no está disponible en el producto. Crea una solicitud para que el equipo de Ungga la incorpore o configure por tu cuenta.`,
     action_url: null,
     action_anchor: null,
     request_kind: isCommonCrmLike

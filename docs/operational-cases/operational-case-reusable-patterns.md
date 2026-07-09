@@ -232,7 +232,7 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 |--|--|
 | **Capa** | `runtime` + `test_ui` |
 | **Cuándo usar** | Al declarar tools en flow, skills y `allowed_tools` |
-| **Comportamiento** | `business_integration` / `external_action` / `internal_notification` / `infrastructure` → tarjeta «Probar tool». `internal_platform` / `internal_domain` → bloque «Herramientas internas» en el hito (sin «Probar tool»; se validan con «Probar habilidad» / «Probar paso»). `scenario_only` → alta/intake, no bloquea pasos operativos. |
+| **Comportamiento** | `business_integration` / `external_action` / `internal_notification` / `infrastructure` → tarjeta «Probar herramienta». `internal_platform` / `internal_domain` → bloque «Herramientas internas» en el hito (sin «Probar herramienta»; se validan con «Probar habilidad» / «Probar paso»). `scenario_only` → alta/intake, no bloquea pasos operativos. |
 | **UI laboratorio** | `ReadinessTestSection`: pill + CTA en el mismo bloque colapsable; gating visual en [`readiness-step-section-ui.ts`](../../apps/web/src/lib/operational-cases/readiness-step-section-ui.ts) (sin duplicar reglas de `tool-readiness/route.ts`). |
 | **Implementación** | [`tool-surface-classification.ts`](../../apps/web/src/lib/operational-cases/tool-surface-classification.ts); API `GET /api/tool-readiness`, `run-skill`, `run-step` |
 
@@ -362,7 +362,7 @@ IDs conceptuales para `testPlan` y futuro `test_pattern` en el flow. Detalle pro
 | `n2_request_documents` | Paso 2 `request-property-documents` | Telegram A→B, luego `list_documents` N1, `notify_user` N1 | N2 + N1 + N3 |
 | `n2_characteristics_telegram_abc` | Paso 3 `extract-property-characteristics` | A/B/C para `characteristics_pending` | N2 |
 | `n2_easybroker_ab` | `easybroker_create_listing` → `easybroker_upload_images` | A crear borrador, B subir fotos al `listing_id` | N2 |
-| `n1_single` | Consultas, listados, extract puntual | Un botón «Probar tool» | N1 |
+| `n1_single` | Consultas, listados, extract puntual | Un botón «Probar herramienta» | N1 |
 
 **Estado UI:** muchos N2 siguen **hardcodeados** en `operational-case-types-client.tsx` (p. ej. `isEasyBrokerCreateScenario`). El catálogo TS prepara migración a metadata declarativa (anillo 2).
 

@@ -263,7 +263,7 @@ function AccountResourcesExpandToggle({
   );
 }
 
-/** Sustituye «Probar tool» / «Cerrar»: solo abre el panel N1 (ToolTestPanel). */
+/** Sustituye «Probar herramienta» / «Cerrar»: solo abre el panel N1 (ToolTestPanel). */
 function ToolTestExpandToggle({
   expanded,
   onToggle,
@@ -359,7 +359,7 @@ const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
     timeline_note:
       "Validación segura: registro y paso inicial sin agente. Prueba con agente: una ejecución real desde el paso actual del caso; publicación o envíos pueden pedir aprobación humana.",
     next_action:
-      "Revisar readiness de tools de envío/escritura/publicación antes de operación real completa.",
+      "Revisar readiness de herramientas de envío/escritura/publicación antes de operación real completa.",
     start_step: "intake",
     success_step: "awaiting_documents",
   },
@@ -371,7 +371,7 @@ const DEFAULT_ACTIVATION_POLICY: Required<OperationalCaseActivationPolicy> = {
     safe_test_success_copy:
       "Registro validado: prueba segura ejecutada o el caso de prueba ya avanzó al flujo operativo.",
     conversational_safe_copy:
-      "Listo para chat/Telegram en modo controlado (plantilla activa, tools listas, registro validado).",
+      "Listo para chat/Telegram en modo controlado (plantilla activa, herramientas listas, registro validado).",
     real_operation_complete_copy:
       "Operación real completa: sin stubs técnicos pendientes.",
     real_operation_pending_copy:
@@ -1387,7 +1387,7 @@ function activationConversationalCheckCopy(params: {
       "Listo para chat/Telegram en modo controlado."
     );
   }
-  return "Requiere plantilla activa, skill sin bloqueos, tools completas para operar y registro del caso validado.";
+  return "Requiere plantilla activa, skill sin bloqueos, herramientas completas para operar y registro del caso validado.";
 }
 
 function operationalStepReadinessSummary(steps: ToolReadinessFlowStep[]) {
@@ -1533,7 +1533,7 @@ function operationCompletenessDescription(params: {
     params.readinessCounts.missing +
     params.readinessCounts.unknown;
   if (technicalPending > 0) {
-    return `Operación real completa: pendiente; quedan ${technicalPending} tools por configurar, incorporar o revisar antes de operar sin restricciones.`;
+    return `Operación real completa: pendiente; quedan ${technicalPending} herramientas por configurar, incorporar o revisar antes de operar sin restricciones.`;
   }
   return params.policy.activation_checks.real_operation_complete_copy;
 }
@@ -2017,9 +2017,9 @@ const MODE_LABELS: Record<ToolTestMode, string> = {
 
 const MODE_DESCRIPTIONS: Record<ToolTestMode, string> = {
   smoke:
-    "Args mínimos genéricos (plantilla). Ideal para validar conectividad/configuración. Si una tool técnica requiere caso, el resultado mostrará explícitamente si se enlazó al caso.",
+    "Args mínimos genéricos (plantilla). Ideal para validar conectividad/configuración. Si una herramienta técnica requiere caso, el resultado mostrará explícitamente si se enlazó al caso.",
   case:
-    "Args armados desde el contexto del caso de prueba del laboratorio (más overrides en Avanzado). La tool recibe sólo ese JSON resuelto, no un formulario paralelo en runtime.",
+    "Args armados desde el contexto del caso de prueba del laboratorio (más overrides en Avanzado). La herramienta recibe sólo ese JSON resuelto, no un formulario paralelo en runtime.",
 };
 
 function documentToolReadinessHint(toolId: string, flowStepKey?: string) {
@@ -3026,8 +3026,8 @@ function ToolTestPanel({
         </details>
         {testBehavior.smoke_uses_case_when_present ? (
           <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-900">
-            Nota: en esta tool, Smoke puede enlazarse al caso cuando existe un
-            fixture.
+            Nota: en esta herramienta, Smoke puede enlazarse al caso cuando existe
+            un fixture.
           </p>
         ) : null}
       </div>
@@ -3051,7 +3051,7 @@ function ToolTestPanel({
       ) : null}
       <p className="text-[10px] text-neutral-500">
         Vista previa: claves ordenadas para comparar modos (mismos valores, orden
-        estable). Lo enviado a la tool es exactamente el JSON mostrado.
+        estable). Lo enviado a la herramienta es exactamente el JSON mostrado.
       </p>
       {mode === "case" && !hasTestCase ? (
         <p className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
@@ -3064,16 +3064,14 @@ function ToolTestPanel({
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold">Args a usar:</span>
             <span className="text-violet-700">
+              modo: {MODE_LABELS[mode]}
+            </span>
+            <span className="text-violet-700">
               fuente:{" "}
               {preview.mode_source
                 ? naturalAndTechnicalLabel(preview.mode_source)
                 : "—"}
             </span>
-            {preview.user_facing_test_type ? (
-              <span className="rounded bg-white/70 px-1.5 py-0.5">
-                tipo: {preview.user_facing_test_type}
-              </span>
-            ) : null}
             {preview.case_id ? (
               <span
                 className="break-all font-mono text-[10px] text-violet-700"
@@ -3086,11 +3084,6 @@ function ToolTestPanel({
               <span className="text-violet-700">recalculando…</span>
             ) : null}
           </div>
-          {preview.recommended_mode_label ? (
-            <p className="mt-1 text-violet-800">
-              modo recomendado: {preview.recommended_mode_label}
-            </p>
-          ) : null}
           {preview.data_sources_used &&
           preview.data_sources_used.length > 0 &&
           preview.data_sources_used.some(
@@ -3138,8 +3131,8 @@ function ToolTestPanel({
               {preview.dependency_status.missing_required_artifacts &&
               preview.dependency_status.missing_required_artifacts.length > 0 ? (
                 <p className="mt-1 text-violet-800">
-                  Corre primero las tools anteriores del paso o el escenario N4
-                  correspondiente.
+                  Corre primero las herramientas anteriores del paso o el
+                  escenario N4 correspondiente.
                 </p>
               ) : null}
             </>
@@ -3315,9 +3308,6 @@ function ToolTestPanel({
             <p className="text-neutral-700">
               <span className="font-semibold">Tipo de prueba:</span>{" "}
               {response.user_facing_test_type}
-              {response.recommended_mode_label
-                ? ` · recomendado: ${response.recommended_mode_label}`
-                : ""}
             </p>
           ) : null}
           {response.data_sources_used &&
@@ -3376,8 +3366,8 @@ function ToolTestPanel({
               {response.dependency_status.missing_required_artifacts &&
               response.dependency_status.missing_required_artifacts.length > 0 ? (
                 <p className="text-neutral-700">
-                  Corre primero las tools anteriores del paso o el escenario N4
-                  correspondiente.
+                  Corre primero las herramientas anteriores del paso o el
+                  escenario N4 correspondiente.
                 </p>
               ) : null}
             </>
@@ -3428,12 +3418,12 @@ function ToolTestPanel({
                 : response.reason === "placeholder_event_id"
                   ? response.hint ??
                     "Falta un event_id real en los args antes de llamar a Google Calendar."
-                  : `La prueba no invocó la tool (${response.reason ?? "política de riesgo"}). ${response.hint ?? "Usa el flow completo con HITL para escritura real."}`}
+                  : `La prueba no invocó la herramienta (${response.reason ?? "política de riesgo"}). ${response.hint ?? "Usa el flow completo con HITL para escritura real."}`}
             </p>
           ) : null}
           <details className="rounded border border-neutral-100 bg-neutral-50/50">
             <summary className="cursor-pointer px-2 py-1 font-semibold text-neutral-700">
-              Args enviados a la tool
+              Args enviados a la herramienta
             </summary>
             <pre className="mx-2 mb-2 overflow-x-auto rounded border border-neutral-200 bg-white p-2 font-mono text-[11px]">
               {stringifyToolArgsForDisplay(response.resolved_args)}
@@ -3462,7 +3452,7 @@ function ToolTestPanel({
                 Resultado de la prueba
               </div>
               <p className="text-[11px] text-violet-800">
-                Respuesta de la tool tras ejecutar (dry-run o real). Distinto de los
+                Respuesta de la herramienta tras ejecutar (dry-run o real). Distinto de los
                 args enviados.
               </p>
               <ToolResultPreview result={response.result} />
@@ -3577,7 +3567,7 @@ function ToolTestPanel({
       ) : (
         <>
           <p className="text-[11px] text-neutral-600">
-            Valida la tool en aislamiento. Elige cómo construir los args y revisa
+            Valida la herramienta en aislamiento. Elige cómo construir los args y revisa
             el resultado antes de correr el flow completo.
           </p>
           {documentToolHint ? (
@@ -3657,7 +3647,7 @@ function TestCaseContextForm({
             Datos del caso de prueba
           </div>
           <p className="mt-1 text-neutral-500">
-            Estos valores alimentan el modo &quot;Datos del caso&quot; de las tools.
+            Estos valores alimentan el modo &quot;Datos del caso&quot; de las herramientas.
             Editarlos aquí evita tener que escribir JSON.
           </p>
         </div>
@@ -4352,7 +4342,7 @@ function SkillTestPanel({
                   ? `${coveredExpectedToolCount}/${expectedToolCalls.length} (${expectedToolCalls.join(", ")})`
                   : SKILL_TEST_NOT_APPLICABLE}
                 {expectedToolCalls.length === 0
-                  ? " (este escenario no exige tools de negocio concretas)."
+                  ? " (este escenario no exige herramientas de negocio concretas)."
                   : "."}
               </p>
               {expectedInternalToolCalls.length > 0 ? (
@@ -4407,7 +4397,7 @@ function SkillTestPanel({
           ) : null}
           {missingAnyToolCall.length > 0 ? (
             <p className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
-              Cobertura mínima de tools faltante: {missingAnyToolCall.join(", ")}.
+              Cobertura mínima de herramientas faltante: {missingAnyToolCall.join(", ")}.
             </p>
           ) : null}
           {contributionSummary ? (
@@ -4995,7 +4985,7 @@ function StepTestPanel({
           {elapsedMs > 120000 ? (
             <p className="mt-1 rounded border border-amber-200 bg-amber-50 p-2 text-amber-900">
               Este N4 está tardando más de 2 minutos. El run sigue vivo, pero
-              conviene revisar la tool activa y los tiempos al terminar.
+              conviene revisar la herramienta activa y los tiempos al terminar.
             </p>
           ) : null}
           {activeRunProgress?.tool_calls?.length ? (
@@ -8385,7 +8375,7 @@ export function OperationalCaseTypesClient({
       });
       setTestContextVersion((version) => version + 1);
       setTestContextMessage(
-        "Datos guardados. No se reinició el recorrido; las pruebas por tool usarán estos valores."
+        "Datos guardados. No se reinició el recorrido; las pruebas por herramienta usarán estos valores."
       );
     } catch (err) {
       setTestContextMessage((err as Error).message ?? String(err));
@@ -10378,8 +10368,8 @@ export function OperationalCaseTypesClient({
                         Herramientas internas
                       </summary>
                       <p className="mt-1 text-[11px] text-neutral-500">
-                        No requiere «Probar tool» aquí. Se comprueba al usar
-                        «Probar habilidad» o «Probar paso» en este hito.
+                        No requiere «Probar herramienta» aquí. Se comprueba al
+                        usar «Probar habilidad» o «Probar paso» en este hito.
                       </p>
                       <div className="mt-2 space-y-2">
                         {tools.map((tool) => renderInternalToolRow(tool))}
