@@ -309,6 +309,13 @@ export function eventBelongsToStep(
   }
   if (
     stepKey === "awaiting_documents" &&
+    event.event_type === "human_decision" &&
+    payloadKind === "step_branch_selected"
+  ) {
+    return true;
+  }
+  if (
+    stepKey === "awaiting_documents" &&
     event.event_type === "reminder_sent" &&
     typeof payload?.purpose === "string" &&
     DOCUMENT_FLOW_REMINDER_PURPOSES.has(payload.purpose)
@@ -484,6 +491,7 @@ function isE2EEvent(item: FlowProgressEvidenceItem): boolean {
   if (item.event_kind === "documents_batch_completed") return true;
   if (isDocumentRequestReminderEvidence(item)) return true;
   if (isDocumentRequestTargetInferredEvidence(item)) return true;
+  if (isStepBranchSelectedEvidence(item)) return true;
   if (
     item.event_result === "e2e_tick_completed" ||
     item.event_result === "e2e_pending_hitl"
@@ -533,6 +541,11 @@ function isDocumentRequestTargetInferredEvidence(
   return item.kind === "event" && item.event_kind === "document_request_target_inferred";
 }
 
+/** Rama documental elegida (Fase E / PATTERN_STEP_BRANCH_DECISION). */
+function isStepBranchSelectedEvidence(item: FlowProgressEvidenceItem): boolean {
+  return item.kind === "event" && item.event_kind === "step_branch_selected";
+}
+
 export function flowProgressForE2ESummary<T extends FlowProgressLike>(
   flowProgress: T[],
   options?: { e2eStartedAt?: string | null }
@@ -554,7 +567,8 @@ export function flowProgressForE2ESummary<T extends FlowProgressLike>(
           item.event_source === "operational_case_update_intake" ||
           isDocumentEvidence ||
           isDocumentRequestReminderEvidence(item) ||
-          isDocumentRequestTargetInferredEvidence(item));
+          isDocumentRequestTargetInferredEvidence(item) ||
+          isStepBranchSelectedEvidence(item));
       if (
         startedAt &&
         Number.isFinite(createdAtMs) &&

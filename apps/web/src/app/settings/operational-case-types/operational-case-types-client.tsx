@@ -31,6 +31,7 @@ import type {
   ToolCall,
 } from "@agents/types";
 import { resolveOperationalCaseDocumentRequestTarget } from "@agents/types";
+import { normalizeStepDecision } from "@/lib/operational-cases/step-decision";
 import { AccountToolConnectionForm } from "@/components/account-tool-connection-form";
 import type { OwnerResponseBusinessOutcome } from "@/lib/operational-cases/evaluate-owner-response-outcome";
 import {
@@ -116,6 +117,15 @@ import {
   readinessLabToolShellClass,
 } from "@/lib/operational-cases/readiness-lab-hierarchy-ui";
 import { ReadinessTestSection } from "@/components/readiness-test-section";
+import {
+  StepDecisionBranchBadge,
+  StepDecisionPanel,
+  StepDecisionScenarioBadge,
+} from "@/components/step-decision-panel";
+import {
+  partitionToolsByStepDecision,
+  stepDecisionToolBadgeLabel,
+} from "@/lib/operational-cases/step-decision-ui";
 import {
   OPERATIONAL_CASE_STATUS_LABELS,
   OperationalCaseInstanceList,
@@ -965,6 +975,7 @@ function normalizeOperationalFlow(value: unknown): OperationalCaseFlowStep[] {
         typeof record.step_label === "string" && record.step_label.trim()
           ? record.step_label.trim()
           : labelFromSlug(stepKey);
+      const stepDecision = normalizeStepDecision(record.step_decision);
       return {
         step_key: stepKey,
         step_label: stepLabel,
@@ -979,6 +990,7 @@ function normalizeOperationalFlow(value: unknown): OperationalCaseFlowStep[] {
         step_tools: Array.isArray(record.step_tools)
           ? record.step_tools.map(normalizeFlowTool).filter(isPresent)
           : [],
+        ...(stepDecision ? { step_decision: stepDecision } : {}),
       };
     })
     .filter(isPresent);
@@ -4869,7 +4881,13 @@ function StepTestPanel({
                   : "border-neutral-200 bg-white text-neutral-700 hover:border-indigo-200"
               } disabled:cursor-not-allowed disabled:opacity-60`}
             >
-              {scenario.label}
+              <span className="inline-flex flex-wrap items-center gap-1">
+                {scenario.label}
+                <StepDecisionScenarioBadge
+                  decision={step.step_decision}
+                  scenarioId={scenario.id}
+                />
+              </span>
             </button>
           );
         })}
@@ -7339,8 +7357,6 @@ export function OperationalCaseTypesClient({
   const selectedSavedSkillBody = selectedCaseType
     ? accountSkillMap.get(selectedCaseType.default_skill_slug)?.body_md ?? ""
     : "";
-  const selectedIsPrivate =
-    selectedCaseType !== null && scopeLabel(selectedCaseType) !== "global";
   const selectedIsActive = (selectedCaseType?.status ?? "active") === "active";
   const skillLooksValid =
     (generatedSkillBody.trim().length > 0 ||
@@ -7351,9 +7367,9 @@ export function OperationalCaseTypesClient({
   const toolsPass =
     Boolean(toolReadiness) && readinessCounts.blocking === 0;
   const toolsHaveBlocks = readinessCounts.blocking > 0;
-  const shouldReviewTools = selectedIsPrivate && !toolReadiness && !toolReadinessLoading;
+  const shouldReviewTools = !toolReadiness && !toolReadinessLoading;
   const canManageTestCase =
-    selectedIsPrivate && selectedIsActive && Boolean(toolReadiness);
+    selectedIsActive && Boolean(toolReadiness);
   const canCreateTestCase = canManageTestCase && !toolsHaveBlocks;
   const refreshedConversationalCase =
     conversationalObservationUnpinned && !activeConversationalCaseId
@@ -7565,7 +7581,7 @@ export function OperationalCaseTypesClient({
     const handleNavigationRestore = () => {
       readinessScrollLockRef.current = null;
       syncWorkspaceFromUrl();
-      if (selectedCaseType && scopeLabel(selectedCaseType) !== "global") {
+      if (selectedCaseType) {
         void refreshToolReadiness(selectedCaseType);
         void refreshTestCase(selectedCaseType);
         void refreshConversationalCase(selectedCaseType);
@@ -7601,7 +7617,6 @@ export function OperationalCaseTypesClient({
     if (
       activeTab !== "lab" ||
       !selectedCaseType ||
-      scopeLabel(selectedCaseType) === "global" ||
       toolReadiness ||
       toolReadinessLoading ||
       toolReadinessError
@@ -7618,22 +7633,14 @@ export function OperationalCaseTypesClient({
   ]);
 
   useEffect(() => {
-    if (
-      activeTab !== "lab" ||
-      !selectedCaseType ||
-      scopeLabel(selectedCaseType) === "global"
-    ) {
+    if (activeTab !== "lab" || !selectedCaseType) {
       return;
     }
     void refreshE2ELabMode(selectedCaseType);
   }, [activeTab, selectedCaseType?.id]);
 
   useEffect(() => {
-    if (
-      activeTab !== "lab" ||
-      !selectedCaseType ||
-      scopeLabel(selectedCaseType) === "global"
-    ) {
+    if (activeTab !== "lab" || !selectedCaseType) {
       return;
     }
     // Attempt the initial load exactly once per case type. Previously this
@@ -7649,11 +7656,7 @@ export function OperationalCaseTypesClient({
   }, [activeTab, selectedCaseType]);
 
   useEffect(() => {
-    if (
-      activeTab !== "lab" ||
-      !selectedCaseType ||
-      scopeLabel(selectedCaseType) === "global"
-    ) {
+    if (activeTab !== "lab" || !selectedCaseType) {
       return;
     }
     const intervalId = window.setInterval(() => {
@@ -7669,7 +7672,6 @@ export function OperationalCaseTypesClient({
     if (
       activeTab !== "lab" ||
       !selectedCaseType ||
-      scopeLabel(selectedCaseType) === "global" ||
       !activeConversationalCaseId
     ) {
       return;
@@ -7829,18 +7831,6 @@ export function OperationalCaseTypesClient({
     row: OperationalCaseType,
     options?: { silent?: boolean }
   ) {
-    if (scopeLabel(row) === "global") {
-      clearToolReadinessRetry();
-      toolReadinessRetryCountRef.current = 0;
-      setToolReadiness(null);
-      setToolReadinessError(null);
-      setExpandedReadinessTools(new Set());
-      setOpenReadinessSteps(new Set());
-      setToolRequests([]);
-      setToolRequestError(null);
-      setToolRequestSubmitting(null);
-      return;
-    }
     const scrollPosition = capturePageScroll(readinessFlowScrollRef.current);
     if (!options?.silent) {
       clearToolReadinessRetry();
@@ -8006,10 +7996,6 @@ export function OperationalCaseTypesClient({
   }
 
   async function refreshTestCase(row: OperationalCaseType) {
-    if (scopeLabel(row) === "global") {
-      setTestCaseResult(null);
-      return;
-    }
     setTestCaseLoading(true);
     try {
       const res = await fetch(
@@ -8036,11 +8022,6 @@ export function OperationalCaseTypesClient({
     row: OperationalCaseType,
     options?: { silent?: boolean; caseId?: string }
   ) {
-    if (scopeLabel(row) === "global") {
-      setConversationalLabResult(null);
-      setActiveConversationalCaseId(null);
-      return;
-    }
     if (!options?.silent) {
       setConversationalLabLoading(true);
     }
@@ -8144,7 +8125,6 @@ export function OperationalCaseTypesClient({
   }
 
   async function refreshE2ELabMode(row: OperationalCaseType) {
-    if (scopeLabel(row) === "global") return;
     try {
       const res = await fetch(
         `/api/operational-case-tests/e2e-lab-mode?case_type_id=${encodeURIComponent(row.id)}`,
@@ -8178,7 +8158,6 @@ export function OperationalCaseTypesClient({
   }
 
   async function toggleE2ELabMode(row: OperationalCaseType, active: boolean) {
-    if (scopeLabel(row) === "global") return;
     setE2ELabModeLoading(true);
     setError(null);
     setConversationalLabMessage(null);
@@ -8551,11 +8530,9 @@ export function OperationalCaseTypesClient({
     setConversationalLabResult(null);
     setActiveConversationalCaseId(null);
     setEditingBaseline(null);
-    if (scopeLabel(row) !== "global") {
-      void refreshToolReadiness(row);
-      void refreshTestCase(row);
-      void refreshConversationalCase(row);
-    }
+    void refreshToolReadiness(row);
+    void refreshTestCase(row);
+    void refreshConversationalCase(row);
     if (options?.updateUrl !== false) {
       replaceWorkspaceUrl(row, tab);
     }
@@ -8565,7 +8542,7 @@ export function OperationalCaseTypesClient({
   function selectWorkspaceTab(tab: CaseTypeWorkspaceTab, row: OperationalCaseType) {
     setActiveTab(tab);
     replaceWorkspaceUrl(row, tab);
-    if (tab === "lab" && scopeLabel(row) !== "global") {
+    if (tab === "lab") {
       if (!toolReadiness && !toolReadinessLoading) {
         void refreshToolReadiness(row);
       }
@@ -9279,6 +9256,15 @@ export function OperationalCaseTypesClient({
                   {testCaseResult.case.current_step ?? "sin paso"} · Creado:{" "}
                   {formatDateTime(testCaseResult.case.created_at)}
                 </div>
+                {testCaseResult.case.case_type_id !== row.id &&
+                testCaseResult.case.case_type === row.case_type ? (
+                  <p className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">
+                    Caso ligado a otra plantilla del mismo tipo (
+                    <span className="font-mono">{row.case_type}</span>
+                    ). Las pruebas N1–N4 lo usan por slug; regenera desde esta
+                    plantilla para alinear IDs.
+                  </p>
+                ) : null}
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -9522,7 +9508,7 @@ export function OperationalCaseTypesClient({
                   <button
                     type="button"
                     onClick={() => void toggleE2ELabMode(row, !e2eLabModeActive)}
-                    disabled={e2eLabModeLoading || scopeLabel(row) === "global"}
+                    disabled={e2eLabModeLoading}
                     className={`rounded px-3 py-1.5 text-[11px] font-semibold disabled:opacity-60 ${
                       e2eLabModeActive
                         ? "border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50"
@@ -9984,6 +9970,9 @@ export function OperationalCaseTypesClient({
               Valida la plantilla de menor a mayor riesgo: preparar el caso de
               prueba, verificar herramientas, probar habilidades y escenarios
               por paso, y al final ejecutar una transición real con el agente.
+              {isGlobal
+                ? " La plantilla de producto no se edita aquí; tus pruebas y el caso de laboratorio son de tu cuenta."
+                : ""}
             </p>
           </div>
         ) : null}
@@ -10120,7 +10109,7 @@ export function OperationalCaseTypesClient({
         </details>
         ) : null}
 
-        {activeTab === "lab" && !isGlobal ? (
+        {activeTab === "lab" ? (
           <div className="w-full min-w-0 space-y-3">
             <div className="space-y-3 rounded-xl border border-neutral-200 p-3 text-sm dark:border-neutral-800">
             <div className="flex items-start justify-between gap-3">
@@ -10239,6 +10228,7 @@ export function OperationalCaseTypesClient({
                     flowStepKey?: string;
                     skillSlug?: string;
                     toolIndex?: number;
+                    branchBadge?: string | null;
                   }
                 ) => {
                   const expansionKey = [
@@ -10250,10 +10240,17 @@ export function OperationalCaseTypesClient({
 
                   return tool.readiness ? (
                     <div key={expansionKey} className={READINESS_LAB_TOOL_CARD_WRAP}>
-                      {tool.tool_label || tool.tool_description ? (
+                      {tool.tool_label || tool.tool_description || flowContext?.branchBadge ? (
                         <div className="mb-1 text-xs">
-                          <span className="font-semibold">
-                            {tool.tool_label ?? tool.tool_id}
+                          <span className="inline-flex flex-wrap items-center gap-1.5">
+                            <span className="font-semibold">
+                              {tool.tool_label ?? tool.tool_id}
+                            </span>
+                            {flowContext?.branchBadge ? (
+                              <StepDecisionBranchBadge
+                                label={flowContext.branchBadge}
+                              />
+                            ) : null}
                           </span>
                           {tool.tool_description ? (
                             <span className="text-neutral-500">
@@ -10453,6 +10450,9 @@ export function OperationalCaseTypesClient({
                           </div>
                         </summary>
                         <div className={READINESS_LAB_STEP_BODY}>
+                          {step.step_decision && !options.preparation ? (
+                            <StepDecisionPanel decision={step.step_decision} />
+                          ) : null}
                           {stepDetailsOpen && !options.preparation ? (
                             <StepTestPanel
                               step={step}
@@ -10476,6 +10476,14 @@ export function OperationalCaseTypesClient({
                               }}
                             />
                           ) : null}
+                          {(() => {
+                            const decisionPartition = partitionToolsByStepDecision(
+                              step.step_decision
+                            );
+                            const branchBadgeFor = (toolId: string) =>
+                              stepDecisionToolBadgeLabel(toolId, decisionPartition);
+                            return (
+                              <>
                           {step.step_skills.length > 0 ? (
                             step.step_skills.map((skill) => (
                               <div
@@ -10547,6 +10555,7 @@ export function OperationalCaseTypesClient({
                                             flowStepKey: step.step_key,
                                             skillSlug: skill.skill_slug,
                                             toolIndex,
+                                            branchBadge: branchBadgeFor(tool.tool_id),
                                           })
                                         )}
                                         {renderInternalToolsBlock(internal)}
@@ -10584,6 +10593,7 @@ export function OperationalCaseTypesClient({
                                       renderToolCard(tool, step.step_key, {
                                         flowStepKey: step.step_key,
                                         toolIndex,
+                                        branchBadge: branchBadgeFor(tool.tool_id),
                                       })
                                     )}
                                     {renderInternalToolsBlock(internal)}
@@ -10592,6 +10602,9 @@ export function OperationalCaseTypesClient({
                               })()}
                             </div>
                           ) : null}
+                              </>
+                            );
+                          })()}
                           {options.preparation ? (
                             <p className="text-xs text-neutral-500">
                               Este hito representa el registro inicial del caso:

@@ -38,6 +38,9 @@ import {
   stepTestCatalogSlugForRootSkill,
   stepTestAvailable,
 } from "@/lib/operational-cases/step-test-scenarios";
+import { stepTestScenariosFor } from "@/lib/operational-cases/step-test-scenario-registry";
+import { collectStepDecisionWarnings } from "@/lib/operational-cases/step-decision";
+import { findLatestSettingsTestCaseId } from "@/lib/operational-cases/settings-test-case-lookup";
 import {
   isIntakePreparationStep,
   isReadinessVisibleTool,
@@ -1316,28 +1319,6 @@ function applySkillTestEvidence<T extends { skill_slug: string; test_status?: Sk
   });
 }
 
-async function latestSettingsTestCaseId(
-  db: ReturnType<typeof createServerClient>,
-  userId: string,
-  caseTypeId: string
-) {
-  const { data, error } = await db
-    .from("operational_cases")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("case_type_id", caseTypeId)
-    .eq("context_jsonb->>created_from", "case_type_settings_test")
-    .eq("context_jsonb->>test_mode", "true")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) {
-    console.warn("[tool-readiness] latest test case lookup failed:", error);
-    return null;
-  }
-  return typeof data?.id === "string" ? data.id : null;
-}
-
 async function skillTestEvidenceForCase(
   db: ReturnType<typeof createServerClient>,
   caseId: string | null
@@ -1470,7 +1451,10 @@ function enrichFlow(params: {
   const mapped = new Set<string>();
   const allowedToolIds = new Set(params.resolved.allowedTools);
 
-  function enrichTool(tool: OperationalCaseFlowTool) {
+  function enrichTool(
+    tool: OperationalCaseFlowTool,
+    ctx?: { flowStepKey?: string; skillSlug?: string }
+  ) {
     mapped.add(tool.tool_id);
     const readiness = params.toolsById.get(tool.tool_id) ?? null;
     return {
@@ -1480,7 +1464,7 @@ function enrichFlow(params: {
             ...readiness,
             test_behavior: normalizeToolTestBehavior(
               tool.tool_id,
-              toolTestBehaviorForFlowTool(tool)
+              toolTestBehaviorForFlowTool(tool, ctx)
             ),
           }
         : null,
@@ -1489,9 +1473,13 @@ function enrichFlow(params: {
 
   const flow = sourceFlow.map((step) => {
     const enrichedSkills = (step.step_skills ?? []).map((skill: OperationalCaseFlowSkill) => {
+      const skillCtx = {
+        flowStepKey: step.step_key,
+        skillSlug: skill.skill_slug,
+      };
       const skillTools = (skill.skill_tools ?? [])
         .filter((tool) => allowedToolIds.has(tool.tool_id))
-        .map(enrichTool);
+        .map((tool) => enrichTool(tool, skillCtx));
       return {
         ...skill,
         skill_tools: skillTools,
@@ -1504,7 +1492,9 @@ function enrichFlow(params: {
     );
     const stepTools = (step.step_tools ?? [])
       .filter((tool) => allowedToolIds.has(tool.tool_id))
-      .map(enrichTool);
+      .map((tool) =>
+        enrichTool(tool, { flowStepKey: step.step_key })
+      );
     const progressHolder: { progress: StepTestProgress | null } = { progress: null };
     const test_status = stepTestStatus(evidencedSkills, stepTools, {
       stepKey: step.step_key,
@@ -1669,7 +1659,12 @@ export async function GET(request: Request) {
     );
     const tools = rawTools.map((tool) => applyToolTestEvidence(tool, toolEvidence));
     const toolsById = new Map(tools.map((tool) => [tool.tool_id, tool]));
-    const testCaseId = await latestSettingsTestCaseId(db, user.id, caseType.id);
+    const testCaseId = await findLatestSettingsTestCaseId(
+      db,
+      user.id,
+      caseType.id,
+      caseType.case_type
+    );
     const skillEvidence = await skillTestEvidenceForCase(db, testCaseId);
     const scenarioEvidence = await stepScenarioEvidenceForCase(db, testCaseId);
     const catalogSlug =
@@ -1687,6 +1682,15 @@ export async function GET(request: Request) {
     const case_e2e_status = caseE2EStatus(flow);
     const { preparationSteps, operationalSteps } = partitionFlowSteps(
       flow.filter((step) => step.step_key !== "transversal_tools")
+    );
+
+    const step_decision_warnings = sourceFlow.flatMap((step) =>
+      collectStepDecisionWarnings({
+        step,
+        knownScenarioIds: stepTestScenariosFor(catalogSlug, step.step_key).map(
+          (s) => s.id
+        ),
+      })
     );
 
     const hasBlocking = tools.some(
@@ -1718,6 +1722,7 @@ export async function GET(request: Request) {
       flow,
       flow_preparation: preparationSteps,
       flow_operational: operationalSteps,
+      step_decision_warnings,
     });
   } catch (err) {
     console.error("[GET /api/tool-readiness] failed:", err);

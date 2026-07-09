@@ -133,6 +133,28 @@ const awaiting = resolveStepN4TestStatus({
 });
 assert.equal(awaiting.status, "awaiting_n4");
 assert.ok(awaiting.progress && awaiting.progress.scenarios_total > 0);
+assert.equal(awaiting.progress?.scenarios_total, 2);
+
+const awaitingOneOk = resolveStepN4TestStatus({
+  catalogSlug: "property_optioning",
+  stepKey: "awaiting_documents",
+  scenarioEvidence: parseStepScenarioEvidenceFromEvents([
+    {
+      created_at: "2026-07-09T12:00:00Z",
+      payload_jsonb: {
+        kind: "step_test_completed",
+        step_key: "awaiting_documents",
+        scenario_id: "awaiting_documents_outreach",
+        status: "tested_ok",
+      },
+    },
+  ]).get("awaiting_documents"),
+  allSkillsOk: true,
+  directToolsOk: true,
+});
+assert.equal(awaitingOneOk.status, "partially_tested");
+assert.equal(awaitingOneOk.progress?.scenarios_passed, 1);
+assert.equal(awaitingOneOk.progress?.scenarios_pending, 1);
 
 const merged = mergeStepScenarioEvidenceMaps(
   runEvidence,

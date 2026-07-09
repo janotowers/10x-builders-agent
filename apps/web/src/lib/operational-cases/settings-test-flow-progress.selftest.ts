@@ -133,6 +133,14 @@ const preE2EDocumentReminderFlow = flowProgressForE2ESummary(
           event_kind: "document_request_target_inferred",
           summary: "Ruta interna inferida por subida de documentos",
         },
+        {
+          kind: "event",
+          id: "step-branch-selected-pre-e2e",
+          created_at: "2026-06-05T10:04:26.000Z",
+          event_type: "human_decision",
+          event_kind: "step_branch_selected",
+          summary: "Rama documental: equipo interno",
+        },
         // Recordatorio NO documental: no debe conservarse pre-transición.
         {
           kind: "event",
@@ -170,6 +178,13 @@ assert.equal(
   ),
   true,
   "la inferencia de ruta interna previa al arranque E2E debe conservarse"
+);
+assert.equal(
+  preE2EDocumentReminderFlow[0]?.evidenceItems.some(
+    (item) => item.id === "step-branch-selected-pre-e2e"
+  ),
+  true,
+  "el evento step_branch_selected previo al arranque E2E debe conservarse"
 );
 assert.equal(
   preE2EDocumentReminderFlow[0]?.evidenceItems.some(

@@ -335,6 +335,32 @@ export function formatOperationalCaseEventSummary(
   }
 
   if (event.event_type === "human_decision") {
+    const payload = isRecord(event.payload_jsonb) ? event.payload_jsonb : {};
+    if (payload.kind === "step_branch_selected") {
+      const branch =
+        typeof payload.branch_value === "string" ? payload.branch_value.trim() : "";
+      const branchLabel =
+        branch === "internal_user"
+          ? "equipo interno"
+          : branch === "external_contact"
+            ? "contacto externo"
+            : branch || "rama";
+      const decidedBy =
+        typeof payload.decided_by === "string" ? payload.decided_by.trim() : "";
+      const decidedHint =
+        decidedBy === "inferred"
+          ? " (inferido)"
+          : decidedBy === "user"
+            ? ""
+            : decidedBy
+              ? ` (${decidedBy})`
+              : "";
+      return withTechnicalKind(
+        `Rama documental: ${branchLabel}${decidedHint}`,
+        technicalKind,
+        includeTechnicalKind
+      );
+    }
     return withTechnicalKind(
       "Decisión / acción manual",
       technicalKind,

@@ -123,7 +123,7 @@ una inmobiliaria. Se aplica cuando el caso operacional es de tipo
 
 | Step | Sub-skill principal | Tools clave (N1 / integración) |
 |---|---|---|
-| `awaiting_documents` | `request-property-documents` | `telegram_send_message_to_contact`, `notify_user` |
+| `awaiting_documents` | `request-property-documents` | Ramas (`document_request_target`): externo → `telegram_send_message_to_contact`; interno → `notify_user`. Compartida: `operational_case_list_documents` |
 | `documents_received` | `extract-property-characteristics` | `operational_case_list_documents`, `operational_case_extract_document_fields`, `telegram_send_message_to_contact`, `notify_user` |
 | `comparables_in_progress` | `perform-comparable-analysis` | `easybroker_search_*`, `bigquery_lookup_local_comparables` (N1); `operational_case_persist_comparables_analysis` y `operational_case_update_state` son **internas** (N3/N4, no N1) |
 | `price_proposal_pending` | `prepare-listing-price` | `notify_user` (HITL) |

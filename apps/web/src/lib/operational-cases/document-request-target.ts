@@ -36,6 +36,7 @@ import {
   beginExternalContactLink,
   buildExternalContactSetupMessage,
 } from "./external-contact-link";
+import { recordStepBranchSelected } from "./step-branch-selected";
 
 type DocumentRequestTargetDecisionSource =
   | "default"
@@ -346,16 +347,12 @@ export async function ensureCaseDocumentRequestTarget(params: {
   const resolved = resolveCaseDocumentRequestTarget(opCase);
   const current = operationalCaseDocumentRequestTargetFromContext(context);
   if (current === resolved) return opCase;
-  const now = new Date().toISOString();
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    context: {
-      ...context,
-      document_request_target: resolved,
-      document_request_target_decided_at: now,
-      document_request_target_decided_by: params.decidedBy ?? "default",
-    },
+  return setCaseDocumentRequestTarget({
+    db,
+    opCase,
+    target: resolved,
+    decidedBy: params.decidedBy ?? "default",
   });
-  return updated ?? opCase;
 }
 
 export async function setCaseDocumentRequestTarget(params: {
@@ -363,8 +360,16 @@ export async function setCaseDocumentRequestTarget(params: {
   opCase: OperationalCase;
   target: OperationalCaseDocumentRequestTarget;
   decidedBy?: DocumentRequestTargetDecisionSource;
+  reason?: string;
+  source?: string;
 }): Promise<OperationalCase> {
   const context = caseContext(params.opCase);
+  const previous = operationalCaseDocumentRequestTargetFromContext(context);
+  const decidedBy = params.decidedBy ?? "user";
+  if (previous === params.target) {
+    // Ya fijado: no reescribe contexto ni duplica evento.
+    return params.opCase;
+  }
   const now = new Date().toISOString();
   const updated = await updateOperationalCase(
     params.db,
@@ -375,11 +380,22 @@ export async function setCaseDocumentRequestTarget(params: {
         ...context,
         document_request_target: params.target,
         document_request_target_decided_at: now,
-        document_request_target_decided_by: params.decidedBy ?? "user",
+        document_request_target_decided_by: decidedBy,
       },
     }
   );
-  return updated ?? params.opCase;
+  const next = updated ?? params.opCase;
+  await recordStepBranchSelected({
+    db: params.db,
+    caseId: next.id,
+    stepKey: next.current_step,
+    branchValue: params.target,
+    decidedBy,
+    previousValue: previous,
+    reason: params.reason,
+    source: params.source,
+  });
+  return next;
 }
 
 /**

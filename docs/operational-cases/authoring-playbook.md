@@ -6,6 +6,7 @@
 > - [`architecture.md`](architecture.md) — subsistema, cron, tablas, binding de habilidad raíz.
 > - [`testing-framework.md`](testing-framework.md) — marco N0–N5 de pruebas en Preparación operativa.
 > - [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) — catálogo de patrones reutilizables (IDs `PATTERN_*`, `n2_*`).
+> - [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) — claridad de ramas (grafo explicativo, no motor).
 > - [`use-case-authoring-vision.md`](use-case-authoring-vision.md) — visión NL → propuesta implementable.
 > - [`../skills-tools-architecture.md`](../skills-tools-architecture.md) — habilidades, tools, HITL.
 
@@ -216,7 +217,24 @@ Si un paso declara **cuatro** habilidades en `step_skills[]`, la raíz puede usa
 
 - primer mensaje, recordatorio, escalación (`awaiting_documents`);
 - reintentos de la misma tool;
-- ramas que no cambian el artefacto ni el responsable del hito.
+- ramas que **no** cambian el artefacto del hito (mismo expediente, misma propuesta, etc.).
+
+#### 5.2.1 Cuando el mismo paso tiene **2+ caminos** (audiencia / espera)
+
+Si el artefacto del hito es el mismo pero cambia el **responsable dominante** o el `waiting_*` (p. ej. documentos los sube el equipo interno vs el contacto externo), **no** partas el `step_key`. Declara una **decisión de rama** (`PATTERN_STEP_BRANCH_DECISION`):
+
+| Qué | Dónde vive la verdad |
+|-----|----------------------|
+| Valor elegido | `context_jsonb` (u otro estado durable) + handlers en código |
+| Cómo actuar en cada rama | Skill atómica (IF explícito) + gates de tools |
+| Mapa para humanos / QA | Metadata `step_decision` en el flow + UI de solo lectura (plan Fases C–D) |
+| Cobertura de prueba | ≥1 escenario N4 **milestone** por rama declarada |
+
+**El panel no ejecuta el IF.** Es grafo explicativo: claridad y trazabilidad, no orquestador tipo n8n.
+
+**Cobertura N4 (no exhaustiva):** N4 demuestra las ramas de decisión del hito, no todo lo que producción puede hacer. No exijas N4 nuevo por recordatorios, copy o reintentos. Guardrails raros → N4 opcional (`counts_toward_step_milestone: false`) o N1/N2. Detalle: [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) §3.5.1.
+
+Ejemplo piloto: `awaiting_documents` + `document_request_target` ∈ {`internal_user`, `external_contact`}.
 
 ### 5.3 Señal de que un paso tiene demasiadas habilidades
 
@@ -261,12 +279,12 @@ Orden recomendado (negocio → técnica):
 2. **Actores** — asesor interno, contacto externo, integraciones (Telegram, EasyBroker, …).
 3. **Esperas y deadlines** — ¿quién puede bloquear días? ¿recordatorios?
 4. **Artefactos acumulados** — documentos, datos estructurados, borradores, publicaciones.
-5. **Pasos (`step_key`)** — hitos con entrada/salida claras (§5).
+5. **Pasos (`step_key`)** — hitos con entrada/salida claras (§5). Si un hito tiene 2+ audiencias/esperas, planear `PATTERN_STEP_BRANCH_DECISION` (no esconder el IF solo en el skill).
 6. **Habilidad raíz compuesta** (`*-coach`) con `includes` de todas las atómicas necesarias.
 7. **Habilidades atómicas por paso** — preferir **una** si basta; varias solo con razón (§9).
-8. **Tools por habilidad** — `allowed_tools`, riesgo, HITL.
-9. **`operational_flow_jsonb`** — alineado 1:1 con `step_key` y skills/tools.
-10. **Contratos de prueba** — `test_contract` por habilidad (N3); escenarios N4 en [`step-test-scenario-registry.ts`](../../apps/web/src/lib/operational-cases/step-test-scenario-registry.ts). Asignar IDs del [catálogo de patrones](operational-case-reusable-patterns.md).
+8. **Tools por habilidad** — `allowed_tools`, riesgo, HITL; en pasos con ramas, tools **primarias por rama** + compartidas.
+9. **`operational_flow_jsonb`** — alineado 1:1 con `step_key` y skills/tools; `step_decision` cuando aplique (metadata explicativa).
+10. **Contratos de prueba** — `test_contract` por habilidad (N3); escenarios N4 en [`step-test-scenario-registry.ts`](../../apps/web/src/lib/operational-cases/step-test-scenario-registry.ts) **por rama de decisión** (§5.2.1). Asignar IDs del [catálogo de patrones](operational-case-reusable-patterns.md).
 11. **Caso de prueba aislado** — N0; batería N1–N4 según [`testing-framework.md`](testing-framework.md) y checklist del catálogo §8.
 12. **Activación** — checklist UI; N5 camino feliz en laboratorio controlado antes de activación estricta.
 

@@ -213,4 +213,36 @@ assert.equal(
   "Contrato enviado por email al propietario"
 );
 
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      actor: "user",
+      payload: {
+        kind: "step_branch_selected",
+        decision_id: "document_request_target",
+        branch_value: "internal_user",
+        decided_by: "user",
+      },
+    })
+  ),
+  "Rama documental: equipo interno"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      actor: "system",
+      payload: {
+        kind: "step_branch_selected",
+        decision_id: "document_request_target",
+        branch_value: "external_contact",
+        decided_by: "inferred",
+      },
+    })
+  ),
+  "Rama documental: contacto externo (inferido)"
+);
+
 console.log("operational-case-event-display.selftest: ok");

@@ -1,6 +1,11 @@
 ---
 name: request-property-documents
-description: Solicita al dueño de una propiedad los documentos requeridos (predial, escritura, identificación, comprobante de domicilio) por Telegram, registra qué llegó, manda recordatorios y escala si no responde. Usado como sub-skill de property-optioning-coach durante el step `awaiting_documents`.
+description: |
+  Reúne el expediente documental del inmueble en el step `awaiting_documents`
+  (escritura bloqueante + ideales). Según `document_request_target`, pide la
+  subida al equipo interno (`notify_user`) o solicita al contacto externo por
+  Telegram; registra qué llegó, manda recordatorios y escala si no responde.
+  Sub-skill de property-optioning-coach.
 scope: business
 allowed_tools:
   - notify_user
@@ -12,24 +17,27 @@ requires_tenant_context: false
 memory_extraction: ephemeral
 heartbeat: blocked
 guardrails: |
-  El primer mensaje al dueño SIEMPRE pasa por HITL del inmobiliario
-  (telegram_send_message_to_contact tiene risk=high → tarjeta de
+  Respeta document_request_target: si es internal_user, NUNCA uses
+  telegram_send_message_to_contact; usa notify_user al asesor.
+  El primer mensaje al dueño (rama externa) SIEMPRE pasa por HITL del
+  inmobiliario (telegram_send_message_to_contact tiene risk=high → tarjeta de
   confirmación). Los recordatorios subsecuentes pueden ir sin HITL si la
   política del case_type lo permite, pero el TEXTO debe seguir la plantilla
   acordada (no improvisar).
-  Marca cada mensaje enviado con `operational_case_add_event(reminder_sent)`
+  Marca cada solicitud/recordatorio con `operational_case_add_event(reminder_sent)`
   para que el cron sepa cuándo fue el último intento.
-  Cuando lleguen documentos via `external_response`, NO concluyas el paso
-  hasta tener evidencia del documento bloqueante: la hoja de escritura donde
-  esté la descripción de la propiedad. Los demás documentos son ideales por
-  ahora y deben pedirse/recordarse, pero no bloquean el avance a extracción.
+  Cuando lleguen documentos via `external_response` o subida interna, NO
+  concluyas el paso hasta tener evidencia del documento bloqueante: la hoja
+  de escritura donde esté la descripción de la propiedad. Los demás documentos
+  son ideales por ahora y deben pedirse/recordarse, pero no bloquean el
+  avance a extracción.
 ---
 
 # Request property documents
 
 ## Objetivo
 
-Obtener del dueño:
+Reunir el expediente (quien aporte depende de la rama):
 
 - **Escritura - primera hoja o sección con la descripción de la propiedad, y última hoja si la tiene a la mano** (bloqueante).
 - **Predial** (último pago, ideal/no bloqueante).
@@ -43,9 +51,10 @@ Más cualquier documento extra que la cuenta exija (revisa
 ## Workflow
 
 1. Lee el caso. Identifica:
-   - `context_jsonb.document_request_target`:
-     - `external_contact` (default sólo si hay contacto verificado) o
-     - `internal_user` (el asesor/equipo sube documentos).
+   - `context_jsonb.document_request_target` (**decisión de rama**):
+     - `internal_user` — el asesor/equipo sube documentos.
+     - `external_contact` — se solicita al dueño/contacto (default sólo si hay
+       contacto verificado y no hay elección explícita interna).
    - `context_jsonb.external_contact_setup_status`: si es `pending`, el asesor
      eligió «externo» pero el contacto **aún no** abrió el deep link de
      vinculación. **NO** uses `telegram_send_message_to_contact` hasta que
@@ -57,7 +66,7 @@ Más cualquier documento extra que la cuenta exija (revisa
    - documentos ya registrados vía `operational_case_list_documents` y/o
      `context_jsonb.documents_received`.
 
-2. Si `document_request_target === internal_user`:
+2. **Rama interna** — Si `document_request_target === internal_user`:
 
    a. NO uses `telegram_send_message_to_contact`.
 
@@ -69,7 +78,7 @@ Más cualquier documento extra que la cuenta exija (revisa
 
    d. Registra `operational_case_add_event(reminder_sent, payload={purpose: internal_request})`.
 
-3. Si `document_request_target !== internal_user` y **aún no se ha mandado el primer mensaje** (no hay evento
+3. **Rama externa** — Si `document_request_target !== internal_user` y **aún no se ha mandado el primer mensaje** (no hay evento
    `reminder_sent` con `purpose=initial_request`):
 
    a. Compón un mensaje cordial en español pidiendo TODOS los documentos
@@ -86,7 +95,7 @@ Más cualquier documento extra que la cuenta exija (revisa
    d. Mueve `status=waiting_external`, deja `current_step=awaiting_documents`,
       pon `next_action_at = now() + remind_after_h[0]` (default 24h).
 
-4. Si `document_request_target !== internal_user` y **ya hay mensajes previos** y el cron te invocó porque venció
+4. **Rama externa (recordatorios)** — Si `document_request_target !== internal_user` y **ya hay mensajes previos** y el cron te invocó porque venció
    `next_action_at`:
 
    a. Revisa últimos eventos: ¿hay `external_response` posterior al último

@@ -46,6 +46,7 @@ import {
   isSettingsOperationalTestCase,
   settingsTestTelegramChatIdForAgent,
 } from "@/lib/operational-cases/settings-test-telegram-lab";
+import { findLatestSettingsTestCase } from "@/lib/operational-cases/settings-test-case-lookup";
 import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
 import { readinessToolIdsForSkill } from "@/lib/operational-cases/tool-surface-classification";
 import {
@@ -222,25 +223,6 @@ async function effectiveFlowForCaseType(
   return Array.isArray(globalCaseType?.operational_flow_jsonb)
     ? (globalCaseType.operational_flow_jsonb as OperationalCaseFlowStep[])
     : [];
-}
-
-async function latestSettingsTestCase(
-  db: ReturnType<typeof createServerClient>,
-  userId: string,
-  caseTypeId: string
-): Promise<OperationalCase | null> {
-  const { data, error } = await db
-    .from("operational_cases")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("case_type_id", caseTypeId)
-    .eq("context_jsonb->>created_from", "case_type_settings_test")
-    .eq("context_jsonb->>test_mode", "true")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return (data as OperationalCase | null) ?? null;
 }
 
 function skillInFlow(flow: OperationalCaseFlowStep[], skillSlug: string) {
@@ -1107,7 +1089,12 @@ export async function POST(request: Request) {
 
     let opCase = caseId
       ? await getOperationalCase(db, caseId)
-      : await latestSettingsTestCase(db, user.id, caseType.id);
+      : await findLatestSettingsTestCase(
+          db,
+          user.id,
+          caseType.id,
+          caseType.case_type
+        );
     if (!opCase || opCase.user_id !== user.id) {
       return NextResponse.json(
         { error: "test_case_required", hint: "Crea primero un caso de prueba." },

@@ -22,6 +22,7 @@ import {
 import { runSettingsTestSafeCheck } from "@/lib/operational-cases/settings-test-safe-check";
 import { settingsTestPropertyDataSeed } from "@/lib/operational-cases/property-search-zone";
 import { syncLabFormIntoPropertyData } from "@/lib/operational-cases/lab-form-property-data-sync";
+import { findLatestSettingsTestCase } from "@/lib/operational-cases/settings-test-case-lookup";
 
 /**
  * Construye `property_data` canónico del caso de prueba a partir del formulario.
@@ -45,40 +46,6 @@ function buildCanonicalPropertyData(
     formContext: context,
     propertyData: basePd,
   }).propertyData;
-}
-
-async function findLatestSettingsTestCase(
-  db: ReturnType<typeof createServerClient>,
-  userId: string,
-  caseTypeId: string,
-  caseTypeSlug?: string
-): Promise<OperationalCase | null> {
-  const { data, error } = await db
-    .from("operational_cases")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("case_type_id", caseTypeId)
-    .eq("context_jsonb->>created_from", "case_type_settings_test")
-    .eq("context_jsonb->>test_mode", "true")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  const exact = (data as OperationalCase | null) ?? null;
-  if (exact || !caseTypeSlug) return exact;
-
-  const fallback = await db
-    .from("operational_cases")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("case_type", caseTypeSlug)
-    .eq("context_jsonb->>created_from", "case_type_settings_test")
-    .eq("context_jsonb->>test_mode", "true")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (fallback.error) throw fallback.error;
-  return (fallback.data as OperationalCase | null) ?? null;
 }
 
 function normalizeIntakeFieldValue(
@@ -211,13 +178,18 @@ export async function POST(request: Request) {
 
     const db = createServerClient();
     const caseType = await getOperationalCaseTypeById(db, caseTypeId);
-    if (
-      !caseType ||
-      caseType.user_id !== user.id ||
-      caseType.visibility !== "private" ||
-      caseType.status !== "active"
-    ) {
-      return NextResponse.json({ error: "private_active_case_type_required" }, { status: 400 });
+    // Laboratorio: se puede probar plantilla privada de la cuenta O producto
+    // global (solo lectura de la plantilla; el caso de prueba es del usuario).
+    const canUseAsLabTemplate =
+      !!caseType &&
+      caseType.status === "active" &&
+      (caseType.visibility === "global" ||
+        (!!caseType.user_id && caseType.user_id === user.id));
+    if (!canUseAsLabTemplate) {
+      return NextResponse.json(
+        { error: "active_case_type_required" },
+        { status: 400 }
+      );
     }
 
     const fields = Array.isArray(caseType.intake_schema_jsonb)
@@ -503,7 +475,10 @@ export async function PATCH(request: Request) {
     }
 
     const caseType = await getOperationalCaseTypeById(db, opCase.case_type_id);
-    if (!caseType || caseType.user_id !== user.id) {
+    if (
+      !caseType ||
+      (caseType.user_id && caseType.user_id !== user.id)
+    ) {
       return NextResponse.json({ error: "case_type_not_found" }, { status: 404 });
     }
 

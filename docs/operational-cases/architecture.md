@@ -3,7 +3,7 @@
 > Este documento sobrevive al plan. Describe **cómo funciona** el subsistema una vez implementado, separado del plan de ejecución y de las decisiones temporales.
 >
 > Plan asociado: [`plan.md`](plan.md). Consideraciones futuras: [`future-considerations.md`](future-considerations.md).
-> Marco de pruebas: [`testing-framework.md`](testing-framework.md) (N0–N5). **Playbook de autoría:** [`authoring-playbook.md`](authoring-playbook.md). Visión de autoría NL: [`use-case-authoring-vision.md`](use-case-authoring-vision.md).
+> Marco de pruebas: [`testing-framework.md`](testing-framework.md) (N0–N5). **Playbook de autoría:** [`authoring-playbook.md`](authoring-playbook.md). Visión de autoría NL: [`use-case-authoring-vision.md`](use-case-authoring-vision.md). Claridad de ramas: [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md).
 
 ---
 
@@ -317,6 +317,8 @@ Tras completar intake conversacional, el asesor elige quién aporta documentos:
 |---|---|
 | `internal_user` | El asesor sube por Telegram/web/panel y confirma con «listo». |
 | `external_contact` | El agente/cron solicita al contacto vía `telegram_send_message_to_contact`. |
+
+Esto es una **decisión de rama** del paso `awaiting_documents` (`PATTERN_STEP_BRANCH_DECISION`): mismo hito (reunir expediente), distinto responsable y `waiting_*`. La verdad de ejecución está en código + `context_jsonb`; el panel de Preparación operativa debe **explicar** ambas ramas (no ejecutar el IF). Al fijar el destino se emite `human_decision` con `kind=step_branch_selected` (idempotente; ver [`step-branch-selected.ts`](../../apps/web/src/lib/operational-cases/step-branch-selected.ts)). Plan: [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md).
 
 Reglas adicionales (2026-06):
 

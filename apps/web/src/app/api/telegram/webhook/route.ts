@@ -2761,11 +2761,15 @@ export async function POST(request: Request) {
         opCase: conversationalCase,
         target: "internal_user",
         decidedBy: "inferred",
+        source: "telegram_webhook",
+        reason: "advisor_uploaded_documents_before_choice",
       });
       conversationalCase =
         (await updateOperationalCase(db, inferred.id, inferred.version, {
           status: "waiting_internal",
         })) ?? inferred;
+      // Compat E2E / proyección: además del human_decision step_branch_selected
+      // que emite setCaseDocumentRequestTarget, conservamos el kind legacy.
       await insertOperationalCaseEvent(db, {
         caseId: conversationalCase.id,
         eventType: "state_changed",

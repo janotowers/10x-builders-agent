@@ -104,6 +104,10 @@ import {
   resolvePublishListingPrice,
 } from "@/lib/operational-cases/publish-case-recipe";
 import {
+  findLatestSettingsTestCase,
+  isLabSettingsTestCaseForTemplate,
+} from "@/lib/operational-cases/settings-test-case-lookup";
+import {
   notifyUserIntentForFlowTool,
   normalizeToolTestBehavior,
   toolTestBehaviorForFlowTool,
@@ -1060,9 +1064,71 @@ type NotifyUserIntentRecipe = {
 
 const NOTIFY_USER_INTENT_RECIPES: NotifyUserIntentRecipe[] = [
   {
+    intent: "documents_internal",
+    appliesTo: (input) =>
+      notifyUserIntentForFlowTool(input.flowTool, {
+        flowStepKey: input.flowStepKey,
+        skillSlug: input.skillSlug,
+      }) === "documents_internal",
+    build: (input) => {
+      if (!input.testCase?.id) return null;
+      return {
+        case_id: input.testCase.id,
+        kind: "tool_readiness_test",
+        urgency: "normal",
+        text:
+          "Prueba controlada desde Ajustes (awaiting_documents): solicita al equipo subir el expediente documental al caso o confirma la escalación interna. No requiere acción real; valida el canal notify_user.",
+      };
+    },
+  },
+  {
+    intent: "property_data_review",
+    appliesTo: (input) =>
+      notifyUserIntentForFlowTool(input.flowTool, {
+        flowStepKey: input.flowStepKey,
+        skillSlug: input.skillSlug,
+      }) === "property_data_review",
+    build: (input) => {
+      if (!input.testCase?.id) return null;
+      const pd = isRecord(input.ctx.property_data)
+        ? (input.ctx.property_data as Record<string, unknown>)
+        : null;
+      const summary = pd
+        ? `Tipo: ${String(pd.property_type ?? "—")}; operación: ${String(pd.operation ?? "—")}; m²: ${String(pd.area_total_m2 ?? "—")}.`
+        : "Revisa property_data del caso.";
+      return {
+        case_id: input.testCase.id,
+        kind: "property_data_review",
+        urgency: "normal",
+        text: `Prueba controlada (documents_received): solicita validación de property_data antes de comparables. ${summary} Confirma si es correcto o indica correcciones.`,
+      };
+    },
+  },
+  {
+    intent: "comparables_insufficient",
+    appliesTo: (input) =>
+      notifyUserIntentForFlowTool(input.flowTool, {
+        flowStepKey: input.flowStepKey,
+        skillSlug: input.skillSlug,
+      }) === "comparables_insufficient",
+    build: (input) => {
+      if (!input.testCase?.id) return null;
+      return {
+        case_id: input.testCase.id,
+        kind: "comparables_insufficient_data",
+        urgency: "normal",
+        text:
+          "Prueba controlada (comparables_in_progress): no hay muestra defendible (usable_count=0). Amplía filtros o zona y reintenta el análisis. No avances a propuesta de precio.",
+      };
+    },
+  },
+  {
     intent: "listing_description_review",
     appliesTo: (input) =>
-      notifyUserIntentForFlowTool(input.flowTool) === "listing_description_review" ||
+      notifyUserIntentForFlowTool(input.flowTool, {
+        flowStepKey: input.flowStepKey,
+        skillSlug: input.skillSlug,
+      }) === "listing_description_review" ||
       (!input.flowTool &&
         (input.skillSlug === "publish-listing-package" ||
           input.flowStepKey === "package_ready")),
@@ -1084,7 +1150,10 @@ const NOTIFY_USER_INTENT_RECIPES: NotifyUserIntentRecipe[] = [
   {
     intent: "listing_published_summary",
     appliesTo: (input) =>
-      notifyUserIntentForFlowTool(input.flowTool) === "listing_published_summary",
+      notifyUserIntentForFlowTool(input.flowTool, {
+        flowStepKey: input.flowStepKey,
+        skillSlug: input.skillSlug,
+      }) === "listing_published_summary",
     build: (input) => {
       if (!input.testCase?.id) return null;
       const completion = canCompleteListingPublishedSummaryFromContext(input.ctx);
@@ -2191,23 +2260,19 @@ function resolveFlowToolForTest(
 async function loadLatestTestCase(
   db: ReturnType<typeof createServerClient>,
   userId: string,
-  caseTypeId: string
+  caseType: { id: string; case_type: string }
 ): Promise<OperationalCase | null> {
-  const { data, error } = await db
-    .from("operational_cases")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("case_type_id", caseTypeId)
-    .eq("context_jsonb->>created_from", "case_type_settings_test")
-    .eq("context_jsonb->>test_mode", "true")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) {
+  try {
+    return await findLatestSettingsTestCase(
+      db,
+      userId,
+      caseType.id,
+      caseType.case_type
+    );
+  } catch (error) {
     console.warn("[run-tool] loadLatestTestCase failed:", error);
     return null;
   }
-  return (data as OperationalCase | null) ?? null;
 }
 
 async function effectiveFlowForCaseType(
@@ -2407,6 +2472,9 @@ function buildInputResolutionStatus(input: {
   caseContext: Record<string, unknown>;
   resolvedArgs: Record<string, unknown>;
   staleArtifacts: Set<string>;
+  flowStepKey?: string;
+  skillSlug?: string;
+  flowTool?: OperationalCaseFlowTool | null;
 }): InputResolutionStatus[] {
   const statuses: InputResolutionStatus[] = [];
   const ctx = input.caseContext;
@@ -2518,16 +2586,62 @@ function buildInputResolutionStatus(input: {
   }
 
   if (input.toolId === "notify_user") {
-    const hasDraft = hasRecordArtifact(ctx, "listing_description_draft");
+    const intent = notifyUserIntentForFlowTool(input.flowTool, {
+      flowStepKey: input.flowStepKey,
+      skillSlug: input.skillSlug,
+    });
+    if (intent === "listing_description_review") {
+      const hasDraft = hasRecordArtifact(ctx, "listing_description_draft");
+      statuses.push(
+        makeInputStatus({
+          key: "listing_description_draft",
+          label: "borrador de descripción",
+          available: hasDraft,
+          stale: isStale("listing_description_draft"),
+          source: "artifact",
+          artifact: "listing_description_draft",
+          action_hint:
+            "Regenera prepare_listing_description_draft antes de solicitar revisión.",
+        })
+      );
+      return statuses;
+    }
+    if (intent === "property_data_review") {
+      statuses.push(
+        makeInputStatus({
+          key: "property_data",
+          label: "property_data del caso",
+          available: isRecord(ctx.property_data),
+          source: "case_context",
+          action_hint:
+            "Completa o regenera property_data en el caso de prueba antes de pedir revisión.",
+        })
+      );
+      return statuses;
+    }
+    if (intent === "comparables_insufficient") {
+      statuses.push(
+        makeInputStatus({
+          key: "case_id",
+          label: "caso de prueba",
+          available: hasCaseId,
+          source: "case_context",
+          action_hint: hasCaseId
+            ? undefined
+            : "Elige modo Con formulario/caso para enlazar la notificación al caso.",
+        })
+      );
+      return statuses;
+    }
     statuses.push(
       makeInputStatus({
-        key: "listing_description_draft",
-        label: "borrador de descripción",
-        available: hasDraft,
-        stale: isStale("listing_description_draft"),
-        source: "artifact",
-        artifact: "listing_description_draft",
-        action_hint: "Regenera prepare_listing_description_draft antes de solicitar revisión.",
+        key: "case_id",
+        label: "caso de prueba",
+        available: hasCaseId,
+        source: "case_context",
+        action_hint: hasCaseId
+          ? undefined
+          : "Elige modo Con formulario/caso para enlazar la notificación al caso.",
       })
     );
     return statuses;
@@ -2624,6 +2738,9 @@ function buildRunResolutionMetadata(input: {
   resolution: ArgResolution;
   resolvedArgs: Record<string, unknown>;
   staleness?: StalenessEvaluation;
+  flowStepKey?: string;
+  skillSlug?: string;
+  flowTool?: OperationalCaseFlowTool | null;
 }): ToolRunResolutionMetadata {
   const behavior = normalizeToolTestBehavior("noop", input.behavior);
   const caseContext = input.resolution.case_context_sample ?? {};
@@ -2682,6 +2799,9 @@ function buildRunResolutionMetadata(input: {
       caseContext,
       resolvedArgs: input.resolvedArgs,
       staleArtifacts,
+      flowStepKey: input.flowStepKey,
+      skillSlug: input.skillSlug,
+      flowTool: input.flowTool,
     }),
     test_behavior: behavior,
   };
@@ -2694,12 +2814,25 @@ function arraysEqualAsSet(left: string[], right: string[]) {
   return a.every((item, index) => item === b[index]);
 }
 
-function toolUsesPhotoAnalysis(toolId: string) {
-  return (
+function toolUsesPhotoAnalysis(
+  toolId: string,
+  ctx?: { flowStepKey?: string; skillSlug?: string; flowTool?: OperationalCaseFlowTool | null }
+) {
+  if (
     toolId === "prepare_listing_description_draft" ||
-    toolId === "notify_user" ||
     toolId === "easybroker_create_listing" ||
     toolId === "ungga_publish_listing"
+  ) {
+    return true;
+  }
+  if (toolId !== "notify_user") return false;
+  const intent = notifyUserIntentForFlowTool(ctx?.flowTool, {
+    flowStepKey: ctx?.flowStepKey,
+    skillSlug: ctx?.skillSlug,
+  });
+  return (
+    intent === "listing_description_review" ||
+    intent === "listing_published_summary"
   );
 }
 
@@ -2708,13 +2841,36 @@ type StalenessEvaluation = {
   stale_artifacts: string[];
 };
 
-const STALENESS_ARTIFACTS_BY_TOOL: Record<string, string[]> = {
-  prepare_listing_description_draft: ["photo_analysis", "zone_context"],
-  notify_user: ["listing_description_draft", "listing_copy_ingredients"],
-  easybroker_create_listing: ["listing_description_draft", "listing_copy_ingredients"],
-  ungga_publish_listing: ["listing_description_draft", "listing_copy_ingredients"],
-  easybroker_upload_images: ["watermarked_photos"],
-};
+function stalenessArtifactsForTool(params: {
+  toolId: string;
+  flowStepKey?: string;
+  skillSlug?: string;
+  flowTool?: OperationalCaseFlowTool | null;
+}): string[] {
+  if (params.toolId === "prepare_listing_description_draft") {
+    return ["photo_analysis", "zone_context"];
+  }
+  if (params.toolId === "notify_user") {
+    const intent = notifyUserIntentForFlowTool(params.flowTool, {
+      flowStepKey: params.flowStepKey,
+      skillSlug: params.skillSlug,
+    });
+    if (intent === "listing_description_review") {
+      return ["listing_description_draft", "listing_copy_ingredients"];
+    }
+    return [];
+  }
+  if (
+    params.toolId === "easybroker_create_listing" ||
+    params.toolId === "ungga_publish_listing"
+  ) {
+    return ["listing_description_draft", "listing_copy_ingredients"];
+  }
+  if (params.toolId === "easybroker_upload_images") {
+    return ["watermarked_photos"];
+  }
+  return [];
+}
 
 function artifactSignatureFromContext(
   context: Record<string, unknown>,
@@ -2741,14 +2897,22 @@ function evaluateStalenessForTool(params: {
   toolId: string;
   caseContext?: Record<string, unknown> | null;
   resolvedArgs: Record<string, unknown>;
+  flowStepKey?: string;
+  skillSlug?: string;
+  flowTool?: OperationalCaseFlowTool | null;
 }): StalenessEvaluation {
   const warnings: string[] = [];
   const staleArtifacts = new Set<string>();
   const ctx = params.caseContext;
   if (!ctx) return { warnings, stale_artifacts: [] };
   const currentSignature = buildPropertyIdentitySignature(ctx);
+  const flowCtx = {
+    flowStepKey: params.flowStepKey,
+    skillSlug: params.skillSlug,
+    flowTool: params.flowTool,
+  };
 
-  if (toolUsesPhotoAnalysis(params.toolId) && detectPhotoAnalysisStaleness(ctx)) {
+  if (toolUsesPhotoAnalysis(params.toolId, flowCtx) && detectPhotoAnalysisStaleness(ctx)) {
     warnings.push(
       "photo_analysis fue generado con un set de fotos distinto al raw_photos actual; el borrador/payload puede estar desactualizado."
     );
@@ -2773,7 +2937,10 @@ function evaluateStalenessForTool(params: {
     }
   }
 
-  for (const artifact of STALENESS_ARTIFACTS_BY_TOOL[params.toolId] ?? []) {
+  for (const artifact of stalenessArtifactsForTool({
+    toolId: params.toolId,
+    ...flowCtx,
+  })) {
     const artifactSignature = artifactSignatureFromContext(ctx, artifact);
     if (!artifactSignature) continue;
     if (artifactSignature !== currentSignature) {
@@ -2936,12 +3103,15 @@ async function resolveArgsForMode(params: {
     const requestedCase = caseId ? await getOperationalCase(db, caseId) : null;
     const testCase =
       requestedCase &&
-      requestedCase.user_id === userId &&
-      requestedCase.case_type_id === caseType.id &&
-      requestedCase.context_jsonb?.created_from === "case_type_settings_test" &&
-      requestedCase.context_jsonb?.test_mode === true
+      isLabSettingsTestCaseForTemplate(requestedCase, userId, {
+        id: caseType.id,
+        case_type: caseType.case_type,
+      })
         ? requestedCase
-        : await loadLatestTestCase(db, userId, caseType.id);
+        : await loadLatestTestCase(db, userId, {
+            id: caseType.id,
+            case_type: caseType.case_type,
+          });
     if (!testCase) {
       const normalized = { ...(TEST_DEFAULTS[toolId] ?? {}), ...userArgs };
       return {
@@ -3049,7 +3219,10 @@ async function resolveArgsForMode(params: {
   }
 
   if (SMOKE_BINDS_TEST_CASE_WHEN_PRESENT.has(toolId)) {
-    const testCase = await loadLatestTestCase(db, userId, caseType.id);
+    const testCase = await loadLatestTestCase(db, userId, {
+      id: caseType.id,
+      case_type: caseType.case_type,
+    });
     if (testCase) {
       const ctx = (testCase.context_jsonb ?? {}) as Record<string, unknown>;
       const recipe = TOOL_TEST_ARG_RECIPES[toolId];
@@ -3095,7 +3268,10 @@ async function resolveArgsForMode(params: {
       ...smokeDefaultsForTool(toolId, caseType),
       ...(scopedFlowTool?.test_inputs_mapping &&
       Object.keys(scopedFlowTool.test_inputs_mapping).length > 0 &&
-      !notifyUserIntentForFlowTool(scopedFlowTool)
+      !notifyUserIntentForFlowTool(scopedFlowTool, {
+        flowStepKey: readinessFlowStepKey,
+        skillSlug: readinessSkillSlug,
+      })
         ? applyTestInputsMapping(scopedFlowTool.test_inputs_mapping, {})
         : {}),
       ...userArgs,
@@ -3656,6 +3832,8 @@ export async function POST(request: Request) {
       );
     }
 
+    const readinessFlowStepKey =
+      cleanText(body.readiness_flow_step_key) || undefined;
     const resolution = await resolveArgsForMode({
       db,
       userId: user.id,
@@ -3666,26 +3844,38 @@ export async function POST(request: Request) {
       mode: requestedMode,
       userArgs,
       readinessSkillSlug: readinessSkillSlug || undefined,
-      readinessFlowStepKey: cleanText(body.readiness_flow_step_key) || undefined,
+      readinessFlowStepKey,
       readinessFlowToolLabel: cleanText(body.readiness_flow_tool_label) || undefined,
     });
     const flowToolForBehavior = resolveFlowToolForTest(flow, {
       toolId,
-      flowStepKey: cleanText(body.readiness_flow_step_key) || undefined,
+      flowStepKey: readinessFlowStepKey,
       skillSlug: readinessSkillSlug || undefined,
       toolLabel: cleanText(body.readiness_flow_tool_label) || undefined,
     });
+    const notifyBehaviorCtx = {
+      flowStepKey: readinessFlowStepKey,
+      skillSlug: readinessSkillSlug || undefined,
+    };
     const baseBehavior = normalizeToolTestBehavior(
       toolId,
       flowToolForBehavior
-        ? toolTestBehaviorForFlowTool({
-            tool_id: flowToolForBehavior.tool_id,
-            tool_label: flowToolForBehavior.tool_label,
-            tool_description: flowToolForBehavior.tool_description,
-            test_inputs_mapping: flowToolForBehavior.test_inputs_mapping,
-          })
+        ? toolTestBehaviorForFlowTool(
+            {
+              tool_id: flowToolForBehavior.tool_id,
+              tool_label: flowToolForBehavior.tool_label,
+              tool_description: flowToolForBehavior.tool_description,
+              test_inputs_mapping: flowToolForBehavior.test_inputs_mapping,
+            },
+            notifyBehaviorCtx
+          )
         : toolTestBehaviorForTool(toolId)
     );
+    const stalenessCtx = {
+      flowStepKey: readinessFlowStepKey,
+      skillSlug: readinessSkillSlug || undefined,
+      flowTool: flowToolForBehavior,
+    };
     let resolvedArgs = await hydrateEasyBrokerUploadListingId({
       db,
       userId: user.id,
@@ -3696,6 +3886,7 @@ export async function POST(request: Request) {
       toolId,
       caseContext: resolution.case_context_sample ?? null,
       resolvedArgs,
+      ...stalenessCtx,
     });
     const earlyResolutionMetadata = buildRunResolutionMetadata({
       toolId,
@@ -3704,6 +3895,7 @@ export async function POST(request: Request) {
       resolution,
       resolvedArgs,
       staleness: earlyStaleness,
+      ...stalenessCtx,
     });
     try {
       resolvedArgs = await ensureSettingsTestDocumentArgs({
@@ -3782,7 +3974,9 @@ export async function POST(request: Request) {
         toolId,
         caseContext: resolution.case_context_sample ?? null,
         resolvedArgs,
+        ...stalenessCtx,
       }),
+      ...stalenessCtx,
     });
 
     const controlledRealWriteRequested = body.controlled_real_write === true;
@@ -3872,12 +4066,15 @@ export async function POST(request: Request) {
         toolId,
         caseContext: resolution.case_context_sample ?? null,
         resolvedArgs: resolvedArgsForExecution,
+        ...stalenessCtx,
       }),
+      ...stalenessCtx,
     });
     const stalenessEvaluation = evaluateStalenessForTool({
       toolId,
       caseContext: resolution.case_context_sample ?? null,
       resolvedArgs: resolvedArgsForExecution,
+      ...stalenessCtx,
     });
     const stalenessWarnings = stalenessEvaluation.warnings;
 

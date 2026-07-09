@@ -16,6 +16,7 @@ import type {
   OperationalCaseTypeStatus,
   OperationalCaseTypeVisibility,
 } from "@agents/types";
+import { normalizeStepDecision } from "@/lib/operational-cases/step-decision";
 
 const STATUS_VALUES: OperationalCaseTypeStatus[] = [
   "draft",
@@ -168,12 +169,14 @@ function normalizeOperationalFlow(value: unknown): OperationalCaseFlowStep[] {
       const stepTools = Array.isArray(step.step_tools)
         ? step.step_tools.map(normalizeFlowTool).filter(isPresent)
         : [];
+      const stepDecision = normalizeStepDecision(step.step_decision);
       return {
         step_key: stepKey,
         step_label: stepLabel,
         step_description: cleanText(step.step_description) || undefined,
         step_skills: stepSkills,
         step_tools: stepTools,
+        ...(stepDecision ? { step_decision: stepDecision } : {}),
       } satisfies OperationalCaseFlowStep;
     })
     .filter((step) => step.step_key && step.step_label);

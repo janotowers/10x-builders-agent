@@ -162,6 +162,31 @@ export const OPERATIONAL_TEST_PATTERNS: TestPatternEntry[] = [
     docAnchor: `${DOC}#pattern_step_test_scenario`,
   },
   {
+    id: "PATTERN_STEP_BRANCH_DECISION",
+    layer: "test_contract",
+    label: "Decisión de rama en un paso (explicativa)",
+    description:
+      "Mismo step_key con 2+ caminos (audiencia/espera). Runtime en código+contexto; flow/UI solo documentan ramas. Cada rama declarada exige ≥1 N4 milestone. No es motor de grafos en el panel.",
+    implementationPaths: [
+      "apps/web/src/lib/operational-cases/document-request-target.ts",
+      "apps/web/src/lib/operational-cases/step-decision.ts",
+      "skills/global/request-property-documents/SKILL.md",
+      "packages/agent/src/tools/realestate-adapters.ts",
+      "packages/db/supabase/migrations/00059_property_optioning_awaiting_documents_step_decision.sql",
+      "packages/db/supabase/migrations/00060_property_optioning_step_decision_documents_comparables.sql",
+      "packages/db/supabase/migrations/00061_property_optioning_documents_received_pending_internal_branch.sql",
+      "docs/operational-cases/step-branch-clarity-plan.md",
+    ],
+    appliesToSkills: [
+      "request-property-documents",
+      "extract-property-characteristics",
+      "perform-comparable-analysis",
+      "property-optioning-coach",
+    ],
+    testLevels: ["n3", "n4", "n5"],
+    docAnchor: `${DOC}#pattern_step_branch_decision`,
+  },
+  {
     id: "PATTERN_STEP_TEST_BUSINESS_DECISION",
     layer: "test_contract",
     label: "N4 por decisión HITL (handler)",
@@ -466,9 +491,13 @@ export const PROPERTY_OPTIONING_STEP_PATTERNS: Record<
   awaiting_documents: {
     stepKey: "awaiting_documents",
     n3Skills: ["request-property-documents"],
-    n4ScenarioIds: ["awaiting_documents_outreach"],
+    n4ScenarioIds: [
+      "awaiting_documents_internal_upload",
+      "awaiting_documents_outreach",
+    ],
     patternIds: [
       "PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS",
+      "PATTERN_STEP_BRANCH_DECISION",
       "n2_request_documents",
       "PATTERN_TELEGRAM_DEDUP_SAME_TURN",
       "PATTERN_SKILL_TEST_CONTRACT",
@@ -484,9 +513,11 @@ export const PROPERTY_OPTIONING_STEP_PATTERNS: Record<
     n4ScenarioIds: [
       "documents_received_property_data_review",
       "documents_received_characteristics_pending",
+      "documents_received_characteristics_pending_internal",
     ],
     patternIds: [
       "PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS",
+      "PATTERN_STEP_BRANCH_DECISION",
       "n2_characteristics_telegram_abc",
       "PATTERN_SKILL_TEST_CONTRACT",
       "PATTERN_NOTIFY_USER_CHANNELS",
@@ -526,6 +557,7 @@ export const PROPERTY_OPTIONING_STEP_PATTERNS: Record<
     ],
     patternIds: [
       "PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS",
+      "PATTERN_STEP_BRANCH_DECISION",
       "PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT",
       "PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE",
       "PATTERN_DETERMINISTIC_ARTIFACT_FROM_TOOL_RESULTS",

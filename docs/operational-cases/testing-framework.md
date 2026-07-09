@@ -5,6 +5,7 @@
 > **Documentos relacionados**
 > - [`authoring-playbook.md`](authoring-playbook.md) — modelo paso / habilidad raíz / `current_step` / autoría de casos (lectura recomendada).
 > - [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) — catálogo de patrones (`PATTERN_*`, `n2_*`, matriz Pasos 2–3).
+> - [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) — ramas de decisión (cobertura N4, UI explicativa).
 > - [`architecture.md`](architecture.md) §10 — tool readiness, provisioning y APIs.
 > - [`../skills-tools-architecture.md`](../skills-tools-architecture.md) §11 — resumen ejecutivo de patrones UI.
 > - [`use-case-authoring-vision.md`](use-case-authoring-vision.md) — visión de generación NL → propuesta implementable y roadmap.
@@ -273,16 +274,21 @@ Usar wizard A/B/C cuando hay **secuencia causal**:
 #### 5.1 Solicitud de documentos (paso operativo 1 — `awaiting_documents`)
 
 **Skill:** `request-property-documents`  
-**Orden en UI** (según `operational_flow_jsonb` tras migración `00038`):
+**Patrón de ramas:** `PATTERN_STEP_BRANCH_DECISION` — `document_request_target` ∈ {`internal_user`, `external_contact`}. Mismo hito (expediente); distinto responsable / `waiting_*`. El panel lista tools de **ambas** ramas; no implica secuencia única ni que el IF viva en la UI.
+
+**Orden en UI** (según `operational_flow_jsonb` tras migración `00038`; sesgo histórico a externo — rebalanceo en [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) Fase B):
 
 | Orden | Tool / bloque | Patrón | Notas |
 |-------|---------------|--------|-------|
-| 1 | `telegram_send_message_to_contact` | N2 A→B | Validar texto (`purpose=request_documents`) y envío real con `ENVIAR PRUEBA` |
-| 2 | `operational_case_list_documents` | N1 | Lista documentos del caso (puede estar vacío justo después de B; valida contrato de consulta) |
-| 3 | `notify_user` | N1 | Escalación al asesor si falta respuesta o decisión humana |
-| 4 | **Probar habilidad** | N3 | Un tick de la habilidad atómica `request-property-documents` (escenario del paso) |
+| 1 | `telegram_send_message_to_contact` | N2 A→B | Rama **externa**: validar texto (`purpose=request_documents`) y envío real con `ENVIAR PRUEBA` |
+| 2 | `operational_case_list_documents` | N1 | Compartida: lista documentos del caso |
+| 3 | `notify_user` | N1 | Rama **interna** (solicitar subida) y/o escalación; no asumir solo “escalar al dueño” |
+| 4 | **Probar habilidad** | N3 | Hoy cubre sobre todo outreach externo |
+| 5 | **Probar paso** | N4 | Escenarios milestone: `awaiting_documents_internal_upload` (interna) y `awaiting_documents_outreach` (externa). «Paso probado» exige 2/2. |
 
-**Prerequisito:** caso de prueba con `case_id` y contacto externo configurado (Telegram).
+**Prerequisito:** caso de prueba con `case_id`; rama externa además requiere contacto Telegram configurado.
+
+**N4 ≠ inventario exhaustivo:** no hace falta un escenario por cada recordatorio o variante de copy; sí por cada **rama de decisión** declarada. Ver plan §3.5.1.
 
 **`operational_case_register_document`:** en `property_optioning` **no está** en `allowed_tools` del coach ni de las sub-skills, por eso **no sale en Preparación operativa** (ni en pasos ni en transversales). Los documentos entran por: (1) **Activos de prueba** + sync al ejecutar tools documentales (`list`/`extract`), (2) **webhook de Telegram** cuando el propietario envía archivos, (3) UI de `/operational-cases`. La tool sigue en el catálogo para otros casos de uso o futuras ampliaciones del flow.
 
@@ -494,13 +500,17 @@ legacy y no cierran pasos con varios escenarios.
 2. Si el case type no usa el slug del catálogo, asociar su habilidad raíz en `DEFAULT_STEP_TEST_CATALOG_SLUG_BY_ROOT_SKILL`.
 3. El botón «Probar paso» aparece automáticamente en Preparación operativa para ese `step_key`.
 
+**Bloque «Decisión del paso» (solo lectura):** en `property_optioning` hoy sólo en `awaiting_documents`, `documents_received` y `comparables_in_progress` (migraciones `00059`–`00061`). Pasos posteriores (`price_proposal_pending`, `contract_pending`, etc.) tienen escenarios N4 secuenciales/HITL pero no un IF de rama declarado en `step_decision`; ver [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) §Fase F.
+
 Escenarios N4 actuales en `property_optioning`:
 
 | Paso | Escenario | Rama probada |
 |------|-----------|--------------|
-| `awaiting_documents` | `awaiting_documents_outreach` | Solicitud inicial de documentos al contacto externo |
+| `awaiting_documents` | `awaiting_documents_internal_upload` | Rama **interna**: `waiting_internal` + `notify_user` (sin Telegram externo) |
+| `awaiting_documents` | `awaiting_documents_outreach` | Rama **externa**: solicitud inicial al contacto / `waiting_external` (`PATTERN_STEP_BRANCH_DECISION`) |
 | `documents_received` | `documents_received_property_data_review` | Datos suficientes → `property_data_review` / `waiting_internal` |
 | `documents_received` | `documents_received_characteristics_pending` | Faltantes críticos → Telegram al contacto / `waiting_external` |
+| `documents_received` | `documents_received_characteristics_pending_internal` | Faltantes críticos con `document_request_target=internal_user` → `waiting_internal` + `notify_user` (sin Telegram) |
 | `comparables_in_progress` | `comparables_in_progress_complete` | Muestra defendible → `price_proposal_pending` con `comparables_analysis_completed`; preparación de precio auditable por `price_proposal_prepared` + `price_approval_requested` |
 | `comparables_in_progress` | `comparables_in_progress_insufficient_data` | 0 usables en EB + BQ → permanece en paso + `waiting_internal` + `notify_user` |
 | `price_proposal_pending` | `price_proposal_pending_hitl` | `pricing_proposal` pending + `price_approval_requested` + decisión humana de precio (`price_approved`/`price_adjusted_and_approved`) |
@@ -517,6 +527,8 @@ Escenarios N4 actuales en `property_optioning`:
 | `package_ready` | `package_ready_easybroker_approval_requested` | Solicita aprobación de negocio por destino (`easybroker_publish_approval`) |
 | `package_ready` | `package_ready_easybroker_published` | HITL de destino: `publish_approvals.easybroker=approved` |
 | `package_ready` | `package_ready_completed_summary_sent` | Cierre: `published/completed` + `notify_user(kind=listing_published_summary)` idempotente |
+
+**Nota:** la tabla no pretende listar todos los caminos de producción; prioriza ramas de decisión y HITL. Política: [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) §3.5.1.
 
 Para artefactos críticos como `comparables_analysis`, N3/N4 deben validar la ruta
 runtime real: primero se ejecutan las tools de búsqueda, luego una tool de

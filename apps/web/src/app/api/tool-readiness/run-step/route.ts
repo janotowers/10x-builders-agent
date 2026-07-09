@@ -70,6 +70,8 @@ import {
   applyPropertyDataSeedRules,
   isolateContextForStepTest,
 } from "@/lib/operational-cases/settings-test-run-isolation";
+import { findLatestSettingsTestCase } from "@/lib/operational-cases/settings-test-case-lookup";
+import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 import {
   stepTestCatalogSlugForRootSkill,
   stepTestScenariosFor,
@@ -178,25 +180,6 @@ async function effectiveFlowForCaseType(
   return Array.isArray(globalCaseType?.operational_flow_jsonb)
     ? (globalCaseType.operational_flow_jsonb as OperationalCaseFlowStep[])
     : [];
-}
-
-async function latestSettingsTestCase(
-  db: ReturnType<typeof createServerClient>,
-  userId: string,
-  caseTypeId: string
-): Promise<OperationalCase | null> {
-  const { data, error } = await db
-    .from("operational_cases")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("case_type_id", caseTypeId)
-    .eq("context_jsonb->>created_from", "case_type_settings_test")
-    .eq("context_jsonb->>test_mode", "true")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return (data as OperationalCase | null) ?? null;
 }
 
 function stepInFlow(flow: OperationalCaseFlowStep[], stepKey: string) {
@@ -326,6 +309,23 @@ function validateStepExpect(
       call.tool_name === "notify_user" &&
       (call.status === "executed" || call.status === "pending_confirmation")
   );
+  if (options?.step_key === "documents_received") {
+    const scenarioId = options.scenario_id ?? "";
+    const telegramUsed = toolCalls.some(
+      (call) =>
+        call.tool_name === "telegram_send_message_to_contact" &&
+        (call.status === "executed" || call.status === "pending_confirmation")
+    );
+    if (
+      scenarioId === "documents_received_characteristics_pending_internal" &&
+      telegramUsed
+    ) {
+      step_outcome_errors = [
+        ...step_outcome_errors,
+        "Con document_request_target=internal_user no debe usarse telegram_send_message_to_contact.",
+      ];
+    }
+  }
   if (options?.step_key === "comparables_in_progress") {
     const comparablesParams = {
       comparables_analysis: contextValue(context, "comparables_analysis"),
@@ -680,6 +680,22 @@ async function executeStepTestRun(runId: string) {
     }
 
     let afterCase = (await getOperationalCase(db, opCase.id)) ?? opCase;
+
+    // documents_received pending: alinear N4 con producción (post-invariants).
+    if (
+      stepKey === "documents_received" &&
+      (scenario.id === "documents_received_characteristics_pending" ||
+        scenario.id === "documents_received_characteristics_pending_internal" ||
+        scenario.id === "documents_received_property_data_review")
+    ) {
+      const invariantResult = await applyPropertyOptioningPostAgentInvariants({
+        db,
+        opCase: afterCase,
+        source: "post_agent_invariant_step_test",
+      });
+      if (invariantResult.case) afterCase = invariantResult.case;
+    }
+
     if (
       scenario.id === "contract_pending_draft_review" &&
       afterCase.status !== "waiting_internal"
@@ -904,7 +920,12 @@ export async function POST(request: Request) {
 
     const opCase = caseId
       ? await getOperationalCase(db, caseId)
-      : await latestSettingsTestCase(db, user.id, caseType.id);
+      : await findLatestSettingsTestCase(
+          db,
+          user.id,
+          caseType.id,
+          caseType.case_type
+        );
     if (!opCase || opCase.user_id !== user.id) {
       return NextResponse.json(
         { error: "test_case_required", hint: "Crea primero un caso de prueba." },

@@ -1,11 +1,12 @@
 # Catálogo de patrones reutilizables — Casos operacionales
 
-> **Estado:** v1.3 — añade `PATTERN_LAB_FORM_PROPERTY_DATA_SYNC` y `PATTERN_ARTIFACT_IDENTITY_STALENESS` para coherencia del fixture de readiness.
+> **Estado:** v1.4 — añade `PATTERN_STEP_BRANCH_DECISION` (grafo explicativo de ramas; no motor en panel). Ver [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md).
 >
 > **Documentos relacionados**
 > - [`use-case-authoring-vision.md`](use-case-authoring-vision.md) — visión NL → propuesta implementable (hub).
 > - [`authoring-playbook.md`](authoring-playbook.md) — modelo `step_key` / `status` / habilidad raíz.
 > - [`testing-framework.md`](testing-framework.md) — marco N0–N5 y matrices de prueba.
+> - [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) — plan de claridad de ramas (metadata + QA + UI).
 > - [`../skills-tools-architecture.md`](../skills-tools-architecture.md) §11 — resumen UI readiness.
 > - Código machine-readable: [`apps/web/src/lib/operational-cases/test-patterns-catalog.ts`](../../apps/web/src/lib/operational-cases/test-patterns-catalog.ts)
 
@@ -161,6 +162,21 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Implementación** | Fuente única [`step-test-scenario-registry.ts`](../../apps/web/src/lib/operational-cases/step-test-scenario-registry.ts): metadata UI, semilla, expectativa, mensaje y ejecución. [`step-test-scenarios.ts`](../../apps/web/src/lib/operational-cases/step-test-scenarios.ts) queda como capa compat de UI. |
 | **Ejecución** | Async durable: `operational_case_test_runs` guarda `queued/running/completed/failed` y `turn_id`; `run-step` devuelve `run_id` y la UI hace polling. El endpoint de estado expone `tool_calls` parciales (última tool, estado, duración) mientras los eventos del caso siguen siendo append-only para auditoría. |
 | **Nivel** | N4 v1 (un tick, habilidad raíz forzada) |
+| **Relacionado** | `PATTERN_STEP_BRANCH_DECISION` — cada rama de decisión declarada debe enlazar ≥1 escenario milestone |
+
+### `PATTERN_STEP_BRANCH_DECISION`
+
+| | |
+|--|--|
+| **Capa** | `domain_model` + `test_contract` + `test_ui` (metadata explicativa; **no** motor de ejecución) |
+| **Cuándo usar** | Mismo `step_key` / mismo artefacto durable, pero **2+ caminos** con distinto responsable dominante o distinto `waiting_*` (p. ej. `document_request_target` interno vs externo en `awaiting_documents`) |
+| **Cuándo NO usar** | Variantes triviales del mismo camino (primer mensaje vs recordatorio); guardrails raros (usar N4 opcional); caminos multi-tick (N5 / N4 v2) |
+| **Runtime** | La decisión vive en **código + estado del caso** (p. ej. `context_jsonb.document_request_target`). Handlers determinísticos + gates de tools; la skill **consume** el valor. El panel / `step_decision` en flow **no** ramifica |
+| **QA** | Toda rama declarada → ≥1 N4 con `counts_toward_step_milestone !== false`. N4 ≠ inventario exhaustivo de producción. Ver plan §3.5.1 |
+| **UI** | Bloque «Decisión del paso» de solo lectura (`StepDecisionPanel`); badges de rama en tools y escenarios N4 (Fase D). Timeline de instancia pendiente Fase E |
+| **Implementación hoy** | Runtime: [`document-request-target.ts`](../../apps/web/src/lib/operational-cases/document-request-target.ts), skill [`request-property-documents`](../../skills/global/request-property-documents/SKILL.md), gate en [`realestate-adapters.ts`](../../packages/agent/src/tools/realestate-adapters.ts). Metadata flow: `step_decision` en tipos + migraciones `00059`/`00060` + [`step-decision.ts`](../../apps/web/src/lib/operational-cases/step-decision.ts). Plan: [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) |
+| **Relacionado** | `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_STEP_STATUS_N3_VS_N4`, playbook §5.2 |
+| **Principio** | *Grafo explicativo para humanos/QA; un solo runtime (código + skill + cron). No duplicar n8n ejecutable en Settings.* |
 
 ### `PATTERN_SKILL_TEST_PROMPT_GUARDRAILS`
 
@@ -372,33 +388,41 @@ IDs conceptuales para `testPlan` y futuro `test_pattern` en el flow. Detalle pro
 
 ### Paso 2 — `awaiting_documents`
 
+**Decisión de rama (`PATTERN_STEP_BRANCH_DECISION`):** `document_request_target` → `internal_user` \| `external_contact` (mismo hito / mismo artefacto expediente).
+
 | Prueba | Escenario / skill | Patrones | Salida esperada |
 |--------|-------------------|----------|-----------------|
-| N3 | `request-property-documents` | `PATTERN_SKILL_TEST_CONTRACT`, `PATTERN_TELEGRAM_DEDUP`, `PATTERN_SKILL_TEST_PROMPT_GUARDRAILS` | `waiting_external`, `reminder_sent` |
-| N4 | `awaiting_documents_outreach` | `PATTERN_STEP_TEST_SCENARIO`, mismos Telegram/notify hints | Igual vía raíz |
+| N3 | `request-property-documents` | `PATTERN_SKILL_TEST_CONTRACT`, `PATTERN_TELEGRAM_DEDUP`, `PATTERN_SKILL_TEST_PROMPT_GUARDRAILS` | Hoy: rama **externa** (`waiting_external`, `reminder_sent`) |
+| N4 | `awaiting_documents_internal_upload` | Idem | Rama interna: `waiting_internal` + `notify_user`, sin Telegram externo |
+| N4 | `awaiting_documents_outreach` | `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_STEP_BRANCH_DECISION` | Rama externa vía raíz |
 
-**Telegram:** contacto **externo** (`purpose` `initial_request` / `requesting_documents`). **No** confundir con `notify_user`.
+**Telegram:** solo rama **externa** (`purpose` `initial_request` / `requesting_documents`). Rama **interna:** `notify_user` (solicitar subida al equipo), no confundir con escalación por falta de respuesta del dueño.
 
 **Eventos documentales en E2E:** post-intake y ruteo interno/externo registran `reminder_sent` con `purpose` determinístico (`documents_checklist_post_intake`, `internal_upload_instructions`, `external_documents_routed`); el resumen E2E los conserva aunque ocurran antes del primer tick manual.
 
 ### Paso 3 — `documents_received`
 
+**Decisión de rama (`PATTERN_STEP_BRANCH_DECISION`):** `critical_property_data` → `complete` \| `pending_external` \| `pending_internal` (mismo hito de extracción; audiencia de faltantes hereda `document_request_target`).
+
 | Prueba | Escenario | Patrones | Salida esperada |
 |--------|-----------|----------|-----------------|
 | N3 | `extract-property-characteristics` (revisión interna) | `PATTERN_SKILL_TEST_CONTRACT`, `PATTERN_NOTIFY_USER_CHANNELS`, `PATTERN_SETTINGS_TEST_SEED_AND_REPAIR`, `PATTERN_SKILL_TEST_PROMPT_GUARDRAILS` | `property_data_review`, `waiting_internal`, `notify_user` |
-| N4 | `documents_received_property_data_review` | `PATTERN_STEP_TEST_SCENARIO` | Igual vía raíz |
-| N4 | `documents_received_characteristics_pending` | `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_TELEGRAM_DEDUP`, semilla incompleta en `context_patch` | `documents_received`, `waiting_external`, Telegram externo |
+| N4 | `documents_received_property_data_review` | `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_STEP_BRANCH_DECISION` | Rama completa → revisión interna |
+| N4 | `documents_received_characteristics_pending` | `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_STEP_BRANCH_DECISION`, `PATTERN_TELEGRAM_DEDUP`, semilla incompleta | Rama faltantes externos → `waiting_external` |
+| N4 | `documents_received_characteristics_pending_internal` | Idem + seed `document_request_target=internal_user` | Rama faltantes internos → `waiting_internal` + `characteristics_pending_internal` (sin Telegram) |
 
-**Notify interno:** solo en rama revisión interna (`kind=property_data_review`). **Faltantes:** Telegram externo, sin `notify_user` de revisión.
+**Notify interno:** revisión (`kind=property_data_review`) o faltantes internos (`characteristics_pending_internal`). **Faltantes externos:** Telegram; no `notify_user` de revisión.
 
 ### Paso 4 — `comparables_in_progress`
+
+**Decisión de rama (`PATTERN_STEP_BRANCH_DECISION`):** `defensible_comparables_sample` → `defensible` \| `insufficient` (mismo análisis; avance o no).
 
 | Prueba | Escenario / skill | Patrones | Salida esperada |
 |--------|-------------------|----------|-----------------|
 | N1 | Cada tool de búsqueda (`easybroker_search_*`, `bigquery_lookup_local_comparables`) | `n1_single` | Lista / datos o `not_configured` documentado |
 | N3 | `perform-comparable-analysis` | `PATTERN_SKILL_TEST_CONTRACT`, `PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT`, `PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE`, `PATTERN_SETTINGS_TEST_SEED_AND_REPAIR`, `PATTERN_SKILL_TEST_PROMPT_GUARDRAILS` | Con usables: `price_proposal_pending`; sin usables: `comparables_in_progress` + `waiting_internal` + `notify_user` |
-| N4 | `comparables_in_progress_complete` | `PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS`, `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT`, `PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE` | `price_proposal_pending` / `active` si muestra defendible |
-| N4 | `comparables_in_progress_insufficient_data` | mismos + semilla ~8 m² | `comparables_in_progress` / `waiting_internal` + `notify_user` si 0 usables en todas las fuentes |
+| N4 | `comparables_in_progress_complete` | `PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS`, `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_STEP_BRANCH_DECISION`, `PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT`, `PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE` | Rama defendible → `price_proposal_pending` / `active` |
+| N4 | `comparables_in_progress_insufficient_data` | mismos + semilla ~8 m² | Rama insuficiente → `waiting_internal` + `notify_user` |
 
 **Sin Telegram externo** en este hito. `notify_user` al asesor es obligatorio cuando no hay muestra defendible; opcional al cerrar con usables.
 
@@ -440,13 +464,13 @@ Derivado de [`authoring-playbook.md`](authoring-playbook.md) §7, con columna de
 2. [ ] Actores (asesor interno, contacto externo, integraciones).
 3. [ ] Esperas / deadlines / recordatorios.
 4. [ ] Artefactos en `context_jsonb` por paso.
-5. [ ] Pasos (`step_key`) con entrada/salida claras.
+5. [ ] Pasos (`step_key`) con entrada/salida; si un hito tiene 2+ audiencias/esperas → `PATTERN_STEP_BRANCH_DECISION` (no esconder el IF solo en el skill).
 6. [ ] Habilidad raíz compuesta (`*-coach`) con `includes` de atómicas.
-7. [ ] Habilidades atómicas por paso (preferir una por paso si basta).
+7. [ ] Habilidades atómicas por paso (preferir una por paso si basta); tools primarias por rama + compartidas cuando aplique.
 8. [ ] Tools en `allowed_tools` + riesgo/HITL.
-9. [ ] `operational_flow_jsonb` alineado 1:1 con runtime.
+9. [ ] `operational_flow_jsonb` alineado 1:1 con runtime; `step_decision` cuando aplique (metadata explicativa).
 10. [ ] Por habilidad: `test_contract` o entrada en `SKILL_TEST_CONTRACTS` → **N3**.
-11. [ ] Por paso con escenario N4: registrar en `step-test-scenario-registry.ts` → **N4** (aunque haya una sola habilidad si la raíz orquesta el hito). El pill del paso debe usar `PATTERN_STEP_STATUS_N3_VS_N4`: habilidad probada no marca **Paso probado** si faltan escenarios del paso.
+11. [ ] Por cada **rama de decisión** declarada: ≥1 N4 milestone (`PATTERN_STEP_TEST_SCENARIO` + `PATTERN_STEP_BRANCH_DECISION`). Registrar en `step-test-scenario-registry.ts`. El pill del paso usa `PATTERN_STEP_STATUS_N3_VS_N4`: habilidad probada no marca **Paso probado** si faltan escenarios del paso. No inventar N4 por recordatorios/copy.
 12. [ ] **N1 antes de N3/N4:** todas las tools *readiness-visible* del paso probadas (`PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS`).
 13. [ ] Asignar IDs `n2_*` / `PATTERN_*` en inventario (§12 [`testing-framework.md`](testing-framework.md)).
 14. [ ] Caso de prueba aislado N0; batería N1 → N3 → N4 según matriz.
@@ -468,24 +492,33 @@ Bloque que `skill-authoring` (o un endpoint hermano) debería emitir al proponer
   "steps": [
     {
       "stepKey": "awaiting_documents",
-      "patterns": ["n2_request_documents"],
+      "patterns": ["n2_request_documents", "PATTERN_STEP_BRANCH_DECISION"],
       "n3Skills": ["request-property-documents"],
-      "n4Scenarios": ["awaiting_documents_outreach"]
+      "n4Scenarios": [
+        "awaiting_documents_internal_upload",
+        "awaiting_documents_outreach"
+      ]
     },
     {
       "stepKey": "documents_received",
-      "patterns": ["n2_characteristics_telegram_abc", "n1_single"],
+      "patterns": [
+        "n2_characteristics_telegram_abc",
+        "n1_single",
+        "PATTERN_STEP_BRANCH_DECISION"
+      ],
       "n3Skills": ["extract-property-characteristics"],
       "n4Scenarios": [
         "documents_received_property_data_review",
-        "documents_received_characteristics_pending"
+        "documents_received_characteristics_pending",
+        "documents_received_characteristics_pending_internal"
       ]
     }
   ],
   "runtimePatterns": [
     "PATTERN_TELEGRAM_DEDUP_SAME_TURN",
     "PATTERN_NOTIFY_USER_CHANNELS",
-    "PATTERN_CASE_UPDATE_STATE_OPTIMISTIC_RETRY"
+    "PATTERN_CASE_UPDATE_STATE_OPTIMISTIC_RETRY",
+    "PATTERN_STEP_BRANCH_DECISION"
   ],
   "uiPatterns": ["PATTERN_SKILL_TEST_CALL_DETAILS"]
 }
@@ -498,6 +531,7 @@ Bloque que `skill-authoring` (o un endpoint hermano) debería emitir al proponer
 | Prioridad | Trabajo |
 |-----------|---------|
 | P0 | Mantener §7 al cerrar QA Paso 4+ (p. ej. escenario fuentes parciales si hace falta) |
+| P0 | Ejecutar [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) Fases B–F — **hecho** (`awaiting_documents`, `documents_received`, `comparables_in_progress`) |
 | P1 | Consumir `test-patterns-catalog.ts` desde UI (sustituir flags `isEasyBroker*`) |
 | P2 | `test_pattern` en `operational_flow_jsonb` |
 | P3 | `skill-authoring` emite `testPlan` con IDs del catálogo |

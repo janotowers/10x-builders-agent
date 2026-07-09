@@ -49,21 +49,51 @@ export type StepTestScenarioCatalog = Record<
 export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
   property_optioning: {
     awaiting_documents: [
+      // Orden alineado a step_decision.branches (interno → externo).
+      {
+        id: "awaiting_documents_internal_upload",
+        label: "Rama interna — subida del equipo",
+        summary:
+          "Caso en awaiting_documents con destino interno: la raíz pide al asesor subir documentos y deja waiting_internal.",
+        seed_summary:
+          "Entrada: awaiting_documents / active; document_request_target=internal_user.",
+        expect_summary:
+          "Salida: awaiting_documents / waiting_internal + notify_user; sin Telegram externo.",
+        seed: {
+          current_step: "awaiting_documents",
+          status: "active",
+          context_patch: { document_request_target: "internal_user" },
+        },
+        expect: {
+          current_step: "awaiting_documents",
+          status: "waiting_internal",
+          expected_events: ["reminder_sent"],
+          expected_tool_calls: ["notify_user"],
+        },
+        message:
+          "Prueba controlada de paso (N4) para awaiting_documents — rama interna. Actúa como la habilidad raíz del caso operacional. El context_jsonb.document_request_target YA es internal_user: NO uses telegram_send_message_to_contact. Solicita al asesor interno (notify_user) el checklist de documentos (escritura bloqueante, predial, identificación, comprobante de domicilio, boleta registral), indícale que los suba al caso (web/Telegram interno) y confirme con «listo». Registra reminder_sent (p. ej. purpose=internal_request o internal_upload_instructions) y deja status=waiting_internal / current_step=awaiting_documents. No avances a documents_received. No pidas dormitorios, baños ni estacionamiento.",
+      },
       {
         id: "awaiting_documents_outreach",
-        label: "Solicitud inicial vía habilidad raíz",
+        label: "Rama externa — solicitud al contacto",
         summary:
-          "Caso en awaiting_documents: la raíz solicita documentos y deja el caso esperando al contacto externo.",
-        seed_summary: "Entrada: awaiting_documents / active.",
+          "Caso en awaiting_documents con destino externo: la raíz solicita documentos al contacto y deja waiting_external.",
+        seed_summary:
+          "Entrada: awaiting_documents / active; document_request_target=external_contact (o contacto verificado).",
         expect_summary: "Salida: awaiting_documents / waiting_external.",
-        seed: { current_step: "awaiting_documents", status: "active" },
+        seed: {
+          current_step: "awaiting_documents",
+          status: "active",
+          context_patch: { document_request_target: "external_contact" },
+        },
         expect: {
           current_step: "awaiting_documents",
           status: "waiting_external",
           expected_events: ["reminder_sent"],
+          expected_tool_calls: ["telegram_send_message_to_contact"],
         },
         message:
-          "Prueba controlada de paso (N4) para awaiting_documents. Actúa como la habilidad raíz del caso operacional. Si el contacto externo aún no tiene la solicitud de documentos, envíala por el canal configurado (escritura, predial, identificación, comprobante de domicilio, boleta registral, etc.), registra reminder_sent y deja status=waiting_external. No pidas dormitorios, baños ni estacionamiento (eso corresponde al paso documents_received / extract-property-characteristics). No avances current_step a documents_received en esta prueba. Invoca telegram_send_message_to_contact como máximo una vez en este tick; no repitas el mismo mensaje al contacto externo.",
+          "Prueba controlada de paso (N4) para awaiting_documents — rama externa. Actúa como la habilidad raíz del caso operacional. El context_jsonb.document_request_target ya es external_contact. Si el contacto externo aún no tiene la solicitud de documentos, envíala por el canal configurado (escritura, predial, identificación, comprobante de domicilio, boleta registral, etc.), registra reminder_sent y deja status=waiting_external. No pidas dormitorios, baños ni estacionamiento (eso corresponde al paso documents_received / extract-property-characteristics). No avances current_step a documents_received en esta prueba. Invoca telegram_send_message_to_contact como máximo una vez en este tick; no repitas el mismo mensaje al contacto externo.",
       },
     ],
     documents_received: [
@@ -96,6 +126,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           current_step: "documents_received",
           status: "active",
           context_patch: {
+            document_request_target: "external_contact",
             property_data: {
               operation: "rent",
               property_type: "departamento",
@@ -125,6 +156,47 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
         },
         message:
           "Prueba controlada de paso (N4) para documents_received, escenario de faltantes críticos. Actúa como la habilidad raíz del caso operacional. El context_jsonb.property_data sembrado está incompleto a propósito: faltan bedrooms, bathrooms y parking_spots. Debes consultar documentos del caso para confirmar fuentes disponibles, NO solicites revisión interna todavía y NO avances a property_data_review. Pregunta únicamente esos faltantes al contacto externo con telegram_send_message_to_contact(purpose='characteristics_pending') y deja status=waiting_external/current_step=documents_received.",
+      },
+      {
+        id: "documents_received_characteristics_pending_internal",
+        label: "Faltantes críticos al equipo interno",
+        summary:
+          "Documentos recibidos con datos críticos faltantes y ruta interna: sin Telegram externo.",
+        seed_summary:
+          "Entrada: documents_received / active; document_request_target=internal_user; property_data incompleto.",
+        expect_summary:
+          "Salida: documents_received / waiting_internal + reminder_sent (characteristics_pending_internal).",
+        seed: {
+          current_step: "documents_received",
+          status: "active",
+          context_patch: {
+            document_request_target: "internal_user",
+            property_data: {
+              operation: "rent",
+              property_type: "departamento",
+              area_total_m2: 116.93,
+              address: {
+                street: "Privada del Tulipán",
+                exterior_number: "1501",
+                neighborhood: "Sendas Residencial G1",
+                city: "Zapopan",
+                state: "Jalisco",
+                country: "MX",
+                postal_code: "45050",
+              },
+              missing_critical_fields: ["bedrooms", "bathrooms", "parking_spots"],
+            },
+          },
+        },
+        expect: {
+          current_step: "documents_received",
+          status: "waiting_internal",
+          expected_context_keys: ["property_data"],
+          expected_events: ["reminder_sent"],
+          expected_tool_calls: ["operational_case_list_documents"],
+        },
+        message:
+          "Prueba controlada de paso (N4) para documents_received — rama interna de faltantes. Actúa como la habilidad raíz del caso operacional. El context_jsonb.document_request_target YA es internal_user y property_data está incompleto (faltan bedrooms, bathrooms, parking_spots). Consulta documentos del caso. NO uses telegram_send_message_to_contact. NO solicites revisión interna (property_data_review) todavía y NO avances de current_step. Deja el caso en documents_received; la capa determinística notificará faltantes al asesor (characteristics_pending_internal) y status=waiting_internal.",
       },
     ],
     comparables_in_progress: [

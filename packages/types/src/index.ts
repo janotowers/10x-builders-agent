@@ -732,6 +732,45 @@ export interface OperationalCaseFlowSkill {
   skill_tools?: OperationalCaseFlowTool[];
 }
 
+/**
+ * Rama de una decisión de paso (`PATTERN_STEP_BRANCH_DECISION`).
+ * Metadata **explicativa** para UI/QA: el agent graph NO la lee para ramificar.
+ */
+export interface OperationalCaseFlowStepDecisionBranch {
+  /** Valor estable; debe coincidir con el valor persistido en contexto cuando aplique. */
+  value: string;
+  label: string;
+  description?: string;
+  /** Status típico mientras la rama está activa (informativo). */
+  expected_status?: OperationalCaseStatus;
+  /** Tools primarias de esta rama (subset de skill_tools / step_tools). */
+  primary_tool_ids?: string[];
+  /** IDs de escenarios N4 milestone que cubren esta rama. */
+  scenario_ids?: string[];
+}
+
+/**
+ * Decisión de rama dentro de un `step_key` (mismo artefacto, distinto
+ * responsable/espera). Solo documentación + UI + enlace a escenarios.
+ * Nunca leída por el agent graph para elegir tools.
+ */
+export interface OperationalCaseFlowStepDecision {
+  /** ID estable de la decisión dentro del paso (ej. document_request_target). */
+  id: string;
+  label: string;
+  description?: string;
+  /**
+   * Clave en context_jsonb donde vive el valor elegido.
+   * Informativo: el runtime ya conoce esta clave en código.
+   */
+  context_key?: string;
+  /** Cómo se decide hoy (copy para autores). */
+  decided_by_hint?: string;
+  branches: OperationalCaseFlowStepDecisionBranch[];
+  /** Tools del hito que aplican a todas las ramas. */
+  shared_tool_ids?: string[];
+}
+
 // Mapping declarativo opcional para la prueba individual de tools desde
 // "Datos del caso": describe cómo derivar args de la tool a partir de
 // claves del `context_jsonb` del caso de prueba. Si está presente, se usa
@@ -746,6 +785,11 @@ export interface OperationalCaseFlowStep {
   step_description?: string;
   step_skills?: OperationalCaseFlowSkill[];
   step_tools?: OperationalCaseFlowTool[];
+  /**
+   * Opcional. Metadata explicativa de ramas (`PATTERN_STEP_BRANCH_DECISION`).
+   * No es motor de ejecución: el runtime ramifica por código + context_jsonb.
+   */
+  step_decision?: OperationalCaseFlowStepDecision;
 }
 
 export interface OperationalCaseSafeTestPolicy {

@@ -27,6 +27,7 @@ import {
   type DbClient,
 } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
+import { recordStepBranchSelected } from "./step-branch-selected";
 
 export const EXTERNAL_CONTACT_LINK_PREFIX = "ec_";
 export const EXTERNAL_CONTACT_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -214,6 +215,22 @@ export async function verifyExternalContactLink(
       chat_id: params.chatId,
       token_id: record.id,
     },
+  });
+
+  const previousTarget =
+    typeof context.document_request_target === "string"
+      ? context.document_request_target
+      : null;
+  await recordStepBranchSelected({
+    db,
+    caseId: opCase.id,
+    stepKey: opCase.current_step,
+    branchValue: "external_contact",
+    decidedBy: "user",
+    previousValue:
+      previousTarget === "internal_user" || previousTarget === "external_contact"
+        ? previousTarget
+        : null,
   });
 
   return {
