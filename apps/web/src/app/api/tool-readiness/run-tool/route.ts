@@ -63,6 +63,9 @@ import {
   deriveCommissionContractTemplateData,
   getBusinessBrainWarehouse,
   getSkillRegistryForUser,
+  canCompleteListingPublishedSummaryFromContext,
+  formatListingDescriptionReviewNotifyText,
+  formatListingPublishedSummaryNotifyText,
   resolveSkill,
   TOOL_CATALOG,
   type ToolContext,
@@ -79,7 +82,34 @@ import type {
   UserToolSetting,
 } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
-import { mergeContextForToolRecipes } from "@/lib/operational-cases/property-search-zone";
+import {
+  mergeContextForToolRecipes,
+  settingsTestPropertyDataSeed,
+} from "@/lib/operational-cases/property-search-zone";
+import { settingsTestApprovedPricingProposalSeed } from "@/lib/operational-cases/step-test-seeds";
+import {
+  hydratePackageReadyListingPhotosInContext,
+  MissingTestPropertyListingPhotosError,
+  missingListingPhotosHint,
+  resolveImagePathsFromRawPhotos,
+  TEST_PROPERTY_LISTING_PHOTOS_MAX,
+} from "@/lib/operational-cases/test-property-listing-photos";
+import { detectPhotoAnalysisStaleness } from "@/lib/operational-cases/photo-analysis-staleness";
+import { buildPropertyIdentitySignature } from "@/lib/operational-cases/property-identity-signature";
+import {
+  resolvePublishConstructionAreaM2,
+  resolvePublishListingCopy,
+  resolvePublishListingCurrency,
+  resolvePublishLandAreaM2,
+  resolvePublishListingPrice,
+} from "@/lib/operational-cases/publish-case-recipe";
+import {
+  notifyUserIntentForFlowTool,
+  normalizeToolTestBehavior,
+  toolTestBehaviorForFlowTool,
+  toolTestBehaviorForTool,
+  type ToolTestBehavior,
+} from "@/lib/tool-readiness/tool-test-behavior";
 import { buildTestContext } from "../../operational-case-tests/test-context-samples";
 
 type ToolRunMode = "smoke" | "case" | "manual";
@@ -107,21 +137,22 @@ type ToolRecipeInput = {
   caseType?: { case_type: string; intake_schema_jsonb?: unknown };
   skillSlug?: string;
   flowStepKey?: string;
+  flowTool?: OperationalCaseFlowTool | null;
 };
 
 const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
   telegram_send_message_to_contact: {
-    text: "Hola, soy parte del equipo inmobiliario. Esta es una prueba controlada de mensaje externo; no requiere accion.",
+    text: "Hola, soy parte del equipo inmobiliario. Esta es una prueba controlada de mensaje externo; no requiere acción.",
     purpose: "tool_readiness_test",
   },
   notify_user: {
-    text: "Prueba controlada desde Ajustes: valida que la notificacion al asesor pueda entregarse.",
+    text: "Prueba controlada desde Ajustes: valida que la notificación al asesor pueda entregarse.",
     kind: "tool_readiness_test",
     urgency: "low",
   },
   operational_case_register_document: {
     kind: "escritura_descripcion",
-    display_name: "Escritura - descripcion",
+    display_name: "Escritura - descripción",
     source: "settings_test",
     blocking: true,
   },
@@ -192,7 +223,7 @@ const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
     },
   },
   analyze_property_images: {
-    image_paths: ["test/property-photo-1.jpg", "test/property-photo-2.jpg"],
+    image_paths: [],
     purpose: "listing_description",
   },
   lookup_property_surroundings: {
@@ -267,17 +298,14 @@ const TOOL_TEST_ARG_RECIPES: Record<
   geocode_property_address: (input) => geocodeAddressCaseRecipe(input.ctx),
   get_avaclick_valuation: (input) => avaclickValuationCaseRecipe(input.ctx),
   telegram_send_message_to_contact: telegramContactCaseRecipe,
-  notify_user: (input) => notifyUserCaseRecipe(input.ctx),
+  notify_user: notifyUserCaseRecipe,
   generate_document_from_template: generateDocumentFromTemplateCaseRecipe,
-  image_watermark: () => ({
-    asset_key: "listing_photo_watermark",
-    position: "bottom-right",
-    opacity: 0.6,
-    scale: 0.18,
-  }),
-  analyze_property_images: (input) => analyzePropertyImagesCaseRecipe(input.ctx),
+  image_watermark: (input) =>
+    imageWatermarkCaseRecipe(input.ctx),
+  analyze_property_images: (input) =>
+    analyzePropertyImagesCaseRecipe(input.ctx, input.testCase?.id),
   lookup_property_surroundings: (input) =>
-    lookupPropertySurroundingsCaseRecipe(input.ctx),
+    lookupPropertySurroundingsCaseRecipe(input.ctx, input.testCase?.id),
   prepare_listing_description_draft: (input) =>
     prepareListingDescriptionDraftCaseRecipe(input.ctx, input.testCase?.id),
   easybroker_create_listing: (input) => easyBrokerCreateCaseRecipe(input.ctx),
@@ -320,6 +348,12 @@ const SMOKE_BINDS_TEST_CASE_WHEN_PRESENT = new Set([
   "operational_case_list_documents",
   "operational_case_extract_document_fields",
   "operational_case_register_document",
+]);
+
+/** En modo caso no mezclar TEST_DEFAULTS que pisan datos del fixture (p. ej. price en Ungga). */
+const CASE_MODE_TOOLS_WITHOUT_SMOKE_DEFAULTS = new Set([
+  "easybroker_create_listing",
+  "ungga_publish_listing",
 ]);
 
 function cleanText(value: unknown) {
@@ -1008,7 +1042,87 @@ function calendarUpdateEventCaseRecipe(input: ToolRecipeInput): Record<string, u
   };
 }
 
-function notifyUserCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+/**
+ * `notify_user` es una tool genérica; el laboratorio NO la especializa en
+ * runtime. Aquí sólo armamos args representativos para N1 según la intención
+ * de notificación del paso/skill del flujo. Cada intención decide su
+ * pertinencia por contexto de flujo (step/skill), no por adivinar con la
+ * presencia de un campo, y construye su payload. Si no puede armar uno
+ * representativo devuelve null y el dispatcher cae al genérico. Para agregar
+ * otra intención (price_approval, contract_review, etc.) se añade una entrada
+ * aquí sin tocar la tool ni el builder genérico.
+ */
+type NotifyUserIntentRecipe = {
+  intent: string;
+  appliesTo: (input: ToolRecipeInput) => boolean;
+  build: (input: ToolRecipeInput) => Record<string, unknown> | null;
+};
+
+const NOTIFY_USER_INTENT_RECIPES: NotifyUserIntentRecipe[] = [
+  {
+    intent: "listing_description_review",
+    appliesTo: (input) =>
+      notifyUserIntentForFlowTool(input.flowTool) === "listing_description_review" ||
+      (!input.flowTool &&
+        (input.skillSlug === "publish-listing-package" ||
+          input.flowStepKey === "package_ready")),
+    build: (input) => {
+      const draft = isRecord(input.ctx.listing_description_draft)
+        ? (input.ctx.listing_description_draft as Record<string, unknown>)
+        : null;
+      if (!draft || !input.testCase?.id) return null;
+      return {
+        case_id: input.testCase.id,
+        kind: "listing_description_review",
+        urgency: "normal",
+        text: formatListingDescriptionReviewNotifyText(draft, {
+          currentContext: input.ctx,
+        }),
+      };
+    },
+  },
+  {
+    intent: "listing_published_summary",
+    appliesTo: (input) =>
+      notifyUserIntentForFlowTool(input.flowTool) === "listing_published_summary",
+    build: (input) => {
+      if (!input.testCase?.id) return null;
+      const completion = canCompleteListingPublishedSummaryFromContext(input.ctx);
+      if (completion.ok) {
+        return {
+          case_id: input.testCase.id,
+          kind: "listing_published_summary",
+          urgency: "normal",
+          text: formatListingPublishedSummaryNotifyText({
+            id: input.testCase.id,
+            context_jsonb: input.ctx,
+          }),
+        };
+      }
+      return {
+        case_id: input.testCase.id,
+        kind: "tool_readiness_test",
+        urgency: "low",
+        text:
+          "Prueba controlada desde Ajustes: valida que el canal del resumen final de publicación pueda entregar mensajes. El cierre real usará notify_user(kind=listing_published_summary) cuando exista published.easybroker, published.ungga o manual_publish_package entregable.",
+      };
+    },
+  },
+];
+
+function notifyUserCaseRecipe(input: ToolRecipeInput): Record<string, unknown> {
+  for (const recipe of NOTIFY_USER_INTENT_RECIPES) {
+    if (!recipe.appliesTo(input)) continue;
+    const built = recipe.build(input);
+    if (built) return built;
+  }
+  return notifyUserGenericReadinessRecipe(input);
+}
+
+function notifyUserGenericReadinessRecipe(
+  input: ToolRecipeInput
+): Record<string, unknown> {
+  const ctx = input.ctx;
   const merged = contextWithPropertyData(ctx);
   const propertyType =
     firstStringArray(merged, ["property_type", "tipo_propiedad", "tipo"])[0] ??
@@ -1048,6 +1162,7 @@ function notifyUserCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
         }).format(price)}.`
       : "";
   return {
+    ...(input.testCase?.id ? { case_id: input.testCase.id } : {}),
     text: `Prueba controlada desde Ajustes: la habilidad solicita revision del asesor para ${propertyType} en ${operation} en ${zona}.${priceText} No requiere accion real; valida que notify_user pueda entregar mensajes del flow.`,
     kind: "tool_readiness_test",
     urgency: "low",
@@ -1480,25 +1595,57 @@ function geocodeAddressCaseRecipe(ctx: Record<string, unknown>): Record<string, 
 }
 
 function analyzePropertyImagesCaseRecipe(
-  ctx: Record<string, unknown>
+  ctx: Record<string, unknown>,
+  caseId?: string | null
 ): Record<string, unknown> {
   const defaults = TEST_DEFAULTS.analyze_property_images ?? {};
-  const rawPhotos = Array.isArray(ctx.raw_photos)
-    ? (ctx.raw_photos.filter((item): item is string => typeof item === "string") as string[])
-    : [];
-  return {
+  const imagePaths = resolveImagePathsFromRawPhotos(ctx.raw_photos);
+  const args: Record<string, unknown> = {
     image_paths:
-      rawPhotos.length > 0
-        ? rawPhotos.slice(0, 8)
+      imagePaths.length > 0
+        ? imagePaths
         : ((defaults.image_paths as string[] | undefined) ?? []),
     purpose:
       firstString(ctx, ["purpose", "listing_copy_purpose"]) ??
       (typeof defaults.purpose === "string" ? defaults.purpose : "listing_description"),
   };
+  if (caseId) args.case_id = caseId;
+  return args;
+}
+
+function resolveWatermarkedPathsFromContext(
+  ctx: Record<string, unknown>,
+  maxCount = TEST_PROPERTY_LISTING_PHOTOS_MAX
+) {
+  const value = ctx.watermarked_photos;
+  if (!Array.isArray(value)) return [] as string[];
+  return value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean)
+    .slice(0, maxCount);
+}
+
+function imageWatermarkCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+  const defaults = TEST_DEFAULTS.image_watermark ?? {};
+  const inputPaths = resolveImagePathsFromRawPhotos(ctx.raw_photos);
+  return {
+    asset_key: "listing_photo_watermark",
+    input_paths: inputPaths.length > 0 ? inputPaths : [],
+    position:
+      firstString(ctx, ["watermark_position"]) ??
+      (typeof defaults.position === "string" ? defaults.position : "bottom-right"),
+    opacity:
+      firstNumber(ctx, ["watermark_opacity"]) ??
+      (typeof defaults.opacity === "number" ? defaults.opacity : 0.6),
+    scale:
+      firstNumber(ctx, ["watermark_scale"]) ??
+      (typeof defaults.scale === "number" ? defaults.scale : 0.18),
+  };
 }
 
 function lookupPropertySurroundingsCaseRecipe(
-  ctx: Record<string, unknown>
+  ctx: Record<string, unknown>,
+  caseId?: string | null
 ): Record<string, unknown> {
   const defaults = TEST_DEFAULTS.lookup_property_surroundings ?? {};
   const merged = contextWithPropertyData(ctx);
@@ -1519,9 +1666,12 @@ function lookupPropertySurroundingsCaseRecipe(
     args.latitude = latitude;
     args.longitude = longitude;
   }
-  const address =
-    firstString(merged, ["address", "property_address"]) ??
-    firstString(addressRecord, ["formatted_address", "street"]);
+  // `address` suele venir como dirección completa (zona, municipio, estado, país).
+  // No debe usarse como `street` porque luego se concatena de nuevo y duplica partes.
+  const street =
+    firstString(addressRecord, ["street"]) ??
+    firstString(merged, ["street"]);
+  const exteriorNumber = firstString(addressRecord, ["exterior_number", "number"]);
   const neighborhood =
     firstString(merged, ["neighborhood", "colonia", "property_zone"]) ??
     firstString(addressRecord, ["neighborhood", "colonia"]);
@@ -1535,11 +1685,23 @@ function lookupPropertySurroundingsCaseRecipe(
     firstString(merged, ["country", "pais"]) ??
     firstString(addressRecord, ["country", "pais"]) ??
     (typeof defaults.country === "string" ? defaults.country : "MX");
+  const fallbackAddress =
+    firstString(merged, ["address", "property_address"]) ??
+    firstString(addressRecord, ["formatted_address"]);
+  const addressParts = [
+    [street, exteriorNumber].filter(Boolean).join(" ").trim(),
+    neighborhood,
+    municipality,
+    state,
+    country,
+  ].filter(Boolean);
+  const address = addressParts.length > 0 ? addressParts.join(", ") : fallbackAddress;
   if (address) args.address = address;
   if (neighborhood) args.neighborhood = neighborhood;
   if (municipality) args.municipality = municipality;
   if (state) args.state = state;
   args.country = country;
+  if (caseId) args.case_id = caseId;
   return args;
 }
 
@@ -1568,20 +1730,11 @@ function unggaPublishCaseRecipe(ctx: Record<string, unknown>): Record<string, un
     operationRaw.toLowerCase().includes("renta") || operationRaw === "rent"
       ? "rent"
       : "sale";
-  const price = firstNumber(ctx, [
-    "target_price",
-    "expected_price",
-    "asking_price",
-    "price",
-    "precio",
-  ]);
-  const areaM2 = firstNumber(ctx, [
-    "area_m2",
-    "construction_m2",
-    "construction_size",
-    "superficie",
-    "m2",
-  ]);
+  const price = resolvePublishListingPrice(ctx);
+  const copy = resolvePublishListingCopy(ctx);
+  const constructionM2 = resolvePublishConstructionAreaM2(ctx);
+  const landM2 = resolvePublishLandAreaM2(ctx);
+  const currency = resolvePublishListingCurrency(ctx);
   const zona = firstString(ctx, [
     "address",
     "property_address",
@@ -1590,19 +1743,23 @@ function unggaPublishCaseRecipe(ctx: Record<string, unknown>): Record<string, un
     "neighborhood",
     "colonia",
   ]);
+  const operationLabel = operation === "rent" ? "renta" : "venta";
   args.title =
+    copy.title ??
     firstString(ctx, ["title", "listing_title", "property_title"]) ??
-    `POC ${propertyType ?? "propiedad"} en ${zona ?? "Ungga"}`;
+    `${propertyType ?? "propiedad"} en ${operationLabel}${zona ? ` en ${zona}` : ""}`;
   args.description =
+    copy.description ??
     firstString(ctx, ["description", "listing_description"]) ??
-    "Borrador generado por Gu OS para revision humana antes de publicar.";
+    "Borrador generado por Gu OS para revisión humana antes de publicar.";
   args.operation = operation;
   if (propertyType) args.property_type = propertyType;
   if (price != null) args.price = price;
-  args.currency = firstString(ctx, ["currency", "moneda"]) ?? "MXN";
-  if (areaM2 != null) {
-    args.construction_m2 = areaM2;
-    args.land_m2 = areaM2;
+  args.currency = currency;
+  if (constructionM2 != null) args.construction_m2 = constructionM2;
+  if (landM2 != null) args.land_m2 = landM2;
+  if (args.land_m2 == null && args.construction_m2 != null) {
+    args.land_m2 = args.construction_m2;
   }
   args.country = firstString(ctx, ["country", "pais"]) ?? "México";
   if (zona) {
@@ -1621,10 +1778,11 @@ function unggaPublishCaseRecipe(ctx: Record<string, unknown>): Record<string, un
   if (price != null) {
     args.operations = [{ type: operation, price, currency: args.currency }];
   }
-  // Ungga exige área de construcción para avanzar en el wizard; si el caso no la trae, usar default de prueba.
   if (args.construction_m2 == null) {
     args.construction_m2 = 80;
-    args.land_m2 = 80;
+  }
+  if (args.land_m2 == null) {
+    args.land_m2 = args.construction_m2 ?? 80;
   }
   args.condition =
     firstString(ctx, ["condition", "estado_propiedad", "property_condition"]) ??
@@ -1633,7 +1791,6 @@ function unggaPublishCaseRecipe(ctx: Record<string, unknown>): Record<string, un
     firstString(ctx, ["age_range", "antiguedad", "property_age"]) ?? "1-5 años";
   args.current_status =
     firstString(ctx, ["current_status", "estado_actual"]) ?? "Habitable";
-  // Ungga exige pin en mapa (autocomplete); default de prueba si el caso no trae dirección.
   if (!args.address) {
     args.address =
       "Av. Paseo de la Reforma 222, Juárez, Ciudad de México, CDMX, México";
@@ -1657,9 +1814,9 @@ function easyBrokerCreateCaseRecipe(ctx: Record<string, unknown>): Record<string
     operationRaw.toLowerCase().includes("renta") || operationRaw === "rent"
       ? "rent"
       : "sale";
-  const price =
-    firstNumber(ctx, ["target_price", "expected_price", "asking_price", "price", "precio"]) ??
-    21000;
+  const price = resolvePublishListingPrice(ctx);
+  const copy = resolvePublishListingCopy(ctx);
+  const currency = resolvePublishListingCurrency(ctx);
   const zona = firstString(ctx, [
     "zona",
     "property_zone",
@@ -1690,9 +1847,11 @@ function easyBrokerCreateCaseRecipe(ctx: Record<string, unknown>): Record<string
   const parking = firstNumber(ctx, ["parking_spaces", "parking", "estacionamientos"]) ?? 1;
   const operationLabel = operation === "rent" ? "renta" : "venta";
   args.title =
+    copy.title ??
     firstString(ctx, ["title", "listing_title", "property_title"]) ??
     `${propertyType} en ${operationLabel} en ${cityArea}`;
   args.description =
+    copy.description ??
     firstString(ctx, ["description", "listing_description"]) ??
     `${propertyType} en ${operationLabel} en ${locationFullName}. Cuenta con ${formatCount(
       bedrooms,
@@ -1705,8 +1864,8 @@ function easyBrokerCreateCaseRecipe(ctx: Record<string, unknown>): Record<string
     )}. Borrador generado por Gu OS para revisión humana antes de publicar.`;
   args.operation = operation;
   args.property_type = propertyType;
-  args.price = price;
-  args.currency = firstString(ctx, ["currency", "moneda"]) ?? "MXN";
+  if (price != null) args.price = price;
+  args.currency = currency;
   args.status = "not_published";
   args.street = street;
   const latitude =
@@ -1725,19 +1884,17 @@ function easyBrokerCreateCaseRecipe(ctx: Record<string, unknown>): Record<string
     latitude,
     longitude,
   };
-  const areaM2 = firstNumber(ctx, ["area_m2", "construction_m2", "construction_size", "superficie", "m2"]);
-  if (areaM2 != null) args.construction_size = areaM2;
+  const constructionM2 = resolvePublishConstructionAreaM2(ctx);
+  const landM2 = resolvePublishLandAreaM2(ctx);
+  if (constructionM2 != null) {
+    args.construction_size = constructionM2;
+  } else if (landM2 != null) {
+    args.construction_size = landM2;
+  }
   args.bedrooms = bedrooms;
   args.bathrooms = fullBathrooms;
   if (bathrooms != null && bathrooms % 1 > 0) args.half_bathrooms = 1;
   args.parking_spaces = parking;
-  args.features = [
-    "Alberca",
-    "Gimnasio",
-    "Salón de usos múltiples",
-    "Terraza",
-    "Área de juegos",
-  ];
   return args;
 }
 
@@ -1938,6 +2095,8 @@ function applyControlledRealWriteSafeguards(
 }
 
 function easyBrokerUploadImagesCaseRecipe(ctx: Record<string, unknown>): Record<string, unknown> {
+  const watermarkedPaths = resolveWatermarkedPathsFromContext(ctx);
+  const rawPaths = resolveImagePathsFromRawPhotos(ctx.raw_photos);
   return {
     listing_id:
       firstString(ctx, [
@@ -1946,6 +2105,11 @@ function easyBrokerUploadImagesCaseRecipe(ctx: Record<string, unknown>): Record<
         "public_id",
         "easybroker_public_id",
       ]) ?? "REEMPLAZA-CON-LISTING-ID",
+    ...(watermarkedPaths.length > 0
+      ? { image_paths: watermarkedPaths }
+      : rawPaths.length > 0
+        ? { image_paths: rawPaths }
+        : {}),
   };
 }
 
@@ -2131,6 +2295,559 @@ interface ArgResolution {
   case_context_sample?: Record<string, unknown> | null;
 }
 
+type ToolRunDependencyStatus = {
+  requires_dependencies: boolean;
+  missing_required_artifacts: string[];
+  available_required_artifacts: string[];
+  can_prepare_dependencies: boolean;
+};
+
+type InputResolutionStatus = {
+  key: string;
+  label: string;
+  status: "available" | "missing" | "stale" | "manual_override";
+  source:
+    | "property_data"
+    | "case_context"
+    | "artifact"
+    | "manual_override"
+    | "test_asset"
+    | "account_asset";
+  artifact?: string;
+  action_hint?: string;
+};
+
+type ToolRunResolutionMetadata = {
+  user_facing_test_type: string;
+  recommended_mode_label: string;
+  data_sources_used: string[];
+  artifacts_read: string[];
+  artifacts_persisted_expected: string[];
+  dependency_status: ToolRunDependencyStatus;
+  arg_resolution_steps: string[];
+  input_resolution_status: InputResolutionStatus[];
+  test_behavior: ToolTestBehavior;
+};
+
+function nestedValue(record: Record<string, unknown>, path: string): unknown {
+  let current: unknown = record;
+  for (const segment of path.split(".")) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function artifactSatisfied(
+  artifact: string,
+  params: {
+    caseContext: Record<string, unknown>;
+    caseId?: string | null;
+    resolvedArgs: Record<string, unknown>;
+  }
+): boolean {
+  if (artifact === "case_id") {
+    const fromArgs = cleanText(params.resolvedArgs.case_id);
+    return Boolean(fromArgs || cleanText(params.caseId));
+  }
+  if (artifact === "raw_photos>=5") {
+    const rawPhotos = params.caseContext.raw_photos;
+    return Array.isArray(rawPhotos) && rawPhotos.length >= 5;
+  }
+  if (artifact === "pricing_proposal.approval_status=approved") {
+    const pricing = isRecord(params.caseContext.pricing_proposal)
+      ? (params.caseContext.pricing_proposal as Record<string, unknown>)
+      : {};
+    return (
+      typeof pricing.approval_status === "string" &&
+      pricing.approval_status.trim().toLowerCase() === "approved"
+    );
+  }
+  if (artifact.includes(".")) {
+    return nestedValue(params.caseContext, artifact) != null;
+  }
+  return params.caseContext[artifact] != null;
+}
+
+function readPropertyData(caseContext: Record<string, unknown>) {
+  return isRecord(caseContext.property_data)
+    ? (caseContext.property_data as Record<string, unknown>)
+    : {};
+}
+
+function hasRecordArtifact(caseContext: Record<string, unknown>, key: string): boolean {
+  return isRecord(caseContext[key]);
+}
+
+function hasManualImagePaths(args: Record<string, unknown>): boolean {
+  if (!Array.isArray(args.image_paths)) return false;
+  return args.image_paths.some(
+    (entry) =>
+      typeof entry === "string" &&
+      entry.trim().length > 0 &&
+      !entry.trim().startsWith("account-assets:")
+  );
+}
+
+function makeInputStatus(
+  base: Omit<InputResolutionStatus, "status"> & { available: boolean; stale?: boolean }
+): InputResolutionStatus {
+  return {
+    key: base.key,
+    label: base.label,
+    source: base.source,
+    artifact: base.artifact,
+    action_hint: base.action_hint,
+    status: base.stale ? "stale" : base.available ? "available" : "missing",
+  };
+}
+
+function buildInputResolutionStatus(input: {
+  toolId: string;
+  caseContext: Record<string, unknown>;
+  resolvedArgs: Record<string, unknown>;
+  staleArtifacts: Set<string>;
+}): InputResolutionStatus[] {
+  const statuses: InputResolutionStatus[] = [];
+  const ctx = input.caseContext;
+  const pd = readPropertyData(ctx);
+  const isStale = (artifact: string) => input.staleArtifacts.has(artifact);
+  const hasCaseId = Boolean(cleanText(input.resolvedArgs.case_id));
+
+  if (input.toolId === "analyze_property_images") {
+    const imagePaths = Array.isArray(input.resolvedArgs.image_paths)
+      ? input.resolvedArgs.image_paths.filter((entry) => typeof entry === "string" && entry.trim())
+      : [];
+    const hasTestAssets = imagePaths.some((entry) =>
+      String(entry).startsWith("account-assets:")
+    );
+    statuses.push(
+      makeInputStatus({
+        key: "image_paths",
+        label: "rutas de imagen",
+        available: imagePaths.length > 0,
+        source: hasManualImagePaths(input.resolvedArgs)
+          ? "manual_override"
+          : hasTestAssets
+            ? "test_asset"
+            : "case_context",
+        action_hint:
+          imagePaths.length > 0 ? undefined : "Agrega fotos de prueba o define image_paths en Avanzado.",
+      })
+    );
+    statuses.push(
+      makeInputStatus({
+        key: "case_id",
+        label: "caso de prueba",
+        available: hasCaseId,
+        source: "case_context",
+        action_hint: hasCaseId ? undefined : "Elige modo Con formulario/caso para persistir photo_analysis.",
+      })
+    );
+    return statuses;
+  }
+
+  if (input.toolId === "lookup_property_surroundings") {
+    const hasAddress =
+      Boolean(cleanText(input.resolvedArgs.address)) ||
+      Boolean(cleanText(input.resolvedArgs.neighborhood));
+    const hasCoordinates =
+      typeof input.resolvedArgs.latitude === "number" &&
+      typeof input.resolvedArgs.longitude === "number";
+    statuses.push(
+      makeInputStatus({
+        key: "address_or_coords",
+        label: "dirección o coordenadas",
+        available: hasAddress || hasCoordinates,
+        source: hasManualImagePaths(input.resolvedArgs) ? "manual_override" : "case_context",
+        action_hint:
+          hasAddress || hasCoordinates
+            ? undefined
+            : "Completa zona/dirección del caso o define latitude/longitude en Avanzado.",
+      })
+    );
+    return statuses;
+  }
+
+  if (input.toolId === "prepare_listing_description_draft") {
+    statuses.push(
+      makeInputStatus({
+        key: "pricing_proposal.approved",
+        label: "precio aprobado",
+        available: artifactSatisfied("pricing_proposal.approval_status=approved", {
+          caseContext: ctx,
+          caseId: cleanText(input.resolvedArgs.case_id) || null,
+          resolvedArgs: input.resolvedArgs,
+        }),
+        source: "artifact",
+        artifact: "pricing_proposal",
+        action_hint: "Aprueba pricing_proposal antes de generar el borrador.",
+      }),
+      makeInputStatus({
+        key: "raw_photos>=5",
+        label: "fotos crudas (>=5)",
+        available: artifactSatisfied("raw_photos>=5", {
+          caseContext: ctx,
+          caseId: cleanText(input.resolvedArgs.case_id) || null,
+          resolvedArgs: input.resolvedArgs,
+        }),
+        source: "artifact",
+        artifact: "raw_photos",
+        action_hint: "Carga fotos o regenera las fotos de prueba del inmueble.",
+      }),
+      makeInputStatus({
+        key: "photo_analysis",
+        label: "análisis de fotos",
+        available: hasRecordArtifact(ctx, "photo_analysis"),
+        stale: isStale("photo_analysis"),
+        source: "artifact",
+        artifact: "photo_analysis",
+        action_hint: "Corre analyze_property_images para refrescar photo_analysis.",
+      }),
+      makeInputStatus({
+        key: "zone_context",
+        label: "contexto de zona",
+        available: hasRecordArtifact(ctx, "zone_context"),
+        stale: isStale("zone_context"),
+        source: "artifact",
+        artifact: "zone_context",
+        action_hint: "Corre lookup_property_surroundings para refrescar zone_context.",
+      })
+    );
+    return statuses;
+  }
+
+  if (input.toolId === "notify_user") {
+    const hasDraft = hasRecordArtifact(ctx, "listing_description_draft");
+    statuses.push(
+      makeInputStatus({
+        key: "listing_description_draft",
+        label: "borrador de descripción",
+        available: hasDraft,
+        stale: isStale("listing_description_draft"),
+        source: "artifact",
+        artifact: "listing_description_draft",
+        action_hint: "Regenera prepare_listing_description_draft antes de solicitar revisión.",
+      })
+    );
+    return statuses;
+  }
+
+  if (input.toolId === "image_watermark") {
+    const imagePaths = Array.isArray(input.resolvedArgs.input_paths)
+      ? input.resolvedArgs.input_paths.filter((entry) => typeof entry === "string" && entry.trim())
+      : [];
+    statuses.push(
+      makeInputStatus({
+        key: "input_paths",
+        label: "imágenes para watermark",
+        available: imagePaths.length > 0,
+        source: imagePaths.some((entry) => String(entry).startsWith("account-assets:"))
+          ? "test_asset"
+          : "manual_override",
+        action_hint:
+          imagePaths.length > 0 ? undefined : "Agrega fotos del inmueble o define input_paths en Avanzado.",
+      }),
+      makeInputStatus({
+        key: "asset_key",
+        label: "watermark de cuenta",
+        available: Boolean(cleanText(input.resolvedArgs.asset_key)),
+        source: "account_asset",
+        action_hint: "Configura listing_photo_watermark en Recursos de cuenta.",
+      })
+    );
+    return statuses;
+  }
+
+  if (input.toolId === "easybroker_create_listing" || input.toolId === "ungga_publish_listing") {
+    statuses.push(
+      makeInputStatus({
+        key: "property_data.core",
+        label: "datos base del inmueble",
+        available: Boolean(cleanText(pd.property_type) && cleanText(pd.operation)),
+        source: "property_data",
+        action_hint: "Alinea tipo y operación en Datos del caso de prueba.",
+      }),
+      makeInputStatus({
+        key: "pricing_proposal",
+        label: "precio del caso",
+        available: isRecord(ctx.pricing_proposal),
+        source: "artifact",
+        artifact: "pricing_proposal",
+        action_hint: "Completa/valida pricing_proposal antes de publicar.",
+      }),
+      makeInputStatus({
+        key: "listing_description_draft",
+        label: "borrador de descripción",
+        available: hasRecordArtifact(ctx, "listing_description_draft"),
+        stale: isStale("listing_description_draft"),
+        source: "artifact",
+        artifact: "listing_description_draft",
+        action_hint: "Regenera el borrador antes de validar payload de publicación.",
+      })
+    );
+    return statuses;
+  }
+
+  if (input.toolId === "easybroker_upload_images") {
+    const hasWatermarked = resolveWatermarkedPathsFromContext(ctx).length > 0;
+    statuses.push(
+      makeInputStatus({
+        key: "listing_id",
+        label: "listing_id existente",
+        available: validEasyBrokerListingId(input.resolvedArgs.listing_id),
+        source: "case_context",
+        action_hint: "Crea/elige un listing_id real o define override en Avanzado.",
+      }),
+      makeInputStatus({
+        key: "watermarked_photos",
+        label: "fotos con watermark",
+        available: hasWatermarked,
+        stale: isStale("watermarked_photos"),
+        source: "artifact",
+        artifact: "watermarked_photos",
+        action_hint: hasWatermarked
+          ? "Si están stale, corre image_watermark de nuevo."
+          : "Corre image_watermark para validar la cadena real de publicación.",
+      })
+    );
+    return statuses;
+  }
+
+  return statuses;
+}
+
+function buildRunResolutionMetadata(input: {
+  toolId: string;
+  behavior: ToolTestBehavior;
+  requestedMode: ToolRunMode;
+  resolution: ArgResolution;
+  resolvedArgs: Record<string, unknown>;
+  staleness?: StalenessEvaluation;
+}): ToolRunResolutionMetadata {
+  const behavior = normalizeToolTestBehavior("noop", input.behavior);
+  const caseContext = input.resolution.case_context_sample ?? {};
+  const staleArtifacts = new Set(input.staleness?.stale_artifacts ?? []);
+  const requiredArtifacts = behavior.required_artifacts ?? [];
+  const missingRequiredArtifacts = requiredArtifacts.filter(
+    (artifact) =>
+      !artifactSatisfied(artifact, {
+        caseContext,
+        caseId: input.resolution.case_id,
+        resolvedArgs: input.resolvedArgs,
+      })
+  );
+  const availableRequiredArtifacts = requiredArtifacts.filter(
+    (artifact) =>
+      artifactSatisfied(artifact, {
+        caseContext,
+        caseId: input.resolution.case_id,
+        resolvedArgs: input.resolvedArgs,
+      })
+  );
+  const argResolutionSteps = [
+    `requested_mode=${input.requestedMode}`,
+    `mode_used=${input.resolution.mode_used}`,
+    `mode_source=${input.resolution.source}`,
+  ];
+  if (input.resolution.case_id) {
+    argResolutionSteps.push("case_context_detected=true");
+  }
+  if (input.resolution.source === "smoke_bound_test_case") {
+    argResolutionSteps.push("smoke_bound_to_case=true");
+  }
+  if (
+    input.requestedMode === "case" &&
+    input.resolution.mode_used === "smoke" &&
+    input.resolution.source === "fallback_smoke_no_test_case"
+  ) {
+    argResolutionSteps.push("case_mode_fell_back_to_smoke=true");
+  }
+  return {
+    user_facing_test_type: behavior.user_facing_test_type ?? "Tool de readiness",
+    recommended_mode_label: behavior.recommended_mode_label ?? "Con formulario/caso",
+    data_sources_used: behavior.data_sources ?? [],
+    artifacts_read: behavior.reads_from_case,
+    artifacts_persisted_expected: behavior.persists_to_case,
+    dependency_status: {
+      requires_dependencies: requiredArtifacts.length > 0,
+      missing_required_artifacts: missingRequiredArtifacts,
+      available_required_artifacts: availableRequiredArtifacts,
+      can_prepare_dependencies: behavior.can_prepare_dependencies === true,
+    },
+    arg_resolution_steps: argResolutionSteps,
+    input_resolution_status: buildInputResolutionStatus({
+      toolId: input.toolId,
+      caseContext,
+      resolvedArgs: input.resolvedArgs,
+      staleArtifacts,
+    }),
+    test_behavior: behavior,
+  };
+}
+
+function arraysEqualAsSet(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  const a = [...left].sort();
+  const b = [...right].sort();
+  return a.every((item, index) => item === b[index]);
+}
+
+function toolUsesPhotoAnalysis(toolId: string) {
+  return (
+    toolId === "prepare_listing_description_draft" ||
+    toolId === "notify_user" ||
+    toolId === "easybroker_create_listing" ||
+    toolId === "ungga_publish_listing"
+  );
+}
+
+type StalenessEvaluation = {
+  warnings: string[];
+  stale_artifacts: string[];
+};
+
+const STALENESS_ARTIFACTS_BY_TOOL: Record<string, string[]> = {
+  prepare_listing_description_draft: ["photo_analysis", "zone_context"],
+  notify_user: ["listing_description_draft", "listing_copy_ingredients"],
+  easybroker_create_listing: ["listing_description_draft", "listing_copy_ingredients"],
+  ungga_publish_listing: ["listing_description_draft", "listing_copy_ingredients"],
+  easybroker_upload_images: ["watermarked_photos"],
+};
+
+function artifactSignatureFromContext(
+  context: Record<string, unknown>,
+  artifact: string
+): string | null {
+  if (artifact === "watermarked_photos") {
+    return cleanText(context.watermarked_photos_property_identity_signature) || null;
+  }
+  const value = context[artifact];
+  if (!isRecord(value)) return null;
+  return cleanText(value.property_identity_signature) || null;
+}
+
+function artifactDisplayName(artifact: string): string {
+  if (artifact === "photo_analysis") return "photo_analysis";
+  if (artifact === "zone_context") return "zone_context";
+  if (artifact === "listing_description_draft") return "listing_description_draft";
+  if (artifact === "listing_copy_ingredients") return "listing_copy_ingredients";
+  if (artifact === "watermarked_photos") return "watermarked_photos";
+  return artifact;
+}
+
+function evaluateStalenessForTool(params: {
+  toolId: string;
+  caseContext?: Record<string, unknown> | null;
+  resolvedArgs: Record<string, unknown>;
+}): StalenessEvaluation {
+  const warnings: string[] = [];
+  const staleArtifacts = new Set<string>();
+  const ctx = params.caseContext;
+  if (!ctx) return { warnings, stale_artifacts: [] };
+  const currentSignature = buildPropertyIdentitySignature(ctx);
+
+  if (toolUsesPhotoAnalysis(params.toolId) && detectPhotoAnalysisStaleness(ctx)) {
+    warnings.push(
+      "photo_analysis fue generado con un set de fotos distinto al raw_photos actual; el borrador/payload puede estar desactualizado."
+    );
+    staleArtifacts.add("photo_analysis");
+  }
+
+  if (params.toolId === "easybroker_upload_images") {
+    const watermarked = resolveWatermarkedPathsFromContext(ctx);
+    const imagePaths = Array.isArray(params.resolvedArgs.image_paths)
+      ? params.resolvedArgs.image_paths
+          .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+          .filter(Boolean)
+      : [];
+    if (watermarked.length > 0 && imagePaths.length > 0 && !arraysEqualAsSet(imagePaths, watermarked)) {
+      warnings.push(
+        "Hay watermarked_photos disponibles en el caso, pero el upload está usando rutas diferentes."
+      );
+    } else if (watermarked.length === 0 && imagePaths.length > 0) {
+      warnings.push(
+        "No hay watermarked_photos persistidas; este upload valida imágenes crudas o paths manuales."
+      );
+    }
+  }
+
+  for (const artifact of STALENESS_ARTIFACTS_BY_TOOL[params.toolId] ?? []) {
+    const artifactSignature = artifactSignatureFromContext(ctx, artifact);
+    if (!artifactSignature) continue;
+    if (artifactSignature !== currentSignature) {
+      staleArtifacts.add(artifact);
+      warnings.push(
+        `${artifactDisplayName(artifact)} fue generado con otra identidad de propiedad; regenera este artefacto antes de validar/publicar.`
+      );
+    }
+  }
+
+  return { warnings, stale_artifacts: Array.from(staleArtifacts) };
+}
+
+function extractWatermarkedPaths(result: unknown): string[] {
+  if (!isRecord(result) || !Array.isArray(result.outputs)) return [];
+  return result.outputs
+    .map((entry) => (isRecord(entry) ? entry : null))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .filter((entry) => entry.ok === true)
+    .map((entry) => {
+      const bucket = cleanText(entry.output_bucket);
+      const path = cleanText(entry.output_path);
+      return bucket && path ? `${bucket}:${path}` : "";
+    })
+    .filter(Boolean)
+    .slice(0, TEST_PROPERTY_LISTING_PHOTOS_MAX);
+}
+
+async function stampPropertyIdentityOnCaseArtifacts(params: {
+  db: ReturnType<typeof createServerClient>;
+  caseId: string;
+  userId: string;
+  toolId: string;
+}) {
+  const opCase = await getOperationalCase(params.db, params.caseId);
+  if (!opCase || opCase.user_id !== params.userId) return;
+  const context = isRecord(opCase.context_jsonb)
+    ? (opCase.context_jsonb as Record<string, unknown>)
+    : {};
+  const signature = buildPropertyIdentitySignature(context);
+  let changed = false;
+  const nextContext: Record<string, unknown> = { ...context };
+
+  const stampRecord = (key: string) => {
+    const current = isRecord(nextContext[key]) ? { ...(nextContext[key] as Record<string, unknown>) } : null;
+    if (!current) return;
+    if (cleanText(current.property_identity_signature) === signature) return;
+    current.property_identity_signature = signature;
+    nextContext[key] = current;
+    changed = true;
+  };
+
+  if (params.toolId === "analyze_property_images") {
+    stampRecord("photo_analysis");
+  }
+  if (params.toolId === "lookup_property_surroundings") {
+    stampRecord("zone_context");
+  }
+  if (params.toolId === "prepare_listing_description_draft") {
+    stampRecord("listing_copy_ingredients");
+    stampRecord("listing_description_draft");
+  }
+  if (params.toolId === "image_watermark" && Array.isArray(nextContext.watermarked_photos)) {
+    if (cleanText(nextContext.watermarked_photos_property_identity_signature) !== signature) {
+      nextContext.watermarked_photos_property_identity_signature = signature;
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
+  await updateOperationalCase(params.db, opCase.id, opCase.version, {
+    context: nextContext,
+  });
+}
+
 function enrichCaseContextFromDocuments(
   ctx: Record<string, unknown>,
   documents: Awaited<ReturnType<typeof listOperationalCaseDocuments>>
@@ -2260,10 +2977,21 @@ async function resolveArgsForMode(params: {
       });
     const mapping = flowTool?.test_inputs_mapping;
     const recipe = TOOL_TEST_ARG_RECIPES[toolId];
+    const flowToolIntent = notifyUserIntentForFlowTool(flowTool);
 
     let derived: Record<string, unknown> = {};
     let source = "generic_param_name_match";
-    if (mapping && Object.keys(mapping).length > 0) {
+    if (recipe && flowToolIntent) {
+      derived = recipe({
+        ctx: mergeContextForToolRecipes(ctx),
+        testCase,
+        caseType,
+        skillSlug: readinessSkillSlug,
+        flowStepKey: readinessFlowStepKey,
+        flowTool,
+      });
+      source = "tool_recipe";
+    } else if (mapping && Object.keys(mapping).length > 0) {
       derived = applyTestInputsMapping(mapping, ctx);
       source = "flow_test_inputs_mapping";
     } else if (recipe) {
@@ -2273,6 +3001,7 @@ async function resolveArgsForMode(params: {
         caseType,
         skillSlug: readinessSkillSlug,
         flowStepKey: readinessFlowStepKey,
+        flowTool,
       });
       source = "tool_recipe";
     } else {
@@ -2282,7 +3011,9 @@ async function resolveArgsForMode(params: {
     // salvo en tools con datos de direccion/propiedad de fixture completo
     // (Avaclick, Geocoding): no deben mezclarse con el formulario del caso.
     const caseDefaults =
-      toolId === "get_avaclick_valuation" || toolId === "geocode_property_address"
+      toolId === "get_avaclick_valuation" ||
+      toolId === "geocode_property_address" ||
+      CASE_MODE_TOOLS_WITHOUT_SMOKE_DEFAULTS.has(toolId)
         ? {}
         : (TEST_DEFAULTS[toolId] ?? {});
     const merged = {
@@ -2328,6 +3059,7 @@ async function resolveArgsForMode(params: {
             caseType,
             skillSlug: readinessSkillSlug,
             flowStepKey: readinessFlowStepKey,
+            flowTool: scopedFlowTool,
           })
         : (() => {
             const fromContext = genericArgsFromContext(def, ctx);
@@ -2361,7 +3093,8 @@ async function resolveArgsForMode(params: {
     {
       ...smokeDefaultsForTool(toolId, caseType),
       ...(scopedFlowTool?.test_inputs_mapping &&
-      Object.keys(scopedFlowTool.test_inputs_mapping).length > 0
+      Object.keys(scopedFlowTool.test_inputs_mapping).length > 0 &&
+      !notifyUserIntentForFlowTool(scopedFlowTool)
         ? applyTestInputsMapping(scopedFlowTool.test_inputs_mapping, {})
         : {}),
       ...userArgs,
@@ -2443,13 +3176,13 @@ function documentKindFromAsset(asset: AccountAsset) {
 
 function documentKindLabel(kind: string) {
   const labels: Record<string, string> = {
-    escritura_descripcion: "Escritura - descripcion",
+    escritura_descripcion: "Escritura - descripción",
     predial: "Predial",
     ine: "INE",
     comprobante_domicilio: "Comprobante de domicilio",
     boleta_registral: "Boleta registral",
     escritura_primera_hoja: "Escritura - primera hoja",
-    escritura_ultima_hoja: "Escritura - ultima hoja",
+    escritura_ultima_hoja: "Escritura - última hoja",
     unknown: "Sin clasificar",
   };
   return labels[kind] ?? kind;
@@ -2583,6 +3316,99 @@ async function ensureSettingsTestDocumentArgs(params: {
           document_id: preferredDocument?.id,
         };
   }
+  return { ...params.args, case_id: caseId };
+}
+
+function hasApprovedPricingProposal(value: unknown) {
+  const proposal = isRecord(value) ? value : {};
+  const approvalStatus =
+    typeof proposal.approval_status === "string"
+      ? proposal.approval_status.trim().toLowerCase()
+      : "";
+  const salida = numericFromContext(proposal.salida);
+  const ideal = numericFromContext(proposal.ideal);
+  const minimo = numericFromContext(proposal.minimo);
+  return (
+    approvalStatus === "approved" &&
+    typeof salida === "number" &&
+    salida > 0 &&
+    typeof ideal === "number" &&
+    ideal > 0 &&
+    typeof minimo === "number" &&
+    minimo > 0
+  );
+}
+
+async function ensurePrepareListingDescriptionFixture(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  toolId: string;
+  args: Record<string, unknown>;
+  caseId?: string | null;
+  mode: ToolRunMode;
+  preview: boolean;
+}) {
+  if (params.toolId !== "prepare_listing_description_draft") return params.args;
+  if (params.mode !== "case") return params.args;
+  const caseId = cleanText(params.args.case_id) || cleanText(params.caseId);
+  if (!caseId) return params.args;
+
+  const opCase = await getOperationalCase(params.db, caseId);
+  if (!opCase) return params.args;
+  const context = isRecord(opCase.context_jsonb)
+    ? (opCase.context_jsonb as Record<string, unknown>)
+    : {};
+  if (
+    context.created_from !== "case_type_settings_test" &&
+    context.test_mode !== true
+  ) {
+    return { ...params.args, case_id: caseId };
+  }
+
+  let nextContext: Record<string, unknown> = context;
+  let changed = false;
+
+  const propertyData = isRecord(nextContext.property_data)
+    ? (nextContext.property_data as Record<string, unknown>)
+    : {};
+  if (Object.keys(propertyData).length === 0) {
+    nextContext = {
+      ...nextContext,
+      property_data: settingsTestPropertyDataSeed(nextContext),
+    };
+    changed = true;
+  }
+
+  if (!hasApprovedPricingProposal(nextContext.pricing_proposal)) {
+    const existingProposal = isRecord(nextContext.pricing_proposal)
+      ? (nextContext.pricing_proposal as Record<string, unknown>)
+      : {};
+    nextContext = {
+      ...nextContext,
+      pricing_proposal: {
+        ...settingsTestApprovedPricingProposalSeed(),
+        ...existingProposal,
+        approval_status: "approved",
+      },
+    };
+    changed = true;
+  }
+
+  if (resolveImagePathsFromRawPhotos(nextContext.raw_photos).length < 5) {
+    nextContext = await hydratePackageReadyListingPhotosInContext(
+      params.db,
+      params.userId,
+      nextContext
+    );
+    changed = true;
+  }
+
+  if (changed && !params.preview) {
+    await updateOperationalCase(params.db, opCase.id, opCase.version, {
+      context: nextContext,
+    });
+  }
+
   return { ...params.args, case_id: caseId };
 }
 
@@ -2842,11 +3668,41 @@ export async function POST(request: Request) {
       readinessFlowStepKey: cleanText(body.readiness_flow_step_key) || undefined,
       readinessFlowToolLabel: cleanText(body.readiness_flow_tool_label) || undefined,
     });
+    const flowToolForBehavior = resolveFlowToolForTest(flow, {
+      toolId,
+      flowStepKey: cleanText(body.readiness_flow_step_key) || undefined,
+      skillSlug: readinessSkillSlug || undefined,
+      toolLabel: cleanText(body.readiness_flow_tool_label) || undefined,
+    });
+    const baseBehavior = normalizeToolTestBehavior(
+      toolId,
+      flowToolForBehavior
+        ? toolTestBehaviorForFlowTool({
+            tool_id: flowToolForBehavior.tool_id,
+            tool_label: flowToolForBehavior.tool_label,
+            tool_description: flowToolForBehavior.tool_description,
+            test_inputs_mapping: flowToolForBehavior.test_inputs_mapping,
+          })
+        : toolTestBehaviorForTool(toolId)
+    );
     let resolvedArgs = await hydrateEasyBrokerUploadListingId({
       db,
       userId: user.id,
       toolId,
       args: resolution.args,
+    });
+    const earlyStaleness = evaluateStalenessForTool({
+      toolId,
+      caseContext: resolution.case_context_sample ?? null,
+      resolvedArgs,
+    });
+    const earlyResolutionMetadata = buildRunResolutionMetadata({
+      toolId,
+      behavior: baseBehavior,
+      requestedMode,
+      resolution,
+      resolvedArgs,
+      staleness: earlyStaleness,
     });
     try {
       resolvedArgs = await ensureSettingsTestDocumentArgs({
@@ -2859,6 +3715,15 @@ export async function POST(request: Request) {
         caseId: resolution.case_id ?? null,
         preview,
         mode: requestedMode,
+      });
+      resolvedArgs = await ensurePrepareListingDescriptionFixture({
+        db,
+        userId: user.id,
+        toolId,
+        args: resolvedArgs,
+        caseId: resolution.case_id ?? null,
+        mode: requestedMode,
+        preview,
       });
     } catch (err) {
       if (err instanceof MissingTestDocumentAssetError) {
@@ -2875,6 +3740,7 @@ export async function POST(request: Request) {
             mode_source: resolution.source,
             case_id: resolution.case_id ?? null,
             resolved_args: resolvedArgs,
+            ...earlyResolutionMetadata,
             error: "missing_test_document_asset",
             hint:
               "Sube primero el activo de prueba test_property_document. Sin ese documento, una lista vacia no valida el flujo documental.",
@@ -2882,8 +3748,41 @@ export async function POST(request: Request) {
           { status: 400 }
         );
       }
+      if (err instanceof MissingTestPropertyListingPhotosError) {
+        return NextResponse.json(
+          {
+            ok: false,
+            executed: false,
+            tool_id: toolId,
+            dry_run: true,
+            reason: "missing_test_listing_photos_asset",
+            risk: def.risk,
+            requested_mode: requestedMode,
+            mode_used: resolution.mode_used,
+            mode_source: resolution.source,
+            case_id: resolution.case_id ?? null,
+            resolved_args: resolvedArgs,
+            ...earlyResolutionMetadata,
+            error: "missing_test_listing_photos_asset",
+            hint: missingListingPhotosHint(err.minimumRequired),
+          },
+          { status: 400 }
+        );
+      }
       throw err;
     }
+    const baseResolutionMetadata = buildRunResolutionMetadata({
+      toolId,
+      behavior: baseBehavior,
+      requestedMode,
+      resolution,
+      resolvedArgs,
+      staleness: evaluateStalenessForTool({
+        toolId,
+        caseContext: resolution.case_context_sample ?? null,
+        resolvedArgs,
+      }),
+    });
 
     const controlledRealWriteRequested = body.controlled_real_write === true;
     const expectedControlledConfirmation = controlledRealWriteConfirmation(toolId);
@@ -2896,6 +3795,7 @@ export async function POST(request: Request) {
         {
           error: "controlled_real_write_not_allowed",
           hint: `Esta prueba real controlada requiere una tool permitida y escribir "${expectedControlledConfirmation}".`,
+          ...baseResolutionMetadata,
         },
         { status: 400 }
       );
@@ -2914,6 +3814,7 @@ export async function POST(request: Request) {
         hint:
           "Para enviar una prueba real por Telegram necesitas chat_id numérico y text. Usa Datos del caso o args avanzados.",
         resolved_args: resolvedArgs,
+        ...baseResolutionMetadata,
       },
       { status: 400 }
     );
@@ -2931,6 +3832,7 @@ export async function POST(request: Request) {
           hint:
             "Para crear un evento de prueba necesitas summary, start_datetime y end_datetime (la receta Caso de prueba ya los arma).",
           resolved_args: resolvedArgs,
+          ...baseResolutionMetadata,
         },
         { status: 400 }
       );
@@ -2946,6 +3848,7 @@ export async function POST(request: Request) {
           hint:
             "Para subir fotos realmente debes indicar un listing_id real de EasyBroker en los args avanzados o en el caso de prueba.",
           resolved_args: resolvedArgs,
+          ...baseResolutionMetadata,
         },
         { status: 400 }
       );
@@ -2958,6 +3861,24 @@ export async function POST(request: Request) {
             toolId === "easybroker_upload_images")
         ? { ...resolvedArgs, dry_run: true }
         : resolvedArgs;
+    const resolutionMetadata = buildRunResolutionMetadata({
+      toolId,
+      behavior: baseBehavior,
+      requestedMode,
+      resolution,
+      resolvedArgs: resolvedArgsForExecution,
+      staleness: evaluateStalenessForTool({
+        toolId,
+        caseContext: resolution.case_context_sample ?? null,
+        resolvedArgs: resolvedArgsForExecution,
+      }),
+    });
+    const stalenessEvaluation = evaluateStalenessForTool({
+      toolId,
+      caseContext: resolution.case_context_sample ?? null,
+      resolvedArgs: resolvedArgsForExecution,
+    });
+    const stalenessWarnings = stalenessEvaluation.warnings;
 
     if (preview) {
       return NextResponse.json({
@@ -2973,6 +3894,8 @@ export async function POST(request: Request) {
         case_id: resolution.case_id ?? null,
         case_context_sample: resolution.case_context_sample ?? null,
         resolved_args: resolvedArgsForExecution,
+        staleness_warnings: stalenessWarnings,
+        ...resolutionMetadata,
       });
     }
 
@@ -2989,6 +3912,8 @@ export async function POST(request: Request) {
         mode_source: resolution.source,
         case_id: resolution.case_id ?? null,
         resolved_args: resolvedArgsForExecution,
+        staleness_warnings: stalenessWarnings,
+        ...resolutionMetadata,
         hint:
           policy.reason === "medium_risk_requires_confirm"
             ? "Esta tool es de riesgo medio; envía confirm:true para ejecutarla desde la prueba individual."
@@ -3112,6 +4037,8 @@ export async function POST(request: Request) {
         mode_source: resolution.source,
         case_id: resolution.case_id ?? null,
         resolved_args: resolvedArgsForExecution,
+        staleness_warnings: stalenessWarnings,
+        ...resolutionMetadata,
         hint:
           "Falta un event_id real. En la misma preparación operativa abre «Crear evento de calendario», usa la sección «Crear evento de prueba en Google Calendar» (escribe CREAR EVENTO PRUEBA) y vuelve aquí; el id se guardará en el caso automáticamente. También puedes pegar un event_id manual en Avanzado.",
       });
@@ -3223,6 +4150,45 @@ export async function POST(request: Request) {
         persistedCalendarEventId = createdId;
       }
     }
+    if (
+      toolId === "image_watermark" &&
+      ok &&
+      resolution.case_id &&
+      isRecord(parsed)
+    ) {
+      const watermarkedPaths = extractWatermarkedPaths(parsed);
+      if (watermarkedPaths.length > 0) {
+        const opCase = await getOperationalCase(db, resolution.case_id);
+        if (opCase && opCase.user_id === user.id) {
+          const context = isRecord(opCase.context_jsonb)
+            ? (opCase.context_jsonb as Record<string, unknown>)
+            : {};
+          await updateOperationalCase(db, opCase.id, opCase.version, {
+            context: {
+              ...context,
+              watermarked_photos: watermarkedPaths,
+            },
+          });
+        }
+      }
+    }
+    if (
+      ok &&
+      resolution.case_id &&
+      [
+        "analyze_property_images",
+        "lookup_property_surroundings",
+        "prepare_listing_description_draft",
+        "image_watermark",
+      ].includes(toolId)
+    ) {
+      await stampPropertyIdentityOnCaseArtifacts({
+        db,
+        caseId: resolution.case_id,
+        userId: user.id,
+        toolId,
+      });
+    }
     return NextResponse.json({
       ok,
       executed: true,
@@ -3260,6 +4226,8 @@ export async function POST(request: Request) {
       mode_source: resolution.source,
       case_id: resolution.case_id ?? null,
       resolved_args: resolvedArgsForExecution,
+      staleness_warnings: stalenessWarnings,
+      ...resolutionMetadata,
       elapsed_ms: elapsedMs,
       error: invokeError,
       summary,

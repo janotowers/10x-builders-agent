@@ -440,6 +440,41 @@ function buildCaseE2ETickMessage(
           "Si hay muestra defendible, avanza a price_proposal_pending con status=active y notifica al asesor. Si data_quality.search_validity=insufficient_market_data y el caso quedará en waiting_internal, solicita decisión concreta con notify_user(kind=comparables_search_expansion_decision). Usa comparables_insufficient_data solo como resumen informativo no bloqueante. Si data_quality.search_validity=invalid_filters, corrige/reintenta y no notifiques insuficiencia.",
         ].join(" ")
       : "",
+    opCase.current_step === "package_ready"
+      ? (() => {
+          const review =
+            context.listing_description_review &&
+            typeof context.listing_description_review === "object" &&
+            !Array.isArray(context.listing_description_review)
+              ? (context.listing_description_review as Record<string, unknown>)
+              : null;
+          const reviewStatus =
+            typeof review?.status === "string" ? review.status : null;
+          if (
+            reviewStatus === "changes_requested" ||
+            reviewStatus === "highlights_added"
+          ) {
+            return [
+              "Acción esperada para este paso: el asesor pidió cambios en la descripción comercial.",
+              "Llama prepare_listing_description_draft(case_id) incorporando context_jsonb.listing_description_review.change_classification, listing_highlights y listing_description_replacement_candidate si existen.",
+              "Después envía notify_user(kind=listing_description_review) con el borrador actualizado para una nueva revisión humana.",
+              "No publiques en destinos ni marques listing_description_approved en este tick.",
+              "Deja current_step=package_ready y status=waiting_internal.",
+            ].join(" ");
+          }
+          if (context.listing_description_approved) {
+            return [
+              "Acción esperada para este paso: continúa publish-listing-package tras la aprobación de descripción.",
+              "Solicita aprobaciones de destino y publica solo donde corresponda approved.",
+            ].join(" ");
+          }
+          return [
+            "Acción esperada para este paso: ejecuta publish-listing-package.",
+            "Si aún no existe listing_description_draft, prepara borrador y solicita notify_user(kind=listing_description_review).",
+            "No publiques en destinos sin aprobación explícita.",
+          ].join(" ");
+        })()
+      : "",
   ].join(" ");
 }
 

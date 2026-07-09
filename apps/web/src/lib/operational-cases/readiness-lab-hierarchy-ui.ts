@@ -1,7 +1,7 @@
 /**
  * Estilos de jerarquía visual del laboratorio (paso → habilidad → tool).
  * Los niveles N0–N4 son nomenclatura de documentación/API; la UI usa color y
- * rótulos («HABILIDAD», «Herramientas de integración / acción»), no chips N1/N3.
+ * rótulos («HABILIDAD», «Herramientas / acciones»), no chips N1/N3.
  * Doc: docs/operational-cases/testing-framework.md § UI v1.1
  */
 

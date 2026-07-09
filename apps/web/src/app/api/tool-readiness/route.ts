@@ -44,6 +44,12 @@ import {
   partitionFlowSteps,
   readinessToolIdsForStep,
 } from "@/lib/operational-cases/tool-surface-classification";
+import {
+  normalizeToolTestBehavior,
+  toolTestBehaviorForFlowTool,
+  toolTestBehaviorForTool,
+  type ToolTestBehavior,
+} from "@/lib/tool-readiness/tool-test-behavior";
 
 type ReadinessStatus = "ready" | "needs_config" | "stub" | "missing" | "unknown";
 type ReadinessCategory =
@@ -98,6 +104,7 @@ type ToolReadinessItem = {
   last_tested_at?: string | null;
   asset_requirements?: ToolAssetRequirementStatus[];
   test_asset_requirements?: ToolAssetRequirementStatus[];
+  test_behavior: ToolTestBehavior;
 };
 
 type SkillTestStatus =
@@ -481,6 +488,10 @@ function classifyTool(params: {
   const base = {
     risk: params.def?.risk,
     requires_integration: params.def?.requires_integration,
+    test_behavior: normalizeToolTestBehavior(
+      params.toolId,
+      toolTestBehaviorForTool(params.toolId)
+    ),
     test_asset_requirements: testAssetRequirements.length
       ? testAssetRequirements
       : undefined,
@@ -1461,9 +1472,18 @@ function enrichFlow(params: {
 
   function enrichTool(tool: OperationalCaseFlowTool) {
     mapped.add(tool.tool_id);
+    const readiness = params.toolsById.get(tool.tool_id) ?? null;
     return {
       ...tool,
-      readiness: params.toolsById.get(tool.tool_id) ?? null,
+      readiness: readiness
+        ? {
+            ...readiness,
+            test_behavior: normalizeToolTestBehavior(
+              tool.tool_id,
+              toolTestBehaviorForFlowTool(tool)
+            ),
+          }
+        : null,
     };
   }
 

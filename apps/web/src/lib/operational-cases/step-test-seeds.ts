@@ -32,15 +32,9 @@ function packageReadyBaseSeed(
     contract_review: isRecord(context.contract_review)
       ? { status: "sent_by_email", ...(context.contract_review as Record<string, unknown>) }
       : { status: "sent_by_email" },
-    raw_photos: Array.isArray(context.raw_photos)
-      ? context.raw_photos
-      : [
-          "account-assets:test/photo-1.jpg",
-          "account-assets:test/photo-2.jpg",
-          "account-assets:test/photo-3.jpg",
-          "account-assets:test/photo-4.jpg",
-          "account-assets:test/photo-5.jpg",
-        ],
+    ...(Array.isArray(context.raw_photos) && context.raw_photos.length > 0
+      ? { raw_photos: context.raw_photos }
+      : {}),
     skill_test_n4_seed: scenarioId,
   };
 }
@@ -248,7 +242,21 @@ export function stepTestContextEnrichment(
           ? context.photo_analysis
           : {
               visible_spaces: ["sala", "cocina", "recámara principal", "baño"],
+              features_by_space: {
+                sala: ["buena iluminación natural", "acabados neutros"],
+                cocina: ["cocina integral"],
+              },
               visible_features: ["buena iluminación", "acabados neutros"],
+              photo_coverage: {
+                facade: "unclear",
+                kitchen: "visible",
+                dining_room: "unclear",
+                living_room: "visible",
+                primary_bedroom: "visible",
+                bathroom: "not_visible",
+                outdoor: "not_visible",
+                parking: "not_visible",
+              },
               do_not_claim: ["roof garden", "amenidades no visibles"],
             },
         zone_context: isRecord(context.zone_context)

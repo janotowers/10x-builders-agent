@@ -35,6 +35,11 @@ import { validatePackageReadyPreflightOutcome } from "@/lib/operational-cases/pa
 import { validatePhotosRequestedInternalOutcome } from "@/lib/operational-cases/photos-requested-internal-validation";
 import { settingsTestPropertyDataSeed } from "@/lib/operational-cases/property-search-zone";
 import { settingsTestApprovedPricingProposalSeed } from "@/lib/operational-cases/step-test-seeds";
+import {
+  hydratePackageReadyListingPhotosInContext,
+  MissingTestPropertyListingPhotosError,
+  missingListingPhotosHint,
+} from "@/lib/operational-cases/test-property-listing-photos";
 import { isolateContextForSkillTest } from "@/lib/operational-cases/settings-test-run-isolation";
 import {
   ensureSettingsTestExternalContact,
@@ -562,23 +567,22 @@ async function applyPackageReadySkillTestSeed(
   );
   const propertyData = settingsTestPropertyDataSeed(context);
 
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    currentStep: "package_ready",
-    status: "active" as OperationalCaseStatus,
-    context: mergeSkillTestContext(context, {
+  const nextContext = await hydratePackageReadyListingPhotosInContext(
+    db,
+    opCase.user_id,
+    mergeSkillTestContext(context, {
       property_data: propertyData,
       pricing_proposal: settingsTestApprovedPricingProposalSeed(),
       contract_review: { status: "sent_by_email" },
-      raw_photos: [
-        "account-assets:test/photo-1.jpg",
-        "account-assets:test/photo-2.jpg",
-        "account-assets:test/photo-3.jpg",
-        "account-assets:test/photo-4.jpg",
-        "account-assets:test/photo-5.jpg",
-      ],
       publish_approvals: { easybroker: "pending", ungga: "pending", manual: "pending" },
       skill_test_n3_seed: "package_ready_description_review_requested",
-    }),
+    })
+  );
+
+  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+    currentStep: "package_ready",
+    status: "active" as OperationalCaseStatus,
+    context: nextContext,
   });
   return updated ?? opCase;
 }
@@ -1381,6 +1385,15 @@ export async function POST(request: Request) {
       case: after,
     });
   } catch (err) {
+    if (err instanceof MissingTestPropertyListingPhotosError) {
+      return NextResponse.json(
+        {
+          error: err.message,
+          hint: missingListingPhotosHint(err.minimumRequired),
+        },
+        { status: 400 }
+      );
+    }
     console.error("[POST /api/tool-readiness/run-skill] failed:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }

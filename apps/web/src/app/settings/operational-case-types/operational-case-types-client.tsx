@@ -54,6 +54,11 @@ import {
   stepTestAvailable,
   stepTestScenariosFor,
 } from "@/lib/operational-cases/step-test-scenarios";
+import { detectStepScenarioFixtureDrift } from "@/lib/operational-cases/step-test-scenario-fixture-drift";
+import {
+  hydratePropertyOptioningTestContextDraft,
+  isPropertyOptioningAreaFieldPair,
+} from "@/lib/operational-cases/property-optioning-intake-schema";
 import {
   flowProgressRuntimeBadgeLabel,
   flowProgressRuntimeBadgeTitle,
@@ -135,6 +140,15 @@ import {
   toolCallFailureDetail,
   toolCallStatusLabel,
 } from "@/lib/operational-cases/settings-test-flow-progress";
+import {
+  normalizeToolTestBehavior,
+  type ToolTestBehavior,
+} from "@/lib/tool-readiness/tool-test-behavior";
+import {
+  mapNaturalAndTechnicalLabels,
+  naturalAndTechnicalLabel,
+} from "@/lib/tool-readiness/readiness-labels";
+import { resolveAssetRequirementPresentation } from "@/lib/tool-readiness/asset-requirement-presentation";
 import { formatE2EActivityDateTime } from "@/lib/operational-cases/settings-test-datetime";
 import { formatOperationalCaseEventSummary } from "@/lib/operational-cases/operational-case-event-display";
 import type { LastE2ETransitionOutcome } from "@/lib/operational-cases/settings-test-e2e-transitions";
@@ -526,6 +540,7 @@ type ToolReadinessToolItem = {
   last_tested_at?: string | null;
   asset_requirements?: ToolAssetRequirementStatus[];
   test_asset_requirements?: ToolAssetRequirementStatus[];
+  test_behavior?: ToolTestBehavior;
 };
 
 type ToolAssetRequirementStatus = {
@@ -1473,7 +1488,9 @@ function stepExpandableSummaryHint(step: ToolReadinessFlowStep) {
   }
   if (toolCount > 0) {
     parts.push(
-      `${toolCount} integración${toolCount === 1 ? "" : "es"} / acción${toolCount === 1 ? "" : "es"}`
+      toolCount === 1
+        ? "1 herramienta / acción"
+        : `${toolCount} herramientas / acciones`
     );
   }
   return parts.length > 0 ? parts.join(" · ") : null;
@@ -1545,8 +1562,6 @@ function formatFileSize(bytes: number | null | undefined) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const TEST_PROPERTY_DOCUMENT_ASSET_KEY = "test_property_document";
-
 const COMMISSION_CONTRACT_TEMPLATE_ASSET_KEY = "commission_contract_template";
 const DOCX_TEMPLATE_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -1569,13 +1584,6 @@ const PROPERTY_DOCUMENT_KIND_OPTIONS = [
   { value: "escritura_ultima_hoja", label: "Escritura - última hoja" },
   { value: "unknown", label: "Sin clasificar" },
 ] as const;
-
-function isPropertyDocumentRequirement(requirement: ToolAssetRequirementStatus) {
-  return (
-    requirement.asset_key === TEST_PROPERTY_DOCUMENT_ASSET_KEY ||
-    requirement.asset_key.startsWith(`${TEST_PROPERTY_DOCUMENT_ASSET_KEY}__`)
-  );
-}
 
 function propertyDocumentKindLabel(value: unknown) {
   const kind = typeof value === "string" ? value : "";
@@ -1645,6 +1653,22 @@ function AccountAssetUploadPanel({
     );
   }
 
+  function assetSecondaryMetaLine(
+    requirement: ToolAssetRequirementStatus,
+    asset: AccountAsset
+  ) {
+    const presentation = resolveAssetRequirementPresentation(requirement);
+    const contentType = asset.content_type ?? "archivo";
+    const size = formatFileSize(asset.file_size_bytes);
+    if (presentation.showDocumentKindSelector) {
+      return `${propertyDocumentKindLabel(asset.metadata_jsonb?.document_kind)} · ${contentType} · ${size}`;
+    }
+    if (presentation.kind === "listing_photo") {
+      return `Foto de propiedad · ${contentType} · ${size}`;
+    }
+    return `${contentType} · ${size}`;
+  }
+
   async function uploadAsset(
     requirement: ToolAssetRequirementStatus,
     file: File,
@@ -1667,7 +1691,7 @@ function AccountAssetUploadPanel({
       formData.set("source_tool_id", item.tool_id);
       formData.set("case_type_id", row.id);
       formData.set("file", file);
-      if (isPropertyDocumentRequirement(requirement)) {
+      if (resolveAssetRequirementPresentation(requirement).showDocumentKindSelector) {
         formData.set("document_kind", documentKindForRequirement(requirement));
       }
       const res = await fetch("/api/account-assets", {
@@ -1707,7 +1731,7 @@ function AccountAssetUploadPanel({
     }
     const filesToUpload = selectedFiles.slice(0, availableSlots);
     if (filesToUpload.length < selectedFiles.length) {
-      setMessage(`Sólo se agregarán ${availableSlots} archivo(s); máximo ${maxCount}.`);
+      setMessage(`Sólo se agregarán ${availableSlots} archivos; máximo ${maxCount}.`);
     }
     const usedKeys = new Set((requirement.assets ?? []).map((asset) => asset.asset_key));
     try {
@@ -1774,6 +1798,7 @@ function AccountAssetUploadPanel({
         ) : null}
       </div>
       {effectiveRequirements.map((requirement) => {
+        const presentation = resolveAssetRequirementPresentation(requirement);
         const isCollection = isCollectionRequirement(requirement);
         const assets = requirement.assets?.length
           ? requirement.assets
@@ -1831,9 +1856,7 @@ function AccountAssetUploadPanel({
                           {String(asset.metadata_jsonb?.original_name ?? asset.display_name)}
                         </div>
                         <div className="font-mono text-[10px] text-neutral-400">
-                          {propertyDocumentKindLabel(asset.metadata_jsonb?.document_kind)} ·{" "}
-                          {asset.content_type ?? "archivo"} ·{" "}
-                          {formatFileSize(asset.file_size_bytes)}
+                          {assetSecondaryMetaLine(requirement, asset)}
                         </div>
                       </div>
                       <button
@@ -1849,25 +1872,26 @@ function AccountAssetUploadPanel({
                 </div>
               ) : null}
               <p className="text-[11px] text-neutral-500">
-                {assets.length} archivo(s) listos · mínimo {minCount}, máximo {maxCount}.
+                {assets.length} {presentation.collectionReadyLabel} · mínimo {minCount},
+                máximo {maxCount}.
               </p>
             </div>
           ) : requirement.asset ? (
             <p className="mt-1 text-[11px] text-neutral-500">
-              Actual:{" "}
+              {presentation.currentPrefix}:{" "}
               {String(
                 requirement.asset.metadata_jsonb?.original_name ??
                   requirement.asset.display_name
               )}{" "}
               ·{" "}
-              {isPropertyDocumentRequirement(requirement)
+              {presentation.showDocumentKindSelector
                 ? `${propertyDocumentKindLabel(requirement.asset.metadata_jsonb?.document_kind)} · `
                 : ""}
               {requirement.asset.content_type ?? "archivo"} ·{" "}
               {formatFileSize(requirement.asset.file_size_bytes)}
             </p>
           ) : null}
-          {isPropertyDocumentRequirement(requirement) ? (
+          {presentation.showDocumentKindSelector ? (
             <label className="mt-2 block text-[11px] text-neutral-600">
               <span className="font-semibold">Tipo de documento</span>
               <select
@@ -1898,10 +1922,10 @@ function AccountAssetUploadPanel({
             {submittingKey?.startsWith(requirement.asset_key)
               ? "Subiendo..."
               : isCollection
-                ? "Agregar documento"
+                ? presentation.addButtonLabel
                 : requirement.configured
-                ? "Reemplazar recurso"
-                : "Subir recurso"}
+                  ? presentation.replaceButtonLabel
+                  : presentation.addButtonLabel}
             <input
               type="file"
               className="hidden"
@@ -1931,6 +1955,21 @@ function AccountAssetUploadPanel({
 
 type ToolTestMode = "smoke" | "case";
 
+type InputResolutionStatus = {
+  key: string;
+  label: string;
+  status: "available" | "missing" | "stale" | "manual_override";
+  source:
+    | "property_data"
+    | "case_context"
+    | "artifact"
+    | "manual_override"
+    | "test_asset"
+    | "account_asset";
+  artifact?: string;
+  action_hint?: string;
+};
+
 interface ToolTestResponse {
   ok: boolean;
   executed?: boolean;
@@ -1943,6 +1982,21 @@ interface ToolTestResponse {
   mode_source?: string;
   case_id?: string | null;
   resolved_args: Record<string, unknown>;
+  user_facing_test_type?: string;
+  recommended_mode_label?: string;
+  data_sources_used?: string[];
+  artifacts_read?: string[];
+  artifacts_persisted_expected?: string[];
+  dependency_status?: {
+    requires_dependencies?: boolean;
+    missing_required_artifacts?: string[];
+    available_required_artifacts?: string[];
+    can_prepare_dependencies?: boolean;
+  };
+  arg_resolution_steps?: string[];
+  input_resolution_status?: InputResolutionStatus[];
+  staleness_warnings?: string[];
+  test_behavior?: ToolTestBehavior;
   elapsed_ms?: number;
   error?: string | null;
   hint?: string;
@@ -1957,13 +2011,13 @@ interface ToolTestResponse {
 }
 
 const MODE_LABELS: Record<ToolTestMode, string> = {
-  smoke: "Smoke test",
-  case: "Caso de prueba",
+  smoke: "Smoke (defaults)",
+  case: "Con formulario/caso",
 };
 
 const MODE_DESCRIPTIONS: Record<ToolTestMode, string> = {
   smoke:
-    "Args mínimos genéricos (plantilla). Si la tool requiere un caso de prueba y existe, smoke puede enlazar case_id automáticamente. La tool recibe únicamente el JSON mostrado.",
+    "Args mínimos genéricos (plantilla). Ideal para validar conectividad/configuración. Si una tool técnica requiere caso, el resultado mostrará explícitamente si se enlazó al caso.",
   case:
     "Args armados desde el contexto del caso de prueba del laboratorio (más overrides en Avanzado). La tool recibe sólo ese JSON resuelto, no un formulario paralelo en runtime.",
 };
@@ -1982,17 +2036,6 @@ function documentToolReadinessHint(toolId: string, flowStepKey?: string) {
       return null;
   }
 }
-
-const MODE_SOURCE_LABELS: Record<string, string> = {
-  smoke_defaults: "smoke defaults",
-  smoke_bound_test_case: "smoke con caso de prueba (case_id + versión)",
-  manual_user_args: "args manuales",
-  flow_test_inputs_mapping: "mapping del flow",
-  tool_recipe: "recipe por tool",
-  generic_param_name_match: "match por nombre de param",
-  fallback_smoke_no_test_case: "fallback smoke (sin caso de prueba)",
-  preview_only: "preview",
-};
 
 const CONTROLLED_WRITE_COPY: Record<
   string,
@@ -2037,6 +2080,13 @@ type OutcomeVariant = "success" | "warning" | "error" | "info";
 
 const WIZARD_PRIMARY_BUTTON_CLASS =
   "rounded bg-violet-700 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-violet-300 disabled:text-violet-100 dark:disabled:bg-violet-900/50 dark:disabled:text-violet-300";
+
+const TOOL_DEPENDENCY_OUTPUTS: Record<string, string[]> = {
+  analyze_property_images: ["photo_analysis"],
+  lookup_property_surroundings: ["zone_context"],
+  geocode_property_address: ["property_data.address.formatted_address"],
+  easybroker_create_listing: ["published.easybroker.listing_id"],
+};
 
 function outcomePanelClass(variant: OutcomeVariant) {
   switch (variant) {
@@ -2379,6 +2429,41 @@ function ToolTestPanel({
   });
 
   const requiresConfirm = item.risk === "medium" && !confirm;
+  const testBehavior = normalizeToolTestBehavior(item.tool_id, item.test_behavior);
+  const testBehaviorClass =
+    testBehavior.kind === "case_assembler"
+      ? "border-sky-200 bg-sky-50 text-sky-900"
+      : testBehavior.kind === "case_backed"
+        ? "border-indigo-200 bg-indigo-50 text-indigo-900"
+        : testBehavior.kind === "prior_artifact"
+          ? "border-amber-200 bg-amber-50 text-amber-900"
+          : "border-emerald-200 bg-emerald-50 text-emerald-900";
+  const behaviorPreconditions = mapNaturalAndTechnicalLabels(testBehavior.prerequisites);
+  const behaviorReads = mapNaturalAndTechnicalLabels(testBehavior.reads_from_case);
+  const behaviorPersists = mapNaturalAndTechnicalLabels(testBehavior.persists_to_case);
+  const behaviorDownstream = mapNaturalAndTechnicalLabels(testBehavior.downstream_for);
+  const behaviorDataSources = mapNaturalAndTechnicalLabels(testBehavior.data_sources ?? []);
+  const behaviorArtifacts = mapNaturalAndTechnicalLabels(
+    testBehavior.required_artifacts ?? []
+  );
+  const behaviorDependencySteps = testBehavior.dependency_steps ?? [];
+  const behaviorDataSourceSet = new Set(
+    behaviorDataSources.map((entry) => entry.toLocaleLowerCase("es-MX"))
+  );
+  const showUserFacingTestTypeChip =
+    Boolean(testBehavior.user_facing_test_type) &&
+    testBehavior.user_facing_test_type?.trim().toLocaleLowerCase("es-MX") !==
+      testBehavior.label.trim().toLocaleLowerCase("es-MX");
+
+  function dependencyStepCopy(step: string) {
+    const generatedArtifacts = TOOL_DEPENDENCY_OUTPUTS[step];
+    if (generatedArtifacts && generatedArtifacts.length > 0) {
+      return `${naturalAndTechnicalLabel(step)} genera ${generatedArtifacts
+        .map((artifact) => naturalAndTechnicalLabel(artifact))
+        .join(", ")}`;
+    }
+    return naturalAndTechnicalLabel(step);
+  }
 
   function lockPageScrollForPanelLayout() {
     scrollLockRef.current = capturePageScroll(readinessFlowScrollEl);
@@ -2544,6 +2629,15 @@ function ToolTestPanel({
           mode_source: data.mode_source,
           case_id: data.case_id ?? caseId ?? null,
           resolved_args: data.resolved_args,
+          user_facing_test_type: data.user_facing_test_type,
+          recommended_mode_label: data.recommended_mode_label,
+          data_sources_used: data.data_sources_used,
+          artifacts_read: data.artifacts_read,
+          artifacts_persisted_expected: data.artifacts_persisted_expected,
+          dependency_status: data.dependency_status,
+          arg_resolution_steps: data.arg_resolution_steps,
+          input_resolution_status: data.input_resolution_status,
+          test_behavior: data.test_behavior,
         });
       }
       if (
@@ -2666,6 +2760,60 @@ function ToolTestPanel({
       : isEasyBrokerUploadScenario
         ? "Sube fotos de prueba al borrador resuelto. B queda disponible cuando hay un listing_id de EasyBroker, normalmente creado en A."
       : controlledWriteCopy?.description;
+  const previewUsesPersistedListingDraft =
+    item.tool_id === "notify_user" &&
+    preview?.resolved_args?.kind === "listing_description_review";
+
+  function renderInputResolutionStatus(
+    entries: InputResolutionStatus[] | undefined,
+    compact = false
+  ) {
+    if (!entries || entries.length === 0) return null;
+    return (
+      <div
+        className={
+          compact
+            ? "mt-1 rounded border border-violet-200 bg-white/70 px-2 py-1"
+            : "rounded border border-neutral-200 bg-neutral-50 p-2"
+        }
+      >
+        <p className="font-semibold">
+          {compact ? "Datos usados por esta prueba:" : "Datos usados por esta prueba"}
+        </p>
+        <ul className="mt-1 space-y-1">
+          {entries.map((entry) => {
+            const statusCopy =
+              entry.status === "available"
+                ? "disponible"
+                : entry.status === "stale"
+                  ? "stale"
+                  : entry.status === "manual_override"
+                    ? "override manual"
+                    : "falta";
+            const toneClass =
+              entry.status === "available"
+                ? "text-emerald-800"
+                : entry.status === "stale"
+                  ? "text-amber-900"
+                  : "text-rose-700";
+            return (
+              <li key={`${entry.key}-${entry.source}`} className="text-[11px]">
+                <span className={`font-semibold ${toneClass}`}>{entry.label}:</span>{" "}
+                <span className={toneClass}>{statusCopy}</span>{" "}
+                <span className="text-neutral-600">
+                  ({naturalAndTechnicalLabel(entry.source)}
+                  {entry.artifact ? ` · ${naturalAndTechnicalLabel(entry.artifact)}` : ""})
+                </span>
+                {entry.action_hint ? (
+                  <span className="text-neutral-600"> — {entry.action_hint}</span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  }
 
   const controlledWriteSection = controlledWriteCopy ? (
     <div className="space-y-2 rounded border-2 border-violet-400 bg-violet-50/90 p-3 text-xs text-violet-950 shadow-sm dark:border-violet-700 dark:bg-violet-950/40">
@@ -2783,6 +2931,106 @@ function ToolTestPanel({
         })}
       </div>
       <p className="text-[11px] text-neutral-500">{MODE_DESCRIPTIONS[mode]}</p>
+      <div className={`rounded border p-2 text-[11px] ${testBehaviorClass}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold">Tipo de prueba:</span>
+          <span className="rounded bg-white/70 px-1.5 py-0.5 font-medium">
+            {testBehavior.label}
+          </span>
+          {showUserFacingTestTypeChip ? (
+            <span className="rounded bg-white/70 px-1.5 py-0.5">
+              {testBehavior.user_facing_test_type}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-1">{testBehavior.summary}</p>
+        <p className="mt-1 text-current/80">{testBehavior.mode_hint}</p>
+        {testBehavior.recommended_mode_label ? (
+          <p className="mt-1">
+            <span className="font-semibold">Modo recomendado:</span>{" "}
+            {testBehavior.recommended_mode_label}
+          </p>
+        ) : null}
+        <details className="mt-2 rounded border border-current/20 bg-white/60 px-2 py-1">
+          <summary className="cursor-pointer font-semibold">Contrato de la prueba</summary>
+          {behaviorDataSources.length > 0 ? (
+            <div className="mt-2">
+              <p className="font-semibold">Fuentes de datos esperadas:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {behaviorDataSources.map((entry) => (
+                  <li key={entry}>{entry}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {behaviorArtifacts.length > 0 ? (
+            <div className="mt-2">
+              <p className="font-semibold">Artefactos requeridos:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {behaviorArtifacts.map((artifact) => (
+                  <li key={artifact}>{artifact}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {behaviorDependencySteps.length > 0 ? (
+            <div className="mt-2">
+              <p className="font-semibold">Cómo se generan normalmente:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {behaviorDependencySteps.map((entry) => (
+                  <li key={entry}>{dependencyStepCopy(entry)}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {behaviorPreconditions.length > 0 ? (
+            <div className="mt-2">
+              <p className="font-semibold">Precondiciones esperadas:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {behaviorPreconditions.map((prerequisite) => (
+                  <li key={prerequisite}>{prerequisite}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {behaviorReads.length > 0 ? (
+            <div className="mt-2">
+              <p className="font-semibold">Lee del caso:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {behaviorReads.map((entry) => (
+                  <li key={entry}>{entry}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {behaviorPersists.length > 0 ? (
+            <div className="mt-2">
+              <p className="font-semibold">Persiste en el caso:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {behaviorPersists.map((entry) => (
+                  <li key={entry}>{entry}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {behaviorDownstream.length > 0 ? (
+            <div className="mt-2">
+              <p className="font-semibold">Habilita a continuación:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {behaviorDownstream.map((entry) => (
+                  <li key={entry}>{entry}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </details>
+        {testBehavior.smoke_uses_case_when_present ? (
+          <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-900">
+            Nota: en esta tool, Smoke puede enlazarse al caso cuando existe un
+            fixture.
+          </p>
+        ) : null}
+      </div>
       {item.tool_id === "operational_case_create" ? (
         <p className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">
           Esta prueba crea un caso real adicional en{" "}
@@ -2816,8 +3064,16 @@ function ToolTestPanel({
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold">Args a usar:</span>
             <span className="text-violet-700">
-              fuente: {MODE_SOURCE_LABELS[preview.mode_source ?? ""] ?? preview.mode_source ?? "—"}
+              fuente:{" "}
+              {preview.mode_source
+                ? naturalAndTechnicalLabel(preview.mode_source)
+                : "—"}
             </span>
+            {preview.user_facing_test_type ? (
+              <span className="rounded bg-white/70 px-1.5 py-0.5">
+                tipo: {preview.user_facing_test_type}
+              </span>
+            ) : null}
             {preview.case_id ? (
               <span
                 className="break-all font-mono text-[10px] text-violet-700"
@@ -2830,6 +3086,71 @@ function ToolTestPanel({
               <span className="text-violet-700">recalculando…</span>
             ) : null}
           </div>
+          {preview.recommended_mode_label ? (
+            <p className="mt-1 text-violet-800">
+              modo recomendado: {preview.recommended_mode_label}
+            </p>
+          ) : null}
+          {preview.data_sources_used &&
+          preview.data_sources_used.length > 0 &&
+          preview.data_sources_used.some(
+            (entry) =>
+              !behaviorDataSourceSet.has(
+                naturalAndTechnicalLabel(entry).toLocaleLowerCase("es-MX")
+              )
+          ) ? (
+            <p className="mt-1">
+              <span className="font-semibold">Fuentes usadas:</span>{" "}
+              {preview.data_sources_used
+                .map((entry) => naturalAndTechnicalLabel(entry))
+                .join(", ")}
+            </p>
+          ) : null}
+          {renderInputResolutionStatus(preview.input_resolution_status, true)}
+          {preview.staleness_warnings && preview.staleness_warnings.length > 0 ? (
+            <div className="mt-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-900">
+              <p className="font-semibold">Coherencia de artefactos:</p>
+              {preview.staleness_warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          ) : null}
+          {preview.dependency_status?.requires_dependencies ? (
+            <>
+              <p className="mt-1">
+                <span className="font-semibold">Dependencias:</span>{" "}
+                {preview.dependency_status.missing_required_artifacts &&
+                preview.dependency_status.missing_required_artifacts.length > 0
+                  ? `faltan ${preview.dependency_status.missing_required_artifacts
+                      .map((entry) => naturalAndTechnicalLabel(entry))
+                      .join(", ")}.`
+                  : "listas."}
+              </p>
+              {preview.dependency_status.available_required_artifacts &&
+              preview.dependency_status.available_required_artifacts.length > 0 ? (
+                <p className="mt-1 text-violet-800">
+                  ya disponibles:{" "}
+                  {preview.dependency_status.available_required_artifacts
+                    .map((entry) => naturalAndTechnicalLabel(entry))
+                    .join(", ")}
+                </p>
+              ) : null}
+              {preview.dependency_status.missing_required_artifacts &&
+              preview.dependency_status.missing_required_artifacts.length > 0 ? (
+                <p className="mt-1 text-violet-800">
+                  Corre primero las tools anteriores del paso o el escenario N4
+                  correspondiente.
+                </p>
+              ) : null}
+            </>
+          ) : null}
+          {previewUsesPersistedListingDraft ? (
+            <p className="mt-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-900">
+              Este preview usa el borrador de descripción persistido en el caso. Si
+              corregiste datos o acabas de correr herramientas previas, regenera
+              primero <span className="font-mono">prepare_listing_description_draft</span>.
+            </p>
+          ) : null}
           <pre className="mt-1 overflow-x-auto rounded bg-white/70 p-1 font-mono text-[11px]">
             {stringifyToolArgsForDisplay(preview.resolved_args)}
           </pre>
@@ -2860,7 +3181,7 @@ function ToolTestPanel({
             ? "Validando..."
             : showTelegramGuidedScenario
               ? `Validar mensaje (${MODE_LABELS[mode]})`
-              : `Probar tool (${MODE_LABELS[mode]})`}
+              : `Probar herramienta (${MODE_LABELS[mode]})`}
         </button>
         <button
           type="button"
@@ -2968,6 +3289,12 @@ function ToolTestPanel({
                 modo: {MODE_LABELS[response.mode_used]}
               </span>
             ) : null}
+            {response.mode_source ? (
+              <span className="text-neutral-500">
+                fuente args:{" "}
+                {naturalAndTechnicalLabel(response.mode_source)}
+              </span>
+            ) : null}
             {response.summary?.status ? (
               <span className="text-neutral-500">
                 status: {response.summary.status}
@@ -2984,6 +3311,91 @@ function ToolTestPanel({
               </span>
             ) : null}
           </div>
+          {response.user_facing_test_type ? (
+            <p className="text-neutral-700">
+              <span className="font-semibold">Tipo de prueba:</span>{" "}
+              {response.user_facing_test_type}
+              {response.recommended_mode_label
+                ? ` · recomendado: ${response.recommended_mode_label}`
+                : ""}
+            </p>
+          ) : null}
+          {response.data_sources_used &&
+          response.data_sources_used.length > 0 &&
+          response.data_sources_used.some(
+            (entry) =>
+              !behaviorDataSourceSet.has(
+                naturalAndTechnicalLabel(entry).toLocaleLowerCase("es-MX")
+              )
+          ) ? (
+            <p className="text-neutral-700">
+              <span className="font-semibold">Fuente de datos:</span>{" "}
+              {response.data_sources_used
+                .map((entry) => naturalAndTechnicalLabel(entry))
+                .join(", ")}
+            </p>
+          ) : null}
+          {renderInputResolutionStatus(response.input_resolution_status)}
+          {response.artifacts_read && response.artifacts_read.length > 0 ? (
+            <p className="text-neutral-700">
+              <span className="font-semibold">Leyó:</span>{" "}
+              {response.artifacts_read
+                .map((entry) => naturalAndTechnicalLabel(entry))
+                .join(", ")}
+            </p>
+          ) : null}
+          {response.artifacts_persisted_expected &&
+          response.artifacts_persisted_expected.length > 0 ? (
+            <p className="text-neutral-700">
+              <span className="font-semibold">Puede persistir:</span>{" "}
+              {response.artifacts_persisted_expected
+                .map((entry) => naturalAndTechnicalLabel(entry))
+                .join(", ")}
+            </p>
+          ) : null}
+          {response.dependency_status?.requires_dependencies ? (
+            <>
+              <p className="text-neutral-700">
+                <span className="font-semibold">Estado de dependencias:</span>{" "}
+                {response.dependency_status.missing_required_artifacts &&
+                response.dependency_status.missing_required_artifacts.length > 0
+                  ? `faltan ${response.dependency_status.missing_required_artifacts
+                      .map((entry) => naturalAndTechnicalLabel(entry))
+                      .join(", ")}.`
+                  : "listas."}
+              </p>
+              {response.dependency_status.available_required_artifacts &&
+              response.dependency_status.available_required_artifacts.length > 0 ? (
+                <p className="text-neutral-700">
+                  <span className="font-semibold">Ya disponibles:</span>{" "}
+                  {response.dependency_status.available_required_artifacts
+                    .map((entry) => naturalAndTechnicalLabel(entry))
+                    .join(", ")}
+                </p>
+              ) : null}
+              {response.dependency_status.missing_required_artifacts &&
+              response.dependency_status.missing_required_artifacts.length > 0 ? (
+                <p className="text-neutral-700">
+                  Corre primero las tools anteriores del paso o el escenario N4
+                  correspondiente.
+                </p>
+              ) : null}
+            </>
+          ) : null}
+          {response.arg_resolution_steps && response.arg_resolution_steps.length > 0 ? (
+            <p className="text-neutral-500">
+              resolución:{" "}
+              {response.arg_resolution_steps.join(" · ")}
+            </p>
+          ) : null}
+          {response.staleness_warnings && response.staleness_warnings.length > 0 ? (
+            <div className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-900">
+              <p className="font-semibold">Coherencia de artefactos:</p>
+              {response.staleness_warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          ) : null}
           {usedFallbackSmoke ? (
             <p className="text-amber-800">
               No se encontró caso de prueba; se ejecutó en modo smoke.
@@ -3102,7 +3514,7 @@ function ToolTestPanel({
               ? "Prueba solicitud de documentos"
             : isGenericTelegramGuidedScenario
               ? "Prueba de mensaje a contacto externo"
-            : "Prueba individual de tool"}
+            : "Prueba individual de herramienta"}
         </div>
         <span className="text-[11px] text-neutral-500">Riesgo: {riskLabel(item.risk)}</span>
       </div>
@@ -3259,123 +3671,153 @@ function TestCaseContextForm({
         </button>
       </div>
       <div className="mt-3 grid gap-2 md:grid-cols-2">
-        {fields.map((field) => {
-          const value = draft[field.name] ?? "";
+        {fields.map((field, index) => {
+          if (
+            field.name === "area_construida_m2" &&
+            fields[index - 1]?.name === "area_total_m2"
+          ) {
+            return null;
+          }
           const commonClass =
             "mt-1 w-full rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-950";
-          const headerNode = (
-            <div className="flex flex-wrap items-baseline gap-1">
-              <span className="font-semibold">
-                {field.label}
-                {field.required ? " *" : ""}
-              </span>
-              <span className="font-mono text-[10px] text-neutral-400">
-                {field.name}
-              </span>
-            </div>
-          );
-          // Nota: NO usamos <label> exterior porque algunos tipos (multi_select)
-          // renderizan <label> por cada checkbox y la anidación de <label> es
-          // HTML inválido y provoca toggles dobles al hacer click en una opción.
-          if (field.type === "multi_select") {
-            return (
-              <div key={field.name}>
-                {headerNode}
-                <div className="mt-1 flex flex-wrap gap-2 rounded border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-800 dark:bg-neutral-950">
-                  {(field.options ?? []).map((option) => {
-                    const optionValue = intakeOptionValue(option);
-                    const selected = draftArray(value).includes(optionValue);
-                    return (
-                      <label
-                        key={optionValue}
-                        className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] dark:bg-neutral-900"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          onChange={(event) => {
-                            const current = draftArray(value);
-                            onChange(
-                              field.name,
-                              event.target.checked
-                                ? Array.from(new Set([...current, optionValue]))
-                                : current.filter((item) => item !== optionValue)
-                            );
-                          }}
-                        />
-                        {intakeOptionLabel(option)}
-                      </label>
-                    );
-                  })}
+          const renderFieldBody = (targetField: OperationalCaseIntakeField) => {
+            const targetValue = draft[targetField.name] ?? "";
+            const headerNode = (
+              <div className="flex flex-wrap items-baseline gap-1">
+                <span className="font-semibold">
+                  {targetField.label}
+                  {targetField.required ? " *" : ""}
+                </span>
+                <span className="font-mono text-[10px] text-neutral-400">
+                  {targetField.name}
+                </span>
+              </div>
+            );
+            const helpNode = targetField.help_text ? (
+              <p className="mt-1 text-[11px] text-neutral-500">
+                {targetField.help_text}
+              </p>
+            ) : null;
+            if (targetField.type === "multi_select") {
+              return (
+                <div key={targetField.name}>
+                  {headerNode}
+                  <div className="mt-1 flex flex-wrap gap-2 rounded border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-800 dark:bg-neutral-950">
+                    {(targetField.options ?? []).map((option) => {
+                      const optionValue = intakeOptionValue(option);
+                      const selected = draftArray(targetValue).includes(optionValue);
+                      return (
+                        <label
+                          key={optionValue}
+                          className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] dark:bg-neutral-900"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={(event) => {
+                              const current = draftArray(targetValue);
+                              onChange(
+                                targetField.name,
+                                event.target.checked
+                                  ? Array.from(new Set([...current, optionValue]))
+                                  : current.filter((item) => item !== optionValue)
+                              );
+                            }}
+                          />
+                          {intakeOptionLabel(option)}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {helpNode}
                 </div>
-                {field.help_text ? (
-                  <p className="mt-1 text-[11px] text-neutral-500">
-                    {field.help_text}
-                  </p>
-                ) : null}
+              );
+            }
+            return (
+              <label key={targetField.name} className="block">
+                {headerNode}
+                {targetField.type === "textarea" ? (
+                  <textarea
+                    value={draftString(targetValue)}
+                    onChange={(event) =>
+                      onChange(targetField.name, event.target.value)
+                    }
+                    rows={3}
+                    placeholder={targetField.placeholder}
+                    className={commonClass}
+                  />
+                ) : targetField.type === "select" ? (
+                  <select
+                    value={draftString(targetValue)}
+                    onChange={(event) =>
+                      onChange(targetField.name, event.target.value)
+                    }
+                    className={commonClass}
+                  >
+                    <option value="">Selecciona...</option>
+                    {(targetField.options ?? []).map((option) => (
+                      <option
+                        key={intakeOptionValue(option)}
+                        value={intakeOptionValue(option)}
+                      >
+                        {intakeOptionLabel(option)}
+                      </option>
+                    ))}
+                  </select>
+                ) : targetField.type === "number" ? (
+                  <div className="relative">
+                    <input
+                      type="number"
+                      value={draftString(targetValue)}
+                      onChange={(event) =>
+                        onChange(targetField.name, event.target.value)
+                      }
+                      placeholder={targetField.placeholder}
+                      min={targetField.min ?? 0}
+                      max={targetField.max}
+                      step={targetField.step ?? 1}
+                      onWheel={(event) => event.currentTarget.blur()}
+                      className={`${commonClass} ${targetField.unit ? "pr-14" : ""}`}
+                    />
+                    {targetField.unit ? (
+                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-500">
+                        {targetField.unit}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    value={draftString(targetValue)}
+                    onChange={(event) =>
+                      onChange(targetField.name, event.target.value)
+                    }
+                    placeholder={targetField.placeholder}
+                    className={commonClass}
+                  />
+                )}
+                {helpNode}
+              </label>
+            );
+          };
+
+          if (isPropertyOptioningAreaFieldPair(fields, index)) {
+            const builtField = fields[index + 1]!;
+            return (
+              <div
+                key="area-surfaces-group"
+                className="space-y-2 rounded border border-neutral-200 bg-neutral-50/70 p-2 md:col-span-2 md:max-w-sm dark:border-neutral-800 dark:bg-neutral-950/40"
+              >
+                <div className="text-[11px] font-semibold text-neutral-600 dark:text-neutral-300">
+                  Superficies
+                </div>
+                {renderFieldBody(field)}
+                {renderFieldBody(builtField)}
               </div>
             );
           }
-          const helpNode = field.help_text ? (
-            <p className="mt-1 text-[11px] text-neutral-500">
-              {field.help_text}
-            </p>
-          ) : null;
-          return (
-            <label key={field.name} className="block">
-              {headerNode}
-              {field.type === "textarea" ? (
-                <textarea
-                  value={draftString(value)}
-                  onChange={(event) => onChange(field.name, event.target.value)}
-                  rows={3}
-                  placeholder={field.placeholder}
-                  className={commonClass}
-                />
-              ) : field.type === "select" ? (
-                <select
-                  value={draftString(value)}
-                  onChange={(event) => onChange(field.name, event.target.value)}
-                  className={commonClass}
-                >
-                  <option value="">Selecciona...</option>
-                  {(field.options ?? []).map((option) => (
-                    <option key={intakeOptionValue(option)} value={intakeOptionValue(option)}>
-                      {intakeOptionLabel(option)}
-                    </option>
-                  ))}
-                </select>
-              ) : field.type === "number" ? (
-                <div className="relative">
-                  <input
-                    type="number"
-                    value={draftString(value)}
-                    onChange={(event) => onChange(field.name, event.target.value)}
-                    placeholder={field.placeholder}
-                    min={field.min ?? 0}
-                    max={field.max}
-                    step={field.step ?? 1}
-                    onWheel={(event) => event.currentTarget.blur()}
-                    className={`${commonClass} ${field.unit ? "pr-14" : ""}`}
-                  />
-                  {field.unit ? (
-                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-500">
-                      {field.unit}
-                    </span>
-                  ) : null}
-                </div>
-              ) : (
-                <input
-                  type="text"
-                  value={draftString(value)}
-                  onChange={(event) => onChange(field.name, event.target.value)}
-                  placeholder={field.placeholder}
-                  className={commonClass}
-                />
-              )}
-              {helpNode}
-            </label>
-          );
+
+          return renderFieldBody(field);
         })}
       </div>
       {message ? <p className="mt-2 text-[11px] text-neutral-600">{message}</p> : null}
@@ -3635,7 +4077,7 @@ function comparableContributionSummary(artifacts?: Record<string, unknown>) {
     numberFromRecord(stats, "internal_inventory_count") ??
     arrayCountFromRecord(comparables, "internal_inventory") ??
     0;
-  return `Datos aportados al analisis: activas ${active} · historicas ${historical} · internas ${internal}.`;
+  return `Datos aportados al análisis: activas ${active} · históricas ${historical} · internas ${internal}.`;
 }
 
 /** Contrato N3: el escenario no exige validar este bloque (no es "falta dato"). */
@@ -4178,6 +4620,7 @@ function StepTestPanel({
   caseTypeSlug,
   hasTestCase,
   caseId,
+  caseContextJsonb,
   onFinished,
 }: {
   step: ToolReadinessFlowStep;
@@ -4185,6 +4628,7 @@ function StepTestPanel({
   caseTypeSlug: string;
   hasTestCase: boolean;
   caseId?: string | null;
+  caseContextJsonb?: Record<string, unknown> | null;
   onFinished: () => Promise<void>;
 }) {
   const [running, setRunning] = useState(false);
@@ -4238,6 +4682,12 @@ function StepTestPanel({
   const selectedScenario =
     scenarios.find((scenario) => scenario.id === selectedScenarioId) ??
     scenarios[0];
+  const scenarioFixtureDrift = selectedScenario
+    ? detectStepScenarioFixtureDrift(
+        selectedScenario.id,
+        caseContextJsonb ?? null
+      )
+    : [];
   const stepToolCalls = response?.tool_calls ?? [];
   const stepBusinessToolCalls = stepToolCalls.filter(
     (call) => !STEP_TEST_INTERNAL_TOOL_NAMES.has(call.tool_name)
@@ -4442,6 +4892,20 @@ function StepTestPanel({
             {selectedScenario.expect_summary ??
               "Salida: contrato esperado del paso."}
           </p>
+          {scenarioFixtureDrift.length > 0 ? (
+            <div className="mt-2 space-y-1 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-amber-950">
+              <p className="font-semibold">Estado actual del caso vs semilla del escenario</p>
+              {scenarioFixtureDrift.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+              <p className="text-[10px] text-amber-800">
+                run-step aplica la semilla al iniciar; este aviso describe el
+                fixture persistido antes de la corrida. Tras pruebas N1 el caso
+                puede haber cambiado — regenera el caso si necesitas repetir el
+                escenario con datos limpios.
+              </p>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -6702,6 +7166,12 @@ export function OperationalCaseTypesClient({
   >(null);
   const [toolRequestError, setToolRequestError] = useState<string | null>(null);
   const [toolReadinessLoading, setToolReadinessLoading] = useState(false);
+  const toolReadinessRetryTimeoutRef = useRef<number | null>(null);
+  const toolReadinessRetryCountRef = useRef(0);
+  // Tracks the case type whose initial lab data load was already attempted, so a
+  // failed fetch does not re-trigger the load effect in a tight loop (which
+  // floods the server with requests when the session expired or the API errors).
+  const initialLabCaseLoadRef = useRef<string | null>(null);
   const [testCaseResult, setTestCaseResult] =
     useState<OperationalCaseTestResult | null>(null);
   const [conversationalLabResult, setConversationalLabResult] =
@@ -6750,6 +7220,22 @@ export function OperationalCaseTypesClient({
     position: PageScrollPosition;
     until: number;
   } | null>(null);
+
+  function clearToolReadinessRetry() {
+    if (toolReadinessRetryTimeoutRef.current === null) return;
+    window.clearTimeout(toolReadinessRetryTimeoutRef.current);
+    toolReadinessRetryTimeoutRef.current = null;
+  }
+
+  function scheduleToolReadinessRetry(row: OperationalCaseType) {
+    if (toolReadinessRetryCountRef.current >= 2) return;
+    clearToolReadinessRetry();
+    toolReadinessRetryCountRef.current += 1;
+    toolReadinessRetryTimeoutRef.current = window.setTimeout(() => {
+      toolReadinessRetryTimeoutRef.current = null;
+      void refreshToolReadiness(row, { silent: true });
+    }, 2500);
+  }
 
   const sortedCaseTypes = useMemo(
     () =>
@@ -7116,6 +7602,12 @@ export function OperationalCaseTypesClient({
   }, [activeTab, selectedCaseType?.id, activeConversationalCaseId]);
 
   useEffect(() => {
+    clearToolReadinessRetry();
+    toolReadinessRetryCountRef.current = 0;
+    return clearToolReadinessRetry;
+  }, [selectedCaseType?.id]);
+
+  useEffect(() => {
     if (
       activeTab !== "lab" ||
       !selectedCaseType ||
@@ -7154,20 +7646,17 @@ export function OperationalCaseTypesClient({
     ) {
       return;
     }
-    if (!testCaseResult && !testCaseLoading) {
-      void refreshTestCase(selectedCaseType);
+    // Attempt the initial load exactly once per case type. Previously this
+    // effect depended on the result/loading state, so a failed fetch reset the
+    // state to null/false and immediately re-fired the effect, hammering the
+    // API in a loop. The silent poll below keeps data fresh afterwards.
+    if (initialLabCaseLoadRef.current === selectedCaseType.id) {
+      return;
     }
-    if (!conversationalLabResult && !conversationalLabLoading) {
-      void refreshConversationalCase(selectedCaseType);
-    }
-  }, [
-    activeTab,
-    conversationalLabResult,
-    conversationalLabLoading,
-    selectedCaseType,
-    testCaseResult,
-    testCaseLoading,
-  ]);
+    initialLabCaseLoadRef.current = selectedCaseType.id;
+    void refreshTestCase(selectedCaseType);
+    void refreshConversationalCase(selectedCaseType);
+  }, [activeTab, selectedCaseType]);
 
   useEffect(() => {
     if (
@@ -7297,10 +7786,15 @@ export function OperationalCaseTypesClient({
       setTestContextMessage(null);
       return;
     }
-    const next: TestContextDraft = {};
-    for (const field of testContextFields) {
-      next[field.name] = draftValue(opCase.context_jsonb?.[field.name]);
-    }
+    const contextJson = opCase.context_jsonb;
+    const next = hydratePropertyOptioningTestContextDraft(
+      testContextFields,
+      contextJson &&
+        typeof contextJson === "object" &&
+        !Array.isArray(contextJson)
+        ? (contextJson as Record<string, unknown>)
+        : {}
+    );
     setTestContextDraft(next);
     setTestContextMessage(null);
   }, [testCaseResult?.case, testContextFields]);
@@ -7346,6 +7840,8 @@ export function OperationalCaseTypesClient({
     options?: { silent?: boolean }
   ) {
     if (scopeLabel(row) === "global") {
+      clearToolReadinessRetry();
+      toolReadinessRetryCountRef.current = 0;
       setToolReadiness(null);
       setToolReadinessError(null);
       setExpandedReadinessTools(new Set());
@@ -7357,6 +7853,8 @@ export function OperationalCaseTypesClient({
     }
     const scrollPosition = capturePageScroll(readinessFlowScrollRef.current);
     if (!options?.silent) {
+      clearToolReadinessRetry();
+      toolReadinessRetryCountRef.current = 0;
       setToolReadinessLoading(true);
     }
     setToolReadinessError(null);
@@ -7375,10 +7873,16 @@ export function OperationalCaseTypesClient({
       if (!res.ok || !("ok" in data)) {
         setToolReadiness(null);
         setToolReadinessError(
-          "error" in data ? data.error : "No se pudo revisar la preparación operativa."
+          res.status === 401
+            ? "Tu sesión expiró. Vuelve a iniciar sesión y recarga la página."
+            : "error" in data
+              ? data.error
+              : "No se pudo revisar la preparación operativa."
         );
         return;
       }
+      clearToolReadinessRetry();
+      toolReadinessRetryCountRef.current = 0;
       setToolReadiness({
         summary: data.summary,
         case_e2e_status: data.case_e2e_status,
@@ -7392,7 +7896,11 @@ export function OperationalCaseTypesClient({
     } catch (err) {
       console.warn("[operational-case-types] tool readiness failed:", err);
       setToolReadiness(null);
-      setToolReadinessError((err as Error).message ?? String(err));
+      const message = (err as Error).message ?? String(err);
+      setToolReadinessError(message);
+      if (message === "Failed to fetch") {
+        scheduleToolReadinessRetry(row);
+      }
     } finally {
       if (!options?.silent) {
         setToolReadinessLoading(false);
@@ -9962,6 +10470,16 @@ export function OperationalCaseTypesClient({
                               caseTypeSlug={row.case_type}
                               hasTestCase={Boolean(testCaseResult?.case)}
                               caseId={testCaseResult?.case?.id ?? null}
+                              caseContextJsonb={
+                                testCaseResult?.case?.context_jsonb &&
+                                typeof testCaseResult.case.context_jsonb === "object" &&
+                                !Array.isArray(testCaseResult.case.context_jsonb)
+                                  ? (testCaseResult.case.context_jsonb as Record<
+                                      string,
+                                      unknown
+                                    >)
+                                  : null
+                              }
                               onFinished={async () => {
                                 await refreshToolReadiness(row);
                                 await refreshTestCase(row);
@@ -10016,7 +10534,7 @@ export function OperationalCaseTypesClient({
                                 ) : null}
                                 <div className={READINESS_LAB_TOOLS_SECTION}>
                                   <div className={READINESS_LAB_TOOLS_LABEL}>
-                                    Herramientas de integración / acción
+                                    Herramientas / acciones
                                   </div>
                                   {(() => {
                                     const { readinessVisible, internal } =
@@ -10065,7 +10583,7 @@ export function OperationalCaseTypesClient({
                           {step.step_tools.length > 0 ? (
                             <div className={READINESS_LAB_STEP_TOOLS_SECTION}>
                               <div className={READINESS_LAB_TOOLS_LABEL}>
-                                Herramientas de integración / acción
+                                Herramientas / acciones
                               </div>
                               {(() => {
                                 const { readinessVisible, internal } =

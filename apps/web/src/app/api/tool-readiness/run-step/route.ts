@@ -61,6 +61,12 @@ import { runBusinessDecisionStepTest } from "@/lib/operational-cases/step-test-b
 import type { BusinessDecisionKind } from "@/lib/business-decisions/registry";
 import { stepTestContextEnrichment } from "@/lib/operational-cases/step-test-seeds";
 import {
+  hydratePackageReadyListingPhotosInContext,
+  MissingTestPropertyListingPhotosError,
+  missingListingPhotosHint,
+  packageReadyN4ScenarioNeedsListingPhotos,
+} from "@/lib/operational-cases/test-property-listing-photos";
+import {
   applyPropertyDataSeedRules,
   isolateContextForStepTest,
 } from "@/lib/operational-cases/settings-test-run-isolation";
@@ -270,8 +276,11 @@ async function enrichStepTestSeed(
   if (scenarioId === COMPARABLES_INSUFFICIENT_N4_SCENARIO_ID) {
     delete merged.comparables_analysis;
   }
+  const nextContext = packageReadyN4ScenarioNeedsListingPhotos(scenarioId)
+    ? await hydratePackageReadyListingPhotosInContext(db, opCase.user_id, merged)
+    : merged;
   const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    context: merged,
+    context: nextContext,
   });
   return updated ?? opCase;
 }
@@ -495,7 +504,7 @@ function validateStepExpect(
     const rawPhotos = contextValue(context, "raw_photos");
     if (Array.isArray(rawPhotos) && rawPhotos.length >= 5) {
       step_outcome_errors.push(
-        "raw_photos no debe tener 5+ fotos en el escenario de preflight bloqueado."
+        `validación N4: el escenario «preflight bloqueado» exige fixture con menos de 5 fotos; el caso tiene ${rawPhotos.length}. Regenera el caso de laboratorio o elige otro escenario.`
       );
     }
   }
@@ -794,6 +803,24 @@ async function executeStepTestRun(runId: string) {
       turnId,
     });
   } catch (err) {
+    if (err instanceof MissingTestPropertyListingPhotosError) {
+      const hint = missingListingPhotosHint(err.minimumRequired);
+      await finishOperationalCaseTestRun(db, {
+        runId,
+        status: "failed",
+        error: err.message,
+        result: {
+          ok: false,
+          status: "tested_failed",
+          error: err.message,
+          hint,
+          run_id: runId,
+          duration_ms: Date.now() - startedMs,
+        },
+        turnId,
+      });
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     console.error("[run-step] async test run failed:", err);
     await finishOperationalCaseTestRun(db, {
