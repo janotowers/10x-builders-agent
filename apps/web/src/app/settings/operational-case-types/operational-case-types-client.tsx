@@ -1207,6 +1207,7 @@ function templateScopePresentation(isGlobal: boolean) {
       listBadge: "Producto global",
       detailBadge: "Plantilla de producto (global)",
       hint: "Incluida con el producto; solo lectura.",
+      metadataValue: "Producto global",
     };
   }
   return {
@@ -1215,7 +1216,43 @@ function templateScopePresentation(isGlobal: boolean) {
     listBadge: "Cuenta",
     detailBadge: "Plantilla de esta cuenta",
     hint: "Propia de tu cuenta; editable.",
+    metadataValue: "Cuenta",
   };
+}
+
+function caseTypeStatusLabel(status: string | null | undefined) {
+  const normalized = (status ?? "active").trim().toLowerCase();
+  if (normalized === "active") return "activo";
+  if (normalized === "draft") return "borrador";
+  if (normalized === "archived") return "archivado";
+  return status ?? "active";
+}
+
+function CaseTypeMetadataChip({
+  label,
+  value,
+  mono = false,
+  valueClassName = "",
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  valueClassName?: string;
+}) {
+  return (
+    <span className="inline-flex max-w-full min-w-0 flex-wrap items-center gap-1.5 text-[11px]">
+      <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
+        {label}
+      </span>
+      <span
+        className={`max-w-full truncate rounded px-2 py-1 ${
+          mono ? "font-mono" : ""
+        } ${valueClassName || "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"}`}
+      >
+        {value}
+      </span>
+    </span>
+  );
 }
 
 function skillKindLabel(kind: string) {
@@ -10900,73 +10937,80 @@ export function OperationalCaseTypesClient({
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="w-full rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              Caso de uso seleccionado
-            </div>
-            <div className="mt-2 flex w-full flex-col gap-2">
-              <select
-                value={selectedCaseType?.id ?? ""}
-                onChange={(event) => {
-                  const next = sortedCaseTypes.find(
-                    (row) => row.id === event.target.value
-                  );
-                  if (next) viewCaseType(next);
-                }}
-                className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold dark:border-neutral-700 dark:bg-neutral-950"
-              >
-                <option value="" disabled>
-                  Selecciona un caso de uso
-                </option>
-                {sortedCaseTypes.map((row) => {
-                  const duplicateName =
-                    sortedCaseTypes.filter(
-                      (candidate) => candidate.display_name === row.display_name
-                    ).length > 1;
-                  const scopeUi = templateScopePresentation(
-                    scopeLabel(row) === "global"
-                  );
-                  return (
-                    <option key={row.id} value={row.id}>
-                      {duplicateName
-                        ? `${row.display_name} (${scopeUi.listBadge})`
-                        : row.display_name}
-                    </option>
-                  );
-                })}
-              </select>
-              {selectedCaseType ? (
-                <div className="flex min-w-0 flex-wrap gap-1.5 text-[11px]">
-                  <span className="max-w-full truncate rounded bg-neutral-100 px-2 py-1 font-mono text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                    {selectedCaseType.case_type}
-                  </span>
-                  <span className="max-w-full truncate rounded bg-violet-50 px-2 py-1 font-mono text-violet-700">
-                    {selectedCaseType.default_skill_slug}
-                  </span>
-                  <span className="rounded bg-neutral-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                    {selectedCaseType.status ?? "active"}
-                  </span>
-                  <span className="rounded bg-neutral-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                    {scopeLabel(selectedCaseType) === "global"
-                      ? "producto"
-                      : "cuenta"}
-                  </span>
-                </div>
-              ) : null}
-            </div>
-            <p className="mt-2 text-sm text-neutral-500">
-              Elige la plantilla desde el selector. Los metadatos técnicos
-              aparecen debajo como referencia.
-            </p>
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            Caso de uso seleccionado
           </div>
-          <button
-            type="button"
-            onClick={startNew}
-            className="rounded bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800"
-          >
-            + Nuevo caso de uso
-          </button>
+          <div className="mt-2 flex w-full flex-col gap-2 sm:flex-row sm:items-center">
+            <select
+              value={selectedCaseType?.id ?? ""}
+              onChange={(event) => {
+                const next = sortedCaseTypes.find(
+                  (row) => row.id === event.target.value
+                );
+                if (next) viewCaseType(next);
+              }}
+              className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold dark:border-neutral-700 dark:bg-neutral-950 sm:min-w-0 sm:flex-1"
+            >
+              <option value="" disabled>
+                Selecciona un caso de uso
+              </option>
+              {sortedCaseTypes.map((row) => {
+                const duplicateName =
+                  sortedCaseTypes.filter(
+                    (candidate) => candidate.display_name === row.display_name
+                  ).length > 1;
+                const scopeUi = templateScopePresentation(
+                  scopeLabel(row) === "global"
+                );
+                return (
+                  <option key={row.id} value={row.id}>
+                    {duplicateName
+                      ? `${row.display_name} (${scopeUi.listBadge})`
+                      : row.display_name}
+                  </option>
+                );
+              })}
+            </select>
+            <button
+              type="button"
+              onClick={startNew}
+              className="shrink-0 rounded bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800"
+            >
+              + Nuevo caso de uso
+            </button>
+          </div>
+          {selectedCaseType ? (
+            <div className="mt-2 flex min-w-0 flex-wrap gap-x-4 gap-y-2">
+              <CaseTypeMetadataChip
+                label="Flujo de trabajo:"
+                value={selectedCaseType.case_type}
+                mono
+              />
+              <CaseTypeMetadataChip
+                label="Habilidad raíz:"
+                value={selectedCaseType.default_skill_slug}
+                mono
+                valueClassName="bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-200"
+              />
+              <CaseTypeMetadataChip
+                label="Estado:"
+                value={caseTypeStatusLabel(selectedCaseType.status)}
+              />
+              <CaseTypeMetadataChip
+                label="Alcance:"
+                value={
+                  templateScopePresentation(
+                    scopeLabel(selectedCaseType) === "global"
+                  ).metadataValue
+                }
+              />
+            </div>
+          ) : null}
+          <p className="mt-2 text-sm text-neutral-500">
+            Elige la plantilla desde el selector. Los metadatos técnicos
+            aparecen debajo con su significado.
+          </p>
         </div>
       </div>
 
