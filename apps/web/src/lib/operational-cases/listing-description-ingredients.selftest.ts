@@ -39,4 +39,20 @@ const missing = collectListingDescriptionIngredients({
 assert.ok(missing.missingIngredients.includes("raw_photos>=5"));
 assert.ok(missing.missingIngredients.includes("advisor_highlights"));
 
+const addressFallback = collectListingDescriptionIngredients({
+  property_data: {
+    address: {
+      city: "Zapopan",
+      state: "Jalisco",
+      neighborhood: "Seattle",
+      formatted_address: "Seattle, Zapopan, Jalisco, MX",
+    },
+  },
+  raw_photos: [],
+});
+assert.equal(addressFallback.municipality, "Zapopan");
+assert.equal(addressFallback.state, "Jalisco");
+assert.equal(addressFallback.neighborhood, "Seattle");
+assert.equal(addressFallback.legalAddress, "Seattle, Zapopan, Jalisco, MX");
+
 console.log("listing-description-ingredients.selftest: ok");

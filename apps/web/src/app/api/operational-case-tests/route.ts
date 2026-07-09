@@ -20,6 +20,32 @@ import {
   effectiveFlowForCaseType,
 } from "@/lib/operational-cases/settings-test-case-response";
 import { runSettingsTestSafeCheck } from "@/lib/operational-cases/settings-test-safe-check";
+import { settingsTestPropertyDataSeed } from "@/lib/operational-cases/property-search-zone";
+import { syncLabFormIntoPropertyData } from "@/lib/operational-cases/lab-form-property-data-sync";
+
+/**
+ * Construye `property_data` canónico del caso de prueba a partir del formulario.
+ * Arranca de la property_data existente (o del seed de piloto si está vacía) y
+ * aplica los valores del formulario con precedencia por fuente (documentos > lab_form).
+ */
+function buildCanonicalPropertyData(
+  context: Record<string, unknown>
+): Record<string, unknown> {
+  const existingPd =
+    context.property_data &&
+    typeof context.property_data === "object" &&
+    !Array.isArray(context.property_data)
+      ? (context.property_data as Record<string, unknown>)
+      : {};
+  const basePd =
+    Object.keys(existingPd).length > 0
+      ? existingPd
+      : settingsTestPropertyDataSeed(context);
+  return syncLabFormIntoPropertyData({
+    formContext: context,
+    propertyData: basePd,
+  }).propertyData;
+}
 
 async function findLatestSettingsTestCase(
   db: ReturnType<typeof createServerClient>,
@@ -204,6 +230,7 @@ export async function POST(request: Request) {
       test_mode: true,
       case_type_id: caseType.id,
     };
+    context.property_data = buildCanonicalPropertyData(context);
     const externalName =
       String(context.owner_name ?? "").trim() ||
       String(context.lead_name ?? "").trim() ||
@@ -532,6 +559,8 @@ export async function PATCH(request: Request) {
     nextContext.title =
       String(nextContext.title ?? "").trim() ||
       `${caseType.display_name} - prueba`;
+
+    nextContext.property_data = buildCanonicalPropertyData(nextContext);
 
     const externalName =
       String(nextContext.owner_name ?? "").trim() ||

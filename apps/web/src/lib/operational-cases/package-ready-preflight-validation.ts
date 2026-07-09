@@ -75,12 +75,10 @@ export function collectPackageReadyPreflightMissingData(
     cleanText(propertyData.legal_address) ||
     cleanText(propertyData.street) ||
     cleanText(propertyData.address);
-  const targetPrice =
-    typeof pricingProposal.target_price === "number" && Number.isFinite(pricingProposal.target_price)
-      ? pricingProposal.target_price
-      : typeof propertyData.target_price === "number" && Number.isFinite(propertyData.target_price)
-        ? propertyData.target_price
-        : null;
+  const listingPrice =
+    typeof pricingProposal.salida === "number" && Number.isFinite(pricingProposal.salida)
+      ? pricingProposal.salida
+      : null;
 
   if (!propertyType) missing.push("property_type");
   if (!operationType) missing.push("operation_type");
@@ -88,8 +86,8 @@ export function collectPackageReadyPreflightMissingData(
   if (!hasAddress || !municipality || !state) {
     missing.push("address_municipality_state");
   }
-  if (!targetPrice || targetPrice <= 0) {
-    missing.push("target_price");
+  if (!listingPrice || listingPrice <= 0) {
+    missing.push("pricing_proposal.salida");
   }
 
   const bedrooms =
@@ -101,7 +99,11 @@ export function collectPackageReadyPreflightMissingData(
   const areaTotal =
     typeof propertyData.area_total_m2 === "number" ? propertyData.area_total_m2 : null;
   const areaBuilt =
-    typeof propertyData.area_built_m2 === "number" ? propertyData.area_built_m2 : null;
+    typeof propertyData.area_construida_m2 === "number"
+      ? propertyData.area_construida_m2
+      : typeof propertyData.area_built_m2 === "number"
+        ? propertyData.area_built_m2
+        : null;
 
   const normalizedType = propertyType.toLowerCase();
   if (normalizedType.includes("casa") || normalizedType.includes("depart")) {
@@ -163,7 +165,7 @@ export function validatePackageReadyPreflightOutcome(params: {
   const photoCount = rawPhotosCount(params.context);
   if (photoCount >= 5) {
     errors.push(
-      "raw_photos no debe tener 5+ fotos en el escenario de preflight bloqueado."
+      `validación N4: el escenario «preflight bloqueado» exige fixture con menos de 5 fotos; el caso tiene ${photoCount}. Regenera el caso de laboratorio o elige otro escenario.`
     );
   }
   return { ok: errors.length === 0, errors };

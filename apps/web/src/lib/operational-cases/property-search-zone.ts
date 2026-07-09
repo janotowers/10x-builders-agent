@@ -114,7 +114,7 @@ export function settingsTestPropertyDataSeed(
 ): Record<string, unknown> {
   const zone =
     context != null ? resolveEffectiveSearchZone(context) : null;
-  const fallbackZone = "Colomos Providencia, Guadalajara, Jalisco";
+  const fallbackZone = "Colomos Providencia, Zapopan, Jalisco";
   const effectiveZone = zone ?? fallbackZone;
   return mergePropertyDataForComparables(
     context ?? {},
@@ -123,6 +123,7 @@ export function settingsTestPropertyDataSeed(
         operation: "rent",
         property_type: "departamento",
         area_total_m2: 116.93,
+        area_construida_m2: 116.93,
         bedrooms: 3,
         bathrooms: 2,
         parking_spots: 1,

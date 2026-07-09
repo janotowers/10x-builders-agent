@@ -46,16 +46,22 @@ export function collectListingDescriptionIngredients(
   context: JsonRecord
 ): ListingDescriptionIngredients {
   const propertyData = asRecord(context.property_data);
+  const address = asRecord(propertyData.address);
   const pricingProposal = asRecord(context.pricing_proposal);
   const zoneContext = asRecord(context.zone_context);
   const rawPhotosCount = Array.isArray(context.raw_photos) ? context.raw_photos.length : 0;
 
-  const municipality = cleanText(propertyData.municipality || propertyData.city);
-  const state = cleanText(propertyData.state);
-  const neighborhood = cleanText(propertyData.neighborhood || propertyData.fraccionamiento);
+  const municipality = cleanText(
+    propertyData.municipality || propertyData.city || address.municipality || address.city
+  );
+  const state = cleanText(propertyData.state || address.state);
+  const neighborhood = cleanText(
+    propertyData.neighborhood || propertyData.fraccionamiento || address.neighborhood
+  );
   const legalAddress =
     cleanText(propertyData.legal_address) ||
     cleanStringArray(propertyData.legal_addresses)[0] ||
+    cleanText(address.formatted_address) ||
     cleanText(propertyData.address);
   const targetPrice = numberOrNull(pricingProposal.target_price ?? propertyData.target_price);
   const currency =
@@ -84,7 +90,9 @@ export function collectListingDescriptionIngredients(
     bathrooms: numberOrNull(propertyData.bathrooms),
     parkingSpots: numberOrNull(propertyData.parking_spots),
     areaTotalM2: numberOrNull(propertyData.area_total_m2),
-    areaBuiltM2: numberOrNull(propertyData.area_built_m2),
+    areaBuiltM2:
+      numberOrNull(propertyData.area_construida_m2) ??
+      numberOrNull(propertyData.area_built_m2),
     rawPhotosCount,
     zonePointsOfInterest,
     advisorHighlights,

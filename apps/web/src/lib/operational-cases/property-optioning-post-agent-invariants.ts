@@ -71,7 +71,12 @@ function positiveNumberOrNull(value: unknown): number | null {
   return null;
 }
 
-function surfaceSourceScore(value: unknown): number {
+/**
+ * Score de confianza por fuente de un dato de propiedad. Documentos oficiales
+ * mandan sobre insumos manuales/formulario (que quedan en 0). Reutilizado por el
+ * sync del laboratorio (lab_form) para respetar la misma precedencia.
+ */
+export function surfaceSourceScore(value: unknown): number {
   if (typeof value !== "string") return 0;
   const normalized = value.trim().toLowerCase();
   if (!normalized) return 0;
