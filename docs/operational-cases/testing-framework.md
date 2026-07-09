@@ -1,6 +1,6 @@
 # Marco de pruebas para readiness operacional
 
-> **Estado:** v1.2 — N0–N4 v1 implementados. **N5** laboratorio E2E controlado implementado (`agent_e2e`, sesión E2E lab, Prueba con agente); batería E2E automatizada multi-tick y **N4 v2** siguen pendientes.
+> **Estado:** v1.3 — N0–N4 v1 implementados. **N5** laboratorio E2E controlado implementado (`agent_e2e`, sesión E2E lab, Prueba con agente); batería E2E automatizada multi-tick y **N4 v2** siguen pendientes. v1.3 añade `property_data` canónico desde el formulario del laboratorio, campos de superficie separados y metadata de coherencia de artefactos en N1.
 >
 > **Documentos relacionados**
 > - [`authoring-playbook.md`](authoring-playbook.md) — modelo paso / habilidad raíz / `current_step` / autoría de casos (lectura recomendada).
@@ -106,7 +106,27 @@ El bloque colapsado **Completar registro del caso** documenta el hito runtime `i
 
 **Layout compacto (v1.3):** tras el resumen y N0, cada hito operativo aparece como **Paso N** en `<details>` cerrado por defecto (título, descripción del paso, pill de estado N3/N4, hint de habilidades/tools visibles). Las tools N1 viven dentro del cuerpo expandido; su pill **Probada** / **Sin probar** es independiente del pill del paso. La auditoría global del fixture no sustituye el resultado por paso.
 
-### 3.4 Caso de prueba aislado
+### 3.4 `property_data` canónico desde el formulario (laboratorio)
+
+En **Preparar caso de prueba**, el formulario derivado de `intake_schema_jsonb` no es sólo UI: al **Guardar datos** o **Regenerar y validar registro**, el servidor sincroniza campos operativos a `context_jsonb.property_data` mediante `syncLabFormIntoPropertyData` ([`lab-form-property-data-sync.ts`](../../apps/web/src/lib/operational-cases/lab-form-property-data-sync.ts)).
+
+**Precedencia automática (sin selector manual):**
+
+| Origen | Prioridad | Comportamiento |
+|--------|-----------|----------------|
+| Documentos (`predial`, `escritura`, etc.) | Mayor | No se sobrescribe con el formulario |
+| `lab_form` | Menor | Rellena vacíos o actualiza lo que el propio formulario había escrito antes |
+| Semilla N0 (`settingsTestPropertyDataSeed`) | Inicial | Solo si `property_data` está vacío |
+
+Campos sincronizados típicos: `property_type`, `operation`, `area_total_m2`, `area_construida_m2`, recámaras/baños/estacionamientos, `address.*`, `search_zone`. Cada campo adoptado lleva `*_source: "lab_form"` para auditoría.
+
+**Superficies separadas:** migración `00057_property_optioning_intake_split_area.sql` reemplaza el intake ambiguo `area_m2` por `area_total_m2` (terreno/total) y `area_construida_m2` (construcción / `construction_size` en publicación). En UI se agrupan bajo «Superficies».
+
+**Implicación para N1:** recipes y previews de tools downstream (p. ej. `easybroker_create_listing`, `prepare_listing_description_draft`) leen `property_data`, no el formulario plano en runtime. Editar el formulario y guardar alinea el payload antes de probar tools.
+
+Ver `PATTERN_LAB_FORM_PROPERTY_DATA_SYNC` en [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md).
+
+### 3.5 Caso de prueba aislado
 
 El subsistema `operational-case-tests` mantiene **un caso de prueba por fila de tipo de caso** (regenerar no crea otro registro). Ese caso:
 
@@ -160,6 +180,25 @@ Ejemplos típicos en `property_optioning`:
 | **Caso de prueba** | Args derivados del `context_jsonb` del caso aislado (+ activos hidratados en args cuando aplica). La tool recibe **sólo** ese JSON; no hay lectura paralela del “formulario” en runtime. |
 
 **Comparar Smoke vs Caso en UI:** la vista previa ordena claves de forma estable (p. ej. alfabético dentro de `context`) sin cambiar valores, para ver diferencias campo a campo.
+
+### Taxonomía operativa de ejecución (Readiness Lab)
+
+Esta taxonomía clasifica **cómo se ejecuta una prueba**, no cómo está implementada una tool.
+
+| Tipo | Usa formulario | Usa tools previas | Orden importa | Orquestación |
+|------|----------------|-------------------|---------------|--------------|
+| Smoke | No | No | No | Automática (defaults) |
+| Tool autocontenida con caso | Sí | No | No | Automática |
+| Tool dependiente con preparación | Sí | Sí | Sí | Automática con dependencias visibles |
+| N4 (escenario de paso) | Sí | Sí | Sí | Automática por escenario |
+| Playthrough secuencial | Sí | Sí | Sí | Flujo secuencial |
+| E2E | Sí | Sí | Sí | Flujo secuencial completo |
+
+Notas de producto/UI:
+
+- En panel explicativo y resultados legibles, usar primero lenguaje natural y mostrar el slug técnico como referencia.
+- En JSON/debug conservar slugs y payloads sin traducción.
+- Si una prueba reutiliza artefactos persistidos del caso (ej. `photo_analysis`, `zone_context`), debe mostrarse de forma explícita.
 
 **Excepción `operational_case_create`:** en ambos modos la ejecución crea una fila **nueva** en `operational_cases` con `created_from=tool_readiness_test`. El caso aislado de Preparación operativa sólo sirve como **fuente al armar args** en modo Caso de prueba; no se reemplaza. Esta tool usa perfil `intake_only`: sólo copia campos declarados en `intake_schema_jsonb` y auxiliares permitidos, no artefactos de readiness ni historial del caso.
 
@@ -737,6 +776,36 @@ Los ensayos GStack/GBrain (*Skill Development Cycle*) proponen un checklist cual
 
 Un **`step_key` tiene un objetivo durable de negocio**; **no** crear un paso nuevo por cada **habilidad atómica** (sub-skill) que la raíz invoque dentro del mismo hito. La **habilidad raíz/compuesta** (`default_skill_slug`) orquesta; las atómicas son medios, no hitos. Ver [`authoring-playbook.md`](authoring-playbook.md) §1 y §3.2.
 
+### 13.5 Metadata de dependencias en N1 (`run-tool`)
+
+La respuesta de `POST /api/tool-readiness/run-tool` mantiene compatibilidad y expone estado de dependencias en `dependency_status` con semántica explícita:
+
+- `requires_dependencies`: si la tool declara artefactos requeridos.
+- `missing_required_artifacts`: artefactos faltantes para la corrida actual.
+- `available_required_artifacts`: artefactos ya presentes en el caso/args.
+
+Nota de UX: el laboratorio **no** debe prometer preparación automática de dependencias mientras no exista una acción explícita para orquestarla.
+
+### 13.6 Procedencia efectiva y coherencia de artefactos (N1)
+
+Además de `dependency_status`, la vista previa y el resultado de N1 pueden incluir:
+
+| Campo | Significado |
+|-------|-------------|
+| `input_resolution_status[]` | **Datos usados por esta prueba:** cada input crítico con `label`, `source` (`property_data`, `artifact`, `test_asset`, `case_context`, `manual_override`, …), `status` (`available` \| `missing` \| `stale`) y `action_hint` opcional |
+| `staleness_warnings[]` | Mensajes legibles cuando un artefacto persistido ya no coincide con la identidad actual del inmueble |
+| `stale_artifacts[]` | Slugs de artefactos desalineados (para UI/programación) |
+
+**Firma de identidad:** `buildPropertyIdentitySignature` ([`property-identity-signature.ts`](../../apps/web/src/lib/operational-cases/property-identity-signature.ts)) resume atributos core de `property_data` (tipo, operación, zona, superficies, recámaras, baños, estacionamientos). Tras ejecutar una tool productora, la firma vigente se estampa en el artefacto (`property_identity_signature` dentro del objeto, o `watermarked_photos_property_identity_signature` para el array de fotos).
+
+**Evaluación por tool, no por paso:** el mapa `STALENESS_ARTIFACTS_BY_TOOL` declara qué artefactos consume cada tool al validar/publicar. Hoy cubre el flujo de publicación (`photo_analysis`, `zone_context`, `listing_description_draft`, `listing_copy_ingredients`, `watermarked_photos`); extender a otros pasos es **aditivo** (nueva tool productora → estampar; nueva tool consumidora → registrar dependencia).
+
+**Chequeo adicional de fotos:** `detectPhotoAnalysisStaleness` compara el set de `raw_photos` usado al generar `photo_analysis` con el set actual del caso.
+
+**Estado esperado tras regenerar:** un caso recién regenerado muestra inputs/artefactos como **faltantes** hasta correr las tools upstream (p. ej. `analyze_property_images`, `lookup_property_surroundings`). Los **activos de prueba** (`test_property_listing_photos`) hidratan `image_paths` en N1 pero **no** sustituyen `raw_photos` persistido en `context_jsonb` para el contrato de `prepare_listing_description_draft`.
+
+Ver `PATTERN_ARTIFACT_IDENTITY_STALENESS` en [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md).
+
 ---
 
 ## 14. Archivos de referencia en código
@@ -751,7 +820,13 @@ Un **`step_key` tiene un objetivo durable de negocio**; **no** crear un paso nue
 | Casos de prueba | `apps/web/src/app/api/operational-case-tests/` |
 | N5 E2E lab | `apps/web/src/app/api/operational-case-tests/run/route.ts` (`mode: "agent_e2e"`), `e2e-lab-mode/route.ts` |
 | Contexto de muestra | `apps/web/src/lib/operational-cases/test-context-samples.ts` |
+| Sync formulario → `property_data` | `apps/web/src/lib/operational-cases/lab-form-property-data-sync.ts` |
+| Intake split area (hydrate UI) | `apps/web/src/lib/operational-cases/property-optioning-intake-schema.ts` |
+| Firma de identidad del inmueble | `apps/web/src/lib/operational-cases/property-identity-signature.ts` |
+| Staleness de `photo_analysis` | `apps/web/src/lib/operational-cases/photo-analysis-staleness.ts` |
+| Labels/taxonomía N1 | `apps/web/src/lib/tool-readiness/readiness-labels.ts`, `tool-test-behavior.ts` |
 | Flow piloto | `packages/db/supabase/migrations/00038_property_optioning_document_flow.sql` (y migraciones previas del case type) |
+| Intake split area (DB) | `packages/db/supabase/migrations/00057_property_optioning_intake_split_area.sql` |
 
 | Playbook autoría | [`authoring-playbook.md`](authoring-playbook.md) |
 | Catálogo de patrones (doc) | [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) |

@@ -1,6 +1,6 @@
 # Catálogo de patrones reutilizables — Casos operacionales
 
-> **Estado:** v1.2 — añade patrones de gate único con remediación por dueño, auto-remediación determinística con circuit breaker y paridad skill↔gate (derivados del fix de extracción/titularidad en `property_optioning`).
+> **Estado:** v1.3 — añade `PATTERN_LAB_FORM_PROPERTY_DATA_SYNC` y `PATTERN_ARTIFACT_IDENTITY_STALENESS` para coherencia del fixture de readiness.
 >
 > **Documentos relacionados**
 > - [`use-case-authoring-vision.md`](use-case-authoring-vision.md) — visión NL → propuesta implementable (hub).
@@ -78,6 +78,29 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Implementación** | Semilla/reparación en [`run-skill/route.ts`](../../apps/web/src/app/api/tool-readiness/run-skill/route.ts) (p. ej. `extract-property-characteristics`, `prepare-listing-price`) |
 | **Producción** | **No** — solo casos con `created_from: case_type_settings_test` |
 | **Ejemplo** | Completar `bedrooms`/`bathrooms`/`parking_spots` tras tick N3 de revisión interna |
+
+### `PATTERN_LAB_FORM_PROPERTY_DATA_SYNC`
+
+| | |
+|--|--|
+| **Capa** | `runtime` (solo readiness / casos `case_type_settings_test`) |
+| **Cuándo usar** | El formulario N0 del laboratorio debe alimentar recipes y tools downstream sin divergir de `property_data` |
+| **Implementación** | [`lab-form-property-data-sync.ts`](../../apps/web/src/lib/operational-cases/lab-form-property-data-sync.ts), invocado desde [`operational-case-tests/route.ts`](../../apps/web/src/app/api/operational-case-tests/route.ts) en POST/PATCH |
+| **Comportamiento** | Mapea intake → `property_data` con precedencia documentos > `lab_form`; sincroniza dirección/zona; expone `*_source` |
+| **Producción** | **No** — casos reales siguen merge documental/post-agente; este patrón evita mezcla en el fixture de Ajustes |
+| **Relacionado** | `PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT`, `PATTERN_SETTINGS_TEST_SEED_AND_REPAIR` |
+
+### `PATTERN_ARTIFACT_IDENTITY_STALENESS`
+
+| | |
+|--|--|
+| **Capa** | `test_ui` + `runtime` (readiness N1) |
+| **Cuándo usar** | Una tool consume artefactos derivados (`photo_analysis`, `zone_context`, borradores, `watermarked_photos`) que pueden quedar obsoletos si cambia la identidad del inmueble en `property_data` |
+| **Implementación** | [`property-identity-signature.ts`](../../apps/web/src/lib/operational-cases/property-identity-signature.ts), `evaluateStalenessForTool` / `buildInputResolutionStatus` / `stampPropertyIdentityOnCaseArtifacts` en [`run-tool/route.ts`](../../apps/web/src/app/api/tool-readiness/run-tool/route.ts) |
+| **Comportamiento** | Firma estable de atributos core; estampa al persistir (tool productora); compara al previsualizar/ejecutar (tool consumidora); UI muestra **Datos usados** y **Coherencia de artefactos** |
+| **Producción** | Paridad conceptual con invariantes de coherencia; la estampa en readiness ayuda a depurar fixtures antes de N3/N4/E2E |
+| **Extensión** | Catálogo por **tool** (`STALENESS_ARTIFACTS_BY_TOOL`), no por `step_key`; añadir entradas al extender a otros pasos |
+| **Relacionado** | `PATTERN_LAB_FORM_PROPERTY_DATA_SYNC`, §13.6 de [`testing-framework.md`](testing-framework.md) |
 
 ### `PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION`
 
