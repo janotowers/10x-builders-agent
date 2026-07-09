@@ -25,9 +25,18 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user: Awaited<
+    ReturnType<typeof supabase.auth.getUser>
+  >["data"]["user"] = null;
+  try {
+    const result = await supabase.auth.getUser();
+    user = result.data.user;
+  } catch {
+    // Supabase auth briefly unreachable: treat as unauthenticated below instead
+    // of throwing (a thrown middleware would surface an HTML 500 page to fetch()
+    // callers and produce confusing JSON parse errors on the client).
+    user = null;
+  }
 
   const { pathname } = request.nextUrl;
 
@@ -40,6 +49,15 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/api/cron/");
 
   if (!user && !isAnonymousOk) {
+    // API routes must answer with JSON so fetch() callers can handle auth
+    // failures cleanly. Redirecting them to the HTML /login page makes
+    // res.json() throw "Unexpected token '<'" on the client.
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json(
+        { error: "unauthorized", reason: "session_expired" },
+        { status: 401 }
+      );
+    }
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
