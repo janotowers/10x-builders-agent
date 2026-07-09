@@ -145,6 +145,11 @@ export type {
   ComparablesAnalysisBuildOptions,
 } from "./operational-cases/comparables-analysis";
 export { buildPricingProposalFromComparables, formatPriceApprovalNotifyText } from "./operational-cases/pricing-proposal";
+export { formatListingDescriptionReviewNotifyText } from "./operational-cases/listing-description-review";
+export {
+  canCompleteListingPublishedSummaryFromContext,
+  formatListingPublishedSummaryNotifyText,
+} from "./operational-cases/listing-published-summary";
 export {
   advanceComparablesToPriceProposalWithRetry,
   notifyPriceApprovalForCase,

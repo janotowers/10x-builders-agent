@@ -259,7 +259,7 @@ const LOCAL_COMPARABLES_BIGQUERY_LOCATION = "US";
 const IMAGE_VISION_MODEL_ID =
   process.env.IMAGE_VISION_MODEL_ID?.trim() || "openai/gpt-4.1-mini";
 const IMAGE_VISION_MAX_TOKENS = Number(
-  process.env.IMAGE_VISION_MAX_TOKENS?.trim() || "1500"
+  process.env.IMAGE_VISION_MAX_TOKENS?.trim() || "2200"
 );
 const IMAGE_VISION_TEMPERATURE = Number(
   process.env.IMAGE_VISION_TEMPERATURE?.trim() || "0"
@@ -346,6 +346,69 @@ function ensureStringArray(value: unknown, max = 24): string[] {
     .map((item) => (typeof item === "string" ? item.trim() : ""))
     .filter((item) => item.length > 0)
     .slice(0, max);
+}
+
+function cleanNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    const cleaned = cleanNonEmptyString(value);
+    if (cleaned) return cleaned;
+  }
+  return null;
+}
+
+function composeAddressFromRecord(address: Record<string, unknown>): string | null {
+  const street = firstNonEmptyString(address.street, address.calle);
+  const exterior = firstNonEmptyString(address.exterior_number, address.numero_exterior);
+  const neighborhood = firstNonEmptyString(address.neighborhood, address.colonia);
+  const municipality = firstNonEmptyString(
+    address.municipality,
+    address.municipio,
+    address.city
+  );
+  const state = firstNonEmptyString(address.state, address.estado);
+  const country = firstNonEmptyString(address.country, address.pais);
+  const firstLine = [street, exterior].filter(Boolean).join(" ").trim();
+  const parts = [firstLine, neighborhood, municipality, state, country].filter(
+    (part): part is string => Boolean(part)
+  );
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function normalizeMissingIngredientsForDisplay(input: {
+  missingIngredients: string[];
+  ingredientPayload: Record<string, unknown>;
+}): string[] {
+  const payload = input.ingredientPayload;
+  const municipality = cleanNonEmptyString(payload.municipality);
+  const state = cleanNonEmptyString(payload.state);
+  const neighborhood = cleanNonEmptyString(payload.neighborhood);
+  const areaBuilt = payload.area_built_m2;
+  return input.missingIngredients.filter((entry) => {
+    const key = entry.trim().toLowerCase();
+    if (!key) return false;
+    if ((key === "municipality" || key === "municipality_state") && municipality) {
+      return false;
+    }
+    if ((key === "state" || key === "municipality_state") && state) {
+      return false;
+    }
+    if (key === "neighborhood" && neighborhood) {
+      return false;
+    }
+    if (
+      key === "area_built_m2" &&
+      typeof areaBuilt === "number" &&
+      Number.isFinite(areaBuilt) &&
+      areaBuilt > 0
+    ) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function asPlainRecord(value: unknown): Record<string, unknown> {
@@ -1982,6 +2045,217 @@ type AnalyzePropertyImagesInput = {
   case_id?: string;
 };
 
+const PHOTO_COVERAGE_KEYS = [
+  "facade",
+  "kitchen",
+  "dining_room",
+  "living_room",
+  "primary_bedroom",
+  "bathroom",
+  "outdoor",
+  "parking",
+] as const;
+
+const ANALYZE_PROPERTY_IMAGES_JSON_SCHEMA = {
+  visible_spaces: "string[]",
+  features_by_space:
+    'Record<string, string[]> — claves en español (ej. fachada, cocina, sala, comedor, recámara principal, baño, exterior, estacionamiento). Cada feature SOLO en el espacio donde se ve claramente.',
+  photo_coverage: {
+    facade: "visible|unclear|not_visible",
+    kitchen: "visible|unclear|not_visible",
+    dining_room: "visible|unclear|not_visible",
+    living_room: "visible|unclear|not_visible",
+    primary_bedroom: "visible|unclear|not_visible",
+    bathroom: "visible|unclear|not_visible",
+    outdoor: "visible|unclear|not_visible",
+    parking: "visible|unclear|not_visible",
+  },
+  style_tags: "string[] — solo si el estilo arquitectónico/decorativo es claramente visible",
+  materials_visible: "string[] — materiales y acabados identificables",
+  lighting_notes: "string[] — iluminación natural/artificial observable",
+  outdoor_spaces: "string[] — patios, jardines, terrazas, balcones visibles",
+  copy_safe_phrases:
+    "string[] — frases cortas (máx 12 palabras) derivadas solo de evidencia visible",
+  quality_notes: "string[]",
+  uncertain_observations: "string[]",
+  do_not_claim: "string[]",
+  recommended_missing_photos: "string[]",
+};
+
+function parsePhotoCoverageRecord(value: unknown) {
+  const raw = asRecord(value) ?? {};
+  const out: Record<string, "visible" | "unclear" | "not_visible"> = {};
+  for (const key of PHOTO_COVERAGE_KEYS) {
+    out[key] = normalizeCoverageValue(raw[key]);
+  }
+  return out;
+}
+
+function parseFeaturesBySpace(value: unknown): Record<string, string[]> {
+  const raw = asRecord(value) ?? {};
+  const out: Record<string, string[]> = {};
+  for (const [key, features] of Object.entries(raw)) {
+    const space = key.trim();
+    if (!space) continue;
+    const list = ensureStringArray(features, 12);
+    if (list.length > 0) out[space] = list;
+  }
+  return out;
+}
+
+function flattenFeaturesBySpace(featuresBySpace: Record<string, string[]>): string[] {
+  const seen = new Set<string>();
+  const flat: string[] = [];
+  for (const features of Object.values(featuresBySpace)) {
+    for (const feature of features) {
+      const dedupeKey = feature.toLowerCase();
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      flat.push(feature);
+    }
+  }
+  return flat.slice(0, 24);
+}
+
+function isEditorialInstructionText(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  return /\b(menciona(?:r)?|agrega(?:r)?|incluye(?:r)?|resalta(?:r)?|destaca(?:r)?|enfatiza(?:r)?|usa(?:r)?|evita(?:r)?|haz(?:lo)?|mejora(?:r)?|ajusta(?:r)?|cambia(?:r)?|corrige(?:r)?)\b/.test(
+    normalized
+  );
+}
+
+function splitHighlightAndInstructions(values: string[]) {
+  const highlights: string[] = [];
+  const editorialInstructions: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (isEditorialInstructionText(trimmed)) {
+      editorialInstructions.push(trimmed);
+    } else {
+      highlights.push(trimmed);
+    }
+  }
+  return { highlights, editorialInstructions };
+}
+
+function buildPhotoAnalysisIngredients(
+  photoAnalysis: Record<string, unknown>
+): Record<string, unknown> {
+  const featuresBySpace = parseFeaturesBySpace(photoAnalysis.features_by_space);
+  const visibleFeatures = ensureStringArray(photoAnalysis.visible_features, 24);
+  return {
+    visible_spaces: ensureStringArray(photoAnalysis.visible_spaces, 12),
+    features_by_space:
+      Object.keys(featuresBySpace).length > 0
+        ? featuresBySpace
+        : visibleFeatures.length > 0
+          ? { general: visibleFeatures }
+          : {},
+    visible_features:
+      Object.keys(featuresBySpace).length > 0
+        ? flattenFeaturesBySpace(featuresBySpace)
+        : visibleFeatures,
+    photo_coverage: parsePhotoCoverageRecord(photoAnalysis.photo_coverage),
+    style_tags: ensureStringArray(photoAnalysis.style_tags, 8),
+    materials_visible: ensureStringArray(photoAnalysis.materials_visible, 12),
+    lighting_notes: ensureStringArray(photoAnalysis.lighting_notes, 8),
+    outdoor_spaces: ensureStringArray(photoAnalysis.outdoor_spaces, 8),
+    copy_safe_phrases: ensureStringArray(photoAnalysis.copy_safe_phrases, 10),
+    quality_notes: ensureStringArray(photoAnalysis.quality_notes, 12),
+    uncertain_observations: ensureStringArray(photoAnalysis.uncertain_observations, 12),
+    do_not_claim: ensureStringArray(photoAnalysis.do_not_claim, 16),
+    recommended_missing_photos: ensureStringArray(
+      photoAnalysis.recommended_missing_photos,
+      12
+    ),
+  };
+}
+
+type ListingPriceResolution = {
+  listing_price: number | null;
+  pricing_ideal: number | null;
+  pricing_minimum: number | null;
+  pricing_source: "pricing_proposal.salida" | null;
+  pricing_approval_status: string;
+};
+
+function resolveListingPriceForDraft(
+  pricingProposal: Record<string, unknown>
+): ListingPriceResolution {
+  const approvalStatusRaw =
+    typeof pricingProposal.approval_status === "string"
+      ? pricingProposal.approval_status
+      : "";
+  const pricingApprovalStatus = approvalStatusRaw.trim().toLowerCase();
+  const listingPrice = safeNumber(pricingProposal.salida);
+  const pricingIdeal = safeNumber(pricingProposal.ideal);
+  const pricingMinimum = safeNumber(pricingProposal.minimo);
+  return {
+    listing_price: listingPrice,
+    pricing_ideal: pricingIdeal,
+    pricing_minimum: pricingMinimum,
+    pricing_source: listingPrice != null ? "pricing_proposal.salida" : null,
+    pricing_approval_status: pricingApprovalStatus,
+  };
+}
+
+function buildPhotoAnalysisOutput(
+  parsed: Record<string, unknown>,
+  selectedPaths: string[],
+  imageCount: number
+) {
+  const featuresBySpace = parseFeaturesBySpace(parsed.features_by_space);
+  const legacyFlat = ensureStringArray(parsed.visible_features, 24);
+  const visibleFeatures =
+    Object.keys(featuresBySpace).length > 0
+      ? flattenFeaturesBySpace(featuresBySpace)
+      : legacyFlat;
+
+  return {
+    ok: true,
+    status: "analyzed",
+    model: IMAGE_VISION_MODEL_ID,
+    image_count: imageCount,
+    visible_spaces: ensureStringArray(parsed.visible_spaces, 12),
+    features_by_space: featuresBySpace,
+    visible_features: visibleFeatures,
+    photo_coverage: parsePhotoCoverageRecord(parsed.photo_coverage),
+    style_tags: ensureStringArray(parsed.style_tags, 8),
+    materials_visible: ensureStringArray(parsed.materials_visible, 12),
+    lighting_notes: ensureStringArray(parsed.lighting_notes, 8),
+    outdoor_spaces: ensureStringArray(parsed.outdoor_spaces, 8),
+    copy_safe_phrases: ensureStringArray(parsed.copy_safe_phrases, 10),
+    quality_notes: ensureStringArray(parsed.quality_notes, 12),
+    uncertain_observations: ensureStringArray(parsed.uncertain_observations, 12),
+    do_not_claim: ensureStringArray(parsed.do_not_claim, 16),
+    recommended_missing_photos: ensureStringArray(parsed.recommended_missing_photos, 12),
+    source_paths: selectedPaths,
+  };
+}
+
+function analyzePropertyImagesSystemPrompt() {
+  return (
+    "Eres analista visual de inmobiliaria en México/LATAM. Devuelve JSON válido sin markdown. " +
+    "Reglas estrictas: (1) ausencia visual NO implica ausencia real; " +
+    "(2) nunca afirmes que la propiedad no tiene algo solo porque no se ve en fotos; " +
+    "(3) cada característica va en features_by_space SOLO bajo el espacio donde se observa con claridad — " +
+    "no mezcles detalles de fachada/exterior bajo espacios interiores ni viceversa; " +
+    "(4) copy_safe_phrases y style_tags deben ser conservadores y basados solo en evidencia visible."
+  );
+}
+
+function analyzePropertyImagesUserPrompt(purpose: string) {
+  return (
+    `Analiza estas imágenes para ${purpose}. ` +
+    "Devuelve este shape JSON exacto (sin campos extra): " +
+    `${JSON.stringify(ANALYZE_PROPERTY_IMAGES_JSON_SCHEMA)}. ` +
+    "Usa claves de espacio en español en features_by_space, alineadas con visible_spaces. " +
+    "Responde solo con JSON."
+  );
+}
+
 function makeAnalyzePropertyImagesTool(ctx: ToolContext) {
   return tool(
     async (input: AnalyzePropertyImagesInput) => {
@@ -2025,48 +2299,27 @@ function makeAnalyzePropertyImagesTool(ctx: ToolContext) {
           messages: [
             {
               role: "system",
-              content:
-                "Eres analista visual de inmobiliaria. Devuelve JSON válido sin markdown. " +
-                "Regla estricta: ausencia visual NO implica ausencia real. " +
-                "Nunca afirmar que la propiedad no tiene algo por no verse en fotos.",
+              content: analyzePropertyImagesSystemPrompt(),
             },
             {
               role: "user",
               content: [
                 {
                   type: "text",
-                  text:
-                    `Analiza estas imágenes para ${input.purpose ?? "listing_description"}. ` +
-                    "Devuelve este shape JSON exacto: " +
-                    '{ "visible_features": string[], "visible_spaces": string[], "photo_coverage": { "facade": "visible|unclear|not_visible", "kitchen": "visible|unclear|not_visible", "living_room": "visible|unclear|not_visible", "primary_bedroom": "visible|unclear|not_visible", "bathroom": "visible|unclear|not_visible" }, "quality_notes": string[], "uncertain_observations": string[], "do_not_claim": string[], "recommended_missing_photos": string[] }. ' +
-                    "Responde solo con JSON.",
+                  text: analyzePropertyImagesUserPrompt(
+                    input.purpose ?? "listing_description"
+                  ),
                 },
                 ...imageMessages,
               ],
             },
           ],
         });
-        const photoCoverage = asRecord(parsed.photo_coverage) ?? {};
-        const out = {
-          ok: true,
-          status: "analyzed",
-          model: IMAGE_VISION_MODEL_ID,
-          image_count: imageMessages.length,
-          visible_features: ensureStringArray(parsed.visible_features),
-          visible_spaces: ensureStringArray(parsed.visible_spaces),
-          photo_coverage: {
-            facade: normalizeCoverageValue(photoCoverage.facade),
-            kitchen: normalizeCoverageValue(photoCoverage.kitchen),
-            living_room: normalizeCoverageValue(photoCoverage.living_room),
-            primary_bedroom: normalizeCoverageValue(photoCoverage.primary_bedroom),
-            bathroom: normalizeCoverageValue(photoCoverage.bathroom),
-          },
-          quality_notes: ensureStringArray(parsed.quality_notes),
-          uncertain_observations: ensureStringArray(parsed.uncertain_observations),
-          do_not_claim: ensureStringArray(parsed.do_not_claim),
-          recommended_missing_photos: ensureStringArray(parsed.recommended_missing_photos),
-          source_paths: selectedPaths,
-        };
+        const out = buildPhotoAnalysisOutput(
+          asRecord(parsed) ?? {},
+          selectedPaths,
+          imageMessages.length
+        );
         const caseId = input.case_id ?? ctx.caseId ?? null;
         if (caseId) {
           await persistCaseContextPatch(
@@ -2123,62 +2376,148 @@ type LookupPropertySurroundingsInput = {
   case_id?: string;
 };
 
+type LookupCoordinatesResolution = {
+  coordinates: {
+    latitude: number;
+    longitude: number;
+    source: "input" | "case_context" | "geocode_property_address";
+    formatted_address?: string;
+  } | null;
+  geocode_failure?: {
+    status: string;
+    message: string;
+    retryable: boolean;
+  };
+};
+
+function geocodeAttemptSummary(
+  result: Awaited<ReturnType<typeof geocodePropertyAddress>>
+) {
+  if (result.ok) return null;
+  return {
+    status: result.status,
+    message: result.message,
+    retryable: result.retryable,
+  };
+}
+
+function hasExplicitAddressInput(input: LookupPropertySurroundingsInput) {
+  const values = [input.address, input.neighborhood, input.municipality, input.state];
+  return values.some((value) => typeof value === "string" && value.trim().length > 0);
+}
+
 async function resolveSurroundingsCoordinates(
   ctx: ToolContext,
   input: LookupPropertySurroundingsInput
-) {
+): Promise<LookupCoordinatesResolution> {
   const lat = safeNumber(input.latitude);
   const lon = safeNumber(input.longitude);
   if (lat != null && lon != null) {
-    return { latitude: lat, longitude: lon, source: "input" as const };
-  }
-  if (input.case_id || ctx.caseId) {
-    const caseId = input.case_id ?? ctx.caseId ?? "";
-    const opCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
-    const caseContext = asRecord(opCase?.context_jsonb) ?? {};
-    const propertyData = asRecord(caseContext.property_data) ?? {};
-    const address = asRecord(propertyData.address) ?? {};
-    const caseLat = safeNumber(address.latitude ?? propertyData.latitude);
-    const caseLon = safeNumber(address.longitude ?? propertyData.longitude);
-    if (caseLat != null && caseLon != null) {
-      return { latitude: caseLat, longitude: caseLon, source: "case_context" as const };
-    }
-    const geocodeInput = {
-      street:
-        (typeof address.street === "string" && address.street.trim()) ||
-        (typeof input.address === "string" && input.address.trim()) ||
-        undefined,
-      neighborhood:
-        (typeof address.neighborhood === "string" && address.neighborhood.trim()) ||
-        (typeof input.neighborhood === "string" && input.neighborhood.trim()) ||
-        undefined,
-      municipality:
-        (typeof address.municipality === "string" && address.municipality.trim()) ||
-        (typeof input.municipality === "string" && input.municipality.trim()) ||
-        (typeof propertyData.municipality === "string" && propertyData.municipality.trim()) ||
-        undefined,
-      state:
-        (typeof address.state === "string" && address.state.trim()) ||
-        (typeof input.state === "string" && input.state.trim()) ||
-        (typeof propertyData.state === "string" && propertyData.state.trim()) ||
-        undefined,
-      country: (typeof input.country === "string" && input.country.trim()) || "MX",
+    return {
+      coordinates: { latitude: lat, longitude: lon, source: "input" as const },
     };
-    const geocoded = await geocodePropertyAddress(geocodeInput);
+  }
+  let geocodeFailure: LookupCoordinatesResolution["geocode_failure"];
+  const caseId = input.case_id ?? ctx.caseId ?? "";
+  const opCase =
+    typeof caseId === "string" && caseId.trim()
+      ? await getOperationalCase(ctx.db, caseId).catch(() => null)
+      : null;
+  const caseContext = asRecord(opCase?.context_jsonb) ?? {};
+  const propertyData = asRecord(caseContext.property_data) ?? {};
+  const caseAddress = asRecord(propertyData.address) ?? {};
+
+  const caseLat = safeNumber(caseAddress.latitude ?? propertyData.latitude);
+  const caseLon = safeNumber(caseAddress.longitude ?? propertyData.longitude);
+  if (caseLat != null && caseLon != null) {
+    return {
+      coordinates: {
+        latitude: caseLat,
+        longitude: caseLon,
+        source: "case_context" as const,
+      },
+    };
+  }
+
+  if (hasExplicitAddressInput(input)) {
+    const geocodedFromInput = await geocodePropertyAddress({
+      street: typeof input.address === "string" ? input.address.trim() : undefined,
+      neighborhood:
+        typeof input.neighborhood === "string" ? input.neighborhood.trim() : undefined,
+      municipality:
+        typeof input.municipality === "string" ? input.municipality.trim() : undefined,
+      state: typeof input.state === "string" ? input.state.trim() : undefined,
+      country: (typeof input.country === "string" && input.country.trim()) || "MX",
+    });
     if (
-      geocoded.ok &&
-      geocoded.status === "ok" &&
-      typeof geocoded.latitude === "number" &&
-      typeof geocoded.longitude === "number"
+      geocodedFromInput.ok &&
+      geocodedFromInput.status === "ok" &&
+      typeof geocodedFromInput.latitude === "number" &&
+      typeof geocodedFromInput.longitude === "number"
     ) {
       return {
-        latitude: geocoded.latitude,
-        longitude: geocoded.longitude,
-        source: "geocode_property_address" as const,
+        coordinates: {
+          latitude: geocodedFromInput.latitude,
+          longitude: geocodedFromInput.longitude,
+          source: "geocode_property_address" as const,
+          formatted_address: geocodedFromInput.formatted_address,
+        },
       };
     }
+    geocodeFailure = geocodeAttemptSummary(geocodedFromInput) ?? geocodeFailure;
   }
-  return null;
+
+  if (opCase) {
+    const geocodedFromCase = await geocodePropertyAddress({
+      street:
+        (typeof caseAddress.street === "string" && caseAddress.street.trim()) || undefined,
+      exterior_number:
+        (typeof caseAddress.exterior_number === "string" &&
+          caseAddress.exterior_number.trim()) ||
+        undefined,
+      neighborhood:
+        (typeof caseAddress.neighborhood === "string" &&
+          caseAddress.neighborhood.trim()) ||
+        undefined,
+      municipality:
+        (typeof caseAddress.municipality === "string" &&
+          caseAddress.municipality.trim()) ||
+        (typeof propertyData.municipality === "string" &&
+          propertyData.municipality.trim()) ||
+        (typeof propertyData.city === "string" && propertyData.city.trim()) ||
+        undefined,
+      state:
+        (typeof caseAddress.state === "string" && caseAddress.state.trim()) ||
+        (typeof propertyData.state === "string" && propertyData.state.trim()) ||
+        undefined,
+      postal_code:
+        (typeof caseAddress.postal_code === "string" &&
+          caseAddress.postal_code.trim()) ||
+        undefined,
+      country:
+        (typeof caseAddress.country === "string" && caseAddress.country.trim()) ||
+        (typeof input.country === "string" && input.country.trim()) ||
+        "MX",
+    });
+    if (
+      geocodedFromCase.ok &&
+      geocodedFromCase.status === "ok" &&
+      typeof geocodedFromCase.latitude === "number" &&
+      typeof geocodedFromCase.longitude === "number"
+    ) {
+      return {
+        coordinates: {
+          latitude: geocodedFromCase.latitude,
+          longitude: geocodedFromCase.longitude,
+          source: "geocode_property_address" as const,
+          formatted_address: geocodedFromCase.formatted_address,
+        },
+      };
+    }
+    geocodeFailure = geocodeAttemptSummary(geocodedFromCase) ?? geocodeFailure;
+  }
+
+  return { coordinates: null, geocode_failure: geocodeFailure };
 }
 
 function normalizeCoverageValue(value: unknown): "visible" | "unclear" | "not_visible" {
@@ -2208,17 +2547,21 @@ function makeLookupPropertySurroundingsTool(ctx: ToolContext) {
         await updateToolCallStatus(ctx.db, record.id, "failed", out);
         return JSON.stringify(out);
       }
-      const coordinates = await resolveSurroundingsCoordinates(ctx, input);
-      if (!coordinates) {
+      const resolution = await resolveSurroundingsCoordinates(ctx, input);
+      if (!resolution.coordinates) {
         const out = {
           ok: false,
           status: "missing_coordinates",
           hint:
             "No pude resolver coordenadas para consultar entorno. Proporciona lat/lng o dirección suficiente.",
+          geocode_status: resolution.geocode_failure?.status ?? null,
+          geocode_message: resolution.geocode_failure?.message ?? null,
+          geocode_retryable: resolution.geocode_failure?.retryable ?? null,
         };
         await updateToolCallStatus(ctx.db, record.id, "failed", out);
         return JSON.stringify(out);
       }
+      const coordinates = resolution.coordinates;
       const radius = Math.max(300, Math.min(3000, Math.round(safeNumber(input.radius_meters) ?? 1500)));
       const perCategory = Math.max(
         1,
@@ -2376,10 +2719,55 @@ function makePrepareListingDescriptionDraftTool(ctx: ToolContext) {
       const pricingProposal = asRecord(context.pricing_proposal) ?? {};
       const photoAnalysis = asRecord(context.photo_analysis) ?? {};
       const zoneContext = asRecord(context.zone_context) ?? {};
-      const highlights = ensureStringArray(context.listing_highlights).slice(0, 8);
+      const highlights = ensureStringArray(context.listing_highlights).slice(0, 12);
+      const copyInstructionsFromContext = ensureStringArray(
+        context.listing_copy_instructions
+      ).slice(0, 8);
+      const listingDescriptionReview = asRecord(context.listing_description_review) ?? {};
+      const reviewClassification = asRecord(
+        listingDescriptionReview.change_classification
+      ) ?? {};
+      const reviewHighlightsRaw = ensureStringArray(
+        reviewClassification.new_facts_or_highlights
+      ).slice(0, 12);
+      const editorialInstructionsRaw = ensureStringArray(
+        reviewClassification.editorial_instructions
+      ).slice(0, 8);
+      const highlightSplit = splitHighlightAndInstructions([
+        ...highlights,
+        ...reviewHighlightsRaw,
+      ]);
+      const reviewInstructionSplit = splitHighlightAndInstructions(editorialInstructionsRaw);
+      const replacementCandidate = asRecord(
+        context.listing_description_replacement_candidate
+      );
+      const replacementText =
+        typeof replacementCandidate?.text === "string" &&
+        replacementCandidate.text.trim()
+          ? replacementCandidate.text.trim()
+          : typeof reviewClassification.replacement_text === "string" &&
+              reviewClassification.replacement_text.trim()
+            ? reviewClassification.replacement_text.trim()
+            : "";
+      const mergedAdvisorHighlights = Array.from(new Set(highlightSplit.highlights)).slice(
+        0,
+        12
+      );
+      const mergedEditorialInstructions = Array.from(
+        new Set([
+          ...copyInstructionsFromContext,
+          ...reviewInstructionSplit.editorialInstructions,
+          ...highlightSplit.editorialInstructions,
+        ])
+      ).slice(0, 12);
       const missingIngredients: string[] = [];
-      const targetPrice = safeNumber(pricingProposal.target_price ?? propertyData.target_price);
-      if (!targetPrice || targetPrice <= 0) missingIngredients.push("target_price");
+      const listingPrice = resolveListingPriceForDraft(pricingProposal);
+      if (listingPrice.pricing_approval_status !== "approved") {
+        missingIngredients.push("pricing_proposal.approval_status=approved");
+      }
+      if (!listingPrice.listing_price || listingPrice.listing_price <= 0) {
+        missingIngredients.push("pricing_proposal.salida");
+      }
       if (!propertyData.property_type && !context.property_type) {
         missingIngredients.push("property_type");
       }
@@ -2399,19 +2787,44 @@ function makePrepareListingDescriptionDraftTool(ctx: ToolContext) {
         await updateToolCallStatus(ctx.db, record.id, "failed", out);
         return JSON.stringify(out);
       }
+      const propertyAddress = asRecord(propertyData.address) ?? {};
+      const municipality = firstNonEmptyString(
+        propertyData.municipality,
+        propertyData.city,
+        propertyAddress.municipality,
+        propertyAddress.municipio,
+        propertyAddress.city
+      );
+      const state = firstNonEmptyString(
+        propertyData.state,
+        propertyAddress.state,
+        propertyAddress.estado
+      );
+      const neighborhood = firstNonEmptyString(
+        propertyData.neighborhood,
+        propertyData.fraccionamiento,
+        propertyAddress.neighborhood,
+        propertyAddress.colonia
+      );
+      const legalAddress = firstNonEmptyString(
+        propertyData.legal_address,
+        propertyAddress.formatted_address,
+        propertyData.formatted_address,
+        composeAddressFromRecord(propertyAddress)
+      );
       const ingredientPayload = {
         property_type: propertyData.property_type ?? context.property_type ?? "propiedad",
         operation_type: propertyData.operation ?? context.operation_type ?? "N/D",
-        legal_address:
-          propertyData.legal_address ??
-          propertyData.address ??
-          (asRecord(propertyData.address)?.formatted_address as string | undefined) ??
-          "N/D",
-        municipality: propertyData.municipality ?? propertyData.city ?? "N/D",
-        state: propertyData.state ?? "N/D",
-        neighborhood:
-          propertyData.neighborhood ?? propertyData.fraccionamiento ?? "N/D",
-        target_price: targetPrice,
+        legal_address: legalAddress ?? "N/D",
+        municipality: municipality ?? "N/D",
+        state: state ?? "N/D",
+        neighborhood: neighborhood ?? "N/D",
+        listing_price: listingPrice.listing_price,
+        pricing_ideal: listingPrice.pricing_ideal,
+        pricing_minimum: listingPrice.pricing_minimum,
+        pricing_source: listingPrice.pricing_source,
+        // Compatibilidad temporal para consumidores legacy de listing_copy_ingredients.
+        target_price: listingPrice.listing_price,
         currency:
           pricingProposal.currency ?? propertyData.currency ?? context.currency ?? "MXN",
         bedrooms: propertyData.bedrooms ?? null,
@@ -2420,15 +2833,7 @@ function makePrepareListingDescriptionDraftTool(ctx: ToolContext) {
         area_total_m2: propertyData.area_total_m2 ?? null,
         area_built_m2: propertyData.area_built_m2 ?? null,
         raw_photos_count: rawPhotosCount,
-        photo_analysis: {
-          visible_spaces: ensureStringArray(photoAnalysis.visible_spaces),
-          visible_features: ensureStringArray(photoAnalysis.visible_features),
-          quality_notes: ensureStringArray(photoAnalysis.quality_notes),
-          do_not_claim: ensureStringArray(photoAnalysis.do_not_claim),
-          recommended_missing_photos: ensureStringArray(
-            photoAnalysis.recommended_missing_photos
-          ),
-        },
+        photo_analysis: buildPhotoAnalysisIngredients(photoAnalysis),
         zone_context: {
           points_of_interest: ensureStringArray(zoneContext.points_of_interest),
           mobility: ensureStringArray(zoneContext.mobility),
@@ -2437,7 +2842,16 @@ function makePrepareListingDescriptionDraftTool(ctx: ToolContext) {
               ? zoneContext.area_summary
               : "",
         },
-        advisor_highlights: highlights,
+        advisor_highlights: mergedAdvisorHighlights,
+        editorial_instructions: mergedEditorialInstructions,
+        revision_feedback: {
+          change_type:
+            typeof reviewClassification.change_type === "string"
+              ? reviewClassification.change_type
+              : null,
+          editorial_instructions: mergedEditorialInstructions,
+          replacement_text: replacementText,
+        },
       };
       try {
         const parsed = await callOpenRouterJsonTool({
@@ -2449,14 +2863,21 @@ function makePrepareListingDescriptionDraftTool(ctx: ToolContext) {
               role: "system",
               content:
                 "Eres copywriter inmobiliario LATAM. Devuelve JSON válido sin markdown. " +
-                "No inventes amenidades ni cercanías; usa solo ingredientes provistos.",
+                "No inventes amenidades ni cercanías; usa solo ingredientes provistos. " +
+                "Prioriza features_by_space para describir cada área con sus detalles visibles; " +
+                "no mezcles características de espacios distintos. " +
+                "Usa copy_safe_phrases cuando encajen. Respeta do_not_claim y photo_coverage. " +
+                "Menciona escuelas, transporte, hospitales o parques por nombre solo si aparecen en zone_context.points_of_interest. " +
+                "Si revision_feedback trae replacement_text, úsalo como base y luego ajusta solo para mantener factualidad y claridad.",
             },
             {
               role: "user",
               content:
                 "Con estos ingredientes genera un borrador comercial con este shape exacto: " +
                 '{ "headline": string, "short_description": string, "description": string, "ingredients_used": string[], "excluded_claims": string[], "missing_ingredients": string[] }. ' +
-                "El cuerpo description debe tener entre 120 y 220 palabras y tono sobrio." +
+                "El cuerpo description debe tener entre 120 y 220 palabras y tono sobrio. " +
+                "Integra advisor_highlights y editorial_instructions cuando existan. " +
+                "missing_ingredients debe contener etiquetas en español natural para el asesor, nunca slugs técnicos ni nombres de campos." +
                 `\n\nIngredientes:\n${JSON.stringify(ingredientPayload)}`,
             },
           ],
@@ -2476,7 +2897,10 @@ function makePrepareListingDescriptionDraftTool(ctx: ToolContext) {
               : "",
           ingredients_used: ensureStringArray(parsed.ingredients_used),
           excluded_claims: ensureStringArray(parsed.excluded_claims),
-          missing_ingredients: ensureStringArray(parsed.missing_ingredients),
+          missing_ingredients: normalizeMissingIngredientsForDisplay({
+            missingIngredients: ensureStringArray(parsed.missing_ingredients),
+            ingredientPayload,
+          }),
           model: LISTING_COPY_MODEL_ID,
           generated_at: new Date().toISOString(),
           purpose: input.purpose ?? "listing_description",

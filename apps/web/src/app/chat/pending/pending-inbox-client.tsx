@@ -408,6 +408,37 @@ export function PendingInboxClient({
     }
   }
 
+  async function submitListingDescriptionReviewDecision(
+    notificationId: string,
+    payload: { action?: "approve"; text?: string }
+  ) {
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]: "Procesando...",
+    }));
+    const res = await fetch("/api/business-decisions/listing-description-review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        notification_id: notificationId,
+        ...payload,
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      message?: string;
+      error?: string;
+    };
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]:
+        data.message ?? data.error ?? (res.ok ? "Listo." : "No se pudo procesar."),
+    }));
+    if (res.ok && data.ok !== false) {
+      await refreshNotifications();
+    }
+  }
+
   async function submitComparablesExpansionDecision(
     notificationId: string,
     payload: {
@@ -1296,6 +1327,62 @@ export function PendingInboxClient({
                             className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
                           >
                             Ajustar
+                          </button>
+                        </div>
+                        {notificationActionStatus[notification.id] ? (
+                          <p className="text-[11px] text-slate-500 dark:text-white/60">
+                            {notificationActionStatus[notification.id]}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {inlineActionKind === "listing_description_review" ? (
+                      <div className="mt-3 space-y-2 rounded-2xl border border-emerald-100 bg-emerald-50/70 p-2 dark:border-emerald-300/20 dark:bg-emerald-300/10">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700 dark:text-emerald-100">
+                          Revisión de descripción
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void submitListingDescriptionReviewDecision(notification.id, {
+                              action: "approve",
+                            })
+                          }
+                          className="rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700"
+                        >
+                          Aprobar descripción
+                        </button>
+                        <div className="flex flex-col gap-1 sm:flex-row">
+                          <input
+                            value={notificationInputs[notification.id] ?? ""}
+                            onChange={(event) =>
+                              setNotificationInputs((current) => ({
+                                ...current,
+                                [notification.id]: event.target.value,
+                              }))
+                            }
+                            placeholder="Ej. Hazlo más corto, agrega puntos clave o pega una versión exacta"
+                            className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const notes = (notificationInputs[notification.id] ?? "").trim();
+                              if (!notes) {
+                                setNotificationActionStatus((current) => ({
+                                  ...current,
+                                  [notification.id]:
+                                    "Escribe los cambios o usa 'Aprobar descripción'.",
+                                }));
+                                return;
+                              }
+                              void submitListingDescriptionReviewDecision(notification.id, {
+                                text: notes,
+                              });
+                            }}
+                            className="rounded-xl border border-emerald-200 px-3 py-2 font-semibold text-emerald-700 hover:bg-emerald-50 dark:border-emerald-300/20 dark:text-emerald-100"
+                          >
+                            Pedir cambios
                           </button>
                         </div>
                         {notificationActionStatus[notification.id] ? (

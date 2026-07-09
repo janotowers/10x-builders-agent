@@ -80,9 +80,16 @@ Producir y entregar:
 
 5. **HITL de descripción**:
    - Envía `notify_user(kind=listing_description_review)` con borrador,
-     ingredientes usados y faltantes.
+     información faltante relevante para el asesor. No expongas slugs técnicos.
    - Espera decisión explícita del asesor:
-     `approved | request_changes | add_highlights`.
+     `approved | request_changes`. Los cambios pueden incluir ajustes
+     editoriales, puntos clave nuevos o texto exacto de reemplazo.
+   - Si el asesor pide cambios, regenera el borrador con
+     `prepare_listing_description_draft` usando
+     `context_jsonb.listing_description_review.change_classification`,
+     `context_jsonb.listing_highlights` y, si existe,
+     `context_jsonb.listing_description_replacement_candidate`.
+     Luego vuelve a enviar `notify_user(kind=listing_description_review)`.
    - Solo cuando exista `context_jsonb.listing_description_approved`
      puedes continuar a publicación.
 

@@ -43,6 +43,11 @@ import {
   formatPriceApprovalNotifyText,
   type PricingProposal,
 } from "../operational-cases/pricing-proposal";
+import { formatListingDescriptionReviewNotifyText } from "../operational-cases/listing-description-review";
+import {
+  canCompleteListingPublishedSummaryFromContext,
+  formatListingPublishedSummaryNotifyText,
+} from "../operational-cases/listing-published-summary";
 import { requiresAvaclick } from "../operational-cases/comparable-search-contract";
 import type {
   OperationalCaseActivationPolicy,
@@ -206,15 +211,6 @@ function canonicalContractReviewNotifyText(opCase: { id: string }): string {
   return `Borrador de contrato listo para revisión.\n\nDescargar borrador del contrato: ${stableUrl}\n\nResponde “mándalo al dueño” o “pedir cambios”, o usa los botones.`;
 }
 
-function formatPriceForSummary(
-  amount: number | null,
-  currency: string | null
-): string | null {
-  if (amount == null || !(amount > 0)) return null;
-  const normalizedCurrency = (currency ?? "MXN").trim() || "MXN";
-  return `${amount.toLocaleString("es-MX")} ${normalizedCurrency}`;
-}
-
 function listingPublishedSummaryAlreadySent(
   recentEvents: Awaited<ReturnType<typeof getRecentOperationalCaseEvents>>
 ): boolean {
@@ -227,75 +223,6 @@ function listingPublishedSummaryAlreadySent(
         : null;
     return payload?.kind === "listing_published_summary_sent";
   });
-}
-
-function buildListingPublishedSummaryText(opCase: {
-  id: string;
-  context_jsonb: unknown;
-}): string {
-  const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
-  const propertyData = isRecord(context.property_data) ? context.property_data : {};
-  const pricingProposal = isRecord(context.pricing_proposal)
-    ? context.pricing_proposal
-    : {};
-  const approvedDescription = isRecord(context.listing_description_approved)
-    ? context.listing_description_approved
-    : {};
-  const published = isRecord(context.published) ? context.published : {};
-  const easybroker = isRecord(published.easybroker) ? published.easybroker : {};
-  const ungga = isRecord(published.ungga) ? published.ungga : {};
-  const manualPackage = isRecord(context.manual_publish_package)
-    ? context.manual_publish_package
-    : {};
-
-  const headline = contextString(approvedDescription, "headline")
-    ?? contextString(propertyData, "property_title")
-    ?? "Publicacion finalizada";
-  const addressSummary = contextString(propertyData, "legal_address")
-    ?? contextString(propertyData, "address")
-    ?? contextString(manualPackage, "address_summary");
-  const targetPrice = positiveNumberFromUnknown(
-    pricingProposal.target_price ?? propertyData.target_price
-  );
-  const currency = contextString(pricingProposal, "currency")
-    ?? contextString(propertyData, "currency")
-    ?? "MXN";
-  const price = formatPriceForSummary(targetPrice, currency);
-
-  const easybrokerUrl = contextString(easybroker, "public_url")
-    ?? contextString(easybroker, "url")
-    ?? contextString(easybroker, "agent_url");
-  const easybrokerListingId = contextString(easybroker, "listing_id");
-  const unggaUrl = contextString(ungga, "published_url");
-  const unggaPropertyId = contextString(ungga, "ungga_property_id");
-  const manualHeadline = contextString(manualPackage, "headline");
-  const manualDescription = contextString(manualPackage, "description");
-
-  const lines: string[] = [
-    `Flujo de publicacion completado para el caso ${opCase.id}.`,
-    "",
-    `Titulo: ${headline}`,
-  ];
-  if (addressSummary) lines.push(`Direccion: ${addressSummary}`);
-  if (price) lines.push(`Precio objetivo: ${price}`);
-  lines.push("");
-  lines.push("Resultado por destino:");
-  lines.push(
-    easybrokerUrl || easybrokerListingId
-      ? `- EasyBroker: ${easybrokerUrl ?? `listing_id ${easybrokerListingId}`}`
-      : "- EasyBroker: sin publicacion final registrada."
-  );
-  lines.push(
-    unggaUrl || unggaPropertyId
-      ? `- Ungga: ${unggaUrl ?? `propiedad ${unggaPropertyId}`}`
-      : "- Ungga: sin publicacion final registrada."
-  );
-  if (manualDescription || manualHeadline) {
-    lines.push(
-      `- Paquete manual: disponible (${manualHeadline ?? "sin titular"}).`
-    );
-  }
-  return lines.join("\n");
 }
 
 function normalizeNotificationText(value: string | undefined): string {
@@ -3507,57 +3434,6 @@ export function blockedPropertyOptioningStepRegressionReason(params: {
   return null;
 }
 
-function canCompletePropertyOptioningFromContext(
-  context: Record<string, unknown>,
-  recentEvents?: Awaited<ReturnType<typeof getRecentOperationalCaseEvents>>
-): { ok: boolean; reason?: string } {
-  const published = isRecord(context.published) ? context.published : {};
-  const easybroker = isRecord(published.easybroker) ? published.easybroker : {};
-  const ungga = isRecord(published.ungga) ? published.ungga : {};
-  const manualPackage = isRecord(context.manual_publish_package)
-    ? context.manual_publish_package
-    : {};
-  const easybrokerPublished = Boolean(
-    (typeof easybroker.listing_id === "string" && easybroker.listing_id.trim()) ||
-      (typeof easybroker.public_url === "string" && easybroker.public_url.trim())
-  );
-  const unggaPublished = Boolean(
-    (typeof ungga.ungga_property_id === "string" && ungga.ungga_property_id.trim()) ||
-      (typeof ungga.published_url === "string" && ungga.published_url.trim())
-  );
-  const manualDelivered = Boolean(
-    typeof manualPackage.description === "string" &&
-      manualPackage.description.trim().length > 0 &&
-      (typeof manualPackage.headline === "string"
-        ? manualPackage.headline.trim().length > 0
-        : true)
-  );
-  const easybrokerFromEvents =
-    recentEvents?.some((event) => {
-      const payload = isRecord(event.payload_jsonb) ? event.payload_jsonb : null;
-      return payload?.kind === "easybroker_published";
-    }) ?? false;
-  const unggaFromEvents =
-    recentEvents?.some((event) => {
-      const payload = isRecord(event.payload_jsonb) ? event.payload_jsonb : null;
-      return payload?.kind === "ungga_published";
-    }) ?? false;
-  if (
-    easybrokerPublished ||
-    unggaPublished ||
-    manualDelivered ||
-    easybrokerFromEvents ||
-    unggaFromEvents
-  ) {
-    return { ok: true };
-  }
-  return {
-    ok: false,
-    reason:
-      "Para cerrar en published/completed debe existir al menos un destino publicado (EasyBroker/Ungga) o un manual_publish_package entregable.",
-  };
-}
-
 function sanitizeIntakePatch(
   intakeSchema: readonly OperationalCaseIntakeField[] | undefined,
   patch: Record<string, unknown>
@@ -4153,7 +4029,8 @@ export function addOperationalCaseTools(
               opCase.case_type === "property_optioning" &&
               (input.current_step === "published" || input.status === "completed")
             ) {
-              const completion = canCompletePropertyOptioningFromContext(nextContext);
+              const completion =
+                canCompleteListingPublishedSummaryFromContext(nextContext);
               if (!completion.ok) {
                 const out = {
                   ok: false,
@@ -4224,13 +4101,13 @@ export function addOperationalCaseTools(
               30
             );
             const alreadySent = listingPublishedSummaryAlreadySent(recentEvents);
-            const completionGate = canCompletePropertyOptioningFromContext(
+            const completionGate = canCompleteListingPublishedSummaryFromContext(
               isRecord(updated.context_jsonb) ? updated.context_jsonb : {},
               recentEvents
             );
             if (!alreadySent && completionGate.ok) {
               try {
-                const summaryText = buildListingPublishedSummaryText(updated);
+                const summaryText = formatListingPublishedSummaryNotifyText(updated);
                 const result = await deps.notifyUser(
                   ctx.db,
                   ctx.userId,
@@ -5138,7 +5015,7 @@ export function addOperationalCaseTools(
                 opCase.context_jsonb && typeof opCase.context_jsonb === "object"
                   ? (opCase.context_jsonb as Record<string, unknown>)
                   : {};
-              const completionGate = canCompletePropertyOptioningFromContext(
+              const completionGate = canCompleteListingPublishedSummaryFromContext(
                 context,
                 recentEvents
               );
@@ -5191,12 +5068,25 @@ export function addOperationalCaseTools(
                   pricingProposalForNotify as PricingProposal
                 );
               }
+            } else if (canonicalKind === "listing_description_review" && opCase) {
+              const descriptionContext =
+                opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                  ? (opCase.context_jsonb as Record<string, unknown>)
+                  : {};
+              const draft = isRecord(descriptionContext.listing_description_draft)
+                ? descriptionContext.listing_description_draft
+                : null;
+              if (draft) {
+                notificationText = formatListingDescriptionReviewNotifyText(draft, {
+                  currentContext: descriptionContext,
+                });
+              }
             } else if (canonicalKind === "contract_data_review") {
               notificationText = canonicalizeContractDataReviewText(input.text);
             } else if (canonicalKind === "contract_review" && opCase) {
               notificationText = canonicalContractReviewNotifyText(opCase);
             } else if (canonicalKind === "listing_published_summary" && opCase) {
-              notificationText = buildListingPublishedSummaryText(opCase);
+              notificationText = formatListingPublishedSummaryNotifyText(opCase);
             }
             const result = await deps.notifyUser(
               ctx.db,
@@ -5212,6 +5102,12 @@ export function addOperationalCaseTools(
                     ? {
                         artifact_key: "pricing_proposal",
                         actions: ["approve", "adjust", "reject"],
+                      }
+                    : {}),
+                  ...(canonicalKind === "listing_description_review"
+                    ? {
+                        artifact_key: "listing_description_draft",
+                        actions: ["approve", "request_changes"],
                       }
                     : {}),
                 },

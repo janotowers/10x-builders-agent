@@ -6,7 +6,8 @@ export type PendingInlineActionKind =
   | "comparables_search_expansion_decision"
   | "contract_review"
   | "contract_data_review"
-  | "property_data_review";
+  | "property_data_review"
+  | "listing_description_review";
 
 function contractPendingLooksDecisional(notification: InternalNotificationDisplay) {
   const text = `${notification.title ?? ""} ${notification.body ?? ""}`.toLowerCase();
@@ -29,6 +30,9 @@ export function pendingInlineActionKind(
     return "comparables_search_expansion_decision";
   }
   if (notification.kind === "property_data_review") return "property_data_review";
+  if (notification.kind === "listing_description_review") {
+    return "listing_description_review";
+  }
   if (notification.kind === "contract_data_review") return "contract_data_review";
   if (notification.kind === "contract_review") return "contract_review";
   if (

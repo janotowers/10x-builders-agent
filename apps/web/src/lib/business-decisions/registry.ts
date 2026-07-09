@@ -36,8 +36,10 @@ export interface BusinessDecisionHandlerInput {
   notificationId: string;
   text: string;
   /**
-   * Sólo lo usa `price_approval`: difiere el tick del agente E2E para que el
-   * caller (webhook de Telegram) envíe primero la confirmación al usuario.
+   * Lo usan decisiones que avanzan flujo en casos E2E controlados (por ejemplo
+   * `price_approval`, `contract_review`, `listing_description_review`):
+   * difiere el tick del agente para que el caller (webhook de Telegram) envíe
+   * primero la confirmación al usuario.
    */
   deferControlledE2ETick?: boolean;
 }

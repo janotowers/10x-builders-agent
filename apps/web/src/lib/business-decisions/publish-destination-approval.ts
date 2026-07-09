@@ -49,8 +49,13 @@ function buildManualPublishPackage(context: Record<string, unknown>) {
         ? context.listing_description_md.trim()
         : ""),
     price:
-      (typeof pricing.target_price === "number" && Number.isFinite(pricing.target_price)
-        ? pricing.target_price
+      (typeof pricing.salida === "number" && Number.isFinite(pricing.salida)
+        ? pricing.salida
+        : typeof pricing.ideal === "number" && Number.isFinite(pricing.ideal)
+          ? pricing.ideal
+          : typeof pricing.target_price === "number" &&
+              Number.isFinite(pricing.target_price)
+            ? pricing.target_price
         : typeof propertyData.target_price === "number" &&
             Number.isFinite(propertyData.target_price)
           ? propertyData.target_price

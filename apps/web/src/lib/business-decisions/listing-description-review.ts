@@ -6,17 +6,23 @@ import {
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import {
+  isControlledE2EOperationalCase,
+  isSettingsOperationalTestCase,
+} from "@agents/types";
+import {
+  classifyListingDescriptionChange,
+  type ListingDescriptionChangeClassification,
+} from "./listing-description-change-classifier";
 
 type ListingDescriptionIntent =
   | "approve"
-  | "request_changes"
-  | "add_highlights"
+  | "change_request"
   | "unclear";
 
 type ParsedListingDescriptionDecision = {
   intent: ListingDescriptionIntent;
   reason?: string;
-  highlights?: string[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -30,10 +36,39 @@ function cleanText(value: unknown): string {
 function parseHighlights(text: string): string[] {
   const inline = text
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[-*•]\s*/, "").trim())
+    .map((line) =>
+      line
+        .replace(/^[-*•]\s*/, "")
+        .replace(/^(highlights?|puntos clave|elementos clave)\s*:\s*/i, "")
+        .trim()
+    )
+    .filter((line) => !/^(highlights?|puntos clave|elementos clave)\s*:?$/i.test(line))
     .filter((line) => line.length > 0)
     .slice(0, 8);
   return inline;
+}
+
+function isEditorialInstructionText(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  return /\b(menciona(?:r)?|agrega(?:r)?|incluye(?:r)?|resalta(?:r)?|destaca(?:r)?|enfatiza(?:r)?|usa(?:r)?|evita(?:r)?|haz(?:lo)?|mejora(?:r)?|ajusta(?:r)?|cambia(?:r)?|corrige(?:r)?)\b/.test(
+    normalized
+  );
+}
+
+export function splitInstructionAndHighlights(values: string[]) {
+  const editorial: string[] = [];
+  const highlights: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (isEditorialInstructionText(trimmed)) {
+      editorial.push(trimmed);
+    } else {
+      highlights.push(trimmed);
+    }
+  }
+  return { editorial, highlights };
 }
 
 export function parseListingDescriptionReviewDecision(
@@ -43,39 +78,97 @@ export function parseListingDescriptionReviewDecision(
   if (!normalized) return { intent: "unclear", reason: "Respuesta vacía." };
   if (
     /^(aprobar|aprobado|apruebo|ok|va|listo|si|sí)\b/.test(normalized) &&
-    !/cambio|ajust|corrig|highlight/.test(normalized)
+    !/cambio|ajust|corrig|highlight|puntos?\s+clave|elementos?\s+clave/.test(normalized)
   ) {
     return { intent: "approve" };
   }
-  if (
-    /highlight|resaltar|agrega|agregar|incluye|incluir/.test(normalized)
-  ) {
-    const highlights = parseHighlights(text);
-    return highlights.length > 0
-      ? { intent: "add_highlights", highlights }
-      : {
-          intent: "unclear",
-          reason:
-            "Entendí que quieres agregar highlights, pero no detecté bullets. Inclúyelos en líneas separadas.",
-        };
-  }
-  if (
-    /cambiar|cambio|ajustar|ajusta|corregir|corrige|editar|edita|modificar|modifica/.test(
-      normalized
-    )
-  ) {
-    return { intent: "request_changes", reason: text.trim() };
-  }
+  if (text.trim()) return { intent: "change_request", reason: text.trim() };
   return {
     intent: "unclear",
     reason:
-      "No entendí si quieres aprobar, pedir cambios o agregar highlights. Ejemplos: APROBAR DESCRIPCIÓN, AJUSTAR DESCRIPCIÓN ... o HIGHLIGHTS: ...",
+      "No entendí si quieres aprobar o pedir cambios. Ejemplos: APROBAR DESCRIPCIÓN o indicar qué ajustar/agregar.",
   };
+}
+
+function fallbackListingDescriptionChangeClassification(
+  text: string
+): ListingDescriptionChangeClassification {
+  const trimmed = text.trim();
+  const normalized = trimmed.toLowerCase();
+  const replacementPrefix = normalized.match(
+    /^(usa exactamente|usa este texto|reemplaza por|descripcion final|descripción final)\s*:?\s*/i
+  );
+  if (replacementPrefix && trimmed.length > replacementPrefix[0].length) {
+    return {
+      change_type: "exact_replacement",
+      editorial_instructions: [],
+      new_facts_or_highlights: [],
+      replacement_text: trimmed.slice(replacementPrefix[0].length).trim() || null,
+      confidence: "medium",
+      requires_clarification: false,
+    };
+  }
+  const highlightHints =
+    /highlight|puntos?\s+clave|elementos?\s+clave|resaltar|resalta|destacar|destaca|enfatizar|enfatiza|mencionar|menciona|agrega|agregar|incluye|incluir/i.test(
+      trimmed
+    ) || /^[\s-•*]+/m.test(trimmed);
+  if (highlightHints) {
+    return {
+      change_type: "new_fact_or_highlight",
+      editorial_instructions: [],
+      new_facts_or_highlights: parseHighlights(trimmed),
+      replacement_text: null,
+      confidence: "low",
+      requires_clarification: false,
+    };
+  }
+  return {
+    change_type: "editorial_instruction",
+    editorial_instructions: trimmed ? [trimmed] : [],
+    new_facts_or_highlights: [],
+    replacement_text: null,
+    confidence: "low",
+    requires_clarification: false,
+  };
+}
+
+function shouldRunListingDescriptionAgentTick(opCase: {
+  context_jsonb?: Record<string, unknown> | null;
+}): boolean {
+  return (
+    isControlledE2EOperationalCase(opCase) || isSettingsOperationalTestCase(opCase)
+  );
+}
+
+async function triggerControlledE2EAgentTick(
+  db: DbClient,
+  updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
+  source: string
+) {
+  const { runSettingsTestCaseAgentTick } = await import(
+    "@/lib/operational-cases/run-settings-test-case-tick"
+  );
+  await runSettingsTestCaseAgentTick(db, updated, updated.user_id, { source });
+}
+
+export async function runDeferredListingDescriptionControlledE2ETick(
+  db: DbClient,
+  caseId: string,
+  source: string
+): Promise<void> {
+  const opCase = await getOperationalCase(db, caseId);
+  if (!opCase) return;
+  await triggerControlledE2EAgentTick(db, opCase, source);
 }
 
 export async function handleListingDescriptionReviewDecision(
   db: DbClient,
-  params: { userId: string; notificationId: string; text: string }
+  params: {
+    userId: string;
+    notificationId: string;
+    text: string;
+    deferControlledE2ETick?: boolean;
+  }
 ) {
   const notification = await getInternalUserNotification(db, params.notificationId);
   if (!notification || notification.user_id !== params.userId) {
@@ -127,7 +220,7 @@ export async function handleListingDescriptionReviewDecision(
     };
     const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
       status: "active",
-      currentStep: opCase.current_step ?? "package_ready",
+      currentStep: "package_ready",
       nextActionAt: new Date().toISOString(),
       context: {
         ...context,
@@ -157,76 +250,107 @@ export async function handleListingDescriptionReviewDecision(
       userId: params.userId,
       status: "actioned",
     });
+    const runAgentTick = shouldRunListingDescriptionAgentTick(opCase);
+    const deferTick = runAgentTick && params.deferControlledE2ETick === true;
+    if (runAgentTick && !deferTick) {
+      void triggerControlledE2EAgentTick(db, updated, "listing_description_approved").catch(
+        (tickError) => {
+          console.error("[listing-description-review] e2e tick failed:", tickError);
+        }
+      );
+    }
     return {
       ok: true,
       status: "approved",
       message: "Descripción aprobada. El caso puede continuar a publicación.",
       case_id: opCase.id,
+      deferredControlledE2ETick: deferTick
+        ? { source: "listing_description_approved" as const }
+        : null,
     };
   }
 
-  if (parsed.intent === "add_highlights") {
-    const existing = Array.isArray(context.listing_highlights)
-      ? context.listing_highlights.filter(
-          (item): item is string => typeof item === "string"
-        )
-      : [];
-    const merged = Array.from(new Set([...existing, ...(parsed.highlights ?? [])])).slice(
-      0,
-      12
-    );
-    const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-      status: "active",
-      currentStep: opCase.current_step ?? "package_ready",
-      nextActionAt: new Date().toISOString(),
-      context: {
-        ...context,
-        listing_highlights: merged,
-        listing_description_review: {
-          status: "highlights_added",
-          decided_at: nowIso,
-          decided_by: params.userId,
-        },
-      },
-    });
-    if (!updated) {
-      return { ok: false, status: "version_conflict", message: "El caso cambió; intenta de nuevo." };
-    }
-    await insertOperationalCaseEvent(db, {
-      caseId: opCase.id,
-      eventType: "human_decision",
-      actor: "user",
-      stepKey: "package_ready",
-      payload: {
-        kind: "listing_description_highlights_added",
-        highlights: merged,
-      },
-    });
-    await resolveInternalNotificationWithReminders(db, {
-      id: notification.id,
-      userId: params.userId,
-      status: "actioned",
-    });
+  if (parsed.intent !== "change_request") {
+    return { ok: false, status: "unclear", message: parsed.reason ?? "No entendí tu respuesta." };
+  }
+
+  const classification =
+    (await classifyListingDescriptionChange({
+      text: params.text,
+      draft,
+    })) ?? fallbackListingDescriptionChangeClassification(params.text);
+  if (classification.requires_clarification) {
     return {
-      ok: true,
-      status: "highlights_added",
+      ok: false,
+      status: "unclear",
       message:
-        "Highlights guardados. Ejecuta de nuevo la preparación del borrador para incorporar cambios.",
-      case_id: opCase.id,
+        classification.clarification_question ??
+        "¿Quieres que cambie la redacción, que agregue puntos clave o que use un texto exacto?",
     };
   }
+
+  const existingHighlights = Array.isArray(context.listing_highlights)
+    ? context.listing_highlights.filter((item): item is string => typeof item === "string")
+    : [];
+  const existingCopyInstructions = Array.isArray(context.listing_copy_instructions)
+    ? context.listing_copy_instructions.filter(
+        (item): item is string => typeof item === "string"
+      )
+    : [];
+  const classifiedSplit = splitInstructionAndHighlights(
+    classification.new_facts_or_highlights
+  );
+  const mergedEditorialInstructions = Array.from(
+    new Set([
+      ...existingCopyInstructions,
+      ...classification.editorial_instructions,
+      ...classifiedSplit.editorial,
+    ])
+  ).slice(0, 12);
+  const mergedHighlights = Array.from(
+    new Set([...existingHighlights, ...classifiedSplit.highlights])
+  ).slice(0, 12);
+  const effectiveChangeType =
+    classification.change_type === "new_fact_or_highlight" &&
+    mergedHighlights.length === 0 &&
+    mergedEditorialInstructions.length > 0
+      ? "editorial_instruction"
+      : classification.change_type;
+  const normalizedClassification: ListingDescriptionChangeClassification = {
+    ...classification,
+    change_type: effectiveChangeType,
+    editorial_instructions: mergedEditorialInstructions.slice(0, 8),
+    new_facts_or_highlights: mergedHighlights.slice(0, 12),
+  };
+  const statusForReview =
+    normalizedClassification.change_type === "new_fact_or_highlight"
+      ? "highlights_added"
+      : "changes_requested";
+  const replacementCandidate = classification.replacement_text
+    ? {
+        text: classification.replacement_text,
+        captured_at: nowIso,
+        captured_by: params.userId,
+      }
+    : null;
 
   const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
-    status: "waiting_internal",
-    currentStep: opCase.current_step ?? "package_ready",
-    nextActionAt: null,
+    status: "active",
+    currentStep: "package_ready",
+    nextActionAt: new Date().toISOString(),
     context: {
       ...context,
+      ...(mergedHighlights.length > 0 ? { listing_highlights: mergedHighlights } : {}),
+      ...(mergedEditorialInstructions.length > 0
+        ? { listing_copy_instructions: mergedEditorialInstructions }
+        : {}),
+      ...(replacementCandidate ? { listing_description_replacement_candidate: replacementCandidate } : {}),
       listing_description_review: {
-        status: "changes_requested",
+        status: statusForReview,
         requested_at: nowIso,
         requested_by: params.userId,
         notes: params.text.trim(),
+        change_classification: normalizedClassification,
       },
     },
   });
@@ -241,6 +365,10 @@ export async function handleListingDescriptionReviewDecision(
     payload: {
       kind: "listing_description_changes_requested",
       notes: params.text.trim(),
+      change_type: normalizedClassification.change_type,
+      highlights: normalizedClassification.new_facts_or_highlights,
+      editorial_instructions: normalizedClassification.editorial_instructions,
+      replacement_candidate: normalizedClassification.replacement_text ?? null,
     },
   });
   await resolveInternalNotificationWithReminders(db, {
@@ -248,10 +376,30 @@ export async function handleListingDescriptionReviewDecision(
     userId: params.userId,
     status: "actioned",
   });
+  const runAgentTick = shouldRunListingDescriptionAgentTick(opCase);
+  const deferTick = runAgentTick && params.deferControlledE2ETick === true;
+  if (runAgentTick && !deferTick) {
+    void triggerControlledE2EAgentTick(db, updated, "listing_description_changes_requested").catch(
+      (tickError) => {
+        console.error("[listing-description-review] e2e tick failed:", tickError);
+      }
+    );
+  }
   return {
     ok: true,
-    status: "changes_requested",
-    message: "Cambios registrados. El caso queda en revisión interna.",
+    status: normalizedClassification.change_type === "new_fact_or_highlight"
+      ? "highlights_added"
+      : "changes_requested",
+    message:
+      normalizedClassification.change_type === "new_fact_or_highlight"
+        ? "Puntos clave guardados. Voy a regenerar el borrador para incorporarlos."
+        : replacementCandidate
+          ? "Cambios registrados. Voy a regenerar el borrador usando el texto propuesto como base."
+          : "Cambios registrados. Voy a regenerar el borrador tomando en cuenta tus instrucciones.",
     case_id: opCase.id,
+    change_classification: normalizedClassification,
+    deferredControlledE2ETick: deferTick
+      ? { source: "listing_description_changes_requested" as const }
+      : null,
   };
 }

@@ -31,7 +31,7 @@ import {
   upsertActiveInternalUserNotification,
 } from "@agents/db";
 import {
-  sendTelegramMessage,
+  sendTelegramAgentMessage,
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
 import {
@@ -235,6 +235,23 @@ async function deliverTelegram(
         ],
       ],
     };
+  } else if (actionKind === "listing_description_review" && actionNotificationId) {
+    replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: "Aprobar descripción",
+            callback_data: `ld_approve:${actionNotificationId}`,
+          },
+        ],
+        [
+          {
+            text: "Pedir cambios",
+            callback_data: `ld_changes:${actionNotificationId}`,
+          },
+        ],
+      ],
+    };
   } else if (
     actionKind === "contract_review" &&
     actionNotificationId &&
@@ -290,7 +307,7 @@ async function deliverTelegram(
   let attemptedReplyMarkup = replyMarkup;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await sendTelegramMessage(chatId, text, attemptedReplyMarkup, {
+      await sendTelegramAgentMessage(chatId, text, attemptedReplyMarkup, {
         throwOnError: true,
       });
       return { channel: "telegram", ok: true, status: "delivered" };
@@ -473,6 +490,7 @@ function shouldReuseActiveNotification(payload: NotifyPayload, caseId: string | 
     "contract_review",
     "missing_requirements",
     "price_approval",
+    "listing_description_review",
     "property_data_review",
     "tool_confirmation_pending",
   ].includes(payload.kind);

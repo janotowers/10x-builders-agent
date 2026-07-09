@@ -1165,16 +1165,17 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       ],
       test: [
         {
-          asset_key: "test_image_watermark_source",
-          label: "Foto fuente para probar watermark",
+          asset_key: "test_property_listing_photos",
+          label: "Fotos de propiedad para pruebas de listing",
           description:
-            "Carga una foto temporal de una propiedad para validar cómo se aplica la marca de agua.",
+            "Carga fotos temporales de un inmueble para analizar cobertura visual, aplicar watermark y validar publicación.",
           accept: ["image/jpeg", "image/png", "image/webp"],
           max_size_mb: 15,
           required: true,
           param: "input_paths",
           min_count: 1,
-          max_count: 1,
+          max_count: 30,
+          collection: true,
         },
       ],
     },
@@ -1183,7 +1184,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "analyze_property_images",
     name: "analyze_property_images",
     description:
-      "Analyzes property photos/images with a vision model and returns structured, evidence-based observations (coverage, visible spaces/features, quality notes, and do-not-claim constraints). This does not infer that unseen features do not exist.",
+      "Analyzes property photos/images with a vision model and returns structured, evidence-based observations (coverage by space, features_by_space, style/materials/lighting notes, copy-safe phrases, and do-not-claim constraints). This does not infer that unseen features do not exist.",
     risk: "low",
     parameters_schema: {
       type: "object",
@@ -1206,6 +1207,23 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         },
       },
       required: ["image_paths"],
+    },
+    asset_profile: {
+      test: [
+        {
+          asset_key: "test_property_listing_photos",
+          label: "Fotos de propiedad para pruebas de listing",
+          description:
+            "Carga fotos temporales de un inmueble para analizar cobertura visual, aplicar watermark y validar publicación.",
+          accept: ["image/jpeg", "image/png", "image/webp"],
+          max_size_mb: 15,
+          required: true,
+          param: "image_paths",
+          min_count: 2,
+          max_count: 30,
+          collection: true,
+        },
+      ],
     },
   },
   {
@@ -1345,12 +1363,12 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     asset_profile: {
       test: [
         {
-          asset_key: "test_easybroker_upload_image",
-          label: "Fotos para probar subida a EasyBroker",
+          asset_key: "test_property_listing_photos",
+          label: "Fotos de propiedad para pruebas de listing",
           description:
-            "Carga una o más fotos temporales para validar los args de subida. La tool usará signed URLs al ejecutar.",
+            "Carga fotos temporales de un inmueble para analizar cobertura visual, aplicar watermark y validar publicación.",
           accept: ["image/jpeg", "image/png", "image/webp"],
-          max_size_mb: 6,
+          max_size_mb: 15,
           required: true,
           param: "image_paths",
           min_count: 1,

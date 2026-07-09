@@ -10,6 +10,7 @@ import {
   associateExternalResponseWithCase,
   countPendingToolCallsForCase,
   findOperationalCaseByExternalChatId,
+  getInternalUserNotification,
   getOperationalCase,
   getRecentOperationalCaseEvents,
   getActiveE2ELabSession,
@@ -18,6 +19,7 @@ import {
   listInternalUserNotifications,
   linkE2ELabSessionToCase,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
+  updateInternalUserNotificationMetadata,
   updateOperationalCase,
   updateToolCallStatus,
   upsertConversationBinding,
@@ -53,6 +55,7 @@ import {
 } from "@/lib/business-decisions/contract-review";
 import { parseContractDataReviewReply } from "@/lib/business-decisions/contract-data-review";
 import { parseTitularidadReviewDecision } from "@/lib/business-decisions/titularidad-review";
+import { runDeferredListingDescriptionControlledE2ETick } from "@/lib/business-decisions/listing-description-review";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
@@ -71,7 +74,7 @@ import {
 } from "@/lib/operational-cases/case-document-ingestion";
 import { ensureConversationalCase } from "@/lib/operational-cases/ensure-conversational-case";
 import { buildTelegramOperationalCaseToolApprovalPolicy } from "@/lib/operational-cases/telegram-operational-case-tool-policy";
-import type { OperationalCase } from "@agents/types";
+import type { InternalUserNotification, OperationalCase } from "@agents/types";
 import {
   operationalCaseDocumentRequestTargetFromContext,
 } from "@agents/types";
@@ -184,6 +187,81 @@ async function maybeRunDeferredContractTick(
   } catch (tickError) {
     console.error("[telegram-webhook] deferred contract tick failed:", tickError);
   }
+}
+
+async function maybeRunDeferredListingDescriptionTick(
+  db: ReturnType<typeof createServerClient>,
+  result: {
+    ok?: boolean;
+    case_id?: unknown;
+    deferredControlledE2ETick?: unknown;
+  }
+): Promise<void> {
+  if (!result.ok) return;
+  const deferred = result.deferredControlledE2ETick;
+  const caseId = typeof result.case_id === "string" ? result.case_id : null;
+  if (!deferred || !caseId) return;
+  const source =
+    typeof (deferred as { source?: unknown }).source === "string"
+      ? (deferred as { source: string }).source
+      : "listing_description_approved";
+  try {
+    await runDeferredListingDescriptionControlledE2ETick(db, caseId, source);
+  } catch (tickError) {
+    console.error(
+      "[telegram-webhook] deferred listing-description tick failed:",
+      tickError
+    );
+  }
+}
+
+function isActiveListingDescriptionReviewNotification(
+  notification: InternalUserNotification | null,
+  userId: string
+): notification is InternalUserNotification {
+  return Boolean(
+    notification &&
+      notification.user_id === userId &&
+      notification.kind === "listing_description_review" &&
+      notification.status === "unread"
+  );
+}
+
+function isTelegramCommand(text: string): boolean {
+  return /^\s*\//.test(text);
+}
+
+async function handleTelegramListingDescriptionReviewText(params: {
+  db: ReturnType<typeof createServerClient>;
+  chatId: number;
+  userId: string;
+  notification: InternalUserNotification;
+  text: string;
+}) {
+  const result = await businessDecisionHandler("listing_description_review").handle(
+    params.db,
+    {
+      userId: params.userId,
+      notificationId: params.notification.id,
+      text: params.text,
+      deferControlledE2ETick: true,
+    }
+  );
+  await sendTelegramMessage(
+    params.chatId,
+    result.message ??
+      (result.ok
+        ? "Listo, procesé tu revisión de descripción."
+        : "No pude procesar la revisión de descripción.")
+  );
+  await maybeRunDeferredListingDescriptionTick(params.db, result);
+  return NextResponse.json({
+    ok: true,
+    routed: result.ok
+      ? "listing_description_review"
+      : "listing_description_review_rejected",
+    notification_id: params.notification.id,
+  });
 }
 
 const TELEGRAM_INTAKE_ROUTED: Record<ConversationalIntakeRoute, string> = {
@@ -968,6 +1046,62 @@ export async function POST(request: Request) {
     }
 
     const userId = telegramAccount.user_id as string;
+
+    if (action === "ld_approve" || action === "ld_changes" || action === "ld_highlights") {
+      const notification = await getInternalUserNotification(db, targetId);
+      if (!isActiveListingDescriptionReviewNotification(notification, userId)) {
+        await answerTelegramCallbackQuery(cb.id, "Revisión no activa");
+        await sendTelegramMessage(
+          cb.message.chat.id,
+          "Esta revisión de descripción ya no está activa. Usa la notificación más reciente del caso."
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "listing_description_review_stale_callback",
+          notification_id: targetId,
+        });
+      }
+      if (action === "ld_changes" || action === "ld_highlights") {
+        await updateInternalUserNotificationMetadata(db, notification, {
+          telegram_pending_reply_intent: "request_changes",
+          telegram_pending_reply_requested_at: new Date().toISOString(),
+        });
+        await answerTelegramCallbackQuery(cb.id, "Escribe los cambios");
+        await sendTelegramMessage(
+          cb.message.chat.id,
+          "Claro. Escríbeme qué cambiar: ajustes editoriales, puntos clave a agregar o pega la versión exacta que quieres usar. Ejemplo:\nHacer el tono más ejecutivo y mencionar cercanía a servicios."
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "listing_description_changes_guidance",
+          notification_id: targetId,
+        });
+      }
+      const result = await businessDecisionHandler("listing_description_review").handle(db, {
+        userId,
+        notificationId: targetId,
+        text: "APROBAR DESCRIPCIÓN",
+        deferControlledE2ETick: true,
+      });
+      await answerTelegramCallbackQuery(
+        cb.id,
+        result.ok ? "Descripción aprobada" : "No pude procesarlo"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Descripción aprobada. El caso puede continuar."
+            : "No pude procesar la revisión de descripción.")
+      );
+      await maybeRunDeferredListingDescriptionTick(db, result);
+      return NextResponse.json({
+        ok: true,
+        routed: "listing_description_review",
+        notification_id: targetId,
+      });
+    }
+
     if (action === "price_approve" || action === "price_reject") {
       const result = await businessDecisionHandler("price_approval").handle(db, {
         userId,
@@ -1652,8 +1786,43 @@ export async function POST(request: Request) {
 
   const pendingInternal = await listInternalUserNotifications(db, userId, {
     statuses: ["unread"],
-    limit: 10,
+    limit: 30,
   });
+
+  const pendingListingDescriptionReviews = pendingInternal.filter(
+    (notification) => notification.kind === "listing_description_review"
+  );
+  const pendingListingDescriptionReply = pendingListingDescriptionReviews.find(
+    (notification) => {
+      const metadata = isObjectRecord(notification.metadata_jsonb)
+        ? notification.metadata_jsonb
+        : {};
+      return metadata.telegram_pending_reply_intent === "request_changes";
+    }
+  );
+  const hasListingDescriptionReviewKeyword =
+    /\b(descripci[oó]n|descripcion|t[ií]tulo|headline|highlights?|puntos?\s+clave|elementos?\s+clave|resaltar|destacar|mencion(?:a|ar|e|es)|enfatiz(?:a|ar|e|es)|vendedor|vendedora|premium|persuasiv[ao]|portal)\b/i.test(
+      text
+    );
+  const shouldRouteListingDescriptionText =
+    Boolean(text) &&
+    !isTelegramCommand(text) &&
+    (Boolean(pendingListingDescriptionReply) ||
+      pendingListingDescriptionReviews.length === 1 ||
+      (pendingListingDescriptionReviews.length > 0 &&
+        hasListingDescriptionReviewKeyword));
+  const listingDescriptionReviewTarget =
+    pendingListingDescriptionReply ??
+    pendingListingDescriptionReviews[0];
+  if (shouldRouteListingDescriptionText && listingDescriptionReviewTarget) {
+    return handleTelegramListingDescriptionReviewText({
+      db,
+      chatId,
+      userId,
+      notification: listingDescriptionReviewTarget,
+      text,
+    });
+  }
 
   const parsedPriceDecision = parsePriceApprovalDecision(text);
   if (parsedPriceDecision.intent !== "unclear") {
