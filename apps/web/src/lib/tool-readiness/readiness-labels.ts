@@ -59,6 +59,15 @@ const LABELS: Record<string, LabelEntry> = {
   "notify_user(kind=listing_description_review)": {
     label: "solicitar revisión de descripción",
   },
+  "notify_user(kind=property_data_review)": {
+    label: "solicitar validación de property_data",
+  },
+  "notify_user(kind=comparables_insufficient_data)": {
+    label: "avisar comparables insuficientes",
+  },
+  "business_decision:property_data_review": {
+    label: "revisión de property_data",
+  },
   OPENROUTER_API_KEY: { label: "API key de OpenRouter" },
   GOOGLE_MAPS_API_KEY: { label: "API key de Google Maps" },
   "property_data.address": { label: "dirección del inmueble" },

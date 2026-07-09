@@ -43,6 +43,95 @@ const SELF_CONTAINED: ToolTestBehavior = {
   data_sources: ["case_form", "manual_overrides"],
 };
 
+const NOTIFY_GENERIC_READINESS: ToolTestBehavior = {
+  kind: "case_backed",
+  label: "Notifica al asesor (prueba de canal)",
+  summary:
+    "Valida que notify_user pueda entregar un mensaje interno ligado al caso de prueba.",
+  mode_hint:
+    "Con formulario/caso enlaza case_id; el kind concreto depende del hito (documentos, revisión de datos, comparables o publicación).",
+  prerequisites: [
+    "case_id del caso de prueba",
+    "canal interno/inbox configurado para el asesor",
+  ],
+  reads_from_case: ["contexto del caso para enlazar la notificación"],
+  persists_to_case: ["internal_user_notifications ligado al caso"],
+  downstream_for: ["continuación del hito tras la notificación"],
+};
+
+const NOTIFY_DOCUMENTS_INTERNAL: ToolTestBehavior = {
+  kind: "case_backed",
+  label: "Solicita subida documental al equipo",
+  summary:
+    "En awaiting_documents (rama interna) pide al asesor subir el expediente o escala si falta respuesta del externo.",
+  mode_hint:
+    "Con formulario/caso valida el canal interno; el skill usa kind de solicitud documental / escalación.",
+  prerequisites: [
+    "case_id del caso de prueba",
+    "canal interno/inbox configurado para el asesor",
+  ],
+  reads_from_case: [
+    "document_request_target",
+    "contexto del caso para enlazar la notificación",
+  ],
+  persists_to_case: [
+    "internal_user_notifications ligado al caso",
+    "reminder_sent (solicitud interna)",
+  ],
+  downstream_for: [
+    "subida de documentos al caso",
+    "avance a documents_received cuando el expediente esté listo",
+  ],
+};
+
+const NOTIFY_PROPERTY_DATA_REVIEW: ToolTestBehavior = {
+  kind: "case_backed",
+  label: "Solicita validación de property_data",
+  summary:
+    "En documents_received, con datos críticos completos, pide al asesor confirmar property_data antes de comparables.",
+  mode_hint:
+    "Con formulario/caso arma kind=property_data_review cuando hay property_data usable en el fixture.",
+  prerequisites: [
+    "case_id del caso de prueba",
+    "property_data con críticos suficientes",
+    "canal interno/inbox configurado para el asesor",
+  ],
+  reads_from_case: ["property_data", "documentos del caso"],
+  persists_to_case: [
+    "internal_user_notifications ligado al caso",
+    "pendiente / waiting_internal de property_data_review",
+  ],
+  downstream_for: [
+    "confirmación del asesor",
+    "avance a comparables_in_progress",
+  ],
+};
+
+const NOTIFY_COMPARABLES_INSUFFICIENT: ToolTestBehavior = {
+  kind: "case_backed",
+  label: "Avisa muestra de comparables insuficiente",
+  summary:
+    "En comparables_in_progress, si usable_count=0, notifica al asesor con filtros y sugerencias sin avanzar a precio.",
+  mode_hint:
+    "Con formulario/caso valida el canal; el skill/runtime usa kind de comparables insuficientes tras persistir el análisis.",
+  prerequisites: [
+    "case_id del caso de prueba",
+    "canal interno/inbox configurado para el asesor",
+  ],
+  reads_from_case: [
+    "property_data",
+    "comparables_analysis (filtros / usable_count)",
+  ],
+  persists_to_case: [
+    "internal_user_notifications ligado al caso",
+    "waiting_internal en comparables_in_progress",
+  ],
+  downstream_for: [
+    "ampliar filtros / reintentar búsqueda",
+    "no avanzar a price_proposal_pending",
+  ],
+};
+
 const NOTIFY_LISTING_DESCRIPTION_REVIEW: ToolTestBehavior = {
   kind: "case_backed",
   label: "Solicita revisión del borrador comercial",
@@ -127,7 +216,7 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
     downstream_for: ["siguientes steps del flujo operativo"],
     data_sources: ["case_context", "case_form", "manual_overrides"],
   },
-  notify_user: NOTIFY_LISTING_DESCRIPTION_REVIEW,
+  notify_user: NOTIFY_GENERIC_READINESS,
   operational_case_register_document: {
     kind: "case_backed",
     label: "Registra documento en el caso",
@@ -339,41 +428,125 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
 };
 
 export type NotifyUserFlowIntent =
+  | "documents_internal"
+  | "property_data_review"
+  | "comparables_insufficient"
   | "listing_description_review"
   | "listing_published_summary"
   | null;
 
+export type NotifyUserBehaviorContext = {
+  flowStepKey?: string | null;
+  skillSlug?: string | null;
+};
+
 export function notifyUserIntentForFlowTool(
-  flowTool?: FlowToolBehaviorInput | null
+  flowTool?: FlowToolBehaviorInput | null,
+  ctx?: NotifyUserBehaviorContext | null
 ): NotifyUserFlowIntent {
-  if (!flowTool || flowTool.tool_id !== "notify_user") return null;
+  if (!flowTool || flowTool.tool_id !== "notify_user") {
+    // Sin flowTool: resolver solo por step/skill (recipes N1).
+    return notifyUserIntentFromStepSkill(ctx);
+  }
   const mappingKind = flowTool.test_inputs_mapping?.kind;
   if (mappingKind === "listing_published_summary") return "listing_published_summary";
   if (mappingKind === "listing_description_review") return "listing_description_review";
+  if (mappingKind === "property_data_review") return "property_data_review";
+  if (mappingKind === "comparables_insufficient_data") {
+    return "comparables_insufficient";
+  }
+  if (
+    mappingKind === "documents_internal" ||
+    mappingKind === "internal_upload_instructions"
+  ) {
+    return "documents_internal";
+  }
+
   const text = `${flowTool.tool_label ?? ""} ${flowTool.tool_description ?? ""}`
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
+  // Cierre de package_ready: el texto/mapping debe ganar al step/skill genérico.
   if (/resumen final|cierre|listing_published_summary|publicacion final/.test(text)) {
     return "listing_published_summary";
   }
-  if (/aprobaciones internas|revision|descripcion|listing_description_review/.test(text)) {
+  if (
+    /borrador comercial|listing_description_review|descripcion comercial/.test(
+      text
+    )
+  ) {
+    return "listing_description_review";
+  }
+
+  const fromStep = notifyUserIntentFromStepSkill(ctx);
+  if (fromStep) return fromStep;
+
+  if (/property_data|caracteristicas|validacion del asesor|revision interna/.test(text)) {
+    return "property_data_review";
+  }
+  if (/comparables|muestra defendible|datos insuficientes/.test(text)) {
+    return "comparables_insufficient";
+  }
+  if (/subida|expediente|documentos|equipo interno/.test(text)) {
+    return "documents_internal";
+  }
+  return null;
+}
+
+function notifyUserIntentFromStepSkill(
+  ctx?: NotifyUserBehaviorContext | null
+): NotifyUserFlowIntent {
+  const step = ctx?.flowStepKey?.trim() || "";
+  const skill = ctx?.skillSlug?.trim() || "";
+  if (
+    step === "awaiting_documents" ||
+    skill === "request-property-documents"
+  ) {
+    return "documents_internal";
+  }
+  if (
+    step === "documents_received" ||
+    skill === "extract-property-characteristics"
+  ) {
+    return "property_data_review";
+  }
+  if (
+    step === "comparables_in_progress" ||
+    skill === "perform-comparable-analysis"
+  ) {
+    return "comparables_insufficient";
+  }
+  if (step === "package_ready" || skill === "publish-listing-package") {
     return "listing_description_review";
   }
   return null;
 }
 
+function behaviorForNotifyIntent(
+  intent: NotifyUserFlowIntent
+): ToolTestBehavior {
+  switch (intent) {
+    case "documents_internal":
+      return NOTIFY_DOCUMENTS_INTERNAL;
+    case "property_data_review":
+      return NOTIFY_PROPERTY_DATA_REVIEW;
+    case "comparables_insufficient":
+      return NOTIFY_COMPARABLES_INSUFFICIENT;
+    case "listing_description_review":
+      return NOTIFY_LISTING_DESCRIPTION_REVIEW;
+    case "listing_published_summary":
+      return NOTIFY_LISTING_PUBLISHED_SUMMARY;
+    default:
+      return NOTIFY_GENERIC_READINESS;
+  }
+}
+
 export function toolTestBehaviorForFlowTool(
-  flowTool: FlowToolBehaviorInput
+  flowTool: FlowToolBehaviorInput,
+  ctx?: NotifyUserBehaviorContext | null
 ): ToolTestBehavior {
   if (flowTool.tool_id === "notify_user") {
-    const intent = notifyUserIntentForFlowTool(flowTool);
-    if (intent === "listing_published_summary") {
-      return NOTIFY_LISTING_PUBLISHED_SUMMARY;
-    }
-    if (intent === "listing_description_review") {
-      return NOTIFY_LISTING_DESCRIPTION_REVIEW;
-    }
+    return behaviorForNotifyIntent(notifyUserIntentForFlowTool(flowTool, ctx));
   }
   return toolTestBehaviorForTool(flowTool.tool_id);
 }

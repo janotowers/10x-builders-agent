@@ -68,10 +68,12 @@ assert.equal(listDocs.user_facing_test_type, "Herramienta respaldada por caso");
 
 const notifyUser = normalizeToolTestBehavior("notify_user");
 assert.equal(notifyUser.kind, "case_backed");
-assert.equal(notifyUser.label, "Solicita revisión del borrador comercial");
+assert.equal(notifyUser.label, "Notifica al asesor (prueba de canal)");
 assert.ok(
-  notifyUser.prerequisites.includes("listing_description_draft para kind=listing_description_review"),
-  "notify_user debe declarar el borrador como precondicion del review de descripcion."
+  !notifyUser.prerequisites.some((entry) =>
+    entry.includes("listing_description_draft")
+  ),
+  "notify_user default no debe exigir listing_description_draft."
 );
 
 const easyBrokerCreate = normalizeToolTestBehavior("easybroker_create_listing");
@@ -81,9 +83,63 @@ assert.equal(easyBrokerCreate.label, "Crea ficha EasyBroker");
 const unggaPublish = normalizeToolTestBehavior("ungga_publish_listing");
 assert.equal(unggaPublish.kind, "case_assembler");
 assert.equal(unggaPublish.label, "Publica o prepara en Ungga");
-assert.ok(
-  notifyUser.downstream_for.includes("listing_description_approved"),
-  "notify_user debe declarar la aprobacion de descripcion como downstream."
+
+const notifyDocs = normalizeToolTestBehavior(
+  "notify_user",
+  toolTestBehaviorForFlowTool(
+    {
+      tool_id: "notify_user",
+      tool_label: "Notificar al asesor",
+      tool_description: "Rama interna: solicita al equipo que suba documentos.",
+    },
+    {
+      flowStepKey: "awaiting_documents",
+      skillSlug: "request-property-documents",
+    }
+  )
+);
+assert.equal(notifyDocs.label, "Solicita subida documental al equipo");
+
+const notifyPropertyData = normalizeToolTestBehavior(
+  "notify_user",
+  toolTestBehaviorForFlowTool(
+    {
+      tool_id: "notify_user",
+      tool_label: "Solicitar validación del asesor",
+      tool_description: "Pide confirmación humana de los datos estructurados.",
+    },
+    {
+      flowStepKey: "documents_received",
+      skillSlug: "extract-property-characteristics",
+    }
+  )
+);
+assert.equal(notifyPropertyData.label, "Solicita validación de property_data");
+assert.equal(
+  notifyUserIntentForFlowTool(
+    { tool_id: "notify_user" },
+    { flowStepKey: "documents_received" }
+  ),
+  "property_data_review"
+);
+
+const notifyComparables = normalizeToolTestBehavior(
+  "notify_user",
+  toolTestBehaviorForFlowTool(
+    {
+      tool_id: "notify_user",
+      tool_label: "Notificar al asesor",
+      tool_description: "Rama sin muestra defendible.",
+    },
+    {
+      flowStepKey: "comparables_in_progress",
+      skillSlug: "perform-comparable-analysis",
+    }
+  )
+);
+assert.equal(
+  notifyComparables.label,
+  "Avisa muestra de comparables insuficiente"
 );
 
 const notifyClosingFlowTool = {
@@ -93,13 +149,17 @@ const notifyClosingFlowTool = {
     "Notifica al asesor el cierre del caso con links y resumen canónico (listing_published_summary).",
 };
 assert.equal(
-  notifyUserIntentForFlowTool(notifyClosingFlowTool),
+  notifyUserIntentForFlowTool(notifyClosingFlowTool, {
+    flowStepKey: "package_ready",
+  }),
   "listing_published_summary",
   "La segunda instancia de notify_user debe resolverse como cierre."
 );
 const notifyClosing = normalizeToolTestBehavior(
   "notify_user",
-  toolTestBehaviorForFlowTool(notifyClosingFlowTool)
+  toolTestBehaviorForFlowTool(notifyClosingFlowTool, {
+    flowStepKey: "package_ready",
+  })
 );
 assert.equal(notifyClosing.label, "Envía resumen final de cierre");
 assert.equal(
@@ -113,6 +173,27 @@ assert.ok(
 assert.ok(
   !notifyClosing.downstream_for.includes("listing_description_approved"),
   "El cierre no debe declararse como HITL de descripción."
+);
+
+const notifyListingReview = normalizeToolTestBehavior(
+  "notify_user",
+  toolTestBehaviorForFlowTool(
+    {
+      tool_id: "notify_user",
+      tool_label: "Solicitar revisión de descripción",
+      tool_description: "Pide revisión del borrador comercial.",
+      test_inputs_mapping: { kind: "listing_description_review" },
+    },
+    { flowStepKey: "package_ready", skillSlug: "publish-listing-package" }
+  )
+);
+assert.equal(
+  notifyListingReview.label,
+  "Solicita revisión del borrador comercial"
+);
+assert.ok(
+  notifyListingReview.downstream_for.includes("listing_description_approved"),
+  "listing review debe declarar la aprobacion de descripcion como downstream."
 );
 
 const partial = normalizeToolTestBehavior("prepare_listing_description_draft", {
