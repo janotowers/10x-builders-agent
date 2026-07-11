@@ -85,6 +85,8 @@ import {
 } from "@/lib/engagement-policies/registry";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 import { buildMediaGroupReceivedAck } from "@/lib/operational-cases/case-document-collection";
+import { requestPublicationProgress } from "@/lib/operational-cases/publication-runner";
+import { runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settings-test-case-tick";
 import { flushMediaGroupAcksForCase } from "@/lib/operational-cases/telegram-media-group-ack-store";
 import {
   buildToolConfirmationEscalationText,
@@ -914,6 +916,37 @@ async function processCase(
       },
     });
     return { case_id: opCase.id, status: "skipped" };
+  }
+  if (opCase.current_step === "package_ready") {
+    const progress = await requestPublicationProgress(
+      db,
+      opCase.id,
+      "cron_publication",
+      {
+        runAgentTick: async (runnerCase, action) => {
+          const tick = await runSettingsTestCaseAgentTick(
+            db,
+            runnerCase,
+            runnerCase.user_id,
+            {
+              source: `cron_publication:${action.type}`,
+              skipLock: true,
+            }
+          );
+          return (
+            tick.publication_execution ?? {
+              status: "not_executed",
+              error: "publication_execution_result_missing",
+            }
+          );
+        },
+      }
+    );
+    return {
+      case_id: opCase.id,
+      status: progress.ok ? "ok" : "error",
+      ...(progress.message ? { error: progress.message } : {}),
+    };
   }
 
   const locked = await markCaseProcessing(db, opCase.id, opCase.version);

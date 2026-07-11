@@ -67,6 +67,7 @@ export async function loadCaseContextMap(
 export function formatPendingCaseContextLine(context: PendingCaseContext): string | null {
   const parts: string[] = [];
   if (context.caseTitle) parts.push(`Caso: ${context.caseTitle}`);
+  if (context.caseId) parts.push(`ID: ${context.caseId}`);
   if (context.caseStepLabel) parts.push(`Paso: ${context.caseStepLabel}`);
   if (context.caseStatusLabel) parts.push(`Estado: ${context.caseStatusLabel}`);
   return parts.length > 0 ? parts.join(" · ") : null;

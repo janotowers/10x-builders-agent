@@ -17,5 +17,48 @@ const parsed = parseContractDataReviewReply(
 );
 assert.equal(parsed.intent, "provide_data");
 assert.equal(parsed.owner_email, "maria.castaneda@example.com");
+assert.equal(parsed.patch?.owner_email, "maria.castaneda@example.com");
+
+const commercial = parseContractDataReviewReply(
+  "Sí se comparte comisión. Comisión total 5%. Exclusiva. Duración 6 meses. dueno@example.com",
+  [
+    {
+      key: "owner_email",
+      label: "Correo",
+      question: "Correo",
+      kind: "email",
+    },
+    {
+      key: "collaboration_enabled",
+      label: "Compartir",
+      question: "¿Se comparte?",
+      kind: "boolean",
+    },
+    {
+      key: "commission_pct",
+      label: "Comisión",
+      question: "Comisión total",
+      kind: "number",
+    },
+    {
+      key: "exclusive",
+      label: "Exclusividad",
+      question: "¿Exclusiva?",
+      kind: "boolean",
+    },
+    {
+      key: "duration_months",
+      label: "Duración",
+      question: "Meses",
+      kind: "number",
+    },
+  ]
+);
+assert.equal(commercial.intent, "provide_data");
+assert.equal(commercial.patch?.owner_email, "dueno@example.com");
+assert.equal(commercial.patch?.collaboration_enabled, true);
+assert.equal(commercial.patch?.commission_pct, 5);
+assert.equal(commercial.patch?.exclusive, true);
+assert.equal(commercial.patch?.duration_months, 6);
 
 console.log("contract-data-review.selftest: ok");

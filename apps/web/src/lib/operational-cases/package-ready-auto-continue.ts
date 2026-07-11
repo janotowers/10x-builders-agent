@@ -1,0 +1,158 @@
+import { isEasybrokerPublishedInContext } from "@/lib/business-decisions/publish-destination-approval";
+import { countRawPhotos } from "@/lib/operational-cases/photo-batch-completion";
+
+export const PACKAGE_READY_AUTO_FOLLOW_UP_MAX_DEPTH = 2;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function publishApprovalsFromContext(
+  context: Record<string, unknown> | null | undefined
+): Record<string, unknown> {
+  if (!isRecord(context)) return {};
+  return isRecord(context.publish_approvals) ? context.publish_approvals : {};
+}
+
+function publishedEasybrokerFromContext(
+  context: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null {
+  if (!isRecord(context)) return null;
+  const published = isRecord(context.published) ? context.published : {};
+  return isRecord(published.easybroker) ? published.easybroker : null;
+}
+
+export function hasWatermarkedPhotosInContext(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  if (!isRecord(context)) return false;
+  return (
+    (Array.isArray(context.watermarked_photos) &&
+      context.watermarked_photos.length > 0) ||
+    (Array.isArray(context.watermarked_image_paths) &&
+      context.watermarked_image_paths.length > 0)
+  );
+}
+
+export function isEasybrokerImagesUploadedInContext(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  const easybroker = publishedEasybrokerFromContext(context);
+  if (!easybroker) return false;
+  if (easybroker.images_uploaded === true) return true;
+  if (easybroker.images_status === "submitted") return true;
+  if (
+    typeof easybroker.image_count === "number" &&
+    Number.isFinite(easybroker.image_count) &&
+    easybroker.image_count > 0
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function isEasybrokerImagesFailedInContext(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  const easybroker = publishedEasybrokerFromContext(context);
+  if (!easybroker) return false;
+  return easybroker.images_status === "failed";
+}
+
+export function packageReadyHasListingPhotos(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  return countRawPhotos(context) > 0 || hasWatermarkedPhotosInContext(context);
+}
+
+/** EasyBroker ya tiene listing y aún faltan fotos por subir. */
+export function packageReadyNeedsEasybrokerImageUpload(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  if (!isEasybrokerPublishedInContext(context)) return false;
+  if (isEasybrokerImagesUploadedInContext(context)) return false;
+  // Fallo permanente de este intento: no reintentar en bucle automático.
+  if (isEasybrokerImagesFailedInContext(context)) return false;
+  return packageReadyHasListingPhotos(context);
+}
+
+/**
+ * EasyBroker ya quedó resuelto (publicado/skipped/rejected) y Ungga aún no
+ * tiene decisión humana.
+ */
+export function packageReadyNeedsUnggaApprovalNotify(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  const approvals = publishApprovalsFromContext(context);
+  const easybrokerDecision =
+    typeof approvals.easybroker === "string" ? approvals.easybroker : null;
+  const easybrokerResolved =
+    isEasybrokerPublishedInContext(context) ||
+    easybrokerDecision === "skipped" ||
+    easybrokerDecision === "rejected";
+  if (!easybrokerResolved) return false;
+  const unggaDecision =
+    typeof approvals.ungga === "string" ? approvals.ungga : null;
+  return !unggaDecision || unggaDecision === "pending";
+}
+
+/**
+ * No pedir Ungga mientras haya fotos pendientes de subir a EasyBroker.
+ * Si el upload falló, tampoco: hay que resolver el error primero.
+ */
+export function packageReadyBlocksUnggaApprovalNotify(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  if (!packageReadyHasListingPhotos(context)) return false;
+  if (isEasybrokerImagesUploadedInContext(context)) return false;
+  if (isEasybrokerImagesFailedInContext(context)) return true;
+  return packageReadyNeedsEasybrokerImageUpload(context);
+}
+
+export function formatUnggaPublishApprovalNotifyText(): string {
+  return [
+    "Aprobación de publicación en Ungga",
+    "",
+    "EasyBroker ya quedó creado. ¿Quieres publicar esta propiedad en Ungga?",
+    "",
+    "Usa los botones:",
+    "- Publicar en Ungga",
+    "- No publicar en Ungga",
+    "- Detener y revisar",
+  ].join("\n");
+}
+
+/**
+ * Tras un tick sin HITL técnico: si aún falta trabajo de máquina (subir fotos
+ * a EasyBroker), encadenar otro tick automáticamente.
+ */
+export function shouldAutoFollowUpPackageReadyTick(params: {
+  context: Record<string, unknown> | null | undefined;
+  pendingConfirmation: boolean;
+  uploadedImagesThisTurn: boolean;
+  uploadFailedThisTurn?: boolean;
+  autoFollowUpDepth: number;
+}): boolean {
+  if (params.pendingConfirmation) return false;
+  if (params.uploadFailedThisTurn) return false;
+  if (params.autoFollowUpDepth >= PACKAGE_READY_AUTO_FOLLOW_UP_MAX_DEPTH) {
+    return false;
+  }
+  if (params.uploadedImagesThisTurn) return false;
+  return packageReadyNeedsEasybrokerImageUpload(params.context);
+}
+
+/**
+ * Si ya no falta upload (o no hay fotos), pedir Ungga de forma determinística
+ * en post-agent — mismo patrón que listing_description_review tras el draft.
+ */
+export function shouldDeterministicallyRequestUnggaApproval(params: {
+  context: Record<string, unknown> | null | undefined;
+  pendingConfirmation: boolean;
+  uploadedImagesThisTurn: boolean;
+}): boolean {
+  if (params.pendingConfirmation) return false;
+  if (!packageReadyNeedsUnggaApprovalNotify(params.context)) return false;
+  if (packageReadyBlocksUnggaApprovalNotify(params.context)) return false;
+  return true;
+}

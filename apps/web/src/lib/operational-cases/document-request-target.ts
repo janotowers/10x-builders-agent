@@ -444,6 +444,14 @@ export async function resolveDocumentTargetReplyAgainstBindings(params: {
   return { matchedCase: candidates[0]!, ambiguous: candidates.length > 1 };
 }
 
+function isOpenOperationalCase(opCase: OperationalCase): boolean {
+  return (
+    opCase.status !== "paused" &&
+    opCase.status !== "completed" &&
+    opCase.status !== "failed"
+  );
+}
+
 function isInternalDocumentCollectionCase(opCase: OperationalCase): boolean {
   const target = operationalCaseDocumentRequestTargetFromContext(
     caseContext(opCase)
@@ -452,9 +460,30 @@ function isInternalDocumentCollectionCase(opCase: OperationalCase): boolean {
     target === "internal_user" &&
     (opCase.current_step === "awaiting_documents" ||
       opCase.current_step === "documents_received") &&
-    opCase.status !== "paused" &&
-    opCase.status !== "completed" &&
-    opCase.status !== "failed"
+    isOpenOperationalCase(opCase)
+  );
+}
+
+/**
+ * Recolección interna de fotos de publicación (photos_requested).
+ * Comparte ownership/batch con documentos, pero NO exige document_request_target
+ * ni clasificación OCR: las fotos las aporta el asesor al pendiente interno.
+ */
+export function isInternalPhotosCollectionCase(
+  opCase: OperationalCase
+): boolean {
+  return (
+    opCase.current_step === "photos_requested" && isOpenOperationalCase(opCase)
+  );
+}
+
+/** Caso que acepta media interna (documentos legales o fotos de listing). */
+export function isInternalMediaCollectionCase(
+  opCase: OperationalCase
+): boolean {
+  return (
+    isInternalDocumentCollectionCase(opCase) ||
+    isInternalPhotosCollectionCase(opCase)
   );
 }
 
@@ -465,13 +494,22 @@ function internalCollectionDecidedAt(opCase: OperationalCase): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/** Recencia para ordenar candidatos de media interna (docs o fotos). */
+function internalMediaCollectionRecency(opCase: OperationalCase): number {
+  const decided = internalCollectionDecidedAt(opCase);
+  const updated =
+    typeof opCase.updated_at === "string" ? Date.parse(opCase.updated_at) : NaN;
+  const updatedMs = Number.isFinite(updated) ? updated : 0;
+  return Math.max(decided, updatedMs);
+}
+
 /**
- * Casos internos que están recabando documentos entre los bindings pendientes,
- * ordenados del más reciente al más antiguo por la decisión de destino. Fuente
- * única para resolver subidas (media o texto) hacia el caso correcto sin pedir
+ * Casos internos que están recabando media (documentos o fotos) entre los
+ * bindings pendientes, ordenados del más reciente al más antiguo. Fuente única
+ * para resolver subidas (media o texto) hacia el caso correcto sin pedir
  * aclaración multi-caso innecesaria.
  */
-async function collectInternalDocumentCollectionCases(params: {
+async function collectInternalMediaCollectionCases(params: {
   db: DbClient;
   pendingBindings: OperationalCaseConversationBinding[];
 }): Promise<OperationalCase[]> {
@@ -481,43 +519,40 @@ async function collectInternalDocumentCollectionCases(params: {
     if (seen.has(binding.case_id)) continue;
     seen.add(binding.case_id);
     const opCase = await getOperationalCase(params.db, binding.case_id);
-    if (opCase && isInternalDocumentCollectionCase(opCase)) {
+    if (opCase && isInternalMediaCollectionCase(opCase)) {
       candidates.push(opCase);
     }
   }
   candidates.sort(
-    (a, b) => internalCollectionDecidedAt(b) - internalCollectionDecidedAt(a)
+    (a, b) => internalMediaCollectionRecency(b) - internalMediaCollectionRecency(a)
   );
   return candidates;
 }
 
 /**
  * Fase 1 (media-first): resuelve el caso interno destino de un mensaje que trae
- * ARCHIVO adjunto. No requiere ningún gate de texto: la sola presencia de media
- * en ruta interna es señal inequívoca, de modo que un caption (p. ej. el del
- * primer elemento de un álbum) nunca preempta la ingestión. Prefiere el caso
- * interno con decisión de destino más reciente.
+ * ARCHIVO adjunto (documentos legales o fotos de listing). No requiere gate de
+ * texto: la sola presencia de media en ruta interna es señal inequívoca.
+ * Prefiere el caso de recolección más reciente.
  */
 export async function resolveInternalDocumentUploadCaseForMedia(params: {
   db: DbClient;
   pendingBindings: OperationalCaseConversationBinding[];
 }): Promise<OperationalCase | null> {
-  const candidates = await collectInternalDocumentCollectionCases(params);
+  const candidates = await collectInternalMediaCollectionCases(params);
   return candidates[0] ?? null;
 }
 
 /**
- * Resuelve a qué caso pertenece un mensaje de TEXTO relacionado con la subida de
- * documentos en ruta interna: texto lateral ("adjunto documentos") o cierre de
- * lote ("listo"). Evita desambiguación multi-caso o caer al LLM general.
+ * Resuelve a qué caso pertenece un mensaje de TEXTO relacionado con la subida
+ * interna de documentos o fotos: texto lateral ("adjunto…") o cierre de lote
+ * ("listo"). Evita desambiguación multi-caso o caer al LLM general.
  *
- * Estrategia de 2 niveles (sin regex frágil que haya que ir engordando):
- *   1) Gate barato determinístico de alta confianza (`looksLikeDocumentBatchComplete`
- *      / `looksLikeDocumentUploadSideText`).
- *   2) Fallback LLM (`stage: "awaiting_documents"`) SOLO cuando hay un caso
- *      interno recabando documentos y el gate barato no resolvió. Interpreta
- *      frases impredecibles ("ahí te van", "te paso lo que junté") y distingue
- *      la intención de abrir un caso nuevo (en cuyo caso NO adopta).
+ * Estrategia:
+ *   1) Gate barato determinístico (`looksLikeDocumentBatchComplete` /
+ *      `looksLikeDocumentUploadSideText`) — aplica a docs y fotos.
+ *   2) Fallback LLM SOLO para recolección documental (`awaiting_documents` /
+ *      `documents_received`). En `photos_requested` no improvisamos con LLM.
  */
 export async function resolveInternalDocumentMessageCase(params: {
   db: DbClient;
@@ -531,7 +566,7 @@ export async function resolveInternalDocumentMessageCase(params: {
   matchedCase: OperationalCase | null;
   reason: "batch_complete" | "upload_side_text" | null;
 }> {
-  const candidates = await collectInternalDocumentCollectionCases(params);
+  const candidates = await collectInternalMediaCollectionCases(params);
   if (candidates.length === 0) return { matchedCase: null, reason: null };
   const target = candidates[0]!;
 
@@ -540,6 +575,11 @@ export async function resolveInternalDocumentMessageCase(params: {
   }
   if (looksLikeDocumentUploadSideText(params.message)) {
     return { matchedCase: target, reason: "upload_side_text" };
+  }
+
+  // Fotos: sólo gates determinísticos (listo / texto lateral). Sin LLM.
+  if (isInternalPhotosCollectionCase(target)) {
+    return { matchedCase: null, reason: null };
   }
 
   const useLlm = params.useLlmFallback ?? true;

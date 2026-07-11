@@ -63,6 +63,12 @@ const DEFAULT_PRIORITY: NotificationChannel[] = ["web", "telegram"];
 const CONTRACT_CALLBACK_EMAIL = "contract_email";
 const CONTRACT_CALLBACK_UPLOAD = "contract_upload";
 
+function publishDestinationLabel(kind: string | undefined) {
+  if (kind === "easybroker_publish_approval") return "EasyBroker";
+  if (kind === "ungga_publish_approval") return "Ungga";
+  return "destino";
+}
+
 /** Botones HITL de contrato solo cuando hay borrador real para revisar. */
 function contractReviewOffersHitlActions(payload: NotifyPayload): boolean {
   if (payload.kind === "contract_template_missing") return false;
@@ -253,6 +259,54 @@ async function deliverTelegram(
       ],
     };
   } else if (
+    (actionKind === "easybroker_publish_approval" ||
+      actionKind === "ungga_publish_approval") &&
+    actionNotificationId
+  ) {
+    const destination = publishDestinationLabel(actionKind);
+    replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: `Publicar en ${destination}`,
+            callback_data: `pub_approve:${actionNotificationId}`,
+          },
+        ],
+        [
+          {
+            text: `No publicar en ${destination}`,
+            callback_data: `pub_skip:${actionNotificationId}`,
+          },
+        ],
+        [
+          {
+            text: "Detener y revisar",
+            callback_data: `pub_reject:${actionNotificationId}`,
+          },
+        ],
+      ],
+    };
+  } else if (
+    actionKind === "publication_review_required" &&
+    actionNotificationId
+  ) {
+    replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: "Aprobar y continuar",
+            callback_data: `pubrev_approve:${actionNotificationId}`,
+          },
+        ],
+        [
+          {
+            text: "Detener y revisar",
+            callback_data: `pubrev_stop:${actionNotificationId}`,
+          },
+        ],
+      ],
+    };
+  } else if (
     actionKind === "contract_review" &&
     actionNotificationId &&
     contractReviewOffersHitlActions(payload)
@@ -273,6 +327,37 @@ async function deliverTelegram(
         ],
       ],
     };
+  } else if (actionKind === "contract_data_review" && actionNotificationId) {
+    const missingFields = Array.isArray(
+      sourceNotificationMetadata?.missing_fields
+    )
+      ? sourceNotificationMetadata.missing_fields
+      : Array.isArray(payload.data?.missing_fields)
+        ? payload.data.missing_fields
+        : [];
+    const hasBoolean = missingFields.some(
+      (item) =>
+        Boolean(item) &&
+        typeof item === "object" &&
+        !Array.isArray(item) &&
+        (item as { kind?: unknown }).kind === "boolean"
+    );
+    if (hasBoolean) {
+      replyMarkup = {
+        inline_keyboard: [
+          [
+            {
+              text: "Sí",
+              callback_data: `cdr_yes:${actionNotificationId}`,
+            },
+            {
+              text: "No",
+              callback_data: `cdr_no:${actionNotificationId}`,
+            },
+          ],
+        ],
+      };
+    }
   } else if (actionKind === "property_data_review" && actionNotificationId) {
     replyMarkup = {
       inline_keyboard: [
@@ -493,6 +578,10 @@ function shouldReuseActiveNotification(payload: NotifyPayload, caseId: string | 
     "listing_description_review",
     "property_data_review",
     "tool_confirmation_pending",
+    "easybroker_publish_approval",
+    "ungga_publish_approval",
+    "manual_publish_package_approval",
+    "publication_review_required",
   ].includes(payload.kind);
 }
 

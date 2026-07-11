@@ -2,6 +2,7 @@ import {
   createServerClient,
   getOperationalCase,
   insertOperationalCaseEvent,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   updateOperationalCase,
 } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
@@ -10,6 +11,7 @@ import { looksLikeDocumentBatchComplete } from "./document-batch-completion";
 type DbClient = ReturnType<typeof createServerClient>;
 
 export const RAW_PHOTOS_MIN_COUNT = 5;
+export const PHOTOS_UPLOAD_REQUESTED_NOTIFICATION_KIND = "photos_upload_requested";
 
 export { looksLikeDocumentBatchComplete as looksLikePhotoBatchComplete };
 
@@ -18,6 +20,20 @@ export function countRawPhotos(
 ): number {
   if (!context || !Array.isArray(context.raw_photos)) return 0;
   return context.raw_photos.length;
+}
+
+/** Cierra pendientes obsoletos de solicitud de fotos (p. ej. al llegar a package_ready). */
+export async function dismissPhotosUploadRequestedNotifications(params: {
+  db: DbClient;
+  userId: string;
+  caseId: string;
+}): Promise<number> {
+  return resolveUnreadInternalNotificationsByKindForCaseWithReminders(params.db, {
+    userId: params.userId,
+    caseId: params.caseId,
+    kind: PHOTOS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
+    status: "actioned",
+  });
 }
 
 export function photosUploadProgressAckText(photoCount: number): string {
@@ -108,6 +124,13 @@ export async function completePhotoBatchForCase(params: {
   }
 
   if (current.current_step === "package_ready") {
+    await dismissPhotosUploadRequestedNotifications({
+      db,
+      userId: current.user_id,
+      caseId: current.id,
+    }).catch((error) => {
+      console.warn("[photo-batch-completion] dismiss photos notify failed:", error);
+    });
     return {
       status: "already_advanced",
       case: current,
@@ -152,6 +175,13 @@ export async function completePhotoBatchForCase(params: {
           minimum_required: RAW_PHOTOS_MIN_COUNT,
         },
       });
+      await dismissPhotosUploadRequestedNotifications({
+        db,
+        userId: updated.user_id,
+        caseId: updated.id,
+      }).catch((error) => {
+        console.warn("[photo-batch-completion] dismiss photos notify failed:", error);
+      });
       return { status: "advanced", case: updated, photoCount };
     }
 
@@ -161,6 +191,13 @@ export async function completePhotoBatchForCase(params: {
     }
     current = reread;
     if (current.current_step === "package_ready") {
+      await dismissPhotosUploadRequestedNotifications({
+        db,
+        userId: current.user_id,
+        caseId: current.id,
+      }).catch((error) => {
+        console.warn("[photo-batch-completion] dismiss photos notify failed:", error);
+      });
       return {
         status: "already_advanced",
         case: current,

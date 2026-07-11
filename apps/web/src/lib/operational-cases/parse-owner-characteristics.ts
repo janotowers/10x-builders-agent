@@ -159,6 +159,24 @@ export function syncIntakeFieldsFromPropertyData(
   }
   if (typeof propertyData.parking_spots === "number") {
     next.parking_spaces = propertyData.parking_spots;
+  } else if (typeof propertyData.parking_spaces === "number") {
+    next.parking_spaces = propertyData.parking_spaces;
+  }
+  // Keep aliases aligned so minimums and EasyBroker read the same canonical value.
+  if (
+    typeof next.parking_spaces === "number" &&
+    next.property_data &&
+    typeof next.property_data === "object" &&
+    !Array.isArray(next.property_data)
+  ) {
+    const pd = { ...(next.property_data as Record<string, unknown>) };
+    if (typeof pd.parking_spaces !== "number") {
+      pd.parking_spaces = next.parking_spaces;
+    }
+    if (typeof pd.parking_spots !== "number") {
+      pd.parking_spots = next.parking_spaces;
+    }
+    next.property_data = pd;
   }
   return next;
 }

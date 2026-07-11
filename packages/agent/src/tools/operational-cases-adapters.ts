@@ -38,6 +38,10 @@ import {
   resolveSubjectAreaM2FromPropertyData,
   validateComparablesAnalysisArtifact,
 } from "../operational-cases/comparables-analysis";
+import {
+  buildContractCommercialMinimumsSummaryMessage,
+  evaluateContractCommercialMinimums,
+} from "../operational-cases/contract-commercial-terms";
 import { tryAdvanceComparablesAfterPersist } from "../operational-cases/comparables-advance";
 import {
   formatPriceApprovalNotifyText,
@@ -125,6 +129,7 @@ const CASE_BOUND_NOTIFY_KINDS = new Set([
   "price_approval",
   "contract_pending",
   "contract_review",
+  "contract_data_review",
   "listing_description_review",
   "easybroker_publish_approval",
   "ungga_publish_approval",
@@ -172,6 +177,14 @@ function canonicalizeNotifyKind(rawKind: string | undefined): string {
   ) {
     return "comparables_analysis";
   }
+  // Batch legado → pedir EasyBroker primero (flujo canónico por destino).
+  if (
+    key === "publish_destination_approvals" ||
+    key === "publish_destination_approval" ||
+    (key.startsWith("publish_destination") && !key.includes("decision"))
+  ) {
+    return "easybroker_publish_approval";
+  }
   return key;
 }
 
@@ -180,7 +193,7 @@ export function canonicalizeNotifyKindForTest(rawKind: string | undefined): stri
 }
 
 function extractMissingContractFieldsFromText(text: string): string[] {
-  const match = text.match(/campos?\s+faltantes?\s*:\s*([^)\\n.]+)/i);
+  const match = text.match(/campos?\s+faltantes?\s*:\s*([^)\n.]+)/i);
   if (!match?.[1]) return [];
   return match[1]
     .split(",")
@@ -206,9 +219,177 @@ function canonicalizeContractDataReviewText(text: string): string {
   return "No pude generar el borrador de contrato porque faltan datos obligatorios. Completa los campos contractuales requeridos para continuar.";
 }
 
+/**
+ * Texto canónico de `contract_data_review` a partir de campos faltantes
+ * detectados por generate (remediación owned, no copy libre del LLM).
+ */
+export function buildContractDataReviewNotifyText(
+  missingRequiredFields: string[]
+): string {
+  const missing = missingRequiredFields
+    .map((field) => field.trim())
+    .filter((field) => field.length > 0);
+  if (missing.includes("owner_email")) {
+    return `Falta correo electrónico del propietario para generar el contrato de comisión. Captura el correo del comitente (campos faltantes: ${missing.join(", ")}).`;
+  }
+  if (missing.length > 0) {
+    return `No pude generar el borrador de contrato porque faltan datos obligatorios: ${missing.join(", ")}. Completa esos campos para continuar.`;
+  }
+  return "No pude generar el borrador de contrato porque faltan datos obligatorios. Completa los campos contractuales requeridos para continuar.";
+}
+
+export function contractDraftOutputPathFromContext(
+  context: unknown
+): string | null {
+  if (!isRecord(context)) return null;
+  const draft = isRecord(context.contract_draft) ? context.contract_draft : null;
+  if (!draft) return null;
+  const outputPath =
+    typeof draft.output_path === "string" ? draft.output_path.trim() : "";
+  return outputPath.length > 0 ? outputPath : null;
+}
+
+/**
+ * Gate de `notify_user(kind=contract_review)`: sin borrador renderizado no
+ * se inventa “Borrador listo” ni se crea un pendiente contradictorio con
+ * `contract_data_review` (PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION).
+ */
+export function evaluateContractReviewNotifyGate(context: unknown):
+  | { ok: true; output_path: string }
+  | {
+      ok: false;
+      error: "contract_draft_required_before_review_notify";
+      hint: string;
+    } {
+  const outputPath = contractDraftOutputPathFromContext(context);
+  if (!outputPath) {
+    return {
+      ok: false,
+      error: "contract_draft_required_before_review_notify",
+      hint:
+        "No notifiques contract_review sin borrador renderizado (contract_draft.output_path). Si generate_document_from_template falló por datos faltantes, el sistema ya pide contract_data_review; completa esos campos y regenera antes de pedir revisión del contrato.",
+    };
+  }
+  return { ok: true, output_path: outputPath };
+}
+
+/**
+ * Contenido usable de `listing_description_draft` (headline/description).
+ * Sin esto no se debe crear un pendiente accionable de revisión.
+ */
+export function listingDescriptionDraftContentFromContext(context: unknown): {
+  headline: string;
+  description: string;
+} | null {
+  if (!isRecord(context)) return null;
+  const draft = isRecord(context.listing_description_draft)
+    ? context.listing_description_draft
+    : null;
+  if (!draft) return null;
+  const headline =
+    typeof draft.headline === "string" ? draft.headline.trim() : "";
+  const description =
+    typeof draft.description === "string" ? draft.description.trim() : "";
+  if (!description) return null;
+  return { headline, description };
+}
+
+/**
+ * Gate de `notify_user(kind=listing_description_review)`: sin borrador real
+ * no se crean botones “Aprobar descripción” / “Pedir cambios”.
+ */
+export function evaluateListingDescriptionReviewNotifyGate(context: unknown):
+  | { ok: true; draft: { headline: string; description: string } }
+  | {
+      ok: false;
+      error: "listing_description_draft_required_before_review_notify";
+      hint: string;
+    } {
+  const draft = listingDescriptionDraftContentFromContext(context);
+  if (!draft) {
+    return {
+      ok: false,
+      error: "listing_description_draft_required_before_review_notify",
+      hint:
+        "No notifiques listing_description_review sin listing_description_draft.description. Si faltan photo_analysis o zone_context, ejecuta analyze_property_images(case_id=...) y lookup_property_surroundings(case_id=...) y luego prepare_listing_description_draft antes de pedir revisión.",
+    };
+  }
+  return { ok: true, draft };
+}
+
+/**
+ * Gate de `notify_user(kind=ungga_publish_approval)`: no pedir Ungga mientras
+ * EasyBroker aún deba recibir fotos, o si el upload falló.
+ */
+export function evaluateUnggaPublishApprovalNotifyGate(context: unknown):
+  | { ok: true }
+  | {
+      ok: false;
+      error:
+        | "easybroker_images_required_before_ungga_approval"
+        | "easybroker_images_upload_failed_before_ungga_approval";
+      hint: string;
+    } {
+  if (!isRecord(context)) return { ok: true };
+  const published = isRecord(context.published) ? context.published : {};
+  const easybroker = isRecord(published.easybroker) ? published.easybroker : null;
+  if (!easybroker) return { ok: true };
+
+  const hasPhotos =
+    (Array.isArray(context.raw_photos) && context.raw_photos.length > 0) ||
+    (Array.isArray(context.watermarked_photos) &&
+      context.watermarked_photos.length > 0) ||
+    (Array.isArray(context.watermarked_image_paths) &&
+      context.watermarked_image_paths.length > 0);
+  if (!hasPhotos) return { ok: true };
+
+  const imagesUploaded =
+    easybroker.images_uploaded === true ||
+    easybroker.images_status === "submitted" ||
+    (typeof easybroker.image_count === "number" &&
+      Number.isFinite(easybroker.image_count) &&
+      easybroker.image_count > 0);
+  if (imagesUploaded) return { ok: true };
+
+  if (easybroker.images_status === "failed") {
+    return {
+      ok: false,
+      error: "easybroker_images_upload_failed_before_ungga_approval",
+      hint:
+        "easybroker_upload_images falló. No pidas Ungga todavía: corrige la URL pública de imágenes (EASYBROKER_PUBLIC_ASSET_BASE_URL / account-assets) y reintenta el upload.",
+    };
+  }
+
+  return {
+    ok: false,
+    error: "easybroker_images_required_before_ungga_approval",
+    hint:
+      "Hay fotos del caso y EasyBroker aún no tiene images_uploaded. Llama easybroker_upload_images antes de notify_user(kind=ungga_publish_approval).",
+  };
+}
+
 function canonicalContractReviewNotifyText(opCase: { id: string }): string {
   const stableUrl = `/api/operational-cases/${opCase.id}/documents/contract_draft/download`;
   return `Borrador de contrato listo para revisión.\n\nDescargar borrador del contrato: ${stableUrl}\n\nResponde “mándalo al dueño” o “pedir cambios”, o usa los botones.`;
+}
+
+function canonicalPublishDestinationApprovalText(kind: string): string {
+  const destination =
+    kind === "easybroker_publish_approval"
+      ? "EasyBroker"
+      : kind === "ungga_publish_approval"
+        ? "Ungga"
+        : "este destino";
+  return [
+    `Aprobación de publicación en ${destination}`,
+    "",
+    `La descripción ya quedó aprobada. ¿Quieres publicar esta propiedad en ${destination}?`,
+    "",
+    "Usa los botones:",
+    `- Publicar en ${destination}`,
+    `- No publicar en ${destination}`,
+    "- Detener y revisar",
+  ].join("\n");
 }
 
 function listingPublishedSummaryAlreadySent(
@@ -875,6 +1056,19 @@ const PROPERTY_TYPE_REQUIREMENTS: Record<string, PropertyDataRequirement[]> = {
       paths: ["integral_kitchen", "has_integral_kitchen", "cocina_integral"],
       question: "Si tiene cocina integral (sí/no).",
     },
+    {
+      key: "parking_spaces",
+      label: "Cajones de estacionamiento",
+      paths: [
+        "parking_spaces",
+        "parking_spots",
+        "parking",
+        "cajones",
+        "estacionamientos",
+      ],
+      question: "Número de cajones de estacionamiento.",
+      allowZero: true,
+    },
   ],
   departamento: [
     {
@@ -897,9 +1091,15 @@ const PROPERTY_TYPE_REQUIREMENTS: Record<string, PropertyDataRequirement[]> = {
       allowZero: true,
     },
     {
-      key: "parking_spots",
+      key: "parking_spaces",
       label: "Cajones de estacionamiento",
-      paths: ["parking_spots", "parking", "parking_spaces", "cajones"],
+      paths: [
+        "parking_spaces",
+        "parking_spots",
+        "parking",
+        "cajones",
+        "estacionamientos",
+      ],
       question: "Número de cajones de estacionamiento.",
       allowZero: true,
     },
@@ -966,9 +1166,15 @@ const PROPERTY_TYPE_REQUIREMENTS: Record<string, PropertyDataRequirement[]> = {
       question: "Número de baños.",
     },
     {
-      key: "parking_spots",
+      key: "parking_spaces",
       label: "Cajones de estacionamiento",
-      paths: ["parking_spots", "parking", "parking_spaces", "cajones"],
+      paths: [
+        "parking_spaces",
+        "parking_spots",
+        "parking",
+        "cajones",
+        "estacionamientos",
+      ],
       question: "Número de cajones/estacionamientos.",
       allowZero: true,
     },
@@ -3883,6 +4089,46 @@ export function addOperationalCaseTools(
                     ...contextPatch,
                   }
                 : undefined;
+            if (contextPatch) {
+              const definedContextPatch = contextPatch;
+              const protectedKeys = [
+                "publication",
+                "published",
+                "publish_approvals",
+                "photo_manifest",
+                "e2e_control_status",
+                "package_ready_lab_auto_continue_listing_id",
+                "package_ready_machine_work_in_flight",
+              ].filter((key) => key in definedContextPatch);
+              if (protectedKeys.length > 0) {
+                const out = {
+                  ok: false,
+                  error: "protected_context_keys",
+                  protected_keys: protectedKeys,
+                  hint:
+                    "No escribas publication/published/publish_approvals/photo_manifest desde operational_case_update_state. El publication runner y los adapters de destino son dueños de ese estado.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+              // commission_terms.confirmation is owned by the typed commercial mutator / HITL.
+              if ("commission_terms" in contextPatch) {
+                const patchedTerms = contextPatch.commission_terms;
+                if (
+                  patchedTerms &&
+                  typeof patchedTerms === "object" &&
+                  !Array.isArray(patchedTerms) &&
+                  "confirmation" in (patchedTerms as Record<string, unknown>)
+                ) {
+                  const { confirmation: _omit, ...restTerms } =
+                    patchedTerms as Record<string, unknown>;
+                  contextPatch = {
+                    ...contextPatch,
+                    commission_terms: restTerms,
+                  };
+                }
+              }
+            }
             const nextContext =
               mergedContext ??
               (opCase.context_jsonb && typeof opCase.context_jsonb === "object"
@@ -5040,7 +5286,70 @@ export function addOperationalCaseTools(
                 return JSON.stringify(out);
               }
             }
+            if (canonicalKind === "contract_review" && opCase) {
+              const contractReviewGate = evaluateContractReviewNotifyGate(
+                opCase.context_jsonb
+              );
+              if (!contractReviewGate.ok) {
+                const out = {
+                  ok: false,
+                  error: contractReviewGate.error,
+                  hint: contractReviewGate.hint,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
+            if (canonicalKind === "listing_description_review" && opCase) {
+              const listingReviewGate = evaluateListingDescriptionReviewNotifyGate(
+                opCase.context_jsonb
+              );
+              if (!listingReviewGate.ok) {
+                const out = {
+                  ok: false,
+                  error: listingReviewGate.error,
+                  hint: listingReviewGate.hint,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
+            if (canonicalKind === "ungga_publish_approval" && opCase) {
+              const unggaGate = evaluateUnggaPublishApprovalNotifyGate(
+                opCase.context_jsonb
+              );
+              if (!unggaGate.ok) {
+                const out = {
+                  ok: false,
+                  error: unggaGate.error,
+                  hint: unggaGate.hint,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+              const { data: unreadRows } = await ctx.db
+                .from("internal_user_notifications")
+                .select("id")
+                .eq("user_id", ctx.userId)
+                .eq("case_id", opCase.id)
+                .eq("kind", "ungga_publish_approval")
+                .eq("status", "unread")
+                .limit(1);
+              if (Array.isArray(unreadRows) && unreadRows.length > 0) {
+                const out = {
+                  ok: false,
+                  error: "ungga_publish_approval_already_notified",
+                  hint:
+                    "Ya hay un pendiente unread de ungga_publish_approval. No reenvíes notify_user; espera la decisión humana.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
             let notificationText = input.text;
+            let contractCommercialForNotify: ReturnType<
+              typeof evaluateContractCommercialMinimums
+            > | null = null;
             if (canonicalKind === "property_data_review") {
               notificationText = canonicalizePropertyDataReviewText(opCase, input.text);
             } else if (canonicalKind === "price_approval" && opCase) {
@@ -5082,9 +5391,34 @@ export function addOperationalCaseTools(
                 });
               }
             } else if (canonicalKind === "contract_data_review") {
-              notificationText = canonicalizeContractDataReviewText(input.text);
+              if (opCase) {
+                const contractContext =
+                  opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+                    ? (opCase.context_jsonb as Record<string, unknown>)
+                    : {};
+                contractCommercialForNotify = evaluateContractCommercialMinimums({
+                  context: contractContext,
+                  propertyData: isRecord(contractContext.property_data)
+                    ? contractContext.property_data
+                    : {},
+                  externalContact: isRecord(opCase.external_contact_jsonb)
+                    ? (opCase.external_contact_jsonb as Record<string, unknown>)
+                    : {},
+                  requireConfirmation: true,
+                });
+                notificationText = buildContractCommercialMinimumsSummaryMessage(
+                  contractCommercialForNotify
+                );
+              } else {
+                notificationText = canonicalizeContractDataReviewText(input.text);
+              }
             } else if (canonicalKind === "contract_review" && opCase) {
               notificationText = canonicalContractReviewNotifyText(opCase);
+            } else if (
+              canonicalKind === "easybroker_publish_approval" ||
+              canonicalKind === "ungga_publish_approval"
+            ) {
+              notificationText = canonicalPublishDestinationApprovalText(canonicalKind);
             } else if (canonicalKind === "listing_published_summary" && opCase) {
               notificationText = formatListingPublishedSummaryNotifyText(opCase);
             }
@@ -5108,6 +5442,31 @@ export function addOperationalCaseTools(
                     ? {
                         artifact_key: "listing_description_draft",
                         actions: ["approve", "request_changes"],
+                      }
+                    : {}),
+                  ...(canonicalKind === "contract_review" && opCase
+                    ? {
+                        contract_draft_ready: true,
+                        artifact_key: "contract_draft",
+                      }
+                    : {}),
+                  ...(canonicalKind === "easybroker_publish_approval" ||
+                  canonicalKind === "ungga_publish_approval"
+                    ? {
+                        actions: ["approve", "skip", "reject"],
+                      }
+                    : {}),
+                  ...(canonicalKind === "contract_data_review"
+                    ? {
+                        missing_required_fields: contractCommercialForNotify
+                          ? contractCommercialForNotify.missing
+                              .filter((item) => item.optional !== true)
+                              .map((item) => item.key)
+                          : extractMissingContractFieldsFromText(notificationText),
+                        missing_fields:
+                          contractCommercialForNotify?.missing ?? undefined,
+                        known_fields:
+                          contractCommercialForNotify?.known ?? undefined,
                       }
                     : {}),
                 },

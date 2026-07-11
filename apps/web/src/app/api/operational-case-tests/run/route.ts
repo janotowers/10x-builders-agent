@@ -384,6 +384,7 @@ export async function POST(request: Request) {
           context: {
             ...(caseBeforeLock.context_jsonb ?? {}),
             e2e_controlled: true,
+            publication_mode: "active",
             e2e_control_source: "settings_agent_test",
             e2e_control_case_type: caseBeforeLock.case_type,
             e2e_control_status:

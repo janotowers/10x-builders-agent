@@ -1230,7 +1230,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "lookup_property_surroundings",
     name: "lookup_property_surroundings",
     description:
-      "Builds verified surroundings context for a property (points of interest, mobility cues, and area summary) from address/coordinates using geocoding + nearby place lookup. Results are persisted for listing copy generation.",
+      "Builds verified surroundings context for a property (points of interest, mobility cues, and area summary) from address/coordinates using geocoding + nearby place lookup. Prefer case_id to reuse geocoded coordinates from the case. Do not pass latitude/longitude=0 as placeholders. Results are persisted for listing copy generation.",
     risk: "low",
     parameters_schema: {
       type: "object",
@@ -1240,8 +1240,16 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         municipality: { type: "string" },
         state: { type: "string" },
         country: { type: "string" },
-        latitude: { type: "number" },
-        longitude: { type: "number" },
+        latitude: {
+          type: "number",
+          description:
+            "Optional. Only pass real coordinates; never 0 as a placeholder. Prefer omitting and using case_id.",
+        },
+        longitude: {
+          type: "number",
+          description:
+            "Optional. Only pass real coordinates; never 0 as a placeholder. Prefer omitting and using case_id.",
+        },
         radius_meters: {
           type: "number",
           description: "Search radius in meters for nearby places (default 1500).",
@@ -1254,7 +1262,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         case_id: {
           type: "string",
           description:
-            "Operational case id for context persistence and audit linkage.",
+            "Operational case id for context persistence, audit linkage, and reuse of prior geocode.",
         },
       },
       required: [],
@@ -1287,7 +1295,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "easybroker_create_listing",
     name: "easybroker_create_listing",
     description:
-      "Creates a new not_published property in EasyBroker using the active tenant's API key. WRITE operation: requires HITL confirmation. After creation use easybroker_upload_images to attach photos.",
+      "Creates a new not_published property in EasyBroker using the active tenant's API key. WRITE: requires HITL. Prefer case_id; the adapter allowlists/sanitizes the payload and resolves coords from the case. Do not send custom_fields or free-form features. After creation use easybroker_upload_images to attach photos.",
     risk: "high",
     requires_integration: "easybroker",
     parameters_schema: {
@@ -1311,7 +1319,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         location: {
           type: "object",
           description:
-            "EasyBroker location object, e.g. { street, city_area, city, state, country, postal_code, latitude, longitude }.",
+            "Address helpers for the adapter (street, neighborhood/city/state, postal_code, latitude, longitude). Only EasyBroker-permitted location keys are sent.",
         },
         construction_size: { type: "number" },
         lot_size: { type: "number" },
@@ -1321,7 +1329,12 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         half_bathrooms: { type: "number" },
         parking: { type: "number", description: "Alias for parking_spaces." },
         parking_spaces: { type: "number" },
-        features: { type: "array", items: { type: "string" } },
+        features: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional. Only names that match GET /v1/features for the account are sent.",
+        },
         tags: { type: "array", items: { type: "string" } },
         share_commission: { type: "boolean" },
         collaboration_notes: { type: "string" },
@@ -1329,12 +1342,11 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         virtual_tour: { type: "string" },
         custom_fields: {
           type: "object",
-          description:
-            "Extra fields specific to the tenant's EasyBroker schema.",
+          description: "Ignored. Do not use; the adapter owns the EasyBroker contract.",
         },
         custom_fields_json: {
           type: "string",
-          description: "Optional JSON object string with extra EasyBroker fields.",
+          description: "Ignored. Do not use; the adapter owns the EasyBroker contract.",
         },
         case_id: { type: "string" },
         dry_run: { type: "boolean" },
@@ -1376,6 +1388,23 @@ export const TOOL_CATALOG: ToolDefinition[] = [
           collection: true,
         },
       ],
+    },
+  },
+  {
+    id: "easybroker_publish_listing",
+    name: "easybroker_publish_listing",
+    description:
+      "Publishes an existing EasyBroker listing (status=published) after draft + images + preflight. WRITE: requires HITL unless E2E auto-execute.",
+    risk: "high",
+    requires_integration: "easybroker",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        listing_id: { type: "string" },
+        case_id: { type: "string" },
+        dry_run: { type: "boolean" },
+      },
+      required: ["listing_id"],
     },
   },
   {

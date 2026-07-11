@@ -3,11 +3,16 @@ import {
   blockedAwaitingDocumentsTransitionReason,
   blockedPropertyOptioningStepRegressionReason,
   buildPropertyDataMinimumsSummaryMessage,
+  buildContractDataReviewNotifyText,
   buildOperationalCaseIntakeUpdateContext,
   buildOperationalCaseCreateContext,
   canonicalizeNotifyKindForTest,
   canonicalizePropertyDataReviewText,
+  contractDraftOutputPathFromContext,
   documentExtractionMinimumsContext,
+  evaluateContractReviewNotifyGate,
+  evaluateListingDescriptionReviewNotifyGate,
+  listingDescriptionDraftContentFromContext,
   evaluatePropertyDataMinimumsForReview,
   evaluatePredialBuiltAreaQualityForTest,
   extractPredialSurfacesFromTextForTest,
@@ -74,6 +79,14 @@ assert.equal(canonicalizeNotifyKindForTest("pricing_proposal"), "price_approval"
 assert.equal(
   canonicalizeNotifyKindForTest("contract_generation_error"),
   "contract_data_review"
+);
+assert.equal(
+  canonicalizeNotifyKindForTest("publish destination approvals"),
+  "easybroker_publish_approval"
+);
+assert.equal(
+  canonicalizeNotifyKindForTest("publish_destination_approvals"),
+  "easybroker_publish_approval"
 );
 assert.equal(
   looksLikeComparablesSummaryNotificationForTest({
@@ -892,7 +905,26 @@ assert.deepEqual(
       half_bathrooms: 1,
     },
   }).missing.map((item) => item.key),
-  ["integral_kitchen"]
+  ["integral_kitchen", "parking_spaces"]
+);
+
+assert.deepEqual(
+  evaluatePropertyDataMinimumsForReview({
+    property_type: "Casa",
+    property_data: {
+      owner_names: ["Ana Propietaria"],
+      legal_addresses: ["Calle 1"],
+      area_total_m2: 180,
+      area_construida_m2: 120,
+      floors: 2,
+      bedrooms: 3,
+      bathrooms: 2,
+      half_bathrooms: 1,
+      integral_kitchen: true,
+      parking_spots: 0,
+    },
+  }).missing.map((item) => item.key),
+  []
 );
 
 const reviewText = canonicalizePropertyDataReviewText(
@@ -921,5 +953,97 @@ assert.doesNotMatch(reviewText, /Datos encontrados en documentos:[\s\S]*Tipo: Te
 assert.doesNotMatch(reviewText, /Datos encontrados en documentos:[\s\S]*Operaci[oó]n: Venta/);
 assert.doesNotMatch(reviewText, /Datos encontrados en documentos:[\s\S]*Zona: Sendas Residencial/);
 assert.match(reviewText, /Direcci[oó]n legal: Privada del Tulipán, Zapopan/i);
+
+assert.equal(contractDraftOutputPathFromContext({}), null);
+assert.equal(
+  contractDraftOutputPathFromContext({
+    contract_draft: { output_path: "  " },
+  }),
+  null
+);
+assert.equal(
+  contractDraftOutputPathFromContext({
+    contract_draft: {
+      output_path: "user/generated-documents/commission_contract/draft.docx",
+    },
+  }),
+  "user/generated-documents/commission_contract/draft.docx"
+);
+
+const blockedContractReview = evaluateContractReviewNotifyGate({
+  contract_draft: {},
+});
+assert.equal(blockedContractReview.ok, false);
+if (!blockedContractReview.ok) {
+  assert.equal(
+    blockedContractReview.error,
+    "contract_draft_required_before_review_notify"
+  );
+}
+
+const allowedContractReview = evaluateContractReviewNotifyGate({
+  contract_draft: {
+    output_path: "user/generated-documents/commission_contract/draft.docx",
+  },
+});
+assert.equal(allowedContractReview.ok, true);
+if (allowedContractReview.ok) {
+  assert.equal(
+    allowedContractReview.output_path,
+    "user/generated-documents/commission_contract/draft.docx"
+  );
+}
+
+assert.equal(
+  listingDescriptionDraftContentFromContext({
+    listing_description_draft: { headline: "Casa", description: "  " },
+  }),
+  null
+);
+assert.deepEqual(
+  listingDescriptionDraftContentFromContext({
+    listing_description_draft: {
+      headline: "Casa luminosa",
+      description: "Descripción comercial completa.",
+    },
+  }),
+  {
+    headline: "Casa luminosa",
+    description: "Descripción comercial completa.",
+  }
+);
+
+const blockedListingReview = evaluateListingDescriptionReviewNotifyGate({
+  listing_description_draft: { headline: "Sin cuerpo" },
+});
+assert.equal(blockedListingReview.ok, false);
+if (!blockedListingReview.ok) {
+  assert.equal(
+    blockedListingReview.error,
+    "listing_description_draft_required_before_review_notify"
+  );
+}
+
+const allowedListingReview = evaluateListingDescriptionReviewNotifyGate({
+  listing_description_draft: {
+    headline: "Departamento",
+    description: "Amplio departamento con luz natural.",
+  },
+});
+assert.equal(allowedListingReview.ok, true);
+if (allowedListingReview.ok) {
+  assert.equal(allowedListingReview.draft.description, "Amplio departamento con luz natural.");
+}
+
+const ownerEmailReviewText = buildContractDataReviewNotifyText(["owner_email"]);
+assert.match(ownerEmailReviewText, /correo electr[oó]nico del propietario/i);
+assert.match(ownerEmailReviewText, /owner_email/);
+
+const multiFieldReviewText = buildContractDataReviewNotifyText([
+  "owner_name",
+  "property_address",
+]);
+assert.match(multiFieldReviewText, /owner_name/);
+assert.match(multiFieldReviewText, /property_address/);
 
 console.log("operational-cases-adapters surface selftest ok");

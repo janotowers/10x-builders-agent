@@ -22,6 +22,14 @@ export interface InternalNotificationDisplay {
   reminderCount?: number | null;
   escalatedAt?: string | null;
   escalationReason?: string | null;
+  contractMissingFields?: Array<{
+    key: string;
+    label: string;
+    question: string;
+    kind: string;
+    optional?: boolean;
+    choices?: Array<{ value: string; label: string }>;
+  }> | null;
 }
 
 export interface ResolvedNotificationDisplay extends InternalNotificationDisplay {

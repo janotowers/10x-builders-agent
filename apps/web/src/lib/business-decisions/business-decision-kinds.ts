@@ -5,7 +5,8 @@ export type BusinessDecisionKind =
   | "contract_owner_signed"
   | "titularidad_review"
   | "listing_description_review"
-  | "publish_destination_approval";
+  | "publish_destination_approval"
+  | "publication_review";
 
 export const BUSINESS_DECISION_LABELS: Record<BusinessDecisionKind, string> = {
   price_approval: "Aprobación de precio",
@@ -15,6 +16,7 @@ export const BUSINESS_DECISION_LABELS: Record<BusinessDecisionKind, string> = {
   titularidad_review: "Verificación de titularidad",
   listing_description_review: "Revisión de descripción comercial",
   publish_destination_approval: "Aprobación por destino de publicación",
+  publication_review: "Revisión condicional de publicación",
 };
 
 export function businessDecisionLabel(kind: BusinessDecisionKind): string {

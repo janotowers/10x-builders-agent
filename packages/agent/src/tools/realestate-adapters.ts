@@ -18,6 +18,7 @@
  * `packages/agent/`). El layer caller (graph.ts wiring) provee la callback.
  */
 import { tool } from "@langchain/core/tools";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,10 +34,12 @@ import {
 } from "./bigquery-adapter";
 import { getAccountAssetByStoragePath,
   listAccountAssets,
+  upsertAccountAsset,
   updateToolCallStatus,
   getOperationalCase,
   listOperationalCaseDocuments,
   insertOperationalCaseEvent,
+  getRecentOperationalCaseEvents,
   updateOperationalCase,
   createExternalContactNotification,
 } from "@agents/db";
@@ -53,13 +56,33 @@ import {
 } from "@agents/types";
 import { deriveCommissionContractTemplateData } from "./commission-contract-template-data";
 import {
+  buildContractDataReviewNotifyText,
   buildPropertyDataMinimumsSummaryMessage,
   documentExtractionMinimumsContext,
   evaluatePropertyAdvanceGate,
   evaluatePropertyDataMinimumsForReview,
   ownerConsistencyStatusFromFields,
 } from "./operational-cases-adapters";
+import {
+  buildContractCommercialMinimumsSummaryMessage,
+  evaluateContractCommercialMinimums,
+  mapCollaborationToEasyBroker,
+  mapCollaborationToUngga,
+  parseCommissionTerms,
+} from "../operational-cases/contract-commercial-terms";
 import { sanitizeComparableSearchFilters } from "../operational-cases/comparable-search-contract";
+import {
+  applyPublicUrlsToManifest,
+  applyWatermarkOutputsToManifest,
+  buildPhotoManifestFromRawPhotos,
+  mergePhotoLabelsIntoManifest,
+  normalizePhotoSourcePath,
+  parsePhotoManifest,
+  photoUploadPairsFromManifest,
+  resolveRawPhotoPaths,
+  type PhotoManifestEntry,
+  type PhotoUploadPair,
+} from "../operational-cases/photo-manifest";
 
 /** Outbound Telegram messages that expect a reply from the external contact. */
 const TELEGRAM_REPLY_EXPECTED_PURPOSES = new Set([
@@ -471,10 +494,35 @@ async function persistPublishedDestination(
     ...published,
     [destination]: destinationPatch,
   };
+  const {
+    buildPublicationContextPatch,
+    publicationFromContext,
+    reconcilePublicationWithArtifacts,
+  } = await import("../operational-cases/publication-workflow");
+  const nextContextBase = {
+    ...currentContext,
+    published: nextPublished,
+  };
+  const publication = reconcilePublicationWithArtifacts(
+    publicationFromContext(nextContextBase),
+    nextContextBase
+  );
+  const publicationPatch = buildPublicationContextPatch(publication);
   return persistCaseContextPatch(
     ctx,
     caseId,
-    { published: nextPublished },
+    {
+      ...publicationPatch,
+      published: {
+        ...(asPlainRecord(publicationPatch.published)),
+        [destination]: {
+          ...asPlainRecord(
+            asPlainRecord(publicationPatch.published)[destination]
+          ),
+          ...destinationPatch,
+        },
+      },
+    },
     {
       kind: "listing_publish_destination_persisted",
       destination,
@@ -490,6 +538,21 @@ function safeNumber(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+/**
+ * Coordenadas usables para Places/Avaclick. Rechaza placeholders (0,0) que el
+ * LLM suele pasar cuando “no sabe” lat/lng — eso apuntaría a Null Island.
+ */
+export function isUsableLatLng(
+  lat: number | null | undefined,
+  lon: number | null | undefined
+): boolean {
+  if (lat == null || lon == null) return false;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  if (lat === 0 && lon === 0) return false;
+  if (Math.abs(lat) < 1e-6 && Math.abs(lon) < 1e-6) return false;
+  return true;
 }
 
 function haversineMeters(
@@ -845,6 +908,9 @@ export function addRealEstateTools(
   }
   if (toolEnabled("easybroker_upload_images", ctx)) {
     tools.push(makeEasyBrokerUploadImagesTool(ctx));
+  }
+  if (toolEnabled("easybroker_publish_listing", ctx)) {
+    tools.push(makeEasyBrokerPublishListingTool(ctx));
   }
 
   // ── Address geocoding (read) ────────────────────────────────────────
@@ -1308,6 +1374,32 @@ export function addRealEstateTools(
                   format: out.format,
                 },
               });
+            } else if (
+              caseIdForEvent &&
+              out.ok === false &&
+              out.error === "commission_contract_missing_required_data" &&
+              input.template_slug === "commission_contract"
+            ) {
+              const missingRequiredFields = Array.isArray(
+                out.missing_required_fields
+              )
+                ? out.missing_required_fields.filter(
+                    (field): field is string =>
+                      typeof field === "string" && field.trim().length > 0
+                  )
+                : [];
+              const remediation = await emitOwnedContractDataReviewIfNeeded(
+                ctx,
+                deps,
+                {
+                  caseId: caseIdForEvent,
+                  missingRequiredFields,
+                }
+              );
+              out.owned_remediation = {
+                kind: "contract_data_review",
+                ...remediation,
+              };
             }
             return JSON.stringify(out);
           } catch (e) {
@@ -1351,13 +1443,48 @@ export function addRealEstateTools(
           position?: "bottom-right" | "bottom-left" | "top-right" | "top-left" | "center";
           opacity?: number;
           scale?: number;
+          case_id?: string;
         }) => {
           const record = await createTrackedToolCall(ctx, "image_watermark",
             input as unknown as Record<string, unknown>,
             false);
           try {
+            if (input.case_id) {
+              const opCase = await getOperationalCase(ctx.db, input.case_id).catch(
+                () => null
+              );
+              const rawPaths = resolveRawPhotoPaths(
+                asRecord(opCase?.context_jsonb)?.raw_photos
+              );
+              const normalizedInput = input.input_paths.map(normalizePhotoSourcePath);
+              if (
+                rawPaths.length > 0 &&
+                (rawPaths.length !== normalizedInput.length ||
+                  rawPaths.some((photoPath, index) => photoPath !== normalizedInput[index]))
+              ) {
+                const out = {
+                  ok: false,
+                  status: "photo_identity_mismatch",
+                  expected_paths: rawPaths,
+                  received_paths: normalizedInput,
+                  missing: rawPaths.filter((photoPath) => !normalizedInput.includes(photoPath)),
+                  hint:
+                    "input_paths debe contener exactamente raw_photos, en el mismo orden.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
             const out = await applyImageWatermark(ctx, input);
-            await updateToolCallStatus(ctx.db, record.id, "executed", out);
+            if (input.case_id && Array.isArray(out.outputs)) {
+              await persistWatermarkedPhotosToCase(ctx, input.case_id, out);
+            }
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              out.ok === false ? "failed" : "executed",
+              out
+            );
             return JSON.stringify(out);
           } catch (err) {
             const out = {
@@ -1380,6 +1507,7 @@ export function addRealEstateTools(
               .optional(),
             opacity: z.number().min(0).max(1).optional(),
             scale: z.number().min(0.05).max(0.5).optional(),
+            case_id: z.string().min(1).optional(),
           }),
         }
       )
@@ -1388,94 +1516,68 @@ export function addRealEstateTools(
 
   // ── Ungga publish — prepare_draft (HITL) + publish_draft (post-aprobación) ─
   if (toolEnabled("ungga_publish_listing", ctx)) {
-    const unggaPublishSchema = z
-      .object({
-        action: z
-          .enum(["prepare_draft", "publish_draft"])
-          .default("prepare_draft")
-          .describe(
-            "prepare_draft: llena wizard y guarda borrador (requiere revisión HITL). publish_draft: publica un borrador ya aprobado usando ungga_property_id o draft_url."
-          ),
-        ungga_property_id: z.string().min(1).optional(),
-        draft_url: z.string().url().optional(),
-        title: z.string().min(1).optional(),
-        description: z.string().optional(),
-        operation: z.string().min(1).optional(),
-        property_type: z.string().min(1).optional(),
-        price: z.number().positive().optional(),
-        currency: z.string().optional(),
-        construction_m2: z.number().positive().optional(),
-        land_m2: z.number().positive().optional(),
-        land_unit: z.string().optional(),
-        condition: z.string().optional(),
-        age_range: z.string().optional(),
-        country: z.string().optional(),
-        address: z.string().optional(),
-        location: z.record(z.string(), z.any()).optional(),
-        bedrooms: z.number().nonnegative().optional(),
-        bathrooms_full: z.number().nonnegative().optional(),
-        bathrooms_half: z.number().nonnegative().optional(),
-        parking_spaces: z.number().nonnegative().optional(),
-        covered_parking: z.boolean().optional(),
-        floor: z.string().optional(),
-        location_type: z.string().optional(),
-        current_status: z.string().optional(),
-        amenities: z.array(z.string()).optional(),
-        video_url: z.string().optional(),
-        tour_url: z.string().optional(),
-        operations: z
-          .array(
-            z.object({
-              type: z.enum(["sale", "rent", "rent_temporary", "presale"]),
-              price: z.number().positive(),
-              currency: z.string().optional(),
-            })
-          )
-          .optional(),
-        image_urls: z.array(z.string().url()).optional(),
-        case_id: z.string().min(1).optional(),
-      })
-      .superRefine((data, ctx) => {
-        if (data.action === "publish_draft") {
-          if (!resolveUnggaPropertyId(data)) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              message:
-                "publish_draft requires ungga_property_id or draft_url pointing to /app/propiedades/{GU-ID}",
-              path: ["ungga_property_id"],
-            });
+    const unggaPublishSchema = z.preprocess(
+      stripEmptyAndNullishProps,
+      z
+        .object({
+          action: z
+            .enum(["prepare_draft", "publish_draft"])
+            .default("prepare_draft")
+            .describe(
+              "prepare_draft: llena wizard y guarda borrador. publish_draft: publica un borrador ya validado usando ungga_property_id o draft_url."
+            ),
+          ungga_property_id: z.string().min(1).optional(),
+          draft_url: z.string().url().optional(),
+          title: z.string().min(1).optional(),
+          description: z.string().optional(),
+          operation: z.string().min(1).optional(),
+          property_type: z.string().min(1).optional(),
+          price: z.number().positive().optional(),
+          currency: z.string().optional(),
+          construction_m2: z.number().positive().optional(),
+          land_m2: z.number().positive().optional(),
+          land_unit: z.string().optional(),
+          condition: z.string().optional(),
+          age_range: z.string().optional(),
+          country: z.string().optional(),
+          address: z.string().optional(),
+          location: z.record(z.string(), z.any()).optional(),
+          bedrooms: z.number().nonnegative().optional(),
+          bathrooms_full: z.number().nonnegative().optional(),
+          bathrooms_half: z.number().nonnegative().optional(),
+          parking_spaces: z.number().nonnegative().optional(),
+          covered_parking: z.boolean().optional(),
+          floor: z.string().optional(),
+          location_type: z.string().optional(),
+          current_status: z.string().optional(),
+          amenities: z.array(z.string()).optional(),
+          video_url: z.string().optional(),
+          tour_url: z.string().optional(),
+          operations: z
+            .array(
+              z.object({
+                type: z.enum(["sale", "rent", "rent_temporary", "presale"]),
+                price: z.number().positive(),
+                currency: z.string().optional(),
+              })
+            )
+            .optional(),
+          image_urls: z.array(z.string().url()).optional(),
+          case_id: z.string().min(1).optional(),
+        })
+        .superRefine((data, refineCtx) => {
+          if (data.action === "publish_draft") {
+            if (!resolveUnggaPropertyId(data)) {
+              refineCtx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message:
+                  "publish_draft requires ungga_property_id or draft_url pointing to /app/propiedades/{GU-ID}",
+                path: ["ungga_property_id"],
+              });
+            }
           }
-          return;
-        }
-        if (!data.title?.trim()) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "prepare_draft requires title",
-            path: ["title"],
-          });
-        }
-        if (!data.operation?.trim()) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "prepare_draft requires operation",
-            path: ["operation"],
-          });
-        }
-        if (!data.property_type?.trim()) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "prepare_draft requires property_type",
-            path: ["property_type"],
-          });
-        }
-        if (data.price == null || !(data.price > 0)) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "prepare_draft requires a positive price",
-            path: ["price"],
-          });
-        }
-      });
+        })
+    );
 
     tools.push(
       tool(
@@ -1487,12 +1589,109 @@ export function addRealEstateTools(
             typeof input.case_id === "string" && input.case_id.trim()
               ? input.case_id.trim()
               : ctx.caseId ?? null;
-          let inputForExecution = { ...input };
+          let inputForExecution = await enrichUnggaPublishInputFromCaseContext(
+            ctx,
+            { ...input }
+          );
+          const action =
+            typeof inputForExecution.action === "string" &&
+            inputForExecution.action.trim()
+              ? inputForExecution.action.trim()
+              : "prepare_draft";
+
+          if (action === "publish_draft") {
+            if (!resolveUnggaPropertyId(inputForExecution as { ungga_property_id?: string; draft_url?: string })) {
+              const out = {
+                ok: false,
+                status: "validation_error",
+                error:
+                  "publish_draft requires ungga_property_id or draft_url from a prior prepare_draft",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+            if (caseId) {
+              const phaseGate = await enforceUnggaPublishPhaseGate(ctx, caseId);
+              if (!phaseGate.ok) {
+                await updateToolCallStatus(ctx.db, record.id, "failed", phaseGate);
+                return JSON.stringify(phaseGate);
+              }
+            }
+          } else {
+            const missing: string[] = [];
+            if (
+              typeof inputForExecution.title !== "string" ||
+              !inputForExecution.title.trim()
+            ) {
+              missing.push("title");
+            }
+            if (
+              typeof inputForExecution.operation !== "string" ||
+              !inputForExecution.operation.trim()
+            ) {
+              missing.push("operation");
+            }
+            if (
+              typeof inputForExecution.property_type !== "string" ||
+              !inputForExecution.property_type.trim()
+            ) {
+              missing.push("property_type");
+            }
+            if (
+              typeof inputForExecution.price !== "number" ||
+              !(inputForExecution.price > 0)
+            ) {
+              missing.push("price");
+            }
+            if (missing.length > 0) {
+              const out = {
+                ok: false,
+                status: "validation_error",
+                error: `prepare_draft missing required fields after case enrichment: ${missing.join(", ")}`,
+                missing_fields: missing,
+                hint: "Pasa case_id con listing_description_approved y pricing_proposal, o suministra title/operation/property_type/price.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+            const imageUrls = Array.isArray(inputForExecution.image_urls)
+              ? inputForExecution.image_urls.filter(
+                  (url) => typeof url === "string" && url.trim().length > 0
+                )
+              : [];
+            if (caseId && imageUrls.length === 0) {
+              const opCaseForImages = await getOperationalCase(ctx.db, caseId).catch(
+                () => null
+              );
+              const ctxImages = asRecord(opCaseForImages?.context_jsonb) ?? {};
+              const manifest = Array.isArray(ctxImages.photo_manifest)
+                ? ctxImages.photo_manifest
+                : [];
+              const rawPhotos = Array.isArray(ctxImages.raw_photos)
+                ? ctxImages.raw_photos
+                : [];
+              if (manifest.length > 0 || rawPhotos.length > 0) {
+                const out = {
+                  ok: false,
+                  status: "validation_error",
+                  error:
+                    "prepare_draft requires image_urls from photo_manifest.public_url when the case has photos; refusing empty image_urls",
+                  expected_image_count: manifest.length || rawPhotos.length,
+                  hint: "Ejecuta image_watermark(case_id) / easybroker_upload_images primero para persistir public_url en photo_manifest, o pasa image_urls explícitas.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
+          }
+
           if (caseId) {
             const gate = await enforcePublishGateForCase({
               ctx,
               caseId,
               destination: "ungga",
+              operationType:
+                input.action === "publish_draft" ? "publish" : "create_draft",
             });
             if (!gate.ok) {
               await updateToolCallStatus(ctx.db, record.id, "failed", gate);
@@ -1531,6 +1730,16 @@ export function addRealEstateTools(
                   typeof out.draft_url === "string" ? out.draft_url : null,
                 status: "published",
               });
+            } else {
+              await persistPublishedDestination(ctx, caseId, "ungga", {
+                ungga_property_id:
+                  typeof out.ungga_property_id === "string"
+                    ? out.ungga_property_id
+                    : null,
+                draft_url:
+                  typeof out.draft_url === "string" ? out.draft_url : null,
+                status: "draft",
+              });
             }
             const kind =
               out.action === "publish_draft" ? "ungga_published" : "ungga_draft_ready";
@@ -1558,7 +1767,7 @@ export function addRealEstateTools(
         {
           name: "ungga_publish_listing",
           description:
-            "Ungga listing in two phases on the same tool: action=prepare_draft creates a draft for human review (HITL); after approval, action=publish_draft publishes that draft using ungga_property_id or draft_url. CLI fallback uses Playwright; internal API when configured.",
+            "Ungga listing in two phases on the same tool: action=prepare_draft creates a draft; after conditional preflight pass, action=publish_draft publishes that draft using ungga_property_id or draft_url. Prefer case_id so the adapter enriches fields. Omit empty strings.",
           schema: unggaPublishSchema,
         }
       )
@@ -1710,6 +1919,145 @@ function buildUnggaPropertyUrl(propertyId: string) {
   return `https://ungga.com/app/propiedades/${propertyId}`;
 }
 
+/**
+ * Remediación owned cuando generate falla por datos contractuales faltantes:
+ * el sistema (no el LLM) emite `contract_data_review` con los campos exactos.
+ * Deduplica por conjunto ordenado de faltantes y refresca el unread existente.
+ */
+async function emitOwnedContractDataReviewIfNeeded(
+  ctx: ToolContext,
+  deps: RealEstateToolDeps,
+  params: {
+    caseId: string;
+    missingRequiredFields?: string[];
+  }
+): Promise<{
+  sent: boolean;
+  skipped?: boolean;
+  reason?: string;
+  error?: string;
+}> {
+  if (!deps.notifyUser) {
+    return { sent: false, skipped: true, reason: "notify_user_unavailable" };
+  }
+
+  const opCase = await getOperationalCase(ctx.db, params.caseId).catch(() => null);
+  if (!opCase) {
+    return { sent: false, skipped: true, reason: "case_not_found" };
+  }
+  const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
+  const propertyData = isRecord(context.property_data)
+    ? context.property_data
+    : {};
+  const externalContact = isRecord(opCase.external_contact_jsonb)
+    ? (opCase.external_contact_jsonb as Record<string, unknown>)
+    : {};
+
+  const commercial = evaluateContractCommercialMinimums({
+    context,
+    propertyData,
+    externalContact,
+    requireConfirmation: true,
+  });
+  const requiredMissing = commercial.missing.filter(
+    (item) => item.optional !== true
+  );
+  // Merge template-only missing keys (e.g. owner_name) that are outside commercial model.
+  const templateMissing = (params.missingRequiredFields ?? [])
+    .map((field) => (typeof field === "string" ? field.trim() : ""))
+    .filter((field) => field.length > 0)
+    .filter(
+      (field) =>
+        !requiredMissing.some((item) => item.key === field) &&
+        !(field === "owner_email" && commercial.owner_email)
+    );
+  const missingKeys = [
+    ...requiredMissing.map((item) => item.key),
+    ...templateMissing,
+  ];
+  if (missingKeys.length === 0 && commercial.ok) {
+    return { sent: false, skipped: true, reason: "no_missing_fields" };
+  }
+
+  const orderedKeySet = missingKeys.slice().sort().join(",");
+  const recentEvents = await getRecentOperationalCaseEvents(
+    ctx.db,
+    params.caseId,
+    20
+  );
+  const alreadyRequestedSameSet = recentEvents.some((event) => {
+    const payload =
+      event.payload_jsonb &&
+      typeof event.payload_jsonb === "object" &&
+      !Array.isArray(event.payload_jsonb)
+        ? (event.payload_jsonb as Record<string, unknown>)
+        : null;
+    if (payload?.kind !== "contract_data_review_requested") return false;
+    const prior = Array.isArray(payload.missing_required_fields)
+      ? payload.missing_required_fields
+          .filter((field): field is string => typeof field === "string")
+          .slice()
+          .sort()
+          .join(",")
+      : "";
+    return prior === orderedKeySet;
+  });
+  // Still refresh body/metadata via upsert even if same set was requested;
+  // skip only a parallel email-only duplicate when nothing commercial remains.
+  if (
+    alreadyRequestedSameSet &&
+    requiredMissing.length === 0 &&
+    templateMissing.length === 1 &&
+    templateMissing[0] === "owner_email" &&
+    commercial.owner_email
+  ) {
+    return { sent: false, skipped: true, reason: "already_requested" };
+  }
+
+  const notifyText =
+    requiredMissing.length > 0 || commercial.known.length > 0
+      ? buildContractCommercialMinimumsSummaryMessage(commercial)
+      : buildContractDataReviewNotifyText(missingKeys);
+
+  try {
+    await deps.notifyUser(
+      ctx.db,
+      ctx.userId,
+      {
+        text: notifyText,
+        kind: "contract_data_review",
+        data: {
+          case_id: params.caseId,
+          missing_required_fields: missingKeys,
+          missing_fields: commercial.missing,
+          known_fields: commercial.known,
+          source: "generate_document_from_template",
+        },
+      },
+      "high"
+    );
+    if (!alreadyRequestedSameSet) {
+      await insertOperationalCaseEvent(ctx.db, {
+        caseId: params.caseId,
+        eventType: "human_decision",
+        actor: "system",
+        stepKey: "contract_pending",
+        payload: {
+          kind: "contract_data_review_requested",
+          source: "generate_document_from_template",
+          missing_required_fields: missingKeys,
+        },
+      });
+    }
+    return { sent: true };
+  } catch (e) {
+    return {
+      sent: false,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
 async function attachUnggaNotification(
   ctx: ToolContext,
   deps: RealEstateToolDeps,
@@ -1730,8 +2078,18 @@ async function attachUnggaNotification(
   if (action === "prepare_draft") {
     const draftUrl =
       typeof out.draft_url === "string" ? out.draft_url.trim() : "";
-    if (draftUrl) {
+    // With publication workflow v1, conditional review is owned by the runner
+    // (publication_review_required). Avoid a second HITL "approve publish" ping.
+    const opCase =
+      caseId != null
+        ? await getOperationalCase(ctx.db, caseId).catch(() => null)
+        : null;
+    const context = asRecord(opCase?.context_jsonb) ?? {};
+    const workflowOff = context.publication_workflow_v1 === false;
+    if (draftUrl && workflowOff) {
       text = `Gu preparó el borrador en Ungga. Revisa la ficha y aprueba la publicación cuando esté listo:\n${draftUrl}`;
+    } else if (draftUrl) {
+      text = `Gu preparó el borrador en Ungga (validación automática en curso):\n${draftUrl}`;
     }
   } else if (action === "publish_draft") {
     const publishedUrl =
@@ -1908,6 +2266,48 @@ async function renderDocumentFromTemplate(
   const modelData = isRecord(input.data) ? input.data : {};
   const effectiveData: Record<string, unknown> = { ...derivedData, ...modelData };
 
+  // Preventive commercial preflight (before template-field checks).
+  if (input.template_slug === "commission_contract") {
+    const caseId = input.case_id ?? ctx.caseId;
+    if (caseId) {
+      const oc = await getOperationalCase(ctx.db, caseId).catch(() => null);
+      if (oc) {
+        const context = isRecord(oc.context_jsonb) ? oc.context_jsonb : {};
+        const propertyData = isRecord(context.property_data)
+          ? context.property_data
+          : {};
+        const externalContact = isRecord(oc.external_contact_jsonb)
+          ? (oc.external_contact_jsonb as Record<string, unknown>)
+          : {};
+        const commercial = evaluateContractCommercialMinimums({
+          context,
+          propertyData,
+          externalContact,
+          requireConfirmation: true,
+        });
+        const requiredMissing = commercial.missing.filter(
+          (item) => item.optional !== true
+        );
+        if (!commercial.ok || requiredMissing.length > 0) {
+          return {
+            ok: false,
+            status: "blocked",
+            error: "commission_contract_missing_required_data",
+            message:
+              "Faltan condiciones comerciales o datos del comitente para generar el contrato.",
+            missing_required_fields: requiredMissing.map((item) => item.key),
+            missing_fields: commercial.missing,
+            known_fields: commercial.known,
+            commercial_summary:
+              buildContractCommercialMinimumsSummaryMessage(commercial),
+            hint:
+              "Completa commission_terms / owner_email vía contract_data_review antes de regenerar. No uses notify_user(kind=contract_review) hasta tener output_path.",
+          };
+        }
+      }
+    }
+  }
+
   const inputFields = Object.keys(effectiveData);
   if (
     input.template_slug === "commission_contract" &&
@@ -1932,7 +2332,7 @@ async function renderDocumentFromTemplate(
         template_fields_detected: templateFields,
         received_fields: inputFields,
         hint:
-          "Completa los campos faltantes en el caso (por ejemplo owner_email del comitente) y reintenta generate_document_from_template.",
+          "Completa los campos faltantes en el caso (por ejemplo owner_email del comitente). El sistema solicitará contract_data_review automáticamente; no uses notify_user(kind=contract_review) hasta regenerar con output_path.",
       };
     }
   }
@@ -2040,10 +2440,91 @@ async function resolveDocumentTemplateAsset(
 }
 
 type AnalyzePropertyImagesInput = {
-  image_paths: string[];
+  image_paths?: string[];
   purpose?: string;
   case_id?: string;
 };
+
+/**
+ * Normaliza `raw_photos` (strings u objetos de caso) a refs `bucket:path`.
+ * Misma semántica que la recipe N1 de laboratorio.
+ */
+export function resolveImagePathsFromRawPhotos(
+  rawPhotos: unknown,
+  maxCount = Number.POSITIVE_INFINITY
+): string[] {
+  if (!Array.isArray(rawPhotos)) return [];
+  const paths: string[] = [];
+  for (const item of rawPhotos) {
+    if (typeof item === "string") {
+      const normalized = normalizeAnalyzeImageStorageRef(item);
+      if (normalized) paths.push(normalized);
+    } else if (asRecord(item)) {
+      const record = asRecord(item)!;
+      const bucket =
+        typeof record.storage_bucket === "string"
+          ? record.storage_bucket.trim()
+          : "";
+      const storagePath =
+        typeof record.storage_path === "string"
+          ? record.storage_path.trim()
+          : "";
+      if (bucket && storagePath) {
+        paths.push(`${bucket}:${storagePath.replace(/^\/+/, "")}`);
+      } else if (storagePath) {
+        const normalized = normalizeAnalyzeImageStorageRef(storagePath);
+        if (normalized) paths.push(normalized);
+      }
+    }
+    if (paths.length >= maxCount) break;
+  }
+  return paths;
+}
+
+/**
+ * El agente a menudo pasa solo `storage_path` sin bucket. Esas rutas viven en
+ * `case-documents`, no en el default de watermark (`account-assets`).
+ */
+export function normalizeAnalyzeImageStorageRef(inputPath: string): string {
+  const trimmed = inputPath.trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^[a-z0-9._-]+:/i.test(trimmed)) return trimmed;
+  return `case-documents:${trimmed.replace(/^\/+/, "")}`;
+}
+
+async function resolveAnalyzePropertyImagePaths(
+  ctx: ToolContext,
+  input: AnalyzePropertyImagesInput
+): Promise<{ paths: string[]; source: "args" | "case_raw_photos" | "none" }> {
+  const caseId =
+    (typeof input.case_id === "string" && input.case_id.trim()) ||
+    (typeof ctx.caseId === "string" && ctx.caseId.trim()) ||
+    "";
+  // Preferir raw_photos del caso: son canónicos con bucket. Los image_paths del
+  // agente suelen venir sin prefijo bucket y fallan al descargar.
+  if (caseId) {
+    const opCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
+    if (opCase && opCase.user_id === ctx.userId) {
+      const context = asRecord(opCase.context_jsonb) ?? {};
+      const fromCase = resolveImagePathsFromRawPhotos(context.raw_photos);
+      if (fromCase.length > 0) {
+        return { paths: fromCase, source: "case_raw_photos" };
+      }
+    }
+  }
+  const fromArgs = Array.isArray(input.image_paths)
+    ? input.image_paths
+        .map((path) =>
+          typeof path === "string" ? normalizeAnalyzeImageStorageRef(path) : ""
+        )
+        .filter((path) => path.length > 0)
+    : [];
+  if (fromArgs.length > 0) {
+    return { paths: fromArgs, source: "args" };
+  }
+  return { paths: [], source: "none" };
+}
 
 const PHOTO_COVERAGE_KEYS = [
   "facade",
@@ -2201,10 +2682,11 @@ function resolveListingPriceForDraft(
   };
 }
 
-function buildPhotoAnalysisOutput(
+export function buildPhotoAnalysisOutput(
   parsed: Record<string, unknown>,
-  selectedPaths: string[],
-  imageCount: number
+  manifest: PhotoManifestEntry[],
+  imageCount: number,
+  loadErrors: Array<{ path: string; error: string }> = []
 ) {
   const featuresBySpace = parseFeaturesBySpace(parsed.features_by_space);
   const legacyFlat = ensureStringArray(parsed.visible_features, 24);
@@ -2214,10 +2696,11 @@ function buildPhotoAnalysisOutput(
       : legacyFlat;
 
   return {
-    ok: true,
-    status: "analyzed",
+    ok: loadErrors.length === 0,
+    status: loadErrors.length === 0 ? "analyzed" : "partial_failure",
     model: IMAGE_VISION_MODEL_ID,
     image_count: imageCount,
+    total_photo_count: manifest.length,
     visible_spaces: ensureStringArray(parsed.visible_spaces, 12),
     features_by_space: featuresBySpace,
     visible_features: visibleFeatures,
@@ -2231,8 +2714,108 @@ function buildPhotoAnalysisOutput(
     uncertain_observations: ensureStringArray(parsed.uncertain_observations, 12),
     do_not_claim: ensureStringArray(parsed.do_not_claim, 16),
     recommended_missing_photos: ensureStringArray(parsed.recommended_missing_photos, 12),
-    source_paths: selectedPaths,
+    source_paths: manifest.map((entry) => entry.source_path),
+    images: manifest,
+    photo_manifest: manifest,
+    missing: loadErrors.map((item) => item.path),
+    load_errors: loadErrors,
   };
+}
+
+const PHOTO_CLASSIFIER_CONCURRENCY = 3;
+const PHOTO_CLASSIFIER_MAX_TOKENS = 180;
+
+type LoadedPhoto = {
+  sourcePath: string;
+  sha256: string;
+  dataUrl: string;
+};
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      while (cursor < values.length) {
+        const index = cursor++;
+        results[index] = await mapper(values[index]);
+      }
+    })
+  );
+  return results;
+}
+
+async function classifyLoadedPhoto(photo: LoadedPhoto): Promise<{
+  source_path: string;
+  sha256: string;
+  space_label: string | null;
+  confidence: number | null;
+  uncertain: boolean;
+  error: PhotoManifestEntry["error"];
+}> {
+  try {
+    const parsed = asRecord(
+      await callOpenRouterJsonTool({
+        model: IMAGE_VISION_MODEL_ID,
+        maxTokens: PHOTO_CLASSIFIER_MAX_TOKENS,
+        temperature: 0,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Clasifica una sola foto inmobiliaria. Devuelve JSON sin markdown: " +
+              '{"space_label":"etiqueta breve en español","confidence":0.0,"uncertain":false}.',
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text:
+                  "Identifica únicamente el espacio principal visible. Si no es claro, usa space_label null y uncertain true.",
+              },
+              { type: "image_url", image_url: { url: photo.dataUrl } },
+            ],
+          },
+        ],
+      })
+    );
+    const label =
+      typeof parsed?.space_label === "string"
+        ? parsed.space_label.trim() || null
+        : null;
+    const confidence =
+      typeof parsed?.confidence === "number" ? parsed.confidence : null;
+    return {
+      source_path: photo.sourcePath,
+      sha256: photo.sha256,
+      space_label: label,
+      confidence,
+      uncertain:
+        parsed?.uncertain === true ||
+        !label ||
+        confidence == null ||
+        confidence < 0.7,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      source_path: photo.sourcePath,
+      sha256: photo.sha256,
+      space_label: null,
+      confidence: null,
+      uncertain: true,
+      error: {
+        code: "classification_failed",
+        message: error instanceof Error ? error.message : String(error),
+        stage: "classify",
+      },
+    };
+  }
 }
 
 function analyzePropertyImagesSystemPrompt() {
@@ -2265,29 +2848,97 @@ function makeAnalyzePropertyImagesTool(ctx: ToolContext) {
         input as unknown as Record<string, unknown>,
         false
       );
-      const maxImages = Math.min(input.image_paths.length, 8);
-      const selectedPaths = input.image_paths.slice(0, maxImages);
-      const imageMessages: Array<Record<string, unknown>> = [];
-      for (const imagePath of selectedPaths) {
-        try {
-          const loaded = await loadImageInput(ctx, imagePath);
-          const normalized = await sharp(loaded.buffer, { failOn: "none" })
-            .rotate()
-            .resize({ width: 1400, withoutEnlargement: true })
-            .jpeg({ quality: 80 })
-            .toBuffer();
-          const dataUrl = `data:image/jpeg;base64,${normalized.toString("base64")}`;
-          imageMessages.push({ type: "image_url", image_url: { url: dataUrl } });
-        } catch {
-          // Si una imagen falla seguimos con el resto; el modelo recibirá menos entradas.
-        }
-      }
-      if (imageMessages.length === 0) {
+      const resolved = await resolveAnalyzePropertyImagePaths(ctx, input);
+      if (resolved.paths.length === 0) {
         const out = {
           ok: false,
-          status: "no_images_loaded",
-          hint: "No se pudieron cargar imágenes válidas para análisis.",
+          status: "missing_image_paths",
+          hint:
+            "Pasa image_paths (refs bucket:path) o case_id de un caso con context_jsonb.raw_photos (>=1 foto).",
         };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+      const caseId = input.case_id ?? ctx.caseId ?? null;
+      const opCase = caseId
+        ? await getOperationalCase(ctx.db, caseId).catch(() => null)
+        : null;
+      const existingManifest = parsePhotoManifest(
+        asRecord(opCase?.context_jsonb)?.photo_manifest
+      );
+      let manifest = buildPhotoManifestFromRawPhotos(
+        resolved.paths,
+        existingManifest
+      );
+      const loadedResults = await mapWithConcurrency(
+        resolved.paths,
+        PHOTO_CLASSIFIER_CONCURRENCY,
+        async (
+          imagePath
+        ): Promise<LoadedPhoto | { sourcePath: string; loadError: string }> => {
+          try {
+            const loaded = await loadImageInput(ctx, imagePath);
+            const sha256 = createHash("sha256").update(loaded.buffer).digest("hex");
+            const normalized = await sharp(loaded.buffer, { failOn: "none" })
+              .rotate()
+              .resize({ width: 1400, withoutEnlargement: true })
+              .jpeg({ quality: 80 })
+              .toBuffer();
+            return {
+              sourcePath: imagePath,
+              sha256,
+              dataUrl: `data:image/jpeg;base64,${normalized.toString("base64")}`,
+            };
+          } catch (err) {
+            return {
+              sourcePath: imagePath,
+              loadError: err instanceof Error ? err.message : String(err),
+            };
+          }
+        }
+      );
+      const loadedPhotos = loadedResults.filter(
+        (item): item is LoadedPhoto => "dataUrl" in item
+      );
+      const loadErrors = loadedResults.flatMap((item) =>
+        "loadError" in item
+          ? [{ path: item.sourcePath, error: item.loadError }]
+          : []
+      );
+      const loadFailureLabels = loadErrors.map((item) => ({
+        source_path: item.path,
+        space_label: null,
+        confidence: null,
+        uncertain: true,
+        error: {
+          code: "image_load_failed",
+          message: item.error,
+          stage: "load" as const,
+        },
+      }));
+      const classifications = await mapWithConcurrency(
+        loadedPhotos,
+        PHOTO_CLASSIFIER_CONCURRENCY,
+        classifyLoadedPhoto
+      );
+      manifest = mergePhotoLabelsIntoManifest(manifest, [
+        ...classifications,
+        ...loadFailureLabels,
+      ]);
+
+      // Persist identity/classification before aggregate copy analysis so a
+      // later model failure never discards hashes or shifts photo labels.
+      if (caseId) {
+        await persistCaseContextPatch(ctx, caseId, {
+          photo_manifest: manifest,
+        });
+      }
+
+      if (loadedPhotos.length === 0) {
+        const out = buildPhotoAnalysisOutput({}, manifest, 0, loadErrors);
+        if (caseId) {
+          await persistCaseContextPatch(ctx, caseId, { photo_analysis: out });
+        }
         await updateToolCallStatus(ctx.db, record.id, "failed", out);
         return JSON.stringify(out);
       }
@@ -2310,22 +2961,28 @@ function makeAnalyzePropertyImagesTool(ctx: ToolContext) {
                     input.purpose ?? "listing_description"
                   ),
                 },
-                ...imageMessages,
+                ...loadedPhotos.map((photo) => ({
+                  type: "image_url",
+                  image_url: { url: photo.dataUrl },
+                })),
               ],
             },
           ],
         });
         const out = buildPhotoAnalysisOutput(
           asRecord(parsed) ?? {},
-          selectedPaths,
-          imageMessages.length
+          manifest,
+          loadedPhotos.length,
+          loadErrors
         );
-        const caseId = input.case_id ?? ctx.caseId ?? null;
         if (caseId) {
           await persistCaseContextPatch(
             ctx,
             caseId,
-            { photo_analysis: out },
+            {
+              photo_analysis: out,
+              photo_manifest: out.photo_manifest,
+            },
             {
               kind: "property_images_analyzed",
               tool: "analyze_property_images",
@@ -2342,10 +2999,17 @@ function makeAnalyzePropertyImagesTool(ctx: ToolContext) {
         return JSON.stringify(out);
       } catch (err) {
         const out = {
+          ...buildPhotoAnalysisOutput({}, manifest, loadedPhotos.length, loadErrors),
           ok: false,
-          status: "failed",
+          status: "aggregate_analysis_failed",
           error: err instanceof Error ? err.message : String(err),
         };
+        if (caseId) {
+          await persistCaseContextPatch(ctx, caseId, {
+            photo_analysis: out,
+            photo_manifest: manifest,
+          });
+        }
         await updateToolCallStatus(ctx.db, record.id, "failed", out);
         return JSON.stringify(out);
       }
@@ -2353,9 +3017,9 @@ function makeAnalyzePropertyImagesTool(ctx: ToolContext) {
     {
       name: "analyze_property_images",
       description:
-        "Analyzes property images and returns structured visual evidence for listing copy (never infers absent features from missing photos).",
+        "Analyzes property images and returns structured visual evidence for listing copy (never infers absent features from missing photos). Prefer case_id alone when the case already has raw_photos; image_paths must use bucket:path refs (e.g. case-documents:user/case/photo.jpg).",
       schema: z.object({
-        image_paths: z.array(z.string().min(1)).min(1).max(30),
+        image_paths: z.array(z.string().min(1)).min(1).optional(),
         purpose: z.string().min(1).optional(),
         case_id: z.string().min(1).optional(),
       }),
@@ -2412,9 +3076,13 @@ async function resolveSurroundingsCoordinates(
 ): Promise<LookupCoordinatesResolution> {
   const lat = safeNumber(input.latitude);
   const lon = safeNumber(input.longitude);
-  if (lat != null && lon != null) {
+  if (isUsableLatLng(lat, lon)) {
     return {
-      coordinates: { latitude: lat, longitude: lon, source: "input" as const },
+      coordinates: {
+        latitude: lat as number,
+        longitude: lon as number,
+        source: "input" as const,
+      },
     };
   }
   let geocodeFailure: LookupCoordinatesResolution["geocode_failure"];
@@ -2427,20 +3095,27 @@ async function resolveSurroundingsCoordinates(
   const propertyData = asRecord(caseContext.property_data) ?? {};
   const caseAddress = asRecord(propertyData.address) ?? {};
 
-  const caseLat = safeNumber(caseAddress.latitude ?? propertyData.latitude);
-  const caseLon = safeNumber(caseAddress.longitude ?? propertyData.longitude);
-  if (caseLat != null && caseLon != null) {
+  const caseLat = safeNumber(
+    caseAddress.latitude ?? propertyData.latitude ?? propertyData.lat
+  );
+  const caseLon = safeNumber(
+    caseAddress.longitude ??
+      propertyData.longitude ??
+      propertyData.lng ??
+      propertyData.lon
+  );
+  if (isUsableLatLng(caseLat, caseLon)) {
     return {
       coordinates: {
-        latitude: caseLat,
-        longitude: caseLon,
+        latitude: caseLat as number,
+        longitude: caseLon as number,
         source: "case_context" as const,
       },
     };
   }
 
   if (hasExplicitAddressInput(input)) {
-    const geocodedFromInput = await geocodePropertyAddress({
+    const geocodeInputFromInput = {
       street: typeof input.address === "string" ? input.address.trim() : undefined,
       neighborhood:
         typeof input.neighborhood === "string" ? input.neighborhood.trim() : undefined,
@@ -2448,13 +3123,19 @@ async function resolveSurroundingsCoordinates(
         typeof input.municipality === "string" ? input.municipality.trim() : undefined,
       state: typeof input.state === "string" ? input.state.trim() : undefined,
       country: (typeof input.country === "string" && input.country.trim()) || "MX",
-    });
+    };
+    const geocodedFromInput = await geocodePropertyAddress(geocodeInputFromInput);
     if (
       geocodedFromInput.ok &&
       geocodedFromInput.status === "ok" &&
       typeof geocodedFromInput.latitude === "number" &&
       typeof geocodedFromInput.longitude === "number"
     ) {
+      // Persistimos la coordenada canónica en property_data.address para que
+      // futuros ticks/consumidores (Avaclick, publicación, este mismo resolver)
+      // no re-geocodifiquen. El candado de confianza + alineación evita
+      // envenenar la dirección canónica con un match dudoso.
+      await maybePersistSurroundingsGeocode(ctx, geocodeInputFromInput, geocodedFromInput);
       return {
         coordinates: {
           latitude: geocodedFromInput.latitude,
@@ -2468,7 +3149,7 @@ async function resolveSurroundingsCoordinates(
   }
 
   if (opCase) {
-    const geocodedFromCase = await geocodePropertyAddress({
+    const geocodeInputFromCase = {
       street:
         (typeof caseAddress.street === "string" && caseAddress.street.trim()) || undefined,
       exterior_number:
@@ -2498,13 +3179,15 @@ async function resolveSurroundingsCoordinates(
         (typeof caseAddress.country === "string" && caseAddress.country.trim()) ||
         (typeof input.country === "string" && input.country.trim()) ||
         "MX",
-    });
+    };
+    const geocodedFromCase = await geocodePropertyAddress(geocodeInputFromCase);
     if (
       geocodedFromCase.ok &&
       geocodedFromCase.status === "ok" &&
       typeof geocodedFromCase.latitude === "number" &&
       typeof geocodedFromCase.longitude === "number"
     ) {
+      await maybePersistSurroundingsGeocode(ctx, geocodeInputFromCase, geocodedFromCase);
       return {
         coordinates: {
           latitude: geocodedFromCase.latitude,
@@ -2518,6 +3201,48 @@ async function resolveSurroundingsCoordinates(
   }
 
   return { coordinates: null, geocode_failure: geocodeFailure };
+}
+
+/**
+ * Persiste en `property_data.address` la coordenada resuelta internamente por
+ * `lookup_property_surroundings`, reutilizando el mismo candado que el tool
+ * `geocode_property_address`: solo `confidence === "high"` y la alineación de
+ * dirección (dentro de `persistGeocodeResultToCaseContext`) evitan sobrescribir
+ * la ubicación canónica con un match dudoso. Best-effort: cualquier fallo se
+ * traga porque el surroundings ya tiene coordenadas para continuar.
+ */
+async function maybePersistSurroundingsGeocode(
+  ctx: ToolContext,
+  requestInput: {
+    street?: string;
+    exterior_number?: string;
+    neighborhood?: string;
+    municipality?: string;
+    state?: string;
+    postal_code?: string;
+    country?: string;
+  },
+  geocoded: Awaited<ReturnType<typeof geocodePropertyAddress>>
+): Promise<void> {
+  if (!ctx.caseId) return;
+  if (!geocoded.ok || geocoded.status !== "ok") return;
+  if (geocoded.confidence !== "high") return;
+  if (!isUsableLatLng(geocoded.latitude, geocoded.longitude)) return;
+  try {
+    await persistGeocodeResultToCaseContext(ctx, requestInput, {
+      latitude: geocoded.latitude,
+      longitude: geocoded.longitude,
+      formatted_address: geocoded.formatted_address,
+      provider: geocoded.provider,
+      confidence: geocoded.confidence,
+      candidates: geocoded.candidates,
+    });
+  } catch (err) {
+    console.warn(
+      "[realestate] lookup_property_surroundings: persist canonical geocode failed:",
+      err
+    );
+  }
 }
 
 function normalizeCoverageValue(value: unknown): "visible" | "unclear" | "not_visible" {
@@ -2659,7 +3384,11 @@ function makeLookupPropertySurroundingsTool(ctx: ToolContext) {
         warnings,
       };
       const caseId = input.case_id ?? ctx.caseId ?? null;
-      if (caseId) {
+      // Defensa en profundidad: nunca persistir zone_context con coordenadas
+      // no usables (Null Island / 0,0). Antes del fix de isUsableLatLng un
+      // input=0,0 llegaba hasta aquí y dejaba un zone_context envenenado que
+      // luego se reusaba como fallback.
+      if (caseId && isUsableLatLng(coordinates.latitude, coordinates.longitude)) {
         await persistCaseContextPatch(
           ctx,
           caseId,
@@ -2682,7 +3411,7 @@ function makeLookupPropertySurroundingsTool(ctx: ToolContext) {
     {
       name: "lookup_property_surroundings",
       description:
-        "Builds surroundings context (POIs + area summary) around a property using coordinates/address.",
+        "Builds surroundings context (POIs + area summary) around a property. Prefer case_id so coordinates come from prior geocode in the case. Do NOT pass latitude/longitude=0 as placeholders; omit them if unknown.",
       schema: z.object({
         address: z.string().optional(),
         neighborhood: z.string().optional(),
@@ -2783,6 +3512,8 @@ function makePrepareListingDescriptionDraftTool(ctx: ToolContext) {
           ok: false,
           status: "missing_required_ingredients",
           missing_ingredients: missingIngredients,
+          hint:
+            "Antes de prepare_listing_description_draft ejecuta analyze_property_images(case_id=...) si falta photo_analysis y lookup_property_surroundings(case_id=...) si falta zone_context. No uses notify_user(kind=listing_description_review) hasta tener listing_description_draft.",
         };
         await updateToolCallStatus(ctx.db, record.id, "failed", out);
         return JSON.stringify(out);
@@ -2963,6 +3694,7 @@ type ImageWatermarkInput = {
   position?: "bottom-right" | "bottom-left" | "top-right" | "top-left" | "center";
   opacity?: number;
   scale?: number;
+  case_id?: string;
 };
 
 const IMAGE_WATERMARK_OUTPUT_BUCKET = "account-assets";
@@ -3075,6 +3807,53 @@ async function applyImageWatermark(
     total: input.input_paths.length,
     outputs,
   };
+}
+
+async function persistWatermarkedPhotosToCase(
+  ctx: ToolContext,
+  caseId: string,
+  watermarkResult: Record<string, unknown>
+): Promise<void> {
+  const opCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
+  if (!opCase || opCase.user_id !== ctx.userId) return;
+  const context = asRecord(opCase.context_jsonb) ?? {};
+  const outputs = Array.isArray(watermarkResult.outputs)
+    ? watermarkResult.outputs
+        .map((entry) => asRecord(entry))
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+        .map((row) => ({
+          input_path:
+            typeof row.input_path === "string" ? row.input_path.trim() : "",
+          output_path:
+            typeof row.output_path === "string" ? row.output_path.trim() : undefined,
+          output_bucket:
+            typeof row.output_bucket === "string"
+              ? row.output_bucket
+              : IMAGE_WATERMARK_OUTPUT_BUCKET,
+          ok: row.ok !== false,
+          error: typeof row.error === "string" ? row.error : undefined,
+        }))
+        .filter((entry) => entry.input_path.length > 0)
+    : [];
+  const existingManifest = parsePhotoManifest(context.photo_manifest);
+  const baseManifest = buildPhotoManifestFromRawPhotos(
+    Array.isArray(context.raw_photos)
+      ? context.raw_photos
+      : outputs.map((entry) => entry.input_path),
+    existingManifest
+  );
+  const applied = applyWatermarkOutputsToManifest(baseManifest, outputs);
+  const watermarkedPaths = applied.manifest
+    .map((entry) => entry.watermarked_path)
+    .filter((entry): entry is string => Boolean(entry));
+  await updateOperationalCase(ctx.db, opCase.id, opCase.version, {
+    context: {
+      ...context,
+      watermarked_photos: watermarkedPaths,
+      photo_manifest: applied.manifest,
+      watermark_missing: applied.missing,
+    },
+  });
 }
 
 async function resolveWatermarkAsset(ctx: ToolContext, assetKey?: string) {
@@ -4254,6 +5033,7 @@ async function enforcePublishGateForCase(params: {
   ctx: ToolContext;
   caseId: string;
   destination: PublishDestination;
+  operationType: "create_draft" | "process_media" | "publish";
 }) {
   const opCase = await getOperationalCase(params.ctx.db, params.caseId);
   if (!opCase || opCase.user_id !== params.ctx.userId) {
@@ -4267,6 +5047,41 @@ async function enforcePublishGateForCase(params: {
     return { ok: true as const, opCase };
   }
   const context = asRecord(opCase.context_jsonb) ?? {};
+  const publication = asRecord(context.publication) ?? {};
+  const rolloutMode =
+    context.publication_mode ?? publication.mode ?? "off";
+  if (rolloutMode !== "active") {
+    return {
+      ok: false,
+      status:
+        rolloutMode === "shadow"
+          ? "publication_shadow_no_side_effects"
+          : "publication_workflow_off",
+      case_id: opCase.id,
+      destination: params.destination,
+      operation_type: params.operationType,
+      hint:
+        "Configura publication_mode=active y ejecuta requestPublicationProgress para escribir en el destino.",
+    };
+  }
+  if (rolloutMode === "active") {
+    const pending = asRecord(context.publication_runner_pending_action);
+    if (
+      !pending ||
+      pending.destination !== params.destination ||
+      pending.type !== params.operationType
+    ) {
+      return {
+        ok: false,
+        status: "publication_runner_required",
+        case_id: opCase.id,
+        destination: params.destination,
+        operation_type: params.operationType,
+        hint:
+          "Las escrituras de publicación activas sólo pueden ejecutarse desde requestPublicationProgress.",
+      };
+    }
+  }
   const missing = collectPublishGateMissing(context, params.destination);
   if (missing.length > 0) {
     return {
@@ -4280,6 +5095,52 @@ async function enforcePublishGateForCase(params: {
     };
   }
   return { ok: true as const, opCase };
+}
+
+async function enforceUnggaPublishPhaseGate(
+  ctx: ToolContext,
+  caseId: string
+): Promise<
+  | { ok: true }
+  | {
+      ok: false;
+      status: string;
+      error: string;
+      phase?: string | null;
+      hint?: string;
+    }
+> {
+  const opCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
+  if (!opCase || opCase.user_id !== ctx.userId) {
+    return {
+      ok: false,
+      status: "case_not_found",
+      error: "No encontré el caso para validar la fase Ungga.",
+    };
+  }
+  const context = asRecord(opCase.context_jsonb) ?? {};
+  if (context.publication_workflow_v1 === false) {
+    return { ok: true };
+  }
+  const { publicationFromContext } = await import(
+    "../operational-cases/publication-workflow"
+  );
+  const publication = publicationFromContext(context);
+  const phase = publication.destinations.ungga.phase;
+  if (phase === "publish_pending" || phase === "publishing") {
+    return { ok: true };
+  }
+  // Legacy cases without machine state may still publish when draft exists.
+  if (!asRecord(context.publication)) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    status: "phase_blocked",
+    phase,
+    error: `publish_draft rechazado: fase Ungga actual es ${phase}; se requiere publish_pending tras preflight pass`,
+    hint: "Espera preflight condicional o resolución de publication_review_required antes de publish_draft.",
+  };
 }
 
 async function approvedListingCopyFromCase(
@@ -4332,6 +5193,7 @@ type EasyBrokerCreateListingInput = {
   lot_length?: number;
   lot_width?: number;
   covered_space?: number;
+  uncovered_space?: number;
   exclusive?: boolean | null;
   videos?: string[];
   virtual_tour?: string;
@@ -4344,7 +5206,10 @@ type EasyBrokerCreateListingInput = {
 
 type EasyBrokerUploadImagesInput = {
   listing_id: string;
-  image_paths: string[];
+  images?: PhotoUploadPair[];
+  /** @deprecated Use images pairs so path/title identity cannot drift. */
+  image_paths?: string[];
+  /** @deprecated Use images pairs so path/title identity cannot drift. */
   image_titles?: string[];
   case_id?: string;
   dry_run?: boolean;
@@ -4371,6 +5236,216 @@ class EasyBrokerApiError extends Error {
 const EASYBROKER_SIGNED_URL_TTL_SECONDS = 60 * 60 * 72;
 const EASYBROKER_MAX_IMAGE_URL_LENGTH = 255;
 
+function stripNullishProps(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const next: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (item === null || item === undefined) continue;
+    next[key] = item;
+  }
+  return next;
+}
+
+/** Omits null/undefined/"" so optional Zod fields are absent, not invalid. */
+function stripEmptyAndNullishProps(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const next: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (item === null || item === undefined) continue;
+    if (typeof item === "string" && item.trim() === "") continue;
+    if (Array.isArray(item)) {
+      const cleaned = item.filter(
+        (entry) => !(typeof entry === "string" && entry.trim() === "")
+      );
+      next[key] = cleaned;
+      continue;
+    }
+    next[key] = item;
+  }
+  return next;
+}
+
+async function enrichUnggaPublishInputFromCaseContext(
+  ctx: ToolContext,
+  input: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const caseId =
+    typeof input.case_id === "string" && input.case_id.trim()
+      ? input.case_id.trim()
+      : ctx.caseId ?? null;
+  if (!caseId) return input;
+  const opCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
+  if (!opCase || opCase.user_id !== ctx.userId) return input;
+  const context = asRecord(opCase.context_jsonb) ?? {};
+  const propertyData = asRecord(context.property_data) ?? {};
+  const approved = asRecord(context.listing_description_approved) ?? {};
+  const pricing = asRecord(context.pricing_proposal) ?? {};
+  const published = asRecord(context.published) ?? {};
+  const unggaPublished = asRecord(published.ungga) ?? {};
+  const publication = asRecord(context.publication);
+  const destinations = publication
+    ? asRecord(publication.destinations)
+    : null;
+  const unggaDest = destinations ? asRecord(destinations.ungga) : null;
+  const unggaArtifact = unggaDest ? asRecord(unggaDest.artifact) : null;
+
+  const next = { ...input };
+  const fillString = (key: string, ...candidates: unknown[]) => {
+    const current = next[key];
+    if (typeof current === "string" && current.trim()) return;
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        next[key] = candidate.trim();
+        return;
+      }
+    }
+  };
+  const fillNumber = (key: string, ...candidates: unknown[]) => {
+    if (typeof next[key] === "number" && Number.isFinite(next[key])) return;
+    for (const candidate of candidates) {
+      const n = typeof candidate === "number" ? candidate : Number(candidate);
+      if (Number.isFinite(n) && n > 0) {
+        next[key] = n;
+        return;
+      }
+    }
+  };
+
+  fillString(
+    "title",
+    approved.headline,
+    propertyData.property_title,
+    context.listing_title
+  );
+  fillString(
+    "description",
+    approved.description,
+    context.listing_description_md
+  );
+  fillString(
+    "operation",
+    propertyData.operation,
+    propertyData.operacion,
+    "sale"
+  );
+  fillString(
+    "property_type",
+    propertyData.property_type,
+    propertyData.tipo,
+    "Casa"
+  );
+  fillNumber(
+    "price",
+    pricing.salida,
+    propertyData.price,
+    propertyData.asking_price
+  );
+  fillString("currency", propertyData.currency, "MXN");
+  fillNumber(
+    "construction_m2",
+    propertyData.construction_m2,
+    propertyData.area_construida_m2,
+    propertyData.area_m2
+  );
+  fillNumber(
+    "land_m2",
+    propertyData.land_m2,
+    propertyData.lot_size,
+    propertyData.terreno_m2
+  );
+  fillNumber("bedrooms", propertyData.bedrooms, propertyData.recamaras);
+  fillNumber(
+    "bathrooms_full",
+    propertyData.bathrooms,
+    propertyData.full_bathrooms,
+    propertyData.banos
+  );
+  fillString(
+    "address",
+    propertyData.address,
+    propertyData.street,
+    propertyData.legal_address
+  );
+  fillString(
+    "ungga_property_id",
+    unggaArtifact?.ungga_property_id,
+    unggaPublished.ungga_property_id
+  );
+  fillString(
+    "draft_url",
+    unggaArtifact?.draft_url,
+    unggaPublished.draft_url
+  );
+
+  if (!Array.isArray(next.image_urls) || next.image_urls.length === 0) {
+    const manifest = Array.isArray(context.photo_manifest)
+      ? context.photo_manifest
+      : [];
+    const urls = manifest
+      .map((item) =>
+        asRecord(item) && typeof item.public_url === "string"
+          ? item.public_url
+          : null
+      )
+      .filter((url): url is string => Boolean(url));
+    if (urls.length > 0) next.image_urls = urls;
+  }
+
+  if (!asRecord(next.location)) {
+    const loc = asRecord(propertyData.location) ?? {};
+    const lat =
+      safeNumber(loc.latitude) ??
+      safeNumber(propertyData.latitude) ??
+      safeNumber(context.geocode && asRecord(context.geocode)?.latitude);
+    const lng =
+      safeNumber(loc.longitude) ??
+      safeNumber(propertyData.longitude) ??
+      safeNumber(context.geocode && asRecord(context.geocode)?.longitude);
+    if (lat != null && lng != null) {
+      next.location = { latitude: lat, longitude: lng };
+    }
+  }
+
+  next.case_id = caseId;
+
+  const terms = parseCommissionTerms(context.commission_terms);
+  const mapped = mapCollaborationToUngga(terms);
+  const destinationsForOverride = asRecord(
+    asRecord(context.publication)?.destinations
+  );
+  const unggaOverride = asRecord(
+    asRecord(destinationsForOverride?.ungga)?.commercial_override
+  );
+  if (next.exclusive === undefined && mapped.exclusive !== undefined) {
+    next.exclusive = mapped.exclusive;
+  }
+  if (
+    next.collaboration_enabled === undefined &&
+    mapped.collaboration_enabled !== undefined
+  ) {
+    next.collaboration_enabled = mapped.collaboration_enabled;
+  }
+  if (
+    next.collaboration_notes === undefined &&
+    mapped.collaboration_notes != null
+  ) {
+    next.collaboration_notes = mapped.collaboration_notes;
+  }
+  if (unggaOverride) {
+    if (typeof unggaOverride.exclusive === "boolean") {
+      next.exclusive = unggaOverride.exclusive;
+    }
+    if (typeof unggaOverride.collaboration_enabled === "boolean") {
+      next.collaboration_enabled = unggaOverride.collaboration_enabled;
+    }
+  }
+  if (mapped.warnings.length > 0) {
+    next.mapping_warnings = mapped.warnings;
+  }
+
+  return next;
+}
+
 function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
   return tool(
     async (input: EasyBrokerCreateListingInput) => {
@@ -4382,6 +5457,7 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
           ctx,
           caseId: input.case_id,
           destination: "easybroker",
+          operationType: "create_draft",
         });
         if (!gate.ok) {
           await updateToolCallStatus(ctx.db, record.id, "failed", gate);
@@ -4404,6 +5480,7 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
         return JSON.stringify(out);
       }
       let attemptedPayload: Record<string, unknown> | undefined;
+      let droppedFields: EasyBrokerDroppedField[] | undefined;
       try {
         let inputForExecution = await applyDefaultEasyBrokerAgent(ctx, input);
         if (input.case_id) {
@@ -4416,8 +5493,38 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
             };
           }
         }
-        attemptedPayload = buildEasyBrokerCreatePayload(inputForExecution);
-        const out = await createEasyBrokerListing(ctx, inputForExecution, creds, attemptedPayload);
+        // Resuelve lat/lng, dirección y atributos del caso antes de armar el
+        // payload allowlisted. El adapter es dueño del contrato EasyBroker.
+        inputForExecution = await enrichEasyBrokerCreateInputFromCaseContext(
+          ctx,
+          inputForExecution
+        );
+        const mappingWarnings = (
+          inputForExecution as EasyBrokerCreateListingInput & {
+            mapping_warnings?: Array<{
+              code: string;
+              message: string;
+              actual?: unknown;
+            }>;
+          }
+        ).mapping_warnings;
+        const catalogFeatureNames = await fetchEasyBrokerFeatureCatalogNames(creds);
+        const built = buildEasyBrokerCreatePayload(inputForExecution, {
+          catalogFeatureNames,
+        });
+        attemptedPayload = built.payload;
+        droppedFields = built.dropped_fields;
+        const out = await createEasyBrokerListing(
+          ctx,
+          inputForExecution,
+          creds,
+          built
+        );
+        if (mappingWarnings && mappingWarnings.length > 0) {
+          (out as Record<string, unknown>).mapping_warnings = mappingWarnings;
+          (out as Record<string, unknown>).share_commission =
+            inputForExecution.share_commission;
+        }
         await markEasyBrokerCredentialResult(ctx, creds, out.ok !== false, out.status);
         await updateToolCallStatus(ctx.db, record.id, out.ok === false ? "failed" : "executed", out);
         if (input.case_id && out.ok !== false) {
@@ -4457,10 +5564,12 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
             actor: "agent",
             stepKey: "package_ready",
             payload: {
-              kind: "easybroker_published",
+              kind: "easybroker_draft_created",
               destination: "easybroker",
               listing_id: out.listing_id ?? null,
               public_url: out.public_url ?? out.url ?? null,
+              remote_status:
+                typeof out.status === "string" ? out.status : "not_published",
             },
           });
         }
@@ -4475,7 +5584,13 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
           error: err instanceof Error ? err.message : String(err),
           credential_failure: credentialFailure,
           ...(apiPayload ? { easybroker_response: apiPayload } : {}),
-          ...(attemptedPayload ? { attempted_payload: attemptedPayload } : {}),
+          ...(attemptedPayload
+            ? {
+                attempted_payload: attemptedPayload,
+                payload_keys: Object.keys(attemptedPayload),
+              }
+            : {}),
+          ...(droppedFields?.length ? { dropped_fields: droppedFields } : {}),
         };
         if (credentialFailure) {
           await markEasyBrokerCredentialResult(ctx, creds, false, out.error);
@@ -4487,55 +5602,62 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
     {
       name: "easybroker_create_listing",
       description:
-        "Creates an EasyBroker property as not_published by default (write, HITL).",
-      schema: z.object({
-        title: z.string().min(1),
-        description: z.string().min(1).max(4000),
-        operation: z.enum(["sale", "rent"]),
-        property_type: z.string().min(1),
-        price: z.number().nonnegative(),
-        currency: z.string().optional(),
-        status: z
-          .enum(["published", "sold", "rented", "reserved", "suspended", "not_published"])
-          .optional(),
-        street: z.string().optional(),
-        location: z.record(z.string(), z.any()).optional(),
-        private_description: z.string().optional(),
-        agent: z.string().optional(),
-        show_prices: z.boolean().optional(),
-        bedrooms: z.number().nonnegative().optional(),
-        bathrooms: z.number().nonnegative().optional(),
-        half_bathrooms: z.number().nonnegative().optional(),
-        parking: z.number().nonnegative().optional(),
-        parking_spaces: z.number().nonnegative().optional(),
-        age: z.string().optional(),
-        floor: z.string().optional(),
-        floors: z.number().int().nonnegative().optional(),
-        expenses: z.string().optional(),
-        internal_id: z.string().optional(),
-        tags: z.array(z.string()).optional(),
-        features: z.array(z.string()).optional(),
-        share_commission: z.boolean().optional(),
-        collaboration_notes: z.string().optional(),
-        shared_commission_percentage: z.number().nullable().optional(),
-        construction_size: z.number().nonnegative().optional(),
-        lot_size: z.number().nonnegative().optional(),
-        area_m2: z.number().nonnegative().optional(),
-        lot_length: z.number().nonnegative().optional(),
-        lot_width: z.number().nonnegative().optional(),
-        covered_space: z.number().nonnegative().optional(),
-        exclusive: z.boolean().nullable().optional(),
-        videos: z.array(z.string()).optional(),
-        virtual_tour: z.string().optional(),
-        show_exact_location: z.boolean().optional(),
-        custom_fields: z.record(z.string(), z.any()).optional(),
-        custom_fields_json: z
-          .string()
-          .optional()
-          .describe("Optional JSON string with tenant-specific EasyBroker fields."),
-        case_id: z.string().optional(),
-        dry_run: z.boolean().optional(),
-      }),
+        "Creates an EasyBroker property as not_published by default (write, HITL). Prefer case_id so the adapter fills title/description/coords/attributes from the case. Do not invent custom_fields, free-form features, empty strings, or latitude/longitude=0; the adapter allowlists and sanitizes the EasyBroker payload.",
+      schema: z.preprocess(
+        stripNullishProps,
+        z.object({
+          title: z.string().min(1),
+          description: z.string().min(1).max(4000),
+          operation: z.enum(["sale", "rent"]),
+          property_type: z.string().min(1),
+          price: z.number().nonnegative(),
+          currency: z.string().optional(),
+          status: z
+            .enum(["published", "sold", "rented", "reserved", "suspended", "not_published"])
+            .optional(),
+          street: z.string().optional(),
+          location: z.record(z.string(), z.any()).optional(),
+          private_description: z.string().optional(),
+          agent: z.string().optional(),
+          show_prices: z.boolean().optional(),
+          bedrooms: z.number().nonnegative().optional(),
+          bathrooms: z.number().nonnegative().optional(),
+          half_bathrooms: z.number().nonnegative().optional(),
+          parking: z.number().nonnegative().optional(),
+          parking_spaces: z.number().nonnegative().optional(),
+          age: z.string().optional(),
+          floor: z.string().optional(),
+          floors: z.number().int().nonnegative().optional(),
+          expenses: z.string().optional(),
+          internal_id: z.string().optional(),
+          tags: z.array(z.string()).optional(),
+          features: z.array(z.string()).optional(),
+          share_commission: z.boolean().optional(),
+          collaboration_notes: z.string().optional(),
+          shared_commission_percentage: z.number().nullable().optional(),
+          construction_size: z.number().nonnegative().optional(),
+          lot_size: z.number().nonnegative().optional(),
+          area_m2: z.number().nonnegative().optional(),
+          lot_length: z.number().nonnegative().optional(),
+          lot_width: z.number().nonnegative().optional(),
+          covered_space: z.number().nonnegative().optional(),
+          uncovered_space: z.number().nonnegative().optional(),
+          exclusive: z.boolean().nullable().optional(),
+          videos: z.array(z.string()).optional(),
+          virtual_tour: z.string().optional(),
+          show_exact_location: z.boolean().optional(),
+          custom_fields: z
+            .record(z.string(), z.any())
+            .optional()
+            .describe("Ignored. Do not use; the adapter owns the EasyBroker contract."),
+          custom_fields_json: z
+            .string()
+            .optional()
+            .describe("Ignored. Do not use; the adapter owns the EasyBroker contract."),
+          case_id: z.string().optional(),
+          dry_run: z.boolean().optional(),
+        })
+      ),
     }
   );
 }
@@ -4551,6 +5673,7 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
           ctx,
           caseId: input.case_id,
           destination: "easybroker",
+          operationType: "process_media",
         });
         if (!gate.ok) {
           await updateToolCallStatus(ctx.db, record.id, "failed", gate);
@@ -4568,10 +5691,89 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
         return JSON.stringify(out);
       }
       try {
-        const out = await uploadEasyBrokerImages(ctx, input, creds);
+        let uploadInput = { ...input };
+        if (input.case_id) {
+          const opCase = await getOperationalCase(ctx.db, input.case_id).catch(
+            () => null
+          );
+          const context = asRecord(opCase?.context_jsonb) ?? {};
+          const manifest = buildPhotoManifestFromRawPhotos(
+            context.raw_photos,
+            parsePhotoManifest(context.photo_manifest)
+          );
+          if (manifest.length > 0) {
+            const publicationRequirements =
+              asRecord(context.publication_requirements) ?? {};
+            const watermarkRequired =
+              context.watermark_required === true ||
+              context.require_watermark === true ||
+              publicationRequirements.watermark === true ||
+              Array.isArray(context.watermarked_photos) ||
+              Array.isArray(context.watermark_missing);
+            const missingWatermarks = watermarkRequired
+              ? manifest
+                  .filter((entry) => !entry.watermarked_path)
+                  .map((entry) => entry.source_path)
+              : [];
+            if (missingWatermarks.length > 0) {
+              throw new Error(
+                `Watermark requerido pero faltan ${missingWatermarks.length} fotos: ${missingWatermarks.join(", ")}`
+              );
+            }
+            uploadInput = {
+              ...uploadInput,
+              images: photoUploadPairsFromManifest(manifest),
+              image_paths: undefined,
+              image_titles: undefined,
+            };
+          }
+        }
+        const out = await uploadEasyBrokerImages(ctx, uploadInput, creds);
         await markEasyBrokerCredentialResult(ctx, creds, out.ok !== false, out.status);
         await updateToolCallStatus(ctx.db, record.id, out.ok === false ? "failed" : "executed", out);
         if (input.case_id && out.ok !== false) {
+          const current = await getOperationalCase(ctx.db, input.case_id).catch(
+            () => null
+          );
+          const currentContext = asRecord(current?.context_jsonb) ?? {};
+          const currentManifest = buildPhotoManifestFromRawPhotos(
+            currentContext.raw_photos,
+            parsePhotoManifest(currentContext.photo_manifest)
+          );
+          const publishedImages = Array.isArray(out.images)
+            ? out.images
+                .map((item) => asRecord(item))
+                .filter((item): item is Record<string, unknown> => Boolean(item))
+                .flatMap((item) =>
+                  typeof item.source_path === "string" &&
+                  typeof item.url === "string"
+                    ? [
+                        {
+                          source_path: item.source_path,
+                          public_url: item.url,
+                          title:
+                            typeof item.title === "string" ? item.title : null,
+                        },
+                      ]
+                    : []
+                )
+            : [];
+          await persistCaseContextPatch(ctx, input.case_id, {
+            photo_manifest: applyPublicUrlsToManifest(
+              currentManifest,
+              publishedImages,
+              "easybroker"
+            ),
+          });
+          await persistPublishedDestination(ctx, input.case_id, "easybroker", {
+            images_uploaded: true,
+            images_status:
+              typeof out.images_status === "string"
+                ? out.images_status
+                : "submitted",
+            image_count: typeof out.count === "number" ? out.count : null,
+            listing_id: input.listing_id,
+          });
           await insertOperationalCaseEvent(ctx.db, {
             caseId: input.case_id,
             eventType: "state_changed",
@@ -4603,11 +5805,130 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
     {
       name: "easybroker_upload_images",
       description:
-        "Replaces an EasyBroker property's image array using HTTP(S) image URLs (write, HITL).",
+        "Replaces an EasyBroker property's image array using identity-safe {source_path, upload_path, title} pairs (write, HITL). Prefer case_id to derive all pairs from photo_manifest.",
       schema: z.object({
         listing_id: z.string().min(1),
-        image_paths: z.array(z.string().min(1)).min(1).max(50),
+        images: z
+          .array(
+            z.object({
+              source_path: z.string().min(1),
+              upload_path: z.string().min(1),
+              title: z.string().nullable(),
+            })
+          )
+          .min(1)
+          .max(50)
+          .optional(),
+        image_paths: z.array(z.string().min(1)).min(1).max(50).optional(),
         image_titles: z.array(z.string()).optional(),
+        case_id: z.string().optional(),
+        dry_run: z.boolean().optional(),
+      }),
+    }
+  );
+}
+
+function makeEasyBrokerPublishListingTool(ctx: ToolContext) {
+  return tool(
+    async (input: {
+      listing_id: string;
+      case_id?: string;
+      dry_run?: boolean;
+    }) => {
+      const record = await createTrackedToolCall(
+        ctx,
+        "easybroker_publish_listing",
+        input as unknown as Record<string, unknown>,
+        true
+      );
+      if (input.case_id) {
+        const gate = await enforcePublishGateForCase({
+          ctx,
+          caseId: input.case_id,
+          destination: "easybroker",
+          operationType: "publish",
+        });
+        if (!gate.ok) {
+          await updateToolCallStatus(ctx.db, record.id, "failed", gate);
+          return JSON.stringify(gate);
+        }
+      }
+      const creds = await resolveEasyBrokerCredentials(ctx);
+      if (!creds) {
+        const out = {
+          ok: false,
+          status: "not_configured",
+          hint:
+            "EasyBroker no está conectado para esta cuenta. Conéctalo desde Ajustes → Cuentas externas.",
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+      try {
+        if (input.dry_run) {
+          const out = {
+            ok: true,
+            status: "dry_run",
+            listing_id: input.listing_id,
+            payload: { status: "published" },
+            hint: "Dry-run: no se envió PATCH a EasyBroker.",
+          };
+          await updateToolCallStatus(ctx.db, record.id, "executed", out);
+          return JSON.stringify(out);
+        }
+        const response = await easyBrokerApiRequest(
+          creds,
+          `/v1/properties/${encodeURIComponent(input.listing_id)}`,
+          {
+            method: "PATCH",
+            body: { status: "published" },
+          }
+        );
+        const out = {
+          ok: true,
+          status: "published",
+          listing_id: input.listing_id,
+          remote_status: "published",
+          raw: response,
+          credential_source: creds.source,
+        };
+        await markEasyBrokerCredentialResult(ctx, creds, true, "published");
+        await updateToolCallStatus(ctx.db, record.id, "executed", out);
+        if (input.case_id) {
+          await persistPublishedDestination(ctx, input.case_id, "easybroker", {
+            listing_id: input.listing_id,
+            status: "published",
+            remote_status: "published",
+          });
+          await insertOperationalCaseEvent(ctx.db, {
+            caseId: input.case_id,
+            eventType: "step_completed",
+            actor: "agent",
+            stepKey: "package_ready",
+            payload: {
+              kind: "easybroker_status_published",
+              destination: "easybroker",
+              listing_id: input.listing_id,
+            },
+          });
+        }
+        return JSON.stringify(out);
+      } catch (err) {
+        const out = {
+          ok: false,
+          status: "failed",
+          error: err instanceof Error ? err.message : String(err),
+        };
+        await updateToolCallStatus(ctx.db, record.id, "failed", out);
+        return JSON.stringify(out);
+      }
+    },
+    {
+      name: "easybroker_publish_listing",
+      description:
+        "Sets an existing EasyBroker listing status to published after draft creation, image upload and conditional preflight pass. Prefer case_id + listing_id from context.published.easybroker.",
+      schema: z.object({
+        listing_id: z.string().min(1),
         case_id: z.string().optional(),
         dry_run: z.boolean().optional(),
       }),
@@ -5832,29 +7153,492 @@ function cleanStringOrNull(value: unknown) {
   return cleanString(value) ?? null;
 }
 
+function isEasyBrokerAgentEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 async function applyDefaultEasyBrokerAgent(
   ctx: ToolContext,
   input: EasyBrokerCreateListingInput
 ): Promise<EasyBrokerCreateListingInput> {
-  if (cleanString(input.agent)) return input;
+  const current = cleanString(input.agent);
+  if (current && isEasyBrokerAgentEmail(current)) return input;
   const webCreds = await resolveEasyBrokerWebCredentials(ctx);
   const agentEmail = cleanString(webCreds?.email);
-  return agentEmail ? { ...input, agent: agentEmail } : input;
+  if (agentEmail && isEasyBrokerAgentEmail(agentEmail)) {
+    return { ...input, agent: agentEmail };
+  }
+  if (current && !isEasyBrokerAgentEmail(current)) {
+    const { agent: _droppedAgent, ...rest } = input;
+    return rest;
+  }
+  return input;
+}
+
+/**
+ * Completa street/location (incl. lat/lng) desde property_data / zone_context
+ * sin pisar valores usables que el caller ya mandó.
+ */
+export function mergeEasyBrokerCreateInputFromCaseSources(
+  input: EasyBrokerCreateListingInput,
+  sources: {
+    propertyData?: Record<string, unknown> | null;
+    zoneContext?: Record<string, unknown> | null;
+  }
+): EasyBrokerCreateListingInput {
+  const propertyData = asRecord(sources.propertyData) ?? {};
+  const address = asRecord(propertyData.address) ?? {};
+  const zoneContext = asRecord(sources.zoneContext) ?? {};
+  const zoneCoordinates = asRecord(zoneContext.coordinates) ?? {};
+  const location: EasyBrokerListingLocationInput = {
+    ...(asRecord(input.location) ?? {}),
+  };
+
+  const inputLat = safeNumber(location.latitude);
+  const inputLon = safeNumber(location.longitude);
+  if (isUsableLatLng(inputLat, inputLon)) {
+    location.latitude = inputLat as number;
+    location.longitude = inputLon as number;
+  } else {
+    const coordinateCandidates: Array<[unknown, unknown]> = [
+      [address.latitude, address.longitude],
+      [propertyData.latitude, propertyData.longitude],
+      [propertyData.lat, propertyData.lng ?? propertyData.lon],
+      [zoneContext.latitude, zoneContext.longitude],
+      [zoneCoordinates.latitude, zoneCoordinates.longitude],
+    ];
+    for (const [latRaw, lonRaw] of coordinateCandidates) {
+      const lat = safeNumber(latRaw);
+      const lon = safeNumber(lonRaw);
+      if (isUsableLatLng(lat, lon)) {
+        location.latitude = lat as number;
+        location.longitude = lon as number;
+        break;
+      }
+    }
+  }
+
+  const stuffedStreet = cleanString(input.street);
+  const stuffedLooksFull = Boolean(
+    stuffedStreet && (stuffedStreet.match(/,/g)?.length ?? 0) >= 2
+  );
+  const parsedFromStreet = stuffedStreet
+    ? parseMexicanAddressParts(stuffedStreet)
+    : {};
+  const parsedFromLocationAddress = cleanString(location.address)
+    ? parseMexicanAddressParts(String(location.address))
+    : {};
+  const parsedFromTitle = cleanString(input.title)
+    ? parseLocationHintFromListingTitle(input.title)
+    : {};
+
+  const fillLocationField = (key: string, ...values: unknown[]) => {
+    if (cleanString(location[key])) return;
+    const found = firstNonEmptyComparableString(...values);
+    if (found) location[key] = found;
+  };
+
+  fillLocationField(
+    "street",
+    location.street,
+    address.street,
+    propertyData.street,
+    propertyData.calle,
+    stuffedLooksFull ? parsedFromStreet.street : stuffedStreet,
+    parsedFromLocationAddress.street
+  );
+  fillLocationField(
+    "exterior_number",
+    location.exterior_number,
+    address.exterior_number,
+    address.numero_exterior,
+    propertyData.exterior_number,
+    parsedFromStreet.exterior_number,
+    parsedFromLocationAddress.exterior_number
+  );
+  fillLocationField(
+    "neighborhood",
+    location.neighborhood,
+    location.city_area,
+    address.neighborhood,
+    address.colonia,
+    propertyData.neighborhood,
+    propertyData.colonia,
+    parsedFromStreet.neighborhood,
+    parsedFromLocationAddress.neighborhood,
+    parsedFromTitle.neighborhood
+  );
+  fillLocationField(
+    "city",
+    location.city,
+    location.municipality,
+    address.municipality,
+    address.city,
+    propertyData.municipality,
+    propertyData.city,
+    parsedFromStreet.city,
+    parsedFromLocationAddress.city,
+    parsedFromTitle.city
+  );
+  fillLocationField(
+    "municipality",
+    location.municipality,
+    location.city,
+    address.municipality,
+    address.city,
+    propertyData.municipality,
+    propertyData.city,
+    parsedFromStreet.city,
+    parsedFromLocationAddress.city,
+    parsedFromTitle.city
+  );
+  fillLocationField(
+    "state",
+    location.state,
+    location.region,
+    address.state,
+    propertyData.state,
+    parsedFromStreet.state,
+    parsedFromLocationAddress.state
+  );
+  fillLocationField(
+    "country",
+    location.country,
+    address.country,
+    propertyData.country,
+    "MX"
+  );
+  fillLocationField(
+    "postal_code",
+    location.postal_code,
+    address.postal_code,
+    address.geocoded_postal_code,
+    propertyData.postal_code
+  );
+  fillLocationField(
+    "name",
+    location.name,
+    location.full_name,
+    buildEasyBrokerLocationName(location)
+  );
+
+  const street =
+    cleanString(
+      stuffedLooksFull
+        ? address.street ?? parsedFromStreet.street ?? location.street
+        : input.street
+    ) ??
+    cleanString(location.street) ??
+    firstNonEmptyComparableString(
+      address.street,
+      propertyData.street,
+      propertyData.calle,
+      parsedFromStreet.street
+    );
+
+  let merged: EasyBrokerCreateListingInput = {
+    ...input,
+    ...(street ? { street } : {}),
+    location: Object.keys(location).length > 0 ? location : input.location,
+  };
+
+  merged = fillEasyBrokerCreateInputFromPropertyData(merged, propertyData, zoneContext);
+  return merged;
+}
+
+function fillEasyBrokerCreateInputFromPropertyData(
+  input: EasyBrokerCreateListingInput,
+  propertyData: Record<string, unknown>,
+  zoneContext: Record<string, unknown> = {}
+): EasyBrokerCreateListingInput {
+  const next: EasyBrokerCreateListingInput = { ...input };
+  const address = asRecord(propertyData.address) ?? {};
+  const photoAnalysis = asRecord(propertyData.photo_analysis) ?? {};
+
+  const fillNumber = (
+    key:
+      | "bedrooms"
+      | "bathrooms"
+      | "half_bathrooms"
+      | "parking_spaces"
+      | "floors"
+      | "construction_size"
+      | "lot_size"
+      | "uncovered_space",
+    ...values: unknown[]
+  ) => {
+    if (typeof next[key] === "number" && Number.isFinite(next[key])) return;
+    for (const value of values) {
+      const parsed = safeNumber(value);
+      if (parsed != null && parsed >= 0) {
+        next[key] = parsed;
+        return;
+      }
+    }
+  };
+
+  fillNumber(
+    "bedrooms",
+    propertyData.bedrooms,
+    propertyData.recamaras,
+    propertyData.habitaciones
+  );
+  fillNumber(
+    "bathrooms",
+    propertyData.bathrooms,
+    propertyData.banos,
+    propertyData.baños
+  );
+  fillNumber("half_bathrooms", propertyData.half_bathrooms, propertyData.medios_banos);
+  fillNumber(
+    "parking_spaces",
+    next.parking,
+    propertyData.parking_spaces,
+    propertyData.parking,
+    propertyData.estacionamientos
+  );
+  fillNumber("floors", propertyData.floors, propertyData.niveles, propertyData.pisos);
+  fillNumber(
+    "construction_size",
+    next.area_m2,
+    propertyData.construction_size,
+    propertyData.area_construida_m2,
+    propertyData.construction_m2,
+    propertyData.built_area_m2
+  );
+  fillNumber(
+    "lot_size",
+    propertyData.lot_size,
+    propertyData.area_terreno_m2,
+    propertyData.land_m2,
+    propertyData.area_m2
+  );
+  fillNumber(
+    "uncovered_space",
+    propertyData.uncovered_space,
+    propertyData.area_descubierta_m2
+  );
+
+  if (!nonEmptyStringArray(next.tags)) {
+    const tagCandidates = [
+      cleanString(asRecord(next.location)?.neighborhood),
+      cleanString(asRecord(next.location)?.city),
+      cleanString(asRecord(next.location)?.municipality),
+      cleanString(address.neighborhood ?? address.colonia),
+      cleanString(zoneContext.neighborhood),
+      cleanString(propertyData.property_type),
+    ].filter((value): value is string => Boolean(value));
+    if (tagCandidates.length) next.tags = [...new Set(tagCandidates)];
+  }
+
+  const existingFeatures = nonEmptyStringArray(next.features) ?? [];
+  const photoFeatures = [
+    ...ensureStringArray(photoAnalysis.visible_features, 24),
+    ...flattenFeaturesBySpace(parseFeaturesBySpace(photoAnalysis.features_by_space)),
+  ];
+  const mergedFeatures = [...new Set([...existingFeatures, ...photoFeatures])];
+  if (mergedFeatures.length) next.features = mergedFeatures;
+
+  return next;
+}
+
+async function enrichEasyBrokerCreateInputFromCaseContext(
+  ctx: ToolContext,
+  input: EasyBrokerCreateListingInput
+): Promise<EasyBrokerCreateListingInput> {
+  const caseId =
+    (typeof input.case_id === "string" && input.case_id.trim()) ||
+    (typeof ctx.caseId === "string" && ctx.caseId.trim()) ||
+    "";
+  if (!caseId) return input;
+
+  const opCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
+  if (!opCase || opCase.user_id !== ctx.userId) return input;
+
+  const context = asRecord(opCase.context_jsonb) ?? {};
+  const propertyData = asRecord(context.property_data) ?? {};
+  const address = asRecord(propertyData.address) ?? {};
+  let enriched = mergeEasyBrokerCreateInputFromCaseSources(
+    { ...input, case_id: caseId },
+    {
+      propertyData,
+      zoneContext: asRecord(context.zone_context),
+    }
+  );
+
+  // Deterministic internal_id for idempotent create/reconcile (max 15 chars).
+  if (!sanitizeEasyBrokerInternalId(enriched.internal_id)) {
+    const compact = caseId.replace(/[^A-Za-z0-9]/g, "").slice(0, 15);
+    const derived = sanitizeEasyBrokerInternalId(compact);
+    if (derived) enriched.internal_id = derived;
+  }
+
+  // Commercial mapping from neutral commission_terms (never mutates canon).
+  const destinations = asRecord(asRecord(context.publication)?.destinations);
+  const ebDest = asRecord(destinations?.easybroker);
+  const commercialOverride = asRecord(ebDest?.commercial_override);
+  const terms = parseCommissionTerms(context.commission_terms);
+  const mapped = mapCollaborationToEasyBroker(terms);
+  if (enriched.share_commission === undefined && mapped.share_commission !== undefined) {
+    enriched.share_commission = mapped.share_commission;
+  }
+  if (
+    enriched.shared_commission_percentage === undefined &&
+    mapped.shared_commission_percentage !== undefined
+  ) {
+    enriched.shared_commission_percentage = mapped.shared_commission_percentage;
+  }
+  if (
+    !cleanString(enriched.collaboration_notes) &&
+    mapped.collaboration_notes
+  ) {
+    enriched.collaboration_notes = mapped.collaboration_notes;
+  }
+  if (enriched.exclusive === undefined && terms.exclusive != null) {
+    enriched.exclusive = terms.exclusive;
+  }
+  // Explicit destination override (auditable); does not alter commission_terms.
+  if (commercialOverride) {
+    if (typeof commercialOverride.share_commission === "boolean") {
+      enriched.share_commission = commercialOverride.share_commission;
+    }
+    if (
+      commercialOverride.shared_commission_percentage === null ||
+      commercialOverride.shared_commission_percentage === 50
+    ) {
+      enriched.shared_commission_percentage =
+        commercialOverride.shared_commission_percentage as number | null;
+    }
+  }
+  if (mapped.warnings.length > 0) {
+    (enriched as EasyBrokerCreateListingInput & {
+      mapping_warnings?: Array<{ code: string; message: string; actual?: unknown }>;
+    }).mapping_warnings = mapped.warnings;
+  }
+
+  const location = asRecord(enriched.location) ?? {};
+  if (
+    isUsableLatLng(safeNumber(location.latitude), safeNumber(location.longitude))
+  ) {
+    return enriched;
+  }
+
+  const geocodeInput = {
+    street:
+      cleanString(enriched.street) ??
+      cleanString(location.street) ??
+      firstNonEmptyComparableString(address.street, propertyData.street),
+    exterior_number:
+      cleanString(location.exterior_number) ??
+      firstNonEmptyComparableString(
+        address.exterior_number,
+        address.numero_exterior,
+        propertyData.exterior_number
+      ),
+    neighborhood:
+      cleanString(location.neighborhood) ??
+      cleanString(location.city_area) ??
+      firstNonEmptyComparableString(
+        address.neighborhood,
+        address.colonia,
+        propertyData.neighborhood
+      ),
+    municipality:
+      cleanString(location.city) ??
+      cleanString(location.municipality) ??
+      firstNonEmptyComparableString(
+        address.municipality,
+        address.city,
+        propertyData.municipality,
+        propertyData.city
+      ),
+    state:
+      cleanString(location.state) ??
+      cleanString(location.region) ??
+      firstNonEmptyComparableString(address.state, propertyData.state),
+    postal_code:
+      cleanString(location.postal_code) ??
+      firstNonEmptyComparableString(
+        address.postal_code,
+        address.geocoded_postal_code,
+        propertyData.postal_code
+      ),
+    country:
+      cleanString(location.country) ??
+      firstNonEmptyComparableString(address.country, propertyData.country) ??
+      "MX",
+  };
+  const filledComponents = [
+    geocodeInput.street,
+    geocodeInput.neighborhood,
+    geocodeInput.municipality,
+    geocodeInput.state,
+    geocodeInput.postal_code,
+  ].filter((item) => typeof item === "string" && item.trim().length > 0).length;
+  if (filledComponents < 2) return enriched;
+
+  try {
+    const geocodeOut = await geocodePropertyAddress(geocodeInput);
+    if (
+      !geocodeOut.ok ||
+      geocodeOut.status !== "ok" ||
+      !isUnequivocalGeocodeForAvaclick(geocodeOut) ||
+      typeof geocodeOut.latitude !== "number" ||
+      typeof geocodeOut.longitude !== "number" ||
+      !isUsableLatLng(geocodeOut.latitude, geocodeOut.longitude)
+    ) {
+      return enriched;
+    }
+
+    enriched = {
+      ...enriched,
+      location: {
+        ...(asRecord(enriched.location) ?? {}),
+        latitude: geocodeOut.latitude,
+        longitude: geocodeOut.longitude,
+      },
+    };
+
+    // Persist when we can attribute the case (ctx.caseId or input.case_id).
+    if (geocodeOut.confidence === "high") {
+      const persistCtx =
+        ctx.caseId === caseId ? ctx : { ...ctx, caseId };
+      await persistGeocodeResultToCaseContext(persistCtx, geocodeInput, {
+        latitude: geocodeOut.latitude,
+        longitude: geocodeOut.longitude,
+        formatted_address: geocodeOut.formatted_address,
+        provider: geocodeOut.provider,
+        confidence: geocodeOut.confidence,
+        candidates: geocodeOut.candidates,
+      });
+    }
+  } catch (err) {
+    console.warn(
+      "[realestate] easybroker_create_listing: geocode enrichment failed:",
+      err
+    );
+  }
+
+  return enriched;
 }
 
 async function createEasyBrokerListing(
   ctx: ToolContext,
   input: EasyBrokerCreateListingInput,
   creds: EasyBrokerCredentials,
-  prebuiltPayload?: Record<string, unknown>
+  prebuilt?: EasyBrokerCreatePayloadBuildResult
 ) {
-  const payload = prebuiltPayload ?? buildEasyBrokerCreatePayload(input);
+  const built =
+    prebuilt ??
+    buildEasyBrokerCreatePayload(input, { catalogFeatureNames: null });
+  const payload = built.payload;
   if (input.dry_run) {
     return {
       ok: true,
       status: "dry_run",
       credential_source: creds.source,
       payload,
+      dropped_fields: built.dropped_fields,
       hint: "Dry-run local: no se envió POST /v1/properties a EasyBroker.",
     };
   }
@@ -5883,6 +7667,7 @@ async function createEasyBrokerListing(
     easybroker_status: stringFromPayload(response.payload, ["status"]),
     request_status: payload.status,
     payload_sent: payload,
+    dropped_fields: built.dropped_fields,
     raw: truncatePayload(response.payload),
   };
 }
@@ -5920,12 +7705,30 @@ async function uploadEasyBrokerImages(
       body: payload,
     }
   );
+
+  let remoteImageCount: number | null = images.length;
+  let imagesStatus: "submitted" | "verified" = "submitted";
+  try {
+    const verified = await pollEasyBrokerRemoteImageCount(
+      creds,
+      input.listing_id,
+      images.length
+    );
+    if (verified != null) {
+      remoteImageCount = verified;
+      if (verified >= images.length) imagesStatus = "verified";
+    }
+  } catch {
+    // keep submitted; runner will wait_remote_media
+  }
+
   return {
     ok: true,
     status: "images_submitted",
     credential_source: creds.source,
     listing_id: input.listing_id,
-    count: images.length,
+    count: remoteImageCount ?? images.length,
+    images_status: imagesStatus,
     images,
     caveat:
       "EasyBroker procesa imágenes de forma asíncrona. En PATCH, el arreglo images reemplaza las imágenes existentes de la propiedad.",
@@ -5933,24 +7736,147 @@ async function uploadEasyBrokerImages(
   };
 }
 
-function buildEasyBrokerCreatePayload(input: EasyBrokerCreateListingInput) {
+async function pollEasyBrokerRemoteImageCount(
+  creds: EasyBrokerCredentials,
+  listingId: string,
+  expected: number
+): Promise<number | null> {
+  const delays = [0, 1500, 3000];
+  let lastCount: number | null = null;
+  for (const delay of delays) {
+    if (delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    const response = await easyBrokerApiRequest(
+      creds,
+      `/v1/properties/${encodeURIComponent(listingId)}`,
+      { method: "GET" }
+    );
+    const payload = asRecord(response.payload) ?? {};
+    const images = Array.isArray(payload.images) ? payload.images : null;
+    if (images) {
+      lastCount = images.length;
+      if (images.length >= expected) return images.length;
+    }
+  }
+  return lastCount;
+}
+
+export type EasyBrokerDroppedField = {
+  field: string;
+  reason: string;
+  value?: unknown;
+};
+
+export type EasyBrokerCreatePayloadBuildResult = {
+  payload: Record<string, unknown>;
+  dropped_fields: EasyBrokerDroppedField[];
+};
+
+/** OpenAPI PropertyBody top-level keys permitted on POST /v1/properties. */
+export const EASYBROKER_CREATE_TOP_LEVEL_ALLOWLIST = [
+  "property_type",
+  "title",
+  "description",
+  "status",
+  "private_description",
+  "operations",
+  "agent",
+  "show_prices",
+  "bedrooms",
+  "bathrooms",
+  "half_bathrooms",
+  "parking_spaces",
+  "age",
+  "floor",
+  "floors",
+  "expenses",
+  "internal_id",
+  "location",
+  "tags",
+  "features",
+  "share_commission",
+  "collaboration_notes",
+  "images",
+  "videos",
+  "virtual_tour",
+  "show_exact_location",
+  "construction_size",
+  "lot_size",
+  "lot_length",
+  "lot_width",
+  "covered_space",
+  "uncovered_space",
+  "exclusive",
+  "shared_commission_percentage",
+] as const;
+
+/** OpenAPI PropertyLocationBody keys permitted on create. */
+export const EASYBROKER_CREATE_LOCATION_ALLOWLIST = [
+  "name",
+  "street",
+  "exterior_number",
+  "interior_number",
+  "cross_street",
+  "postal_code",
+  "latitude",
+  "longitude",
+] as const;
+
+const EASYBROKER_FEATURE_CATALOG_TTL_MS = 10 * 60 * 1000;
+const easyBrokerFeatureCatalogCache = new Map<
+  string,
+  { names: string[]; fetchedAt: number }
+>();
+
+/**
+ * Builds an allowlisted EasyBroker create payload. Never spreads custom_fields.
+ * Features are included only when they match the account catalog (exact/normalized).
+ */
+export function buildEasyBrokerCreatePayload(
+  input: EasyBrokerCreateListingInput,
+  options: { catalogFeatureNames?: string[] | null } = {}
+): EasyBrokerCreatePayloadBuildResult {
+  const dropped_fields: EasyBrokerDroppedField[] = [];
+  const drop = (field: string, reason: string, value?: unknown) => {
+    dropped_fields.push({ field, reason, ...(value !== undefined ? { value } : {}) });
+  };
+
   const customFields = parseEasyBrokerCustomFields(input);
-  const location = input.location ?? {};
-  const street =
-    cleanString(input.street) ??
+  for (const [key, value] of Object.entries(customFields)) {
+    drop(`custom_fields.${key}`, "custom_fields_passthrough_disabled", value);
+  }
+  if (input.covered_space !== undefined) {
+    drop("covered_space", "not_available_in_mexico", input.covered_space);
+  }
+
+  // Defensa en profundidad: aunque el enrich del caso no haya corrido, deriva
+  // colonia/ciudad/estado desde street/title antes de exigir location.name.
+  const normalized = mergeEasyBrokerCreateInputFromCaseSources(input, {});
+  const location = normalized.location ?? {};
+  const streetRaw =
+    cleanString(normalized.street) ??
     cleanString(location.street) ??
-    cleanString(location.address);
-  if (!street) {
+    cleanString(location.address) ??
+    cleanString(input.street);
+  if (!streetRaw) {
     throw new Error(
       "easybroker_create_listing requiere `street` o `location.street` para crear la propiedad."
     );
   }
-  if (!input.location || Object.keys(input.location).length === 0) {
+  if (!normalized.location || Object.keys(normalized.location).length === 0) {
     throw new Error(
       "easybroker_create_listing requiere `location` con la ubicación registrada/compatible con EasyBroker."
     );
   }
-  const easyBrokerLocation = buildEasyBrokerLocationPayload(location, street);
+  const street = sanitizeEasyBrokerStreet(streetRaw, location);
+  if (street !== streetRaw) {
+    drop("street", "normalized_full_address_to_street", streetRaw);
+  }
+
+  const { payload: easyBrokerLocation, dropped: locationDropped } =
+    buildEasyBrokerLocationPayload(location, street);
+  dropped_fields.push(...locationDropped);
   if (
     easyBrokerLocation.latitude === undefined ||
     easyBrokerLocation.longitude === undefined
@@ -5959,7 +7885,12 @@ function buildEasyBrokerCreatePayload(input: EasyBrokerCreateListingInput) {
       "easybroker_create_listing requiere `location.latitude` y `location.longitude` para que EasyBroker geolocalice la propiedad. Alternativa futura: integrar lookup de city_id/administrative_division_id vía /v1/locations."
     );
   }
-  // EasyBroker's create docs and read responses use `rental` for long-term rentals.
+  if (!cleanString(easyBrokerLocation.name)) {
+    throw new Error(
+      "easybroker_create_listing requiere `location.name` (p. ej. \"Colonia, Ciudad, Estado\") compatible con /v1/locations."
+    );
+  }
+
   const operationTypeMap: Record<string, string> = {
     sale: "sale",
     rent: "rental",
@@ -5967,8 +7898,8 @@ function buildEasyBrokerCreatePayload(input: EasyBrokerCreateListingInput) {
     temporary_rental: "temporary_rental",
   };
   const operationType = operationTypeMap[input.operation] ?? input.operation;
+
   const payload: Record<string, unknown> = {
-    ...customFields,
     property_type: input.property_type,
     title: input.title,
     description: input.description.slice(0, 4000),
@@ -5984,8 +7915,16 @@ function buildEasyBrokerCreatePayload(input: EasyBrokerCreateListingInput) {
       },
     ],
   };
-  setIfPresent(payload, "private_description", cleanString(input.private_description));
-  setIfPresent(payload, "agent", cleanString(input.agent));
+
+  setIfPresent(payload, "private_description", cleanString(normalized.private_description ?? input.private_description));
+  const agent = cleanString(normalized.agent ?? input.agent);
+  if (agent) {
+    if (isEasyBrokerAgentEmail(agent)) {
+      payload.agent = agent;
+    } else {
+      drop("agent", "must_be_easybroker_account_email", agent);
+    }
+  }
   setIfPresent(payload, "show_prices", input.show_prices);
   setIfPresent(payload, "bedrooms", integerOrUndefined(input.bedrooms));
   setIfPresent(payload, "bathrooms", integerOrUndefined(input.bathrooms));
@@ -5995,43 +7934,337 @@ function buildEasyBrokerCreatePayload(input: EasyBrokerCreateListingInput) {
     "parking_spaces",
     integerOrUndefined(input.parking_spaces ?? input.parking)
   );
-  setIfPresent(payload, "age", cleanString(input.age));
-  setIfPresent(payload, "floor", cleanString(input.floor));
-  setIfPresent(payload, "floors", integerOrUndefined(input.floors));
-  setIfPresent(payload, "expenses", cleanString(input.expenses));
-  setIfPresent(payload, "internal_id", cleanString(input.internal_id));
+
+  const age = sanitizeEasyBrokerAge(input.age);
+  if (age) payload.age = age;
+  else if (cleanString(input.age)) drop("age", "invalid_age_value", input.age);
+
+  const floor = cleanEasyBrokerOptionalString(input.floor);
+  if (floor) payload.floor = floor;
+  else if (cleanString(input.floor)) drop("floor", "placeholder_or_empty", input.floor);
+
+  setIfPresent(payload, "floors", positiveIntegerOrUndefined(input.floors));
+
+  const expenses = cleanEasyBrokerOptionalString(input.expenses);
+  if (expenses) payload.expenses = expenses;
+  else if (cleanString(input.expenses)) {
+    drop("expenses", "placeholder_or_empty", input.expenses);
+  }
+
+  const internalIdRaw = cleanString(input.internal_id);
+  if (internalIdRaw) {
+    const internalId = sanitizeEasyBrokerInternalId(internalIdRaw);
+    if (internalId) payload.internal_id = internalId;
+    else drop("internal_id", "invalid_or_exceeds_max_length_15", internalIdRaw);
+  }
   setIfPresent(payload, "tags", nonEmptyStringArray(input.tags));
-  // `features` must match EasyBroker's feature catalog exactly; omit from the
-  // generic test recipe unless caller explicitly maps known-valid names later.
+
+  const featureCandidates = nonEmptyStringArray(input.features) ?? [];
+  const { matched: matchedFeatures, dropped: featureDropped } =
+    filterFeaturesAgainstCatalog(featureCandidates, options.catalogFeatureNames ?? null);
+  dropped_fields.push(...featureDropped);
+  setIfPresent(payload, "features", matchedFeatures.length ? matchedFeatures : undefined);
+
   setIfPresent(payload, "share_commission", input.share_commission);
   setIfPresent(payload, "collaboration_notes", cleanString(input.collaboration_notes));
-  if (input.shared_commission_percentage !== undefined) {
-    payload.shared_commission_percentage = input.shared_commission_percentage;
+
+  if (input.shared_commission_percentage === null) {
+    payload.shared_commission_percentage = null;
+  } else if (input.shared_commission_percentage === 50) {
+    payload.shared_commission_percentage = 50;
+  } else if (input.shared_commission_percentage !== undefined) {
+    drop(
+      "shared_commission_percentage",
+      "only_50_or_null_allowed",
+      input.shared_commission_percentage
+    );
   }
+
   setIfPresent(
     payload,
     "construction_size",
-    numberOrUndefined(input.construction_size ?? input.area_m2)
+    positiveNumberOrUndefined(input.construction_size ?? input.area_m2)
   );
-  setIfPresent(payload, "lot_size", numberOrUndefined(input.lot_size));
-  setIfPresent(payload, "lot_length", numberOrUndefined(input.lot_length));
-  setIfPresent(payload, "lot_width", numberOrUndefined(input.lot_width));
-  setIfPresent(payload, "covered_space", numberOrUndefined(input.covered_space));
+  setIfPresent(payload, "lot_size", positiveNumberOrUndefined(input.lot_size));
+  setIfPresent(payload, "lot_length", positiveIntegerOrUndefined(input.lot_length));
+  setIfPresent(payload, "lot_width", positiveIntegerOrUndefined(input.lot_width));
+  setIfPresent(
+    payload,
+    "uncovered_space",
+    positiveNumberOrUndefined(input.uncovered_space)
+  );
   if (input.exclusive !== undefined) payload.exclusive = input.exclusive;
   setIfPresent(payload, "videos", nonEmptyStringArray(input.videos));
   setIfPresent(payload, "virtual_tour", cleanString(input.virtual_tour));
   setIfPresent(payload, "show_exact_location", input.show_exact_location ?? false);
-  return payload;
+
+  for (const key of Object.keys(payload)) {
+    if (
+      !(EASYBROKER_CREATE_TOP_LEVEL_ALLOWLIST as readonly string[]).includes(key)
+    ) {
+      drop(key, "not_in_top_level_allowlist", payload[key]);
+      delete payload[key];
+    }
+  }
+
+  return { payload, dropped_fields };
+}
+
+function sanitizeEasyBrokerAge(value: unknown): string | undefined {
+  const age = cleanEasyBrokerOptionalString(value);
+  if (!age) return undefined;
+  if (age === "under_construction" || age === "new_construction") return age;
+  if (/^\d{4}$/.test(age)) return age;
+  return undefined;
+}
+
+/** EasyBroker enforces max 15 chars and a restricted charset for internal_id. */
+const EASYBROKER_INTERNAL_ID_MAX_LENGTH = 15;
+
+function sanitizeEasyBrokerInternalId(value: unknown): string | undefined {
+  const id = cleanString(value);
+  if (!id) return undefined;
+  if (!/^[A-Za-z0-9\-_.,&/]+$/.test(id)) return undefined;
+  if (id.length > EASYBROKER_INTERNAL_ID_MAX_LENGTH) return undefined;
+  return id;
+}
+
+/** Treat LLM placeholders like N/D as absent optional strings. */
+function cleanEasyBrokerOptionalString(value: unknown): string | undefined {
+  const cleaned = cleanString(value);
+  if (!cleaned) return undefined;
+  const normalized = cleaned
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  if (
+    !normalized ||
+    normalized === "nd" ||
+    normalized === "na" ||
+    normalized === "nainfo" ||
+    normalized === "none" ||
+    normalized === "null" ||
+    normalized === "undefined" ||
+    normalized === "unknown" ||
+    normalized === "sdatos" ||
+    normalized === "sindato" ||
+    normalized === "sindatos"
+  ) {
+    return undefined;
+  }
+  return cleaned;
+}
+
+/**
+ * LLM often stuffs the full address into `street`. Keep the street line only
+ * and strip a trailing exterior number when it is already sent separately.
+ */
+function sanitizeEasyBrokerStreet(
+  street: string,
+  location: EasyBrokerListingLocationInput
+): string {
+  const parsed = parseMexicanAddressParts(street);
+  let cleaned =
+    cleanString(parsed.street) ??
+    (street.includes(",") ? street.split(",")[0]!.trim() : street.trim());
+  const exterior =
+    cleanString(location.exterior_number) ?? cleanString(parsed.exterior_number);
+  if (exterior) {
+    const escaped = exterior.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    cleaned = cleaned.replace(new RegExp(`\\s+${escaped}$`, "i"), "").trim();
+  }
+  return cleaned || street.trim();
+}
+
+function buildEasyBrokerLocationName(
+  location: EasyBrokerListingLocationInput
+): string | undefined {
+  const explicit =
+    cleanString(location.full_name) ?? cleanString(location.name);
+  if (explicit) return explicit;
+  const city =
+    cleanString(location.city) ?? cleanString(location.municipality);
+  const composed = [
+    location.city_area ?? location.neighborhood,
+    city,
+    location.region ?? location.state,
+  ]
+    .map(cleanString)
+    .filter(Boolean)
+    .join(", ");
+  return composed || undefined;
+}
+
+const MEXICAN_STATE_NAMES = new Set(
+  [
+    "aguascalientes",
+    "baja california",
+    "baja california sur",
+    "campeche",
+    "chiapas",
+    "chihuahua",
+    "ciudad de mexico",
+    "cdmx",
+    "coahuila",
+    "colima",
+    "durango",
+    "guanajuato",
+    "guerrero",
+    "hidalgo",
+    "jalisco",
+    "mexico",
+    "estado de mexico",
+    "michoacan",
+    "morelos",
+    "nayarit",
+    "nuevo leon",
+    "oaxaca",
+    "puebla",
+    "queretaro",
+    "quintana roo",
+    "san luis potosi",
+    "sinaloa",
+    "sonora",
+    "tabasco",
+    "tamaulipas",
+    "tlaxcala",
+    "veracruz",
+    "yucatan",
+    "zacatecas",
+  ].map((value) => normalizeEasyBrokerFeatureKey(value))
+);
+
+function titleCaseWords(value: string): string {
+  const words = value
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  return words
+    .map((word, index) =>
+      index === 0 || !/^(de|del|la|las|los|y|en)$/i.test(word)
+        ? word.charAt(0).toUpperCase() + word.slice(1)
+        : word.toLowerCase()
+    )
+    .join(" ");
+}
+
+/**
+ * Best-effort parse of Mexican full-address strings the LLM often puts in
+ * `street` (e.g. "CALLE X, NUMERO 3668, FRACCIONAMIENTO Y, ZAPOPAN, JALISCO").
+ */
+export function parseMexicanAddressParts(raw: string): {
+  street?: string;
+  exterior_number?: string;
+  neighborhood?: string;
+  city?: string;
+  state?: string;
+} {
+  const parts = raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return {};
+  if (parts.length === 1) {
+    const only = parts[0]!;
+    const withNumber = only.match(/^(.*?)[\s]+(\d+[A-Za-z]?)$/);
+    if (withNumber?.[1] && withNumber[2]) {
+      return {
+        street: titleCaseWords(withNumber[1].replace(/^(calle|av\.?|avenida)\s+/i, "").trim() || withNumber[1]),
+        exterior_number: withNumber[2],
+      };
+    }
+    return { street: only };
+  }
+
+  const working = [...parts];
+  let state: string | undefined;
+  let city: string | undefined;
+  let neighborhood: string | undefined;
+  let exterior_number: string | undefined;
+
+  const last = working[working.length - 1]!;
+  if (MEXICAN_STATE_NAMES.has(normalizeEasyBrokerFeatureKey(last))) {
+    state = titleCaseWords(last);
+    working.pop();
+  }
+  if (working.length) {
+    city = titleCaseWords(working.pop()!);
+  }
+
+  for (let i = working.length - 1; i >= 0; i -= 1) {
+    const part = working[i]!;
+    const numeroMatch = part.match(/^(?:numero|n[uú]mero|no\.?|#)\s*(.+)$/i);
+    if (numeroMatch?.[1]) {
+      exterior_number = numeroMatch[1].trim();
+      working.splice(i, 1);
+      continue;
+    }
+    if (/^\d+[A-Za-z]?$/.test(part)) {
+      exterior_number = part;
+      working.splice(i, 1);
+      continue;
+    }
+    const neighborhoodMatch = part.match(
+      /^(?:fraccionamiento|fracc\.?|colonia|col\.?|residencial|privada)\s+(.+)$/i
+    );
+    if (neighborhoodMatch?.[1]) {
+      neighborhood = titleCaseWords(neighborhoodMatch[1]);
+      working.splice(i, 1);
+    }
+  }
+
+  if (!neighborhood && working.length > 1) {
+    neighborhood = titleCaseWords(working.pop()!);
+  }
+
+  let street = working.join(" ").trim() || undefined;
+  if (street) {
+    street = street.replace(/^(calle|av\.?|avenida)\s+/i, "").trim() || street;
+    if (!exterior_number) {
+      const withNumber = street.match(/^(.*?)[\s]+(\d+[A-Za-z]?)$/);
+      if (withNumber?.[1] && withNumber[2]) {
+        street = withNumber[1].trim();
+        exterior_number = withNumber[2];
+      }
+    }
+    street = titleCaseWords(street);
+  }
+
+  return {
+    ...(street ? { street } : {}),
+    ...(exterior_number ? { exterior_number } : {}),
+    ...(neighborhood ? { neighborhood } : {}),
+    ...(city ? { city } : {}),
+    ...(state ? { state } : {}),
+  };
+}
+
+function parseLocationHintFromListingTitle(title: string): {
+  neighborhood?: string;
+  city?: string;
+} {
+  const match = title.match(
+    /\ben\s+(?:fraccionamiento|fracc\.?|colonia|col\.?)?\s*([^,]+),\s*([A-Za-zÁÉÍÓÚÜáéíóúüñÑ\s]+?)(?:\s*$|\s*[.|-])/i
+  );
+  if (!match?.[1] || !match[2]) return {};
+  return {
+    neighborhood: titleCaseWords(match[1].trim()),
+    city: titleCaseWords(match[2].trim()),
+  };
 }
 
 function parseEasyBrokerCustomFields(input: EasyBrokerCreateListingInput) {
   const custom: Record<string, unknown> = { ...(input.custom_fields ?? {}) };
   if (input.custom_fields_json?.trim()) {
-    const parsed = JSON.parse(input.custom_fields_json) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("custom_fields_json debe ser un objeto JSON.");
+    try {
+      const parsed = JSON.parse(input.custom_fields_json) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        Object.assign(custom, parsed as Record<string, unknown>);
+      }
+    } catch {
+      // Ignore invalid JSON; create should not fail solely on ignored custom fields.
     }
-    Object.assign(custom, parsed as Record<string, unknown>);
   }
   return custom;
 }
@@ -6039,39 +8272,213 @@ function parseEasyBrokerCustomFields(input: EasyBrokerCreateListingInput) {
 function buildEasyBrokerLocationPayload(
   location: EasyBrokerListingLocationInput,
   street?: string
-) {
-  // OpenAPI create schema:
-  // location.name is the registered full location string returned by /locations.
-  // Do not send city_area/city/region/show_exact_location here; those appear in
-  // read responses but are not permitted in POST /properties.
+): { payload: Record<string, unknown>; dropped: EasyBrokerDroppedField[] } {
+  const dropped: EasyBrokerDroppedField[] = [];
   const payload: Record<string, unknown> = {};
-  const locationName =
-    cleanString(location.full_name) ??
-    cleanString(location.name) ??
-    [location.city_area ?? location.neighborhood, location.city, location.region ?? location.state]
-      .map(cleanString)
-      .filter(Boolean)
-      .join(", ");
-  setIfPresent(payload, "name", cleanString(locationName));
+  const enrichedLocation: EasyBrokerListingLocationInput = { ...location };
+  if (!buildEasyBrokerLocationName(enrichedLocation)) {
+    const parsed = parseMexicanAddressParts(
+      cleanString(street) ??
+        cleanString(location.street) ??
+        cleanString(location.address) ??
+        ""
+    );
+    if (!cleanString(enrichedLocation.neighborhood) && parsed.neighborhood) {
+      enrichedLocation.neighborhood = parsed.neighborhood;
+    }
+    if (!cleanString(enrichedLocation.city) && parsed.city) {
+      enrichedLocation.city = parsed.city;
+    }
+    if (!cleanString(enrichedLocation.municipality) && parsed.city) {
+      enrichedLocation.municipality = parsed.city;
+    }
+    if (!cleanString(enrichedLocation.state) && parsed.state) {
+      enrichedLocation.state = parsed.state;
+    }
+    if (!cleanString(enrichedLocation.exterior_number) && parsed.exterior_number) {
+      enrichedLocation.exterior_number = parsed.exterior_number;
+    }
+  }
+  const locationName = buildEasyBrokerLocationName(enrichedLocation);
+  setIfPresent(payload, "name", locationName);
   setIfPresent(payload, "street", cleanString(street));
-  setIfPresent(payload, "postal_code", cleanString(location.postal_code));
-  setIfPresent(payload, "latitude", numberOrUndefined(location.latitude));
-  setIfPresent(payload, "longitude", numberOrUndefined(location.longitude));
-  return payload;
+  setIfPresent(
+    payload,
+    "exterior_number",
+    cleanString(enrichedLocation.exterior_number)
+  );
+  setIfPresent(payload, "interior_number", cleanString(enrichedLocation.interior_number));
+  setIfPresent(payload, "cross_street", cleanString(enrichedLocation.cross_street));
+  setIfPresent(payload, "postal_code", cleanString(enrichedLocation.postal_code));
+  const latitude = safeNumber(enrichedLocation.latitude);
+  const longitude = safeNumber(enrichedLocation.longitude);
+  if (isUsableLatLng(latitude, longitude)) {
+    payload.latitude = latitude;
+    payload.longitude = longitude;
+  }
+
+  for (const [key, value] of Object.entries(location)) {
+    if (
+      (EASYBROKER_CREATE_LOCATION_ALLOWLIST as readonly string[]).includes(key)
+    ) {
+      continue;
+    }
+    // Helper aliases used only to build `name` / enrich — not sent to EasyBroker.
+    if (
+      [
+        "neighborhood",
+        "city",
+        "municipality",
+        "state",
+        "region",
+        "country",
+        "city_area",
+        "full_name",
+        "type",
+        "address",
+      ].includes(key)
+    ) {
+      continue;
+    }
+    dropped.push({
+      field: `location.${key}`,
+      reason: "not_in_location_allowlist",
+      value,
+    });
+  }
+
+  return { payload, dropped };
+}
+
+function normalizeEasyBrokerFeatureKey(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+export function filterFeaturesAgainstCatalog(
+  candidates: string[],
+  catalogNames: string[] | null
+): { matched: string[]; dropped: EasyBrokerDroppedField[] } {
+  const uniqueCandidates = [
+    ...new Set(
+      candidates
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean)
+    ),
+  ];
+  if (!uniqueCandidates.length) return { matched: [], dropped: [] };
+  if (!catalogNames) {
+    return {
+      matched: [],
+      dropped: uniqueCandidates.map((value) => ({
+        field: "features",
+        reason: "feature_catalog_unavailable",
+        value,
+      })),
+    };
+  }
+  const byNorm = new Map(
+    catalogNames.map((name) => [normalizeEasyBrokerFeatureKey(name), name] as const)
+  );
+  const matched: string[] = [];
+  const dropped: EasyBrokerDroppedField[] = [];
+  const seen = new Set<string>();
+  for (const candidate of uniqueCandidates) {
+    const catalogName = byNorm.get(normalizeEasyBrokerFeatureKey(candidate));
+    if (!catalogName) {
+      dropped.push({
+        field: "features",
+        reason: "not_in_easybroker_feature_catalog",
+        value: candidate,
+      });
+      continue;
+    }
+    if (seen.has(catalogName)) continue;
+    seen.add(catalogName);
+    matched.push(catalogName);
+  }
+  return { matched, dropped };
+}
+
+async function fetchEasyBrokerFeatureCatalogNames(
+  creds: EasyBrokerCredentials
+): Promise<string[] | null> {
+  const cacheKey = creds.apiKey.slice(0, 12);
+  const cached = easyBrokerFeatureCatalogCache.get(cacheKey);
+  if (
+    cached &&
+    Date.now() - cached.fetchedAt < EASYBROKER_FEATURE_CATALOG_TTL_MS
+  ) {
+    return cached.names;
+  }
+  try {
+    const names: string[] = [];
+    let page = 1;
+    for (let i = 0; i < 20; i += 1) {
+      const response = await easyBrokerApiRequest(creds, "/v1/features", {
+        method: "GET",
+        query: { page, limit: 100, locale: "es" },
+      });
+      const content = Array.isArray(response.payload.content)
+        ? response.payload.content
+        : [];
+      for (const item of content) {
+        const name =
+          item && typeof item === "object" && !Array.isArray(item)
+            ? cleanString((item as Record<string, unknown>).name)
+            : undefined;
+        if (name) names.push(name);
+      }
+      const pagination = asRecord(response.payload.pagination);
+      const nextPage = pagination?.next_page;
+      if (nextPage == null || nextPage === "") break;
+      const nextPageNum =
+        typeof nextPage === "number"
+          ? nextPage
+          : typeof nextPage === "string"
+            ? Number(nextPage)
+            : NaN;
+      if (!Number.isFinite(nextPageNum) || nextPageNum <= page) break;
+      page = nextPageNum;
+    }
+    const unique = [...new Set(names)];
+    easyBrokerFeatureCatalogCache.set(cacheKey, {
+      names: unique,
+      fetchedAt: Date.now(),
+    });
+    return unique;
+  } catch (err) {
+    console.warn(
+      "[realestate] easybroker_create_listing: feature catalog fetch failed; omitting features:",
+      err
+    );
+    return null;
+  }
 }
 
 async function resolveEasyBrokerImagePayloads(
   ctx: ToolContext,
   input: EasyBrokerUploadImagesInput
 ): Promise<EasyBrokerImagePayload[]> {
-  if (input.image_paths.length > 50) {
+  const pairs = normalizeEasyBrokerUploadPairs(input);
+  if (pairs.length === 0) {
+    throw new Error(
+      "Se requiere images con pares {source_path, upload_path, title} o case_id con photo_manifest."
+    );
+  }
+  if (pairs.length > 50) {
     throw new Error("EasyBroker permite máximo 50 imágenes por propiedad.");
   }
   const images = await Promise.all(
-    input.image_paths.map(async (imagePath, index) => {
-      const title = input.image_titles?.[index]?.trim() || null;
+    pairs.map(async (pair) => {
+      const imagePath = pair.upload_path;
+      const title = pair.title?.trim() || null;
       if (/^https?:\/\//i.test(imagePath)) {
-        return { url: imagePath, title, source_path: imagePath };
+        return { url: imagePath, title, source_path: pair.source_path };
       }
       const parsed = parseStoragePath(imagePath);
       const shortUrl = await publicAccountAssetUrlForEasyBroker(ctx, parsed);
@@ -6079,7 +8486,7 @@ async function resolveEasyBrokerImagePayloads(
         return {
           url: shortUrl,
           title,
-          source_path: imagePath,
+          source_path: pair.source_path,
         };
       }
       const { data, error } = await ctx.db.storage
@@ -6097,12 +8504,30 @@ async function resolveEasyBrokerImagePayloads(
           ensureEasyBrokerImageUrlExtension(data.signedUrl, parsed.path)
         ),
         title,
-        source_path: imagePath,
+        source_path: pair.source_path,
         expires_in_seconds: EASYBROKER_SIGNED_URL_TTL_SECONDS,
       };
     })
   );
   return images;
+}
+
+export function normalizeEasyBrokerUploadPairs(
+  input: {
+    images?: PhotoUploadPair[];
+    image_paths?: string[];
+    image_titles?: string[];
+  }
+): PhotoUploadPair[] {
+  return (
+    input.images && input.images.length > 0
+      ? input.images
+      : (input.image_paths ?? []).map((uploadPath, index) => ({
+          source_path: normalizePhotoSourcePath(uploadPath),
+          upload_path: uploadPath,
+          title: input.image_titles?.[index]?.trim() || null,
+        }))
+  );
 }
 
 async function publicAccountAssetUrlForEasyBroker(
@@ -6111,11 +8536,32 @@ async function publicAccountAssetUrlForEasyBroker(
 ) {
   const siteUrl = publicSiteUrl();
   if (!siteUrl) return null;
-  const asset = await getAccountAssetByStoragePath(ctx.db, {
+  let asset = await getAccountAssetByStoragePath(ctx.db, {
     storageBucket: parsed.bucket,
     storagePath: parsed.path,
   });
-  if (!asset) return null;
+  // Case photos live in case-documents and usually have no account_assets row.
+  // Upsert a lightweight pointer so EasyBroker gets a short public redirect URL
+  // (≤255 chars) instead of a long Supabase signed URL.
+  if (!asset) {
+    const digest = createHash("sha256")
+      .update(`${parsed.bucket}:${parsed.path}`)
+      .digest("hex")
+      .slice(0, 24);
+    const basename = path.basename(parsed.path) || "image";
+    asset = await upsertAccountAsset(ctx.db, {
+      userId: ctx.userId,
+      assetKey: `easybroker_image__${digest}`,
+      displayName: basename.slice(0, 120),
+      storageBucket: parsed.bucket,
+      storagePath: parsed.path,
+      sourceToolId: "easybroker_upload_images",
+      metadata: {
+        purpose: "easybroker_public_image",
+        source_bucket: parsed.bucket,
+      },
+    });
+  }
   const extension = path.extname(parsed.path).replace(/^\./, "").toLowerCase();
   if (!["jpg", "jpeg", "png", "gif", "bmp", "heic"].includes(extension)) {
     throw new Error(
@@ -6165,19 +8611,32 @@ function ensureEasyBrokerImageUrlExtension(url: string, sourcePath: string) {
 async function easyBrokerApiRequest(
   creds: EasyBrokerCredentials,
   pathname: string,
-  options: { method: "POST" | "PATCH"; body: Record<string, unknown> }
+  options: {
+    method: "GET" | "POST" | "PATCH";
+    body?: Record<string, unknown>;
+    query?: Record<string, string | number | undefined>;
+  }
 ) {
   const base = process.env.EASYBROKER_API_BASE?.trim() || "https://api.easybroker.com";
   const url = new URL(pathname, base.replace(/\/$/, ""));
+  if (options.query) {
+    for (const [key, value] of Object.entries(options.query)) {
+      if (value === undefined || value === null || value === "") continue;
+      url.searchParams.set(key, String(value));
+    }
+  }
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    "Country-Code": "MX",
+    "X-Authorization": creds.apiKey,
+  };
+  if (options.body) {
+    headers["content-type"] = "application/json";
+  }
   const res = await fetch(url, {
     method: options.method,
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "Country-Code": "MX",
-      "X-Authorization": creds.apiKey,
-    },
-    body: JSON.stringify(options.body),
+    headers,
+    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   });
   const payload = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
@@ -6229,8 +8688,18 @@ function integerOrUndefined(value: unknown) {
     : undefined;
 }
 
+function positiveIntegerOrUndefined(value: unknown) {
+  const parsed = integerOrUndefined(value);
+  return parsed != null && parsed > 0 ? parsed : undefined;
+}
+
 function numberOrUndefined(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function positiveNumberOrUndefined(value: unknown) {
+  const parsed = numberOrUndefined(value);
+  return parsed != null && parsed > 0 ? parsed : undefined;
 }
 
 function nonEmptyStringArray(value: unknown) {
@@ -6349,8 +8818,11 @@ async function runUnggaCliFallback(
     childEnv.UNGGA_STAGING_PASSWORD = cliCreds.password;
     childEnv.UNGGA_CLI_ENABLED = "true";
   }
+  // Real writes unless explicitly testing dry-run.
   if (envFlagEnabled("UNGGA_TOOL_TEST_DRY_RUN")) {
     childEnv.UNGGA_CLI_DRY_RUN = "true";
+  } else if (envFlagEnabled("UNGGA_CLI_DRY_RUN") == null) {
+    childEnv.UNGGA_CLI_DRY_RUN = "false";
   }
 
   const tempDir = await mkdtemp(path.join(tmpdir(), "ungga-cli-"));
@@ -6377,18 +8849,37 @@ async function runUnggaCliFallback(
       stdout?: string;
       stderr?: string;
       code?: number | string;
+      signal?: string;
+      killed?: boolean;
     };
     const parsed = error.stdout ? parseCliJson(error.stdout) : null;
+    const parsedError =
+      parsed && typeof parsed.error === "string" ? parsed.error : null;
+    const timeoutLikely =
+      error.killed === true ||
+      error.signal === "SIGTERM" ||
+      String(error.message ?? "").includes("TIMEOUT");
     return {
       ok: false,
-      status: "failed",
+      status: timeoutLikely ? "unknown_outcome" : "failed",
       mode: "cli",
-      exit_code: error.code,
-      error: error.message ?? String(err),
+      exit_code: error.code ?? null,
+      signal: error.signal ?? null,
+      error:
+        parsedError ||
+        (timeoutLikely
+          ? `Ungga CLI timed out or was killed: ${error.message ?? String(err)}`
+          : error.message ?? String(err)),
       ...(parsed ? { cli_result: parsed } : {}),
+      ...(error.stdout?.trim()
+        ? { stdout: error.stdout.trim().slice(0, 4000) }
+        : {}),
       ...(error.stderr?.trim()
         ? { stderr: error.stderr.trim().slice(0, 2000) }
         : {}),
+      hint: timeoutLikely
+        ? "Resultado desconocido: no reintentes prepare_draft automáticamente; revisa si quedó un borrador en Ungga."
+        : "Revisa cli_result.error / stdout para el fallo real del POC Playwright.",
     };
   } finally {
     await rm(tempDir, { recursive: true, force: true });

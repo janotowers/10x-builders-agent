@@ -91,13 +91,45 @@ export function operationalCaseStepLabel(
 }
 
 export function operationalCaseDisplayTitle(opCase: OperationalCase): string {
-  return String(
-    opCase.context_jsonb.title ??
-      opCase.context_jsonb.property_title ??
-      opCase.context_jsonb.lead_name ??
-      opCase.current_step ??
-      opCase.id
-  );
+  const ctx =
+    opCase.context_jsonb &&
+    typeof opCase.context_jsonb === "object" &&
+    !Array.isArray(opCase.context_jsonb)
+      ? (opCase.context_jsonb as Record<string, unknown>)
+      : {};
+  const propertyData =
+    ctx.property_data &&
+    typeof ctx.property_data === "object" &&
+    !Array.isArray(ctx.property_data)
+      ? (ctx.property_data as Record<string, unknown>)
+      : {};
+
+  const clean = (value: unknown) =>
+    typeof value === "string" ? value.trim() : "";
+  const propertyTitle = clean(ctx.property_title);
+  const title = clean(ctx.title);
+  const propertyType = clean(ctx.property_type) || clean(propertyData.property_type);
+  const address =
+    clean(propertyData.address) ||
+    clean(propertyData.property_address) ||
+    clean(ctx.property_address) ||
+    [clean(propertyData.street), clean(propertyData.exterior_number)]
+      .filter(Boolean)
+      .join(" ");
+  const leadName = clean(ctx.lead_name);
+  const titleLooksGeneric =
+    Boolean(title) &&
+    ((propertyType && title.toLowerCase() === propertyType.toLowerCase()) ||
+      (title.length <= 12 && !/\d/.test(title) && !/\s/.test(title)));
+
+  // Preferir títulos específicos (property_title / dirección) sobre nicknames
+  // genéricos tipo "Casa" que suelen venir de property_type.
+  if (propertyTitle) return propertyTitle;
+  if (title && !titleLooksGeneric) return title;
+  if (address) return address;
+  if (title) return title;
+  if (leadName) return leadName;
+  return String(opCase.current_step ?? opCase.id);
 }
 
 export type OperationalCaseInstanceSkillMeta = {

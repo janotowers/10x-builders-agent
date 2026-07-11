@@ -5,6 +5,7 @@ import {
   dismissOrphanInternalRemindersForUser,
   getOperationalCase,
   getRecentOperationalCaseEvents,
+  LAB_CLEANABLE_CASE_OR_FILTER,
   rejectPendingToolCallsForCase,
   resolveInternalNotificationWithReminders,
   updateOperationalCase,
@@ -184,9 +185,7 @@ export async function DELETE(request: Request) {
     .from("operational_cases")
     .select("id")
     .eq("user_id", user.id)
-    .or(
-      "context_jsonb->>created_from.eq.case_type_settings_test,context_jsonb->>test_mode.eq.true"
-    );
+    .or(LAB_CLEANABLE_CASE_OR_FILTER);
   if (casesError) throw casesError;
 
   let deleted_notifications = 0;

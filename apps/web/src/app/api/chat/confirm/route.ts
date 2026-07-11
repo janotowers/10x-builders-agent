@@ -1,14 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
-  countPendingToolCallsForCase,
   createServerClient,
   decryptToken,
   getGoogleCalendarAccessToken,
-  getOperationalCase,
   getPendingToolCall,
-  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
-  updateOperationalCase,
   updateToolCallStatus,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
@@ -19,8 +15,12 @@ import {
 } from "@/lib/scheduled-task-confirmation";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { findPendingConfirmationCheckpoint } from "@/lib/agent/pending-confirmation-checkpoint";
+import {
+  buildAgentE2EResumeToolApprovalPolicy,
+  isAgentE2EToolCall,
+} from "@/lib/operational-cases/settings-test-tool-policy";
+import { finalizeCaseAfterToolDecision } from "@/lib/operational-cases/finalize-case-after-tool-decision";
 
-const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
 const TOOL_CALL_SELECT =
   "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind";
 
@@ -40,62 +40,6 @@ async function loadTurnToolCalls(
     return [];
   }
   return (data ?? []) as Array<Record<string, unknown>>;
-}
-
-function toolCallCaseId(toolCall: {
-  arguments_json?: unknown;
-  metadata_jsonb?: unknown;
-}): string | null {
-  const args = toolCall.arguments_json;
-  if (
-    args &&
-    typeof args === "object" &&
-    !Array.isArray(args) &&
-    typeof (args as Record<string, unknown>).case_id === "string"
-  ) {
-    const caseId = ((args as Record<string, unknown>).case_id as string).trim();
-    if (caseId) return caseId;
-  }
-  const metadata = toolCall.metadata_jsonb;
-  if (
-    metadata &&
-    typeof metadata === "object" &&
-    !Array.isArray(metadata) &&
-    typeof (metadata as Record<string, unknown>).case_id === "string"
-  ) {
-    const caseId = ((metadata as Record<string, unknown>).case_id as string).trim();
-    if (caseId) return caseId;
-  }
-  return null;
-}
-
-async function finalizeCaseAfterToolDecision(
-  db: ReturnType<typeof createServerClient>,
-  params: { toolCall: { arguments_json?: unknown; metadata_jsonb?: unknown }; userId: string }
-) {
-  const caseId = toolCallCaseId(params.toolCall);
-  if (!caseId) return;
-  const pending = await countPendingToolCallsForCase(db, caseId);
-  if (pending > 0) return;
-
-  await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
-    userId: params.userId,
-    caseId,
-    kind: TOOL_CONFIRMATION_PENDING_KIND,
-    status: "actioned",
-  });
-
-  const opCase = await getOperationalCase(db, caseId);
-  if (
-    !opCase ||
-    opCase.user_id !== params.userId ||
-    !["active", "waiting_internal", "waiting_external"].includes(opCase.status)
-  ) {
-    return;
-  }
-  await updateOperationalCase(db, opCase.id, opCase.version, {
-    nextActionAt: new Date().toISOString(),
-  });
 }
 
 export async function POST(request: Request) {
@@ -143,7 +87,11 @@ export async function POST(request: Request) {
         message: "Acción cancelada por el usuario.",
         source: "chat_confirm",
       });
-      await finalizeCaseAfterToolDecision(db, { toolCall, userId: user.id });
+      await finalizeCaseAfterToolDecision(db, {
+        toolCall,
+        userId: user.id,
+        decision: "reject",
+      });
       const turnId = (toolCall.turn_id as string | null) ?? undefined;
       return NextResponse.json({
         ok: true,
@@ -289,8 +237,21 @@ export async function POST(request: Request) {
       businessBrain:
         (profile?.business_brain as Record<string, unknown> | null) ?? {},
       isUnggaAdmin: (profile?.is_ungga_admin as boolean | null) ?? false,
-      channel: channel === "case_runner" ? "case_runner" : "web",
+      channel:
+        channel === "case_runner" || isAgentE2EToolCall(toolCall)
+          ? "case_runner"
+          : "web",
       googleCalendarAccessToken,
+      caseId:
+        typeof toolCall.metadata_jsonb?.case_id === "string"
+          ? toolCall.metadata_jsonb.case_id
+          : typeof toolCall.arguments_json?.case_id === "string"
+            ? toolCall.arguments_json.case_id
+            : undefined,
+      toolCallSource: isAgentE2EToolCall(toolCall) ? "agent_e2e" : undefined,
+      toolApprovalPolicy: isAgentE2EToolCall(toolCall)
+        ? buildAgentE2EResumeToolApprovalPolicy()
+        : undefined,
       onEvent: (event) => {
         const eventTurnId =
           event.turnId ?? ((toolCall.turn_id as string | null) ?? undefined);
@@ -326,7 +287,11 @@ export async function POST(request: Request) {
         pendingConfirmation = null;
       }
     }
-    await finalizeCaseAfterToolDecision(db, { toolCall, userId: user.id });
+    await finalizeCaseAfterToolDecision(db, {
+      toolCall,
+      userId: user.id,
+      decision: "approve",
+    });
 
     return NextResponse.json({
       ok: true,

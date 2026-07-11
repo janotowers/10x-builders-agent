@@ -10,6 +10,7 @@ allowed_tools:
   - image_watermark
   - easybroker_create_listing
   - easybroker_upload_images
+  - easybroker_publish_listing
   - ungga_publish_listing
   - operational_case_update_state
   - operational_case_add_event
@@ -18,17 +19,18 @@ memory_extraction: ephemeral
 heartbeat: blocked
 guardrails: |
   Este es el último paso. Una vez completado, mover a status=completed.
-  Cada publicación externa pasa por doble control:
-  (1) aprobación de negocio por destino (`publish_approvals`) y
-  (2) confirmación técnica HITL de la tool write.
-  No uses una sola aprobación para todos los destinos.
+  La orquestación de publicación es dueña del sistema (publication runner):
+  el agente NO escribe `publication`, `published`, `publish_approvals` ni
+  `photo_manifest` vía operational_case_update_state.
+  Cada destino: aprobación de negocio → draft → media → preflight condicional
+  → publish automático si pass; review humana solo si hay omisiones,
+  discrepancias o baja confianza.
+  EasyBroker: create(not_published) → upload images → publish_listing.
+  Ungga: prepare_draft → (preflight) → publish_draft.
   Nunca publiques sin confirmar que `pricing_proposal.approval_status=approved`
-  y que el contrato ya fue enviado por email al propietario
-  (`context_jsonb.contract_review.status=sent_by_email` o evento
-  `step_completed(kind: contract_sent_to_owner_email)` en timeline).
+  y que el contrato ya fue enviado por email al propietario.
   Nunca publiques sin `listing_description_approved`.
-  Para portales sin API, NO automatices con browser; entrega el paquete
-  formateado y pide al inmobiliario que suba manualmente.
+  No inventes image_titles desde visible_spaces; usa photo_manifest por archivo.
 ---
 
 # Publish listing package
@@ -54,16 +56,17 @@ Producir y entregar:
    - Campos mínimos de ficha EasyBroker: `property_type`, `operation_type`,
      `target_price > 0`, `currency`, dirección usable (`municipality`, `state`
      y calle o dirección legal). Para casa/departamento exige también
-     `bedrooms`, `bathrooms`, `parking_spots` y m2 (construcción o total).
+     `bedrooms`, `bathrooms`, `parking_spaces` y m2 (construcción o total).
      Para terreno/lote exige `area_total_m2`.
    Si falla algún gate, `notify_user` al inmobiliario explicando qué falta y
    `status=paused`.
 
 2. **Análisis de imágenes**: llama `analyze_property_images` con
-   `image_paths=context_jsonb.raw_photos` y persiste en
-   `context_jsonb.photo_analysis`.
-   - Regla crítica: "no visible" no implica "no existe".
-   - Expresa cobertura visual como evidencia, no como verdad absoluta.
+   `image_paths=context_jsonb.raw_photos` (todas; sin truncar a 8).
+   Clasifica **por archivo** (path/sha256), no por índice del modelo.
+   Persiste `context_jsonb.photo_analysis` (agregado para copy) y
+   `context_jsonb.photo_manifest` 1:1. Si una foto falla al cargar, deja
+   `uncertain=true` / `space_label=null` en esa entrada; no desplaces etiquetas.
 
 3. **Enriquecer entorno**: llama `lookup_property_surroundings` usando
    dirección/coordenadas de `property_data` y persiste en
@@ -93,45 +96,45 @@ Producir y entregar:
    - Solo cuando exista `context_jsonb.listing_description_approved`
      puedes continuar a publicación.
 
-6. **Watermark**: llama `image_watermark` con `input_paths=context_jsonb.raw_photos`,
-   posición y opacidad por defecto del tenant. Persiste outputs en
-   `context_jsonb.watermarked_photos`.
+6. **Watermark + manifest**: llama `image_watermark(case_id, input_paths=raw_photos)`.
+   Persiste `watermarked_photos` y actualiza `photo_manifest` 1:1.
+   `analyze_property_images` debe llenar `photo_manifest[].space_label` por archivo;
+   nunca derives títulos desde `visible_spaces` agregados.
 
 7. **Aprobación por destino (negocio)**:
-   - Solicita y persiste aprobación por destino en
-     `context_jsonb.publish_approvals`:
-     - `easybroker`: approved/pending/skipped/rejected
-     - `ungga`: approved/pending/skipped/rejected
-     - `manual`: approved/pending/skipped/rejected
-   - No publiques en un destino si su estado no es `approved`.
+   - Solicita aprobación one-by-one (EasyBroker, luego Ungga).
+   - El publication runner persiste `context.publication` + proyecciones
+     `publish_approvals` / `published`. No las escribas a mano.
 
-8. **Publicar en EasyBroker**:
-   - Solo cuando `publish_approvals.easybroker=approved`, llama
-     `easybroker_create_listing(...)` con `listing_description_approved`.
-     Captura el `listing_id` retornado en
-     `context_jsonb.published.easybroker.listing_id`.
-   - Llama `easybroker_upload_images(listing_id, image_paths=watermarked_photos)`.
-   - Inserta `operational_case_add_event(step_completed, payload={destination: "easybroker", listing_id})`.
+8. **EasyBroker (dos pasos técnicos)**:
+   - `easybroker_create_listing` → status `not_published` + listing_id.
+     Colaboración se mapea desde `commission_terms.collaboration` en el
+     adapter: `enabled` → `share_commission` aunque el % canónico (p. ej. 40)
+     no sea representable; el detalle incompatible se omite con warning y
+     **no** muta el canónico.
+   - `easybroker_upload_images` con pares identidad
+     `{source_path, upload_path, title}` / manifest (nunca arrays posicionales
+     inventados). Persiste `public_url` en el manifest para Ungga.
+   - Preflight condicional (watermark/manifest/remoto): si pass →
+     `easybroker_publish_listing`.
+   - Si review_required → notificación `publication_review_required`.
 
-9. **Publicar en Ungga**:
-   - Si la tool `ungga_publish_listing` devuelve `status=not_configured`,
-     notifica al inmobiliario y deja `published.ungga = "pending_manual"`.
-   - Si devuelve OK, persiste `ungga_listing_id`.
+9. **Ungga (dos fases)**:
+   - Solo tras EasyBroker remotamente publicado u omisión explícita.
+   - `ungga_publish_listing(action=prepare_draft, case_id)` (omitir strings vacíos).
+   - Preflight condicional sobre el draft (GU-ID real, no dry-run).
+   - Si pass → `ungga_publish_listing(action=publish_draft, ungga_property_id)`.
+   - Timeout/kill → `unknown_outcome` (ledger + revisión); nunca auto-reintentar
+     `prepare_draft`.
+   - Nunca `publish_draft` sin GU-ID persistido.
+
+   La orquestación entra **solo** por el publication runner
+   (`requestPublicationProgress`) con modo explícito `off|shadow|active`
+   (default `off`; precedencia de caso). Shadow calcula sin side effects.
 
 10. **Paquete para portales sin API** (Inmuebles24, Vivanuncios):
-   - Genera `context_jsonb.manual_publish_package`:
-     ```json
-     {
-       "headline": "...",
-       "description": "...",
-       "price": 0,
-       "currency": "MXN",
-       "address_summary": "...",
-       "image_paths_zip": "..."
-     }
-     ```
-   - Notifica al inmobiliario con instrucciones claras de cómo subir
-     manualmente; NO intentes automatizar con browser.
+   - Genera `context_jsonb.manual_publish_package` tras aprobación manual.
+   - Notifica al inmobiliario; NO automatices con browser.
 
 11. Mueve `status=completed`, `current_step=published`. Inserta
    `operational_case_add_event(step_completed, payload={kind: case_completed})`.

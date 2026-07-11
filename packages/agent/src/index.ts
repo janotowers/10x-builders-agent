@@ -4,7 +4,12 @@ export {
   buildOperationalCaseIntakeUpdateContext,
   buildOperationalCaseCreateContext,
   buildPropertyDataMinimumsSummaryMessage,
+  buildContractDataReviewNotifyText,
+  contractDraftOutputPathFromContext,
   documentExtractionMinimumsContext,
+  evaluateContractReviewNotifyGate,
+  evaluateListingDescriptionReviewNotifyGate,
+  listingDescriptionDraftContentFromContext,
   evaluatePropertyDataMinimumsForReview,
   evaluatePropertyAdvanceGate,
   ownerConsistencyStatusFromFields,
@@ -34,6 +39,29 @@ export {
   googleCalendarJson,
 } from "./tools/calendar-api";
 export { eventDisplayFields } from "./tools/calendar-event-display";
+export {
+  PHOTO_LABEL_CONFIDENCE_THRESHOLD,
+  applyPublicUrlsToManifest,
+  applyWatermarkOutputsToManifest,
+  buildPhotoManifestFromRawPhotos,
+  imagePathsForUpload,
+  imageTitlesFromManifest,
+  manifestNeedsLabelReview,
+  manifestsMatchRawPhotosInOrder,
+  manifestsMatchRawPhotosSet,
+  mergePhotoEntries,
+  mergePhotoLabelsIntoManifest,
+  normalizePhotoSourcePath,
+  parsePhotoManifest,
+  photoUploadPairsFromManifest,
+  publicImageUrlsFromManifest,
+  resolveRawPhotoPaths,
+} from "./operational-cases/photo-manifest";
+export type {
+  PhotoManifestEntry,
+  PhotoManifestError,
+  PhotoUploadPair,
+} from "./operational-cases/photo-manifest";
 export { flushSessionMemory } from "./memory_flush";
 export {
   buildLangChainTools,
@@ -118,6 +146,25 @@ export {
   readablePropertyAddress,
 } from "./tools/commission-contract-template-data";
 export type { CommissionContractPlaceholderKey } from "./tools/commission-contract-template-data";
+export {
+  applyCommissionTermsPatch,
+  buildContractCommercialMinimumsSummaryMessage,
+  emptyCommissionTerms,
+  evaluateContractCommercialMinimums,
+  mapCollaborationToEasyBroker,
+  mapCollaborationToUngga,
+  parseCommissionTerms,
+  parseContractCommercialReply,
+  resolveOwnerEmailFromSources,
+} from "./operational-cases/contract-commercial-terms";
+export type {
+  CollaborationCompensationMode,
+  CollaborationTerms,
+  CommissionTerms,
+  ContractCommercialMinimumsResult,
+  ContractCommercialMissingField,
+  ContractCommercialPatch,
+} from "./operational-cases/contract-commercial-terms";
 export { testAvaclickCredentials } from "./tools/avaclick";
 export {
   buildComparableSearchFilters,
@@ -146,6 +193,21 @@ export type {
 } from "./operational-cases/comparables-analysis";
 export { buildPricingProposalFromComparables, formatPriceApprovalNotifyText } from "./operational-cases/pricing-proposal";
 export { formatListingDescriptionReviewNotifyText } from "./operational-cases/listing-description-review";
+export { resolveImagePathsFromRawPhotos } from "./tools/realestate-adapters";
+export { normalizeAnalyzeImageStorageRef } from "./tools/realestate-adapters";
+export {
+  isUsableLatLng,
+  mergeEasyBrokerCreateInputFromCaseSources,
+  buildEasyBrokerCreatePayload,
+  filterFeaturesAgainstCatalog,
+  parseMexicanAddressParts,
+  EASYBROKER_CREATE_TOP_LEVEL_ALLOWLIST,
+  EASYBROKER_CREATE_LOCATION_ALLOWLIST,
+} from "./tools/realestate-adapters";
+export type {
+  EasyBrokerCreatePayloadBuildResult,
+  EasyBrokerDroppedField,
+} from "./tools/realestate-adapters";
 export {
   canCompleteListingPublishedSummaryFromContext,
   formatListingPublishedSummaryNotifyText,

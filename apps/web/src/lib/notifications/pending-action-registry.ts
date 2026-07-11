@@ -7,7 +7,9 @@ export type PendingInlineActionKind =
   | "contract_review"
   | "contract_data_review"
   | "property_data_review"
-  | "listing_description_review";
+  | "listing_description_review"
+  | "publish_destination_approval"
+  | "publication_review";
 
 function contractPendingLooksDecisional(notification: InternalNotificationDisplay) {
   const text = `${notification.title ?? ""} ${notification.body ?? ""}`.toLowerCase();
@@ -32,6 +34,15 @@ export function pendingInlineActionKind(
   if (notification.kind === "property_data_review") return "property_data_review";
   if (notification.kind === "listing_description_review") {
     return "listing_description_review";
+  }
+  if (
+    notification.kind === "easybroker_publish_approval" ||
+    notification.kind === "ungga_publish_approval"
+  ) {
+    return "publish_destination_approval";
+  }
+  if (notification.kind === "publication_review_required") {
+    return "publication_review";
   }
   if (notification.kind === "contract_data_review") return "contract_data_review";
   if (notification.kind === "contract_review") return "contract_review";

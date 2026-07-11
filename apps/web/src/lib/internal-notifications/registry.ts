@@ -22,7 +22,8 @@ export interface InternalNotificationKindConfig {
     | "contract_review"
     | "contract_data_review"
     | "listing_description_review"
-    | "publish_destination_approval";
+    | "publish_destination_approval"
+    | "publication_review";
   technical?: boolean;
   /**
    * Pure FYI notifications: no decision/action expected from the user, so the
@@ -184,6 +185,9 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     label: "Solicitar fotos al asesor",
     visibleInInbox: true,
     intent: "reminder",
+    // Recordatorio de carga: no debe bloquear ticks E2E ni competir con HITL
+    // accionable (revisión de descripción, precio, contrato).
+    informational: true,
     reviewCtaLabel: "Subir fotos del inmueble",
   },
   listing_description_review: {
@@ -218,6 +222,26 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     businessDecision: "publish_destination_approval",
     reviewCtaLabel: "Aprobar o rechazar destino",
   },
+  publication_review_required: {
+    kind: "publication_review_required",
+    label: "Revisión condicional de publicación",
+    visibleInInbox: true,
+    intent: "review",
+    businessDecision: "publication_review",
+    reviewCtaLabel: "Aprobar y continuar o detener",
+  },
+  /**
+   * Kind libre/legado que el agente emitía en batch (EasyBroker+Ungga+Manual).
+   * No tiene botones estructurados; no debe bloquear el laboratorio.
+   */
+  publish_destination_approvals: {
+    kind: "publish_destination_approvals",
+    label: "Aprobaciones de publicación (legado)",
+    visibleInInbox: true,
+    intent: "reminder",
+    informational: true,
+    reviewCtaLabel: "Revisar en flujo",
+  },
   listing_published_summary: {
     kind: "listing_published_summary",
     label: "Resumen final de publicación",
@@ -231,6 +255,13 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     visibleInInbox: true,
     intent: "review",
     reviewCtaLabel: "Revisar titularidad",
+  },
+  contract_template_missing: {
+    kind: "contract_template_missing",
+    label: "Falta plantilla de contrato",
+    visibleInInbox: true,
+    intent: "review",
+    reviewCtaLabel: "Subir plantilla en preparación",
   },
   internal_notification_reminder: {
     kind: "internal_notification_reminder",
@@ -292,6 +323,14 @@ function canonicalizeComparablesNotificationKind(kind: string): string {
     )
   ) {
     return "comparables_analysis";
+  }
+  // Batch legado: "publish destination approvals" / publish_destination_approval(s)
+  if (
+    kind === "publish_destination_approvals" ||
+    kind === "publish_destination_approval" ||
+    (kind.startsWith("publish_destination") && !kind.includes("decision"))
+  ) {
+    return "publish_destination_approvals";
   }
   return kind;
 }

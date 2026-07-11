@@ -6,6 +6,11 @@ import type {
   InternalUserNotificationStatus,
   NotificationPriority,
 } from "@agents/types";
+import { isCronSuppressedOperationalCase } from "@agents/types";
+
+/** Casos de laboratorio (settings test o E2E conversacional controlado). */
+export const LAB_CLEANABLE_CASE_OR_FILTER =
+  "context_jsonb->>created_from.eq.case_type_settings_test,context_jsonb->>test_mode.eq.true,context_jsonb->>e2e_controlled.eq.true";
 
 export interface CreateInternalUserNotificationInput {
   userId: string;
@@ -311,6 +316,39 @@ export async function setInternalUserNotificationStatus(
   return (data as InternalUserNotification | null) ?? null;
 }
 
+/**
+ * Claim atómico: solo transiciona unread → actioned/dismissed.
+ * Si ya no está unread, retorna null (idempotencia para callbacks duplicados).
+ */
+export async function claimUnreadInternalNotification(
+  db: DbClient,
+  params: {
+    id: string;
+    userId: string;
+    status: Exclude<InternalUserNotificationStatus, "unread">;
+  }
+): Promise<InternalUserNotification | null> {
+  const now = new Date().toISOString();
+  const update: Record<string, unknown> = {
+    status: params.status,
+    updated_at: now,
+    read_at: now,
+  };
+  if (params.status === "actioned") {
+    update.actioned_at = now;
+  }
+  const { data, error } = await db
+    .from("internal_user_notifications")
+    .update(update)
+    .eq("id", params.id)
+    .eq("user_id", params.userId)
+    .eq("status", "unread")
+    .select("*")
+    .maybeSingle();
+  if (error) throw error;
+  return (data as InternalUserNotification | null) ?? null;
+}
+
 function reminderStatusUpdate(
   status: InternalUserNotificationStatus,
   now: string
@@ -453,12 +491,8 @@ export async function verifyOwnedSettingsTestCase(
     .maybeSingle();
   if (caseError) throw caseError;
   if (!opCase) return false;
-  const context = (opCase as { context_jsonb?: Record<string, unknown> }).context_jsonb;
-  return (
-    context?.created_from === "case_type_settings_test" ||
-    context?.test_mode === true ||
-    (context?.created_from === "agent_conversation" &&
-      context?.e2e_controlled === true)
+  return isCronSuppressedOperationalCase(
+    opCase as { context_jsonb?: Record<string, unknown> | null }
   );
 }
 
@@ -470,7 +504,7 @@ export async function deleteSettingsTestInternalNotifications(
     .from("operational_cases")
     .select("id")
     .eq("user_id", userId)
-    .or("context_jsonb->>created_from.eq.case_type_settings_test,context_jsonb->>test_mode.eq.true");
+    .or(LAB_CLEANABLE_CASE_OR_FILTER);
   if (casesError) throw casesError;
   const caseIds = (cases ?? [])
     .map((row: { id?: unknown }) => row.id)

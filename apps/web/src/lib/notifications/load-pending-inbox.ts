@@ -44,6 +44,15 @@ export type PendingInboxNotification = {
   reminderCount?: number | null;
   escalatedAt?: string | null;
   escalationReason?: string | null;
+  /** Structured commercial/contract missing fields for dynamic HITL forms. */
+  contractMissingFields?: Array<{
+    key: string;
+    label: string;
+    question: string;
+    kind: string;
+    optional?: boolean;
+    choices?: Array<{ value: string; label: string }>;
+  }> | null;
 };
 
 export type PendingInboxToolConfirmation = {
@@ -153,6 +162,42 @@ function notificationNumberMetadata(
 ) {
   const value = notification.metadata_jsonb?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function notificationContractMissingFields(
+  notification: InternalUserNotification
+): PendingInboxNotification["contractMissingFields"] {
+  const raw = notification.metadata_jsonb?.missing_fields;
+  if (!Array.isArray(raw)) return null;
+  const fields = raw
+    .filter(
+      (item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object" && !Array.isArray(item)
+    )
+    .map((item) => ({
+      key: typeof item.key === "string" ? item.key : "",
+      label: typeof item.label === "string" ? item.label : String(item.key ?? ""),
+      question:
+        typeof item.question === "string" ? item.question : String(item.key ?? ""),
+      kind: typeof item.kind === "string" ? item.kind : "text",
+      optional: item.optional === true,
+      choices: Array.isArray(item.choices)
+        ? item.choices
+            .filter(
+              (choice): choice is Record<string, unknown> =>
+                Boolean(choice) &&
+                typeof choice === "object" &&
+                !Array.isArray(choice)
+            )
+            .map((choice) => ({
+              value: String(choice.value ?? ""),
+              label: String(choice.label ?? choice.value ?? ""),
+            }))
+            .filter((choice) => choice.value.length > 0)
+        : undefined,
+    }))
+    .filter((item) => item.key.length > 0);
+  return fields.length > 0 ? fields : null;
 }
 
 async function includeReminderSourceNotifications(
@@ -270,6 +315,7 @@ export async function loadPendingInboxSnapshot(
       escalationReason: notificationStringMetadata(notification, "escalation_reason"),
       refreshCount: notificationNumberMetadata(notification, "refresh_count"),
       lastRefreshedAt: notificationStringMetadata(notification, "last_refreshed_at"),
+      contractMissingFields: notificationContractMissingFields(notification),
     };
   });
 
@@ -383,6 +429,7 @@ export async function loadResolvedInboxSnapshot(
       lastReminderAt: null,
       refreshCount: notificationNumberMetadata(notification, "refresh_count"),
       lastRefreshedAt: notificationStringMetadata(notification, "last_refreshed_at"),
+      contractMissingFields: notificationContractMissingFields(notification),
     };
   });
 

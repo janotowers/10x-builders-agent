@@ -210,6 +210,38 @@ if (decisionMultiple.route === "clarify") {
   );
 }
 
+const staleAdvancedCase = {
+  ...operationalCase,
+  id: "case-3",
+  context_jsonb: {
+    created_from: "agent_conversation",
+    intake_status: "complete",
+    property_title: "Casa vieja",
+  },
+} as unknown as OperationalCase;
+const staleBinding = {
+  ...binding,
+  id: "binding-3",
+  case_id: "case-3",
+} as OperationalCaseConversationBinding;
+const decisionSingleIntakeAmongStale = resolveTelegramConversationRoute({
+  message: "Casa en venta en Las Fuentes. La zona es Las Fuentes, Zapopan, Jalisco",
+  bindings: [binding, staleBinding],
+  candidateCasesById: new Map([
+    ["case-1", intakeCaseWithId],
+    ["case-3", staleAdvancedCase],
+  ]),
+  explicitIntent: false,
+});
+assert.equal(decisionSingleIntakeAmongStale.route, "case");
+if (decisionSingleIntakeAmongStale.route === "case") {
+  assert.equal(decisionSingleIntakeAmongStale.caseId, "case-1");
+  assert.equal(
+    decisionSingleIntakeAmongStale.reason,
+    "single_matching_binding_continuation"
+  );
+}
+
 const explicitStartMultiple = resolveTelegramConversationRoute({
   message: "Quiero opcionar",
   bindings: [binding, bindingB],
@@ -249,5 +281,56 @@ assert.equal(
   ),
   false
 );
+
+const photosRequestedCase = {
+  current_step: "photos_requested",
+  status: "waiting_internal",
+  context_jsonb: {
+    created_from: "agent_conversation",
+    e2e_controlled: true,
+  },
+} as unknown as OperationalCase;
+
+assert.equal(
+  shouldBindTelegramMessageToConversationalCase({
+    message: "listo",
+    opCase: photosRequestedCase,
+  }),
+  true
+);
+assert.equal(
+  shouldBindTelegramMessageToConversationalCase({
+    message: "ahí te van las fotos",
+    opCase: photosRequestedCase,
+  }),
+  true
+);
+assert.equal(
+  shouldBindTelegramMessageToConversationalCase({
+    message: "Cuántos leads tuvimos en marzo?",
+    opCase: photosRequestedCase,
+  }),
+  false
+);
+
+const photosBinding = {
+  ...binding,
+  id: "binding-photos",
+  case_id: "case-photos",
+} as OperationalCaseConversationBinding;
+const photosCaseWithId = {
+  ...photosRequestedCase,
+  id: "case-photos",
+} as unknown as OperationalCase;
+const decisionPhotosListo = resolveTelegramConversationRoute({
+  message: "listo",
+  bindings: [photosBinding],
+  candidateCasesById: new Map([["case-photos", photosCaseWithId]]),
+  explicitIntent: false,
+});
+assert.equal(decisionPhotosListo.route, "case");
+if (decisionPhotosListo.route === "case") {
+  assert.equal(decisionPhotosListo.caseId, "case-photos");
+}
 
 console.log("conversational-case-routing.route-selftest: ok");

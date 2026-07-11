@@ -200,6 +200,7 @@ export async function POST(request: Request) {
       title: `${caseType.display_name} - prueba`,
       created_from: "case_type_settings_test",
       test_mode: true,
+      publication_mode: "active",
       case_type_id: caseType.id,
     };
     context.property_data = buildCanonicalPropertyData(context);

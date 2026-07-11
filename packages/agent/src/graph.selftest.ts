@@ -4,6 +4,7 @@ import {
   operationalStepUsesTenantBigQueryForTest,
   resolveStepBoundSkillSlugForTest,
   shouldBlockCompanyDataAnswerWithoutSuccessfulBigQueryForTest,
+  shouldRequireListingDescriptionDraftForTest,
 } from "./graph";
 import type { ResolvedSkill } from "./skills/types";
 
@@ -123,6 +124,44 @@ assert.equal(
     message: "hola",
     toolNamesAvailable: new Set(["bigquery_run_query"]),
     successfulBigQueryCalls: 0,
+  }),
+  false
+);
+
+assert.equal(
+  shouldRequireListingDescriptionDraftForTest({
+    operationalStepKey: "package_ready",
+    message:
+      "Acción esperada: el asesor pidió cambios en la descripción comercial. Llama prepare_listing_description_draft(case_id).",
+    toolNamesAvailable: ["prepare_listing_description_draft", "notify_user"],
+  }),
+  true
+);
+
+assert.equal(
+  shouldRequireListingDescriptionDraftForTest({
+    operationalStepKey: "package_ready",
+    message: "Llama prepare_listing_description_draft(case_id).",
+    toolNamesAvailable: ["prepare_listing_description_draft"],
+    toolCallNames: ["prepare_listing_description_draft"],
+  }),
+  false
+);
+
+assert.equal(
+  shouldRequireListingDescriptionDraftForTest({
+    operationalStepKey: "package_ready",
+    message: "Llama prepare_listing_description_draft(case_id).",
+    toolNamesAvailable: ["notify_user"],
+  }),
+  false
+);
+
+assert.equal(
+  shouldRequireListingDescriptionDraftForTest({
+    operationalStepKey: "photos_requested",
+    message: "Llama prepare_listing_description_draft(case_id).",
+    toolNamesAvailable: ["prepare_listing_description_draft"],
   }),
   false
 );

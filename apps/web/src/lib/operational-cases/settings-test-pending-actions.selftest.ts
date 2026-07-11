@@ -92,6 +92,21 @@ function main() {
   assert.equal(informationalNotification.historicalActions.length, 1);
   assert.equal(informationalNotification.historicalActions[0]?.blocking, false);
 
+  const photosUploadRequested = partitionSettingsTestPendingActions({
+    actions: [
+      pendingNotificationAction({
+        id: "notification:n-photos",
+        notification_id: "n-photos",
+        notification_kind: "photos_upload_requested",
+        created_at: "2026-06-16T10:30:00.000Z",
+      }),
+    ],
+    lastTransitionAt: "2026-06-16T10:00:00.000Z",
+    caseRunnerSessionIds: new Set(["session-1"]),
+  });
+  assert.equal(photosUploadRequested.blockingActions.length, 0);
+  assert.equal(photosUploadRequested.historicalActions.length, 1);
+
   const expansionDecisionNotification = partitionSettingsTestPendingActions({
     actions: [
       pendingNotificationAction({

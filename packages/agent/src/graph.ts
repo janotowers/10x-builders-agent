@@ -609,8 +609,50 @@ function isInternalCorrectionMessage(message: BaseMessage): boolean {
   return (
     content.startsWith("[CORRECCIÓN INTERNA — COMPANY-DATA]") ||
     content.startsWith("[CORRECCIÓN INTERNA — LEAD-FOLLOW-UP-DRAFT]") ||
-    content.startsWith("[CORRECCIÓN INTERNA — MEMORY-CURATE]")
+    content.startsWith("[CORRECCIÓN INTERNA — MEMORY-CURATE]") ||
+    content.startsWith("[CORRECCIÓN INTERNA — LISTING-DESCRIPTION-DRAFT]")
   );
+}
+
+/**
+ * Tick E2E / case_runner pide regenerar o preparar borrador comercial y la
+ * tool está enlazada, pero el modelo a veces cierra solo con
+ * operational_case_update_state inventando que "no dispone" de
+ * prepare_listing_description_draft. Misma familia que company-data.
+ */
+export function shouldRequireListingDescriptionDraftForTest(args: {
+  readonly operationalStepKey: string | null | undefined;
+  readonly message: string | undefined;
+  readonly toolNamesAvailable: ReadonlySet<string> | readonly string[];
+  readonly toolCallNames?: readonly string[];
+}): boolean {
+  if (args.operationalStepKey !== "package_ready") return false;
+  const available =
+    args.toolNamesAvailable instanceof Set
+      ? args.toolNamesAvailable
+      : new Set(args.toolNamesAvailable);
+  if (!available.has("prepare_listing_description_draft")) return false;
+  if (args.toolCallNames?.includes("prepare_listing_description_draft")) {
+    return false;
+  }
+  const text = args.message ?? "";
+  if (!text.trim()) return false;
+  return (
+    /prepare_listing_description_draft/i.test(text) ||
+    /pidió cambios en la descripción comercial/i.test(text) ||
+    /cerró un pendiente prematuro sin borrador/i.test(text) ||
+    /listing_description_review\.change_classification/i.test(text) ||
+    /preparar el paquete comercial/i.test(text)
+  );
+}
+
+function shouldRequireListingDescriptionDraftForTurn(args: {
+  readonly operationalStepKey: string | null;
+  readonly message: string | undefined;
+  readonly toolNamesAvailable: Set<string>;
+  readonly toolCallNames: readonly string[];
+}): boolean {
+  return shouldRequireListingDescriptionDraftForTest(args);
 }
 
 function shouldAskLeadIdentifierBeforeDraft(args: {
@@ -1601,6 +1643,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   );
   const companyDataQueryCorrection = `[CORRECCIÓN INTERNA — COMPANY-DATA]\nLa skill company-data está activa y este turno pide una métrica o período de datos de negocio. Tu respuesta anterior intentó cerrar sin llamar a bigquery_run_query. Eso no está permitido aunque el historial contenga un número previo.\n\nAhora emite exactamente el/los tool_call(s) bigquery_run_query necesarios para el MENSAJE ACTUAL del usuario: "${(message ?? "").replace(/\n/g, " ").slice(0, 200)}". Si el mensaje actual nombra un solo período, consulta SOLO ese período. No respondas texto final hasta recibir el resultado de BigQuery.`;
   const memoryCurateCorrection = `[CORRECCIÓN INTERNA — MEMORY-CURATE]\nLa skill memory-curate está activa para el mensaje actual del usuario: "${(message ?? "").replace(/\n/g, " ").slice(0, 200)}". Tu respuesta anterior intentó contestar o confirmar cambios usando historial conversacional. Eso no está permitido para recuerdos de largo plazo porque el estado activo puede haber cambiado.\n\nDebes emitir ahora un tool_call apropiado antes de responder:\n- Si el usuario pregunta qué recuerdas sobre un tema/persona, usa search_user_memories con ese tema.\n- Si pide listar recuerdos o qué recuerdas de él/ella en general, usa list_user_memories con status="active".\n- Si está confirmando archivar/borrar recuerdos mostrados inmediatamente antes, emite archive_user_memory/delete_user_memory usando los UUID completos previamente mostrados o vuelve a buscar/listar si no estás seguro.\nNo vuelvas a listar recuerdos desde historial ni memoria inyectada.`;
+  const listingDescriptionDraftCorrection = `[CORRECCIÓN INTERNA — LISTING-DESCRIPTION-DRAFT]\nEste turno de package_ready exige regenerar o preparar el borrador comercial. Tu respuesta anterior cerró sin llamar prepare_listing_description_draft (p. ej. solo operational_case_update_state o texto diciendo que "no dispones" de la tool).\n\nEso es incorrecto: prepare_listing_description_draft SÍ está enlazada en este turno${toolNamesAvailable.has("lookup_property_surroundings") ? " (también lookup_property_surroundings)" : ""}.\n\nAhora DEBES emitir tool_call(s):\n1) Si zone_context tiene POIs vacíos o lat/lng=0, llama lookup_property_surroundings(case_id=...) SIN latitude/longitude.\n2) Llama prepare_listing_description_draft(case_id) incorporando listing_description_review / highlights / replacement_candidate del contexto.\n3) Luego notify_user(kind=listing_description_review) solo con borrador real.\nProhibido cerrar solo con operational_case_update_state inventando que faltan tools.`;
   if (
     !input.autoApproveTools &&
     !resumeDecision &&
@@ -1618,6 +1661,36 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 - Si te falta UN dato esencial (hora exacta o cuál es el qué), haz UNA sola pregunta corta y NADA más; no anuncies que vas a programar.
 - "cada N minutos/horas/días" → schedule_type="recurring" con cron_expr (p.ej. "*/5 * * * *" para cada 5 min).
 - "en N minutos" o "hoy a las HH:MM" → schedule_type="one_time" con run_at en ISO 8601 con offset de la zona del usuario.`;
+  }
+
+  if (
+    !resumeDecision &&
+    message &&
+    shouldRequireListingDescriptionDraftForTest({
+      operationalStepKey: boundOperationalStepKey,
+      message,
+      toolNamesAvailable,
+      toolCallNames: [],
+    })
+  ) {
+    effectiveSystemPrompt =
+      effectiveSystemPrompt.trimEnd() +
+      `
+
+[ATAJO — ESTE TURNO · LISTING DESCRIPTION]
+- prepare_listing_description_draft ESTÁ disponible en este turno. PROHIBIDO decir que "no dispones" de esa tool o de lookup_property_surroundings.
+- DEBES llamar prepare_listing_description_draft(case_id) en este turno (tras lookup_property_surroundings si zone_context/POIs están vacíos o se usó lat/lng=0).
+- PROHIBIDO cerrar solo con operational_case_update_state sin haber regenerado el borrador.`;
+  } else if (
+    !resumeDecision &&
+    message &&
+    boundOperationalStepKey === "package_ready" &&
+    /prepare_listing_description_draft/i.test(message) &&
+    !toolNamesAvailable.has("prepare_listing_description_draft")
+  ) {
+    console.warn(
+      `[ops-case] package_ready tick pide prepare_listing_description_draft pero NO está enlazada; caseId=${input.caseId ?? "(none)"} skill=${activeSkill?.rootName ?? "none"} tools=${[...toolNamesAvailable].join(",")}`
+    );
   }
 
   if (
@@ -1715,6 +1788,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   let companyDataQueryCorrectionCount = 0;
   let leadContextQueryCorrectionCount = 0;
   let memoryCurateCorrectionCount = 0;
+  let listingDescriptionDraftCorrectionCount = 0;
 
   const leadIdentifierRequest =
     "Claro. Para redactarlo con contexto real, compárteme el nombre, teléfono o correo del lead.";
@@ -1786,6 +1860,24 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       memoryCurateCorrectionCount += 1;
       return {
         messages: [response, new HumanMessage(memoryCurateCorrection)],
+      };
+    }
+    if (
+      !hasToolCalls &&
+      listingDescriptionDraftCorrectionCount < 1 &&
+      shouldRequireListingDescriptionDraftForTurn({
+        operationalStepKey: boundOperationalStepKey,
+        message,
+        toolNamesAvailable,
+        toolCallNames,
+      })
+    ) {
+      listingDescriptionDraftCorrectionCount += 1;
+      console.warn(
+        `[ops-case] listing-description-draft correction: caseId=${input.caseId ?? "(none)"} step=${boundOperationalStepKey ?? "(none)"} skill=${activeSkill?.rootName ?? "none"} toolsBound=${toolNamesAvailable.has("prepare_listing_description_draft")}`
+      );
+      return {
+        messages: [response, new HumanMessage(listingDescriptionDraftCorrection)],
       };
     }
     return hasToolCalls

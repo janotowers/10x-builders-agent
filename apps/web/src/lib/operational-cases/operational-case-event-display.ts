@@ -282,6 +282,13 @@ export function formatOperationalCaseEventSummary(
         : null;
     return originalName ? `Documento recibido: ${originalName}` : "Documento recibido";
   }
+  if (technicalKind === "photo_registered") {
+    const originalName =
+      typeof payload.original_name === "string" && payload.original_name.trim()
+        ? payload.original_name.trim()
+        : null;
+    return originalName ? `Foto recibida: ${originalName}` : "Foto recibida";
+  }
 
   if (event.event_type === "external_response") return "Respuesta del contacto externo";
 

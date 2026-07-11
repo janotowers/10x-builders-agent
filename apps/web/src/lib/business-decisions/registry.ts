@@ -23,6 +23,7 @@ import {
   handlePublishDestinationApprovalDecision,
   parsePublishDestinationApprovalDecision,
 } from "./publish-destination-approval";
+import { handlePublicationReviewDecision } from "./publication-review";
 import {
   BUSINESS_DECISION_LABELS,
   type BusinessDecisionKind,
@@ -35,9 +36,12 @@ export interface BusinessDecisionHandlerInput {
   userId: string;
   notificationId: string;
   text: string;
+  /** Typed commercial patch for contract_data_review (partial capture). */
+  patch?: Record<string, unknown>;
   /**
    * Lo usan decisiones que avanzan flujo en casos E2E controlados (por ejemplo
-   * `price_approval`, `contract_review`, `listing_description_review`):
+   * `price_approval`, `contract_review`, `listing_description_review`,
+   * `publish_destination_approval`):
    * difiere el tick del agente para que el caller (webhook de Telegram) envíe
    * primero la confirmación al usuario.
    */
@@ -117,6 +121,22 @@ export const BUSINESS_DECISION_HANDLERS: Record<
     label: BUSINESS_DECISION_LABELS.publish_destination_approval,
     parse: parsePublishDestinationApprovalDecision,
     handle: handlePublishDestinationApprovalDecision,
+  },
+  publication_review: {
+    kind: "publication_review",
+    notificationKind: "publication_review_required",
+    label: BUSINESS_DECISION_LABELS.publication_review,
+    parse: (text: string) => {
+      const normalized = text.trim().toLowerCase();
+      if (/\b(aprobar|continuar|approve|continue)\b/.test(normalized)) {
+        return { intent: "approve_continue" };
+      }
+      if (/\b(detener|stop|rechazar)\b/.test(normalized)) {
+        return { intent: "stop" };
+      }
+      return { intent: "unclear", reason: "Respuesta no reconocida." };
+    },
+    handle: handlePublicationReviewDecision,
   },
 };
 

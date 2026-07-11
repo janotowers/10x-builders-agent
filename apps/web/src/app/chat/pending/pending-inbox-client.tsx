@@ -87,6 +87,12 @@ function dueBadgeState(dueAtIso: string | null | undefined) {
   };
 }
 
+function publishDestinationLabel(kind: string) {
+  if (kind === "easybroker_publish_approval") return "EasyBroker";
+  if (kind === "ungga_publish_approval") return "Ungga";
+  return "destino";
+}
+
 function formatDateTime(value: string | null | undefined): string | null {
   if (!value) return null;
   const date = new Date(value);
@@ -439,6 +445,68 @@ export function PendingInboxClient({
     }
   }
 
+  async function submitPublishDestinationApprovalDecision(
+    notificationId: string,
+    payload: { action?: "approve" | "skip" | "reject"; text?: string }
+  ) {
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]: "Procesando...",
+    }));
+    const res = await fetch("/api/business-decisions/publish-destination-approval", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        notification_id: notificationId,
+        ...payload,
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      message?: string;
+      error?: string;
+    };
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]:
+        data.message ?? data.error ?? (res.ok ? "Listo." : "No se pudo procesar."),
+    }));
+    if (res.ok && data.ok !== false) {
+      await refreshNotifications();
+    }
+  }
+
+  async function submitPublicationReviewDecision(
+    notificationId: string,
+    payload: { action?: "approve_continue" | "stop"; text?: string }
+  ) {
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]: "Procesando...",
+    }));
+    const res = await fetch("/api/business-decisions/publication-review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        notification_id: notificationId,
+        ...payload,
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      message?: string;
+      error?: string;
+    };
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]:
+        data.message ?? data.error ?? (res.ok ? "Listo." : "No se pudo procesar."),
+    }));
+    if (res.ok && data.ok !== false) {
+      await refreshNotifications();
+    }
+  }
+
   async function submitComparablesExpansionDecision(
     notificationId: string,
     payload: {
@@ -506,7 +574,7 @@ export function PendingInboxClient({
 
   async function submitContractDataReviewDecision(
     notificationId: string,
-    payload: { text?: string }
+    payload: { text?: string; patch?: Record<string, unknown> }
   ) {
     setNotificationActionStatus((current) => ({
       ...current,
@@ -518,6 +586,7 @@ export function PendingInboxClient({
       body: JSON.stringify({
         notification_id: notificationId,
         text: payload.text ?? "",
+        ...(payload.patch ? { patch: payload.patch } : {}),
       }),
     });
     const data = (await res.json().catch(() => ({}))) as {
@@ -1149,13 +1218,17 @@ export function PendingInboxClient({
                   )
                 : notificationConfig.reviewCtaLabel ?? "Revisar en flujo";
               // Informational notifications only need an acknowledge button.
-              // Actionable cards show the review CTA and avoid an ambiguous
-              // "Entendido" that competes with the real action; we only fall
-              // back to acknowledge when there is no actionable destination.
+              // Structured HITL cards use inline buttons and avoid a competing
+              // "Entendido". Free-form / legacy cards (no businessDecision) still
+              // get Entendido even when they have a case link, so orphans can be
+              // dismissed without opening the flow.
               const showReviewCta =
                 !hasStructuredDecision && !isInformational && Boolean(primaryReviewHref);
               const showAcknowledge =
-                !hasStructuredDecision && (isInformational || !primaryReviewHref);
+                !hasStructuredDecision &&
+                (isInformational ||
+                  !primaryReviewHref ||
+                  !notificationConfig.businessDecision);
               const showSecondaryFlowLink =
                 hasStructuredDecision && Boolean(primaryReviewHref);
               const isHitlReminder =
@@ -1361,28 +1434,111 @@ export function PendingInboxClient({
                                 [notification.id]: event.target.value,
                               }))
                             }
-                            placeholder="Ej. Hazlo más corto, agrega puntos clave o pega una versión exacta"
+                            placeholder="Opcional: cambios concretos, o vacío para regenerar el borrador"
                             className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
                           />
                           <button
                             type="button"
                             onClick={() => {
                               const notes = (notificationInputs[notification.id] ?? "").trim();
-                              if (!notes) {
-                                setNotificationActionStatus((current) => ({
-                                  ...current,
-                                  [notification.id]:
-                                    "Escribe los cambios o usa 'Aprobar descripción'.",
-                                }));
-                                return;
-                              }
                               void submitListingDescriptionReviewDecision(notification.id, {
-                                text: notes,
+                                text:
+                                  notes ||
+                                  "Continuar: generar o regenerar el borrador comercial.",
                               });
                             }}
                             className="rounded-xl border border-emerald-200 px-3 py-2 font-semibold text-emerald-700 hover:bg-emerald-50 dark:border-emerald-300/20 dark:text-emerald-100"
                           >
                             Pedir cambios
+                          </button>
+                        </div>
+                        {notificationActionStatus[notification.id] ? (
+                          <p className="text-[11px] text-slate-500 dark:text-white/60">
+                            {notificationActionStatus[notification.id]}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {inlineActionKind === "publish_destination_approval" ? (
+                      <div className="mt-3 space-y-2 rounded-2xl border border-blue-100 bg-blue-50/70 p-2 dark:border-blue-300/20 dark:bg-blue-300/10">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-blue-100">
+                          Aprobación de publicación ·{" "}
+                          {publishDestinationLabel(notification.kind)}
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void submitPublishDestinationApprovalDecision(
+                                notification.id,
+                                { action: "approve" }
+                              )
+                            }
+                            className="rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700"
+                          >
+                            Publicar en{" "}
+                            {publishDestinationLabel(notification.kind)}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void submitPublishDestinationApprovalDecision(
+                                notification.id,
+                                { action: "skip" }
+                              )
+                            }
+                            className="rounded-full bg-slate-600 px-2 py-1 font-semibold text-white hover:bg-slate-700"
+                          >
+                            No publicar en{" "}
+                            {publishDestinationLabel(notification.kind)}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void submitPublishDestinationApprovalDecision(
+                                notification.id,
+                                { action: "reject" }
+                              )
+                            }
+                            className="rounded-full border border-rose-200 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-300/20 dark:text-rose-100"
+                          >
+                            Detener y revisar
+                          </button>
+                        </div>
+                        {notificationActionStatus[notification.id] ? (
+                          <p className="text-[11px] text-slate-500 dark:text-white/60">
+                            {notificationActionStatus[notification.id]}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {inlineActionKind === "publication_review" ? (
+                      <div className="mt-3 space-y-2 rounded-2xl border border-amber-100 bg-amber-50/70 p-2 dark:border-amber-300/20 dark:bg-amber-300/10">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-100">
+                          Revisión condicional de publicación
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void submitPublicationReviewDecision(notification.id, {
+                                action: "approve_continue",
+                              })
+                            }
+                            className="rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700"
+                          >
+                            Aprobar y continuar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void submitPublicationReviewDecision(notification.id, {
+                                action: "stop",
+                              })
+                            }
+                            className="rounded-full border border-rose-200 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-300/20 dark:text-rose-100"
+                          >
+                            Detener y revisar
                           </button>
                         </div>
                         {notificationActionStatus[notification.id] ? (
@@ -1517,39 +1673,193 @@ export function PendingInboxClient({
                         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-100">
                           Datos contractuales faltantes
                         </p>
-                        <div className="flex flex-col gap-1 sm:flex-row">
-                          <input
-                            value={notificationInputs[notification.id] ?? ""}
-                            onChange={(event) =>
-                              setNotificationInputs((current) => ({
-                                ...current,
-                                [notification.id]: event.target.value,
-                              }))
-                            }
-                            placeholder="Correo del comitente, ej. maria.castaneda@example.com"
-                            className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const email = (notificationInputs[notification.id] ?? "").trim();
-                              if (!email) {
-                                setNotificationActionStatus((current) => ({
-                                  ...current,
-                                  [notification.id]:
-                                    "Escribe el correo del comitente para continuar.",
-                                }));
-                                return;
+                        {(notification.contractMissingFields ?? []).length > 0 ? (
+                          <div className="space-y-2">
+                            {(notification.contractMissingFields ?? []).map((field) => {
+                              const draftKey = `${notification.id}:${field.key}`;
+                              const draftValue = notificationInputs[draftKey] ?? "";
+                              if (field.kind === "boolean") {
+                                return (
+                                  <div key={field.key} className="space-y-1">
+                                    <p className="text-[11px] text-slate-600 dark:text-white/70">
+                                      {field.question}
+                                      {field.optional ? " (opcional)" : ""}
+                                    </p>
+                                    <div className="flex flex-wrap gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void submitContractDataReviewDecision(
+                                            notification.id,
+                                            {
+                                              patch: {
+                                                [field.key === "collaboration_enabled"
+                                                  ? "collaboration_enabled"
+                                                  : field.key]: true,
+                                              },
+                                            }
+                                          )
+                                        }
+                                        className="rounded-full bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700"
+                                      >
+                                        Sí
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void submitContractDataReviewDecision(
+                                            notification.id,
+                                            {
+                                              patch: {
+                                                [field.key === "collaboration_enabled"
+                                                  ? "collaboration_enabled"
+                                                  : field.key]: false,
+                                              },
+                                            }
+                                          )
+                                        }
+                                        className="rounded-full border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-white dark:border-white/20 dark:text-white"
+                                      >
+                                        No
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
                               }
-                              void submitContractDataReviewDecision(notification.id, {
-                                text: email,
-                              });
-                            }}
-                            className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
-                          >
-                            Guardar y continuar
-                          </button>
-                        </div>
+                              if (field.kind === "choice" && field.choices?.length) {
+                                return (
+                                  <div key={field.key} className="space-y-1">
+                                    <p className="text-[11px] text-slate-600 dark:text-white/70">
+                                      {field.question}
+                                      {field.optional ? " (opcional)" : ""}
+                                    </p>
+                                    <div className="flex flex-wrap gap-1">
+                                      {field.choices.map((choice) => (
+                                        <button
+                                          key={choice.value}
+                                          type="button"
+                                          onClick={() =>
+                                            void submitContractDataReviewDecision(
+                                              notification.id,
+                                              {
+                                                patch: {
+                                                  compensation_mode: choice.value,
+                                                },
+                                              }
+                                            )
+                                          }
+                                          className="rounded-full border border-amber-200 px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-300/30 dark:text-amber-100"
+                                        >
+                                          {choice.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div key={field.key} className="space-y-1">
+                                  <p className="text-[11px] text-slate-600 dark:text-white/70">
+                                    {field.question}
+                                    {field.optional ? " (opcional)" : ""}
+                                  </p>
+                                  <div className="flex flex-col gap-1 sm:flex-row">
+                                    <input
+                                      value={draftValue}
+                                      onChange={(event) =>
+                                        setNotificationInputs((current) => ({
+                                          ...current,
+                                          [draftKey]: event.target.value,
+                                        }))
+                                      }
+                                      placeholder={
+                                        field.kind === "email"
+                                          ? "ej. maria.castaneda@example.com"
+                                          : field.kind === "number"
+                                            ? "Número"
+                                            : "Respuesta"
+                                      }
+                                      className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const value = draftValue.trim();
+                                        if (!value) {
+                                          setNotificationActionStatus((current) => ({
+                                            ...current,
+                                            [notification.id]:
+                                              "Completa el campo para continuar.",
+                                          }));
+                                          return;
+                                        }
+                                        const patch: Record<string, unknown> = {};
+                                        if (field.key === "owner_email") {
+                                          patch.owner_email = value;
+                                        } else if (field.key === "commission_pct") {
+                                          patch.commission_pct = Number(
+                                            value.replace(/%/g, "").replace(/,/g, ".")
+                                          );
+                                        } else if (field.key === "duration_months") {
+                                          patch.duration_months = Number(value);
+                                        } else if (field.key === "compensation_value") {
+                                          patch.compensation_value = Number(
+                                            value.replace(/,/g, ".")
+                                          );
+                                        } else {
+                                          patch[field.key] = value;
+                                        }
+                                        void submitContractDataReviewDecision(
+                                          notification.id,
+                                          { patch }
+                                        );
+                                      }}
+                                      className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
+                                    >
+                                      Guardar
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-1 sm:flex-row">
+                            <input
+                              value={notificationInputs[notification.id] ?? ""}
+                              onChange={(event) =>
+                                setNotificationInputs((current) => ({
+                                  ...current,
+                                  [notification.id]: event.target.value,
+                                }))
+                              }
+                              placeholder="Correo, sí/no compartir comisión, comisión total %, exclusiva, duración…"
+                              className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const text = (
+                                  notificationInputs[notification.id] ?? ""
+                                ).trim();
+                                if (!text) {
+                                  setNotificationActionStatus((current) => ({
+                                    ...current,
+                                    [notification.id]:
+                                      "Escribe los datos faltantes para continuar.",
+                                  }));
+                                  return;
+                                }
+                                void submitContractDataReviewDecision(notification.id, {
+                                  text,
+                                });
+                              }}
+                              className="rounded-xl border border-violet-200 px-3 py-2 font-semibold text-violet-700 hover:bg-violet-50 dark:border-violet-300/20 dark:text-violet-100"
+                            >
+                              Guardar y continuar
+                            </button>
+                          </div>
+                        )}
                         {notificationActionStatus[notification.id] ? (
                           <p className="text-[11px] text-slate-500 dark:text-white/60">
                             {notificationActionStatus[notification.id]}

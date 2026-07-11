@@ -8,6 +8,8 @@ import {
   buildCaseDocumentRequestTargetPrompt,
   buildDocumentRouteConfirmationAck,
   buildOperationalCaseContinuationReprompt,
+  isInternalMediaCollectionCase,
+  isInternalPhotosCollectionCase,
   messageLooksLikeDocumentTargetChoice,
   parseCaseDocumentRequestTargetChoice,
   shouldPromptCaseDocumentRequestTarget,
@@ -225,5 +227,46 @@ const continuationNoTarget = buildOperationalCaseContinuationReprompt(
 );
 assert.ok(continuationNoTarget.includes("«interno»"));
 assert.ok(continuationNoTarget.includes("«externo»"));
+
+const photosCase = {
+  id: "photos-1",
+  user_id: "u1",
+  case_type: "property_optioning",
+  current_step: "photos_requested",
+  status: "waiting_internal",
+  context_jsonb: {
+    created_from: "agent_conversation",
+    e2e_controlled: true,
+  },
+  version: 1,
+} as unknown as OperationalCase;
+
+assert.equal(isInternalPhotosCollectionCase(photosCase), true);
+assert.equal(isInternalMediaCollectionCase(photosCase), true);
+assert.equal(
+  isInternalPhotosCollectionCase(
+    conversationalAwaitingDocs({ document_request_target: "internal_user" })
+  ),
+  false
+);
+assert.equal(
+  isInternalMediaCollectionCase(
+    conversationalAwaitingDocs({ document_request_target: "internal_user" })
+  ),
+  true
+);
+assert.equal(
+  isInternalMediaCollectionCase(
+    conversationalAwaitingDocs({ document_request_target: "external_contact" })
+  ),
+  false
+);
+assert.equal(
+  isInternalPhotosCollectionCase({
+    ...photosCase,
+    status: "paused",
+  } as unknown as OperationalCase),
+  false
+);
 
 console.log("document-request-target.selftest: ok");

@@ -1964,6 +1964,38 @@ function easyBrokerCreateCaseRecipe(ctx: Record<string, unknown>): Record<string
   args.bathrooms = fullBathrooms;
   if (bathrooms != null && bathrooms % 1 > 0) args.half_bathrooms = 1;
   args.parking_spaces = parking;
+  const floors = firstNumber(ctx, ["floors", "niveles", "pisos"]);
+  if (floors != null && floors > 0) args.floors = Math.trunc(floors);
+  const exteriorNumber = firstString(ctx, [
+    "exterior_number",
+    "numero_exterior",
+    "num_ext",
+  ]);
+  const postalCode = firstString(ctx, ["postal_code", "cp", "codigo_postal"]);
+  if (exteriorNumber || postalCode) {
+    args.location = {
+      ...(args.location as Record<string, unknown>),
+      ...(exteriorNumber ? { exterior_number: exteriorNumber } : {}),
+      ...(postalCode ? { postal_code: postalCode } : {}),
+    };
+  }
+  const tags = [
+    cityArea,
+    city,
+    propertyType,
+    operation === "rent" ? "Renta" : "Venta",
+  ].filter(Boolean);
+  if (tags.length) args.tags = [...new Set(tags)];
+  args.private_description =
+    firstString(ctx, ["private_description", "notas_privadas"]) ??
+    `${propertyType} en ${operationLabel} en ${locationFullName}. ${formatCount(
+      bedrooms,
+      "recámara",
+      "recámaras"
+    )}, ${formatCount(fullBathrooms, "baño", "baños")}.`;
+  args.show_exact_location = false;
+  args.show_prices = true;
+  // No enviar custom_fields ni features libres: el adapter allowlista el contrato.
   return args;
 }
 

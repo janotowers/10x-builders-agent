@@ -2,16 +2,27 @@ import {
   getInternalUserNotification,
   getOperationalCase,
   insertOperationalCaseEvent,
+  refreshInternalUserNotificationContent,
   resolveInternalNotificationWithReminders,
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import {
+  applyCommissionTermsPatch,
+  buildContractCommercialMinimumsSummaryMessage,
+  evaluateContractCommercialMinimums,
+  parseCommissionTerms,
+  parseContractCommercialReply,
+  type ContractCommercialMissingField,
+  type ContractCommercialPatch,
+} from "@agents/agent";
 import { isControlledE2EOperationalCase } from "@agents/types";
 import { runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settings-test-case-tick";
 
 export type ParsedContractDataReviewReply = {
   intent: "provide_data" | "unclear";
   owner_email?: string;
+  patch?: ContractCommercialPatch;
   reason?: string;
 };
 
@@ -30,30 +41,121 @@ export function extractOwnerEmailFromContractDataReply(text: string): string | n
   return looksLikeEmail(email) ? email : null;
 }
 
-export function parseContractDataReviewReply(text: string): ParsedContractDataReviewReply {
+function missingFieldsFromMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): ContractCommercialMissingField[] {
+  const structured = metadata?.missing_fields;
+  if (Array.isArray(structured)) {
+    return structured.filter(
+      (item): item is ContractCommercialMissingField =>
+        isRecord(item) &&
+        typeof item.key === "string" &&
+        typeof item.question === "string"
+    );
+  }
+  const keys = Array.isArray(metadata?.missing_required_fields)
+    ? metadata.missing_required_fields.filter(
+        (field): field is string =>
+          typeof field === "string" && field.trim().length > 0
+      )
+    : [];
+  return keys.map((key) => ({
+    key,
+    label: key,
+    question: key,
+    kind:
+      key === "owner_email"
+        ? "email"
+        : key === "collaboration_enabled" || key === "exclusive"
+          ? "boolean"
+          : "text",
+  }));
+}
+
+/**
+ * Backward-compatible text parser. Prefer typed `patch` from the API/UI.
+ */
+export function parseContractDataReviewReply(
+  text: string,
+  missing?: ContractCommercialMissingField[]
+): ParsedContractDataReviewReply {
   const trimmed = text.trim();
   if (!trimmed) {
-    return { intent: "unclear", reason: "Escribe el correo del comitente para continuar." };
+    return {
+      intent: "unclear",
+      reason: "Escribe los datos faltantes para continuar.",
+    };
   }
+
+  if (missing && missing.length > 0) {
+    const parsed = parseContractCommercialReply(trimmed, missing);
+    if (parsed.intent === "unclear") {
+      return { intent: "unclear", reason: parsed.reason, patch: {} };
+    }
+    return {
+      intent: "provide_data",
+      patch: parsed.patch,
+      owner_email: parsed.patch.owner_email,
+    };
+  }
+
+  // Legacy email-only fallback
   const ownerEmail = extractOwnerEmailFromContractDataReply(trimmed);
   if (!ownerEmail) {
     return {
       intent: "unclear",
       reason:
-        "No encontré un correo válido. Ejemplo: maria.castaneda@example.com",
+        "No encontré datos válidos. Ejemplo: maria.castaneda@example.com · Sí se comparte comisión · Comisión total 5% · Exclusiva · Duración 6 meses",
     };
   }
-  return { intent: "provide_data", owner_email: ownerEmail };
+  return {
+    intent: "provide_data",
+    owner_email: ownerEmail,
+    patch: { owner_email: ownerEmail },
+  };
 }
 
-function missingRequiredFieldsFromNotification(
-  metadata: Record<string, unknown> | null | undefined
-): string[] {
-  const raw = metadata?.missing_required_fields;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (field): field is string => typeof field === "string" && field.trim().length > 0
-  );
+function normalizePatch(raw: unknown): ContractCommercialPatch {
+  if (!isRecord(raw)) return {};
+  const patch: ContractCommercialPatch = {};
+  if (typeof raw.owner_email === "string" && looksLikeEmail(raw.owner_email)) {
+    patch.owner_email = raw.owner_email.trim();
+  }
+  if ("commission_pct" in raw) {
+    patch.commission_pct =
+      raw.commission_pct === null ? null : Number(raw.commission_pct);
+  }
+  if ("exclusive" in raw) {
+    patch.exclusive =
+      raw.exclusive === null ? null : Boolean(raw.exclusive);
+  }
+  if ("duration_months" in raw) {
+    patch.duration_months =
+      raw.duration_months === null ? null : Number(raw.duration_months);
+  }
+  if ("collaboration_enabled" in raw) {
+    patch.collaboration_enabled =
+      raw.collaboration_enabled === null
+        ? null
+        : Boolean(raw.collaboration_enabled);
+  }
+  if (typeof raw.compensation_mode === "string") {
+    patch.compensation_mode =
+      raw.compensation_mode as ContractCommercialPatch["compensation_mode"];
+  }
+  if ("compensation_value" in raw) {
+    patch.compensation_value =
+      raw.compensation_value === null ? null : Number(raw.compensation_value);
+  }
+  if (typeof raw.compensation_currency === "string" || raw.compensation_currency === null) {
+    patch.compensation_currency = raw.compensation_currency as string | null;
+  }
+  if (typeof raw.collaboration_notes === "string" || raw.collaboration_notes === null) {
+    patch.collaboration_notes = raw.collaboration_notes as string | null;
+  }
+  if (raw.confirm === true) patch.confirm = true;
+  if (typeof raw.confirmed_by === "string") patch.confirmed_by = raw.confirmed_by;
+  return patch;
 }
 
 export async function handleContractDataReviewDecision(
@@ -61,7 +163,8 @@ export async function handleContractDataReviewDecision(
   params: {
     userId: string;
     notificationId: string;
-    text: string;
+    text?: string;
+    patch?: ContractCommercialPatch | Record<string, unknown>;
   }
 ) {
   const notification = await getInternalUserNotification(db, params.notificationId);
@@ -95,39 +198,99 @@ export async function handleContractDataReviewDecision(
     };
   }
 
-  const parsed = parseContractDataReviewReply(params.text);
-  if (parsed.intent === "unclear") {
-    return { ok: false, status: "unclear", message: parsed.reason };
-  }
-
   const metadata = isRecord(notification.metadata_jsonb)
     ? notification.metadata_jsonb
     : {};
-  const missingRequiredFields = missingRequiredFieldsFromNotification(metadata);
-  const ownerEmail = parsed.owner_email!;
-  if (missingRequiredFields.includes("owner_email") || missingRequiredFields.length === 0) {
-    // owner_email is the primary HITL field today; allow capture even if metadata is empty.
-  }
-
   const context = (opCase.context_jsonb ?? {}) as Record<string, unknown>;
   const propertyData = isRecord(context.property_data)
     ? { ...context.property_data }
     : {};
 
+  const evaluationBefore = evaluateContractCommercialMinimums({
+    context,
+    propertyData,
+    requireConfirmation: false,
+  });
+  const missingFromMeta = missingFieldsFromMetadata(metadata);
+  const missingForParse =
+    missingFromMeta.length > 0 ? missingFromMeta : evaluationBefore.missing;
+
+  const typedPatch = normalizePatch(params.patch);
+  let patch: ContractCommercialPatch = { ...typedPatch };
+
+  if (Object.keys(patch).length === 0 && typeof params.text === "string") {
+    const parsed = parseContractDataReviewReply(params.text, missingForParse);
+    if (parsed.intent === "unclear") {
+      return { ok: false, status: "unclear", message: parsed.reason };
+    }
+    patch = { ...(parsed.patch ?? {}) };
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return {
+      ok: false,
+      status: "unclear",
+      message: "No recibí datos contractuales para guardar.",
+    };
+  }
+
+  const currentTerms = parseCommissionTerms(context.commission_terms);
+  let nextTerms = applyCommissionTermsPatch(currentTerms, patch);
+
+  if (typeof patch.owner_email === "string" && looksLikeEmail(patch.owner_email)) {
+    propertyData.owner_email = patch.owner_email.trim();
+  }
+
+  const interimContext = {
+    ...context,
+    ...(typeof patch.owner_email === "string"
+      ? { owner_email: patch.owner_email.trim() }
+      : {}),
+    property_data: propertyData,
+    commission_terms: nextTerms,
+  };
+
+  let evaluation = evaluateContractCommercialMinimums({
+    context: interimContext,
+    propertyData,
+    requireConfirmation: false,
+  });
+
+  const requiredStillMissing = evaluation.missing.filter(
+    (item) => item.optional !== true
+  );
+  const capturedComplete = requiredStillMissing.length === 0;
+
+  if (capturedComplete) {
+    nextTerms = applyCommissionTermsPatch(nextTerms, {
+      confirm: true,
+      confirmed_by: params.userId,
+    });
+    evaluation = evaluateContractCommercialMinimums({
+      context: {
+        ...interimContext,
+        commission_terms: nextTerms,
+      },
+      propertyData,
+      requireConfirmation: true,
+    });
+  }
+
+  const capturedFields = Object.fromEntries(
+    Object.entries(patch).filter(([, value]) => value !== undefined)
+  );
+
   const updatedCase = await updateOperationalCase(db, opCase.id, opCase.version, {
     nextActionAt: new Date().toISOString(),
     context: {
-      ...context,
-      owner_email: ownerEmail,
-      property_data: {
-        ...propertyData,
-        owner_email: ownerEmail,
-      },
+      ...interimContext,
+      commission_terms: nextTerms,
       contract_data_review: {
-        status: "captured",
+        status: capturedComplete ? "captured" : "partial",
         captured_at: new Date().toISOString(),
-        captured_fields: { owner_email: ownerEmail },
-        missing_required_fields: missingRequiredFields,
+        captured_fields: capturedFields,
+        missing_required_fields: requiredStillMissing.map((item) => item.key),
+        missing_fields: evaluation.missing,
       },
     },
   });
@@ -144,10 +307,47 @@ export async function handleContractDataReviewDecision(
       kind: "contract_data_review_response",
       source: "contract_data_review",
       notification_id: notification.id,
-      owner_email: ownerEmail,
-      missing_required_fields: missingRequiredFields,
+      patch: capturedFields,
+      missing_required_fields: requiredStillMissing.map((item) => item.key),
+      complete: capturedComplete,
     },
   });
+
+  if (!capturedComplete) {
+    const summary = buildContractCommercialMinimumsSummaryMessage(evaluation);
+    await insertOperationalCaseEvent(db, {
+      caseId: updatedCase.id,
+      eventType: "state_changed",
+      actor: "system",
+      stepKey: "contract_pending",
+      payload: {
+        kind: "contract_data_partial_capture",
+        source: "contract_data_review",
+        missing_required_fields: requiredStillMissing.map((item) => item.key),
+      },
+    });
+
+    // Keep the unread notification active with remaining fields (deduped upsert path).
+    await refreshInternalUserNotificationContent(db, notification, {
+      body: summary,
+      metadata: {
+        case_id: updatedCase.id,
+        missing_required_fields: requiredStillMissing.map((item) => item.key),
+        missing_fields: evaluation.missing,
+        known_fields: evaluation.known,
+        source: "contract_data_review_partial",
+      },
+    });
+
+    return {
+      ok: true,
+      status: "partial",
+      message: summary,
+      missing_required_fields: requiredStillMissing.map((item) => item.key),
+      missing_fields: evaluation.missing,
+    };
+  }
+
   await insertOperationalCaseEvent(db, {
     caseId: updatedCase.id,
     eventType: "state_changed",
@@ -156,7 +356,8 @@ export async function handleContractDataReviewDecision(
     payload: {
       kind: "contract_data_captured",
       source: "contract_data_review",
-      owner_email: ownerEmail,
+      owner_email: evaluation.owner_email,
+      commission_terms_confirmed: true,
     },
   });
 
@@ -178,7 +379,8 @@ export async function handleContractDataReviewDecision(
     ok: true,
     status: "captured",
     message:
-      "Correo del comitente registrado. Reintentaré generar el borrador del contrato.",
-    owner_email: ownerEmail,
+      "Datos contractuales registrados. Reintentaré generar el borrador del contrato.",
+    owner_email: evaluation.owner_email,
+    commission_terms: nextTerms,
   };
 }

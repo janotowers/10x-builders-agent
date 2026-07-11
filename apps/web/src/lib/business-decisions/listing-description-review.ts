@@ -90,6 +90,66 @@ export function parseListingDescriptionReviewDecision(
   };
 }
 
+const LISTING_DESCRIPTION_REVIEW_TEXT_HINT =
+  /\b(descripci[oó]n|descripcion|t[ií]tulo|headline|highlights?|puntos?\s+clave|elementos?\s+clave|resaltar|destacar|mencion(?:a|ar|e|es)|enfatiz(?:a|ar|e|es)|vendedor|vendedora|premium|persuasiv[ao]|portal)\b/i;
+
+const LISTING_DESCRIPTION_APPROVE_HINT =
+  /^(aprobar|aprobado|apruebo|ok|va|listo|si|sí)\b/i;
+
+const LISTING_DESCRIPTION_EDITORIAL_HINT =
+  /\b(hazlo|hacerlo|cambia(?:r)?|ajust(?:a|ar)|corrig(?:e|ir)|reescrib(?:e|ir)|tono|redacci[oó]n|m[aá]s\s+(ejecutivo|sobrio|corto|largo|vendedor|persuasiv[ao]))\b/i;
+
+/**
+ * Free-text must look like a listing-description decision — not merely "any
+ * text while one review is pending". Intake replies and new-case intents are
+ * not description edits.
+ */
+export function looksLikeListingDescriptionDecisionText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (LISTING_DESCRIPTION_APPROVE_HINT.test(trimmed)) return true;
+  if (LISTING_DESCRIPTION_REVIEW_TEXT_HINT.test(trimmed)) return true;
+  if (LISTING_DESCRIPTION_EDITORIAL_HINT.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * Sticky HITL for listing-description review must not swallow:
+ * - explicit new-case / optioning intents
+ * - turns that belong to an active incomplete conversational intake
+ *   (unless the user just pressed «Pedir cambios» and we are waiting for
+ *   that explicit reply)
+ *
+ * Mirror price/contract HITL: only claim messages that look like answers to
+ * this decision (or an explicit "write your changes" pending reply).
+ */
+export function shouldRouteTelegramTextToListingDescriptionReview(params: {
+  text: string;
+  isTelegramCommand?: boolean;
+  pendingReviewCount: number;
+  hasPendingReplyIntent: boolean;
+  /** Deterministic start-case intent (e.g. "quiero opcionar una propiedad"). */
+  isExplicitNewCaseIntent: boolean;
+  /**
+   * True when this chat already has an incomplete conversational intake that
+   * should own the turn (usually a different case than the stale review).
+   * Does NOT override an explicit pending-reply intent from «Pedir cambios».
+   */
+  hasCompetingActiveConversationalIntake?: boolean;
+}): boolean {
+  const text = params.text.trim();
+  if (!text || params.isTelegramCommand) return false;
+  // Explicit "start another case" still wins over a description edit.
+  if (params.isExplicitNewCaseIntent) return false;
+  if (params.pendingReviewCount <= 0) return false;
+  // User pressed «Pedir cambios» and was asked to write the edit: that reply
+  // must reach listing_description_review even if another intake is open in
+  // the same chat (otherwise the edit is misread as property_zone / intake).
+  if (params.hasPendingReplyIntent) return true;
+  if (params.hasCompetingActiveConversationalIntake) return false;
+  return looksLikeListingDescriptionDecisionText(text);
+}
+
 function fallbackListingDescriptionChangeClassification(
   text: string
 ): ListingDescriptionChangeClassification {
@@ -200,14 +260,18 @@ export async function handleListingDescriptionReviewDecision(
   const draft = isRecord(context.listing_description_draft)
     ? context.listing_description_draft
     : null;
+  const draftDescription =
+    draft && typeof draft.description === "string" ? draft.description.trim() : "";
+  const hasUsableDraft = Boolean(draft && draftDescription);
   const nowIso = new Date().toISOString();
 
   if (parsed.intent === "approve") {
-    if (!draft) {
+    if (!draft || !draftDescription) {
       return {
         ok: false,
         status: "missing_draft",
-        message: "No encontré listing_description_draft para aprobar.",
+        message:
+          "No hay borrador comercial aún. Usa «Pedir cambios» (puedes dejar una nota o el texto por defecto) para cerrar este pendiente y que el agente prepare el borrador real.",
       };
     }
     const approved = {
@@ -274,19 +338,85 @@ export async function handleListingDescriptionReviewDecision(
     return { ok: false, status: "unclear", message: parsed.reason ?? "No entendí tu respuesta." };
   }
 
-  const classification =
+  // Pendiente prematuro sin borrador: cerrar HITL y pedir al agente el flujo real.
+  if (!hasUsableDraft) {
+    const notes =
+      params.text.trim() ||
+      "Sin borrador previo: generar photo_analysis, zone_context y listing_description_draft.";
+    const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+      status: "active",
+      currentStep: "package_ready",
+      nextActionAt: new Date().toISOString(),
+      context: {
+        ...context,
+        listing_description_review: {
+          status: "regeneration_requested",
+          requested_at: nowIso,
+          requested_by: params.userId,
+          notes,
+          reason: "missing_listing_description_draft",
+        },
+      },
+    });
+    if (!updated) {
+      return { ok: false, status: "version_conflict", message: "El caso cambió; intenta de nuevo." };
+    }
+    await insertOperationalCaseEvent(db, {
+      caseId: opCase.id,
+      eventType: "human_decision",
+      actor: "user",
+      stepKey: "package_ready",
+      payload: {
+        kind: "listing_description_regeneration_requested",
+        reason: "missing_listing_description_draft",
+        notes,
+      },
+    });
+    await resolveInternalNotificationWithReminders(db, {
+      id: notification.id,
+      userId: params.userId,
+      status: "actioned",
+    });
+    const runAgentTick = shouldRunListingDescriptionAgentTick(opCase);
+    const deferTick = runAgentTick && params.deferControlledE2ETick === true;
+    if (runAgentTick && !deferTick) {
+      void triggerControlledE2EAgentTick(
+        db,
+        updated,
+        "listing_description_regeneration_requested"
+      ).catch((tickError) => {
+        console.error("[listing-description-review] e2e tick failed:", tickError);
+      });
+    }
+    return {
+      ok: true,
+      status: "regeneration_requested",
+      message:
+        "No había borrador aún. Cerré este pendiente; el agente preparará análisis, entorno y el borrador real. Si el laboratorio sigue bloqueado, pulsa «Revisar avance».",
+      case_id: opCase.id,
+      deferredControlledE2ETick: deferTick
+        ? { source: "listing_description_regeneration_requested" as const }
+        : null,
+    };
+  }
+
+  let classification =
     (await classifyListingDescriptionChange({
       text: params.text,
       draft,
     })) ?? fallbackListingDescriptionChangeClassification(params.text);
   if (classification.requires_clarification) {
-    return {
-      ok: false,
-      status: "unclear",
-      message:
-        classification.clarification_question ??
-        "¿Quieres que cambie la redacción, que agregue puntos clave o que use un texto exacto?",
-    };
+    const fallback = fallbackListingDescriptionChangeClassification(params.text);
+    if (params.text.trim().length >= 8 && fallback.editorial_instructions.length > 0) {
+      classification = fallback;
+    } else {
+      return {
+        ok: false,
+        status: "unclear",
+        message:
+          "Escribe arriba el cambio concreto (ej. «hazlo más corto», «menciona la terraza») y vuelve a pulsar Pedir cambios.",
+      };
+    }
   }
 
   const existingHighlights = Array.isArray(context.listing_highlights)

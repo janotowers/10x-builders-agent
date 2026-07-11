@@ -3,6 +3,8 @@ import type {
   OperationalCase,
   OperationalCaseConversationBinding,
 } from "@agents/types";
+import { looksLikeDocumentBatchComplete } from "./document-batch-completion";
+import { looksLikeDocumentUploadSideText } from "./case-document-collection";
 
 function normalize(value: string) {
   return value
@@ -103,6 +105,15 @@ export function shouldBindTelegramMessageToConversationalCase(params: {
     (params.opCase.current_step === "documents_received" ||
       params.opCase.current_step === "property_data_review");
   if (reviewingPropertyData) return looksLikePropertyDataReviewResponse(text);
+
+  // Cierre de lote de fotos («listo») o texto lateral de subida en photos_requested.
+  if (params.opCase.current_step === "photos_requested") {
+    return (
+      looksLikeDocumentBatchComplete(params.message) ||
+      looksLikeDocumentUploadSideText(params.message) ||
+      /\b(foto|fotos|imagen|imagenes|imágenes|album|álbum)\b/.test(text)
+    );
+  }
 
   return (
     params.opCase.current_step === "intake" &&
@@ -324,6 +335,31 @@ export function resolveTelegramConversationRoute(params: {
       };
     })
     .filter((value) => value !== null);
+
+  const matchingContinuationBindings = activeBindings.filter((binding) => {
+    const opCase = params.candidateCasesById.get(binding.case_id);
+    return Boolean(
+      opCase &&
+        shouldBindTelegramMessageToConversationalCase({
+          message: text,
+          opCase,
+        })
+    );
+  });
+  if (matchingContinuationBindings.length === 1) {
+    const binding = matchingContinuationBindings[0]!;
+    const opCase = params.candidateCasesById.get(binding.case_id);
+    if (opCase) {
+      return {
+        route: "case",
+        confidence: "high",
+        reason: "single_matching_binding_continuation",
+        caseId: opCase.id,
+        bindingId: binding.id,
+        candidateSummaries,
+      };
+    }
+  }
 
   return {
     route: "clarify",

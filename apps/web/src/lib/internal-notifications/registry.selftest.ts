@@ -70,6 +70,22 @@ assert.equal(
   true
 );
 assert.equal(
+  internalNotificationKindConfig("photos_upload_requested").informational,
+  true,
+  "photos_upload_requested must not block E2E ticks"
+);
+assert.equal(
+  internalNotificationKindConfig("publish_destination_approvals").informational,
+  true,
+  "legacy batch publish destination kind must not block E2E ticks"
+);
+assert.equal(
+  effectiveInternalNotificationKind({
+    kind: "publish destination approvals",
+  }),
+  "publish_destination_approvals"
+);
+assert.equal(
   internalNotificationKindConfig("comparables_search_expansion_decision")
     .reviewCtaLabel,
   "Elegir ampliacion en flujo"

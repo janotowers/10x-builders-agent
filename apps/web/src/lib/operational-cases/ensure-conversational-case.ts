@@ -45,6 +45,7 @@ export async function ensureConversationalCase(
     userId: string;
     caseType: string;
     channel?: string;
+    chatId?: number | null;
     e2eControlled?: boolean;
     labTelegramChatId?: number;
     /**
@@ -110,6 +111,7 @@ export async function ensureConversationalCase(
       caseId: existing.id,
       caseType: existing.case_type,
       channel: params.channel === "web" ? "web" : "telegram",
+      chatId: params.chatId,
       status: "awaiting_user",
       awaitingFields:
         (existing.context_jsonb?.missing_required as unknown[]) ?? [],
@@ -179,6 +181,7 @@ export async function ensureConversationalCase(
     caseId: created.id,
     caseType: created.case_type,
     channel,
+    chatId: params.chatId,
     status: "awaiting_user",
     awaitingFields: (created.context_jsonb?.missing_required as unknown[]) ?? [],
     metadata: {

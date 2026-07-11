@@ -8,7 +8,6 @@ import {
   getPendingToolCall,
   getGoogleCalendarAccessToken,
   associateExternalResponseWithCase,
-  countPendingToolCallsForCase,
   findOperationalCaseByExternalChatId,
   getInternalUserNotification,
   getOperationalCase,
@@ -18,7 +17,6 @@ import {
   insertOperationalCaseEvent,
   listInternalUserNotifications,
   linkE2ELabSessionToCase,
-  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   updateInternalUserNotificationMetadata,
   updateOperationalCase,
   updateToolCallStatus,
@@ -55,11 +53,21 @@ import {
 } from "@/lib/business-decisions/contract-review";
 import { parseContractDataReviewReply } from "@/lib/business-decisions/contract-data-review";
 import { parseTitularidadReviewDecision } from "@/lib/business-decisions/titularidad-review";
-import { runDeferredListingDescriptionControlledE2ETick } from "@/lib/business-decisions/listing-description-review";
+import {
+  runDeferredListingDescriptionControlledE2ETick,
+  shouldRouteTelegramTextToListingDescriptionReview,
+} from "@/lib/business-decisions/listing-description-review";
+import { runDeferredPublishDestinationControlledE2ETick } from "@/lib/business-decisions/publish-destination-approval";
+import { finalizeCaseAfterToolDecision } from "@/lib/operational-cases/finalize-case-after-tool-decision";
+import {
+  buildAgentE2EResumeToolApprovalPolicy,
+  isAgentE2EToolCall,
+} from "@/lib/operational-cases/settings-test-tool-policy";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
   looksLikeNewCaseIntent,
+  shouldBindTelegramMessageToConversationalCase,
   shouldForceNewConversationalCaseOnExplicitStartIntent,
 } from "@/lib/operational-cases/conversational-case-routing";
 import {
@@ -86,6 +94,7 @@ import { findPendingConfirmationCheckpoint } from "@/lib/agent/pending-confirmat
 import {
   buildTelegramIntakeCompletionMessage,
   intakeJustCompleted,
+  isIntakeInProgress,
 } from "@/lib/operational-cases/telegram-intake-completion-message";
 import { classifyOperationalConversationMessage } from "@/lib/operational-cases/operational-conversation-classifier";
 import { processCharacteristicsReplyDeterministically } from "@/lib/operational-cases/characteristics-response";
@@ -215,6 +224,32 @@ async function maybeRunDeferredListingDescriptionTick(
   }
 }
 
+async function maybeRunDeferredPublishDestinationTick(
+  db: ReturnType<typeof createServerClient>,
+  result: {
+    ok?: boolean;
+    case_id?: unknown;
+    deferredControlledE2ETick?: unknown;
+  }
+): Promise<void> {
+  if (!result.ok) return;
+  const deferred = result.deferredControlledE2ETick;
+  const caseId = typeof result.case_id === "string" ? result.case_id : null;
+  if (!deferred || !caseId) return;
+  const source =
+    typeof (deferred as { source?: unknown }).source === "string"
+      ? (deferred as { source: string }).source
+      : "publish_destination_easybroker_approved";
+  try {
+    await runDeferredPublishDestinationControlledE2ETick(db, caseId, source);
+  } catch (tickError) {
+    console.error(
+      "[telegram-webhook] deferred publish-destination tick failed:",
+      tickError
+    );
+  }
+}
+
 function isActiveListingDescriptionReviewNotification(
   notification: InternalUserNotification | null,
   userId: string
@@ -275,7 +310,6 @@ const TELEGRAM_INTAKE_ROUTED: Record<ConversationalIntakeRoute, string> = {
 };
 
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
-const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
 const PHOTO_FILE_EXTENSION = /\.(jpe?g|png|webp|heic|heif|gif|bmp|tiff?)$/i;
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -378,33 +412,6 @@ async function appendRawPhoto(params: {
   };
 }
 
-function toolCallCaseId(toolCall: {
-  arguments_json?: unknown;
-  metadata_jsonb?: unknown;
-}): string | null {
-  const args = toolCall.arguments_json;
-  if (
-    args &&
-    typeof args === "object" &&
-    !Array.isArray(args) &&
-    typeof (args as Record<string, unknown>).case_id === "string"
-  ) {
-    const caseId = ((args as Record<string, unknown>).case_id as string).trim();
-    if (caseId) return caseId;
-  }
-  const metadata = toolCall.metadata_jsonb;
-  if (
-    metadata &&
-    typeof metadata === "object" &&
-    !Array.isArray(metadata) &&
-    typeof (metadata as Record<string, unknown>).case_id === "string"
-  ) {
-    const caseId = ((metadata as Record<string, unknown>).case_id as string).trim();
-    if (caseId) return caseId;
-  }
-  return null;
-}
-
 function notificationMissingContractFields(notification: {
   metadata_jsonb?: unknown;
 }): string[] {
@@ -419,38 +426,6 @@ function notificationMissingContractFields(notification: {
   return raw.filter(
     (field): field is string => typeof field === "string" && field.trim().length > 0
   );
-}
-
-async function finalizeCaseAfterToolDecision(
-  db: ReturnType<typeof createServerClient>,
-  params: {
-    toolCall: { arguments_json?: unknown; metadata_jsonb?: unknown };
-    userId: string;
-  }
-) {
-  const caseId = toolCallCaseId(params.toolCall);
-  if (!caseId) return;
-  const pending = await countPendingToolCallsForCase(db, caseId);
-  if (pending > 0) return;
-
-  await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
-    userId: params.userId,
-    caseId,
-    kind: TOOL_CONFIRMATION_PENDING_KIND,
-    status: "actioned",
-  });
-
-  const opCase = await getOperationalCase(db, caseId);
-  if (
-    !opCase ||
-    opCase.user_id !== params.userId ||
-    !["active", "waiting_internal", "waiting_external"].includes(opCase.status)
-  ) {
-    return;
-  }
-  await updateOperationalCase(db, opCase.id, opCase.version, {
-    nextActionAt: new Date().toISOString(),
-  });
 }
 
 function normalizeForTelegramRouting(value: string) {
@@ -905,7 +880,11 @@ async function resumeAgentFromCallback(
       message: "Acción cancelada por el usuario.",
       source: "telegram_callback",
     });
-    await finalizeCaseAfterToolDecision(db, { toolCall, userId });
+    await finalizeCaseAfterToolDecision(db, {
+      toolCall,
+      userId,
+      decision: "reject",
+    });
     return {
       ok: true,
       message: "Acción cancelada.",
@@ -1001,10 +980,24 @@ async function resumeAgentFromCallback(
     businessBrain:
       (profile?.business_brain as Record<string, unknown> | null) ?? {},
     isUnggaAdmin: (profile?.is_ungga_admin as boolean | null) ?? false,
-    channel: "telegram",
+    channel: isAgentE2EToolCall(toolCall) ? "case_runner" : "telegram",
     googleCalendarAccessToken,
+    caseId:
+      typeof toolCall.metadata_jsonb?.case_id === "string"
+        ? toolCall.metadata_jsonb.case_id
+        : typeof toolCall.arguments_json?.case_id === "string"
+          ? toolCall.arguments_json.case_id
+          : undefined,
+    toolCallSource: isAgentE2EToolCall(toolCall) ? "agent_e2e" : undefined,
+    toolApprovalPolicy: isAgentE2EToolCall(toolCall)
+      ? buildAgentE2EResumeToolApprovalPolicy()
+      : undefined,
   });
-  await finalizeCaseAfterToolDecision(db, { toolCall, userId });
+  await finalizeCaseAfterToolDecision(db, {
+    toolCall,
+    userId,
+    decision: "approve",
+  });
 
   return {
     ok: true,
@@ -1047,6 +1040,25 @@ export async function POST(request: Request) {
 
     const userId = telegramAccount.user_id as string;
 
+    // Idempotency for callbacks (same ledger as message updates).
+    const callbackClaimState = await claimTelegramWebhookUpdate({
+      db,
+      updateId: update.update_id,
+      userId,
+      chatId: cb.message.chat.id,
+      messageId: cb.message.message_id,
+    });
+    if (callbackClaimState !== "claimed") {
+      await answerTelegramCallbackQuery(cb.id, "Ya procesado");
+      return NextResponse.json({
+        ok: true,
+        routed:
+          callbackClaimState === "duplicate_completed"
+            ? "telegram_duplicate_callback_completed"
+            : "telegram_duplicate_callback_in_progress",
+      });
+    }
+    try {
     if (action === "ld_approve" || action === "ld_changes" || action === "ld_highlights") {
       const notification = await getInternalUserNotification(db, targetId);
       if (!isActiveListingDescriptionReviewNotification(notification, userId)) {
@@ -1148,6 +1160,106 @@ export async function POST(request: Request) {
       });
     }
 
+    if (action === "pub_approve" || action === "pub_skip" || action === "pub_reject") {
+      const text =
+        action === "pub_approve"
+          ? "APROBAR"
+          : action === "pub_skip"
+            ? "OMITIR"
+            : "RECHAZAR";
+      const result = await businessDecisionHandler("publish_destination_approval").handle(
+        db,
+        {
+          userId,
+          notificationId: targetId,
+          text,
+          deferControlledE2ETick: true,
+        }
+      );
+      await answerTelegramCallbackQuery(
+        cb.id,
+        result.ok ? "Decisión registrada" : "No pude procesarlo"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Listo, procesé tu decisión de publicación."
+            : "No pude procesar la decisión de publicación.")
+      );
+      await maybeRunDeferredPublishDestinationTick(db, result);
+      return NextResponse.json({
+        ok: true,
+        routed: "publish_destination_approval",
+        notification_id: targetId,
+      });
+    }
+
+    if (action === "pubrev_approve" || action === "pubrev_stop") {
+      const text =
+        action === "pubrev_approve"
+          ? "Aprobar y continuar"
+          : "Detener y revisar";
+      const result = await businessDecisionHandler("publication_review").handle(db, {
+        userId,
+        notificationId: targetId,
+        text,
+        deferControlledE2ETick: true,
+      });
+      await answerTelegramCallbackQuery(
+        cb.id,
+        result.ok ? "Revisión registrada" : "No pude procesarlo"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Listo, procesé la revisión condicional."
+            : "No pude procesar la revisión condicional.")
+      );
+      if (
+        result.ok &&
+        result.case_id &&
+        result.deferredControlledE2ETick &&
+        action === "pubrev_approve"
+      ) {
+        const source =
+          typeof (result.deferredControlledE2ETick as { source?: string }).source ===
+          "string"
+            ? (result.deferredControlledE2ETick as { source: string }).source
+            : "publication_review_telegram";
+        const { requestPublicationProgress } = await import(
+          "@/lib/operational-cases/publication-runner"
+        );
+        const { runSettingsTestCaseAgentTick } = await import(
+          "@/lib/operational-cases/run-settings-test-case-tick"
+        );
+        void requestPublicationProgress(db, String(result.case_id), source, {
+          runAgentTick: async (opCase, machineAction) => {
+            const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
+              source: `${source}:${machineAction.type}`,
+            });
+            return (
+              tick.publication_execution ?? {
+                status: "not_executed",
+                error: "publication_execution_result_missing",
+              }
+            );
+          },
+        }).catch((error) => {
+          console.error(
+            "[telegram-webhook] deferred publication review progress failed:",
+            error
+          );
+        });
+      }
+      return NextResponse.json({
+        ok: true,
+        routed: "publication_review",
+        notification_id: targetId,
+      });
+    }
+
     const isContractSendEmailAction =
       action === "contract_email" || action === "contract_send_email";
     const isContractUploadAction =
@@ -1181,6 +1293,83 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         routed: "contract_review",
+        notification_id: targetId,
+      });
+    }
+
+    if (action === "cdr_yes" || action === "cdr_no") {
+      const notification = await getInternalUserNotification(db, targetId);
+      if (
+        !notification ||
+        notification.user_id !== userId ||
+        notification.kind !== "contract_data_review" ||
+        notification.status !== "unread"
+      ) {
+        await answerTelegramCallbackQuery(cb.id, "Pendiente no activo");
+        return NextResponse.json({
+          ok: true,
+          routed: "contract_data_review_stale_callback",
+          notification_id: targetId,
+        });
+      }
+      const metadata =
+        notification.metadata_jsonb &&
+        typeof notification.metadata_jsonb === "object"
+          ? (notification.metadata_jsonb as Record<string, unknown>)
+          : {};
+      const missingFields = Array.isArray(metadata.missing_fields)
+        ? metadata.missing_fields
+        : [];
+      const firstBoolean = missingFields.find(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) &&
+          typeof item === "object" &&
+          !Array.isArray(item) &&
+          item.kind === "boolean" &&
+          typeof item.key === "string"
+      );
+      if (!firstBoolean || typeof firstBoolean.key !== "string") {
+        await answerTelegramCallbackQuery(cb.id, "Escribe el dato faltante");
+        await sendTelegramMessage(
+          cb.message.chat.id,
+          notification.body ||
+            "Responde con los datos contractuales faltantes (correo, porcentajes o meses)."
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "contract_data_review_text_guidance",
+          notification_id: targetId,
+        });
+      }
+      const patchKey =
+        firstBoolean.key === "collaboration_enabled"
+          ? "collaboration_enabled"
+          : firstBoolean.key;
+      const result = await businessDecisionHandler("contract_data_review").handle(
+        db,
+        {
+          userId,
+          notificationId: targetId,
+          text: "",
+          patch: {
+            [patchKey]: action === "cdr_yes",
+          },
+        }
+      );
+      await answerTelegramCallbackQuery(
+        cb.id,
+        result.ok ? "Registrado" : "No pude procesarlo"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Listo, registré tu respuesta."
+            : "No pude registrar los datos contractuales.")
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "contract_data_review",
         notification_id: targetId,
       });
     }
@@ -1271,12 +1460,27 @@ export async function POST(request: Request) {
         await sendTelegramMessage(cb.message.chat.id, result.message ?? "Hecho.");
       }
     } else if (action === "reject") {
-      await answerTelegramCallbackQuery(cb.id, "❌ Cancelado");
-      await sendTelegramMessage(cb.message.chat.id, "Acción cancelada.");
-      await resumeAgentFromCallback(db, targetId, "reject");
+      const result = await resumeAgentFromCallback(db, targetId, "reject");
+      await answerTelegramCallbackQuery(
+        cb.id,
+        result.ok ? "❌ Cancelado" : "Ya no aplica"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Acción cancelada."
+            : "Esta confirmación ya fue procesada o expiró.")
+      );
     }
 
     return NextResponse.json({ ok: true });
+    } finally {
+      await completeTelegramWebhookUpdate({
+        db,
+        updateId: update.update_id,
+      });
+    }
   }
 
   const message = update.message;
@@ -1800,20 +2004,54 @@ export async function POST(request: Request) {
       return metadata.telegram_pending_reply_intent === "request_changes";
     }
   );
-  const hasListingDescriptionReviewKeyword =
-    /\b(descripci[oó]n|descripcion|t[ií]tulo|headline|highlights?|puntos?\s+clave|elementos?\s+clave|resaltar|destacar|mencion(?:a|ar|e|es)|enfatiz(?:a|ar|e|es)|vendedor|vendedora|premium|persuasiv[ao]|portal)\b/i.test(
-      text
-    );
-  const shouldRouteListingDescriptionText =
-    Boolean(text) &&
-    !isTelegramCommand(text) &&
-    (Boolean(pendingListingDescriptionReply) ||
-      pendingListingDescriptionReviews.length === 1 ||
-      (pendingListingDescriptionReviews.length > 0 &&
-        hasListingDescriptionReviewKeyword));
   const listingDescriptionReviewTarget =
     pendingListingDescriptionReply ??
     pendingListingDescriptionReviews[0];
+
+  // Resolve early whether this chat already owns an incomplete conversational
+  // intake. That turn must beat a *sticky keyword* listing-description HITL
+  // from another (often stale) case — otherwise intake replies get misclassified
+  // as copy edits. An explicit «Pedir cambios» pending-reply intent still wins
+  // (see shouldRouteTelegramTextToListingDescriptionReview).
+  const earlyPendingBindings =
+    pendingListingDescriptionReviews.length > 0
+      ? await findPendingConversationBindings(db, {
+          userId,
+          channel: "telegram",
+          chatId,
+        })
+      : [];
+  let hasCompetingActiveConversationalIntake = false;
+  if (earlyPendingBindings.length > 0) {
+    const reviewCaseId =
+      typeof listingDescriptionReviewTarget?.case_id === "string"
+        ? listingDescriptionReviewTarget.case_id
+        : null;
+    for (const binding of earlyPendingBindings) {
+      if (reviewCaseId && binding.case_id === reviewCaseId) continue;
+      const boundCase = await getOperationalCase(db, binding.case_id);
+      if (
+        boundCase &&
+        boundCase.status !== "paused" &&
+        boundCase.status !== "completed" &&
+        boundCase.status !== "failed" &&
+        isIntakeInProgress(boundCase)
+      ) {
+        hasCompetingActiveConversationalIntake = true;
+        break;
+      }
+    }
+  }
+
+  const shouldRouteListingDescriptionText =
+    shouldRouteTelegramTextToListingDescriptionReview({
+      text,
+      isTelegramCommand: isTelegramCommand(text),
+      pendingReviewCount: pendingListingDescriptionReviews.length,
+      hasPendingReplyIntent: Boolean(pendingListingDescriptionReply),
+      isExplicitNewCaseIntent: deterministicPropertyIntent,
+      hasCompetingActiveConversationalIntake,
+    });
   if (shouldRouteListingDescriptionText && listingDescriptionReviewTarget) {
     return handleTelegramListingDescriptionReviewText({
       db,
@@ -1822,6 +2060,21 @@ export async function POST(request: Request) {
       notification: listingDescriptionReviewTarget,
       text,
     });
+  }
+  if (
+    pendingListingDescriptionReviews.length > 0 &&
+    (deterministicPropertyIntent || hasCompetingActiveConversationalIntake)
+  ) {
+    console.info(
+      "[telegram-webhook] bypassing listing_description_review for active conversational turn",
+      {
+        pending_review_count: pendingListingDescriptionReviews.length,
+        pending_reply_intent: Boolean(pendingListingDescriptionReply),
+        notification_id: listingDescriptionReviewTarget?.id ?? null,
+        explicit_optioning_intent: deterministicPropertyIntent,
+        competing_active_intake: hasCompetingActiveConversationalIntake,
+      }
+    );
   }
 
   const parsedPriceDecision = parsePriceApprovalDecision(text);
@@ -1859,12 +2112,27 @@ export async function POST(request: Request) {
     (notification) => notification.kind === "contract_data_review"
   );
   if (pendingContractData && text) {
-    const parsedContractData = parseContractDataReviewReply(text);
+    const metadata =
+      pendingContractData.metadata_jsonb &&
+      typeof pendingContractData.metadata_jsonb === "object"
+        ? (pendingContractData.metadata_jsonb as Record<string, unknown>)
+        : {};
+    const missingFields = Array.isArray(metadata.missing_fields)
+      ? (metadata.missing_fields as Array<{
+          key: string;
+          label: string;
+          question: string;
+          kind: "email" | "boolean" | "number" | "text" | "choice";
+          optional?: boolean;
+        }>)
+      : undefined;
+    const parsedContractData = parseContractDataReviewReply(text, missingFields);
     if (parsedContractData.intent !== "unclear") {
       const result = await businessDecisionHandler("contract_data_review").handle(db, {
         userId,
         notificationId: pendingContractData.id,
         text,
+        patch: parsedContractData.patch as Record<string, unknown> | undefined,
       });
       await sendTelegramMessage(
         chatId,
@@ -2268,6 +2536,43 @@ export async function POST(request: Request) {
     activeE2ELabSession.case_id.trim().length > 0
       ? activeE2ELabSession.case_id.trim()
       : null;
+  if (
+    !conversationalCase &&
+    text &&
+    !explicitPropertyIntent &&
+    activeE2ELabSessionCaseId
+  ) {
+    const sessionCase = await getOperationalCase(db, activeE2ELabSessionCaseId);
+    if (
+      isUsableE2ELabSessionCase({
+        opCase: sessionCase,
+        userId,
+        caseType: "property_optioning",
+      }) &&
+      sessionCase &&
+      isIntakeInProgress(sessionCase) &&
+      shouldBindTelegramMessageToConversationalCase({
+        message: agentMessageText,
+        opCase: sessionCase,
+      })
+    ) {
+      conversationalCase = sessionCase;
+      await upsertConversationBinding(db, {
+        userId,
+        caseId: sessionCase.id,
+        caseType: sessionCase.case_type,
+        channel: "telegram",
+        chatId,
+        sessionId: session.id,
+        status: "awaiting_user",
+        awaitingFields:
+          (sessionCase.context_jsonb?.missing_required as unknown[]) ?? [],
+        metadata: {
+          source: "telegram_webhook_e2e_session_intake_owner",
+        },
+      });
+    }
+  }
   const pendingClarificationBinding = routingBindings.find(
     (binding) => binding.status === "clarification_needed"
   );
@@ -2419,6 +2724,7 @@ export async function POST(request: Request) {
               userId,
               caseType: "property_optioning",
               channel: "telegram",
+              chatId,
               e2eControlled: Boolean(activeE2ELabSession),
               labTelegramChatId: activeE2ELabSession ? chatId : undefined,
               forceNew:
@@ -2582,6 +2888,7 @@ export async function POST(request: Request) {
         userId,
         caseType: "property_optioning",
         channel: "telegram",
+        chatId,
         e2eControlled: Boolean(activeE2ELabSession),
         labTelegramChatId: activeE2ELabSession ? chatId : undefined,
         forceNew: true,
@@ -2644,7 +2951,8 @@ export async function POST(request: Request) {
         }) &&
         sessionCase &&
         (sessionCase.current_step === "awaiting_documents" ||
-          sessionCase.current_step === "documents_received")
+          sessionCase.current_step === "documents_received" ||
+          sessionCase.current_step === "photos_requested")
       ) {
         conversationalCase = sessionCase;
       }
@@ -2825,7 +3133,7 @@ export async function POST(request: Request) {
         eventType: "external_response",
         actor: "user",
         payload: {
-          kind: "document_registered",
+          kind: isInternalPhotosStep ? "photo_registered" : "document_registered",
           source: "advisor_telegram",
           document_id: ingested.document.id,
           document_kind: ingested.document.kind,
@@ -2837,7 +3145,11 @@ export async function POST(request: Request) {
           telegram_file_unique_id: inboundMedia.uniqueId,
         },
       });
-      console.info("[telegram-webhook] internal doc ingested", {
+      console.info(
+        isInternalPhotosStep
+          ? "[telegram-webhook] internal photo ingested"
+          : "[telegram-webhook] internal doc ingested",
+        {
         caseId: conversationalCase.id,
         message_id: message.message_id,
         media_group_id: message.media_group_id ?? null,

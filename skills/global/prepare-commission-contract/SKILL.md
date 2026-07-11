@@ -48,7 +48,21 @@ guardrails: |
    - `context_jsonb.property_data` (dirección, m², tipo).
    - `context_jsonb.pricing_proposal` (debe estar `approval_status=approved`).
    - `external_contact_jsonb.display_name` (nombre del dueño).
-   - `context_jsonb.commission_terms` (si no existe, usa defaults del tenant).
+   - `context_jsonb.commission_terms` (modelo neutral; ver abajo).
+   - `owner_email` / `property_data.owner_email` / contacto externo.
+
+1a. **Preflight comercial dinámico (antes de generar).** El sistema evalúa
+   `evaluateContractCommercialMinimums` y solo pregunta faltantes reales:
+   - Correo del propietario (si no está en contexto/property_data/contacto).
+   - `commission_terms.collaboration.enabled` (tríestado: sí / no / ausente).
+   - Detalle de compensación **opcional** si `enabled=true`
+     (`compensation.mode` / `value`); `enabled=true` no exige porcentaje.
+   - Comisión total pactada (`commission_pct`), exclusividad, duración.
+   - `confirmation.status` se confirma al completar obligatorios vía HITL tipado;
+     no la escribas con `context_patch` genérico.
+   Si faltan obligatorios, el sistema emite/refresca `contract_data_review`
+   (web + Telegram, respuestas parciales). No inventes defaults como respuesta
+   del usuario; los defaults de cuenta solo se muestran como conocidos.
 
 1b. **Gate de titularidad (HITL) antes de generar.** El contrato solo procede
    con la titularidad verificada. `generate_document_from_template` aplica este
@@ -90,9 +104,9 @@ guardrails: |
 
 3. Notifica al inmobiliario sólo cuando tengas un borrador/link real:
    `notify_user(kind="contract_review", "Borrador del contrato listo para [propiedad]. Revísalo y dime si lo mando al dueño o necesita cambios.\n\nDescargar borrador del contrato: <URL>")`.
-   Sustituye `<URL>` por el enlace estable del caso: `/api/operational-cases/{case_id}/documents/contract_draft/download` (URL absoluta con el dominio del sitio si la conoces). **No** pegues la `signed_url` larga de Supabase en el mensaje. Si no hay `output_path` renderizado o
-   plantilla no se pudo generar, no pidas aprobación de contrato; explica
-   qué configuración falta y pausa el caso.
+   Sustituye `<URL>` por el enlace estable del caso: `/api/operational-cases/{case_id}/documents/contract_draft/download` (URL absoluta con el dominio del sitio si la conoces). **No** pegues la `signed_url` larga de Supabase en el mensaje.
+   - **Gate determinístico:** sin `contract_draft.output_path` el tool `notify_user(kind=contract_review)` falla con `contract_draft_required_before_review_notify`. No inventes “Borrador listo”.
+   - Si `generate_document_from_template` falla con `commission_contract_missing_required_data`, el sistema emite/refresca solo `contract_data_review` (remediación owned, dedupe por conjunto de faltantes). No llames `contract_review` en ese turno; espera los datos (pueden llegar en respuestas parciales), regenera y entonces sí notifica revisión.
 
 4. Inserta evento `operational_case_add_event(human_decision, payload={kind: contract_drafted, doc_url: "<mismo enlace corto>", output_path, output_bucket})` usando `output_path`/`output_bucket` de la tool.
 5. Mantén `current_step=contract_pending`, `status=waiting_internal` y

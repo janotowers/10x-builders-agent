@@ -4,6 +4,7 @@ import {
   getGlobalOperationalCaseTypeBySlug,
   getOperationalCase,
   getOperationalCaseTypeById,
+  updateOperationalCase,
 } from "@agents/db";
 import type {
   OperationalCase,
@@ -25,8 +26,21 @@ import {
   buildSettingsTestFlowProgress,
   type SettingsTestFlowProgressStep,
 } from "@/lib/operational-cases/settings-test-flow-progress";
+import { healStalePublishFlowBlockers } from "@/lib/operational-cases/finalize-case-after-tool-decision";
+import {
+  isEasybrokerImagesFailedInContext,
+  packageReadyNeedsEasybrokerImageUpload,
+  packageReadyNeedsUnggaApprovalNotify,
+  shouldAutoFollowUpPackageReadyTick,
+} from "@/lib/operational-cases/package-ready-auto-continue";
+import { reconcilePublicationCaseRecord } from "@/lib/operational-cases/publication-reconcile";
+import { resolvePublicationRolloutMode } from "@/lib/operational-cases/publication-rollout";
 
 type Db = ReturnType<typeof createServerClient>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 export type SettingsTestCaseApiResponse = {
   ok: true;
@@ -66,7 +80,39 @@ export async function buildSettingsTestCaseResponse(
   flow: OperationalCaseFlowStep[] = [],
   options?: { telegramSentForToolCallId?: string | null }
 ): Promise<SettingsTestCaseApiResponse> {
-  const fresh = (await getOperationalCase(db, opCase.id)) ?? opCase;
+  let fresh = (await getOperationalCase(db, opCase.id)) ?? opCase;
+  if (
+    fresh.current_step === "package_ready" &&
+    typeof fresh.context_jsonb?.publication_reconciled_at !== "string"
+  ) {
+    const context = isRecord(fresh.context_jsonb) ? fresh.context_jsonb : {};
+    const publicationMode = resolvePublicationRolloutMode(context);
+    await reconcilePublicationCaseRecord(db, fresh, {
+      publicationMode,
+      featureEnabled: publicationMode !== "off",
+      verifyRemote: publicationMode !== "off",
+    }).catch((error) => {
+      console.warn("[settings-test-case-response] publication reconcile failed:", error);
+    });
+    fresh = (await getOperationalCase(db, fresh.id)) ?? fresh;
+  }
+  if (
+    fresh.context_jsonb?.e2e_controlled === true ||
+    fresh.context_jsonb?.test_mode === true
+  ) {
+    try {
+      await healStalePublishFlowBlockers(db, {
+        caseId: fresh.id,
+        userId,
+      });
+      fresh = (await getOperationalCase(db, fresh.id)) ?? fresh;
+    } catch (error) {
+      console.warn(
+        "[settings-test-case-response] healStalePublishFlowBlockers failed:",
+        error
+      );
+    }
+  }
   const playthroughAnchorAt = settingsTestPlaythroughAnchorAt(
     fresh.context_jsonb
   );
@@ -98,6 +144,73 @@ export async function buildSettingsTestCaseResponse(
     events,
     telegramSentForToolCallId: options?.telegramSentForToolCallId,
   });
+
+  // Lab is an observer: wake serialized publication runner if machine work remains.
+  if (
+    pendingResult.blockingActions.length === 0 &&
+    fresh.current_step === "package_ready" &&
+    (fresh.context_jsonb?.e2e_controlled === true ||
+      fresh.context_jsonb?.test_mode === true)
+  ) {
+    const context = isRecord(fresh.context_jsonb) ? fresh.context_jsonb : {};
+    if (context.package_ready_machine_work_in_flight !== true) {
+      const needsUploadFollowUp = shouldAutoFollowUpPackageReadyTick({
+        context,
+        pendingConfirmation: false,
+        uploadedImagesThisTurn: false,
+        uploadFailedThisTurn: isEasybrokerImagesFailedInContext(context),
+        autoFollowUpDepth: 0,
+      });
+      const needsUnggaFollowUp =
+        packageReadyNeedsUnggaApprovalNotify(context) &&
+        !packageReadyNeedsEasybrokerImageUpload(context) &&
+        !isEasybrokerImagesFailedInContext(context) &&
+        !pendingResult.pendingActions.some(
+          (action) =>
+            action.kind === "internal_notification" &&
+            action.notification_kind === "ungga_publish_approval"
+        );
+      if (needsUploadFollowUp || needsUnggaFollowUp) {
+        try {
+          const { requestPublicationProgress } = await import(
+            "@/lib/operational-cases/publication-runner"
+          );
+          const { runSettingsTestCaseAgentTick } = await import(
+            "@/lib/operational-cases/run-settings-test-case-tick"
+          );
+          void requestPublicationProgress(
+            db,
+            fresh.id,
+            "package_ready_lab_auto_continue",
+            {
+              runAgentTick: async (opCase, action) => {
+                const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
+                  source: `package_ready_lab_auto_continue:${action.type}`,
+                });
+                return (
+                  tick.publication_execution ?? {
+                    status: "not_executed",
+                    error: "publication_execution_result_missing",
+                  }
+                );
+              },
+            }
+          ).catch((error) => {
+            console.warn(
+              "[settings-test-case-response] package_ready lab auto-continue failed:",
+              error
+            );
+          });
+        } catch (error) {
+          console.warn(
+            "[settings-test-case-response] package_ready lab auto-continue schedule failed:",
+            error
+          );
+        }
+      }
+    }
+  }
+
   const transitionCount = await countSettingsTestE2ETransitions(
     db,
     fresh.id,

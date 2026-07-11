@@ -13,13 +13,18 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
     notification_id?: unknown;
     text?: unknown;
+    patch?: unknown;
   };
   const notificationId =
     typeof body.notification_id === "string" ? body.notification_id : "";
   const text = typeof body.text === "string" ? body.text.trim() : "";
-  if (!notificationId || !text) {
+  const patch =
+    body.patch && typeof body.patch === "object" && !Array.isArray(body.patch)
+      ? (body.patch as Record<string, unknown>)
+      : undefined;
+  if (!notificationId || (!text && !patch)) {
     return NextResponse.json(
-      { error: "notification_id and text are required" },
+      { error: "notification_id and text or patch are required" },
       { status: 400 }
     );
   }
@@ -27,7 +32,8 @@ export async function POST(request: Request) {
   const result = await handleContractDataReviewDecision(createServerClient(), {
     userId: user.id,
     notificationId,
-    text,
+    text: text || undefined,
+    patch,
   });
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }

@@ -245,4 +245,40 @@ assert.equal(
   "Rama documental: contacto externo (inferido)"
 );
 
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "external_response",
+      actor: "user",
+      payload: {
+        kind: "photo_registered",
+        original_name: "fachada.jpg",
+      },
+    })
+  ),
+  "Foto recibida: fachada.jpg"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "external_response",
+      actor: "user",
+      payload: { kind: "photo_registered" },
+    })
+  ),
+  "Foto recibida"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "external_response",
+      actor: "user",
+      payload: { note: "sin kind" },
+    })
+  ),
+  "Respuesta del contacto externo"
+);
+
 console.log("operational-case-event-display.selftest: ok");
