@@ -364,6 +364,18 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Enlaces borrador** | `PATTERN_GENERATED_CASE_DOCUMENT_ACCESS` con `CONTRACT_DRAFT_DOCUMENT_BINDING` |
 | **Relacionado** | `PATTERN_GENERATED_CASE_DOCUMENT_ACCESS`, `PATTERN_STEP_TEST_BUSINESS_DECISION`, `PATTERN_NOTIFY_USER_CHANNELS`, `PATTERN_TOOL_AUDIT_SINGLE_OWNER`, `PATTERN_GENERATED_DOCUMENT_DEDUP` |
 
+### `PATTERN_BUSINESS_DECISION_CONTRACT_DATA_REVIEW`
+
+| | |
+|--|--|
+| **Capa** | `runtime` + `test_contract` |
+| **Cuándo usar** | Paso `contract_pending`: faltan datos comerciales o de comitente antes de renderizar el DOCX (`commission_contract_missing_required_data`) |
+| **Modelo canónico** | `context_jsonb.commission_terms` (neutral, independiente de EasyBroker/Ungga): `commission_pct`, `exclusive`, `duration_months`, `collaboration.enabled` (tríestado), `collaboration.compensation`, `confirmation`. Evaluador missing-only: [`contract-commercial-terms.ts`](../../packages/agent/src/operational-cases/contract-commercial-terms.ts) |
+| **Flujo producto** | Preflight preventivo en `generate_document_from_template`; remediación owned `notify_user(kind=contract_data_review)` dedupeada por conjunto de faltantes. HITL dinámico (web formulario + Telegram Sí/No/texto) con **respuestas parciales**; al completar obligatorios confirma términos vía mutador tipado (no `context_patch.confirmation`) |
+| **Handlers** | [`contract-data-review.ts`](../../apps/web/src/lib/business-decisions/contract-data-review.ts), registro en [`registry.ts`](../../apps/web/src/lib/business-decisions/registry.ts) |
+| **Mappers destino** | EasyBroker/Ungga enriquecen en el borde desde `commission_terms`; % incompatible → warning, nunca muta canónico; override auditable en `publication.destinations.<destino>.commercial_override` |
+| **Relacionado** | `PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION`, `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`, `PATTERN_OPERATIONAL_WRITE_GATE` |
+
 **Auth Gmail:** usa OAuth por usuario (`provider=gmail` en `user_integrations`, scope `gmail.send`) igual que Calendar. No depende de `GOOGLE_APPLICATION_CREDENTIALS_JSON` (service account).
 
 ---
@@ -445,7 +457,9 @@ Orden sugerido en laboratorio: **HITL** → (opcional N3 si falta) → **Aprobar
 | `contract_pending_advisor_requests_changes` | `contract_changes_requested` + `waiting_internal` | Idem («necesita cambios…») |
 | `contract_pending_owner_signed` | Avance a `photos_requested` + `step_completed:contract_signed` | `handleContractOwnerSignedDecision` (simulación N4) |
 
-Orden sugerido en laboratorio: **N3** `prepare-commission-contract` → **N4 borrador** (si no cubierto por N3) → **aprobar envío** o **pedir cambios** → (opcional) **firma simulada**. Patrones: `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`, `PATTERN_STEP_TEST_BUSINESS_DECISION`, `PATTERN_TOOL_AUDIT_SINGLE_OWNER`, `PATTERN_GENERATED_DOCUMENT_DEDUP`, `PATTERN_NOTIFY_USER_CHANNELS`.
+Orden sugerido en laboratorio: **N3** `prepare-commission-contract` → **N4 borrador** (si no cubierto por N3) → **aprobar envío** o **pedir cambios** → (opcional) **firma simulada**. Patrones: `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`, `PATTERN_BUSINESS_DECISION_CONTRACT_DATA_REVIEW`, `PATTERN_STEP_TEST_BUSINESS_DECISION`, `PATTERN_TOOL_AUDIT_SINGLE_OWNER`, `PATTERN_GENERATED_DOCUMENT_DEDUP`, `PATTERN_NOTIFY_USER_CHANNELS`.
+
+Si faltan datos comerciales (correo, colaboración, comisión, exclusividad, duración), el sistema emite `contract_data_review` antes de `contract_review`; completar vía Pendientes/Telegram y regenerar borrador.
 
 ### Pasos 6–7 (`photos_requested` … `package_ready`)
 
@@ -453,6 +467,9 @@ Orden sugerido en laboratorio: **N3** `prepare-commission-contract` → **N4 bor
 |--------|----------------|---------------------------|
 | N3 por habilidad | `PATTERN_STEP_STATUS_N3_VS_N4`, contratos en `run-skill` | **Paso listo para probar** (no **Paso probado**) |
 | N4 | `PATTERN_STEP_TEST_SCENARIO` + semillas en `step-test-seeds.ts` | **Paso probado** tras `step_test_completed` |
+| Publicación | Publication runner, preflight condicional, rollout `off\|shadow\|active` (default **off**) | E2E: `publication_mode: "active"`; legacy `97d9ba19-…` solo recuperación |
+
+Regresión local: `npm run test:publication-workflow` (web), `npm run test:contract-commercial-terms` y `npm run test:photo-manifest` (agent).
 
 ---
 

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Publication workflow hardening**: serialized `publication-runner` with `publication_operations` ledger (migration `00063`), conditional preflight, API-backed reconcile, remote EasyBroker/Ungga snapshots, rollout modes `off|shadow|active` (default **off**), and business decisions for destination approval and conditional publication review
+- **Neutral commercial terms** (`commission_terms` / `collaboration.enabled` tri-state): deterministic evaluator, dynamic `contract_data_review` HITL (web + Telegram, partial capture), preventive preflight before contract generation, and destination mappers (EasyBroker/Ungga) that warn on incompatible detail without mutating canonical data
+- **Photo manifest by identity**: shared path/sha256 helpers, per-file classification with bounded concurrency, identity-safe EasyBroker upload pairs, watermark/URL merge 1:1 with `raw_photos`
+- **Residential minimums**: `parking_spaces` for casa/residencia in property data review (missing-only; zero valid)
+- Regression scripts: `npm run test:publication-workflow` (web), `npm run test:contract-commercial-terms` and `npm run test:photo-manifest` (agent)
+
+### Changed
+
+- Publication side effects require explicit `publication_mode` (or account equivalent); implicit default-on removed
+- `contract_data_review` generalized beyond owner email only; dedupe by ordered missing-field set
+- Ungga timeout/kill propagates to `unknown_outcome` without auto-retry of `prepare_draft`
+
 - **Alma efectiva (`soul_effective`)**: reviewer LLM compila voz/tono/estilo/brevedad en un resumen coherente con defaults; el compiler lo inyecta en cada prompt; preview en Settings → Perfil del agente → Alma
 - **Telegram webhook idempotency**: tabla `telegram_webhook_updates` (migration `00052`) evita procesar dos veces el mismo `update_id` / respuestas duplicadas
 - **Cron hardening**: `SCHEDULED_TASKS_CONCURRENCY` (default 5) en `POST /api/cron/scheduled-tasks`; runbook con stagger recomendado para `scheduled-tasks`, `operational-cases` y `heartbeat`

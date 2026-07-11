@@ -468,6 +468,20 @@ Flujo **property_data_review** (implementado):
 - El asesor confirma o corrige desde **Pendientes** (inline) o Telegram (`property_data_confirm` / `property_data_correct`).
 - Handler compartido: [`apps/web/src/lib/business-decisions/property-data-review.ts`](../../apps/web/src/lib/business-decisions/property-data-review.ts); API `POST /api/business-decisions/property-data-review`.
 
+Flujo **contract_data_review** + `commission_terms` (implementado):
+
+- Modelo neutral en `context_jsonb.commission_terms`:
+  `commission_pct`, `exclusive`, `duration_months`,
+  `collaboration.enabled` (tríestado), `collaboration.compensation.mode|value|currency`,
+  `confirmation`.
+- Evaluador missing-only: [`packages/agent/src/operational-cases/contract-commercial-terms.ts`](../../packages/agent/src/operational-cases/contract-commercial-terms.ts).
+  `enabled=false` limpia compensación; `enabled=true` no exige detalle.
+- Preflight preventivo al generar contrato; remediación owned dedupeada por conjunto de faltantes.
+- HITL dinámico (web formulario / Telegram botones Sí-No + texto validado) con respuestas parciales:
+  [`contract-data-review.ts`](../../apps/web/src/lib/business-decisions/contract-data-review.ts).
+- Mappers de borde EasyBroker/Ungga no mutan el canónico; overrides auditables en
+  `publication.destinations.<destino>.commercial_override`.
+
 ---
 
 ## 8. Skills compuestas y atómicas
@@ -596,9 +610,70 @@ Perfil declarativo de assets:
   UI muestra un cargador compacto con "Agregar fotos" en vez de campos fijos.
   Para `easybroker_upload_images`, la prueba permite hasta 30 fotos temporales.
 
-### 10.2 Orden de publicación EasyBroker
+### 10.2 Orden de publicación EasyBroker / Ungga (publication runner)
 
-Para publicación real, el orden recomendado es:
+La orquestación vive en `publication-workflow` + `publication-runner` (no en el
+LLM). Fuente de verdad: `context_jsonb.publication` (proyecciones legadas
+`publish_approvals` / `published`). El agente **no** puede escribir esas raíces
+vía `operational_case_update_state`.
+
+Feature flag / rollout por caso (precedencia de caso sobre cuenta):
+`context.publication_mode` o `publication.mode` ∈ `off | shadow | active`
+(default **`off`**). `shadow` calcula reconcile/preflight sin side effects;
+`active` habilita el runner. Flags legados
+`context.publication_workflow_v1 === false` /
+`publication.feature_enabled=false` también desactivan.
+
+Para casos existentes, `reconcilePublicationCase` (first-touch / lab / admin)
+reconstruye `publication` desde artefactos **y** verificación API cuando
+hay credenciales: EasyBroker por `internal_id`/listing (status, campos,
+conteo/títulos de imágenes); Ungga por GU-ID/draft. Resultado ambiguo →
+`unknown_outcome` (nunca “cura” automática). Deduplica pendientes con
+metadata real. Si Ungga no tiene GU-ID confirmado, lo deja en
+`draft_pending` (no reintenta borradores huérfanos).
+
+Caso legado de recuperación `97d9ba19-687d-4fd6-8b7d-75be29b5f285`: conservar
+`EB-WL4498`, verificar remotamente las cinco imágenes/títulos, corregir
+manifest, publicar solo tras pass y revisar Ungga antes de cualquier
+reintento. Usar un caso nuevo para E2E limpio.
+
+Orden por destino (EasyBroker antes que Ungga):
+
+1. Aprobación humana one-by-one (`easybroker_publish_approval` /
+   `ungga_publish_approval`) — callbacks idempotentes (`claim unread`).
+2. Draft técnico:
+   - EasyBroker: `easybroker_create_listing` → `status=not_published`.
+     Colaboración desde `commission_terms.collaboration` (mapper de borde;
+     % incompatible → warning, sin mutar canónico). Override auditable solo
+     en `publication.destinations.<destino>.commercial_override`.
+   - Ungga: `ungga_publish_listing(action=prepare_draft)` (enrich desde
+     `case_id`; omitir strings vacíos; CLI real con `UNGGA_CLI_DRY_RUN=false`
+     salvo tests).
+3. Media: `image_watermark(case_id)` + `photo_manifest` 1:1 por path/sha256 +
+   `easybroker_upload_images` con pares `{source_path, upload_path, title}`
+   (nunca desde `visible_spaces`). Persist `public_url` en el manifest.
+4. Preflight condicional (`publication-preflight`, watermark/manifest reales):
+   `pass` → publicar; `waiting` → reanudar; `review_required` →
+   `publication_review_required`; `blocked`/`unknown_outcome` → no reintentar
+   side effects automáticamente. Ungga no avanza si EasyBroker no está
+   remotamente publicado u omitido.
+5. Publish:
+   - EasyBroker: `easybroker_publish_listing` (PATCH `status=published`) tras
+     snapshot remoto.
+   - Ungga: `ungga_publish_listing(action=publish_draft)` solo con GU-ID.
+     Timeout/kill → `unknown_outcome` en fase + ledger; sin auto-retry de
+     `prepare_draft`.
+
+El ledger `publication_operations` se cierra con el resultado real del
+adapter (`succeeded` / `failed` / `unknown_outcome`), no solo porque terminó
+el tick del agente.
+
+Side effects externos se registran en `publication_operations` (clave única
+`(case_id, destination, operation_key)`). Todos los disparadores (Telegram,
+web, lab refresh, auto-follow-up) pasan por `requestPublicationProgress` con
+`markCaseProcessing` — sin `skipLock` recursivo.
+
+Para publicación real, el orden técnico EasyBroker sigue siendo:
 
 1. `image_watermark` genera fotos marcadas en `account-assets` usando
    `listing_photo_watermark` u otro asset de watermark de la cuenta.
@@ -610,16 +685,16 @@ Para publicación real, el orden recomendado es:
    `account_tool_secrets` para `easybroker_web`; EasyBroker resuelve ese email
    al usuario/agente visible en su panel.
 3. `easybroker_upload_images` recibe el `listing_id` devuelto por create y
-   adjunta las fotos generadas por `image_watermark` enviando URLs firmadas a
-   EasyBroker. Para prueba aislada puede usar fotos temporales subidas desde UI
-   como activos de prueba.
+   adjunta las fotos generadas por `image_watermark` enviando URLs firmadas /
+   públicas cortas a EasyBroker.
+4. Tras preflight pass, `easybroker_publish_listing` cambia a `published`.
 
 El adapter write debe guardar en el resultado IDs/URLs devueltos por EasyBroker
 y registrar errores por imagen sin perder el listing ya creado. `create` devuelve
 `public_url` (la liga pública/listing que entrega la API) y `agent_url` (derivada
 para el panel interno `/agent/properties/{slug}`). La validación operativa mínima
 es: dry-run/HITL del paquete aprobado → create listing → upload imágenes →
-devolver URL de borrador/publicación para revisión humana.
+publish → devolver URL para confirmación.
 Las fotos de publicación no son `account_assets` persistentes; son artefactos
 operativos/caso. La limpieza automática de artefactos temporales queda pendiente
 si no existe todavía un job/política para `tool-test-artifacts` o
@@ -641,7 +716,9 @@ El contrato real de EasyBroker valida `images[].url` con máximo 255 caracteres;
 por eso el adapter no debe enviar signed URLs largas de Supabase directamente.
 Cuando hay `NEXT_PUBLIC_SITE_URL` público (o `EASYBROKER_PUBLIC_ASSET_BASE_URL`),
 manda una URL corta de Gu OS (`/api/public/account-assets/{id}/image.ext`) que
-redirige temporalmente al objeto privado.
+redirige temporalmente al objeto privado. Si la foto vive en `case-documents`
+(sin fila previa en `account_assets`), el upload hace upsert de un pointer
+`easybroker_image__*` para reutilizar ese mismo endpoint corto.
 
 Entornos:
 
@@ -668,11 +745,26 @@ importantes para no repetir la iteración:
 - `location.name` debe ser el string completo de ubicación registrada (por
   ejemplo `Colomos Providencia, Guadalajara, Jalisco`), compatible con
   `/v1/locations`.
-- En `POST /properties`, `location` acepta campos de dirección como `name`,
-  `street`, `postal_code`, `latitude` y `longitude`. No enviar ahí `city_area`,
-  `city`, `region`, `type` o `full_name`; esos aparecen en respuestas/lookup,
-  pero producen `422 Unpermitted parameters` en create.
+- En `POST /properties`, `location` acepta solo: `name`, `street`,
+  `exterior_number`, `interior_number`, `cross_street`, `postal_code`,
+  `latitude` y `longitude`. No enviar ahí `city_area`, `city`, `region`, `type`
+  o `full_name`; esos aparecen en respuestas/lookup, pero producen
+  `422 Unpermitted parameters` en create.
 - `show_exact_location` va top-level, no dentro de `location`.
+- El adapter (`buildEasyBrokerCreatePayload`) es el dueño del contrato: construye
+  por **allowlist** (OpenAPI `PropertyBody`) y **no** hace passthrough de
+  `custom_fields` / `custom_fields_json`. Campos internos del caso como
+  `legal_address` o `area_construida_m2` nunca deben ir top-level.
+- Sanitizers relevantes: strings vacíos y placeholders (`N/D`, `N/A`) se
+  omiten; `internal_id` máximo 15 caracteres (un UUID de caso se omite);
+  `lot_width` / `lot_length` / tamaños en `0` se omiten; `covered_space` no se
+  envía en MX; `shared_commission_percentage` solo `50` o `null`; `agent` debe
+  ser email de cuenta EasyBroker; `street` se normaliza si el LLM mandó la
+  dirección completa.
+- `tags` son strings libres y sí se envían. `features` solo si matchean el
+  catálogo de la cuenta (`GET /v1/features`, match exacto/normalizado). Si el
+  catálogo no está disponible o no hay match, se omiten y se registran en
+  `dropped_fields` sin bloquear el create.
 - El endpoint crea siempre una ficha nueva (`POST`), no hace upsert. Repetir la
   prueba real controlada crea otro borrador.
 - Para propiedades `not_published`, la UI de EasyBroker puede ordenar
