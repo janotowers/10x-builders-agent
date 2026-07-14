@@ -721,6 +721,45 @@ export function buildContractCommercialMinimumsSummaryMessage(
     .trim();
 }
 
+/**
+ * Chat-first echo after commercial data capture — no buttons.
+ * Lets the advisor spot exclusivity/commission mistakes before the draft runs.
+ */
+export function buildContractCommercialCaptureAckMessage(params: {
+  ownerEmail?: string | null;
+  terms: CommissionTerms;
+}): string {
+  const terms = params.terms;
+  const lines: string[] = ["Datos contractuales registrados:"];
+  if (params.ownerEmail) {
+    lines.push(`- Correo: ${params.ownerEmail}`);
+  }
+  if (terms.duration_months != null) {
+    lines.push(`- Duración del encargo: ${terms.duration_months} meses`);
+  }
+  if (terms.exclusive != null) {
+    lines.push(
+      `- Exclusividad: ${terms.exclusive ? "Con exclusiva" : "Sin exclusiva"}`
+    );
+  }
+  if (terms.commission_pct != null) {
+    lines.push(`- Comisión pactada: ${terms.commission_pct}%`);
+  }
+  if (terms.collaboration.enabled != null) {
+    if (terms.collaboration.enabled) {
+      const share =
+        terms.collaboration.compensation.value != null
+          ? ` (compartida ${terms.collaboration.compensation.value}% de la comisión total)`
+          : "";
+      lines.push(`- Compartir comisión: Sí${share}`);
+    } else {
+      lines.push("- Compartir comisión: No");
+    }
+  }
+  lines.push("", "Generaré el borrador del contrato.");
+  return lines.join("\n");
+}
+
 /** Owner commission % → EasyBroker operations[].commission (percentage). */
 export function mapOwnerCommissionToEasyBroker(terms: CommissionTerms): {
   commission?: { type: "percentage"; value: number };
@@ -880,6 +919,85 @@ export function mapCollaborationToUngga(terms: CommissionTerms): {
   return out;
 }
 
+export type BooleanPolarity = "explicit_true" | "explicit_false" | "unknown";
+
+function normalizeSpanishReplyText(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Polarity guardian for exclusivity. Prefer explicit_false / explicit_true only;
+ * never treat a bare "exclusiva" inside a negation as affirmative.
+ * Aligns with copy: "con exclusiva o sin exclusiva".
+ */
+export function classifyExclusivePolarity(text: string): BooleanPolarity {
+  const lower = normalizeSpanishReplyText(text);
+  if (!lower || !/exclusiv/.test(lower)) return "unknown";
+
+  // Negations first (order matters).
+  if (
+    /\bsin\s+exclusiv/.test(lower) ||
+    /\bno\s+(?:(?:es|sera|seria|queda|quedara|va\s+a\s+ser)\s+)?(?:en\s+)?exclusiv/.test(
+      lower
+    ) ||
+    /\bno\s+exclusiv/.test(lower) ||
+    /\bcaptacion\s+no\s+(?:es\s+)?(?:en\s+)?exclusiv/.test(lower) ||
+    /\bno,?\s+la\s+captacion\s+no\s+es\s+(?:en\s+)?exclusiv/.test(lower)
+  ) {
+    return "explicit_false";
+  }
+
+  if (
+    /\bcon\s+exclusiv/.test(lower) ||
+    /\bes\s+(?:en\s+)?exclusiv/.test(lower) ||
+    /\b(?:si|sí)\b.{0,30}exclusiv/.test(lower) ||
+    /\bexclusiv.{0,20}\b(?:si|sí)\b/.test(lower) ||
+    /^exclusiv/.test(lower) ||
+    /(?:^|[.,;:])\s*exclusiv/.test(lower)
+  ) {
+    return "explicit_true";
+  }
+
+  // Mentions "exclusiv*" without clear polarity — do not guess.
+  return "unknown";
+}
+
+/**
+ * Polarity guardian for commission sharing. Same contract as exclusive:
+ * only return explicit_* when the Spanish cue is unambiguous.
+ */
+export function classifyCollaborationPolarity(text: string): BooleanPolarity {
+  const lower = normalizeSpanishReplyText(text);
+  if (!lower) return "unknown";
+
+  if (
+    (/\bno\s+(se\s+)?comparte|\bno\s+compart|\bsin\s+compartir/.test(lower) &&
+      /comision|compart/.test(lower)) ||
+    /^no$/.test(lower)
+  ) {
+    // Bare "no" only counts when caller already scoped to this field alone.
+    if (/^no$/.test(lower)) return "unknown";
+    return "explicit_false";
+  }
+
+  if (
+    /(\bsi\b|\bsí\b).{0,40}(comision|compart)|(\bcomparte|\bcompartir\b).{0,40}(comision|si\b)/.test(
+      lower
+    ) ||
+    (/\bsi\b|\bsí\b|\bcomparte|\bcompartir\b/.test(lower) &&
+      /comision|compart/.test(lower))
+  ) {
+    return "explicit_true";
+  }
+
+  return "unknown";
+}
+
 export function parseContractCommercialReply(
   text: string,
   missing: ContractCommercialMissingField[]
@@ -904,24 +1022,13 @@ export function parseContractCommercialReply(
     }
   }
 
-  const lower = trimmed
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{M}/gu, "");
+  const lower = normalizeSpanishReplyText(trimmed);
 
   if (missingKeys.has("collaboration_enabled")) {
-    if (
-      /\bno\s+(se\s+)?comparte|\bno\s+compart|\bsin\s+compartir/.test(lower) &&
-      /comision|compart/.test(lower)
-    ) {
+    const polarity = classifyCollaborationPolarity(trimmed);
+    if (polarity === "explicit_false") {
       patch.collaboration_enabled = false;
-    } else if (
-      /(\bsi\b|\bsí\b).{0,40}(comision|compart)|(\bcomparte|\bcompartir\b).{0,40}(comision|si\b)/.test(
-        lower
-      ) ||
-      (/\bsi\b|\bsí\b|\bcomparte|\bcompartir\b/.test(lower) &&
-        /comision|compart/.test(lower))
-    ) {
+    } else if (polarity === "explicit_true") {
       patch.collaboration_enabled = true;
     } else if (/^no$/i.test(trimmed) || /^si$/i.test(trimmed) || /^sí$/i.test(trimmed)) {
       const booleanMissing = missing.filter((item) => item.kind === "boolean");
@@ -932,16 +1039,11 @@ export function parseContractCommercialReply(
   }
 
   if (missingKeys.has("exclusive")) {
-    if (/exclusiv/.test(lower)) {
-      if (
-        /\bno\s+(?:(?:es|sera|seria|queda|quedara|va\s+a\s+ser)\s+)?exclusiv/.test(
-          lower
-        ) ||
-        /\bsin\s+exclusividad\b/.test(lower)
-      ) {
-        patch.exclusive = false;
-      }
-      else if (/\bexclusiv/.test(lower)) patch.exclusive = true;
+    const polarity = classifyExclusivePolarity(trimmed);
+    if (polarity === "explicit_false") {
+      patch.exclusive = false;
+    } else if (polarity === "explicit_true") {
+      patch.exclusive = true;
     } else if (/^no$/i.test(trimmed) || /^si$/i.test(trimmed) || /^sí$/i.test(trimmed)) {
       const booleanMissing = missing.filter((item) => item.kind === "boolean");
       if (booleanMissing.length === 1 && booleanMissing[0]?.key === "exclusive") {

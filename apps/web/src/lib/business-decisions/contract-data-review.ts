@@ -10,6 +10,7 @@ import {
 import {
   applyCommissionTermsPatch,
   buildContractCommercialMinimumsSummaryMessage,
+  buildContractCommercialCaptureAckMessage,
   evaluateContractCommercialMinimums,
   parseCommissionTerms,
   parseContractCommercialReply,
@@ -437,10 +438,12 @@ export async function handleContractDataReviewDecision(
   return {
     ok: true,
     status: "captured",
-    message:
-      "Datos contractuales registrados. Generaré el borrador del contrato.",
+    message: buildContractCommercialCaptureAckMessage({
+      ownerEmail: evaluation.owner_email,
+      terms: nextTerms,
+    }),
     owner_email: evaluation.owner_email,
     commission_terms: nextTerms,
   };
 }
-
+

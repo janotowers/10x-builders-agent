@@ -492,6 +492,12 @@ rotos en clientes de correo o si se necesita analytics de apertura.
 `commission_pct` (número, porcentaje del precio). El copy de captura y los
 mappers a EasyBroker/Ungga asumen **%** en este sprint.
 
+**Polaridad de exclusiva (2026-07):** el extractors híbrido usa
+`classifyExclusivePolarity` (`explicit_true` | `explicit_false` | `unknown`).
+El determinístico solo pisa al LLM cuando la polaridad es explícita
+(`No es en exclusiva`, `sin exclusiva`, `con exclusiva`, …). Tras capturar
+datos, el ack de chat hace eco Con/Sin exclusiva antes de generar el borrador.
+
 **Contexto de producto (México):**
 
 - En **venta**, la comisión al propietario suele expresarse como **% del precio**.

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
   applyCommissionTermsPatch,
+  buildContractCommercialCaptureAckMessage,
   buildContractCommercialMinimumsSummaryMessage,
+  classifyExclusivePolarity,
   emptyCommissionTerms,
   evaluateContractCommercialMinimums,
   mapCollaborationToEasyBroker,
@@ -173,6 +175,69 @@ const replyNonExclusive = parseContractCommercialReply(
   empty.missing
 );
 assert.equal(replyNonExclusive.patch.exclusive, false);
+
+const replyE2eNoEsEnExclusiva = parseContractCommercialReply(
+  "alex@ungga.com, sí se comparte comisión del 5% del total y de ese el 50% es para cada parte. No es en exclusiva y es por 8 meses.",
+  empty.missing
+);
+assert.equal(replyE2eNoEsEnExclusiva.patch.exclusive, false);
+assert.equal(replyE2eNoEsEnExclusiva.patch.collaboration_enabled, true);
+assert.equal(replyE2eNoEsEnExclusiva.patch.duration_months, 8);
+assert.equal(replyE2eNoEsEnExclusiva.patch.owner_email, "alex@ungga.com");
+
+const replySinExclusiva = parseContractCommercialReply("Sin exclusiva", [
+  {
+    key: "exclusive",
+    label: "Exclusividad",
+    question: "Indica si la captación es con exclusiva o sin exclusiva.",
+    kind: "boolean",
+  },
+]);
+assert.equal(replySinExclusiva.patch.exclusive, false);
+
+const replyConExclusiva = parseContractCommercialReply("Con exclusiva", [
+  {
+    key: "exclusive",
+    label: "Exclusividad",
+    question: "Indica si la captación es con exclusiva o sin exclusiva.",
+    kind: "boolean",
+  },
+]);
+assert.equal(replyConExclusiva.patch.exclusive, true);
+
+assert.equal(
+  classifyExclusivePolarity("No es en exclusiva"),
+  "explicit_false"
+);
+assert.equal(classifyExclusivePolarity("sin exclusiva"), "explicit_false");
+assert.equal(classifyExclusivePolarity("con exclusiva"), "explicit_true");
+assert.equal(
+  classifyExclusivePolarity("menciona exclusiva sin decir más"),
+  "unknown"
+);
+
+const captureAck = buildContractCommercialCaptureAckMessage({
+  ownerEmail: "alex@ungga.com",
+  terms: {
+    ...emptyCommissionTerms(),
+    exclusive: false,
+    commission_pct: 5,
+    duration_months: 8,
+    collaboration: {
+      enabled: true,
+      compensation: {
+        mode: "percentage_of_total_commission",
+        value: 50,
+        currency: null,
+      },
+      notes: null,
+    },
+  },
+});
+assert.match(captureAck, /Sin exclusiva/);
+assert.match(captureAck, /5%/);
+assert.match(captureAck, /8 meses/);
+assert.match(captureAck, /Generaré el borrador/);
 
 const replyExplicitNonExclusive = parseContractCommercialReply(
   "No, la captación no es exclusiva y el porcentaje de esa comisión que se comparte es de la mitad",

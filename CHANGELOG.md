@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Commercial exclusivity polarity**: phrases like `No es en exclusiva` and
+  `sin exclusiva` no longer flip to `exclusive: true`. Hybrid merge only lets
+  the deterministic parser override the LLM when polarity is explicit; the
+  capture ack echoes Con/Sin exclusiva before generating the contract draft.
 - **E2E publication remote wait resume**: controlled/lab cases no longer stall after
   EasyBroker `images_submitted` with `remote_count=0`. The lab observer wakes the
   serialized publication runner from `nextPublicationAction` (including

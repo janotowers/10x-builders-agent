@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   parseContractCommercialReply,
+  classifyExclusivePolarity,
+  classifyCollaborationPolarity,
   type CollaborationCompensationMode,
   type CommissionTerms,
   type ContractCommercialMissingField,
@@ -130,13 +132,17 @@ function valuesConflict(a: unknown, b: unknown): boolean {
 
 /**
  * Merge LLM + deterministic patches.
- * - Deterministic priority fields fill gaps and override when present.
- * - Incompatible values are dropped and reported as unresolved.
+ * - Deterministic fills gaps when LLM omitted a field.
+ * - For exclusive / collaboration_enabled, deterministic overrides LLM only when
+ *   the source text has explicit polarity (explicit_true / explicit_false).
+ * - Other conflicts are dropped as unresolved (safer than guessing).
  */
 export function mergeContractCommercialPatches(params: {
   llmPatch: ContractCommercialPatch;
   deterministicPatch: ContractCommercialPatch;
   missingFields: ContractCommercialMissingField[];
+  /** Original advisor message; used to decide boolean polarity overrides. */
+  sourceText?: string;
 }): {
   patch: ContractCommercialPatch;
   unresolved: Array<{ field: string; reason: string }>;
@@ -157,6 +163,7 @@ export function mergeContractCommercialPatches(params: {
     seedAllowed
   );
   const merged: ContractCommercialPatch = { ...llm };
+  const sourceText = params.sourceText?.trim() ?? "";
 
   for (const [rawKey, detValue] of Object.entries(deterministic)) {
     const key = rawKey as keyof ContractCommercialPatch;
@@ -167,16 +174,28 @@ export function mergeContractCommercialPatches(params: {
       continue;
     }
     if (valuesConflict(llmValue, detValue)) {
-      // These booleans come from narrow, explicit Spanish polarity patterns
-      // (for example "no es exclusiva"). Prefer that direct evidence over an
-      // LLM interpretation so a clearly negated answer is never lost.
       if (
         (key === "exclusive" || key === "collaboration_enabled") &&
         typeof detValue === "boolean"
       ) {
-        (merged as Record<string, unknown>)[key] = detValue;
+        const polarity =
+          key === "exclusive"
+            ? classifyExclusivePolarity(sourceText)
+            : classifyCollaborationPolarity(sourceText);
+        if (
+          polarity === "explicit_true" ||
+          polarity === "explicit_false"
+        ) {
+          (merged as Record<string, unknown>)[key] =
+            polarity === "explicit_true";
+          assumptions.push(
+            `Se priorizó la polaridad explícita del texto para ${key}.`
+          );
+          continue;
+        }
+        // Unknown polarity: keep LLM; do not let a weak deterministic guess win.
         assumptions.push(
-          `Se priorizó la polaridad explícita del texto para ${key}.`
+          `Se conservó la interpretación del LLM para ${key} (polaridad determinística no explícita).`
         );
         continue;
       }
@@ -423,6 +442,7 @@ export async function extractContractCommercialReply(
         llmPatch,
         deterministicPatch,
         missingFields: input.missingFields,
+        sourceText: text,
       });
       const hasData = Object.keys(merged.patch).length > 0;
       console.info(

@@ -160,6 +160,7 @@ export type {
 export {
   applyCommissionTermsPatch,
   buildContractCommercialMinimumsSummaryMessage,
+  buildContractCommercialCaptureAckMessage,
   collaborationCompensationModeChoices,
   emptyCommissionTerms,
   evaluateContractCommercialMinimums,
@@ -168,10 +169,13 @@ export {
   mapCollaborationToUngga,
   parseCommissionTerms,
   parseContractCommercialReply,
+  classifyExclusivePolarity,
+  classifyCollaborationPolarity,
   resolveOwnerEmailFromSources,
   COLLABORATION_COMPENSATION_MODE_LABELS,
 } from "./operational-cases/contract-commercial-terms";
 export type {
+  BooleanPolarity,
   CollaborationCompensationMode,
   CollaborationTerms,
   CommissionTerms,

@@ -216,11 +216,46 @@ async function main() {
     llmPatch: { exclusive: true },
     deterministicPatch: { exclusive: false },
     missingFields: ALL_MISSING,
+    sourceText: "No es en exclusiva",
   });
   assert.equal(booleanConflict.patch.exclusive, false);
   assert.ok(
     booleanConflict.assumptions.some((item) => item.includes("exclusive"))
   );
+
+  // 9b) Without explicit polarity in source text, keep LLM on boolean conflict.
+  const weakDetConflict = mergeContractCommercialPatches({
+    llmPatch: { exclusive: false },
+    deterministicPatch: { exclusive: true },
+    missingFields: ALL_MISSING,
+    sourceText: "revisar tema de exclusiva luego",
+  });
+  assert.equal(weakDetConflict.patch.exclusive, false);
+  assert.ok(
+    weakDetConflict.assumptions.some((item) =>
+      item.includes("conservó la interpretación del LLM")
+    )
+  );
+
+  // 9c) E2E phrase: deterministic parse alone must not invent exclusive=true.
+  const e2eExtract = await extractContractCommercialReply(
+    {
+      text:
+        "alex@ungga.com, sí se comparte comisión del 5% del total y de ese el 50% es para cada parte. No es en exclusiva y es por 8 meses.",
+      missingFields: ALL_MISSING,
+    },
+    {
+      async extract() {
+        return {
+          patch: { exclusive: true },
+          confidence: "medium",
+          unresolved: [],
+          assumptions: [],
+        };
+      },
+    }
+  );
+  assert.equal(e2eExtract.patch.exclusive, false);
 
   // 10) Ambiguous text without mutation.
   const unclear = await extractContractCommercialReply(
