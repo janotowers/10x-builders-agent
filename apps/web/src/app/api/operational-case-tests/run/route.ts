@@ -35,6 +35,7 @@ import {
 } from "@/lib/operational-cases/settings-test-case-response";
 import { buildLastE2ETransitionOutcome } from "@/lib/operational-cases/settings-test-e2e-transitions";
 import { runSettingsTestSafeCheck } from "@/lib/operational-cases/settings-test-safe-check";
+import { controlledE2EPublicationContextPatch } from "@/lib/operational-cases/publication-tool-policy";
 type RunMode = "safe_check" | "agent_e2e";
 
 type RunBody = {
@@ -370,11 +371,17 @@ export async function POST(request: Request) {
     if (!caseBeforeLock) {
       return NextResponse.json({ error: "case_not_found_after_owner_response" }, { status: 404 });
     }
-    if (
-      mode === "agent_e2e" &&
-      !settingsTestCase &&
-      !isControlledE2EOperationalCase(caseBeforeLock)
-    ) {
+    const adoptionPatch =
+      mode === "agent_e2e" && !settingsTestCase
+        ? controlledE2EPublicationContextPatch({
+            caseType: caseBeforeLock.case_type,
+            e2eControlled: true,
+            context: caseBeforeLock.context_jsonb,
+            channel: "settings_agent_test",
+            includeControlMarkers: true,
+          })
+        : null;
+    if (adoptionPatch) {
       const adopted = await updateOperationalCase(
         db,
         caseBeforeLock.id,
@@ -383,19 +390,15 @@ export async function POST(request: Request) {
           nextActionAt: null,
           context: {
             ...(caseBeforeLock.context_jsonb ?? {}),
-            e2e_controlled: true,
-            publication_mode: "active",
-            e2e_control_source: "settings_agent_test",
-            e2e_control_case_type: caseBeforeLock.case_type,
-            e2e_control_status:
-              caseBeforeLock.current_step === "intake"
-                ? "intake"
-                : "ready_for_manual_tick",
-            e2e_control_started_at:
-              typeof caseBeforeLock.context_jsonb?.e2e_control_started_at ===
-              "string"
-                ? caseBeforeLock.context_jsonb.e2e_control_started_at
-                : new Date().toISOString(),
+            ...adoptionPatch,
+            ...(caseBeforeLock.context_jsonb?.e2e_controlled !== true
+              ? {
+                  e2e_control_status:
+                    caseBeforeLock.current_step === "intake"
+                      ? "intake"
+                      : "ready_for_manual_tick",
+                }
+              : {}),
           },
         }
       );

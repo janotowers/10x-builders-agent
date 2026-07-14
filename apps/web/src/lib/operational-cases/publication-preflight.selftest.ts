@@ -125,17 +125,141 @@ ungga = applyPublicationEvent(ungga, {
   destination: "ungga",
   artifact: { ungga_property_id: "GU-1", draft_url: "https://ungga.com/app/propiedades/GU-1" },
 });
+ungga = applyPublicationEvent(ungga, {
+  type: "media_submitted",
+  destination: "ungga",
+  expected_count: 2,
+});
+ungga = applyPublicationEvent(ungga, {
+  type: "media_verified",
+  destination: "ungga",
+  remote_count: 2,
+});
 const unggaDry = runPublicationPreflight({
   destination: "ungga",
   publication: ungga,
   context: baseContext(),
-  remote: { ungga_property_id: "GU-1", dry_run: true },
+  remote: { ungga_property_id: "GU-1", dry_run: true, image_count: 2 },
 });
 assert.equal(unggaDry.status, "review_required");
 assert.ok(unggaDry.issues.some((i) => i.code === "ungga_dry_run_not_persisted"));
 
-const text = formatPublicationReviewNotifyText("easybroker", lowConfidence);
+let unggaMissingMedia = emptyPublicationState();
+unggaMissingMedia = applyPublicationEvent(unggaMissingMedia, {
+  type: "approval_decided",
+  destination: "ungga",
+  approval: "approved",
+});
+unggaMissingMedia = applyPublicationEvent(unggaMissingMedia, {
+  type: "draft_created",
+  destination: "ungga",
+  artifact: {
+    ungga_property_id: "GU-2",
+    draft_url: "https://ungga.com/app/propiedades/GU-2",
+  },
+});
+const unggaMediaBlock = runPublicationPreflight({
+  destination: "ungga",
+  publication: unggaMissingMedia,
+  context: baseContext(),
+  remote: { ungga_property_id: "GU-2", image_count: 0 },
+});
+assert.equal(unggaMediaBlock.status, "review_required");
+assert.ok(
+  unggaMediaBlock.issues.some(
+    (i) =>
+      i.code === "ungga_media_not_submitted" ||
+      i.code === "ungga_media_not_verified"
+  )
+);
+
+const unggaPass = runPublicationPreflight({
+  destination: "ungga",
+  publication: ungga,
+  context: baseContext(),
+  remote: { ungga_property_id: "GU-1", image_count: 2 },
+  options: { requireWatermark: true },
+});
+assert.equal(unggaPass.status, "pass", unggaPass.summary);
+
+// Ungga often shows extra thumbs; remote_count >= expected is OK.
+const unggaExtraThumbs = emptyPublicationState();
+unggaExtraThumbs.destinations.ungga = {
+  ...ungga.destinations.ungga,
+  media: {
+    required: true,
+    submitted: true,
+    verified: true,
+    expected_count: 2,
+    remote_count: 3,
+    last_checked_at: null,
+  },
+};
+const unggaExtraPass = runPublicationPreflight({
+  destination: "ungga",
+  publication: unggaExtraThumbs,
+  context: baseContext(),
+  remote: { ungga_property_id: "GU-1", image_count: 3 },
+  options: { requireWatermark: true },
+});
+assert.equal(
+  unggaExtraPass.status,
+  "pass",
+  `extra thumbs must pass: ${unggaExtraPass.summary}`
+);
+
+const unggaTooFew = runPublicationPreflight({
+  destination: "ungga",
+  publication: unggaExtraThumbs,
+  context: baseContext(),
+  remote: { ungga_property_id: "GU-1", image_count: 1 },
+  options: { requireWatermark: true },
+});
+assert.equal(unggaTooFew.status, "review_required");
+assert.ok(
+  unggaTooFew.issues.some((i) => i.code === "ungga_media_count_mismatch")
+);
+
+const noWatermarkRequired = runPublicationPreflight({
+  destination: "easybroker",
+  publication,
+  context: baseContext({
+    photo_manifest: [
+      {
+        source_path: "a",
+        sequence: 0,
+        space_label: "Fachada",
+        confidence: 0.95,
+        public_url: "https://example.com/a.jpg",
+      },
+      {
+        source_path: "b",
+        sequence: 1,
+        space_label: "Cocina",
+        confidence: 0.95,
+        public_url: "https://example.com/b.jpg",
+      },
+    ],
+  }),
+  remote: { status: "not_published", image_count: 2, images_ready: true },
+  options: { requireWatermark: false },
+});
+assert.equal(
+  noWatermarkRequired.status,
+  "pass",
+  "missing watermarked_path must not block when watermark is not configured"
+);
+
+const text = formatPublicationReviewNotifyText("ungga", unggaMediaBlock, {
+  last_step: { step: "media_upload", ok: false, error: "timeout" },
+  expected_image_count: 2,
+  uploaded_image_count: 0,
+  has_draft_artifact: true,
+  ungga_property_id: "GU-2",
+});
 assert.ok(text.includes("Revisión requerida"));
+assert.ok(text.includes("Último paso"));
+assert.ok(text.includes("GU-2"));
 assert.ok(text.includes("Aprobar y continuar"));
 
 console.log("publication-preflight.selftest: ok");

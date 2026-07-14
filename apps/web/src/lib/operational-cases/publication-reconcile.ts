@@ -27,6 +27,7 @@ import {
   compareEasyBrokerSnapshot,
   fetchEasyBrokerListingSnapshot,
   fetchUnggaListingSnapshot,
+  isUnggaApiCredentialsMissingError,
 } from "@/lib/operational-cases/publication-remote-snapshot";
 import type { PublicationRolloutMode } from "@/lib/operational-cases/publication-rollout";
 
@@ -292,15 +293,20 @@ export async function reconcilePublicationCaseRecord(
           }
         }
       } catch (error) {
-        publication = applyPublicationEvent(publication, {
-          type: "draft_failed",
-          destination: "ungga",
-          error: `remote_read_failed:${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          unknown: true,
-        });
-        changes.push("ungga_remote_read_failed");
+        if (isUnggaApiCredentialsMissingError(error)) {
+          // CLI-only accounts: leave destination as-is; runner uses CLI evidence.
+          changes.push("ungga_api_credentials_missing_skipped");
+        } else {
+          publication = applyPublicationEvent(publication, {
+            type: "draft_failed",
+            destination: "ungga",
+            error: `remote_read_failed:${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            unknown: true,
+          });
+          changes.push("ungga_remote_read_failed");
+        }
       }
     }
   }

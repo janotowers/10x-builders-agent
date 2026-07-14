@@ -312,9 +312,15 @@ export function buildPricingProposalFromComparables(params: {
   const perSource = perSourceBreakdown(rows, subjectAreaM2, integrationIssues);
   if (avaclick) perSource.push(avaclickPerSource(avaclick));
 
+  const seenComparableIds = new Set<string>();
   const comparablesUsed = usableRows
     .map((row) => row.id)
-    .filter((id): id is string => Boolean(id))
+    .filter((id): id is string => {
+      if (!id) return false;
+      if (seenComparableIds.has(id)) return false;
+      seenComparableIds.add(id);
+      return true;
+    })
     .slice(0, 12);
 
   const avaclickAvg = avaclick ? numberOrNull(avaclick.sale_average_mxn) : null;

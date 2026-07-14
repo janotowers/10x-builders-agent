@@ -1,4 +1,7 @@
-import { isEasybrokerPublishedInContext } from "@/lib/business-decisions/publish-destination-approval";
+import {
+  isEasybrokerPublishedInContext,
+  isEasybrokerResolvedForUnggaApproval,
+} from "@/lib/business-decisions/publish-destination-approval";
 import { countRawPhotos } from "@/lib/operational-cases/photo-batch-completion";
 
 export const PACKAGE_READY_AUTO_FOLLOW_UP_MAX_DEPTH = 2;
@@ -77,20 +80,14 @@ export function packageReadyNeedsEasybrokerImageUpload(
 }
 
 /**
- * EasyBroker ya quedó resuelto (publicado/skipped/rejected) y Ungga aún no
- * tiene decisión humana.
+ * EasyBroker ya quedó resuelto (publicado públicamente / skipped / rejected) y
+ * Ungga aún no tiene decisión humana. Un borrador con listing_id no basta.
  */
 export function packageReadyNeedsUnggaApprovalNotify(
   context: Record<string, unknown> | null | undefined
 ): boolean {
+  if (!isEasybrokerResolvedForUnggaApproval(context)) return false;
   const approvals = publishApprovalsFromContext(context);
-  const easybrokerDecision =
-    typeof approvals.easybroker === "string" ? approvals.easybroker : null;
-  const easybrokerResolved =
-    isEasybrokerPublishedInContext(context) ||
-    easybrokerDecision === "skipped" ||
-    easybrokerDecision === "rejected";
-  if (!easybrokerResolved) return false;
   const unggaDecision =
     typeof approvals.ungga === "string" ? approvals.ungga : null;
   return !unggaDecision || unggaDecision === "pending";
@@ -113,13 +110,29 @@ export function formatUnggaPublishApprovalNotifyText(): string {
   return [
     "Aprobación de publicación en Ungga",
     "",
-    "EasyBroker ya quedó creado. ¿Quieres publicar esta propiedad en Ungga?",
+    "EasyBroker ya quedó publicado. ¿Quieres publicar esta propiedad en Ungga?",
     "",
     "Usa los botones:",
     "- Publicar en Ungga",
     "- No publicar en Ungga",
     "- Detener y revisar",
   ].join("\n");
+}
+
+/**
+ * Ticks invoked by the publication runner (or its follow-up/lab wake paths)
+ * must not schedule another fire-and-forget runner: the outer loop already
+ * continues to process_media / publish.
+ */
+export function isNestedPublicationRunnerTick(
+  source: string | null | undefined
+): boolean {
+  if (typeof source !== "string" || !source.trim()) return false;
+  return (
+    source.startsWith("publication_runner:") ||
+    source.startsWith("package_ready_auto_follow_up:") ||
+    source.startsWith("package_ready_lab_auto_continue:")
+  );
 }
 
 /**
@@ -132,7 +145,10 @@ export function shouldAutoFollowUpPackageReadyTick(params: {
   uploadedImagesThisTurn: boolean;
   uploadFailedThisTurn?: boolean;
   autoFollowUpDepth: number;
+  /** Tick source; nested runner sources never schedule a second runner. */
+  source?: string | null;
 }): boolean {
+  if (isNestedPublicationRunnerTick(params.source)) return false;
   if (params.pendingConfirmation) return false;
   if (params.uploadFailedThisTurn) return false;
   if (params.autoFollowUpDepth >= PACKAGE_READY_AUTO_FOLLOW_UP_MAX_DEPTH) {

@@ -17,6 +17,7 @@ import type {
 } from "@agents/types";
 import { operationalCaseDocumentRequestTargetFromContext } from "@agents/types";
 import { isAdoptableConversationalCaseForE2ELab } from "./e2e-lab-routing-isolation";
+import { controlledE2EPublicationContextPatch } from "./publication-tool-policy";
 
 type DbClient = Parameters<typeof getOperationalCaseTypeForUser>[0];
 
@@ -80,6 +81,27 @@ export async function ensureConversationalCase(
     existing.status !== "paused" &&
     isAdoptableConversationalCaseForE2ELab(existing, e2eControlled)
   ) {
+    const publicationPatch = controlledE2EPublicationContextPatch({
+      caseType: existing.case_type,
+      e2eControlled,
+      context: existing.context_jsonb,
+      channel: params.channel,
+    });
+    if (publicationPatch) {
+      const context = {
+        ...(existing.context_jsonb ?? {}),
+        ...publicationPatch,
+      };
+      await db
+        .from("operational_cases")
+        .update({
+          context_jsonb: context,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id)
+        .eq("user_id", params.userId);
+      existing.context_jsonb = context;
+    }
     const existingRequestTarget = operationalCaseDocumentRequestTargetFromContext(
       existing.context_jsonb
     );
@@ -134,6 +156,19 @@ export async function ensureConversationalCase(
     | undefined;
   const missing = missingRequiredIntakeFields(intakeSchema, {});
   const incompleteDraft = missing.length > 0;
+  const baseContext = buildOperationalCaseCreateContext({
+    context: {},
+    missing,
+    allowIncompleteIntake: true,
+    e2eControlled,
+    channel: params.channel,
+  });
+  const publicationPatch = controlledE2EPublicationContextPatch({
+    caseType: caseType.case_type,
+    e2eControlled,
+    context: baseContext,
+    channel: params.channel,
+  });
 
   const created = await createOperationalCase(db, {
     userId: params.userId,
@@ -145,13 +180,7 @@ export async function ensureConversationalCase(
     // (interno/externo) se decide explícitamente después.
     externalContact: undefined,
     nextActionAt: e2eControlled || incompleteDraft ? null : new Date().toISOString(),
-    context: buildOperationalCaseCreateContext({
-      context: {},
-      missing,
-      allowIncompleteIntake: true,
-      e2eControlled,
-      channel: params.channel,
-    }),
+    context: { ...baseContext, ...(publicationPatch ?? {}) },
   });
 
   await insertOperationalCaseEvent(db, {

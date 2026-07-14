@@ -5,10 +5,39 @@ import {
   EASYBROKER_CREATE_TOP_LEVEL_ALLOWLIST,
   EASYBROKER_CREATE_LOCATION_ALLOWLIST,
   mergeEasyBrokerCreateInputFromCaseSources,
+  sanitizeEasyBrokerTitle,
+  selectEasyBrokerLocationFullName,
 } from "./realestate-adapters";
 
 const allowlist = new Set<string>(EASYBROKER_CREATE_TOP_LEVEL_ALLOWLIST);
 const locationAllowlist = new Set<string>(EASYBROKER_CREATE_LOCATION_ALLOWLIST);
+
+assert.equal(
+  sanitizeEasyBrokerTitle(
+    "Casa en venta en Fraccionamiento Las Fuentes, Zapopan con diseño contemporáneo y detalles tradicionales"
+  ),
+  "Casa en venta en Fraccionamiento Las Fuentes, Zapopan con diseño contemporáneo"
+);
+assert.ok(
+  sanitizeEasyBrokerTitle("x".repeat(100)).length <= 80,
+  "EasyBroker title must never exceed 80 characters"
+);
+assert.equal(
+  selectEasyBrokerLocationFullName(
+    {
+      name: "Venta en Fraccionamiento Las Fuentes, Zapopan, Jalisco",
+      neighborhood: "Venta en Fraccionamiento Las Fuentes",
+      city: "Zapopan",
+      state: "Jalisco",
+    },
+    [
+      "Las Fuentes, Zapopan, Jalisco",
+      "Las Fuentes, Jocotepec, Jalisco",
+      "Zapopan, Jalisco",
+    ]
+  ),
+  "Las Fuentes, Zapopan, Jalisco"
+);
 
 function assertPayloadKeysAllowed(payload: Record<string, unknown>) {
   for (const key of Object.keys(payload)) {

@@ -8,6 +8,9 @@ const BOT_TOKEN = () => process.env.TELEGRAM_BOT_TOKEN ?? "";
 /** https://core.telegram.org/bots/api#sendmessage */
 export const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
+/** https://core.telegram.org/bots/api#senddocument — caption hard limit */
+export const TELEGRAM_MAX_CAPTION_LENGTH = 1024;
+
 /** Intentos totales (1 inicial + reintentos) ante fallos transitorios. */
 const TELEGRAM_FETCH_MAX_ATTEMPTS = 3;
 /** Backoff entre intentos (ms). El índice 0 es la espera antes del 2º intento. */
@@ -222,6 +225,62 @@ export async function sendTelegramAgentMessage(
   if (options?.throwOnError) {
     throw new Error(
       `Telegram sendMessage HTTP ${res?.status ?? "unknown"}${desc ? `: ${desc}` : ""}`
+    );
+  }
+}
+
+/**
+ * Sends a binary document via Telegram Bot API `sendDocument`.
+ * Prefer this for DOCX/PDF artifacts so advisors can download without opening a URL.
+ * Keeps an optional caption (plain text; Telegram caption limit is 1024).
+ */
+export async function sendTelegramDocument(
+  chatId: number,
+  params: {
+    filename: string;
+    bytes: Buffer | Uint8Array;
+    contentType?: string;
+    caption?: string;
+    replyMarkup?: Record<string, unknown>;
+  },
+  options?: { throwOnError?: boolean }
+): Promise<void> {
+  const token = BOT_TOKEN().trim();
+  if (!token) {
+    throw new Error("Telegram sendDocument not configured: TELEGRAM_BOT_TOKEN is empty");
+  }
+
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  // Copy into a plain Uint8Array so BlobPart typing stays valid across Node/DOM.
+  const body = new Uint8Array(params.bytes);
+  const blob = new Blob([body], {
+    type: params.contentType ?? "application/octet-stream",
+  });
+  form.set("document", blob, params.filename);
+  const caption = params.caption?.trim();
+  if (caption) {
+    form.set(
+      "caption",
+      caption.length <= TELEGRAM_MAX_CAPTION_LENGTH
+        ? caption
+        : caption.slice(0, TELEGRAM_MAX_CAPTION_LENGTH)
+    );
+  }
+  if (params.replyMarkup) {
+    form.set("reply_markup", JSON.stringify(params.replyMarkup));
+  }
+
+  const res = await telegramBotFetch(
+    `https://api.telegram.org/bot${token}/sendDocument`,
+    { method: "POST", body: form },
+    { throwOnError: options?.throwOnError, label: "sendDocument" }
+  );
+  if (!res?.ok && options?.throwOnError) {
+    const body = (await res?.json().catch(() => ({}))) as Record<string, unknown>;
+    const desc = typeof body.description === "string" ? body.description : "";
+    throw new Error(
+      `Telegram sendDocument HTTP ${res?.status ?? "unknown"}${desc ? `: ${desc}` : ""}`
     );
   }
 }

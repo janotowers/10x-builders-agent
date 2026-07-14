@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import {
+  formatFlowStepEvidenceSummaryLine,
   formatStepScenarioChecklist,
   formatStepScenarioProgress,
   stepScenarioBucketCounts,
+  summarizeFlowStepEvidence,
 } from "./readiness-test-ui";
 import type { StepTestProgressSummary } from "./readiness-test-ui";
 
@@ -66,5 +68,55 @@ assert.equal(
   formatStepScenarioProgress(noOptional),
   "1/1 escenarios probados"
 );
+
+{
+  const blockedSummary = summarizeFlowStepEvidence(
+    ["event:state_changed", "tool:generate_document_from_template:failed"],
+    [
+      {
+        kind: "event",
+        summary: "Preparación de contrato iniciada",
+      },
+      {
+        kind: "tool",
+        tool_name: "generate_document_from_template",
+        status: "failed",
+        summary: "Preflight de contrato bloqueado — requiere datos contractuales",
+        result_json: {
+          status: "blocked",
+          error: "commission_contract_missing_required_data",
+        },
+      },
+    ]
+  );
+  assert.equal(blockedSummary.toolBlocked, 1);
+  assert.equal(blockedSummary.toolFailed, 0);
+  assert.match(
+    formatFlowStepEvidenceSummaryLine(blockedSummary),
+    /1 bloqueada/
+  );
+  assert.equal(
+    formatFlowStepEvidenceSummaryLine(blockedSummary).includes("fallida"),
+    false
+  );
+
+  const realFailSummary = summarizeFlowStepEvidence(
+    ["tool:generate_document_from_template:failed"],
+    [
+      {
+        kind: "tool",
+        tool_name: "generate_document_from_template",
+        status: "failed",
+        summary: "generate_document_from_template · Fallida",
+        result_json: {
+          status: "failed",
+          error: "No se pudo guardar el documento",
+        },
+      },
+    ]
+  );
+  assert.equal(realFailSummary.toolFailed, 1);
+  assert.equal(realFailSummary.toolBlocked, 0);
+}
 
 console.log("readiness-test-ui.selftest: ok");

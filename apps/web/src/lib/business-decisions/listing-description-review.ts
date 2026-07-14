@@ -14,6 +14,7 @@ import {
   classifyListingDescriptionChange,
   type ListingDescriptionChangeClassification,
 } from "./listing-description-change-classifier";
+import { sanitizeListingDescriptionCommercialCopy } from "@agents/agent";
 
 type ListingDescriptionIntent =
   | "approve"
@@ -277,7 +278,9 @@ export async function handleListingDescriptionReviewDecision(
     const approved = {
       headline: cleanText(draft.headline),
       short_description: cleanText(draft.short_description),
-      description: cleanText(draft.description),
+      // Also sanitize drafts generated before the copy guard was deployed so
+      // an internal photo-coverage caveat cannot reach publication on approve.
+      description: sanitizeListingDescriptionCommercialCopy(draft.description),
       approved_at: nowIso,
       approved_by: params.userId,
       source: "listing_description_review",

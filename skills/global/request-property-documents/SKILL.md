@@ -70,13 +70,21 @@ Más cualquier documento extra que la cuenta exija (revisa
 
    a. NO uses `telegram_send_message_to_contact`.
 
-   b. Llama `notify_user` al asesor con checklist de documentos pendientes y
+   b. Revisa eventos recientes. Si ya existe `reminder_sent` con
+      `purpose=internal_request` y no hay documento/respuesta interna posterior,
+      **no vuelvas a notificar**: conserva la espera event-driven.
+
+   c. Solo en la solicitud inicial (o si hubo nueva evidencia y cambió el
+      checklist), llama `notify_user` al asesor con documentos pendientes y
       la instrucción explícita de subirlos al caso (web/Telegram interno) y
       confirmar con “listo” cuando termine.
 
-   c. Deja `status=waiting_internal`, `current_step=awaiting_documents`.
+   d. Deja `status=waiting_internal`, `current_step=awaiting_documents` y
+      `next_action_at=null`. La continuación la despierta la carga de un
+      documento o la respuesta “listo”; el cron no debe sondear esta espera.
 
-   d. Registra `operational_case_add_event(reminder_sent, payload={purpose: internal_request})`.
+   e. Si enviaste una solicitud, registra
+      `operational_case_add_event(reminder_sent, payload={purpose: internal_request})`.
 
 3. **Rama externa** — Si `document_request_target !== internal_user` y **aún no se ha mandado el primer mensaje** (no hay evento
    `reminder_sent` con `purpose=initial_request`):

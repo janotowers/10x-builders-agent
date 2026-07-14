@@ -49,6 +49,10 @@ import {
 } from "../operational-cases/pricing-proposal";
 import { formatListingDescriptionReviewNotifyText } from "../operational-cases/listing-description-review";
 import {
+  isEasybrokerEffectivelyPublished,
+  publicationFromContext,
+} from "../operational-cases/publication-workflow";
+import {
   canCompleteListingPublishedSummaryFromContext,
   formatListingPublishedSummaryNotifyText,
 } from "../operational-cases/listing-published-summary";
@@ -238,6 +242,64 @@ export function buildContractDataReviewNotifyText(
   return "No pude generar el borrador de contrato porque faltan datos obligatorios. Completa los campos contractuales requeridos para continuar.";
 }
 
+function normalizedStringSet(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0)
+    ),
+  ].sort();
+}
+
+/**
+ * Detecta la notificación que ya pertenece a la remediación owned de
+ * generate_document_from_template. El modelo puede intentar llamar notify_user
+ * después de recibir el resultado bloqueado; ese segundo push debe ser un no-op.
+ */
+export function matchesOwnedContractDataReviewForTest(
+  metadata: unknown,
+  missingRequiredFields: string[]
+): boolean {
+  if (!isRecord(metadata)) return false;
+  if (metadata.source !== "generate_document_from_template") return false;
+  const existing = normalizedStringSet(metadata.missing_required_fields);
+  const requested = normalizedStringSet(missingRequiredFields);
+  return (
+    existing.length > 0 &&
+    existing.length === requested.length &&
+    existing.every((field, index) => field === requested[index])
+  );
+}
+
+async function activeOwnedContractDataReviewNotificationId(
+  db: DbClient,
+  userId: string,
+  caseId: string,
+  missingRequiredFields: string[]
+): Promise<string | null> {
+  if (normalizedStringSet(missingRequiredFields).length === 0) return null;
+  const { data, error } = await db
+    .from("internal_user_notifications")
+    .select("id,metadata_jsonb")
+    .eq("user_id", userId)
+    .eq("case_id", caseId)
+    .eq("kind", "contract_data_review")
+    .eq("status", "unread")
+    .order("created_at", { ascending: false })
+    .limit(5);
+  if (error || !Array.isArray(data)) return null;
+  const match = data.find((row) =>
+    matchesOwnedContractDataReviewForTest(
+      (row as { metadata_jsonb?: unknown }).metadata_jsonb,
+      missingRequiredFields
+    )
+  ) as { id?: unknown } | undefined;
+  return typeof match?.id === "string" ? match.id : null;
+}
+
 export function contractDraftOutputPathFromContext(
   context: unknown
 ): string | null {
@@ -318,8 +380,8 @@ export function evaluateListingDescriptionReviewNotifyGate(context: unknown):
 }
 
 /**
- * Gate de `notify_user(kind=ungga_publish_approval)`: no pedir Ungga mientras
- * EasyBroker aún deba recibir fotos, o si el upload falló.
+ * Gate de `notify_user(kind=ungga_publish_approval)`: EasyBroker debe estar
+ * publicado remotamente (o skipped/rejected) y, si hay fotos, ya subidas.
  */
 export function evaluateUnggaPublishApprovalNotifyGate(context: unknown):
   | { ok: true }
@@ -327,10 +389,30 @@ export function evaluateUnggaPublishApprovalNotifyGate(context: unknown):
       ok: false;
       error:
         | "easybroker_images_required_before_ungga_approval"
-        | "easybroker_images_upload_failed_before_ungga_approval";
+        | "easybroker_images_upload_failed_before_ungga_approval"
+        | "easybroker_not_publicly_published_before_ungga_approval";
       hint: string;
     } {
   if (!isRecord(context)) return { ok: true };
+  const approvals = isRecord(context.publish_approvals)
+    ? context.publish_approvals
+    : {};
+  const easybrokerDecision =
+    typeof approvals.easybroker === "string" ? approvals.easybroker : null;
+  const easybrokerSkippedOrRejected =
+    easybrokerDecision === "skipped" || easybrokerDecision === "rejected";
+  if (
+    !easybrokerSkippedOrRejected &&
+    !isEasybrokerEffectivelyPublished(publicationFromContext(context))
+  ) {
+    return {
+      ok: false,
+      error: "easybroker_not_publicly_published_before_ungga_approval",
+      hint:
+        "EasyBroker debe estar publicado remotamente (phase=published) o skipped/rejected antes de notify_user(kind=ungga_publish_approval). Un borrador con listing_id no basta.",
+    };
+  }
+
   const published = isRecord(context.published) ? context.published : {};
   const easybroker = isRecord(published.easybroker) ? published.easybroker : null;
   if (!easybroker) return { ok: true };
@@ -589,6 +671,30 @@ function propertyDataRecord(context: Record<string, unknown>) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function resolveParkingSpacesForDisplay(
+  source: Record<string, unknown> | null | undefined
+): number | null {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const keys = [
+    "parking_spots",
+    "parking_spaces",
+    "parking",
+    "cajones",
+    "estacionamientos",
+  ] as const;
+  for (const key of keys) {
+    const raw = source[key];
+    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
+      return Math.trunc(raw);
+    }
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      const parsed = Number(raw.replace(/,/g, "").trim());
+      if (Number.isFinite(parsed) && parsed >= 0) return Math.trunc(parsed);
+    }
+  }
+  return null;
 }
 
 function firstMeaningfulValue(...values: unknown[]) {
@@ -1650,6 +1756,18 @@ export function canonicalizePropertyDataReviewText(
       ? sanitizeExtractedReviewDetails(cleaned.slice(extractedStart))
       : sanitizeExtractedReviewDetails(cleaned);
 
+  const propertyData = propertyDataRecord(context);
+  const parking = resolveParkingSpacesForDisplay({
+    ...context,
+    ...propertyData,
+  });
+  const parkingAlreadyPresent =
+    /cajones?\s+de\s+estacionamiento|estacionamientos?/i.test(cleaned);
+  const parkingLine =
+    parking != null && !parkingAlreadyPresent
+      ? `- Número de cajones de estacionamiento: ${parking}`
+      : null;
+
   return [
     `Revisión de datos extraídos para el caso ${opCase.id}:`,
     "",
@@ -1662,6 +1780,7 @@ export function canonicalizePropertyDataReviewText(
     "Datos encontrados en documentos:",
     extractedDetails ||
       "- No se incluyeron datos documentales específicos en el mensaje del agente.",
+    parkingLine,
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -4259,7 +4378,7 @@ export function addOperationalCaseTools(
                   ? "La búsqueda fue inválida por filtros (no insuficiencia real). Reintenta con filtros canónicos y persiste de nuevo."
                   : searchValidity === "missing_required_source"
                     ? "Falta una fuente obligatoria aplicable (Avaclick). Ejecuta get_avaclick_valuation y vuelve a persistir."
-                    : "No avances a price_proposal_pending hasta persistir comparables_analysis con data_quality.usable_count > 0. Si todas las fuentes tienen 0 usables, deja current_step=comparables_in_progress y status=waiting_internal con notify_user. Solo se permite avanzar con Avaclick si existe decision humana explicita (context.comparables_decision=use_avaclick_primary).";
+                    : "No avances a price_proposal_pending hasta persistir comparables_analysis con defensible_sample=true (unique_comparable_count >= 3). Si no hay muestra defendible, deja current_step=comparables_in_progress y status=waiting_internal con notify_user. Solo se permite avanzar con Avaclick si existe decision humana explicita (context.comparables_decision=use_avaclick_primary).";
               const out = {
                 ok: false,
                 error: "price_advance_must_use_persist",
@@ -5422,6 +5541,33 @@ export function addOperationalCaseTools(
             } else if (canonicalKind === "listing_published_summary" && opCase) {
               notificationText = formatListingPublishedSummaryNotifyText(opCase);
             }
+            if (
+              canonicalKind === "contract_data_review" &&
+              opCase &&
+              contractCommercialForNotify
+            ) {
+              const missingRequiredFields = contractCommercialForNotify.missing
+                .filter((item) => item.optional !== true)
+                .map((item) => item.key);
+              const ownedNotificationId =
+                await activeOwnedContractDataReviewNotificationId(
+                  ctx.db,
+                  ctx.userId,
+                  opCase.id,
+                  missingRequiredFields
+                );
+              if (ownedNotificationId) {
+                const out = {
+                  ok: true,
+                  status: "contract_data_review_already_notified",
+                  skipped: true,
+                  notification_id: ownedNotificationId,
+                  missing_required_fields: missingRequiredFields,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "executed", out);
+                return JSON.stringify(out);
+              }
+            }
             const result = await deps.notifyUser(
               ctx.db,
               ctx.userId,
@@ -5478,6 +5624,51 @@ export function addOperationalCaseTools(
               attempted: result.attempted,
               delivered: result.delivered,
             };
+            if (
+              canonicalKind === "listing_description_review" &&
+              caseId &&
+              result.delivered.length > 0
+            ) {
+              const descriptionContext =
+                opCase?.context_jsonb && typeof opCase.context_jsonb === "object"
+                  ? (opCase.context_jsonb as Record<string, unknown>)
+                  : {};
+              const draft = isRecord(descriptionContext.listing_description_draft)
+                ? descriptionContext.listing_description_draft
+                : {};
+              const draftGeneratedAt =
+                typeof draft.generated_at === "string"
+                  ? Date.parse(draft.generated_at)
+                  : Number.NaN;
+              const recentEvents = await getRecentOperationalCaseEvents(
+                ctx.db,
+                caseId,
+                30
+              );
+              const alreadyRecordedForDraft = recentEvents.some((event) => {
+                const payload = isRecord(event.payload_jsonb)
+                  ? event.payload_jsonb
+                  : {};
+                if (payload.kind !== "listing_description_review_requested") {
+                  return false;
+                }
+                if (!Number.isFinite(draftGeneratedAt)) return true;
+                return Date.parse(event.created_at) >= draftGeneratedAt;
+              });
+              if (!alreadyRecordedForDraft) {
+                await insertOperationalCaseEvent(ctx.db, {
+                  caseId,
+                  eventType: "human_decision",
+                  actor: "agent",
+                  stepKey: "package_ready",
+                  payload: {
+                    kind: "listing_description_review_requested",
+                    source: "notify_user",
+                    waiting_for: "advisor_response",
+                  },
+                });
+              }
+            }
             if (
               canonicalKind === "listing_published_summary" &&
               caseId &&

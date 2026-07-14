@@ -68,6 +68,12 @@ import {
 } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { notify } from "@/lib/notify";
+import { buildHitlApprovalTelegramMarkup } from "@/lib/notify/hitl-telegram-markup";
+import { buildOperationalCaseCronToolApprovalPolicy } from "@/lib/operational-cases/operational-case-cron-tool-policy";
+import {
+  isInternalDocumentEventDrivenWait,
+  stabilizeInternalDocumentWait,
+} from "@/lib/operational-cases/internal-document-wait-invariant";
 import {
   sendTelegramMessage,
   truncateTelegramText,
@@ -259,44 +265,8 @@ async function buildPendingToolDescription(
       baseLines.push(`Mensaje propuesto: ${truncateTelegramText(preview)}`);
     }
   }
-  baseLines.push(
-    link
-      ? `Revisar detalle: ${link}`
-      : `Revisar detalle en web: /chat/pending?case=${encodeURIComponent(opCase.id)}`
-  );
+  baseLines.push("Usa los botones para decidir o abre «Ver detalle».");
   return { text: baseLines.join("\n"), link };
-}
-
-/**
- * Texto de respaldo cuando no logramos resolver el `tool_call` concreto: aun
- * así identificamos el caso por su título/zona para que el aviso nunca sea un
- * recordatorio anónimo ("no se sabe de qué caso habla").
- */
-function buildPendingToolFallbackText(
-  opCase: OperationalCase,
-  pendingCount: number
-): string {
-  const title =
-    typeof opCase.context_jsonb?.property_title === "string"
-      ? opCase.context_jsonb.property_title.trim()
-      : "";
-  const zone =
-    typeof opCase.context_jsonb?.property_zone === "string"
-      ? opCase.context_jsonb.property_zone.trim()
-      : "";
-  const lines = [
-    pendingCount === 1
-      ? "Tienes 1 aprobación del agente pendiente para continuar este caso."
-      : `Tienes ${pendingCount} aprobaciones del agente pendientes para continuar este caso.`,
-    `Caso: ${title || opCase.case_type}${zone ? ` (${zone})` : ""}`,
-  ];
-  const link = buildPendingCaseUrl(opCase.id);
-  lines.push(
-    link
-      ? `Revisar detalle: ${link}`
-      : `Revisar detalle en web: /chat/pending?case=${encodeURIComponent(opCase.id)}`
-  );
-  return lines.join("\n");
 }
 
 async function maybeSendPendingToolButtonsToAdvisor(
@@ -329,30 +299,18 @@ async function maybeSendPendingToolButtonsToAdvisor(
     firstPending,
     pendingCalls.length
   );
+  // Single Telegram message: body + approve/reject (+ optional Ver detalle URL
+  // button). A second plain "Ver detalle:" message used to duplicate the same
+  // notice and looked like a bug (one with buttons, one without).
   await sendTelegramMessage(
     chatId,
     truncateTelegramText(text),
-    {
-      inline_keyboard: [
-        [
-          {
-            text: "✅ Aprobar",
-            callback_data: `approve:${firstPending.id}`,
-          },
-          {
-            text: "❌ Cancelar",
-            callback_data: `reject:${firstPending.id}`,
-          },
-        ],
-      ],
-    },
+    buildHitlApprovalTelegramMarkup({
+      toolCallId: firstPending.id,
+      detailUrl: link,
+    }),
     { throwOnError: true }
   );
-  if (link) {
-    await sendTelegramMessage(chatId, `Ver detalle: ${link}`, undefined, {
-      throwOnError: true,
-    });
-  }
   await insertOperationalCaseEvent(db, {
     caseId: opCase.id,
     eventType: "reminder_sent",
@@ -364,6 +322,59 @@ async function maybeSendPendingToolButtonsToAdvisor(
       pending_count: pendingCalls.length,
     },
   });
+}
+
+/**
+ * Persist the web HITL card (upsert) and deliver Telegram buttons once per
+ * pending tool_call. Shared by the cron "already pending" skip path and the
+ * path right after an agent tick creates a new pending confirmation.
+ */
+async function ensurePendingHitlAdvisorNotice(
+  db: ReturnType<typeof createServerClient>,
+  stepLabelResolver: OperationalStepLabelResolver,
+  opCase: OperationalCase
+) {
+  const pendingCalls = await listPendingCaseToolCalls(
+    db,
+    opCase.user_id,
+    opCase.id
+  );
+  if (pendingCalls.length === 0) return;
+  const pendingReference = pendingCalls[0]!;
+  const pendingReferenceText = (
+    await buildPendingToolDescription(
+      stepLabelResolver,
+      opCase,
+      pendingReference,
+      pendingCalls.length
+    )
+  ).text;
+  await notify(
+    db,
+    opCase.user_id,
+    {
+      text: pendingReferenceText,
+      kind: TOOL_CONFIRMATION_PENDING_KIND,
+      data: {
+        case_id: opCase.id,
+        title: "Aprobación del agente pendiente",
+        action_url: `/chat/pending?case=${encodeURIComponent(opCase.id)}`,
+        pending_tool_confirmations: pendingCalls.length,
+        pending_tool_name: pendingReference.tool_name,
+        pending_tool_call_id: pendingReference.id,
+      },
+    },
+    "normal",
+    // Telegram is delivered once by maybeSendPendingToolButtonsToAdvisor so the
+    // web card and the Telegram notice stay on a single deduped path.
+    { pushChannels: [] }
+  );
+  await maybeSendPendingToolButtonsToAdvisor(
+    db,
+    stepLabelResolver,
+    opCase,
+    pendingCalls
+  );
 }
 
 function hoursFromNow(hours: number) {
@@ -993,49 +1004,7 @@ async function processCase(
 
     const pendingHitlCount = await countPendingToolCallsForCase(db, opCase.id);
     if (pendingHitlCount > 0) {
-      const pendingCalls = await listPendingCaseToolCalls(
-        db,
-        opCase.user_id,
-        opCase.id
-      );
-      const pendingReference =
-        pendingCalls.length > 0 ? pendingCalls[0] : null;
-      const pendingReferenceText = pendingReference
-        ? (
-            await buildPendingToolDescription(
-              stepLabelResolver,
-              opCase,
-              pendingReference,
-              pendingHitlCount
-            )
-          ).text
-        : buildPendingToolFallbackText(opCase, pendingHitlCount);
-      await notify(
-        db,
-        opCase.user_id,
-        {
-          text: pendingReferenceText,
-          kind: TOOL_CONFIRMATION_PENDING_KIND,
-          data: {
-            case_id: opCase.id,
-            title: "Aprobación del agente pendiente",
-            action_url: `/chat/pending?case=${encodeURIComponent(opCase.id)}`,
-            pending_tool_confirmations: pendingHitlCount,
-            pending_tool_name: pendingReference?.tool_name ?? null,
-            pending_tool_call_id: pendingReference?.id ?? null,
-          },
-        },
-        "normal",
-        { pushChannels: [] }
-      );
-      if (pendingCalls.length > 0) {
-        await maybeSendPendingToolButtonsToAdvisor(
-          db,
-          stepLabelResolver,
-          opCase,
-          pendingCalls
-        );
-      }
+      await ensurePendingHitlAdvisorNotice(db, stepLabelResolver, opCase);
       const fresh = await getOperationalCase(db, opCase.id);
       if (fresh) {
         await updateOperationalCase(db, fresh.id, fresh.version, {
@@ -1112,6 +1081,9 @@ async function processCase(
       // requiere confirmación, el HITL queda pendiente y se notifica al
       // usuario; la próxima interacción humana lo resuelve.
       autoApproveTools: false,
+      // Bookkeeping interno del caso no es una decisión humana. Las acciones
+      // externas/comerciales de riesgo conservan su HITL normal.
+      toolApprovalPolicy: buildOperationalCaseCronToolApprovalPolicy(),
       caseId: opCase.id,
     });
 
@@ -1145,16 +1117,39 @@ async function processCase(
       opCase: fresh,
       source: "post_agent_invariant_cron",
     });
-    const caseAfterInvariants = invariantResult.case ?? fresh;
+    const caseAfterInvariants = await stabilizeInternalDocumentWait(
+      db,
+      invariantResult.case ?? fresh
+    );
+
+    if (result.pendingConfirmation) {
+      // Notify in the same tick that created HITL — don't wait for the next
+      // cron pass to surface approve/reject to the advisor.
+      const caseForHitl = caseAfterInvariants ?? opCase;
+      await ensurePendingHitlAdvisorNotice(db, stepLabelResolver, caseForHitl);
+      const freshForHitl = await getOperationalCase(db, opCase.id);
+      if (freshForHitl) {
+        await updateOperationalCase(db, freshForHitl.id, freshForHitl.version, {
+          nextActionAt: null,
+        });
+      }
+      return { case_id: opCase.id, status: "ok" };
+    }
 
     // Si el agente NO actualizó next_action_at (no movió el caso), lo
     // empujamos a +5min para que no martillemos esto cada minuto. El agente
     // bien escrito lo hace solo, pero esto es defensivo.
+    // Exception: internal document waits are event-driven (upload / «listo»).
+    // Re-arming +5min here undoes stabilizeInternalDocumentWait and re-sends
+    // the same document request on every cron pass.
     if (caseAfterInvariants) {
       const isStillStuckAtLease =
         caseAfterInvariants.status === opCase.status &&
         caseAfterInvariants.current_step === opCase.current_step;
-      if (isStillStuckAtLease) {
+      if (
+        isStillStuckAtLease &&
+        !isInternalDocumentEventDrivenWait(caseAfterInvariants)
+      ) {
         await updateOperationalCase(db, caseAfterInvariants.id, caseAfterInvariants.version, {
           nextActionAt: new Date(Date.now() + 5 * 60_000).toISOString(),
         });

@@ -49,15 +49,19 @@ Producir y persistir en `context_jsonb.pricing_proposal`:
 ## Workflow
 
 1. Lee `context_jsonb.comparables_analysis.stats` y `data_quality`:
-   - Si `stats.price_per_m2.available=true`, `sample_size >= 3` y existe
-     `area_total_m2` confiable en `property_data`, usa `p25/p50/p75` de
-     `price_per_m2` como métrica principal.
+   - Si `stats.price_per_m2.available=true` (requiere ≥3 valores ppm² en el
+     artefacto) y existe área confiable en `property_data`, usa `p25/p50/p75`
+     de `price_per_m2` como métrica principal.
+   - Nota: el builder determinístico de propuesta puede usar ppm² con
+     `sample_size >= 1` cuando ya hay muestra defendible por conteo único;
+     documenta la limitación en `rationale` si la señal ppm² es delgada.
    - Si no, usa `stats.price.p25/p50/p75` de precio total publicado como
      métrica principal y explica la limitación en `rationale`.
 2. Calcula propuesta inicial:
    - Con precio/m² confiable:
-     `ideal = round(price_per_m2.p50 * area_total_m2)`;
-     `minimo = round(price_per_m2.p25 * area_total_m2)`.
+     `ideal = round(price_per_m2.p50 * area_sujeto_m2)`;
+     `minimo = round(price_per_m2.p25 * area_sujeto_m2)`.
+     Preferir `area_construida_m2` cuando exista; si no, `area_total_m2`.
    - Sin precio/m² confiable:
      `ideal = round(price.p50)`;
      `minimo = round(price.p25)`.
@@ -79,7 +83,8 @@ Producir y persistir en `context_jsonb.pricing_proposal`:
    - mediana del mercado (p50),
    - cuántas activas, referencias históricas e internas se usaron,
    - factores conocidos (ubicación, m², estado).
-4. Guarda en `context_jsonb.pricing_proposal` con `approval_status=pending`.
+   - `comparables_used` es auditoría automática de la muestra usable
+     (no una lista a aprobar fila por fila).4. Guarda en `context_jsonb.pricing_proposal` con `approval_status=pending`.
 5. Pide HITL al inmobiliario via `notify_user(urgency=normal, kind=price_approval)`.
    Usa el texto canónico de `formatPricingProposalForApproval` (no improvises):
 

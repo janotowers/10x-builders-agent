@@ -3,16 +3,32 @@
  * Los selectores son placeholders: ajústalos al DOM real de app.ungga.com.
  */
 import { chromium } from "playwright";
+import { createWriteStream } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+import {
+  evaluatePrepareDraftSuccess,
+  extractPropertyIdFromUrl,
+  lastMeaningfulStep,
+  MAX_UNGGA_IMAGE_BYTES,
+  MAX_UNGGA_IMAGE_DOWNLOADS,
+  resolveUnggaTimeoutMs,
+} from "./prepare-draft-contract.mjs";
+
+export {
+  evaluatePrepareDraftSuccess,
+  extractPropertyIdFromUrl,
+  lastMeaningfulStep,
+  resolveUnggaTimeoutMs,
+} from "./prepare-draft-contract.mjs";
 
 function envFlag(name, fallback = false) {
   const raw = process.env[name]?.trim().toLowerCase();
   if (!raw) return fallback;
   return raw === "1" || raw === "true" || raw === "yes";
-}
-
-function timeoutMs(name, fallback) {
-  const value = Number(process.env[name] ?? "");
-  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 async function maybeCapture(page, name, metrics) {
@@ -51,17 +67,21 @@ export async function loginToUngga(creds, metrics = []) {
       ? creds.baseUrl
       : `${creds.baseUrl.replace(/\/$/, "")}/login`;
     await page.goto(loginUrl, {
-      waitUntil: "networkidle",
-      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+      waitUntil: "domcontentloaded",
+      timeout: resolveUnggaTimeoutMs("nav"),
     });
     const visibleInputs = page.locator("input:visible");
-    await visibleInputs.nth(0).fill(creds.email);
-    await visibleInputs.nth(1).fill(creds.password);
+    await visibleInputs.nth(0).fill(creds.email, {
+      timeout: resolveUnggaTimeoutMs("action"),
+    });
+    await visibleInputs.nth(1).fill(creds.password, {
+      timeout: resolveUnggaTimeoutMs("action"),
+    });
     await page
       .getByRole("button", { name: /^ingresar$|^entrar$|^iniciar sesión$|^login$|^sign in$/i })
-      .click();
+      .click({ timeout: resolveUnggaTimeoutMs("action") });
     await page.waitForURL((url) => !url.pathname.endsWith("/login"), {
-      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+      timeout: resolveUnggaTimeoutMs("nav"),
     });
     push("login", true, Date.now() - tLogin);
   } catch (e) {
@@ -93,9 +113,11 @@ export async function publishListingDraft(page, opts, metrics = []) {
     const publishUrl = resolveTargetUrl(page.url(), publishPath);
     await page.goto(publishUrl, {
       waitUntil: "domcontentloaded",
-      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+      timeout: resolveUnggaTimeoutMs("nav"),
     });
-    const bodyText = await page.locator("body").innerText({ timeout: 10_000 });
+    const bodyText = await page.locator("body").innerText({
+      timeout: resolveUnggaTimeoutMs("action"),
+    });
     if (/\b404\b|page could not be found/i.test(bodyText)) {
       throw new Error(
         `Publish path not found: ${publishPath}. Set UNGGA_CLI_PUBLISH_PATH to the real listing creation route.`
@@ -104,6 +126,9 @@ export async function publishListingDraft(page, opts, metrics = []) {
     await clickCreatePropertyIfPresent(page, metrics);
     await page.waitForTimeout(500);
 
+    const expectedImageCount = Array.isArray(listing.image_urls)
+      ? listing.image_urls.filter((u) => typeof u === "string" && u.trim()).length
+      : 0;
     const stages = [];
     stages.push({ tab: "GENERAL", filled: await fillGeneralTab(page, listing) });
     if (stages[0].filled.length === 0) {
@@ -111,14 +136,43 @@ export async function publishListingDraft(page, opts, metrics = []) {
         `No listing fields found at ${page.url()}. Adjust UNGGA_CLI_PUBLISH_PATH/selectors.`
       );
     }
-    await advanceWizard(page, "GENERAL", metrics);
+    const generalAdvanced = await advanceWizard(page, "GENERAL", metrics);
+    if (!generalAdvanced) {
+      const generalErrors = latestValidationErrors(metrics, "GENERAL");
+      throw new Error(
+        `GENERAL validation blocked draft: ${generalErrors.join("; ") || "unknown validation error"}`
+      );
+    }
 
     await clickWizardTab(page, "DETALLES");
     stages.push({ tab: "DETALLES", filled: await fillDetailsTab(page, listing) });
     await advanceWizard(page, "DETALLES", metrics);
 
     await clickWizardTab(page, "MEDIA");
-    stages.push({ tab: "MEDIA", filled: await fillMediaTab(page, listing) });
+    await page.waitForTimeout(800);
+    const mediaFilled = await fillMediaTab(page, listing, metrics);
+    stages.push({ tab: "MEDIA", filled: mediaFilled.filled });
+    const uploadedImageCount = mediaFilled.uploaded_image_count;
+    if (
+      expectedImageCount > 0 &&
+      uploadedImageCount < expectedImageCount
+    ) {
+      const msg = `Media incomplete: expected ${expectedImageCount} photos, observed ${uploadedImageCount}`;
+      push("publish_listing", false, Date.now() - t0, msg);
+      await maybeCapture(page, "media-incomplete", metrics);
+      return {
+        ok: false,
+        dry_run: dryRun,
+        error: msg,
+        url: page.url(),
+        stages,
+        expected_image_count: expectedImageCount,
+        uploaded_image_count: uploadedImageCount,
+        images_submitted: uploadedImageCount > 0,
+        images_verified: false,
+        last_step: lastMeaningfulStep(metrics),
+      };
+    }
     await advanceWizard(page, "MEDIA", metrics);
 
     await clickWizardTab(page, "OPERACIÓN");
@@ -134,23 +188,61 @@ export async function publishListingDraft(page, opts, metrics = []) {
     let draftLinks = null;
     if (!dryRun) {
       saveOutcome = await saveAsDraft(page, metrics);
-      if (saveOutcome?.ok) {
+      // Even on a soft save signal, try to resolve GU-ID from the properties list.
+      if (saveOutcome?.ok || /\/propiedades/i.test(page.url())) {
         draftLinks = await resolveDraftLinks(page, listing, metrics);
+        if (
+          draftLinks?.ungga_property_id &&
+          draftLinks?.draft_url &&
+          (!saveOutcome || saveOutcome.ok !== true)
+        ) {
+          saveOutcome = {
+            ok: true,
+            url: page.url(),
+            signal: "resolved_via_list",
+          };
+        }
       }
     }
 
-    const url = page.url();
-    push("publish_listing", true, Date.now() - t0);
+    const verdict = evaluatePrepareDraftSuccess({
+      dryRun,
+      expectedImageCount,
+      uploadedImageCount,
+      saveOutcome,
+      draftLinks,
+      unggaPropertyId:
+        draftLinks?.ungga_property_id ?? extractPropertyIdFromUrl(page.url()),
+      draftUrl: draftLinks?.draft_url ?? null,
+    });
+
+    push(
+      "publish_listing",
+      verdict.ok,
+      Date.now() - t0,
+      verdict.error ?? undefined
+    );
+    if (!verdict.ok) {
+      await maybeCapture(page, "publish-incomplete", metrics);
+    }
     return {
+      ok: verdict.ok,
       dry_run: dryRun,
-      url,
-      ungga_listing_id:
-        draftLinks?.ungga_property_id ?? extractIdFromUrl(url),
+      url: page.url(),
+      ungga_listing_id: verdict.ungga_property_id,
+      ungga_property_id: verdict.ungga_property_id,
       stages,
       save_outcome: saveOutcome,
-      draft_url: draftLinks?.draft_url ?? null,
+      draft_url: verdict.draft_url,
       properties_url: draftLinks?.properties_url ?? null,
       draft_lookup: draftLinks?.lookup ?? null,
+      expected_image_count: verdict.expected_image_count,
+      uploaded_image_count: verdict.uploaded_image_count,
+      image_count: verdict.uploaded_image_count,
+      images_submitted: verdict.images_submitted,
+      images_verified: verdict.images_verified,
+      last_step: lastMeaningfulStep(metrics),
+      ...(verdict.error ? { error: verdict.error } : {}),
     };
   } catch (e) {
     push("publish_listing", false, Date.now() - t0, e?.message ?? String(e));
@@ -178,7 +270,7 @@ export async function publishExistingDraft(page, opts, metrics = []) {
   try {
     await page.goto(targetUrl, {
       waitUntil: "domcontentloaded",
-      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+      timeout: resolveUnggaTimeoutMs("nav"),
     });
     await page.waitForTimeout(800);
     await dismissStrayModals(page);
@@ -267,7 +359,7 @@ export async function publishExistingDraft(page, opts, metrics = []) {
       };
     }
 
-    await publishBtn.click({ timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000) });
+    await publishBtn.click({ timeout: resolveUnggaTimeoutMs("nav") });
     await page.waitForTimeout(800);
     const confirmBtn = await firstVisible([
       page.getByRole("button", { name: /^confirmar$|^aceptar$|^sí$|^si$/i }),
@@ -280,7 +372,7 @@ export async function publishExistingDraft(page, opts, metrics = []) {
       } catch {}
     }
     await page.waitForLoadState("networkidle", {
-      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+      timeout: resolveUnggaTimeoutMs("nav"),
     }).catch(() => {});
     await page.waitForTimeout(1000);
     await maybeCapture(page, "publish-draft-after", metrics);
@@ -330,29 +422,43 @@ export async function fillGeneralTab(page, listing) {
   ) {
     filled.push("construction_m2");
   }
-  if (
-    listing.land_m2 != null &&
-    (await fillByLabel(page, /TERRENO/i, String(listing.land_m2), { nth: 0 }))
-  ) {
-    filled.push("land_m2");
-    if (
-      listing.land_unit &&
-      (await selectByLabel(page, /TERRENO/i, listing.land_unit, { nth: 0 }))
-    ) {
-      filled.push("land_unit");
-    }
+  if (listing.land_m2 != null) {
+    const landFilled = await fillLandArea(page, listing.land_m2, listing.land_unit);
+    if (landFilled.land_m2) filled.push("land_m2");
+    if (landFilled.land_unit) filled.push("land_unit");
   }
   if (
     listing.condition &&
     (await selectByLabel(page, /ESTADO DE LA PROPIEDAD/i, listing.condition))
   ) {
     filled.push("condition");
+  } else {
+    for (const fallback of ["Bueno", "Excelente", "Regular", "Muy bueno"]) {
+      if (await selectByLabel(page, /ESTADO DE LA PROPIEDAD/i, fallback)) {
+        filled.push("condition");
+        break;
+      }
+    }
   }
   if (
     listing.age_range &&
     (await selectByLabel(page, /ANTIGÜEDAD/i, listing.age_range))
   ) {
     filled.push("age_range");
+  } else {
+    for (const fallback of [
+      "1-5 años",
+      "5-10 años",
+      "A estrenar",
+      "10-20 años",
+      "Menos de 1 año",
+      "Más de 20 años",
+    ]) {
+      if (await selectByLabel(page, /ANTIGÜEDAD/i, fallback)) {
+        filled.push("age_range");
+        break;
+      }
+    }
   }
   if (
     listing.country &&
@@ -378,6 +484,65 @@ function pickAddress(listing) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
+}
+
+/**
+ * Ungga pairs land area + unit under similar "terreno" labels; prefer a numeric
+ * input and only then set the unit select.
+ */
+async function fillLandArea(page, landM2, landUnit) {
+  const value = String(landM2);
+  const areaCandidates = [
+    page.getByLabel(/área del terreno|area del terreno|terreno \(m/i).first(),
+    page.getByPlaceholder(/área del terreno|area del terreno|terreno/i).first(),
+    page
+      .locator('label')
+      .filter({ hasText: /terreno/i })
+      .locator('input[type="number"], input[type="text"], input:not([type])')
+      .first(),
+    page.locator('input[name*="land" i], input[name*="terreno" i]').first(),
+  ];
+
+  let filledArea = false;
+  for (const candidate of areaCandidates) {
+    if ((await candidate.count().catch(() => 0)) === 0) continue;
+    const visible = await candidate.isVisible().catch(() => false);
+    // Area inputs can be present but not yet "visible" in Ungga wizard.
+    try {
+      await candidate.click({ timeout: 2_000 }).catch(() => {});
+      await candidate.fill("");
+      await candidate.fill(value);
+      const current = await candidate.inputValue().catch(() => "");
+      if (String(current).replace(/[^\d.]/g, "") === String(landM2)) {
+        filledArea = true;
+        break;
+      }
+      // Some controls ignore fill(); type as fallback.
+      await candidate.press("Control+A").catch(() => {});
+      await candidate.type(value, { delay: 20 });
+      const typed = await candidate.inputValue().catch(() => "");
+      if (String(typed).replace(/[^\d.]/g, "") === String(landM2)) {
+        filledArea = true;
+        break;
+      }
+    } catch {
+      // try next candidate
+    }
+    void visible;
+  }
+
+  if (!filledArea) {
+    filledArea = await fillByLabel(page, /TERRENO/i, value, { nth: 0 });
+  }
+
+  let filledUnit = false;
+  if (filledArea && landUnit) {
+    filledUnit =
+      (await selectByLabel(page, /unidad|terreno/i, String(landUnit), { nth: 0 })) ||
+      (await selectByLabel(page, /TERRENO/i, String(landUnit), { nth: 0 }));
+  }
+
+  return { land_m2: filledArea, land_unit: filledUnit };
 }
 
 /**
@@ -542,16 +707,248 @@ export async function fillDetailsTab(page, listing) {
   return filled;
 }
 
-/** Llena pestaña MEDIA (opcional). */
-export async function fillMediaTab(page, listing) {
+/** Llena pestaña MEDIA: video/tour opcionales + carga real de image_urls. */
+export async function fillMediaTab(page, listing, metrics = []) {
   const filled = [];
+  const t0 = Date.now();
   if (listing.video_url) {
     if (await fillByLabel(page, /^VIDEO/i, listing.video_url)) filled.push("video_url");
   }
   if (listing.tour_url) {
     if (await fillByLabel(page, /TOUR VIRTUAL/i, listing.tour_url)) filled.push("tour_url");
   }
-  return filled;
+
+  const imageUrls = Array.isArray(listing.image_urls)
+    ? listing.image_urls
+        .filter((u) => typeof u === "string" && u.trim())
+        .map((u) => u.trim())
+        .slice(0, MAX_UNGGA_IMAGE_DOWNLOADS)
+    : [];
+
+  if (imageUrls.length === 0) {
+    metrics.push({
+      step: "media_upload",
+      ok: true,
+      duration_ms: Date.now() - t0,
+      expected_image_count: 0,
+      uploaded_image_count: 0,
+    });
+    return { filled, uploaded_image_count: 0, expected_image_count: 0 };
+  }
+
+  let tempDir = null;
+  try {
+    tempDir = await mkdtemp(path.join(tmpdir(), "ungga-media-"));
+    const localPaths = [];
+    for (let i = 0; i < imageUrls.length; i += 1) {
+      const localPath = await downloadImageToTemp(imageUrls[i], tempDir, i);
+      localPaths.push(localPath);
+    }
+
+    let fileInput = await firstVisible([
+      page.locator('input[type="file"][accept*="image"]'),
+      page.locator('input[type="file"]'),
+    ]);
+    if (!fileInput) {
+      const uploadTrigger = await firstVisible([
+        page.getByRole("button", {
+          name: /subir|cargar|agregar foto|añadir foto|seleccionar foto|agregar imagen/i,
+        }),
+        page.getByRole("link", {
+          name: /subir|cargar|agregar foto|añadir foto|seleccionar foto|agregar imagen/i,
+        }),
+        page.locator('[data-testid*="upload" i], [class*="upload" i]').first(),
+      ]);
+      if (uploadTrigger) {
+        await uploadTrigger.click({ timeout: 5_000 }).catch(() => {});
+        await page.waitForTimeout(700);
+      }
+      fileInput = await firstVisible([
+        page.locator('input[type="file"][accept*="image"]'),
+        page.locator('input[type="file"]'),
+      ]);
+    }
+    if (!fileInput) {
+      // Hidden inputs are common in Ungga; firstVisible ignores them.
+      const hiddenInput = page.locator('input[type="file"]').first();
+      if ((await hiddenInput.count()) > 0) {
+        fileInput = hiddenInput;
+      }
+    }
+    if (!fileInput) {
+      const msg = "No se encontró input[type=file] en la pestaña MEDIA.";
+      metrics.push({
+        step: "media_upload",
+        ok: false,
+        duration_ms: Date.now() - t0,
+        expected_image_count: imageUrls.length,
+        uploaded_image_count: 0,
+        error: msg,
+      });
+      filled.push({ media_upload: false, error: msg });
+      return {
+        filled,
+        uploaded_image_count: 0,
+        expected_image_count: imageUrls.length,
+        error: msg,
+      };
+    }
+
+    await fileInput.setInputFiles(localPaths, {
+      timeout: resolveUnggaTimeoutMs("upload"),
+    });
+    await page.waitForTimeout(1500);
+
+    const uploadedCount = await waitForVisibleImageCount(
+      page,
+      imageUrls.length,
+      resolveUnggaTimeoutMs("upload")
+    );
+    // Ungga sometimes renders an extra placeholder/thumbnail; accept >= expected.
+    const ok = uploadedCount >= imageUrls.length;
+    metrics.push({
+      step: "media_upload",
+      ok,
+      duration_ms: Date.now() - t0,
+      expected_image_count: imageUrls.length,
+      uploaded_image_count: uploadedCount,
+      ...(ok
+        ? {}
+        : {
+            error: `expected ${imageUrls.length} thumbnails, observed ${uploadedCount}`,
+          }),
+    });
+    filled.push({
+      media_upload: ok,
+      expected_image_count: imageUrls.length,
+      uploaded_image_count: uploadedCount,
+    });
+    return {
+      filled,
+      uploaded_image_count: uploadedCount,
+      expected_image_count: imageUrls.length,
+      ...(ok
+        ? {}
+        : {
+            error: `expected ${imageUrls.length} thumbnails, observed ${uploadedCount}`,
+          }),
+    };
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    metrics.push({
+      step: "media_upload",
+      ok: false,
+      duration_ms: Date.now() - t0,
+      expected_image_count: imageUrls.length,
+      uploaded_image_count: 0,
+      error: msg,
+    });
+    filled.push({ media_upload: false, error: msg });
+    return {
+      filled,
+      uploaded_image_count: 0,
+      expected_image_count: imageUrls.length,
+      error: msg,
+    };
+  } finally {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+async function downloadImageToTemp(url, tempDir, index) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    resolveUnggaTimeoutMs("upload")
+  );
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+    });
+    if (!res.ok) {
+      throw new Error(`image download HTTP ${res.status} for index ${index}`);
+    }
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
+    if (contentType && !contentType.startsWith("image/")) {
+      throw new Error(
+        `image download rejected content-type ${contentType} for index ${index}`
+      );
+    }
+    const ext = extensionFromContentType(contentType) || "jpg";
+    const localPath = path.join(tempDir, `image-${String(index).padStart(2, "0")}.${ext}`);
+    const contentLength = Number(res.headers.get("content-length") || "");
+    if (Number.isFinite(contentLength) && contentLength > MAX_UNGGA_IMAGE_BYTES) {
+      throw new Error(`image too large (${contentLength} bytes) for index ${index}`);
+    }
+    if (!res.body) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > MAX_UNGGA_IMAGE_BYTES) {
+        throw new Error(`image too large (${buf.length} bytes) for index ${index}`);
+      }
+      await writeFile(localPath, buf);
+      return localPath;
+    }
+    let written = 0;
+    const nodeStream = Readable.fromWeb(res.body);
+    nodeStream.on("data", (chunk) => {
+      written += chunk.length;
+      if (written > MAX_UNGGA_IMAGE_BYTES) {
+        controller.abort();
+        throw new Error(`image too large (>${MAX_UNGGA_IMAGE_BYTES}) for index ${index}`);
+      }
+    });
+    await pipeline(nodeStream, createWriteStream(localPath));
+    return localPath;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extensionFromContentType(contentType) {
+  if (!contentType) return null;
+  if (contentType.includes("png")) return "png";
+  if (contentType.includes("webp")) return "webp";
+  if (contentType.includes("gif")) return "gif";
+  if (contentType.includes("jpeg") || contentType.includes("jpg")) return "jpg";
+  return null;
+}
+
+async function waitForVisibleImageCount(page, expected, timeoutMsValue) {
+  const started = Date.now();
+  let lastCount = 0;
+  while (Date.now() - started < timeoutMsValue) {
+    lastCount = await countVisibleMediaThumbnails(page);
+    if (lastCount >= expected) return lastCount;
+    await page.waitForTimeout(750);
+  }
+  return lastCount;
+}
+
+async function countVisibleMediaThumbnails(page) {
+  return page.evaluate(() => {
+    const selectors = [
+      'img[src*="blob:"]',
+      'img[src*="http"]',
+      '[data-testid*="image"] img',
+      '[class*="thumbnail"] img',
+      '[class*="preview"] img',
+      'input[type="file"] ~ * img',
+    ];
+    const seen = new Set();
+    for (const sel of selectors) {
+      for (const img of document.querySelectorAll(sel)) {
+        if (!(img instanceof HTMLImageElement)) continue;
+        const rect = img.getBoundingClientRect();
+        if (rect.width < 24 || rect.height < 24) continue;
+        const key = img.src || `${rect.left}:${rect.top}:${rect.width}`;
+        if (key) seen.add(key);
+      }
+    }
+    return seen.size;
+  });
 }
 
 /**
@@ -627,21 +1024,45 @@ export async function fillOperationTab(page, listing) {
       }
     }
 
-    // El modal tiene ✕ (cancelar) y ✓ (confirmar) en el footer. El ✓ es el
-    // único con gradiente brand-purple en su className.
+    // Prefer Contado so the confirm control can enable.
+    const contado = await firstVisible([
+      scope.getByLabel(/^contado$/i),
+      scope.getByRole("checkbox", { name: /contado/i }),
+      scope.locator("label").filter({ hasText: /^contado$/i }),
+    ]);
+    if (contado) {
+      await contado.click({ timeout: 3_000 }).catch(() => {});
+    }
+
+    // Footer: ✕ cancel + ✓ confirm (purple). Prefer modal-scoped checkmark.
+    const modalRoot = page.locator("div.fixed.inset-0").filter({
+      hasText: /Elije el tipo de operación/i,
+    });
     const confirmBtn = await firstVisible([
+      modalRoot.locator('button[class*="bg-gradient-to-r"]').last(),
+      modalRoot.locator("button").filter({ hasText: /^✓$|^✔$/ }).first(),
+      modalRoot.getByRole("button").last(),
       scope.locator('button[class*="bg-gradient-to-r"][class*="brand-purple"]'),
       scope.locator('button[class*="bg-gradient-to-r"]'),
       scope.getByRole("button", { name: /^confirmar$|^aceptar$|^guardar$/i }),
     ]);
     let confirmed = false;
     if (confirmBtn) {
-      await confirmBtn.click({ timeout: 5_000 }).catch(() => {});
+      try {
+        await confirmBtn.click({ timeout: 5_000 });
+      } catch {
+        await confirmBtn.click({ timeout: 5_000, force: true }).catch(() => {});
+      }
       await page.waitForTimeout(1200);
       const stillOpen =
         (await titleLocator.count()) > 0 &&
         (await titleLocator.isVisible().catch(() => false));
       confirmed = !stillOpen;
+      if (!confirmed) {
+        // Last resort: Escape only after attempting confirm.
+        await page.keyboard.press("Escape").catch(() => {});
+        await page.waitForTimeout(400);
+      }
     }
 
     filled.push({
@@ -667,6 +1088,7 @@ function escapeRegex(s) {
 async function saveAsDraft(page, metrics) {
   const t0 = Date.now();
   try {
+    await dismissStrayModals(page);
     const button = page
       .getByRole("button", { name: /guardar como borrador/i })
       .first();
@@ -694,14 +1116,67 @@ async function saveAsDraft(page, metrics) {
       await maybeCapture(page, "save-draft-disabled", metrics);
       return { ok: false, error: msg };
     }
-    await button.click({ timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000) });
-    await page.waitForLoadState("networkidle", {
-      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
-    });
-    await page.waitForTimeout(1500);
+    await button.click({ timeout: resolveUnggaTimeoutMs("action") });
+    // Prefer deterministic draft signals over networkidle (which can hang forever).
+    const draftReady = await Promise.race([
+      page
+        .waitForURL(/\/propiedades\/(?!nueva(?:\/|$))[^/?#]+/i, {
+          timeout: resolveUnggaTimeoutMs("nav"),
+        })
+        .then(() => "url")
+        .catch(() => null),
+      page
+        .getByText(/GU-ID/i)
+        .first()
+        .waitFor({ state: "visible", timeout: resolveUnggaTimeoutMs("nav") })
+        .then(() => "gu_id")
+        .catch(() => null),
+      page
+        .getByText(/borrador\s+guardado|guardado\s+como\s+borrador|propiedad\s+creada/i)
+        .first()
+        .waitFor({ state: "visible", timeout: resolveUnggaTimeoutMs("nav") })
+        .then(() => "toast")
+        .catch(() => null),
+      page
+        .waitForURL(/\/app\/propiedades\/?(?:\?|#|$)/i, {
+          timeout: resolveUnggaTimeoutMs("nav"),
+        })
+        .then(() => "properties_list")
+        .catch(() => null),
+      page
+        .waitForLoadState("networkidle", {
+          timeout: Math.min(resolveUnggaTimeoutMs("nav"), 20_000),
+        })
+        .then(() => "networkidle")
+        .catch(() => null),
+    ]);
+    await page.waitForTimeout(800);
     await maybeCapture(page, "after-save-draft", metrics);
-    metrics.push({ step: "save_draft", ok: true, duration_ms: Date.now() - t0, url: page.url() });
-    return { ok: true, url: page.url() };
+    const urlId = extractPropertyIdFromUrl(page.url());
+    const onPropertiesList =
+      /\/app\/propiedades\/?(?:\?|#|$)/i.test(page.url()) && !urlId;
+    const ok = Boolean(draftReady || urlId || onPropertiesList);
+    metrics.push({
+      step: "save_draft",
+      ok,
+      duration_ms: Date.now() - t0,
+      url: page.url(),
+      signal: draftReady ?? (onPropertiesList ? "properties_list" : null),
+      ...(ok
+        ? {}
+        : { error: "No se confirmó guardado de borrador (URL/GU-ID/toast)." }),
+    });
+    return ok
+      ? {
+          ok: true,
+          url: page.url(),
+          signal: draftReady ?? (onPropertiesList ? "properties_list" : null),
+        }
+      : {
+          ok: false,
+          error: "No se confirmó guardado de borrador (URL/GU-ID/toast).",
+          url: page.url(),
+        };
   } catch (e) {
     metrics.push({
       step: "save_draft",
@@ -773,7 +1248,7 @@ async function resolveDraftLinks(page, listing, metrics) {
   try {
     await page.goto(propertiesUrl, {
       waitUntil: "domcontentloaded",
-      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+      timeout: resolveUnggaTimeoutMs("nav"),
     });
     await page.waitForTimeout(800);
     await dismissStrayModals(page);
@@ -864,7 +1339,7 @@ async function resolveDraftLinks(page, listing, metrics) {
       try {
         await Promise.all([
           page.waitForURL(/\/propiedades\/[^/?#]+/i, {
-            timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 30_000),
+            timeout: resolveUnggaTimeoutMs("action"),
           }),
           detalle.click({ timeout: 5_000 }),
         ]);
@@ -963,6 +1438,20 @@ async function extractGuIdFromModal(page, title) {
 }
 
 async function dismissStrayModals(page) {
+  const overlay = page.locator("div.fixed.inset-0.z-50").first();
+  if ((await overlay.count()) > 0 && (await overlay.isVisible().catch(() => false))) {
+    const closeBtn = await firstVisible([
+      overlay.getByRole("button", { name: /^cancelar$|^cerrar$|^✕$|^x$/i }),
+      overlay.locator("button").first(),
+    ]);
+    if (closeBtn) {
+      await closeBtn.click({ timeout: 2_000, force: true }).catch(() => {});
+      await page.waitForTimeout(400);
+    } else {
+      await page.keyboard.press("Escape").catch(() => {});
+      await page.waitForTimeout(400);
+    }
+  }
   const cancel = await firstVisible([
     page.getByRole("button", { name: /^cancelar$/i }),
     page.locator("button:has-text('CANCELAR')"),
@@ -1022,14 +1511,6 @@ async function findDraftCardByTitle(page, title) {
   return null;
 }
 
-function extractPropertyIdFromUrl(url) {
-  if (!url) return null;
-  const m = url.match(/\/propiedades\/([^/?#]+)(?:[/?#]|$)/i);
-  if (!m) return null;
-  const id = m[1];
-  if (!id || id === "nueva" || id === "new") return null;
-  return id;
-}
 
 async function fillByLabel(page, label, value, opts = {}) {
   const nth = opts.nth ?? 0;
@@ -1049,32 +1530,79 @@ async function fillByLabel(page, label, value, opts = {}) {
 
 async function selectByLabel(page, label, value, opts = {}) {
   const nth = opts.nth ?? 0;
+  const wanted = String(value).trim();
+  if (!wanted) return false;
   const control = page
     .locator(`label:has-text("${labelHint(label)}")`)
     .locator("select")
     .nth(nth);
-  if ((await control.count()) === 0) {
-    const fallback = page.getByLabel(label).first();
-    if ((await fallback.count()) === 0) return false;
+  const target =
+    (await control.count()) > 0 ? control : page.getByLabel(label).first();
+  if ((await target.count()) === 0) return false;
+
+  const attempts = [
+    wanted,
+    { label: wanted },
+    { label: new RegExp(`^${escapeRegex(wanted)}$`, "i") },
+  ];
+  for (const attempt of attempts) {
     try {
-      await fallback.selectOption(String(value));
+      await target.selectOption(attempt);
       return true;
     } catch {
-      await fallback.fill(String(value));
-      return true;
+      // try next strategy
     }
   }
+
   try {
-    await control.selectOption(String(value));
+    const matched = await target.evaluate((el, needle) => {
+      const norm = (s) =>
+        String(s || "")
+          .trim()
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "");
+      const n = norm(needle);
+      const options = [...(el.options || [])];
+      const hit = options.find((opt) => {
+        const text = norm(opt.textContent || opt.label || "");
+        const val = norm(opt.value || "");
+        return text === n || val === n || text.includes(n) || val.includes(n);
+      });
+      if (!hit) return null;
+      el.value = hit.value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return hit.value;
+    }, wanted);
+    if (matched != null) return true;
+  } catch {
+    // fall through
+  }
+
+  try {
+    await target.fill(wanted);
+    return true;
   } catch {
     return false;
   }
-  return true;
+}
+
+function latestValidationErrors(metrics, fromTab) {
+  const step = `continue_after_${fromTab}`;
+  for (let i = metrics.length - 1; i >= 0; i -= 1) {
+    const row = metrics[i];
+    if (row?.step === step && Array.isArray(row.validation_errors)) {
+      return row.validation_errors.filter((e) => typeof e === "string" && e.trim());
+    }
+  }
+  return [];
 }
 
 function labelHint(label) {
   if (label instanceof RegExp) {
     return label.source
+      .split("|")[0]
       .replace(/\\\\b|\\\\B|\\\\w|\\\\W|\\\\s|\\\\S|\\\\d|\\\\D|[\^$.|?*+()\[\]{}]/g, "")
       .replace(/\\\\/g, "")
       .trim();
@@ -1108,13 +1636,13 @@ async function clickCreatePropertyIfPresent(page, metrics) {
     if (href) {
       await page.goto(resolveTargetUrl(page.url(), href), {
         waitUntil: "domcontentloaded",
-        timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+        timeout: resolveUnggaTimeoutMs("nav"),
       });
     } else {
       await createAction.click({ timeout: 10_000 });
     }
     await page.waitForLoadState("domcontentloaded", {
-      timeout: timeoutMs("UNGGA_CLI_TIMEOUT_MS", 60_000),
+      timeout: resolveUnggaTimeoutMs("nav"),
     });
     metrics.push({
       step: "open_create_property",

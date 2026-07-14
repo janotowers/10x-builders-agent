@@ -110,6 +110,26 @@ assert.equal(
   "contrato-comision-av-reforma-123-cuauhtemoc-11112222-2026-06-29.docx"
 );
 
+const friendlyGenericTitleComposed = buildFriendlyGeneratedDocumentFilename({
+  opCase: {
+    id: "51c782ca-40c7-492c-9b23-8a903f05b9fa",
+    context_jsonb: {
+      property_title: "Casa",
+      property_type: ["Casa"],
+      operation_type: ["sale"],
+      property_zone: "Las Fuentes, Zapopan, Jalisco",
+      property_data: { title: "Casa", property_type: ["Casa"], operation: "sale" },
+    },
+    created_at: "2026-07-12T19:00:00.000Z",
+  },
+  binding: CONTRACT_DRAFT_DOCUMENT_BINDING,
+  storagePath: "u1/generated-documents/commission_contract/x.docx",
+});
+assert.equal(
+  friendlyGenericTitleComposed,
+  "contrato-comision-casa-venta-las-fuentes-51c782ca-2026-07-12.docx"
+);
+
 const friendlyWithContactFallback = buildFriendlyGeneratedDocumentFilename({
   opCase: {
     id: "abcd1234efgh",

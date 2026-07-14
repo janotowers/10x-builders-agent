@@ -494,7 +494,10 @@ function validateStepExpect(
       );
     }
   }
-  if (options?.step_key === "package_ready") {
+  if (
+    options?.step_key === "package_ready" &&
+    options.scenario_id === "package_ready_preflight_blocked"
+  ) {
     if (after.status !== "paused") {
       step_outcome_errors.push("status debe ser paused cuando el preflight falla.");
     }
@@ -505,6 +508,29 @@ function validateStepExpect(
     if (Array.isArray(rawPhotos) && rawPhotos.length >= 5) {
       step_outcome_errors.push(
         `validación N4: el escenario «preflight bloqueado» exige fixture con menos de 5 fotos; el caso tiene ${rawPhotos.length}. Regenera el caso de laboratorio o elige otro escenario.`
+      );
+    }
+  }
+  if (
+    options?.step_key === "package_ready" &&
+    options.scenario_id === "package_ready_easybroker_approval_requested"
+  ) {
+    const prematureWrites = [
+      "easybroker_create_listing",
+      "easybroker_upload_images",
+      "easybroker_publish_listing",
+      "ungga_publish_listing",
+    ].filter((toolName) =>
+      toolCalls.some(
+        (call) =>
+          call.tool_name === toolName &&
+          (call.status === "executed" ||
+            call.status === "pending_confirmation")
+      )
+    );
+    if (prematureWrites.length > 0) {
+      step_outcome_errors.push(
+        `No debe existir HITL técnico ni escritura antes de aprobar EasyBroker: ${prematureWrites.join(", ")}.`
       );
     }
   }

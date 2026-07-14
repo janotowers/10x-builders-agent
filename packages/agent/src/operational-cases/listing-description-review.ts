@@ -211,22 +211,48 @@ function truncateDescription(description: string, maxLength: number) {
   };
 }
 
+/**
+ * Commercial copy must not expose internal visual-analysis caveats or mutable
+ * structured commercial values. Price, currency, commission, availability and
+ * listing status belong in portal fields so one field remains the source of
+ * truth throughout the commercialization lifecycle.
+ */
+export function sanitizeListingDescriptionCommercialCopy(value: unknown): string {
+  const text = cleanText(value);
+  if (!text) return "";
+  const withoutMutableCommercialSentences = text
+    .split(/(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÑ¿¡])/u)
+    .filter((sentence) => {
+      const exactMoney =
+        /(?:[$€£]\s*\d)|(?:\b\d[\d.,\s]*\s*(?:mxn|usd|eur|pesos?|d[oó]lares?)\b)/i;
+      const mutableCommercialValue =
+        /\b(?:precio(?:\s+de\s+(?:venta|renta|publicaci[oó]n))?|renta\s+mensual|mantenimiento|comisi[oó]n)\b[^.!?]{0,100}\d/i;
+      return !exactMoney.test(sentence) && !mutableCommercialValue.test(sentence);
+    })
+    .join(" ")
+    .trim();
+  return withoutMutableCommercialSentences
+    .replace(
+      /\s*,?\s*(?:aunque|pero)\s+[^.!?]{0,180}?\b(?:no\s+(?:es|son|está|están)\s+(?:claramente\s+)?visibles?|no\s+se\s+(?:aprecia|observa|ve|distingue))[^.!?]{0,120}?\b(?:imágenes|fotografías|fotos)\b[^.!?]*/gi,
+      ""
+    )
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export function formatListingDescriptionReviewNotifyText(
   draft: ListingDescriptionDraftLike,
   options: ListingDescriptionReviewFormatOptions = {}
 ): string {
-  const headline = cleanText(draft.headline);
-  const shortDescription = cleanText(draft.short_description);
-  const description = cleanText(draft.description);
+  const headline = sanitizeListingDescriptionCommercialCopy(draft.headline);
+  const shortDescription = sanitizeListingDescriptionCommercialCopy(
+    draft.short_description
+  );
+  const description = sanitizeListingDescriptionCommercialCopy(draft.description);
   const presentIngredients = derivePresentIngredientKeys(options.currentContext);
   const missingIngredients = humanizedStringArrayFromValue(draft.missing_ingredients, 8)
     .filter((item) => !ingredientIsContradictedByContext(item, presentIngredients));
-  const visualCoverageGaps = missingIngredients.filter((item) =>
-    /\bfotos?\b|estacionamiento|bañ|bano/i.test(item)
-  );
-  const missingDataPoints = missingIngredients.filter(
-    (item) => !visualCoverageGaps.includes(item)
-  );
   const maxDescriptionLength = options.maxDescriptionLength ?? 1200;
   const excerpt = truncateDescription(description, maxDescriptionLength);
 
@@ -241,11 +267,8 @@ export function formatListingDescriptionReviewNotifyText(
     excerpt.truncated
       ? "Nota: texto recortado para este mensaje. Revisa el borrador completo en el panel del caso."
       : null,
-    missingDataPoints.length > 0
-      ? `**Información que aún no se tiene:** ${missingDataPoints.join(", ")}.`
-      : null,
-    visualCoverageGaps.length > 0
-      ? `**Cobertura visual por completar:** ${visualCoverageGaps.join(", ")}.`
+    missingIngredients.length > 0
+      ? `**Posibles mejoras futuras (opcionales):** Si más adelante se actualiza la ficha, podrían enriquecerla: ${missingIngredients.join(", ")}. No son requisitos para aprobar ni continuar; este paso solo revisa el texto y no solicita una nueva carga.`
       : null,
     "",
     "Usa los botones: Aprobar descripción o Pedir cambios. Si respondes por texto, describe qué ajustar, qué puntos clave agregar o pega una versión exacta.",

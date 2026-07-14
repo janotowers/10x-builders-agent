@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
+  buildPropertyDataReviewMessage,
   missingOwnerResponseCriticalFields,
   parseOwnerCharacteristics,
+  resolveParkingSpacesForDisplay,
   syncIntakeFieldsFromPropertyData,
 } from "./parse-owner-characteristics";
 
@@ -44,5 +46,47 @@ for (const text of noHalfBathVariants) {
     `debe interpretar como 0 medios baños: ${text}`
   );
 }
+
+assert.equal(resolveParkingSpacesForDisplay({ parking_spots: 2 }), 2);
+assert.equal(resolveParkingSpacesForDisplay({ parking_spaces: 0 }), 0);
+assert.equal(resolveParkingSpacesForDisplay({ cajones: 1 }), 1);
+assert.equal(resolveParkingSpacesForDisplay({ estacionamientos: "3" }), 3);
+assert.equal(resolveParkingSpacesForDisplay({}), null);
+
+const reviewWithSpacesAlias = buildPropertyDataReviewMessage({
+  propertyTitle: "Casa prueba",
+  propertyData: {
+    operation: "sale",
+    property_type: "casa",
+    bedrooms: 3,
+    bathrooms: 2,
+    area_total_m2: 138,
+    parking_spaces: 1,
+  },
+});
+assert.match(reviewWithSpacesAlias, /Estacionamientos: 1/);
+
+const reviewWithZero = buildPropertyDataReviewMessage({
+  propertyTitle: "Casa prueba",
+  propertyData: {
+    operation: "sale",
+    property_type: "casa",
+    bedrooms: 3,
+    bathrooms: 2,
+    area_total_m2: 138,
+    parking_spots: 0,
+  },
+});
+assert.match(reviewWithZero, /Estacionamientos: 0/);
+
+const reviewWithoutParking = buildPropertyDataReviewMessage({
+  propertyTitle: "Terreno prueba",
+  propertyData: {
+    operation: "sale",
+    property_type: "terreno",
+    area_total_m2: 200,
+  },
+});
+assert.doesNotMatch(reviewWithoutParking, /Estacionamientos:/);
 
 console.log("parse-owner-characteristics selftest ok");

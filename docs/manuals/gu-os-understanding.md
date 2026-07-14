@@ -565,8 +565,9 @@ está aislado en una tool).
 ¿Cómo se entera el inmobiliario de que algo necesita su atención? Por
 `notify_user`, que elige canal según preferencia del usuario (web cuando
 está activo; Telegram cuando no). Y para acciones de juicio comercial
-(precio mínimo, comparables seleccionados, contrato final) **siempre pide
-HITL**: el agente prepara, el humano aprueba.
+(precio mínimo / propuesta de precio, contrato final) **siempre pide
+HITL**: el agente prepara la muestra de comparables automáticamente y el
+humano aprueba el precio resultante, no elige filas individuales.
 
 Este subsistema convive con Heartbeat y tareas programadas; cada uno
 resuelve un problema distinto:

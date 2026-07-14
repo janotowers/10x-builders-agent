@@ -7,6 +7,7 @@ const PUBLISH_TOOLS = [
   "image_watermark",
   "easybroker_create_listing",
   "easybroker_upload_images",
+  "easybroker_publish_listing",
   "ungga_publish_listing",
 ] as const;
 

@@ -8,6 +8,7 @@ import {
   finishPublicationOperation,
   getOperationalCase,
   getProfile,
+  getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
   markCaseProcessing,
   markPublicationOperationRunning,
@@ -15,6 +16,10 @@ import {
   type DbClient,
 } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
+import {
+  canCompleteListingPublishedSummaryFromContext,
+  formatListingPublishedSummaryNotifyText,
+} from "@agents/agent";
 import { notify } from "@/lib/notify";
 import {
   formatPublicationReviewNotifyText,
@@ -38,10 +43,15 @@ import {
   parsePhotoManifest,
   publicImageUrlsFromManifest,
 } from "@/lib/operational-cases/photo-manifest";
+import { resolveRequireWatermark } from "@/lib/operational-cases/watermark-requirement";
 import {
+  canUseUnggaCliEvidence,
   compareEasyBrokerSnapshot,
   fetchEasyBrokerListingSnapshot,
   fetchUnggaListingSnapshot,
+  isUnggaApiCredentialsMissingError,
+  unggaMediaCountSatisfied,
+  unggaSnapshotFromCliEvidence,
   type EasyBrokerListingSnapshot,
   type UnggaListingSnapshot,
 } from "@/lib/operational-cases/publication-remote-snapshot";
@@ -125,15 +135,69 @@ async function persistPublication(
   extraContext?: Record<string, unknown>
 ): Promise<OperationalCase | null> {
   const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
-  const patch = buildPublicationContextPatch(publication);
   return updateOperationalCase(db, opCase.id, opCase.version, {
-    context: {
-      ...context,
-      ...patch,
-      ...(extraContext ?? {}),
-      package_ready_machine_work_in_flight: false,
-    },
+    context: buildPublicationPersistenceContext(
+      context,
+      publication,
+      extraContext
+    ),
   });
+}
+
+/**
+ * Persist runner ownership (in_flight + pending_action) before external tools.
+ * Retries once after reload on version conflict. Never run tools without a
+ * successful persist.
+ */
+export async function persistPublicationRunnerGate(
+  db: DbClient,
+  opCase: OperationalCase,
+  publication: PublicationState,
+  action: PublicationMachineAction
+): Promise<
+  | { ok: true; opCase: OperationalCase }
+  | { ok: false; opCase: OperationalCase; error: string }
+> {
+  const gateExtra = {
+    package_ready_machine_work_in_flight: true,
+    publication_runner_pending_action: action,
+  };
+  let current = opCase;
+  let persisted = await persistPublication(db, current, publication, gateExtra);
+  if (persisted) {
+    return { ok: true, opCase: persisted };
+  }
+  const reloaded = await getOperationalCase(db, opCase.id);
+  if (!reloaded) {
+    return {
+      ok: false,
+      opCase: current,
+      error: "publication_pending_action_persist_failed",
+    };
+  }
+  current = reloaded;
+  persisted = await persistPublication(db, current, publication, gateExtra);
+  if (persisted) {
+    return { ok: true, opCase: persisted };
+  }
+  return {
+    ok: false,
+    opCase: current,
+    error: "publication_pending_action_persist_failed",
+  };
+}
+
+export function buildPublicationPersistenceContext(
+  context: Record<string, unknown>,
+  publication: PublicationState,
+  extraContext?: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    ...context,
+    ...buildPublicationContextPatch(publication),
+    package_ready_machine_work_in_flight: false,
+    ...(extraContext ?? {}),
+  };
 }
 
 async function ensurePublicationSeeded(
@@ -192,6 +256,17 @@ async function requestDestinationApproval(
       ? "easybroker_publish_approval"
       : "ungga_publish_approval";
   const label = destination === "easybroker" ? "EasyBroker" : "Ungga";
+  const { data: existing } = await db
+    .from("internal_user_notifications")
+    .select("id")
+    .eq("user_id", opCase.user_id)
+    .eq("case_id", opCase.id)
+    .eq("kind", kind)
+    .eq("status", "unread")
+    .limit(1);
+  if ((existing ?? []).length > 0) {
+    return "waiting_hitl";
+  }
   await notify(
     db,
     opCase.user_id,
@@ -231,17 +306,71 @@ async function requestConditionalReview(
   destination: PublicationDestination,
   result: PreflightResult
 ): Promise<"waiting_hitl"> {
+  const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
+  const publication = publicationFromContext(context);
+  const dest = publication.destinations[destination];
+  const publishedBucket = isRecord(context.published)
+    ? context.published[destination]
+    : null;
+  const alreadyPublished =
+    dest.phase === "published" ||
+    (isRecord(publishedBucket) &&
+      (publishedBucket.remote_status === "published" ||
+        publishedBucket.status === "published" ||
+        publishedBucket.ok === true));
+  // Never open a "review before publish" HITL after the destination is already live.
+  if (alreadyPublished) {
+    return "waiting_hitl";
+  }
+  const { data: existing } = await db
+    .from("internal_user_notifications")
+    .select("id")
+    .eq("user_id", opCase.user_id)
+    .eq("case_id", opCase.id)
+    .eq("kind", "publication_review_required")
+    .eq("status", "unread")
+    .eq("metadata_jsonb->>destination", destination)
+    .limit(1);
+  if ((existing ?? []).length > 0) {
+    return "waiting_hitl";
+  }
   await notify(
     db,
     opCase.user_id,
     {
-      text: formatPublicationReviewNotifyText(destination, result),
+      text: formatPublicationReviewNotifyText(destination, result, {
+        last_step: isRecord(dest.last_error)
+          ? null
+          : typeof dest.operation_key === "string"
+            ? {
+                step: dest.operation_key,
+                ok: false,
+                error: dest.last_error ?? dest.review_reason ?? undefined,
+              }
+            : dest.last_error
+              ? {
+                  step: "publication",
+                  ok: false,
+                  error: dest.last_error,
+                }
+              : null,
+        expected_image_count: dest.media.expected_count,
+        uploaded_image_count: dest.media.remote_count,
+        has_draft_artifact: Boolean(
+          dest.artifact.listing_id || dest.artifact.ungga_property_id
+        ),
+        ungga_property_id: dest.artifact.ungga_property_id ?? null,
+      }),
       kind: "publication_review_required",
       data: {
         case_id: opCase.id,
         destination,
         issues: result.issues,
         summary: result.summary,
+        expected_image_count: dest.media.expected_count,
+        uploaded_image_count: dest.media.remote_count,
+        ungga_property_id: dest.artifact.ungga_property_id ?? null,
+        last_error: dest.last_error,
       },
     },
     "high"
@@ -274,6 +403,11 @@ export async function requestPublicationProgress(
   options?: {
     /** When true, only seed/reconcile state and compute next action. */
     dryCompute?: boolean;
+    /**
+     * Explicit recovery only: re-claim a ledger operation known to have
+     * failed before any external tool executed.
+     */
+    forceRetryFailedOperation?: boolean;
     /** Delegate machine tool work to an agent tick callback. */
     runAgentTick?: (
       opCase: OperationalCase,
@@ -388,7 +522,13 @@ export async function requestPublicationProgress(
         photoManifest: parsePhotoManifest(contextNow.photo_manifest),
         remote,
         options: {
-          requireWatermark: destination.media.required,
+          requireWatermark: (
+            await resolveRequireWatermark({
+              db,
+              userId: opCase.user_id,
+              context: contextNow,
+            })
+          ).requireWatermark,
           contractRequired: true,
         },
       });
@@ -417,12 +557,72 @@ export async function requestPublicationProgress(
     if (action.type === "idle") {
       const fresh = await getOperationalCase(db, caseId);
       if (fresh) {
+        const mergedContext = {
+          ...(isRecord(fresh.context_jsonb) ? fresh.context_jsonb : {}),
+          ...buildPublicationContextPatch(publication),
+          package_ready_machine_work_in_flight: false,
+        };
+        const shouldFinalize =
+          action.reason === "all_destinations_resolved" &&
+          canCompleteListingPublishedSummaryFromContext(mergedContext).ok &&
+          fresh.current_step === "package_ready";
+
+        if (shouldFinalize) {
+          const recentEvents = await getRecentOperationalCaseEvents(
+            db,
+            fresh.id,
+            30
+          );
+          const alreadySent = recentEvents.some((event) => {
+            const payload = isRecord(event.payload_jsonb)
+              ? event.payload_jsonb
+              : null;
+            return payload?.kind === "listing_published_summary_sent";
+          });
+          const closed = await updateOperationalCase(
+            db,
+            fresh.id,
+            fresh.version,
+            {
+              context: mergedContext,
+              status: "completed",
+              currentStep: "published",
+              nextActionAt: null,
+            }
+          );
+          if (closed && !alreadySent) {
+            try {
+              const summaryText = formatListingPublishedSummaryNotifyText(closed);
+              const result = await notify(db, closed.user_id, {
+                text: summaryText,
+                kind: "listing_published_summary",
+                data: { case_id: closed.id },
+              });
+              if (result.delivered.length > 0) {
+                await insertOperationalCaseEvent(db, {
+                  caseId: closed.id,
+                  eventType: "step_completed",
+                  actor: "system",
+                  stepKey: "published",
+                  payload: { kind: "listing_published_summary_sent" },
+                });
+              }
+            } catch {
+              // Closure must not fail if Telegram delivery fails.
+            }
+          }
+          return {
+            ok: true,
+            status: "idle",
+            actions_run: actionsRun,
+            next_action: action,
+            publication,
+            message: "publication_finalized",
+          };
+        }
+
         await updateOperationalCase(db, fresh.id, fresh.version, {
-          context: {
-            ...(isRecord(fresh.context_jsonb) ? fresh.context_jsonb : {}),
-            ...buildPublicationContextPatch(publication),
-            package_ready_machine_work_in_flight: false,
-          },
+          context: mergedContext,
           status: "waiting_internal",
           nextActionAt: null,
         });
@@ -615,40 +815,91 @@ export async function requestPublicationProgress(
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        publication = applyPublicationEvent(publication, {
-          type: "preflight_result",
-          destination: action.destination,
-          status: "review_required",
-          reason: `remote_verification_failed:${message}`,
+        if (
+          action.destination === "ungga" &&
+          isUnggaApiCredentialsMissingError(error) &&
+          canUseUnggaCliEvidence({
+            unggaPropertyId: dest.artifact.ungga_property_id,
+            mediaRequired: dest.media.required,
+            mediaVerified: dest.media.verified,
+          }) &&
+          dest.artifact.ungga_property_id
+        ) {
+          // CLI-only accounts: GU-ID + verified media from prepare_draft is enough.
+          remote = unggaSnapshotFromCliEvidence({
+            unggaPropertyId: dest.artifact.ungga_property_id,
+            draftUrl: dest.artifact.draft_url,
+            publishedUrl: dest.artifact.published_url,
+            remoteStatus: dest.artifact.remote_status,
+            imageCount: dest.media.remote_count,
+          });
+        } else {
+          publication = applyPublicationEvent(publication, {
+            type: "preflight_result",
+            destination: action.destination,
+            status: "review_required",
+            reason: `remote_verification_failed:${message}`,
+          });
+          const persisted = await persistPublication(db, opCase, publication);
+          if (persisted) opCase = persisted;
+          await requestConditionalReview(db, opCase, action.destination, {
+            status: "blocked",
+            issues: [
+              {
+                code: "remote_verification_failed",
+                field: "remote",
+                severity: "critical",
+                message: `No se pudo verificar el destino remoto: ${message}`,
+              },
+            ],
+            summary: "No se pudo verificar el estado remoto.",
+          });
+          return {
+            ok: false,
+            status: "waiting_hitl",
+            actions_run: actionsRun,
+            next_action: action,
+            publication,
+            message,
+          };
+        }
+      }
+      const watermarkGate = await resolveRequireWatermark({
+        db,
+        userId: opCase.user_id,
+        context: contextNow,
+      });
+      let preflightContext = contextNow;
+      if (
+        watermarkGate.configured !== null &&
+        contextNow.watermark_configured !== watermarkGate.configured
+      ) {
+        const stamped = await updateOperationalCase(db, opCase.id, opCase.version, {
+          context: {
+            ...contextNow,
+            watermark_configured: watermarkGate.configured,
+          },
         });
-        const persisted = await persistPublication(db, opCase, publication);
-        if (persisted) opCase = persisted;
-        await requestConditionalReview(db, opCase, action.destination, {
-          status: "blocked",
-          issues: [
-            {
-              code: "remote_verification_failed",
-              field: "remote",
-              severity: "critical",
-              message: `No se pudo verificar el destino remoto: ${message}`,
-            },
-          ],
-          summary: "No se pudo verificar el estado remoto.",
-        });
-        return {
-          ok: false,
-          status: "waiting_hitl",
-          actions_run: actionsRun,
-          next_action: action,
-          publication,
-          message,
-        };
+        if (stamped) {
+          opCase = stamped;
+          preflightContext = isRecord(stamped.context_jsonb)
+            ? (stamped.context_jsonb as Record<string, unknown>)
+            : {
+                ...contextNow,
+                watermark_configured: watermarkGate.configured,
+              };
+        } else {
+          preflightContext = {
+            ...contextNow,
+            watermark_configured: watermarkGate.configured,
+          };
+        }
       }
       const preflight = runPublicationPreflight({
         destination: action.destination,
         publication,
-        context: contextNow,
-        photoManifest: parsePhotoManifest(contextNow.photo_manifest),
+        context: preflightContext,
+        photoManifest: parsePhotoManifest(preflightContext.photo_manifest),
         remote:
           action.destination === "easybroker"
             ? {
@@ -677,7 +928,7 @@ export async function requestPublicationProgress(
                   remote && "image_count" in remote ? remote.image_count : null,
               },
         options: {
-          requireWatermark: dest.media.required,
+          requireWatermark: watermarkGate.requireWatermark,
           contractRequired: true,
         },
       });
@@ -759,11 +1010,22 @@ export async function requestPublicationProgress(
             throw new Error("easybroker_internal_id_mismatch");
           }
         } else if (dest.artifact.ungga_property_id) {
-          const snapshot = await fetchUngga(db, {
-            userId: opCase.user_id,
-            unggaPropertyId: dest.artifact.ungga_property_id,
-          });
-          remoteCount = snapshot?.image_count ?? null;
+          try {
+            const snapshot = await fetchUngga(db, {
+              userId: opCase.user_id,
+              unggaPropertyId: dest.artifact.ungga_property_id,
+            });
+            remoteCount = snapshot?.image_count ?? null;
+          } catch (error) {
+            if (
+              isUnggaApiCredentialsMissingError(error) &&
+              typeof dest.media.remote_count === "number"
+            ) {
+              remoteCount = dest.media.remote_count;
+            } else {
+              throw error;
+            }
+          }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -799,7 +1061,9 @@ export async function requestPublicationProgress(
       const countReady =
         typeof remoteCount === "number" &&
         remoteCount > 0 &&
-        (expected <= 0 || remoteCount === expected);
+        (action.destination === "ungga"
+          ? unggaMediaCountSatisfied(remoteCount, expected)
+          : expected <= 0 || remoteCount === expected);
 
       if (
         dest.media.submitted &&
@@ -878,6 +1142,8 @@ export async function requestPublicationProgress(
         operationKey,
         operationType: action.type,
         request: { source, action },
+      }, {
+        forceRetry: options.forceRetryFailedOperation === true,
       }).catch(() => null);
 
       if (claim?.status === "reuse") {
@@ -908,7 +1174,7 @@ export async function requestPublicationProgress(
             type: "media_submitted",
             destination: action.destination,
             expected_count:
-              typeof result.count === "number"
+              typeof result.count === "number" && result.count > 0
                 ? result.count
                 : publication.destinations[action.destination].media.expected_count,
           });
@@ -988,11 +1254,71 @@ export async function requestPublicationProgress(
         });
       }
 
-      const persisted = await persistPublication(db, opCase, publication, {
-        package_ready_machine_work_in_flight: true,
-        publication_runner_pending_action: action,
-      });
-      if (persisted) opCase = persisted;
+      const gatePersist = await persistPublicationRunnerGate(
+        db,
+        opCase,
+        publication,
+        action
+      );
+      opCase = gatePersist.opCase;
+      if (!gatePersist.ok) {
+        const errorText = gatePersist.error;
+        await finishPublicationOperation(db, {
+          operationId: claim.operation.id,
+          status: "failed",
+          result: {},
+          errorText,
+        });
+        publication = applyPublicationEvent(
+          publication,
+          action.type === "publish"
+            ? {
+                type: "publish_failed",
+                destination: action.destination,
+                error: errorText,
+                unknown: false,
+              }
+            : action.type === "process_media"
+              ? {
+                  type: "media_failed",
+                  destination: action.destination,
+                  error: errorText,
+                }
+              : {
+                  type: "draft_failed",
+                  destination: action.destination,
+                  error: errorText,
+                  unknown: false,
+                }
+        );
+        const failed = await persistPublication(db, opCase, publication, {
+          package_ready_machine_work_in_flight: false,
+          publication_runner_pending_action: null,
+        });
+        if (failed) opCase = failed;
+        await insertOperationalCaseEvent(db, {
+          caseId: opCase.id,
+          eventType: "state_changed",
+          actor: "system",
+          stepKey: "package_ready",
+          payload: {
+            kind: "publication_operation_failed",
+            destination: action.destination,
+            operation_type: action.type,
+            error: errorText,
+            unknown_outcome: false,
+            source,
+          },
+        });
+        return {
+          ok: false,
+          status: "failed",
+          actions_run: actionsRun,
+          next_action: action,
+          publication,
+          message: errorText,
+        };
+      }
 
       let execution: PublicationExecutionResult;
       try {
@@ -1023,6 +1349,37 @@ export async function requestPublicationProgress(
           : execution.status === "not_executed"
             ? "expected_publication_tool_not_executed"
             : "publication_operation_failed");
+
+      if (execution.status === "pending_hitl") {
+        // Keep runner ownership; human must confirm the technical tool call.
+        // Do not mark the ledger/destination as failed — that blocks retries.
+        const waiting = await persistPublication(db, opCase, publication, {
+          package_ready_machine_work_in_flight: true,
+          publication_runner_pending_action: action,
+        });
+        if (waiting) opCase = waiting;
+        await insertOperationalCaseEvent(db, {
+          caseId: opCase.id,
+          eventType: "state_changed",
+          actor: "system",
+          stepKey: "package_ready",
+          payload: {
+            kind: "publication_technical_hitl_pending",
+            destination: action.destination,
+            operation_type: action.type,
+            error: errorText,
+            source,
+          },
+        });
+        return {
+          ok: true,
+          status: "waiting_hitl",
+          actions_run: actionsRun,
+          next_action: action,
+          publication,
+          message: errorText,
+        };
+      }
 
       if (execution.status === "succeeded" && action.type === "publish") {
         try {
@@ -1076,12 +1433,40 @@ export async function requestPublicationProgress(
             const propertyId =
               destination.artifact.ungga_property_id ??
               stringResult(result, ["ungga_property_id", "property_id", "id"]);
-            const snapshot = propertyId
-              ? await fetchUngga(db, {
-                  userId: opCase.user_id,
+            let snapshot: UnggaListingSnapshot | null = null;
+            try {
+              snapshot = propertyId
+                ? await fetchUngga(db, {
+                    userId: opCase.user_id,
+                    unggaPropertyId: propertyId,
+                  })
+                : null;
+            } catch (error) {
+              if (
+                isUnggaApiCredentialsMissingError(error) &&
+                propertyId &&
+                (stringResult(result, [
+                  "published_url",
+                  "public_url",
+                  "url",
+                ]) ||
+                  result.ok === true)
+              ) {
+                snapshot = unggaSnapshotFromCliEvidence({
                   unggaPropertyId: propertyId,
-                })
-              : null;
+                  publishedUrl: stringResult(result, [
+                    "published_url",
+                    "public_url",
+                    "url",
+                  ]),
+                  draftUrl: stringResult(result, ["draft_url"]),
+                  remoteStatus: "published",
+                  imageCount: destination.media.remote_count,
+                });
+              } else {
+                throw error;
+              }
+            }
             if (!snapshot || snapshot.status !== "published") {
               execution = {
                 status: "unknown_outcome",
@@ -1090,7 +1475,9 @@ export async function requestPublicationProgress(
               };
             } else {
               result.remote_status = snapshot.status;
-              result.published_url = snapshot.published_url;
+              result.published_url =
+                snapshot.published_url ??
+                stringResult(result, ["published_url", "public_url", "url"]);
             }
           }
         } catch (error) {
@@ -1133,14 +1520,73 @@ export async function requestPublicationProgress(
                 "remote_status",
                 "status",
               ]),
+              image_count:
+                typeof result.image_count === "number"
+                  ? result.image_count
+                  : typeof result.uploaded_image_count === "number"
+                    ? result.uploaded_image_count
+                    : null,
+              images_uploaded: result.images_submitted === true,
+              images_status:
+                result.images_verified === true
+                  ? "verified"
+                  : result.images_submitted === true
+                    ? "submitted"
+                    : null,
             },
           });
+          if (action.destination === "ungga") {
+            const expectedCount =
+              typeof result.expected_image_count === "number" &&
+              result.expected_image_count > 0
+                ? result.expected_image_count
+                : publication.destinations.ungga.media.expected_count;
+            const uploadedCount =
+              typeof result.uploaded_image_count === "number"
+                ? result.uploaded_image_count
+                : typeof result.image_count === "number"
+                  ? result.image_count
+                  : null;
+            const mediaVerified =
+              result.images_verified === true ||
+              (typeof expectedCount === "number" &&
+                expectedCount > 0 &&
+                unggaMediaCountSatisfied(uploadedCount, expectedCount));
+            const mediaSubmitted =
+              result.images_submitted === true || mediaVerified;
+            if (mediaSubmitted && typeof expectedCount === "number" && expectedCount > 0) {
+              publication = applyPublicationEvent(publication, {
+                type: "media_submitted",
+                destination: "ungga",
+                expected_count: expectedCount,
+              });
+              if (mediaVerified && typeof uploadedCount === "number") {
+                publication = applyPublicationEvent(publication, {
+                  type: "media_verified",
+                  destination: "ungga",
+                  remote_count: uploadedCount,
+                });
+              }
+            } else if (
+              publication.destinations.ungga.media.required &&
+              publication.destinations.ungga.media.expected_count > 0
+            ) {
+              // Keep Ungga out of process_media dead-end: without verified
+              // media evidence, force review instead of inventing a media tool.
+              publication = applyPublicationEvent(publication, {
+                type: "preflight_result",
+                destination: "ungga",
+                status: "review_required",
+                reason: "ungga_media_not_verified_after_prepare_draft",
+              });
+            }
+          }
         } else if (action.type === "process_media") {
           publication = applyPublicationEvent(publication, {
             type: "media_submitted",
             destination: action.destination,
             expected_count:
-              typeof result.count === "number"
+              typeof result.count === "number" && result.count > 0
                 ? result.count
                 : publication.destinations[action.destination].media.expected_count,
           });
@@ -1202,6 +1648,20 @@ export async function requestPublicationProgress(
         publication_runner_pending_action: null,
       });
       if (failed) opCase = failed;
+      await insertOperationalCaseEvent(db, {
+        caseId: opCase.id,
+        eventType: "state_changed",
+        actor: "system",
+        stepKey: "package_ready",
+        payload: {
+          kind: "publication_operation_failed",
+          destination: action.destination,
+          operation_type: action.type,
+          error: errorText,
+          unknown_outcome: unknown,
+          source,
+        },
+      });
       if (unknown) {
         await requestConditionalReview(db, opCase, action.destination, {
           status: "blocked",
@@ -1348,9 +1808,14 @@ export function buildPublicationAgentHint(
     ].join(" ");
   }
   if (action.type === "process_media" && destination === "easybroker") {
+    const watermarkConfigured = context.watermark_configured;
+    const watermarkHint =
+      watermarkConfigured === false
+        ? "No hay watermark de marca configurado: sube fotos originales (sin image_watermark)."
+        : "Si falta watermark y la cuenta tiene logo de marca, llama image_watermark(case_id) primero.";
     return [
       "PUBLICATION RUNNER: sube fotos a EasyBroker.",
-      "Si falta watermark, llama image_watermark(case_id) primero.",
+      watermarkHint,
       `Luego easybroker_upload_images con listing_id del caso.`,
       paths.length
         ? `image_paths canónicos: ${JSON.stringify(paths)}.`

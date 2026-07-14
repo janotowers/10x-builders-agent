@@ -30,20 +30,13 @@ assert.equal(
   "auto_execute"
 );
 
-const publishAutoExecutePolicy = buildSettingsTestToolApprovalPolicy(undefined, {
-  autoExecuteApprovedPublishTools: true,
-});
-assert.equal(publishAutoExecutePolicy.easybroker_create_listing, "auto_execute");
-assert.equal(publishAutoExecutePolicy.easybroker_upload_images, "auto_execute");
-assert.equal(publishAutoExecutePolicy.ungga_publish_listing, "auto_execute");
-assert.equal(publishAutoExecutePolicy.image_watermark, "auto_execute");
 assert.equal(
   buildSettingsTestToolApprovalPolicy().easybroker_create_listing,
   undefined
 );
 
 const resumePolicy = buildAgentE2EResumeToolApprovalPolicy();
-assert.equal(resumePolicy.easybroker_create_listing, "auto_execute");
+assert.equal(resumePolicy.easybroker_create_listing, undefined);
 assert.equal(resumePolicy.generate_document_from_template, "auto_execute");
 assert.equal(isAgentE2EToolCall({ metadata_jsonb: { source: "agent_e2e" } }), true);
 assert.equal(isAgentE2EToolCall({ metadata_jsonb: { source: "web" } }), false);

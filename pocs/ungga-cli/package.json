@@ -9,7 +9,8 @@
     "poc:create": "node src/create-listing.mjs",
     "poc:publish": "node src/publish-listing.mjs",
     "poc:inspect": "node src/inspect-wizard.mjs",
-    "poc:report": "node src/report.mjs"
+    "poc:report": "node src/report.mjs",
+    "test:prepare-draft": "node src/prepare-draft.selftest.mjs"
   },
   "dependencies": {
     "playwright": "^1.49.0",

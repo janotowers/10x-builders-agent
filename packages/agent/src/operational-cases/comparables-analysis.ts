@@ -266,6 +266,20 @@ function pricePerM2Stats(rows: ComparableRow[]) {
 }
 
 function filtersFromCalls(toolCalls: ComparableToolCallInput[]) {
+  const firstResult = SOURCE_TOOL_NAMES
+    .map((toolName) => latestExecutedToolCall(toolCalls, toolName)?.result_json)
+    .find(isRecord);
+  const searchAttempts = isRecord(firstResult?.search_attempts)
+    ? firstResult.search_attempts
+    : null;
+  const attempts = Array.isArray(searchAttempts?.attempts)
+    ? searchAttempts.attempts.filter(isRecord)
+    : [];
+  const exhausted = searchAttempts?.exhausted === true;
+  const lastAttemptFilters =
+    exhausted && attempts.length > 0 && isRecord(attempts[attempts.length - 1]?.filters)
+      ? attempts[attempts.length - 1].filters
+      : null;
   const firstArgs = SOURCE_TOOL_NAMES
     .map((toolName) => latestExecutedToolCall(toolCalls, toolName)?.arguments_json)
     .find(isRecord);
@@ -275,7 +289,7 @@ function filtersFromCalls(toolCalls: ComparableToolCallInput[]) {
       return isRecord(result?.filters_used) ? result.filters_used : isRecord(result?.query) ? result.query : null;
     })
     .find(isRecord);
-  const source = firstResultFilters ?? firstArgs ?? {};
+  const source = lastAttemptFilters ?? firstResultFilters ?? firstArgs ?? {};
   return {
     neighborhood: cleanString(source.neighborhood) ?? cleanString(source.zona),
     zona: cleanString(source.zona) ?? cleanString(source.neighborhood),
@@ -683,8 +697,19 @@ export function buildComparablesAnalysisFromToolCalls(
   });
   const fallbackModeradoAttempted = toolCalls.some((call) => {
     if (!isRecord(call.result_json)) return false;
-    return isRecord(call.result_json.search_attempts);
+    const searchAttempts = call.result_json.search_attempts;
+    if (!isRecord(searchAttempts)) return false;
+    if (searchAttempts.exhausted === true) return true;
+    return Array.isArray(searchAttempts.attempts) && searchAttempts.attempts.length > 1;
   });
+  const exhaustedFallbackLevel = toolCalls
+    .map((call) => {
+      if (!isRecord(call.result_json)) return null;
+      const searchAttempts = call.result_json.search_attempts;
+      if (!isRecord(searchAttempts) || searchAttempts.exhausted !== true) return null;
+      return cleanString(searchAttempts.last_attempt_level);
+    })
+    .find((level): level is string => Boolean(level));
 
   if (!activeCall) warnings.push("No se ejecutó easybroker_search_listings en este turno.");
   if (!historicalCall) warnings.push("No se ejecutó easybroker_search_closed_deals en este turno.");
@@ -717,7 +742,9 @@ export function buildComparablesAnalysisFromToolCalls(
   }
   if (fallbackModeradoAttempted && usableRows.length === 0) {
     warnings.push(
-      "Se agotó fallback moderado de búsqueda (área expandida y relajación de exactitud) sin obtener comparables usables."
+      exhaustedFallbackLevel
+        ? `Se agotó fallback moderado de búsqueda hasta ${exhaustedFallbackLevel} (área expandida y relajación de exactitud) sin obtener comparables usables.`
+        : "Se agotó fallback moderado de búsqueda (área expandida y relajación de exactitud) sin obtener comparables usables."
     );
   }
   if (duplicateHistoricalCount > 0) {

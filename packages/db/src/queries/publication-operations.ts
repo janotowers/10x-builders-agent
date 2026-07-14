@@ -34,7 +34,7 @@ export type ClaimPublicationOperationInput = {
 /**
  * Reclama una operación idempotente. Si ya existe:
  * - succeeded → reutiliza
- * - failed → permite reclaim solo si forceRetry
+ * - failed/unknown_outcome → permite reclaim solo si forceRetry (revisión humana)
  * - claimed/running/unknown_outcome → no re-ejecutar
  */
 export async function claimPublicationOperation(
@@ -92,13 +92,16 @@ export async function claimPublicationOperation(
   if (operation.status === "succeeded") {
     return { status: "reuse", operation };
   }
-  if (operation.status === "unknown_outcome") {
+  if (operation.status === "unknown_outcome" && !options?.forceRetry) {
     return { status: "unknown_outcome", operation };
   }
   if (operation.status === "claimed" || operation.status === "running") {
     return { status: "in_flight", operation };
   }
-  if (operation.status === "failed" && options?.forceRetry) {
+  if (
+    (operation.status === "failed" || operation.status === "unknown_outcome") &&
+    options?.forceRetry
+  ) {
     const { data: updated, error: updateError } = await db
       .from("publication_operations")
       .update({
@@ -111,12 +114,18 @@ export async function claimPublicationOperation(
         updated_at: nowIso,
       })
       .eq("id", operation.id)
-      .eq("status", "failed")
+      .eq("status", operation.status)
       .select("*")
       .maybeSingle();
     if (updateError) throw updateError;
     if (!updated) {
-      return { status: "failed_terminal", operation };
+      return {
+        status:
+          operation.status === "unknown_outcome"
+            ? "unknown_outcome"
+            : "failed_terminal",
+        operation,
+      };
     }
     return {
       status: "claimed",

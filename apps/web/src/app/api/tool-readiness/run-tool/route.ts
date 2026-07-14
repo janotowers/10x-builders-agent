@@ -814,9 +814,13 @@ function easyBrokerComparablePropertyTypes(
   for (const type of propertyTypes) {
     const normalized = comparableText(type);
     if (!normalized) continue;
-    if (normalized.includes("casa en condominio")) {
+    if (
+      normalized.includes("casa en condominio") ||
+      normalized === "condo_house" ||
+      normalized === "condo house"
+    ) {
       add("Casa en condominio");
-    } else if (/\bcasa\b/.test(normalized)) {
+    } else if (normalized === "house" || /\bcasa\b/.test(normalized)) {
       add("Casa", "Casa en condominio");
     } else if (/\b(departamento|depto|apartment)\b/.test(normalized)) {
       add("Departamento");
@@ -1118,7 +1122,7 @@ const NOTIFY_USER_INTENT_RECIPES: NotifyUserIntentRecipe[] = [
         kind: "comparables_insufficient_data",
         urgency: "normal",
         text:
-          "Prueba controlada (comparables_in_progress): no hay muestra defendible (usable_count=0). Amplía filtros o zona y reintenta el análisis. No avances a propuesta de precio.",
+          "Prueba controlada (comparables_in_progress): no hay muestra defendible (unique_comparable_count < 3 / usable_count=0). Amplía filtros o zona y reintenta el análisis. No avances a propuesta de precio.",
       };
     },
   },
@@ -1261,6 +1265,7 @@ function generateDocumentFromTemplateCaseRecipe(
         external && typeof external === "object" && !Array.isArray(external)
           ? (external as Record<string, unknown>)
           : {},
+      timezone: "America/Mexico_City",
     }),
   };
   if (input.testCase?.id) args.case_id = input.testCase.id;
@@ -1395,15 +1400,8 @@ function easyBrokerCaseRecipe(ctx: Record<string, unknown>): Record<string, unkn
   if (areaArgs.min_area_m2 != null) args.min_area_m2 = areaArgs.min_area_m2;
   if (areaArgs.max_area_m2 != null) args.max_area_m2 = areaArgs.max_area_m2;
 
-  const shouldUseResidentialRooms = propertyKind === "residential";
-  if (shouldUseResidentialRooms) {
-    const bedrooms = firstNumber(merged, ["bedrooms", "recamaras"]);
-    if (bedrooms != null) args.bedrooms = bedrooms;
-    const bathrooms = firstNumber(merged, ["bathrooms", "banos"]);
-    if (bathrooms != null) args.bathrooms = bathrooms;
-    const parking = firstNumber(merged, ["parking_spaces", "parking", "estacionamientos"]);
-    if (parking != null) args.parking_spaces = parking;
-  }
+  // Rooms/parking are intentionally omitted for valuation comparables;
+  // sanitizeComparableSearchFilters would drop them anyway.
   const sanitized = sanitizeComparableSearchFilters({
     raw: args,
     propertyData: merged,

@@ -276,4 +276,53 @@ assert.ok(
   "quota_error de Avaclick debe quedar como warning no bloqueante"
 );
 
+// --- Dedupe activa/cerrada por eb:{id} sin URL ---
+const idOnlyDedupe = buildComparablesAnalysisFromToolCalls([
+  {
+    tool_name: "easybroker_search_listings",
+    status: "executed",
+    result_json: {
+      results: [{ id: "EB-99", price: 2500000, area_m2: 120 }],
+    },
+  },
+  {
+    tool_name: "easybroker_search_closed_deals",
+    status: "executed",
+    result_json: {
+      results: [{ id: "EB-99", price: 2500000, area_m2: 120 }],
+    },
+  },
+  {
+    tool_name: "bigquery_lookup_local_comparables",
+    status: "executed",
+    result_json: { rows: [] },
+  },
+]);
+assert.equal(
+  (idOnlyDedupe.historical_references as unknown[]).length,
+  0,
+  "cerrada con mismo id que activa se deduplica"
+);
+assert.equal(
+  (idOnlyDedupe.data_quality as { unique_comparable_count?: number }).unique_comparable_count,
+  1
+);
+assert.ok(
+  (
+    (idOnlyDedupe.data_quality as { warnings?: string[] }).warnings ?? []
+  ).some((warning) => warning.includes("ya estaban presentes en activas"))
+);
+
+const idOnlyProposal = buildPricingProposalFromComparables({
+  analysis: idOnlyDedupe,
+  subjectAreaM2: 120,
+  areaBasis: "construction",
+});
+assert.ok(idOnlyProposal);
+assert.deepEqual(idOnlyProposal?.comparables_used, ["EB-99"]);
+assert.match(
+  formatPriceApprovalNotifyText(idOnlyProposal!),
+  /Sin referencias históricas únicas adicionales/
+);
+
 console.log("comparables-pricing.selftest: ok");

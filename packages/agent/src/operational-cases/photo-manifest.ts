@@ -201,7 +201,7 @@ export function applyWatermarkOutputsToManifest(
   );
   const missing: string[] = [];
   const next = manifest.map((entry) => {
-    const output = byInput.get(entry.source_path);
+    const output = byInput.get(normalizePhotoSourcePath(entry.source_path));
     if (!output || output.ok === false || !output.output_path) {
       missing.push(entry.source_path);
       return output?.error

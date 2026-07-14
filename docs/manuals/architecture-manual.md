@@ -820,10 +820,14 @@ Tools del dominio inmobiliario (en `packages/agent/src/tools/realestate-adapters
   completa; la búsqueda de comparables usa automatización web con credenciales del
   cliente, storage state y prueba de conexión no headless cuando aplica reCAPTCHA.
   Si el storage state expira, el adapter intenta login con email/password antes
-  de pedir login asistido. Contrato de filtros: `bedrooms`/`bathrooms`/
-  `parking_spaces` son exactos; `min_bedrooms`/`min_bathrooms`/
-  `min_parking_spaces` significan "al menos"; `shared_commission_only` activa el
-  filtro de comisión compartida cuando el caso/skill lo requiere.
+  de pedir login asistido. Contrato de filtros para valuación/comparables:
+  zona, operación, tipo y banda de área canónica (residencial `strict`
+  asimétrica −15%/+85%). `bedrooms`/`bathrooms`/`parking_spaces` exactos y
+  `min_*` son para búsquedas de opciones (comprador/rentador), no para el
+  flujo de opinión de valor. `easybroker_search_closed_deals` verifica
+  `Estatus=Solo cerradas` antes de tratar resultados como históricos.
+  `shared_commission_only` activa el filtro de comisión compartida cuando el
+  caso/skill lo requiere.
 - `easybroker_create_listing`, `easybroker_upload_images` (**implementadas** HTTP
   write; provider `easybroker` + API key; fallback legacy `EASYBROKER_API_KEY`;
   `risk='high'`/HITL). `create` usa `POST /v1/properties` y crea por default

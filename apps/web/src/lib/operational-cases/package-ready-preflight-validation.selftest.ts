@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { collectPackageReadyPreflightMissingData } from "./package-ready-preflight-validation";
+import {
+  collectPackageReadyPreflightMissingData,
+  publishToolExecuted,
+} from "./package-ready-preflight-validation";
 
 const missingPrice = collectPackageReadyPreflightMissingData({
   property_data: {
@@ -65,6 +68,12 @@ const withSalida = collectPackageReadyPreflightMissingData({
 assert.ok(
   !withSalida.includes("pricing_proposal.salida"),
   "Con salida válida no debe reportar faltante de salida."
+);
+assert.deepEqual(
+  publishToolExecuted([
+    { tool_name: "easybroker_publish_listing", status: "pending_confirmation" },
+  ]),
+  ["easybroker_publish_listing"]
 );
 
 console.log("package-ready-preflight-validation.selftest: ok");

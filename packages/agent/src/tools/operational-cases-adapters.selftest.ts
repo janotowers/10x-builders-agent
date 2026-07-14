@@ -20,6 +20,7 @@ import {
   looksLikeComparablesSummaryNotificationForTest,
   looksLikeComparablesCompletionProseForTest,
   comparablesSearchExpansionDecisionAlreadyRequestedForTest,
+  matchesOwnedContractDataReviewForTest,
   priceApprovalNotificationAlreadyDeliveredForTest,
   missingRequiredIntakeFields,
   normalizePredialExtractionSurfacesForTest,
@@ -79,6 +80,36 @@ assert.equal(canonicalizeNotifyKindForTest("pricing_proposal"), "price_approval"
 assert.equal(
   canonicalizeNotifyKindForTest("contract_generation_error"),
   "contract_data_review"
+);
+assert.equal(
+  matchesOwnedContractDataReviewForTest(
+    {
+      source: "generate_document_from_template",
+      missing_required_fields: ["exclusive", "owner_email"],
+    },
+    ["owner_email", "exclusive"]
+  ),
+  true
+);
+assert.equal(
+  matchesOwnedContractDataReviewForTest(
+    {
+      source: "contract_data_review_partial",
+      missing_required_fields: ["exclusive"],
+    },
+    ["exclusive"]
+  ),
+  false
+);
+assert.equal(
+  matchesOwnedContractDataReviewForTest(
+    {
+      source: "generate_document_from_template",
+      missing_required_fields: ["exclusive"],
+    },
+    ["owner_email", "exclusive"]
+  ),
+  false
 );
 assert.equal(
   canonicalizeNotifyKindForTest("publish destination approvals"),
@@ -953,6 +984,27 @@ assert.doesNotMatch(reviewText, /Datos encontrados en documentos:[\s\S]*Tipo: Te
 assert.doesNotMatch(reviewText, /Datos encontrados en documentos:[\s\S]*Operaci[oó]n: Venta/);
 assert.doesNotMatch(reviewText, /Datos encontrados en documentos:[\s\S]*Zona: Sendas Residencial/);
 assert.match(reviewText, /Direcci[oó]n legal: Privada del Tulipán, Zapopan/i);
+
+const reviewTextWithParking = canonicalizePropertyDataReviewText(
+  {
+    id: "case-2",
+    context_jsonb: {
+      property_title: "Casa en Las Fuentes",
+      property_zone: "Las Fuentes",
+      operation_type: "Venta",
+      property_type: "Casa",
+      property_data: {
+        parking_spots: 2,
+      },
+    },
+  } as unknown as Awaited<ReturnType<typeof import("@agents/db").getOperationalCase>>,
+  [
+    "Datos extraídos:",
+    "- Dirección legal: Circunvalacion Sur 3668",
+    "- Superficie: 146 m²",
+  ].join("\n")
+);
+assert.match(reviewTextWithParking, /Número de cajones de estacionamiento: 2/);
 
 assert.equal(contractDraftOutputPathFromContext({}), null);
 assert.equal(

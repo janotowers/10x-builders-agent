@@ -13,12 +13,14 @@ import {
 } from "@agents/types";
 import { dismissPrematurePublishDestinationApprovals } from "@/lib/business-decisions/publish-destination-approval";
 import { packageReadyBlocksUnggaApprovalNotify } from "@/lib/operational-cases/package-ready-auto-continue";
+import { shouldClearStalePublicationRunnerPendingAction } from "@/lib/operational-cases/publication-tool-policy";
 
 const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
 
 const PUBLISH_CREATE_TOOLS = new Set([
   "easybroker_create_listing",
   "easybroker_upload_images",
+  "easybroker_publish_listing",
   "ungga_publish_listing",
 ]);
 
@@ -221,6 +223,7 @@ export async function healStalePublishFlowBlockers(
   prematureDestinationsDismissed: number;
   duplicateUnggaDismissed: number;
   e2eFlagsCleared: boolean;
+  staleRunnerActionCleared: boolean;
 }> {
   const opCase = await getOperationalCase(db, params.caseId);
   if (!opCase || opCase.user_id !== params.userId) {
@@ -229,6 +232,7 @@ export async function healStalePublishFlowBlockers(
       prematureDestinationsDismissed: 0,
       duplicateUnggaDismissed: 0,
       e2eFlagsCleared: false,
+      staleRunnerActionCleared: false,
     };
   }
 
@@ -261,6 +265,17 @@ export async function healStalePublishFlowBlockers(
 
   const pendingRemaining = await countPendingToolCallsForCase(db, params.caseId);
   const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
+  const staleRunnerActionCleared =
+    shouldClearStalePublicationRunnerPendingAction(context);
+  if (staleRunnerActionCleared) {
+    await updateOperationalCase(db, opCase.id, opCase.version, {
+      context: {
+        ...context,
+        publication_runner_pending_action: null,
+        package_ready_machine_work_in_flight: false,
+      },
+    });
+  }
   const staleE2EFlags =
     pendingRemaining === 0 &&
     (context.e2e_control_pending_confirmation === true ||
@@ -284,5 +299,6 @@ export async function healStalePublishFlowBlockers(
     prematureDestinationsDismissed,
     duplicateUnggaDismissed,
     e2eFlagsCleared: staleE2EFlags,
+    staleRunnerActionCleared,
   };
 }

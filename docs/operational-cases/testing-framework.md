@@ -146,7 +146,7 @@ El subsistema `operational-case-tests` mantiene **un caso de prueba por fila de 
 
 ## 4. N1 — Tool individual
 
-**Alcance N1:** sólo tools *readiness-visible* (`business_integration`, `external_action`, `internal_notification`). Tools de plataforma (`operational_case_update_state`, `operational_case_add_event`, `operational_case_persist_*`) y `scenario_only` (`operational_case_create`) **no** exigen N1 previo a N3/N4 del mismo paso; las internas aparecen en detalle técnico N3/N4. Ver `PATTERN_TOOL_SURFACE_CLASSIFICATION` y [`tool-surface-classification.ts`](../../apps/web/src/lib/operational-cases/tool-surface-classification.ts).
+**Alcance N1:** sólo tools *readiness-visible* (`business_integration`, `external_action`, `internal_notification`). Tools de plataforma (`operational_case_update_intake`, `operational_case_update_state`, `operational_case_add_event`, `operational_case_persist_*`) y `scenario_only` (`operational_case_create`) **no** exigen N1 previo a N3/N4 del mismo paso; las internas aparecen en detalle técnico N3/N4. Ver `PATTERN_TOOL_SURFACE_CLASSIFICATION` y [`tool-surface-classification.ts`](../../apps/web/src/lib/operational-cases/tool-surface-classification.ts).
 
 **Intake / registro:** en settings usar la tarjeta **Preparar caso de prueba** (N0: formulario + crear/regenerar fixture + `safe_check`). El hito `intake` del flow (**Completar registro del caso**) es referencia runtime colapsada, no N4 **Probar paso**. Ver `PATTERN_CASE_INTAKE_PRECONDITION`.
 
@@ -565,9 +565,9 @@ Objetivo en BD: `step_test_contract` en flow — ver [`authoring-playbook.md`](a
 Tras expandir **Paso 3 · Análisis de comparables**:
 
 1. **N1** (ya hecho si las tres tools muestran **Probada**): `easybroker_search_listings`, `easybroker_search_closed_deals`, `bigquery_lookup_local_comparables`.
-2. **N3** — **Probar habilidad** en `perform-comparable-analysis`, escenario **Análisis completo y avance a precio** (`comparables_in_progress_complete`). Revisa el panel: tools ejecutadas, `operational_case_persist_comparables_analysis`, `usable_count > 0`, avance a `price_proposal_pending`. Si falla, el pill pasa a **Falló N3** aunque N1 siga en verde.
-3. **N4** — **Probar paso** con el mismo escenario (raíz del caso) o **Sin comparables usables** para la rama `waiting_internal` + `notify_user`. El pill del paso refleja el último N4.
-4. Escenario negativo N3/N4: **Sin comparables usables — no avanzar a precio** (filtros estrechos / 0 usables en todas las fuentes).
+2. **N3** — **Probar habilidad** en `perform-comparable-analysis`, escenario **Análisis completo y avance a precio** (`comparables_in_progress_complete`). Revisa el panel: tools ejecutadas, `operational_case_persist_comparables_analysis`, `defensible_sample=true` / `unique_comparable_count >= 3`, avance a `price_proposal_pending`. Si falla, el pill pasa a **Falló N3** aunque N1 siga en verde.
+3. **N4** — **Probar paso** con el mismo escenario (raíz del caso) o **Sin muestra defendible** para la rama `waiting_internal` + `notify_user`. El pill del paso refleja el último N4.
+4. Escenario negativo N3/N4: **Sin muestra defendible — no avanzar a precio** (filtros estrechos / 0 usables o <3 únicos cross-source).
 
 Patrones: `PATTERN_COMPARABLE_SEARCH_ZONE_ALIGNMENT`, `PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE`, `PATTERN_DETERMINISTIC_ARTIFACT_FROM_TOOL_RESULTS`. Skill: [`perform-comparable-analysis/SKILL.md`](../../skills/global/perform-comparable-analysis/SKILL.md).
 
@@ -632,6 +632,12 @@ La consolidación de titularidad (`property-optioning-post-agent-invariants`) es
 | Sesión E2E lab | `POST/GET /api/operational-case-tests/e2e-lab-mode` | Ventana temporal (2 h) donde el cron no procesa el caso de prueba |
 | Fixture sintético | Tarjeta N0 «Regenerar y validar registro» | Ancla `controlled_test_playthrough_anchor_at` + auditoría por transición |
 | Caso conversacional | Webhook + `operational_case_conversation_bindings` | E2E con canal real; `e2e_controlled=true` al primer tick manual |
+
+Para `property_optioning`, crear, reutilizar o adoptar un caso N5 controlado
+normaliza `publication_mode: "active"`. En `package_ready` la secuencia es
+obligatoria: preparar copy → aprobar descripción → aprobación de negocio por
+destino → runner create/upload/publish. Un pending técnico aislado no autoriza
+escrituras y `off|shadow` nunca caen al agente legacy después de aprobar copy.
 
 **Pendiente:** batería automatizada multi-tick (guion que encadena todos los pasos sin clics); evals en CI derivados de N5.
 

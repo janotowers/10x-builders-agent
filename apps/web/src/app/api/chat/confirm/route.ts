@@ -4,10 +4,12 @@ import {
   createServerClient,
   decryptToken,
   getGoogleCalendarAccessToken,
+  getOperationalCase,
   getPendingToolCall,
   updateToolCallStatus,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
+import { operationalCaseDocumentRequestTargetFromContext } from "@agents/types";
 import { publishTurnEvent } from "@/lib/agent-turn-events";
 import {
   findExistingScheduledTaskForConfirmation,
@@ -16,9 +18,9 @@ import {
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { findPendingConfirmationCheckpoint } from "@/lib/agent/pending-confirmation-checkpoint";
 import {
-  buildAgentE2EResumeToolApprovalPolicy,
   isAgentE2EToolCall,
 } from "@/lib/operational-cases/settings-test-tool-policy";
+import { buildPublicationAwareE2EToolApprovalPolicy } from "@/lib/operational-cases/publication-tool-policy";
 import { finalizeCaseAfterToolDecision } from "@/lib/operational-cases/finalize-case-after-tool-decision";
 
 const TOOL_CALL_SELECT =
@@ -198,6 +200,32 @@ export async function POST(request: Request) {
       );
     }
 
+    const caseId =
+      typeof toolCall.metadata_jsonb?.case_id === "string"
+        ? toolCall.metadata_jsonb.case_id
+        : typeof toolCall.arguments_json?.case_id === "string"
+          ? toolCall.arguments_json.case_id
+          : undefined;
+    const resumeCase = caseId ? await getOperationalCase(db, caseId) : null;
+    const resumeContext =
+      resumeCase?.user_id === user.id ? (resumeCase.context_jsonb ?? {}) : {};
+    const resumePricing =
+      resumeContext.pricing_proposal &&
+      typeof resumeContext.pricing_proposal === "object" &&
+      !Array.isArray(resumeContext.pricing_proposal)
+        ? (resumeContext.pricing_proposal as Record<string, unknown>)
+        : {};
+    const e2eResumePolicy = isAgentE2EToolCall(toolCall)
+      ? buildPublicationAwareE2EToolApprovalPolicy({
+          context: resumeContext,
+          documentRequestTarget:
+            operationalCaseDocumentRequestTargetFromContext(resumeContext),
+          autoExecuteContractDraftGeneration:
+            resumeCase?.current_step === "contract_pending" &&
+            resumePricing.approval_status === "approved",
+        })
+      : undefined;
+
     const result = await runAgent({
       resumeDecision: "approve",
       checkpointThreadId: storedCheckpointThreadId,
@@ -242,16 +270,9 @@ export async function POST(request: Request) {
           ? "case_runner"
           : "web",
       googleCalendarAccessToken,
-      caseId:
-        typeof toolCall.metadata_jsonb?.case_id === "string"
-          ? toolCall.metadata_jsonb.case_id
-          : typeof toolCall.arguments_json?.case_id === "string"
-            ? toolCall.arguments_json.case_id
-            : undefined,
+      caseId,
       toolCallSource: isAgentE2EToolCall(toolCall) ? "agent_e2e" : undefined,
-      toolApprovalPolicy: isAgentE2EToolCall(toolCall)
-        ? buildAgentE2EResumeToolApprovalPolicy()
-        : undefined,
+      toolApprovalPolicy: e2eResumePolicy,
       onEvent: (event) => {
         const eventTurnId =
           event.turnId ?? ((toolCall.turn_id as string | null) ?? undefined);

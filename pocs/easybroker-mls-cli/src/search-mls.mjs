@@ -120,20 +120,23 @@ try {
     (canUseStorage ? "" : requireEnv("EASYBROKER_WEB_PASSWORD"));
   session = await loginToEasyBroker({ loginUrl, email, password }, metrics);
   const result = await searchMlsProperties(session.page, input, metrics);
+  const ok = result?.ok !== false;
 
   console.log(
     JSON.stringify(
       {
-        ok: true,
+        ok,
         mode: input.mode,
         duration_ms: Date.now() - startedAt,
         result,
         metrics,
+        ...(ok ? {} : { error: result?.error ?? "search_failed" }),
       },
       null,
       2
     )
   );
+  if (!ok) process.exitCode = 1;
 } catch (err) {
   console.log(
     JSON.stringify(

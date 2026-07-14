@@ -74,6 +74,97 @@ assert.equal(
   formatOperationalCaseEventSummary(
     event({
       event_type: "state_changed",
+      actor: "agent",
+      payload: { kind: "listing_description_drafted" },
+    })
+  ),
+  "Borrador de descripción comercial preparado"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      payload: { kind: "listing_description_review_requested" },
+    })
+  ),
+  "Esperando aprobación o cambios de la descripción"
+);
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      actor: "user",
+      payload: { kind: "listing_description_approved" },
+    })
+  ),
+  "Descripción comercial aprobada"
+);
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      payload: {
+        kind: "publish_destination_approval_requested",
+        destination: "easybroker",
+      },
+    })
+  ),
+  "Aprobación para publicar en easybroker solicitada"
+);
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      actor: "user",
+      payload: {
+        kind: "publish_destination_decision",
+        destination: "easybroker",
+        decision: "approved",
+      },
+    })
+  ),
+  "Destino easybroker aprobado"
+);
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "state_changed",
+      payload: {
+        kind: "publication_operation_failed",
+        destination: "easybroker",
+        operation_type: "create_draft",
+      },
+    })
+  ),
+  "Falló una operación de publicación (easybroker · create_draft)"
+);
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      payload: { kind: "ungga_publish_approval_requested" },
+    })
+  ),
+  "Aprobación para publicar en ungga solicitada"
+);
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "human_decision",
+      payload: {
+        kind: "publication_review_required",
+        destination: "easybroker",
+      },
+    })
+  ),
+  "Revisión de publicación requerida en easybroker"
+);
+
+assert.equal(
+  formatOperationalCaseEventSummary(
+    event({
+      event_type: "state_changed",
       payload: {
         kind: "document_surfaces_consolidated_to_property_data",
         adopted: { area_total_m2: 138, area_construida_m2: 146 },

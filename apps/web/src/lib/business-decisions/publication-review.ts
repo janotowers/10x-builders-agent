@@ -78,15 +78,18 @@ async function triggerProgress(
   db: DbClient,
   caseId: string,
   userId: string,
-  source: string
+  source: string,
+  options?: { forceRetryFailedOperation?: boolean }
 ) {
   const { runSettingsTestCaseAgentTick } = await import(
     "@/lib/operational-cases/run-settings-test-case-tick"
   );
   await requestPublicationProgress(db, caseId, source, {
+    forceRetryFailedOperation: options?.forceRetryFailedOperation === true,
     runAgentTick: async (opCase, action) => {
       const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
         source: `${source}:${action.type}`,
+        skipLock: true,
       });
       return (
         tick.publication_execution ?? {
@@ -96,6 +99,42 @@ async function triggerProgress(
       );
     },
   });
+}
+
+/**
+ * After unknown_outcome/failed create without a known remote artifact, human
+ * "approve and continue" means "I checked; safe to retry prepare_draft".
+ * If a GU-ID/listing already exists, do NOT force-retry create — reconcile instead.
+ */
+export function shouldForceRetryPublicationCreateAfterReview(params: {
+  destination: PublicationDestination;
+  publication: ReturnType<typeof publicationFromContext>;
+}): boolean {
+  const dest = params.publication.destinations[params.destination];
+  const hasArtifact = Boolean(
+    dest.artifact.listing_id || dest.artifact.ungga_property_id
+  );
+  return (
+    !hasArtifact &&
+    (dest.phase === "unknown_outcome" || dest.phase === "failed")
+  );
+}
+
+export function publicationReviewContinueGuidance(params: {
+  destination: PublicationDestination;
+  publication: ReturnType<typeof publicationFromContext>;
+  forceRetry: boolean;
+}): string {
+  const dest = params.publication.destinations[params.destination];
+  const artifactId =
+    dest.artifact.ungga_property_id || dest.artifact.listing_id || null;
+  if (params.forceRetry) {
+    return "Reintento de create autorizado (sin artifact remoto conocido).";
+  }
+  if (artifactId) {
+    return `Hay artifact ${artifactId}: no se recreará. Se continúa desde revisión/validación del borrador existente.`;
+  }
+  return "Revisión aceptada; se continúa el flujo de publicación.";
 }
 
 export async function handlePublicationReviewDecision(
@@ -169,6 +208,12 @@ export async function handlePublicationReviewDecision(
   const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
   let publication = publicationFromContext(context);
   let nextContext: Record<string, unknown> = { ...context };
+  const forceRetryFailedOperation =
+    parsed.intent === "approve_continue" &&
+    shouldForceRetryPublicationCreateAfterReview({
+      destination,
+      publication,
+    });
 
   if (parsed.intent === "relabel" && parsed.labels) {
     const manifest = mergePhotoLabelsIntoManifest(
@@ -185,10 +230,29 @@ export async function handlePublicationReviewDecision(
       destination,
     });
   } else if (parsed.intent === "approve_continue") {
-    publication = applyPublicationEvent(publication, {
-      type: "review_resolved",
-      destination,
-    });
+    if (forceRetryFailedOperation) {
+      const dest = publication.destinations[destination];
+      publication = {
+        ...publication,
+        destinations: {
+          ...publication.destinations,
+          [destination]: {
+            ...dest,
+            phase: "draft_pending",
+            last_error: null,
+            review_reason: null,
+            preflight: null,
+            operation_key: null,
+            updated_at: new Date().toISOString(),
+          },
+        },
+      };
+    } else {
+      publication = applyPublicationEvent(publication, {
+        type: "review_resolved",
+        destination,
+      });
+    }
   } else {
     await insertOperationalCaseEvent(db, {
       caseId: opCase.id,
@@ -248,11 +312,11 @@ export async function handlePublicationReviewDecision(
   const tickSource = `publication_review_${destination}_${parsed.intent}`;
   const deferTick = shouldTick && params.deferControlledE2ETick === true;
   if (shouldTick && !deferTick) {
-    void triggerProgress(db, updated.id, params.userId, tickSource).catch(
-      (error) => {
-        console.error("[publication-review] progress failed:", error);
-      }
-    );
+    void triggerProgress(db, updated.id, params.userId, tickSource, {
+      forceRetryFailedOperation,
+    }).catch((error) => {
+      console.error("[publication-review] progress failed:", error);
+    });
   }
 
   return {
@@ -261,8 +325,16 @@ export async function handlePublicationReviewDecision(
     message:
       parsed.intent === "relabel"
         ? "Etiquetas actualizadas; continúo la validación."
-        : "Revisión aprobada; continúo la publicación.",
+        : parsed.intent === "approve_continue"
+          ? publicationReviewContinueGuidance({
+              destination,
+              publication,
+              forceRetry: forceRetryFailedOperation,
+            })
+          : "Revisión aprobada; continúo la publicación.",
     case_id: opCase.id,
-    deferredControlledE2ETick: deferTick ? { source: tickSource } : null,
+    deferredControlledE2ETick: deferTick
+      ? { source: tickSource, forceRetryFailedOperation }
+      : null,
   };
 }

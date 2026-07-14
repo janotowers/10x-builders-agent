@@ -35,10 +35,10 @@ const progress = buildStepTestProgress({
   scenarioEvidence: evidence.get("contract_pending"),
 });
 assert.equal(progress?.scenarios_total, 3);
-assert.equal(progress?.scenarios?.length, 5);
+assert.equal(progress?.scenarios?.length, 6);
 assert.equal(
   progress?.scenarios?.filter((s) => s.optional).length,
-  2
+  3
 );
 assert.equal(progress?.scenarios_passed, 2);
 assert.equal(progress?.scenarios_pending, 1);

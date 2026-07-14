@@ -69,6 +69,34 @@ assert.equal(
   ]).kind,
   "titularidad_review_required"
 );
+assert.equal(
+  classifyContractGenerationFailureFromToolCalls([
+    {
+      tool_name: "generate_document_from_template",
+      status: "pending_confirmation",
+      result_json: null,
+    },
+    {
+      tool_name: "generate_document_from_template",
+      status: "failed",
+      result_json: {
+        status: "validation_error",
+        error: "{\"message\":\"<html>502 Bad Gateway cloudflare</html>\"}",
+      },
+    },
+  ]).kind,
+  "infrastructure_error"
+);
+assert.equal(
+  classifyContractGenerationFailureFromToolCalls([
+    {
+      tool_name: "generate_document_from_template",
+      status: "pending_confirmation",
+      result_json: null,
+    },
+  ]).kind,
+  "pending_confirmation"
+);
 
 assert.deepEqual(
   missingListingDescriptionIngredientsFromToolCalls([
@@ -149,6 +177,12 @@ assert.equal(
     context_jsonb: {
       listing_description_approved: { description: "Texto aprobado" },
       publish_approvals: { easybroker: "approved" },
+      publication_mode: "active",
+      package_ready_machine_work_in_flight: true,
+      publication_runner_pending_action: {
+        destination: "easybroker",
+        type: "create_draft",
+      },
     },
   } as never),
   true
@@ -159,7 +193,13 @@ assert.equal(
     current_step: "package_ready",
     context_jsonb: {
       listing_description_approved: { description: "Texto aprobado" },
-      publish_approvals: { easybroker: "pending" },
+      publish_approvals: { easybroker: "approved" },
+      publication_mode: "active",
+      package_ready_machine_work_in_flight: true,
+      publication_runner_pending_action: {
+        destination: "ungga",
+        type: "create_draft",
+      },
     },
   } as never),
   false

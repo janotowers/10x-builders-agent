@@ -33,6 +33,7 @@ import {
   packageReadyNeedsUnggaApprovalNotify,
   shouldAutoFollowUpPackageReadyTick,
 } from "@/lib/operational-cases/package-ready-auto-continue";
+import { isCaseProcessingLeaseActive } from "@/lib/operational-cases/publication-media-recovery";
 import { reconcilePublicationCaseRecord } from "@/lib/operational-cases/publication-reconcile";
 import { resolvePublicationRolloutMode } from "@/lib/operational-cases/publication-rollout";
 
@@ -153,13 +154,17 @@ export async function buildSettingsTestCaseResponse(
       fresh.context_jsonb?.test_mode === true)
   ) {
     const context = isRecord(fresh.context_jsonb) ? fresh.context_jsonb : {};
-    if (context.package_ready_machine_work_in_flight !== true) {
+    if (
+      context.package_ready_machine_work_in_flight !== true &&
+      !isCaseProcessingLeaseActive(fresh.next_action_at)
+    ) {
       const needsUploadFollowUp = shouldAutoFollowUpPackageReadyTick({
         context,
         pendingConfirmation: false,
         uploadedImagesThisTurn: false,
         uploadFailedThisTurn: isEasybrokerImagesFailedInContext(context),
         autoFollowUpDepth: 0,
+        source: "package_ready_lab_observer",
       });
       const needsUnggaFollowUp =
         packageReadyNeedsUnggaApprovalNotify(context) &&
@@ -186,6 +191,7 @@ export async function buildSettingsTestCaseResponse(
               runAgentTick: async (opCase, action) => {
                 const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
                   source: `package_ready_lab_auto_continue:${action.type}`,
+                  skipLock: true,
                 });
                 return (
                   tick.publication_execution ?? {

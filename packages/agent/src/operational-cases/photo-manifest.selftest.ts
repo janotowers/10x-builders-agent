@@ -57,6 +57,22 @@ assert.equal(
 assert.ok(watermarked.missing.includes("case-documents:case/photo-1.jpg"));
 assert.equal(watermarked.manifest[1].error?.stage, "watermark");
 
+const watermarkNormalizedLookup = applyWatermarkOutputsToManifest(
+  [{ ...manifest[0], source_path: "case/photo-0.jpg" }],
+  [
+    {
+      input_path: "case-documents:case/photo-0.jpg",
+      output_bucket: "account-assets",
+      output_path: "wm/photo-0b.jpg",
+      ok: true,
+    },
+  ]
+);
+assert.equal(
+  watermarkNormalizedLookup.manifest[0].watermarked_path,
+  "account-assets:wm/photo-0b.jpg",
+  "lookup must normalize entry.source_path"
+);
 const withUrls = applyPublicUrlsToManifest(
   watermarked.manifest,
   [

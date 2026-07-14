@@ -32,6 +32,7 @@ import {
 } from "@agents/db";
 import {
   sendTelegramAgentMessage,
+  sendTelegramDocument,
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
 import {
@@ -44,7 +45,9 @@ import type { NotificationChannel } from "@agents/types";
 import {
   buildCaseDocumentDownloadUrl,
   caseDocumentDownloadPath,
+  CONTRACT_DRAFT_DOCUMENT_BINDING,
   defaultDownloadLabel,
+  downloadGeneratedCaseDocumentForUser,
   generatedCaseDocumentBindingForNotifyKind,
   normalizeNotifyTextReplacingSignedUrls,
   parseGeneratedDocumentFromContext,
@@ -56,6 +59,20 @@ import {
 } from "@/lib/operational-cases/generated-case-document";
 import { buildExternalCaseDocumentDownloadUrl } from "@/lib/operational-cases/case-document-download-token";
 import { resolvePendingToolCallId } from "@/lib/notify/pending-tool-call-id";
+import { buildContractDataReviewTelegramMarkup } from "@/lib/notify/contract-data-review-telegram-markup";
+import {
+  CONTRACT_REVIEW_BUTTONS_ONLY_FOLLOWUP_TEXT,
+  CONTRACT_REVIEW_FALLBACK_ATTACH_CAPTION,
+  CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES,
+  contractReviewTelegramDeliveryPlan,
+  prepareContractReviewDocumentCaption,
+  shouldAttachContractDraftAfterTextFallback,
+  type ContractReviewTelegramDeliveryPlan,
+} from "@/lib/notify/contract-review-telegram-delivery";
+import {
+  buildHitlApprovalTelegramMarkup,
+  resolveHitlDetailUrlForTelegram,
+} from "@/lib/notify/hitl-telegram-markup";
 
 export type NotifyUrgency = "low" | "normal" | "high";
 
@@ -198,7 +215,14 @@ async function deliverTelegram(
     }
   }
   let replyMarkup:
-    | { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }
+    | {
+        inline_keyboard: Array<
+          Array<
+            | { text: string; callback_data: string }
+            | { text: string; url: string }
+          >
+        >;
+      }
     | undefined;
   if (actionKind === "tool_confirmation_pending") {
     // Resolve the underlying tool_call id from the payload (direct path) or the
@@ -214,14 +238,14 @@ async function deliverTelegram(
     if (pendingToolCallId) {
       const stillPending = await getPendingToolCall(db, pendingToolCallId);
       if (stillPending) {
-        replyMarkup = {
-          inline_keyboard: [
-            [
-              { text: "✅ Aprobar", callback_data: `approve:${pendingToolCallId}` },
-              { text: "❌ Cancelar", callback_data: `reject:${pendingToolCallId}` },
-            ],
-          ],
-        };
+        const detailUrl =
+          typeof payload.data?.action_url === "string"
+            ? payload.data.action_url
+            : null;
+        replyMarkup = buildHitlApprovalTelegramMarkup({
+          toolCallId: pendingToolCallId,
+          detailUrl: resolveHitlDetailUrlForTelegram(detailUrl),
+        });
       }
     }
   } else if (actionKind === "price_approval" && actionNotificationId) {
@@ -335,29 +359,10 @@ async function deliverTelegram(
       : Array.isArray(payload.data?.missing_fields)
         ? payload.data.missing_fields
         : [];
-    const hasBoolean = missingFields.some(
-      (item) =>
-        Boolean(item) &&
-        typeof item === "object" &&
-        !Array.isArray(item) &&
-        (item as { kind?: unknown }).kind === "boolean"
+    replyMarkup = buildContractDataReviewTelegramMarkup(
+      actionNotificationId,
+      missingFields
     );
-    if (hasBoolean) {
-      replyMarkup = {
-        inline_keyboard: [
-          [
-            {
-              text: "Sí",
-              callback_data: `cdr_yes:${actionNotificationId}`,
-            },
-            {
-              text: "No",
-              callback_data: `cdr_no:${actionNotificationId}`,
-            },
-          ],
-        ],
-      };
-    }
   } else if (actionKind === "property_data_review" && actionNotificationId) {
     replyMarkup = {
       inline_keyboard: [
@@ -388,14 +393,28 @@ async function deliverTelegram(
     };
   }
   const text = truncateTelegramText(payload.text);
+
+  if (actionKind === "contract_review") {
+    return deliverContractReviewTelegram({
+      db,
+      userId,
+      chatId,
+      payload,
+      text,
+      replyMarkup,
+    });
+  }
+
   let lastError: string | undefined;
   let attemptedReplyMarkup = replyMarkup;
+  let delivered = false;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       await sendTelegramAgentMessage(chatId, text, attemptedReplyMarkup, {
         throwOnError: true,
       });
-      return { channel: "telegram", ok: true, status: "delivered" };
+      delivered = true;
+      break;
     } catch (e) {
       lastError = (e as Error).message ?? String(e);
       // Telegram rejects the full send when a button callback_data is invalid.
@@ -405,12 +424,238 @@ async function deliverTelegram(
       }
     }
   }
-  return {
-    channel: "telegram",
-    ok: false,
-    status: "failed",
-    reason: lastError ?? "send_failed",
-  };
+  if (!delivered) {
+    return {
+      channel: "telegram",
+      ok: false,
+      status: "failed",
+      reason: lastError ?? "send_failed",
+    };
+  }
+
+  return { channel: "telegram", ok: true, status: "delivered" };
+}
+
+type TelegramReplyMarkup = {
+  inline_keyboard: Array<
+    Array<
+      | { text: string; callback_data: string }
+      | { text: string; url: string }
+    >
+  >;
+};
+
+async function sendTelegramTextWithOptionalButtons(
+  chatId: number,
+  text: string,
+  replyMarkup: TelegramReplyMarkup | undefined
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  let attemptedReplyMarkup = replyMarkup;
+  let lastError: string | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await sendTelegramAgentMessage(chatId, text, attemptedReplyMarkup, {
+        throwOnError: true,
+      });
+      return { ok: true };
+    } catch (e) {
+      lastError = (e as Error).message ?? String(e);
+      if (attemptedReplyMarkup && /BUTTON_DATA_INVALID/i.test(lastError)) {
+        attemptedReplyMarkup = undefined;
+        continue;
+      }
+      break;
+    }
+  }
+  return { ok: false, error: lastError ?? "send_failed" };
+}
+
+async function loadContractReviewTelegramDocument(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  payload: NotifyPayload;
+}): Promise<{
+  filename: string;
+  bytes: Buffer;
+} | null> {
+  const caseId =
+    typeof params.payload.data?.case_id === "string"
+      ? params.payload.data.case_id.trim()
+      : "";
+  if (!caseId) return null;
+
+  const downloaded = await downloadGeneratedCaseDocumentForUser({
+    db: params.db,
+    userId: params.userId,
+    caseId,
+    binding: CONTRACT_DRAFT_DOCUMENT_BINDING,
+  });
+  if (!("data" in downloaded) || !downloaded.data) return null;
+
+  const bytes = Buffer.from(await downloaded.data.arrayBuffer());
+  if (bytes.byteLength === 0) return null;
+  if (bytes.byteLength > CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES) {
+    console.warn(
+      `[notify] contract_review telegram document skipped: soft_cap bytes=${bytes.byteLength}`
+    );
+    return null;
+  }
+  return { filename: downloaded.filename, bytes };
+}
+
+async function deliverContractReviewTelegram(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  chatId: number;
+  payload: NotifyPayload;
+  text: string;
+  replyMarkup: TelegramReplyMarkup | undefined;
+}): Promise<NotifyChannelResult> {
+  const document = await loadContractReviewTelegramDocument({
+    db: params.db,
+    userId: params.userId,
+    payload: params.payload,
+  });
+  const prepared = prepareContractReviewDocumentCaption(params.text);
+  let plan: ContractReviewTelegramDeliveryPlan = contractReviewTelegramDeliveryPlan({
+    hasBytes: Boolean(document),
+    byteLength: document?.bytes.byteLength,
+    originalTextLength: params.text.length,
+    captionFitsWithoutTruncation: prepared.fitsWithoutTruncation,
+  });
+
+  if (!document) {
+    console.warn("[notify] contract_review telegram: missing_bytes; using text path");
+  } else if (!prepared.fitsWithoutTruncation) {
+    console.warn(
+      "[notify] contract_review telegram: caption_too_long; using text path"
+    );
+  }
+
+  if (plan === "document_with_actions" && document) {
+    const docResult = await sendContractReviewDocumentAttempt({
+      chatId: params.chatId,
+      document,
+      caption: prepared.caption,
+      replyMarkup: params.replyMarkup,
+    });
+    if (docResult.status === "delivered_with_actions") {
+      return { channel: "telegram", ok: true, status: "delivered" };
+    }
+    if (docResult.status === "delivered_document_only") {
+      const buttonsFollowUp = await sendTelegramTextWithOptionalButtons(
+        params.chatId,
+        CONTRACT_REVIEW_BUTTONS_ONLY_FOLLOWUP_TEXT,
+        params.replyMarkup
+      );
+      if (buttonsFollowUp.ok) {
+        return { channel: "telegram", ok: true, status: "delivered" };
+      }
+      console.warn(
+        "[notify] contract_review telegram: buttons follow-up failed after document; falling back to full text",
+        buttonsFollowUp.error
+      );
+      // Document already in chat — do not attach again after the text fallback.
+      plan = "text_only";
+    } else {
+      console.warn(
+        "[notify] contract_review telegram: sendDocument_failed; falling back to text",
+        docResult.error
+      );
+      plan = "text_with_actions_then_attach";
+    }
+  }
+
+  const textResult = await sendTelegramTextWithOptionalButtons(
+    params.chatId,
+    params.text,
+    params.replyMarkup
+  );
+  if (!textResult.ok) {
+    return {
+      channel: "telegram",
+      ok: false,
+      status: "failed",
+      reason: textResult.error,
+    };
+  }
+
+  if (
+    document &&
+    shouldAttachContractDraftAfterTextFallback(plan)
+  ) {
+    try {
+      await sendTelegramDocument(
+        params.chatId,
+        {
+          filename: document.filename,
+          bytes: document.bytes,
+          contentType:
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          caption: CONTRACT_REVIEW_FALLBACK_ATTACH_CAPTION,
+        },
+        { throwOnError: true }
+      );
+    } catch (error) {
+      console.warn(
+        "[notify] contract_review telegram: attach_best_effort_failed",
+        error
+      );
+    }
+  }
+
+  return { channel: "telegram", ok: true, status: "delivered" };
+}
+
+async function sendContractReviewDocumentAttempt(params: {
+  chatId: number;
+  document: { filename: string; bytes: Buffer };
+  caption: string;
+  replyMarkup: TelegramReplyMarkup | undefined;
+}): Promise<
+  | { status: "delivered_with_actions" }
+  | { status: "delivered_document_only" }
+  | { status: "failed"; error: string }
+> {
+  try {
+    await sendTelegramDocument(
+      params.chatId,
+      {
+        filename: params.document.filename,
+        bytes: params.document.bytes,
+        contentType:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        caption: params.caption,
+        replyMarkup: params.replyMarkup,
+      },
+      { throwOnError: true }
+    );
+    return { status: "delivered_with_actions" };
+  } catch (e) {
+    const error = (e as Error).message ?? String(e);
+    if (params.replyMarkup && /BUTTON_DATA_INVALID/i.test(error)) {
+      try {
+        await sendTelegramDocument(
+          params.chatId,
+          {
+            filename: params.document.filename,
+            bytes: params.document.bytes,
+            contentType:
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            caption: params.caption,
+          },
+          { throwOnError: true }
+        );
+        return { status: "delivered_document_only" };
+      } catch (retryError) {
+        return {
+          status: "failed",
+          error: (retryError as Error).message ?? String(retryError),
+        };
+      }
+    }
+    return { status: "failed", error };
+  }
 }
 
 const DELIVERERS: Record<

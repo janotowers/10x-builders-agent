@@ -406,36 +406,92 @@ export type FlowStepEvidenceSummary = {
   toolExecuted: number;
   toolPending: number;
   toolFailed: number;
+  toolBlocked: number;
   toolRejected: number;
   uniqueTools: string[];
 };
 
+function isBlockedContractEvidenceItem(item: {
+  kind: string;
+  tool_name?: string;
+  status?: string;
+  result_json?: unknown;
+  summary?: string;
+}): boolean {
+  if (item.kind !== "tool") return false;
+  if (
+    item.tool_name === "generate_document_from_template" &&
+    item.status === "failed"
+  ) {
+    const result =
+      item.result_json && typeof item.result_json === "object"
+        ? (item.result_json as Record<string, unknown>)
+        : null;
+    if (
+      result?.status === "blocked" &&
+      result?.error === "commission_contract_missing_required_data"
+    ) {
+      return true;
+    }
+  }
+  return (
+    typeof item.summary === "string" &&
+    item.summary.includes("Preflight de contrato bloqueado")
+  );
+}
+
 /** Resume evidencia cruda de flowProgress para UI operativa. */
 export function summarizeFlowStepEvidence(
-  evidence: string[]
+  evidence: string[],
+  evidenceItems?: Array<{
+    kind: string;
+    tool_name?: string;
+    status?: string;
+    result_json?: unknown;
+    summary?: string;
+  }>
 ): FlowStepEvidenceSummary {
   let eventCount = 0;
   let toolExecuted = 0;
   let toolPending = 0;
   let toolFailed = 0;
+  let toolBlocked = 0;
   let toolRejected = 0;
   const toolNames = new Set<string>();
 
-  for (const item of evidence) {
-    if (item.startsWith("event:")) {
-      eventCount += 1;
-      continue;
+  if (evidenceItems && evidenceItems.length > 0) {
+    for (const item of evidenceItems) {
+      if (item.kind === "event") {
+        eventCount += 1;
+        continue;
+      }
+      if (item.kind !== "tool") continue;
+      if (typeof item.tool_name === "string") toolNames.add(item.tool_name);
+      if (item.status === "executed") toolExecuted += 1;
+      else if (item.status === "pending_confirmation") toolPending += 1;
+      else if (item.status === "rejected") toolRejected += 1;
+      else if (item.status === "failed") {
+        if (isBlockedContractEvidenceItem(item)) toolBlocked += 1;
+        else toolFailed += 1;
+      }
     }
-    if (!item.startsWith("tool:")) continue;
-    const lastColon = item.lastIndexOf(":");
-    if (lastColon <= 5) continue;
-    const status = item.slice(lastColon + 1);
-    const toolName = item.slice(5, lastColon);
-    toolNames.add(toolName);
-    if (status === "executed") toolExecuted += 1;
-    else if (status === "pending_confirmation") toolPending += 1;
-    else if (status === "failed") toolFailed += 1;
-    else if (status === "rejected") toolRejected += 1;
+  } else {
+    for (const item of evidence) {
+      if (item.startsWith("event:")) {
+        eventCount += 1;
+        continue;
+      }
+      if (!item.startsWith("tool:")) continue;
+      const lastColon = item.lastIndexOf(":");
+      if (lastColon <= 5) continue;
+      const status = item.slice(lastColon + 1);
+      const toolName = item.slice(5, lastColon);
+      toolNames.add(toolName);
+      if (status === "executed") toolExecuted += 1;
+      else if (status === "pending_confirmation") toolPending += 1;
+      else if (status === "failed") toolFailed += 1;
+      else if (status === "rejected") toolRejected += 1;
+    }
   }
 
   return {
@@ -443,6 +499,7 @@ export function summarizeFlowStepEvidence(
     toolExecuted,
     toolPending,
     toolFailed,
+    toolBlocked,
     toolRejected,
     uniqueTools: [...toolNames].sort((a, b) => a.localeCompare(b)),
   };
@@ -466,6 +523,11 @@ export function formatFlowStepEvidenceSummaryLine(
   if (summary.toolPending > 0) {
     parts.push(
       `${summary.toolPending} pendiente${summary.toolPending === 1 ? "" : "s"} de confirmación`
+    );
+  }
+  if (summary.toolBlocked > 0) {
+    parts.push(
+      `${summary.toolBlocked} bloqueada${summary.toolBlocked === 1 ? "" : "s"}`
     );
   }
   if (summary.toolFailed > 0) {

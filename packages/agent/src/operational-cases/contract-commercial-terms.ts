@@ -77,8 +77,93 @@ function cleanString(value: unknown): string | null {
   return cleaned.length > 0 ? cleaned : null;
 }
 
+function normalizeEmailCandidate(value: string): string {
+  return value.trim().replace(/[.,;:!?)\]}>]+$/g, "");
+}
+
 function looksLikeEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmailCandidate(value));
+}
+
+const SPANISH_INTEGER_WORDS: Record<string, number> = {
+  un: 1,
+  una: 1,
+  uno: 1,
+  dos: 2,
+  tres: 3,
+  cuatro: 4,
+  cinco: 5,
+  seis: 6,
+  siete: 7,
+  ocho: 8,
+  nueve: 9,
+  diez: 10,
+  once: 11,
+  doce: 12,
+};
+
+const SPANISH_INTEGER_TOKEN =
+  "\\d+(?:[.,]\\d+)?|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce";
+
+function numberTokenOrNull(
+  value: string | undefined,
+  options?: { allowZero?: boolean }
+): number | null {
+  if (!value) return null;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "");
+  if (normalized in SPANISH_INTEGER_WORDS) {
+    return SPANISH_INTEGER_WORDS[normalized];
+  }
+  return numberOrNull(value, options);
+}
+
+export const COLLABORATION_COMPENSATION_MODE_LABELS: Record<
+  CollaborationCompensationMode,
+  string
+> = {
+  percentage_of_total_commission: "Porcentaje de la comisión total",
+  percentage_of_sale_price: "Porcentaje del precio de venta/renta",
+  fixed_amount: "Monto fijo",
+  negotiable: "A convenir",
+  not_specified: "No especificado",
+};
+
+export function formatCollaborationCompensationMode(
+  mode: CollaborationCompensationMode
+): string {
+  return COLLABORATION_COMPENSATION_MODE_LABELS[mode] ?? mode;
+}
+
+export function collaborationCompensationModeChoices(): Array<{
+  value: CollaborationCompensationMode;
+  label: string;
+}> {
+  return [
+    {
+      value: "percentage_of_total_commission",
+      label: COLLABORATION_COMPENSATION_MODE_LABELS.percentage_of_total_commission,
+    },
+    {
+      value: "percentage_of_sale_price",
+      label: COLLABORATION_COMPENSATION_MODE_LABELS.percentage_of_sale_price,
+    },
+    {
+      value: "fixed_amount",
+      label: COLLABORATION_COMPENSATION_MODE_LABELS.fixed_amount,
+    },
+    {
+      value: "negotiable",
+      label: COLLABORATION_COMPENSATION_MODE_LABELS.negotiable,
+    },
+    {
+      value: "not_specified",
+      label: "No especificar por ahora",
+    },
+  ];
 }
 
 function numberOrNull(value: unknown, options?: { allowZero?: boolean }): number | null {
@@ -346,7 +431,9 @@ export function resolveOwnerEmailFromSources(params: {
     cleanString(contact.email),
   ];
   for (const candidate of candidates) {
-    if (candidate && looksLikeEmail(candidate)) return candidate;
+    if (candidate && looksLikeEmail(candidate)) {
+      return normalizeEmailCandidate(candidate);
+    }
   }
   return null;
 }
@@ -354,8 +441,35 @@ export function resolveOwnerEmailFromSources(params: {
 function formatKnownValue(value: unknown): string {
   if (typeof value === "boolean") return value ? "Sí" : "No";
   if (typeof value === "number") return String(value);
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    if (compensationModeOrNull(value)) {
+      return formatCollaborationCompensationMode(
+        value as CollaborationCompensationMode
+      );
+    }
+    return value;
+  }
   return String(value ?? "");
+}
+
+function formatSharedCompensationKnownValue(terms: CommissionTerms): string {
+  const mode = terms.collaboration.compensation.mode;
+  const value = terms.collaboration.compensation.value;
+  const currency = terms.collaboration.compensation.currency;
+  const modeLabel = formatCollaborationCompensationMode(mode);
+  if (value == null) return modeLabel;
+  if (mode === "fixed_amount") {
+    return currency
+      ? `${currency} ${value} (${modeLabel})`
+      : `${value} (${modeLabel})`;
+  }
+  if (
+    mode === "percentage_of_total_commission" ||
+    mode === "percentage_of_sale_price"
+  ) {
+    return `${value}% (${modeLabel})`;
+  }
+  return modeLabel;
 }
 
 /**
@@ -451,31 +565,19 @@ export function evaluateContractCommercialMinimums(params: {
       key: "compensation_mode",
       label: "Detalle de comisión compartida",
       question:
-        "¿Quieres especificar cuánto se comparte? (opcional)",
+        "¿Quieres especificar cuánto se comparte con el colaborador? (opcional)",
       kind: "choice",
       optional: true,
-      choices: [
-        {
-          value: "percentage_of_total_commission",
-          label: "Porcentaje de la comisión total",
-        },
-        {
-          value: "percentage_of_sale_price",
-          label: "Porcentaje del precio de venta/renta",
-        },
-        { value: "fixed_amount", label: "Monto fijo" },
-        { value: "negotiable", label: "A convenir" },
-        { value: "not_specified", label: "No especificar por ahora" },
-      ],
+      choices: collaborationCompensationModeChoices(),
     });
   } else if (
     terms.collaboration.enabled === true &&
     terms.collaboration.compensation.mode !== "not_specified"
   ) {
     known.push({
-      key: "compensation_mode",
-      label: "Detalle de comisión compartida",
-      value: terms.collaboration.compensation.mode,
+      key: "compensation_detail",
+      label: "Comisión compartida",
+      value: formatSharedCompensationKnownValue(terms),
     });
     if (
       (terms.collaboration.compensation.mode ===
@@ -489,16 +591,10 @@ export function evaluateContractCommercialMinimums(params: {
         label: "Valor de comisión compartida",
         question:
           terms.collaboration.compensation.mode === "fixed_amount"
-            ? "Monto fijo compartido con el colaborador."
-            : "Porcentaje compartido con el colaborador.",
+            ? "Monto fijo compartido con el colaborador (opcional)."
+            : "Porcentaje de esa comisión que se comparte con el colaborador (opcional).",
         kind: "number",
         optional: true,
-      });
-    } else if (terms.collaboration.compensation.value != null) {
-      known.push({
-        key: "compensation_value",
-        label: "Valor de comisión compartida",
-        value: formatKnownValue(terms.collaboration.compensation.value),
       });
     }
   }
@@ -506,15 +602,15 @@ export function evaluateContractCommercialMinimums(params: {
   if (terms.commission_pct == null) {
     missing.push({
       key: "commission_pct",
-      label: "Comisión total",
+      label: "Comisión cobrada al propietario",
       question:
-        "Porcentaje total de comisión pactado con el propietario.",
+        "Comisión cobrada al propietario (% del precio de venta o renta).",
       kind: "number",
     });
   } else {
     known.push({
       key: "commission_pct",
-      label: "Comisión total",
+      label: "Comisión cobrada al propietario",
       value: `${terms.commission_pct}%`,
     });
   }
@@ -563,36 +659,64 @@ export function evaluateContractCommercialMinimums(params: {
   };
 }
 
+export type ContractCommercialSummaryMode = "initial" | "partial";
+
 export function buildContractCommercialMinimumsSummaryMessage(
-  result: ContractCommercialMinimumsResult
+  result: ContractCommercialMinimumsResult,
+  options?: { mode?: ContractCommercialSummaryMode }
 ): string {
-  const knownLines =
-    result.known.length > 0
-      ? result.known.map((item) => `- ${item.label}: ${item.value}`)
-      : ["- Sin datos contractuales consolidados todavía."];
+  const mode = options?.mode === "partial" ? "partial" : "initial";
   const required = result.missing.filter((item) => item.optional !== true);
   const optional = result.missing.filter((item) => item.optional === true);
   const requiredLines = required.map(
     (item, index) => `${index + 1}. ${item.question}`
   );
   const optionalLines = optional.map((item) => `- ${item.question}`);
+  const knownLines = result.known.map(
+    (item) => `- ${item.label}: ${item.value}`
+  );
 
-  const parts = [
-    "Para preparar el contrato y la publicación, confirma:",
-    "",
-    "Datos conocidos:",
-    ...knownLines,
-  ];
-  if (requiredLines.length > 0) {
-    parts.push("", "Faltantes:", "", ...requiredLines);
+  const parts: string[] = [];
+  if (mode === "partial") {
+    parts.push(
+      "Gracias. Con lo que enviaste aún falta completar el contrato."
+    );
+  } else {
+    parts.push("Para preparar el contrato de comisión, necesito estos datos:");
   }
+
+  if (knownLines.length > 0) {
+    parts.push("", "Datos ya registrados:", ...knownLines);
+  }
+
+  if (requiredLines.length > 0) {
+    parts.push(
+      "",
+      knownLines.length > 0 || mode === "partial" ? "Aún necesito:" : "",
+      ...requiredLines
+    );
+  }
+
   if (optionalLines.length > 0) {
     parts.push("", "Opcional:", ...optionalLines);
   }
+
   if (requiredLines.length === 0 && optionalLines.length === 0) {
     parts.push("", "No hay faltantes obligatorios.");
+  } else if (mode === "partial") {
+    parts.push("", "Puedes responder solo los pendientes.");
+  } else if (requiredLines.length > 1) {
+    parts.push(
+      "",
+      "Puedes responder todo en un solo mensaje.",
+      "Ejemplo: propietario@email.com · No se comparte comisión · Comisión cobrada al propietario 5% · Exclusiva · 6 meses"
+    );
   }
-  return parts.join("\n");
+
+  return parts
+    .filter((line, index, all) => !(line === "" && all[index - 1] === ""))
+    .join("\n")
+    .trim();
 }
 
 /**
@@ -723,8 +847,11 @@ export function parseContractCommercialReply(
   const missingKeys = new Set(missing.map((item) => item.key));
 
   const emailMatch = trimmed.match(/[^\s@]+@[^\s@]+\.[^\s@]+/);
-  if (emailMatch && looksLikeEmail(emailMatch[0]) && missingKeys.has("owner_email")) {
-    patch.owner_email = emailMatch[0].trim();
+  if (emailMatch && missingKeys.has("owner_email")) {
+    const email = normalizeEmailCandidate(emailMatch[0]);
+    if (looksLikeEmail(email)) {
+      patch.owner_email = email;
+    }
   }
 
   const lower = trimmed
@@ -734,20 +861,19 @@ export function parseContractCommercialReply(
 
   if (missingKeys.has("collaboration_enabled")) {
     if (
-      /\bno\s+(se\s+)?comparte|\bno\s+compart|\bsin\s+compartir|\bno\b/.test(
-        lower
-      ) &&
+      /\bno\s+(se\s+)?comparte|\bno\s+compart|\bsin\s+compartir/.test(lower) &&
       /comision|compart/.test(lower)
     ) {
       patch.collaboration_enabled = false;
     } else if (
-      /\bsi\b|\bsí\b|\bcomparte|\bcompartir\b/.test(lower) &&
-      /comision|compart/.test(lower)
+      /(\bsi\b|\bsí\b).{0,40}(comision|compart)|(\bcomparte|\bcompartir\b).{0,40}(comision|si\b)/.test(
+        lower
+      ) ||
+      (/\bsi\b|\bsí\b|\bcomparte|\bcompartir\b/.test(lower) &&
+        /comision|compart/.test(lower))
     ) {
       patch.collaboration_enabled = true;
     } else if (/^no$/i.test(trimmed) || /^si$/i.test(trimmed) || /^sí$/i.test(trimmed)) {
-      // Ambiguous single-word answers when multiple booleans missing — leave unset
-      // unless collaboration is the only boolean missing.
       const booleanMissing = missing.filter((item) => item.kind === "boolean");
       if (booleanMissing.length === 1 && booleanMissing[0]?.key === "collaboration_enabled") {
         patch.collaboration_enabled = /^si$|^sí$/i.test(trimmed);
@@ -757,31 +883,110 @@ export function parseContractCommercialReply(
 
   if (missingKeys.has("exclusive")) {
     if (/exclusiv/.test(lower)) {
-      if (/\bno\s+exclusiv/.test(lower)) patch.exclusive = false;
+      if (
+        /\bno\s+(?:(?:es|sera|seria|queda|quedara|va\s+a\s+ser)\s+)?exclusiv/.test(
+          lower
+        ) ||
+        /\bsin\s+exclusividad\b/.test(lower)
+      ) {
+        patch.exclusive = false;
+      }
       else if (/\bexclusiv/.test(lower)) patch.exclusive = true;
+    } else if (/^no$/i.test(trimmed) || /^si$/i.test(trimmed) || /^sí$/i.test(trimmed)) {
+      const booleanMissing = missing.filter((item) => item.kind === "boolean");
+      if (booleanMissing.length === 1 && booleanMissing[0]?.key === "exclusive") {
+        patch.exclusive = /^si$|^sí$/i.test(trimmed);
+      }
     }
   }
 
-  const commissionPctMatch = trimmed.match(
-    /(?:comisi[oó]n(?:\s+total)?|commission(?:\s+pct)?)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*%?/i
+  // Shared compensation before total commission to avoid misrouting "50% de la comisión".
+  // Also accept when this reply enables collaboration (progressive capture in one message).
+  const canCaptureSharedDetail =
+    missingKeys.has("compensation_value") ||
+    missingKeys.has("compensation_mode") ||
+    patch.collaboration_enabled === true;
+  const sharedPctOfTotalMatch = trimmed.match(
+    /(\d+(?:[.,]\d+)?)\s*%?\s*(?:del?\s+(?:total\s+de\s+)?(?:la\s+)?comisi[oó]n(?:\s+total)?)/i
   );
-  if (commissionPctMatch && missingKeys.has("commission_pct")) {
-    patch.commission_pct = numberOrNull(commissionPctMatch[1]);
-  } else if (missingKeys.has("commission_pct")) {
-    const barePct = trimmed.match(/^(\d+(?:[.,]\d+)?)\s*%?$/);
-    if (barePct && missing.filter((m) => m.kind === "number" && m.optional !== true).length === 1) {
-      patch.commission_pct = numberOrNull(barePct[1]);
+  const sharedExplicitMatch = trimmed.match(
+    /(?:se\s+comparte(?:\s+el)?|compart(?:e|ida?|ir)|colaborador)\s*(?:el\s+)?(\d+(?:[.,]\d+)?)\s*%?/i
+  );
+  const sharedValueRaw =
+    sharedExplicitMatch?.[1] ??
+    (/\bcompart|\bcolabor/.test(lower) ? sharedPctOfTotalMatch?.[1] : undefined);
+  if (sharedValueRaw != null && canCaptureSharedDetail) {
+    const sharedValue = numberOrNull(sharedValueRaw, { allowZero: true });
+    if (sharedValue != null) {
+      if (
+        missingKeys.has("compensation_value") ||
+        patch.collaboration_enabled === true
+      ) {
+        patch.compensation_value = sharedValue;
+      }
+      if (
+        (missingKeys.has("compensation_mode") ||
+          patch.collaboration_enabled === true) &&
+        patch.compensation_mode == null &&
+        (/de la comisi|del total|comisi[oó]n total/i.test(trimmed) ||
+          sharedPctOfTotalMatch != null)
+      ) {
+        patch.compensation_mode = "percentage_of_total_commission";
+      }
     }
   }
 
-  const durationMatch = trimmed.match(
-    /(?:duraci[oó]n|meses?|duration)\s*[:=]?\s*(\d+)/i
-  );
-  if (durationMatch && missingKeys.has("duration_months")) {
-    patch.duration_months = numberOrNull(durationMatch[1]);
+  if (missingKeys.has("commission_pct")) {
+    const commissionPctMatch = trimmed.match(
+      /(?:comisi[oó]n\s+total(?:\s+[^=:\d%]{0,40})?|comisi[oó]n(?:\s+total)?\s+pactada(?:\s+con\s+el\s+propietario)?|comisi[oó]n\s+cobrada(?:\s+al\s+propietario)?|commission(?:\s+(?:pct|total))?)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*%?/i
+    );
+    const ownerPctMatch = trimmed.match(
+      /(\d+(?:[.,]\d+)?)\s*%\s*(?:cobrad[oa]\s+al\s+propietario|pactad[oa]\s+con\s+el\s+propietario)/i
+    );
+    const candidate = commissionPctMatch?.[1] ?? ownerPctMatch?.[1];
+    if (candidate) {
+      const looksShared =
+        /comisi[oó]n\s+compart|compart(?:e|ida?).{0,20}\d|(\d+(?:[.,]\d+)?)\s*%?\s*(?:del?\s+(?:total\s+de\s+)?(?:la\s+)?comisi[oó]n)/i.test(
+          trimmed
+        ) &&
+        !/comisi[oó]n\s+total|comisi[oó]n\s+pactada|comisi[oó]n\s+cobrada|cobrad[oa]\s+al\s+propietario/i.test(
+          trimmed
+        );
+      if (!looksShared) {
+        patch.commission_pct = numberOrNull(candidate);
+      }
+    } else {
+      const barePct = trimmed.match(/^(\d+(?:[.,]\d+)?)\s*%?$/);
+      if (
+        barePct &&
+        missing.filter((m) => m.kind === "number" && m.optional !== true).length === 1
+      ) {
+        patch.commission_pct = numberOrNull(barePct[1]);
+      }
+    }
   }
 
-  if (missingKeys.has("compensation_mode")) {
+  if (missingKeys.has("duration_months")) {
+    const durationMatch =
+      trimmed.match(
+        new RegExp(
+          `(?:duraci[oó]n|duration)\\s*[:=]?\\s*(${SPANISH_INTEGER_TOKEN})(?:\\s*meses?)?`,
+          "i"
+        )
+      ) ??
+      trimmed.match(
+        new RegExp(`\\b(${SPANISH_INTEGER_TOKEN})\\s*meses?\\b`, "i")
+      );
+    if (durationMatch) {
+      patch.duration_months = numberTokenOrNull(durationMatch[1]);
+    }
+  }
+
+  if (
+    (missingKeys.has("compensation_mode") ||
+      patch.collaboration_enabled === true) &&
+    patch.compensation_mode == null
+  ) {
     if (/no especificar|por ahora|omitir detalle/i.test(trimmed)) {
       patch.compensation_mode = "not_specified";
     } else if (/negociable|a convenir/i.test(trimmed)) {
@@ -790,21 +995,20 @@ export function parseContractCommercialReply(
       patch.compensation_mode = "percentage_of_sale_price";
     } else if (/monto fijo|cantidad fija|fijo/i.test(trimmed)) {
       patch.compensation_mode = "fixed_amount";
-    } else if (/comisi[oó]n total|de la comisi[oó]n/i.test(trimmed)) {
+    } else if (
+      patch.compensation_value != null ||
+      (/comisi[oó]n total|de la comisi[oó]n|se comparte|compart/i.test(trimmed) &&
+        /\d+(?:[.,]\d+)?\s*%?/.test(trimmed) &&
+        /compart/i.test(trimmed))
+    ) {
       patch.compensation_mode = "percentage_of_total_commission";
     }
   }
 
-  const sharedValueMatch = trimmed.match(
-    /(?:compartid[oa]|colaborador|shared)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i
-  );
-  if (sharedValueMatch && missingKeys.has("compensation_value")) {
-    patch.compensation_value = numberOrNull(sharedValueMatch[1], {
-      allowZero: true,
-    });
-  }
-
-  if (Object.keys(patch).length === 0) {
+  if (
+    Object.keys(patch).length === 0 ||
+    Object.values(patch).every((value) => value === undefined)
+  ) {
     return {
       intent: "unclear",
       patch: {},

@@ -3,6 +3,8 @@ import {
   buildComparableSearchFilters,
   classifyComparableSearchOutcome,
   deriveComparableAreaBand,
+  mapToEasyBrokerPropertyType,
+  propertyTypesMatch,
   requiresAvaclick,
   sanitizeComparableSearchFilters,
 } from "./comparable-search-contract";
@@ -28,6 +30,22 @@ assert.equal(
   requiresAvaclick({ property_type: "Terreno industrial" }),
   false
 );
+
+assert.equal(mapToEasyBrokerPropertyType("house"), "Casa");
+assert.equal(mapToEasyBrokerPropertyType("casa"), "Casa");
+assert.equal(mapToEasyBrokerPropertyType("Casa"), "Casa");
+assert.equal(mapToEasyBrokerPropertyType("condo_house"), "Casa en condominio");
+assert.equal(mapToEasyBrokerPropertyType("departamento"), "Departamento");
+assert.equal(propertyTypesMatch("Casa", "house"), true);
+assert.equal(propertyTypesMatch("Casa", "Departamento"), false);
+
+const canonicalFromHouse = buildComparableSearchFilters({
+  context: { ...propertyData, property_type: "house" },
+});
+assert.equal(canonicalFromHouse.search_validity, "valid");
+assert.equal(canonicalFromHouse.filters.property_type, "Casa");
+assert.equal(canonicalFromHouse.filters.min_area_m2, 124);
+assert.equal(canonicalFromHouse.filters.max_area_m2, 270);
 
 const canonical = buildComparableSearchFilters({ context: propertyData });
 assert.equal(canonical.search_validity, "valid");

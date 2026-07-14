@@ -172,6 +172,64 @@ export function formatOperationalCaseEventSummary(
   if (technicalKind === "price_rejected") return "Precio rechazado";
   if (technicalKind === "contract_preparation_entered") return "Preparación de contrato iniciada";
   if (technicalKind === "contract_review_requested") return "Revisión de contrato solicitada";
+  if (technicalKind === "listing_description_drafted")
+    return "Borrador de descripción comercial preparado";
+  if (technicalKind === "listing_description_review_requested")
+    return "Esperando aprobación o cambios de la descripción";
+  if (technicalKind === "listing_description_approved")
+    return "Descripción comercial aprobada";
+  if (technicalKind === "publish_destination_approval_requested") {
+    const destination =
+      typeof payload.destination === "string" ? payload.destination.trim() : "";
+    return destination
+      ? `Aprobación para publicar en ${destination} solicitada`
+      : "Aprobación de destino solicitada";
+  }
+  if (
+    technicalKind === "easybroker_publish_approval_requested" ||
+    technicalKind === "ungga_publish_approval_requested"
+  ) {
+    const destination = technicalKind.startsWith("easybroker")
+      ? "easybroker"
+      : "ungga";
+    return `Aprobación para publicar en ${destination} solicitada`;
+  }
+  if (technicalKind === "publish_destination_decision") {
+    const destination =
+      typeof payload.destination === "string" ? payload.destination.trim() : "";
+    const decision =
+      typeof payload.decision === "string" ? payload.decision.trim() : "";
+    const decisionLabel =
+      decision === "approved"
+        ? "aprobado"
+        : decision === "skipped"
+          ? "omitido"
+          : decision === "rejected"
+            ? "rechazado"
+            : "registrado";
+    return destination
+      ? `Destino ${destination} ${decisionLabel}`
+      : `Decisión de publicación: ${decisionLabel}`;
+  }
+  if (technicalKind === "publication_operation_failed") {
+    const destination =
+      typeof payload.destination === "string" ? payload.destination.trim() : "";
+    const operation =
+      typeof payload.operation_type === "string"
+        ? payload.operation_type.trim()
+        : "";
+    const detail = [destination, operation].filter(Boolean).join(" · ");
+    return detail
+      ? `Falló una operación de publicación (${detail})`
+      : "Falló una operación de publicación";
+  }
+  if (technicalKind === "publication_review_required") {
+    const destination =
+      typeof payload.destination === "string" ? payload.destination.trim() : "";
+    return destination
+      ? `Revisión de publicación requerida en ${destination}`
+      : "Revisión de publicación requerida";
+  }
   if (technicalKind === "contract_email_send_attempted")
     return withTechnicalKind(
       "Enviando contrato por email al propietario",

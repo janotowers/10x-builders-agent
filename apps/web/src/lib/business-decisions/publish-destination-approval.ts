@@ -43,9 +43,8 @@ function destinationFromNotificationKind(kind: string):
 }
 
 /**
- * True when EasyBroker already left a usable listing artifact on the case.
- * Prefer publication.phase === "published" when available; legacy contexts that
- * only have listing_id still count as "created" for sequencing Ungga.
+ * True when EasyBroker already left a usable listing artifact on the case
+ * (draft or published). Use for upload sequencing, not for Ungga approval.
  */
 export function isEasybrokerPublishedInContext(
   context: Record<string, unknown> | null | undefined
@@ -59,8 +58,9 @@ export function isEasybrokerPublishedInContext(
   if (easybroker.status === "published" || easybroker.remote_status === "published") {
     return true;
   }
-  // Legacy: listing exists (draft or published). Sequencing still treats this
-  // as EasyBroker-resolved for Ungga approval after media.
+  // Legacy: listing exists (draft or published). Enough for image upload
+  // sequencing, but NOT for Ungga approval — use
+  // isEasybrokerResolvedForUnggaApproval instead.
   return (
     typeof easybroker.listing_id === "string" ||
     easybroker.ok === true
@@ -76,6 +76,28 @@ export function isEasybrokerPubliclyPublishedInContext(
 }
 
 /**
+ * Ungga approval may be requested only after EasyBroker is publicly published
+ * or explicitly skipped/rejected.
+ */
+export function isEasybrokerResolvedForUnggaApproval(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  if (!isRecord(context)) return false;
+  const approvals = isRecord(context.publish_approvals)
+    ? context.publish_approvals
+    : {};
+  const easybrokerDecision =
+    typeof approvals.easybroker === "string" ? approvals.easybroker : null;
+  if (
+    easybrokerDecision === "skipped" ||
+    easybrokerDecision === "rejected"
+  ) {
+    return true;
+  }
+  return isEasybrokerPubliclyPublishedInContext(context);
+}
+
+/**
  * Destinos cuya aprobación humana aún no debe pedirse (ni bloquear el lab)
  * porque EasyBroker no terminó (publicado / omitido / rechazado).
  */
@@ -83,16 +105,7 @@ export function prematurePublishDestinationNotificationKinds(
   context: Record<string, unknown> | null | undefined
 ): string[] {
   if (!isRecord(context)) return [];
-  const approvals = isRecord(context.publish_approvals)
-    ? context.publish_approvals
-    : {};
-  const easybrokerDecision =
-    typeof approvals.easybroker === "string" ? approvals.easybroker : null;
-  const easybrokerResolved =
-    isEasybrokerPublishedInContext(context) ||
-    easybrokerDecision === "skipped" ||
-    easybrokerDecision === "rejected";
-  if (easybrokerResolved) return [];
+  if (isEasybrokerResolvedForUnggaApproval(context)) return [];
   return ["ungga_publish_approval"];
 }
 
@@ -220,6 +233,7 @@ async function triggerControlledE2EAgentTick(
     runAgentTick: async (opCase, action) => {
       const tick = await runSettingsTestCaseAgentTick(db, opCase, opCase.user_id, {
         source: `${source}:${action.type}`,
+        skipLock: true,
       });
       return (
         tick.publication_execution ?? {

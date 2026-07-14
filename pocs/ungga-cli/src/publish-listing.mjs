@@ -6,6 +6,8 @@ import {
   publishExistingDraft,
   closeSession,
 } from "./steps.mjs";
+import { lastMeaningfulStep } from "./prepare-draft-contract.mjs";
+import { normalizeUnggaUiFields } from "./normalize-ui-fields.mjs";
 
 async function readJsonInput() {
   const argPath = process.argv[2];
@@ -50,10 +52,11 @@ function resolvePropertyId(input) {
 }
 
 function normalizeListing(input) {
-  const title = String(input.title ?? "").trim();
-  const operation = String(input.operation ?? "").trim();
-  const propertyType = String(input.property_type ?? "").trim();
-  const price = Number(input.price);
+  const ui = normalizeUnggaUiFields(input);
+  const title = String(ui.title ?? "").trim();
+  const operation = String(ui.operation ?? "").trim();
+  const propertyType = String(ui.property_type ?? "").trim();
+  const price = Number(ui.price);
   if (!title) throw new Error("Missing required input: title");
   if (!operation) throw new Error("Missing required input: operation");
   if (!propertyType) throw new Error("Missing required input: property_type");
@@ -63,75 +66,75 @@ function normalizeListing(input) {
   return {
     title,
     description:
-      typeof input.description === "string" ? input.description.trim() : "",
+      typeof ui.description === "string" ? ui.description.trim() : "",
     operation,
     property_type: propertyType,
     price,
     currency:
-      typeof input.currency === "string" && input.currency.trim()
-        ? input.currency.trim()
+      typeof ui.currency === "string" && ui.currency.trim()
+        ? ui.currency.trim()
         : "MXN",
     construction_m2:
-      Number.isFinite(Number(input.construction_m2)) && Number(input.construction_m2) > 0
-        ? Number(input.construction_m2)
+      Number.isFinite(Number(ui.construction_m2)) && Number(ui.construction_m2) > 0
+        ? Number(ui.construction_m2)
         : null,
     land_m2:
-      Number.isFinite(Number(input.land_m2)) && Number(input.land_m2) > 0
-        ? Number(input.land_m2)
+      Number.isFinite(Number(ui.land_m2)) && Number(ui.land_m2) > 0
+        ? Number(ui.land_m2)
         : null,
     land_unit:
-      typeof input.land_unit === "string" && input.land_unit.trim()
-        ? input.land_unit.trim()
+      typeof ui.land_unit === "string" && ui.land_unit.trim()
+        ? ui.land_unit.trim()
         : "m²",
     condition:
-      typeof input.condition === "string" && input.condition.trim()
-        ? input.condition.trim()
-        : null,
+      typeof ui.condition === "string" && ui.condition.trim()
+        ? ui.condition.trim()
+        : "Bueno",
     age_range:
-      typeof input.age_range === "string" && input.age_range.trim()
-        ? input.age_range.trim()
-        : null,
+      typeof ui.age_range === "string" && ui.age_range.trim()
+        ? ui.age_range.trim()
+        : "1-5 años",
     country:
-      typeof input.country === "string" && input.country.trim()
-        ? input.country.trim()
+      typeof ui.country === "string" && ui.country.trim()
+        ? ui.country.trim()
         : null,
     address:
-      typeof input.address === "string" && input.address.trim()
-        ? input.address.trim()
+      typeof ui.address === "string" && ui.address.trim()
+        ? ui.address.trim()
         : null,
     location:
-      input.location && typeof input.location === "object" ? input.location : {},
-    bedrooms: numberOrNull(input.bedrooms),
-    bathrooms_full: numberOrNull(input.bathrooms_full),
-    bathrooms_half: numberOrNull(input.bathrooms_half),
-    parking_spaces: numberOrNull(input.parking_spaces),
-    covered_parking: Boolean(input.covered_parking),
+      ui.location && typeof ui.location === "object" ? ui.location : {},
+    bedrooms: numberOrNull(ui.bedrooms),
+    bathrooms_full: numberOrNull(ui.bathrooms_full),
+    bathrooms_half: numberOrNull(ui.bathrooms_half),
+    parking_spaces: numberOrNull(ui.parking_spaces),
+    covered_parking: Boolean(ui.covered_parking),
     floor:
-      input.floor != null && String(input.floor).trim()
-        ? String(input.floor).trim()
+      ui.floor != null && String(ui.floor).trim()
+        ? String(ui.floor).trim()
         : null,
     location_type:
-      typeof input.location_type === "string" && input.location_type.trim()
-        ? input.location_type.trim()
+      typeof ui.location_type === "string" && ui.location_type.trim()
+        ? ui.location_type.trim()
         : null,
     current_status:
-      typeof input.current_status === "string" && input.current_status.trim()
-        ? input.current_status.trim()
+      typeof ui.current_status === "string" && ui.current_status.trim()
+        ? ui.current_status.trim()
         : null,
-    amenities: Array.isArray(input.amenities)
-      ? input.amenities.filter((a) => typeof a === "string" && a.trim())
+    amenities: Array.isArray(ui.amenities)
+      ? ui.amenities.filter((a) => typeof a === "string" && a.trim())
       : [],
     video_url:
-      typeof input.video_url === "string" && input.video_url.trim()
-        ? input.video_url.trim()
+      typeof ui.video_url === "string" && ui.video_url.trim()
+        ? ui.video_url.trim()
         : null,
     tour_url:
-      typeof input.tour_url === "string" && input.tour_url.trim()
-        ? input.tour_url.trim()
+      typeof ui.tour_url === "string" && ui.tour_url.trim()
+        ? ui.tour_url.trim()
         : null,
-    operations: normalizeOperations(input),
-    image_urls: Array.isArray(input.image_urls) ? input.image_urls : [],
-    case_id: typeof input.case_id === "string" ? input.case_id : undefined,
+    operations: normalizeOperations(ui),
+    image_urls: Array.isArray(ui.image_urls) ? ui.image_urls : [],
+    case_id: typeof ui.case_id === "string" ? ui.case_id : undefined,
   };
 }
 
@@ -211,13 +214,15 @@ try {
     mode = dryRun ? "dry_run" : "save_draft";
   }
 
+  const ok = result?.ok === true;
   console.log(
     JSON.stringify(
       {
-        ok: result?.ok !== false,
+        ok,
         action,
         mode,
         duration_ms: Date.now() - startedAt,
+        last_step: result?.last_step ?? lastMeaningfulStep(metrics),
         result,
         metrics,
       },
@@ -225,6 +230,7 @@ try {
       2
     )
   );
+  if (!ok) process.exitCode = 1;
 } catch (err) {
   console.log(
     JSON.stringify(
@@ -232,6 +238,7 @@ try {
         ok: false,
         duration_ms: Date.now() - startedAt,
         error: err?.message ?? String(err),
+        last_step: lastMeaningfulStep(metrics),
         metrics,
       },
       null,

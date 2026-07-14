@@ -7,7 +7,8 @@
   "scripts": {
     "poc:search": "node src/search-mls.mjs",
     "poc:login": "node src/login.mjs",
-    "poc:login:assisted": "node src/login-assisted.mjs"
+    "poc:login:assisted": "node src/login-assisted.mjs",
+    "test:status-filter": "node src/status-filter.selftest.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

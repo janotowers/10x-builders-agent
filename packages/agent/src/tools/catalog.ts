@@ -868,7 +868,8 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         max_area_m2: { type: "number" },
         bedrooms: {
           type: "number",
-          description: "Exact bedroom count for comparable searches.",
+          description:
+            "Exact bedroom count for buyer/renter option searches. Comparable valuation searches ignore this; the contract keeps zona/operation/type/area only.",
         },
         min_bedrooms: {
           type: "number",
@@ -876,7 +877,8 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         },
         bathrooms: {
           type: "number",
-          description: "Exact bathroom count for comparable searches.",
+          description:
+            "Exact bathroom count for buyer/renter option searches. Comparable valuation searches ignore this.",
         },
         min_bathrooms: {
           type: "number",
@@ -884,7 +886,8 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         },
         parking_spaces: {
           type: "number",
-          description: "Exact parking space count for comparable searches.",
+          description:
+            "Exact parking space count for buyer/renter option searches. Comparable valuation searches ignore this.",
         },
         min_parking_spaces: {
           type: "number",
@@ -908,7 +911,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "easybroker_search_closed_deals",
     name: "easybroker_search_closed_deals",
     description:
-      "Read-only search over EasyBroker properties marked sold/rented. Use as historical reference for comparables, but do not assume the exposed price is the final closing price unless the account captures it that way.",
+      "Read-only search over EasyBroker MLS with Estatus=Solo cerradas verified. Use as historical reference for comparables, but do not assume the exposed price is the final closing price unless the account captures it that way. If Solo cerradas cannot be verified, the tool returns filter_not_applied with empty results.",
     risk: "low",
     requires_integration: "easybroker_web",
     parameters_schema: {
@@ -933,7 +936,8 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         max_area_m2: { type: "number" },
         bedrooms: {
           type: "number",
-          description: "Exact bedroom count for comparable searches.",
+          description:
+            "Exact bedroom count for buyer/renter option searches. Comparable valuation searches ignore this.",
         },
         min_bedrooms: {
           type: "number",
@@ -941,7 +945,8 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         },
         bathrooms: {
           type: "number",
-          description: "Exact bathroom count for comparable searches.",
+          description:
+            "Exact bathroom count for buyer/renter option searches. Comparable valuation searches ignore this.",
         },
         min_bathrooms: {
           type: "number",
@@ -949,7 +954,8 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         },
         parking_spaces: {
           type: "number",
-          description: "Exact parking space count for comparable searches.",
+          description:
+            "Exact parking space count for buyer/renter option searches. Comparable valuation searches ignore this.",
         },
         min_parking_spaces: {
           type: "number",
@@ -1098,13 +1104,13 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         asset_key: {
           type: "string",
           description:
-            "Optional explicit account_assets.asset_key. If omitted, the tool tries template_slug, template_slug_template, then commission_contract_template.",
+            "Optional explicit account_assets.asset_key. Omit entirely when unknown (do not send empty string). If omitted, the tool tries template_slug, template_slug_template, then commission_contract_template.",
         },
         format: { type: "string", enum: ["docx", "pdf"], description: "Output format. Current renderer supports docx; pdf returns unsupported_format." },
         data: {
           type: "object",
           description:
-            "Optional. Object with placeholder values that override or extend the values auto-derived from the case. Omit it to let the tool fill the template from the operational case context.",
+            "Optional. Object with placeholder values that override or extend the values auto-derived from the case. Prefer omitting `data` entirely to let the tool fill the template from the operational case context; do not send empty strings for optional fields.",
         },
         case_id: {
           type: "string",

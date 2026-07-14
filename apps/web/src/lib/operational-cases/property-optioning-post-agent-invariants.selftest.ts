@@ -3,7 +3,9 @@ import {
   mergeDocumentAddressIntoContextPropertyData,
   mergeDocumentLegalIdentityIntoContextPropertyData,
   mergeDocumentSurfacesIntoContextPropertyData,
+  propertyDataReviewTextFromContext,
 } from "./property-optioning-post-agent-invariants";
+import type { OperationalCase } from "@agents/types";
 
 function propertyDataOf(result: {
   context: Record<string, unknown>;
@@ -408,6 +410,79 @@ function propertyDataOf(result: {
     false,
     "re-ejecutar con el mismo conflicto no marca cambio"
   );
+}
+
+{
+  const opCase = {
+    id: "case-parking-review",
+    context_jsonb: {
+      property_title: "Casa en Las Fuentes",
+      property_zone: "Las Fuentes, Zapopan, Jalisco",
+      operation_type: ["sale"],
+      property_type: ["Casa"],
+      property_data: {
+        floors: 2,
+        bedrooms: 3,
+        bathrooms: 2,
+        half_bathrooms: 0,
+        integral_kitchen: true,
+        parking_spots: 2,
+        area_total_m2: 138,
+        area_construida_m2: 146,
+      },
+    },
+  } as unknown as OperationalCase;
+  const text = propertyDataReviewTextFromContext({
+    opCase,
+    documentFields: {
+      owner_names: "MARIA CONCEPCION",
+      legal_address: "Calle Circunvalacion Sur 3668",
+    },
+  });
+  assert.match(text, /Número de cajones de estacionamiento: 2/);
+  assert.match(text, /Número de medios baños: 0/);
+}
+
+{
+  const opCase = {
+    id: "case-parking-zero",
+    context_jsonb: {
+      property_title: "Casa sin cajones",
+      property_zone: "Las Fuentes",
+      operation_type: "sale",
+      property_type: "Casa",
+      property_data: {
+        bedrooms: 3,
+        bathrooms: 2,
+        parking_spaces: 0,
+      },
+    },
+  } as unknown as OperationalCase;
+  const text = propertyDataReviewTextFromContext({
+    opCase,
+    documentFields: {},
+  });
+  assert.match(text, /Número de cajones de estacionamiento: 0/);
+}
+
+{
+  const opCase = {
+    id: "case-parking-absent",
+    context_jsonb: {
+      property_title: "Terreno",
+      property_zone: "Sendas",
+      operation_type: "sale",
+      property_type: "Terreno",
+      property_data: {
+        area_total_m2: 200,
+      },
+    },
+  } as unknown as OperationalCase;
+  const text = propertyDataReviewTextFromContext({
+    opCase,
+    documentFields: {},
+  });
+  assert.doesNotMatch(text, /cajones de estacionamiento/i);
 }
 
 console.log("property-optioning-post-agent-invariants.selftest: ok");

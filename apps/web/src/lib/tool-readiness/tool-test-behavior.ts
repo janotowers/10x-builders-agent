@@ -111,7 +111,7 @@ const NOTIFY_COMPARABLES_INSUFFICIENT: ToolTestBehavior = {
   kind: "case_backed",
   label: "Avisa muestra de comparables insuficiente",
   summary:
-    "En comparables_in_progress, si usable_count=0, notifica al asesor con filtros y sugerencias sin avanzar a precio.",
+    "En comparables_in_progress, si no hay muestra defendible (unique_comparable_count < 3 / p. ej. usable_count=0), notifica al asesor con filtros y sugerencias sin avanzar a precio.",
   mode_hint:
     "Con formulario/caso valida el canal; el skill/runtime usa kind de comparables insuficientes tras persistir el análisis.",
   prerequisites: [
@@ -120,7 +120,7 @@ const NOTIFY_COMPARABLES_INSUFFICIENT: ToolTestBehavior = {
   ],
   reads_from_case: [
     "property_data",
-    "comparables_analysis (filtros / usable_count)",
+    "comparables_analysis (filtros / unique_comparable_count / usable_count)",
   ],
   persists_to_case: [
     "internal_user_notifications ligado al caso",

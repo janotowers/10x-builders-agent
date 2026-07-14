@@ -25,6 +25,7 @@ import {
 } from "@agents/types";
 import { notify } from "@/lib/notify";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
+import { resolveParkingSpacesForDisplay } from "./parse-owner-characteristics";
 
 type ApplyPropertyOptioningPostAgentInvariantsResult = {
   case: OperationalCase | null;
@@ -1065,7 +1066,7 @@ function operationLabel(value: unknown): string {
   return value.trim();
 }
 
-function propertyDataReviewTextFromContext(params: {
+export function propertyDataReviewTextFromContext(params: {
   opCase: OperationalCase;
   documentFields: Record<string, unknown>;
 }) {
@@ -1086,11 +1087,16 @@ function propertyDataReviewTextFromContext(params: {
     }
     return raw == null ? "" : String(raw).trim();
   };
+  const parkingSpaces = resolveParkingSpacesForDisplay(merged);
   const additionalProvided = [
     ["Número de plantas o pisos", value("floors")],
     ["Número de recámaras", value("bedrooms")],
     ["Número de baños completos", value("bathrooms")],
     ["Número de medios baños", value("half_bathrooms")],
+    [
+      "Número de cajones de estacionamiento",
+      parkingSpaces != null ? String(parkingSpaces) : "",
+    ],
     [
       "Cocina integral",
       typeof merged.integral_kitchen === "boolean"
@@ -1100,7 +1106,7 @@ function propertyDataReviewTextFromContext(params: {
         : "",
     ],
   ]
-    .filter(([, provided]) => provided && String(provided).trim())
+    .filter(([, provided]) => provided !== "" && provided != null)
     .map(([label, provided]) => `- ${label}: ${String(provided).trim()}`);
   return [
     `Revisión de datos extraídos para el caso ${params.opCase.id}:`,

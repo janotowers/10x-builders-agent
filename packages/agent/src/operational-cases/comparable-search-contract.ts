@@ -72,9 +72,82 @@ function operationOrNull(value: unknown): "sale" | "rent" | null {
   return null;
 }
 
-function normalizePropertyType(value: unknown): string | null {
+/**
+ * Map business/agent property-type aliases to EasyBroker MLS UI labels.
+ * Avaclick slugs (house, condo_house) are intentionally remapped only for MLS
+ * search filters — Avaclick adapters keep their own slug vocabulary.
+ */
+export function mapToEasyBrokerPropertyType(value: unknown): string | null {
   const cleaned = cleanString(value);
-  return cleaned ?? null;
+  if (!cleaned) return null;
+  const normalized = cleaned
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (
+    normalized.includes("casa en condominio") ||
+    normalized === "condo house" ||
+    normalized === "condo_house" ||
+    normalized === "condohouse"
+  ) {
+    return "Casa en condominio";
+  }
+  if (
+    normalized === "house" ||
+    normalized === "casa" ||
+    /\bcasa\b/.test(normalized)
+  ) {
+    return "Casa";
+  }
+  if (
+    normalized.includes("departamento") ||
+    normalized === "depto" ||
+    normalized === "apartment" ||
+    normalized === "apto" ||
+    normalized === "condo"
+  ) {
+    return "Departamento";
+  }
+  if (normalized.includes("terreno industrial") || normalized.includes("lote industrial")) {
+    return "Terreno industrial";
+  }
+  if (normalized.includes("terreno") || normalized.includes("lote") || normalized === "land") {
+    return "Terreno";
+  }
+  if (normalized.includes("bodega comercial")) return "Bodega comercial";
+  if (
+    normalized.includes("bodega industrial") ||
+    normalized.includes("nave industrial") ||
+    normalized === "bodega" ||
+    normalized === "nave"
+  ) {
+    return "Bodega industrial";
+  }
+  if (normalized.includes("oficina") || normalized === "office") return "Oficina";
+  if (normalized.includes("local en centro comercial")) {
+    return "Local en centro comercial";
+  }
+  if (normalized.includes("local")) return "Local comercial";
+
+  // Preserve already-canonical EasyBroker labels (Casa, Departamento, ...).
+  if (/^[A-ZÁÉÍÓÚÑ]/.test(cleaned)) return cleaned;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+/** True when two property-type labels refer to the same EasyBroker type. */
+export function propertyTypesMatch(actual: unknown, requested: unknown): boolean {
+  const left = mapToEasyBrokerPropertyType(actual)?.toLowerCase();
+  const right = mapToEasyBrokerPropertyType(requested)?.toLowerCase();
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+function normalizePropertyType(value: unknown): string | null {
+  return mapToEasyBrokerPropertyType(value);
 }
 
 function isResidentialComparableType(value: unknown) {
@@ -422,7 +495,7 @@ export function sanitizeComparableSearchFilters(input: {
         ...filters,
         ...expandedFallbackResult.filters,
       },
-      reason: "expand_area_preserving_soft_room_constraints",
+      reason: "expand_area_band",
     });
   }
   if (wideFallbackResult?.search_validity === "valid") {
@@ -433,12 +506,12 @@ export function sanitizeComparableSearchFilters(input: {
     fallbackSteps.push({
       level: "wide",
       filters: { ...wideBase },
-      reason: "expand_area_wide_and_drop_parking",
+      reason: "expand_area_band_wide",
     });
     fallbackSteps.push({
       level: "location_only",
       filters: omitFilterKeys(wideBase, AREA_FILTER_KEYS),
-      reason: "location_and_type_only_no_area_or_room_constraints",
+      reason: "location_operation_and_type_only",
     });
   }
 

@@ -79,9 +79,42 @@ const fallbackExhaustedAnalysis = buildComparablesAnalysisFromToolCalls([
       ok: true,
       count: 0,
       results: [],
+      filters_used: { min_area_m2: 109, max_area_m2: 350, zona: "Las Fuentes" },
       search_attempts: {
-        strict_filters: { min_area_m2: 124, max_area_m2: 168 },
-        fallback_filters: { min_area_m2: 109, max_area_m2: 183 },
+        strict_filters: { min_area_m2: 124, max_area_m2: 270 },
+        attempts: [
+          {
+            level: "strict",
+            reason: "canonical_strict",
+            filters: { min_area_m2: 124, max_area_m2: 270 },
+            count: 0,
+            ok: true,
+          },
+          {
+            level: "expanded",
+            reason: "expand_area_band",
+            filters: { min_area_m2: 117, max_area_m2: 307 },
+            count: 0,
+            ok: true,
+          },
+          {
+            level: "wide",
+            reason: "expand_area_band_wide",
+            filters: { min_area_m2: 109, max_area_m2: 350 },
+            count: 0,
+            ok: true,
+          },
+          {
+            level: "location_only",
+            reason: "location_operation_and_type_only",
+            filters: { zona: "Las Fuentes" },
+            count: 0,
+            ok: true,
+          },
+        ],
+        last_attempt_level: "location_only",
+        applied_level: null,
+        exhausted: true,
       },
     },
   },
@@ -93,6 +126,15 @@ assert.ok(
   (
     (fallbackExhaustedAnalysis.data_quality as { warnings?: string[] }).warnings ?? []
   ).some((warning) => warning.includes("Se agotó fallback moderado"))
+);
+assert.ok(
+  (
+    (fallbackExhaustedAnalysis.data_quality as { warnings?: string[] }).warnings ?? []
+  ).some((warning) => warning.includes("location_only"))
+);
+assert.equal(
+  (fallbackExhaustedAnalysis.filters_used as { zona?: string }).zona,
+  "Las Fuentes"
 );
 
 console.log("comparables-insufficient-n4.selftest: ok");

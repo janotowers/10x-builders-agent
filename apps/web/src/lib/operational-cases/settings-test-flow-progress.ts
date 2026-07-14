@@ -138,6 +138,35 @@ export function toolCallStatusLabel(status: string): string {
   }
 }
 
+/**
+ * Preflight contractual esperado: la fila auditada queda `failed`, pero
+ * `result_json` marca `blocked` + `commission_contract_missing_required_data`.
+ */
+export function isCommissionContractDataBlockedCall(
+  call: Pick<ToolCall, "tool_name" | "status" | "result_json">
+): boolean {
+  if (call.tool_name !== "generate_document_from_template") return false;
+  if (call.status !== "failed") return false;
+  const result =
+    call.result_json && typeof call.result_json === "object"
+      ? (call.result_json as Record<string, unknown>)
+      : null;
+  if (!result) return false;
+  return (
+    result.status === "blocked" &&
+    result.error === "commission_contract_missing_required_data"
+  );
+}
+
+export function toolCallDisplayStatusLabel(
+  call: Pick<ToolCall, "tool_name" | "status" | "result_json">
+): string {
+  if (isCommissionContractDataBlockedCall(call)) {
+    return "Bloqueada — requiere datos contractuales";
+  }
+  return toolCallStatusLabel(call.status);
+}
+
 function normalizeToolCallFailureText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -189,10 +218,23 @@ function isExpectedNotifyUserGuardError(errorText: string | null) {
 }
 
 export function toolCallFailureDetail(
-  call: Pick<ToolCall, "status" | "result_json">
+  call: Pick<ToolCall, "tool_name" | "status" | "result_json">
 ): string | null {
   if (call.status !== "failed") return null;
   const result = call.result_json as Record<string, unknown> | undefined;
+  if (isCommissionContractDataBlockedCall(call)) {
+    const missing = Array.isArray(result?.missing_required_fields)
+      ? result.missing_required_fields.filter(
+          (field): field is string =>
+            typeof field === "string" && field.trim().length > 0
+        )
+      : [];
+    if (missing.length > 0) return `Faltan: ${missing.join(", ")}`;
+    return (
+      normalizeToolCallFailureText(result?.message) ??
+      "Faltan datos contractuales para generar el borrador"
+    );
+  }
   const errorText = normalizeToolCallFailureText(result?.error);
   if (isExpectedNotifyUserGuardError(errorText)) {
     if (errorText === "price_approval_already_notified") {
@@ -346,11 +388,14 @@ function summarizeToolEvidenceItem(call: ToolCall, stepKey: string): string {
     stepKey === "contract_pending" &&
     call.tool_name === "generate_document_from_template"
   ) {
+    if (isCommissionContractDataBlockedCall(call)) {
+      return "Preflight de contrato bloqueado — requiere datos contractuales";
+    }
     if (call.status === "executed") return "Borrador de contrato generado";
     if (call.status === "pending_confirmation")
       return "Generando borrador interno (pendiente)";
   }
-  return `${call.tool_name} · ${toolCallStatusLabel(call.status)}`;
+  return `${call.tool_name} · ${toolCallDisplayStatusLabel(call)}`;
 }
 
 function stableToolArgsKey(call: ToolCall): string {

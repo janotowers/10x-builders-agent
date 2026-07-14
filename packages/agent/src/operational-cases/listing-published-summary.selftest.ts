@@ -32,9 +32,27 @@ const text = formatListingPublishedSummaryNotifyText({
 });
 
 assert.match(text, /\*\*Resumen final de publicación\*\*/);
+assert.match(text, /Avance de publicación para el caso case-123/);
 assert.match(text, /Departamento en renta en Colomos Providencia/);
 assert.match(text, /EasyBroker: https:\/\/www\.easybroker\.com\/mx\/listings\/eb-123/);
+assert.match(text, /Ungga: sin publicación final registrada/);
 assert.doesNotMatch(text, /Aprobar descripción/);
+
+const bothDestinations = formatListingPublishedSummaryNotifyText({
+  id: "case-456",
+  context_jsonb: {
+    ...context,
+    published: {
+      ...context.published,
+      ungga: {
+        ungga_property_id: "UG-1",
+        published_url: "https://ungga.example/properties/UG-1",
+      },
+    },
+  },
+});
+assert.match(bothDestinations, /Flujo completado para el caso case-456/);
+assert.match(bothDestinations, /Ungga: https:\/\/ungga\.example\/properties\/UG-1/);
 
 const incomplete = canCompleteListingPublishedSummaryFromContext({});
 assert.equal(incomplete.ok, false);

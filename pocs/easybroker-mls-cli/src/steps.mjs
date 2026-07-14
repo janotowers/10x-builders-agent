@@ -580,7 +580,47 @@ export async function searchMlsProperties(page, input, metrics = []) {
     }
     push("open_mls", true, Date.now() - t0, undefined);
 
-    const filters = await applySearchFilters(page, input);
+    const filterResult = await applySearchFilters(page, input);
+    const filters = Array.isArray(filterResult?.filled) ? filterResult.filled : filterResult;
+    const statusFilter =
+      filterResult && typeof filterResult === "object" && filterResult.status_filter
+        ? filterResult.status_filter
+        : {
+            requested: input.mode === "closed_deals",
+            applied: false,
+            verified: false,
+            selected_label: null,
+            mode: input.mode === "closed_deals" ? "closed_deals" : "listings",
+          };
+    metrics.push({
+      step: "apply_status_filter",
+      ok: !statusFilter.requested || statusFilter.verified === true,
+      requested: statusFilter.requested,
+      applied: statusFilter.applied,
+      verified: statusFilter.verified,
+      selected_label: statusFilter.selected_label,
+      mode: statusFilter.mode,
+    });
+
+    if (statusFilter.requested && statusFilter.verified !== true) {
+      metrics.push({
+        step: "page_diagnostics",
+        ok: true,
+        ...(await collectPageDiagnostics(page)),
+      });
+      await maybeCapture(page, "mls-status-filter-failed", metrics, true);
+      push("search_mls", false, Date.now() - t0, "status_filter_not_applied");
+      return {
+        ok: false,
+        url: page.url(),
+        filters,
+        count: 0,
+        results: [],
+        status_filter: statusFilter,
+        error: "status_filter_not_applied",
+      };
+    }
+
     const results = await extractResults(page, input.limit ?? 20, input);
     if (filters.length === 0 || results.length === 0) {
       metrics.push({
@@ -597,6 +637,7 @@ export async function searchMlsProperties(page, input, metrics = []) {
       filters,
       count: results.length,
       results,
+      status_filter: statusFilter,
     };
   } catch (e) {
     push("search_mls", false, Date.now() - t0, e?.message ?? String(e));
@@ -695,6 +736,8 @@ async function applySearchFilters(page, input) {
   const filled = [];
   await page.keyboard.press("Escape").catch(() => {});
 
+  const statusFilter = await applyStatusFilter(page, input);
+
   if (input.zona && await applyLocationFilter(page, input.zona)) {
     filled.push("location");
   }
@@ -721,7 +764,10 @@ async function applySearchFilters(page, input) {
   const propertyTypes = [
     ...(input.property_type ? [input.property_type] : []),
     ...(Array.isArray(input.property_types) ? input.property_types : []),
-  ].filter((value) => typeof value === "string" && value.trim());
+  ]
+    .filter((value) => typeof value === "string" && value.trim())
+    .map((value) => canonicalPropertyType(value.trim()))
+    .filter(Boolean);
   const typeApplied = await applyPropertyTypeFilter(page, propertyTypes);
   for (const type of typeApplied) filled.push(`property_type:${type}`);
 
@@ -735,7 +781,146 @@ async function applySearchFilters(page, input) {
     if (synced.location) filled.push("location:reapplied");
     for (const param of synced.exactParams) filled.push(param);
   }
-  return filled;
+
+  // Re-verify status after URL rewrite; pathname sync can clear UI filters.
+  if (statusFilter.requested) {
+    const rechecked = await statusFilterLooksApplied(page);
+    statusFilter.verified = rechecked.verified;
+    statusFilter.applied = rechecked.verified || statusFilter.applied;
+    if (rechecked.selected_label) statusFilter.selected_label = rechecked.selected_label;
+    if (!statusFilter.verified) {
+      const retry = await applyStatusFilter(page, input);
+      Object.assign(statusFilter, retry);
+    }
+  }
+
+  // Derive the status token only from the FINAL verified state so filters[]
+  // never lags behind status_filter after URL sync / retry.
+  const statusToken = statusFilterTraceToken(statusFilter);
+  if (statusToken) filled.unshift(statusToken);
+
+  return { filled, status_filter: statusFilter };
+}
+
+/**
+ * Trace token for `result.filters[]` derived from the final status_filter.
+ * Returns null when closed-status filtering was not requested.
+ */
+export function statusFilterTraceToken(statusFilter) {
+  if (!statusFilter || statusFilter.requested !== true) return null;
+  return statusFilter.verified
+    ? `status:${statusFilter.selected_label ?? "solo_cerradas"}`
+    : "status:unverified";
+}
+
+async function applyStatusFilter(page, input) {
+  const mode = input.mode === "closed_deals" ? "closed_deals" : "listings";
+  const result = {
+    requested: mode === "closed_deals",
+    applied: false,
+    verified: false,
+    selected_label: null,
+    mode,
+  };
+  if (mode !== "closed_deals") return result;
+
+  const opened =
+    (await openExactTopFilter(page, "Estatus")) ||
+    (await openTopFilter(page, /estatus|status/i));
+  if (!opened) return result;
+
+  const optionPatterns = [
+    /solo\s+cerradas/i,
+    /cerradas/i,
+    /vendidas?\s*\/?\s*rentadas?/i,
+    /vendid[oa]s?/i,
+  ];
+  let selected = null;
+  for (const pattern of optionPatterns) {
+    if (await clickVisibleText(page, pattern)) {
+      selected = pattern.source;
+      break;
+    }
+  }
+  if (!selected) {
+    await page.keyboard.press("Escape").catch(() => {});
+    return result;
+  }
+  result.applied = true;
+  result.selected_label = "Solo cerradas";
+
+  await clickApplyInOpenFilter(page);
+  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+  await page.waitForTimeout(800);
+
+  const verification = await statusFilterLooksApplied(page);
+  result.verified = verification.verified;
+  if (verification.selected_label) result.selected_label = verification.selected_label;
+  return result;
+}
+
+/**
+ * Verify that the closed-status filter is actually selected — not merely that
+ * the label exists somewhere in the page text.
+ */
+export async function statusFilterLooksApplied(page) {
+  const evidence = await page.evaluate(() => {
+    const normalize = (value) =>
+      String(value || "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    const closedPatterns = [
+      "solo cerradas",
+      "cerradas",
+      "vendidas / rentadas",
+      "vendidas/rentadas",
+    ];
+    const isClosedLabel = (text) =>
+      closedPatterns.some((pattern) => normalize(text).includes(pattern));
+
+    const selectedCandidates = [];
+    const selectors = [
+      '[aria-checked="true"]',
+      '[aria-pressed="true"]',
+      'input[type="radio"]:checked',
+      'input[type="checkbox"]:checked',
+      '[class*="selected" i]',
+      '[class*="active" i]',
+      '[data-selected="true"]',
+    ];
+    for (const selector of selectors) {
+      for (const el of Array.from(document.querySelectorAll(selector))) {
+        const text = normalize(el.innerText || el.textContent || el.getAttribute("aria-label") || "");
+        if (text && isClosedLabel(text)) selectedCandidates.push(text);
+        const label = el.closest("label") || el.parentElement;
+        const labelText = normalize(label?.innerText || label?.textContent || "");
+        if (labelText && isClosedLabel(labelText)) selectedCandidates.push(labelText);
+      }
+    }
+
+    const chipCandidates = Array.from(
+      document.querySelectorAll('[class*="chip" i], [class*="tag" i], [class*="badge" i], button, a, span')
+    )
+      .map((el) => normalize(el.innerText || el.textContent || ""))
+      .filter((text) => text && text.length < 80 && isClosedLabel(text));
+
+    return {
+      selectedCandidates: Array.from(new Set(selectedCandidates)).slice(0, 5),
+      chipCandidates: Array.from(new Set(chipCandidates)).slice(0, 5),
+    };
+  }).catch(() => ({ selectedCandidates: [], chipCandidates: [] }));
+
+  const selected =
+    evidence.selectedCandidates[0] ||
+    evidence.chipCandidates.find((text) => /solo cerradas|cerradas/.test(text)) ||
+    null;
+  return {
+    verified: Boolean(selected),
+    selected_label: selected ? "Solo cerradas" : null,
+  };
 }
 
 async function applyLocationFilter(page, zona) {
@@ -1495,9 +1680,59 @@ function minRoomCountMatches(actual, requested) {
 
 function canonicalPropertyType(value) {
   if (!value) return null;
-  const normalized = String(value).trim().toLowerCase();
+  const normalized = String(value)
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+  if (
+    normalized.includes("casa en condominio") ||
+    normalized === "condo house" ||
+    normalized === "condo_house"
+  ) {
+    return "Casa en condominio";
+  }
+  if (normalized === "house" || normalized === "casa" || /\bcasa\b/.test(normalized)) {
+    return "Casa";
+  }
+  if (
+    normalized.includes("departamento") ||
+    normalized === "depto" ||
+    normalized === "apartment" ||
+    normalized === "condo"
+  ) {
+    return "Departamento";
+  }
+  if (normalized.includes("terreno industrial") || normalized.includes("lote industrial")) {
+    return "Terreno industrial";
+  }
+  if (normalized.includes("terreno") || normalized.includes("lote") || normalized === "land") {
+    return "Terreno";
+  }
+  if (normalized.includes("bodega comercial")) return "Bodega comercial";
+  if (
+    normalized.includes("bodega industrial") ||
+    normalized.includes("nave industrial") ||
+    normalized === "bodega" ||
+    normalized === "nave"
+  ) {
+    return "Bodega industrial";
+  }
+  if (normalized.includes("oficina") || normalized === "office") return "Oficina";
+  if (normalized.includes("local en centro comercial")) return "Local en centro comercial";
   if (normalized.startsWith("local")) return "Local comercial";
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  const cleaned = String(value).trim();
+  if (!cleaned) return null;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+function propertyTypesMatch(actual, requested) {
+  const left = canonicalPropertyType(actual)?.toLowerCase();
+  const right = canonicalPropertyType(requested)?.toLowerCase();
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
 }
 
 function filterMlsResults(results, input = {}) {
@@ -1519,10 +1754,13 @@ function mlsResultMatchesInput(result, input = {}) {
     ...(Array.isArray(input.property_types) ? input.property_types : []),
   ]
     .filter((value) => typeof value === "string" && value.trim())
-    .map((value) => value.trim().toLowerCase());
+    .map((value) => canonicalPropertyType(value.trim()))
+    .filter(Boolean);
   if (propertyTypes.length > 0) {
-    const actual = String(result.property_type ?? "").toLowerCase();
-    if (!actual || !propertyTypes.some((type) => actual.includes(type))) return false;
+    const actual = canonicalPropertyType(result.property_type);
+    if (!actual || !propertyTypes.some((type) => propertyTypesMatch(actual, type))) {
+      return false;
+    }
   }
 
   if (input.min_price != null && result.price != null && result.price < input.min_price) {

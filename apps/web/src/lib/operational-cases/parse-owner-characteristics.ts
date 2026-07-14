@@ -131,7 +131,52 @@ export function missingOwnerResponseCriticalFields(
 }
 
 function propertyTypeLabel(value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "house" || normalized === "casa") return "Casa";
+  if (
+    normalized === "condo_house" ||
+    normalized === "condo house" ||
+    normalized.includes("casa en condominio")
+  ) {
+    return "Casa en condominio";
+  }
+  if (
+    normalized === "departamento" ||
+    normalized === "depto" ||
+    normalized === "apartment"
+  ) {
+    return "Departamento";
+  }
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+const PARKING_DISPLAY_KEYS = [
+  "parking_spots",
+  "parking_spaces",
+  "parking",
+  "cajones",
+  "estacionamientos",
+] as const;
+
+/**
+ * Resolve parking count for display. Treats 0 as a valid explicit value.
+ * Prefers the first numeric alias found among known keys.
+ */
+export function resolveParkingSpacesForDisplay(
+  source: Record<string, unknown> | null | undefined
+): number | null {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  for (const key of PARKING_DISPLAY_KEYS) {
+    const raw = source[key];
+    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
+      return Math.trunc(raw);
+    }
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      const parsed = Number(raw.replace(/,/g, "").trim());
+      if (Number.isFinite(parsed) && parsed >= 0) return Math.trunc(parsed);
+    }
+  }
+  return null;
 }
 
 /** Keep intake fields aligned with canonical property_data after owner merge. */
@@ -186,6 +231,7 @@ export function buildPropertyDataReviewMessage(params: {
   propertyData: Record<string, unknown>;
 }) {
   const { propertyTitle, propertyData } = params;
+  const parking = resolveParkingSpacesForDisplay(propertyData);
   return [
     `Se ha recibido la respuesta del dueño con los detalles de ${propertyTitle}.`,
     "Se requiere revisión interna de los datos extraídos antes de comparables.",
@@ -195,9 +241,7 @@ export function buildPropertyDataReviewMessage(params: {
     `Recámaras: ${String(propertyData.bedrooms ?? "pendiente")}`,
     `Baños: ${String(propertyData.bathrooms ?? "pendiente")}`,
     `m² totales: ${String(propertyData.area_total_m2 ?? "pendiente")}`,
-    typeof propertyData.parking_spots === "number"
-      ? `Estacionamientos: ${propertyData.parking_spots}`
-      : null,
+    parking != null ? `Estacionamientos: ${parking}` : null,
   ]
     .filter(Boolean)
     .join("\n");

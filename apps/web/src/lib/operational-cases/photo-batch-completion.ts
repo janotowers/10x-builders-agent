@@ -153,11 +153,17 @@ export async function completePhotoBatchForCase(params: {
     return { status: "insufficient_photos", case: current, photoCount };
   }
 
+  // E2E: cron is suppressed for controlled cases — leave next_action_at null and
+  // let the caller fire runSettingsTestCaseAgentTick immediately (same pattern as
+  // characteristics replies). Production: wake the cron with next_action_at=now.
+  const isE2EControlled = current.context_jsonb?.e2e_controlled === true;
+  const nextActionAt = isE2EControlled ? null : new Date().toISOString();
+
   for (let attempt = 0; attempt < MAX_TRANSITION_ATTEMPTS; attempt += 1) {
     const updated = await updateOperationalCase(db, current.id, current.version, {
       status: "active",
       currentStep: "package_ready",
-      nextActionAt: new Date().toISOString(),
+      nextActionAt,
     });
     if (updated) {
       await insertOperationalCaseEvent(db, {

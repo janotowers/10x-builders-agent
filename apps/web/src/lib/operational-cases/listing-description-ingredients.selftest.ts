@@ -29,8 +29,13 @@ const ingredients = collectListingDescriptionIngredients({
 });
 
 assert.equal(ingredients.missingIngredients.length, 0);
-assert.match(buildListingDescriptionPrompt(ingredients), /Redacta una descripcion inmobiliaria/);
-assert.match(buildListingApprovalSummary(ingredients), /Cobertura de fotos: 5 foto\(s\)/);
+const descriptionPrompt = buildListingDescriptionPrompt(ingredients);
+assert.match(descriptionPrompt, /Redacta una descripcion inmobiliaria/);
+assert.match(descriptionPrompt, /no incluir en el copy/i);
+assert.doesNotMatch(descriptionPrompt, /6200000|6,200,000|MXN/);
+const approvalSummary = buildListingApprovalSummary(ingredients);
+assert.match(approvalSummary, /Cobertura de fotos: 5 foto\(s\)/);
+assert.match(approvalSummary, /Precio: 6200000 MXN/);
 
 const missing = collectListingDescriptionIngredients({
   property_data: {},

@@ -520,7 +520,37 @@ function extensionFromStoragePath(storagePath: string): string {
   return ext || "docx";
 }
 
-/** Etiqueta legible del caso (propiedad o contacto) para el nombre de archivo. */
+function firstStringOrListItem(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === "string" && item.trim()) return item.trim();
+    }
+  }
+  return null;
+}
+
+function operationLabelForFilename(value: unknown): string | null {
+  const raw = firstStringOrListItem(value)?.toLowerCase() ?? null;
+  if (!raw) return null;
+  if (raw === "sale" || raw === "venta" || raw.includes("vent")) return "venta";
+  if (raw === "rent" || raw === "renta" || raw.includes("rent")) return "renta";
+  return slugifyForFilename(raw, 16) || null;
+}
+
+function neighborhoodFromAddress(address: unknown): string | null {
+  if (!isRecord(address)) return null;
+  return (
+    firstStringOrListItem(address.neighborhood) ??
+    firstStringOrListItem(address.zona) ??
+    firstStringOrListItem(address.municipality)
+  );
+}
+
+/**
+ * Prefer a rich title when available. If the title is too generic (e.g. just
+ * "Casa"), compose property_type + operation + zone so downloads stay readable.
+ */
 function friendlyCaseLabelForFilename(opCase: {
   context_jsonb?: unknown;
   external_contact_jsonb?: { display_name?: string } | null;
@@ -529,13 +559,45 @@ function friendlyCaseLabelForFilename(opCase: {
   const propertyData = isRecord(context.property_data)
     ? context.property_data
     : {};
-  const candidates: unknown[] = [
+  const richCandidates: unknown[] = [
     propertyData.title,
-    typeof propertyData.address === "string" ? propertyData.address : undefined,
     context.property_title,
-    opCase.external_contact_jsonb?.display_name,
+    typeof propertyData.address === "string" ? propertyData.address : undefined,
   ];
-  for (const candidate of candidates) {
+  for (const candidate of richCandidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      const slug = slugifyForFilename(candidate);
+      // Single short tokens like "casa" / "departamento" are too weak alone.
+      if (slug && slug.includes("-") && slug.length >= 12) return slug;
+      if (slug && slug.length >= 20) return slug;
+    }
+  }
+
+  const propertyType =
+    firstStringOrListItem(propertyData.property_type) ??
+    firstStringOrListItem(context.property_type);
+  const operation = operationLabelForFilename(
+    propertyData.operation ?? context.operation_type
+  );
+  const zoneRaw =
+    firstStringOrListItem(context.property_zone) ??
+    neighborhoodFromAddress(propertyData.address) ??
+    firstStringOrListItem(propertyData.neighborhood);
+  // Prefer colonia (text before first comma) so names stay short and readable.
+  const zone = zoneRaw ? zoneRaw.split(",")[0]?.trim() || zoneRaw : null;
+
+  const composed = [propertyType, operation, zone]
+    .map((part) => (part ? slugifyForFilename(part, 28) : ""))
+    .filter(Boolean)
+    .join("-");
+  if (composed) return composed.slice(0, 48).replace(/-+$/g, "");
+
+  const contact = opCase.external_contact_jsonb?.display_name;
+  if (typeof contact === "string" && contact.trim()) {
+    return slugifyForFilename(contact);
+  }
+  // Last resort: accept a short generic title rather than omitting the label.
+  for (const candidate of richCandidates) {
     if (typeof candidate === "string" && candidate.trim()) {
       const slug = slugifyForFilename(candidate);
       if (slug) return slug;

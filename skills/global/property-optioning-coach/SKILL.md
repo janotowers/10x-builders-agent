@@ -51,9 +51,11 @@ requires_tenant_context: true
 memory_extraction: ephemeral
 heartbeat: blocked
 guardrails: |
-  Decisiones de juicio comercial (precio mínimo, comparables seleccionados,
+  Decisiones de juicio comercial (precio mínimo / propuesta de precio,
   contrato final, publicación) SIEMPRE pasan por HITL: el agente prepara,
-  el humano aprueba.
+  el humano aprueba. La muestra de comparables se construye automáticamente;
+  el humano aprueba el precio resultante (`price_approval`), no elige filas
+  individuales de comparables.
   El cron del subsistema operational-cases te invoca sin mensaje del
   usuario. Lee el bloque [Caso operacional activo] del system prompt y
   decide la siguiente acción a partir del current_step.

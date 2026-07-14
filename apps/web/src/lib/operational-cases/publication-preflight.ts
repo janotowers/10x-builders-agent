@@ -488,6 +488,47 @@ function evaluateUngga(
           "Ungga requiere URLs públicas del manifest; ninguna está disponible.",
       });
     }
+    const expected =
+      dest.media.expected_count > 0 ? dest.media.expected_count : manifest.length;
+    if (expected > 0) {
+      if (!dest.media.submitted) {
+        pushIssue(issues, {
+          code: "ungga_media_not_submitted",
+          field: "media.submitted",
+          severity: "critical",
+          message:
+            "Las fotos de Ungga aún no fueron confirmadas tras prepare_draft.",
+        });
+      }
+      const remoteCount =
+        typeof input.remote?.image_count === "number"
+          ? input.remote.image_count
+          : dest.media.remote_count;
+      if (!dest.media.verified) {
+        pushIssue(issues, {
+          code: "ungga_media_not_verified",
+          field: "media.verified",
+          severity: "critical",
+          expected,
+          actual: remoteCount,
+          message: `Ungga no verificó las ${expected} fotos esperadas antes de publicar.`,
+        });
+      } else if (
+        typeof remoteCount === "number" &&
+        remoteCount > 0 &&
+        remoteCount < expected
+      ) {
+        // Ungga often shows extra thumbs (cover + uploads); only fewer is a mismatch.
+        pushIssue(issues, {
+          code: "ungga_media_count_mismatch",
+          field: "remote.image_count",
+          severity: "critical",
+          expected,
+          actual: remoteCount,
+          message: `Conteo de fotos Ungga inconsistente: esperadas ${expected}, remotas ${remoteCount}.`,
+        });
+      }
+    }
   }
 }
 
@@ -547,7 +588,14 @@ export function runPublicationPreflight(
 
 export function formatPublicationReviewNotifyText(
   destination: PublicationDestination,
-  result: PreflightResult
+  result: PreflightResult,
+  extras?: {
+    last_step?: { step?: string; ok?: boolean; error?: string } | null;
+    expected_image_count?: number | null;
+    uploaded_image_count?: number | null;
+    has_draft_artifact?: boolean;
+    ungga_property_id?: string | null;
+  }
 ): string {
   const label = destination === "easybroker" ? "EasyBroker" : "Ungga";
   const lines = [
@@ -560,10 +608,42 @@ export function formatPublicationReviewNotifyText(
   for (const issue of result.issues.filter((i) => i.severity !== "info").slice(0, 8)) {
     lines.push(`- [${issue.severity}] ${issue.message}`);
   }
+  if (extras?.last_step && typeof extras.last_step.step === "string") {
+    lines.push(
+      "",
+      `Último paso: ${extras.last_step.step}${
+        extras.last_step.ok === false ? " (falló)" : ""
+      }${
+        typeof extras.last_step.error === "string" && extras.last_step.error
+          ? ` — ${extras.last_step.error}`
+          : ""
+      }`
+    );
+  }
+  if (
+    typeof extras?.expected_image_count === "number" ||
+    typeof extras?.uploaded_image_count === "number"
+  ) {
+    lines.push(
+      `Fotos: esperadas ${extras.expected_image_count ?? "?"}, observadas ${
+        extras.uploaded_image_count ?? "?"
+      }.`
+    );
+  }
+  if (extras?.has_draft_artifact || extras?.ungga_property_id) {
+    lines.push(
+      "",
+      extras.ungga_property_id
+        ? `Ya existe un borrador (${extras.ungga_property_id}). No recrees: verifica en Ungga y reconcilia.`
+        : "Puede existir un borrador remoto. Verifica en Ungga antes de reintentar create."
+    );
+  }
   lines.push(
     "",
     "Usa los botones:",
-    "- Aprobar y continuar",
+    extras?.has_draft_artifact || extras?.ungga_property_id
+      ? "- Aprobar y continuar (solo si confirmaste el borrador existente; no recreará si ya hay GU-ID)"
+      : "- Aprobar y continuar (autoriza reintento de create si no hay artifact)",
     "- Corregir etiquetas/datos",
     "- Detener y revisar"
   );

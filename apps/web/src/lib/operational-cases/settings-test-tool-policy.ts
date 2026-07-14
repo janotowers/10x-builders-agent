@@ -23,8 +23,6 @@ export const SETTINGS_TEST_PUBLISH_AUTO_EXECUTE_TOOLS = [
 type SettingsTestToolPolicyOptions = {
   documentRequestTarget?: "internal_user" | "external_contact" | null;
   autoExecuteContractDraftGeneration?: boolean;
-  /** Tras publish_approvals.<destino>=approved, no pedir HITL técnico de nuevo. */
-  autoExecuteApprovedPublishTools?: boolean;
 };
 
 export function buildSettingsTestToolApprovalPolicy(
@@ -46,11 +44,6 @@ export function buildSettingsTestToolApprovalPolicy(
   if (options?.autoExecuteContractDraftGeneration) {
     policy.generate_document_from_template = "auto_execute";
   }
-  if (options?.autoExecuteApprovedPublishTools) {
-    for (const toolId of SETTINGS_TEST_PUBLISH_AUTO_EXECUTE_TOOLS) {
-      policy[toolId] = "auto_execute";
-    }
-  }
   return policy;
 }
 
@@ -61,10 +54,7 @@ export function buildSettingsTestToolApprovalPolicy(
  * easybroker_create_listing tras un validation_error).
  */
 export function buildAgentE2EResumeToolApprovalPolicy(): ToolApprovalPolicy {
-  return buildSettingsTestToolApprovalPolicy([
-    ...SETTINGS_TEST_PUBLISH_AUTO_EXECUTE_TOOLS,
-    "generate_document_from_template",
-  ]);
+  return buildSettingsTestToolApprovalPolicy(["generate_document_from_template"]);
 }
 
 export function isAgentE2EToolCall(toolCall: {

@@ -28,7 +28,12 @@ El CLI imprime JSON normalizado con:
 
 - `mode`: `listings` o `closed_deals`
 - `result.results[]`: cards normalizadas
-- `metrics[]`: login, apertura MLS, búsqueda/extracción
+- `result.status_filter`: `{ requested, applied, verified, selected_label }`
+- `result.filters[]`: traza de filtros aplicados **después** de la verificación
+  final (p. ej. `status:Solo cerradas` o `status:unverified`). El token de
+  estatus se deriva del `status_filter` final, no de un snapshot intermedio
+  previo al sync de URL.
+- `metrics[]`: login, apertura MLS, búsqueda/extracción, `apply_status_filter`
 
 ## Filtros soportados
 
@@ -36,6 +41,7 @@ Los filtros son opcionales; el CLI sólo aplica los que recibe.
 
 ```json
 {
+  "mode": "listings",
   "zona": "Colomos Providencia, Guadalajara, Jalisco",
   "operation": "rent",
   "property_types": ["Casa", "Departamento"],
@@ -48,15 +54,17 @@ Los filtros son opcionales; el CLI sólo aplica los que recibe.
 }
 ```
 
-- `bedrooms`, `bathrooms`, `parking_spaces`: valor exacto. Útil para comparables.
+- Valuación/comparables (flujo Gu OS): zona, operación, tipo y banda de m².
+  Aliases como `house` se canonicalizan a `Casa` antes del click UI.
+- `bedrooms`, `bathrooms`, `parking_spaces`: valor exacto. Útiles para
+  **búsqueda de opciones** (comprador/rentador), no para valuación.
 - `min_bedrooms`, `min_bathrooms`, `min_parking_spaces`: al menos ese valor.
-  Útil para búsqueda de opciones para un comprador/rentador.
 - `shared_commission_only`: si es `true`, intenta activar el filtro de comisión
   compartida en `Más`.
-
-Nota: `closed_deals` sólo debe tratarse como cerrado histórico si la UI MLS
-expone filtros/estados de vendida/rentada/cerrada. Si no, el adapter devuelve
-caveat explícito.
+- `mode: "closed_deals"`: aplica y **verifica** `Estatus = Solo cerradas`.
+  Si no puede verificar el filtro, el CLI/adapter devuelve
+  `status_filter_not_applied` / `filter_not_applied` con `results: []`
+  (nunca etiqueta activas como históricas).
 
 ## reCAPTCHA / anti-bot
 
@@ -75,3 +83,9 @@ fallback con `EASYBROKER_WEB_EMAIL` / `EASYBROKER_WEB_PASSWORD` y vuelve a
 guardar la sesión si el login funciona.
 
 Para apuntar a otra ruta, exporta `EASYBROKER_MLS_STORAGE_STATE=/ruta/a/state.json`.
+
+## Tests
+
+```bash
+npm --prefix pocs/easybroker-mls-cli run test:status-filter
+```

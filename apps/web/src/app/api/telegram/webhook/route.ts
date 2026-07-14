@@ -36,6 +36,7 @@ import {
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
 import { notify } from "@/lib/notify";
+import { resolveSingleRequiredBooleanField } from "@/lib/notify/contract-data-review-telegram-markup";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import {
@@ -51,7 +52,6 @@ import {
   parseContractReviewDecision,
   runDeferredContractControlledE2ETick,
 } from "@/lib/business-decisions/contract-review";
-import { parseContractDataReviewReply } from "@/lib/business-decisions/contract-data-review";
 import { parseTitularidadReviewDecision } from "@/lib/business-decisions/titularidad-review";
 import {
   runDeferredListingDescriptionControlledE2ETick,
@@ -60,9 +60,9 @@ import {
 import { runDeferredPublishDestinationControlledE2ETick } from "@/lib/business-decisions/publish-destination-approval";
 import { finalizeCaseAfterToolDecision } from "@/lib/operational-cases/finalize-case-after-tool-decision";
 import {
-  buildAgentE2EResumeToolApprovalPolicy,
   isAgentE2EToolCall,
 } from "@/lib/operational-cases/settings-test-tool-policy";
+import { buildPublicationAwareE2EToolApprovalPolicy } from "@/lib/operational-cases/publication-tool-policy";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
@@ -941,6 +941,32 @@ async function resumeAgentFromCallback(
     };
   }
 
+  const caseId =
+    typeof toolCall.metadata_jsonb?.case_id === "string"
+      ? toolCall.metadata_jsonb.case_id
+      : typeof toolCall.arguments_json?.case_id === "string"
+        ? toolCall.arguments_json.case_id
+        : undefined;
+  const resumeCase = caseId ? await getOperationalCase(db, caseId) : null;
+  const resumeContext =
+    resumeCase?.user_id === userId ? (resumeCase.context_jsonb ?? {}) : {};
+  const resumePricing =
+    resumeContext.pricing_proposal &&
+    typeof resumeContext.pricing_proposal === "object" &&
+    !Array.isArray(resumeContext.pricing_proposal)
+      ? (resumeContext.pricing_proposal as Record<string, unknown>)
+      : {};
+  const e2eResumePolicy = isAgentE2EToolCall(toolCall)
+    ? buildPublicationAwareE2EToolApprovalPolicy({
+        context: resumeContext,
+        documentRequestTarget:
+          operationalCaseDocumentRequestTargetFromContext(resumeContext),
+        autoExecuteContractDraftGeneration:
+          resumeCase?.current_step === "contract_pending" &&
+          resumePricing.approval_status === "approved",
+      })
+    : undefined;
+
   const result = await runAgent({
     resumeDecision: "approve",
     checkpointThreadId: storedCheckpointThreadId,
@@ -982,16 +1008,9 @@ async function resumeAgentFromCallback(
     isUnggaAdmin: (profile?.is_ungga_admin as boolean | null) ?? false,
     channel: isAgentE2EToolCall(toolCall) ? "case_runner" : "telegram",
     googleCalendarAccessToken,
-    caseId:
-      typeof toolCall.metadata_jsonb?.case_id === "string"
-        ? toolCall.metadata_jsonb.case_id
-        : typeof toolCall.arguments_json?.case_id === "string"
-          ? toolCall.arguments_json.case_id
-          : undefined,
+    caseId,
     toolCallSource: isAgentE2EToolCall(toolCall) ? "agent_e2e" : undefined,
-    toolApprovalPolicy: isAgentE2EToolCall(toolCall)
-      ? buildAgentE2EResumeToolApprovalPolicy()
-      : undefined,
+    toolApprovalPolicy: e2eResumePolicy,
   });
   await finalizeCaseAfterToolDecision(db, {
     toolCall,
@@ -1228,6 +1247,9 @@ export async function POST(request: Request) {
           "string"
             ? (result.deferredControlledE2ETick as { source: string }).source
             : "publication_review_telegram";
+        const forceRetryFailedOperation =
+          (result.deferredControlledE2ETick as { forceRetryFailedOperation?: boolean })
+            .forceRetryFailedOperation === true;
         const { requestPublicationProgress } = await import(
           "@/lib/operational-cases/publication-runner"
         );
@@ -1235,9 +1257,11 @@ export async function POST(request: Request) {
           "@/lib/operational-cases/run-settings-test-case-tick"
         );
         void requestPublicationProgress(db, String(result.case_id), source, {
+          forceRetryFailedOperation,
           runAgentTick: async (opCase, machineAction) => {
             const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
               source: `${source}:${machineAction.type}`,
+              skipLock: true,
             });
             return (
               tick.publication_execution ?? {
@@ -1320,15 +1344,9 @@ export async function POST(request: Request) {
       const missingFields = Array.isArray(metadata.missing_fields)
         ? metadata.missing_fields
         : [];
-      const firstBoolean = missingFields.find(
-        (item): item is Record<string, unknown> =>
-          Boolean(item) &&
-          typeof item === "object" &&
-          !Array.isArray(item) &&
-          item.kind === "boolean" &&
-          typeof item.key === "string"
-      );
-      if (!firstBoolean || typeof firstBoolean.key !== "string") {
+      // Solo aceptar Sí/No cuando queda exactamente un booleano obligatorio.
+      const singleBoolean = resolveSingleRequiredBooleanField(missingFields);
+      if (!singleBoolean) {
         await answerTelegramCallbackQuery(cb.id, "Escribe el dato faltante");
         await sendTelegramMessage(
           cb.message.chat.id,
@@ -1342,9 +1360,9 @@ export async function POST(request: Request) {
         });
       }
       const patchKey =
-        firstBoolean.key === "collaboration_enabled"
+        singleBoolean.key === "collaboration_enabled"
           ? "collaboration_enabled"
-          : firstBoolean.key;
+          : singleBoolean.key;
       const result = await businessDecisionHandler("contract_data_review").handle(
         db,
         {
@@ -2112,41 +2130,28 @@ export async function POST(request: Request) {
     (notification) => notification.kind === "contract_data_review"
   );
   if (pendingContractData && text) {
-    const metadata =
-      pendingContractData.metadata_jsonb &&
-      typeof pendingContractData.metadata_jsonb === "object"
-        ? (pendingContractData.metadata_jsonb as Record<string, unknown>)
-        : {};
-    const missingFields = Array.isArray(metadata.missing_fields)
-      ? (metadata.missing_fields as Array<{
-          key: string;
-          label: string;
-          question: string;
-          kind: "email" | "boolean" | "number" | "text" | "choice";
-          optional?: boolean;
-        }>)
-      : undefined;
-    const parsedContractData = parseContractDataReviewReply(text, missingFields);
-    if (parsedContractData.intent !== "unclear") {
-      const result = await businessDecisionHandler("contract_data_review").handle(db, {
-        userId,
-        notificationId: pendingContractData.id,
-        text,
-        patch: parsedContractData.patch as Record<string, unknown> | undefined,
-      });
-      await sendTelegramMessage(
-        chatId,
-        result.message ??
-          (result.ok
-            ? "Listo, registré los datos contractuales."
-            : "No pude registrar los datos contractuales.")
-      );
-      return NextResponse.json({
-        ok: true,
-        routed: "contract_data_review",
-        notification_id: pendingContractData.id,
-      });
-    }
+    // Always route free text through the central handler (hybrid extractor +
+    // deterministic judge). Never fall through silently on unclear replies.
+    const result = await businessDecisionHandler("contract_data_review").handle(db, {
+      userId,
+      notificationId: pendingContractData.id,
+      text,
+    });
+    await sendTelegramMessage(
+      chatId,
+      result.message ??
+        (result.ok
+          ? result.status === "partial"
+            ? "Registré parte de los datos. Aún faltan pendientes del contrato."
+            : "Listo, registré los datos contractuales."
+          : "No pude registrar los datos contractuales.")
+    );
+    return NextResponse.json({
+      ok: true,
+      routed: "contract_data_review",
+      notification_id: pendingContractData.id,
+      status: result.status,
+    });
   }
 
   const parsedContractDecision = parseContractReviewDecision(text);

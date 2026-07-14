@@ -220,13 +220,13 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           expected_context_keys: ["property_data", "comparables_analysis"],
         },
         message:
-          "Prueba controlada de paso (N4) para comparables_in_progress — escenario con muestra defendible. Actúa como property-optioning-coach. Usa la zona efectiva del caso (property_zone del contexto de prueba); alinea property_data.address.neighborhood con esa zona. Enruta a perform-comparable-analysis y consulta easybroker_search_listings, easybroker_search_closed_deals y bigquery_lookup_local_comparables. Si el tipo es casa/departamento en condominio, agrega get_avaclick_valuation como fuente complementaria; si faltan coordenadas pero hay dirección suficiente, usa geocode_property_address antes de Avaclick. Si una fuente devuelve not_configured, missing_required_fields o vacío, continúa con las demás y documenta la limitación. Si la suma de comparables USABLES (activas + históricas + internas) es mayor que cero: guarda comparables_analysis con stats defendibles, avanza a price_proposal_pending y status=active, y notify_user al asesor. No uses telegram_send_message_to_contact.",
+          "Prueba controlada de paso (N4) para comparables_in_progress — escenario con muestra defendible. Actúa como property-optioning-coach. Usa la zona efectiva del caso (property_zone del contexto de prueba); alinea property_data.address.neighborhood con esa zona. Enruta a perform-comparable-analysis y consulta easybroker_search_listings, easybroker_search_closed_deals y bigquery_lookup_local_comparables. Si el tipo es casa/departamento en condominio, agrega get_avaclick_valuation como fuente complementaria; si faltan coordenadas pero hay dirección suficiente, usa geocode_property_address antes de Avaclick. Si una fuente devuelve not_configured, missing_required_fields o vacío, continúa con las demás y documenta la limitación. Si hay muestra defendible (unique_comparable_count >= 3 / defensible_sample=true): guarda comparables_analysis con stats defendibles, avanza a price_proposal_pending y status=active, y notify_user al asesor. No uses telegram_send_message_to_contact.",
       },
       {
         id: "comparables_in_progress_insufficient_data",
-        label: "Sin comparables usables — no avanzar a precio",
+        label: "Sin muestra defendible — no avanzar a precio",
         summary:
-          "Filtros muy estrechos (~8 m²): si todas las fuentes devuelven 0 usables, el caso permanece en comparables_in_progress y el asesor recibe notify_user.",
+          "Filtros muy estrechos (~8 m²): si no hay muestra defendible (p. ej. 0 usables o <3 únicos), el caso permanece en comparables_in_progress y el asesor recibe notify_user.",
         seed_summary:
           "Entrada: comparables_in_progress / active con property_data restrictivo.",
         expect_summary:
@@ -245,7 +245,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           expected_tool_calls: ["notify_user"],
         },
         message:
-          "Prueba controlada de paso (N4) para comparables_in_progress — escenario datos insuficientes. Actúa como property-optioning-coach. El property_data sembrado usa ~8 m² a propósito (filtros muy estrechos). Consulta las tres fuentes base (EasyBroker activas, EasyBroker cerradas, BigQuery interno) y, si aplica por tipo de propiedad, get_avaclick_valuation como complemento. Si Avaclick devuelve validation_error con missing_required_fields, registra warning y continúa; no bloquees el paso por eso. Si tras normalizar la suma de comparables USABLES es 0 en todas las fuentes: NO avances a price_proposal_pending; deja current_step=comparables_in_progress y status=waiting_internal; persiste comparables_analysis con filters_used, data_quality.warnings y usable_count=0; ejecuta notify_user(kind=comparables_insufficient_data) al asesor con datos de la propiedad, filtros usados y sugerencias concretas para ampliar búsqueda. No uses telegram_send_message_to_contact.",
+          "Prueba controlada de paso (N4) para comparables_in_progress — escenario datos insuficientes. Actúa como property-optioning-coach. El property_data sembrado usa ~8 m² a propósito (filtros muy estrechos). Consulta las tres fuentes base (EasyBroker activas, EasyBroker cerradas, BigQuery interno) y, si aplica por tipo de propiedad, get_avaclick_valuation como complemento. Si Avaclick devuelve validation_error con missing_required_fields, registra warning y continúa; no bloquees el paso por eso. Si tras persistir no hay muestra defendible (defensible_sample=false / unique_comparable_count < 3; en este escenario suele ser usable_count=0): NO avances a price_proposal_pending; deja current_step=comparables_in_progress y status=waiting_internal; persiste comparables_analysis con filters_used, data_quality.warnings y usable_count/unique_comparable_count; ejecuta notify_user(kind=comparables_insufficient_data) al asesor con datos de la propiedad, filtros usados y sugerencias concretas para ampliar búsqueda. No uses telegram_send_message_to_contact.",
       },
     ],
     price_proposal_pending: [
@@ -392,6 +392,52 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
         },
         message:
           "Prueba controlada de paso (N4) para contract_pending — borrador real (Salida A). Actúa como property-optioning-coach. En este tick SOLO el flujo de contrato: enruta a prepare-commission-contract y usa únicamente generate_document_from_template y notify_user (no uses ungga_publish_listing, easybroker_*, image_watermark ni herramientas de package_ready). Verifica pricing_proposal.approval_status=approved. Llama generate_document_from_template(template_slug=commission_contract, format=docx, case_id=...) exactamente una vez; los placeholders del DOCX se rellenan desde el caso (no hace falta pasar data). Debe devolver status=rendered con output_path. NO uses la signed_url larga de Supabase en el mensaje: en notify_user(kind=contract_review) escribe «Descargar borrador del contrato» seguido del enlace estable /api/operational-cases/{case_id}/documents/contract_draft/download (URL completa con el dominio del sitio si lo conoces). Inserta human_decision kind=contract_drafted con ese mismo enlace corto. Deja current_step=contract_pending y status=waiting_internal. NO mandes el contrato al dueño por Telegram en este tick. NO avances a photos_requested.",
+      },
+      {
+        id: "contract_pending_missing_commercial_data",
+        label: "Faltan datos comerciales (HITL contract_data_review)",
+        counts_toward_step_milestone: false,
+        summary:
+          "Caso en contract_pending sin commission_terms completos: el preflight bloquea generate y el sistema emite contract_data_review.",
+        seed_summary:
+          "Entrada: contract_pending / active; pricing_proposal approved; sin owner_email/commission_terms completos.",
+        expect_summary:
+          "Salida: waiting_internal + generate blocked (commission_contract_missing_required_data) + notify_user(kind=contract_data_review) con missing_fields estructurados; sin contract_review ni borrador.",
+        seed: {
+          current_step: "contract_pending",
+          status: "active",
+          context_patch: {
+            skill_test_n4_seed: "contract_pending_missing_commercial_data",
+            // Incomplete on purpose: evaluator must ask for commercial minimums.
+            commission_terms: {
+              commission_pct: null,
+              exclusive: null,
+              duration_months: null,
+              collaboration: {
+                enabled: null,
+                compensation: {
+                  mode: "not_specified",
+                  value: null,
+                  currency: null,
+                },
+                notes: null,
+              },
+              confirmation: {
+                status: "pending",
+                confirmed_at: null,
+                confirmed_by: null,
+              },
+            },
+          },
+        },
+        expect: {
+          current_step: "contract_pending",
+          status: "waiting_internal",
+          expected_context_keys: ["property_data", "pricing_proposal"],
+          expected_tool_calls: ["generate_document_from_template", "notify_user"],
+        },
+        message:
+          "Prueba controlada de paso (N4) para contract_pending — datos comerciales faltantes. Actúa como property-optioning-coach. Enruta a prepare-commission-contract e intenta generate_document_from_template(template_slug=commission_contract) una vez. Si devuelve blocked/commission_contract_missing_required_data, NO inventes términos ni uses contract_review. El sistema debe emitir/refrescar notify_user(kind=contract_data_review) con missing_fields; deja current_step=contract_pending y status=waiting_internal. NO avances a photos_requested.",
       },
       {
         id: "contract_pending_advisor_approves_send",
@@ -604,7 +650,9 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           current_step: "package_ready",
           status: "waiting_internal",
           expected_context_keys: ["listing_description_approved", "publish_approvals"],
-          expected_tool_calls: ["notify_user"],
+          expected_events: [
+            "human_decision:publish_destination_approval_requested",
+          ],
         },
         message:
           "Prueba controlada de paso (N4) para package_ready — aprobación por destino EasyBroker. Solicita notify_user(kind=easybroker_publish_approval) antes de publicar.",

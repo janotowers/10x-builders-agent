@@ -27,6 +27,13 @@ function packageReadyBaseSeed(
       }
     : settingsTestApprovedPricingProposalSeed();
   return {
+    publication_mode: "active",
+    publication_workflow_v1: true,
+    publication: {
+      ...(isRecord(context.publication) ? context.publication : {}),
+      feature_enabled: true,
+      mode: "active",
+    },
     property_data: propertyData,
     pricing_proposal: approvedPricing,
     contract_review: isRecord(context.contract_review)

@@ -14,8 +14,15 @@ export const COMMISSION_CONTRACT_TEMPLATE_PLACEHOLDERS = [
   "salida_price_words",
   "minimum_price",
   "commission_pct",
+  "commission_pct_words",
   "exclusive",
   "duration_months",
+  "duration_months_words",
+  "operation_type",
+  "operation_contract_type",
+  "contract_day",
+  "contract_month",
+  "contract_year",
 ] as const;
 
 export type CommissionContractPlaceholderKey =
@@ -327,6 +334,215 @@ export function amountToSpanishLegalWords(value: unknown): string {
   return joinSpanishParts(parts);
 }
 
+const CARDINAL_WORDS_LOWER: Record<number, string> = {
+  0: "cero",
+  1: "uno",
+  2: "dos",
+  3: "tres",
+  4: "cuatro",
+  5: "cinco",
+  6: "seis",
+  7: "siete",
+  8: "ocho",
+  9: "nueve",
+  10: "diez",
+  11: "once",
+  12: "doce",
+  13: "trece",
+  14: "catorce",
+  15: "quince",
+  16: "dieciséis",
+  17: "diecisiete",
+  18: "dieciocho",
+  19: "diecinueve",
+  20: "veinte",
+  21: "veintiuno",
+  22: "veintidós",
+  23: "veintitrés",
+  24: "veinticuatro",
+  25: "veinticinco",
+  26: "veintiséis",
+  27: "veintisiete",
+  28: "veintiocho",
+  29: "veintinueve",
+  30: "treinta",
+  40: "cuarenta",
+  50: "cincuenta",
+  60: "sesenta",
+  70: "setenta",
+  80: "ochenta",
+  90: "noventa",
+};
+
+function cardinalUnder100Lower(value: number): string {
+  if (value in CARDINAL_WORDS_LOWER) return CARDINAL_WORDS_LOWER[value];
+  if (value < 100) {
+    const tens = Math.floor(value / 10) * 10;
+    const units = value % 10;
+    return `${CARDINAL_WORDS_LOWER[tens]} y ${CARDINAL_WORDS_LOWER[units]}`;
+  }
+  return String(value);
+}
+
+/** Entero no negativo en minúsculas (p. ej. duración en meses). */
+export function integerToSpanishWordsLower(value: unknown): string {
+  const parsed =
+    typeof value === "number" && Number.isFinite(value)
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value.replace(/,/g, "").trim())
+        : null;
+  if (parsed == null || !Number.isFinite(parsed) || parsed < 0) return "";
+  const whole = Math.round(parsed);
+  if (whole <= 100) return cardinalUnder100Lower(whole);
+  // Fallback for rare large durations: reuse legal converter in lowercase.
+  return amountToSpanishLegalWords(whole).toLowerCase();
+}
+
+/**
+ * Porcentaje en letra para cláusulas: "cinco por ciento", "cuatro punto cinco por ciento".
+ */
+export function percentToSpanishWords(value: unknown): string {
+  const parsed =
+    typeof value === "number" && Number.isFinite(value)
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value.replace(/,/g, "").trim())
+        : null;
+  if (parsed == null || !Number.isFinite(parsed) || parsed < 0) return "";
+
+  const rounded = Math.round(parsed * 100) / 100;
+  const whole = Math.trunc(rounded);
+  const cents = Math.round((rounded - whole) * 100);
+  const wholeWords = integerToSpanishWordsLower(whole);
+  if (!wholeWords) return "";
+  if (cents === 0) return `${wholeWords} por ciento`;
+  const fractionWords = integerToSpanishWordsLower(cents);
+  return `${wholeWords} punto ${fractionWords} por ciento`;
+}
+
+export type ContractOperationKind = "sale" | "rent";
+
+export function resolveContractOperationKind(
+  sources: Array<Record<string, unknown> | null | undefined>
+): ContractOperationKind | null {
+  for (const source of sources) {
+    if (!source) continue;
+    const raw = firstString(source, [
+      "operation",
+      "operation_type",
+      "tipo_operacion",
+      "listing_operation",
+    ]);
+    if (!raw) continue;
+    const normalized = raw
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "");
+    if (
+      normalized === "sale" ||
+      normalized === "venta" ||
+      normalized === "compraventa" ||
+      normalized.includes("venta")
+    ) {
+      return "sale";
+    }
+    if (
+      normalized === "rent" ||
+      normalized === "renta" ||
+      normalized === "alquiler" ||
+      normalized === "arrendamiento" ||
+      normalized.includes("renta") ||
+      normalized.includes("arrend")
+    ) {
+      return "rent";
+    }
+  }
+  return null;
+}
+
+export function operationTypeLabel(kind: ContractOperationKind | null): string {
+  if (kind === "rent") return "renta";
+  if (kind === "sale") return "venta";
+  return "";
+}
+
+export function operationContractTypeLabel(
+  kind: ContractOperationKind | null
+): string {
+  if (kind === "rent") return "arrendamiento";
+  if (kind === "sale") return "compraventa";
+  return "";
+}
+
+const MONTH_NAMES_ES = [
+  "enero",
+  "febrero",
+  "marzo",
+  "abril",
+  "mayo",
+  "junio",
+  "julio",
+  "agosto",
+  "septiembre",
+  "octubre",
+  "noviembre",
+  "diciembre",
+] as const;
+
+/**
+ * Fecha de firma = fecha de generación del documento, en la zona del perfil.
+ */
+export function contractDatePartsFromTimezone(input?: {
+  now?: Date;
+  timezone?: string | null;
+}): { contract_day: string; contract_month: string; contract_year: string } {
+  const timezone =
+    typeof input?.timezone === "string" && input.timezone.trim()
+      ? input.timezone.trim()
+      : "America/Mexico_City";
+  const now = input?.now ?? new Date();
+  try {
+    const parts = new Intl.DateTimeFormat("es-MX", {
+      timeZone: timezone,
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    }).formatToParts(now);
+    const day = parts.find((part) => part.type === "day")?.value ?? "";
+    const monthRaw = parts.find((part) => part.type === "month")?.value ?? "";
+    const year = parts.find((part) => part.type === "year")?.value ?? "";
+    const monthNormalized = monthRaw
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "");
+    const month =
+      MONTH_NAMES_ES.find(
+        (name) =>
+          name.normalize("NFD").replace(/\p{M}/gu, "") === monthNormalized
+      ) ?? monthRaw.toLowerCase();
+    return {
+      contract_day: day,
+      contract_month: month,
+      contract_year: year,
+    };
+  } catch {
+    const fallback = new Intl.DateTimeFormat("es-MX", {
+      timeZone: "America/Mexico_City",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    }).formatToParts(now);
+    return {
+      contract_day: fallback.find((part) => part.type === "day")?.value ?? "",
+      contract_month: (
+        fallback.find((part) => part.type === "month")?.value ?? ""
+      ).toLowerCase(),
+      contract_year: fallback.find((part) => part.type === "year")?.value ?? "",
+    };
+  }
+}
+
 /**
  * Rellena los placeholders del contrato desde el contexto del caso.
  * Fuente de verdad compartida con generate_document_from_template (el modelo
@@ -338,6 +554,10 @@ export function deriveCommissionContractTemplateData(input: {
   pricing_proposal?: Record<string, unknown>;
   commission_terms?: Record<string, unknown>;
   external_contact?: Record<string, unknown>;
+  /** IANA timezone from user profile; defaults to America/Mexico_City. */
+  timezone?: string | null;
+  /** Override generation/signing instant (tests). */
+  now?: Date;
 }): Record<CommissionContractPlaceholderKey, string | number | boolean> {
   const caseContext = input.case_context ?? {};
   const propertyData = input.property_data ?? {};
@@ -349,6 +569,23 @@ export function deriveCommissionContractTemplateData(input: {
 
   const salida =
     pricing.salida ?? pricing.salida_price ?? pricing.list_price ?? "";
+
+  const commissionPct = firstValue(
+    commission.commission_pct,
+    commission.commission_percent,
+    commission.pct
+  );
+  const durationMonths = firstValue(commission.duration_months, commission.months);
+  const operationKind = resolveContractOperationKind([
+    propertyData,
+    caseContext,
+    pricing,
+    commission,
+  ]);
+  const dateParts = contractDatePartsFromTimezone({
+    now: input.now,
+    timezone: input.timezone,
+  });
 
   return {
     owner_name: ownerName,
@@ -375,16 +612,15 @@ export function deriveCommissionContractTemplateData(input: {
         pricing.min_price
       ) ?? ""
     ) as string | number,
-    commission_pct: templateScalar(
-      firstValue(
-        commission.commission_pct,
-        commission.commission_percent,
-        commission.pct
-      ) ?? ""
-    ) as string | number,
+    commission_pct: templateScalar(commissionPct ?? "") as string | number,
+    commission_pct_words: percentToSpanishWords(commissionPct),
     exclusive: templateScalar(commission.exclusive ?? "") as string | boolean,
-    duration_months: templateScalar(
-      firstValue(commission.duration_months, commission.months) ?? ""
-    ) as string | number,
+    duration_months: templateScalar(durationMonths ?? "") as string | number,
+    duration_months_words: integerToSpanishWordsLower(durationMonths),
+    operation_type: operationTypeLabel(operationKind),
+    operation_contract_type: operationContractTypeLabel(operationKind),
+    contract_day: dateParts.contract_day,
+    contract_month: dateParts.contract_month,
+    contract_year: dateParts.contract_year,
   };
 }

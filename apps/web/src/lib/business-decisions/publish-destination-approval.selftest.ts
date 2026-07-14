@@ -50,7 +50,18 @@ assert.deepEqual(
     publish_approvals: { easybroker: "approved" },
     published: { easybroker: { listing_id: "EB-1" } },
   }),
-  []
+  ["ungga_publish_approval"],
+  "draft listing_id alone is still premature for Ungga"
+);
+assert.deepEqual(
+  prematurePublishDestinationNotificationKinds({
+    publish_approvals: { easybroker: "approved" },
+    published: {
+      easybroker: { listing_id: "EB-1", status: "published" },
+    },
+  }),
+  [],
+  "publicly published EasyBroker clears premature Ungga"
 );
 assert.deepEqual(
   prematurePublishDestinationNotificationKinds({

@@ -1,6 +1,8 @@
 import {
+  buildContractCommercialMinimumsSummaryMessage,
   buildContractDataReviewNotifyText,
   contractDraftOutputPathFromContext,
+  evaluateContractCommercialMinimums,
   evaluatePropertyAdvanceGate,
   formatListingDescriptionReviewNotifyText,
   listingDescriptionDraftContentFromContext,
@@ -14,6 +16,7 @@ import {
   getGoogleCalendarAccessToken,
   getOperationalCase,
   getProfile,
+  getRecentOperationalCaseEvents,
   getUserIntegrations,
   getUserSkillSettings,
   getUserToolSettings,
@@ -40,6 +43,7 @@ import { buildDocumentChecklistLines } from "@/lib/operational-cases/case-docume
 import { healStalePublishFlowBlockers } from "@/lib/operational-cases/finalize-case-after-tool-decision";
 import {
   formatUnggaPublishApprovalNotifyText,
+  isNestedPublicationRunnerTick,
   shouldAutoFollowUpPackageReadyTick,
   shouldDeterministicallyRequestUnggaApproval,
 } from "@/lib/operational-cases/package-ready-auto-continue";
@@ -54,7 +58,11 @@ import {
   parseContractDraftFromContext,
   parseGenerateDocumentRenderResult,
 } from "@/lib/operational-cases/contract-draft-document";
-import { buildSettingsTestToolApprovalPolicy } from "@/lib/operational-cases/settings-test-tool-policy";
+import {
+  buildPublicationAwareE2EToolApprovalPolicy,
+  listingDescriptionIsApproved,
+  shouldAutoExecuteApprovedPublishToolsFromContext,
+} from "@/lib/operational-cases/publication-tool-policy";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 import {
   countRawPhotos,
@@ -112,13 +120,14 @@ export function classifyPublicationExecutionFromToolCalls(
         ? result.message
         : `${toolName}_${call.status}`;
   const unknown =
+    result.status === "unknown_outcome" ||
     /\b(timeout|timed out|killed|kill signal|sigterm|sigkill|aborted|econnreset|socket hang up)\b/i.test(
       error
     );
   if (
     call.status === "failed" ||
     result.ok === false ||
-    ["failed", "not_configured", "validation_error"].includes(
+    ["failed", "not_configured", "validation_error", "unknown_outcome"].includes(
       typeof result.status === "string" ? result.status : ""
     )
   ) {
@@ -138,6 +147,30 @@ export function classifyPublicationExecutionFromToolCalls(
         result,
         error: artifact ? "publication_dry_run" : "publication_artifact_missing",
       };
+    }
+    if (action.destination === "ungga") {
+      const expected =
+        typeof result.expected_image_count === "number"
+          ? result.expected_image_count
+          : null;
+      const uploaded =
+        typeof result.uploaded_image_count === "number"
+          ? result.uploaded_image_count
+          : typeof result.image_count === "number"
+            ? result.image_count
+            : null;
+      if (
+        typeof expected === "number" &&
+        expected > 0 &&
+        result.images_verified !== true &&
+        uploaded !== expected
+      ) {
+        return {
+          status: "failed",
+          result,
+          error: `ungga_media_incomplete:expected_${expected}_got_${uploaded ?? 0}`,
+        };
+      }
     }
   }
   if (
@@ -203,37 +236,13 @@ function shouldAutoExecuteContractDraftGeneration(opCase: OperationalCase): bool
   return pricingProposal?.approval_status === "approved";
 }
 
-/**
- * Tras aprobación de negocio por destino, el tick E2E no debe pedir un segundo
- * HITL técnico para tools high-risk de publicación (mismo patrón que
- * generate_document_from_template tras precio aprobado).
- */
 export function shouldAutoExecuteApprovedPublishToolsForTest(
   opCase: OperationalCase
 ): boolean {
-  if (opCase.case_type !== "property_optioning") return false;
-  if (opCase.current_step !== "package_ready") return false;
-  const context = contextRecord(opCase);
-  const approved = context.listing_description_approved;
-  if (!approved || typeof approved !== "object" || Array.isArray(approved)) {
-    return false;
-  }
-  const description =
-    typeof (approved as Record<string, unknown>).description === "string"
-      ? ((approved as Record<string, unknown>).description as string).trim()
-      : "";
-  if (!description) return false;
-  const approvals =
-    context.publish_approvals &&
-    typeof context.publish_approvals === "object" &&
-    !Array.isArray(context.publish_approvals)
-      ? (context.publish_approvals as Record<string, unknown>)
-      : {};
-  return approvals.easybroker === "approved" || approvals.ungga === "approved";
-}
-
-function shouldAutoExecuteApprovedPublishTools(opCase: OperationalCase): boolean {
-  return shouldAutoExecuteApprovedPublishToolsForTest(opCase);
+  return shouldAutoExecuteApprovedPublishToolsFromContext(contextRecord(opCase), {
+    caseType: opCase.case_type,
+    currentStep: opCase.current_step,
+  });
 }
 
 async function listTurnToolCalls(
@@ -272,13 +281,69 @@ export function missingContractFieldsFromToolCalls(toolCalls: TurnToolCallRow[])
   return [...fields];
 }
 
+/** Prefer structured missing_fields from tool results; fall back to commercial evaluator. */
+export function resolveContractDataReviewCommercialState(params: {
+  toolCalls: TurnToolCallRow[];
+  context?: Record<string, unknown> | null;
+}): ReturnType<typeof evaluateContractCommercialMinimums> {
+  const context = params.context ?? {};
+  const propertyData = isRecord(context.property_data) ? context.property_data : {};
+  const externalContact = isRecord(context.external_contact)
+    ? context.external_contact
+    : {};
+
+  for (const call of params.toolCalls) {
+    if (call.tool_name !== "generate_document_from_template") continue;
+    const result = call.result_json ?? {};
+    if (result.error !== "commission_contract_missing_required_data") continue;
+    if (
+      Array.isArray(result.missing_fields) &&
+      result.missing_fields.length > 0 &&
+      typeof result.commercial_summary === "string" &&
+      result.commercial_summary.trim()
+    ) {
+      const evaluated = evaluateContractCommercialMinimums({
+        context,
+        propertyData,
+        externalContact,
+        requireConfirmation: false,
+      });
+      // Prefer live evaluator (source of truth) even when tool already returned summary.
+      return evaluated;
+    }
+  }
+
+  return evaluateContractCommercialMinimums({
+    context,
+    propertyData,
+    externalContact,
+    requireConfirmation: false,
+  });
+}
+
 export type ContractGenerationFailureKind =
   | "not_attempted"
   | "template_missing"
   | "titularidad_review_required"
   | "owner_corroboration_incomplete"
   | "pending_confirmation"
+  | "infrastructure_error"
   | "unknown";
+
+function summarizeContractGenerationError(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  if (/502\s*bad\s*gateway|cloudflare/i.test(raw)) {
+    return "error temporal del almacenamiento (502). Reintenta en unos segundos";
+  }
+  if (/503\s*service\s*unavailable|504\s*gateway/i.test(raw)) {
+    return "servicio de almacenamiento temporalmente no disponible. Reintenta en unos segundos";
+  }
+  // Avoid dumping HTML bodies into Telegram/web notices.
+  if (/<html[\s>]/i.test(raw) || raw.length > 180) {
+    return "error de infraestructura al renderizar el DOCX. Reintenta con «Revisar avance»";
+  }
+  return raw;
+}
 
 /** Clasifica por qué el tick de contrato no dejó un borrador renderizado. */
 export function classifyContractGenerationFailureFromToolCalls(
@@ -290,10 +355,24 @@ export function classifyContractGenerationFailureFromToolCalls(
   if (generateCalls.length === 0) {
     return { kind: "not_attempted" };
   }
-  if (generateCalls.some((call) => call.status === "pending_confirmation")) {
+
+  // Prefer terminal outcomes over orphan pending rows. Auto-execute creates a
+  // pending_confirmation audit row first; if render throws before status update,
+  // a later failed sibling can leave a stale pending that must not look like HITL.
+  const terminalCalls = generateCalls.filter((call) =>
+    ["executed", "failed", "rejected", "approved"].includes(call.status)
+  );
+  const failedCalls = generateCalls.filter((call) => call.status === "failed");
+  const stillPending =
+    generateCalls.some((call) => call.status === "pending_confirmation") &&
+    failedCalls.length === 0 &&
+    !generateCalls.some((call) => call.status === "executed");
+
+  if (stillPending) {
     return { kind: "pending_confirmation" };
   }
-  for (const call of generateCalls) {
+
+  for (const call of failedCalls.length > 0 ? failedCalls : terminalCalls) {
     const result = call.result_json ?? {};
     const error = typeof result.error === "string" ? result.error : "";
     const status = typeof result.status === "string" ? result.status : "";
@@ -312,15 +391,26 @@ export function classifyContractGenerationFailureFromToolCalls(
     if (error === "owner_corroboration_extraction_incomplete") {
       return { kind: "owner_corroboration_incomplete" };
     }
+    if (/502|503|504|cloudflare|bad gateway|storage|gateway/i.test(error)) {
+      return {
+        kind: "infrastructure_error",
+        detail: summarizeContractGenerationError(error),
+      };
+    }
   }
-  const last = generateCalls[generateCalls.length - 1];
+
+  const lastFailed = failedCalls[failedCalls.length - 1];
+  const last = lastFailed ?? generateCalls[generateCalls.length - 1];
   const lastError =
     typeof last?.result_json?.error === "string"
       ? last.result_json.error
       : typeof last?.result_json?.status === "string"
         ? last.result_json.status
         : undefined;
-  return { kind: "unknown", detail: lastError };
+  return {
+    kind: "unknown",
+    detail: summarizeContractGenerationError(lastError),
+  };
 }
 
 function contractGenerationFailureNotify(params: {
@@ -351,6 +441,13 @@ function contractGenerationFailureNotify(params: {
         kind: "case_update",
         text:
           "La generación del contrato quedó pendiente de aprobación humana (HITL). Aprueba la tool en Pendientes y continúa.",
+      };
+    case "infrastructure_error":
+      return {
+        kind: "case_update",
+        text: params.failure.detail
+          ? `No pude generar el borrador del contrato (${params.failure.detail}). Pulsa «Revisar avance» para reintentar.`
+          : "No pude generar el borrador del contrato por un error temporal de infraestructura. Pulsa «Revisar avance» para reintentar.",
       };
     case "not_attempted":
       return {
@@ -481,6 +578,27 @@ async function hasUnreadListingDescriptionReviewNotification(
     .maybeSingle();
   if (error) return false;
   return Boolean(data?.id);
+}
+
+async function hasListingDescriptionReviewRequestedEventForCurrentDraft(
+  db: ReturnType<typeof createServerClient>,
+  caseId: string,
+  context: Record<string, unknown>
+) {
+  const draft = isRecord(context.listing_description_draft)
+    ? context.listing_description_draft
+    : {};
+  const draftGeneratedAt =
+    typeof draft.generated_at === "string"
+      ? Date.parse(draft.generated_at)
+      : Number.NaN;
+  const events = await getRecentOperationalCaseEvents(db, caseId, 30);
+  return events.some((event) => {
+    const payload = isRecord(event.payload_jsonb) ? event.payload_jsonb : {};
+    if (payload.kind !== "listing_description_review_requested") return false;
+    if (!Number.isFinite(draftGeneratedAt)) return true;
+    return Date.parse(event.created_at) >= draftGeneratedAt;
+  });
 }
 
 async function hasUnreadPhotosUploadRequestedNotification(
@@ -891,9 +1009,11 @@ function buildCaseE2ETickMessage(
             "En este tick SOLO el flujo de contrato: generate_document_from_template y notify_user.",
             "No uses herramientas de fotos, package_ready, EasyBroker ni Ungga.",
             "Llama generate_document_from_template(template_slug=commission_contract, format=docx, case_id=...) exactamente una vez.",
+            "Omite asset_key y data si no los necesitas; no envíes strings vacíos ni data={}.",
             "Si devuelve titularidad_review_required, notify_user(kind=titularidad_review) y detente en waiting_internal.",
             "Si devuelve owner_corroboration_extraction_incomplete, extrae esos documentos con operational_case_extract_document_fields(force=true) y reintenta una vez.",
             "Si devuelve not_configured / plantilla faltante, notify_user explicando que falta commission_contract_template y deja status=paused.",
+            "Si devuelve commission_contract_missing_required_data, la tool ya emitió contract_data_review como remediación owned: NO llames notify_user otra vez; termina el turno en waiting_internal.",
             "Si status=rendered con output_path, entonces notify_user(kind=contract_review) con «Descargar borrador del contrato» + /api/operational-cases/{case_id}/documents/contract_draft/download.",
             "No notifiques contract_review sin borrador real. Deja current_step=contract_pending y status=waiting_internal tras pedir revisión.",
           ].join(" ");
@@ -960,7 +1080,7 @@ function buildCaseE2ETickMessage(
               !Array.isArray(context.published)
                 ? (context.published as Record<string, unknown>)
                 : {};
-            const easybrokerPublished = Boolean(
+            const easybrokerDraftCreated = Boolean(
               published.easybroker &&
                 typeof published.easybroker === "object" &&
                 !Array.isArray(published.easybroker) &&
@@ -968,6 +1088,31 @@ function buildCaseE2ETickMessage(
                   "string" ||
                   (published.easybroker as Record<string, unknown>).ok === true)
             );
+            const publicationState =
+              context.publication &&
+              typeof context.publication === "object" &&
+              !Array.isArray(context.publication)
+                ? (context.publication as Record<string, unknown>)
+                : null;
+            const easybrokerDest =
+              publicationState &&
+              typeof publicationState.destinations === "object" &&
+              publicationState.destinations &&
+              !Array.isArray(publicationState.destinations) &&
+              typeof (publicationState.destinations as Record<string, unknown>)
+                .easybroker === "object"
+                ? ((publicationState.destinations as Record<string, unknown>)
+                    .easybroker as Record<string, unknown>)
+                : null;
+            const easybrokerPubliclyPublished =
+              easybrokerDest?.phase === "published" ||
+              (published.easybroker &&
+                typeof published.easybroker === "object" &&
+                !Array.isArray(published.easybroker) &&
+                ((published.easybroker as Record<string, unknown>).status ===
+                  "published" ||
+                  (published.easybroker as Record<string, unknown>)
+                    .remote_status === "published"));
             const easybrokerDecision =
               typeof publishApprovals.easybroker === "string"
                 ? publishApprovals.easybroker
@@ -977,7 +1122,7 @@ function buildCaseE2ETickMessage(
                 ? publishApprovals.ungga
                 : null;
             const easybrokerResolvedForNextDestination =
-              easybrokerPublished ||
+              Boolean(easybrokerPubliclyPublished) ||
               easybrokerDecision === "skipped" ||
               easybrokerDecision === "rejected";
             const pendingAction = context.publication_runner_pending_action;
@@ -999,22 +1144,31 @@ function buildCaseE2ETickMessage(
                 ? runnerHint
                 : !easybrokerDecision || easybrokerDecision === "pending"
                   ? "Si EasyBroker aún no tiene decisión, envía notify_user(kind=easybroker_publish_approval) con botones Publicar en EasyBroker / No publicar en EasyBroker / Detener y revisar; no publiques todavía."
-                  : easybrokerDecision === "approved" && !easybrokerPublished
+                  : easybrokerDecision === "approved" && !easybrokerDraftCreated
                     ? "publish_approvals.easybroker=approved y aún NO hay context.published.easybroker: en este tick DEBES llamar easybroker_create_listing(case_id) con title/description/operation/property_type/price/street/location. NO inventes custom_fields, legal_address, area_construida_m2, features libres, lot_width/lot_length=0, internal_id=UUID del caso, placeholders N/D ni latitude/longitude=0; el adapter enriquece desde el caso y allowlista el payload EasyBroker. NO pidas Ungga todavía."
-                    : easybrokerDecision === "approved" && easybrokerPublished
-                      ? "EasyBroker ya quedó en context.published.easybroker; no lo vuelvas a crear. Si el listing sigue not_published, sube fotos (image_watermark + easybroker_upload_images) y luego easybroker_publish_listing tras preflight. Si Ungga no tiene decisión y EasyBroker ya está publicado/skipped/rejected, envía notify_user(kind=ungga_publish_approval)."
-                      : "EasyBroker está skipped/rejected; no lo publiques.",
+                    : easybrokerDecision === "approved" &&
+                        easybrokerDraftCreated &&
+                        !easybrokerPubliclyPublished
+                      ? "EasyBroker ya tiene listing (borrador). No lo vuelvas a crear. Si faltan fotos, image_watermark (solo si hay logo de marca) + easybroker_upload_images. No publiques ni pidas Ungga hasta que el runner indique publish y EasyBroker esté publicado remotamente."
+                      : easybrokerDecision === "approved" &&
+                          easybrokerPubliclyPublished
+                        ? "EasyBroker ya está publicado remotamente. Si Ungga no tiene decisión, envía notify_user(kind=ungga_publish_approval)."
+                        : "EasyBroker está skipped/rejected; no lo publiques.",
               !runnerHint &&
               easybrokerResolvedForNextDestination &&
               (!unggaDecision || unggaDecision === "pending")
-                ? "Solo ahora (EasyBroker ya publicado, skipped o rejected): si Ungga aún no tiene decisión y ya subiste fotos (o no hay fotos), envía notify_user(kind=ungga_publish_approval)."
+                ? "Solo ahora (EasyBroker ya publicado remotamente, skipped o rejected): si Ungga aún no tiene decisión y ya subiste fotos (o no hay fotos), envía notify_user(kind=ungga_publish_approval)."
                 : !runnerHint && unggaDecision === "approved"
                   ? "PUBLICATION: publish_approvals.ungga=approved. Si aún no hay ungga_property_id, llama ungga_publish_listing(action=prepare_draft, case_id) UNA vez (omitir strings vacíos). NO uses publish_draft hasta tener GU-ID y preflight pass. Si el runner indica publish, usa action=publish_draft con ungga_property_id del contexto."
                   : !runnerHint
-                    ? "NO solicites Ungga hasta que EasyBroker esté publicado en context.published.easybroker o quede skipped/rejected."
+                    ? "NO solicites Ungga hasta que EasyBroker esté publicado remotamente (phase=published) o quede skipped/rejected."
                     : "",
               "Publica solo destinos con publish_approvals.<destino>=approved. Si un destino está skipped/rejected, no lo publiques.",
-              "Si no hay decisión humana pendiente, continúa el trabajo de máquina en el mismo tick (create → upload → publish EasyBroker → ask Ungga); no te detengas a mitad.",
+              runnerHint
+                ? "Ejecuta SOLO la acción pendiente del publication runner; no llames tools de otras fases; el runner encadena el siguiente paso. No pidas Ungga en este tick salvo que el hint lo indique."
+                : easybrokerResolvedForNextDestination
+                  ? "Si no hay decisión humana pendiente, continúa el trabajo de máquina; puedes pedir Ungga solo porque EasyBroker ya está publicado/skipped/rejected."
+                  : "Si no hay decisión humana pendiente, continúa el trabajo de máquina del paso actual (create o upload EasyBroker); no publiques ni pidas Ungga todavía.",
               "No escribas published/publish_approvals/photo_manifest/publication vía operational_case_update_state.",
             ]
               .filter(Boolean)
@@ -1102,6 +1256,7 @@ export async function runSettingsTestCaseAgentTick(
   const initialContext = contextRecord(opCase);
   if (
     opCase.current_step === "package_ready" &&
+    listingDescriptionIsApproved(initialContext) &&
     !isRecord(initialContext.publication_runner_pending_action)
   ) {
     const progress = await requestPublicationProgress(
@@ -1129,6 +1284,9 @@ export async function runSettingsTestCaseAgentTick(
         },
       }
     );
+    // Once copy is approved, publication state owns the tick in all rollout
+    // modes. In particular, off/shadow must not fall through to the legacy
+    // agent where a publish write could become a generic technical HITL.
     const afterProgress = (await getOperationalCase(db, opCase.id)) ?? opCase;
     return {
       case: afterProgress,
@@ -1432,13 +1590,11 @@ export async function runSettingsTestCaseAgentTick(
     autoApproveTools: false,
     toolApprovalPolicy:
       settingsTestCase || controlledE2ECase || Boolean(pendingPublicationAction)
-      ? buildSettingsTestToolApprovalPolicy(undefined, {
+      ? buildPublicationAwareE2EToolApprovalPolicy({
+          context: contextRecord(caseWithTarget),
           documentRequestTarget: explicitDocumentRequestTarget,
           autoExecuteContractDraftGeneration:
             shouldAutoExecuteContractDraftGeneration(caseWithTarget),
-          autoExecuteApprovedPublishTools:
-            Boolean(pendingPublicationAction) ||
-            shouldAutoExecuteApprovedPublishTools(caseWithTarget),
         })
       : undefined,
     caseId: caseWithTarget.id,
@@ -1534,15 +1690,33 @@ export async function runSettingsTestCaseAgentTick(
     );
     if (!hasUnreadContractData) {
       await dismissUnreadContractGenerationErrorNotifications(db, userId, fresh.id);
+      const commercial = resolveContractDataReviewCommercialState({
+        toolCalls: turnToolCalls,
+        context: (caseAfterDeterministicFallback.context_jsonb ??
+          {}) as Record<string, unknown>,
+      });
+      const requiredMissing = commercial.missing.filter(
+        (item) => item.optional !== true
+      );
+      const missingKeys =
+        requiredMissing.length > 0
+          ? requiredMissing.map((item) => item.key)
+          : missingContractFields;
+      const notifyText =
+        requiredMissing.length > 0 || commercial.known.length > 0
+          ? buildContractCommercialMinimumsSummaryMessage(commercial)
+          : buildContractDataReviewNotifyText(missingKeys);
       await notify(
         db,
         userId,
         {
-          text: buildContractDataReviewNotifyText(missingContractFields),
+          text: notifyText,
           kind: "contract_data_review",
           data: {
             case_id: fresh.id,
-            missing_required_fields: missingContractFields,
+            missing_required_fields: missingKeys,
+            missing_fields: commercial.missing,
+            known_fields: commercial.known,
             source: options?.source ?? "settings_test_case_tick",
           },
         },
@@ -1556,7 +1730,7 @@ export async function runSettingsTestCaseAgentTick(
         payload: {
           kind: "contract_data_review_requested",
           source: options?.source ?? "settings_test_case_tick",
-          missing_required_fields: missingContractFields,
+          missing_required_fields: missingKeys,
         },
       });
     }
@@ -1752,6 +1926,16 @@ export async function runSettingsTestCaseAgentTick(
           },
           "normal"
         );
+      }
+      // Agent notify_user records this event at delivery time. Keep a
+      // post-agent backfill for owned fallback/legacy paths, deduped per draft.
+      const reviewEventAlreadyRecorded =
+        await hasListingDescriptionReviewRequestedEventForCurrentDraft(
+          db,
+          fresh.id,
+          contextRecord(caseAfterDeterministicFallback)
+        );
+      if (!reviewEventAlreadyRecorded) {
         await insertOperationalCaseEvent(db, {
           caseId: fresh.id,
           eventType: "human_decision",
@@ -1760,6 +1944,7 @@ export async function runSettingsTestCaseAgentTick(
           payload: {
             kind: "listing_description_review_requested",
             source: options?.source ?? "settings_test_case_tick",
+            waiting_for: "advisor_response",
           },
         });
       }
@@ -1929,10 +2114,20 @@ export async function runSettingsTestCaseAgentTick(
       uploadedImagesThisTurn: uploadedEasybrokerImagesThisTurn,
       uploadFailedThisTurn: easybrokerUploadFailure.failed,
       autoFollowUpDepth: options?.autoFollowUpDepth ?? 0,
+      source: options?.source ?? null,
     });
 
+  const preserveRunnerLease =
+    options?.skipLock === true &&
+    isNestedPublicationRunnerTick(options?.source ?? null);
+
   const updated = await updateOperationalCase(db, fresh.id, version, {
-    nextActionAt: controlledE2ECase ? null : undefined,
+    nextActionAt:
+      preserveRunnerLease
+        ? undefined
+        : controlledE2ECase
+          ? null
+          : undefined,
     context: {
       ...(caseForFinalUpdate?.context_jsonb ?? fresh.context_jsonb),
       ...(settingsTestCase
@@ -2005,6 +2200,7 @@ export async function runSettingsTestCaseAgentTick(
           const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
             source: `package_ready_auto_follow_up:${action.type}`,
             autoFollowUpDepth: (options?.autoFollowUpDepth ?? 0) + 1,
+            skipLock: true,
           });
           return (
             tick.publication_execution ?? {

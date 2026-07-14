@@ -142,20 +142,34 @@ export type {
 
 export {
   COMMISSION_CONTRACT_TEMPLATE_PLACEHOLDERS,
+  amountToSpanishLegalWords,
+  contractDatePartsFromTimezone,
   deriveCommissionContractTemplateData,
+  formatContractSalidaPrice,
+  integerToSpanishWordsLower,
+  operationContractTypeLabel,
+  operationTypeLabel,
+  percentToSpanishWords,
   readablePropertyAddress,
+  resolveContractOperationKind,
 } from "./tools/commission-contract-template-data";
-export type { CommissionContractPlaceholderKey } from "./tools/commission-contract-template-data";
+export type {
+  CommissionContractPlaceholderKey,
+  ContractOperationKind,
+} from "./tools/commission-contract-template-data";
 export {
   applyCommissionTermsPatch,
   buildContractCommercialMinimumsSummaryMessage,
+  collaborationCompensationModeChoices,
   emptyCommissionTerms,
   evaluateContractCommercialMinimums,
+  formatCollaborationCompensationMode,
   mapCollaborationToEasyBroker,
   mapCollaborationToUngga,
   parseCommissionTerms,
   parseContractCommercialReply,
   resolveOwnerEmailFromSources,
+  COLLABORATION_COMPENSATION_MODE_LABELS,
 } from "./operational-cases/contract-commercial-terms";
 export type {
   CollaborationCompensationMode,
@@ -164,6 +178,7 @@ export type {
   ContractCommercialMinimumsResult,
   ContractCommercialMissingField,
   ContractCommercialPatch,
+  ContractCommercialSummaryMode,
 } from "./operational-cases/contract-commercial-terms";
 export { testAvaclickCredentials } from "./tools/avaclick";
 export {
@@ -172,6 +187,8 @@ export {
   deriveComparableAreaBand,
   requiresAvaclick,
   classifyComparableSearchOutcome,
+  mapToEasyBrokerPropertyType,
+  propertyTypesMatch,
 } from "./operational-cases/comparable-search-contract";
 export type {
   ComparableSearchValidity,
@@ -192,7 +209,10 @@ export type {
   ComparablesAnalysisBuildOptions,
 } from "./operational-cases/comparables-analysis";
 export { buildPricingProposalFromComparables, formatPriceApprovalNotifyText } from "./operational-cases/pricing-proposal";
-export { formatListingDescriptionReviewNotifyText } from "./operational-cases/listing-description-review";
+export {
+  formatListingDescriptionReviewNotifyText,
+  sanitizeListingDescriptionCommercialCopy,
+} from "./operational-cases/listing-description-review";
 export { resolveImagePathsFromRawPhotos } from "./tools/realestate-adapters";
 export { normalizeAnalyzeImageStorageRef } from "./tools/realestate-adapters";
 export {

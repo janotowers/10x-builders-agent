@@ -147,8 +147,9 @@ import { settingsTestPlaythroughAnchorAt } from "@/lib/operational-cases/setting
 import type { FlowProgressEvidenceItem } from "@/lib/operational-cases/settings-test-flow-progress";
 import {
   flowProgressForE2ESummary,
+  isCommissionContractDataBlockedCall,
+  toolCallDisplayStatusLabel,
   toolCallFailureDetail,
-  toolCallStatusLabel,
 } from "@/lib/operational-cases/settings-test-flow-progress";
 import {
   normalizeToolTestBehavior,
@@ -180,6 +181,9 @@ import {
   formatLastE2ETransitionOutcome,
   formatSettingsTestCleanupResult,
   formatSettingsTestHistorySummary,
+  isObservationalLabCaseReadOnly,
+  listObservableConversationalCases,
+  partitionObservableConversationalCases,
   type OperationalStepLabelMap,
   type SettingsTestCleanupTarget,
 } from "@/lib/operational-cases/settings-test-history-ui";
@@ -6136,7 +6140,44 @@ function TestCaseFlowProgressSummary({
       </summary>
       <ol className="mt-3 space-y-2 border-t border-neutral-200 pt-3 text-xs dark:border-neutral-800">
         {visibleSteps.map((step) => {
-          const summary = summarizeFlowStepEvidence(step.evidence);
+          const summary = summarizeFlowStepEvidence(
+            step.evidence,
+            step.evidenceItems
+          );
+          const listingReviewRequests = (step.evidenceItems ?? []).filter(
+            (item) =>
+              (item.kind === "event" &&
+                item.event_kind === "listing_description_review_requested") ||
+              (item.kind === "tool" &&
+                item.tool_name === "notify_user" &&
+                item.arguments_json != null &&
+                typeof item.arguments_json === "object" &&
+                !Array.isArray(item.arguments_json) &&
+                (item.arguments_json as Record<string, unknown>).kind ===
+                  "listing_description_review")
+          );
+          const listingReviewDecisions = (step.evidenceItems ?? []).filter(
+            (item) =>
+              item.kind === "event" &&
+              [
+                "listing_description_approved",
+                "listing_description_changes_requested",
+                "listing_description_regeneration_requested",
+              ].includes(item.event_kind ?? "")
+          );
+          const latestEvidenceAt = (
+            items: typeof listingReviewRequests
+          ): number =>
+            items.reduce(
+              (latest, item) =>
+                Math.max(latest, new Date(item.created_at).getTime() || 0),
+              0
+            );
+          const waitingForListingReview =
+            step.step_key === "package_ready" &&
+            step.status === "in_progress" &&
+            latestEvidenceAt(listingReviewRequests) >
+              latestEvidenceAt(listingReviewDecisions);
           return (
             <li
               key={step.step_key}
@@ -6155,6 +6196,12 @@ function TestCaseFlowProgressSummary({
                       cycleScoped: Boolean(e2eScoped),
                     })}
               </p>
+              {waitingForListingReview ? (
+                <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] font-medium text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+                  Esperando respuesta del asesor: aprobar la descripción o pedir
+                  cambios. No se requiere otra acción del agente hasta recibirla.
+                </p>
+              ) : null}
               {intakeIncomplete && step.step_key === "intake" ? (
                 <div className="mt-2 rounded border border-sky-100 bg-sky-50/70 p-2 text-[11px] text-sky-950 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-100">
                   <div className="font-semibold">
@@ -6223,10 +6270,39 @@ function TestCaseFlowProgressSummary({
                                     {item.tool_name}
                                   </span>
                                   <span className="text-neutral-500">
-                                    · {toolCallStatusLabel(item.status)}
+                                    ·{" "}
+                                    {toolCallDisplayStatusLabel({
+                                      tool_name: item.tool_name,
+                                      status: item.status,
+                                      result_json:
+                                        item.result_json &&
+                                        typeof item.result_json === "object"
+                                          ? (item.result_json as Record<
+                                              string,
+                                              unknown
+                                            >)
+                                          : null,
+                                    })}
                                   </span>
                                   {item.failure_detail ? (
-                                    <span className="text-red-700 dark:text-red-300">
+                                    <span
+                                      className={
+                                        isCommissionContractDataBlockedCall({
+                                          tool_name: item.tool_name,
+                                          status: item.status,
+                                          result_json:
+                                            item.result_json &&
+                                            typeof item.result_json === "object"
+                                              ? (item.result_json as Record<
+                                                  string,
+                                                  unknown
+                                                >)
+                                              : null,
+                                        })
+                                          ? "text-amber-700 dark:text-amber-300"
+                                          : "text-red-700 dark:text-red-300"
+                                      }
+                                    >
                                       · {item.failure_detail}
                                     </span>
                                   ) : null}
@@ -7075,14 +7151,26 @@ function TestCaseAuditPanel({
                                     className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-1 text-[11px] ${
                                       item.call.status === "pending_confirmation"
                                         ? "border-amber-200 bg-amber-50 text-amber-900"
-                                        : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+                                        : isCommissionContractDataBlockedCall(
+                                              item.call
+                                            )
+                                          ? "border-amber-200 bg-amber-50/80 text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100"
+                                          : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
                                     }`}
                                   >
                                     <span className="font-mono text-neutral-800 dark:text-neutral-100">
                                       {item.call.tool_name}
                                     </span>
-                                    <span className="text-neutral-500">
-                                      {toolCallStatusLabel(item.call.status)}
+                                    <span
+                                      className={
+                                        isCommissionContractDataBlockedCall(
+                                          item.call
+                                        )
+                                          ? "text-amber-800 dark:text-amber-200"
+                                          : "text-neutral-500"
+                                      }
+                                    >
+                                      {toolCallDisplayStatusLabel(item.call)}
                                       {" · "}
                                       {formatAuditDateTime(item.call.created_at)}
                                       {toolCallFailureDetail(item.call)
@@ -7334,17 +7422,11 @@ export function OperationalCaseTypesClient({
     [relatedOperationalCases]
   );
   const observableConversationalCases = useMemo(
-    () =>
-      relatedOperationalCases
-        .filter(
-          (opCase) =>
-            opCase.context_jsonb?.created_from === "agent_conversation" &&
-            !["completed", "failed"].includes(opCase.status)
-        )
-        .sort(
-          (a, b) =>
-            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        ),
+    () => listObservableConversationalCases(relatedOperationalCases),
+    [relatedOperationalCases]
+  );
+  const partitionedObservableConversationalCases = useMemo(
+    () => partitionObservableConversationalCases(relatedOperationalCases),
     [relatedOperationalCases]
   );
   const pausedConversationalCase = useMemo(
@@ -7404,6 +7486,9 @@ export function OperationalCaseTypesClient({
   const toolsPass =
     Boolean(toolReadiness) && readinessCounts.blocking === 0;
   const toolsHaveBlocks = readinessCounts.blocking > 0;
+  const blockingReadinessTools = (toolReadiness?.tools ?? []).filter(
+    (tool) => tool.blocking && isReadinessVisibleTool(tool.tool_id)
+  );
   const shouldReviewTools = !toolReadiness && !toolReadinessLoading;
   const canManageTestCase =
     selectedIsActive && Boolean(toolReadiness);
@@ -9455,10 +9540,12 @@ export function OperationalCaseTypesClient({
       const caseIsControlledE2E =
         agentTestCase?.context_jsonb?.e2e_controlled === true;
       const isRealConversationalCase = Boolean(agentTestCase && !caseIsControlledE2E);
+      const isObservedCaseReadOnly = isObservationalLabCaseReadOnly(agentTestCase);
       const hasObservableConversationalCases =
         observableConversationalCases.length > 0;
       const observedCaseSelectorValue = activeConversationalCaseId ?? "";
       const canAbandonObservedE2ECase =
+        !isObservedCaseReadOnly &&
         agentTestCase?.context_jsonb?.created_from === "agent_conversation" &&
         caseIsControlledE2E &&
         !isAbandonedConversationalE2ECase(agentTestCase);
@@ -9477,6 +9564,10 @@ export function OperationalCaseTypesClient({
       const n5StatusLabel =
         labMode === "sin_caso"
           ? "Sin caso conversacional activo"
+          : isObservedCaseReadOnly
+            ? agentTestCase?.status === "failed"
+              ? "Caso fallido — solo lectura"
+              : "Caso cerrado — solo lectura"
           : labMode === "accion_humana_pendiente"
             ? "Acción humana pendiente"
             : labMode === "intake_conversacional"
@@ -9632,15 +9723,45 @@ export function OperationalCaseTypesClient({
                 className="mt-1 w-full rounded border border-violet-200 bg-white px-2 py-1 text-[11px] font-medium text-violet-900 dark:border-violet-800 dark:bg-neutral-950 dark:text-violet-100"
               >
                 <option value="">— Sin caso en observación —</option>
-                {observableConversationalCases.map((opCase) => (
-                  <option key={opCase.id} value={opCase.id}>
-                    {observedCaseLabel(opCase)}
-                  </option>
-                ))}
+                {partitionedObservableConversationalCases.active.length > 0 ? (
+                  <optgroup label="En curso">
+                    {partitionedObservableConversationalCases.active.map(
+                      (opCase) => (
+                        <option key={opCase.id} value={opCase.id}>
+                          {observedCaseLabel(opCase)}
+                        </option>
+                      )
+                    )}
+                  </optgroup>
+                ) : null}
+                {partitionedObservableConversationalCases.closedReadOnly.length >
+                0 ? (
+                  <optgroup label="Cerrados (solo lectura)">
+                    {partitionedObservableConversationalCases.closedReadOnly.map(
+                      (opCase) => (
+                        <option key={opCase.id} value={opCase.id}>
+                          {observedCaseLabel(opCase)}
+                        </option>
+                      )
+                    )}
+                  </optgroup>
+                ) : null}
               </select>
             ) : activeConversationalCaseId && agentTestCase ? (
               <p className="mt-1 text-xs font-medium">
                 {observedCaseLabel(agentTestCase)}
+              </p>
+            ) : null}
+            {isObservedCaseReadOnly && agentTestCase ? (
+              <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-300">
+                Este caso ya terminó. Puedes revisar actividad e historial, pero no
+                se puede avanzar ni abandonar desde el lab.{" "}
+                <a
+                  href={`/operational-cases?case=${encodeURIComponent(agentTestCase.id)}`}
+                  className="font-semibold text-violet-700 underline-offset-2 hover:underline dark:text-violet-300"
+                >
+                  Abrir detalle completo
+                </a>
               </p>
             ) : null}
           </div>
@@ -9653,6 +9774,11 @@ export function OperationalCaseTypesClient({
                 <span className="inline-flex rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
                   {isRealConversationalCase ? "Caso real observado" : "Prueba con agente"}
                 </span>
+                {isObservedCaseReadOnly ? (
+                  <span className="inline-flex rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-900 dark:bg-blue-950 dark:text-blue-100">
+                    Solo lectura
+                  </span>
+                ) : null}
                 {hasCase && !intakeIncomplete ? (
                   <span
                     className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
@@ -9709,14 +9835,16 @@ export function OperationalCaseTypesClient({
                 ) : null}
               </div>
                 <p className="mt-2 text-xs text-neutral-600 dark:text-neutral-300">
-                  {isRealConversationalCase
+                  {isObservedCaseReadOnly
+                    ? "Caso cerrado: este panel es solo lectura (eventos, tools y auditoría). No se pueden lanzar nuevas revisiones ni abandonar el recorrido."
+                    : isRealConversationalCase
                     ? "Este panel observa el caso real. El flujo avanza por Telegram, cron y tus decisiones HITL en Pendientes."
                     : "Activa el modo prueba E2E antes de escribir por Telegram si quieres que el nuevo caso sea controlado por el laboratorio. Los avances por evento ocurren en Telegram; las revisiones por tiempo se hacen manualmente aquí."}
                 </p>
                 <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-300">
                   Estado actual: {n5StatusLabel}
                 </p>
-                {isRealConversationalCase ? (
+                {isRealConversationalCase && !isObservedCaseReadOnly ? (
                   <p className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
                     Caso real de producción: el cron puede continuar este caso fuera
                     del laboratorio.
@@ -9775,7 +9903,19 @@ export function OperationalCaseTypesClient({
                     de recorrido actual.
                   </p>
                 ) : null}
-                {isRealConversationalCase ? (
+                {isObservedCaseReadOnly ? (
+                  <div className="flex flex-wrap gap-2">
+                    <a
+                      href={`/operational-cases?case=${encodeURIComponent(agentTestCase.id)}`}
+                      className="inline-flex w-fit rounded border border-blue-300 bg-white px-3 py-2 text-xs font-semibold text-blue-900 hover:bg-blue-50"
+                    >
+                      Abrir detalle completo
+                    </a>
+                    <span className="inline-flex items-center rounded bg-blue-50 px-3 py-2 text-[11px] font-medium text-blue-800">
+                      Revisar avance deshabilitado (caso cerrado)
+                    </span>
+                  </div>
+                ) : isRealConversationalCase ? (
                   <a
                     href={`/chat/pending?case=${encodeURIComponent(agentTestCase.id)}`}
                     target="_blank"
@@ -9816,7 +9956,9 @@ export function OperationalCaseTypesClient({
                   </button>
                 )}
                 <p className="text-[11px] text-neutral-500">
-                  {isRealConversationalCase
+                  {isObservedCaseReadOnly
+                    ? "Puedes inspeccionar eventos, tools y el historial de este caso cerrado. Para un nuevo recorrido, deja el selector en «Sin caso en observación» y escribe por Telegram con modo E2E activo."
+                    : isRealConversationalCase
                     ? "Este panel muestra auditoría del caso real. Para resolver acciones pendientes usa el inbox de Pendientes o Telegram."
                     : intakeIncomplete
                     ? "Ahora mismo el recorrido está en Paso 0 (intake). Continúa por Telegram para completar los datos faltantes; la primera revisión manual se habilita después."
@@ -10224,6 +10366,17 @@ export function OperationalCaseTypesClient({
                 Prueba o configura las tools requeridas antes de crear una prueba
                 end-to-end. Los stubs no críticos pueden quedar como
                 advertencia para una prueba parcial.
+                {blockingReadinessTools.length > 0 ? (
+                  <span className="mt-1 block font-semibold">
+                    Bloquean ahora:{" "}
+                    {blockingReadinessTools
+                      .map(
+                        (tool) =>
+                          `${tool.tool_id} (${toolReadinessLabel(tool.status)})`
+                      )
+                      .join(", ")}
+                  </span>
+                ) : null}
               </p>
             ) : null}
             {toolReadinessError ? (

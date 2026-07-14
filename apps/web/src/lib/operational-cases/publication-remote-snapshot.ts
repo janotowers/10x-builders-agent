@@ -74,7 +74,9 @@ async function unggaApiCredentials(
   return base && token ? { base, token } : null;
 }
 
-function easyBrokerSnapshot(payload: Record<string, unknown>): EasyBrokerListingSnapshot {
+export function easyBrokerSnapshot(
+  payload: Record<string, unknown>
+): EasyBrokerListingSnapshot {
   const images = Array.isArray(payload.images)
     ? payload.images.filter(isRecord)
     : [];
@@ -89,7 +91,9 @@ function easyBrokerSnapshot(payload: Record<string, unknown>): EasyBrokerListing
       stringValue(payload.property_id),
     public_id: stringValue(payload.public_id),
     internal_id: stringValue(payload.internal_id),
-    status: stringValue(payload.status),
+    status:
+      stringValue(payload.status) ??
+      (stringValue(payload.published_at) ? "published" : "not_published"),
     title: stringValue(payload.title),
     description: stringValue(payload.description),
     image_count: images.length,
@@ -178,6 +182,61 @@ export async function fetchEasyBrokerListingSnapshot(
   return exact[0] ? easyBrokerSnapshot(exact[0]) : null;
 }
 
+export function isUnggaApiCredentialsMissingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message === "ungga_api_credentials_missing" ||
+    message.includes("ungga_api_credentials_missing")
+  );
+}
+
+/**
+ * CLI-only Ungga accounts have no internal API. When prepare_draft already
+ * verified the GU-ID + media, use that artifact as adapter-tier remote evidence.
+ */
+export function unggaSnapshotFromCliEvidence(params: {
+  unggaPropertyId: string;
+  draftUrl?: string | null;
+  publishedUrl?: string | null;
+  remoteStatus?: string | null;
+  imageCount?: number | null;
+}): UnggaListingSnapshot {
+  const id = params.unggaPropertyId.trim();
+  return {
+    ungga_property_id: id,
+    status: params.remoteStatus?.trim() || "draft",
+    draft_url: params.draftUrl?.trim() || null,
+    published_url: params.publishedUrl?.trim() || null,
+    image_count:
+      typeof params.imageCount === "number" && Number.isFinite(params.imageCount)
+        ? params.imageCount
+        : null,
+    raw: { source: "cli_evidence", ungga_property_id: id },
+  };
+}
+
+export function canUseUnggaCliEvidence(params: {
+  unggaPropertyId?: string | null;
+  mediaRequired: boolean;
+  mediaVerified: boolean;
+}): boolean {
+  const id =
+    typeof params.unggaPropertyId === "string"
+      ? params.unggaPropertyId.trim()
+      : "";
+  if (!id) return false;
+  return !params.mediaRequired || params.mediaVerified;
+}
+
+/** Ungga often shows extra thumbs (cover + uploads); accept remote >= expected. */
+export function unggaMediaCountSatisfied(
+  remoteCount: number | null | undefined,
+  expectedCount: number
+): boolean {
+  if (!(expectedCount > 0)) return true;
+  return typeof remoteCount === "number" && remoteCount >= expectedCount;
+}
+
 export async function fetchUnggaListingSnapshot(
   db: DbClient,
   params: { userId: string; unggaPropertyId: string }
@@ -225,9 +284,17 @@ export function compareEasyBrokerSnapshot(params: {
   expectedFields?: Record<string, unknown>;
 }): string[] {
   const mismatches: string[] = [];
+  const expectedInternalId = params.expectedInternalId
+    ?.replace(/[^A-Za-z0-9]/g, "")
+    .slice(0, 15)
+    .toUpperCase();
+  const actualInternalId = params.snapshot.internal_id
+    ?.replace(/[^A-Za-z0-9]/g, "")
+    .slice(0, 15)
+    .toUpperCase();
   if (
-    params.expectedInternalId &&
-    params.snapshot.internal_id !== params.expectedInternalId
+    expectedInternalId &&
+    actualInternalId !== expectedInternalId
   ) {
     mismatches.push("internal_id_mismatch");
   }
@@ -246,13 +313,26 @@ export function compareEasyBrokerSnapshot(params: {
   }
   for (const [field, expected] of Object.entries(params.expectedFields ?? {})) {
     if (expected === undefined || expected === null || expected === "") continue;
+    const canonicalExpected =
+      field === "title" && typeof expected === "string"
+        ? canonicalEasyBrokerTitle(expected)
+        : expected;
     const actual =
       field === "title" || field === "description"
         ? params.snapshot[field]
         : params.snapshot.fields[field];
-    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    if (JSON.stringify(actual) !== JSON.stringify(canonicalExpected)) {
       mismatches.push(`critical_field_mismatch:${field}`);
     }
   }
   return mismatches;
+}
+
+function canonicalEasyBrokerTitle(value: string): string {
+  const clean = value.trim().replace(/\s+/g, " ");
+  if (clean.length <= 80) return clean;
+  const sliced = clean.slice(0, 80);
+  const lastSpace = sliced.lastIndexOf(" ");
+  const shortened = lastSpace >= 56 ? sliced.slice(0, lastSpace) : sliced;
+  return shortened.replace(/[\s,;:.-]+$/g, "");
 }

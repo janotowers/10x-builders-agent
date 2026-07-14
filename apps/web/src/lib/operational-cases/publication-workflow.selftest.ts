@@ -134,4 +134,38 @@ const unknown = applyPublicationEvent(afterEbApproval, {
 assert.equal(unknown.destinations.easybroker.phase, "unknown_outcome");
 assert.equal(nextPublicationAction(unknown).type, "request_review");
 
+// Ungga with photos: after prepare_draft + media verified, continue to validate/publish
+let ungga = applyPublicationEvent(state, {
+  type: "approval_decided",
+  destination: "ungga",
+  approval: "approved",
+});
+assert.equal(nextPublicationAction(ungga).type, "create_draft");
+ungga = applyPublicationEvent(ungga, {
+  type: "draft_created",
+  destination: "ungga",
+  artifact: {
+    ungga_property_id: "GU-1",
+    draft_url: "https://ungga.com/app/propiedades/GU-1",
+  },
+});
+assert.equal(ungga.destinations.ungga.phase, "media_pending");
+ungga = applyPublicationEvent(ungga, {
+  type: "media_submitted",
+  destination: "ungga",
+  expected_count: 6,
+});
+ungga = applyPublicationEvent(ungga, {
+  type: "media_verified",
+  destination: "ungga",
+  remote_count: 6,
+});
+assert.equal(nextPublicationAction(ungga).type, "validate");
+ungga = applyPublicationEvent(ungga, {
+  type: "preflight_result",
+  destination: "ungga",
+  status: "pass",
+});
+assert.equal(nextPublicationAction(ungga).type, "publish");
+
 console.log("publication-workflow.selftest: ok");

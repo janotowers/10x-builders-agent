@@ -57,11 +57,16 @@ guardrails: |
    - `commission_terms.collaboration.enabled` (tríestado: sí / no / ausente).
    - Detalle de compensación **opcional** si `enabled=true`
      (`compensation.mode` / `value`); `enabled=true` no exige porcentaje.
-   - Comisión total pactada (`commission_pct`), exclusividad, duración.
+     Distingue **comisión cobrada al propietario** (`commission_pct`, % del
+     precio) vs **porcentaje compartido con el colaborador**
+     (`compensation_value`, parte de esa comisión).
+   - Comisión cobrada al propietario (`commission_pct`), exclusividad, duración.
    - `confirmation.status` se confirma al completar obligatorios vía HITL tipado;
      no la escribas con `context_patch` genérico.
    Si faltan obligatorios, el sistema emite/refresca `contract_data_review`
-   (web + Telegram, respuestas parciales). No inventes defaults como respuesta
+   (web + Telegram, respuestas parciales). El texto libre se interpreta con
+   extractor híbrido (LLM + Zod + fallback determinístico); el evaluador
+   canónico sigue siendo el juez. No inventes defaults como respuesta
    del usuario; los defaults de cuenta solo se muestran como conocidos.
 
 1b. **Gate de titularidad (HITL) antes de generar.** El contrato solo procede
@@ -94,10 +99,17 @@ guardrails: |
      "case_id": "..."
    }
    ```
-   Los placeholders del DOCX (`owner_name`, `property_address`, `property_type`,
-   `area_m2`, `salida_price`, `minimum_price`, `commission_pct`, `exclusive`,
-   `duration_months`) se rellenan **automáticamente** desde el caso. Solo pasa
-   `data` si necesitas sobreescribir algún campo puntual.
+   **No** envíes `asset_key`, `data` ni otros opcionales vacíos (`""` / `{}`); omítelos.
+   Los placeholders del DOCX se rellenan **automáticamente** desde el caso:
+   `owner_name`, `owner_email`, `property_address`, `property_type`, `area_m2`,
+   `salida_price` / `salida_price_formatted` / `salida_price_words`,
+   `minimum_price`, `commission_pct` / `commission_pct_words`,
+   `duration_months` / `duration_months_words`, `exclusive` (disponible pero la
+   plantilla puede dejar la cláusula fija por ahora), `operation_type`
+   (`venta`/`renta`), `operation_contract_type` (`compraventa`/`arrendamiento`),
+   `contract_day` / `contract_month` / `contract_year` (fecha de generación =
+   fecha de firma, zona del perfil del usuario). Solo pasa `data` si necesitas
+   sobreescribir algún campo puntual.
    - Si la tool devuelve `status=not_configured`: notifica al inmobiliario
      que falta la plantilla DOCX cargada y pausa el caso (`status=paused`).
    - Si ya tienes `output_path` de esa llamada en este turno, reutilízalo; no vuelvas a generar el mismo contrato.
@@ -106,7 +118,7 @@ guardrails: |
    `notify_user(kind="contract_review", "Borrador del contrato listo para [propiedad]. Revísalo y dime si lo mando al dueño o necesita cambios.\n\nDescargar borrador del contrato: <URL>")`.
    Sustituye `<URL>` por el enlace estable del caso: `/api/operational-cases/{case_id}/documents/contract_draft/download` (URL absoluta con el dominio del sitio si la conoces). **No** pegues la `signed_url` larga de Supabase en el mensaje.
    - **Gate determinístico:** sin `contract_draft.output_path` el tool `notify_user(kind=contract_review)` falla con `contract_draft_required_before_review_notify`. No inventes “Borrador listo”.
-   - Si `generate_document_from_template` falla con `commission_contract_missing_required_data`, el sistema emite/refresca solo `contract_data_review` (remediación owned, dedupe por conjunto de faltantes). No llames `contract_review` en ese turno; espera los datos (pueden llegar en respuestas parciales), regenera y entonces sí notifica revisión.
+   - Si `generate_document_from_template` falla con `commission_contract_missing_required_data`, el sistema emite/refresca por sí mismo `contract_data_review` (remediación owned, dedupe por conjunto de faltantes). No llames `notify_user` —ni `contract_data_review` ni `contract_review`— en ese turno; espera los datos (pueden llegar en respuestas parciales), regenera y entonces sí notifica revisión.
 
 4. Inserta evento `operational_case_add_event(human_decision, payload={kind: contract_drafted, doc_url: "<mismo enlace corto>", output_path, output_bucket})` usando `output_path`/`output_bucket` de la tool.
 5. Mantén `current_step=contract_pending`, `status=waiting_internal` y

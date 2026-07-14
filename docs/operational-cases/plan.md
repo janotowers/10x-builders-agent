@@ -86,7 +86,7 @@ flowchart LR
 
 - El **scanner es determinístico**: solo decide "este caso vence", invoca `runAgent` con contexto del caso, y libera el lock. Toda cognición vive en el agente.
 - El **agente nunca actúa sin contexto del caso**: cuando se invoca con `case_id`, lee `operational_cases` + últimos N eventos antes de razonar.
-- **HITL en juicio comercial**: precio mínimo, comparables seleccionados, contrato final. El agente prepara, el humano aprueba.
+- **HITL en juicio comercial**: precio mínimo / propuesta de precio (`price_approval`), contrato final, publicación. El agente prepara la muestra de comparables automáticamente; el humano aprueba el precio resultante, no selecciona filas individuales.
 
 ---
 

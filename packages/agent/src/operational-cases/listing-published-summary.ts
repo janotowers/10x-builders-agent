@@ -130,10 +130,15 @@ export function formatListingPublishedSummaryNotifyText(opCase: {
   const manualHeadline = contextString(manualPackage, "headline");
   const manualDescription = contextString(manualPackage, "description");
 
+  const unggaResolved = Boolean(unggaUrl || unggaPropertyId);
+  const easybrokerResolved = Boolean(easybrokerUrl || easybrokerListingId);
+  const allDestinationsResolved = easybrokerResolved && unggaResolved;
   const lines: string[] = [
     "**Resumen final de publicación**",
     "",
-    `Flujo completado para el caso ${opCase.id}.`,
+    allDestinationsResolved
+      ? `Flujo completado para el caso ${opCase.id}.`
+      : `Avance de publicación para el caso ${opCase.id} (aún puede faltar un destino).`,
     "",
     `**Título:** ${headline}`,
   ];

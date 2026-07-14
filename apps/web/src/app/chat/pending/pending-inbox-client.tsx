@@ -26,6 +26,7 @@ import {
   toolConfirmationToolLine,
 } from "@/lib/notifications/pending-action-display";
 import { pendingInlineActionKind } from "@/lib/notifications/pending-action-registry";
+import { contractDataReviewBooleanButtonLabels } from "@/lib/notify/contract-data-review-telegram-markup";
 import type {
   InternalNotificationDisplay,
   PendingInboxCounts,
@@ -1679,6 +1680,9 @@ export function PendingInboxClient({
                               const draftKey = `${notification.id}:${field.key}`;
                               const draftValue = notificationInputs[draftKey] ?? "";
                               if (field.kind === "boolean") {
+                                const labels = contractDataReviewBooleanButtonLabels(
+                                  field.key
+                                );
                                 return (
                                   <div key={field.key} className="space-y-1">
                                     <p className="text-[11px] text-slate-600 dark:text-white/70">
@@ -1702,7 +1706,7 @@ export function PendingInboxClient({
                                         }
                                         className="rounded-full bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700"
                                       >
-                                        Sí
+                                        {labels.yes}
                                       </button>
                                       <button
                                         type="button"
@@ -1720,7 +1724,7 @@ export function PendingInboxClient({
                                         }
                                         className="rounded-full border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-white dark:border-white/20 dark:text-white"
                                       >
-                                        No
+                                        {labels.no}
                                       </button>
                                     </div>
                                   </div>
@@ -1833,7 +1837,7 @@ export function PendingInboxClient({
                                   [notification.id]: event.target.value,
                                 }))
                               }
-                              placeholder="Correo, sí/no compartir comisión, comisión total %, exclusiva, duración…"
+                              placeholder="Correo, sí/no compartir, comisión cobrada al propietario %, exclusiva, duración…"
                               className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
                             />
                             <button

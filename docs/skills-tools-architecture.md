@@ -368,6 +368,18 @@ perform-comparable-analysis
 No debería usar SQL libre si ya existe un wrapper de comparables. El flujo
 operacional necesita repetibilidad.
 
+Contrato de filtros (runtime en `comparable-search-contract.ts`):
+
+- Base: zona/colonia, operación, tipo EasyBroker canónico, banda de área.
+- Residencial `strict` es asimétrica (−15% / +85%; ej. 146 m² → 124–270).
+- Ladder automático: `expanded` → `wide` → `location_only` antes de HITL de
+  expansión.
+- Recámaras/baños/estacionamientos no son filtros duros de valuación.
+- `easybroker_search_closed_deals` verifica `Estatus=Solo cerradas`; si no,
+  falla con `filter_not_applied` y resultados vacíos.
+- HITL comercial posterior: `price_approval` (no selección fila a fila).
+- Spec ejecutable: `comparable-search-contract.selftest.ts`.
+
 ### `bigquery_lookup_local_comparables`
 
 Uso: traer inventario/comparables internos desde BigQuery.

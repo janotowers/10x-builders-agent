@@ -306,14 +306,14 @@ export async function getDueOperationalCases(
 }
 
 /**
- * Lock optimista: bumpea version y deja next_action_at en el futuro lejano
- * para que otros workers no lo levanten mientras se procesa. Devuelve true
- * si el lock se tomó (la versión coincidía); false si otro worker se
- * adelantó.
+ * Lock optimista con lease real: bumpea version y deja next_action_at en el
+ * futuro (+leaseMinutes) para exclusión mutua. Devuelve true si el lock se
+ * tomó; false si la versión no coincidía o hay un lease activo (next_action_at
+ * en el futuro).
  *
- * Convención: cuando el lock se toma, next_action_at se mueve a +5 minutos
- * para que sea un "lease". Si el procesamiento crashea sin liberar, el caso
- * volverá a aparecer como vencido en 5 min.
+ * Convención: next_action_at futuro = caso ocupado por un worker. Si el
+ * procesamiento crashea sin liberar, el caso vuelve a ser reclamable cuando
+ * el lease expire.
  */
 export async function markCaseProcessing(
   db: DbClient,
@@ -321,16 +321,20 @@ export async function markCaseProcessing(
   expectedVersion: number,
   leaseMinutes = 5
 ): Promise<boolean> {
-  const leaseUntil = new Date(Date.now() + leaseMinutes * 60_000).toISOString();
+  const nowIso = new Date().toISOString();
+  const leaseUntil = new Date(
+    Date.now() + leaseMinutes * 60_000
+  ).toISOString();
   const { data, error } = await db
     .from("operational_cases")
     .update({
       next_action_at: leaseUntil,
       version: expectedVersion + 1,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     })
     .eq("id", caseId)
     .eq("version", expectedVersion)
+    .or(`next_action_at.is.null,next_action_at.lte."${nowIso}"`)
     .select("id");
   if (error) {
     console.error("markCaseProcessing error:", error);

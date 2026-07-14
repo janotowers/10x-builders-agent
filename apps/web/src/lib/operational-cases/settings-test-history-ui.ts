@@ -305,8 +305,54 @@ function observedCasePropertyHeadline(opCase: OperationalCase): string {
   return `${title} · ${zone}`;
 }
 
+export function isObservationalLabCaseReadOnly(
+  opCase: Pick<OperationalCase, "status"> | null | undefined
+): boolean {
+  return opCase?.status === "completed" || opCase?.status === "failed";
+}
+
+/**
+ * Casos conversacionales seleccionables en el lab E2E.
+ * Incluye cerrados (completed/failed) para auditoría en solo lectura;
+ * los activos van primero.
+ */
+export function listObservableConversationalCases(
+  cases: OperationalCase[]
+): OperationalCase[] {
+  return cases
+    .filter(
+      (opCase) => opCase.context_jsonb?.created_from === "agent_conversation"
+    )
+    .sort((a, b) => {
+      const rank = (status: OperationalCase["status"]) =>
+        isObservationalLabCaseReadOnly({ status }) ? 1 : 0;
+      const rankDiff = rank(a.status) - rank(b.status);
+      if (rankDiff !== 0) return rankDiff;
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    });
+}
+
+export function partitionObservableConversationalCases(
+  cases: OperationalCase[]
+): {
+  active: OperationalCase[];
+  closedReadOnly: OperationalCase[];
+} {
+  const active: OperationalCase[] = [];
+  const closedReadOnly: OperationalCase[] = [];
+  for (const opCase of listObservableConversationalCases(cases)) {
+    if (isObservationalLabCaseReadOnly(opCase)) closedReadOnly.push(opCase);
+    else active.push(opCase);
+  }
+  return { active, closedReadOnly };
+}
+
 export function observedConversationalCaseModeTag(opCase: OperationalCase): string {
-  if (opCase.context_jsonb?.e2e_controlled !== true) return "[Real]";
+  if (opCase.context_jsonb?.e2e_controlled !== true) {
+    return isObservationalLabCaseReadOnly(opCase) ? "[Real cerrado]" : "[Real]";
+  }
+  if (opCase.status === "completed") return "[E2E cerrado]";
+  if (opCase.status === "failed") return "[E2E fallido]";
   if (opCase.status === "paused") {
     return opCase.context_jsonb?.e2e_control_status === "abandoned"
       ? "[E2E abandonado]"

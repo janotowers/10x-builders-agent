@@ -248,7 +248,7 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 |--|--|
 | **Capa** | `runtime` + `test_ui` |
 | **Cuándo usar** | Al declarar tools en flow, skills y `allowed_tools` |
-| **Comportamiento** | `business_integration` / `external_action` / `internal_notification` / `infrastructure` → tarjeta «Probar herramienta». `internal_platform` / `internal_domain` → bloque «Herramientas internas» en el hito (sin «Probar herramienta»; se validan con «Probar habilidad» / «Probar paso»). `scenario_only` → alta/intake, no bloquea pasos operativos. |
+| **Comportamiento** | `business_integration` / `external_action` / `internal_notification` / `infrastructure` → tarjeta «Probar herramienta». `internal_platform` / `internal_domain` → bloque «Herramientas internas» en el hito (sin «Probar herramienta»; se validan con «Probar habilidad» / «Probar paso»). Incluye `operational_case_update_intake` y `operational_case_update_state`. `scenario_only` → alta/intake, no bloquea pasos operativos. |
 | **UI laboratorio** | `ReadinessTestSection`: pill + CTA en el mismo bloque colapsable; gating visual en [`readiness-step-section-ui.ts`](../../apps/web/src/lib/operational-cases/readiness-step-section-ui.ts) (sin duplicar reglas de `tool-readiness/route.ts`). |
 | **Implementación** | [`tool-surface-classification.ts`](../../apps/web/src/lib/operational-cases/tool-surface-classification.ts); API `GET /api/tool-readiness`, `run-skill`, `run-step` |
 
@@ -277,9 +277,9 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 |--|--|
 | **Capa** | `runtime` + `test_runtime` |
 | **Cuándo usar** | Cualquier hito que persista `comparables_analysis` y condicione avance a precio |
-| **Regla de negocio** | Si `usable_count === 0` sumando **todas** las fuentes (EasyBroker activas, EasyBroker cerradas, BigQuery interno), **no** `price_proposal_pending`; permanecer en `comparables_in_progress` + `waiting_internal` + `notify_user` al asesor con filtros y sugerencias |
-| **Implementación** | [`comparables-analysis-validation.ts`](../../apps/web/src/lib/operational-cases/comparables-analysis-validation.ts); validación en `run-skill` (`validateContract`) y `run-step` (`validateStepExpect` en paso `comparables_in_progress`); skill [`perform-comparable-analysis/SKILL.md`](../../skills/global/perform-comparable-analysis/SKILL.md) |
-| **Pruebas** | N3 contrato; N4 escenarios `comparables_in_progress_complete` (muestra defendible) e `comparables_in_progress_insufficient_data` (0 usables) |
+| **Regla de negocio** | La muestra defendible exige `data_quality.unique_comparable_count >= 3` (o `defensible_sample=true` tras `operational_case_persist_comparables_analysis`). Si no se alcanza ese umbral —p. ej. 0 usables en todas las fuentes, o 1–2 únicos tras dedupe cross-source— **no** `price_proposal_pending`; permanecer en `comparables_in_progress` + `waiting_internal` + `notify_user` al asesor con filtros y sugerencias. `usable_count > 0` solo no basta. |
+| **Implementación** | [`comparables-analysis.ts`](../../packages/agent/src/operational-cases/comparables-analysis.ts) (`comparablesHasDefensibleSample`); [`comparables-analysis-validation.ts`](../../apps/web/src/lib/operational-cases/comparables-analysis-validation.ts); validación en `run-skill` / `run-step`; skill [`perform-comparable-analysis/SKILL.md`](../../skills/global/perform-comparable-analysis/SKILL.md) |
+| **Pruebas** | N3 contrato; N4 escenarios `comparables_in_progress_complete` (muestra defendible ≥3 únicos) e `comparables_in_progress_insufficient_data` (sin muestra defendible) |
 
 ### `PATTERN_INTEGRATION_RECONNECT_DEGRADED_CONTINUATION`
 
@@ -287,7 +287,7 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 |--|--|
 | **Capa** | `runtime` + `ux` |
 | **Cuándo usar** | Una fuente de comparables (especialmente EasyBroker MLS web) devuelve `needs_manual_login` tras reintentos automáticos |
-| **Regla de negocio** | Reintentos automáticos primero; si la fuente sigue pidiendo reconexión, tratarlo como estado recuperable y **evaluar con muestra total** (`usable_count`) antes de bloquear el caso |
+| **Regla de negocio** | Reintentos automáticos primero; si la fuente sigue pidiendo reconexión, tratarlo como estado recuperable y **evaluar con la muestra total defendible** (`unique_comparable_count` / `defensible_sample`, no solo `usable_count` crudo) antes de bloquear el caso |
 | **Con muestra defendible** | Avanzar a `price_proposal_pending`; notificación no bloqueante (fuente degradada, reconectar después) |
 | **Sin muestra defendible** | Mantener `comparables_in_progress` + `waiting_internal`; `notify_user(kind=integration_reconnect)` con CTA explícito de reconexión |
 | **Implementación** | `realestate-adapters.ts` (reintento acotado + `needs_manual_login` + `assisted_login` explícito), `comparables-analysis.ts` (`data_quality.needs_user_reauth`, `integration_issues`, estado `session_refreshed_retry_recommended`), skill [`perform-comparable-analysis/SKILL.md`](../../skills/global/perform-comparable-analysis/SKILL.md) |
@@ -371,7 +371,8 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Capa** | `runtime` + `test_contract` |
 | **Cuándo usar** | Paso `contract_pending`: faltan datos comerciales o de comitente antes de renderizar el DOCX (`commission_contract_missing_required_data`) |
 | **Modelo canónico** | `context_jsonb.commission_terms` (neutral, independiente de EasyBroker/Ungga): `commission_pct`, `exclusive`, `duration_months`, `collaboration.enabled` (tríestado), `collaboration.compensation`, `confirmation`. Evaluador missing-only: [`contract-commercial-terms.ts`](../../packages/agent/src/operational-cases/contract-commercial-terms.ts) |
-| **Flujo producto** | Preflight preventivo en `generate_document_from_template`; remediación owned `notify_user(kind=contract_data_review)` dedupeada por conjunto de faltantes. HITL dinámico (web formulario + Telegram Sí/No/texto) con **respuestas parciales**; al completar obligatorios confirma términos vía mutador tipado (no `context_patch.confirmation`) |
+| **Flujo producto** | Preflight preventivo en `generate_document_from_template`; remediación owned `notify_user(kind=contract_data_review)` dedupeada por conjunto de faltantes (copy canónico + `missing_fields`/`known_fields` estructurados también en tick E2E). HITL dinámico (web formulario por campo + Telegram texto libre; botones Sí/No contextuales **solo** si queda un único booleano obligatorio) con **respuestas parciales**; al completar obligatorios confirma términos vía mutador tipado (no `context_patch.confirmation`). Captura parcial **no** reprograma `next_action_at`/cron hasta completar obligatorios |
+| **Extracción texto libre** | Híbrido: LLM interpreta → Zod valida → parser determinístico completa/conflicto → `evaluateContractCommercialMinimums` decide. Módulo: [`contract-commercial-extraction.ts`](../../apps/web/src/lib/business-decisions/contract-commercial-extraction.ts). Patch tipado (botones/formulario) bypasea LLM. Auditoría en `context_jsonb.contract_data_review.extraction_*` |
 | **Handlers** | [`contract-data-review.ts`](../../apps/web/src/lib/business-decisions/contract-data-review.ts), registro en [`registry.ts`](../../apps/web/src/lib/business-decisions/registry.ts) |
 | **Mappers destino** | EasyBroker/Ungga enriquecen en el borde desde `commission_terms`; % incompatible → warning, nunca muta canónico; override auditable en `publication.destinations.<destino>.commercial_override` |
 | **Relacionado** | `PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION`, `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`, `PATTERN_OPERATIONAL_WRITE_GATE` |
@@ -452,14 +453,15 @@ Orden sugerido en laboratorio: **HITL** → (opcional N3 si falta) → **Aprobar
 
 | Escenario N4 | Qué valida | Ejecución |
 |--------------|------------|-----------|
+| `contract_pending_missing_commercial_data` | Preflight bloquea generate; `contract_data_review` con `missing_fields` estructurados; sin borrador ni `contract_review` | Agente raíz → `prepare-commission-contract` |
 | `contract_pending_draft_review` | Borrador + `notify_user` + `contract_drafted`; permanece en revisión interna | Agente raíz → `prepare-commission-contract` |
 | `contract_pending_advisor_approves_send` | Aprobación para dueño + `reminder_sent` (envío simulado en prueba) | `handleContractReviewDecision` («mándalo al dueño») |
 | `contract_pending_advisor_requests_changes` | `contract_changes_requested` + `waiting_internal` | Idem («necesita cambios…») |
 | `contract_pending_owner_signed` | Avance a `photos_requested` + `step_completed:contract_signed` | `handleContractOwnerSignedDecision` (simulación N4) |
 
-Orden sugerido en laboratorio: **N3** `prepare-commission-contract` → **N4 borrador** (si no cubierto por N3) → **aprobar envío** o **pedir cambios** → (opcional) **firma simulada**. Patrones: `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`, `PATTERN_BUSINESS_DECISION_CONTRACT_DATA_REVIEW`, `PATTERN_STEP_TEST_BUSINESS_DECISION`, `PATTERN_TOOL_AUDIT_SINGLE_OWNER`, `PATTERN_GENERATED_DOCUMENT_DEDUP`, `PATTERN_NOTIFY_USER_CHANNELS`.
+Orden sugerido en laboratorio: **N3** `prepare-commission-contract` → **N4 datos comerciales** (si aplica) → **N4 borrador** → **aprobar envío** o **pedir cambios** → (opcional) **firma simulada**. Patrones: `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW`, `PATTERN_BUSINESS_DECISION_CONTRACT_DATA_REVIEW`, `PATTERN_STEP_TEST_BUSINESS_DECISION`, `PATTERN_TOOL_AUDIT_SINGLE_OWNER`, `PATTERN_GENERATED_DOCUMENT_DEDUP`, `PATTERN_NOTIFY_USER_CHANNELS`.
 
-Si faltan datos comerciales (correo, colaboración, comisión, exclusividad, duración), el sistema emite `contract_data_review` antes de `contract_review`; completar vía Pendientes/Telegram y regenerar borrador.
+Si faltan datos comerciales (correo, colaboración, comisión cobrada al propietario, exclusividad, duración), el sistema emite `contract_data_review` antes de `contract_review`. El porcentaje compartido con colaborador es opcional y distinto de la comisión cobrada al propietario. Completar vía Pendientes/Telegram (extractor híbrido en texto libre) y regenerar borrador.
 
 ### Pasos 6–7 (`photos_requested` … `package_ready`)
 

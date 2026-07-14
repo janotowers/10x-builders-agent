@@ -19,6 +19,7 @@ export type ToolSurfaceKind =
 
 const TOOL_SURFACE_BY_ID: Record<string, ToolSurfaceKind> = {
   operational_case_create: "scenario_only",
+  operational_case_update_intake: "internal_platform",
   operational_case_update_state: "internal_platform",
   operational_case_add_event: "internal_platform",
   operational_case_persist_comparables_analysis: "internal_domain",

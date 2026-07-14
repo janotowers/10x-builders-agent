@@ -53,6 +53,9 @@ export async function POST(request: Request) {
       "string"
         ? (result.deferredControlledE2ETick as { source: string }).source
         : "publication_review_web";
+    const forceRetryFailedOperation =
+      (result.deferredControlledE2ETick as { forceRetryFailedOperation?: boolean })
+        .forceRetryFailedOperation === true;
     const { requestPublicationProgress } = await import(
       "@/lib/operational-cases/publication-runner"
     );
@@ -64,6 +67,7 @@ export async function POST(request: Request) {
       String(result.case_id),
       source,
       {
+        forceRetryFailedOperation,
         runAgentTick: async (opCase, machineAction) => {
           const tick = await runSettingsTestCaseAgentTick(
             createServerClient(),
@@ -71,6 +75,7 @@ export async function POST(request: Request) {
             user.id,
             {
               source: `${source}:${machineAction.type}`,
+              skipLock: true,
             }
           );
           return (

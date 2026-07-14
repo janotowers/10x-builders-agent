@@ -19,9 +19,9 @@ guardrails: |
   Usa SIEMPRE la zona/colonia, operación y rango de m² del
   context_jsonb.property_data como filtros base. No metas comparables de
   otra colonia "porque hay más datos".
-  El humano DEBE elegir cuáles comparables van al precio final (HITL en la
-  sub-skill prepare-listing-price). Tu job aquí es entregar un set
-  defendible, no decidir.
+  La muestra usable se construye automáticamente (dedupe + stats); el HITL
+  comercial de este flujo es la aprobación de precio (`price_approval`) en
+  prepare-listing-price, no una selección fila a fila de comparables.
   BigQuery interno aporta inventario publicado / asking prices, NO precios de
   cierre, salvo que la tool indique explícitamente is_closed_price=true.
   En este step NO abras conversación para pedir faltantes de Avaclick. Si faltan
@@ -92,10 +92,13 @@ Producir un objeto `context_jsonb.comparables_analysis`:
    - `neighborhood = address.neighborhood`
    - `operation = property_data.operation`
    - `property_type = property_data.property_type`
-   - `min_area_m2 = area_total_m2 * 0.7` si existe área confiable.
-   - `max_area_m2 = area_total_m2 * 1.3` si existe área confiable.
+   - Banda de área canónica (runtime, no improvisar): preferir
+     `area_construida_m2`; si no hay, `area_total_m2`.
+   - Residencial `strict` es **asimétrica**: −15% / +85% (pisos absolutos
+     20/35 m²). Ejemplo: 146 m² construidos → 124–270 m².
    - `months_back = 12` (subir a 24 si los resultados < 5).
-
+   - No uses recámaras/baños/estacionamientos ni topes de precio inventados
+     como filtros duros de valuación.
 2. Llama (siempre con **objeto plano de argumentos**, sin anidar en `filters: {...}`):
    - `easybroker_search_listings({...filters})` para activas/publicadas en el mercado
      actual.
@@ -127,12 +130,13 @@ Producir un objeto `context_jsonb.comparables_analysis`:
 3. Usa filtros canónicos del contrato determinístico (runtime), no placeholders:
    - No envíes `0` en `min_area_m2`, `max_area_m2`, `min_price`, `max_price`,
      `parking_spaces` como “default”.
-   - Con `area_construida_m2` confiable, el primer intento debe usar banda
-     canónica estricta (±15%, mínimo absoluto 20 m²), aunque el modelo proponga
-     otro rango.
-   - Si faltan rangos, reintenta con los filtros derivados desde `property_data`
-     (banda inicial ±15%, mínimo 20 m²; fallback automático ±25% antes de pedir decisión).
-
+   - Con `area_construida_m2` confiable, el primer intento usa la banda
+     canónica estricta residencial (−15% / +85%, mínimos absolutos 20/35 m²),
+     aunque el modelo proponga otro rango.
+   - Si faltan resultados, el adapter aplica automáticamente
+     `expanded` → `wide` → `location_only` antes de pedir decisión humana.
+   - Varias sesiones Playwright visibles en pantalla pueden corresponder a
+     intentos internos de **una** tool (ladder), no a tool calls duplicadas.
 4. Si alguna devuelve `status: "not_configured"` o `status: "validation_error"` por
    faltantes mínimos:
    - Reporta al inmobiliario via `notify_user` qué fuente falla y qué necesita
@@ -146,7 +150,7 @@ Producir un objeto `context_jsonb.comparables_analysis`:
    - Revisa `assisted_login` en el `result_json` para saber si el login asistido se
      intentó o se omitió (y por qué). Si `attempted=false`, sigue la razón/hint.
    - No decidas severidad todavía; persiste primero y decide con base en
-     `defensible_sample` / `usable_count`.
+     `defensible_sample` / `unique_comparable_count`.
    - Tras persistir, `operational_case_persist_comparables_analysis` reflejará
      `data_quality.needs_user_reauth=true` y `data_quality.integration_issues`.
 
@@ -154,26 +158,28 @@ Producir un objeto `context_jsonb.comparables_analysis`:
    búsquedas, llama `operational_case_persist_comparables_analysis`. Esa tool
    construye el artefacto determinísticamente desde los `tool_calls` del turno:
    deduplica resultados, normaliza listas, calcula `stats`, `price`,
-   `price_per_m2` y `data_quality.usable_count`.
+   `price_per_m2`, `usable_count` y `unique_comparable_count`.
 
 6. Lee el resultado de `operational_case_persist_comparables_analysis`
-   (`defensible_sample`, `usable_count`, `stats`, `data_quality`) para decidir
-   el siguiente estado.
+   (`defensible_sample`, `unique_comparable_count`, `usable_count`, `stats`,
+   `data_quality`) para decidir el siguiente estado.
 
 7. La tool ya guarda `context_jsonb.comparables_analysis` (incluye
-   `data_quality.usable_count` contando usables de **todas** las fuentes:
-   EasyBroker activas, EasyBroker cerradas/referencia histórica e inventario
-   BigQuery).
+   `data_quality.usable_count` por fuente y
+   `data_quality.unique_comparable_count` cross-source; el gate de avance
+   usa `defensible_sample` ≈ `unique_comparable_count >= 3`).
 
-   - Si `usable_count > 0` (muestra defendible): usa la ruta determinística
-     (`operational_case_persist_comparables_analysis` + invariantes post-agent).
-     No uses `operational_case_update_state` para saltar directo a
-     `price_proposal_pending`.
-   - Si `usable_count === 0` en **todas** las fuentes: **no** avances a
-     `price_proposal_pending`. Deja `current_step=comparables_in_progress`,
-     `status=waiting_internal` y pasa al paso 7 (notificación de datos
-     insuficientes).
-
+   - Si `defensible_sample=true` (`unique_comparable_count >= 3`): usa la ruta
+     determinística (`operational_case_persist_comparables_analysis` +
+     invariantes post-agent). No uses `operational_case_update_state` para
+     saltar directo a `price_proposal_pending`.
+   - Si no hay muestra defendible (`unique_comparable_count < 3`, p. ej. 0
+     usables en todas las fuentes o solo 1–2 únicos tras dedupe): **no**
+     avances a `price_proposal_pending`. Deja
+     `current_step=comparables_in_progress`, `status=waiting_internal` y pasa
+     al paso 8 (notificación / decisión de expansión).
+     Nota: `usable_count > 0` **no** basta por sí solo si los únicos
+     cross-source son menos de 3.
 8. Notifica al inmobiliario:
    - Con muestra defendible:
      - No envíes resumen libre de comparables ni `kind=comparables_analysis` cuando
@@ -183,7 +189,7 @@ Producir un objeto `context_jsonb.comparables_analysis`:
        sólo si `data_quality.source_conflict` ≥30%) para abrir la decisión humana del precio.
      - `source_conflict` compara la mediana de mercado por m² y el **total implícito**
        del sujeto (p50 × m²) contra Avaclick — no la mediana de precio total de comparables más grandes.
-   - Sin comparables usables con `data_quality.search_validity="insufficient_market_data"`:
+   - Sin muestra defendible con `data_quality.search_validity="insufficient_market_data"`:
     si el caso quedará en `waiting_internal`, pide decisión concreta con
     `notify_user(kind="comparables_search_expansion_decision")` y opciones
     accionables dentro del flujo. Usa `comparables_insufficient_data` solo para
@@ -195,7 +201,7 @@ Producir un objeto `context_jsonb.comparables_analysis`:
     Persiste comparables con warning de integración y continúa con fuentes de mercado.
   - Si se requiere decisión humana para ampliar más allá del fallback moderado:
     usa `notify_user(kind="comparables_search_expansion_decision")` con pregunta resoluble
-    dentro del flujo (ej. ampliar a ±35% o colonias adyacentes).
+    dentro del flujo (ej. ampliar más el área o colonias adyacentes).
      - Si `data_quality.needs_user_reauth=true`, usa
        `notify_user(kind="integration_reconnect")` con CTA claro:
        reconectar EasyBroker MLS en **Credenciales API → "Probar conexión"** y luego
@@ -208,8 +214,8 @@ En Ajustes → **Paso 3 · Análisis de comparables** (`comparables_in_progress`
 | Nivel | Acción | Escenario |
 |-------|--------|-----------|
 | N1 | Probar cada tool de integración (EB activas, EB cerradas, BQ) | Recetas del catálogo; pill **Probada** por tool |
-| N3 | **Probar habilidad** (`perform-comparable-analysis`) | **Análisis completo y avance a precio** — `usable_count > 0`, persistencia determinística, avance a `price_proposal_pending` |
-| N3 | Misma habilidad | **Sin comparables usables — no avanzar a precio** — permanece en paso + `waiting_internal` + `notify_user` |
+| N3 | **Probar habilidad** (`perform-comparable-analysis`) | **Análisis completo y avance a precio** — `defensible_sample=true` (`unique_comparable_count >= 3`), persistencia determinística, avance a `price_proposal_pending` |
+| N3 | Misma habilidad | **Sin muestra defendible — no avanzar a precio** — permanece en paso + `waiting_internal` + `notify_user` |
 | N4 | **Probar paso** (habilidad raíz) | Mismos escenarios; valida cierre del hito, no sustituye N3 |
 
 Si N1 está en verde pero el pill del paso dice **Falló N3/N4**, revisa el panel del último run (tools faltantes, `persist` sin ejecutar, transición bloqueada por gate). Ver `PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE` y [`testing-framework.md`](../../docs/operational-cases/testing-framework.md) §7.
@@ -221,8 +227,9 @@ Si N1 está en verde pero el pill del paso dice **Falló N3/N4**, revisa el pane
   ese caso usa `price_per_m2`.
 - Presentar inventario interno de BigQuery como cierres reales si la respuesta
   dice `is_closed_price=false`.
-- Quedarte con 0 comparables usables (en ninguna fuente) y aún así avanzar a
-  `price_proposal_pending`; reporta "datos insuficientes", permanece en
-  `comparables_in_progress` y pide decisión al asesor interno.
+- Quedarte con menos de 3 comparables **únicos** cross-source (o 0 usables)
+  y aún así avanzar a `price_proposal_pending`; reporta datos insuficientes /
+  pide expansión, permanece en `comparables_in_progress` y pide decisión al
+  asesor interno.
 - Usar una colonia distinta a `property_data` / `property_zone` del caso solo
   porque hay más listados en otra zona.

@@ -611,7 +611,14 @@ export const PROPERTY_OPTIONING_STEP_PATTERNS: Record<
   package_ready: {
     stepKey: "package_ready",
     n3Skills: ["publish-listing-package"],
-    n4ScenarioIds: ["package_ready_preflight_blocked"],
+    n4ScenarioIds: [
+      "package_ready_preflight_blocked",
+      "package_ready_description_review_requested",
+      "package_ready_description_approved",
+      "package_ready_easybroker_approval_requested",
+      "package_ready_easybroker_published",
+      "package_ready_completed_summary_sent",
+    ],
     patternIds: [
       "PATTERN_READINESS_N3_N4_BLOCKED_BY_TOOLS",
       "PATTERN_STEP_STATUS_N3_VS_N4",

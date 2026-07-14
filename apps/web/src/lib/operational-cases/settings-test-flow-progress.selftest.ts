@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import {
   buildSettingsTestFlowProgress,
   flowProgressForE2ESummary,
+  isCommissionContractDataBlockedCall,
+  toolCallDisplayStatusLabel,
+  toolCallFailureDetail,
   type SettingsTestFlowProgressStep,
 } from "./settings-test-flow-progress";
 import type { OperationalCase, OperationalCaseFlowStep, ToolCall } from "@agents/types";
@@ -682,5 +685,53 @@ assert.deepEqual(
   ["evt-price-prepared"],
   "la propuesta de precio preparada debe atribuirse al paso price_proposal_pending"
 );
+
+{
+  const blockedCall = {
+    tool_name: "generate_document_from_template",
+    status: "failed",
+    result_json: {
+      status: "blocked",
+      error: "commission_contract_missing_required_data",
+      missing_required_fields: ["owner_email", "commission_pct"],
+      message: "Faltan condiciones comerciales",
+    },
+  } as const;
+  assert.equal(isCommissionContractDataBlockedCall(blockedCall), true);
+  assert.equal(
+    toolCallDisplayStatusLabel(blockedCall),
+    "Bloqueada — requiere datos contractuales"
+  );
+  assert.match(
+    toolCallFailureDetail(blockedCall) ?? "",
+    /Faltan: owner_email, commission_pct/
+  );
+
+  const realFailure = {
+    tool_name: "generate_document_from_template",
+    status: "failed",
+    result_json: {
+      status: "failed",
+      error: "No se pudo guardar el documento",
+    },
+  } as const;
+  assert.equal(isCommissionContractDataBlockedCall(realFailure), false);
+  assert.equal(toolCallDisplayStatusLabel(realFailure), "Fallida");
+  assert.equal(
+    toolCallFailureDetail(realFailure),
+    "No se pudo guardar el documento"
+  );
+
+  const otherBlocked = {
+    tool_name: "generate_document_from_template",
+    status: "failed",
+    result_json: {
+      status: "blocked",
+      error: "titularidad_review_required",
+    },
+  } as const;
+  assert.equal(isCommissionContractDataBlockedCall(otherBlocked), false);
+  assert.equal(toolCallDisplayStatusLabel(otherBlocked), "Fallida");
+}
 
 console.log("settings-test-flow-progress.selftest: ok");
