@@ -10,6 +10,7 @@ import {
   getProfile,
   getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
+  listPublicationOperationsForCase,
   markCaseProcessing,
   markPublicationOperationRunning,
   updateOperationalCase,
@@ -22,12 +23,20 @@ import {
 } from "@agents/agent";
 import { notify } from "@/lib/notify";
 import {
+  canSafelyForceRetryProcessMedia,
+  canSafelyForceRetryUnggaPublish,
+} from "@/lib/operational-cases/publication-media-recovery";
+import {
+  shouldSendCorrectiveListingPublishedSummary,
+} from "@/lib/operational-cases/publication-closure-recovery";
+import {
   formatPublicationReviewNotifyText,
   runPublicationPreflight,
   type PreflightResult,
 } from "@/lib/operational-cases/publication-preflight";
 import {
   applyPublicationEvent,
+  areAllPublicationDestinationsResolved,
   buildPublicationContextPatch,
   nextPublicationAction,
   publicationFromContext,
@@ -107,6 +116,42 @@ function stringResult(
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
+}
+
+/**
+ * Apply process_media tool result without wiping a verified remote poll.
+ * Always records media_submitted; also media_verified when the tool already
+ * confirmed remote_count matches expected.
+ */
+export function applyProcessMediaPublicationEvents(
+  publication: PublicationState,
+  destination: PublicationDestination,
+  result: Record<string, unknown>
+): PublicationState {
+  const expectedCount =
+    typeof result.count === "number" && result.count > 0
+      ? result.count
+      : publication.destinations[destination].media.expected_count;
+  let next = applyPublicationEvent(publication, {
+    type: "media_submitted",
+    destination,
+    expected_count: expectedCount,
+  });
+  const remoteCount =
+    typeof result.remote_count === "number" ? result.remote_count : null;
+  if (
+    result.images_status === "verified" &&
+    typeof remoteCount === "number" &&
+    remoteCount > 0 &&
+    (expectedCount <= 0 || remoteCount === expectedCount)
+  ) {
+    next = applyPublicationEvent(next, {
+      type: "media_verified",
+      destination,
+      remote_count: remoteCount,
+    });
+  }
+  return next;
 }
 
 function expectedEasyBrokerCriticalFields(
@@ -562,23 +607,47 @@ export async function requestPublicationProgress(
           ...buildPublicationContextPatch(publication),
           package_ready_machine_work_in_flight: false,
         };
+        const hasInFlightLedger = (
+          await listPublicationOperationsForCase(db, fresh.id, 50)
+        ).some(
+          (row) => row.status === "claimed" || row.status === "running"
+        );
+        const machineWorkInFlight =
+          mergedContext.package_ready_machine_work_in_flight === true;
+        const recentEventsForGate = await getRecentOperationalCaseEvents(
+          db,
+          fresh.id,
+          30
+        );
         const shouldFinalize =
           action.reason === "all_destinations_resolved" &&
-          canCompleteListingPublishedSummaryFromContext(mergedContext).ok &&
+          areAllPublicationDestinationsResolved(publication) &&
+          !machineWorkInFlight &&
+          !hasInFlightLedger &&
+          canCompleteListingPublishedSummaryFromContext(
+            mergedContext,
+            recentEventsForGate,
+            {
+              machineWorkInFlight,
+              hasInFlightLedgerOperation: hasInFlightLedger,
+            }
+          ).ok &&
           fresh.current_step === "package_ready";
 
         if (shouldFinalize) {
-          const recentEvents = await getRecentOperationalCaseEvents(
-            db,
-            fresh.id,
-            30
-          );
+          const recentEvents = recentEventsForGate;
           const alreadySent = recentEvents.some((event) => {
             const payload = isRecord(event.payload_jsonb)
               ? event.payload_jsonb
               : null;
-            return payload?.kind === "listing_published_summary_sent";
+            return (
+              payload?.kind === "listing_published_summary_sent" ||
+              payload?.kind === "listing_published_summary_resent"
+            );
           });
+          const sendCorrective =
+            alreadySent &&
+            shouldSendCorrectiveListingPublishedSummary(recentEvents);
           const closed = await updateOperationalCase(
             db,
             fresh.id,
@@ -590,13 +659,16 @@ export async function requestPublicationProgress(
               nextActionAt: null,
             }
           );
-          if (closed && !alreadySent) {
+          if (closed && (!alreadySent || sendCorrective)) {
             try {
               const summaryText = formatListingPublishedSummaryNotifyText(closed);
               const result = await notify(db, closed.user_id, {
                 text: summaryText,
                 kind: "listing_published_summary",
-                data: { case_id: closed.id },
+                data: {
+                  case_id: closed.id,
+                  ...(sendCorrective ? { corrective: true } : {}),
+                },
               });
               if (result.delivered.length > 0) {
                 await insertOperationalCaseEvent(db, {
@@ -604,7 +676,11 @@ export async function requestPublicationProgress(
                   eventType: "step_completed",
                   actor: "system",
                   stepKey: "published",
-                  payload: { kind: "listing_published_summary_sent" },
+                  payload: {
+                    kind: sendCorrective
+                      ? "listing_published_summary_resent"
+                      : "listing_published_summary_sent",
+                  },
                 });
               }
             } catch {
@@ -1136,7 +1212,7 @@ export async function requestPublicationProgress(
         publication.destinations[action.destination].artifact.ungga_property_id ??
         "new"
       }`;
-      const claim = await claimPublicationOperation(db, {
+      let claim = await claimPublicationOperation(db, {
         caseId: opCase.id,
         destination: action.destination,
         operationKey,
@@ -1145,6 +1221,76 @@ export async function requestPublicationProgress(
       }, {
         forceRetry: options.forceRetryFailedOperation === true,
       }).catch(() => null);
+
+      // Auto-heal: process_media failed before EasyBroker side effects (e.g. watermark gate).
+      if (
+        claim?.status === "failed_terminal" &&
+        action.type === "process_media" &&
+        options.forceRetryFailedOperation !== true
+      ) {
+        const uploadToolCalls = await listEasyBrokerUploadToolCallsForCase(
+          db,
+          opCase.id
+        );
+        const safe = canSafelyForceRetryProcessMedia({
+          operation: {
+            status: claim.operation.status,
+            operation_type: claim.operation.operation_type,
+            error_text: claim.operation.error_text,
+          },
+          uploadToolCalls,
+        });
+        if (safe) {
+          claim = await claimPublicationOperation(
+            db,
+            {
+              caseId: opCase.id,
+              destination: action.destination,
+              operationKey,
+              operationType: action.type,
+              request: {
+                source,
+                action,
+                auto_force_retry: "pre_remote_process_media",
+              },
+            },
+            { forceRetry: true }
+          ).catch(() => null);
+        }
+      }
+
+      // Auto-heal: Ungga publish failed before CLI side effects (*_not_called).
+      if (
+        claim?.status === "failed_terminal" &&
+        action.type === "publish" &&
+        action.destination === "ungga" &&
+        options.forceRetryFailedOperation !== true
+      ) {
+        const safe = canSafelyForceRetryUnggaPublish({
+          operation: {
+            status: claim.operation.status,
+            operation_type: claim.operation.operation_type,
+            error_text: claim.operation.error_text,
+          },
+        });
+        if (safe) {
+          claim = await claimPublicationOperation(
+            db,
+            {
+              caseId: opCase.id,
+              destination: action.destination,
+              operationKey,
+              operationType: action.type,
+              request: {
+                source,
+                action,
+                auto_force_retry: "pre_side_effect_ungga_publish",
+              },
+            },
+            { forceRetry: true }
+          ).catch(() => null);
+        }
+      }
 
       if (claim?.status === "reuse") {
         const result = isRecord(claim.operation.result_jsonb)
@@ -1170,14 +1316,11 @@ export async function requestPublicationProgress(
             },
           });
         } else if (action.type === "process_media") {
-          publication = applyPublicationEvent(publication, {
-            type: "media_submitted",
-            destination: action.destination,
-            expected_count:
-              typeof result.count === "number" && result.count > 0
-                ? result.count
-                : publication.destinations[action.destination].media.expected_count,
-          });
+          publication = applyProcessMediaPublicationEvents(
+            publication,
+            action.destination,
+            result
+          );
         } else {
           publication = applyPublicationEvent(publication, {
             type: "publish_succeeded",
@@ -1582,14 +1725,11 @@ export async function requestPublicationProgress(
             }
           }
         } else if (action.type === "process_media") {
-          publication = applyPublicationEvent(publication, {
-            type: "media_submitted",
-            destination: action.destination,
-            expected_count:
-              typeof result.count === "number" && result.count > 0
-                ? result.count
-                : publication.destinations[action.destination].media.expected_count,
-          });
+          publication = applyProcessMediaPublicationEvents(
+            publication,
+            action.destination,
+            result
+          );
         } else {
           publication = applyPublicationEvent(publication, {
             type: "publish_succeeded",
@@ -1785,6 +1925,31 @@ export async function recordPublicationPublished(
   await persistPublication(db, opCase, publication);
 }
 
+async function listEasyBrokerUploadToolCallsForCase(
+  db: DbClient,
+  caseId: string
+): Promise<
+  Array<{
+    tool_name: string;
+    status?: string | null;
+    result_json?: Record<string, unknown> | null;
+  }>
+> {
+  const { data, error } = await db
+    .from("tool_calls")
+    .select("tool_name,status,result_json,arguments_json,created_at")
+    .eq("tool_name", "easybroker_upload_images")
+    .contains("arguments_json", { case_id: caseId })
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (error || !Array.isArray(data)) return [];
+  return data.map((row) => ({
+    tool_name: String(row.tool_name ?? "easybroker_upload_images"),
+    status: typeof row.status === "string" ? row.status : null,
+    result_json: isRecord(row.result_json) ? row.result_json : null,
+  }));
+}
+
 export function buildPublicationAgentHint(
   action: PublicationMachineAction,
   context: Record<string, unknown>
@@ -1811,18 +1976,19 @@ export function buildPublicationAgentHint(
     const watermarkConfigured = context.watermark_configured;
     const watermarkHint =
       watermarkConfigured === false
-        ? "No hay watermark de marca configurado: sube fotos originales (sin image_watermark)."
-        : "Si falta watermark y la cuenta tiene logo de marca, llama image_watermark(case_id) primero.";
+        ? "No hay watermark de marca: el adapter sube fotos originales."
+        : "Si hay logo de marca, el adapter aplica watermark solo; no inventes upload_path.";
     return [
       "PUBLICATION RUNNER: sube fotos a EasyBroker.",
       watermarkHint,
-      `Luego easybroker_upload_images con listing_id del caso.`,
+      "Llama easybroker_upload_images({ case_id, listing_id }) UNA vez.",
+      "No construyas images/upload_path; el adapter deriva pares desde photo_manifest.",
       paths.length
-        ? `image_paths canónicos: ${JSON.stringify(paths)}.`
-        : "Deriva image_paths desde photo_manifest/raw_photos.",
+        ? `Referencia de identidad (source_path): ${JSON.stringify(paths)}.`
+        : "Deriva identidad desde photo_manifest/raw_photos.",
       titles.some(Boolean)
-        ? `image_titles del manifest (omitir nulls): ${JSON.stringify(titles)}.`
-        : "No inventes image_titles; usa solo etiquetas del photo_manifest con confianza alta.",
+        ? `Títulos del manifest (solo referencia): ${JSON.stringify(titles)}.`
+        : "No inventes image_titles.",
       "No pidas Ungga en este tick.",
     ].join(" ");
   }

@@ -120,6 +120,43 @@ import {
 }
 
 {
+  const missingCommission = evaluatePrepareDraftSuccess({
+    dryRun: false,
+    expectedImageCount: 6,
+    uploadedImageCount: 6,
+    saveOutcome: { ok: true },
+    draftLinks: {
+      ungga_property_id: "GU-1",
+      draft_url: "https://ungga.com/app/propiedades/GU-1",
+    },
+    expectedCommissionPct: 5,
+    commissionActual: 0,
+    commissionVerified: false,
+  });
+  assert.equal(missingCommission.ok, false);
+  assert.match(missingCommission.error ?? "", /Commission not verified/i);
+}
+
+{
+  const verifiedCommission = evaluatePrepareDraftSuccess({
+    dryRun: false,
+    expectedImageCount: 6,
+    uploadedImageCount: 6,
+    saveOutcome: { ok: true },
+    draftLinks: {
+      ungga_property_id: "GU-1",
+      draft_url: "https://ungga.com/app/propiedades/GU-1",
+    },
+    expectedCommissionPct: 5,
+    commissionActual: 5,
+    commissionVerified: true,
+  });
+  assert.equal(verifiedCommission.ok, true);
+  assert.equal(verifiedCommission.commission_verified, true);
+  assert.equal(verifiedCommission.commission_expected, 5);
+}
+
+{
   const falsePositive = validateUnggaCliPrepareDraftResult({
     ok: true,
     mode: "save_draft",

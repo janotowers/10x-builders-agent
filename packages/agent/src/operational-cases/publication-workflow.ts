@@ -62,6 +62,8 @@ export type PublicationArtifact = {
   images_status?: string | null;
   images_uploaded?: boolean;
   images_error?: string | null;
+  /** How the Ungga property was created: cli | api | easybroker_import | unknown */
+  creation_source?: string | null;
 };
 
 export type PublicationMediaState = {
@@ -450,6 +452,33 @@ export function isEasybrokerDraftCreated(
 }
 
 /**
+ * Idle reasons that mean this destination needs no further machine work.
+ * In-flight / no_action idles must NOT fall through to all_destinations_resolved.
+ */
+export function isDestinationResolvedIdleReason(reason: string): boolean {
+  return (
+    reason.endsWith("_already_published") ||
+    reason.endsWith("_skipped_or_rejected")
+  );
+}
+
+/**
+ * True when every destination is terminal-success (published) or explicitly
+ * skipped/rejected. Failed / unknown_outcome / in-flight never qualify.
+ */
+export function areAllPublicationDestinationsResolved(
+  publication: PublicationState
+): boolean {
+  return PUBLICATION_DESTINATIONS.every((destination) => {
+    const dest = publication.destinations[destination];
+    if (dest.approval === "skipped" || dest.approval === "rejected") {
+      return true;
+    }
+    return dest.phase === "published" || dest.phase === "skipped";
+  });
+}
+
+/**
  * Reducer puro: una sola acción siguiente por caso.
  * Orden: EasyBroker completo (o skipped/rejected) antes de Ungga.
  */
@@ -475,6 +504,13 @@ export function nextPublicationAction(
         }
         const ebAction = actionForDestination("easybroker", eb);
         if (ebAction.type !== "idle") return ebAction;
+        // Preserve in-flight / unresolved idle from EasyBroker (do not discard).
+        if (
+          ebAction.type === "idle" &&
+          !isDestinationResolvedIdleReason(ebAction.reason)
+        ) {
+          return ebAction;
+        }
         return {
           type: "idle",
           reason: "waiting_easybroker_before_ungga",
@@ -485,6 +521,15 @@ export function nextPublicationAction(
     const dest = publication.destinations[destination];
     const action = actionForDestination(destination, dest);
     if (action.type !== "idle") return action;
+    // Keep draft_in_flight / publish_in_flight / no_action — never escalate to
+    // all_destinations_resolved while a destination is still unresolved.
+    if (!isDestinationResolvedIdleReason(action.reason)) {
+      return action;
+    }
+  }
+
+  if (!areAllPublicationDestinationsResolved(publication)) {
+    return { type: "idle", reason: "destinations_unresolved" };
   }
 
   return { type: "idle", reason: "all_destinations_resolved" };

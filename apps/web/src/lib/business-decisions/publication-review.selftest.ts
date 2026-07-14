@@ -76,4 +76,40 @@ import {
   );
 }
 
+{
+  let publication = emptyPublicationState();
+  publication = applyPublicationEvent(publication, {
+    type: "approval_decided",
+    destination: "ungga",
+    approval: "approved",
+  });
+  publication = applyPublicationEvent(publication, {
+    type: "draft_created",
+    destination: "ungga",
+    artifact: { ungga_property_id: "GU-CLI" },
+  });
+  publication = applyPublicationEvent(publication, {
+    type: "publish_failed",
+    destination: "ungga",
+    error: "ungga_publish_listing_not_called",
+  });
+  assert.equal(
+    shouldForceRetryPublicationCreateAfterReview({
+      destination: "ungga",
+      publication,
+      lastError: "ungga_publish_listing_not_called",
+    }),
+    true,
+    "pre-side-effect publish failure may force-retry publish on existing CLI draft"
+  );
+  assert.match(
+    publicationReviewContinueGuidance({
+      destination: "ungga",
+      publication,
+      forceRetry: true,
+    }),
+    /Reintento de publish|GU-CLI/
+  );
+}
+
 console.log("publication-review.selftest: ok");

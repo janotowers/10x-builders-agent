@@ -9,6 +9,12 @@ const SAFE_PROCESS_MEDIA_NO_SIDE_EFFECT_ERRORS = new Set([
   "publication_pending_action_persist_failed",
   "publication_executor_missing",
   "no_tool_for_action",
+  "watermark_precondition_missing",
+  "watermark_persist_failed",
+  "watermark_apply_failed",
+  "raw_photos_missing",
+  "case_not_found",
+  "case_id_required",
 ]);
 
 export type ProcessMediaRecoveryOperation = {
@@ -20,7 +26,23 @@ export type ProcessMediaRecoveryOperation = {
 export type ProcessMediaRecoveryToolCall = {
   tool_name: string;
   status?: string | null;
+  result_json?: Record<string, unknown> | null;
 };
+
+export function isWatermarkPreconditionUploadError(
+  errorText: string | null | undefined
+): boolean {
+  const error = typeof errorText === "string" ? errorText.trim() : "";
+  if (!error) return false;
+  if (
+    error === "watermark_precondition_missing" ||
+    error === "watermark_persist_failed" ||
+    error === "watermark_apply_failed"
+  ) {
+    return true;
+  }
+  return /^Watermark requerido pero faltan\b/i.test(error);
+}
 
 export function isSafeProcessMediaNoSideEffectError(
   errorText: string | null | undefined
@@ -29,12 +51,44 @@ export function isSafeProcessMediaNoSideEffectError(
   if (!error) return false;
   if (SAFE_PROCESS_MEDIA_NO_SIDE_EFFECT_ERRORS.has(error)) return true;
   if (error.endsWith("_not_called")) return true;
-  return error.includes("easybroker_upload_images_not_called");
+  if (error.includes("easybroker_upload_images_not_called")) return true;
+  if (isWatermarkPreconditionUploadError(error)) return true;
+  return false;
+}
+
+function uploadAttemptHadNoRemoteSideEffect(
+  row: ProcessMediaRecoveryToolCall
+): boolean {
+  const result =
+    row.result_json && typeof row.result_json === "object"
+      ? row.result_json
+      : null;
+  if (result?.side_effect_started === false) return true;
+  if (result?.side_effect_started === true) return false;
+  const status = typeof result?.status === "string" ? result.status : null;
+  if (
+    status === "watermark_precondition_missing" ||
+    status === "watermark_persist_failed" ||
+    status === "watermark_apply_failed" ||
+    status === "raw_photos_missing" ||
+    status === "case_not_found" ||
+    status === "case_id_required"
+  ) {
+    return true;
+  }
+  const error =
+    typeof result?.error === "string"
+      ? result.error
+      : typeof result?.hint === "string"
+        ? result.hint
+        : null;
+  return isWatermarkPreconditionUploadError(error);
 }
 
 /**
- * True only when process_media failed without ever calling
- * easybroker_upload_images — safe to forceRetry the ledger row.
+ * True only when process_media failed without any EasyBroker image side effect.
+ * Allows forceRetry when upload was attempted but blocked by watermark/local
+ * preconditions (side_effect_started=false).
  */
 export function canSafelyForceRetryProcessMedia(params: {
   operation: ProcessMediaRecoveryOperation;
@@ -42,13 +96,54 @@ export function canSafelyForceRetryProcessMedia(params: {
 }): boolean {
   if (params.operation.operation_type !== "process_media") return false;
   if (params.operation.status !== "failed") return false;
-  if (!isSafeProcessMediaNoSideEffectError(params.operation.error_text)) {
-    return false;
-  }
-  const hasUploadAttempt = params.uploadToolCalls.some(
+
+  const uploadAttempts = params.uploadToolCalls.filter(
     (row) => row.tool_name === "easybroker_upload_images"
   );
-  return !hasUploadAttempt;
+  if (uploadAttempts.length === 0) {
+    return isSafeProcessMediaNoSideEffectError(params.operation.error_text);
+  }
+
+  // Upload tool ran, but every attempt stopped before EasyBroker HTTP.
+  return uploadAttempts.every(uploadAttemptHadNoRemoteSideEffect);
+}
+
+/**
+ * True when Ungga publish failed before CLI side effects (tool not called /
+ * agent hallucinated success). Safe to reclaim the ledger and retry publish
+ * on the existing CLI GU-ID without creating a new draft.
+ */
+export function canSafelyForceRetryUnggaPublish(params: {
+  operation: ProcessMediaRecoveryOperation;
+  publishToolCalls?: ProcessMediaRecoveryToolCall[];
+}): boolean {
+  if (params.operation.operation_type !== "publish") return false;
+  if (params.operation.status !== "failed") return false;
+  const error =
+    typeof params.operation.error_text === "string"
+      ? params.operation.error_text.trim()
+      : "";
+  if (
+    error === "ungga_publish_listing_not_called" ||
+    error.endsWith("_not_called") ||
+    error.includes("publication_execution_result_missing")
+  ) {
+    return true;
+  }
+  const attempts = (params.publishToolCalls ?? []).filter(
+    (row) => row.tool_name === "ungga_publish_listing"
+  );
+  if (attempts.length === 0) return Boolean(error);
+  return attempts.every((row) => {
+    const result =
+      row.result_json && typeof row.result_json === "object"
+        ? row.result_json
+        : null;
+    if (result?.side_effect_started === false) return true;
+    if (result?.side_effect_started === true) return false;
+    // No result means the tool never ran.
+    return result == null;
+  });
 }
 
 /**
@@ -63,4 +158,18 @@ export function isCaseProcessingLeaseActive(
   const leaseMs = Date.parse(nextActionAt);
   if (!Number.isFinite(leaseMs)) return false;
   return leaseMs > nowMs;
+}
+
+/**
+ * True when a scheduled resume (or null schedule) may proceed.
+ * Future timestamps act as debounce/lease; past or null means due.
+ */
+export function isPublicationResumeDue(
+  nextActionAt: string | null | undefined,
+  nowMs: number = Date.now()
+): boolean {
+  if (typeof nextActionAt !== "string" || !nextActionAt.trim()) return true;
+  const resumeMs = Date.parse(nextActionAt);
+  if (!Number.isFinite(resumeMs)) return true;
+  return resumeMs <= nowMs;
 }

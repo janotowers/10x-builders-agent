@@ -1160,7 +1160,11 @@ const NOTIFY_USER_INTENT_RECIPES: NotifyUserIntentRecipe[] = [
       }) === "listing_published_summary",
     build: (input) => {
       if (!input.testCase?.id) return null;
-      const completion = canCompleteListingPublishedSummaryFromContext(input.ctx);
+      const completion = canCompleteListingPublishedSummaryFromContext(
+        input.ctx,
+        undefined,
+        { allowLegacyRelaxed: true }
+      );
       if (completion.ok) {
         return {
           case_id: input.testCase.id,

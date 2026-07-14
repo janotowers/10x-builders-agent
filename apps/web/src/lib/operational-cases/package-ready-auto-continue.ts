@@ -3,8 +3,23 @@ import {
   isEasybrokerResolvedForUnggaApproval,
 } from "@/lib/business-decisions/publish-destination-approval";
 import { countRawPhotos } from "@/lib/operational-cases/photo-batch-completion";
+import { isPublicationResumeDue } from "@/lib/operational-cases/publication-media-recovery";
+import { resolvePublicationRolloutMode } from "@/lib/operational-cases/publication-rollout";
+import { listingDescriptionIsApproved } from "@/lib/operational-cases/publication-tool-policy";
+import {
+  nextPublicationAction,
+  publicationFromContext,
+} from "@/lib/operational-cases/publication-workflow";
 
 export const PACKAGE_READY_AUTO_FOLLOW_UP_MAX_DEPTH = 2;
+
+const LAB_WAKE_MACHINE_ACTIONS = new Set([
+  "create_draft",
+  "process_media",
+  "wait_remote_media",
+  "validate",
+  "publish",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -123,10 +138,15 @@ export function formatUnggaPublishApprovalNotifyText(): string {
  * Ticks invoked by the publication runner (or its follow-up/lab wake paths)
  * must not schedule another fire-and-forget runner: the outer loop already
  * continues to process_media / publish.
+ *
+ * Prefer structural `publicationRunnerOwned` when available; `source` prefixes
+ * remain as telemetry/compat fallback.
  */
 export function isNestedPublicationRunnerTick(
-  source: string | null | undefined
+  source: string | null | undefined,
+  options?: { publicationRunnerOwned?: boolean }
 ): boolean {
+  if (options?.publicationRunnerOwned === true) return true;
   if (typeof source !== "string" || !source.trim()) return false;
   return (
     source.startsWith("publication_runner:") ||
@@ -147,8 +167,16 @@ export function shouldAutoFollowUpPackageReadyTick(params: {
   autoFollowUpDepth: number;
   /** Tick source; nested runner sources never schedule a second runner. */
   source?: string | null;
+  /** Structural ownership from the publication runner (preferred). */
+  publicationRunnerOwned?: boolean;
 }): boolean {
-  if (isNestedPublicationRunnerTick(params.source)) return false;
+  if (
+    isNestedPublicationRunnerTick(params.source, {
+      publicationRunnerOwned: params.publicationRunnerOwned,
+    })
+  ) {
+    return false;
+  }
   if (params.pendingConfirmation) return false;
   if (params.uploadFailedThisTurn) return false;
   if (params.autoFollowUpDepth >= PACKAGE_READY_AUTO_FOLLOW_UP_MAX_DEPTH) {
@@ -156,6 +184,40 @@ export function shouldAutoFollowUpPackageReadyTick(params: {
   }
   if (params.uploadedImagesThisTurn) return false;
   return packageReadyNeedsEasybrokerImageUpload(params.context);
+}
+
+/**
+ * Lab observer substitute for cron: wake the serialized publication runner when
+ * machine work remains and the resume/lease window is due.
+ * Driven by nextPublicationAction (not legacy images_* heuristics alone).
+ */
+export function shouldLabObserverWakePublicationRunner(params: {
+  context: Record<string, unknown> | null | undefined;
+  currentStep: string | null | undefined;
+  nextActionAt: string | null | undefined;
+  blockingActionsCount: number;
+  hasPendingPublishApprovalNotification?: boolean;
+  nowMs?: number;
+}): boolean {
+  if (params.blockingActionsCount > 0) return false;
+  if (params.currentStep !== "package_ready") return false;
+  if (!isRecord(params.context)) return false;
+  if (params.context.package_ready_machine_work_in_flight === true) return false;
+  if (!isPublicationResumeDue(params.nextActionAt, params.nowMs)) return false;
+  if (!listingDescriptionIsApproved(params.context)) return false;
+  if (resolvePublicationRolloutMode(params.context) !== "active") return false;
+
+  const next = nextPublicationAction(publicationFromContext(params.context));
+  if (LAB_WAKE_MACHINE_ACTIONS.has(next.type)) return true;
+
+  if (
+    (next.type === "request_approval" || next.type === "request_review") &&
+    params.hasPendingPublishApprovalNotification !== true
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 /**

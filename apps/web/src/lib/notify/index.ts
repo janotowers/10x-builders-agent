@@ -827,6 +827,9 @@ function shouldReuseActiveNotification(payload: NotifyPayload, caseId: string | 
     "ungga_publish_approval",
     "manual_publish_package_approval",
     "publication_review_required",
+    // Corrective re-close after premature summary must upsert, not insert
+    // (unique active index on user/case/kind).
+    "listing_published_summary",
   ].includes(payload.kind);
 }
 

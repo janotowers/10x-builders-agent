@@ -15,6 +15,8 @@ export {
   isTerminalPublicationPhase,
   isEasybrokerEffectivelyPublished,
   isEasybrokerDraftCreated,
+  isDestinationResolvedIdleReason,
+  areAllPublicationDestinationsResolved,
   nextPublicationAction,
   applyPublicationEvent,
   buildPublicationContextPatch,

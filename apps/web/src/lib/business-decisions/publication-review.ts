@@ -81,23 +81,12 @@ async function triggerProgress(
   source: string,
   options?: { forceRetryFailedOperation?: boolean }
 ) {
-  const { runSettingsTestCaseAgentTick } = await import(
+  const { createPublicationRunnerOwnedAgentTick } = await import(
     "@/lib/operational-cases/run-settings-test-case-tick"
   );
   await requestPublicationProgress(db, caseId, source, {
     forceRetryFailedOperation: options?.forceRetryFailedOperation === true,
-    runAgentTick: async (opCase, action) => {
-      const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
-        source: `${source}:${action.type}`,
-        skipLock: true,
-      });
-      return (
-        tick.publication_execution ?? {
-          status: "not_executed",
-          error: "publication_execution_result_missing",
-        }
-      );
-    },
+    runAgentTick: createPublicationRunnerOwnedAgentTick(db, userId, source),
   });
 }
 
@@ -105,19 +94,70 @@ async function triggerProgress(
  * After unknown_outcome/failed create without a known remote artifact, human
  * "approve and continue" means "I checked; safe to retry prepare_draft".
  * If a GU-ID/listing already exists, do NOT force-retry create — reconcile instead.
+ *
+ * Additionally: Ungga publish that failed with *_not_called (pre-side-effect)
+ * may force-retry publish on the existing CLI artifact.
  */
 export function shouldForceRetryPublicationCreateAfterReview(params: {
   destination: PublicationDestination;
   publication: ReturnType<typeof publicationFromContext>;
+  lastError?: string | null;
 }): boolean {
   const dest = params.publication.destinations[params.destination];
   const hasArtifact = Boolean(
     dest.artifact.listing_id || dest.artifact.ungga_property_id
   );
-  return (
+  if (
     !hasArtifact &&
     (dest.phase === "unknown_outcome" || dest.phase === "failed")
+  ) {
+    return true;
+  }
+  // Safe publish retry: artifact exists, publish failed before CLI side effect.
+  if (
+    params.destination === "ungga" &&
+    hasArtifact &&
+    (dest.phase === "failed" || dest.phase === "unknown_outcome") &&
+    isPreSideEffectUnggaPublishError(params.lastError ?? dest.last_error)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function isPreSideEffectUnggaPublishError(
+  errorText: string | null | undefined
+): boolean {
+  const error = typeof errorText === "string" ? errorText.trim() : "";
+  if (!error) return false;
+  return (
+    error === "ungga_publish_listing_not_called" ||
+    error.endsWith("_not_called") ||
+    error.includes("publication_execution_result_missing")
   );
+}
+
+/**
+ * Whether force-retry should reset to draft_pending (recreate) or
+ * publish_pending (retry publish on existing CLI draft).
+ */
+export function forceRetryPublicationResetPhase(params: {
+  destination: PublicationDestination;
+  publication: ReturnType<typeof publicationFromContext>;
+  lastError?: string | null;
+}): "draft_pending" | "publish_pending" {
+  const dest = params.publication.destinations[params.destination];
+  const hasArtifact = Boolean(
+    dest.artifact.listing_id || dest.artifact.ungga_property_id
+  );
+  if (
+    params.destination === "ungga" &&
+    hasArtifact &&
+    isPreSideEffectUnggaPublishError(params.lastError ?? dest.last_error)
+  ) {
+    return "publish_pending";
+  }
+  return "draft_pending";
 }
 
 export function publicationReviewContinueGuidance(params: {
@@ -129,6 +169,12 @@ export function publicationReviewContinueGuidance(params: {
   const artifactId =
     dest.artifact.ungga_property_id || dest.artifact.listing_id || null;
   if (params.forceRetry) {
+    if (
+      artifactId &&
+      isPreSideEffectUnggaPublishError(dest.last_error)
+    ) {
+      return `Reintento de publish autorizado sobre el borrador CLI ${artifactId} (sin side effect previo).`;
+    }
     return "Reintento de create autorizado (sin artifact remoto conocido).";
   }
   if (artifactId) {
@@ -213,6 +259,7 @@ export async function handlePublicationReviewDecision(
     shouldForceRetryPublicationCreateAfterReview({
       destination,
       publication,
+      lastError: publication.destinations[destination].last_error,
     });
 
   if (parsed.intent === "relabel" && parsed.labels) {
@@ -229,19 +276,24 @@ export async function handlePublicationReviewDecision(
       type: "review_resolved",
       destination,
     });
-  } else if (parsed.intent === "approve_continue") {
+  } else   if (parsed.intent === "approve_continue") {
     if (forceRetryFailedOperation) {
       const dest = publication.destinations[destination];
+      const resetPhase = forceRetryPublicationResetPhase({
+        destination,
+        publication,
+        lastError: dest.last_error,
+      });
       publication = {
         ...publication,
         destinations: {
           ...publication.destinations,
           [destination]: {
             ...dest,
-            phase: "draft_pending",
+            phase: resetPhase,
             last_error: null,
             review_reason: null,
-            preflight: null,
+            preflight: resetPhase === "publish_pending" ? "pass" : null,
             operation_key: null,
             updated_at: new Date().toISOString(),
           },

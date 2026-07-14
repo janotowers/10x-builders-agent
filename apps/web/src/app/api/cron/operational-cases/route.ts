@@ -92,7 +92,7 @@ import {
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 import { buildMediaGroupReceivedAck } from "@/lib/operational-cases/case-document-collection";
 import { requestPublicationProgress } from "@/lib/operational-cases/publication-runner";
-import { runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settings-test-case-tick";
+import { createPublicationRunnerOwnedAgentTick, runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settings-test-case-tick";
 import { flushMediaGroupAcksForCase } from "@/lib/operational-cases/telegram-media-group-ack-store";
 import {
   buildToolConfirmationEscalationText,
@@ -934,23 +934,11 @@ async function processCase(
       opCase.id,
       "cron_publication",
       {
-        runAgentTick: async (runnerCase, action) => {
-          const tick = await runSettingsTestCaseAgentTick(
-            db,
-            runnerCase,
-            runnerCase.user_id,
-            {
-              source: `cron_publication:${action.type}`,
-              skipLock: true,
-            }
-          );
-          return (
-            tick.publication_execution ?? {
-              status: "not_executed",
-              error: "publication_execution_result_missing",
-            }
-          );
-        },
+        runAgentTick: createPublicationRunnerOwnedAgentTick(
+          db,
+          opCase.user_id,
+          "cron_publication"
+        ),
       }
     );
     return {

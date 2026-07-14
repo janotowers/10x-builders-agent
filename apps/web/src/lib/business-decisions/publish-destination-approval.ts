@@ -225,23 +225,16 @@ async function triggerControlledE2EAgentTick(
   updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
   source: string
 ) {
-  const { runSettingsTestCaseAgentTick } = await import(
+  const { createPublicationRunnerOwnedAgentTick } = await import(
     "@/lib/operational-cases/run-settings-test-case-tick"
   );
   // Prefer serialized publication runner; it may delegate to the agent tick.
   await requestPublicationProgress(db, updated.id, source, {
-    runAgentTick: async (opCase, action) => {
-      const tick = await runSettingsTestCaseAgentTick(db, opCase, opCase.user_id, {
-        source: `${source}:${action.type}`,
-        skipLock: true,
-      });
-      return (
-        tick.publication_execution ?? {
-          status: "not_executed",
-          error: "publication_execution_result_missing",
-        }
-      );
-    },
+    runAgentTick: createPublicationRunnerOwnedAgentTick(
+      db,
+      updated.user_id,
+      source
+    ),
   });
 }
 

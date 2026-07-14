@@ -16,15 +16,144 @@ const context = {
   listing_description_approved: {
     headline: "Departamento en renta en Colomos Providencia",
   },
+  publish_approvals: {
+    easybroker: "approved",
+    ungga: "pending",
+  },
+  publication: {
+    destinations: {
+      easybroker: { phase: "published" },
+      ungga: { phase: "awaiting_approval" },
+    },
+  },
   published: {
     easybroker: {
       listing_id: "EB-123",
       public_url: "https://www.easybroker.com/mx/listings/eb-123",
+      status: "published",
     },
   },
 };
 
-assert.deepEqual(canCompleteListingPublishedSummaryFromContext(context), { ok: true });
+// EasyBroker alone while Ungga still pending must not close.
+assert.equal(
+  canCompleteListingPublishedSummaryFromContext(context).ok,
+  false
+);
+
+// listing_id alone with not_published must not close.
+assert.equal(
+  canCompleteListingPublishedSummaryFromContext({
+    publish_approvals: { easybroker: "approved", ungga: "skipped" },
+    publication: {
+      destinations: {
+        easybroker: { phase: "draft_ready" },
+        ungga: { phase: "skipped" },
+      },
+    },
+    published: {
+      easybroker: {
+        listing_id: "EB-123",
+        status: "not_published",
+      },
+    },
+  }).ok,
+  false
+);
+
+// Ungga GU-ID alone must not close.
+assert.equal(
+  canCompleteListingPublishedSummaryFromContext({
+    publish_approvals: { easybroker: "skipped", ungga: "approved" },
+    publication: {
+      destinations: {
+        easybroker: { phase: "skipped" },
+        ungga: { phase: "draft_ready" },
+      },
+    },
+    published: {
+      ungga: {
+        ungga_property_id: "GU-1",
+        status: "draft",
+      },
+    },
+  }).ok,
+  false
+);
+
+// EasyBroker-imported Ungga ID must be rejected.
+assert.equal(
+  canCompleteListingPublishedSummaryFromContext({
+    publish_approvals: { easybroker: "approved", ungga: "approved" },
+    publication: {
+      destinations: {
+        easybroker: { phase: "published" },
+        ungga: { phase: "published" },
+      },
+    },
+    published: {
+      easybroker: {
+        listing_id: "EB-123",
+        public_url: "https://www.easybroker.com/mx/listings/eb-123",
+        status: "published",
+      },
+      ungga: {
+        ungga_property_id: "vowMl9le6jQsOAYuSIIERGuOW1F2EB-WL9056",
+        published_url:
+          "https://ungga.com/app/propiedades/vowMl9le6jQsOAYuSIIERGuOW1F2EB-WL9056",
+        status: "published",
+      },
+    },
+  }).ok,
+  false
+);
+
+// In-flight machine work blocks closure.
+assert.equal(
+  canCompleteListingPublishedSummaryFromContext(
+    {
+      ...context,
+      publish_approvals: { easybroker: "approved", ungga: "approved" },
+      publication: {
+        destinations: {
+          easybroker: { phase: "published" },
+          ungga: { phase: "published" },
+        },
+      },
+      published: {
+        easybroker: context.published.easybroker,
+        ungga: {
+          ungga_property_id: "GU-1",
+          published_url: "https://ungga.com/app/propiedades/GU-1",
+          status: "published",
+        },
+      },
+    },
+    undefined,
+    { machineWorkInFlight: true }
+  ).ok,
+  false
+);
+
+const bothOk = canCompleteListingPublishedSummaryFromContext({
+  ...context,
+  publish_approvals: { easybroker: "approved", ungga: "approved" },
+  publication: {
+    destinations: {
+      easybroker: { phase: "published" },
+      ungga: { phase: "published" },
+    },
+  },
+  published: {
+    easybroker: context.published.easybroker,
+    ungga: {
+      ungga_property_id: "GU-1",
+      published_url: "https://ungga.com/app/propiedades/GU-1",
+      status: "published",
+    },
+  },
+});
+assert.deepEqual(bothOk, { ok: true });
 
 const text = formatListingPublishedSummaryNotifyText({
   id: "case-123",
@@ -42,6 +171,7 @@ const bothDestinations = formatListingPublishedSummaryNotifyText({
   id: "case-456",
   context_jsonb: {
     ...context,
+    publish_approvals: { easybroker: "approved", ungga: "approved" },
     published: {
       ...context.published,
       ungga: {
@@ -56,6 +186,18 @@ assert.match(bothDestinations, /Ungga: https:\/\/ungga\.example\/properties\/UG-
 
 const incomplete = canCompleteListingPublishedSummaryFromContext({});
 assert.equal(incomplete.ok, false);
-assert.match(incomplete.reason ?? "", /destino publicado/);
+assert.match(incomplete.reason ?? "", /publicaci/);
+
+// Legacy relaxed still accepts listing_id for tool-readiness smoke.
+assert.equal(
+  canCompleteListingPublishedSummaryFromContext(
+    {
+      published: { easybroker: { listing_id: "EB-123" } },
+    },
+    undefined,
+    { allowLegacyRelaxed: true }
+  ).ok,
+  true
+);
 
 console.log("listing-published-summary selftest ok");

@@ -166,6 +166,36 @@ export function evaluatePrepareDraftSuccess(params) {
     };
   }
 
+  const expectedCommission =
+    typeof params?.expectedCommissionPct === "number" &&
+    Number.isFinite(params.expectedCommissionPct) &&
+    params.expectedCommissionPct > 0
+      ? params.expectedCommissionPct
+      : null;
+  const commissionVerified = params?.commissionVerified === true;
+  const commissionActual =
+    typeof params?.commissionActual === "number" &&
+    Number.isFinite(params.commissionActual)
+      ? params.commissionActual
+      : null;
+
+  if (expectedCommission != null && !commissionVerified) {
+    return {
+      ok: false,
+      dry_run: false,
+      ungga_property_id: unggaPropertyId,
+      draft_url: draftUrl,
+      expected_image_count: expectedImageCount,
+      uploaded_image_count: uploadedImageCount ?? expectedImageCount,
+      images_submitted: expectedImageCount > 0,
+      images_verified: expectedImageCount > 0,
+      commission_expected: expectedCommission,
+      commission_actual: commissionActual,
+      commission_verified: false,
+      error: `Commission not verified: expected ${expectedCommission}%, got ${commissionActual ?? "null"}`,
+    };
+  }
+
   return {
     ok: true,
     dry_run: false,
@@ -175,6 +205,10 @@ export function evaluatePrepareDraftSuccess(params) {
     uploaded_image_count: uploadedImageCount ?? expectedImageCount,
     images_submitted: expectedImageCount > 0,
     images_verified: expectedImageCount > 0,
+    commission_expected: expectedCommission,
+    commission_actual:
+      expectedCommission == null ? null : (commissionActual ?? expectedCommission),
+    commission_verified: expectedCommission == null ? true : true,
     error: null,
   };
 }
@@ -211,6 +245,22 @@ export function validateUnggaCliPrepareDraftResult(parsed) {
   const draftUrl =
     (typeof result.draft_url === "string" && result.draft_url.trim()) || null;
 
+  const expectedCommission =
+    typeof result.commission_expected === "number" &&
+    Number.isFinite(result.commission_expected) &&
+    result.commission_expected > 0
+      ? result.commission_expected
+      : null;
+  const commissionActual =
+    typeof result.commission_actual === "number" &&
+    Number.isFinite(result.commission_actual)
+      ? result.commission_actual
+      : null;
+  const commissionVerified =
+    expectedCommission == null
+      ? true
+      : result.commission_verified === true;
+
   return evaluatePrepareDraftSuccess({
     dryRun,
     expectedImageCount: expected,
@@ -226,5 +276,8 @@ export function validateUnggaCliPrepareDraftResult(parsed) {
       ungga_property_id: propertyId,
       draft_url: draftUrl,
     },
+    expectedCommissionPct: expectedCommission,
+    commissionActual,
+    commissionVerified,
   });
 }

@@ -30,31 +30,99 @@ function formatPriceForSummary(
   return `${amount.toLocaleString("es-MX")} ${normalizedCurrency}`;
 }
 
+function approvalOf(
+  context: JsonRecord,
+  destination: "easybroker" | "ungga"
+): string | null {
+  const approvals = isRecord(context.publish_approvals)
+    ? context.publish_approvals
+    : {};
+  const value = approvals[destination];
+  return typeof value === "string" ? value : null;
+}
+
+function publicationPhaseOf(
+  context: JsonRecord,
+  destination: "easybroker" | "ungga"
+): string | null {
+  const publication = isRecord(context.publication) ? context.publication : {};
+  const destinations = isRecord(publication.destinations)
+    ? publication.destinations
+    : {};
+  const dest = isRecord(destinations[destination])
+    ? destinations[destination]
+    : {};
+  return typeof dest.phase === "string" ? dest.phase : null;
+}
+
+function looksLikeEasyBrokerImportedUnggaId(propertyId: string): boolean {
+  return /EB-[A-Z0-9]+/i.test(propertyId.trim());
+}
+
+function unggaUrlMatchesPropertyId(
+  publishedUrl: string,
+  propertyId: string
+): boolean {
+  const m = publishedUrl.match(/\/propiedades\/([^/?#]+)/i);
+  if (!m?.[1]) return false;
+  return m[1].trim() === propertyId.trim();
+}
+
+/**
+ * Strict completion gate for listing_published_summary / case closure.
+ *
+ * - Does not accept EasyBroker draft listing_id alone
+ * - Does not accept Ungga GU-ID alone (requires published_url)
+ * - Rejects EasyBroker-imported Ungga IDs as evidence
+ * - Blocks when machine work / in-flight phases are active
+ */
 export function canCompleteListingPublishedSummaryFromContext(
   context: JsonRecord,
-  recentEvents?: Array<{ payload_jsonb?: unknown }>
+  recentEvents?: Array<{ payload_jsonb?: unknown }>,
+  options?: {
+    allowLegacyRelaxed?: boolean;
+    machineWorkInFlight?: boolean;
+    hasInFlightLedgerOperation?: boolean;
+  }
 ): { ok: boolean; reason?: string } {
+  if (options?.machineWorkInFlight === true) {
+    return {
+      ok: false,
+      reason: "Hay trabajo de publicación en curso; no se puede cerrar aún.",
+    };
+  }
+  if (options?.hasInFlightLedgerOperation === true) {
+    return {
+      ok: false,
+      reason:
+        "Hay una operación de publicación claimed/running; no se puede cerrar aún.",
+    };
+  }
+
   const published = isRecord(context.published) ? context.published : {};
   const easybroker = isRecord(published.easybroker) ? published.easybroker : {};
   const ungga = isRecord(published.ungga) ? published.ungga : {};
   const manualPackage = isRecord(context.manual_publish_package)
     ? context.manual_publish_package
     : {};
-  const easybrokerPublished = Boolean(
-    (typeof easybroker.listing_id === "string" && easybroker.listing_id.trim()) ||
-      (typeof easybroker.public_url === "string" && easybroker.public_url.trim())
-  );
-  const unggaPublished = Boolean(
-    (typeof ungga.ungga_property_id === "string" && ungga.ungga_property_id.trim()) ||
-      (typeof ungga.published_url === "string" && ungga.published_url.trim())
-  );
-  const manualDelivered = Boolean(
-    typeof manualPackage.description === "string" &&
-      manualPackage.description.trim().length > 0 &&
-      (typeof manualPackage.headline === "string"
-        ? manualPackage.headline.trim().length > 0
-        : true)
-  );
+
+  const easybrokerApproval = approvalOf(context, "easybroker");
+  const unggaApproval = approvalOf(context, "ungga");
+  const easybrokerPhase = publicationPhaseOf(context, "easybroker");
+  const unggaPhase = publicationPhaseOf(context, "ungga");
+
+  const inFlightPhase = (phase: string | null) =>
+    phase === "draft_creating" ||
+    phase === "publishing" ||
+    phase === "media_processing";
+
+  if (inFlightPhase(easybrokerPhase) || inFlightPhase(unggaPhase)) {
+    return {
+      ok: false,
+      reason: "Hay una fase de publicación in-flight; no se puede cerrar aún.",
+    };
+  }
+
   const easybrokerFromEvents =
     recentEvents?.some((event) => {
       const payload = isRecord(event.payload_jsonb) ? event.payload_jsonb : null;
@@ -66,19 +134,137 @@ export function canCompleteListingPublishedSummaryFromContext(
       return payload?.kind === "ungga_published";
     }) ?? false;
 
+  const easybrokerSkipped =
+    easybrokerApproval === "skipped" ||
+    easybrokerApproval === "rejected" ||
+    easybrokerPhase === "skipped";
+  const unggaSkipped =
+    unggaApproval === "skipped" ||
+    unggaApproval === "rejected" ||
+    unggaPhase === "skipped";
+
+  const easybrokerPublicUrl =
+    contextString(easybroker, "public_url") ??
+    contextString(easybroker, "url") ??
+    contextString(easybroker, "agent_url");
+  const easybrokerListingId = contextString(easybroker, "listing_id");
+  const easybrokerStatus =
+    contextString(easybroker, "status") ??
+    contextString(easybroker, "remote_status");
+  const easybrokerPublishedStrict =
+    !easybrokerSkipped &&
+    (easybrokerPhase === "published" ||
+      easybrokerStatus === "published" ||
+      easybrokerFromEvents) &&
+    Boolean(easybrokerPublicUrl || easybrokerListingId);
+
+  const unggaPropertyId = contextString(ungga, "ungga_property_id");
+  const unggaUrl = contextString(ungga, "published_url");
+  const unggaStatus =
+    contextString(ungga, "status") ?? contextString(ungga, "remote_status");
+
   if (
-    easybrokerPublished ||
-    unggaPublished ||
-    manualDelivered ||
-    easybrokerFromEvents ||
-    unggaFromEvents
+    unggaPropertyId &&
+    looksLikeEasyBrokerImportedUnggaId(unggaPropertyId)
   ) {
-    return { ok: true };
+    return {
+      ok: false,
+      reason:
+        "El GU-ID de Ungga parece importado desde EasyBroker; no cuenta como evidencia de publicación CLI.",
+    };
   }
+
+  const unggaPublishedStrict =
+    !unggaSkipped &&
+    (unggaPhase === "published" ||
+      unggaStatus === "published" ||
+      unggaFromEvents) &&
+    Boolean(unggaUrl) &&
+    (!unggaPropertyId || unggaUrlMatchesPropertyId(unggaUrl!, unggaPropertyId));
+
+  const manualDelivered = Boolean(
+    typeof manualPackage.description === "string" &&
+      manualPackage.description.trim().length > 0 &&
+      (typeof manualPackage.headline === "string"
+        ? manualPackage.headline.trim().length > 0
+        : true)
+  );
+
+  // When approvals exist, every non-skipped approved destination must be published.
+  const easybrokerRequired =
+    easybrokerApproval === "approved" ||
+    (!easybrokerSkipped &&
+      (easybrokerPhase != null || easybrokerListingId != null));
+  const unggaRequired =
+    unggaApproval === "approved" ||
+    (!unggaSkipped && (unggaPhase != null || unggaPropertyId != null));
+
+  if (easybrokerRequired && !easybrokerPublishedStrict && !easybrokerSkipped) {
+    // Legacy relaxed mode (tool-readiness smoke only): listing_id alone.
+    if (
+      options?.allowLegacyRelaxed === true &&
+      Boolean(easybrokerListingId || easybrokerPublicUrl)
+    ) {
+      // fall through
+    } else {
+      return {
+        ok: false,
+        reason:
+          "EasyBroker aún no está publicado de forma verificable (fase/status published + evidencia).",
+      };
+    }
+  }
+
+  if (unggaRequired && !unggaPublishedStrict && !unggaSkipped) {
+    if (
+      options?.allowLegacyRelaxed === true &&
+      Boolean(unggaPropertyId || unggaUrl)
+    ) {
+      // fall through
+    } else {
+      return {
+        ok: false,
+        reason:
+          "Ungga aún no está publicado de forma verificable (requiere published_url del GU-ID CLI).",
+      };
+    }
+  }
+
+  if (
+    easybrokerPublishedStrict ||
+    unggaPublishedStrict ||
+    (easybrokerSkipped && unggaSkipped && manualDelivered) ||
+    (easybrokerSkipped && unggaPublishedStrict) ||
+    (unggaSkipped && easybrokerPublishedStrict) ||
+    (easybrokerSkipped && unggaSkipped) ||
+    (options?.allowLegacyRelaxed === true &&
+      (Boolean(easybrokerListingId || easybrokerPublicUrl) ||
+        Boolean(unggaPropertyId || unggaUrl) ||
+        manualDelivered ||
+        easybrokerFromEvents ||
+        unggaFromEvents))
+  ) {
+    // Require at least one real published destination unless both skipped
+    // with optional manual package, or both skipped alone after explicit decisions.
+    if (
+      easybrokerPublishedStrict ||
+      unggaPublishedStrict ||
+      (easybrokerSkipped && unggaSkipped) ||
+      (options?.allowLegacyRelaxed === true &&
+        (Boolean(easybrokerListingId || easybrokerPublicUrl) ||
+          Boolean(unggaPropertyId || unggaUrl) ||
+          manualDelivered ||
+          easybrokerFromEvents ||
+          unggaFromEvents))
+    ) {
+      return { ok: true };
+    }
+  }
+
   return {
     ok: false,
     reason:
-      "Para cerrar en published/completed debe existir al menos un destino publicado (EasyBroker/Ungga) o un manual_publish_package entregable.",
+      "Para cerrar en published/completed debe existir evidencia de publicación real (EasyBroker/Ungga con URL/fase published) o destinos omitidos explícitamente.",
   };
 }
 
@@ -130,8 +316,16 @@ export function formatListingPublishedSummaryNotifyText(opCase: {
   const manualHeadline = contextString(manualPackage, "headline");
   const manualDescription = contextString(manualPackage, "description");
 
-  const unggaResolved = Boolean(unggaUrl || unggaPropertyId);
-  const easybrokerResolved = Boolean(easybrokerUrl || easybrokerListingId);
+  const easybrokerApproval = approvalOf(context, "easybroker");
+  const unggaApproval = approvalOf(context, "ungga");
+  const easybrokerSkipped =
+    easybrokerApproval === "skipped" || easybrokerApproval === "rejected";
+  const unggaSkipped =
+    unggaApproval === "skipped" || unggaApproval === "rejected";
+
+  const unggaResolved = Boolean(unggaUrl) || unggaSkipped;
+  const easybrokerResolved =
+    Boolean(easybrokerUrl || easybrokerListingId) || easybrokerSkipped;
   const allDestinationsResolved = easybrokerResolved && unggaResolved;
   const lines: string[] = [
     "**Resumen final de publicación**",
@@ -147,14 +341,20 @@ export function formatListingPublishedSummaryNotifyText(opCase: {
   lines.push("");
   lines.push("**Resultado por destino:**");
   lines.push(
-    easybrokerUrl || easybrokerListingId
-      ? `- EasyBroker: ${easybrokerUrl ?? `listing_id ${easybrokerListingId}`}`
-      : "- EasyBroker: sin publicación final registrada."
+    easybrokerSkipped
+      ? "- EasyBroker: omitido."
+      : easybrokerUrl || easybrokerListingId
+        ? `- EasyBroker: ${easybrokerUrl ?? `listing_id ${easybrokerListingId}`}`
+        : "- EasyBroker: sin publicación final registrada."
   );
   lines.push(
-    unggaUrl || unggaPropertyId
-      ? `- Ungga: ${unggaUrl ?? `propiedad ${unggaPropertyId}`}`
-      : "- Ungga: sin publicación final registrada."
+    unggaSkipped
+      ? "- Ungga: omitido."
+      : unggaUrl
+        ? `- Ungga: ${unggaUrl}`
+        : unggaPropertyId
+          ? `- Ungga: propiedad ${unggaPropertyId} (sin URL publicada).`
+          : "- Ungga: sin publicación final registrada."
   );
   if (manualDescription || manualHeadline) {
     lines.push(

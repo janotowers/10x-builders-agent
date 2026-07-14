@@ -105,4 +105,92 @@ function simulateConcurrentTriggers(
   assert.equal(nextPublicationAction(state).type, "request_review");
 }
 
+// EasyBroker published + Ungga draft_creating must NOT resolve all destinations
+{
+  let state = emptyPublicationState();
+  state = applyPublicationEvent(state, {
+    type: "approval_decided",
+    destination: "easybroker",
+    approval: "approved",
+  });
+  state = applyPublicationEvent(state, {
+    type: "draft_created",
+    destination: "easybroker",
+    artifact: { listing_id: "EB-1", remote_status: "not_published" },
+  });
+  state = applyPublicationEvent(state, {
+    type: "media_submitted",
+    destination: "easybroker",
+    expected_count: 1,
+  });
+  state = applyPublicationEvent(state, {
+    type: "media_verified",
+    destination: "easybroker",
+    remote_count: 1,
+  });
+  state = applyPublicationEvent(state, {
+    type: "preflight_result",
+    destination: "easybroker",
+    status: "pass",
+  });
+  state = applyPublicationEvent(state, {
+    type: "publish_succeeded",
+    destination: "easybroker",
+    artifact: {
+      listing_id: "EB-1",
+      public_id: "EB-1",
+      remote_status: "published",
+    },
+  });
+  state = applyPublicationEvent(state, {
+    type: "approval_decided",
+    destination: "ungga",
+    approval: "approved",
+  });
+  state = applyPublicationEvent(state, {
+    type: "draft_started",
+    destination: "ungga",
+    operation_key: "create_draft:ungga:new",
+  });
+  const unggaDrafting = nextPublicationAction(state);
+  assert.equal(unggaDrafting.type, "idle");
+  assert.equal(
+    (unggaDrafting as { reason: string }).reason,
+    "ungga_draft_in_flight"
+  );
+  assert.notEqual(
+    (unggaDrafting as { reason: string }).reason,
+    "all_destinations_resolved"
+  );
+
+  state = applyPublicationEvent(state, {
+    type: "draft_created",
+    destination: "ungga",
+    artifact: {
+      ungga_property_id: "GU-1",
+      draft_url: "https://ungga.com/app/propiedades/GU-1",
+    },
+  });
+  state = applyPublicationEvent(state, {
+    type: "preflight_result",
+    destination: "ungga",
+    status: "pass",
+  });
+  state = applyPublicationEvent(state, {
+    type: "publish_started",
+    destination: "ungga",
+    operation_key: "publish:ungga:GU-1",
+  });
+  const unggaPublishing = nextPublicationAction(state);
+  assert.equal(unggaPublishing.type, "idle");
+  assert.equal(
+    (unggaPublishing as { reason: string }).reason,
+    "ungga_publish_in_flight"
+  );
+  assert.notEqual(
+    (unggaPublishing as { reason: string }).reason,
+    "all_destinations_resolved"
+  );
+}
+
 console.log("publication-concurrency.selftest: ok");

@@ -113,12 +113,14 @@ Producir y entregar:
      no sea representable; el detalle incompatible se omite con warning y
      **no** muta el canónico. `commission_terms.commission_pct` →
      `operations[].commission = { type: "percentage", value }`.
-   - `easybroker_upload_images` con pares identidad
-     `{source_path, upload_path, title}` / manifest (nunca arrays posicionales
-     inventados). Persiste `public_url` en el manifest para Ungga.
+   - `easybroker_upload_images` con `case_id` + `listing_id`.
+     El adapter aplica watermark solo si hay asset de marca y deriva pares
+     desde `photo_manifest` (nunca inventes `upload_path`).
    - Preflight condicional (watermark/manifest/remoto): si pass →
      `easybroker_publish_listing`.
    - Si review_required → notificación `publication_review_required`.
+   - Watermark: obligatorio solo cuando existe asset de marca; sin asset,
+     sube originales.
 
 9. **Ungga (dos fases)**:
    - Solo tras EasyBroker remotamente publicado u omisión explícita.

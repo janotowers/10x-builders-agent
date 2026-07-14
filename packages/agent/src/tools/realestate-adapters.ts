@@ -1664,7 +1664,10 @@ export function addRealEstateTools(
               : "prepare_draft";
 
           if (action === "publish_draft") {
-            if (!resolveUnggaPropertyId(inputForExecution as { ungga_property_id?: string; draft_url?: string })) {
+            const publishPropertyId = resolveUnggaPropertyId(
+              inputForExecution as { ungga_property_id?: string; draft_url?: string }
+            );
+            if (!publishPropertyId) {
               const out = {
                 ok: false,
                 status: "validation_error",
@@ -1675,7 +1678,11 @@ export function addRealEstateTools(
               return JSON.stringify(out);
             }
             if (caseId) {
-              const phaseGate = await enforceUnggaPublishPhaseGate(ctx, caseId);
+              const phaseGate = await enforceUnggaPublishPhaseGate(
+                ctx,
+                caseId,
+                publishPropertyId
+              );
               if (!phaseGate.ok) {
                 await updateToolCallStatus(ctx.db, record.id, "failed", phaseGate);
                 return JSON.stringify(phaseGate);
@@ -1791,6 +1798,7 @@ export function addRealEstateTools(
                 draft_url:
                   typeof out.draft_url === "string" ? out.draft_url : null,
                 status: "published",
+                creation_source: "cli",
               });
             } else {
               await persistPublishedDestination(ctx, caseId, "ungga", {
@@ -1801,6 +1809,7 @@ export function addRealEstateTools(
                 draft_url:
                   typeof out.draft_url === "string" ? out.draft_url : null,
                 status: "draft",
+                creation_source: "cli",
               });
             }
             const kind =
@@ -5331,9 +5340,10 @@ async function enforcePublishGateForCase(params: {
 
 async function enforceUnggaPublishPhaseGate(
   ctx: ToolContext,
-  caseId: string
+  caseId: string,
+  requestedPropertyId?: string | null
 ): Promise<
-  | { ok: true }
+  | { ok: true; canonical_property_id: string | null }
   | {
       ok: false;
       status: string;
@@ -5352,19 +5362,59 @@ async function enforceUnggaPublishPhaseGate(
   }
   const context = asRecord(opCase.context_jsonb) ?? {};
   if (context.publication_workflow_v1 === false) {
-    return { ok: true };
+    return { ok: true, canonical_property_id: requestedPropertyId ?? null };
   }
   const { publicationFromContext } = await import(
     "../operational-cases/publication-workflow"
   );
   const publication = publicationFromContext(context);
   const phase = publication.destinations.ungga.phase;
+  const artifactId =
+    typeof publication.destinations.ungga.artifact.ungga_property_id === "string"
+      ? publication.destinations.ungga.artifact.ungga_property_id.trim()
+      : null;
+  const published = asRecord(context.published) ?? {};
+  const unggaPublished = asRecord(published.ungga) ?? {};
+  const contextId =
+    typeof unggaPublished.ungga_property_id === "string"
+      ? unggaPublished.ungga_property_id.trim()
+      : null;
+  const canonicalId = artifactId || contextId || null;
+
+  if (
+    requestedPropertyId &&
+    looksLikeEasyBrokerImportedUnggaId(requestedPropertyId)
+  ) {
+    return {
+      ok: false,
+      status: "ungga_imported_property_rejected",
+      phase,
+      error:
+        "publish_draft rechazado: el GU-ID parece una propiedad importada desde EasyBroker. Usa el borrador CLI canónico.",
+      hint: "No adoptar propiedades Tipo Importada / Origen EasyBroker.",
+    };
+  }
+
+  if (
+    requestedPropertyId &&
+    canonicalId &&
+    requestedPropertyId.trim() !== canonicalId
+  ) {
+    return {
+      ok: false,
+      status: "ungga_property_id_mismatch",
+      phase,
+      error: `publish_draft rechazado: GU-ID solicitado (${requestedPropertyId}) no coincide con el artifact CLI (${canonicalId}).`,
+      hint: "Publica únicamente el borrador creado por prepare_draft vía CLI.",
+    };
+  }
+
   if (phase === "publish_pending" || phase === "publishing") {
-    return { ok: true };
+    return { ok: true, canonical_property_id: canonicalId };
   }
   // Legacy cases without machine state may still publish when draft exists.
   if (!asRecord(context.publication)) {
-    return { ok: true };
+    return { ok: true, canonical_property_id: canonicalId };
   }
   return {
     ok: false,
@@ -5373,6 +5423,12 @@ async function enforceUnggaPublishPhaseGate(
     error: `publish_draft rechazado: fase Ungga actual es ${phase}; se requiere publish_pending tras preflight pass`,
     hint: "Espera preflight condicional o resolución de publication_review_required antes de publish_draft.",
   };
+}
+
+function looksLikeEasyBrokerImportedUnggaId(propertyId: string): boolean {
+  const id = propertyId.trim();
+  if (!id) return false;
+  return /EB-[A-Z0-9]+/i.test(id);
 }
 
 async function approvedListingCopyFromCase(
@@ -6043,6 +6099,196 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
   );
 }
 
+export type EnsureCasePhotosReadyResult =
+  | {
+      ok: true;
+      requireWatermark: boolean;
+      preferWatermarked: boolean;
+      skippedWatermark: boolean;
+      appliedWatermark: boolean;
+      manifest: PhotoManifestEntry[];
+    }
+  | {
+      ok: false;
+      status:
+        | "case_not_found"
+        | "raw_photos_missing"
+        | "watermark_apply_failed"
+        | "watermark_persist_failed"
+        | "watermark_precondition_missing";
+      error: string;
+      missing?: string[];
+      side_effect_started: false;
+      retryable: true;
+    };
+
+/**
+ * Deterministic media precondition for EasyBroker upload.
+ * - No brand watermark asset → upload originals (never block).
+ * - Asset exists and watermarked_path missing → apply + persist before upload.
+ * - Asset exists but apply/persist fails → structured failure (no EasyBroker side effect).
+ */
+export async function ensureCasePhotosReadyForUpload(
+  ctx: ToolContext,
+  caseId: string
+): Promise<EnsureCasePhotosReadyResult> {
+  const opCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
+  if (!opCase || opCase.user_id !== ctx.userId) {
+    return {
+      ok: false,
+      status: "case_not_found",
+      error: "No se encontró el caso para preparar fotos de publicación.",
+      side_effect_started: false,
+      retryable: true,
+    };
+  }
+
+  let context = asRecord(opCase.context_jsonb) ?? {};
+  let manifest = buildPhotoManifestFromRawPhotos(
+    context.raw_photos,
+    parsePhotoManifest(context.photo_manifest)
+  );
+  const rawPaths = resolveRawPhotoPaths(context.raw_photos);
+  if (rawPaths.length === 0 && manifest.length === 0) {
+    return {
+      ok: false,
+      status: "raw_photos_missing",
+      error: "El caso no tiene raw_photos / photo_manifest para subir a EasyBroker.",
+      side_effect_started: false,
+      retryable: true,
+    };
+  }
+
+  const resolved = await resolveRequireWatermark({
+    db: ctx.db,
+    userId: ctx.userId,
+    context,
+  });
+  if (
+    resolved.configured !== null &&
+    context.watermark_configured !== resolved.configured
+  ) {
+    await persistCaseContextPatch(ctx, caseId, {
+      watermark_configured: resolved.configured,
+    });
+    context = { ...context, watermark_configured: resolved.configured };
+  }
+
+  let requireWatermark =
+    resolved.requireWatermark || contextRequiresWatermark(context);
+
+  // Explicit no-asset always wins: originals are valid.
+  if (resolved.configured === false || context.watermark_configured === false) {
+    requireWatermark = false;
+  }
+
+  if (!requireWatermark) {
+    if (context.watermark_configured !== false) {
+      await persistCaseContextPatch(ctx, caseId, {
+        watermark_configured: false,
+        watermark_missing: [],
+      });
+    }
+    return {
+      ok: true,
+      requireWatermark: false,
+      preferWatermarked: false,
+      skippedWatermark: true,
+      appliedWatermark: false,
+      manifest,
+    };
+  }
+
+  const missing = manifest
+    .filter((entry) => !entry.watermarked_path)
+    .map((entry) => entry.source_path);
+  if (missing.length === 0) {
+    return {
+      ok: true,
+      requireWatermark: true,
+      preferWatermarked: true,
+      skippedWatermark: false,
+      appliedWatermark: false,
+      manifest,
+    };
+  }
+
+  const inputPaths = rawPaths.length > 0 ? rawPaths : missing;
+  const watermarkOut = await applyImageWatermark(ctx, {
+    input_paths: inputPaths,
+    case_id: caseId,
+  });
+
+  if (watermarkOut.status === "not_configured") {
+    await persistCaseContextPatch(ctx, caseId, {
+      watermark_configured: false,
+      watermark_missing: [],
+    });
+    return {
+      ok: true,
+      requireWatermark: false,
+      preferWatermarked: false,
+      skippedWatermark: true,
+      appliedWatermark: false,
+      manifest,
+    };
+  }
+
+  const persisted = await persistWatermarkedPhotosToCase(
+    ctx,
+    caseId,
+    watermarkOut
+  );
+  if (!persisted) {
+    return {
+      ok: false,
+      status: "watermark_persist_failed",
+      error:
+        "Las imágenes se marcaron en storage pero no se pudo persistir photo_manifest.watermarked_path.",
+      missing,
+      side_effect_started: false,
+      retryable: true,
+    };
+  }
+
+  const refreshed = await getOperationalCase(ctx.db, caseId).catch(() => null);
+  const refreshedContext = asRecord(refreshed?.context_jsonb) ?? {};
+  manifest = buildPhotoManifestFromRawPhotos(
+    refreshedContext.raw_photos ?? context.raw_photos,
+    parsePhotoManifest(refreshedContext.photo_manifest)
+  );
+  const stillMissing = manifest
+    .filter((entry) => !entry.watermarked_path)
+    .map((entry) => entry.source_path);
+
+  if (
+    watermarkOut.ok === false ||
+    watermarkOut.status === "partial_failure" ||
+    stillMissing.length > 0
+  ) {
+    return {
+      ok: false,
+      status: "watermark_apply_failed",
+      error:
+        stillMissing.length > 0
+          ? `Watermark requerido pero faltan ${stillMissing.length} fotos: ${stillMissing.join(", ")}`
+          : "image_watermark devolvió un fallo parcial al preparar fotos.",
+      missing: stillMissing.length > 0 ? stillMissing : missing,
+      side_effect_started: false,
+      retryable: true,
+    };
+  }
+
+  return {
+    ok: true,
+    requireWatermark: true,
+    preferWatermarked: true,
+    skippedWatermark: false,
+    appliedWatermark: true,
+    manifest,
+  };
+}
+
 function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
   return tool(
     async (input: EasyBrokerUploadImagesInput) => {
@@ -6054,6 +6300,8 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
         const out = {
           ok: false,
           status: "case_id_required",
+          side_effect_started: false,
+          retryable: true,
           hint:
             "easybroker_upload_images requiere case_id para validar el gate de publicación.",
         };
@@ -6068,69 +6316,80 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
         operationType: "process_media",
       });
       if (!gate.ok) {
-        await updateToolCallStatus(ctx.db, record.id, "failed", gate);
-        return JSON.stringify(gate);
+        await updateToolCallStatus(ctx.db, record.id, "failed", {
+          ...gate,
+          side_effect_started: false,
+          retryable: true,
+        });
+        return JSON.stringify({
+          ...gate,
+          side_effect_started: false,
+          retryable: true,
+        });
       }
       const creds = await resolveEasyBrokerCredentials(ctx);
       if (!creds) {
         const out = {
+          ok: false,
           status: "not_configured",
+          side_effect_started: false,
+          retryable: true,
           hint:
             "EasyBroker no está conectado para esta cuenta. Conéctalo desde Ajustes → Cuentas externas antes de publicar.",
         };
         await updateToolCallStatus(ctx.db, record.id, "failed", out);
         return JSON.stringify(out);
       }
+
+      let sideEffectStarted = false;
       try {
-        let uploadInput = { ...input };
-        if (input.case_id) {
-          const opCase = await getOperationalCase(ctx.db, input.case_id).catch(
-            () => null
-          );
-          const context = asRecord(opCase?.context_jsonb) ?? {};
-          const manifest = buildPhotoManifestFromRawPhotos(
-            context.raw_photos,
-            parsePhotoManifest(context.photo_manifest)
-          );
-          if (manifest.length > 0) {
-            const resolved = await resolveRequireWatermark({
-              db: ctx.db,
-              userId: ctx.userId,
-              context,
-            });
-            if (
-              context.watermark_configured !== resolved.configured &&
-              resolved.configured !== null
-            ) {
-              await persistCaseContextPatch(ctx, input.case_id, {
-                watermark_configured: resolved.configured,
-              });
-            }
-            const watermarkRequired =
-              resolved.requireWatermark || contextRequiresWatermark(context);
-            const missingWatermarks = watermarkRequired
-              ? manifest
-                  .filter((entry) => !entry.watermarked_path)
-                  .map((entry) => entry.source_path)
-              : [];
-            if (missingWatermarks.length > 0) {
-              throw new Error(
-                `Watermark requerido pero faltan ${missingWatermarks.length} fotos: ${missingWatermarks.join(", ")}`
-              );
-            }
-            uploadInput = {
-              ...uploadInput,
-              images: photoUploadPairsFromManifest(manifest),
-              image_paths: undefined,
-              image_titles: undefined,
-            };
-          }
+        const ensure = await ensureCasePhotosReadyForUpload(ctx, caseId);
+        if (!ensure.ok) {
+          const out = {
+            ok: false,
+            status: ensure.status,
+            error: ensure.error,
+            missing: ensure.missing,
+            side_effect_started: false as const,
+            retryable: true as const,
+            hint:
+              "El upload no llegó a EasyBroker. Reintenta process_media; el adapter aplicará watermark si hay asset de marca.",
+          };
+          await updateToolCallStatus(ctx.db, record.id, "failed", out);
+          return JSON.stringify(out);
         }
+
+        // Always derive pairs from the authoritative manifest; ignore LLM-invented paths.
+        const uploadInput: EasyBrokerUploadImagesInput = {
+          ...input,
+          images:
+            ensure.manifest.length > 0
+              ? photoUploadPairsFromManifest(
+                  ensure.manifest,
+                  ensure.preferWatermarked
+                )
+              : input.images,
+          image_paths: undefined,
+          image_titles: undefined,
+        };
+
+        sideEffectStarted = true;
         const out = await uploadEasyBrokerImages(ctx, uploadInput, creds);
         await markEasyBrokerCredentialResult(ctx, creds, out.ok !== false, out.status);
-        await updateToolCallStatus(ctx.db, record.id, out.ok === false ? "failed" : "executed", out);
-        if (input.case_id && out.ok !== false) {
-          const current = await getOperationalCase(ctx.db, input.case_id).catch(
+        const enrichedOut = {
+          ...out,
+          side_effect_started: true,
+          watermark_applied: ensure.appliedWatermark,
+          watermark_skipped: ensure.skippedWatermark,
+        };
+        await updateToolCallStatus(
+          ctx.db,
+          record.id,
+          out.ok === false ? "failed" : "executed",
+          enrichedOut
+        );
+        if (out.ok !== false) {
+          const current = await getOperationalCase(ctx.db, caseId).catch(
             () => null
           );
           const currentContext = asRecord(current?.context_jsonb) ?? {};
@@ -6156,14 +6415,14 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
                     : []
                 )
             : [];
-          await persistCaseContextPatch(ctx, input.case_id, {
+          await persistCaseContextPatch(ctx, caseId, {
             photo_manifest: applyPublicUrlsToManifest(
               currentManifest,
               publishedImages,
               "easybroker"
             ),
           });
-          await persistPublishedDestination(ctx, input.case_id, "easybroker", {
+          await persistPublishedDestination(ctx, caseId, "easybroker", {
             images_uploaded: true,
             images_status:
               typeof out.images_status === "string"
@@ -6173,7 +6432,7 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
             listing_id: input.listing_id,
           });
           await insertOperationalCaseEvent(ctx.db, {
-            caseId: input.case_id,
+            caseId,
             eventType: "state_changed",
             actor: "agent",
             payload: {
@@ -6181,10 +6440,12 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
               listing_id: input.listing_id,
               image_count: out.count,
               status: out.status,
+              watermark_applied: ensure.appliedWatermark,
+              watermark_skipped: ensure.skippedWatermark,
             },
           });
         }
-        return JSON.stringify(out);
+        return JSON.stringify(enrichedOut);
       } catch (err) {
         const credentialFailure = isEasyBrokerCredentialFailure(err);
         const out = {
@@ -6192,6 +6453,8 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
           status: "failed",
           error: err instanceof Error ? err.message : String(err),
           credential_failure: credentialFailure,
+          side_effect_started: sideEffectStarted,
+          retryable: !sideEffectStarted,
         };
         if (credentialFailure) {
           await markEasyBrokerCredentialResult(ctx, creds, false, out.error);
@@ -6203,7 +6466,7 @@ function makeEasyBrokerUploadImagesTool(ctx: ToolContext) {
     {
       name: "easybroker_upload_images",
       description:
-        "Replaces an EasyBroker property's image array using identity-safe {source_path, upload_path, title} pairs (write, HITL). case_id is required to enforce the publication gate and derive pairs from photo_manifest.",
+        "Uploads EasyBroker listing images from the case photo_manifest (write). Pass case_id + listing_id; the adapter applies brand watermark when configured and derives identity-safe pairs. Do not invent upload_path values.",
       schema: z.object({
         listing_id: z.string().min(1),
         images: z
@@ -9536,6 +9799,23 @@ export function buildUnggaCliToolResponse(
         : propertyId
           ? buildUnggaPropertyUrl(propertyId)
           : null;
+    const publishCommissionExpected =
+      typeof input.commission_pct === "number" &&
+      Number.isFinite(input.commission_pct) &&
+      input.commission_pct > 0
+        ? input.commission_pct
+        : typeof nestedResult.commission_expected === "number" &&
+            Number.isFinite(nestedResult.commission_expected) &&
+            nestedResult.commission_expected > 0
+          ? nestedResult.commission_expected
+          : null;
+    const publishCommissionVerified =
+      publishCommissionExpected == null
+        ? true
+        : nestedResult.commission_verified === true;
+    if (ok && publishCommissionExpected != null && !publishCommissionVerified) {
+      ok = false;
+    }
     return {
       ok,
       action,
@@ -9554,9 +9834,20 @@ export function buildUnggaCliToolResponse(
       ...(publishedUrl ? { published_url: publishedUrl } : {}),
       ...(propertyId ? { ungga_property_id: propertyId } : {}),
       ...links,
+      commission_expected: publishCommissionExpected,
+      commission_actual:
+        typeof nestedResult.commission_actual === "number"
+          ? nestedResult.commission_actual
+          : null,
+      commission_verified: publishCommissionVerified && ok,
       ...(lastStep ? { last_step: lastStep } : {}),
       cli_result: parsed,
       ...(stderr.trim() ? { stderr: stderr.trim().slice(0, 2000) } : {}),
+      ...(!ok && publishCommissionExpected != null && !publishCommissionVerified
+        ? {
+            error: `Commission not verified before publish: expected ${publishCommissionExpected}%`,
+          }
+        : {}),
     };
   }
 
@@ -9587,6 +9878,26 @@ export function buildUnggaCliToolResponse(
       uploadedImageCount >= expectedImageCount);
 
   let contractError: string | null = null;
+  const expectedCommissionPct =
+    typeof input.commission_pct === "number" &&
+    Number.isFinite(input.commission_pct) &&
+    input.commission_pct > 0
+      ? input.commission_pct
+      : typeof nestedResult.commission_expected === "number" &&
+          Number.isFinite(nestedResult.commission_expected) &&
+          nestedResult.commission_expected > 0
+        ? nestedResult.commission_expected
+        : null;
+  const commissionActual =
+    typeof nestedResult.commission_actual === "number" &&
+    Number.isFinite(nestedResult.commission_actual)
+      ? nestedResult.commission_actual
+      : null;
+  const commissionVerified =
+    expectedCommissionPct == null
+      ? true
+      : nestedResult.commission_verified === true;
+
   if (cliMode === "dry_run") {
     if (
       expectedImageCount > 0 &&
@@ -9606,6 +9917,9 @@ export function buildUnggaCliToolResponse(
     ) {
       ok = false;
       contractError = `Media incomplete: expected ${expectedImageCount} photos, observed ${uploadedImageCount ?? 0}`;
+    } else if (expectedCommissionPct != null && !commissionVerified) {
+      ok = false;
+      contractError = `Commission not verified: expected ${expectedCommissionPct}%, got ${commissionActual ?? "null"}`;
     }
   }
 
@@ -9636,6 +9950,9 @@ export function buildUnggaCliToolResponse(
     image_count: uploadedImageCount,
     images_submitted: imagesSubmitted && ok,
     images_verified: imagesVerified && ok,
+    commission_expected: expectedCommissionPct,
+    commission_actual: commissionActual,
+    commission_verified: expectedCommissionPct == null ? true : commissionVerified && ok,
     ...(lastStep ? { last_step: lastStep } : {}),
     ...(contractError ? { error: contractError } : {}),
     ...(draftReady

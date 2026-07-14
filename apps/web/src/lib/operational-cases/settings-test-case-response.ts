@@ -27,13 +27,7 @@ import {
   type SettingsTestFlowProgressStep,
 } from "@/lib/operational-cases/settings-test-flow-progress";
 import { healStalePublishFlowBlockers } from "@/lib/operational-cases/finalize-case-after-tool-decision";
-import {
-  isEasybrokerImagesFailedInContext,
-  packageReadyNeedsEasybrokerImageUpload,
-  packageReadyNeedsUnggaApprovalNotify,
-  shouldAutoFollowUpPackageReadyTick,
-} from "@/lib/operational-cases/package-ready-auto-continue";
-import { isCaseProcessingLeaseActive } from "@/lib/operational-cases/publication-media-recovery";
+import { shouldLabObserverWakePublicationRunner } from "@/lib/operational-cases/package-ready-auto-continue";
 import { reconcilePublicationCaseRecord } from "@/lib/operational-cases/publication-reconcile";
 import { resolvePublicationRolloutMode } from "@/lib/operational-cases/publication-rollout";
 
@@ -154,65 +148,53 @@ export async function buildSettingsTestCaseResponse(
       fresh.context_jsonb?.test_mode === true)
   ) {
     const context = isRecord(fresh.context_jsonb) ? fresh.context_jsonb : {};
+    const hasPendingPublishApprovalNotification =
+      pendingResult.pendingActions.some(
+        (action) =>
+          action.kind === "internal_notification" &&
+          (action.notification_kind === "ungga_publish_approval" ||
+            action.notification_kind === "easybroker_publish_approval" ||
+            action.notification_kind === "manual_publish_package_approval" ||
+            action.notification_kind === "publication_review")
+      );
     if (
-      context.package_ready_machine_work_in_flight !== true &&
-      !isCaseProcessingLeaseActive(fresh.next_action_at)
-    ) {
-      const needsUploadFollowUp = shouldAutoFollowUpPackageReadyTick({
+      shouldLabObserverWakePublicationRunner({
         context,
-        pendingConfirmation: false,
-        uploadedImagesThisTurn: false,
-        uploadFailedThisTurn: isEasybrokerImagesFailedInContext(context),
-        autoFollowUpDepth: 0,
-        source: "package_ready_lab_observer",
-      });
-      const needsUnggaFollowUp =
-        packageReadyNeedsUnggaApprovalNotify(context) &&
-        !packageReadyNeedsEasybrokerImageUpload(context) &&
-        !isEasybrokerImagesFailedInContext(context) &&
-        !pendingResult.pendingActions.some(
-          (action) =>
-            action.kind === "internal_notification" &&
-            action.notification_kind === "ungga_publish_approval"
+        currentStep: fresh.current_step,
+        nextActionAt: fresh.next_action_at,
+        blockingActionsCount: pendingResult.blockingActions.length,
+        hasPendingPublishApprovalNotification,
+      })
+    ) {
+      try {
+        const { requestPublicationProgress } = await import(
+          "@/lib/operational-cases/publication-runner"
         );
-      if (needsUploadFollowUp || needsUnggaFollowUp) {
-        try {
-          const { requestPublicationProgress } = await import(
-            "@/lib/operational-cases/publication-runner"
-          );
-          const { runSettingsTestCaseAgentTick } = await import(
-            "@/lib/operational-cases/run-settings-test-case-tick"
-          );
-          void requestPublicationProgress(
-            db,
-            fresh.id,
-            "package_ready_lab_auto_continue",
-            {
-              runAgentTick: async (opCase, action) => {
-                const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
-                  source: `package_ready_lab_auto_continue:${action.type}`,
-                  skipLock: true,
-                });
-                return (
-                  tick.publication_execution ?? {
-                    status: "not_executed",
-                    error: "publication_execution_result_missing",
-                  }
-                );
-              },
-            }
-          ).catch((error) => {
-            console.warn(
-              "[settings-test-case-response] package_ready lab auto-continue failed:",
-              error
-            );
-          });
-        } catch (error) {
+        const { createPublicationRunnerOwnedAgentTick } = await import(
+          "@/lib/operational-cases/run-settings-test-case-tick"
+        );
+        void requestPublicationProgress(
+          db,
+          fresh.id,
+          "package_ready_lab_auto_continue",
+          {
+            runAgentTick: createPublicationRunnerOwnedAgentTick(
+              db,
+              userId,
+              "package_ready_lab_auto_continue"
+            ),
+          }
+        ).catch((error) => {
           console.warn(
-            "[settings-test-case-response] package_ready lab auto-continue schedule failed:",
+            "[settings-test-case-response] package_ready lab auto-continue failed:",
             error
           );
-        }
+        });
+      } catch (error) {
+        console.warn(
+          "[settings-test-case-response] package_ready lab auto-continue schedule failed:",
+          error
+        );
       }
     }
   }

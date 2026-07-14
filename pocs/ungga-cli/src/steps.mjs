@@ -31,6 +31,38 @@ function envFlag(name, fallback = false) {
   return raw === "1" || raw === "true" || raw === "yes";
 }
 
+function resolveExpectedCommissionPct(listing) {
+  const ops = Array.isArray(listing?.operations) ? listing.operations : [];
+  for (const op of ops) {
+    const pct = Number(op?.commission_pct);
+    if (Number.isFinite(pct) && pct > 0) return pct;
+  }
+  const top = Number(listing?.commission_pct);
+  if (Number.isFinite(top) && top > 0) return top;
+  return null;
+}
+
+/**
+ * EasyBroker auto-imports into Ungga often use IDs containing "EB-" or ending
+ * with an EasyBroker public id. CLI-created drafts use Ungga-native GU-IDs.
+ */
+export function looksLikeEasyBrokerImportedUnggaId(propertyId) {
+  const id = typeof propertyId === "string" ? propertyId.trim() : "";
+  if (!id) return false;
+  if (/EB-[A-Z0-9]+/i.test(id)) return true;
+  if (/origen\s*easybroker/i.test(id)) return true;
+  return false;
+}
+
+function cardLooksLikeEasyBrokerImport(text) {
+  const raw = String(text ?? "");
+  return (
+    /tipo\s*importada/i.test(raw) ||
+    /origen\s*easybroker/i.test(raw) ||
+    /\bimportada\b/i.test(raw)
+  );
+}
+
 async function maybeCapture(page, name, metrics) {
   if (!envFlag("UNGGA_CLI_SCREENSHOTS")) return;
   const safeName = name.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
@@ -176,7 +208,45 @@ export async function publishListingDraft(page, opts, metrics = []) {
     await advanceWizard(page, "MEDIA", metrics);
 
     await clickWizardTab(page, "OPERACIÓN");
-    stages.push({ tab: "OPERACIÓN", filled: await fillOperationTab(page, listing) });
+    const operationFilled = await fillOperationTab(page, listing);
+    stages.push({ tab: "OPERACIÓN", filled: operationFilled });
+
+    const expectedCommission = resolveExpectedCommissionPct(listing);
+    const commissionStage = operationFilled.find(
+      (row) => row?.commission_expected != null || row?.commission_verify
+    );
+    const commissionVerify = commissionStage?.commission_verify ?? {
+      expected: expectedCommission,
+      actual: commissionStage?.commission_actual ?? null,
+      persisted:
+        expectedCommission == null
+          ? true
+          : commissionStage?.commission_verified === true,
+      filled: commissionStage?.commission_filled === true,
+      edit_path: commissionStage?.edit_path ?? null,
+      retried: false,
+    };
+
+    if (
+      expectedCommission != null &&
+      commissionVerify.persisted !== true
+    ) {
+      const msg = `Commission not verified: expected ${expectedCommission}%, got ${commissionVerify.actual ?? "null"}`;
+      push("publish_listing", false, Date.now() - t0, msg);
+      await maybeCapture(page, "commission-verify-failed", metrics);
+      return {
+        ok: false,
+        dry_run: dryRun,
+        error: msg,
+        url: page.url(),
+        stages,
+        commission_expected: expectedCommission,
+        commission_actual: commissionVerify.actual ?? null,
+        commission_verified: false,
+        commission_verify: commissionVerify,
+        last_step: lastMeaningfulStep(metrics),
+      };
+    }
 
     await maybeCapture(
       page,
@@ -214,6 +284,10 @@ export async function publishListingDraft(page, opts, metrics = []) {
       unggaPropertyId:
         draftLinks?.ungga_property_id ?? extractPropertyIdFromUrl(page.url()),
       draftUrl: draftLinks?.draft_url ?? null,
+      expectedCommissionPct: expectedCommission,
+      commissionActual: commissionVerify.actual ?? null,
+      commissionVerified:
+        expectedCommission == null ? true : commissionVerify.persisted === true,
     });
 
     push(
@@ -241,6 +315,11 @@ export async function publishListingDraft(page, opts, metrics = []) {
       image_count: verdict.uploaded_image_count,
       images_submitted: verdict.images_submitted,
       images_verified: verdict.images_verified,
+      commission_expected: expectedCommission,
+      commission_actual: commissionVerify.actual ?? null,
+      commission_verified:
+        expectedCommission == null ? true : commissionVerify.persisted === true,
+      commission_verify: commissionVerify,
       last_step: lastMeaningfulStep(metrics),
       ...(verdict.error ? { error: verdict.error } : {}),
     };
@@ -285,6 +364,116 @@ export async function publishExistingDraft(page, opts, metrics = []) {
         await editBtn.click({ timeout: 5_000 });
         await page.waitForTimeout(1200);
       } catch {}
+    }
+
+    const expectedCommission = resolveExpectedCommissionPct(opts.listing ?? opts);
+    let commissionVerify = null;
+    if (expectedCommission != null) {
+      await clickWizardTab(page, "OPERACIÓN").catch(() => {});
+      const op =
+        Array.isArray(opts.listing?.operations) && opts.listing.operations[0]
+          ? opts.listing.operations[0]
+          : { type: "sale", commission_pct: expectedCommission };
+      commissionVerify = await verifyAndFixOperationCommission(page, {
+        op,
+        expectedCommission,
+      });
+      metrics.push({
+        step: "commission_verify_before_publish",
+        ok: commissionVerify.persisted === true,
+        expected: expectedCommission,
+        actual: commissionVerify.actual,
+        retried: commissionVerify.retried,
+        ...(commissionVerify.error ? { error: commissionVerify.error } : {}),
+      });
+      if (commissionVerify.persisted !== true) {
+        const msg = `Commission not verified before publish: expected ${expectedCommission}%, got ${commissionVerify.actual ?? "null"}`;
+        push("publish_draft", false, Date.now() - t0, msg);
+        await maybeCapture(page, "commission-verify-before-publish-failed", metrics);
+        return {
+          ok: false,
+          error: msg,
+          property_id: propertyId,
+          url: page.url(),
+          commission_expected: expectedCommission,
+          commission_actual: commissionVerify.actual,
+          commission_verified: false,
+          commission_verify: commissionVerify,
+        };
+      }
+      // Persist commission before navigating to Publicar (pencil confirm alone
+      // is not always enough on Ungga's published/edit flow).
+      if (!dryRun) {
+        const saveOutcome = await saveAsDraft(page, metrics);
+        if (saveOutcome?.ok !== true) {
+          // Soft: some edit surfaces lack "Guardar como borrador"; re-read after
+          // a short wait still helps when the palomita already persisted.
+          metrics.push({
+            step: "commission_save_before_publish",
+            ok: false,
+            error: saveOutcome?.error ?? "save_as_draft_unavailable",
+          });
+        } else {
+          metrics.push({
+            step: "commission_save_before_publish",
+            ok: true,
+          });
+        }
+        // Read-only re-check after save attempt.
+        await clickWizardTab(page, "OPERACIÓN").catch(() => {});
+        const card = await findOperationCard(page, op);
+        if (card) {
+          const pencil = await findPencilInCard(card);
+          if (pencil) {
+            await pencil.click({ timeout: 5_000 }).catch(() => {});
+            await page.waitForTimeout(800);
+            const reread = await readCommissionInputValue(page);
+            await page.keyboard.press("Escape").catch(() => {});
+            commissionVerify = {
+              ...commissionVerify,
+              actual: reread.actual,
+              persisted:
+                reread.ok &&
+                reread.actual != null &&
+                Number(reread.actual) === Number(expectedCommission),
+              error:
+                reread.ok &&
+                reread.actual != null &&
+                Number(reread.actual) === Number(expectedCommission)
+                  ? null
+                  : "commission_not_persisted_after_save",
+            };
+            metrics.push({
+              step: "commission_reread_after_save",
+              ok: commissionVerify.persisted === true,
+              expected: expectedCommission,
+              actual: commissionVerify.actual,
+              ...(commissionVerify.error
+                ? { error: commissionVerify.error }
+                : {}),
+            });
+            if (commissionVerify.persisted !== true) {
+              const msg = `Commission not persisted after save: expected ${expectedCommission}%, got ${commissionVerify.actual ?? "null"}`;
+              push("publish_draft", false, Date.now() - t0, msg);
+              await maybeCapture(
+                page,
+                "commission-not-persisted-after-save",
+                metrics
+              );
+              return {
+                ok: false,
+                error: msg,
+                property_id: propertyId,
+                url: page.url(),
+                commission_expected: expectedCommission,
+                commission_actual: commissionVerify.actual,
+                commission_verified: false,
+                commission_verify: commissionVerify,
+              };
+            }
+          }
+        }
+      }
     }
 
     await maybeCapture(
@@ -387,6 +576,14 @@ export async function publishExistingDraft(page, opts, metrics = []) {
       published_url: publishedUrl,
       properties_url: `${origin}/app/propiedades`,
       url: page.url(),
+      ...(expectedCommission != null
+        ? {
+            commission_expected: expectedCommission,
+            commission_actual: commissionVerify?.actual ?? expectedCommission,
+            commission_verified: true,
+            commission_verify: commissionVerify,
+          }
+        : {}),
     };
   } catch (e) {
     push("publish_draft", false, Date.now() - t0, e?.message ?? String(e));
@@ -953,8 +1150,9 @@ async function countVisibleMediaThumbnails(page) {
 
 /**
  * Llena pestaña OPERACIÓN. Por cada entrada de listing.operations abre el modal
- * "Elije el tipo de operación", selecciona el tab (Venta/Renta/...), captura
- * precio y moneda, y confirma con el botón ✓.
+ * "Elije el tipo de operación" (alta), selecciona el tab (Venta/Renta/...), captura
+ * precio y moneda, y confirma. Luego edita/verifica comisión vía el lápiz de la
+ * tarjeta (flujo real de Ungga: Operación → lápiz → COMISIÓN (%)).
  */
 export async function fillOperationTab(page, listing) {
   const filled = [];
@@ -969,149 +1167,437 @@ export async function fillOperationTab(page, listing) {
   };
 
   for (const op of ops) {
-    const addBtn = await firstVisible([
-      page.getByRole("button", { name: /agregar tipo de operación/i }),
-      page.locator('button:has-text("Agregar tipo de operación")'),
-      page.locator('[role="button"]:has-text("Agregar tipo de operación")'),
-      page.locator("button, a").filter({ hasText: /agregar tipo de operaci[oó]n/i }),
-      page.getByText(/agregar tipo de operaci[oó]n/i),
-    ]);
-    if (!addBtn) {
-      filled.push({ op, ok: false, error: "no 'Agregar tipo de operación' button" });
-      break;
-    }
-    await addBtn.click().catch(() => {});
-    await page.waitForTimeout(800);
-
-    const MODAL_TITLE = "Elije el tipo de operación";
-    const titleLocator = page.locator(`text=${MODAL_TITLE}`).first();
-    const scope = page;
-
-    const tabRegex = TAB_BY_TYPE[op.type] ?? null;
-    let tabClicked = false;
-    if (tabRegex) {
-      const tab = scope.getByRole("button", { name: tabRegex }).first();
-      if ((await tab.count()) > 0) {
-        await tab.click().catch(() => {});
-        tabClicked = true;
-        await page.waitForTimeout(300);
-      }
-    }
-
-    const priceInput = scope
-      .locator("label:has-text('PRECIO')")
-      .locator("input")
-      .first();
-    let priceFilled = false;
-    if ((await priceInput.count()) > 0 && op.price != null) {
-      await priceInput.fill(String(op.price));
-      priceFilled = true;
-    }
-
     const commissionPct =
       op.commission_pct != null
         ? Number(op.commission_pct)
         : listing.commission_pct != null
           ? Number(listing.commission_pct)
           : null;
-    let commissionFilled = false;
-    if (Number.isFinite(commissionPct) && commissionPct > 0) {
-      const commissionInput = await firstVisible([
-        scope
-          .locator("label")
-          .filter({ hasText: /comisi[oó]n\s*\(%\)/i })
-          .locator("input")
-          .first(),
-        scope.locator("label:has-text('COMISIÓN')").locator("input").first(),
-        scope.locator("label:has-text('Comisión')").locator("input").first(),
-        scope.getByLabel(/comisi[oó]n\s*\(%\)?/i).first(),
-        scope.getByPlaceholder(/comisi[oó]n/i).first(),
-      ]);
-      if (commissionInput) {
-        await commissionInput.click({ timeout: 2_000 }).catch(() => {});
-        await commissionInput.fill("");
-        await commissionInput.fill(String(commissionPct));
-        const current = await commissionInput.inputValue().catch(() => "");
-        const numeric = String(current).replace(/[^\d.]/g, "");
-        commissionFilled =
-          numeric === String(commissionPct) ||
-          Number(numeric) === Number(commissionPct);
-      }
-    }
+    const expectedCommission =
+      Number.isFinite(commissionPct) && commissionPct > 0 ? commissionPct : null;
 
+    // If a card already exists for this operation, skip add and edit via pencil.
+    const existingCard = await findOperationCard(page, op);
+    let tabClicked = false;
+    let priceFilled = false;
     let currencySet = false;
-    if (op.currency) {
-      const currencySelect = scope
-        .locator("label:has-text('MONEDA')")
-        .locator("select")
-        .first();
-      if ((await currencySelect.count()) > 0) {
-        try {
-          await currencySelect.selectOption(String(op.currency));
-          currencySet = true;
-        } catch {
-          /* moneda no disponible, ignorar */
+    let confirmed = false;
+    let editPath = "pencil";
+
+    if (!existingCard) {
+      editPath = "add_modal";
+      const addBtn = await firstVisible([
+        page.getByRole("button", { name: /agregar tipo de operación/i }),
+        page.locator('button:has-text("Agregar tipo de operación")'),
+        page.locator('[role="button"]:has-text("Agregar tipo de operación")'),
+        page.locator("button, a").filter({ hasText: /agregar tipo de operaci[oó]n/i }),
+        page.getByText(/agregar tipo de operaci[oó]n/i),
+        page.getByRole("button", { name: /agregar otra operación/i }),
+        page.locator("button, a").filter({ hasText: /agregar otra operaci[oó]n/i }),
+      ]);
+      if (!addBtn) {
+        filled.push({
+          op,
+          ok: false,
+          error: "no 'Agregar tipo de operación' button",
+          edit_path: editPath,
+        });
+        break;
+      }
+      await addBtn.click().catch(() => {});
+      await page.waitForTimeout(800);
+
+      const MODAL_TITLE = /Elije el tipo de operación|Elige el tipo de operación/i;
+      const titleLocator = page.locator("text=/Elije|Elige el tipo de operación/i").first();
+      const scope = page;
+
+      const tabRegex = TAB_BY_TYPE[op.type] ?? null;
+      if (tabRegex) {
+        const tab = scope.getByRole("button", { name: tabRegex }).first();
+        if ((await tab.count()) > 0) {
+          await tab.click().catch(() => {});
+          tabClicked = true;
+          await page.waitForTimeout(300);
         }
       }
-    }
 
-    // Prefer Contado so the confirm control can enable.
-    const contado = await firstVisible([
-      scope.getByLabel(/^contado$/i),
-      scope.getByRole("checkbox", { name: /contado/i }),
-      scope.locator("label").filter({ hasText: /^contado$/i }),
-    ]);
-    if (contado) {
-      await contado.click({ timeout: 3_000 }).catch(() => {});
-    }
-
-    // Footer: ✕ cancel + ✓ confirm (purple). Prefer modal-scoped checkmark.
-    const modalRoot = page.locator("div.fixed.inset-0").filter({
-      hasText: /Elije el tipo de operación/i,
-    });
-    const confirmBtn = await firstVisible([
-      modalRoot.locator('button[class*="bg-gradient-to-r"]').last(),
-      modalRoot.locator("button").filter({ hasText: /^✓$|^✔$/ }).first(),
-      modalRoot.getByRole("button").last(),
-      scope.locator('button[class*="bg-gradient-to-r"][class*="brand-purple"]'),
-      scope.locator('button[class*="bg-gradient-to-r"]'),
-      scope.getByRole("button", { name: /^confirmar$|^aceptar$|^guardar$/i }),
-    ]);
-    let confirmed = false;
-    if (confirmBtn) {
-      try {
-        await confirmBtn.click({ timeout: 5_000 });
-      } catch {
-        await confirmBtn.click({ timeout: 5_000, force: true }).catch(() => {});
+      const priceInput = scope
+        .locator("label:has-text('PRECIO')")
+        .locator("input")
+        .first();
+      if ((await priceInput.count()) > 0 && op.price != null) {
+        await priceInput.fill(String(op.price));
+        priceFilled = true;
       }
-      await page.waitForTimeout(1200);
-      const stillOpen =
-        (await titleLocator.count()) > 0 &&
-        (await titleLocator.isVisible().catch(() => false));
-      confirmed = !stillOpen;
-      if (!confirmed) {
-        // Last resort: Escape only after attempting confirm.
-        await page.keyboard.press("Escape").catch(() => {});
-        await page.waitForTimeout(400);
+
+      // Best-effort commission fill in add modal (may be absent; pencil is canonical).
+      if (expectedCommission != null) {
+        await fillCommissionInputInScope(scope, expectedCommission);
       }
+
+      if (op.currency) {
+        const currencySelect = scope
+          .locator("label:has-text('MONEDA')")
+          .locator("select")
+          .first();
+        if ((await currencySelect.count()) > 0) {
+          try {
+            await currencySelect.selectOption(String(op.currency));
+            currencySet = true;
+          } catch {
+            /* moneda no disponible, ignorar */
+          }
+        }
+      }
+
+      // Prefer Contado so the confirm control can enable.
+      const contado = await firstVisible([
+        scope.getByLabel(/^contado$/i),
+        scope.getByRole("checkbox", { name: /contado/i }),
+        scope.locator("label").filter({ hasText: /^contado$/i }),
+      ]);
+      if (contado) {
+        await contado.click({ timeout: 3_000 }).catch(() => {});
+      }
+
+      // Share commission = Sí when we have a commission pct.
+      if (expectedCommission != null) {
+        const shareYes = await firstVisible([
+          scope.getByRole("radio", { name: /^sí$|^si$/i }),
+          scope.locator("label").filter({ hasText: /^sí$|^si$/i }),
+          scope.getByText(/^sí$|^si$/i),
+        ]);
+        if (shareYes) {
+          await shareYes.click({ timeout: 2_000 }).catch(() => {});
+        }
+      }
+
+      const modalRoot = page.locator("div.fixed.inset-0").filter({
+        hasText: MODAL_TITLE,
+      });
+      const confirmBtn = await firstVisible([
+        modalRoot.locator('button[class*="bg-gradient-to-r"]').last(),
+        modalRoot.locator("button").filter({ hasText: /^✓$|^✔$/ }).first(),
+        modalRoot.getByRole("button").last(),
+        scope.locator('button[class*="bg-gradient-to-r"][class*="brand-purple"]'),
+        scope.locator('button[class*="bg-gradient-to-r"]'),
+        scope.getByRole("button", { name: /^confirmar$|^aceptar$|^guardar$/i }),
+      ]);
+      if (confirmBtn) {
+        try {
+          await confirmBtn.click({ timeout: 5_000 });
+        } catch {
+          await confirmBtn.click({ timeout: 5_000, force: true }).catch(() => {});
+        }
+        await page.waitForTimeout(1200);
+        const stillOpen =
+          (await titleLocator.count()) > 0 &&
+          (await titleLocator.isVisible().catch(() => false));
+        confirmed = !stillOpen;
+        if (!confirmed) {
+          await page.keyboard.press("Escape").catch(() => {});
+          await page.waitForTimeout(400);
+        }
+      }
+    } else {
+      tabClicked = true;
+      priceFilled = true;
+      confirmed = true;
     }
 
+    // Canonical path: open pencil on the operation card and set/verify commission.
+    let commissionVerify = {
+      expected: expectedCommission,
+      actual: null,
+      filled: false,
+      persisted: false,
+      edit_path: "pencil",
+      retried: false,
+    };
+    if (expectedCommission != null) {
+      commissionVerify = await verifyAndFixOperationCommission(page, {
+        op,
+        expectedCommission,
+      });
+    }
+
+    const commissionOk =
+      expectedCommission == null || commissionVerify.persisted === true;
     filled.push({
       op,
-      ok: tabClicked && priceFilled && confirmed,
+      ok: (existingCard ? true : tabClicked && priceFilled && confirmed) && commissionOk,
       tab_clicked: tabClicked,
       price_filled: priceFilled,
-      commission_filled: commissionFilled,
-      commission_pct:
-        Number.isFinite(commissionPct) && commissionPct > 0
-          ? commissionPct
-          : null,
+      commission_filled: commissionVerify.filled || commissionVerify.persisted,
+      commission_verified: commissionVerify.persisted,
+      commission_expected: expectedCommission,
+      commission_actual: commissionVerify.actual,
+      commission_pct: expectedCommission,
       currency_set: currencySet,
-      confirmed,
+      confirmed: existingCard ? true : confirmed,
+      edit_path: existingCard ? "pencil" : editPath,
+      commission_verify: commissionVerify,
     });
-    if (!confirmed) break;
+    if (!confirmed && !existingCard) break;
+    if (!commissionOk) break;
   }
   return filled;
+}
+
+async function findOperationCard(page, op) {
+  const typeLabel =
+    op?.type === "rent"
+      ? /renta/i
+      : op?.type === "rent_temporary"
+        ? /renta temporal/i
+        : op?.type === "presale"
+          ? /preventa/i
+          : /venta/i;
+  const priceHint =
+    op?.price != null
+      ? String(op.price).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+      : null;
+
+  const cards = page.locator("div, li, article, section").filter({
+    hasText: typeLabel,
+  });
+  const count = await cards.count().catch(() => 0);
+  for (let i = 0; i < Math.min(count, 12); i += 1) {
+    const card = cards.nth(i);
+    const text = ((await card.innerText().catch(() => "")) || "").trim();
+    if (!typeLabel.test(text)) continue;
+    if (priceHint && !text.includes(priceHint) && !text.includes(String(op.price))) {
+      // Still accept if it looks like an operation card with edit affordance.
+      const hasPencil = await card
+        .locator("button, a, [role='button']")
+        .filter({ has: page.locator("svg") })
+        .count()
+        .catch(() => 0);
+      if (hasPencil === 0) continue;
+    }
+    const pencil = await findPencilInCard(card);
+    if (pencil) return card;
+  }
+  return null;
+}
+
+async function findPencilInCard(card) {
+  const candidates = [
+    card.getByRole("button", { name: /editar|edit/i }),
+    card.locator('button[aria-label*="editar" i], button[aria-label*="edit" i]'),
+    card.locator("button").filter({ hasText: /^✎$|^✏$/ }),
+    card.locator("button").last(),
+  ];
+  for (const loc of candidates) {
+    if ((await loc.count().catch(() => 0)) > 0) {
+      const el = loc.first();
+      if (await el.isVisible().catch(() => false)) return el;
+    }
+  }
+  // Prefer the rightmost icon button (pencil sits to the right of price).
+  const iconButtons = card.locator("button").filter({ has: card.page().locator("svg") });
+  const n = await iconButtons.count().catch(() => 0);
+  if (n >= 1) {
+    // Last non-trash: usually pencil is before trash; try n-2 then n-1.
+    for (const idx of [Math.max(0, n - 2), n - 1, 0]) {
+      const el = iconButtons.nth(idx);
+      if (await el.isVisible().catch(() => false)) return el;
+    }
+  }
+  return null;
+}
+
+async function fillCommissionInputInScope(scope, expectedCommission) {
+  const commissionInput = await firstVisible([
+    scope
+      .locator("label")
+      .filter({ hasText: /comisi[oó]n\s*\(%\)/i })
+      .locator("input")
+      .first(),
+    scope.locator("label:has-text('COMISIÓN')").locator("input").first(),
+    scope.locator("label:has-text('Comisión')").locator("input").first(),
+    scope.getByLabel(/comisi[oó]n\s*\(%\)?/i).first(),
+    scope.getByPlaceholder(/comisi[oó]n/i).first(),
+  ]);
+  if (!commissionInput) return { ok: false, actual: null };
+  await commissionInput.click({ timeout: 2_000 }).catch(() => {});
+  await commissionInput.fill("");
+  await commissionInput.fill(String(expectedCommission));
+  await commissionInput.dispatchEvent("input").catch(() => {});
+  await commissionInput.dispatchEvent("change").catch(() => {});
+  await commissionInput.blur().catch(() => {});
+  const current = await commissionInput.inputValue().catch(() => "");
+  const numeric = String(current).replace(/[^\d.]/g, "");
+  const ok =
+    numeric === String(expectedCommission) ||
+    Number(numeric) === Number(expectedCommission);
+  return { ok, actual: numeric ? Number(numeric) : null, input: commissionInput };
+}
+
+function operationModalRoot(page) {
+  return page.locator("div.fixed.inset-0").filter({
+    hasText: /comisi[oó]n|elige el tipo de operaci[oó]n|elije el tipo de operaci[oó]n|precio/i,
+  });
+}
+
+async function readCommissionInputValue(scope) {
+  const commissionInput = await firstVisible([
+    scope
+      .locator("label")
+      .filter({ hasText: /comisi[oó]n\s*\(%\)/i })
+      .locator("input")
+      .first(),
+    scope.locator("label:has-text('COMISIÓN')").locator("input").first(),
+    scope.locator("label:has-text('Comisión')").locator("input").first(),
+    scope.getByLabel(/comisi[oó]n\s*\(%\)?/i).first(),
+  ]);
+  if (!commissionInput) return { ok: false, actual: null };
+  const raw = await commissionInput.inputValue().catch(() => "");
+  const numeric = String(raw).replace(/[^\d.]/g, "");
+  return {
+    ok: true,
+    actual: numeric ? Number(numeric) : null,
+    input: commissionInput,
+  };
+}
+
+/**
+ * Confirm the operation modal via the purple check ("palomita") button.
+ * Returns false if the confirm control could not be clicked or the modal stayed open.
+ */
+async function confirmOperationModal(page) {
+  const modalRoot = operationModalRoot(page);
+
+  const confirmBtn = await firstVisible([
+    // Canonical Ungga UI: purple gradient check button next to white X.
+    modalRoot.locator('button[class*="bg-gradient-to-r"]').filter({
+      hasNotText: /^x$/i,
+    }).last(),
+    modalRoot.locator('button[class*="brand-purple"]').last(),
+    modalRoot.locator("button").filter({ hasText: /^✓$|^✔$/ }).first(),
+    modalRoot.getByRole("button", {
+      name: /^confirmar$|^aceptar$|^guardar$|^✓$|^✔$/i,
+    }),
+  ]);
+  if (!confirmBtn) return false;
+
+  const stillOpenBefore =
+    (await modalRoot.count().catch(() => 0)) > 0 &&
+    (await modalRoot.first().isVisible().catch(() => false));
+  if (!stillOpenBefore) return true;
+
+  try {
+    await confirmBtn.click({ timeout: 5_000 });
+  } catch {
+    const forced = await confirmBtn
+      .click({ timeout: 5_000, force: true })
+      .then(() => true)
+      .catch(() => false);
+    if (!forced) return false;
+  }
+  await page.waitForTimeout(1000);
+
+  const stillOpen =
+    (await modalRoot.count().catch(() => 0)) > 0 &&
+    (await modalRoot.first().isVisible().catch(() => false));
+  // Do not Escape-dismiss as "success"; caller must treat unconfirmed as failure.
+  return !stillOpen;
+}
+
+/**
+ * Open operation card pencil, set COMISIÓN (%), confirm with palomita,
+ * reopen and read-only verify persistence (never rewrite on re-read).
+ */
+export async function verifyAndFixOperationCommission(page, params) {
+  const expected = Number(params?.expectedCommission);
+  const result = {
+    expected: Number.isFinite(expected) && expected > 0 ? expected : null,
+    actual: null,
+    filled: false,
+    persisted: false,
+    edit_path: "pencil",
+    retried: false,
+    error: null,
+  };
+  if (result.expected == null) {
+    result.persisted = true;
+    return result;
+  }
+
+  await clickWizardTab(page, "OPERACIÓN").catch(() => {});
+  await page.waitForTimeout(400);
+
+  const attempt = async () => {
+    const card = await findOperationCard(page, params.op ?? {});
+    if (!card) {
+      return { ok: false, error: "operation_card_not_found" };
+    }
+    const pencil = await findPencilInCard(card);
+    if (!pencil) {
+      return { ok: false, error: "pencil_not_found" };
+    }
+    await pencil.click({ timeout: 5_000 }).catch(() => {});
+    await page.waitForTimeout(800);
+
+    // Ensure "Sí" for share commission so the % field is enabled.
+    const shareYes = await firstVisible([
+      page.getByRole("radio", { name: /^sí$|^si$/i }),
+      page.locator("label").filter({ hasText: /^sí$|^si$/i }),
+    ]);
+    if (shareYes) {
+      await shareYes.click({ timeout: 2_000 }).catch(() => {});
+      await page.waitForTimeout(200);
+    }
+
+    const fill = await fillCommissionInputInScope(page, result.expected);
+    result.filled = fill.ok;
+    result.actual = fill.actual;
+    if (!fill.ok) {
+      await page.keyboard.press("Escape").catch(() => {});
+      return { ok: false, error: "commission_input_not_filled" };
+    }
+    const confirmed = await confirmOperationModal(page);
+    if (!confirmed) {
+      await page.keyboard.press("Escape").catch(() => {});
+      return { ok: false, error: "commission_confirm_palomita_failed" };
+    }
+
+    // Re-open and READ-ONLY verify (do not rewrite the field).
+    await page.waitForTimeout(600);
+    const card2 = await findOperationCard(page, params.op ?? {});
+    if (!card2) {
+      return { ok: false, error: "operation_card_missing_after_save" };
+    }
+    const pencil2 = await findPencilInCard(card2);
+    if (!pencil2) {
+      return { ok: false, error: "pencil_missing_after_save" };
+    }
+    await pencil2.click({ timeout: 5_000 }).catch(() => {});
+    await page.waitForTimeout(800);
+
+    const reread = await readCommissionInputValue(page);
+    result.actual = reread.actual;
+    const persisted =
+      reread.ok &&
+      reread.actual != null &&
+      Number(reread.actual) === Number(result.expected);
+    // Close without rewriting: Escape is enough for a read-only check.
+    await page.keyboard.press("Escape").catch(() => {});
+    await page.waitForTimeout(300);
+    return {
+      ok: persisted,
+      error: persisted ? null : "commission_not_persisted",
+    };
+  };
+
+  let first = await attempt();
+  if (!first.ok) {
+    result.retried = true;
+    first = await attempt();
+  }
+  result.persisted = first.ok === true;
+  result.error = first.error ?? null;
+  return result;
 }
 
 function escapeRegex(s) {
@@ -1253,17 +1739,32 @@ async function resolveDraftLinks(page, listing, metrics) {
 
   const postSaveId = extractPropertyIdFromUrl(page.url());
   if (postSaveId) {
-    out.draft_url = `${origin}/app/propiedades/${postSaveId}`;
-    out.ungga_property_id = postSaveId;
-    out.lookup.method = "post_save_url";
-    metrics.push({
-      step: "resolve_draft_links",
-      ok: true,
-      via: "post_save_url",
-      duration_ms: Date.now() - t0,
-      draft_url: out.draft_url,
-    });
-    return out;
+    if (looksLikeEasyBrokerImportedUnggaId(postSaveId)) {
+      out.lookup.fallback_reason =
+        "post_save_url looked like EasyBroker import; ignoring";
+      metrics.push({
+        step: "resolve_draft_links",
+        ok: false,
+        via: "post_save_url_rejected_import",
+        error: out.lookup.fallback_reason,
+        duration_ms: Date.now() - t0,
+        rejected_id: postSaveId,
+      });
+    } else {
+      out.draft_url = `${origin}/app/propiedades/${postSaveId}`;
+      out.ungga_property_id = postSaveId;
+      out.lookup.method = "post_save_url";
+      out.lookup.creation_source = "cli";
+      metrics.push({
+        step: "resolve_draft_links",
+        ok: true,
+        via: "post_save_url",
+        duration_ms: Date.now() - t0,
+        draft_url: out.draft_url,
+        creation_source: "cli",
+      });
+      return out;
+    }
   }
 
   const title = typeof listing.title === "string" ? listing.title.trim() : "";
@@ -1326,10 +1827,24 @@ async function resolveDraftLinks(page, listing, metrics) {
     await page.getByText(/GU-ID/i).first().waitFor({ state: "visible", timeout: 8_000 }).catch(() => {});
     const modalGuId = await extractGuIdFromModal(page, title);
     if (modalGuId) {
+      if (looksLikeEasyBrokerImportedUnggaId(modalGuId)) {
+        out.lookup.fallback_reason =
+          "modal GU-ID looked like EasyBroker import; rejecting";
+        metrics.push({
+          step: "resolve_draft_links",
+          ok: false,
+          via: "modal_gu_id_rejected_import",
+          error: out.lookup.fallback_reason,
+          duration_ms: Date.now() - t0,
+          rejected_id: modalGuId,
+        });
+        return out;
+      }
       out.ungga_property_id = modalGuId;
       out.draft_url = `${origin}/app/propiedades/${modalGuId}`;
       out.lookup.method = "listing_search";
       out.lookup.via = "modal_gu_id";
+      out.lookup.creation_source = "cli";
       metrics.push({
         step: "resolve_draft_links",
         ok: true,
@@ -1337,6 +1852,7 @@ async function resolveDraftLinks(page, listing, metrics) {
         duration_ms: Date.now() - t0,
         draft_url: out.draft_url,
         ungga_property_id: out.ungga_property_id,
+        creation_source: "cli",
       });
       await maybeCapture(page, "draft-detalle", metrics);
       return out;
@@ -1390,8 +1906,21 @@ async function resolveDraftLinks(page, listing, metrics) {
     }
 
     out.ungga_property_id = extractPropertyIdFromUrl(out.draft_url || "") ?? null;
+    if (
+      out.ungga_property_id &&
+      looksLikeEasyBrokerImportedUnggaId(out.ungga_property_id)
+    ) {
+      out.lookup.fallback_reason =
+        "detalle GU-ID looked like EasyBroker import; rejecting";
+      out.ungga_property_id = null;
+      out.draft_url = null;
+    }
     if (!out.ungga_property_id) {
-      out.lookup.fallback_reason = "could not resolve GU-ID from modal or DETALLE navigation";
+      out.lookup.fallback_reason =
+        out.lookup.fallback_reason ||
+        "could not resolve GU-ID from modal or DETALLE navigation";
+    } else {
+      out.lookup.creation_source = "cli";
     }
     metrics.push({
       step: "resolve_draft_links",
@@ -1400,6 +1929,9 @@ async function resolveDraftLinks(page, listing, metrics) {
       duration_ms: Date.now() - t0,
       draft_url: out.draft_url,
       ungga_property_id: out.ungga_property_id,
+      ...(out.lookup.creation_source
+        ? { creation_source: out.lookup.creation_source }
+        : {}),
       ...(out.lookup.fallback_reason ? { error: out.lookup.fallback_reason } : {}),
     });
     await maybeCapture(page, "draft-detalle", metrics);
@@ -1532,17 +2064,22 @@ async function findDraftCardByTitle(page, title) {
   ];
   for (const loc of candidates) {
     const total = await loc.count().catch(() => 0);
-    for (let i = 0; i < Math.min(total, 5); i += 1) {
+    for (let i = 0; i < Math.min(total, 8); i += 1) {
       const candidate = loc.nth(i);
       const visible = await candidate.isVisible().catch(() => false);
-      if (visible) return candidate;
+      if (!visible) continue;
+      const text = (await candidate.innerText().catch(() => "")) || "";
+      if (cardLooksLikeEasyBrokerImport(text)) continue;
+      return candidate;
     }
   }
   const textNode = page.locator(`text="${safeTitle}"`).first();
   if ((await textNode.count().catch(() => 0)) > 0) {
-    return textNode.locator(
+    const ancestor = textNode.locator(
       "xpath=ancestor-or-self::*[self::button or self::a or @role='button'][1]"
     );
+    const text = (await ancestor.innerText().catch(() => "")) || "";
+    if (!cardLooksLikeEasyBrokerImport(text)) return ancestor;
   }
   return null;
 }

@@ -4,10 +4,12 @@ import {
   easyBrokerSnapshot,
 } from "./publication-remote-snapshot";
 import { resolvePublicationRolloutMode } from "./publication-rollout";
-import { buildPublicationPersistenceContext } from "./publication-runner";
+import { buildPublicationPersistenceContext, applyProcessMediaPublicationEvents } from "./publication-runner";
 import { classifyPublicationExecutionFromToolCalls } from "./run-settings-test-case-tick";
 import {
+  applyPublicationEvent,
   emptyPublicationState,
+  nextPublicationAction,
   type PublicationMachineAction,
 } from "./publication-workflow";
 
@@ -205,5 +207,32 @@ assert.equal(
   processMedia,
   "pending process_media gate must persist before tool execution"
 );
+
+let mediaState = applyPublicationEvent(emptyPublicationState(), {
+  type: "approval_decided",
+  destination: "easybroker",
+  approval: "approved",
+});
+mediaState = applyPublicationEvent(mediaState, {
+  type: "draft_created",
+  destination: "easybroker",
+  artifact: { listing_id: "EB-1" },
+});
+const submittedOnly = applyProcessMediaPublicationEvents(mediaState, "easybroker", {
+  count: 6,
+  remote_count: 0,
+  images_status: "submitted",
+});
+assert.equal(submittedOnly.destinations.easybroker.media.submitted, true);
+assert.equal(submittedOnly.destinations.easybroker.media.verified, false);
+assert.equal(nextPublicationAction(submittedOnly).type, "wait_remote_media");
+
+const verifiedInline = applyProcessMediaPublicationEvents(mediaState, "easybroker", {
+  count: 6,
+  remote_count: 6,
+  images_status: "verified",
+});
+assert.equal(verifiedInline.destinations.easybroker.media.verified, true);
+assert.equal(nextPublicationAction(verifiedInline).type, "validate");
 
 console.log("publication-hardening.selftest: ok");

@@ -108,4 +108,62 @@ import {
   assert.equal(out.requires_human_review, true);
 }
 
+{
+  const out = buildUnggaCliToolResponse(
+    {
+      action: "prepare_draft",
+      commission_pct: 5,
+      image_urls: ["https://example.com/1.jpg"],
+    },
+    {
+      ok: true,
+      mode: "save_draft",
+      result: {
+        save_outcome: { ok: true },
+        ungga_property_id: "GU-OK",
+        draft_url: "https://ungga.com/app/propiedades/GU-OK",
+        expected_image_count: 1,
+        uploaded_image_count: 1,
+        images_submitted: true,
+        images_verified: true,
+        commission_expected: 5,
+        commission_actual: 0,
+        commission_verified: false,
+      },
+    },
+    ""
+  );
+  assert.equal(out.ok, false);
+  assert.match(String(out.error), /Commission not verified/i);
+}
+
+{
+  const out = buildUnggaCliToolResponse(
+    {
+      action: "prepare_draft",
+      commission_pct: 5,
+      image_urls: ["https://example.com/1.jpg"],
+    },
+    {
+      ok: true,
+      mode: "save_draft",
+      result: {
+        save_outcome: { ok: true },
+        ungga_property_id: "GU-OK",
+        draft_url: "https://ungga.com/app/propiedades/GU-OK",
+        expected_image_count: 1,
+        uploaded_image_count: 1,
+        images_submitted: true,
+        images_verified: true,
+        commission_expected: 5,
+        commission_actual: 5,
+        commission_verified: true,
+      },
+    },
+    ""
+  );
+  assert.equal(out.ok, true);
+  assert.equal(out.commission_verified, true);
+}
+
 console.log("realestate-adapters-ungga-cli.selftest: ok");

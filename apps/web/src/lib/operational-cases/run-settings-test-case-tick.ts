@@ -1215,6 +1215,47 @@ export type SettingsTestCaseTickResult = {
   publication_execution?: PublicationExecutionResult;
 };
 
+export type SettingsTestCaseTickOptions = {
+  source?: string;
+  skipLock?: boolean;
+  ownerResponseText?: string;
+  autoFollowUpDepth?: number;
+  publicationRunnerOwned?: boolean;
+};
+
+/**
+ * Builds the runAgentTick callback used by requestPublicationProgress.
+ * Always sets publicationRunnerOwned so nested ticks preserve the runner lease
+ * and never schedule a second fire-and-forget runner.
+ */
+export function createPublicationRunnerOwnedAgentTick(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  sourcePrefix: string,
+  options?: Omit<
+    SettingsTestCaseTickOptions,
+    "source" | "skipLock" | "publicationRunnerOwned"
+  >
+): (
+  opCase: OperationalCase,
+  action: PublicationMachineAction
+) => Promise<PublicationExecutionResult> {
+  return async (opCase, action) => {
+    const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
+      ...options,
+      source: `${sourcePrefix}:${action.type}`,
+      skipLock: true,
+      publicationRunnerOwned: true,
+    });
+    return (
+      tick.publication_execution ?? {
+        status: "not_executed",
+        error: "publication_execution_result_missing",
+      }
+    );
+  };
+}
+
 /**
  * Un tick del agente sobre un caso de prueba creado desde Settings.
  * Usado por la API de pruebas y por el webhook de Telegram cuando el
@@ -1224,13 +1265,7 @@ export async function runSettingsTestCaseAgentTick(
   db: ReturnType<typeof createServerClient>,
   opCase: OperationalCase,
   userId: string,
-  options?: {
-    source?: string;
-    skipLock?: boolean;
-    ownerResponseText?: string;
-    /** Depth of automatic machine-only follow-up ticks (package_ready). */
-    autoFollowUpDepth?: number;
-  }
+  options?: SettingsTestCaseTickOptions
 ): Promise<SettingsTestCaseTickResult> {
   ensureAgentToolDepsWired();
 
@@ -1264,30 +1299,54 @@ export async function runSettingsTestCaseAgentTick(
       opCase.id,
       options?.source ?? "case_tick_publication_entry",
       {
-        runAgentTick: async (runnerCase, action) => {
-          const tick = await runSettingsTestCaseAgentTick(
-            db,
-            runnerCase,
-            userId,
-            {
-              ...options,
-              source: `publication_runner:${action.type}`,
-              skipLock: true,
-            }
-          );
-          return (
-            tick.publication_execution ?? {
-              status: "not_executed",
-              error: "publication_execution_result_missing",
-            }
-          );
-        },
+        runAgentTick: createPublicationRunnerOwnedAgentTick(
+          db,
+          userId,
+          "publication_runner",
+          options
+        ),
       }
     );
     // Once copy is approved, publication state owns the tick in all rollout
     // modes. In particular, off/shadow must not fall through to the legacy
     // agent where a publish write could become a generic technical HITL.
-    const afterProgress = (await getOperationalCase(db, opCase.id)) ?? opCase;
+    let afterProgress = (await getOperationalCase(db, opCase.id)) ?? opCase;
+    if (
+      progress.status === "waiting_remote" &&
+      (isControlledE2EOperationalCase(afterProgress) ||
+        isSettingsOperationalTestCase(afterProgress))
+    ) {
+      const ctx = contextRecord(afterProgress);
+      const patched = await updateOperationalCase(
+        db,
+        afterProgress.id,
+        afterProgress.version,
+        {
+          context: {
+            ...ctx,
+            ...(isSettingsOperationalTestCase(afterProgress)
+              ? { controlled_test_status: "e2e_waiting_remote_media" }
+              : {}),
+            ...(isControlledE2EOperationalCase(afterProgress)
+              ? { e2e_control_status: "waiting_remote_media" }
+              : {}),
+          },
+        }
+      );
+      if (patched) afterProgress = patched;
+      await insertOperationalCaseEvent(db, {
+        caseId: afterProgress.id,
+        eventType: "state_changed",
+        actor: "system",
+        stepKey: afterProgress.current_step ?? undefined,
+        payload: {
+          source: options?.source ?? "case_tick_publication_entry",
+          result: "e2e_waiting_remote_media",
+          next_action: progress.next_action?.type ?? "wait_remote_media",
+          message: progress.message ?? "waiting_for_remote_media",
+        },
+      });
+    }
     return {
       case: afterProgress,
       pending_confirmation: false,
@@ -2115,11 +2174,14 @@ export async function runSettingsTestCaseAgentTick(
       uploadFailedThisTurn: easybrokerUploadFailure.failed,
       autoFollowUpDepth: options?.autoFollowUpDepth ?? 0,
       source: options?.source ?? null,
+      publicationRunnerOwned: options?.publicationRunnerOwned === true,
     });
 
   const preserveRunnerLease =
     options?.skipLock === true &&
-    isNestedPublicationRunnerTick(options?.source ?? null);
+    isNestedPublicationRunnerTick(options?.source ?? null, {
+      publicationRunnerOwned: options?.publicationRunnerOwned === true,
+    });
 
   const updated = await updateOperationalCase(db, fresh.id, version, {
     nextActionAt:
@@ -2196,19 +2258,14 @@ export async function runSettingsTestCaseAgentTick(
       updated.id,
       "package_ready_auto_follow_up",
       {
-        runAgentTick: async (opCase, action) => {
-          const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
-            source: `package_ready_auto_follow_up:${action.type}`,
+        runAgentTick: createPublicationRunnerOwnedAgentTick(
+          db,
+          userId,
+          "package_ready_auto_follow_up",
+          {
             autoFollowUpDepth: (options?.autoFollowUpDepth ?? 0) + 1,
-            skipLock: true,
-          });
-          return (
-            tick.publication_execution ?? {
-              status: "not_executed",
-              error: "publication_execution_result_missing",
-            }
-          );
-        },
+          }
+        ),
       }
     ).catch((error) => {
       console.warn(

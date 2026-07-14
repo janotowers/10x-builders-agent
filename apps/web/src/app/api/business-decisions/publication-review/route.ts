@@ -59,7 +59,7 @@ export async function POST(request: Request) {
     const { requestPublicationProgress } = await import(
       "@/lib/operational-cases/publication-runner"
     );
-    const { runSettingsTestCaseAgentTick } = await import(
+    const { createPublicationRunnerOwnedAgentTick } = await import(
       "@/lib/operational-cases/run-settings-test-case-tick"
     );
     void requestPublicationProgress(
@@ -68,23 +68,11 @@ export async function POST(request: Request) {
       source,
       {
         forceRetryFailedOperation,
-        runAgentTick: async (opCase, machineAction) => {
-          const tick = await runSettingsTestCaseAgentTick(
-            createServerClient(),
-            opCase,
-            user.id,
-            {
-              source: `${source}:${machineAction.type}`,
-              skipLock: true,
-            }
-          );
-          return (
-            tick.publication_execution ?? {
-              status: "not_executed",
-              error: "publication_execution_result_missing",
-            }
-          );
-        },
+        runAgentTick: createPublicationRunnerOwnedAgentTick(
+          createServerClient(),
+          user.id,
+          source
+        ),
       }
     ).catch((error) => {
       console.error("[publication-review/route] deferred progress failed:", error);

@@ -1382,19 +1382,28 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "easybroker_upload_images",
     name: "easybroker_upload_images",
     description:
-      "Uploads images to an existing EasyBroker listing. WRITE: requires HITL.",
+      "Uploads images to an existing EasyBroker listing from the case photo_manifest. WRITE: requires HITL. Prefer only case_id + listing_id; the adapter applies brand watermark when configured and derives identity-safe pairs. Do not invent upload paths.",
     risk: "high",
     requires_integration: "easybroker",
     parameters_schema: {
       type: "object",
       properties: {
         listing_id: { type: "string" },
-        image_paths: { type: "array", items: { type: "string" } },
+        case_id: {
+          type: "string",
+          description:
+            "Operational case id. Required so the adapter can watermark (if brand asset exists) and derive photo pairs from photo_manifest.",
+        },
+        image_paths: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional. Ignored when case_id has a photo_manifest; the adapter owns path identity.",
+        },
         image_titles: { type: "array", items: { type: "string" } },
-        case_id: { type: "string" },
         dry_run: { type: "boolean" },
       },
-      required: ["listing_id", "image_paths"],
+      required: ["listing_id", "case_id"],
     },
     asset_profile: {
       test: [

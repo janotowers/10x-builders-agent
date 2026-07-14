@@ -216,7 +216,19 @@ try {
     }
     result = await publishExistingDraft(
       session.page,
-      { propertyId, dryRun },
+      {
+        propertyId,
+        dryRun,
+        listing: {
+          commission_pct:
+            typeof rawInput.commission_pct === "number"
+              ? rawInput.commission_pct
+              : undefined,
+          operations: Array.isArray(rawInput.operations)
+            ? rawInput.operations
+            : undefined,
+        },
+      },
       metrics
     );
     mode = dryRun ? "publish_dry_run" : "publish_draft";
