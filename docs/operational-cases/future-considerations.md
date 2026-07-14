@@ -484,6 +484,50 @@ Hoy los correos incluyen URL firmada de Storage con nombre de archivo amigable
 No es bloqueante para el flujo actual; priorizar si usuarios se quejan de links
 rotos en clientes de correo o si se necesita analytics de apertura.
 
+---
+
+## 12. Comisión comercial: renta en «meses» vs porcentaje
+
+**Estado (2026-07):** el modelo canónico en `commission_terms` es
+`commission_pct` (número, porcentaje del precio). El copy de captura y los
+mappers a EasyBroker/Ungga asumen **%** en este sprint.
+
+**Contexto de producto (México):**
+
+- En **venta**, la comisión al propietario suele expresarse como **% del precio**.
+- En **renta**, además del % es habitual pactar **equivalente a N meses de renta**
+  (típicamente **1 mes**), no un porcentaje.
+
+**Por qué no entra aún:**
+
+- Ungga CLI hoy edita **Comisión (%)** en el modal Operación.
+- EasyBroker mapper usa `operations[].commission = { type: "percentage", value }`.
+- El extractor híbrido de `contract_data_review` normaliza a `commission_pct`.
+
+**Diseño recomendado para futura implementación:**
+
+1. Extender `commission_terms` con modo explícito, p. ej.
+   `commission_mode: "percentage" | "months_of_rent"` y `commission_value`.
+2. Actualizar HITL/copy: en renta ofrecer «X meses de renta» además de %.
+3. Mappers destino: definir equivalencia % ↔ meses usando `salida_price` / renta
+   mensual del paquete, o campos separados por portal si no hay conversión segura.
+4. Tests de regresión en venta (% only) antes de activar renta en producción.
+
+Hasta entonces, **no prometer** «1 mes de renta» en ejemplos de chat si el
+sistema solo persiste `commission_pct`.
+
+---
+
+## 13. Checklist documental vs gates duros
+
+**Estado (2026-07):** el checklist canónico (`case-document-collection.ts`) lista
+**boleta registral** primero con `(indispensable)` en copy/metadata. Los gates
+duros de avance (`completeDocumentBatchForCase`, `evaluatePropertyAdvanceGate`)
+**no** exigen boleta ausente como único bloqueante universal: «listo» avanza con
+≥1 documento; comparables bloquea boleta solo **si ya hay** boleta incompleta.
+
+Documentar aquí para evitar re-debatir «escritura vs boleta» en cada E2E.
+
 ### Correcciones por inbox web (explícitamente no)
 
 El producto **no** incluye formulario en pending inbox para subir contrato

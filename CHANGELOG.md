@@ -7,13 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Chat-first conversational copy (pre-E2E)**: intake, document checklist,
+  interno/externo, «listo», characteristics minimums, contract commercial
+  prompts, photos request, and related acks no longer mention the panel; copy
+  is channel-neutral (“aquí” / chat). Boleta registral is listed first as
+  `(indispensable)` in checklist metadata/skill (gates unchanged). Contract
+  commercial questions reorder to email → duration → exclusivity → owner % →
+  share; examples stay percentage-only.
+- **Ungga commission persistence**: CLI confirms Operación with the purple
+  check (palomita), read-only re-verifies commission (no rewrite on re-open),
+  and attempts save-as-draft + reread before `publish_draft`.
+
 ### Fixed
 
+- **E2E publication remote wait resume**: controlled/lab cases no longer stall after
+  EasyBroker `images_submitted` with `remote_count=0`. The lab observer wakes the
+  serialized publication runner from `nextPublicationAction` (including
+  `wait_remote_media` / `validate` / `publish`), respecting resume leases. Cron
+  suppression for E2E stays intact. `process_media` success no longer resets an
+  already-verified remote poll; waiting-remote ticks surface
+  `e2e_waiting_remote_media` instead of looking finished.
+- **Ungga deterministic publish + safe closure**: `nextPublicationAction` no longer
+  discards Ungga `draft_in_flight` / `publish_in_flight` idles into
+  `all_destinations_resolved`. Nested runner ticks use structural
+  `publicationRunnerOwned` (preserve lease; no recursive follow-up). Completion
+  requires published evidence (`published_url` for Ungga; not GU-ID alone; not
+  EasyBroker-imported Ungga IDs). Ungga CLI edits/verifies **Comisión (%)** via
+  the Operación pencil modal; prepare/publish fail if the expected % does not
+  persist. Premature closures can be reopened with
+  `reopenPrematurelyClosedPublicationCase` and a single corrective summary.
+  Corrective `listing_published_summary` reuses the active unread notification
+  (upsert) so the unique `(user, case, kind)` index does not block Telegram
+  redelivery with the Ungga URL.
+- **Deterministic EasyBroker watermark before upload**: `easybroker_upload_images`
+  now prepares media itself. If a brand watermark asset exists and
+  `photo_manifest.watermarked_path` is missing, it applies/persists watermark
+  before any EasyBroker HTTP call; if no asset exists, it uploads originals and
+  never blocks. Agent-invented `upload_path` values are ignored in favor of the
+  manifest. Pre-remote watermark failures return `side_effect_started:false` and
+  are safe to force-retry in the publication ledger.
 - **Destination owner commission mapping**: EasyBroker create now projects
   `commission_terms.commission_pct` into `operations[].commission`
   (`{ type: "percentage", value }`) so the UI shows e.g. “50% de 5%” instead of
-  a bare shared percent. Ungga CLI fills **Comisión (%)** in the Operación modal
-  from the same canonical field; collaborator share % remains EasyBroker-only
+  a bare shared percent. Ungga CLI fills **Comisión (%)** via the Operación
+  pencil modal (tarjeta → lápiz → COMISIÓN) from the same canonical field and
+  verifies persistence before treating prepare/publish as success;
+  collaborator share % remains EasyBroker-only
   (`shared_commission_percentage` 50|null) and is not sent to Ungga.
 - **Watermark + Ungga sequencing**: watermark is required only when the account has a brand asset (`watermark_configured`); missing logo no longer blocks preflight/upload. `image_watermark` persists `photo_manifest.watermarked_path` via OCC retries and fails loudly on persist/`partial_failure`. Package-ready prompts follow a single runner action (no same-tick “ask Ungga”). `ungga_publish_approval` waits for EasyBroker publicly published (or skipped/rejected), not merely a draft `listing_id`. Publication write tools now audit as `approved` (not `pending_confirmation`) when the graph already auto-executes them, so a slow Ungga CLI run no longer looks like a second human decision. The publication runner treats genuine technical HITL as `waiting_hitl` instead of marking the destination `failed`. Ungga CLI/agent now map internal enums (`good`→`Bueno`, `existing`→`Habitable`, `MX`→`México`, etc.), enrich `land_m2` from `property_data.area_total_m2`, and abort early on GENERAL validation so a failed draft does not look like a stuck HITL while MEDIA never mounts.
 - **Ungga direct publish (CLI-only)**: with publication workflow v1, suppress per-destination Ungga draft/publish Telegram pings (final `listing_published_summary` owns closure). Validate/publish no longer open `review_required` solely for `ungga_api_credentials_missing` when GU-ID + CLI-verified media exist; post-publish confirmation trusts CLI `published_url`/`ok`. Media counts accept `remote >= expected` (extra Ungga thumbs). Reconcile skips API-missing without marking the destination unknown. When the runner reaches `all_destinations_resolved`, it closes `package_ready` → `published`/`completed` and sends `listing_published_summary` once.

@@ -315,7 +315,7 @@ Tras completar intake conversacional, el asesor elige quién aporta documentos:
 
 | Valor | Comportamiento |
 |---|---|
-| `internal_user` | El asesor sube por Telegram/web/panel y confirma con «listo». |
+| `internal_user` | El asesor sube documentos **en el chat** (Telegram, web u otro canal futuro) y confirma con «listo». |
 | `external_contact` | El agente/cron solicita al contacto vía `telegram_send_message_to_contact`. |
 
 Esto es una **decisión de rama** del paso `awaiting_documents` (`PATTERN_STEP_BRANCH_DECISION`): mismo hito (reunir expediente), distinto responsable y `waiting_*`. La verdad de ejecución está en código + `context_jsonb`; el panel de Preparación operativa debe **explicar** ambas ramas (no ejecutar el IF). Al fijar el destino se emite `human_decision` con `kind=step_branch_selected` (idempotente; ver [`step-branch-selected.ts`](../../apps/web/src/lib/operational-cases/step-branch-selected.ts)). Plan: [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md).
@@ -656,11 +656,18 @@ Orden por destino (EasyBroker antes que Ungga):
      (`commission_pct`) → `operations[].commission`. Override auditable solo
      en `publication.destinations.<destino>.commercial_override`.
    - Ungga: `ungga_publish_listing(action=prepare_draft)` (enrich desde
-     `case_id`; `commission_pct` → Comisión (%) en modal Operación; omitir
-     strings vacíos; CLI real con `UNGGA_CLI_DRY_RUN=false` salvo tests).
-3. Media: `image_watermark(case_id)` + `photo_manifest` 1:1 por path/sha256 +
-   `easybroker_upload_images` con pares `{source_path, upload_path, title}`
-   (nunca desde `visible_spaces`). Persist `public_url` en el manifest.
+     `case_id`; `commission_pct` → Comisión (%) vía lápiz en tarjeta Operación
+     con confirmación **palomita**, verificación read-only al reabrir el modal,
+     `saveAsDraft` + relectura antes de `publish_draft`; omitir strings vacíos;
+     CLI real con `UNGGA_CLI_DRY_RUN=false` salvo tests). Solo el GU-ID creado
+     por CLI es canónico (`creation_source=cli`); no adoptar `Tipo Importada /
+     Origen EasyBroker`.
+3. Media: `easybroker_upload_images(case_id, listing_id)` es el dueño de la
+   secuencia. Si la cuenta tiene asset de watermark, el adapter aplica y
+   persiste `photo_manifest.watermarked_path` **antes** de llamar a EasyBroker;
+   si no hay asset, sube originales sin bloquear. Ignora `upload_path` inventados
+   por el LLM y deriva pares desde el manifest. Persist `public_url` en el
+   manifest tras el upload.
 4. Preflight condicional (`publication-preflight`, watermark/manifest reales):
    `pass` → publicar; `waiting` → reanudar; `review_required` →
    `publication_review_required`; `blocked`/`unknown_outcome` → no reintentar
@@ -669,18 +676,41 @@ Orden por destino (EasyBroker antes que Ungga):
 5. Publish:
    - EasyBroker: `easybroker_publish_listing` (PATCH `status=published`) tras
      snapshot remoto.
-   - Ungga: `ungga_publish_listing(action=publish_draft)` solo con GU-ID.
+   - Ungga: `ungga_publish_listing(action=publish_draft)` solo con el GU-ID CLI
+     canónico; revalida comisión antes de Publicar; exige `published_url`.
      Timeout/kill → `unknown_outcome` en fase + ledger; sin auto-retry de
-     `prepare_draft`.
+     `prepare_draft`. Retry de `publish` solo si el ledger prueba
+     `*_not_called` / pre-side-effect.
 
 El ledger `publication_operations` se cierra con el resultado real del
 adapter (`succeeded` / `failed` / `unknown_outcome`), no solo porque terminó
 el tick del agente.
 
+**Ownership del runner:** ticks delegados llevan `publicationRunnerOwned=true`
+(además de prefijos de telemetría). Eso preserva `next_action_at` y bloquea
+auto-follow-up recursivo aunque el `source` sea `publish_destination_*` /
+`publication_review_*` / `cron_publication:*`. `nextPublicationAction` no
+descarta `*_in_flight` hacia `all_destinations_resolved`.
+
+**Cierre:** requiere evidencia publicada (Ungga: `published_url` del mismo
+GU-ID CLI; no basta GU-ID ni imports EasyBroker). No cierra con ledger
+`claimed/running` ni `package_ready_machine_work_in_flight`. Recuperación:
+`reopenPrematurelyClosedPublicationCase` + un resumen correctivo idempotente.
+Runbook lab: [`apps/web/scripts/lab/README.md`](../../apps/web/scripts/lab/README.md)
+(reopen → retry publish, mismo GU-ID CLI).
+
 Side effects externos se registran en `publication_operations` (clave única
 `(case_id, destination, operation_key)`). Todos los disparadores (Telegram,
 web, lab refresh, auto-follow-up) pasan por `requestPublicationProgress` con
 `markCaseProcessing` — sin `skipLock` recursivo.
+
+En casos E2E controlados / settings test el cron **no** continúa el caso (limpia
+`next_action_at` y marca `cron_suppressed`). El sustituto es el observador del
+lab (`buildSettingsTestCaseResponse`): si `nextPublicationAction` indica trabajo
+de máquina (`wait_remote_media`, `validate`, `publish`, etc.) y el lease/resume
+ya venció, dispara `package_ready_lab_auto_continue` →
+`requestPublicationProgress`. Decisiones humanas usan el patrón
+`deferredControlledE2ETick` / callback directo al mismo runner.
 
 Para publicación real, el orden técnico EasyBroker sigue siendo:
 

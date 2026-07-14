@@ -149,7 +149,7 @@ export interface OperationalCaseFlowStep {
 {
   "step_key": "awaiting_documents",
   "step_label": "Reunir documentos",
-  "step_description": "Obtener el expediente documental (escritura bloqueante + ideales). Quién aporta se decide por rama.",
+  "step_description": "Obtener el expediente documental (boleta indispensable en copy + ideales). Quién aporta se decide por rama.",
   "step_decision": {
     "id": "document_request_target",
     "label": "¿Quién aporta los documentos?",
