@@ -85,6 +85,7 @@ terms = applyCommissionTermsPatch(terms, {
 const mapped = mapCollaborationToEasyBroker(terms);
 assert.equal(mapped.share_commission, true);
 assert.equal(mapped.shared_commission_percentage, undefined);
+assert.deepEqual(mapped.commission, { type: "percentage", value: 5 });
 assert.ok(
   mapped.warnings.some(
     (warning) => warning.code === "destination_commission_mapping_unsupported"
@@ -97,10 +98,12 @@ terms = applyCommissionTermsPatch(terms, {
 const mapped50 = mapCollaborationToEasyBroker(terms);
 assert.equal(mapped50.share_commission, true);
 assert.equal(mapped50.shared_commission_percentage, 50);
+assert.deepEqual(mapped50.commission, { type: "percentage", value: 5 });
 assert.equal(mapped50.warnings.length, 0);
 
 const unggaMapped = mapCollaborationToUngga(terms);
 assert.equal(unggaMapped.collaboration_enabled, true);
+assert.equal(unggaMapped.commission_pct, 5);
 assert.ok(
   unggaMapped.warnings.some(
     (warning) => warning.code === "destination_commission_mapping_unsupported"

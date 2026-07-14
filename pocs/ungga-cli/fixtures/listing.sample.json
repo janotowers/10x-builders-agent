@@ -27,8 +27,9 @@
   "video_url": "",
   "tour_url": "",
   "operations": [
-    { "type": "sale", "price": 5500000, "currency": "MXN" }
+    { "type": "sale", "price": 5500000, "currency": "MXN", "commission_pct": 5 }
   ],
+  "commission_pct": 5,
   "image_urls": [],
   "case_id": "poc"
 }

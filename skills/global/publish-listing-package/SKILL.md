@@ -111,7 +111,8 @@ Producir y entregar:
      Colaboración se mapea desde `commission_terms.collaboration` en el
      adapter: `enabled` → `share_commission` aunque el % canónico (p. ej. 40)
      no sea representable; el detalle incompatible se omite con warning y
-     **no** muta el canónico.
+     **no** muta el canónico. `commission_terms.commission_pct` →
+     `operations[].commission = { type: "percentage", value }`.
    - `easybroker_upload_images` con pares identidad
      `{source_path, upload_path, title}` / manifest (nunca arrays posicionales
      inventados). Persiste `public_url` en el manifest para Ungga.
@@ -122,6 +123,8 @@ Producir y entregar:
 9. **Ungga (dos fases)**:
    - Solo tras EasyBroker remotamente publicado u omisión explícita.
    - `ungga_publish_listing(action=prepare_draft, case_id)` (omitir strings vacíos).
+     `commission_pct` llena **Comisión (%)** en el modal Operación; el %
+     opcional al colaborador no se envía a Ungga.
    - Preflight condicional sobre el draft (GU-ID real, no dry-run).
    - Si pass → `ungga_publish_listing(action=publish_draft, ungga_property_id)`.
    - Timeout/kill → `unknown_outcome` (ledger + revisión); nunca auto-reintentar

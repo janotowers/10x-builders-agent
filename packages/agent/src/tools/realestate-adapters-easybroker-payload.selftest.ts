@@ -289,6 +289,42 @@ const sharedCommission50 = buildEasyBrokerCreatePayload(
 );
 assert.equal(sharedCommission50.payload.shared_commission_percentage, 50);
 
+const ownerCommission = buildEasyBrokerCreatePayload(
+  {
+    ...enrichedE2e,
+    share_commission: true,
+    shared_commission_percentage: 50,
+    commission: { type: "percentage", value: 5 },
+    features: undefined,
+  },
+  { catalogFeatureNames: [] }
+);
+assert.deepEqual(
+  (ownerCommission.payload.operations as Array<Record<string, unknown>>)[0]
+    .commission,
+  { type: "percentage", value: 5 }
+);
+assert.equal(ownerCommission.payload.shared_commission_percentage, 50);
+
+const invalidOwnerCommission = buildEasyBrokerCreatePayload(
+  {
+    ...enrichedE2e,
+    commission: { type: "percentage", value: 0 },
+    features: undefined,
+  },
+  { catalogFeatureNames: [] }
+);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(
+    (invalidOwnerCommission.payload.operations as Array<Record<string, unknown>>)[0],
+    "commission"
+  ),
+  false
+);
+assert.ok(
+  invalidOwnerCommission.dropped_fields.some((item) => item.field === "commission")
+);
+
 const sharedCommission0 = buildEasyBrokerCreatePayload(
   {
     ...enrichedE2e,

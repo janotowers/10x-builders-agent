@@ -719,31 +719,62 @@ export function buildContractCommercialMinimumsSummaryMessage(
     .trim();
 }
 
+/** Owner commission % → EasyBroker operations[].commission (percentage). */
+export function mapOwnerCommissionToEasyBroker(terms: CommissionTerms): {
+  commission?: { type: "percentage"; value: number };
+  warnings: Array<{ code: string; message: string; actual?: unknown }>;
+} {
+  const warnings: Array<{ code: string; message: string; actual?: unknown }> =
+    [];
+  if (terms.commission_pct == null) return { warnings };
+  const value = Number(terms.commission_pct);
+  if (!Number.isFinite(value) || value <= 0 || value > 100) {
+    warnings.push({
+      code: "destination_commission_mapping_unsupported",
+      message:
+        "commission_pct canónico no es un porcentaje usable en EasyBroker; se omite operations[].commission.",
+      actual: terms.commission_pct,
+    });
+    return { warnings };
+  }
+  return {
+    commission: { type: "percentage", value },
+    warnings,
+  };
+}
+
 /**
  * Proyección de borde hacia EasyBroker.
  * Nunca muta el canónico; omite detalles incompatibles con warning.
+ * - commission_pct → operations[].commission { type: percentage, value }
+ * - collaboration → share_commission + shared_commission_percentage (solo 50|null)
  */
 export function mapCollaborationToEasyBroker(terms: CommissionTerms): {
+  commission?: { type: "percentage"; value: number };
   share_commission?: boolean;
   shared_commission_percentage?: number | null;
   collaboration_notes?: string;
   warnings: Array<{ code: string; message: string; actual?: unknown }>;
 } {
-  const warnings: Array<{ code: string; message: string; actual?: unknown }> =
-    [];
-  if (terms.collaboration.enabled == null) {
-    return { warnings };
-  }
+  const owner = mapOwnerCommissionToEasyBroker(terms);
+  const warnings = [...owner.warnings];
 
   const out: {
+    commission?: { type: "percentage"; value: number };
     share_commission?: boolean;
     shared_commission_percentage?: number | null;
     collaboration_notes?: string;
     warnings: Array<{ code: string; message: string; actual?: unknown }>;
   } = {
-    share_commission: terms.collaboration.enabled,
     warnings,
+    ...(owner.commission ? { commission: owner.commission } : {}),
   };
+
+  if (terms.collaboration.enabled == null) {
+    return out;
+  }
+
+  out.share_commission = terms.collaboration.enabled;
 
   if (terms.collaboration.enabled === false) {
     out.shared_commission_percentage = null;
@@ -788,13 +819,15 @@ export function mapCollaborationToEasyBroker(terms: CommissionTerms): {
 
 /**
  * Proyección de borde hacia Ungga.
- * Extensible: hoy solo propaga exclusividad/notas cuando el destino las acepte.
- * No inventa campos que Ungga no soporte.
+ * - commission_pct → Comisión (%) en modal Operación (CLI)
+ * - exclusividad / collaboration.enabled cuando el destino los acepte
+ * - el % opcional al colaborador no se mapea (Ungga no lo expone)
  */
 export function mapCollaborationToUngga(terms: CommissionTerms): {
   exclusive?: boolean;
   collaboration_enabled?: boolean;
   collaboration_notes?: string | null;
+  commission_pct?: number;
   warnings: Array<{ code: string; message: string; actual?: unknown }>;
 } {
   const warnings: Array<{ code: string; message: string; actual?: unknown }> =
@@ -803,8 +836,23 @@ export function mapCollaborationToUngga(terms: CommissionTerms): {
     exclusive?: boolean;
     collaboration_enabled?: boolean;
     collaboration_notes?: string | null;
+    commission_pct?: number;
     warnings: Array<{ code: string; message: string; actual?: unknown }>;
   } = { warnings };
+
+  if (terms.commission_pct != null) {
+    const value = Number(terms.commission_pct);
+    if (Number.isFinite(value) && value > 0 && value <= 100) {
+      out.commission_pct = value;
+    } else {
+      warnings.push({
+        code: "destination_commission_mapping_unsupported",
+        message:
+          "commission_pct canónico no es un porcentaje usable en Ungga; se omite Comisión (%).",
+        actual: terms.commission_pct,
+      });
+    }
+  }
 
   if (terms.exclusive != null) {
     out.exclusive = terms.exclusive;

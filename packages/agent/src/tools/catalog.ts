@@ -1344,6 +1344,24 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         tags: { type: "array", items: { type: "string" } },
         share_commission: { type: "boolean" },
         collaboration_notes: { type: "string" },
+        shared_commission_percentage: {
+          type: "number",
+          description:
+            "EasyBroker only accepts 50 or null. Prefer mapping from commission_terms.",
+        },
+        commission: {
+          type: "object",
+          description:
+            "Owner closing commission nested under operations[]. Prefer mapping from commission_terms.commission_pct as { type: 'percentage', value }.",
+          properties: {
+            type: {
+              type: "string",
+              enum: ["percentage", "amount", "months"],
+            },
+            value: { type: "number" },
+            currency: { type: "string" },
+          },
+        },
         videos: { type: "array", items: { type: "string" } },
         virtual_tour: { type: "string" },
         custom_fields: {
@@ -1456,6 +1474,11 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         amenities: { type: "array", items: { type: "string" } },
         video_url: { type: "string" },
         tour_url: { type: "string" },
+        commission_pct: {
+          type: "number",
+          description:
+            "Owner commission % for Ungga Operación modal (from commission_terms.commission_pct).",
+        },
         operations: {
           type: "array",
           items: {
@@ -1467,6 +1490,10 @@ export const TOOL_CATALOG: ToolDefinition[] = [
               },
               price: { type: "number" },
               currency: { type: "string" },
+              commission_pct: {
+                type: "number",
+                description: "Owner commission % filled in the operation modal.",
+              },
             },
             required: ["type", "price"],
           },

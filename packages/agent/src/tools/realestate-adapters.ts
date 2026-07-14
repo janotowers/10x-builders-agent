@@ -1602,12 +1602,14 @@ export function addRealEstateTools(
           amenities: z.array(z.string()).optional(),
           video_url: z.string().optional(),
           tour_url: z.string().optional(),
+          commission_pct: z.number().positive().max(100).optional(),
           operations: z
             .array(
               z.object({
                 type: z.enum(["sale", "rent", "rent_temporary", "presale"]),
                 price: z.number().positive(),
                 currency: z.string().optional(),
+                commission_pct: z.number().positive().max(100).optional(),
               })
             )
             .optional(),
@@ -5417,6 +5419,8 @@ type EasyBrokerCreateListingInput = {
   share_commission?: boolean;
   collaboration_notes?: string;
   shared_commission_percentage?: number | null;
+  /** Owner closing commission → nested under operations[].commission. */
+  commission?: { type: "percentage" | "amount" | "months"; value: number; currency?: string };
   construction_size?: number;
   lot_size?: number;
   area_m2?: number;
@@ -5663,12 +5667,23 @@ async function enrichUnggaPublishInputFromCaseContext(
   ) {
     next.collaboration_notes = mapped.collaboration_notes;
   }
+  if (
+    (typeof next.commission_pct !== "number" ||
+      !Number.isFinite(next.commission_pct)) &&
+    mapped.commission_pct != null
+  ) {
+    next.commission_pct = mapped.commission_pct;
+  }
   if (unggaOverride) {
     if (typeof unggaOverride.exclusive === "boolean") {
       next.exclusive = unggaOverride.exclusive;
     }
     if (typeof unggaOverride.collaboration_enabled === "boolean") {
       next.collaboration_enabled = unggaOverride.collaboration_enabled;
+    }
+    const overridePct = safeNumber(unggaOverride.commission_pct);
+    if (overridePct != null && overridePct > 0) {
+      next.commission_pct = overridePct;
     }
   }
   if (mapped.warnings.length > 0) {
@@ -5994,6 +6009,13 @@ function makeEasyBrokerCreateListingTool(ctx: ToolContext) {
           share_commission: z.boolean().optional(),
           collaboration_notes: z.string().optional(),
           shared_commission_percentage: z.number().nullable().optional(),
+          commission: z
+            .object({
+              type: z.enum(["percentage", "amount", "months"]),
+              value: z.number().positive(),
+              currency: z.string().optional(),
+            })
+            .optional(),
           construction_size: z.number().nonnegative().optional(),
           lot_size: z.number().nonnegative().optional(),
           area_m2: z.number().nonnegative().optional(),
@@ -7881,6 +7903,9 @@ async function enrichEasyBrokerCreateInputFromCaseContext(
   ) {
     enriched.collaboration_notes = mapped.collaboration_notes;
   }
+  if (enriched.commission === undefined && mapped.commission) {
+    enriched.commission = mapped.commission;
+  }
   if (enriched.exclusive === undefined && terms.exclusive != null) {
     enriched.exclusive = terms.exclusive;
   }
@@ -7895,6 +7920,25 @@ async function enrichEasyBrokerCreateInputFromCaseContext(
     ) {
       enriched.shared_commission_percentage =
         commercialOverride.shared_commission_percentage as number | null;
+    }
+    const overrideCommission = asRecord(commercialOverride.commission);
+    if (overrideCommission) {
+      const type = cleanString(overrideCommission.type);
+      const value = safeNumber(overrideCommission.value);
+      if (
+        (type === "percentage" || type === "amount" || type === "months") &&
+        value != null &&
+        value > 0
+      ) {
+        enriched.commission = {
+          type,
+          value,
+          ...(typeof overrideCommission.currency === "string" &&
+          overrideCommission.currency.trim()
+            ? { currency: overrideCommission.currency.trim() }
+            : {}),
+        };
+      }
     }
   }
   if (mapped.warnings.length > 0) {
@@ -8291,21 +8335,27 @@ export function buildEasyBrokerCreatePayload(
     drop("title", "truncated_to_easybroker_max_80", input.title);
   }
 
+  const operation: Record<string, unknown> = {
+    type: operationType,
+    amount: input.price,
+    currency: input.currency ?? "MXN",
+    active: true,
+    unit: "total",
+  };
+  const commission = sanitizeEasyBrokerCommission(input.commission);
+  if (commission) {
+    operation.commission = commission;
+  } else if (input.commission !== undefined) {
+    drop("commission", "invalid_commission_object", input.commission);
+  }
+
   const payload: Record<string, unknown> = {
     property_type: input.property_type,
     title,
     description: input.description.slice(0, 4000),
     status: input.status ?? "not_published",
     location: easyBrokerLocation,
-    operations: [
-      {
-        type: operationType,
-        amount: input.price,
-        currency: input.currency ?? "MXN",
-        active: true,
-        unit: "total",
-      },
-    ],
+    operations: [operation],
   };
 
   setIfPresent(payload, "private_description", cleanString(normalized.private_description ?? input.private_description));
@@ -8408,6 +8458,33 @@ function sanitizeEasyBrokerAge(value: unknown): string | undefined {
   if (age === "under_construction" || age === "new_construction") return age;
   if (/^\d{4}$/.test(age)) return age;
   return undefined;
+}
+
+/**
+ * EasyBroker operations[].commission: type ∈ percentage|amount|months.
+ * Percentage values must be in (0, 100]; amount/months require positive value.
+ */
+function sanitizeEasyBrokerCommission(
+  value: unknown
+): { type: "percentage" | "amount" | "months"; value: number; currency?: string } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const type = cleanString(record.type);
+  const amount = safeNumber(record.value);
+  if (
+    (type !== "percentage" && type !== "amount" && type !== "months") ||
+    amount == null ||
+    amount <= 0
+  ) {
+    return undefined;
+  }
+  if (type === "percentage" && amount > 100) return undefined;
+  const currency = cleanString(record.currency);
+  return {
+    type,
+    value: amount,
+    ...(type === "amount" && currency ? { currency } : {}),
+  };
 }
 
 /** EasyBroker enforces max 15 chars and a restricted charset for internal_id. */

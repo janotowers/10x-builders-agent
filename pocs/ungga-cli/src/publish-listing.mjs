@@ -133,6 +133,7 @@ function normalizeListing(input) {
         ? ui.tour_url.trim()
         : null,
     operations: normalizeOperations(ui),
+    commission_pct: numberOrNull(ui.commission_pct),
     image_urls: Array.isArray(ui.image_urls) ? ui.image_urls : [],
     case_id: typeof ui.case_id === "string" ? ui.case_id : undefined,
   };
@@ -145,21 +146,29 @@ function numberOrNull(value) {
 }
 
 function normalizeOperations(input) {
+  const topLevelCommission = numberOrNull(input.commission_pct);
   if (Array.isArray(input.operations) && input.operations.length > 0) {
     return input.operations
-      .map((op) => ({
-        type:
-          op.type === "sale" || op.type === "venta"
-            ? "sale"
-            : op.type === "rent" || op.type === "renta"
-            ? "rent"
-            : null,
-        price: numberOrNull(op.price),
-        currency:
-          typeof op.currency === "string" && op.currency.trim()
-            ? op.currency.trim()
-            : "MXN",
-      }))
+      .map((op) => {
+        const commissionPct =
+          numberOrNull(op.commission_pct) ?? topLevelCommission;
+        return {
+          type:
+            op.type === "sale" || op.type === "venta"
+              ? "sale"
+              : op.type === "rent" || op.type === "renta"
+              ? "rent"
+              : null,
+          price: numberOrNull(op.price),
+          currency:
+            typeof op.currency === "string" && op.currency.trim()
+              ? op.currency.trim()
+              : "MXN",
+          ...(commissionPct != null && commissionPct > 0
+            ? { commission_pct: commissionPct }
+            : {}),
+        };
+      })
       .filter((op) => op.type && op.price != null);
   }
   if (input.operation && input.price != null) {
@@ -171,6 +180,9 @@ function normalizeOperations(input) {
         typeof input.currency === "string" && input.currency.trim()
           ? input.currency.trim()
           : "MXN",
+      ...(topLevelCommission != null && topLevelCommission > 0
+        ? { commission_pct: topLevelCommission }
+        : {}),
     };
     return op.price != null ? [op] : [];
   }

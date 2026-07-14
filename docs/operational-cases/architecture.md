@@ -481,6 +481,10 @@ Flujo **contract_data_review** + `commission_terms` (implementado):
   [`contract-data-review.ts`](../../apps/web/src/lib/business-decisions/contract-data-review.ts).
 - Mappers de borde EasyBroker/Ungga no mutan el canónico; overrides auditables en
   `publication.destinations.<destino>.commercial_override`.
+  - EasyBroker: `commission_pct` → `operations[].commission = { type: "percentage", value }`;
+    colaboración → `share_commission` + `shared_commission_percentage` solo `50` o `null`.
+  - Ungga: `commission_pct` → campo **Comisión (%)** del modal Operación (CLI);
+    el % opcional al colaborador no se mapea.
 
 ---
 
@@ -648,11 +652,12 @@ Orden por destino (EasyBroker antes que Ungga):
 2. Draft técnico:
    - EasyBroker: `easybroker_create_listing` → `status=not_published`.
      Colaboración desde `commission_terms.collaboration` (mapper de borde;
-     % incompatible → warning, sin mutar canónico). Override auditable solo
+     % incompatible → warning, sin mutar canónico). Comisión al propietario
+     (`commission_pct`) → `operations[].commission`. Override auditable solo
      en `publication.destinations.<destino>.commercial_override`.
    - Ungga: `ungga_publish_listing(action=prepare_draft)` (enrich desde
-     `case_id`; omitir strings vacíos; CLI real con `UNGGA_CLI_DRY_RUN=false`
-     salvo tests).
+     `case_id`; `commission_pct` → Comisión (%) en modal Operación; omitir
+     strings vacíos; CLI real con `UNGGA_CLI_DRY_RUN=false` salvo tests).
 3. Media: `image_watermark(case_id)` + `photo_manifest` 1:1 por path/sha256 +
    `easybroker_upload_images` con pares `{source_path, upload_path, title}`
    (nunca desde `visible_spaces`). Persist `public_url` en el manifest.
@@ -762,7 +767,9 @@ importantes para no repetir la iteración:
 - Sanitizers relevantes: strings vacíos y placeholders (`N/D`, `N/A`) se
   omiten; `internal_id` máximo 15 caracteres (un UUID de caso se omite);
   `lot_width` / `lot_length` / tamaños en `0` se omiten; `covered_space` no se
-  envía en MX; `shared_commission_percentage` solo `50` o `null`; `agent` debe
+  envía en MX; `operations[].commission` se arma desde `commission_terms.commission_pct`
+  como `{ type: "percentage", value }` (omitido si ausente/inválido);
+  `shared_commission_percentage` solo `50` o `null`; `agent` debe
   ser email de cuenta EasyBroker; `street` se normaliza si el LLM mandó la
   dirección completa.
 - `tags` son strings libres y sí se envían. `features` solo si matchean el

@@ -1008,6 +1008,37 @@ export async function fillOperationTab(page, listing) {
       priceFilled = true;
     }
 
+    const commissionPct =
+      op.commission_pct != null
+        ? Number(op.commission_pct)
+        : listing.commission_pct != null
+          ? Number(listing.commission_pct)
+          : null;
+    let commissionFilled = false;
+    if (Number.isFinite(commissionPct) && commissionPct > 0) {
+      const commissionInput = await firstVisible([
+        scope
+          .locator("label")
+          .filter({ hasText: /comisi[oó]n\s*\(%\)/i })
+          .locator("input")
+          .first(),
+        scope.locator("label:has-text('COMISIÓN')").locator("input").first(),
+        scope.locator("label:has-text('Comisión')").locator("input").first(),
+        scope.getByLabel(/comisi[oó]n\s*\(%\)?/i).first(),
+        scope.getByPlaceholder(/comisi[oó]n/i).first(),
+      ]);
+      if (commissionInput) {
+        await commissionInput.click({ timeout: 2_000 }).catch(() => {});
+        await commissionInput.fill("");
+        await commissionInput.fill(String(commissionPct));
+        const current = await commissionInput.inputValue().catch(() => "");
+        const numeric = String(current).replace(/[^\d.]/g, "");
+        commissionFilled =
+          numeric === String(commissionPct) ||
+          Number(numeric) === Number(commissionPct);
+      }
+    }
+
     let currencySet = false;
     if (op.currency) {
       const currencySelect = scope
@@ -1070,6 +1101,11 @@ export async function fillOperationTab(page, listing) {
       ok: tabClicked && priceFilled && confirmed,
       tab_clicked: tabClicked,
       price_filled: priceFilled,
+      commission_filled: commissionFilled,
+      commission_pct:
+        Number.isFinite(commissionPct) && commissionPct > 0
+          ? commissionPct
+          : null,
       currency_set: currencySet,
       confirmed,
     });
