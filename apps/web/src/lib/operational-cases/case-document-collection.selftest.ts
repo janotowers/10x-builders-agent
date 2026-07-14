@@ -8,10 +8,11 @@ import {
   looksLikeDocumentUploadSideText,
 } from "./case-document-collection";
 
-// Lista canónica: exactamente un documento bloqueante (escritura).
+// Lista canónica: exactamente un documento bloqueante (boleta).
 const blocking = REQUIRED_PROPERTY_DOCUMENTS.filter((doc) => doc.blocking);
 assert.equal(blocking.length, 1, "debe haber un único documento bloqueante");
-assert.equal(blocking[0]!.key, "escritura_descripcion");
+assert.equal(blocking[0]!.key, "boleta_registral");
+assert.equal(REQUIRED_PROPERTY_DOCUMENTS[0]!.key, "boleta_registral");
 
 // Checklist incluye el bloqueante con su nota y cubre todos los documentos.
 const lines = buildDocumentChecklistLines();

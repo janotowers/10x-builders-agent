@@ -29,12 +29,17 @@ const missingPrompt = buildMissingIntakeFieldsPrompt([
   { label: "Título / propiedad" },
   { name: "property_zone" },
 ]);
-assert.ok(missingPrompt.includes("1. Título / propiedad:"));
-assert.ok(missingPrompt.includes("2. property_zone:"));
-// Sin campos: usa el fallback de 4 campos canónicos.
+assert.ok(missingPrompt.includes("1. Título / propiedad"));
+assert.ok(!missingPrompt.includes("1. Título / propiedad:"));
+assert.ok(missingPrompt.includes("2. property_zone"));
+assert.ok(missingPrompt.includes("Compártemelos en un solo mensaje."));
+assert.ok(!missingPrompt.includes("continúo con el registro"));
+// Sin campos: usa el fallback de 4 campos canónicos con ejemplos.
 const fallbackPrompt = buildMissingIntakeFieldsPrompt([]);
-assert.ok(fallbackPrompt.includes("1. Título / propiedad:"));
-assert.ok(fallbackPrompt.includes("4. Tipo de propiedad:"));
+assert.ok(fallbackPrompt.includes("1. Título / propiedad"));
+assert.ok(fallbackPrompt.includes("3. Operación aplicable (ej., Venta, Renta, Venta y Renta)"));
+assert.ok(fallbackPrompt.includes("4. Tipo de propiedad (ej., Casa, Departamento, Terreno, etc.)"));
+assert.ok(!fallbackPrompt.includes("1. Título / propiedad:"));
 
 // buildIntakeProgressPrompt ──────────────────────────────────────────────────
 const progress = buildIntakeProgressPrompt({
@@ -44,13 +49,15 @@ const progress = buildIntakeProgressPrompt({
 assert.ok(progress.includes("Perfecto, ya registré estos datos:"));
 assert.ok(progress.includes("- Título / propiedad: Casa Roma"));
 assert.ok(progress.includes("- Zona / colonia: Condesa"));
-assert.ok(progress.includes("Operación aplicable:"));
+assert.ok(progress.includes("Operación aplicable (ej., Venta, Renta, Venta y Renta)"));
+assert.ok(!progress.includes("Operación aplicable:"));
 // Sin datos capturados: cae al prompt de campos faltantes (sin encabezado).
 const progressEmpty = buildIntakeProgressPrompt({
   context: {},
   missingFields: [{ label: "Operación aplicable" }],
 });
 assert.ok(!progressEmpty.includes("Perfecto, ya registré"));
+assert.ok(progressEmpty.includes("Operación aplicable (ej.,"));
 
 // decideIntakeReopen ─────────────────────────────────────────────────────────
 // Sin documentos ni decisión humana → se puede reabrir.

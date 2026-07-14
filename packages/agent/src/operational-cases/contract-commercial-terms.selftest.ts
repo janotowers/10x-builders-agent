@@ -17,6 +17,16 @@ assert.ok(empty.missing.some((item) => item.key === "collaboration_enabled"));
 assert.ok(empty.missing.some((item) => item.key === "commission_pct"));
 assert.ok(empty.missing.some((item) => item.key === "exclusive"));
 assert.ok(empty.missing.some((item) => item.key === "duration_months"));
+assert.deepEqual(
+  empty.missing.filter((item) => item.optional !== true).map((item) => item.key),
+  [
+    "owner_email",
+    "duration_months",
+    "exclusive",
+    "commission_pct",
+    "collaboration_enabled",
+  ]
+);
 // Optional compensation is not listed until enabled=true
 assert.equal(
   empty.missing.some((item) => item.key === "compensation_mode"),
@@ -265,13 +275,14 @@ assert.equal(replySharedOnly.patch.commission_pct, undefined);
 assert.equal(replySharedOnly.patch.compensation_value, 40);
 
 const summary = buildContractCommercialMinimumsSummaryMessage(empty);
-assert.match(summary, /Para preparar el contrato de comisión, necesito estos datos/);
-assert.match(summary, /Correo electrónico del propietario/);
-assert.match(summary, /Comisión cobrada al propietario/);
+assert.match(summary, /Para preparar el contrato de comisión, necesito lo siguiente/);
+assert.match(summary, /Correo electrónico del propietario\/contacto del inmueble/);
+assert.match(summary, /comisión pactada con el propietario/);
 assert.equal(summary.includes("Datos conocidos"), false);
 assert.equal(summary.includes("Sin datos contractuales consolidados todavía"), false);
 assert.equal(summary.includes("Faltantes:"), false);
 assert.match(summary, /Puedes responder todo en un solo mensaje/);
+assert.match(summary, /Comisión 4%/);
 
 const summaryWithKnown = buildContractCommercialMinimumsSummaryMessage({
   ...empty,

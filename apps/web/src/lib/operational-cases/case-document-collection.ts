@@ -2,7 +2,7 @@
  * Capa común de colección documental para casos operacionales.
  *
  * Fuente única de verdad para el "protocolo" de documentos de propiedad,
- * compartida por TODOS los canales (Telegram interno/externo, chat web, panel)
+ * compartida por TODOS los canales de chat (Telegram interno/externo, chat web)
  * y por el tick del agente. Concentra:
  *
  *   - La lista canónica de documentos requeridos (`REQUIRED_PROPERTY_DOCUMENTS`).
@@ -41,21 +41,23 @@ export interface RequiredPropertyDocument {
 
 /**
  * Lista canónica de documentos de propiedad. El orden refleja la prioridad de
- * comunicación: primero el bloqueante, luego los ideales.
+ * comunicación: primero el marcado indispensable (boleta), luego los ideales.
+ * Nota: el flag `blocking` alinea el copy del checklist con la práctica de
+ * titularidad; no cambia por sí solo los gates duros de avance.
  */
 export const REQUIRED_PROPERTY_DOCUMENTS: RequiredPropertyDocument[] = [
+  {
+    key: "boleta_registral",
+    label: "Boleta registral",
+    blocking: true,
+    hint: "La usaré como referencia principal para validar titularidad.",
+  },
   {
     key: "escritura_descripcion",
     label:
       "Escritura: primera hoja o sección donde esté la descripción de la propiedad, y última hoja si la tienes a la mano",
-    blocking: true,
-    hint: "La revisaré como soporte legal de la propiedad.",
-  },
-  {
-    key: "boleta_registral",
-    label: "Boleta registral",
     blocking: false,
-    hint: "La usaré como referencia principal para validar titularidad.",
+    hint: "La revisaré como soporte legal de la propiedad.",
   },
   {
     key: "predial",
@@ -90,8 +92,7 @@ export function buildDocumentChecklistLines(options?: {
 }): string[] {
   const markBlocking = options?.markBlocking ?? true;
   return REQUIRED_PROPERTY_DOCUMENTS.map((doc) => {
-    const suffix =
-      markBlocking && doc.blocking ? " (indispensable para avanzar)" : "";
+    const suffix = markBlocking && doc.blocking ? " (indispensable)" : "";
     return `• ${doc.label}${suffix}`;
   });
 }

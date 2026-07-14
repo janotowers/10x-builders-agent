@@ -170,7 +170,7 @@ export async function ingestCaseDocument(
     sha256,
     source: input.source,
     sourceMetadata: input.sourceMetadata ?? {},
-    blocking: kind === "escritura_descripcion",
+    blocking: kind === "boleta_registral",
   });
 
   return {

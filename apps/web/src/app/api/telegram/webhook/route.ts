@@ -1253,23 +1253,16 @@ export async function POST(request: Request) {
         const { requestPublicationProgress } = await import(
           "@/lib/operational-cases/publication-runner"
         );
-        const { runSettingsTestCaseAgentTick } = await import(
+        const { createPublicationRunnerOwnedAgentTick } = await import(
           "@/lib/operational-cases/run-settings-test-case-tick"
         );
         void requestPublicationProgress(db, String(result.case_id), source, {
           forceRetryFailedOperation,
-          runAgentTick: async (opCase, machineAction) => {
-            const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
-              source: `${source}:${machineAction.type}`,
-              skipLock: true,
-            });
-            return (
-              tick.publication_execution ?? {
-                status: "not_executed",
-                error: "publication_execution_result_missing",
-              }
-            );
-          },
+          runAgentTick: createPublicationRunnerOwnedAgentTick(
+            db,
+            userId,
+            source
+          ),
         }).catch((error) => {
           console.error(
             "[telegram-webhook] deferred publication review progress failed:",
@@ -1442,7 +1435,7 @@ export async function POST(request: Request) {
         cb.message.chat.id,
         result.message ??
           (result.ok
-            ? "Titularidad aprobada. Reintentaré generar el contrato."
+            ? "Titularidad aprobada. Generaré el contrato."
             : "No pude procesar la decisión de titularidad.")
       );
       return NextResponse.json({
@@ -2200,7 +2193,7 @@ export async function POST(request: Request) {
         chatId,
         result.message ??
           (result.ok
-            ? "Titularidad aprobada. Reintentaré generar el contrato."
+            ? "Titularidad aprobada. Generaré el contrato."
             : "No pude procesar la decisión de titularidad.")
       );
       return NextResponse.json({

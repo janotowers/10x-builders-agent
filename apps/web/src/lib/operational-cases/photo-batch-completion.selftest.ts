@@ -23,7 +23,19 @@ const notify = formatPhotosUploadRequestNotifyText({
 assert(notify.includes("Solicitud de fotos"), "notify title");
 assert(notify.includes(String(RAW_PHOTOS_MIN_COUNT)), "notify min");
 assert(notify.includes("«listo»"), "notify listo");
+assert(notify.includes("**«listo»**"), "notify listo bold");
 assert(notify.includes("Fachada"), "notify checklist");
+assert(!/panel/i.test(notify), "notify must not mention panel");
+assert(notify.includes("aquí"), "notify channel-neutral aquí");
+assert(notify.includes("Referencia del caso"), "notify case ref");
+
+const notifyWithAppUrl = formatPhotosUploadRequestNotifyText({
+  propertyLabel: "CIRCUNVALACION SUR 3668",
+  caseId: "2744bf73-1796-4cee-9e70-d2ab180e4cfc",
+  appUrl: "https://example.com",
+});
+assert(!/panel/i.test(notifyWithAppUrl), "appUrl must not add panel link");
+assert(!/chat\/pending/i.test(notifyWithAppUrl), "no pending panel URL");
 
 assert(
   photosUploadProgressAckText(3).includes("«listo»"),

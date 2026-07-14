@@ -534,8 +534,56 @@ export function evaluateContractCommercialMinimums(params: {
     missing.push({
       key: "owner_email",
       label: "Correo del propietario",
-      question: "Correo electrónico del propietario.",
+      question:
+        "Correo electrónico del propietario/contacto del inmueble.",
       kind: "email",
+    });
+  }
+
+  if (terms.duration_months == null) {
+    missing.push({
+      key: "duration_months",
+      label: "Duración del encargo",
+      question: "Duración del encargo (en meses).",
+      kind: "number",
+    });
+  } else {
+    known.push({
+      key: "duration_months",
+      label: "Duración del encargo",
+      value: `${terms.duration_months} meses`,
+    });
+  }
+
+  if (terms.exclusive == null) {
+    missing.push({
+      key: "exclusive",
+      label: "Exclusividad",
+      question:
+        "Indica si la captación es con exclusiva o sin exclusiva.",
+      kind: "boolean",
+    });
+  } else {
+    known.push({
+      key: "exclusive",
+      label: "Exclusividad",
+      value: formatKnownValue(terms.exclusive),
+    });
+  }
+
+  if (terms.commission_pct == null) {
+    missing.push({
+      key: "commission_pct",
+      label: "Comisión cobrada al propietario",
+      question:
+        "¿Cuál es la comisión pactada con el propietario del inmueble? (Porcentaje del precio, p. ej. 4% o 5%).",
+      kind: "number",
+    });
+  } else {
+    known.push({
+      key: "commission_pct",
+      label: "Comisión cobrada al propietario",
+      value: `${terms.commission_pct}%`,
     });
   }
 
@@ -544,7 +592,7 @@ export function evaluateContractCommercialMinimums(params: {
       key: "collaboration_enabled",
       label: "Compartir comisión",
       question:
-        "¿Se compartirá comisión con otro asesor o inmobiliaria?",
+        "Indica si la comisión se compartirá o no con otro asesor o inmobiliaria.",
       kind: "boolean",
     });
   } else {
@@ -565,7 +613,7 @@ export function evaluateContractCommercialMinimums(params: {
       key: "compensation_mode",
       label: "Detalle de comisión compartida",
       question:
-        "¿Quieres especificar cuánto se comparte con el colaborador? (opcional)",
+        "En caso afirmativo (opcional): ¿Qué porcentaje de la comisión total se compartirá? (Por ejemplo, 50%).",
       kind: "choice",
       optional: true,
       choices: collaborationCompensationModeChoices(),
@@ -592,57 +640,11 @@ export function evaluateContractCommercialMinimums(params: {
         question:
           terms.collaboration.compensation.mode === "fixed_amount"
             ? "Monto fijo compartido con el colaborador (opcional)."
-            : "Porcentaje de esa comisión que se comparte con el colaborador (opcional).",
+            : "¿Qué porcentaje de la comisión total se compartirá? (Por ejemplo, 50%).",
         kind: "number",
         optional: true,
       });
     }
-  }
-
-  if (terms.commission_pct == null) {
-    missing.push({
-      key: "commission_pct",
-      label: "Comisión cobrada al propietario",
-      question:
-        "Comisión cobrada al propietario (% del precio de venta o renta).",
-      kind: "number",
-    });
-  } else {
-    known.push({
-      key: "commission_pct",
-      label: "Comisión cobrada al propietario",
-      value: `${terms.commission_pct}%`,
-    });
-  }
-
-  if (terms.exclusive == null) {
-    missing.push({
-      key: "exclusive",
-      label: "Exclusividad",
-      question: "¿La captación es exclusiva?",
-      kind: "boolean",
-    });
-  } else {
-    known.push({
-      key: "exclusive",
-      label: "Exclusividad",
-      value: formatKnownValue(terms.exclusive),
-    });
-  }
-
-  if (terms.duration_months == null) {
-    missing.push({
-      key: "duration_months",
-      label: "Duración del encargo",
-      question: "Duración del encargo en meses.",
-      kind: "number",
-    });
-  } else {
-    known.push({
-      key: "duration_months",
-      label: "Duración del encargo",
-      value: `${terms.duration_months} meses`,
-    });
   }
 
   const requiredMissing = missing.filter((item) => item.optional !== true);
@@ -682,7 +684,7 @@ export function buildContractCommercialMinimumsSummaryMessage(
       "Gracias. Con lo que enviaste aún falta completar el contrato."
     );
   } else {
-    parts.push("Para preparar el contrato de comisión, necesito estos datos:");
+    parts.push("Para preparar el contrato de comisión, necesito lo siguiente:");
   }
 
   if (knownLines.length > 0) {
@@ -698,7 +700,7 @@ export function buildContractCommercialMinimumsSummaryMessage(
   }
 
   if (optionalLines.length > 0) {
-    parts.push("", "Opcional:", ...optionalLines);
+    parts.push("", "En caso afirmativo (opcional):", ...optionalLines);
   }
 
   if (requiredLines.length === 0 && optionalLines.length === 0) {
@@ -709,7 +711,7 @@ export function buildContractCommercialMinimumsSummaryMessage(
     parts.push(
       "",
       "Puedes responder todo en un solo mensaje.",
-      "Ejemplo: propietario@email.com · No se comparte comisión · Comisión cobrada al propietario 5% · Exclusiva · 6 meses"
+      "Ejemplo: propietario@email.com, 6 meses, Sin exclusiva, Comisión 4%, Sí se comparte, 50%."
     );
   }
 

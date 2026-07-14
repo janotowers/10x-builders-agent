@@ -678,6 +678,7 @@ const minimumsMessage = buildPropertyDataMinimumsSummaryMessage({
 });
 
 assert.match(minimumsMessage, /Ya tengo estos datos del caso:/);
+assert.match(minimumsMessage, /por favor dame estos datos:/);
 assert.match(minimumsMessage, /Dirección encontrada: Privada del Tulipán/);
 assert.match(minimumsMessage, /Superficie de terreno encontrada: 116.93 m²/);
 assert.match(minimumsMessage, /Titularidad tomada de boleta registral/i);

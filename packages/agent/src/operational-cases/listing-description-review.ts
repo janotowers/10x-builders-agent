@@ -265,7 +265,7 @@ export function formatListingDescriptionReviewNotifyText(
     shortDescription ? `**Resumen corto:** ${shortDescription}` : null,
     excerpt.text ? `**Descripción:** ${excerpt.text}` : null,
     excerpt.truncated
-      ? "Nota: texto recortado para este mensaje. Revisa el borrador completo en el panel del caso."
+      ? "Nota: texto recortado para este mensaje. Si necesitas el borrador completo, pídemelo aquí y te lo envío."
       : null,
     missingIngredients.length > 0
       ? `**Posibles mejoras futuras (opcionales):** Si más adelante se actualiza la ficha, podrían enriquecerla: ${missingIngredients.join(", ")}. No son requisitos para aprobar ni continuar; este paso solo revisa el texto y no solicita una nueva carga.`

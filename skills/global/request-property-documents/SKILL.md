@@ -2,8 +2,8 @@
 name: request-property-documents
 description: |
   Reúne el expediente documental del inmueble en el step `awaiting_documents`
-  (escritura bloqueante + ideales). Según `document_request_target`, pide la
-  subida al equipo interno (`notify_user`) o solicita al contacto externo por
+  (boleta indispensable en copy + ideales). Según `document_request_target`, pide
+  la subida al equipo interno (`notify_user`) o solicita al contacto externo por
   Telegram; registra qué llegó, manda recordatorios y escala si no responde.
   Sub-skill de property-optioning-coach.
 scope: business
@@ -27,10 +27,9 @@ guardrails: |
   Marca cada solicitud/recordatorio con `operational_case_add_event(reminder_sent)`
   para que el cron sepa cuándo fue el último intento.
   Cuando lleguen documentos via `external_response` o subida interna, NO
-  concluyas el paso hasta tener evidencia del documento bloqueante: la hoja
-  de escritura donde esté la descripción de la propiedad. Los demás documentos
-  son ideales por ahora y deben pedirse/recordarse, pero no bloquean el
-  avance a extracción.
+  improvises el checklist: usa el orden canónico (boleta primero como
+  indispensable en copy). El avance por «listo» lo resuelve el runtime con al
+  menos un documento recibido; no inventes gates distintos.
 ---
 
 # Request property documents
@@ -39,11 +38,11 @@ guardrails: |
 
 Reunir el expediente (quien aporte depende de la rama):
 
-- **Escritura - primera hoja o sección con la descripción de la propiedad, y última hoja si la tiene a la mano** (bloqueante).
-- **Predial** (último pago, ideal/no bloqueante).
-- **Identificación oficial** del propietario (anverso/reverso, ideal/no bloqueante).
-- **Comprobante de domicilio** (no mayor a 3 meses, ideal/no bloqueante).
-- **Boleta registral** (ideal/no bloqueante).
+- **Boleta registral** (indispensable en copy / metadata de checklist).
+- **Escritura** — primera hoja o sección con la descripción de la propiedad, y última hoja si la tiene a la mano (ideal).
+- **Predial** (último pago, ideal).
+- **Identificación oficial** del propietario (anverso/reverso, ideal).
+- **Comprobante de domicilio** (no mayor a 3 meses, ideal).
 
 Más cualquier documento extra que la cuenta exija (revisa
 `operational_cases.context_jsonb.required_documents` si está definido).
@@ -76,8 +75,8 @@ Más cualquier documento extra que la cuenta exija (revisa
 
    c. Solo en la solicitud inicial (o si hubo nueva evidencia y cambió el
       checklist), llama `notify_user` al asesor con documentos pendientes y
-      la instrucción explícita de subirlos al caso (web/Telegram interno) y
-      confirmar con “listo” cuando termine.
+      la instrucción explícita de enviarlos **aquí en el chat** y confirmar con
+      “listo” cuando termine. No menciones panel ni URLs de panel.
 
    d. Deja `status=waiting_internal`, `current_step=awaiting_documents` y
       `next_action_at=null`. La continuación la despierta la carga de un
@@ -90,10 +89,10 @@ Más cualquier documento extra que la cuenta exija (revisa
    `reminder_sent` con `purpose=initial_request`):
 
    a. Compón un mensaje cordial en español pidiendo TODOS los documentos
-      pendientes, formateado como bullet list. Señala que la hoja de escritura
-      con descripción de la propiedad es la indispensable para avanzar y que
-      lo demás ayuda a dejar el expediente completo. Incluye breve frase de
-      tranquilidad (cómo se usan, no se comparten con nadie sin permiso).
+      pendientes, formateado como bullet list. Señala que la **boleta registral**
+      es la indispensable y que lo demás ayuda a dejar el expediente completo.
+      Incluye breve frase de tranquilidad (cómo se usan, no se comparten con
+      nadie sin permiso).
 
    b. Llama `telegram_send_message_to_contact` con `purpose=initial_request`,
       `case_id` actual.
@@ -125,16 +124,16 @@ Más cualquier documento extra que la cuenta exija (revisa
       o documentos recibidos),
       añádelos a `context_jsonb.documents_received[]`.
 
-   b. Compara contra el checklist. Si ya está la hoja de escritura con
-      descripción de la propiedad:
+   b. Compara contra el checklist. Si ya hay documentos recibidos y el runtime
+      marcó el lote (p. ej. «listo») o hay evidencia suficiente para continuar:
       - mueve `current_step=documents_received`, `status=active`,
         `next_action_at=now()` para que el cron pase a la siguiente
         sub-skill (`extract-property-characteristics`).
-      - manda `notify_user("Documento clave recibido para caso X; paso a extraer características. Documentos ideales faltantes: ...")` si faltan ideales.
+      - manda `notify_user("Documento(s) recibido(s) para caso X; paso a extraer características. Documentos ideales faltantes: ...")` si faltan ideales.
 
-   c. Si falta la hoja de escritura con descripción: manda mensaje cortés
-      agradeciendo lo que llegó y pidiendo específicamente ese documento.
-      Mantén `waiting_external` y reprograma `next_action_at`.
+   c. Si aún no hay material usable: manda mensaje cortés agradeciendo lo que
+      llegó y pidiendo lo pendiente (prioriza boleta). Mantén `waiting_external`
+      y reprograma `next_action_at`.
 
 ## Plantillas (texto base; ajustar tono al perfil del agente)
 
@@ -144,11 +143,11 @@ Más cualquier documento extra que la cuenta exija (revisa
 Hola, [nombre]. Soy [agente] de [inmobiliaria]. Para preparar la
 publicación de tu propiedad necesito estos documentos:
 
-• Escritura: primera hoja o sección donde esté la descripción de la propiedad, y última hoja si la tienes a la mano (indispensable para avanzar)
+• Boleta registral (indispensable)
+• Escritura: primera hoja o sección donde esté la descripción de la propiedad, y última hoja si la tienes a la mano
 • Último recibo de predial
 • Identificación oficial (anverso y reverso)
 • Comprobante de domicilio (≤ 3 meses)
-• Boleta registral
 
 Solo los uso para verificar la propiedad y armar el contrato; no los
 comparto con nadie sin tu autorización. ¿Puedes enviarme esos documentos

@@ -112,23 +112,15 @@ export function shouldPromptCaseDocumentRequestTarget(
 function buildDocumentTargetChoiceQuestion(params: {
   canUseExternal: boolean;
 }): string {
-  if (!params.canUseExternal) {
-    return [
-      "¿Quién prefieres que aporte esos documentos?",
-      "",
-      "• «interno» — tú o tu equipo los suben.",
-      "• «externo» — se los solicito al dueño/contacto. Si aún no está vinculado, primero te daré un enlace para conectarlo.",
-      "",
-      "Respóndeme solo con «interno» o «externo».",
-    ].join("\n");
-  }
+  const externalLine = params.canUseExternal
+    ? "• **«externo»** si quieres que se los solicite al dueño/contacto de la propiedad."
+    : "• **«externo»** si quieres que se los solicite al dueño/contacto de la propiedad. Si aún no está vinculado, primero te daré un enlace para conectarlo.";
   return [
     "¿Quién prefieres que aporte esos documentos?",
     "",
-    "• «interno» — tú o tu equipo los suben.",
-    "• «externo» — se los solicito al dueño/contacto.",
-    "",
-    "Respóndeme solo con «interno» o «externo».",
+    "**Responde**:",
+    "• **«interno»** si tú me los darás.",
+    externalLine,
   ].join("\n");
 }
 
@@ -216,7 +208,7 @@ export function buildOperationalCaseContinuationReprompt(
       "",
       DOCUMENT_PRIVACY_LINE,
       "",
-      'Puedes enviarlos aquí mismo o desde el panel del caso y confirmar con «listo» cuando termines.',
+      "Puedes enviarlos aquí mismo como archivos y confirmar con **«listo»** cuando termines.",
     ].join("\n");
   }
   return [
@@ -238,15 +230,9 @@ export function buildDocumentRouteConfirmationAck(params: {
   if (params.target === "external_contact") {
     return "Perfecto: se los solicitaré al dueño/contacto externo y te aviso en cuanto responda.";
   }
-  const whereToUpload =
-    params.channel === "telegram"
-      ? "Puedes enviarlos aquí mismo como archivos o subirlos desde el panel del caso."
-      : "Puedes adjuntarlos en este chat o subirlos desde el panel del caso.";
-  return [
-    "Perfecto.",
-    whereToUpload,
-    'Cuando tengas cargados todos los documentos disponibles, avísame con «listo» y empiezo a revisarlos.',
-  ].join(" ");
+  // Channel-neutral: advisors operate via chat (web, Telegram, or future channels).
+  void params.channel;
+  return "Perfecto. Envíalos aquí mismo como archivos. Cuando tengas cargados todos los documentos disponibles, avísame con **«listo»** y empiezo a revisarlos.";
 }
 
 export type DocumentFlowReminderPurpose =

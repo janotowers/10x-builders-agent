@@ -106,14 +106,29 @@ export function buildMissingIntakeFieldsPrompt(missingFields: unknown[]): string
     })
     .filter((label): label is string => Boolean(label));
 
+  const withExamples = (label: string): string => {
+    const normalized = label
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+    if (/operacion/.test(normalized)) {
+      return "Operación aplicable (ej., Venta, Renta, Venta y Renta)";
+    }
+    if (/tipo de propiedad|property_type/.test(normalized)) {
+      return "Tipo de propiedad (ej., Casa, Departamento, Terreno, etc.)";
+    }
+    // Strip trailing colon if the schema label included one.
+    return label.replace(/:\s*$/, "");
+  };
+
   const fallback = [
     "Título / propiedad",
     "Zona / colonia",
-    "Operación aplicable",
-    "Tipo de propiedad",
+    "Operación aplicable (ej., Venta, Renta, Venta y Renta)",
+    "Tipo de propiedad (ej., Casa, Departamento, Terreno, etc.)",
   ];
-  const items = (labels.length > 0 ? labels : fallback)
-    .map((label, index) => `${index + 1}. ${label}:`)
+  const items = (labels.length > 0 ? labels.map(withExamples) : fallback)
+    .map((label, index) => `${index + 1}. ${label}`)
     .join("\n");
 
   return [
@@ -121,7 +136,7 @@ export function buildMissingIntakeFieldsPrompt(missingFields: unknown[]): string
     "",
     items,
     "",
-    "Compártemelos en un solo mensaje y continúo con el registro.",
+    "Compártemelos en un solo mensaje.",
   ].join("\n");
 }
 

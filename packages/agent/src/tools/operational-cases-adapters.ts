@@ -1404,7 +1404,7 @@ export function buildPropertyDataMinimumsSummaryMessage(params: {
     "",
     ...(knownLines.length > 0 ? knownLines : ["- Sin datos consolidados todavía."]),
     "",
-    "Para completar los datos mínimos antes de la revisión, por favor confirma:",
+    "Para completar los datos mínimos antes de la revisión, por favor dame estos datos:",
     "",
     ...missingLines,
   ].join("\n");
@@ -4852,7 +4852,7 @@ export function addOperationalCaseTools(
             sha256: input.sha256 ?? null,
             source: input.source ?? "unknown",
             sourceMetadata: input.metadata ?? {},
-            blocking: input.blocking ?? input.kind === "escritura_descripcion",
+            blocking: input.blocking ?? input.kind === "boleta_registral",
           });
           await insertOperationalCaseEvent(ctx.db, {
             caseId: opCase.id,

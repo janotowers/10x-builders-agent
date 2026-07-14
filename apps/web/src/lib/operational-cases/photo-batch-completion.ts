@@ -40,16 +40,16 @@ export function photosUploadProgressAckText(photoCount: number): string {
   return [
     `Recibí la foto. Van ${photoCount} registrada(s).`,
     `Mínimo ${RAW_PHOTOS_MIN_COUNT} para publicar.`,
-    "Cuando termines de subir todas las fotos, escribe «listo».",
+    "Cuando termines de subir todas las fotos, escribe **«listo»**.",
   ].join(" ");
 }
 
 export function photosBatchInsufficientAckText(photoCount: number): string {
   const missing = Math.max(0, RAW_PHOTOS_MIN_COUNT - photoCount);
   if (photoCount === 0) {
-    return `Aún no veo fotos registradas en el caso. Sube al menos ${RAW_PHOTOS_MIN_COUNT} y luego escribe «listo».`;
+    return `Aún no veo fotos registradas en el caso. Sube al menos ${RAW_PHOTOS_MIN_COUNT} y luego escribe **«listo»**.`;
   }
-  return `Van ${photoCount}/${RAW_PHOTOS_MIN_COUNT} fotos; faltan ${missing}. Sigue subiendo y escribe «listo» cuando termines.`;
+  return `Van ${photoCount}/${RAW_PHOTOS_MIN_COUNT} fotos; faltan ${missing}. Sigue subiendo y escribe **«listo»** cuando termines.`;
 }
 
 export function photosBatchAdvancedAckText(photoCount: number): string {
@@ -66,15 +66,13 @@ export function formatPhotosUploadRequestNotifyText(params: {
   const caseRef = params.caseId.trim();
   const shortCaseRef =
     caseRef.length > 12 ? `…${caseRef.slice(-8)}` : caseRef;
-  const panelLine =
-    params.appUrl && /^https?:\/\//i.test(params.appUrl)
-      ? `Panel: ${params.appUrl.replace(/\/$/, "")}/chat/pending?case=${encodeURIComponent(caseRef)}`
-      : `Referencia del caso: ${shortCaseRef}`;
+  // Keep signature stable for callers; appUrl is intentionally unused (chat-first, no panel links).
+  void params.appUrl;
 
   return [
     `Solicitud de fotos — ${property}`,
     "",
-    `Sube al menos ${RAW_PHOTOS_MIN_COUNT} fotos del inmueble por web o por este chat (puedes enviar más si lo consideras útil).`,
+    `Sube al menos ${RAW_PHOTOS_MIN_COUNT} fotos del inmueble aquí (puedes enviar más).`,
     "",
     "Fotos sugeridas:",
     "• Fachada",
@@ -84,9 +82,9 @@ export function formatPhotosUploadRequestNotifyText(params: {
     "• Baño principal",
     "• Extras opcionales: jardín, estacionamiento, amenidades, detalles",
     "",
-    "Cuando termines de subir todas las fotos, responde «listo».",
+    "Cuando termines de subir todas las fotos, responde **«listo»**.",
     "",
-    panelLine,
+    `Referencia del caso: ${shortCaseRef}`,
   ].join("\n");
 }
 

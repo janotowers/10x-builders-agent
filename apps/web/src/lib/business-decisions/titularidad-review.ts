@@ -169,6 +169,6 @@ export async function handleTitularidadReviewDecision(
     ok: true,
     status: "approved",
     message:
-      "Titularidad aprobada por override. Reintentaré la generación del contrato con esta autorización.",
+      "Titularidad aprobada por override. Generaré el contrato con esta autorización.",
   };
 }

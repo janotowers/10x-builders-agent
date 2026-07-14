@@ -155,30 +155,31 @@ const promptWithExternal = buildCaseDocumentRequestTargetPrompt(
 );
 assert.ok(promptWithExternal.includes("Sobre [Real]"));
 assert.ok(promptWithExternal.includes("necesito estos documentos"));
-assert.ok(/escritura/i.test(promptWithExternal));
-assert.ok(promptWithExternal.includes("indispensable"));
-assert.ok(promptWithExternal.includes("«interno»"));
-assert.ok(promptWithExternal.includes("«externo»"));
+assert.ok(/boleta/i.test(promptWithExternal));
+assert.ok(promptWithExternal.includes("(indispensable)"));
+assert.ok(promptWithExternal.includes("**Responde**"));
+assert.ok(promptWithExternal.includes("**«interno»**") || promptWithExternal.includes("«interno»"));
+assert.ok(promptWithExternal.includes("**«externo»**") || promptWithExternal.includes("«externo»"));
 
 // Sin contacto externo verificado, el prompt sigue ofreciendo interno/externo:
 // si el asesor elige externo, el subflujo posterior vincula al contacto.
 const promptInternalOnly = buildCaseDocumentRequestTargetPrompt(
   conversationalAwaitingDocs({})
 );
-assert.ok(/escritura/i.test(promptInternalOnly));
+assert.ok(/boleta/i.test(promptInternalOnly));
 assert.ok(promptInternalOnly.includes("«interno»"));
 assert.ok(promptInternalOnly.includes("«externo»"));
 assert.ok(/enlace/i.test(promptInternalOnly));
 
-// Acuse de confirmación de ruta: copy base no menciona un canal concreto; la
-// variante por canal aclara dónde subir; siempre recuerda "listo".
+// Acuse de confirmación de ruta: copy chat-first (sin panel); siempre recuerda "listo".
 const internalWebAck = buildDocumentRouteConfirmationAck({
   target: "internal_user",
   channel: "web",
 });
 assert.ok(internalWebAck.startsWith("Perfecto."));
-assert.ok(internalWebAck.includes("«listo»"));
-assert.ok(internalWebAck.includes("este chat"));
+assert.ok(internalWebAck.includes("**«listo»**") || internalWebAck.includes("«listo»"));
+assert.ok(internalWebAck.includes("aquí mismo"));
+assert.ok(!/panel/i.test(internalWebAck));
 assert.ok(!/telegram/i.test(internalWebAck));
 assert.ok(!/equipo interno/i.test(internalWebAck));
 
@@ -186,8 +187,10 @@ const internalTelegramAck = buildDocumentRouteConfirmationAck({
   target: "internal_user",
   channel: "telegram",
 });
-assert.ok(internalTelegramAck.includes("«listo»"));
+assert.ok(internalTelegramAck.includes("**«listo»**") || internalTelegramAck.includes("«listo»"));
 assert.ok(internalTelegramAck.includes("aquí mismo"));
+assert.ok(!/panel/i.test(internalTelegramAck));
+assert.equal(internalWebAck, internalTelegramAck);
 
 const externalAck = buildDocumentRouteConfirmationAck({
   target: "external_contact",

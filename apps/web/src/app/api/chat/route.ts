@@ -205,7 +205,7 @@ async function registerInternalCaseAttachments(params: {
       sourceMetadata: {
         source: "chat_web_attachment",
       },
-      blocking: (attachment.suggestedKind ?? "unknown") === "escritura_descripcion",
+      blocking: (attachment.suggestedKind ?? "unknown") === "boleta_registral",
     });
     await insertOperationalCaseEvent(params.db, {
       caseId: currentCase.id,
