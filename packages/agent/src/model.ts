@@ -32,10 +32,29 @@ export const DEFAULT_HEARTBEAT_TEMPERATURE = 0.1;
  */
 export const DEFAULT_MAX_TOKENS = 2048;
 
+/**
+ * Defaults OpenRouter por rol. Los overrides viven en env (`*_MODEL_ID`).
+ * Canonical inventory: docs/tools-design/model-providers.md §"Roles actuales".
+ */
 /** Default del modelo principal del agente (OpenRouter). */
 export const DEFAULT_MAIN_AGENT_MODEL_ID = "openai/gpt-4o-mini";
 /** Default del modelo dedicado a compaction / memory flush. */
-export const DEFAULT_COMPACTION_MODEL_ID = "anthropic/claude-3-5-haiku";
+export const DEFAULT_COMPACTION_MODEL_ID = "anthropic/claude-haiku-4.5";
+/** Default del selector pre-graph de skills (JSON estricto, temp 0). */
+export const DEFAULT_SKILL_SELECTOR_MODEL_ID = "anthropic/claude-haiku-4.5";
+/** Default del reviewer de Business Brain (Settings). */
+export const DEFAULT_BUSINESS_BRAIN_REVIEWER_MODEL_ID =
+  "anthropic/claude-haiku-4.5";
+/**
+ * Default del clasificador conversacional de casos (edge web/Telegram).
+ * Alineado al main agent: misma clase de modelo salvo override explícito.
+ */
+export const DEFAULT_OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID =
+  DEFAULT_MAIN_AGENT_MODEL_ID;
+/** Default vision (analyze_property_images y tools de foto). */
+export const DEFAULT_IMAGE_VISION_MODEL_ID = "openai/gpt-4.1-mini";
+/** Default redacción comercial (prepare_listing_description_draft). */
+export const DEFAULT_LISTING_COPY_MODEL_ID = "openai/gpt-4.1-mini";
 
 /** Modelo principal del agente (env override > default). */
 export const MAIN_AGENT_MODEL_ID =
@@ -45,6 +64,41 @@ export const MAIN_AGENT_MODEL_ID =
  * Preferir MAIN_AGENT_MODEL_ID en código nuevo.
  */
 export const CHAT_MODEL_ID = MAIN_AGENT_MODEL_ID;
+
+/** Compaction / memory flush (env override > default). */
+export const COMPACTION_MODEL_ID =
+  process.env.COMPACTION_MODEL_ID?.trim() || DEFAULT_COMPACTION_MODEL_ID;
+
+/** Skill selector (env override > default). */
+export const SKILL_SELECTOR_MODEL_ID =
+  process.env.SKILL_SELECTOR_MODEL_ID?.trim() ||
+  DEFAULT_SKILL_SELECTOR_MODEL_ID;
+
+/** Business Brain reviewer (env override > default). */
+export const BUSINESS_BRAIN_REVIEWER_MODEL_ID =
+  process.env.BUSINESS_BRAIN_REVIEWER_MODEL_ID?.trim() ||
+  DEFAULT_BUSINESS_BRAIN_REVIEWER_MODEL_ID;
+
+/** Clasificador conversacional de casos (env override > default). */
+export const OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID =
+  process.env.OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID?.trim() ||
+  DEFAULT_OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID;
+
+/** Vision / análisis de imágenes (env override > default). */
+export const IMAGE_VISION_MODEL_ID =
+  process.env.IMAGE_VISION_MODEL_ID?.trim() || DEFAULT_IMAGE_VISION_MODEL_ID;
+
+/** Copy de listing (env override > default). */
+export const LISTING_COPY_MODEL_ID =
+  process.env.LISTING_COPY_MODEL_ID?.trim() || DEFAULT_LISTING_COPY_MODEL_ID;
+
+/**
+ * Heartbeat: si `HEARTBEAT_MODEL_ID` está vacío, el canal hereda el modelo
+ * principal en `graph.ts` (no hay un default barato aparte en código).
+ */
+export function resolveHeartbeatModelId(): string | undefined {
+  return process.env.HEARTBEAT_MODEL_ID?.trim() || undefined;
+}
 
 /** Resuelve maxTokens: variable de entorno > default. */
 function resolveMaxTokens(): number {
@@ -87,20 +141,18 @@ export function createChatModel(options: CreateChatModelOptions = {}) {
 }
 
 /**
- * Factory dedicada para el `compaction_node`. Usa Claude 3.5 Haiku vía el
- * mismo endpoint de OpenRouter (sin credencial ni SDK nuevos). Se mantiene
- * separada de `createChatModel()` para no acoplar las dos decisiones: si el
- * modelo principal del agente cambia (gpt-4o-mini → otro), el compactador
- * sigue siendo Haiku, que es suficiente para la tarea mecánica de resumir.
+ * Factory dedicada para el `compaction_node`. Usa Haiku vía el mismo endpoint
+ * de OpenRouter (sin credencial ni SDK nuevos). Se mantiene separada de
+ * `createChatModel()` para no acoplar las dos decisiones: si el modelo
+ * principal del agente cambia, el compactador sigue siendo Haiku-class, que
+ * es suficiente para la tarea mecánica de resumir.
  */
 export function createCompactionModel() {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
-  const modelName =
-    process.env.COMPACTION_MODEL_ID?.trim() || DEFAULT_COMPACTION_MODEL_ID;
 
   return new ChatOpenAI({
-    modelName,
+    modelName: COMPACTION_MODEL_ID,
     temperature: 0,
     maxTokens: 2048,
     configuration: {
@@ -114,16 +166,6 @@ export function createCompactionModel() {
 }
 
 /**
- * Default model id for skill selection. Same family as the compaction model
- * (small + cheap is enough — selection only sees skill name + description and
- * the latest user message). Override with the `SKILL_SELECTOR_MODEL_ID` env
- * when you want to test a different slug.
- */
-export const DEFAULT_SKILL_SELECTOR_MODEL_ID = "anthropic/claude-3-5-haiku";
-export const DEFAULT_BUSINESS_BRAIN_REVIEWER_MODEL_ID =
-  "anthropic/claude-3-5-haiku";
-
-/**
  * Factory for the pre-graph skill selector (V1-B). Tiny prompt, strict JSON
  * output; deterministic temperature so the same input picks the same skill
  * and tests are stable.
@@ -132,12 +174,8 @@ export function createSkillSelectorModel() {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
 
-  const modelName =
-    process.env.SKILL_SELECTOR_MODEL_ID?.trim() ||
-    DEFAULT_SKILL_SELECTOR_MODEL_ID;
-
   return new ChatOpenAI({
-    modelName,
+    modelName: SKILL_SELECTOR_MODEL_ID,
     temperature: 0,
     maxTokens: 128,
     configuration: {
@@ -158,12 +196,8 @@ export function createBusinessBrainReviewerModel() {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
 
-  const modelName =
-    process.env.BUSINESS_BRAIN_REVIEWER_MODEL_ID?.trim() ||
-    DEFAULT_BUSINESS_BRAIN_REVIEWER_MODEL_ID;
-
   return new ChatOpenAI({
-    modelName,
+    modelName: BUSINESS_BRAIN_REVIEWER_MODEL_ID,
     temperature: 0,
     maxTokens: 700,
     configuration: {

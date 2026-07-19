@@ -45,6 +45,7 @@ import {
   createChatModel,
   createCompactionModel,
   createSkillSelectorModel,
+  resolveHeartbeatModelId,
   DEFAULT_CRON_TEMPERATURE,
   DEFAULT_HEARTBEAT_TEMPERATURE,
   DEFAULT_INTERACTIVE_TEMPERATURE,
@@ -1129,7 +1130,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       : resolvedChannelForRuntime === "heartbeat"
       ? DEFAULT_HEARTBEAT_TEMPERATURE
       : DEFAULT_INTERACTIVE_TEMPERATURE;
-  const heartbeatModelName = process.env.HEARTBEAT_MODEL_ID?.trim() || undefined;
+  const heartbeatModelName = resolveHeartbeatModelId();
   const heartbeatMaxTokensRaw = process.env.HEARTBEAT_MAX_TOKENS?.trim();
   const heartbeatMaxTokens =
     heartbeatMaxTokensRaw && Number.isFinite(Number(heartbeatMaxTokensRaw))

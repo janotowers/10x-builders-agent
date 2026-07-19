@@ -1,6 +1,5 @@
 import { z } from "zod";
-
-const DEFAULT_CLASSIFIER_MODEL = "openai/gpt-4o-mini";
+import { OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID } from "@agents/agent";
 
 const PatchSchema = z
   .object({
@@ -131,9 +130,7 @@ async function invokeOpenRouterClassifier(
 ) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return null;
-  const model =
-    process.env.OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID?.trim() ||
-    DEFAULT_CLASSIFIER_MODEL;
+  const model = OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID;
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {

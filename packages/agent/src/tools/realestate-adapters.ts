@@ -29,6 +29,10 @@ import PizZip from "pizzip";
 import sharp from "sharp";
 import { z } from "zod";
 import {
+  IMAGE_VISION_MODEL_ID,
+  LISTING_COPY_MODEL_ID,
+} from "../model";
+import {
   executeBigQueryQuery,
   type BigQueryParamValue,
 } from "./bigquery-adapter";
@@ -285,16 +289,12 @@ const execFileAsync = promisify(execFile);
 
 const LOCAL_COMPARABLES_BIGQUERY_PROJECT_ID = "ungga-full";
 const LOCAL_COMPARABLES_BIGQUERY_LOCATION = "US";
-const IMAGE_VISION_MODEL_ID =
-  process.env.IMAGE_VISION_MODEL_ID?.trim() || "openai/gpt-4.1-mini";
 const IMAGE_VISION_MAX_TOKENS = Number(
   process.env.IMAGE_VISION_MAX_TOKENS?.trim() || "2200"
 );
 const IMAGE_VISION_TEMPERATURE = Number(
   process.env.IMAGE_VISION_TEMPERATURE?.trim() || "0"
 );
-const LISTING_COPY_MODEL_ID =
-  process.env.LISTING_COPY_MODEL_ID?.trim() || "openai/gpt-4.1-mini";
 const LISTING_COPY_MAX_TOKENS = Number(
   process.env.LISTING_COPY_MAX_TOKENS?.trim() || "1200"
 );
