@@ -1,6 +1,6 @@
 # Arquitectura Técnica — Agente Personal MVP
 
-> **Nota:** este documento es el overview tecnico corto del stack actual. Para una **guia narrativa** (menos tecnica, con foco en Skills y el mapa mental del sistema), ver [`docs/manuals/gu-os-understanding.md`](manuals/gu-os-understanding.md). Para el **manual tecnico** integrador, ver [`docs/manuals/architecture-manual.md`](manuals/architecture-manual.md). Para **principios agenticos externos** (Thin Harness / Fat Skills, alineacion con Gu OS), ver [`docs/manuals/agentic-principles-alignment.md`](manuals/agentic-principles-alignment.md).
+> **Nota:** este documento es el overview tecnico corto del stack actual. Para una **guia narrativa** (menos tecnica, con foco en Skills y el mapa mental del sistema), ver [`docs/manuals/gu-os-understanding.md`](manuals/gu-os-understanding.md). Para el **manual tecnico** integrador, ver [`docs/manuals/architecture-manual.md`](manuals/architecture-manual.md). Para **principios agenticos externos** (Thin Harness / Fat Skills, alineacion con Gu OS), ver [`docs/manuals/agentic-principles-alignment.md`](manuals/agentic-principles-alignment.md). Para el **analisis de design space / riesgos** (paper Claude Code), ver [`docs/manuals/gu-os-agent-architecture-analysis.md`](manuals/gu-os-agent-architecture-analysis.md).
 
 ## Stack
 
@@ -12,13 +12,24 @@
 | Base de datos + Auth  | Supabase (Postgres + Auth + RLS)     | `packages/db`                        |
 | Tipos compartidos     | TypeScript                           | `packages/types`                     |
 | Config compartida     | tsconfig                             | `packages/config`                    |
-| Modelo LLM            | OpenRouter (GPT-4o-mini por defecto, overrides por canal) | vía `@langchain/openai` con base URL |
+| Modelo LLM            | OpenRouter (varios roles; defaults en `model.ts`) | vía `@langchain/openai` con base URL |
 
-### Proveedores de modelo (diseño previsto)
+### Proveedores de modelo
 
-**Estado actual del código:** el LLM se invoca solo vía **OpenRouter** (`OPENROUTER_API_KEY`, `OPENROUTER_MAX_TOKENS`). Overrides opcionales por rol en `packages/agent/src/model.ts`: agente principal (`MAIN_AGENT_MODEL_ID`, default `openai/gpt-4o-mini`), compaction (`COMPACTION_MODEL_ID`, default `anthropic/claude-3-5-haiku`), selector de skills (`SKILL_SELECTOR_MODEL_ID`), reviewer de Business Brain (`BUSINESS_BRAIN_REVIEWER_MODEL_ID`). Por canal: heartbeat (`HEARTBEAT_MODEL_ID`, `HEARTBEAT_MAX_TOKENS`, temperatura baja; si no hay override, hereda el modelo principal).
+**Estado actual del código:** el LLM se invoca solo vía **OpenRouter** (`OPENROUTER_API_KEY`, `OPENROUTER_MAX_TOKENS`). Los **defaults y env IDs canónicos** viven en [`packages/agent/src/model.ts`](../packages/agent/src/model.ts); las factories de loop (main / compaction / selector / brain reviewer) también. Roles laterales (visión, listing copy, clasificador de casos) leen las mismas constantes desde su punto de uso.
 
-**Diseño acordado (implementación pendiente):** soportar además **Google Gemini** directo (AI Studio o Vertex) con una fachada única y configuración por canal (interactivo / cron / heartbeat), sin duplicar lógica en el grafo ni en las tools. Motivación, variables previstas, fallback y riesgos: **[docs/tools-design/model-providers.md](tools-design/model-providers.md)**.
+| Rol | Env | Default en código |
+| --- | --- | --- |
+| Agente principal (web/telegram/cron/case_runner) | `MAIN_AGENT_MODEL_ID` | `openai/gpt-4o-mini` |
+| Heartbeat | `HEARTBEAT_MODEL_ID` (+ `HEARTBEAT_MAX_TOKENS`) | hereda main si se omite |
+| Compaction / memory flush | `COMPACTION_MODEL_ID` | `anthropic/claude-haiku-4.5` |
+| Skill selector | `SKILL_SELECTOR_MODEL_ID` | `anthropic/claude-haiku-4.5` |
+| Business Brain reviewer | `BUSINESS_BRAIN_REVIEWER_MODEL_ID` | `anthropic/claude-haiku-4.5` |
+| Clasificador conversacional de casos | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` | mismo default que main |
+| Vision / fotos | `IMAGE_VISION_MODEL_ID` | `openai/gpt-4.1-mini` |
+| Copy de listing | `LISTING_COPY_MODEL_ID` | `openai/gpt-4.1-mini` |
+
+Inventario + diseño multi-proveedor previsto: **[docs/tools-design/model-providers.md](tools-design/model-providers.md)**. Análisis de arquitectura (design space, riesgos): **[docs/manuals/gu-os-agent-architecture-analysis.md](manuals/gu-os-agent-architecture-analysis.md)**.
 
 ## Estructura del monorepo
 
@@ -133,6 +144,8 @@ No es una API externa ni OAuth: ejecuta un comando en el **mismo proceso/host** 
 
 Manipulan archivos de texto dentro de una **raíz configurada** (`FILE_TOOLS_ROOT`, ruta absoluta). Todas las rutas que pasa el modelo son **relativas** a esa raíz; `resolveSafePath` en `packages/agent/src/tools/fileTools.ts` rechaza rutas absolutas, `..` que escapen, y null bytes. Activación fail-closed: si `FILE_TOOLS_ENABLED !== "true"` o falta `FILE_TOOLS_ROOT`, las tres tools no se registran. `read_file` es `low` (sin HITL); `write_file` es `medium` (crea o sobrescribe, con confirmación); `edit_file` es `high` (reemplazo literal único, con confirmación). Detalle: **[docs/tools-design/files.md](tools-design/files.md)**.
 
+**Seguridad (host tools):** no apuntar `FILE_TOOLS_ROOT` a la raíz del monorepo si ahí vive `.env.local` — `read_file` podría leer secretos sin HITL. Preferir fail-closed (flags comentadas) o una carpeta dedicada. Las skills globales (`skills/global/`) **no** usan file tools: las carga el registry. Bash (`BASH_TOOL_ENABLED`) es host shell sin sandbox; mantenerlo off salvo self-hosted consciente.
+
 ### Tareas programadas (`schedule_task` + cron)
 
 - La tool **`schedule_task`** (riesgo `medium`, HITL al **programar**) persiste filas en **`scheduled_tasks`** con `next_run_at` (one-time o recurrente vía `cron_expr` + zona IANA), `user_request` y `display_title` para UI legible.
@@ -159,7 +172,7 @@ Manipulan archivos de texto dentro de una **raíz configurada** (`FILE_TOOLS_ROO
 ## LangGraph: grafo, compaction (memoria corta) y HITL
 
 - **StateGraph** con nodos **`compaction`**, **`agent`** y **`tools`**. Flujo: `__start__` → `compaction` → `agent` → (condicional) → `tools` o `__end__`; tras ejecutar tools, **`tools` → `compaction` → `agent`**. Así, cada lote de `ToolMessage` pasa por compaction antes del siguiente turno del modelo principal.
-- **Memoria de corto plazo (compaction):** `packages/agent/src/nodes/compaction_node.ts` — (1) *microcompact*: ofusca resultados de tools antiguos (`[tool result cleared]`) conservando los últimos N intactos; (2) *LLM compaction*: si la ventana estimada supera el umbral (default 80%), resume con el modelo de `createCompactionModel()` en `model.ts` (default `anthropic/claude-3-5-haiku`, override `COMPACTION_MODEL_ID`) y reinyecta un `SystemMessage` `[CONTEXTO COMPACTADO]`; circuit breaker tras fallos consecutivos del compactador. Estado centralizado en `packages/agent/src/state.ts`: `messages` con **`messagesStateReducer`** (LangGraph) para soportar `RemoveMessage` y reemplazos por `id`, más `compactionCount` e **`iterationCount`**.
+- **Memoria de corto plazo (compaction):** `packages/agent/src/nodes/compaction_node.ts` — (1) *microcompact*: ofusca resultados de tools antiguos (`[tool result cleared]`) conservando los últimos N intactos; (2) *LLM compaction*: si la ventana estimada supera el umbral (default 80%), resume con el modelo de `createCompactionModel()` en `model.ts` (default `anthropic/claude-haiku-4.5`, override `COMPACTION_MODEL_ID`) y reinyecta un `SystemMessage` `[CONTEXTO COMPACTADO]`; circuit breaker tras fallos consecutivos del compactador. Estado centralizado en `packages/agent/src/state.ts`: `messages` con **`messagesStateReducer`** (LangGraph) para soportar `RemoveMessage` y reemplazos por `id`, más `compactionCount` e **`iterationCount`**.
 - **Límite de iteraciones de tools:** hasta **10** (`MAX_TOOL_ITERATIONS` en `graph.ts`). El guard **`shouldContinue`** usa **`state.iterationCount`** (incrementado en `agent` cuando hay `tool_calls`), no el recuento de `AIMessage` en el historial, para que el límite siga aplicando aunque compaction borre mensajes viejos.
 - **Checkpointer:** `PostgresSaver` si existe `DATABASE_URL` (URI Postgres directa); si no, `MemorySaver` en memoria del proceso.
 - **`thread_id`:** por mensaje nuevo se usa un id único por turno (`sessionId` + timestamp) para no mezclar checkpoints; el resume tras HITL reutiliza el `checkpointThreadId` guardado en `structured_payload`.

@@ -253,6 +253,9 @@ de la app, configura `EASYBROKER_PUBLIC_ASSET_BASE_URL` con esa base pública.
 
 - [docs/brief.md](docs/brief.md) — visión y brief original.
 - [docs/architecture.md](docs/architecture.md) — arquitectura técnica del MVP.
+- [docs/manuals/architecture-manual.md](docs/manuals/architecture-manual.md) — manual técnico integrador (skills, memoria, tools, modelos).
+- [docs/manuals/gu-os-agent-architecture-analysis.md](docs/manuals/gu-os-agent-architecture-analysis.md) — análisis de arquitectura agentica (design space, riesgos, recomendaciones).
+- [docs/tools-design/model-providers.md](docs/tools-design/model-providers.md) — roles de modelo actuales + diseño multi-proveedor previsto.
 - [docs/plan.md](docs/plan.md) — fases y decisiones de implementación.
 - [docs/business-brain-evolution-roadmap.md](docs/business-brain-evolution-roadmap.md) — evolución hacia Business Brain (Skills, Heartbeat, contexto por cuenta); roadmap producto + ingeniería.
 - [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md) — variables `BIGQUERY_*` y credenciales GCP para `bigquery_run_query` en local y producción.

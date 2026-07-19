@@ -249,16 +249,21 @@ Separar responsabilidades permite controlar costo, latencia y calidad.
 
 ### Detalle tecnico actual
 
-| Responsabilidad | Modelo actual | Donde se configura | Estado |
+| Responsabilidad | Default en codigo | Donde se configura | Estado |
 |---|---|---|---|
-| Chat principal | `openai/gpt-4o-mini` via OpenRouter | `MAIN_AGENT_MODEL_ID` opcional (fallback interno) + `OPENROUTER_MAX_TOKENS` | Hoy |
-| Compaction | `anthropic/claude-3-5-haiku` via OpenRouter | `COMPACTION_MODEL_ID` opcional (fallback interno) | Hoy |
-| Selector de skills | `anthropic/claude-3-5-haiku` via OpenRouter | `SKILL_SELECTOR_MODEL_ID` opcional | Hoy |
-| Reviewer de Business Brain | `anthropic/claude-3-5-haiku` via OpenRouter | `BUSINESS_BRAIN_REVIEWER_MODEL_ID` opcional | Hoy |
-| Embeddings memoria | `google/gemini-embedding-001` via OpenRouter | `MEMORY_EMBEDDING_MODEL`, `MEMORY_EMBEDDING_DIM=1536` | Hoy |
+| Chat principal | `openai/gpt-4o-mini` | `MAIN_AGENT_MODEL_ID` + `OPENROUTER_MAX_TOKENS` (`model.ts`) | Hoy |
+| Compaction / memory flush | `anthropic/claude-haiku-4.5` | `COMPACTION_MODEL_ID` (`model.ts`) | Hoy |
+| Selector de skills | `anthropic/claude-haiku-4.5` | `SKILL_SELECTOR_MODEL_ID` (`model.ts`) | Hoy |
+| Reviewer de Business Brain | `anthropic/claude-haiku-4.5` | `BUSINESS_BRAIN_REVIEWER_MODEL_ID` (`model.ts`) | Hoy |
+| Clasificador conversacional de casos | mismo que main | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` (constante en `model.ts`; uso en web) | Hoy |
+| Vision / fotos | `openai/gpt-4.1-mini` | `IMAGE_VISION_MODEL_ID` (constante en `model.ts`; uso en realestate adapters) | Hoy |
+| Copy de listing | `openai/gpt-4.1-mini` | `LISTING_COPY_MODEL_ID` (constante en `model.ts`; uso en realestate adapters) | Hoy |
+| Embeddings memoria | `google/gemini-embedding-001` | `MEMORY_EMBEDDING_MODEL`, `MEMORY_EMBEDDING_DIM=1536` | Hoy |
 | Cron | mismo factory `createChatModel`, temperatura baja | `DEFAULT_CRON_TEMPERATURE=0.1` | Hoy |
-| Heartbeat | override por env, max tokens propio | `HEARTBEAT_MODEL_ID`, `HEARTBEAT_MAX_TOKENS` | Hoy |
+| Heartbeat | hereda main si se omite | `HEARTBEAT_MODEL_ID`, `HEARTBEAT_MAX_TOKENS` | Hoy |
 | Multi-proveedor directo | OpenRouter + Google directo | `docs/tools-design/model-providers.md` | Previsto |
+
+Inventario canónico y riesgos de host tools: [`docs/tools-design/model-providers.md`](../tools-design/model-providers.md). Análisis profundo: [`gu-os-agent-architecture-analysis.md`](gu-os-agent-architecture-analysis.md).
 
 ### Regla conceptual
 

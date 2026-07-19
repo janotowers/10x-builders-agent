@@ -24,7 +24,7 @@ LangGraph loop:
    In V1.5 this registry also feeds a user-visible Settings catalog; the
    runtime still treats the repo metadata as the canonical standard catalog.
 3. Runs a small, deterministic **skill selector** model
-   (`createSkillSelectorModel`, default `anthropic/claude-3-5-haiku` via
+   (`createSkillSelectorModel`, default `anthropic/claude-haiku-4.5` via
    OpenRouter).
 4. If a skill is active:
    - resolves and injects the skill playbook into the initial system prompt;

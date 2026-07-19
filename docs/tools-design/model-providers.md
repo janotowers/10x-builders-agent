@@ -1,11 +1,30 @@
 # Proveedores de modelo (fachada multi-proveedor)
 
-## Estado
+## Roles actuales (OpenRouter)
+
+Inventario canónico. **Defaults y lectura de env** viven en [`packages/agent/src/model.ts`](../../packages/agent/src/model.ts). Las factories del loop LangGraph también; visión/listing/clasificador importan las mismas constantes en su punto de uso.
+
+| Rol | Env | Default | Dónde se usa |
+| --- | --- | --- | --- |
+| Agente principal | `MAIN_AGENT_MODEL_ID` | `openai/gpt-4o-mini` | `createChatModel` → web, telegram, cron, case_runner |
+| Heartbeat | `HEARTBEAT_MODEL_ID` (+ `HEARTBEAT_MAX_TOKENS`) | hereda main si se omite | `graph.ts` vía `resolveHeartbeatModelId()` |
+| Compaction / memory flush | `COMPACTION_MODEL_ID` | `anthropic/claude-haiku-4.5` | `createCompactionModel` |
+| Skill selector | `SKILL_SELECTOR_MODEL_ID` | `anthropic/claude-haiku-4.5` | `createSkillSelectorModel` |
+| Business Brain reviewer | `BUSINESS_BRAIN_REVIEWER_MODEL_ID` | `anthropic/claude-haiku-4.5` | `createBusinessBrainReviewerModel` |
+| Clasificador conversacional de casos | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` | mismo que main | `apps/web/.../operational-conversation-classifier.ts` |
+| Vision / fotos | `IMAGE_VISION_MODEL_ID` | `openai/gpt-4.1-mini` | `packages/agent/.../realestate-adapters.ts` |
+| Copy de listing | `LISTING_COPY_MODEL_ID` | `openai/gpt-4.1-mini` | `packages/agent/.../realestate-adapters.ts` |
+| Embeddings memoria | `MEMORY_EMBEDDING_MODEL` | `google/gemini-embedding-001` | `packages/agent/src/embeddings.ts` |
+
+Tope global de salida: `OPENROUTER_MAX_TOKENS` (default código 2048).
+
+## Estado (multi-proveedor)
 
 | Aspecto | Estado |
 | ------- | ------ |
 | Documento de diseño | Este archivo (versionado en el repo). |
-| Implementación en código | **Pendiente para multi-proveedor.** Hoy el agente usa solo OpenRouter vía `ChatOpenAI` con `baseURL` de OpenRouter en [`packages/agent/src/model.ts`](../../packages/agent/src/model.ts) (`openai/gpt-4o-mini` por defecto), aunque ya existen overrides por canal para cron/heartbeat. |
+| Roles OpenRouter actuales | **Implementados** (tabla arriba). |
+| Multi-proveedor (Gemini directo) | **Pendiente.** Hoy solo OpenRouter vía `ChatOpenAI` + `baseURL` OpenRouter. |
 
 Evita confundir este documento con el comportamiento actual del binario: las variables `MODEL_PROVIDER_*` y la integración directa con Gemini **aún no existen** en el código hasta que se implemente el plan correspondiente.
 

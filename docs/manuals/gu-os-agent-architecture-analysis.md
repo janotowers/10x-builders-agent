@@ -1,5 +1,7 @@
 # Gu OS — Agent Architecture Analysis
 
+**Location:** `docs/manuals/gu-os-agent-architecture-analysis.md` (moved from repo root for consistency with other manuals).
+
 **Framework:** "Dive into Claude Code: The Design Space of Today's and Future AI Agent Systems" (arXiv [2604.14228v2](https://arxiv.org/abs/2604.14228), Jul 2026), used as an analytical lens — *not* as a benchmark to imitate.
 
 **Framework reference (external):**
@@ -30,7 +32,7 @@ Confidence levels: High / Medium / Low.
 - Like **OpenClaw/Hermes**: a persistent multi-surface product (not an ephemeral CLI), channel routing, structured persistent memory, cron/webhook proactivity, per-action approvals rendered across surfaces.
 - Unlike all three archetypes: a first-class **durable workflow engine** ("operational cases": state machine + append-only event log + optimistic locking + cron ticks) for multi-day business procedures, and a **multi-tenant SaaS trust model** (RLS, encrypted per-account credentials, tenant-scoped warehouse context).
 
-Where the paper's Claude Code bets on *"minimal scaffolding, maximal harness"* around a frontier model, Gu OS makes the **opposite wager**: dense deterministic scaffolding (pre-graph skill selector, intent heuristics, per-turn tool hiding, deterministic prefetchers, app-level business-decision handlers) around deliberately cheap mini/nano-tier models. The *code defaults* are `openai/gpt-4o-mini` (main) and `anthropic/claude-3-5-haiku` (utility roles) with a 2048 output-token cap; the *operating environment* (`apps/web/.env.local`, dev machine) overrides every role via env: `openai/gpt-5.4-mini` (main agent + operational classifier), `openai/gpt-5.4-nano` (heartbeat, 1024-token cap), `anthropic/claude-haiku-4.5` (compaction, skill selector, brain reviewer), `openai/gpt-4.1-mini` (image vision + listing copy), 4096 global output cap. The tiering strategy — newer but still cheap models, matched per role — confirms rather than contradicts the cost-first thesis. This is an economically coherent bet for a cost-sensitive vertical SaaS — and it is *documented as a conscious divergence* (`docs/tools-design/skill-routing.md`; `docs/manuals/agentic-principles-alignment.md` §8) **[A][B]**.
+Where the paper's Claude Code bets on *"minimal scaffolding, maximal harness"* around a frontier model, Gu OS makes the **opposite wager**: dense deterministic scaffolding (pre-graph skill selector, intent heuristics, per-turn tool hiding, deterministic prefetchers, app-level business-decision handlers) around deliberately cheap mini/nano-tier models. The *code defaults* in `packages/agent/src/model.ts` are `openai/gpt-4o-mini` (main / classifier) and `anthropic/claude-haiku-4.5` (compaction, skill selector, brain reviewer), plus `openai/gpt-4.1-mini` (vision / listing copy), with a 2048 output-token cap; the *operating environment* (`apps/web/.env.local`, dev machine) may still override every role (e.g. `gpt-5.4-mini` / `gpt-5.4-nano`). The tiering strategy — newer but still cheap models, matched per role — confirms rather than contradicts the cost-first thesis. This is an economically coherent bet for a cost-sensitive vertical SaaS — and it is *documented as a conscious divergence* (`docs/tools-design/skill-routing.md`; `docs/manuals/agentic-principles-alignment.md` §8) **[A][B]**.
 
 **Most consequential findings** (details and evidence in §14–15):
 
@@ -129,7 +131,7 @@ The documentation corpus is unusually faithful; most divergences are small and s
 |---|---|---|
 | Channel edge & control plane | `apps/web/src/app/api/*` | Auth, request normalization, session mgmt, HITL resume endpoints, cron runners, webhooks, OAuth, readiness labs |
 | Agent runtime | `packages/agent/src/graph.ts` (`runAgent`, 2,770 lines) | LangGraph loop, context assembly, skill activation, HITL interrupts, tool execution, turn events |
-| Model clients | `packages/agent/src/model.ts` + `tools/realestate-adapters.ts` L288–297 + `apps/web/src/lib/operational-cases/operational-conversation-classifier.ts` L135 | Seven env-overridable model roles, all via OpenRouter: main agent, compaction/flush, skill selector (temp 0), brain reviewer, heartbeat (`graph.ts` L1132), image vision, listing copy, operational-conversation classifier. Dev env overrides all of them (gpt-5.4-mini/nano, claude-haiku-4.5, gpt-4.1-mini — §9.14) |
+| Model clients | `packages/agent/src/model.ts` (canonical defaults + env IDs for all roles; factories for main/compaction/selector/reviewer). Consumers: `graph.ts` (heartbeat), `tools/realestate-adapters.ts` (vision/listing), `apps/web/.../operational-conversation-classifier.ts` | Seven+ env-overridable OpenRouter roles. Defaults: main `gpt-4o-mini`, utility Haiku `claude-haiku-4.5`, vision/listing `gpt-4.1-mini` (§9.14; `docs/tools-design/model-providers.md`) |
 | Tool system | `tools/catalog.ts` (48 tools, risk-graded) + `tools/adapters.ts` (`buildLangChainTools`, `isToolAvailable`, `resolveToolApprovalMode`) + domain adapters (`realestate-adapters.ts` 9,594 lines, `operational-cases-adapters.ts` 5,499 lines, calendar, bigquery, files, bash) | Definition, gating, execution, audit |
 | Skills | `skills/global/*/SKILL.md` + `packages/agent/src/skills/*` (registry, parse, resolve, select, routing-context) | Playbooks: frontmatter contract, lazy bodies, `references/` progressive disclosure, pre-graph selection |
 | Context reduction | `nodes/compaction_node.ts` | Microcompact (clear old tool results, keep 5) + LLM compaction at 80% of 120k-token window, circuit breaker at 3 failures |
@@ -537,19 +539,19 @@ The actually configured environment (`apps/web/.env.local`, dev machine — runt
 |---|---|---|---|
 | Main agent (web/telegram/cron/case_runner) | `openai/gpt-4o-mini` | `openai/gpt-5.4-mini` | primary reasoning, still mini-tier |
 | Heartbeat | inherits main | `openai/gpt-5.4-nano` + 1024-token cap | runs every X min per user → cheapest tier |
-| Compaction / memory flush | `anthropic/claude-3-5-haiku` | `anthropic/claude-haiku-4.5` | mechanical/extractive task |
-| Skill selector | `anthropic/claude-3-5-haiku` | `anthropic/claude-haiku-4.5` | tiny prompt, JSON out, temp 0 |
-| Business Brain reviewer | `anthropic/claude-3-5-haiku` | `anthropic/claude-haiku-4.5` | short rewriting task |
+| Compaction / memory flush | `anthropic/claude-haiku-4.5` | `anthropic/claude-haiku-4.5` (or env) | mechanical/extractive task |
+| Skill selector | `anthropic/claude-haiku-4.5` | `anthropic/claude-haiku-4.5` (or env) | tiny prompt, JSON out, temp 0 |
+| Business Brain reviewer | `anthropic/claude-haiku-4.5` | `anthropic/claude-haiku-4.5` (or env) | short rewriting task |
 | Operational conversation classifier | `openai/gpt-4o-mini` | `openai/gpt-5.4-mini` | structured JSON; deterministic-rules fallback |
 | Image vision / listing copy | `openai/gpt-4.1-mini` | `openai/gpt-4.1-mini` (explicit) | vision-capable slug required |
 
-Global output cap: default 2048, configured 4096 (`OPENROUTER_MAX_TOKENS`). Two observations: (1) the tiering is real and role-matched — heavier-but-still-cheap model where judgment lives, nano where frequency dominates, haiku-class for mechanical text tasks, vision-capable only where needed; the env file's own comments document this cost logic. (2) The env file flags the code defaults as stale ("claude-3-5-haiku — deprecado! actualizar defaults en model.ts?") — defaults and reality have already drifted, which matters because any environment *without* overrides silently falls back to deprecated slugs **[B/config]**.
+Global output cap: default 2048, configured 4096 (`OPENROUTER_MAX_TOKENS`). The tiering is real and role-matched — heavier-but-still-cheap model where judgment lives, nano where frequency dominates, haiku-class for mechanical text tasks, vision-capable only where needed. **Post-analysis fix:** code defaults for Haiku-class roles were refreshed to `anthropic/claude-haiku-4.5` in `model.ts`, and vision/listing/classifier IDs were centralized there so the inventory is no longer split across three files without a single source of truth **[B]**.
 
 - Stable across models: tool gating, HITL, RLS, compaction mechanics, case engine.
 - Model-sensitive: skill selection quality, SQL generation quality, addendum compliance, JSON parse rates, the entire intent-heuristic layer's *necessity*. Note: the intent-heuristic layer was calibrated against the mini-tier; a main-model swap via one env var is trivial at the API level but untested at the behavior level.
 - Vendor risk: low switching cost at the API level (one baseURL, per-role env slugs — already exercised in practice), medium at the behavior level (heuristics re-tuning). The Gemini facade design (`model-providers.md`) is documented but unimplemented — correctly deferred [A].
 
-**Verdict:** KEEP the per-role env-slot design (it is stronger than the initial code-defaults reading suggested); FIX the stale code defaults (the env file itself asks for this); VALIDATE FIRST any main-model upgrade against the heuristic layer (an eval set for the intent filters + selector is the prerequisite the docs already imply).
+**Verdict:** KEEP the per-role env-slot design; stale Haiku defaults were **fixed** in `model.ts` (now `claude-haiku-4.5`) and lateral role IDs centralized. VALIDATE FIRST any main-model upgrade against the heuristic layer (an eval set for the intent filters + selector is the prerequisite the docs already imply).
 
 ### 9.15 Cost, token economics, latency, scale
 

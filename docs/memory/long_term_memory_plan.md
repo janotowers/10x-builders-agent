@@ -208,7 +208,7 @@ flowchart TB
   adv -.-> sess
 ```
 
-APIs externas llamadas: `Haiku` (`anthropic/claude-3-5-haiku` vía OpenRouter, extracción) y `generateEmbedding` (`google/gemini-embedding-001` vía OpenRouter, 1536 dims).
+APIs externas llamadas: `Haiku` (`anthropic/claude-haiku-4.5` vía OpenRouter / `COMPACTION_MODEL_ID`, extracción) y `generateEmbedding` (`google/gemini-embedding-001` vía OpenRouter, 1536 dims).
 
 ### D. Composición del SystemMessage que ve el modelo
 
