@@ -1,6 +1,11 @@
 # Gu OS — Agent Architecture Analysis
 
-**Framework:** "Dive into Claude Code: The Design Space of Today's and Future AI Agent Systems" (arXiv 2604.14228v2, Jul 2026), used as an analytical lens — *not* as a benchmark to imitate.
+**Framework:** "Dive into Claude Code: The Design Space of Today's and Future AI Agent Systems" (arXiv [2604.14228v2](https://arxiv.org/abs/2604.14228), Jul 2026), used as an analytical lens — *not* as a benchmark to imitate.
+
+**Framework reference (external):**
+- arXiv abstract: [https://arxiv.org/abs/2604.14228](https://arxiv.org/abs/2604.14228)
+- PDF (revision used in this analysis): [https://arxiv.org/pdf/2604.14228v2](https://arxiv.org/pdf/2604.14228v2)
+- Authors' companion repo: [https://github.com/VILA-Lab/Dive-into-Claude-Code](https://github.com/VILA-Lab/Dive-into-Claude-Code)
 
 **Repository:** `10x-builders-agent` @ commit `b465151de72e59a82470f6171aaf395013e5778c` (main, 2026-07-14), 199 commits since 2026-03-30.
 
@@ -57,7 +62,7 @@ Where the paper's Claude Code bets on *"minimal scaffolding, maximal harness"* a
 | Analyzed | `docs/` (44 files), `packages/agent` (~90 source files), `packages/db` (66 migrations + queries), `packages/types`, `apps/web` (pages, 64 API routes, `src/lib/*`), `skills/global/` (29 skills), `heartbeat/`, `scripts/`, `pocs/` |
 | Excluded | `node_modules`, `.turbo`, `tmp/`, binary assets; `pocs/` examined only at inventory level |
 | Commands run | `git log/rev-list/shortlog`, directory listings, line counts, read-only file reads and greps. **No tests executed, no dev server touched, no network calls, no dependency installs, no code modified** (this report file is the only artifact created) |
-| Paper | Read in full via PDF extraction (53 pages) |
+| Paper | Read in full via [arXiv PDF v2](https://arxiv.org/pdf/2604.14228v2) (53 pages); local copy optional under `docs/external-docs/` |
 | Runtime evidence | **None** — all conclusions are [A]/[B]/[D]/[E]. A dev server was running in the user's terminal but was not probed |
 
 **Important unknowns [E]:** production deployment topology (no `vercel.json`, `Dockerfile`, or CI config exists; docs mention GCP Cloud Scheduler / Supabase pg_cron as options); actual number of users/tenants; real traffic on each channel; actual model bills and latency. *Partially resolved for the dev environment* (`apps/web/.env.local`, operator-provided): model overrides are set for all seven model roles (see §9.14); `DATABASE_URL` is set (PostgresSaver active, no `MemorySaver` fallback). **Host tools update (operator, post-analysis):** `BASH_TOOL_ENABLED` and `FILE_TOOLS_ENABLED` / `FILE_TOOLS_ROOT` are now **commented out** in `.env.local`, so those tools are fail-closed again (code requires `=== "true"`). Earlier in this review they were live with `FILE_TOOLS_ROOT` = repo root — a real exposure window if the then-running `npm run dev` process had loaded that env (restart required for the live process to drop them). Skill loading (`skills/global` + `account_skills`) does **not** depend on file tools. Production env values remain unknown [E].
