@@ -31,7 +31,7 @@ import {
   answerTelegramCallbackQuery,
   downloadTelegramFile,
   getTelegramFile,
-  sendTelegramAgentMessage,
+  sendTelegramMarkdownMessage,
   sendTelegramMessage,
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
@@ -630,7 +630,7 @@ async function finalizeInternalPhotoBatch(params: {
     completion.status === "no_photos" ||
     completion.status === "insufficient_photos"
   ) {
-    await sendTelegramMessage(
+    await sendTelegramMarkdownMessage(
       chatId,
       photosBatchInsufficientAckText(completion.photoCount)
     );
@@ -1819,7 +1819,7 @@ export async function POST(request: Request) {
               case_id: matchedCase.id,
             });
           }
-          await sendTelegramMessage(chatId, choice.responseText);
+          await sendTelegramMarkdownMessage(chatId, choice.responseText);
           return NextResponse.json({
             ok: true,
             routed: "operational_case_document_target_set",
@@ -2790,7 +2790,7 @@ export async function POST(request: Request) {
           if (firstPrompt.handled) {
             conversationalCase = firstPrompt.updatedCase;
             if (firstPrompt.responseText) {
-              await sendTelegramMessage(chatId, firstPrompt.responseText);
+              await sendTelegramMarkdownMessage(chatId, firstPrompt.responseText);
             }
             return NextResponse.json({
               ok: true,
@@ -3215,7 +3215,7 @@ export async function POST(request: Request) {
         });
       }
       if (photoResult.photoAdded && isInternalPhotosStep) {
-        await sendTelegramMessage(
+        await sendTelegramMarkdownMessage(
           chatId,
           photosUploadProgressAckText(photoResult.photoCount)
         );
@@ -3430,7 +3430,7 @@ export async function POST(request: Request) {
     if (intakeTurn.handled) {
       conversationalCase = intakeTurn.updatedCase;
       if (intakeTurn.responseText) {
-        await sendTelegramMessage(chatId, intakeTurn.responseText);
+        await sendTelegramMarkdownMessage(chatId, intakeTurn.responseText);
       }
       if (intakeTurn.shouldRunPostIntakeE2ETick) {
         try {
@@ -3501,7 +3501,7 @@ export async function POST(request: Request) {
           case_id: conversationalCase.id,
         });
       }
-      await sendTelegramMessage(chatId, choice.responseText);
+      await sendTelegramMarkdownMessage(chatId, choice.responseText);
       return NextResponse.json({
         ok: true,
         routed: "operational_case_document_target_set",
@@ -3679,7 +3679,7 @@ export async function POST(request: Request) {
           hasConversationalCase: Boolean(conversationalCaseBeforeAgent),
         })
       ) {
-        await sendTelegramAgentMessage(chatId, result.response);
+        await sendTelegramMarkdownMessage(chatId, result.response);
       }
       // Flush POST fire-and-forget: solo si el turno cerró limpio.
       // Callbacks (resume HITL) no entran aquí — ese branch retorna antes.

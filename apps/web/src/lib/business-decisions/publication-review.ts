@@ -33,14 +33,21 @@ function parsePublicationReviewDecision(text: string): {
 } {
   const normalized = text.trim().toLowerCase();
   if (
-    /\b(aprobar|continuar|publicar|approve|continue)\b/.test(normalized) ||
-    normalized === "aprobar y continuar"
+    /\b(aprobar|continuar|publicar|approve|continue|reintentar)\b/.test(
+      normalized
+    ) ||
+    normalized === "aprobar y continuar" ||
+    /ya actualic[eé].*api key/.test(normalized) ||
+    normalized.includes("ya actualicé la api key") ||
+    normalized.includes("ya actualice la api key")
   ) {
     return { intent: "approve_continue" };
   }
   if (
-    /\b(detener|rechazar|stop|revisar)\b/.test(normalized) ||
-    normalized.includes("detener y revisar")
+    /\b(detener|rechazar|stop|pausar)\b/.test(normalized) ||
+    normalized.includes("detener y revisar") ||
+    normalized.includes("pausar publicación") ||
+    normalized.includes("pausar publicacion")
   ) {
     return { intent: "stop" };
   }
@@ -70,7 +77,7 @@ function parsePublicationReviewDecision(text: string): {
   return {
     intent: "unclear",
     reason:
-      "No entendí. Usa «Aprobar y continuar», «Detener y revisar», o envía JSON con labels corregidas.",
+      "No entendí. Usa «Aprobar y continuar» / «Ya actualicé la API key — reintentar», «Detener y revisar» / «Pausar publicación», o envía JSON con labels corregidas.",
   };
 }
 

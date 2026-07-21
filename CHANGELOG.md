@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Publication destination HITL labels**: EasyBroker/Ungga approval actions are
+  now **Publicar en …** / **Omitir …** / **Pausar publicación**, with copy that
+  explains omit skips only that portal while pause stops the case. Parser still
+  accepts legacy “No publicar…” / “Detener y revisar”.
+- **Commercial Q5 (shared commission)**: collaboration prompt now invites an
+  optional share of the total (e.g. 50%) when commission is shared.
+- **Photos request copy**: removes “Referencia del caso”; closing cue requires
+  exact markdown `**«listo»**`.
+- **Listing description review spacing**: blank lines between Título, Resumen
+  corto, Descripción and Posibles mejoras.
+- **Listing copy factuality (movable items)**: vision analysis routes furniture /
+  portable appliances to `do_not_claim` (not `copy_safe_phrases`); description
+  draft forbids mentioning them unless explicit in property data / advisor
+  highlights / instructions / HITL (sale and rent; exception e.g. “se renta
+  amueblada”). Documented in `publish-listing-package` skill.
+- **Publication destination approval ack**: Telegram/web ack after approving a
+  destination now reads like `Publicación en EasyBroker aprobada. Sigo con la
+  publicación…` (same pattern for Ungga / omit / reject).
+- **Publication credential-failure review**: 401/invalid API key no longer uses
+  the generic “missing listing_id / photos” review copy. Advisors get a clear
+  Settings → Cuentas externas remediation and two buttons only: retry after
+  updating the key, or pause publication.
+- **Telegram Markdown sender rename**: `sendTelegramAgentMessage` →
+  `sendTelegramMarkdownMessage` (product Markdown → Telegram HTML; not LLM-only).
+  Deterministic operational copy with `**bold**` (post-intake docs prompt,
+  interno/externo ack, photo «listo» acks) now uses that sender so Telegram
+  renders bold instead of literal asterisks.
 - **Chat-first conversational copy (pre-E2E)**: intake, document checklist,
   interno/externo, «listo», characteristics minimums, contract commercial
   prompts, photos request, and related acks no longer mention the panel; copy
@@ -22,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **External account credential rotation UX**: with status `invalid`, «Probar
+  conexión» was the primary action but only validates the *already stored*
+  secret — so pasting a new API key and clicking Probar re-tested the old key.
+  Unsaved secret drafts now disable Probar; saving new secrets auto-runs the
+  connection test; secret values are trimmed on save.
 - **Commercial exclusivity polarity**: phrases like `No es en exclusiva` and
   `sin exclusiva` no longer flip to `exclusive: true`. Hybrid merge only lets
   the deterministic parser override the LLM when polarity is explicit; the

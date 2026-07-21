@@ -104,15 +104,70 @@ export function AccountToolConnectionForm({
   const secretDraftEmpty = Object.values(secretDraft).every(
     (v) => !v.trim().length
   );
-  const canTest = hasSecret && !testingBusy;
+  /** Draft has typed secrets that are not on the server yet — Probar would hit the old key. */
+  const hasUnsavedSecretDraft = !secretDraftEmpty;
+  const canTest =
+    hasSecret &&
+    !testingBusy &&
+    !savingBusy &&
+    !hasUnsavedSecretDraft &&
+    status !== "disconnected";
+  // Prefer Save when the user is rotating credentials (unsaved draft) or first connect.
   const testIsPrimary =
-    hasSecret && (status === "pending_test" || status === "invalid");
+    hasSecret &&
+    !hasUnsavedSecretDraft &&
+    (status === "pending_test" || status === "invalid");
   const saveLabel = hasSecret ? "Actualizar credenciales" : "Guardar";
+
+  async function handleTest(opts?: { afterSave?: boolean }) {
+    // Probar always hits the server-side secret. Block when the form still has
+    // typed-but-unsaved values (would re-validate the old key). afterSave skips
+    // that guard because we just persisted and React state may still be stale.
+    if (!opts?.afterSave) {
+      if (!hasSecret || hasUnsavedSecretDraft || status === "disconnected") {
+        return;
+      }
+    }
+    setFeedback(null);
+    setTestingBusy(true);
+    try {
+      const res = await fetch(`/api/account-tool-secrets/${provider}/test`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFeedback({
+          kind: "err",
+          message: body.error ?? `Error ${res.status} al probar.`,
+        });
+        return;
+      }
+      if (body.ok) {
+        setFeedback({ kind: "ok", message: "Conexión válida ✓" });
+      } else {
+        setFeedback({
+          kind: "err",
+          message: body.error ?? "La conexión falló.",
+        });
+      }
+      if (body.secret) {
+        setState((prev) =>
+          prev ? { provider: prev.provider, secret: body.secret } : prev
+        );
+        onChanged?.(body.secret);
+      }
+    } catch (e) {
+      setFeedback({ kind: "err", message: (e as Error).message });
+    } finally {
+      setTestingBusy(false);
+    }
+  }
 
   async function handleSave() {
     if (!state) return;
     setFeedback(null);
     setSavingBusy(true);
+    let shouldAutoTest = false;
     try {
       // Si ya hay secret guardado y el usuario no escribió uno nuevo,
       // sólo actualizamos config preservando el secret cifrado en server.
@@ -162,13 +217,14 @@ export function AccountToolConnectionForm({
         for (const k of Object.keys(prev)) cleared[k] = "";
         return cleared;
       });
+      shouldAutoTest = !onlyConfig;
       setFeedback({
         kind: "ok",
         message: onlyConfig
           ? status === "invalid"
-            ? "Configuración actualizada. Las credenciales guardadas no cambiaron — escribe correo y password para rotarlas."
+            ? "Configuración actualizada. Las credenciales guardadas no cambiaron — vuelve a escribir los campos secretos para rotarlas."
             : "Configuración actualizada."
-          : "Credenciales guardadas. Ahora prueba la conexión.",
+          : "Credenciales guardadas. Probando conexión…",
       });
       onChanged?.(body.secret ?? null);
     } catch (e) {
@@ -176,42 +232,10 @@ export function AccountToolConnectionForm({
     } finally {
       setSavingBusy(false);
     }
-  }
-
-  async function handleTest() {
-    if (!hasSecret) return;
-    setFeedback(null);
-    setTestingBusy(true);
-    try {
-      const res = await fetch(`/api/account-tool-secrets/${provider}/test`, {
-        method: "POST",
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setFeedback({
-          kind: "err",
-          message: body.error ?? `Error ${res.status} al probar.`,
-        });
-        return;
-      }
-      if (body.ok) {
-        setFeedback({ kind: "ok", message: "Conexión válida ✓" });
-      } else {
-        setFeedback({
-          kind: "err",
-          message: body.error ?? "La conexión falló.",
-        });
-      }
-      if (body.secret) {
-        setState((prev) =>
-          prev ? { provider: prev.provider, secret: body.secret } : prev
-        );
-        onChanged?.(body.secret);
-      }
-    } catch (e) {
-      setFeedback({ kind: "err", message: (e as Error).message });
-    } finally {
-      setTestingBusy(false);
+    // After rotating/saving secrets, validate against the provider immediately
+    // so "Actualizar" alone can reach Conectada (Probar only sees server-side keys).
+    if (shouldAutoTest) {
+      await handleTest({ afterSave: true });
     }
   }
 
@@ -339,15 +363,24 @@ export function AccountToolConnectionForm({
       {hasSecret && (
         <p className="text-xs text-neutral-500">
           Tip: para conservar las credenciales guardadas, deja{" "}
-          <strong>todos</strong> los campos secretos en blanco. Si actualizas
-          correo o password, debes llenar ambos campos secretos requeridos.
+          <strong>todos</strong> los campos secretos en blanco. Si rotas la
+          API key / password, escríbela de nuevo y guarda (se probará sola).
+        </p>
+      )}
+
+      {hasUnsavedSecretDraft && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          Hay credenciales nuevas sin guardar. «Probar conexión» usa lo ya
+          guardado en el servidor — guarda primero (o usa Actualizar /
+          Guardar, que prueba automáticamente).
         </p>
       )}
 
       {hasSecret && status === "invalid" && secretDraftEmpty && (
         <p className="text-xs text-amber-700 dark:text-amber-400">
-          La conexión está inválida. Vuelve a escribir correo y password API —
-          guardar solo el nombre de empresa mantiene las credenciales anteriores.
+          La conexión está inválida. Vuelve a escribir los campos secretos
+          (API key / password) y guarda — dejarlos en blanco conserva las
+          credenciales anteriores.
         </p>
       )}
 

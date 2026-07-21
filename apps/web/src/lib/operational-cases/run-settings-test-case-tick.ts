@@ -1028,10 +1028,10 @@ function buildCaseE2ETickMessage(
             "En este tick SOLO fotos internas: notify_user, operational_case_add_event y operational_case_update_state.",
             "NO uses telegram_send_message_to_contact ni herramientas de calendario, contrato o publicación.",
             photoCount >= RAW_PHOTOS_MIN_COUNT
-              ? `Ya hay ${photoCount} foto(s) en raw_photos. Aun así envía notify_user(kind=photos_upload_requested) recordando el mínimo de ${RAW_PHOTOS_MIN_COUNT} y que responda «listo» para avanzar; no avances a package_ready en este tick.`
-              : `Hay ${photoCount} foto(s) en raw_photos. Envía notify_user(kind=photos_upload_requested) pidiendo al menos ${RAW_PHOTOS_MIN_COUNT} fotos${propertyLabel ? ` de ${propertyLabel}` : ""} (fachada, sala/comedor, cocina, recámara principal, baño principal) por web o Telegram interno, e indica que responda «listo» al terminar.`,
+              ? `Ya hay ${photoCount} foto(s) en raw_photos. Aun así envía notify_user(kind=photos_upload_requested) recordando el mínimo de ${RAW_PHOTOS_MIN_COUNT} y que responda exactamente **«listo»** (con negrita markdown) para avanzar; no avances a package_ready en este tick.`
+              : `Hay ${photoCount} foto(s) en raw_photos. Envía notify_user(kind=photos_upload_requested) pidiendo al menos ${RAW_PHOTOS_MIN_COUNT} fotos${propertyLabel ? ` de ${propertyLabel}` : ""} aquí (fachada, sala/comedor, cocina, recámara principal, baño principal) e indica que responda exactamente **«listo»** (con negrita markdown) al terminar. No menciones panel ni «Referencia del caso».`,
             "Inserta operational_case_add_event(reminder_sent, purpose=photos_upload_requested).",
-            "Deja current_step=photos_requested y status=waiting_internal. NO avances a package_ready sin «listo» del asesor.",
+            "Deja current_step=photos_requested y status=waiting_internal. NO avances a package_ready sin **«listo»** del asesor.",
           ].join(" ");
         })()
       : "",
@@ -1143,7 +1143,7 @@ function buildCaseE2ETickMessage(
               runnerHint
                 ? runnerHint
                 : !easybrokerDecision || easybrokerDecision === "pending"
-                  ? "Si EasyBroker aún no tiene decisión, envía notify_user(kind=easybroker_publish_approval) con botones Publicar en EasyBroker / No publicar en EasyBroker / Detener y revisar; no publiques todavía."
+                  ? "Si EasyBroker aún no tiene decisión, envía notify_user(kind=easybroker_publish_approval) con botones Publicar en EasyBroker / Omitir EasyBroker / Pausar publicación; no publiques todavía."
                   : easybrokerDecision === "approved" && !easybrokerDraftCreated
                     ? "publish_approvals.easybroker=approved y aún NO hay context.published.easybroker: en este tick DEBES llamar easybroker_create_listing(case_id) con title/description/operation/property_type/price/street/location. NO inventes custom_fields, legal_address, area_construida_m2, features libres, lot_width/lot_length=0, internal_id=UUID del caso, placeholders N/D ni latitude/longitude=0; el adapter enriquece desde el caso y allowlista el payload EasyBroker. NO pidas Ungga todavía."
                     : easybrokerDecision === "approved" &&

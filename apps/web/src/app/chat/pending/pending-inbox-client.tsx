@@ -1490,7 +1490,7 @@ export function PendingInboxClient({
                             }
                             className="rounded-full bg-slate-600 px-2 py-1 font-semibold text-white hover:bg-slate-700"
                           >
-                            No publicar en{" "}
+                            Omitir{" "}
                             {publishDestinationLabel(notification.kind)}
                           </button>
                           <button
@@ -1503,7 +1503,7 @@ export function PendingInboxClient({
                             }
                             className="rounded-full border border-rose-200 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-300/20 dark:text-rose-100"
                           >
-                            Detener y revisar
+                            Pausar publicación
                           </button>
                         </div>
                         {notificationActionStatus[notification.id] ? (
@@ -1516,7 +1516,9 @@ export function PendingInboxClient({
                     {inlineActionKind === "publication_review" ? (
                       <div className="mt-3 space-y-2 rounded-2xl border border-amber-100 bg-amber-50/70 p-2 dark:border-amber-300/20 dark:bg-amber-300/10">
                         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-100">
-                          Revisión condicional de publicación
+                          {notification.credentialFailure
+                            ? "Credencial de publicación inválida"
+                            : "Revisión condicional de publicación"}
                         </p>
                         <div className="flex flex-wrap gap-1">
                           <button
@@ -1528,7 +1530,9 @@ export function PendingInboxClient({
                             }
                             className="rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700"
                           >
-                            Aprobar y continuar
+                            {notification.credentialFailure
+                              ? "Ya actualicé la API key — reintentar"
+                              : "Aprobar y continuar"}
                           </button>
                           <button
                             type="button"
@@ -1539,7 +1543,9 @@ export function PendingInboxClient({
                             }
                             className="rounded-full border border-rose-200 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-300/20 dark:text-rose-100"
                           >
-                            Detener y revisar
+                            {notification.credentialFailure
+                              ? "Pausar publicación"
+                              : "Detener y revisar"}
                           </button>
                         </div>
                         {notificationActionStatus[notification.id] ? (

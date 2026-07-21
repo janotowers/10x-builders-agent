@@ -27,7 +27,7 @@ assert(notify.includes("**«listo»**"), "notify listo bold");
 assert(notify.includes("Fachada"), "notify checklist");
 assert(!/panel/i.test(notify), "notify must not mention panel");
 assert(notify.includes("aquí"), "notify channel-neutral aquí");
-assert(notify.includes("Referencia del caso"), "notify case ref");
+assert(!notify.includes("Referencia del caso"), "notify must omit case ref");
 
 const notifyWithAppUrl = formatPhotosUploadRequestNotifyText({
   propertyLabel: "CIRCUNVALACION SUR 3668",
@@ -36,6 +36,10 @@ const notifyWithAppUrl = formatPhotosUploadRequestNotifyText({
 });
 assert(!/panel/i.test(notifyWithAppUrl), "appUrl must not add panel link");
 assert(!/chat\/pending/i.test(notifyWithAppUrl), "no pending panel URL");
+assert(
+  !notifyWithAppUrl.includes("Referencia del caso"),
+  "appUrl must not restore case ref"
+);
 
 assert(
   photosUploadProgressAckText(3).includes("«listo»"),

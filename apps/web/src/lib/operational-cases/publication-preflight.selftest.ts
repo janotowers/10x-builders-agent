@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { emptyPublicationState, applyPublicationEvent } from "./publication-workflow";
 import {
+  formatPublicationCredentialFailureNotifyText,
   formatPublicationReviewNotifyText,
+  looksLikePublicationCredentialAuthFailure,
   runPublicationPreflight,
 } from "./publication-preflight";
 
@@ -261,5 +263,33 @@ assert.ok(text.includes("Revisión requerida"));
 assert.ok(text.includes("Último paso"));
 assert.ok(text.includes("GU-2"));
 assert.ok(text.includes("Aprobar y continuar"));
+
+assert.equal(
+  looksLikePublicationCredentialAuthFailure(
+    'EasyBroker respondió 401: Your API key is invalid — {"error":"Your API key is invalid"}'
+  ),
+  true
+);
+assert.equal(looksLikePublicationCredentialAuthFailure("timeout"), false);
+const credText = formatPublicationCredentialFailureNotifyText("easybroker");
+assert.ok(credText.includes("API key"));
+assert.ok(credText.includes("Ajustes"));
+assert.ok(credText.includes("Ya actualicé la API key"));
+assert.ok(credText.includes("Pausar publicación"));
+assert.ok(!credText.includes("Corregir etiquetas"));
+const credViaReview = formatPublicationReviewNotifyText(
+  "easybroker",
+  unggaMediaBlock,
+  {
+    last_step: {
+      step: "create_draft:easybroker:new",
+      ok: false,
+      error: "EasyBroker respondió 401: Your API key is invalid",
+    },
+    credential_failure: true,
+  }
+);
+assert.ok(credViaReview.includes("credencial no es válida"));
+assert.ok(!credViaReview.includes("listing_id"));
 
 console.log("publication-preflight.selftest: ok");

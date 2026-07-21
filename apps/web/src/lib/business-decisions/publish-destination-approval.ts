@@ -31,6 +31,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Human-facing destination label for advisor acks (not the technical id). */
+export function publishDestinationDisplayName(
+  destination: string | null | undefined
+): string {
+  if (destination === "easybroker") return "EasyBroker";
+  if (destination === "ungga") return "Ungga";
+  if (destination === "manual") return "paquete manual";
+  return typeof destination === "string" && destination.trim()
+    ? destination.trim()
+    : "el destino";
+}
+
+export function formatPublishDestinationDecisionAck(params: {
+  destination: string;
+  decision: "approved" | "skipped" | "rejected" | string;
+}): string {
+  const label = publishDestinationDisplayName(params.destination);
+  if (params.decision === "approved") {
+    return `Publicación en ${label} aprobada. Sigo con la publicación…`;
+  }
+  if (params.decision === "skipped") {
+    return `Publicación en ${label} omitida. Continúo con el siguiente paso…`;
+  }
+  if (params.decision === "rejected") {
+    return `Publicación en ${label} rechazada; el caso queda en revisión interna.`;
+  }
+  return `Decisión de publicación en ${label} registrada.`;
+}
+
 function destinationFromNotificationKind(kind: string):
   | "easybroker"
   | "ungga"
@@ -189,9 +218,11 @@ export function parsePublishDestinationApprovalDecision(
 ): ParsedDestinationDecision {
   const normalized = text.trim().toLowerCase();
   if (!normalized) return { intent: "unclear", reason: "Respuesta vacía." };
-  // Skip before approve: "No publicar en X" must not match "publicar en".
+  // Skip before approve: "No publicar en X" / "Omitir X" must not match "publicar en".
   if (
-    /^(omitir|skip|saltar|no\s+publicar|no\s+usar)\b/.test(normalized)
+    /^(omitir|skip|saltar|no\s+publicar|no\s+usar)\b/.test(normalized) ||
+    normalized.includes("omitir easybroker") ||
+    normalized.includes("omitir ungga")
   ) {
     return { intent: "skip", reason: text.trim() };
   }
@@ -202,13 +233,17 @@ export function parsePublishDestinationApprovalDecision(
   ) {
     return { intent: "approve" };
   }
-  if (/^(rechazar|rechazo|cancelar|no|detener|deten)\b/.test(normalized)) {
+  if (
+    /^(rechazar|rechazo|cancelar|no|detener|deten|pausar)\b/.test(normalized) ||
+    normalized.includes("pausar publicación") ||
+    normalized.includes("pausar publicacion")
+  ) {
     return { intent: "reject", reason: text.trim() };
   }
   return {
     intent: "unclear",
     reason:
-      "No entendí la decisión. Usa los botones Publicar / No publicar / Detener y revisar, o responde APROBAR, OMITIR o RECHAZAR.",
+      "No entendí la decisión. Usa los botones Publicar / Omitir / Pausar publicación, o responde APROBAR, OMITIR o RECHAZAR.",
   };
 }
 
@@ -422,12 +457,10 @@ export async function handlePublishDestinationApprovalDecision(
   return {
     ok: true,
     status: nextState,
-    message:
-      nextState === "approved"
-        ? `Destino ${destination} aprobado.`
-        : nextState === "skipped"
-          ? `Destino ${destination} marcado como omitido.`
-          : `Destino ${destination} rechazado; el caso queda en revisión interna.`,
+    message: formatPublishDestinationDecisionAck({
+      destination,
+      decision: nextState,
+    }),
     destination,
     case_id: opCase.id,
     deferredControlledE2ETick: deferTick ? { source: tickSource } : null,

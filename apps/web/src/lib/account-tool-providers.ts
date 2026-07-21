@@ -282,7 +282,7 @@ export function validateAccountToolPayload(
           error: `secret.${field.name} debe ser string`,
         };
       }
-      secret[field.name] = value;
+      secret[field.name] = value.trim();
     }
   }
 

@@ -31,7 +31,7 @@ import {
   upsertActiveInternalUserNotification,
 } from "@agents/db";
 import {
-  sendTelegramAgentMessage,
+  sendTelegramMarkdownMessage,
   sendTelegramDocument,
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
@@ -298,13 +298,13 @@ async function deliverTelegram(
         ],
         [
           {
-            text: `No publicar en ${destination}`,
+            text: `Omitir ${destination}`,
             callback_data: `pub_skip:${actionNotificationId}`,
           },
         ],
         [
           {
-            text: "Detener y revisar",
+            text: "Pausar publicación",
             callback_data: `pub_reject:${actionNotificationId}`,
           },
         ],
@@ -314,21 +314,39 @@ async function deliverTelegram(
     actionKind === "publication_review_required" &&
     actionNotificationId
   ) {
+    const credentialFailure =
+      payload.data?.credential_failure === true ||
+      sourceNotificationMetadata?.credential_failure === true;
     replyMarkup = {
-      inline_keyboard: [
-        [
-          {
-            text: "Aprobar y continuar",
-            callback_data: `pubrev_approve:${actionNotificationId}`,
-          },
-        ],
-        [
-          {
-            text: "Detener y revisar",
-            callback_data: `pubrev_stop:${actionNotificationId}`,
-          },
-        ],
-      ],
+      inline_keyboard: credentialFailure
+        ? [
+            [
+              {
+                text: "Ya actualicé la API key — reintentar",
+                callback_data: `pubrev_approve:${actionNotificationId}`,
+              },
+            ],
+            [
+              {
+                text: "Pausar publicación",
+                callback_data: `pubrev_stop:${actionNotificationId}`,
+              },
+            ],
+          ]
+        : [
+            [
+              {
+                text: "Aprobar y continuar",
+                callback_data: `pubrev_approve:${actionNotificationId}`,
+              },
+            ],
+            [
+              {
+                text: "Detener y revisar",
+                callback_data: `pubrev_stop:${actionNotificationId}`,
+              },
+            ],
+          ],
     };
   } else if (
     actionKind === "contract_review" &&
@@ -410,7 +428,7 @@ async function deliverTelegram(
   let delivered = false;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await sendTelegramAgentMessage(chatId, text, attemptedReplyMarkup, {
+      await sendTelegramMarkdownMessage(chatId, text, attemptedReplyMarkup, {
         throwOnError: true,
       });
       delivered = true;
@@ -454,7 +472,7 @@ async function sendTelegramTextWithOptionalButtons(
   let lastError: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await sendTelegramAgentMessage(chatId, text, attemptedReplyMarkup, {
+      await sendTelegramMarkdownMessage(chatId, text, attemptedReplyMarkup, {
         throwOnError: true,
       });
       return { ok: true };

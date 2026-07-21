@@ -53,6 +53,8 @@ export type PendingInboxNotification = {
     optional?: boolean;
     choices?: Array<{ value: string; label: string }>;
   }> | null;
+  /** Publication review: auth/credential failure (Settings fix), not data labels. */
+  credentialFailure?: boolean;
 };
 
 export type PendingInboxToolConfirmation = {
@@ -316,6 +318,8 @@ export async function loadPendingInboxSnapshot(
       refreshCount: notificationNumberMetadata(notification, "refresh_count"),
       lastRefreshedAt: notificationStringMetadata(notification, "last_refreshed_at"),
       contractMissingFields: notificationContractMissingFields(notification),
+      credentialFailure:
+        notification.metadata_jsonb?.credential_failure === true,
     };
   });
 
@@ -430,6 +434,8 @@ export async function loadResolvedInboxSnapshot(
       refreshCount: notificationNumberMetadata(notification, "refresh_count"),
       lastRefreshedAt: notificationStringMetadata(notification, "last_refreshed_at"),
       contractMissingFields: notificationContractMissingFields(notification),
+      credentialFailure:
+        notification.metadata_jsonb?.credential_failure === true,
     };
   });
 

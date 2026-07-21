@@ -26,8 +26,24 @@ const text = formatListingDescriptionReviewNotifyText(
 
 assert.match(text, /\*\*Revisión de descripción comercial\*\*/);
 assert.match(text, /\*\*Título:\*\* Departamento/);
+assert.match(text, /\*\*Resumen corto:\*\* Amplio departamento/);
 assert.match(text, /\*\*Descripción:\*\* Este departamento/);
 assert.match(text, /\*\*Posibles mejoras futuras \(opcionales\):\*\*/);
+assert.match(
+  text,
+  /\*\*Título:\*\*[^\n]+\n\n\*\*Resumen corto:\*\*/,
+  "blank line between Título and Resumen corto"
+);
+assert.match(
+  text,
+  /\*\*Resumen corto:\*\*[^\n]+\n\n\*\*Descripción:\*\*/,
+  "blank line between Resumen corto and Descripción"
+);
+assert.match(
+  text,
+  /\*\*Descripción:\*\*[^\n]+\n\n\*\*Posibles mejoras futuras/,
+  "blank line between Descripción and Posibles mejoras"
+);
 assert.match(text, /superficie construida/);
 assert.match(text, /estado de baños/);
 assert.match(text, /fotos del estacionamiento/);

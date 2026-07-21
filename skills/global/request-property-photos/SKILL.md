@@ -33,8 +33,8 @@ al paso de publicación.
 
 2. Si hay menos de 5 fotos confirmadas con «listo»:
    - Llama `notify_user(kind=photos_upload_requested)` con el copy estructurado
-     (mínimo 5, checklist sugerida, canales web/Telegram, instrucción de
-     responder «listo» al terminar).
+     (mínimo 5, checklist sugerida, instrucción de responder **«listo»** al
+     terminar; canal-neutral: «aquí»).
    - Inserta `operational_case_add_event(reminder_sent, payload={purpose: photos_upload_requested})`.
    - Mantén `current_step=photos_requested`, `status=waiting_internal`.
 
@@ -48,12 +48,14 @@ al paso de publicación.
 
 ## Copy sugerido para notify_user
 
-Usa este esquema (adapta la dirección desde `property_data`):
+Usa este esquema (adapta la dirección desde `property_data`). En el texto del
+`notify_user` escribe exactamente `**«listo»**` (negrita markdown) para que
+Telegram/web lo resalten:
 
 ```
 Solicitud de fotos — {dirección o título}
 
-Sube al menos 5 fotos del inmueble por web o por Telegram (puedes enviar más).
+Sube al menos 5 fotos del inmueble aquí (puedes enviar más).
 
 Fotos sugeridas:
 • Fachada
@@ -63,14 +65,16 @@ Fotos sugeridas:
 • Baño principal
 • Extras opcionales: jardín, estacionamiento, amenidades, detalles
 
-Cuando termines de subir todas las fotos, responde «listo».
-
-Referencia del caso: {case_id corto o link al panel}
+Cuando termines de subir todas las fotos, responde **«listo»**.
 ```
+
+No incluyas «Referencia del caso», enlaces al panel ni menciones de canal
+específico («por web o por Telegram»).
 
 ## Antipatrones
 
 - Contactar al dueño externo en este paso.
 - Intentar calendarizar sesiones o usar tools de calendario.
 - Avanzar a `package_ready` sin «listo» del asesor y sin >= 5 fotos en `raw_photos`.
-- Mensajes genéricos sin checklist ni instrucción de «listo».
+- Mensajes genéricos sin checklist ni instrucción de **«listo»**.
+- Mencionar panel, laboratorio o «Referencia del caso» en el copy.

@@ -37,6 +37,7 @@
     "test:easybroker-fallback": "tsx src/tools/realestate-adapters-easybroker-fallback.selftest.ts",
     "test:ungga-cli": "tsx src/tools/realestate-adapters-ungga-cli.selftest.ts",
     "test:publish-gate": "tsx src/tools/realestate-adapters-publish-gate.selftest.ts",
+    "test:listing-copy-policy": "tsx src/tools/realestate-adapters-listing-copy-policy.selftest.ts",
     "test:contract-commercial-terms": "tsx src/operational-cases/contract-commercial-terms.selftest.ts",
     "test:skill-aware-tools": "tsx src/tools/skill-aware.selftest.ts",
     "test:skill-references": "tsx src/tools/skill-references.selftest.ts",

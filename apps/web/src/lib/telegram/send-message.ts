@@ -176,10 +176,11 @@ export async function sendTelegramMessage(
 }
 
 /**
- * Sends an agent narrative (Markdown from the LLM) with Telegram HTML rendering.
+ * Sends product Markdown (`**bold**`, `` `code` ``) with Telegram HTML rendering.
+ * Does not imply the text came from the AI agent — deterministic copy uses this too.
  * Falls back to plain text if Telegram rejects the formatted payload.
  */
-export async function sendTelegramAgentMessage(
+export async function sendTelegramMarkdownMessage(
   chatId: number,
   text: string,
   replyMarkup?: Record<string, unknown>,

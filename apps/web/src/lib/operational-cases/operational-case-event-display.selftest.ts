@@ -124,7 +124,7 @@ assert.equal(
       },
     })
   ),
-  "Destino easybroker aprobado"
+  "Publicación en EasyBroker aprobada"
 );
 assert.equal(
   formatOperationalCaseEventSummary(

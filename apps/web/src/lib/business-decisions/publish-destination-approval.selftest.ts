@@ -1,9 +1,24 @@
 import assert from "node:assert/strict";
 import {
+  formatPublishDestinationDecisionAck,
   isEasybrokerPublishedInContext,
   parsePublishDestinationApprovalDecision,
   prematurePublishDestinationNotificationKinds,
 } from "./publish-destination-approval";
+
+assert.equal(
+  formatPublishDestinationDecisionAck({
+    destination: "easybroker",
+    decision: "approved",
+  }),
+  "Publicación en EasyBroker aprobada. Sigo con la publicación…"
+);
+assert.ok(
+  formatPublishDestinationDecisionAck({
+    destination: "ungga",
+    decision: "skipped",
+  }).includes("Ungga")
+);
 
 assert.equal(parsePublishDestinationApprovalDecision("APROBAR").intent, "approve");
 assert.equal(parsePublishDestinationApprovalDecision("OMITIR").intent, "skip");
@@ -16,11 +31,19 @@ assert.equal(
   "skip"
 );
 assert.equal(
+  parsePublishDestinationApprovalDecision("Omitir EasyBroker").intent,
+  "skip"
+);
+assert.equal(
   parsePublishDestinationApprovalDecision("Publicar en EasyBroker").intent,
   "approve"
 );
 assert.equal(
   parsePublishDestinationApprovalDecision("Detener y revisar").intent,
+  "reject"
+);
+assert.equal(
+  parsePublishDestinationApprovalDecision("Pausar publicación").intent,
   "reject"
 );
 assert.equal(parsePublishDestinationApprovalDecision("no").intent, "reject");

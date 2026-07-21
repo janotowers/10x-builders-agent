@@ -28,7 +28,7 @@ import {
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
 import {
-  sendTelegramAgentMessage,
+  sendTelegramMarkdownMessage,
   sendTelegramMessage,
   truncateTelegramText,
 } from "@/lib/telegram/send-message";
@@ -267,7 +267,7 @@ async function runTask(
         );
       }
       try {
-        await sendTelegramAgentMessage(chatId, responseText, undefined, {
+        await sendTelegramMarkdownMessage(chatId, responseText, undefined, {
           throwOnError: true,
         });
         notified = true;

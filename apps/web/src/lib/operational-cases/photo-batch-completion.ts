@@ -63,10 +63,8 @@ export function formatPhotosUploadRequestNotifyText(params: {
 }): string {
   const property =
     params.propertyLabel?.trim() || "el inmueble del caso";
-  const caseRef = params.caseId.trim();
-  const shortCaseRef =
-    caseRef.length > 12 ? `…${caseRef.slice(-8)}` : caseRef;
-  // Keep signature stable for callers; appUrl is intentionally unused (chat-first, no panel links).
+  // Keep signature stable for callers; caseId/appUrl unused (chat-first, no case refs/panel links).
+  void params.caseId;
   void params.appUrl;
 
   return [
@@ -83,8 +81,6 @@ export function formatPhotosUploadRequestNotifyText(params: {
     "• Extras opcionales: jardín, estacionamiento, amenidades, detalles",
     "",
     "Cuando termines de subir todas las fotos, responde **«listo»**.",
-    "",
-    `Referencia del caso: ${shortCaseRef}`,
   ].join("\n");
 }
 

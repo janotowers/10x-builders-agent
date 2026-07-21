@@ -256,23 +256,29 @@ export function formatListingDescriptionReviewNotifyText(
   const maxDescriptionLength = options.maxDescriptionLength ?? 1200;
   const excerpt = truncateDescription(description, maxDescriptionLength);
 
-  const lines = [
+  const blocks: Array<string | null> = [
     "**Revisión de descripción comercial**",
-    "",
     "Revisa el borrador preparado para publicar la propiedad.",
-    "",
     headline ? `**Título:** ${headline}` : null,
     shortDescription ? `**Resumen corto:** ${shortDescription}` : null,
     excerpt.text ? `**Descripción:** ${excerpt.text}` : null,
-    excerpt.truncated
-      ? "Nota: texto recortado para este mensaje. Si necesitas el borrador completo, pídemelo aquí y te lo envío."
-      : null,
-    missingIngredients.length > 0
-      ? `**Posibles mejoras futuras (opcionales):** Si más adelante se actualiza la ficha, podrían enriquecerla: ${missingIngredients.join(", ")}. No son requisitos para aprobar ni continuar; este paso solo revisa el texto y no solicita una nueva carga.`
-      : null,
-    "",
-    "Usa los botones: Aprobar descripción o Pedir cambios. Si respondes por texto, describe qué ajustar, qué puntos clave agregar o pega una versión exacta.",
-  ].filter((line): line is string => line != null);
+  ];
+  if (excerpt.truncated) {
+    blocks.push(
+      "Nota: texto recortado para este mensaje. Si necesitas el borrador completo, pídemelo aquí y te lo envío."
+    );
+  }
+  if (missingIngredients.length > 0) {
+    blocks.push(
+      `**Posibles mejoras futuras (opcionales):** Si más adelante se actualiza la ficha, podrían enriquecerla: ${missingIngredients.join(", ")}. No son requisitos para aprobar ni continuar; este paso solo revisa el texto y no solicita una nueva carga.`
+    );
+  }
+  blocks.push(
+    "Usa los botones: Aprobar descripción o Pedir cambios. Si respondes por texto, describe qué ajustar, qué puntos clave agregar o pega una versión exacta."
+  );
 
-  return lines.join("\n").trim();
+  return blocks
+    .filter((line): line is string => line != null)
+    .join("\n\n")
+    .trim();
 }

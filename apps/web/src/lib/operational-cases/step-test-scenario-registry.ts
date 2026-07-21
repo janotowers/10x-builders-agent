@@ -548,7 +548,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           expected_tool_calls: ["notify_user"],
         },
         message:
-          "Prueba controlada de paso (N4) para photos_requested — solicitar fotos internas. Actúa como property-optioning-coach. Enruta a request-property-photos. Envía notify_user(kind=photos_upload_requested) pidiendo al asesor subir al menos 5 fotos del inmueble por web o Telegram interno (fachada, sala/comedor, cocina, recámara principal, baño principal) e indica que responda «listo» al terminar. Inserta reminder_sent con purpose=photos_upload_requested. Deja status=waiting_internal y current_step=photos_requested. NO avances a package_ready en este tick. NO uses telegram_send_message_to_contact ni herramientas de calendario en este tick.",
+          "Prueba controlada de paso (N4) para photos_requested — solicitar fotos internas. Actúa como property-optioning-coach. Enruta a request-property-photos. Envía notify_user(kind=photos_upload_requested) pidiendo al asesor subir al menos 5 fotos del inmueble aquí (fachada, sala/comedor, cocina, recámara principal, baño principal) e indica que responda exactamente **«listo»** (negrita markdown) al terminar; no menciones panel ni Referencia del caso. Inserta reminder_sent con purpose=photos_upload_requested. Deja status=waiting_internal y current_step=photos_requested. NO avances a package_ready en este tick. NO uses telegram_send_message_to_contact ni herramientas de calendario en este tick.",
       },
     ],
     package_ready: [

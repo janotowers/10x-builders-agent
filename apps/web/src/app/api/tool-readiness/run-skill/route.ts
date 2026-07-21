@@ -1036,7 +1036,7 @@ function buildSkillTestMessage(params: {
   }
   if (params.skill.skill_slug === "request-property-photos") {
     lines.push(
-      "Flujo de este escenario: solicita al asesor interno la subida de fotos con notify_user(kind=photos_upload_requested), mínimo 5 fotos útiles (fachada, sala/comedor, cocina, recámara principal, baño principal) e indica que responda «listo» al terminar.",
+      "Flujo de este escenario: solicita al asesor interno la subida de fotos con notify_user(kind=photos_upload_requested), mínimo 5 fotos útiles (fachada, sala/comedor, cocina, recámara principal, baño principal) e indica que responda exactamente **«listo»** (negrita markdown) al terminar; no menciones panel ni Referencia del caso.",
       "Inserta operational_case_add_event(reminder_sent, payload con purpose=photos_upload_requested) y ejecuta operational_case_update_state con current_step=photos_requested y status=waiting_internal. NO avances a package_ready en este tick.",
       "NO uses telegram_send_message_to_contact ni ninguna tool de calendario en este tick."
     );

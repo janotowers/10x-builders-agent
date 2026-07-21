@@ -592,7 +592,7 @@ export function evaluateContractCommercialMinimums(params: {
       key: "collaboration_enabled",
       label: "Compartir comisión",
       question:
-        "Indica si la comisión se compartirá o no con otro asesor o inmobiliaria.",
+        "Indica si la comisión se compartirá o no con otro asesor o inmobiliaria. Si sí, opcionalmente cuánto del total (p. ej. 50%).",
       kind: "boolean",
     });
   } else {
@@ -613,7 +613,7 @@ export function evaluateContractCommercialMinimums(params: {
       key: "compensation_mode",
       label: "Detalle de comisión compartida",
       question:
-        "En caso afirmativo (opcional): ¿Qué porcentaje de la comisión total se compartirá? (Por ejemplo, 50%).",
+        "Si se comparte, opcionalmente ¿cuánto del total de la comisión? (p. ej. 50%).",
       kind: "choice",
       optional: true,
       choices: collaborationCompensationModeChoices(),

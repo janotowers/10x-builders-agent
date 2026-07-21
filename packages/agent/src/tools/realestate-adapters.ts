@@ -2639,10 +2639,11 @@ const ANALYZE_PROPERTY_IMAGES_JSON_SCHEMA = {
   lighting_notes: "string[] — iluminación natural/artificial observable",
   outdoor_spaces: "string[] — patios, jardines, terrazas, balcones visibles",
   copy_safe_phrases:
-    "string[] — frases cortas (máx 12 palabras) derivadas solo de evidencia visible",
+    "string[] — frases cortas (máx 12 palabras) derivadas solo de evidencia visible; NUNCA muebles, decoración ni electrodomésticos portátiles (esas observaciones van a do_not_claim)",
   quality_notes: "string[]",
   uncertain_observations: "string[]",
-  do_not_claim: "string[]",
+  do_not_claim:
+    "string[] — afirmaciones a evitar en copy; incluye muebles/decoración/electrodomésticos portátiles visibles (las fotos no prueban que se incluyan en venta o renta) y cualquier detalle no verificable",
   recommended_missing_photos: "string[]",
 };
 
@@ -2901,15 +2902,80 @@ async function classifyLoadedPhoto(photo: LoadedPhoto): Promise<{
   }
 }
 
-function analyzePropertyImagesSystemPrompt() {
+/** Exported for selftests — policy for visual analysis vs commercial claims. */
+export function analyzePropertyImagesSystemPrompt() {
   return (
     "Eres analista visual de inmobiliaria en México/LATAM. Devuelve JSON válido sin markdown. " +
     "Reglas estrictas: (1) ausencia visual NO implica ausencia real; " +
     "(2) nunca afirmes que la propiedad no tiene algo solo porque no se ve en fotos; " +
     "(3) cada característica va en features_by_space SOLO bajo el espacio donde se observa con claridad — " +
     "no mezcles detalles de fachada/exterior bajo espacios interiores ni viceversa; " +
-    "(4) copy_safe_phrases y style_tags deben ser conservadores y basados solo en evidencia visible."
+    "(4) copy_safe_phrases y style_tags deben ser conservadores y basados solo en evidencia visible; " +
+    "(5) política anti-mobiliario movible (venta y renta): muebles, decoración y electrodomésticos " +
+    "portátiles observados (sofás, mesas, sillas, camas, refrigerador, microondas, TV, lámparas, etc.) " +
+    "van a do_not_claim, NUNCA a copy_safe_phrases — las fotos nunca prueban que se incluyan en la " +
+    "operación de venta o renta; (6) elementos fijos verificables (cocina integral, clósets empotrados, " +
+    "canceles, aire acondicionado instalado, pisos, cancelería) sí pueden ir a features_by_space / " +
+    "copy_safe_phrases si se ven con claridad."
   );
+}
+
+/** Exported for selftests — commercial draft factuality rules. */
+export function prepareListingDescriptionDraftSystemPrompt() {
+  return (
+    "Eres copywriter inmobiliario LATAM. Devuelve JSON válido sin markdown. " +
+    "No inventes amenidades ni cercanías; usa solo ingredientes provistos. " +
+    "Prioriza features_by_space para describir cada área con sus detalles visibles; " +
+    "no mezcles características de espacios distintos. " +
+    "Usa copy_safe_phrases cuando encajen. Respeta do_not_claim y photo_coverage. " +
+    "Política anti-mobiliario movible (venta y renta por igual): no menciones muebles, " +
+    "decoración ni electrodomésticos portátiles salvo confirmación explícita en property_data, " +
+    "advisor_highlights, listing_copy_instructions o revision_feedback/feedback humano " +
+    "(p. ej. «se renta amueblada», «incluye refrigerador»). " +
+    "Sí puedes mencionar elementos fijos verificables (cocina integral, clósets empotrados, " +
+    "canceles, aire acondicionado instalado, etc.) si aparecen en los ingredientes. " +
+    "La descripción, el título y el resumen son copy comercial para el cliente: nunca menciones fotos, imágenes, cobertura visual, elementos no visibles ni limitaciones del análisis. " +
+    "No incluyas precio, moneda, comisión, mantenimiento, disponibilidad, vigencia ni estado de publicación; son campos estructurados mutables del listing y no pertenecen al copy. " +
+    "Si un dato está verificado en property_data (por ejemplo, cajones de estacionamiento), úsalo sin comentar si aparece o no en las fotos. " +
+    "Los faltantes deben ir exclusivamente en missing_ingredients y nunca dentro de headline, short_description o description. " +
+    "Menciona escuelas, transporte, hospitales o parques por nombre solo si aparecen en zone_context.points_of_interest. " +
+    "Si revision_feedback trae replacement_text, úsalo como base y luego ajusta solo para mantener factualidad y claridad."
+  );
+}
+
+/**
+ * Pure policy helper: photos alone never justify movable furniture/equipment claims
+ * for sale or rent. Explicit advisor confirmation unlocks those claims.
+ */
+export function allowsMovableItemCommercialClaim(input: {
+  operationType?: string | null;
+  photoShowsMovableItems?: boolean;
+  explicitConfirmationText?: string | null;
+}): { allowed: boolean; reason: string } {
+  const confirmation = (input.explicitConfirmationText ?? "").trim();
+  const hasExplicit =
+    /\b(amueblad[oa]s?|semi[\s-]?amueblad[oa]s?|incluye\b|con\s+muebles|equipad[oa]s?)\b/i.test(
+      confirmation
+    );
+  if (hasExplicit) {
+    return {
+      allowed: true,
+      reason: "explicit_confirmation",
+    };
+  }
+  const op = (input.operationType ?? "").toLowerCase();
+  const isSaleOrRent =
+    /venta|sale|renta|rent|lease|alquiler/.test(op) || op.length === 0;
+  if (input.photoShowsMovableItems && isSaleOrRent) {
+    return {
+      allowed: false,
+      reason: "photos_do_not_prove_inclusion_sale_or_rent",
+    };
+  }
+  return {
+    allowed: false,
+    reason: "no_explicit_confirmation",
+  };
 }
 
 function analyzePropertyImagesUserPrompt(purpose: string) {
@@ -3687,18 +3753,7 @@ function makePrepareListingDescriptionDraftTool(ctx: ToolContext) {
           messages: [
             {
               role: "system",
-              content:
-                "Eres copywriter inmobiliario LATAM. Devuelve JSON válido sin markdown. " +
-                "No inventes amenidades ni cercanías; usa solo ingredientes provistos. " +
-                "Prioriza features_by_space para describir cada área con sus detalles visibles; " +
-                "no mezcles características de espacios distintos. " +
-                "Usa copy_safe_phrases cuando encajen. Respeta do_not_claim y photo_coverage. " +
-                "La descripción, el título y el resumen son copy comercial para el cliente: nunca menciones fotos, imágenes, cobertura visual, elementos no visibles ni limitaciones del análisis. " +
-                "No incluyas precio, moneda, comisión, mantenimiento, disponibilidad, vigencia ni estado de publicación; son campos estructurados mutables del listing y no pertenecen al copy. " +
-                "Si un dato está verificado en property_data (por ejemplo, cajones de estacionamiento), úsalo sin comentar si aparece o no en las fotos. " +
-                "Los faltantes deben ir exclusivamente en missing_ingredients y nunca dentro de headline, short_description o description. " +
-                "Menciona escuelas, transporte, hospitales o parques por nombre solo si aparecen en zone_context.points_of_interest. " +
-                "Si revision_feedback trae replacement_text, úsalo como base y luego ajusta solo para mantener factualidad y claridad.",
+              content: prepareListingDescriptionDraftSystemPrompt(),
             },
             {
               role: "user",

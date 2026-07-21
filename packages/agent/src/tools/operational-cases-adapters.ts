@@ -467,10 +467,14 @@ function canonicalPublishDestinationApprovalText(kind: string): string {
     "",
     `La descripción ya quedó aprobada. ¿Quieres publicar esta propiedad en ${destination}?`,
     "",
+    `• **Publicar en ${destination}**: continúa la publicación en este portal.`,
+    `• **Omitir ${destination}**: no uses este portal y sigue con los demás destinos.`,
+    "• **Pausar publicación**: detén el caso aquí para revisión interna.",
+    "",
     "Usa los botones:",
     `- Publicar en ${destination}`,
-    `- No publicar en ${destination}`,
-    "- Detener y revisar",
+    `- Omitir ${destination}`,
+    "- Pausar publicación",
   ].join("\n");
 }
 

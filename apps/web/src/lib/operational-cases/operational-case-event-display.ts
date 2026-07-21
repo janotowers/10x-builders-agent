@@ -199,6 +199,23 @@ export function formatOperationalCaseEventSummary(
       typeof payload.destination === "string" ? payload.destination.trim() : "";
     const decision =
       typeof payload.decision === "string" ? payload.decision.trim() : "";
+    const destinationLabel =
+      destination === "easybroker"
+        ? "EasyBroker"
+        : destination === "ungga"
+          ? "Ungga"
+          : destination === "manual"
+            ? "paquete manual"
+            : destination;
+    if (decision === "approved" && destinationLabel) {
+      return `Publicación en ${destinationLabel} aprobada`;
+    }
+    if (decision === "skipped" && destinationLabel) {
+      return `Publicación en ${destinationLabel} omitida`;
+    }
+    if (decision === "rejected" && destinationLabel) {
+      return `Publicación en ${destinationLabel} rechazada`;
+    }
     const decisionLabel =
       decision === "approved"
         ? "aprobado"
@@ -207,8 +224,8 @@ export function formatOperationalCaseEventSummary(
           : decision === "rejected"
             ? "rechazado"
             : "registrado";
-    return destination
-      ? `Destino ${destination} ${decisionLabel}`
+    return destinationLabel
+      ? `Destino ${destinationLabel} ${decisionLabel}`
       : `Decisión de publicación: ${decisionLabel}`;
   }
   if (technicalKind === "publication_operation_failed") {

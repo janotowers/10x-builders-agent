@@ -586,6 +586,51 @@ export function runPublicationPreflight(
   return finalize(issues);
 }
 
+/**
+ * Detects auth/credential failures that the advisor can fix in
+ * Settings → Cuentas externas (not a data/labels review).
+ */
+export function looksLikePublicationCredentialAuthFailure(
+  error: string | null | undefined
+): boolean {
+  if (!error || !error.trim()) return false;
+  const lower = error.toLowerCase();
+  if (lower.includes("api key is invalid")) return true;
+  if (lower.includes("credential_failure")) return true;
+  if (lower.includes("your api key is invalid")) return true;
+  if (/\b401\b/.test(lower) && /(invalid|unauthorized|forbidden)/.test(lower)) {
+    return true;
+  }
+  if (/\b403\b/.test(lower) && /(invalid|unauthorized|forbidden|api key)/.test(lower)) {
+    return true;
+  }
+  return false;
+}
+
+export function formatPublicationCredentialFailureNotifyText(
+  destination: PublicationDestination
+): string {
+  const label = destination === "easybroker" ? "EasyBroker" : "Ungga";
+  const settingsTarget =
+    destination === "easybroker"
+      ? "EasyBroker (API)"
+      : "Ungga (API o CLI, según uses)";
+  return [
+    `No pude continuar la publicación en ${label}: la API key / credencial no es válida.`,
+    "",
+    `Esto suele pasar cuando la key se regeneró o rotó en ${label} y aún no se actualizó aquí.`,
+    "",
+    "Qué hacer:",
+    `1. En ${label}, confirma o genera una credencial válida (cuenta con permisos de administrador si aplica).`,
+    `2. En Ajustes → Cuentas externas → ${settingsTarget}, pega la key/credencial nueva y guarda (se probará sola).`,
+    "3. Cuando aparezca Conectada, usa el botón de abajo para reintentar.",
+    "",
+    "Usa los botones:",
+    "• Ya actualicé la API key — reintentar",
+    "• Pausar publicación",
+  ].join("\n");
+}
+
 export function formatPublicationReviewNotifyText(
   destination: PublicationDestination,
   result: PreflightResult,
@@ -595,9 +640,16 @@ export function formatPublicationReviewNotifyText(
     uploaded_image_count?: number | null;
     has_draft_artifact?: boolean;
     ungga_property_id?: string | null;
+    credential_failure?: boolean;
   }
 ): string {
   const label = destination === "easybroker" ? "EasyBroker" : "Ungga";
+  const credentialFailure =
+    extras?.credential_failure === true ||
+    looksLikePublicationCredentialAuthFailure(extras?.last_step?.error);
+  if (credentialFailure) {
+    return formatPublicationCredentialFailureNotifyText(destination);
+  }
   const lines = [
     `Revisión requerida antes de publicar en ${label}`,
     "",

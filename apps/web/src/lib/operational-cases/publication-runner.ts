@@ -31,6 +31,7 @@ import {
 } from "@/lib/operational-cases/publication-closure-recovery";
 import {
   formatPublicationReviewNotifyText,
+  looksLikePublicationCredentialAuthFailure,
   runPublicationPreflight,
   type PreflightResult,
 } from "@/lib/operational-cases/publication-preflight";
@@ -321,10 +322,14 @@ async function requestDestinationApproval(
         "",
         `¿Quieres publicar esta propiedad en ${label}?`,
         "",
+        `• **Publicar en ${label}**: continúa la publicación en este portal.`,
+        `• **Omitir ${label}**: no uses este portal y sigue con los demás destinos.`,
+        "• **Pausar publicación**: detén el caso aquí para revisión interna.",
+        "",
         "Usa los botones:",
         `- Publicar en ${label}`,
-        `- No publicar en ${label}`,
-        "- Detener y revisar",
+        `- Omitir ${label}`,
+        "- Pausar publicación",
       ].join("\n"),
       kind,
       data: { case_id: opCase.id, destination },
@@ -379,32 +384,37 @@ async function requestConditionalReview(
   if ((existing ?? []).length > 0) {
     return "waiting_hitl";
   }
+  const lastErrorText =
+    typeof dest.last_error === "string" ? dest.last_error : null;
+  const credentialFailure =
+    looksLikePublicationCredentialAuthFailure(lastErrorText);
+  const lastStep =
+    typeof dest.operation_key === "string"
+      ? {
+          step: dest.operation_key,
+          ok: false as const,
+          error: lastErrorText ?? dest.review_reason ?? undefined,
+        }
+      : lastErrorText
+        ? {
+            step: "publication",
+            ok: false as const,
+            error: lastErrorText,
+          }
+        : null;
   await notify(
     db,
     opCase.user_id,
     {
       text: formatPublicationReviewNotifyText(destination, result, {
-        last_step: isRecord(dest.last_error)
-          ? null
-          : typeof dest.operation_key === "string"
-            ? {
-                step: dest.operation_key,
-                ok: false,
-                error: dest.last_error ?? dest.review_reason ?? undefined,
-              }
-            : dest.last_error
-              ? {
-                  step: "publication",
-                  ok: false,
-                  error: dest.last_error,
-                }
-              : null,
+        last_step: lastStep,
         expected_image_count: dest.media.expected_count,
         uploaded_image_count: dest.media.remote_count,
         has_draft_artifact: Boolean(
           dest.artifact.listing_id || dest.artifact.ungga_property_id
         ),
         ungga_property_id: dest.artifact.ungga_property_id ?? null,
+        credential_failure: credentialFailure,
       }),
       kind: "publication_review_required",
       data: {
@@ -416,6 +426,7 @@ async function requestConditionalReview(
         uploaded_image_count: dest.media.remote_count,
         ungga_property_id: dest.artifact.ungga_property_id ?? null,
         last_error: dest.last_error,
+        credential_failure: credentialFailure,
       },
     },
     "high"
@@ -430,6 +441,7 @@ async function requestConditionalReview(
       destination,
       summary: result.summary,
       issue_codes: result.issues.map((i) => i.code),
+      credential_failure: credentialFailure,
     },
   });
   return "waiting_hitl";
@@ -1815,6 +1827,22 @@ export async function requestPublicationProgress(
             },
           ],
           summary: "Resultado externo desconocido; revisión obligatoria.",
+        });
+      } else if (looksLikePublicationCredentialAuthFailure(errorText)) {
+        // Surface Settings remediation immediately (don't wait for a later tick
+        // to discover phase=failed → request_review via generic preflight).
+        await requestConditionalReview(db, opCase, action.destination, {
+          status: "blocked",
+          issues: [
+            {
+              code: "credential_auth_failure",
+              field: "account_tool_secrets",
+              severity: "critical",
+              message:
+                "La API key / credencial del destino no es válida. Actualízala en Ajustes → Cuentas externas.",
+            },
+          ],
+          summary: "Credencial inválida; actualiza la conexión en Ajustes.",
         });
       }
       return {

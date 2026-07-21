@@ -80,6 +80,16 @@ Producir y entregar:
    - (opcional) `context_jsonb.listing_highlights`
    Usa solo ingredientes verificados: `property_data`, `photo_analysis`,
    `zone_context` y highlights del asesor. No inventes amenidades ni cercanías.
+   **Política anti-mobiliario movible (venta y renta):** no afirmes que la
+   propiedad se entrega amueblada ni menciones sofás, camas, mesas, sillas,
+   refrigerador, microondas, TV u otros objetos portátiles solo porque aparecen
+   en fotos. Esas observaciones deben quedar en `photo_analysis.do_not_claim`,
+   no en `copy_safe_phrases`. Excepción: solo si el asesor lo confirma de forma
+   explícita en `property_data`, highlights, instrucciones de copy o feedback
+   HITL (p. ej. «se renta amueblada», «incluye refrigerador»). Sí puedes
+   mencionar elementos fijos verificables (cocina integral, clósets empotrados,
+   canceles, A/C instalado). No preguntes de forma obligatoria si está amueblada
+   en el intake.
 
 5. **HITL de descripción**:
    - Envía `notify_user(kind=listing_description_review)` con borrador,
@@ -155,6 +165,8 @@ Producir y entregar:
 - Publicar en todos los destinos con una sola aprobación ("¿publico en todos?").
   Cada destino merece confirmación específica.
 - Publicar sin `listing_description_approved`.
+- Afirmar mobiliario/equipamiento movible por evidencia fotográfica sola
+  (venta o renta) sin confirmación explícita del asesor.
 - Automatizar con Playwright contra portales externos (ver
   docs/operational-cases/future-considerations.md sección 4).
 - Marcar `completed` antes de tener al menos UN destino publicado o
