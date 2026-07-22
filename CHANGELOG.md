@@ -34,8 +34,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is built by one formatter (`formatPublishDestinationApprovalNotifyText`) that
   uses “destino”, drops “portal”/redundant button lists, and ends with
   “Elige una opción:”.
+- **Full commercial description as .txt attachment**: when the
+  `listing_description_review` message truncates the description (>1200 chars),
+  Telegram now also receives the complete draft (title + short summary + full
+  description) as a `.txt` document, and the web inbox shows a
+  «Ver texto completo» expander. The copy no longer promises an unimplemented
+  “pídemelo y te lo envío”; it says the full draft is attached. New helpers
+  `buildListingDescriptionDraftTxtAttachment` /
+  `listingDescriptionReviewExcerptTruncated` (+ selftests).
 
 ### Fixed
+
+- **`waiting_internal / published` closure invariant**: a publication case can
+  no longer end in the contradictory state `status=waiting_internal` +
+  `current_step=published`. The runner's finalize gate (extracted to the pure,
+  selftested `canFinalizePublicationClosure`) now also closes from
+  `current_step=published` (not only `package_ready`); its idle fallback never
+  downgrades a `completed` case; and `operational_case_update_state` normalizes
+  `published`/`completed` as one atomic pair once the strict evidence gate
+  passes.
+- **Ambiguous approvals no longer publish**: in listing-description review,
+  bare affirmatives (`ok`, `va`, `listo`, `sí`) approve only when standalone;
+  courtesy acknowledgments like “ok gracias” now trigger a clarification
+  (“Responde APROBAR…”) instead of auto-approving. Also fixed the change-hint
+  regex (`cambio` → `cambi`) so “ok pero cambia el tono” is parsed as a change
+  request instead of an approval.
+- **Consistent «Ajustar» review buttons**: price approval («Ajustar y aprobar»)
+  and property-data review («Enviar corrección») now use the same «Ajustar»
+  label across Telegram and the web inbox, with guidance texts aligned.
 
 - **TypeScript package `rootDir` for TS 6 readiness**: set explicit
   `"rootDir": "./src"` on `@agents/agent`, `@agents/db`, and `@agents/types`
