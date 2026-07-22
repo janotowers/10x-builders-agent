@@ -417,6 +417,8 @@ Son capas distintas:
 | **HITL de tool** | Antes de ejecutar una tool `medium`/`high` | LangGraph `interrupt()` + tarjetas en **Pendientes** y botones Aprobar/Rechazar en web/Telegram | `calendar_create_event`, `telegram_send_message_to_contact` |
 | **HITL de negocio** | Después de que el agente preparó una decisión comercial | `notify_user` crea pendiente persistente; el humano decide por UI o texto estructurado | Aprobación de `pricing_proposal` (`kind = price_approval`), revisión de datos (`property_data_review`) |
 
+Texto libre (Telegram/web) para HITL de negocio pasa por el **router compartido de pendientes** antes del agente: consultas de solo lectura (precio/estado), gates de decisión, escape de preguntas laterales en captura de datos, y una 2ª opinión LLM **solo** cuando un gate sticky está a punto de responder «no entendí». Detalle: [`pending-decision-routing.md`](pending-decision-routing.md).
+
 #### HITL de tool en casos operativos (anti-spam del cron)
 
 Cuando un tick del cron llega a un caso con **tool calls en `pending_confirmation`**, el runtime **no** vuelve a invocar `runAgent` (evita duplicar tarjetas «Aprobación del agente»). En su lugar:

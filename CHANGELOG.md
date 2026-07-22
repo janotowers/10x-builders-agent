@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   draft content («¿qué dice el título?», «¿cómo quedó la descripción?») are
   answered with the full artifact (review stays pending), while editorial
   questions («¿puedes cambiar el título?») remain change requests.
+- **LLM second opinion on sticky HITL `unclear` (Fase 3.3)**: when
+  `listing_description_review` or `contract_data_review` already claimed a
+  free-text turn and the parser/extractor would answer «no entendí», a small
+  OpenRouter classifier may release the turn to the conversational agent
+  (`release_to_agent` + medium/high confidence) without resolving the
+  pending notification. Happy paths stay deterministic; API/schema failures
+  fail open to the previous clarify message. Documented in
+  `docs/operational-cases/pending-decision-routing.md`.
 
 - **Deterministic commission-contract render (lab/prod parity)**: after the
   agent turn, a shared `applyPostAgentContractHandling` now owns the

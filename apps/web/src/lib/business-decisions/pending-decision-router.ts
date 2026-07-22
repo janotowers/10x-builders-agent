@@ -9,13 +9,18 @@
  *   0. read-only case queries (price/status) answered deterministically,
  *      without resolving notifications or mutating case state
  *   1. listing_description_review (incl. read_artifact + pending «Pedir
- *      cambios» reply intent + competing-intake guard)
+ *      cambios» reply intent + competing-intake guard). On parser `unclear`,
+ *      an LLM second opinion may release the turn to the agent (Fase 3.3).
  *   2. price_approval
  *   3. contract_data_review (claims any pending text, except clearly
- *      interrogative data-free side questions, which escape to the agent)
+ *      interrogative data-free side questions, which escape to the agent).
+ *      On extractor `unclear`, the same LLM second opinion may release.
  *   4. contract_review (incl. contract_pending with no missing fields)
  *   5. titularidad_review
  *   6. comparables_search_expansion_decision
+ *
+ * Keyword gates (2/4/5/6) only claim when their deterministic parse is not
+ * unclear, so those turns already fall through to the agent without LLM help.
  *
  * `property_data_review` stays in the Telegram webhook: it is bound to the
  * external contact's chat and has no web-chat equivalent.
@@ -62,6 +67,11 @@ import {
 } from "./case-query";
 import { caseContextFromOperationalCase } from "@/lib/notifications/enrich-case-context";
 import { isIntakeInProgress } from "@/lib/operational-cases/telegram-intake-completion-message";
+import {
+  classifyPendingDecisionUnclear,
+  shouldReleaseUnclearToAgent,
+  type PendingDecisionUnclearGate,
+} from "./pending-decision-unclear-classifier";
 
 export type PendingDecisionChannel = "telegram" | "web";
 
@@ -131,6 +141,60 @@ export function isActionableContractReviewNotification(notification: {
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function caseSummaryForUnclearClassifier(
+  opCase: OperationalCase | null | undefined
+): string | null {
+  if (!opCase) return null;
+  const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
+  const parts = [
+    typeof context.property_title === "string" ? context.property_title : null,
+    typeof context.property_zone === "string" ? context.property_zone : null,
+    opCase.current_step,
+    opCase.status,
+  ].filter((part): part is string => typeof part === "string" && part.trim().length > 0);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/**
+ * Second opinion before a sticky gate answers "unclear". On release, the
+ * caller returns `{ handled: false }` so the turn reaches the agent while the
+ * pending notification stays unread. Failures keep clarifying.
+ */
+async function maybeReleaseUnclearToAgent(params: {
+  db: DbClient;
+  text: string;
+  gate: PendingDecisionUnclearGate;
+  caseId: string | null | undefined;
+  channel: PendingDecisionChannel;
+  notificationId: string;
+}): Promise<boolean> {
+  let caseSummary: string | null = null;
+  if (params.caseId) {
+    try {
+      const opCase = await getOperationalCase(params.db, params.caseId);
+      caseSummary = caseSummaryForUnclearClassifier(opCase);
+    } catch {
+      caseSummary = null;
+    }
+  }
+  const classification = await classifyPendingDecisionUnclear({
+    message: params.text,
+    gate: params.gate,
+    caseSummary,
+  });
+  const release = shouldReleaseUnclearToAgent(classification);
+  console.info("[pending-decision-router] unclear second opinion", {
+    channel: params.channel,
+    gate: params.gate,
+    notification_id: params.notificationId,
+    case_id: params.caseId ?? null,
+    disposition: classification?.disposition ?? "failed_open",
+    confidence: classification?.confidence ?? null,
+    release,
+  });
+  return release;
 }
 
 async function runDeferredTickFromResult(
@@ -382,6 +446,19 @@ export async function resolvePendingDecisionTurn(
         artifact,
       };
     }
+    if (result.status === "unclear") {
+      const release = await maybeReleaseUnclearToAgent({
+        db,
+        text,
+        gate: "listing_description_review",
+        caseId:
+          stringOrNull(result.case_id) ??
+          listingDescriptionReviewTarget.case_id,
+        channel: params.channel,
+        notificationId: listingDescriptionReviewTarget.id,
+      });
+      if (release) return { handled: false };
+    }
     return {
       handled: true,
       routed: result.ok
@@ -483,7 +560,9 @@ export async function resolvePendingDecisionTurn(
     );
   } else if (pendingContractData) {
     // Always route free text through the central handler (hybrid extractor +
-    // deterministic judge). Never fall through silently on unclear replies.
+    // deterministic judge). On unclear, an LLM second opinion may release the
+    // turn to the agent; otherwise we keep clarifying (never silent fallthrough
+    // that looks like the message was ignored).
     const result = await businessDecisionHandler("contract_data_review").handle(
       db,
       {
@@ -492,6 +571,17 @@ export async function resolvePendingDecisionTurn(
         text,
       }
     );
+    if (result.status === "unclear") {
+      const release = await maybeReleaseUnclearToAgent({
+        db,
+        text,
+        gate: "contract_data_review",
+        caseId: stringOrNull(result.case_id) ?? pendingContractData.case_id,
+        channel: params.channel,
+        notificationId: pendingContractData.id,
+      });
+      if (release) return { handled: false };
+    }
     return {
       handled: true,
       routed: "contract_data_review",
