@@ -31,8 +31,10 @@ import {
   answerTelegramCallbackQuery,
   downloadTelegramFile,
   getTelegramFile,
+  sendTelegramDocument,
   sendTelegramMarkdownMessage,
   sendTelegramMessage,
+  truncateTelegramText,
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
 import { notify } from "@/lib/notify";
@@ -280,6 +282,43 @@ async function handleTelegramListingDescriptionReviewText(params: {
       deferControlledE2ETick: true,
     }
   );
+
+  // Read-only request for the full draft: deliver the artifact as .txt and
+  // keep the review pending (no decision was made).
+  const artifact =
+    result.status === "artifact_text" &&
+    isObjectRecord(result.artifact) &&
+    typeof result.artifact.content === "string" &&
+    typeof result.artifact.filename === "string"
+      ? { filename: result.artifact.filename, content: result.artifact.content }
+      : null;
+  if (artifact) {
+    try {
+      await sendTelegramDocument(params.chatId, {
+        filename: artifact.filename,
+        bytes: Buffer.from(artifact.content, "utf-8"),
+        contentType: "text/plain; charset=utf-8",
+        caption:
+          typeof result.message === "string" && result.message.trim()
+            ? result.message
+            : "Borrador completo de la descripción comercial.",
+      });
+    } catch {
+      // Fallback: plain message so the advisor still gets the draft.
+      await sendTelegramMessage(
+        params.chatId,
+        truncateTelegramText(
+          `${result.message ?? "Te comparto el borrador completo."}\n\n${artifact.content}`
+        )
+      );
+    }
+    return NextResponse.json({
+      ok: true,
+      routed: "listing_description_artifact_sent",
+      notification_id: params.notification.id,
+    });
+  }
+
   await sendTelegramMessage(
     params.chatId,
     result.message ??

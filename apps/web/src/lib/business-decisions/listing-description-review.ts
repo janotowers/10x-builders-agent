@@ -14,11 +14,15 @@ import {
   classifyListingDescriptionChange,
   type ListingDescriptionChangeClassification,
 } from "./listing-description-change-classifier";
-import { sanitizeListingDescriptionCommercialCopy } from "@agents/agent";
+import {
+  buildListingDescriptionDraftTxtAttachment,
+  sanitizeListingDescriptionCommercialCopy,
+} from "@agents/agent";
 
 type ListingDescriptionIntent =
   | "approve"
   | "change_request"
+  | "read_artifact"
   | "unclear";
 
 type ParsedListingDescriptionDecision = {
@@ -88,6 +92,28 @@ const AFFIRMATIVE_OR_COURTESY_LEAD =
 const CHANGE_HINT =
   /cambi|ajust|corrig|highlight|puntos?\s+clave|elementos?\s+clave/;
 
+/**
+ * Read-only request for the full draft ("dame el texto completo de la
+ * descripción"). Must be answered with the artifact, never treated as a
+ * change request nor as a decision that closes the review.
+ */
+const READ_ARTIFACT_REQUEST =
+  /\b(?:dame|env[ií]a(?:me)?|manda(?:me)?|comparte(?:me)?|mu[eé]stra(?:me)?|ens[eé]ña(?:me)?|p[aá]sa(?:me)?|quiero\s+(?:ver|leer)|puedo\s+ver|necesito\s+(?:ver|leer))\b[^.!?]{0,60}\b(?:texto|descripci[oó]n|borrador)\b|\b(?:texto|descripci[oó]n|borrador)\b[^.!?]{0,30}\bcomplet[oa]\b/i;
+
+/**
+ * Editorial imperatives beat the bare "texto completo" pattern, so
+ * "reescribe el texto completo" stays a change request, not a read.
+ */
+const READ_ARTIFACT_EDITORIAL_EXCLUSION =
+  /\b(?:reescrib|regener|redact|mencion|agreg|incluy|resalt|destac|enfatiz|mejor|corrig|cambi|ajust|evit|quita|elimin|acort|alarg|haz(?:lo)?)\w*\b/i;
+
+export function looksLikeListingDescriptionReadRequest(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (READ_ARTIFACT_EDITORIAL_EXCLUSION.test(trimmed)) return false;
+  return READ_ARTIFACT_REQUEST.test(trimmed);
+}
+
 export function parseListingDescriptionReviewDecision(
   text: string
 ): ParsedListingDescriptionDecision {
@@ -108,6 +134,12 @@ export function parseListingDescriptionReviewDecision(
       reason:
         "No me queda claro si apruebas la descripción tal cual. Responde APROBAR para aprobarla, o dime qué ajustar.",
     };
+  }
+  if (
+    looksLikeListingDescriptionReadRequest(normalized) &&
+    !CHANGE_HINT.test(normalized)
+  ) {
+    return { intent: "read_artifact" };
   }
   return { intent: "change_request", reason: text.trim() };
 }
@@ -132,6 +164,7 @@ export function looksLikeListingDescriptionDecisionText(text: string): boolean {
   if (LISTING_DESCRIPTION_APPROVE_HINT.test(trimmed)) return true;
   if (LISTING_DESCRIPTION_REVIEW_TEXT_HINT.test(trimmed)) return true;
   if (LISTING_DESCRIPTION_EDITORIAL_HINT.test(trimmed)) return true;
+  if (looksLikeListingDescriptionReadRequest(trimmed)) return true;
   return false;
 }
 
@@ -286,6 +319,37 @@ export async function handleListingDescriptionReviewDecision(
     draft && typeof draft.description === "string" ? draft.description.trim() : "";
   const hasUsableDraft = Boolean(draft && draftDescription);
   const nowIso = new Date().toISOString();
+
+  if (parsed.intent === "read_artifact") {
+    // Read-only: answer with the full draft. The review stays pending — no
+    // state change, no notification resolution, no agent tick.
+    if (!hasUsableDraft || !draft) {
+      return {
+        ok: false,
+        status: "missing_draft",
+        message:
+          "Aún no hay borrador comercial que mostrar. Usa «Pedir cambios» para que el agente lo prepare.",
+      };
+    }
+    const artifact = buildListingDescriptionDraftTxtAttachment(draft, {
+      caseId: opCase.id,
+    });
+    if (!artifact) {
+      return {
+        ok: false,
+        status: "missing_draft",
+        message: "El borrador está vacío; usa «Pedir cambios» para regenerarlo.",
+      };
+    }
+    return {
+      ok: true,
+      status: "artifact_text",
+      message:
+        "Te comparto el borrador completo. La revisión sigue pendiente: responde APROBAR o dime qué ajustar.",
+      artifact,
+      case_id: opCase.id,
+    };
+  }
 
   if (parsed.intent === "approve") {
     if (!draft || !draftDescription) {

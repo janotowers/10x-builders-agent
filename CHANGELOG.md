@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   “pídemelo y te lo envío”; it says the full draft is attached. New helpers
   `buildListingDescriptionDraftTxtAttachment` /
   `listingDescriptionReviewExcerptTruncated` (+ selftests).
+- **Read-only `read_artifact` intent during description review**: free-text
+  requests like “dame el texto completo de la descripción” are now answered
+  with the full draft as a `.txt` document while the review stays pending —
+  no state change, no notification resolution, no misclassification as a
+  change request. Editorial imperatives (“reescribe el texto completo”) and
+  mixed read+change messages still parse as change requests.
 
 ### Fixed
 

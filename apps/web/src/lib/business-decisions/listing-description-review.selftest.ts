@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   looksLikeListingDescriptionDecisionText,
+  looksLikeListingDescriptionReadRequest,
   parseListingDescriptionReviewDecision,
   shouldRouteTelegramTextToListingDescriptionReview,
   splitInstructionAndHighlights,
@@ -46,6 +47,53 @@ assert.equal(
 assert.equal(
   parseListingDescriptionReviewDecision("aprobar pero ajusta el título").intent,
   "change_request"
+);
+
+// Read-only requests for the full draft: answer with the artifact, keep pending.
+assert.equal(
+  parseListingDescriptionReviewDecision(
+    "Dame el texto completo de la descripción comercial"
+  ).intent,
+  "read_artifact"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("muéstrame el borrador").intent,
+  "read_artifact"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("quiero ver la descripción completa").intent,
+  "read_artifact"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("reescribe el texto completo").intent,
+  "change_request",
+  "editorial imperative with 'texto completo' is a change, not a read"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision(
+    "dame el texto completo y ajusta el título"
+  ).intent,
+  "change_request",
+  "mixed read+change must be treated as change request"
+);
+assert.equal(
+  looksLikeListingDescriptionReadRequest("dame el texto completo"),
+  true
+);
+assert.equal(
+  looksLikeListingDescriptionDecisionText("dame el texto completo"),
+  true,
+  "read request must be claimed by the sticky review gate"
+);
+assert.equal(
+  shouldRouteTelegramTextToListingDescriptionReview({
+    text: "Dame el texto completo de la descripción comercial",
+    pendingReviewCount: 1,
+    hasPendingReplyIntent: false,
+    isExplicitNewCaseIntent: false,
+  }),
+  true,
+  "read request routes to the review handler instead of the generic agent"
 );
 
 const freeText = parseListingDescriptionReviewDecision(
