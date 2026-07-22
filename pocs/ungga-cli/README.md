@@ -28,7 +28,7 @@ UNGGA_CLI_DRY_RUN=true
 UNGGA_CLI_HEADLESS=true
 UNGGA_CLI_SCREENSHOTS=true
 UNGGA_CLI_TIMEOUT_MS=60000
-UNGGA_CLI_PUBLISH_PATH=https://ungga.com/app/propiedades
+UNGGA_CLI_PUBLISH_PATH=https://ungga.com/app/propiedades/nueva
 ```
 
 > Usa cuenta de prueba. Ajusta selectores en `src/steps.mjs` al DOM real de Ungga.
@@ -84,14 +84,24 @@ Campos que el script llena automáticamente:
   `presale`), llena `price` + `currency` y confirma con el botón ✓.
 
 En `prepare_draft` el POC no presiona `PUBLICAR`; guarda borrador con
-"Guardar como borrador". Tras aprobación HITL, `publish_draft` publica el borrador:
+"Guardar como borrador". Preferir `UNGGA_CLI_PUBLISH_PATH` apuntando al wizard
+(`/app/propiedades/nueva`). Si apunta al catálogo, el script intenta abrir
+"Nueva propiedad" y, si no abre el formulario, hace fallback a `/nueva`.
+
+Tras aprobación HITL, `publish_draft` publica el borrador existente:
 
 ```bash
-echo '{"action":"publish_draft","ungga_property_id":"GU-ID_AQUI"}' | npm run poc:publish
+echo '{"action":"publish_draft","ungga_property_id":"GU-ID_AQUI","title":"…"}' | npm run poc:publish
 ```
 
-Abre la ficha → **EDITAR** → pestaña **PUBLICAR** → botón Publicar.
-Con `UNGGA_CLI_DRY_RUN=true` sólo verifica que el botón esté disponible.
+Flujo real: guardar cambios en el editor → catálogo (pestaña Borrador) → abrir
+la ficha cuyo modal muestra el **GU-ID** objetivo → **PUBLICAR** (y diálogo de
+confirmación si aparece) → verificar estado PUBLICADO. No usa la primera ficha
+por título: hay gemelas importadas (p. ej. EasyBroker) con PUBLICAR
+deshabilitado ("gestiona desde tu portal o CRM"); el CLI exige match de GU-ID
+antes de hacer click.
+
+Con `UNGGA_CLI_DRY_RUN=true` no confirma la publicación remota.
 
 La tool `ungga_publish_listing` usa el mismo contrato (`action`: `prepare_draft` |
 `publish_draft`) y mantiene HITL entre fases.

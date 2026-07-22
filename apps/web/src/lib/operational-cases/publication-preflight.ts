@@ -607,6 +607,162 @@ export function looksLikePublicationCredentialAuthFailure(
   return false;
 }
 
+type UnggaPrepareDraftFailureExtras = {
+  commission_verify?: { error?: string | null; persisted?: boolean } | null;
+  last_step?: { step?: string; error?: string | null } | null;
+  commission_verified?: boolean | null;
+};
+
+function unggaPrepareDraftFailureHaystack(
+  error: string | null | undefined,
+  extras?: UnggaPrepareDraftFailureExtras
+): string {
+  const verifyError =
+    typeof extras?.commission_verify?.error === "string"
+      ? extras.commission_verify.error
+      : "";
+  const lastStepError =
+    typeof extras?.last_step?.error === "string" ? extras.last_step.error : "";
+  const lastStepName =
+    typeof extras?.last_step?.step === "string" ? extras.last_step.step : "";
+  return [error ?? "", verifyError, lastStepError, lastStepName]
+    .join("\n")
+    .toLowerCase();
+}
+
+/**
+ * Known Ungga prepare_draft commission failures (before saveAsDraft).
+ * Requires real commission evidence — do NOT treat bare commission_verified=false
+ * as proof (that default falsely labeled navigation/form failures as commission).
+ */
+export function looksLikeUnggaPrepareDraftCommissionFailure(
+  error: string | null | undefined,
+  extras?: UnggaPrepareDraftFailureExtras
+): boolean {
+  const haystack = unggaPrepareDraftFailureHaystack(error, extras);
+  if (!haystack.trim()) return false;
+  // Only treat persisted===false as commission evidence when the haystack
+  // already mentions commission, or commission_verify carries an error string.
+  const verifyError =
+    typeof extras?.commission_verify?.error === "string"
+      ? extras.commission_verify.error.trim()
+      : "";
+  if (extras?.commission_verify?.persisted === false && verifyError) {
+    return true;
+  }
+  return (
+    haystack.includes("commission_input_not_filled") ||
+    haystack.includes("commission_input_not_found") ||
+    haystack.includes("commission_input_value_mismatch") ||
+    haystack.includes("commission_not_persisted") ||
+    haystack.includes("commission_confirm_palomita_failed") ||
+    haystack.includes("commission not verified") ||
+    (haystack.includes("verify_commission") &&
+      (haystack.includes("commission") || haystack.includes("comisi")))
+  );
+}
+
+/**
+ * Any Ungga prepare_draft failure before saveAsDraft (safe to retry; no GU-ID).
+ * Covers form/navigation failures and commission failures.
+ */
+export function looksLikeUnggaPrepareDraftFailure(
+  error: string | null | undefined,
+  extras?: UnggaPrepareDraftFailureExtras
+): boolean {
+  if (looksLikeUnggaPrepareDraftCommissionFailure(error, extras)) return true;
+  const haystack = unggaPrepareDraftFailureHaystack(error, extras);
+  if (!haystack.trim()) return false;
+  return (
+    haystack.includes("no listing fields found") ||
+    haystack.includes("ungga_cli_publish_path") ||
+    haystack.includes("publish path not found") ||
+    haystack.includes("open_create_property") ||
+    haystack.includes("create action did not open") ||
+    haystack.includes("adjust ungga_cli_publish_path") ||
+    haystack.includes("general validation blocked draft") ||
+    haystack.includes("prepare_draft") ||
+    (typeof extras?.last_step?.step === "string" &&
+      /prepare_draft|open_create_property|fill_general|verify_commission/i.test(
+        extras.last_step.step
+      ))
+  );
+}
+
+export function formatUnggaPrepareDraftFailureNotifyText(extras?: {
+  cause?: "commission" | "form" | "generic";
+  commission_expected?: number | null;
+  commission_actual?: number | null;
+  last_step?: { step?: string; ok?: boolean; error?: string } | null;
+  commission_verify?: { error?: string | null; stage?: string | null } | null;
+}): string {
+  const cause =
+    extras?.cause === "commission" || extras?.cause === "form"
+      ? extras.cause
+      : looksLikeUnggaPrepareDraftCommissionFailure(
+            extras?.last_step?.error ?? extras?.commission_verify?.error,
+            {
+              commission_verify: extras?.commission_verify ?? null,
+              last_step: extras?.last_step ?? null,
+            }
+          )
+        ? "commission"
+        : "form";
+  const expected =
+    typeof extras?.commission_expected === "number" &&
+    Number.isFinite(extras.commission_expected)
+      ? extras.commission_expected
+      : 4;
+  const actual =
+    typeof extras?.commission_actual === "number"
+      ? String(extras.commission_actual)
+      : "null";
+  const detailError =
+    typeof extras?.commission_verify?.error === "string" &&
+    extras.commission_verify.error.trim()
+      ? extras.commission_verify.error.trim()
+      : typeof extras?.last_step?.error === "string" &&
+          extras.last_step.error.trim()
+        ? extras.last_step.error.trim()
+        : null;
+  const lines =
+    cause === "commission"
+      ? [
+          `No pude preparar el borrador: no se pudo capturar/verificar la comisión del ${expected}%.`,
+          "",
+          "No hubo publicación y el borrador no se guardó en Ungga.",
+          `Comisión observada: ${actual}%.`,
+        ]
+      : [
+          "No pude preparar el borrador en Ungga: no se pudo abrir/completar el formulario.",
+          "",
+          "No hubo publicación y el borrador no se guardó en Ungga.",
+        ];
+  if (detailError) {
+    lines.push(`Detalle: ${detailError}`);
+  }
+  if (
+    extras?.last_step &&
+    typeof extras.last_step.step === "string" &&
+    extras.last_step.step.trim()
+  ) {
+    lines.push(
+      `Último paso: ${extras.last_step.step}${
+        extras.last_step.ok === false ? " (falló)" : ""
+      }.`
+    );
+  }
+  lines.push(
+    "",
+    "Esto ocurrió antes de guardar el borrador (sin GU-ID). Puedes reintentar la preparación.",
+    "",
+    "Usa los botones:",
+    "• Reintentar preparación",
+    "• Pausar publicación"
+  );
+  return lines.join("\n");
+}
+
 export function formatPublicationCredentialFailureNotifyText(
   destination: PublicationDestination
 ): string {
@@ -641,6 +797,10 @@ export function formatPublicationReviewNotifyText(
     has_draft_artifact?: boolean;
     ungga_property_id?: string | null;
     credential_failure?: boolean;
+    prepare_draft_failure?: boolean;
+    commission_expected?: number | null;
+    commission_actual?: number | null;
+    commission_verify?: { error?: string | null; stage?: string | null } | null;
   }
 ): string {
   const label = destination === "easybroker" ? "EasyBroker" : "Ungga";
@@ -650,6 +810,29 @@ export function formatPublicationReviewNotifyText(
   if (credentialFailure) {
     return formatPublicationCredentialFailureNotifyText(destination);
   }
+  const commissionPrepareFailure =
+    destination === "ungga" &&
+    looksLikeUnggaPrepareDraftCommissionFailure(extras?.last_step?.error, {
+      commission_verify: extras?.commission_verify ?? null,
+      last_step: extras?.last_step ?? null,
+    });
+  const prepareDraftFailure =
+    destination === "ungga" &&
+    (extras?.prepare_draft_failure === true ||
+      commissionPrepareFailure ||
+      looksLikeUnggaPrepareDraftFailure(extras?.last_step?.error, {
+        commission_verify: extras?.commission_verify ?? null,
+        last_step: extras?.last_step ?? null,
+      }));
+  if (prepareDraftFailure && !extras?.has_draft_artifact && !extras?.ungga_property_id) {
+    return formatUnggaPrepareDraftFailureNotifyText({
+      cause: commissionPrepareFailure ? "commission" : "form",
+      commission_expected: extras?.commission_expected,
+      commission_actual: extras?.commission_actual,
+      last_step: extras?.last_step,
+      commission_verify: extras?.commission_verify,
+    });
+  }
   const lines = [
     `Revisión requerida antes de publicar en ${label}`,
     "",
@@ -657,7 +840,23 @@ export function formatPublicationReviewNotifyText(
     "",
     "Incidencias:",
   ];
-  for (const issue of result.issues.filter((i) => i.severity !== "info").slice(0, 8)) {
+  // When prepare_draft failed before save, omit downstream symptoms (missing
+  // GU-ID / unconfirmed photos) so the root cause stays primary.
+  const issues = result.issues.filter((i) => i.severity !== "info");
+  const filteredIssues =
+    prepareDraftFailure
+      ? issues.filter(
+          (i) =>
+            i.code !== "ungga_draft_missing" &&
+            i.code !== "ungga_media_not_submitted" &&
+            i.code !== "ungga_media_not_verified" &&
+            i.code !== "ungga_media_count_mismatch"
+        )
+      : issues;
+  for (const issue of (filteredIssues.length > 0 ? filteredIssues : issues).slice(
+    0,
+    8
+  )) {
     lines.push(`- [${issue.severity}] ${issue.message}`);
   }
   if (extras?.last_step && typeof extras.last_step.step === "string") {
@@ -673,8 +872,9 @@ export function formatPublicationReviewNotifyText(
     );
   }
   if (
-    typeof extras?.expected_image_count === "number" ||
-    typeof extras?.uploaded_image_count === "number"
+    !prepareDraftFailure &&
+    (typeof extras?.expected_image_count === "number" ||
+      typeof extras?.uploaded_image_count === "number")
   ) {
     lines.push(
       `Fotos: esperadas ${extras.expected_image_count ?? "?"}, observadas ${
@@ -693,11 +893,14 @@ export function formatPublicationReviewNotifyText(
   lines.push(
     "",
     "Usa los botones:",
-    extras?.has_draft_artifact || extras?.ungga_property_id
-      ? "- Aprobar y continuar (solo si confirmaste el borrador existente; no recreará si ya hay GU-ID)"
-      : "- Aprobar y continuar (autoriza reintento de create si no hay artifact)",
-    "- Corregir etiquetas/datos",
-    "- Detener y revisar"
+    prepareDraftFailure && !extras?.has_draft_artifact && !extras?.ungga_property_id
+      ? "- Reintentar preparación"
+      : extras?.has_draft_artifact || extras?.ungga_property_id
+        ? "- Aprobar y continuar (solo si confirmaste el borrador existente; no recreará si ya hay GU-ID)"
+        : "- Aprobar y continuar (autoriza reintento de create si no hay artifact)",
+    ...(prepareDraftFailure && !extras?.has_draft_artifact && !extras?.ungga_property_id
+      ? ["- Pausar publicación"]
+      : ["- Corregir etiquetas/datos", "- Detener y revisar"])
   );
   return lines.join("\n");
 }

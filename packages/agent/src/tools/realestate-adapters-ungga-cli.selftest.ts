@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  buildUnggaCliFailureResponse,
   buildUnggaCliToolResponse,
   normalizeUnggaUiFields,
 } from "./realestate-adapters";
@@ -164,6 +165,60 @@ import {
   );
   assert.equal(out.ok, true);
   assert.equal(out.commission_verified, true);
+}
+
+{
+  const out = buildUnggaCliFailureResponse({
+    message: "Command failed: node src/publish-listing.mjs /tmp/listing.json",
+    code: 1,
+    stdout: JSON.stringify({
+      ok: false,
+      mode: "save_draft",
+      error: "Commission not verified: expected 4%, got null",
+      result: {
+        error: "Commission not verified: expected 4%, got null",
+        commission_expected: 4,
+        commission_actual: null,
+        commission_verified: false,
+        commission_verify: {
+          error: "commission_input_not_filled",
+          persisted: false,
+          stage: "fill_input",
+        },
+        expected_image_count: 6,
+        uploaded_image_count: 7,
+        last_step: { step: "verify_commission", ok: false },
+      },
+    }),
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "failed");
+  assert.equal(out.phase, "prepare_draft");
+  assert.match(String(out.error), /Commission not verified/);
+  assert.equal(out.commission_expected, 4);
+  assert.equal(out.commission_actual, null);
+  assert.equal(out.commission_verified, false);
+  assert.equal(out.uploaded_image_count, 7);
+  assert.equal(
+    (out.commission_verify as { error?: string })?.error,
+    "commission_input_not_filled"
+  );
+  assert.equal(
+    (out.last_step as { step?: string })?.step,
+    "verify_commission"
+  );
+  assert.match(String(out.hint), /reintentar la preparación/i);
+  assert.ok(!String(out.error).startsWith("Command failed:"));
+}
+
+{
+  const timeout = buildUnggaCliFailureResponse({
+    message: "TIMEOUT",
+    killed: true,
+    signal: "SIGTERM",
+  });
+  assert.equal(timeout.status, "unknown_outcome");
+  assert.match(String(timeout.hint), /no reintentes prepare_draft/i);
 }
 
 console.log("realestate-adapters-ungga-cli.selftest: ok");

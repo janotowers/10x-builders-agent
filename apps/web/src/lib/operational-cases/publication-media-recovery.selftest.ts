@@ -172,6 +172,28 @@ assert.equal(
   }),
   false
 );
+assert.equal(
+  canSafelyForceRetryUnggaPublish({
+    operation: {
+      status: "failed",
+      operation_type: "publish",
+      error_text:
+        "locator.click: Timeout 8000ms exceeded. element is not enabled. title=Esta propiedad se gestiona desde tu portal o CRM",
+    },
+  }),
+  true
+);
+assert.equal(
+  canSafelyForceRetryUnggaPublish({
+    operation: {
+      status: "failed",
+      operation_type: "publish",
+      error_text:
+        "ungga_publish_button_disabled:Esta propiedad se gestiona desde tu portal o CRM",
+    },
+  }),
+  true
+);
 
 const now = Date.parse("2026-07-14T01:00:00.000Z");
 assert.equal(isCaseProcessingLeaseActive(null, now), false);

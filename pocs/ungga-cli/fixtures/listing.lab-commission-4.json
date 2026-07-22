@@ -1,0 +1,42 @@
+{
+  "action": "prepare_draft",
+  "title": "POC lab commission 4% - DELETE ME",
+  "description": "Ficha de laboratorio Playwright (Gu OS). Validar comisión 4% y media. No usar en operación real.",
+  "operation": "sale",
+  "property_type": "Departamento",
+  "price": 5500000,
+  "currency": "MXN",
+  "construction_m2": 120,
+  "land_m2": 150,
+  "land_unit": "m²",
+  "condition": "Bueno",
+  "age_range": "1-5 años",
+  "country": "México",
+  "address": "Av. Acueducto 6050, Lomas Altas, Zapopan, Jalisco, México",
+  "location": {
+    "zona": "Lomas Altas, Zapopan"
+  },
+  "bedrooms": 3,
+  "bathrooms_full": 2,
+  "bathrooms_half": 1,
+  "parking_spaces": 2,
+  "covered_parking": true,
+  "floor": "3",
+  "location_type": "Residencial",
+  "current_status": "Habitable",
+  "amenities": ["Alberca", "Jardín"],
+  "operations": [
+    { "type": "sale", "price": 5500000, "currency": "MXN", "commission_pct": 4 }
+  ],
+  "commission_pct": 4,
+  "collaboration_enabled": true,
+  "image_urls": [
+    "https://picsum.photos/seed/gu-lab-1/800/600.jpg",
+    "https://picsum.photos/seed/gu-lab-2/800/600.jpg",
+    "https://picsum.photos/seed/gu-lab-3/800/600.jpg",
+    "https://picsum.photos/seed/gu-lab-4/800/600.jpg",
+    "https://picsum.photos/seed/gu-lab-5/800/600.jpg",
+    "https://picsum.photos/seed/gu-lab-6/800/600.jpg"
+  ],
+  "case_id": "poc-lab-commission-4"
+}

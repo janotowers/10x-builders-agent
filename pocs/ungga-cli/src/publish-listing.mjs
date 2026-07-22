@@ -134,6 +134,12 @@ function normalizeListing(input) {
         : null,
     operations: normalizeOperations(ui),
     commission_pct: numberOrNull(ui.commission_pct),
+    collaboration_enabled:
+      typeof ui.collaboration_enabled === "boolean"
+        ? ui.collaboration_enabled
+        : undefined,
+    exclusive:
+      typeof ui.exclusive === "boolean" ? ui.exclusive : undefined,
     image_urls: Array.isArray(ui.image_urls) ? ui.image_urls : [],
     case_id: typeof ui.case_id === "string" ? ui.case_id : undefined,
   };
@@ -220,9 +226,15 @@ try {
         propertyId,
         dryRun,
         listing: {
+          title:
+            typeof rawInput.title === "string" ? rawInput.title.trim() : undefined,
           commission_pct:
             typeof rawInput.commission_pct === "number"
               ? rawInput.commission_pct
+              : undefined,
+          collaboration_enabled:
+            typeof rawInput.collaboration_enabled === "boolean"
+              ? rawInput.collaboration_enabled
               : undefined,
           operations: Array.isArray(rawInput.operations)
             ? rawInput.operations

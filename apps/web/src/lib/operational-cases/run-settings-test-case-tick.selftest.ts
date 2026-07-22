@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
   classifyContractGenerationFailureFromToolCalls,
+  contractGenerationFailureNotify,
   deriveControlledE2EStatusForTest,
+  isPriceApprovedForContract,
   listingDescriptionReviewNeedsRegeneration,
   missingContractFieldsFromToolCalls,
   missingListingDescriptionIngredientsFromToolCalls,
@@ -204,5 +206,46 @@ assert.equal(
   } as never),
   false
 );
+
+// Copy dirigido al asesor NUNCA debe mencionar «Revisar avance» (control
+// interno del laboratorio, no lenguaje de producto).
+for (const kind of [
+  "template_missing",
+  "titularidad_review_required",
+  "owner_corroboration_incomplete",
+  "pending_confirmation",
+  "infrastructure_error",
+  "not_attempted",
+  "unknown",
+] as const) {
+  const notice = contractGenerationFailureNotify({
+    failure: { kind, detail: kind === "infrastructure_error" ? "502" : undefined },
+    caseId: "case-1",
+  });
+  assert.ok(
+    !/Revisar avance/i.test(notice.text),
+    `contract failure copy (${kind}) must not mention «Revisar avance»: ${notice.text}`
+  );
+  assert.ok(notice.text.trim().length > 0, `contract failure copy (${kind}) must not be empty`);
+}
+// Fallos recuperables deben comunicar reintento automático (no acción TI).
+assert.match(
+  contractGenerationFailureNotify({
+    failure: { kind: "infrastructure_error" },
+    caseId: "case-1",
+  }).text,
+  /autom[aá]tic/i
+);
+
+// Elegibilidad de render determinista: solo con precio aprobado.
+assert.equal(
+  isPriceApprovedForContract({ pricing_proposal: { approval_status: "approved" } }),
+  true
+);
+assert.equal(
+  isPriceApprovedForContract({ pricing_proposal: { approval_status: "pending" } }),
+  false
+);
+assert.equal(isPriceApprovedForContract({}), false);
 
 console.log("run-settings-test-case-tick.selftest: ok");

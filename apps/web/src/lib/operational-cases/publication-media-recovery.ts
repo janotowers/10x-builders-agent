@@ -126,7 +126,12 @@ export function canSafelyForceRetryUnggaPublish(params: {
   if (
     error === "ungga_publish_listing_not_called" ||
     error.endsWith("_not_called") ||
-    error.includes("publication_execution_result_missing")
+    error.includes("publication_execution_result_missing") ||
+    /ungga_publish_button_disabled|element is not enabled|gestiona desde tu portal o crm|open_modal_guid_mismatch|guid_mismatch/i.test(
+      error
+    ) ||
+    (/locator\.click/i.test(error) &&
+      (/timeout/i.test(error) || /not enabled/i.test(error)))
   ) {
     return true;
   }
@@ -141,6 +146,19 @@ export function canSafelyForceRetryUnggaPublish(params: {
         : null;
     if (result?.side_effect_started === false) return true;
     if (result?.side_effect_started === true) return false;
+    const attemptError =
+      typeof result?.error === "string"
+        ? result.error
+        : typeof result?.message === "string"
+          ? result.message
+          : "";
+    if (
+      /ungga_publish_button_disabled|element is not enabled|gestiona desde tu portal o crm|open_modal_guid_mismatch/i.test(
+        attemptError
+      )
+    ) {
+      return true;
+    }
     // No result means the tool never ran.
     return result == null;
   });

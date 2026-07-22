@@ -37,6 +37,8 @@ function parsePublicationReviewDecision(text: string): {
       normalized
     ) ||
     normalized === "aprobar y continuar" ||
+    normalized.includes("reintentar preparación") ||
+    normalized.includes("reintentar preparacion") ||
     /ya actualic[eé].*api key/.test(normalized) ||
     normalized.includes("ya actualicé la api key") ||
     normalized.includes("ya actualice la api key")
@@ -77,7 +79,7 @@ function parsePublicationReviewDecision(text: string): {
   return {
     intent: "unclear",
     reason:
-      "No entendí. Usa «Aprobar y continuar» / «Ya actualicé la API key — reintentar», «Detener y revisar» / «Pausar publicación», o envía JSON con labels corregidas.",
+      "No entendí. Usa «Aprobar y continuar» / «Reintentar preparación» / «Ya actualicé la API key — reintentar», «Detener y revisar» / «Pausar publicación», o envía JSON con labels corregidas.",
   };
 }
 
@@ -137,10 +139,19 @@ export function isPreSideEffectUnggaPublishError(
 ): boolean {
   const error = typeof errorText === "string" ? errorText.trim() : "";
   if (!error) return false;
+  const lower = error.toLowerCase();
   return (
     error === "ungga_publish_listing_not_called" ||
     error.endsWith("_not_called") ||
-    error.includes("publication_execution_result_missing")
+    error.includes("publication_execution_result_missing") ||
+    // CLI found a modal but never completed publish (wrong twin card / disabled CTA).
+    lower.includes("ungga_publish_button_disabled") ||
+    lower.includes("element is not enabled") ||
+    lower.includes("gestiona desde tu portal o crm") ||
+    lower.includes("open_modal_guid_mismatch") ||
+    lower.includes("guid_mismatch") ||
+    (lower.includes("locator.click") &&
+      (lower.includes("timeout") || lower.includes("not enabled")))
   );
 }
 

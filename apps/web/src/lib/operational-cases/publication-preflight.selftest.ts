@@ -3,7 +3,10 @@ import { emptyPublicationState, applyPublicationEvent } from "./publication-work
 import {
   formatPublicationCredentialFailureNotifyText,
   formatPublicationReviewNotifyText,
+  formatUnggaPrepareDraftFailureNotifyText,
   looksLikePublicationCredentialAuthFailure,
+  looksLikeUnggaPrepareDraftCommissionFailure,
+  looksLikeUnggaPrepareDraftFailure,
   runPublicationPreflight,
 } from "./publication-preflight";
 
@@ -291,5 +294,153 @@ const credViaReview = formatPublicationReviewNotifyText(
 );
 assert.ok(credViaReview.includes("credencial no es válida"));
 assert.ok(!credViaReview.includes("listing_id"));
+
+assert.equal(
+  looksLikeUnggaPrepareDraftCommissionFailure(
+    "Commission not verified: expected 4%, got null",
+    {
+      commission_verify: { error: "commission_input_not_filled", persisted: false },
+      last_step: { step: "verify_commission", error: "commission_input_not_filled" },
+      commission_verified: false,
+    }
+  ),
+  true
+);
+assert.equal(
+  looksLikeUnggaPrepareDraftCommissionFailure("commission_input_not_filled"),
+  true
+);
+assert.equal(
+  looksLikeUnggaPrepareDraftCommissionFailure("timeout while uploading"),
+  false
+);
+// Bare commission_verified=false must NOT label navigation/form failures as commission.
+assert.equal(
+  looksLikeUnggaPrepareDraftCommissionFailure(
+    "No listing fields found at https://ungga.com/app/propiedades. Adjust UNGGA_CLI_PUBLISH_PATH/selectors.",
+    {
+      last_step: {
+        step: "prepare_draft",
+        error:
+          "No listing fields found at https://ungga.com/app/propiedades. Adjust UNGGA_CLI_PUBLISH_PATH/selectors.",
+      },
+      commission_verified: false,
+    }
+  ),
+  false
+);
+assert.equal(
+  looksLikeUnggaPrepareDraftFailure(
+    "No listing fields found at https://ungga.com/app/propiedades. Adjust UNGGA_CLI_PUBLISH_PATH/selectors.",
+    {
+      last_step: {
+        step: "prepare_draft",
+        error:
+          "No listing fields found at https://ungga.com/app/propiedades. Adjust UNGGA_CLI_PUBLISH_PATH/selectors.",
+      },
+    }
+  ),
+  true
+);
+assert.equal(
+  looksLikeUnggaPrepareDraftFailure("commission_input_not_filled"),
+  true
+);
+const prepareFailText = formatUnggaPrepareDraftFailureNotifyText({
+  cause: "commission",
+  commission_expected: 4,
+  commission_actual: null,
+  last_step: { step: "verify_commission", ok: false, error: "commission_input_not_filled" },
+  commission_verify: { error: "commission_input_not_filled", stage: "fill_input" },
+});
+assert.ok(prepareFailText.includes("No pude preparar el borrador"));
+assert.ok(prepareFailText.includes("comisión del 4%"));
+assert.ok(prepareFailText.includes("Reintentar preparación"));
+assert.ok(prepareFailText.includes("Pausar publicación"));
+assert.ok(!prepareFailText.includes("Corregir etiquetas"));
+assert.ok(!prepareFailText.includes("No hay GU-ID de borrador"));
+const formFailText = formatUnggaPrepareDraftFailureNotifyText({
+  cause: "form",
+  last_step: {
+    step: "prepare_draft",
+    ok: false,
+    error:
+      "No listing fields found at https://ungga.com/app/propiedades. Adjust UNGGA_CLI_PUBLISH_PATH/selectors.",
+  },
+});
+assert.ok(formFailText.includes("no se pudo abrir/completar el formulario"));
+assert.ok(formFailText.includes("No listing fields found"));
+assert.ok(formFailText.includes("Reintentar preparación"));
+assert.ok(!formFailText.includes("comisión del"));
+assert.ok(!formFailText.includes("Comisión observada"));
+const prepareViaReview = formatPublicationReviewNotifyText(
+  "ungga",
+  {
+    status: "review_required",
+    summary: "Fallo prepare_draft",
+    issues: [
+      {
+        code: "ungga_draft_missing",
+        field: "artifact.ungga_property_id",
+        severity: "critical",
+        message: "No hay GU-ID de borrador Ungga para publicar.",
+      },
+      {
+        code: "ungga_media_not_verified",
+        field: "media.verified",
+        severity: "critical",
+        message: "Ungga no verificó las 6 fotos esperadas antes de publicar.",
+      },
+    ],
+  },
+  {
+    prepare_draft_failure: true,
+    has_draft_artifact: false,
+    ungga_property_id: null,
+    commission_expected: 4,
+    commission_actual: null,
+    last_step: {
+      step: "verify_commission",
+      ok: false,
+      error: "Commission not verified: expected 4%, got null",
+    },
+    commission_verify: { error: "commission_input_not_filled" },
+  }
+);
+assert.ok(prepareViaReview.includes("No pude preparar el borrador"));
+assert.ok(prepareViaReview.includes("comisión del 4%"));
+assert.ok(!prepareViaReview.includes("No hay GU-ID de borrador"));
+assert.ok(!prepareViaReview.includes("fotos esperadas"));
+assert.ok(prepareViaReview.includes("Reintentar preparación"));
+const formViaReview = formatPublicationReviewNotifyText(
+  "ungga",
+  {
+    status: "review_required",
+    summary: "Fallo prepare_draft",
+    issues: [
+      {
+        code: "ungga_draft_missing",
+        field: "artifact.ungga_property_id",
+        severity: "critical",
+        message: "No hay GU-ID de borrador Ungga para publicar.",
+      },
+    ],
+  },
+  {
+    prepare_draft_failure: true,
+    has_draft_artifact: false,
+    ungga_property_id: null,
+    last_step: {
+      step: "prepare_draft",
+      ok: false,
+      error:
+        "No listing fields found at https://ungga.com/app/propiedades. Adjust UNGGA_CLI_PUBLISH_PATH/selectors.",
+    },
+  }
+);
+assert.ok(formViaReview.includes("no se pudo abrir/completar el formulario"));
+assert.ok(formViaReview.includes("No listing fields found"));
+assert.ok(!formViaReview.includes("comisión del"));
+assert.ok(formViaReview.includes("Reintentar preparación"));
 
 console.log("publication-preflight.selftest: ok");

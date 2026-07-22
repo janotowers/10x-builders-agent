@@ -6,8 +6,10 @@ import {
   evaluatePropertyAdvanceGate,
   formatListingDescriptionReviewNotifyText,
   listingDescriptionDraftContentFromContext,
+  renderCommissionContractForCase,
   runAgent,
   runDocumentFieldExtraction,
+  type ToolContext,
 } from "@agents/agent";
 import {
   createToolCall,
@@ -52,6 +54,7 @@ import {
   requestPublicationProgress,
   type PublicationExecutionResult,
 } from "@/lib/operational-cases/publication-runner";
+import { unggaMediaCountSatisfied } from "@/lib/operational-cases/publication-remote-snapshot";
 import type { PublicationMachineAction } from "@/lib/operational-cases/publication-workflow";
 import {
   buildContractDraftDownloadUrl,
@@ -71,13 +74,14 @@ import {
   PHOTOS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
   RAW_PHOTOS_MIN_COUNT,
 } from "@/lib/operational-cases/photo-batch-completion";
+import { resolvePropertyDisplayLabel } from "@/lib/operational-cases/property-display-label";
 import { telegramChatIdFromCase } from "@/lib/operational-cases/settings-test-telegram-lab";
 
 type PostAgentInvariantAction = Awaited<
   ReturnType<typeof applyPropertyOptioningPostAgentInvariants>
 >["action"];
 
-type TurnToolCallRow = {
+export type TurnToolCallRow = {
   tool_name: string;
   status: string;
   result_json: Record<string, unknown> | null;
@@ -119,11 +123,20 @@ export function classifyPublicationExecutionFromToolCalls(
       : typeof result.message === "string"
         ? result.message
         : `${toolName}_${call.status}`;
+  // Playwright action timeouts (e.g. click on disabled PUBLICAR) are known
+  // failures, not process kill / unknown external outcomes.
+  const knownPlaywrightActionFailure =
+    /element is not enabled|ungga_publish_button_disabled|gestiona desde tu portal o crm|open_modal_guid_mismatch/i.test(
+      error
+    ) ||
+    (/locator\.(click|fill|check)/i.test(error) &&
+      /timeout \d+ms exceeded/i.test(error));
   const unknown =
     result.status === "unknown_outcome" ||
-    /\b(timeout|timed out|killed|kill signal|sigterm|sigkill|aborted|econnreset|socket hang up)\b/i.test(
-      error
-    );
+    (!knownPlaywrightActionFailure &&
+      /\b(timeout|timed out|killed|kill signal|sigterm|sigkill|aborted|econnreset|socket hang up)\b/i.test(
+        error
+      ));
   if (
     call.status === "failed" ||
     result.ok === false ||
@@ -163,7 +176,7 @@ export function classifyPublicationExecutionFromToolCalls(
         typeof expected === "number" &&
         expected > 0 &&
         result.images_verified !== true &&
-        uploaded !== expected
+        !unggaMediaCountSatisfied(uploaded, expected)
       ) {
         return {
           status: "failed",
@@ -340,7 +353,7 @@ function summarizeContractGenerationError(raw: string | undefined): string | und
   }
   // Avoid dumping HTML bodies into Telegram/web notices.
   if (/<html[\s>]/i.test(raw) || raw.length > 180) {
-    return "error de infraestructura al renderizar el DOCX. Reintenta con «Revisar avance»";
+    return "error temporal de infraestructura al renderizar el DOCX";
   }
   return raw;
 }
@@ -413,55 +426,360 @@ export function classifyContractGenerationFailureFromToolCalls(
   };
 }
 
-function contractGenerationFailureNotify(params: {
+export function contractGenerationFailureNotify(params: {
   failure: { kind: ContractGenerationFailureKind; detail?: string };
   caseId: string;
 }): { kind: string; text: string } {
+  // Copy dirigido al asesor (Telegram/web chat). NO menciona «Revisar avance»
+  // (control interno de laboratorio). Los fallos recuperables indican reintento
+  // automático; los que requieren acción humana la piden en lenguaje de producto.
   switch (params.failure.kind) {
     case "template_missing":
       return {
         kind: "contract_template_missing",
         text:
-          "No pude generar el borrador del contrato: falta la plantilla DOCX `commission_contract_template` en la cuenta. Súbela en Preparación operativa y pulsa «Revisar avance».",
+          "No pude generar el borrador del contrato: falta la plantilla DOCX de contrato de comisión en la cuenta. Súbela en Preparación operativa y el borrador se generará en cuanto esté disponible.",
       };
     case "titularidad_review_required":
       return {
         kind: "titularidad_review",
         text:
-          "No pude generar el contrato porque la titularidad no está verificada (desajuste entre documentos). Confirma si avanzamos con override o corrige la identificación/comprobante, y luego pulsa «Revisar avance».",
+          "No pude generar el contrato porque la titularidad aún no está verificada (hay un desajuste entre los documentos). Confirma si avanzamos de todos modos o corrige la identificación/comprobante para continuar.",
       };
     case "owner_corroboration_incomplete":
       return {
         kind: "case_update",
         text:
-          "No pude generar el contrato: falta terminar la extracción de identificación/comprobante del propietario. Pulsa «Revisar avance» para reintentar la extracción y el borrador.",
+          "Estoy terminando de verificar la identificación/comprobante del propietario para armar el contrato. Lo reintento automáticamente en cuanto quede lista.",
       };
     case "pending_confirmation":
       return {
         kind: "case_update",
         text:
-          "La generación del contrato quedó pendiente de aprobación humana (HITL). Aprueba la tool en Pendientes y continúa.",
+          "La generación del contrato quedó pendiente de tu aprobación. Apruébala en Pendientes para continuar.",
       };
     case "infrastructure_error":
       return {
         kind: "case_update",
         text: params.failure.detail
-          ? `No pude generar el borrador del contrato (${params.failure.detail}). Pulsa «Revisar avance» para reintentar.`
-          : "No pude generar el borrador del contrato por un error temporal de infraestructura. Pulsa «Revisar avance» para reintentar.",
+          ? `No pude generar el borrador del contrato (${params.failure.detail}). Lo reintento automáticamente en unos minutos.`
+          : "No pude generar el borrador del contrato por un error temporal. Lo reintento automáticamente en unos minutos.",
       };
     case "not_attempted":
       return {
         kind: "case_update",
         text:
-          "El caso avanzó a contrato, pero en este tick no se generó el borrador DOCX. Pulsa «Revisar avance» para preparar el contrato de comisión.",
+          "Estoy preparando el borrador del contrato de comisión. Te aviso en cuanto esté listo para tu revisión.",
       };
     default:
       return {
         kind: "case_update",
-        text: params.failure.detail
-          ? `No pude verificar el borrador del contrato (${params.failure.detail}). Pulsa «Revisar avance» para reintentar.`
-          : "No pude verificar el borrador del contrato (falta render real). Pulsa «Revisar avance» para reintentar.",
+        text:
+          "No pude generar el borrador del contrato por un error temporal. Lo reintento automáticamente en unos minutos.",
       };
+  }
+}
+
+export function isPriceApprovedForContract(context: Record<string, unknown>): boolean {
+  const pricing = isRecord(context.pricing_proposal)
+    ? context.pricing_proposal
+    : null;
+  return pricing?.approval_status === "approved";
+}
+
+/** Ensure `contract_review` notify + event exist once a real draft is stored. */
+async function ensureContractReviewNotification(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  caseId: string,
+  source: string
+): Promise<void> {
+  const hasUnreadReview = await hasUnreadContractReviewNotification(
+    db,
+    userId,
+    caseId
+  );
+  if (hasUnreadReview) return;
+  const contractUrl = buildContractDraftDownloadUrl(caseId);
+  await notify(
+    db,
+    userId,
+    {
+      text: `Borrador de contrato listo para revisión.\n\nDescargar borrador del contrato: ${contractUrl}\n\nResponde “mándalo al dueño” o “pedir cambios”, o usa los botones.`,
+      kind: "contract_review",
+      data: {
+        case_id: caseId,
+        contract_draft_ready: true,
+        contract_draft_url: contractUrl,
+      },
+    },
+    "normal"
+  );
+  await insertOperationalCaseEvent(db, {
+    caseId,
+    eventType: "human_decision",
+    actor: "system",
+    stepKey: "contract_pending",
+    payload: {
+      kind: "contract_review_requested",
+      source,
+      doc_url: contractUrl,
+    },
+  });
+}
+
+/** Ensure `contract_data_review` notify + event exist when commercial data is missing. */
+async function ensureContractDataReviewNotification(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  caseId: string;
+  source: string;
+  toolCalls: TurnToolCallRow[];
+  context: Record<string, unknown>;
+  missingContractFields: string[];
+}): Promise<void> {
+  const { db, userId, caseId, source } = params;
+  const hasDraft = contractDraftOutputPathFromContext(params.context) != null;
+  if (!hasDraft) {
+    await dismissPrematureContractReviewNotifications(db, userId, caseId);
+  }
+  const hasUnreadContractData = await hasUnreadContractDataNotification(
+    db,
+    userId,
+    caseId
+  );
+  if (hasUnreadContractData) return;
+  await dismissUnreadContractGenerationErrorNotifications(db, userId, caseId);
+  const commercial = resolveContractDataReviewCommercialState({
+    toolCalls: params.toolCalls,
+    context: params.context,
+  });
+  const requiredMissing = commercial.missing.filter(
+    (item) => item.optional !== true
+  );
+  const missingKeys =
+    requiredMissing.length > 0
+      ? requiredMissing.map((item) => item.key)
+      : params.missingContractFields;
+  const notifyText =
+    requiredMissing.length > 0 || commercial.known.length > 0
+      ? buildContractCommercialMinimumsSummaryMessage(commercial)
+      : buildContractDataReviewNotifyText(missingKeys);
+  await notify(
+    db,
+    userId,
+    {
+      text: notifyText,
+      kind: "contract_data_review",
+      data: {
+        case_id: caseId,
+        missing_required_fields: missingKeys,
+        missing_fields: commercial.missing,
+        known_fields: commercial.known,
+        source,
+      },
+    },
+    "high"
+  );
+  await insertOperationalCaseEvent(db, {
+    caseId,
+    eventType: "human_decision",
+    actor: "system",
+    stepKey: "contract_pending",
+    payload: {
+      kind: "contract_data_review_requested",
+      source,
+      missing_required_fields: missingKeys,
+    },
+  });
+}
+
+/** Emit the observability event + advisor notice for a contract generation failure. */
+async function emitContractGenerationFailure(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  caseId: string;
+  source: string;
+  failure: { kind: ContractGenerationFailureKind; detail?: string };
+}): Promise<void> {
+  const { db, userId, caseId, source, failure } = params;
+  await insertOperationalCaseEvent(db, {
+    caseId,
+    eventType: "state_changed",
+    actor: "system",
+    stepKey: "contract_pending",
+    payload: {
+      kind: "contract_generation_unverified",
+      source,
+      reason: "missing_generate_document_render",
+      failure_kind: failure.kind,
+      ...(failure.detail ? { failure_detail: failure.detail } : {}),
+    },
+  });
+  const notifyPayload = contractGenerationFailureNotify({ failure, caseId });
+  await notify(
+    db,
+    userId,
+    {
+      text: notifyPayload.text,
+      kind: notifyPayload.kind,
+      data: { case_id: caseId, source, failure_kind: failure.kind },
+    },
+    "high"
+  );
+}
+
+/**
+ * Manejo determinista compartido del paso de contrato tras un turno del agente
+ * (cron y tick E2E usan EXACTAMENTE esta función). Garantiza paridad
+ * laboratorio/producción: si ya hay borrador asegura `contract_review`; si
+ * faltan datos comerciales asegura `contract_data_review`; y si el agente no
+ * generó el DOCX pese a tener precio aprobado + datos completos, renderiza el
+ * contrato de forma determinista (PATTERN_DETERMINISTIC_AUTO_REMEDIATION).
+ *
+ * Devuelve `humanWait=true` cuando el resultado deja el caso esperando una
+ * acción/decisión humana (el cron NO debe re-armar next_action_at en ese caso).
+ */
+export async function applyPostAgentContractHandling(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
+  opCase: OperationalCase;
+  toolCalls: TurnToolCallRow[];
+  pendingConfirmation: boolean;
+  source: string;
+  toolContext: {
+    sessionId: string;
+    enabledTools: Awaited<ReturnType<typeof getUserToolSettings>>;
+    integrations: Awaited<ReturnType<typeof getUserIntegrations>>;
+    userTimezone?: string;
+  };
+}): Promise<{ handled: boolean; humanWait: boolean }> {
+  const { db, userId, source, opCase } = params;
+  if (!opCase || opCase.current_step !== "contract_pending") {
+    return { handled: false, humanWait: false };
+  }
+  // Un HITL pendiente del agente es dueño del turno; no interferimos.
+  if (params.pendingConfirmation) {
+    return { handled: false, humanWait: false };
+  }
+
+  const caseId = opCase.id;
+  const context = contextRecord(opCase);
+  const missingContractFields = missingContractFieldsFromToolCalls(
+    params.toolCalls
+  );
+
+  // 1) Ya existe borrador real → asegurar revisión de contrato.
+  if (contractDraftOutputPathFromContext(opCase.context_jsonb) != null) {
+    await ensureContractReviewNotification(db, userId, caseId, source);
+    return { handled: true, humanWait: true };
+  }
+
+  // 2) Faltan datos comerciales (por tool call o por el evaluador en vivo) →
+  //    asegurar contract_data_review. Cubre también el caso en que el agente
+  //    nunca llamó la tool pero los datos aún están incompletos.
+  const propertyData = isRecord(context.property_data)
+    ? (context.property_data as Record<string, unknown>)
+    : {};
+  const externalContact = isRecord(opCase.external_contact_jsonb)
+    ? (opCase.external_contact_jsonb as Record<string, unknown>)
+    : {};
+  const liveCommercial = evaluateContractCommercialMinimums({
+    context,
+    propertyData,
+    externalContact,
+    requireConfirmation: true,
+  });
+  const liveRequiredMissing = liveCommercial.missing.filter(
+    (item) => item.optional !== true
+  );
+  if (missingContractFields.length > 0 || liveRequiredMissing.length > 0) {
+    await ensureContractDataReviewNotification({
+      db,
+      userId,
+      caseId,
+      source,
+      toolCalls: params.toolCalls,
+      context,
+      missingContractFields,
+    });
+    return { handled: true, humanWait: true };
+  }
+
+  // 3) Precio no aprobado → no es nuestro trabajo generar; lo dueña el flujo.
+  if (!isPriceApprovedForContract(context)) {
+    return { handled: false, humanWait: false };
+  }
+
+  // 4) Trabajo mecánico → código: render determinista del contrato.
+  ensureAgentToolDepsWired();
+  const ctx: ToolContext = {
+    db,
+    userId,
+    sessionId: params.toolContext.sessionId,
+    channel: "case_runner",
+    enabledTools: params.toolContext.enabledTools,
+    integrations: params.toolContext.integrations,
+    userTimezone: params.toolContext.userTimezone,
+  };
+  const result = await renderCommissionContractForCase(ctx, { caseId });
+
+  switch (result.kind) {
+    case "rendered":
+      await ensureContractReviewNotification(db, userId, caseId, source);
+      return { handled: true, humanWait: true };
+    case "missing_required_data": {
+      const refreshed = (await getOperationalCase(db, caseId)) ?? opCase;
+      await ensureContractDataReviewNotification({
+        db,
+        userId,
+        caseId,
+        source,
+        toolCalls: params.toolCalls,
+        context: contextRecord(refreshed),
+        missingContractFields: result.missingRequiredFields,
+      });
+      return { handled: true, humanWait: true };
+    }
+    case "titularidad_review_required":
+      await emitContractGenerationFailure({
+        db,
+        userId,
+        caseId,
+        source,
+        failure: { kind: "titularidad_review_required", detail: result.detail },
+      });
+      return { handled: true, humanWait: true };
+    case "template_missing":
+      await emitContractGenerationFailure({
+        db,
+        userId,
+        caseId,
+        source,
+        failure: { kind: "template_missing", detail: result.hint },
+      });
+      return { handled: true, humanWait: true };
+    case "owner_corroboration_incomplete":
+      await emitContractGenerationFailure({
+        db,
+        userId,
+        caseId,
+        source,
+        failure: { kind: "owner_corroboration_incomplete" },
+      });
+      // Recuperable de forma automática: el cron puede reintentar.
+      return { handled: true, humanWait: false };
+    case "infrastructure_error":
+    case "failed":
+    default:
+      await emitContractGenerationFailure({
+        db,
+        userId,
+        caseId,
+        source,
+        failure: { kind: "infrastructure_error" },
+      });
+      return { handled: true, humanWait: false };
   }
 }
 
@@ -620,17 +938,8 @@ async function hasUnreadPhotosUploadRequestedNotification(
 }
 
 function propertyLabelFromCaseContext(context: Record<string, unknown>): string | null {
-  const propertyData =
-    context.property_data &&
-    typeof context.property_data === "object" &&
-    !Array.isArray(context.property_data)
-      ? (context.property_data as Record<string, unknown>)
-      : {};
-  for (const key of ["property_title", "address", "legal_address"] as const) {
-    const value = propertyData[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
+  const label = resolvePropertyDisplayLabel(context, { fallback: "" });
+  return label.trim() ? label : null;
 }
 
 /** Descarta listing_description_review prematuro cuando aún no hay borrador. */
@@ -948,7 +1257,7 @@ function buildCaseE2ETickMessage(
             ? "Acción esperada para este paso: antes de pedir documentos, solicita al asesor elegir destino («interno» o «externo») con notify_user(kind=case_update). No envíes solicitud documental todavía."
             : documentRequestTarget === "external_contact"
             ? "Acción esperada para este paso: usa request-property-documents, envía el mensaje inicial de solicitud de documentos al contacto por Telegram, registra reminder_sent con purpose=initial_request y deja el caso en waiting_external / awaiting_documents."
-            : "Acción esperada para este paso: NO contactes al dueño por Telegram. Usa notify_user(kind=case_update) para pedir al asesor interno que suba documentos al caso (web, Telegram interno o panel de casos) y confirme con “listo” cuando termine.",
+            : "Acción esperada para este paso: NO contactes al dueño por Telegram. Usa notify_user(kind=documents_upload_requested) para pedir al asesor interno que suba documentos aquí en el chat y confirme con “listo” (o Terminé de subir) cuando termine.",
           explicitDocumentRequestTarget == null
             ? "Si el asesor responde «interno», registra document_request_target=internal_user. Si responde «externo», registra document_request_target=external_contact y entonces sí solicita documentos al contacto."
             : documentRequestTarget === "external_contact"
@@ -1299,6 +1608,8 @@ export async function runSettingsTestCaseAgentTick(
       opCase.id,
       options?.source ?? "case_tick_publication_entry",
       {
+        // Settings/E2E run route already took the processing lease with skipLock.
+        skipLock: options?.skipLock === true,
         runAgentTick: createPublicationRunnerOwnedAgentTick(
           db,
           userId,
@@ -1669,8 +1980,6 @@ export async function runSettingsTestCaseAgentTick(
   const caseAfterDeterministicFallback = invariantResult.case ?? afterAgent;
   let caseForFinalUpdate = caseAfterDeterministicFallback;
   const turnToolCalls = await listTurnToolCalls(db, agentResult.turnId);
-  const hasRenderedContractDraft = hasRenderedContractDraftFromToolCalls(turnToolCalls);
-  const missingContractFields = missingContractFieldsFromToolCalls(turnToolCalls);
   const missingListingIngredients =
     missingListingDescriptionIngredientsFromToolCalls(turnToolCalls);
   const draftedListingThisTurn = hasListingDescriptionDraftFromToolCalls(turnToolCalls);
@@ -1678,160 +1987,33 @@ export async function runSettingsTestCaseAgentTick(
     hasEasybrokerUploadFromToolCalls(turnToolCalls);
   const easybrokerUploadFailure =
     hasEasybrokerUploadFailureFromToolCalls(turnToolCalls);
-  const contractDraft = parseContractDraftFromContext(
-    caseAfterDeterministicFallback?.context_jsonb ?? null
-  );
-  const hasContractDraftOutputPath = Boolean(contractDraft?.output_path?.trim());
   const listingDraftContent = listingDescriptionDraftContentFromContext(
     caseAfterDeterministicFallback?.context_jsonb ?? null
   );
   let responsePreviewForEvent: string | null =
     agentResult.response?.slice(0, 500) ?? null;
-  if (
-    caseAfterDeterministicFallback?.current_step === "contract_pending" &&
-    missingContractFields.length === 0 &&
-    !hasContractDraftOutputPath &&
-    !hasRenderedContractDraft
-  ) {
+  // Manejo determinista compartido del paso de contrato (paridad lab/prod).
+  const contractHandling = await applyPostAgentContractHandling({
+    db,
+    userId,
+    opCase: caseAfterDeterministicFallback ?? fresh,
+    toolCalls: turnToolCalls,
+    pendingConfirmation: Boolean(agentResult.pendingConfirmation),
+    source: options?.source ?? "settings_test_case_tick",
+    toolContext: {
+      sessionId: session.id,
+      enabledTools: toolSettings,
+      integrations,
+      userTimezone: profile.timezone,
+    },
+  });
+  if (contractHandling.handled) {
     responsePreviewForEvent = null;
-    const failure = classifyContractGenerationFailureFromToolCalls(turnToolCalls);
-    await insertOperationalCaseEvent(db, {
-      caseId: fresh.id,
-      eventType: "state_changed",
-      actor: "system",
-      stepKey: "contract_pending",
-      payload: {
-        kind: "contract_generation_unverified",
-        source: options?.source ?? "settings_test_case_tick",
-        reason: "missing_generate_document_render",
-        failure_kind: failure.kind,
-        ...(failure.detail ? { failure_detail: failure.detail } : {}),
-      },
-    });
-    if (!agentResult.pendingConfirmation) {
-      const notifyPayload = contractGenerationFailureNotify({
-        failure,
-        caseId: fresh.id,
-      });
-      await notify(
-        db,
-        userId,
-        {
-          text: notifyPayload.text,
-          kind: notifyPayload.kind,
-          data: {
-            case_id: fresh.id,
-            source: options?.source ?? "settings_test_case_tick",
-            failure_kind: failure.kind,
-          },
-        },
-        "high"
-      );
-    }
-  }
-  if (
-    caseAfterDeterministicFallback?.current_step === "contract_pending" &&
-    missingContractFields.length > 0 &&
-    !agentResult.pendingConfirmation
-  ) {
-    responsePreviewForEvent = null;
-    const hasDraft =
-      contractDraftOutputPathFromContext(
-        caseAfterDeterministicFallback.context_jsonb
-      ) != null;
-    if (!hasDraft) {
-      await dismissPrematureContractReviewNotifications(db, userId, fresh.id);
-    }
-    const hasUnreadContractData = await hasUnreadContractDataNotification(
-      db,
-      userId,
-      fresh.id
-    );
-    if (!hasUnreadContractData) {
-      await dismissUnreadContractGenerationErrorNotifications(db, userId, fresh.id);
-      const commercial = resolveContractDataReviewCommercialState({
-        toolCalls: turnToolCalls,
-        context: (caseAfterDeterministicFallback.context_jsonb ??
-          {}) as Record<string, unknown>,
-      });
-      const requiredMissing = commercial.missing.filter(
-        (item) => item.optional !== true
-      );
-      const missingKeys =
-        requiredMissing.length > 0
-          ? requiredMissing.map((item) => item.key)
-          : missingContractFields;
-      const notifyText =
-        requiredMissing.length > 0 || commercial.known.length > 0
-          ? buildContractCommercialMinimumsSummaryMessage(commercial)
-          : buildContractDataReviewNotifyText(missingKeys);
-      await notify(
-        db,
-        userId,
-        {
-          text: notifyText,
-          kind: "contract_data_review",
-          data: {
-            case_id: fresh.id,
-            missing_required_fields: missingKeys,
-            missing_fields: commercial.missing,
-            known_fields: commercial.known,
-            source: options?.source ?? "settings_test_case_tick",
-          },
-        },
-        "high"
-      );
-      await insertOperationalCaseEvent(db, {
-        caseId: fresh.id,
-        eventType: "human_decision",
-        actor: "system",
-        stepKey: "contract_pending",
-        payload: {
-          kind: "contract_data_review_requested",
-          source: options?.source ?? "settings_test_case_tick",
-          missing_required_fields: missingKeys,
-        },
-      });
-    }
-  }
-  if (
-    caseAfterDeterministicFallback?.current_step === "contract_pending" &&
-    missingContractFields.length === 0 &&
-    hasContractDraftOutputPath &&
-    !agentResult.pendingConfirmation
-  ) {
-    const hasUnreadReview = await hasUnreadContractReviewNotification(
-      db,
-      userId,
-      fresh.id
-    );
-    if (!hasUnreadReview) {
-      const contractUrl = buildContractDraftDownloadUrl(fresh.id);
-      await notify(
-        db,
-        userId,
-        {
-          text: `Borrador de contrato listo para revisión.\n\nDescargar borrador del contrato: ${contractUrl}\n\nResponde “mándalo al dueño” o “pedir cambios”, o usa los botones.`,
-          kind: "contract_review",
-          data: {
-            case_id: fresh.id,
-            contract_draft_ready: true,
-            contract_draft_url: contractUrl,
-          },
-        },
-        "normal"
-      );
-      await insertOperationalCaseEvent(db, {
-        caseId: fresh.id,
-        eventType: "human_decision",
-        actor: "system",
-        stepKey: "contract_pending",
-        payload: {
-          kind: "contract_review_requested",
-          source: options?.source ?? "settings_test_case_tick",
-          doc_url: contractUrl,
-        },
-      });
+    // El render determinista pudo persistir contract_draft; refresca el caso
+    // para que el resto del tick no clobbere el contexto recién escrito.
+    const refreshedForContract = await getOperationalCase(db, fresh.id);
+    if (refreshedForContract) {
+      caseForFinalUpdate = refreshedForContract;
     }
   }
   if (

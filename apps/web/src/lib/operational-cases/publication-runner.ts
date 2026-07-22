@@ -20,6 +20,7 @@ import type { OperationalCase } from "@agents/types";
 import {
   canCompleteListingPublishedSummaryFromContext,
   formatListingPublishedSummaryNotifyText,
+  formatPublishDestinationApprovalNotifyText,
 } from "@agents/agent";
 import { notify } from "@/lib/notify";
 import {
@@ -32,6 +33,8 @@ import {
 import {
   formatPublicationReviewNotifyText,
   looksLikePublicationCredentialAuthFailure,
+  looksLikeUnggaPrepareDraftCommissionFailure,
+  looksLikeUnggaPrepareDraftFailure,
   runPublicationPreflight,
   type PreflightResult,
 } from "@/lib/operational-cases/publication-preflight";
@@ -317,20 +320,9 @@ async function requestDestinationApproval(
     db,
     opCase.user_id,
     {
-      text: [
-        `Aprobación de publicación en ${label}`,
-        "",
-        `¿Quieres publicar esta propiedad en ${label}?`,
-        "",
-        `• **Publicar en ${label}**: continúa la publicación en este portal.`,
-        `• **Omitir ${label}**: no uses este portal y sigue con los demás destinos.`,
-        "• **Pausar publicación**: detén el caso aquí para revisión interna.",
-        "",
-        "Usa los botones:",
-        `- Publicar en ${label}`,
-        `- Omitir ${label}`,
-        "- Pausar publicación",
-      ].join("\n"),
+      text: formatPublishDestinationApprovalNotifyText({
+        destination: label,
+      }),
       kind,
       data: { case_id: opCase.id, destination },
     },
@@ -388,6 +380,26 @@ async function requestConditionalReview(
     typeof dest.last_error === "string" ? dest.last_error : null;
   const credentialFailure =
     looksLikePublicationCredentialAuthFailure(lastErrorText);
+  const hasDraftArtifact = Boolean(
+    dest.artifact.listing_id || dest.artifact.ungga_property_id
+  );
+  const prepareDraftExtras = {
+    last_step: lastErrorText
+      ? { step: dest.operation_key ?? "prepare_draft", error: lastErrorText }
+      : null,
+  };
+  const commissionPrepareFailure =
+    destination === "ungga" &&
+    !hasDraftArtifact &&
+    looksLikeUnggaPrepareDraftCommissionFailure(
+      lastErrorText,
+      prepareDraftExtras
+    );
+  const prepareDraftFailure =
+    destination === "ungga" &&
+    !hasDraftArtifact &&
+    (commissionPrepareFailure ||
+      looksLikeUnggaPrepareDraftFailure(lastErrorText, prepareDraftExtras));
   const lastStep =
     typeof dest.operation_key === "string"
       ? {
@@ -397,11 +409,21 @@ async function requestConditionalReview(
         }
       : lastErrorText
         ? {
-            step: "publication",
+            step: commissionPrepareFailure
+              ? "verify_commission"
+              : prepareDraftFailure
+                ? "prepare_draft"
+                : "publication",
             ok: false as const,
             error: lastErrorText,
           }
         : null;
+  const commissionMatch = lastErrorText?.match(
+    /expected\s+(\d+(?:\.\d+)?)%/i
+  );
+  const commissionActualMatch = lastErrorText?.match(
+    /got\s+(null|\d+(?:\.\d+)?)/i
+  );
   await notify(
     db,
     opCase.user_id,
@@ -410,11 +432,28 @@ async function requestConditionalReview(
         last_step: lastStep,
         expected_image_count: dest.media.expected_count,
         uploaded_image_count: dest.media.remote_count,
-        has_draft_artifact: Boolean(
-          dest.artifact.listing_id || dest.artifact.ungga_property_id
-        ),
+        has_draft_artifact: hasDraftArtifact,
         ungga_property_id: dest.artifact.ungga_property_id ?? null,
         credential_failure: credentialFailure,
+        prepare_draft_failure: prepareDraftFailure,
+        commission_expected: commissionMatch
+          ? Number(commissionMatch[1])
+          : null,
+        commission_actual:
+          commissionActualMatch && commissionActualMatch[1] !== "null"
+            ? Number(commissionActualMatch[1])
+            : null,
+        commission_verify: commissionPrepareFailure
+          ? {
+              error: lastErrorText,
+              stage: "verify_commission",
+            }
+          : prepareDraftFailure
+            ? {
+                error: lastErrorText,
+                stage: "prepare_draft",
+              }
+            : null,
       }),
       kind: "publication_review_required",
       data: {
@@ -427,6 +466,8 @@ async function requestConditionalReview(
         ungga_property_id: dest.artifact.ungga_property_id ?? null,
         last_error: dest.last_error,
         credential_failure: credentialFailure,
+        prepare_draft_failure: prepareDraftFailure,
+        safe_retry_prepare: prepareDraftFailure,
       },
     },
     "high"
@@ -442,6 +483,7 @@ async function requestConditionalReview(
       summary: result.summary,
       issue_codes: result.issues.map((i) => i.code),
       credential_failure: credentialFailure,
+      prepare_draft_failure: prepareDraftFailure,
     },
   });
   return "waiting_hitl";
@@ -465,6 +507,11 @@ export async function requestPublicationProgress(
      * failed before any external tool executed.
      */
     forceRetryFailedOperation?: boolean;
+    /**
+     * Caller already holds the case processing lease (e.g. settings E2E run
+     * route). Skip markCaseProcessing so we don't no-op as already_processing.
+     */
+    skipLock?: boolean;
     /** Delegate machine tool work to an agent tick callback. */
     runAgentTick?: (
       opCase: OperationalCase,
@@ -507,17 +554,31 @@ export async function requestPublicationProgress(
     loaded = (await getOperationalCase(db, caseId)) ?? loaded;
   }
 
-  const locked = await markCaseProcessing(db, loaded.id, loaded.version, 5);
-  if (!locked) {
-    return {
-      ok: true,
-      status: "already_processing",
-      actions_run: [],
-      message: `skipped_by_${source}`,
-    };
+  if (options?.skipLock) {
+    // Caller already holds the lease (often 1 min from settings run). Extend
+    // it so Ungga CLI (2–3 min) does not expire mid-flight and allow a second tick.
+    const extended = await updateOperationalCase(
+      db,
+      loaded.id,
+      loaded.version,
+      {
+        nextActionAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      }
+    ).catch(() => null);
+    if (extended) loaded = extended;
+  } else {
+    const locked = await markCaseProcessing(db, loaded.id, loaded.version, 5);
+    if (!locked) {
+      return {
+        ok: true,
+        status: "already_processing",
+        actions_run: [],
+        message: `skipped_by_${source}`,
+      };
+    }
   }
 
-  // Reload after lock bump
+  // Reload after lock bump (or after caller-held lease)
   let opCase = (await getOperationalCase(db, caseId)) ?? loaded;
   const seeded = await ensurePublicationSeeded(db, opCase);
   opCase = seeded.opCase;
@@ -1304,6 +1365,37 @@ export async function requestPublicationProgress(
         }
       }
 
+      // Auto-heal: create_draft failed before any remote artifact (safe retry).
+      // Without this, lab «Revisar avance» after «Reintentar preparación» hits
+      // failed_terminal because the tick does not pass forceRetryFailedOperation.
+      if (
+        claim?.status === "failed_terminal" &&
+        action.type === "create_draft" &&
+        options.forceRetryFailedOperation !== true
+      ) {
+        const dest = publication.destinations[action.destination];
+        const hasArtifact = Boolean(
+          dest.artifact.listing_id || dest.artifact.ungga_property_id
+        );
+        if (!hasArtifact) {
+          claim = await claimPublicationOperation(
+            db,
+            {
+              caseId: opCase.id,
+              destination: action.destination,
+              operationKey,
+              operationType: action.type,
+              request: {
+                source,
+                action,
+                auto_force_retry: "pre_artifact_create_draft",
+              },
+            },
+            { forceRetry: true }
+          ).catch(() => null);
+        }
+      }
+
       if (claim?.status === "reuse") {
         const result = isRecord(claim.operation.result_jsonb)
           ? claim.operation.result_jsonb
@@ -1368,12 +1460,53 @@ export async function requestPublicationProgress(
         };
       }
       if (claim?.status === "in_flight") {
-        return {
-          ok: true,
-          status: "already_processing",
-          actions_run: actionsRun,
-          publication,
-        };
+        // Stale lease from a killed deferred tick (common after Telegram
+        // «Reintentar preparación» in next dev). Safe only when no remote
+        // artifact exists yet for create_draft.
+        const dest = publication.destinations[action.destination];
+        const hasArtifact = Boolean(
+          dest.artifact.listing_id || dest.artifact.ungga_property_id
+        );
+        const claimedAtMs = Date.parse(
+          String(claim.operation.claimed_at ?? claim.operation.updated_at ?? "")
+        );
+        const staleMs = Number.isFinite(claimedAtMs)
+          ? Date.now() - claimedAtMs
+          : 0;
+        const canReclaimStaleCreate =
+          action.type === "create_draft" &&
+          !hasArtifact &&
+          staleMs >= 2 * 60_000;
+        if (canReclaimStaleCreate) {
+          await finishPublicationOperation(db, {
+            operationId: claim.operation.id,
+            status: "failed",
+            errorText: "stale_in_flight_reclaimed",
+            result: { auto_reclaim: "stale_create_draft" },
+          }).catch(() => null);
+          claim = await claimPublicationOperation(
+            db,
+            {
+              caseId: opCase.id,
+              destination: action.destination,
+              operationKey,
+              operationType: action.type,
+              request: {
+                source,
+                action,
+                auto_force_retry: "stale_in_flight_create_draft",
+              },
+            },
+            { forceRetry: true }
+          ).catch(() => null);
+        } else {
+          return {
+            ok: true,
+            status: "already_processing",
+            actions_run: actionsRun,
+            publication,
+          };
+        }
       }
       if (claim?.status === "failed_terminal") {
         return {
@@ -1844,6 +1977,68 @@ export async function requestPublicationProgress(
           ],
           summary: "Credencial inválida; actualiza la conexión en Ajustes.",
         });
+      } else if (
+        action.destination === "ungga" &&
+        action.type === "create_draft"
+      ) {
+        const prepareExtras = {
+          last_step: {
+            step:
+              typeof result.last_step === "object" &&
+              result.last_step &&
+              typeof (result.last_step as { step?: unknown }).step === "string"
+                ? String((result.last_step as { step: string }).step)
+                : "prepare_draft",
+            error: errorText,
+          },
+          commission_verify:
+            result.commission_verify &&
+            typeof result.commission_verify === "object"
+              ? (result.commission_verify as {
+                  error?: string | null;
+                  persisted?: boolean;
+                })
+              : null,
+          commission_verified:
+            typeof result.commission_verified === "boolean"
+              ? result.commission_verified
+              : undefined,
+        };
+        if (
+          looksLikeUnggaPrepareDraftCommissionFailure(errorText, prepareExtras)
+        ) {
+          await requestConditionalReview(db, opCase, action.destination, {
+            status: "review_required",
+            issues: [
+              {
+                code: "ungga_prepare_draft_commission_failed",
+                field: "commission_pct",
+                severity: "critical",
+                message:
+                  "No se pudo capturar/verificar la comisión antes de guardar el borrador Ungga.",
+              },
+            ],
+            summary:
+              "Fallo conocido de prepare_draft (comisión); reintento seguro disponible.",
+          });
+        } else if (
+          looksLikeUnggaPrepareDraftFailure(errorText, prepareExtras)
+        ) {
+          await requestConditionalReview(db, opCase, action.destination, {
+            status: "review_required",
+            issues: [
+              {
+                code: "ungga_prepare_draft_failed",
+                field: "prepare_draft",
+                severity: "critical",
+                message:
+                  "No se pudo abrir/completar el formulario de Ungga antes de guardar el borrador.",
+              },
+            ],
+            summary:
+              "Fallo conocido de prepare_draft (formulario); reintento seguro disponible.",
+          });
+        }
       }
       return {
         ok: false,

@@ -1208,7 +1208,7 @@ export function addRealEstateTools(
           template_slug: string;
           asset_key?: string;
           format: "docx" | "pdf";
-          data: Record<string, unknown>;
+          data?: Record<string, unknown>;
           case_id?: string;
         }) => {
           const inputRecord = input as unknown as Record<string, unknown>;
@@ -1603,6 +1603,9 @@ export function addRealEstateTools(
           video_url: z.string().optional(),
           tour_url: z.string().optional(),
           commission_pct: z.number().positive().max(100).optional(),
+          collaboration_enabled: z.boolean().optional(),
+          exclusive: z.boolean().optional(),
+          collaboration_notes: z.string().optional(),
           operations: z
             .array(
               z.object({
@@ -2474,6 +2477,163 @@ async function renderDocumentFromTemplate(
       templateFields.length === 0
         ? "No detecté placeholders con formato {{campo}} en la plantilla DOCX; el documento puede generarse sin reemplazos."
         : undefined,
+  };
+}
+
+export type CommissionContractRenderResult =
+  | {
+      kind: "rendered";
+      outputBucket: string;
+      outputPath: string;
+      templateSlug: string;
+    }
+  | { kind: "titularidad_review_required"; detail?: string }
+  | { kind: "owner_corroboration_incomplete"; documentIds: string[] }
+  | { kind: "missing_required_data"; missingRequiredFields: string[] }
+  | { kind: "template_missing"; hint?: string }
+  | { kind: "infrastructure_error"; error: string }
+  | { kind: "failed"; error: string };
+
+/**
+ * Render programático del contrato de comisión para remediación determinista
+ * post-agente (PATTERN_DETERMINISTIC_AUTO_REMEDIATION_WITH_CIRCUIT_BREAKER).
+ *
+ * Reutiliza EXACTAMENTE los mismos gates (titularidad/corroboración), el core
+ * de render y la persistencia de `contract_draft` que el wrapper de la tool
+ * `generate_document_from_template`, de modo que laboratorio y producción
+ * comparten una sola ruta de código. El caller (cron / tick E2E) es dueño de
+ * las notificaciones; esta función NO hace side-effects de notify.
+ */
+export async function renderCommissionContractForCase(
+  ctx: ToolContext,
+  params: { caseId: string }
+): Promise<CommissionContractRenderResult> {
+  const caseId = params.caseId?.trim();
+  if (!caseId) return { kind: "failed", error: "missing_case_id" };
+
+  // Gate de titularidad — misma fuente de verdad que el wrapper de la tool.
+  const gateCase = await getOperationalCase(ctx.db, caseId).catch(() => null);
+  if (gateCase && gateCase.case_type === "property_optioning") {
+    const gateDocuments = await listOperationalCaseDocuments(ctx.db, {
+      caseId: gateCase.id,
+      statuses: ["received"],
+    });
+    const titularidadGate = evaluatePropertyAdvanceGate({
+      documents: gateDocuments,
+      context: gateCase.context_jsonb,
+      targetTransition: "contract_pending",
+    });
+    const corroborationBlock = titularidadGate.blocks.find(
+      (block) => block.reason === "owner_corroboration_extraction_pending"
+    );
+    if (corroborationBlock) {
+      return {
+        kind: "owner_corroboration_incomplete",
+        documentIds: corroborationBlock.remediation.document_ids ?? [],
+      };
+    }
+    const titularidadBlock = titularidadGate.blocks.find(
+      (block) => block.reason === "titularidad_unverified"
+    );
+    if (titularidadBlock) {
+      const titularidadFields = documentExtractionMinimumsContext(gateDocuments);
+      return {
+        kind: "titularidad_review_required",
+        detail:
+          typeof titularidadFields.owner_consistency_note === "string"
+            ? titularidadFields.owner_consistency_note
+            : undefined,
+      };
+    }
+  }
+
+  let out: Record<string, unknown>;
+  try {
+    out = await renderDocumentFromTemplate(ctx, {
+      template_slug: "commission_contract",
+      format: "docx",
+      data: {},
+      case_id: caseId,
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return /502|503|504|cloudflare|bad gateway/i.test(message)
+      ? { kind: "infrastructure_error", error: message }
+      : { kind: "failed", error: message };
+  }
+
+  if (
+    out.ok === true &&
+    out.status === "rendered" &&
+    typeof out.output_path === "string" &&
+    out.output_path.trim()
+  ) {
+    // Persistencia idéntica a la del wrapper, pero con actor=system porque el
+    // render lo dispara el runtime, no el modelo.
+    const opCase = await getOperationalCase(ctx.db, caseId);
+    if (opCase) {
+      const baseContext = isRecord(opCase.context_jsonb)
+        ? opCase.context_jsonb
+        : {};
+      await updateOperationalCase(ctx.db, caseId, opCase.version, {
+        context: {
+          ...baseContext,
+          contract_draft: {
+            ...(isRecord(baseContext.contract_draft)
+              ? baseContext.contract_draft
+              : {}),
+            template_slug: out.template_slug,
+            output_bucket: out.output_bucket,
+            output_path: out.output_path,
+            generated_at: new Date().toISOString(),
+          },
+        },
+      });
+    }
+    await insertOperationalCaseEvent(ctx.db, {
+      caseId,
+      eventType: "state_changed",
+      actor: "system",
+      payload: {
+        tool: "generate_document_from_template",
+        source: "deterministic_post_agent",
+        output_bucket: out.output_bucket,
+        output_path: out.output_path,
+        template_asset_key: out.template_asset_key,
+        format: out.format,
+      },
+    });
+    return {
+      kind: "rendered",
+      outputBucket: String(out.output_bucket ?? ""),
+      outputPath: String(out.output_path),
+      templateSlug: String(out.template_slug ?? "commission_contract"),
+    };
+  }
+
+  if (
+    out.ok === false &&
+    out.error === "commission_contract_missing_required_data"
+  ) {
+    const missing = Array.isArray(out.missing_required_fields)
+      ? out.missing_required_fields.filter(
+          (field): field is string =>
+            typeof field === "string" && field.trim().length > 0
+        )
+      : [];
+    return { kind: "missing_required_data", missingRequiredFields: missing };
+  }
+
+  if (out.ok === false && out.status === "not_configured") {
+    return {
+      kind: "template_missing",
+      hint: typeof out.hint === "string" ? out.hint : undefined,
+    };
+  }
+
+  return {
+    kind: "failed",
+    error: typeof out.error === "string" ? out.error : "render_failed",
   };
 }
 
@@ -9174,10 +9334,11 @@ function collectEasyBrokerLocationFullNames(
     }
     return;
   }
-  if (!asRecord(value)) return;
-  const fullName = cleanString(value.full_name);
+  const record = asRecord(value);
+  if (!record) return;
+  const fullName = cleanString(record.full_name);
   if (fullName) output.add(fullName);
-  for (const child of Object.values(value)) {
+  for (const child of Object.values(record)) {
     if (child && typeof child === "object") {
       collectEasyBrokerLocationFullNames(child, output, depth + 1);
     }
@@ -9778,38 +9939,119 @@ async function runUnggaCliFallback(
       signal?: string;
       killed?: boolean;
     };
-    const parsed = error.stdout ? parseCliJson(error.stdout) : null;
-    const parsedError =
-      parsed && typeof parsed.error === "string" ? parsed.error : null;
-    const timeoutLikely =
-      error.killed === true ||
-      error.signal === "SIGTERM" ||
-      String(error.message ?? "").includes("TIMEOUT");
-    return {
-      ok: false,
-      status: timeoutLikely ? "unknown_outcome" : "failed",
-      mode: "cli",
-      exit_code: error.code ?? null,
-      signal: error.signal ?? null,
-      error:
-        parsedError ||
-        (timeoutLikely
-          ? `Ungga CLI timed out or was killed: ${error.message ?? String(err)}`
-          : error.message ?? String(err)),
-      ...(parsed ? { cli_result: parsed } : {}),
-      ...(error.stdout?.trim()
-        ? { stdout: error.stdout.trim().slice(0, 4000) }
-        : {}),
-      ...(error.stderr?.trim()
-        ? { stderr: error.stderr.trim().slice(0, 2000) }
-        : {}),
-      hint: timeoutLikely
-        ? "Resultado desconocido: no reintentes prepare_draft automáticamente; revisa si quedó un borrador en Ungga."
-        : "Revisa cli_result.error / stdout para el fallo real del POC Playwright.",
-    };
+    return buildUnggaCliFailureResponse({
+      message: error.message ?? String(err),
+      stdout: error.stdout,
+      stderr: error.stderr,
+      code: error.code,
+      signal: error.signal,
+      killed: error.killed,
+    });
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Normalize a non-zero Ungga CLI exit into a structured tool failure.
+ * Elevates root-cause fields from JSON stdout; keeps exit/stdout as secondary.
+ */
+export function buildUnggaCliFailureResponse(error: {
+  message?: string;
+  stdout?: string;
+  stderr?: string;
+  code?: number | string;
+  signal?: string;
+  killed?: boolean;
+}): Record<string, unknown> {
+  const parsed = error.stdout ? parseCliJson(error.stdout) : null;
+  const nestedResult =
+    parsed?.result &&
+    typeof parsed.result === "object" &&
+    !Array.isArray(parsed.result)
+      ? (parsed.result as Record<string, unknown>)
+      : parsed && typeof parsed === "object"
+        ? parsed
+        : {};
+  const parsedError =
+    (typeof nestedResult.error === "string" && nestedResult.error.trim()
+      ? nestedResult.error.trim()
+      : null) ||
+    (parsed && typeof parsed.error === "string" && parsed.error.trim()
+      ? parsed.error.trim()
+      : null);
+  const commissionVerify =
+    nestedResult.commission_verify &&
+    typeof nestedResult.commission_verify === "object" &&
+    !Array.isArray(nestedResult.commission_verify)
+      ? (nestedResult.commission_verify as Record<string, unknown>)
+      : null;
+  const lastStep =
+    nestedResult.last_step &&
+    typeof nestedResult.last_step === "object" &&
+    !Array.isArray(nestedResult.last_step)
+      ? nestedResult.last_step
+      : parsed?.last_step &&
+          typeof parsed.last_step === "object" &&
+          !Array.isArray(parsed.last_step)
+        ? parsed.last_step
+        : null;
+  const timeoutLikely =
+    error.killed === true ||
+    error.signal === "SIGTERM" ||
+    String(error.message ?? "").includes("TIMEOUT");
+  const commandFailedFallback =
+    !parsedError &&
+    typeof error.message === "string" &&
+    /^Command failed:/i.test(error.message);
+  return {
+    ok: false,
+    status: timeoutLikely ? "unknown_outcome" : "failed",
+    mode: "cli",
+    phase: "prepare_draft",
+    exit_code: error.code ?? null,
+    signal: error.signal ?? null,
+    error:
+      parsedError ||
+      (timeoutLikely
+        ? `Ungga CLI timed out or was killed: ${error.message ?? "timeout"}`
+        : commandFailedFallback
+          ? "Ungga CLI failed before saving the draft; see cli_result / last_step."
+          : error.message ?? "Ungga CLI failed"),
+    ...(typeof nestedResult.commission_expected === "number"
+      ? { commission_expected: nestedResult.commission_expected }
+      : {}),
+    ...(typeof nestedResult.commission_actual === "number" ||
+    nestedResult.commission_actual === null
+      ? { commission_actual: nestedResult.commission_actual }
+      : {}),
+    ...(typeof nestedResult.commission_verified === "boolean"
+      ? { commission_verified: nestedResult.commission_verified }
+      : {}),
+    ...(commissionVerify ? { commission_verify: commissionVerify } : {}),
+    ...(typeof nestedResult.expected_image_count === "number"
+      ? { expected_image_count: nestedResult.expected_image_count }
+      : {}),
+    ...(typeof nestedResult.uploaded_image_count === "number"
+      ? {
+          uploaded_image_count: nestedResult.uploaded_image_count,
+          image_count: nestedResult.uploaded_image_count,
+        }
+      : {}),
+    ...(lastStep ? { last_step: lastStep } : {}),
+    ...(parsed ? { cli_result: parsed } : {}),
+    ...(error.stdout?.trim()
+      ? { stdout: error.stdout.trim().slice(0, 4000) }
+      : {}),
+    ...(error.stderr?.trim()
+      ? { stderr: error.stderr.trim().slice(0, 2000) }
+      : {}),
+    hint: timeoutLikely
+      ? "Resultado desconocido: no reintentes prepare_draft automáticamente; revisa si quedó un borrador en Ungga."
+      : parsedError
+        ? "Fallo conocido de prepare_draft (pre-save). Puedes reintentar la preparación tras revisar la causa raíz."
+        : "Revisa cli_result.error / stdout para el fallo real del POC Playwright.",
+  };
 }
 
 export function buildUnggaCliToolResponse(

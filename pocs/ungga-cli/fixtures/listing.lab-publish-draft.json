@@ -1,0 +1,11 @@
+{
+  "action": "publish_draft",
+  "ungga_property_id": "PSLgXFjsiZZpYE98CAHS",
+  "draft_url": "https://ungga.com/app/propiedades/PSLgXFjsiZZpYE98CAHS",
+  "title": "POC lab commission 4% - DELETE ME",
+  "commission_pct": 4,
+  "collaboration_enabled": true,
+  "operations": [
+    { "type": "sale", "price": 5500000, "currency": "MXN", "commission_pct": 4 }
+  ]
+}

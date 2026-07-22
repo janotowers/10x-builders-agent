@@ -141,7 +141,8 @@ export async function publishListingDraft(page, opts, metrics = []) {
   const listing = opts.listing;
   const t0 = Date.now();
   try {
-    const publishPath = process.env.UNGGA_CLI_PUBLISH_PATH?.trim() || "/properties/new";
+    const publishPath =
+      process.env.UNGGA_CLI_PUBLISH_PATH?.trim() || "/app/propiedades/nueva";
     const publishUrl = resolveTargetUrl(page.url(), publishPath);
     await page.goto(publishUrl, {
       waitUntil: "domcontentloaded",
@@ -162,7 +163,39 @@ export async function publishListingDraft(page, opts, metrics = []) {
       ? listing.image_urls.filter((u) => typeof u === "string" && u.trim()).length
       : 0;
     const stages = [];
-    stages.push({ tab: "GENERAL", filled: await fillGeneralTab(page, listing) });
+    let generalFilled = await fillGeneralTab(page, listing);
+    if (generalFilled.length === 0) {
+      const fallbackUrl = resolveCreatePropertyFallbackUrl(page.url());
+      const tFallback = Date.now();
+      try {
+        await page.goto(fallbackUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: resolveUnggaTimeoutMs("nav"),
+        });
+        await page.waitForTimeout(500);
+        generalFilled = await fillGeneralTab(page, listing);
+        metrics.push({
+          step: "open_create_property_fallback",
+          ok: generalFilled.length > 0,
+          duration_ms: Date.now() - tFallback,
+          url: page.url(),
+          ...(generalFilled.length === 0
+            ? {
+                error: `No listing fields found after fallback to ${fallbackUrl}`,
+              }
+            : {}),
+        });
+      } catch (e) {
+        metrics.push({
+          step: "open_create_property_fallback",
+          ok: false,
+          duration_ms: Date.now() - tFallback,
+          url: page.url(),
+          error: e?.message ?? String(e),
+        });
+      }
+    }
+    stages.push({ tab: "GENERAL", filled: generalFilled });
     if (stages[0].filled.length === 0) {
       throw new Error(
         `No listing fields found at ${page.url()}. Adjust UNGGA_CLI_PUBLISH_PATH/selectors.`
@@ -185,12 +218,16 @@ export async function publishListingDraft(page, opts, metrics = []) {
     const mediaFilled = await fillMediaTab(page, listing, metrics);
     stages.push({ tab: "MEDIA", filled: mediaFilled.filled });
     const uploadedImageCount = mediaFilled.uploaded_image_count;
+    const placeholderImageCount =
+      typeof mediaFilled.placeholder_image_count === "number"
+        ? mediaFilled.placeholder_image_count
+        : null;
     if (
       expectedImageCount > 0 &&
       uploadedImageCount < expectedImageCount
     ) {
       const msg = `Media incomplete: expected ${expectedImageCount} photos, observed ${uploadedImageCount}`;
-      push("publish_listing", false, Date.now() - t0, msg);
+      push("prepare_draft", false, Date.now() - t0, msg);
       await maybeCapture(page, "media-incomplete", metrics);
       return {
         ok: false,
@@ -200,6 +237,9 @@ export async function publishListingDraft(page, opts, metrics = []) {
         stages,
         expected_image_count: expectedImageCount,
         uploaded_image_count: uploadedImageCount,
+        ...(placeholderImageCount != null
+          ? { placeholder_image_count: placeholderImageCount }
+          : {}),
         images_submitted: uploadedImageCount > 0,
         images_verified: false,
         last_step: lastMeaningfulStep(metrics),
@@ -232,7 +272,7 @@ export async function publishListingDraft(page, opts, metrics = []) {
       commissionVerify.persisted !== true
     ) {
       const msg = `Commission not verified: expected ${expectedCommission}%, got ${commissionVerify.actual ?? "null"}`;
-      push("publish_listing", false, Date.now() - t0, msg);
+      push("verify_commission", false, Date.now() - t0, msg);
       await maybeCapture(page, "commission-verify-failed", metrics);
       return {
         ok: false,
@@ -291,7 +331,7 @@ export async function publishListingDraft(page, opts, metrics = []) {
     });
 
     push(
-      "publish_listing",
+      "prepare_draft",
       verdict.ok,
       Date.now() - t0,
       verdict.error ?? undefined
@@ -313,6 +353,9 @@ export async function publishListingDraft(page, opts, metrics = []) {
       expected_image_count: verdict.expected_image_count,
       uploaded_image_count: verdict.uploaded_image_count,
       image_count: verdict.uploaded_image_count,
+      ...(placeholderImageCount != null
+        ? { placeholder_image_count: placeholderImageCount }
+        : {}),
       images_submitted: verdict.images_submitted,
       images_verified: verdict.images_verified,
       commission_expected: expectedCommission,
@@ -324,7 +367,7 @@ export async function publishListingDraft(page, opts, metrics = []) {
       ...(verdict.error ? { error: verdict.error } : {}),
     };
   } catch (e) {
-    push("publish_listing", false, Date.now() - t0, e?.message ?? String(e));
+    push("prepare_draft", false, Date.now() - t0, e?.message ?? String(e));
     await maybeCapture(page, "publish-failed", metrics);
     throw e;
   }
@@ -377,13 +420,17 @@ export async function publishExistingDraft(page, opts, metrics = []) {
       commissionVerify = await verifyAndFixOperationCommission(page, {
         op,
         expectedCommission,
+        collaborationEnabled:
+          opts.listing?.collaboration_enabled === true ||
+          opts.collaboration_enabled === true,
       });
       metrics.push({
-        step: "commission_verify_before_publish",
+        step: "verify_commission",
         ok: commissionVerify.persisted === true,
         expected: expectedCommission,
         actual: commissionVerify.actual,
         retried: commissionVerify.retried,
+        stage: commissionVerify.stage ?? null,
         ...(commissionVerify.error ? { error: commissionVerify.error } : {}),
       });
       if (commissionVerify.persisted !== true) {
@@ -476,67 +523,40 @@ export async function publishExistingDraft(page, opts, metrics = []) {
       }
     }
 
-    await maybeCapture(
-      page,
-      dryRun ? "publish-draft-preview" : "publish-draft-before",
-      metrics
-    );
+    // Real Ungga publish path (2026 UI):
+    // 1) Editor → PUBLICAR tab → "Guardar cambios" (ready, still draft)
+    // 2) Catalog → Borrador → open listing modal
+    // 3) Modal action icon "PUBLICAR" (not the wizard tab)
+    // 4) Verify badge PUBLICADO (never trust click alone)
+    const listingTitle =
+      typeof opts.listing?.title === "string" && opts.listing.title.trim()
+        ? opts.listing.title.trim()
+        : typeof opts.title === "string" && opts.title.trim()
+          ? opts.title.trim()
+          : null;
 
-    const publishStep = await firstVisible([
-      page.getByRole("tab", { name: /^publicar$/i }),
-      page.locator('[role="tab"]:has-text("PUBLICAR")'),
-      page.locator("button:has-text('PUBLICAR')").filter({ hasText: /^PUBLICAR$/i }),
-      page.getByText(/^PUBLICAR$/i),
-    ]);
-    if (publishStep) {
-      try {
-        await publishStep.click({ timeout: 5_000 });
-        await page.waitForTimeout(800);
-      } catch {}
-    } else {
-      for (let i = 0; i < 4; i += 1) {
-        const cont = await firstVisible([
-          page.getByRole("button", { name: /^continuar/i }),
-          page.locator('button:has-text("Continuar")'),
-        ]);
-        if (!cont) break;
-        try {
-          await cont.click({ timeout: 5_000 });
-          await page.waitForTimeout(800);
-        } catch {
-          break;
-        }
-      }
-    }
-
-    const publishBtn = await firstVisible([
-      page.getByRole("button", { name: /^publicar$/i }),
-      page.getByRole("button", { name: /publicar propiedad|publicar ficha|publicar ahora/i }),
-      page.locator('button[class*="brand-purple"]:has-text("PUBLICAR")'),
-      page.locator('button:has-text("PUBLICAR")').filter({ hasNotText: /continuar/i }),
-    ]);
-    if (!publishBtn) {
-      const msg = "Botón Publicar no encontrado en la ficha.";
-      push("publish_draft", false, Date.now() - t0, msg);
-      await maybeCapture(page, "publish-draft-missing-button", metrics);
-      return { ok: false, error: msg, property_id: propertyId, url: page.url() };
-    }
-
-    const disabled = await publishBtn.evaluate((el) => {
-      const candidate = el.closest("button") ?? el;
-      return Boolean(
-        candidate.disabled ||
-          candidate.getAttribute("disabled") !== null ||
-          candidate.getAttribute("aria-disabled") === "true"
-      );
+    await page.goto(`${origin}/app/propiedades/${propertyId}/editar`, {
+      waitUntil: "domcontentloaded",
+      timeout: resolveUnggaTimeoutMs("nav"),
     });
-    if (disabled) {
-      const msg = "Botón Publicar está deshabilitado.";
+    await page.waitForTimeout(800);
+    await dismissStrayModals(page);
+    await clickWizardTab(page, "PUBLICAR").catch(() => {});
+    await page.waitForTimeout(500);
+
+    const saveChanges = await firstVisible([
+      page.getByRole("button", { name: /^guardar cambios$/i }),
+      page.locator("button").filter({ hasText: /^guardar cambios$/i }),
+    ]);
+    if (!saveChanges) {
+      const msg = "Botón 'Guardar cambios' no encontrado en pestaña PUBLICAR.";
       push("publish_draft", false, Date.now() - t0, msg);
+      await maybeCapture(page, "publish-save-changes-missing", metrics);
       return { ok: false, error: msg, property_id: propertyId, url: page.url() };
     }
 
     if (dryRun) {
+      // Dry-run only proves the ready CTA exists; catalog modal publish is live-only.
       push("publish_draft", true, Date.now() - t0);
       return {
         ok: true,
@@ -545,28 +565,82 @@ export async function publishExistingDraft(page, opts, metrics = []) {
         property_id: propertyId,
         draft_url: targetUrl,
         url: page.url(),
+        next_step: "catalog_modal_publicar",
       };
     }
 
-    await publishBtn.click({ timeout: resolveUnggaTimeoutMs("nav") });
-    await page.waitForTimeout(800);
+    await saveChanges.click({ timeout: 10_000 });
+    await page.waitForTimeout(2000);
+    metrics.push({
+      step: "publish_save_changes",
+      ok: true,
+      url: page.url(),
+    });
+    await maybeCapture(page, "publish-after-save-changes", metrics);
+
+    const modalPublish = await openDraftCardAndClickPublish(page, {
+      origin,
+      propertyId,
+      listingTitle,
+      metrics,
+    });
+    if (!modalPublish.ok) {
+      push("publish_draft", false, Date.now() - t0, modalPublish.error);
+      await maybeCapture(page, "publish-draft-missing-button", metrics);
+      return {
+        ok: false,
+        error: modalPublish.error,
+        property_id: propertyId,
+        url: page.url(),
+        stage: modalPublish.stage ?? null,
+      };
+    }
+
     const confirmBtn = await firstVisible([
-      page.getByRole("button", { name: /^confirmar$|^aceptar$|^sí$|^si$/i }),
-      page.locator('button[class*="brand-purple"]:has-text("CONFIRMAR")'),
+      page.getByRole("button", { name: /^confirmar$|^aceptar$|^sí$|^si$|^publicar$/i }),
+      page.locator('button[class*="brand-purple"]').filter({
+        hasText: /^confirmar$|^aceptar$|^publicar$/i,
+      }),
     ]);
     if (confirmBtn) {
-      try {
-        await confirmBtn.click({ timeout: 5_000 });
-        await page.waitForTimeout(1200);
-      } catch {}
+      await confirmBtn.click({ timeout: 5_000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+      metrics.push({ step: "publish_confirm_dialog", ok: true });
     }
+
     await page.waitForLoadState("networkidle", {
       timeout: resolveUnggaTimeoutMs("nav"),
     }).catch(() => {});
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(1500);
     await maybeCapture(page, "publish-draft-after", metrics);
 
-    const publishedId = extractPropertyIdFromUrl(page.url()) ?? propertyId;
+    const status = await verifyListingPublishedStatus(page, {
+      origin,
+      propertyId,
+      listingTitle,
+    });
+    metrics.push({
+      step: "publish_status_verify",
+      ok: status.published === true,
+      ...(status.error ? { error: status.error } : {}),
+      evidence: status.evidence ?? null,
+    });
+    if (status.published !== true) {
+      const msg =
+        status.error ||
+        "Click PUBLICAR no confirmó estado PUBLICADO (sigue en borrador).";
+      push("publish_draft", false, Date.now() - t0, msg);
+      await maybeCapture(page, "publish-draft-still-borrador", metrics);
+      return {
+        ok: false,
+        error: msg,
+        property_id: propertyId,
+        url: page.url(),
+        remote_status: status.remote_status ?? "draft",
+      };
+    }
+
+    const publishedId = propertyId;
     const publishedUrl = `${origin}/app/propiedades/${publishedId}`;
     push("publish_draft", true, Date.now() - t0);
     return {
@@ -576,6 +650,7 @@ export async function publishExistingDraft(page, opts, metrics = []) {
       published_url: publishedUrl,
       properties_url: `${origin}/app/propiedades`,
       url: page.url(),
+      remote_status: "published",
       ...(expectedCommission != null
         ? {
             commission_expected: expectedCommission,
@@ -590,6 +665,263 @@ export async function publishExistingDraft(page, opts, metrics = []) {
     await maybeCapture(page, "publish-draft-failed", metrics);
     throw e;
   }
+}
+
+/**
+ * Catalog → Borrador → open listing card modal → click PUBLICAR action icon.
+ * Must match the exact GU-ID in the modal: titles can collide with EasyBroker
+ * imports that keep PUBLICAR disabled ("gestiona desde tu portal o CRM").
+ */
+async function openDraftCardAndClickPublish(page, params) {
+  const { origin, propertyId, listingTitle, metrics = [] } = params;
+  await page.goto(`${origin}/app/propiedades`, {
+    waitUntil: "domcontentloaded",
+    timeout: resolveUnggaTimeoutMs("nav"),
+  });
+  await page.waitForTimeout(1000);
+  await dismissStrayModals(page);
+
+  const draftTab = await firstVisible([
+    page.getByRole("button", { name: /^borrador/i }),
+    page.getByRole("tab", { name: /^borrador/i }),
+    page.locator("button, a, [role='tab']").filter({ hasText: /^borrador/i }),
+  ]);
+  if (draftTab) {
+    await draftTab.click({ timeout: 5_000 }).catch(() => {});
+    await page.waitForTimeout(1200);
+  }
+
+  if (listingTitle) {
+    const search = await firstVisible([
+      page.getByPlaceholder(/buscar por título|buscar/i),
+      page.locator('input[type="search"], input[placeholder*="Buscar" i]'),
+    ]);
+    if (search) {
+      await search.fill(listingTitle).catch(() => {});
+      await page.keyboard.press("Enter").catch(() => {});
+      await page.waitForTimeout(1000);
+    }
+  }
+
+  const titleNeedle = listingTitle
+    ? listingTitle.split(",")[0].trim().slice(0, 48)
+    : "";
+  const cardCandidates = page.locator("div, article, a, li").filter({
+    hasText: titleNeedle
+      ? new RegExp(escapeRegex(titleNeedle), "i")
+      : new RegExp(escapeRegex(propertyId), "i"),
+  });
+  const count = await cardCandidates.count().catch(() => 0);
+  const tried = [];
+  for (let i = 0; i < Math.min(count, 40); i += 1) {
+    const candidate = cardCandidates.nth(i);
+    const text = ((await candidate.innerText().catch(() => "")) || "").trim();
+    if (text.length > 1200 || text.length < 20) continue;
+    if (!(await candidate.isVisible().catch(() => false))) continue;
+    // Prefer BORRADOR cards; skip obvious non-cards.
+    if (titleNeedle && !new RegExp(escapeRegex(titleNeedle), "i").test(text)) {
+      continue;
+    }
+
+    await page.keyboard.press("Escape").catch(() => {});
+    await page.waitForTimeout(300);
+    await dismissStrayModals(page);
+    await candidate.scrollIntoViewIfNeeded().catch(() => {});
+    await candidate.click({ timeout: 8_000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+
+    const modal = await findCatalogPropertyModal(page);
+    if (!modal) {
+      tried.push({ i, reason: "no_modal" });
+      continue;
+    }
+    const modalText = ((await modal.innerText().catch(() => "")) || "").trim();
+    if (!modalText.includes(propertyId)) {
+      tried.push({
+        i,
+        reason: "guid_mismatch",
+        sample: modalText.slice(0, 180).replace(/\s+/g, " "),
+      });
+      await page.keyboard.press("Escape").catch(() => {});
+      await page.waitForTimeout(300);
+      continue;
+    }
+
+    await maybeCapture(page, "publish-catalog-modal", metrics);
+    const publishProbe = await resolveModalPublishAction(modal);
+    if (!publishProbe.action) {
+      return {
+        ok: false,
+        error: "Acción PUBLICAR no encontrada en el modal del catálogo.",
+        stage: "modal_publicar",
+        property_id: propertyId,
+      };
+    }
+    if (publishProbe.disabled) {
+      const reason =
+        publishProbe.title ||
+        "PUBLICAR deshabilitado en el modal del catálogo";
+      metrics.push({
+        step: "catalog_modal_publicar_click",
+        ok: false,
+        property_id: propertyId,
+        error: reason,
+      });
+      return {
+        ok: false,
+        error: `ungga_publish_button_disabled:${reason}`,
+        stage: "modal_publicar_disabled",
+        property_id: propertyId,
+      };
+    }
+
+    await publishProbe.action.click({ timeout: 8_000 });
+    await page.waitForTimeout(1500);
+    metrics.push({
+      step: "catalog_modal_publicar_click",
+      ok: true,
+      property_id: propertyId,
+      card_index: i,
+    });
+    return { ok: true, stage: "modal_publicar", property_id: propertyId };
+  }
+
+  await maybeCapture(page, "publish-modal-missing", metrics);
+  metrics.push({
+    step: "catalog_modal_guid_search",
+    ok: false,
+    property_id: propertyId,
+    tried,
+  });
+  return {
+    ok: false,
+    error: `Modal del borrador con GU-ID ${propertyId} no encontrado (hay fichas con título similar; no se usó un duplicado).`,
+    stage: "open_modal_guid_mismatch",
+    tried_count: tried.length,
+  };
+}
+
+async function findCatalogPropertyModal(page) {
+  const modal = page
+    .locator("div.fixed.inset-0, [role='dialog']")
+    .filter({ hasText: /publicar|gu-id|link para redes|archivar|editar/i })
+    .first();
+  if (
+    (await modal.count().catch(() => 0)) === 0 ||
+    !(await modal.isVisible().catch(() => false))
+  ) {
+    return null;
+  }
+  return modal;
+}
+
+async function resolveModalPublishAction(modal) {
+  let action = await firstVisible([
+    modal.getByRole("button", { name: /^publicar$/i }),
+    modal.locator("button, [role='button'], a").filter({ hasText: /^publicar$/i }),
+  ]);
+  if (!action) {
+    const iconButtons = modal.locator("button, [role='button']").filter({
+      hasText: /archivar|publicar|editar|detalle|cerrar/i,
+    });
+    const n = await iconButtons.count().catch(() => 0);
+    for (let i = 0; i < n; i += 1) {
+      const el = iconButtons.nth(i);
+      const label = ((await el.innerText().catch(() => "")) || "").trim();
+      if (/^publicar$/i.test(label)) {
+        action = el;
+        break;
+      }
+    }
+  }
+  if (!action) return { action: null, disabled: false, title: null };
+  const disabled = await action.isDisabled().catch(async () => {
+    const cls = (await action.getAttribute("class").catch(() => "")) || "";
+    return /cursor-not-allowed|opacity-50/i.test(cls);
+  });
+  const title = (await action.getAttribute("title").catch(() => null)) || null;
+  return { action, disabled: Boolean(disabled), title };
+}
+
+async function verifyListingPublishedStatus(page, params) {
+  const { origin, propertyId, listingTitle } = params;
+  // Close modal if still open, then check detail + catalog tabs.
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForTimeout(400);
+
+  await page.goto(`${origin}/app/propiedades/${propertyId}`, {
+    waitUntil: "domcontentloaded",
+    timeout: resolveUnggaTimeoutMs("nav"),
+  });
+  await page.waitForTimeout(1200);
+  const detailText = ((await page.locator("body").innerText().catch(() => "")) || "").trim();
+  if (/\bPUBLICADO\b/i.test(detailText) && !/\bBORRADOR\b/i.test(detailText)) {
+    return {
+      published: true,
+      remote_status: "published",
+      evidence: "detail_page_publicado",
+    };
+  }
+
+  await page.goto(`${origin}/app/propiedades`, {
+    waitUntil: "domcontentloaded",
+    timeout: resolveUnggaTimeoutMs("nav"),
+  });
+  await page.waitForTimeout(1000);
+  const mineTab = await firstVisible([
+    page.getByRole("button", { name: /mis propiedades/i }),
+    page.getByRole("tab", { name: /mis propiedades/i }),
+  ]);
+  if (mineTab) {
+    await mineTab.click().catch(() => {});
+    await page.waitForTimeout(1000);
+  }
+  const needle = listingTitle || propertyId;
+  const cardText = await page
+    .locator("div, article, a")
+    .filter({ hasText: new RegExp(escapeRegex(needle), "i") })
+    .first()
+    .innerText()
+    .catch(() => "");
+  if (/\bPUBLICADO\b/i.test(cardText) && !/\bBORRADOR\b/i.test(cardText)) {
+    return {
+      published: true,
+      remote_status: "published",
+      evidence: "catalog_card_publicado",
+    };
+  }
+
+  const draftTab = await firstVisible([
+    page.getByRole("button", { name: /^borrador/i }),
+    page.getByRole("tab", { name: /^borrador/i }),
+  ]);
+  if (draftTab) {
+    await draftTab.click().catch(() => {});
+    await page.waitForTimeout(1000);
+  }
+  const stillDraft = await page
+    .locator("div, article, a")
+    .filter({ hasText: new RegExp(escapeRegex(needle), "i") })
+    .filter({ hasText: /borrador/i })
+    .count()
+    .catch(() => 0);
+
+  if (stillDraft > 0) {
+    return {
+      published: false,
+      remote_status: "draft",
+      error: "La ficha sigue en Borrador tras PUBLICAR.",
+      evidence: "still_in_borrador_tab",
+    };
+  }
+
+  // Not in draft and not clearly PUBLICADO → unknown, treat as failure.
+  return {
+    published: false,
+    remote_status: "unknown",
+    error: "No se pudo confirmar PUBLICADO tras el click.",
+    evidence: "unconfirmed",
+  };
 }
 
 /**
@@ -929,8 +1261,14 @@ export async function fillMediaTab(page, listing, metrics = []) {
       duration_ms: Date.now() - t0,
       expected_image_count: 0,
       uploaded_image_count: 0,
+      placeholder_image_count: 0,
     });
-    return { filled, uploaded_image_count: 0, expected_image_count: 0 };
+    return {
+      filled,
+      uploaded_image_count: 0,
+      expected_image_count: 0,
+      placeholder_image_count: 0,
+    };
   }
 
   let tempDir = null;
@@ -942,6 +1280,7 @@ export async function fillMediaTab(page, listing, metrics = []) {
       localPaths.push(localPath);
     }
 
+    const baseline = await countVisibleMediaThumbnails(page);
     let fileInput = await firstVisible([
       page.locator('input[type="file"][accept*="image"]'),
       page.locator('input[type="file"]'),
@@ -980,6 +1319,7 @@ export async function fillMediaTab(page, listing, metrics = []) {
         duration_ms: Date.now() - t0,
         expected_image_count: imageUrls.length,
         uploaded_image_count: 0,
+        placeholder_image_count: baseline,
         error: msg,
       });
       filled.push({ media_upload: false, error: msg });
@@ -987,6 +1327,7 @@ export async function fillMediaTab(page, listing, metrics = []) {
         filled,
         uploaded_image_count: 0,
         expected_image_count: imageUrls.length,
+        placeholder_image_count: baseline,
         error: msg,
       };
     }
@@ -996,12 +1337,14 @@ export async function fillMediaTab(page, listing, metrics = []) {
     });
     await page.waitForTimeout(1500);
 
-    const uploadedCount = await waitForVisibleImageCount(
+    const afterCount = await waitForVisibleImageCount(
       page,
-      imageUrls.length,
+      baseline + imageUrls.length,
       resolveUnggaTimeoutMs("upload")
     );
-    // Ungga sometimes renders an extra placeholder/thumbnail; accept >= expected.
+    // Count only newly observed thumbnails; placeholders that already existed
+    // stay reported separately. Accept >= expected (extra cover thumbs OK).
+    const uploadedCount = Math.max(0, afterCount - baseline);
     const ok = uploadedCount >= imageUrls.length;
     metrics.push({
       step: "media_upload",
@@ -1009,25 +1352,29 @@ export async function fillMediaTab(page, listing, metrics = []) {
       duration_ms: Date.now() - t0,
       expected_image_count: imageUrls.length,
       uploaded_image_count: uploadedCount,
+      placeholder_image_count: baseline,
+      total_visible_image_count: afterCount,
       ...(ok
         ? {}
         : {
-            error: `expected ${imageUrls.length} thumbnails, observed ${uploadedCount}`,
+            error: `expected ${imageUrls.length} new photos, observed ${uploadedCount} (total visible ${afterCount}, baseline ${baseline})`,
           }),
     });
     filled.push({
       media_upload: ok,
       expected_image_count: imageUrls.length,
       uploaded_image_count: uploadedCount,
+      placeholder_image_count: baseline,
     });
     return {
       filled,
       uploaded_image_count: uploadedCount,
       expected_image_count: imageUrls.length,
+      placeholder_image_count: baseline,
       ...(ok
         ? {}
         : {
-            error: `expected ${imageUrls.length} thumbnails, observed ${uploadedCount}`,
+            error: `expected ${imageUrls.length} new photos, observed ${uploadedCount}`,
           }),
     };
   } catch (e) {
@@ -1208,8 +1555,8 @@ export async function fillOperationTab(page, listing) {
       await page.waitForTimeout(800);
 
       const MODAL_TITLE = /Elije el tipo de operación|Elige el tipo de operación/i;
-      const titleLocator = page.locator("text=/Elije|Elige el tipo de operación/i").first();
-      const scope = page;
+      const addModal = await waitForOperationModal(page, MODAL_TITLE);
+      const scope = addModal ?? page;
 
       const tabRegex = TAB_BY_TYPE[op.type] ?? null;
       if (tabRegex) {
@@ -1230,13 +1577,10 @@ export async function fillOperationTab(page, listing) {
         priceFilled = true;
       }
 
-      // Best-effort commission fill in add modal (may be absent; pencil is canonical).
-      if (expectedCommission != null) {
-        await fillCommissionInputInScope(scope, expectedCommission);
-      }
+      const addScope = scope;
 
       if (op.currency) {
-        const currencySelect = scope
+        const currencySelect = addScope
           .locator("label:has-text('MONEDA')")
           .locator("select")
           .first();
@@ -1252,52 +1596,42 @@ export async function fillOperationTab(page, listing) {
 
       // Prefer Contado so the confirm control can enable.
       const contado = await firstVisible([
-        scope.getByLabel(/^contado$/i),
-        scope.getByRole("checkbox", { name: /contado/i }),
-        scope.locator("label").filter({ hasText: /^contado$/i }),
+        addScope.getByLabel(/^contado$/i),
+        addScope.getByRole("checkbox", { name: /contado/i }),
+        addScope.locator("label").filter({ hasText: /^contado$/i }),
       ]);
       if (contado) {
         await contado.click({ timeout: 3_000 }).catch(() => {});
       }
 
-      // Share commission = Sí when we have a commission pct.
-      if (expectedCommission != null) {
-        const shareYes = await firstVisible([
-          scope.getByRole("radio", { name: /^sí$|^si$/i }),
-          scope.locator("label").filter({ hasText: /^sí$|^si$/i }),
-          scope.getByText(/^sí$|^si$/i),
-        ]);
-        if (shareYes) {
-          await shareYes.click({ timeout: 2_000 }).catch(() => {});
-        }
+      // Share commission = Sí only when collaboration is enabled (not merely
+      // because a commission_pct value exists). Enable before filling %.
+      if (listing.collaboration_enabled === true) {
+        await selectShareCommissionYes(addScope);
       }
 
-      const modalRoot = page.locator("div.fixed.inset-0").filter({
-        hasText: MODAL_TITLE,
-      });
-      const confirmBtn = await firstVisible([
-        modalRoot.locator('button[class*="bg-gradient-to-r"]').last(),
-        modalRoot.locator("button").filter({ hasText: /^✓$|^✔$/ }).first(),
-        modalRoot.getByRole("button").last(),
-        scope.locator('button[class*="bg-gradient-to-r"][class*="brand-purple"]'),
-        scope.locator('button[class*="bg-gradient-to-r"]'),
-        scope.getByRole("button", { name: /^confirmar$|^aceptar$|^guardar$/i }),
-      ]);
-      if (confirmBtn) {
-        try {
-          await confirmBtn.click({ timeout: 5_000 });
-        } catch {
-          await confirmBtn.click({ timeout: 5_000, force: true }).catch(() => {});
+      // Best-effort commission fill in add modal (may be absent; pencil is canonical).
+      if (expectedCommission != null) {
+        await fillCommissionInputInScope(addScope, expectedCommission);
+      }
+
+      confirmed = await confirmOperationModal(page, { op });
+      if (!confirmed) {
+        // One more attempt: click the rightmost enabled purple control in the overlay.
+        const overlay = page.locator("div.fixed.inset-0").last();
+        const retryBtn = overlay
+          .locator('button[class*="bg-gradient-to-r"], button[class*="brand-purple"]')
+          .last();
+        if ((await retryBtn.count().catch(() => 0)) > 0) {
+          await retryBtn.click({ timeout: 5_000, force: true }).catch(() => {});
+          await page.waitForTimeout(1200);
+          confirmed = Boolean(await findOperationCard(page, op));
         }
-        await page.waitForTimeout(1200);
-        const stillOpen =
-          (await titleLocator.count()) > 0 &&
-          (await titleLocator.isVisible().catch(() => false));
-        confirmed = !stillOpen;
-        if (!confirmed) {
-          await page.keyboard.press("Escape").catch(() => {});
-          await page.waitForTimeout(400);
-        }
+      }
+      if (!confirmed) {
+        await maybeCapture(page, "operation-confirm-failed", []);
+        await page.keyboard.press("Escape").catch(() => {});
+        await page.waitForTimeout(400);
       }
     } else {
       tabClicked = true;
@@ -1318,6 +1652,7 @@ export async function fillOperationTab(page, listing) {
       commissionVerify = await verifyAndFixOperationCommission(page, {
         op,
         expectedCommission,
+        collaborationEnabled: listing.collaboration_enabled === true,
       });
     }
 
@@ -1347,7 +1682,7 @@ export async function fillOperationTab(page, listing) {
 async function findOperationCard(page, op) {
   const typeLabel =
     op?.type === "rent"
-      ? /renta/i
+      ? /renta(?!\s*temporal)/i
       : op?.type === "rent_temporary"
         ? /renta temporal/i
         : op?.type === "presale"
@@ -1358,35 +1693,38 @@ async function findOperationCard(page, op) {
       ? String(op.price).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
       : null;
 
-  const cards = page.locator("div, li, article, section").filter({
-    hasText: typeLabel,
-  });
+  // Prefer compact operation cards that already expose an edit affordance.
+  const cards = page
+    .locator("div, li, article, section")
+    .filter({ hasText: typeLabel })
+    .filter({ has: page.locator("button") });
   const count = await cards.count().catch(() => 0);
-  for (let i = 0; i < Math.min(count, 12); i += 1) {
+  let fallback = null;
+  for (let i = 0; i < Math.min(count, 16); i += 1) {
     const card = cards.nth(i);
     const text = ((await card.innerText().catch(() => "")) || "").trim();
     if (!typeLabel.test(text)) continue;
-    if (priceHint && !text.includes(priceHint) && !text.includes(String(op.price))) {
-      // Still accept if it looks like an operation card with edit affordance.
-      const hasPencil = await card
-        .locator("button, a, [role='button']")
-        .filter({ has: page.locator("svg") })
-        .count()
-        .catch(() => 0);
-      if (hasPencil === 0) continue;
-    }
+    // Skip oversized containers that wrap the whole OPERATION tab.
+    if (text.length > 600) continue;
     const pencil = await findPencilInCard(card);
-    if (pencil) return card;
+    if (!pencil) continue;
+    const priceMatches =
+      !priceHint ||
+      text.includes(priceHint) ||
+      text.includes(String(op.price));
+    if (priceMatches) return card;
+    if (!fallback) fallback = card;
   }
-  return null;
+  return fallback;
 }
 
 async function findPencilInCard(card) {
   const candidates = [
-    card.getByRole("button", { name: /editar|edit/i }),
-    card.locator('button[aria-label*="editar" i], button[aria-label*="edit" i]'),
+    card.getByRole("button", { name: /editar|edit|lápiz|lapiz/i }),
+    card.locator(
+      'button[aria-label*="editar" i], button[aria-label*="edit" i], button[title*="editar" i], button[title*="edit" i]'
+    ),
     card.locator("button").filter({ hasText: /^✎$|^✏$/ }),
-    card.locator("button").last(),
   ];
   for (const loc of candidates) {
     if ((await loc.count().catch(() => 0)) > 0) {
@@ -1394,34 +1732,78 @@ async function findPencilInCard(card) {
       if (await el.isVisible().catch(() => false)) return el;
     }
   }
-  // Prefer the rightmost icon button (pencil sits to the right of price).
-  const iconButtons = card.locator("button").filter({ has: card.page().locator("svg") });
+  // Prefer icon buttons that are not trash/delete.
+  const iconButtons = card.locator("button").filter({
+    has: card.page().locator("svg"),
+  });
   const n = await iconButtons.count().catch(() => 0);
-  if (n >= 1) {
-    // Last non-trash: usually pencil is before trash; try n-2 then n-1.
-    for (const idx of [Math.max(0, n - 2), n - 1, 0]) {
-      const el = iconButtons.nth(idx);
-      if (await el.isVisible().catch(() => false)) return el;
+  for (let idx = 0; idx < n; idx += 1) {
+    const el = iconButtons.nth(idx);
+    if (!(await el.isVisible().catch(() => false))) continue;
+    const label = (
+      (await el.getAttribute("aria-label").catch(() => "")) ||
+      (await el.getAttribute("title").catch(() => "")) ||
+      (await el.innerText().catch(() => "")) ||
+      ""
+    ).toLowerCase();
+    if (/eliminar|borrar|delete|trash|remover/.test(label)) continue;
+    if (/editar|edit|lápiz|lapiz|pencil/.test(label) || !label.trim()) {
+      return el;
     }
   }
   return null;
 }
 
-async function fillCommissionInputInScope(scope, expectedCommission) {
-  const commissionInput = await firstVisible([
+function commissionInputCandidates(scope) {
+  return [
     scope
       .locator("label")
       .filter({ hasText: /comisi[oó]n\s*\(%\)/i })
-      .locator("input")
+      .locator('input:not([type="hidden"]), [role="spinbutton"]')
       .first(),
-    scope.locator("label:has-text('COMISIÓN')").locator("input").first(),
-    scope.locator("label:has-text('Comisión')").locator("input").first(),
+    scope
+      .locator("label")
+      .filter({ hasText: /comisi[oó]n/i })
+      .locator('input[type="number"], input:not([type]), [role="spinbutton"]')
+      .first(),
+    scope.locator('input[type="number"][name*="comision" i], input[type="number"][id*="comision" i]').first(),
+    scope.locator('input[placeholder*="comisi" i], input[aria-label*="comisi" i]').first(),
     scope.getByLabel(/comisi[oó]n\s*\(%\)?/i).first(),
-    scope.getByPlaceholder(/comisi[oó]n/i).first(),
-  ]);
-  if (!commissionInput) return { ok: false, actual: null };
+    scope.getByRole("spinbutton", { name: /comisi[oó]n/i }).first(),
+    scope.getByPlaceholder(/comisi[oó]n|%/i).first(),
+  ];
+}
+
+async function sleepMs(ms) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+async function fillCommissionInputInScope(scope, expectedCommission) {
+  const started = Date.now();
+  let lastStage = "locate_input";
+  let commissionInput = null;
+  while (Date.now() - started < 6_000) {
+    commissionInput = await firstVisible(commissionInputCandidates(scope));
+    if (commissionInput) {
+      const enabled = await commissionInput.isEnabled().catch(() => false);
+      if (enabled) break;
+      lastStage = "input_disabled";
+      commissionInput = null;
+    } else {
+      lastStage = "locate_input";
+    }
+    await sleepMs(200);
+  }
+  if (!commissionInput) {
+    return {
+      ok: false,
+      actual: null,
+      stage: lastStage,
+      error: "commission_input_not_found",
+    };
+  }
   await commissionInput.click({ timeout: 2_000 }).catch(() => {});
-  await commissionInput.fill("");
+  await commissionInput.fill("").catch(() => {});
   await commissionInput.fill(String(expectedCommission));
   await commissionInput.dispatchEvent("input").catch(() => {});
   await commissionInput.dispatchEvent("change").catch(() => {});
@@ -1431,60 +1813,140 @@ async function fillCommissionInputInScope(scope, expectedCommission) {
   const ok =
     numeric === String(expectedCommission) ||
     Number(numeric) === Number(expectedCommission);
-  return { ok, actual: numeric ? Number(numeric) : null, input: commissionInput };
+  return {
+    ok,
+    actual: numeric ? Number(numeric) : null,
+    input: commissionInput,
+    stage: ok ? "filled" : "value_mismatch",
+    ...(ok ? {} : { error: "commission_input_value_mismatch" }),
+  };
 }
 
 function operationModalRoot(page) {
-  return page.locator("div.fixed.inset-0").filter({
-    hasText: /comisi[oó]n|elige el tipo de operaci[oó]n|elije el tipo de operaci[oó]n|precio/i,
-  });
+  // Prefer true overlays/dialogs; avoid matching the whole OPERACIÓN tab via "precio".
+  return page
+    .locator("div.fixed.inset-0, [role='dialog']")
+    .filter({
+      hasText:
+        /elige el tipo de operaci[oó]n|elije el tipo de operaci[oó]n|compartir comisi[oó]n|comisi[oó]n\s*\(%\)/i,
+    });
+}
+
+async function waitForOperationModal(page, titleRegex = null) {
+  const started = Date.now();
+  while (Date.now() - started < 5_000) {
+    const root = operationModalRoot(page);
+    const count = await root.count().catch(() => 0);
+    for (let i = 0; i < Math.min(count, 4); i += 1) {
+      const candidate = root.nth(i);
+      if (!(await candidate.isVisible().catch(() => false))) continue;
+      if (titleRegex) {
+        const text = ((await candidate.innerText().catch(() => "")) || "").trim();
+        if (!titleRegex.test(text)) continue;
+      }
+      return candidate;
+    }
+    await page.waitForTimeout(200);
+  }
+  return null;
+}
+
+async function selectShareCommissionYes(scope) {
+  const shareRegion = scope
+    .locator("div, fieldset, section, label")
+    .filter({ hasText: /compartir comisi[oó]n/i })
+    .first();
+  const region =
+    (await shareRegion.count().catch(() => 0)) > 0 ? shareRegion : scope;
+  const shareYes = await firstVisible([
+    region.getByRole("radio", { name: /^sí$|^si$/i }),
+    region.locator("label").filter({ hasText: /^sí$|^si$/i }),
+    region.getByText(/^sí$|^si$/i),
+  ]);
+  if (!shareYes) return false;
+  await shareYes.click({ timeout: 2_000 }).catch(() => {});
+  await sleepMs(200);
+  return true;
 }
 
 async function readCommissionInputValue(scope) {
-  const commissionInput = await firstVisible([
-    scope
-      .locator("label")
-      .filter({ hasText: /comisi[oó]n\s*\(%\)/i })
-      .locator("input")
-      .first(),
-    scope.locator("label:has-text('COMISIÓN')").locator("input").first(),
-    scope.locator("label:has-text('Comisión')").locator("input").first(),
-    scope.getByLabel(/comisi[oó]n\s*\(%\)?/i).first(),
-  ]);
-  if (!commissionInput) return { ok: false, actual: null };
+  const commissionInput = await firstVisible(commissionInputCandidates(scope));
+  if (!commissionInput) {
+    return { ok: false, actual: null, stage: "locate_input", error: "commission_input_not_found" };
+  }
   const raw = await commissionInput.inputValue().catch(() => "");
   const numeric = String(raw).replace(/[^\d.]/g, "");
   return {
     ok: true,
     actual: numeric ? Number(numeric) : null,
     input: commissionInput,
+    stage: "read",
   };
+}
+
+async function looksLikeDismissControl(el) {
+  const label = (
+    (await el.getAttribute("aria-label").catch(() => "")) ||
+    (await el.getAttribute("title").catch(() => "")) ||
+    (await el.innerText().catch(() => "")) ||
+    ""
+  )
+    .trim()
+    .toLowerCase();
+  return /^(x|×)$/.test(label) || /cancelar|cerrar|dismiss|cancel/.test(label);
 }
 
 /**
  * Confirm the operation modal via the purple check ("palomita") button.
  * Returns false if the confirm control could not be clicked or the modal stayed open.
  */
-async function confirmOperationModal(page) {
+async function confirmOperationModal(page, opts = {}) {
   const modalRoot = operationModalRoot(page);
+  let modal =
+    (await modalRoot.count().catch(() => 0)) > 0 ? modalRoot.first() : null;
+  if (!modal) {
+    // Fallback: any visible fixed overlay that contains PRECIO / operación fields.
+    modal = await firstVisible([
+      page.locator("div.fixed.inset-0").filter({ hasText: /PRECIO|MONEDA|VENTA/i }),
+      page.locator("[role='dialog']").filter({ hasText: /PRECIO|MONEDA|VENTA/i }),
+    ]);
+  }
+  if (!modal) return false;
 
-  const confirmBtn = await firstVisible([
-    // Canonical Ungga UI: purple gradient check button next to white X.
-    modalRoot.locator('button[class*="bg-gradient-to-r"]').filter({
-      hasNotText: /^x$/i,
-    }).last(),
-    modalRoot.locator('button[class*="brand-purple"]').last(),
-    modalRoot.locator("button").filter({ hasText: /^✓$|^✔$/ }).first(),
-    modalRoot.getByRole("button", {
+  const stillOpenBefore = await modal.isVisible().catch(() => false);
+  if (!stillOpenBefore) return true;
+
+  // Ungga's palomita is often an SVG-only purple/gradient button (no accessible name).
+  // Prefer named confirms, then gradient/purple buttons that are not dismiss controls.
+  let confirmBtn = await firstVisible([
+    modal.getByRole("button", {
       name: /^confirmar$|^aceptar$|^guardar$|^✓$|^✔$/i,
     }),
+    modal.locator("button").filter({ hasText: /^✓$|^✔$/ }).first(),
   ]);
-  if (!confirmBtn) return false;
 
-  const stillOpenBefore =
-    (await modalRoot.count().catch(() => 0)) > 0 &&
-    (await modalRoot.first().isVisible().catch(() => false));
-  if (!stillOpenBefore) return true;
+  if (!confirmBtn) {
+    const candidates = modal.locator(
+      'button[class*="bg-gradient-to-r"], button[class*="brand-purple"], button'
+    );
+    const n = await candidates.count().catch(() => 0);
+    for (let i = n - 1; i >= 0; i -= 1) {
+      const el = candidates.nth(i);
+      if (!(await el.isVisible().catch(() => false))) continue;
+      if (await looksLikeDismissControl(el)) continue;
+      const disabled = await el.isDisabled().catch(() => false);
+      if (disabled) continue;
+      const className = (await el.getAttribute("class").catch(() => "")) || "";
+      const hasConfirmLook =
+        /bg-gradient|brand-purple|from-|to-/.test(className) ||
+        (await el.locator("svg").count().catch(() => 0)) > 0;
+      if (!hasConfirmLook && i < n - 1) continue;
+      confirmBtn = el;
+      break;
+    }
+  }
+
+  if (!confirmBtn) return false;
 
   try {
     await confirmBtn.click({ timeout: 5_000 });
@@ -1495,13 +1957,19 @@ async function confirmOperationModal(page) {
       .catch(() => false);
     if (!forced) return false;
   }
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(1200);
 
-  const stillOpen =
-    (await modalRoot.count().catch(() => 0)) > 0 &&
-    (await modalRoot.first().isVisible().catch(() => false));
-  // Do not Escape-dismiss as "success"; caller must treat unconfirmed as failure.
-  return !stillOpen;
+  const modalStillVisible =
+    (await operationModalRoot(page).count().catch(() => 0)) > 0 &&
+    (await operationModalRoot(page).first().isVisible().catch(() => false));
+  if (!modalStillVisible) return true;
+
+  // Success can also mean the operation card appeared even if an overlay heuristic lags.
+  if (opts.op) {
+    const card = await findOperationCard(page, opts.op);
+    if (card) return true;
+  }
+  return false;
 }
 
 /**
@@ -1510,6 +1978,7 @@ async function confirmOperationModal(page) {
  */
 export async function verifyAndFixOperationCommission(page, params) {
   const expected = Number(params?.expectedCommission);
+  const collaborationEnabled = params?.collaborationEnabled === true;
   const result = {
     expected: Number.isFinite(expected) && expected > 0 ? expected : null,
     actual: null,
@@ -1518,6 +1987,7 @@ export async function verifyAndFixOperationCommission(page, params) {
     edit_path: "pencil",
     retried: false,
     error: null,
+    stage: null,
   };
   if (result.expected == null) {
     result.persisted = true;
@@ -1530,53 +2000,60 @@ export async function verifyAndFixOperationCommission(page, params) {
   const attempt = async () => {
     const card = await findOperationCard(page, params.op ?? {});
     if (!card) {
-      return { ok: false, error: "operation_card_not_found" };
+      return { ok: false, error: "operation_card_not_found", stage: "find_card" };
     }
     const pencil = await findPencilInCard(card);
     if (!pencil) {
-      return { ok: false, error: "pencil_not_found" };
+      return { ok: false, error: "pencil_not_found", stage: "find_pencil" };
     }
     await pencil.click({ timeout: 5_000 }).catch(() => {});
-    await page.waitForTimeout(800);
-
-    // Ensure "Sí" for share commission so the % field is enabled.
-    const shareYes = await firstVisible([
-      page.getByRole("radio", { name: /^sí$|^si$/i }),
-      page.locator("label").filter({ hasText: /^sí$|^si$/i }),
-    ]);
-    if (shareYes) {
-      await shareYes.click({ timeout: 2_000 }).catch(() => {});
-      await page.waitForTimeout(200);
+    const modal = await waitForOperationModal(page);
+    if (!modal) {
+      return { ok: false, error: "operation_modal_not_visible", stage: "wait_modal" };
     }
 
-    const fill = await fillCommissionInputInScope(page, result.expected);
+    // Enable share-commission only when collaboration is requested.
+    if (collaborationEnabled) {
+      await selectShareCommissionYes(modal);
+    }
+
+    const fill = await fillCommissionInputInScope(modal, result.expected);
     result.filled = fill.ok;
     result.actual = fill.actual;
+    result.stage = fill.stage ?? null;
     if (!fill.ok) {
       await page.keyboard.press("Escape").catch(() => {});
-      return { ok: false, error: "commission_input_not_filled" };
+      return {
+        ok: false,
+        error: fill.error || "commission_input_not_filled",
+        stage: fill.stage ?? "fill_input",
+      };
     }
     const confirmed = await confirmOperationModal(page);
     if (!confirmed) {
       await page.keyboard.press("Escape").catch(() => {});
-      return { ok: false, error: "commission_confirm_palomita_failed" };
+      return { ok: false, error: "commission_confirm_palomita_failed", stage: "confirm" };
     }
 
     // Re-open and READ-ONLY verify (do not rewrite the field).
     await page.waitForTimeout(600);
     const card2 = await findOperationCard(page, params.op ?? {});
     if (!card2) {
-      return { ok: false, error: "operation_card_missing_after_save" };
+      return { ok: false, error: "operation_card_missing_after_save", stage: "reopen_card" };
     }
     const pencil2 = await findPencilInCard(card2);
     if (!pencil2) {
-      return { ok: false, error: "pencil_missing_after_save" };
+      return { ok: false, error: "pencil_missing_after_save", stage: "reopen_pencil" };
     }
     await pencil2.click({ timeout: 5_000 }).catch(() => {});
-    await page.waitForTimeout(800);
+    const modal2 = await waitForOperationModal(page);
+    if (!modal2) {
+      return { ok: false, error: "operation_modal_missing_after_save", stage: "reopen_modal" };
+    }
 
-    const reread = await readCommissionInputValue(page);
+    const reread = await readCommissionInputValue(modal2);
     result.actual = reread.actual;
+    result.stage = reread.stage ?? "reread";
     const persisted =
       reread.ok &&
       reread.actual != null &&
@@ -1587,6 +2064,7 @@ export async function verifyAndFixOperationCommission(page, params) {
     return {
       ok: persisted,
       error: persisted ? null : "commission_not_persisted",
+      stage: persisted ? "verified" : "reread_mismatch",
     };
   };
 
@@ -1597,6 +2075,7 @@ export async function verifyAndFixOperationCommission(page, params) {
   }
   result.persisted = first.ok === true;
   result.error = first.error ?? null;
+  result.stage = first.stage ?? result.stage;
   return result;
 }
 
@@ -2194,6 +2673,17 @@ async function fillIfPresent(page, label, value) {
 async function clickCreatePropertyIfPresent(page, metrics) {
   const t0 = Date.now();
   await page.waitForTimeout(500);
+  const urlBefore = page.url();
+  if (looksLikeCreatePropertyWizard(urlBefore)) {
+    metrics.push({
+      step: "open_create_property",
+      ok: true,
+      duration_ms: Date.now() - t0,
+      url: urlBefore,
+      already_on_wizard: true,
+    });
+    return true;
+  }
   const createAction =
     (await firstVisible([
       page.getByRole("link", {
@@ -2217,13 +2707,25 @@ async function clickCreatePropertyIfPresent(page, metrics) {
     await page.waitForLoadState("domcontentloaded", {
       timeout: resolveUnggaTimeoutMs("nav"),
     });
+    await page.waitForTimeout(500);
+    const urlAfter = page.url();
+    const navigated =
+      urlAfter !== urlBefore ||
+      looksLikeCreatePropertyWizard(urlAfter) ||
+      (await hasWizardGeneralFields(page));
     metrics.push({
       step: "open_create_property",
-      ok: true,
+      ok: navigated,
       duration_ms: Date.now() - t0,
-      url: page.url(),
+      url: urlAfter,
+      ...(navigated
+        ? {}
+        : {
+            error:
+              "Create action did not open the listing wizard (URL/fields unchanged)",
+          }),
     });
-    return true;
+    return navigated;
   } catch (e) {
     metrics.push({
       step: "open_create_property",
@@ -2233,6 +2735,33 @@ async function clickCreatePropertyIfPresent(page, metrics) {
     });
     throw e;
   }
+}
+
+function looksLikeCreatePropertyWizard(url) {
+  try {
+    const pathname = new URL(url).pathname.replace(/\/+$/, "");
+    return /\/propiedades\/(?:nueva|new)$/i.test(pathname);
+  } catch {
+    return /\/propiedades\/(?:nueva|new)\b/i.test(String(url ?? ""));
+  }
+}
+
+function resolveCreatePropertyFallbackUrl(currentUrl) {
+  try {
+    const origin = new URL(currentUrl).origin;
+    return `${origin}/app/propiedades/nueva`;
+  } catch {
+    return "https://ungga.com/app/propiedades/nueva";
+  }
+}
+
+async function hasWizardGeneralFields(page) {
+  const title = page.getByLabel(/T[ÍI]TULO/i).first();
+  if (await title.isVisible().catch(() => false)) return true;
+  const propertyType = page.getByLabel(/TIPO DE PROPIEDAD/i).first();
+  if (await propertyType.isVisible().catch(() => false)) return true;
+  const wizardTab = page.getByRole("button", { name: /^GENERAL$/i }).first();
+  return wizardTab.isVisible().catch(() => false);
 }
 
 async function firstVisible(locators) {
