@@ -537,7 +537,7 @@ The actually configured environment (`apps/web/.env.local`, dev machine — runt
 
 | Role | Code default | Configured (dev) | Rationale (per env-file comments) |
 |---|---|---|---|
-| Main agent (web/telegram/cron/case_runner) | `openai/gpt-4o-mini` | `openai/gpt-5.4-mini` | primary reasoning, still mini-tier |
+| Main agent (web/telegram/cron/case_runner) | `openai/gpt-5.4-mini` | `openai/gpt-5.4-mini` | primary reasoning, still mini-tier |
 | Heartbeat | inherits main | `openai/gpt-5.4-nano` + 1024-token cap | runs every X min per user → cheapest tier |
 | Compaction / memory flush | `anthropic/claude-haiku-4.5` | `anthropic/claude-haiku-4.5` (or env) | mechanical/extractive task |
 | Skill selector | `anthropic/claude-haiku-4.5` | `anthropic/claude-haiku-4.5` (or env) | tiny prompt, JSON out, temp 0 |

@@ -115,7 +115,7 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `EASYBROKER_PUBLIC_ASSET_BASE_URL` | *(Opcional, necesario para probar upload real de fotos EasyBroker en local)* URL pública base **sin barra final** que EasyBroker puede abrir para descargar imágenes privadas vía redirect corto. En local usa ngrok, ej. `https://abc123.ngrok-free.app`; en producción normalmente basta `NEXT_PUBLIC_SITE_URL`. |
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |
    | `OPENROUTER_MAX_TOKENS` | *(Opcional)* Cap de `max_tokens` de salida por llamada. OpenRouter lo reserva contra tu saldo antes de ejecutar, así que con poco crédito conviene bajarlo. Default: `2048` |
-| `MAIN_AGENT_MODEL_ID` | *(Opcional)* Override del modelo principal del agente (`runAgent`) para web/telegram/cron/case_runner. Default: `openai/gpt-4o-mini` |
+| `MAIN_AGENT_MODEL_ID` | *(Opcional)* Override del modelo principal del agente (`runAgent`) para web/telegram/cron/case_runner. Default: `openai/gpt-5.4-mini` |
 | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` | *(Opcional)* Clasificador JSON de casos (intake/routing) y 2ª opinión HITL cuando un gate sticky responde «no entendí». Default: `openai/gpt-5.4-mini`. Detalle: [pending-decision-routing.md](docs/operational-cases/pending-decision-routing.md) |
 | `COMPACTION_MODEL_ID` | *(Opcional)* Override del modelo usado por compaction/memory flush. Default: `anthropic/claude-3-5-haiku` |
    | `ENCRYPTION_KEY` | 64 caracteres hexadecimales (32 bytes) para cifrar tokens de integraciones en base de datos. Generar: `openssl rand -hex 32` |

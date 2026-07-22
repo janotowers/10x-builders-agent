@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Operational conversation classifier default model**: code fallback for
-  `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` is now `openai/gpt-5.4-mini`
-  (no longer inherits `MAIN_AGENT_MODEL_ID` / `gpt-4o-mini`). Same env still
-  drives intake routing and the pending-decision HITL `unclear` second opinion.
-  README + `.env.example` + model-role docs updated; README links
+- **Main agent + conversation classifier default models**: code fallbacks for
+  `MAIN_AGENT_MODEL_ID` and `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` are
+  now both `openai/gpt-5.4-mini` (classifier no longer inherits the main-agent
+  constant). Same classifier env still drives intake routing and the
+  pending-decision HITL `unclear` second opinion. README + `.env.example` +
+  model-role docs updated; README links
   `docs/operational-cases/pending-decision-routing.md`.
 
 ### Added

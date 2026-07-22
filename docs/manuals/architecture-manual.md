@@ -251,7 +251,7 @@ Separar responsabilidades permite controlar costo, latencia y calidad.
 
 | Responsabilidad | Default en codigo | Donde se configura | Estado |
 |---|---|---|---|
-| Chat principal | `openai/gpt-4o-mini` | `MAIN_AGENT_MODEL_ID` + `OPENROUTER_MAX_TOKENS` (`model.ts`) | Hoy |
+| Chat principal | `openai/gpt-5.4-mini` | `MAIN_AGENT_MODEL_ID` + `OPENROUTER_MAX_TOKENS` (`model.ts`) | Hoy |
 | Compaction / memory flush | `anthropic/claude-haiku-4.5` | `COMPACTION_MODEL_ID` (`model.ts`) | Hoy |
 | Selector de skills | `anthropic/claude-haiku-4.5` | `SKILL_SELECTOR_MODEL_ID` (`model.ts`) | Hoy |
 | Reviewer de Business Brain | `anthropic/claude-haiku-4.5` | `BUSINESS_BRAIN_REVIEWER_MODEL_ID` (`model.ts`) | Hoy |

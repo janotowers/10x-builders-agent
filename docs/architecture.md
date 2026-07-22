@@ -20,7 +20,7 @@
 
 | Rol | Env | Default en código |
 | --- | --- | --- |
-| Agente principal (web/telegram/cron/case_runner) | `MAIN_AGENT_MODEL_ID` | `openai/gpt-4o-mini` |
+| Agente principal (web/telegram/cron/case_runner) | `MAIN_AGENT_MODEL_ID` | `openai/gpt-5.4-mini` |
 | Heartbeat | `HEARTBEAT_MODEL_ID` (+ `HEARTBEAT_MAX_TOKENS`) | hereda main si se omite |
 | Compaction / memory flush | `COMPACTION_MODEL_ID` | `anthropic/claude-haiku-4.5` |
 | Skill selector | `SKILL_SELECTOR_MODEL_ID` | `anthropic/claude-haiku-4.5` |

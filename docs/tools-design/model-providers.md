@@ -6,7 +6,7 @@ Inventario canónico. **Defaults y lectura de env** viven en [`packages/agent/sr
 
 | Rol | Env | Default | Dónde se usa |
 | --- | --- | --- | --- |
-| Agente principal | `MAIN_AGENT_MODEL_ID` | `openai/gpt-4o-mini` | `createChatModel` → web, telegram, cron, case_runner |
+| Agente principal | `MAIN_AGENT_MODEL_ID` | `openai/gpt-5.4-mini` | `createChatModel` → web, telegram, cron, case_runner |
 | Heartbeat | `HEARTBEAT_MODEL_ID` (+ `HEARTBEAT_MAX_TOKENS`) | hereda main si se omite | `graph.ts` vía `resolveHeartbeatModelId()` |
 | Compaction / memory flush | `COMPACTION_MODEL_ID` | `anthropic/claude-haiku-4.5` | `createCompactionModel` |
 | Skill selector | `SKILL_SELECTOR_MODEL_ID` | `anthropic/claude-haiku-4.5` | `createSkillSelectorModel` |

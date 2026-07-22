@@ -37,7 +37,7 @@ export const DEFAULT_MAX_TOKENS = 2048;
  * Canonical inventory: docs/tools-design/model-providers.md §"Roles actuales".
  */
 /** Default del modelo principal del agente (OpenRouter). */
-export const DEFAULT_MAIN_AGENT_MODEL_ID = "openai/gpt-4o-mini";
+export const DEFAULT_MAIN_AGENT_MODEL_ID = "openai/gpt-5.4-mini";
 /** Default del modelo dedicado a compaction / memory flush. */
 export const DEFAULT_COMPACTION_MODEL_ID = "anthropic/claude-haiku-4.5";
 /** Default del selector pre-graph de skills (JSON estricto, temp 0). */
