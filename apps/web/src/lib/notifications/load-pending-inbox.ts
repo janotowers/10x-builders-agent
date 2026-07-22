@@ -320,6 +320,9 @@ export async function loadPendingInboxSnapshot(
       contractMissingFields: notificationContractMissingFields(notification),
       credentialFailure:
         notification.metadata_jsonb?.credential_failure === true,
+      prepareDraftFailure:
+        notification.metadata_jsonb?.prepare_draft_failure === true ||
+        notification.metadata_jsonb?.safe_retry_prepare === true,
     };
   });
 
@@ -436,6 +439,9 @@ export async function loadResolvedInboxSnapshot(
       contractMissingFields: notificationContractMissingFields(notification),
       credentialFailure:
         notification.metadata_jsonb?.credential_failure === true,
+      prepareDraftFailure:
+        notification.metadata_jsonb?.prepare_draft_failure === true ||
+        notification.metadata_jsonb?.safe_retry_prepare === true,
     };
   });
 

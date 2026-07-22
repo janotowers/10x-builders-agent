@@ -40,7 +40,7 @@ export function photosUploadProgressAckText(photoCount: number): string {
   return [
     `Recibí la foto. Van ${photoCount} registrada(s).`,
     `Mínimo ${RAW_PHOTOS_MIN_COUNT} para publicar.`,
-    "Cuando termines de subir todas las fotos, escribe **«listo»**.",
+    "Cuando termines, toca **«Terminé de subir»** o escribe **«listo»**.",
   ].join(" ");
 }
 
@@ -80,7 +80,7 @@ export function formatPhotosUploadRequestNotifyText(params: {
     "• Baño principal",
     "• Extras opcionales: jardín, estacionamiento, amenidades, detalles",
     "",
-    "Cuando termines de subir todas las fotos, responde **«listo»**.",
+    "Cuando termines de subir todas las fotos, toca **«Terminé de subir»** o escribe **«listo»**.",
   ].join("\n");
 }
 

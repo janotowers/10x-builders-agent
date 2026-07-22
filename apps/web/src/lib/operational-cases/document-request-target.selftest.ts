@@ -8,6 +8,7 @@ import {
   buildCaseDocumentRequestTargetPrompt,
   buildDocumentRouteConfirmationAck,
   buildOperationalCaseContinuationReprompt,
+  canInferInternalDocumentTargetOnUpload,
   isInternalMediaCollectionCase,
   isInternalPhotosCollectionCase,
   messageLooksLikeDocumentTargetChoice,
@@ -268,6 +269,27 @@ assert.equal(
   isInternalPhotosCollectionCase({
     ...photosCase,
     status: "paused",
+  } as unknown as OperationalCase),
+  false
+);
+
+// Paridad web/Telegram: inferencia interna cuando el asesor sube sin elegir.
+assert.equal(
+  canInferInternalDocumentTargetOnUpload(conversationalAwaitingDocs({})),
+  true,
+  "upload before choice must allow inference"
+);
+assert.equal(
+  canInferInternalDocumentTargetOnUpload(
+    conversationalAwaitingDocs({ document_request_target: "internal_user" })
+  ),
+  false,
+  "already decided must not re-infer"
+);
+assert.equal(
+  canInferInternalDocumentTargetOnUpload({
+    ...conversationalAwaitingDocs({}),
+    current_step: "photos_requested",
   } as unknown as OperationalCase),
   false
 );

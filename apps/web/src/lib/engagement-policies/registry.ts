@@ -164,6 +164,18 @@ const KIND_POLICIES: Record<string, Partial<EngagementPolicy>> = {
   external_contact_escalation: {
     reminderCooldownHours: 4,
   },
+  // Upload-batch confirmation: advisor uploaded docs/photos but may forget «listo».
+  // Timing is account-overridable via engagement_policy_overrides_jsonb.
+  photos_upload_requested: {
+    defaultDueAfterHours: 8,
+    reminderCooldownHours: 8,
+    maxReminderAttempts: 3,
+  },
+  documents_upload_requested: {
+    defaultDueAfterHours: 8,
+    reminderCooldownHours: 8,
+    maxReminderAttempts: 3,
+  },
 };
 
 const PRIORITY_POLICIES: Record<NotificationPriority, Partial<EngagementPolicy>> = {

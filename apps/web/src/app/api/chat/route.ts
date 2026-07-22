@@ -31,6 +31,7 @@ import type { OperationalCase, ToolApprovalPolicy } from "@agents/types";
 import { resolveOperationalCaseDocumentRequestTarget } from "@agents/types";
 import {
   applyDocumentRequestTargetChoice,
+  inferInternalDocumentTargetOnUpload,
   resolveCharacteristicsReplyAgainstBindings,
   resolveDocumentTargetReplyAgainstBindings,
   resolveInternalDocumentMessageCase,
@@ -41,16 +42,9 @@ import {
   isInternalCharacteristicsReplyCandidate,
   processCharacteristicsReplyDeterministically,
 } from "@/lib/operational-cases/characteristics-response";
-import {
-  completeDocumentBatchForCase,
-  looksLikeDocumentBatchComplete,
-} from "@/lib/operational-cases/document-batch-completion";
-import {
-  completePhotoBatchForCase,
-  photosBatchAdvancedAckText,
-  photosBatchInsufficientAckText,
-  photosUploadProgressAckText,
-} from "@/lib/operational-cases/photo-batch-completion";
+import { looksLikeDocumentBatchComplete } from "@/lib/operational-cases/document-batch-completion";
+import { photosUploadProgressAckText } from "@/lib/operational-cases/photo-batch-completion";
+import { completeUploadBatch } from "@/lib/operational-cases/upload-batch-completion";
 import {
   buildExternalContactDeepLink,
   buildExternalContactSetupMessage,
@@ -169,18 +163,26 @@ async function registerInternalCaseAttachments(params: {
       rawPhotosCount: 0,
     };
   }
-  const target = resolveOperationalCaseDocumentRequestTarget({
-    externalContact: params.opCase.external_contact_jsonb,
-    context: params.opCase.context_jsonb,
+  // Paridad Telegram: persistir inferencia interna si el asesor sube docs
+  // antes de elegir interno/externo (no solo resolver por default).
+  const inferred = await inferInternalDocumentTargetOnUpload({
+    db: params.db,
+    opCase: params.opCase,
+    source: "web_chat",
+    reason: "advisor_uploaded_documents_before_choice",
   });
-  let currentCase = params.opCase;
+  let currentCase = inferred.opCase;
+  const target = resolveOperationalCaseDocumentRequestTarget({
+    externalContact: currentCase.external_contact_jsonb,
+    context: currentCase.context_jsonb,
+  });
   const supportsInternalDocs =
-    target === "internal_user" && params.opCase.current_step === "awaiting_documents";
-  const supportsInternalPhotos = params.opCase.current_step === "photos_requested";
+    target === "internal_user" && currentCase.current_step === "awaiting_documents";
+  const supportsInternalPhotos = currentCase.current_step === "photos_requested";
   if (!supportsInternalDocs && !supportsInternalPhotos) {
     return {
       registered: 0,
-      opCase: params.opCase,
+      opCase: currentCase,
       photosAdded: 0,
       rawPhotosCount: 0,
     };
@@ -729,84 +731,37 @@ export async function POST(request: Request) {
           context: conversationalCase.context_jsonb,
         });
         if (
-          target === "internal_user" &&
-          conversationalCase.current_step === "awaiting_documents" &&
-          looksLikeDocumentBatchComplete(effectiveMessage)
+          looksLikeDocumentBatchComplete(effectiveMessage) &&
+          (conversationalCase.current_step === "photos_requested" ||
+            (target === "internal_user" &&
+              conversationalCase.current_step === "awaiting_documents"))
         ) {
-          const completion = await completeDocumentBatchForCase({
+          const source =
+            conversationalCase.current_step === "photos_requested"
+              ? "web_chat_internal_photos_marked_ready"
+              : "web_chat_internal_documents_marked_ready";
+          const completion = await completeUploadBatch({
             db,
             caseId: conversationalCase.id,
             channel: "web",
-            source: "web_chat_internal_documents_marked_ready",
+            source,
           });
-          if (completion.status === "no_documents") {
-            return await respondConversational(
-              "Aún no veo documentos registrados en el caso. Sube al menos uno y luego escribe “listo”."
-            );
-          }
-          if (completion.status === "failed") {
-            return await respondConversational(
-              "Registré tu confirmación, pero no pude avanzar el caso en este momento. Intenta de nuevo en unos segundos."
-            );
-          }
           conversationalCase = completion.case;
-          if (conversationalCase.context_jsonb?.e2e_controlled === true) {
-            void runSettingsTestCaseAgentTick(
-              db,
-              conversationalCase,
-              conversationalCase.user_id,
-              { source: "web_chat_internal_documents_marked_ready" }
-            ).catch((tickError) => {
-              console.error(
-                "[chat] internal documents marked ready tick failed:",
-                tickError
-              );
-            });
-          }
-          return await respondConversational(
-            "Perfecto, marqué el caso como documentos recibidos y continúo con la extracción."
-          );
-        }
-        if (
-          conversationalCase.current_step === "photos_requested" &&
-          looksLikeDocumentBatchComplete(effectiveMessage)
-        ) {
-          const completion = await completePhotoBatchForCase({
-            db,
-            caseId: conversationalCase.id,
-            channel: "web",
-            source: "web_chat_internal_photos_marked_ready",
-          });
           if (
-            completion.status === "no_photos" ||
-            completion.status === "insufficient_photos"
+            (completion.status === "advanced" ||
+              completion.status === "already_advanced") &&
+            conversationalCase.context_jsonb?.e2e_controlled === true
           ) {
-            return await respondConversational(
-              photosBatchInsufficientAckText(completion.photoCount)
-            );
-          }
-          if (completion.status === "failed") {
-            return await respondConversational(
-              "Registré tu confirmación, pero no pude avanzar el caso en este momento. Intenta de nuevo en unos segundos."
-            );
-          }
-          conversationalCase = completion.case;
-          if (conversationalCase.context_jsonb?.e2e_controlled === true) {
             void runSettingsTestCaseAgentTick(
               db,
               conversationalCase,
               conversationalCase.user_id,
-              { source: "web_chat_internal_photos_marked_ready" }
+              { source }
             ).catch((tickError) => {
-              console.error(
-                "[chat] internal photos marked ready tick failed:",
-                tickError
-              );
+              console.error("[chat] upload batch marked ready tick failed:", tickError);
             });
           }
-          return await respondConversational(
-            photosBatchAdvancedAckText(completion.photoCount)
-          );
+          return await respondConversational(completion.ackText);
         }
         conversationalCaseId = conversationalCase.id;
         operationalToolApprovalPolicy =

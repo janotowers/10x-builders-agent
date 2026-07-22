@@ -108,12 +108,12 @@ import {
 } from "@/lib/operational-cases/conversational-e2e-post-intake";
 import {
   applyDocumentRequestTargetChoice,
+  inferInternalDocumentTargetOnUpload,
   messageLooksLikeDocumentTargetChoice,
   resolveCharacteristicsReplyAgainstBindings,
   resolveDocumentTargetReplyAgainstBindings,
   resolveInternalDocumentMessageCase,
   resolveInternalDocumentUploadCaseForMedia,
-  setCaseDocumentRequestTarget,
   shouldPromptCaseDocumentRequestTarget,
 } from "@/lib/operational-cases/document-request-target";
 import { shouldSendTelegramAgentResponse } from "@/lib/operational-cases/telegram-agent-response-policy";
@@ -130,12 +130,8 @@ import {
   completeDocumentBatchForCase,
   looksLikeDocumentBatchComplete,
 } from "@/lib/operational-cases/document-batch-completion";
-import {
-  completePhotoBatchForCase,
-  photosBatchAdvancedAckText,
-  photosBatchInsufficientAckText,
-  photosUploadProgressAckText,
-} from "@/lib/operational-cases/photo-batch-completion";
+import { photosUploadProgressAckText } from "@/lib/operational-cases/photo-batch-completion";
+import { completeUploadBatch } from "@/lib/operational-cases/upload-batch-completion";
 import {
   buildDocumentReceivedAck,
   buildMediaGroupReceivedAck,
@@ -144,6 +140,8 @@ import {
 import {
   appendMediaGroupAckToCase,
   flushMediaGroupAcksForCase,
+  inspectPendingMediaGroupAcks,
+  MEDIA_GROUP_ACK_WINDOW_MS,
 } from "@/lib/operational-cases/telegram-media-group-ack-store";
 
 /**
@@ -334,9 +332,6 @@ async function appendRawPhoto(params: {
   photoAdded: boolean;
   photoCount: number;
 }> {
-  if (params.opCase.current_step !== "photos_requested") {
-    return { opCase: params.opCase, photoAdded: false, photoCount: 0 };
-  }
   if (
     !looksLikeRawPhotoUpload({
       contentType: params.ingested.document.content_type ?? "",
@@ -346,70 +341,89 @@ async function appendRawPhoto(params: {
     return { opCase: params.opCase, photoAdded: false, photoCount: 0 };
   }
 
-  const currentContext = isObjectRecord(params.opCase.context_jsonb)
-    ? (params.opCase.context_jsonb as Record<string, unknown>)
-    : {};
-  const existingRawPhotos = Array.isArray(currentContext.raw_photos)
-    ? currentContext.raw_photos.filter((item): item is Record<string, unknown> =>
-        isObjectRecord(item)
-      )
-    : [];
-  const duplicate = existingRawPhotos.some((item) => {
-    const sameDocument =
-      typeof item.document_id === "string" && item.document_id === params.ingested.document.id;
-    const samePath =
-      typeof item.storage_path === "string" &&
-      item.storage_path === params.ingested.document.storage_path;
-    return sameDocument || samePath;
-  });
-  if (duplicate) {
-    return {
-      opCase: params.opCase,
-      photoAdded: false,
-      photoCount: existingRawPhotos.length,
-    };
-  }
-
-  const nextRawPhotos = [
-    ...existingRawPhotos,
-    {
-      document_id: params.ingested.document.id,
-      storage_bucket: params.ingested.document.storage_bucket,
-      storage_path: params.ingested.document.storage_path,
-      original_name: params.ingested.document.original_name,
-      content_type: params.ingested.document.content_type,
-      sha256: params.ingested.sha256,
-      source: params.ingested.document.source,
-      uploaded_at: new Date().toISOString(),
-    },
-  ];
-  const photoCount = nextRawPhotos.length;
-  const nextCase = await updateOperationalCase(
-    params.db,
-    params.opCase.id,
-    params.opCase.version,
-    {
-      currentStep: "photos_requested",
-      status: "waiting_internal",
-      context: {
-        ...currentContext,
-        raw_photos: nextRawPhotos,
-      },
+  // Optimistic-lock retries: concurrent album webhooks often race on version.
+  const maxAttempts = 4;
+  let current = params.opCase;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (current.current_step !== "photos_requested") {
+      return { opCase: current, photoAdded: false, photoCount: 0 };
     }
-  );
-  if (!nextCase) {
-    return {
-      opCase: params.opCase,
-      photoAdded: false,
-      photoCount: existingRawPhotos.length,
-    };
+    const currentContext = isObjectRecord(current.context_jsonb)
+      ? (current.context_jsonb as Record<string, unknown>)
+      : {};
+    const existingRawPhotos = Array.isArray(currentContext.raw_photos)
+      ? currentContext.raw_photos.filter(
+          (item): item is Record<string, unknown> => isObjectRecord(item)
+        )
+      : [];
+    const duplicate = existingRawPhotos.some((item) => {
+      const sameDocument =
+        typeof item.document_id === "string" &&
+        item.document_id === params.ingested.document.id;
+      const samePath =
+        typeof item.storage_path === "string" &&
+        item.storage_path === params.ingested.document.storage_path;
+      return sameDocument || samePath;
+    });
+    if (duplicate) {
+      return {
+        opCase: current,
+        photoAdded: false,
+        photoCount: existingRawPhotos.length,
+      };
+    }
+
+    const nextRawPhotos = [
+      ...existingRawPhotos,
+      {
+        document_id: params.ingested.document.id,
+        storage_bucket: params.ingested.document.storage_bucket,
+        storage_path: params.ingested.document.storage_path,
+        original_name: params.ingested.document.original_name,
+        content_type: params.ingested.document.content_type,
+        sha256: params.ingested.sha256,
+        source: params.ingested.document.source,
+        uploaded_at: new Date().toISOString(),
+      },
+    ];
+    const nextCase = await updateOperationalCase(
+      params.db,
+      current.id,
+      current.version,
+      {
+        currentStep: "photos_requested",
+        status: "waiting_internal",
+        context: {
+          ...currentContext,
+          raw_photos: nextRawPhotos,
+        },
+      }
+    );
+    if (nextCase) {
+      return {
+        opCase: nextCase,
+        photoAdded: true,
+        photoCount: nextRawPhotos.length,
+      };
+    }
+    const fresh = await getOperationalCase(params.db, current.id);
+    if (!fresh) {
+      return {
+        opCase: current,
+        photoAdded: false,
+        photoCount: existingRawPhotos.length,
+      };
+    }
+    current = fresh;
   }
 
-  return {
-    opCase: nextCase,
-    photoAdded: true,
-    photoCount,
-  };
+  const fallbackContext = isObjectRecord(current.context_jsonb)
+    ? (current.context_jsonb as Record<string, unknown>)
+    : {};
+  const fallbackCount = Array.isArray(fallbackContext.raw_photos)
+    ? fallbackContext.raw_photos.length
+    : 0;
+  return { opCase: current, photoAdded: false, photoCount: fallbackCount };
 }
 
 function notificationMissingContractFields(notification: {
@@ -561,38 +575,29 @@ async function finalizeInternalDocumentBatch(params: {
   source: string;
 }) {
   const { db, caseId, chatId, source } = params;
-  const completion = await completeDocumentBatchForCase({
+  const completion = await completeUploadBatch({
     db,
     caseId,
     channel: "telegram",
     source,
   });
-  if (completion.status === "no_documents") {
-    await sendTelegramMessage(
-      chatId,
-      "Aún no veo documentos registrados en el caso. Súbeme al menos uno y luego escribe «listo»."
-    );
+  if (completion.status === "no_files") {
+    await sendTelegramMessage(chatId, completion.ackText);
     return NextResponse.json({
       ok: true,
       routed: "operational_case_internal_documents_no_documents",
       case_id: caseId,
     });
   }
-  if (completion.status === "failed") {
-    await sendTelegramMessage(
-      chatId,
-      "Registré tu confirmación, pero no pude avanzar el caso en este momento. Inténtalo de nuevo en unos segundos."
-    );
+  if (completion.status === "failed" || completion.status === "wrong_step") {
+    await sendTelegramMessage(chatId, completion.ackText);
     return NextResponse.json({
       ok: true,
       routed: "operational_case_internal_documents_failed",
       case_id: caseId,
     });
   }
-  await sendTelegramMessage(
-    chatId,
-    "Gracias, ya registré que terminaste de enviar documentos. Voy a procesarlos y te aviso el siguiente paso."
-  );
+  await sendTelegramMessage(chatId, completion.ackText);
   if (completion.case.context_jsonb?.e2e_controlled === true) {
     void runSettingsTestCaseAgentTick(
       db,
@@ -613,50 +618,119 @@ async function finalizeInternalDocumentBatch(params: {
   });
 }
 
-async function finalizeInternalPhotoBatch(params: {
+const UPLOAD_BATCH_SETTLE_MAX_WAIT_MS = 8_000;
+const UPLOAD_BATCH_SETTLE_POLL_MS = 400;
+
+async function sleepMs(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Shared completion path for button «Terminé de subir» and text «listo».
+ * Waits briefly for in-flight Telegram album webhooks to settle, flushes
+ * consolidated media-group acks, then runs completeUploadBatch on a fresh case.
+ */
+async function finalizeUploadBatchAfterSettling(params: {
   db: ReturnType<typeof createServerClient>;
   caseId: string;
   chatId: number;
   source: string;
-}) {
+  /** When true, answer Telegram callback quickly before settling. */
+  callbackQueryId?: string;
+}): Promise<NextResponse> {
   const { db, caseId, chatId, source } = params;
-  const completion = await completePhotoBatchForCase({
+
+  if (params.callbackQueryId) {
+    await answerTelegramCallbackQuery(
+      params.callbackQueryId,
+      "Confirmando carga…"
+    );
+  }
+
+  const settleDeadline = Date.now() + UPLOAD_BATCH_SETTLE_MAX_WAIT_MS;
+  let opCase = await getOperationalCase(db, caseId);
+  while (opCase && Date.now() < settleDeadline) {
+    const pending = inspectPendingMediaGroupAcks({
+      context: isObjectRecord(opCase.context_jsonb)
+        ? (opCase.context_jsonb as Record<string, unknown>)
+        : {},
+      caseId,
+      chatId,
+      windowMs: MEDIA_GROUP_ACK_WINDOW_MS,
+    });
+    // Settle only while album items are still arriving (quiet window not met).
+    // Use a short quiet threshold for completion (not the full 12s ack window).
+    const quietMs = 1_500;
+    if (
+      !pending.settling ||
+      pending.msSinceLastFile == null ||
+      pending.msSinceLastFile >= quietMs
+    ) {
+      break;
+    }
+    await sleepMs(UPLOAD_BATCH_SETTLE_POLL_MS);
+    opCase = await getOperationalCase(db, caseId);
+  }
+
+  if (opCase) {
+    const flush = await flushMediaGroupAcksForCase({
+      db,
+      opCase,
+      chatId,
+      sendAck: async () => {
+        // Final completion ack comes from completeUploadBatch; avoid double message.
+      },
+      force: true,
+    });
+    opCase = flush.opCase;
+  }
+
+  const completion = await completeUploadBatch({
     db,
     caseId,
     channel: "telegram",
     source,
   });
+
+  const batchKind = completion.batchKind;
+  const isPhotos = batchKind === "photos";
+  if (completion.status === "insufficient" || completion.status === "no_files") {
+    await sendTelegramMarkdownMessage(chatId, completion.ackText);
+    return NextResponse.json({
+      ok: true,
+      routed: isPhotos
+        ? "operational_case_internal_photos_insufficient"
+        : "upload_batch_done",
+      case_id: caseId,
+      ...(isPhotos ? { photos_count: completion.fileCount } : {}),
+      status: completion.status,
+    });
+  }
+  if (completion.status === "failed" || completion.status === "wrong_step") {
+    await sendTelegramMessage(chatId, completion.ackText);
+    return NextResponse.json({
+      ok: true,
+      routed: isPhotos
+        ? "operational_case_internal_photos_failed"
+        : "upload_batch_done",
+      case_id: caseId,
+      status: completion.status,
+    });
+  }
+
+  const ackUsesMarkdown =
+    completion.ackText.includes("**") || completion.ackText.includes("«");
+  if (ackUsesMarkdown) {
+    await sendTelegramMarkdownMessage(chatId, completion.ackText);
+  } else {
+    await sendTelegramMessage(chatId, completion.ackText);
+  }
+
   if (
-    completion.status === "no_photos" ||
-    completion.status === "insufficient_photos"
+    (completion.status === "advanced" ||
+      completion.status === "already_advanced") &&
+    completion.case.context_jsonb?.e2e_controlled === true
   ) {
-    await sendTelegramMarkdownMessage(
-      chatId,
-      photosBatchInsufficientAckText(completion.photoCount)
-    );
-    return NextResponse.json({
-      ok: true,
-      routed: "operational_case_internal_photos_insufficient",
-      case_id: caseId,
-      photos_count: completion.photoCount,
-    });
-  }
-  if (completion.status === "failed") {
-    await sendTelegramMessage(
-      chatId,
-      "Registré tu confirmación, pero no pude avanzar el caso en este momento. Inténtalo de nuevo en unos segundos."
-    );
-    return NextResponse.json({
-      ok: true,
-      routed: "operational_case_internal_photos_failed",
-      case_id: caseId,
-    });
-  }
-  await sendTelegramMessage(
-    chatId,
-    photosBatchAdvancedAckText(completion.photoCount)
-  );
-  if (completion.case.context_jsonb?.e2e_controlled === true) {
     void runSettingsTestCaseAgentTick(
       db,
       completion.case,
@@ -664,17 +738,30 @@ async function finalizeInternalPhotoBatch(params: {
       { source }
     ).catch((tickError) => {
       console.error(
-        "[telegram-webhook] internal photos marked ready tick failed:",
+        `[telegram-webhook] upload batch tick failed (${source}):`,
         tickError
       );
     });
   }
+
   return NextResponse.json({
     ok: true,
-    routed: "operational_case_internal_photos_processing",
+    routed: isPhotos
+      ? "operational_case_internal_photos_processing"
+      : "upload_batch_done",
     case_id: caseId,
-    photos_count: completion.photoCount,
+    ...(isPhotos ? { photos_count: completion.fileCount } : {}),
+    status: completion.status,
   });
+}
+
+async function finalizeInternalPhotoBatch(params: {
+  db: ReturnType<typeof createServerClient>;
+  caseId: string;
+  chatId: number;
+  source: string;
+}) {
+  return finalizeUploadBatchAfterSettling(params);
 }
 
 interface TelegramUpdate {
@@ -1176,6 +1263,25 @@ export async function POST(request: Request) {
         ok: true,
         routed: "price_adjust_guidance",
         notification_id: targetId,
+      });
+    }
+
+    if (action === "upload_done") {
+      const caseId = targetId;
+      const opCase = await getOperationalCase(db, caseId);
+      if (!opCase || opCase.user_id !== userId) {
+        await answerTelegramCallbackQuery(cb.id, "Caso no encontrado");
+        return NextResponse.json({
+          ok: true,
+          routed: "upload_batch_done_case_missing",
+        });
+      }
+      return await finalizeUploadBatchAfterSettling({
+        db,
+        caseId,
+        chatId: cb.message.chat.id,
+        source: "telegram_upload_done_button",
+        callbackQueryId: cb.id,
       });
     }
 
@@ -3049,49 +3155,23 @@ export async function POST(request: Request) {
       });
     }
 
+    // Subida de documentos por el asesor ANTES de elegir destino: inferimos
+    // ruta interna (los archivos llegan del propio chat del asesor). Paridad
+    // con web via inferInternalDocumentTargetOnUpload.
+    const inferredTarget = await inferInternalDocumentTargetOnUpload({
+      db,
+      opCase: conversationalCase,
+      source: "telegram_webhook",
+      reason: "advisor_uploaded_documents_before_choice",
+      eventExtras: {
+        message_id: message.message_id,
+        media_group_id: message.media_group_id ?? null,
+      },
+    });
+    conversationalCase = inferredTarget.opCase;
     let requestTarget = operationalCaseDocumentRequestTargetFromContext(
       conversationalCase.context_jsonb
     );
-    // Subida de documentos por el asesor ANTES de elegir destino: inferimos
-    // ruta interna (los archivos llegan del propio chat del asesor) en vez de
-    // re-preguntar interno/externo por cada archivo. Así la ingesta y el acuse
-    // siguen la misma rama interna de abajo (acuse en bloque, sin repetir la
-    // pregunta). El asesor puede cambiar a externo explícitamente más tarde.
-    if (
-      requestTarget == null &&
-      shouldPromptCaseDocumentRequestTarget(conversationalCase) &&
-      conversationalCase.current_step === "awaiting_documents"
-    ) {
-      const inferred = await setCaseDocumentRequestTarget({
-        db,
-        opCase: conversationalCase,
-        target: "internal_user",
-        decidedBy: "inferred",
-        source: "telegram_webhook",
-        reason: "advisor_uploaded_documents_before_choice",
-      });
-      conversationalCase =
-        (await updateOperationalCase(db, inferred.id, inferred.version, {
-          status: "waiting_internal",
-        })) ?? inferred;
-      // Compat E2E / proyección: además del human_decision step_branch_selected
-      // que emite setCaseDocumentRequestTarget, conservamos el kind legacy.
-      await insertOperationalCaseEvent(db, {
-        caseId: conversationalCase.id,
-        eventType: "state_changed",
-        actor: "system",
-        stepKey: conversationalCase.current_step ?? undefined,
-        payload: {
-          kind: "document_request_target_inferred",
-          source: "telegram_webhook",
-          target: "internal_user",
-          reason: "advisor_uploaded_documents_before_choice",
-          message_id: message.message_id,
-          media_group_id: message.media_group_id ?? null,
-        },
-      });
-      requestTarget = "internal_user";
-    }
     const isInternalDocumentStep =
       requestTarget === "internal_user" &&
       (conversationalCase.current_step === "awaiting_documents" ||
@@ -3276,17 +3356,7 @@ export async function POST(request: Request) {
       internalDocumentTextReason === "batch_complete") &&
     conversationalCase.current_step === "photos_requested"
   ) {
-    const flush = await flushMediaGroupAcksForCase({
-      db,
-      opCase: conversationalCase,
-      chatId,
-      sendAck: async () => {
-        // Avoid double ack with finalizeInternalPhotoBatch message.
-      },
-      force: true,
-    });
-    conversationalCase = flush.opCase;
-    return await finalizeInternalPhotoBatch({
+    return await finalizeUploadBatchAfterSettling({
       db,
       caseId: conversationalCase.id,
       chatId,

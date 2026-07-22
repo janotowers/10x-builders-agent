@@ -9,9 +9,19 @@ for (const positive of [
   "ya está",
   "ya estan",
   "terminé",
+  "ya terminé",
   "eso es todo",
   "ya mandé todo",
   "ya te mandé todo",
+  "ya subí todo",
+  "ya los subí",
+  "ya las subí",
+  "ya te los mandé",
+  "ya te las mandé",
+  "ya te los di",
+  "ya te las di",
+  "ya quedaron",
+  "ya quedó",
   "documentos enviados",
 ]) {
   assert.equal(
@@ -26,6 +36,7 @@ for (const negative of [
   "listo para enviar mañana",
   "todavía no",
   "te mando la escritura",
+  "ya casi termino",
   "",
 ]) {
   assert.equal(

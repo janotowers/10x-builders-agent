@@ -116,4 +116,36 @@ const nextWindow = nextAllowedDeliveryAt({
 });
 assert.equal(nextWindow.toISOString(), "2026-05-25T15:00:00.000Z");
 
+assert.equal(
+  defaultDueAtForEngagement(
+    {
+      audience: "internal_user",
+      intent: "reminder",
+      kind: "photos_upload_requested",
+    },
+    base
+  ),
+  "2026-05-24T20:00:00.000Z",
+  "photos upload request must get a due_at for cron reminders"
+);
+assert.equal(
+  defaultDueAtForEngagement(
+    {
+      audience: "internal_user",
+      intent: "reminder",
+      kind: "documents_upload_requested",
+    },
+    base
+  ),
+  "2026-05-24T20:00:00.000Z"
+);
+assert.equal(
+  resolveEngagementPolicy({
+    audience: "internal_user",
+    intent: "reminder",
+    kind: "photos_upload_requested",
+  }).maxReminderAttempts,
+  3
+);
+
 console.log("engagement-policies registry selftest passed");

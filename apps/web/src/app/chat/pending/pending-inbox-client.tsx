@@ -27,6 +27,7 @@ import {
 } from "@/lib/notifications/pending-action-display";
 import { pendingInlineActionKind } from "@/lib/notifications/pending-action-registry";
 import { contractDataReviewBooleanButtonLabels } from "@/lib/notify/contract-data-review-telegram-markup";
+import { isUploadBatchNotificationKind } from "@/lib/operational-cases/upload-batch-completion";
 import type {
   InternalNotificationDisplay,
   PendingInboxCounts,
@@ -473,6 +474,31 @@ export function PendingInboxClient({
         data.message ?? data.error ?? (res.ok ? "Listo." : "No se pudo procesar."),
     }));
     if (res.ok && data.ok !== false) {
+      await refreshNotifications();
+    }
+  }
+
+  async function submitUploadBatchComplete(notificationId: string) {
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]: "Procesando...",
+    }));
+    const res = await fetch("/api/business-decisions/upload-batch-complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notification_id: notificationId }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      message?: string;
+      error?: string;
+    };
+    setNotificationActionStatus((current) => ({
+      ...current,
+      [notificationId]:
+        data.message ?? data.error ?? (res.ok ? "Listo." : "No se pudo procesar."),
+    }));
+    if (res.ok) {
       await refreshNotifications();
     }
   }
@@ -1230,6 +1256,8 @@ export function PendingInboxClient({
                 (isInformational ||
                   !primaryReviewHref ||
                   !notificationConfig.businessDecision);
+              const showUploadBatchDone =
+                isInformational && isUploadBatchNotificationKind(notification.kind);
               const showSecondaryFlowLink =
                 hasStructuredDecision && Boolean(primaryReviewHref);
               const isHitlReminder =
@@ -1518,7 +1546,9 @@ export function PendingInboxClient({
                         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-100">
                           {notification.credentialFailure
                             ? "Credencial de publicación inválida"
-                            : "Revisión condicional de publicación"}
+                            : notification.prepareDraftFailure
+                              ? "Fallo al preparar borrador"
+                              : "Revisión condicional de publicación"}
                         </p>
                         <div className="flex flex-wrap gap-1">
                           <button
@@ -1532,7 +1562,9 @@ export function PendingInboxClient({
                           >
                             {notification.credentialFailure
                               ? "Ya actualicé la API key — reintentar"
-                              : "Aprobar y continuar"}
+                              : notification.prepareDraftFailure
+                                ? "Reintentar preparación"
+                                : "Aprobar y continuar"}
                           </button>
                           <button
                             type="button"
@@ -1543,7 +1575,8 @@ export function PendingInboxClient({
                             }
                             className="rounded-full border border-rose-200 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-300/20 dark:text-rose-100"
                           >
-                            {notification.credentialFailure
+                            {notification.credentialFailure ||
+                            notification.prepareDraftFailure
                               ? "Pausar publicación"
                               : "Detener y revisar"}
                           </button>
@@ -1966,6 +1999,17 @@ export function PendingInboxClient({
                       >
                         Ver en flujo
                       </a>
+                    ) : null}
+                    {showUploadBatchDone ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void submitUploadBatchComplete(notification.id)
+                        }
+                        className="rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700"
+                      >
+                        Terminé de subir
+                      </button>
                     ) : null}
                     {showAcknowledge ? (
                       <button

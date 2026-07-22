@@ -30,6 +30,13 @@ export interface InternalNotificationDisplay {
     optional?: boolean;
     choices?: Array<{ value: string; label: string }>;
   }> | null;
+  /** Publication review: auth/credential failure (Settings fix), not data labels. */
+  credentialFailure?: boolean;
+  /**
+   * Publication review: known Ungga prepare_draft failure before save.
+   * Safe to retry preparation directly (no remote GU-ID to reconcile).
+   */
+  prepareDraftFailure?: boolean;
 }
 
 export interface ResolvedNotificationDisplay extends InternalNotificationDisplay {

@@ -74,13 +74,15 @@ Más cualquier documento extra que la cuenta exija (revisa
       **no vuelvas a notificar**: conserva la espera event-driven.
 
    c. Solo en la solicitud inicial (o si hubo nueva evidencia y cambió el
-      checklist), llama `notify_user` al asesor con documentos pendientes y
-      la instrucción explícita de enviarlos **aquí en el chat** y confirmar con
-      “listo” cuando termine. No menciones panel ni URLs de panel.
+      checklist), llama `notify_user(kind=documents_upload_requested)` al
+      asesor con documentos pendientes y la instrucción explícita de
+      enviarlos **aquí en el chat** y confirmar con “listo” (o el botón
+      **Terminé de subir**) cuando termine. No menciones panel ni URLs de panel.
 
    d. Deja `status=waiting_internal`, `current_step=awaiting_documents` y
       `next_action_at=null`. La continuación la despierta la carga de un
-      documento o la respuesta “listo”; el cron no debe sondear esta espera.
+      documento o la respuesta “listo”; el cron no re-ejecuta el agente en
+      esta espera (sí puede recordar la confirmación vía la notificación).
 
    e. Si enviaste una solicitud, registra
       `operational_case_add_event(reminder_sent, payload={purpose: internal_request})`.

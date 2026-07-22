@@ -75,6 +75,15 @@ assert.equal(
   "photos_upload_requested must not block E2E ticks"
 );
 assert.equal(
+  internalNotificationKindConfig("documents_upload_requested").informational,
+  true,
+  "documents_upload_requested must not block E2E ticks"
+);
+assert.equal(
+  internalNotificationKindConfig("documents_upload_requested").reviewCtaLabel,
+  "Subir documentos del caso"
+);
+assert.equal(
   internalNotificationKindConfig("publish_destination_approvals").informational,
   true,
   "legacy batch publish destination kind must not block E2E ticks"

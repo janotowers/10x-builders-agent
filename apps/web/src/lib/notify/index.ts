@@ -41,6 +41,11 @@ import {
   internalNotificationKindConfig,
 } from "@/lib/internal-notifications/registry";
 import { defaultDueAtForEngagement } from "@/lib/engagement-policies/registry";
+import {
+  DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
+  isUploadBatchNotificationKind,
+  UPLOAD_BATCH_DONE_CALLBACK_PREFIX,
+} from "@/lib/operational-cases/upload-batch-completion";
 import type { NotificationChannel } from "@agents/types";
 import {
   buildCaseDocumentDownloadUrl,
@@ -199,6 +204,7 @@ async function deliverTelegram(
   // keeps the SAME primary action (e.g. a HITL reminder must still let the user
   // approve/reject), instead of degrading into a passive text-only nudge.
   let sourceNotificationMetadata: Record<string, unknown> | null = null;
+  let sourceNotificationCaseId: string | null = null;
   if (reminderSourceNotificationId) {
     actionNotificationId = reminderSourceNotificationId;
     const sourceNotification = await getInternalUserNotification(
@@ -207,6 +213,10 @@ async function deliverTelegram(
     );
     if (sourceNotification?.user_id === userId) {
       actionKind = sourceNotification.kind;
+      sourceNotificationCaseId =
+        typeof sourceNotification.case_id === "string"
+          ? sourceNotification.case_id.trim()
+          : null;
       sourceNotificationMetadata =
         sourceNotification.metadata_jsonb &&
         typeof sourceNotification.metadata_jsonb === "object"
@@ -317,6 +327,11 @@ async function deliverTelegram(
     const credentialFailure =
       payload.data?.credential_failure === true ||
       sourceNotificationMetadata?.credential_failure === true;
+    const prepareDraftFailure =
+      payload.data?.prepare_draft_failure === true ||
+      payload.data?.safe_retry_prepare === true ||
+      sourceNotificationMetadata?.prepare_draft_failure === true ||
+      sourceNotificationMetadata?.safe_retry_prepare === true;
     replyMarkup = {
       inline_keyboard: credentialFailure
         ? [
@@ -333,20 +348,35 @@ async function deliverTelegram(
               },
             ],
           ]
-        : [
-            [
-              {
-                text: "Aprobar y continuar",
-                callback_data: `pubrev_approve:${actionNotificationId}`,
-              },
+        : prepareDraftFailure
+          ? [
+              [
+                {
+                  text: "Reintentar preparación",
+                  callback_data: `pubrev_approve:${actionNotificationId}`,
+                },
+              ],
+              [
+                {
+                  text: "Pausar publicación",
+                  callback_data: `pubrev_stop:${actionNotificationId}`,
+                },
+              ],
+            ]
+          : [
+              [
+                {
+                  text: "Aprobar y continuar",
+                  callback_data: `pubrev_approve:${actionNotificationId}`,
+                },
+              ],
+              [
+                {
+                  text: "Detener y revisar",
+                  callback_data: `pubrev_stop:${actionNotificationId}`,
+                },
+              ],
             ],
-            [
-              {
-                text: "Detener y revisar",
-                callback_data: `pubrev_stop:${actionNotificationId}`,
-              },
-            ],
-          ],
     };
   } else if (
     actionKind === "contract_review" &&
@@ -409,6 +439,23 @@ async function deliverTelegram(
         ],
       ],
     };
+  } else if (isUploadBatchNotificationKind(actionKind)) {
+    const uploadCaseId =
+      (typeof payload.data?.case_id === "string" && payload.data.case_id.trim()) ||
+      sourceNotificationCaseId ||
+      "";
+    if (uploadCaseId) {
+      replyMarkup = {
+        inline_keyboard: [
+          [
+            {
+              text: "Terminé de subir",
+              callback_data: `${UPLOAD_BATCH_DONE_CALLBACK_PREFIX}${uploadCaseId}`,
+            },
+          ],
+        ],
+      };
+    }
   }
   const text = truncateTelegramText(payload.text);
 
@@ -845,6 +892,8 @@ function shouldReuseActiveNotification(payload: NotifyPayload, caseId: string | 
     "ungga_publish_approval",
     "manual_publish_package_approval",
     "publication_review_required",
+    "photos_upload_requested",
+    DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
     // Corrective re-close after premature summary must upsert, not insert
     // (unique active index on user/case/kind).
     "listing_published_summary",

@@ -197,6 +197,63 @@ export async function appendMediaGroupAckToCase(params: {
   return current;
 }
 
+export type PendingMediaGroupAckStatus = {
+  /** True when any unsent ack group still falls inside the settling window. */
+  settling: boolean;
+  /** Milliseconds since the newest unsent group's last_file_at (null if none). */
+  msSinceLastFile: number | null;
+  /** File count across unsent groups for this chat/case. */
+  pendingFileCount: number;
+  /** Newest last_file_at among unsent groups (ISO), or null. */
+  lastFileAt: string | null;
+};
+
+/**
+ * Pure inspection of pending (unacked) media-group activity for a case/chat.
+ * Used by completion paths to wait for album ingestion to settle before counting.
+ */
+export function inspectPendingMediaGroupAcks(params: {
+  context: Record<string, unknown> | null | undefined;
+  caseId: string;
+  chatId: number;
+  windowMs?: number;
+  nowMs?: number;
+}): PendingMediaGroupAckStatus {
+  const windowMs = params.windowMs ?? DEFAULT_WINDOW_MS;
+  const nowMs = params.nowMs ?? Date.now();
+  const map = readAckMap(asContextRecord(params.context));
+  let pendingFileCount = 0;
+  let lastFileAtMs = Number.NEGATIVE_INFINITY;
+  let lastFileAt: string | null = null;
+  for (const group of Object.values(map)) {
+    if (group.case_id !== params.caseId || group.chat_id !== params.chatId) {
+      continue;
+    }
+    if (group.ack_sent_at) continue;
+    pendingFileCount += group.files.length;
+    const groupLastMs = Date.parse(group.last_file_at);
+    if (Number.isFinite(groupLastMs) && groupLastMs >= lastFileAtMs) {
+      lastFileAtMs = groupLastMs;
+      lastFileAt = group.last_file_at;
+    }
+  }
+  if (pendingFileCount === 0 || !Number.isFinite(lastFileAtMs)) {
+    return {
+      settling: false,
+      msSinceLastFile: null,
+      pendingFileCount: 0,
+      lastFileAt: null,
+    };
+  }
+  const msSinceLastFile = Math.max(0, nowMs - lastFileAtMs);
+  return {
+    settling: msSinceLastFile < windowMs,
+    msSinceLastFile,
+    pendingFileCount,
+    lastFileAt,
+  };
+}
+
 export async function flushMediaGroupAcksForCase(params: {
   db: DbClient;
   opCase: OperationalCase;
@@ -248,10 +305,13 @@ export async function flushMediaGroupAcksForCase(params: {
   return { opCase: updated, flushed: sentKeys.length, markReady: shouldMarkReady };
 }
 
+export const MEDIA_GROUP_ACK_WINDOW_MS = DEFAULT_WINDOW_MS;
+
 export const __testOnly = {
   groupKey,
   readAckMap,
   appendInMap,
   isFlushable,
   markSentInMap,
+  inspectPendingMediaGroupAcks,
 };

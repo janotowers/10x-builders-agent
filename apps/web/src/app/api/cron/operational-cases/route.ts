@@ -92,8 +92,21 @@ import {
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 import { buildMediaGroupReceivedAck } from "@/lib/operational-cases/case-document-collection";
 import { requestPublicationProgress } from "@/lib/operational-cases/publication-runner";
-import { createPublicationRunnerOwnedAgentTick, runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settings-test-case-tick";
+import {
+  applyPostAgentContractHandling,
+  createPublicationRunnerOwnedAgentTick,
+  runSettingsTestCaseAgentTick,
+  type TurnToolCallRow,
+} from "@/lib/operational-cases/run-settings-test-case-tick";
 import { flushMediaGroupAcksForCase } from "@/lib/operational-cases/telegram-media-group-ack-store";
+import {
+  countCaseUploadFiles,
+  formatUploadBatchConfirmationReminderText,
+  isUploadBatchNotificationKind,
+  resolveUploadBatchKind,
+  UPLOAD_BATCH_CONFIRMATION_PURPOSE,
+  uploadBatchKindFromNotificationKind,
+} from "@/lib/operational-cases/upload-batch-completion";
 import {
   buildToolConfirmationEscalationText,
   notificationMetadataPendingToolCallId,
@@ -712,17 +725,53 @@ async function processInternalNotificationReminder(
   const pendingToolCallId = notificationMetadataPendingToolCallId(
     currentNotification.metadata_jsonb
   );
+
+  let reminderText = `Recordatorio: ${currentNotification.title}\n\n${currentNotification.body}`;
+  let uploadBatchPurpose: string | null = null;
+  if (
+    isUploadBatchNotificationKind(currentNotification.kind) &&
+    currentNotification.case_id
+  ) {
+    const opCase = await getOperationalCase(db, currentNotification.case_id);
+    const expectedKind = uploadBatchKindFromNotificationKind(currentNotification.kind);
+    const liveKind = opCase ? resolveUploadBatchKind(opCase) : null;
+    if (!opCase || !expectedKind || liveKind !== expectedKind) {
+      // Caso ya avanzó o ya no espera esta carga: cierra el pendiente.
+      await setInternalUserNotificationStatus(db, {
+        id: currentNotification.id,
+        userId: currentNotification.user_id,
+        status: "actioned",
+      });
+      return "resolved_stale_upload_batch";
+    }
+    const fileCount = await countCaseUploadFiles({
+      db,
+      opCase,
+      batchKind: expectedKind,
+    });
+    if (fileCount > 0) {
+      reminderText = formatUploadBatchConfirmationReminderText({
+        batchKind: expectedKind,
+        fileCount,
+        context: opCase.context_jsonb,
+      });
+      uploadBatchPurpose = UPLOAD_BATCH_CONFIRMATION_PURPOSE;
+    }
+    // fileCount === 0: keep the original request nudge (still waiting for uploads).
+  }
+
   await notify(
     db,
     currentNotification.user_id,
     {
-      text: `Recordatorio: ${currentNotification.title}\n\n${currentNotification.body}`,
+      text: reminderText,
       kind: "internal_notification_reminder",
       data: {
         case_id: currentNotification.case_id ?? undefined,
         title: `Recordatorio: ${currentNotification.title}`,
         source_notification_id: currentNotification.id,
         pending_tool_call_id: pendingToolCallId,
+        ...(uploadBatchPurpose ? { purpose: uploadBatchPurpose } : {}),
       },
     },
     currentNotification.priority
@@ -737,6 +786,7 @@ async function processInternalNotificationReminder(
         source: "internal_user_notifications",
         notification_id: currentNotification.id,
         pending_tool_call_id: pendingToolCallId,
+        ...(uploadBatchPurpose ? { purpose: uploadBatchPurpose } : {}),
       },
     });
   }
@@ -955,7 +1005,10 @@ async function processCase(
   const lockedCase = { ...opCase, version: opCase.version + 1 };
 
   try {
-    if (lockedCase.current_step === "awaiting_documents") {
+    if (
+      lockedCase.current_step === "awaiting_documents" ||
+      lockedCase.current_step === "photos_requested"
+    ) {
       const requestTarget = resolveOperationalCaseDocumentRequestTarget({
         externalContact: lockedCase.external_contact_jsonb,
         context: lockedCase.context_jsonb,
@@ -965,7 +1018,9 @@ async function processCase(
         typeof lockedCase.external_contact_jsonb.chat_id === "number"
           ? lockedCase.external_contact_jsonb.chat_id
           : null;
+      // Photos are always internal-advisor uploads; documents may be internal or external.
       const targetChatId =
+        lockedCase.current_step === "photos_requested" ||
         requestTarget === "internal_user"
           ? await getTelegramChatId(db, opCase.user_id)
           : externalChatId;
@@ -1079,17 +1134,19 @@ async function processCase(
       `[ops-case-cron] case ${opCase.id} processed: response_len=${result.response?.length ?? 0} pending_confirmation=${result.pendingConfirmation ? "yes" : "no"}`
     );
 
+    let turnToolCalls: TurnToolCallRow[] = [];
     if (result.turnId) {
       const { data: toolCallRows } = await db
         .from("tool_calls")
         .select("tool_name, status, result_json")
         .eq("turn_id", result.turnId)
         .order("created_at", { ascending: true });
+      turnToolCalls = (toolCallRows ?? []) as TurnToolCallRow[];
       const freshCase = (await getOperationalCase(db, opCase.id)) ?? opCase;
       await syncContractDraftFromToolCalls(
         db,
         freshCase,
-        (toolCallRows ?? []) as Array<{
+        turnToolCalls as Array<{
           tool_name: string;
           status: string;
           result_json?: unknown;
@@ -1118,6 +1175,41 @@ async function processCase(
       const freshForHitl = await getOperationalCase(db, opCase.id);
       if (freshForHitl) {
         await updateOperationalCase(db, freshForHitl.id, freshForHitl.version, {
+          nextActionAt: null,
+        });
+      }
+      return { case_id: opCase.id, status: "ok" };
+    }
+
+    // Manejo determinista compartido del paso de contrato (misma ruta que el
+    // tick E2E): asegura contract_review / contract_data_review y, si el agente
+    // no generó el DOCX pese a tener precio + datos, renderiza el contrato.
+    let contractHumanWait = false;
+    if (caseAfterInvariants) {
+      const contractHandling = await applyPostAgentContractHandling({
+        db,
+        userId: opCase.user_id,
+        opCase: caseAfterInvariants,
+        toolCalls: turnToolCalls,
+        pendingConfirmation: false,
+        source: "operational_cases_cron",
+        toolContext: {
+          sessionId: session.id,
+          enabledTools: toolSettings,
+          integrations,
+          userTimezone: profile.timezone,
+        },
+      });
+      contractHumanWait = contractHandling.handled && contractHandling.humanWait;
+    }
+
+    // Si el manejo de contrato dejó el caso esperando una acción/decisión
+    // humana (revisión, datos faltantes, titularidad, plantilla), no re-armamos
+    // el cron: se comporta como un HITL.
+    if (contractHumanWait) {
+      const freshForWait = await getOperationalCase(db, opCase.id);
+      if (freshForWait && freshForWait.next_action_at) {
+        await updateOperationalCase(db, freshForWait.id, freshForWait.version, {
           nextActionAt: null,
         });
       }

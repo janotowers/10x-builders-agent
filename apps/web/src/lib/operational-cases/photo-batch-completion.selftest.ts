@@ -24,6 +24,7 @@ assert(notify.includes("Solicitud de fotos"), "notify title");
 assert(notify.includes(String(RAW_PHOTOS_MIN_COUNT)), "notify min");
 assert(notify.includes("«listo»"), "notify listo");
 assert(notify.includes("**«listo»**"), "notify listo bold");
+assert(notify.includes("Terminé de subir"), "notify button option");
 assert(notify.includes("Fachada"), "notify checklist");
 assert(!/panel/i.test(notify), "notify must not mention panel");
 assert(notify.includes("aquí"), "notify channel-neutral aquí");
@@ -44,6 +45,10 @@ assert(
 assert(
   photosUploadProgressAckText(3).includes("«listo»"),
   "progress ack mentions listo"
+);
+assert(
+  photosUploadProgressAckText(3).includes("Terminé de subir"),
+  "progress ack mentions button"
 );
 assert(
   photosBatchInsufficientAckText(2).includes(`2/${RAW_PHOTOS_MIN_COUNT}`),

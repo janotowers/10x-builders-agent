@@ -3,11 +3,28 @@ import {
   getOperationalCase,
   insertOperationalCaseEvent,
   listOperationalCaseDocuments,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   updateOperationalCase,
 } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
 
 type DbClient = ReturnType<typeof createServerClient>;
+
+export const DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND =
+  "documents_upload_requested";
+
+export async function dismissDocumentsUploadRequestedNotifications(params: {
+  db: DbClient;
+  userId: string;
+  caseId: string;
+}): Promise<number> {
+  return resolveUnreadInternalNotificationsByKindForCaseWithReminders(params.db, {
+    userId: params.userId,
+    caseId: params.caseId,
+    kind: DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
+    status: "actioned",
+  });
+}
 
 /**
  * Detecta si un mensaje del usuario/contacto señala que terminó de enviar el
@@ -21,7 +38,9 @@ export function looksLikeDocumentBatchComplete(value: string): boolean {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
-  return /^(listo|ya esta|ya estan|termine|termine todo|eso es todo|ya mande todo|ya te mande todo|documentos enviados)$/.test(
+  // Exact phrases only — keep conservative to avoid false positives like
+  // "listo para enviar mañana". Shared by documents and photos.
+  return /^(listo|ya esta|ya estan|termine|termine todo|ya termine|eso es todo|ya mande todo|ya te mande todo|ya subi todo|ya los subi|ya las subi|ya te los mande|ya te las mande|ya te los di|ya te las di|ya quedaron|ya quedo|documentos enviados)$/.test(
     normalized
   );
 }
@@ -73,6 +92,16 @@ export async function completeDocumentBatchForCase(params: {
     return { status: "no_documents", case: current, documentCount: 0 };
   }
   if (current.current_step === "documents_received") {
+    await dismissDocumentsUploadRequestedNotifications({
+      db,
+      userId: current.user_id,
+      caseId: current.id,
+    }).catch((error) => {
+      console.warn(
+        "[document-batch-completion] dismiss documents notify failed:",
+        error
+      );
+    });
     return {
       status: "already_advanced",
       case: current,
@@ -101,6 +130,16 @@ export async function completeDocumentBatchForCase(params: {
           document_count: docs.length,
         },
       });
+      await dismissDocumentsUploadRequestedNotifications({
+        db,
+        userId: updated.user_id,
+        caseId: updated.id,
+      }).catch((error) => {
+        console.warn(
+          "[document-batch-completion] dismiss documents notify failed:",
+          error
+        );
+      });
       return { status: "advanced", case: updated, documentCount: docs.length };
     }
 
@@ -110,6 +149,16 @@ export async function completeDocumentBatchForCase(params: {
     }
     current = reread;
     if (current.current_step === "documents_received") {
+      await dismissDocumentsUploadRequestedNotifications({
+        db,
+        userId: current.user_id,
+        caseId: current.id,
+      }).catch((error) => {
+        console.warn(
+          "[document-batch-completion] dismiss documents notify failed:",
+          error
+        );
+      });
       return {
         status: "already_advanced",
         case: current,

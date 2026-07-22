@@ -384,6 +384,67 @@ export async function setCaseDocumentRequestTarget(params: {
   return next;
 }
 
+/** Pure gate: should we persist internal_user from an advisor upload? */
+export function canInferInternalDocumentTargetOnUpload(
+  opCase: OperationalCase
+): boolean {
+  return (
+    operationalCaseDocumentRequestTargetFromContext(caseContext(opCase)) ==
+      null &&
+    shouldPromptCaseDocumentRequestTarget(opCase) &&
+    opCase.current_step === "awaiting_documents"
+  );
+}
+
+/**
+ * When the advisor uploads documents before answering interno/externo, infer
+ * internal_user deterministically (files arrive from the advisor's own chat).
+ * Shared by Telegram and web for channel parity. Idempotent if already set.
+ */
+export async function inferInternalDocumentTargetOnUpload(params: {
+  db: DbClient;
+  opCase: OperationalCase;
+  source: string;
+  reason?: string;
+  /** Extra payload fields for the legacy inferred event (Telegram message_id…). */
+  eventExtras?: Record<string, unknown>;
+}): Promise<{ opCase: OperationalCase; inferred: boolean }> {
+  if (!canInferInternalDocumentTargetOnUpload(params.opCase)) {
+    return { opCase: params.opCase, inferred: false };
+  }
+
+  const inferred = await setCaseDocumentRequestTarget({
+    db: params.db,
+    opCase: params.opCase,
+    target: "internal_user",
+    decidedBy: "inferred",
+    source: params.source,
+    reason: params.reason ?? "advisor_uploaded_documents_before_choice",
+  });
+  const withStatus =
+    (await updateOperationalCase(params.db, inferred.id, inferred.version, {
+      status: "waiting_internal",
+    })) ?? inferred;
+
+  // Compat E2E / proyección: besides step_branch_selected from setCase…,
+  // keep the legacy kind for settings-test flow progress.
+  await insertOperationalCaseEvent(params.db, {
+    caseId: withStatus.id,
+    eventType: "state_changed",
+    actor: "system",
+    stepKey: withStatus.current_step ?? undefined,
+    payload: {
+      kind: "document_request_target_inferred",
+      source: params.source,
+      target: "internal_user",
+      reason: params.reason ?? "advisor_uploaded_documents_before_choice",
+      ...(params.eventExtras ?? {}),
+    },
+  });
+
+  return { opCase: withStatus, inferred: true };
+}
+
 /**
  * Gate barato: ¿el mensaje parece una respuesta a la pregunta interno/externo?
  * No requiere el caso; sólo detecta intención de elegir destino documental.

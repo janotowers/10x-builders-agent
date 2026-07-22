@@ -190,6 +190,15 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     informational: true,
     reviewCtaLabel: "Subir fotos del inmueble",
   },
+  documents_upload_requested: {
+    kind: "documents_upload_requested",
+    label: "Solicitar documentos al asesor",
+    visibleInInbox: true,
+    intent: "reminder",
+    // Misma semántica que fotos: carga interna + confirmación «listo».
+    informational: true,
+    reviewCtaLabel: "Subir documentos del caso",
+  },
   listing_description_review: {
     kind: "listing_description_review",
     label: "Revisión de descripción comercial",
@@ -204,7 +213,7 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     visibleInInbox: true,
     intent: "approval",
     businessDecision: "publish_destination_approval",
-    reviewCtaLabel: "Aprobar o rechazar destino",
+    reviewCtaLabel: "Publicar, omitir o pausar",
   },
   ungga_publish_approval: {
     kind: "ungga_publish_approval",
@@ -212,7 +221,7 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     visibleInInbox: true,
     intent: "approval",
     businessDecision: "publish_destination_approval",
-    reviewCtaLabel: "Aprobar o rechazar destino",
+    reviewCtaLabel: "Publicar, omitir o pausar",
   },
   manual_publish_package_approval: {
     kind: "manual_publish_package_approval",
@@ -220,7 +229,7 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     visibleInInbox: true,
     intent: "approval",
     businessDecision: "publish_destination_approval",
-    reviewCtaLabel: "Aprobar o rechazar destino",
+    reviewCtaLabel: "Publicar, omitir o pausar",
   },
   publication_review_required: {
     kind: "publication_review_required",
