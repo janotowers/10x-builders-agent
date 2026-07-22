@@ -289,7 +289,10 @@ function filtersFromCalls(toolCalls: ComparableToolCallInput[]) {
       return isRecord(result?.filters_used) ? result.filters_used : isRecord(result?.query) ? result.query : null;
     })
     .find(isRecord);
-  const source = lastAttemptFilters ?? firstResultFilters ?? firstArgs ?? {};
+  const source = (lastAttemptFilters ??
+    firstResultFilters ??
+    firstArgs ??
+    {}) as Record<string, unknown>;
   return {
     neighborhood: cleanString(source.neighborhood) ?? cleanString(source.zona),
     zona: cleanString(source.zona) ?? cleanString(source.neighborhood),

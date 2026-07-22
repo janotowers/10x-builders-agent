@@ -22,6 +22,7 @@ import {
   dedupeConcatenatedSiteOriginInUrl,
   resolveGeneratedDocumentOutputPathFromCase,
 } from "@/lib/operational-cases/generated-case-document";
+import { resolveShortPropertyAddress } from "@/lib/operational-cases/property-display-label";
 
 export type ContractReviewIntent =
   | "approve_send"
@@ -236,22 +237,7 @@ function resolveOwnerName(context: Record<string, unknown>): string {
 }
 
 function resolvePropertyReference(context: Record<string, unknown>): string {
-  const propertyData = isRecord(context.property_data) ? context.property_data : {};
-  const street = cleanString(propertyData.street);
-  const exterior = cleanString(propertyData.exterior_number);
-  const neighborhood = cleanString(propertyData.neighborhood);
-  const municipality = cleanString(propertyData.municipality);
-  const legalAddress =
-    cleanString(propertyData.legal_address) ||
-    (Array.isArray(propertyData.legal_addresses)
-      ? cleanString(propertyData.legal_addresses[0])
-      : "");
-  const shortAddress = [street, exterior].filter(Boolean).join(" ");
-  if (shortAddress && neighborhood) return `${shortAddress}, ${neighborhood}`;
-  if (shortAddress && municipality) return `${shortAddress}, ${municipality}`;
-  if (shortAddress) return shortAddress;
-  if (legalAddress) return legalAddress;
-  return "";
+  return resolveShortPropertyAddress(context);
 }
 
 function resolveLegalPropertyAddress(context: Record<string, unknown>): string {

@@ -7,8 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Deterministic commission-contract render (lab/prod parity)**: after the
+  agent turn, a shared `applyPostAgentContractHandling` now owns the
+  `contract_pending` step in both cron and the E2E tick. If a draft already
+  exists it ensures `contract_review`; if commercial data is missing it ensures
+  `contract_data_review`; and when price is approved + data complete but the
+  agent skipped `generate_document_from_template`, the runtime renders the DOCX
+  deterministically via the new exported `renderCommissionContractForCase`
+  (same titularidad/commercial gates + persistence as the tool), then notifies
+  `contract_review`. Removes the reliance on the LLM re-calling the tool and the
+  production gap where cron never backfilled the review. Cron treats a resulting
+  human wait like a HITL (no +5m re-arm).
+- **Upload-batch confirmation pattern**: when the advisor uploads documents or
+  photos but forgets «listo», cron reminders (governed by engagement-policies
+  `defaultDueAfterHours` / cooldown / max attempts, overridable per account)
+  nudge with a shared **Terminé de subir** action. Telegram inline button and
+  web inbox CTA call the same `completeUploadBatch` handler as text «listo».
+  New kind `documents_upload_requested` (parity with `photos_upload_requested`).
+  Shared property display label prefers short address over generic titles.
+  Detector accepts more natural close phrases (`ya terminé`, `ya las subí`, …).
+  Web/Telegram parity for inferring `document_request_target=internal_user`
+  when the advisor uploads before answering interno/externo.
+- **Shared publication-destination approval copy**: EasyBroker/Ungga HITL text
+  is built by one formatter (`formatPublishDestinationApprovalNotifyText`) that
+  uses “destino”, drops “portal”/redundant button lists, and ends with
+  “Elige una opción:”.
+
+### Fixed
+
+- **Ungga publish wrong-card / disabled PUBLICAR**: catalog publish now opens
+  cards until the modal GU-ID matches the target, refuses disabled PUBLICAR
+  (CRM/import twins), and treats those click failures as safe pre-side-effect
+  retries — not `unknown_outcome` process kills.
+- **Lab «Revisar avance» after Ungga prepare_draft retry**: settings E2E run
+  locked the case, then `requestPublicationProgress` tried to lock again and
+  no-op’d as `already_processing` (looked like the button did nothing; second
+  click → `case_busy`). Progress now honors `skipLock`, auto force-retries
+  `create_draft` when there is no remote artifact, and reclaims stale
+  in-flight create ops left by killed Telegram deferred ticks.
+- **Ungga prepare_draft form open (catalog path)**: when `UNGGA_CLI_PUBLISH_PATH`
+  lands on `/app/propiedades`, `open_create_property` no longer reports success
+  if the SPA did not open the wizard. A fallback navigates to
+  `/app/propiedades/nueva` before failing with “No listing fields found”.
+  Default/example path now points at the wizard.
+- **Ungga prepare_draft mislabeled as commission**: navigation/form failures
+  (e.g. “No listing fields found”) no longer open review with “no se pudo
+  capturar/verificar la comisión”. Commission copy requires real commission
+  evidence; other pre-save failures use a neutral form message while keeping
+  **Reintentar preparación** / **Pausar publicación**.
+- **Telegram album upload race**: «Terminé de subir» / «listo» now share
+  `finalizeUploadBatchAfterSettling` — wait for media-group quiet, force-flush
+  consolidated acks, then `completeUploadBatch` on a fresh case read.
+  `appendRawPhoto` retries optimistic-lock conflicts with dedupe by
+  `document_id`/`storage_path`. Cron also flushes album acks during
+  `photos_requested`.
+- **Ungga prepare_draft commission failure surfacing**: CLI non-zero exits
+  elevate `commission_verify` / photo counts / `last_step` instead of only
+  “Command failed…”. Known pre-save commission failures open review immediately
+  with root-cause copy (“No pude preparar el borrador…”) and CTAs **Reintentar
+  preparación** / **Pausar publicación**, without presenting missing GU-ID or
+  unconfirmed photos as independent causes.
+- **Ungga media count false fail (7 vs 6)**: settings tick and preflight keep
+  the safe `observadas >= esperadas` rule via `unggaMediaCountSatisfied`.
+- **Type-check to green (build hygiene)**: resolved long-standing `tsc` errors so
+  `apps/web` and `@agents/agent` type-check clean, letting real regressions
+  surface instead of hiding in baseline noise. Two were real (latent) bugs:
+  the Telegram internal-photos route reported `photos_count` from a
+  non-existent `photoCount` (now `fileCount`), and `InternalNotificationDisplay`
+  lacked the `credentialFailure` flag the inbox already populates at runtime.
+  The rest were type-only, runtime-safe narrowings (`comparables-analysis`
+  filters source, EasyBroker location `full_name` traversal, the
+  `generate_document_from_template` optional `data` schema, and the tool-call
+  display-status helpers accepting the panel's structural shape).
+
 ### Changed
 
+- **`operational_case_update_state` prompt**: tool description and
+  `context_patch` schema now state that `publication` / `published` /
+  `publish_approvals` / `photo_manifest` (and related lab keys) are owned by
+  the publication runner — do not write them from the tick.
+- **Ungga CLI commission UI**: commission fill/verify is scoped to the operation
+  modal; “Compartir comisión” follows `collaboration_enabled` (not mere
+  presence of `commission_pct`); media counts new thumbnails vs baseline;
+  metrics use `prepare_draft` / `verify_commission` / `save_draft` instead of
+  labeling pre-save failures as `publish_listing`.
+- **Contract failure copy (advisor-facing)**: notices sent to the advisor on
+  contract generation issues no longer say «Revisar avance» (an internal lab
+  control). Recoverable failures (infra) state automatic retry; human-action
+  failures (missing template, titularidad) use product language. The lab
+  «Revisar avance» button in Settings is unchanged.
 - **Publication destination HITL labels**: EasyBroker/Ungga approval actions are
   now **Publicar en …** / **Omitir …** / **Pausar publicación**, with copy that
   explains omit skips only that portal while pause stops the case. Parser still

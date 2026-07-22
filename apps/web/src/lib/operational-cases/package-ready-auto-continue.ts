@@ -1,3 +1,4 @@
+import { formatPublishDestinationApprovalNotifyText } from "@agents/agent";
 import {
   isEasybrokerPublishedInContext,
   isEasybrokerResolvedForUnggaApproval,
@@ -122,20 +123,9 @@ export function packageReadyBlocksUnggaApprovalNotify(
 }
 
 export function formatUnggaPublishApprovalNotifyText(): string {
-  return [
-    "Aprobación de publicación en Ungga",
-    "",
-    "EasyBroker ya quedó publicado. ¿Quieres publicar esta propiedad en Ungga?",
-    "",
-    "• **Publicar en Ungga**: continúa la publicación en este portal.",
-    "• **Omitir Ungga**: no uses este portal y cierra los destinos restantes.",
-    "• **Pausar publicación**: detén el caso aquí para revisión interna.",
-    "",
-    "Usa los botones:",
-    "- Publicar en Ungga",
-    "- Omitir Ungga",
-    "- Pausar publicación",
-  ].join("\n");
+  return formatPublishDestinationApprovalNotifyText({
+    destination: "Ungga",
+  });
 }
 
 /**

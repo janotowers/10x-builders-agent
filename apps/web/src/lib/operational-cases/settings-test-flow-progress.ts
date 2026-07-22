@@ -142,8 +142,19 @@ export function toolCallStatusLabel(status: string): string {
  * Preflight contractual esperado: la fila auditada queda `failed`, pero
  * `result_json` marca `blocked` + `commission_contract_missing_required_data`.
  */
+/**
+ * Forma mínima de una tool call para el display de avance. Acepta `status`
+ * como string y `result_json` nullable porque los ítems de actividad del panel
+ * llegan así (no siempre como `ToolCall` estricto). Solo se comparan valores.
+ */
+type ToolCallDisplayInput = {
+  tool_name: string;
+  status: string;
+  result_json?: Record<string, unknown> | null;
+};
+
 export function isCommissionContractDataBlockedCall(
-  call: Pick<ToolCall, "tool_name" | "status" | "result_json">
+  call: ToolCallDisplayInput
 ): boolean {
   if (call.tool_name !== "generate_document_from_template") return false;
   if (call.status !== "failed") return false;
@@ -159,7 +170,7 @@ export function isCommissionContractDataBlockedCall(
 }
 
 export function toolCallDisplayStatusLabel(
-  call: Pick<ToolCall, "tool_name" | "status" | "result_json">
+  call: ToolCallDisplayInput
 ): string {
   if (isCommissionContractDataBlockedCall(call)) {
     return "Bloqueada — requiere datos contractuales";

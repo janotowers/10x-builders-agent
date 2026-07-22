@@ -71,7 +71,7 @@ export const STEP_TEST_SCENARIO_CATALOG: StepTestScenarioCatalog = {
           expected_tool_calls: ["notify_user"],
         },
         message:
-          "Prueba controlada de paso (N4) para awaiting_documents — rama interna. Actúa como la habilidad raíz del caso operacional. El context_jsonb.document_request_target YA es internal_user: NO uses telegram_send_message_to_contact. Solicita al asesor interno (notify_user) el checklist de documentos (escritura bloqueante, predial, identificación, comprobante de domicilio, boleta registral), indícale que los suba al caso (web/Telegram interno) y confirme con «listo». Registra reminder_sent (p. ej. purpose=internal_request o internal_upload_instructions) y deja status=waiting_internal / current_step=awaiting_documents. No avances a documents_received. No pidas dormitorios, baños ni estacionamiento.",
+          "Prueba controlada de paso (N4) para awaiting_documents — rama interna. Actúa como la habilidad raíz del caso operacional. El context_jsonb.document_request_target YA es internal_user: NO uses telegram_send_message_to_contact. Solicita al asesor interno con notify_user(kind=documents_upload_requested) el checklist de documentos (boleta registral indispensable, escritura, predial, identificación, comprobante de domicilio), indícale que los suba aquí en el chat y confirme con «listo». Registra reminder_sent (p. ej. purpose=internal_request) y deja status=waiting_internal / current_step=awaiting_documents. No avances a documents_received. No pidas dormitorios, baños ni estacionamiento.",
       },
       {
         id: "awaiting_documents_outreach",

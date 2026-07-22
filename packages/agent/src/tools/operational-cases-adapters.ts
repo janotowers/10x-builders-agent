@@ -39,6 +39,10 @@ import {
   validateComparablesAnalysisArtifact,
 } from "../operational-cases/comparables-analysis";
 import {
+  formatPublishDestinationApprovalNotifyText,
+  publicationDestinationLabelFromKind,
+} from "../operational-cases/publication-destination-approval-copy";
+import {
   buildContractCommercialMinimumsSummaryMessage,
   evaluateContractCommercialMinimums,
 } from "../operational-cases/contract-commercial-terms";
@@ -456,26 +460,14 @@ function canonicalContractReviewNotifyText(opCase: { id: string }): string {
 }
 
 function canonicalPublishDestinationApprovalText(kind: string): string {
-  const destination =
-    kind === "easybroker_publish_approval"
-      ? "EasyBroker"
-      : kind === "ungga_publish_approval"
-        ? "Ungga"
-        : "este destino";
-  return [
-    `Aprobación de publicación en ${destination}`,
-    "",
-    `La descripción ya quedó aprobada. ¿Quieres publicar esta propiedad en ${destination}?`,
-    "",
-    `• **Publicar en ${destination}**: continúa la publicación en este portal.`,
-    `• **Omitir ${destination}**: no uses este portal y sigue con los demás destinos.`,
-    "• **Pausar publicación**: detén el caso aquí para revisión interna.",
-    "",
-    "Usa los botones:",
-    `- Publicar en ${destination}`,
-    `- Omitir ${destination}`,
-    "- Pausar publicación",
-  ].join("\n");
+  const destination = publicationDestinationLabelFromKind(kind) ?? "EasyBroker";
+  return formatPublishDestinationApprovalNotifyText({
+    destination,
+    contextLine:
+      destination === "EasyBroker"
+        ? "La descripción ya quedó aprobada. ¿Quieres continuar con EasyBroker?"
+        : undefined,
+  });
 }
 
 function listingPublishedSummaryAlreadySent(
@@ -4515,7 +4507,7 @@ export function addOperationalCaseTools(
         {
           name: "operational_case_update_state",
           description:
-            "Updates the active operational case (status/current_step/next_action_at/...). Optimistic-locked by version.",
+            "Updates the active operational case (status/current_step/next_action_at/...). Optimistic-locked by version. Do NOT put publication/published/publish_approvals/photo_manifest/e2e_control_status in context_patch — the publication runner and destination adapters own that state.",
           schema: z.object({
             case_id: z.string().min(1),
             expected_version: z.number().int().nonnegative(),
@@ -4523,7 +4515,12 @@ export function addOperationalCaseTools(
             current_step: z.string().min(1).optional(),
             next_action_at: z.string().optional(),
             due_at: z.string().optional(),
-            context_patch: z.record(z.string(), z.any()).optional(),
+            context_patch: z
+              .record(z.string(), z.any())
+              .optional()
+              .describe(
+                "Partial context merge. Forbidden keys (rejected): publication, published, publish_approvals, photo_manifest, e2e_control_status, package_ready_lab_auto_continue_listing_id, package_ready_machine_work_in_flight. The publication runner and destination adapters own those."
+              ),
             external_contact: z.record(z.string(), z.any()).optional(),
             note: z.string().optional(),
           }),
