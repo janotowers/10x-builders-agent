@@ -76,6 +76,31 @@ assert.equal(
   "change_request",
   "mixed read+change must be treated as change request"
 );
+// Interrogative reads about the draft content are also artifact reads.
+assert.equal(
+  parseListingDescriptionReviewDecision("¿qué dice el título?").intent,
+  "read_artifact"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("cómo quedó la descripción").intent,
+  "read_artifact"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("¿cuál es el resumen?").intent,
+  "read_artifact"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("¿puedes cambiar el título?").intent,
+  "change_request",
+  "editorial verb beats the interrogative read"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision(
+    "¿qué te parece si agregamos la alberca al texto?"
+  ).intent,
+  "change_request",
+  "interrogative with editorial verb stays a change request"
+);
 assert.equal(
   looksLikeListingDescriptionReadRequest("dame el texto completo"),
   true

@@ -101,6 +101,16 @@ const READ_ARTIFACT_REQUEST =
   /\b(?:dame|env[ií]a(?:me)?|manda(?:me)?|comparte(?:me)?|mu[eé]stra(?:me)?|ens[eé]ña(?:me)?|p[aá]sa(?:me)?|quiero\s+(?:ver|leer)|puedo\s+ver|necesito\s+(?:ver|leer))\b[^.!?]{0,60}\b(?:texto|descripci[oó]n|borrador)\b|\b(?:texto|descripci[oó]n|borrador)\b[^.!?]{0,30}\bcomplet[oa]\b/i;
 
 /**
+ * Interrogative reads about the draft content ("¿qué dice el título?",
+ * "¿cómo quedó la descripción?") are also answered with the artifact. The
+ * editorial exclusion below still wins ("¿puedes cambiar el título?" is a
+ * change request, not a read).
+ */
+// (?!\w) instead of \b: JS \b fails after accented chars ("qué" → é ∉ \w).
+const READ_ARTIFACT_INTERROGATIVE =
+  /^(?:¿)?\s*(?:qu[eé]|cu[aá]l(?:es)?|c[oó]mo)(?!\w)[^.!?]{0,80}\b(?:t[ií]tulo|descripci[oó]n|borrador|texto|resumen|highlights?)\b/i;
+
+/**
  * Editorial imperatives beat the bare "texto completo" pattern, so
  * "reescribe el texto completo" stays a change request, not a read.
  */
@@ -111,7 +121,10 @@ export function looksLikeListingDescriptionReadRequest(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
   if (READ_ARTIFACT_EDITORIAL_EXCLUSION.test(trimmed)) return false;
-  return READ_ARTIFACT_REQUEST.test(trimmed);
+  return (
+    READ_ARTIFACT_REQUEST.test(trimmed) ||
+    READ_ARTIFACT_INTERROGATIVE.test(trimmed)
+  );
 }
 
 export function parseListingDescriptionReviewDecision(
