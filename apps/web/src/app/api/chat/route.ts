@@ -50,6 +50,7 @@ import {
   buildExternalContactSetupMessage,
 } from "@/lib/operational-cases/external-contact-link";
 import { handleContractRevisionUploadAndSend } from "@/lib/business-decisions/contract-review";
+import { resolvePendingDecisionTurn } from "@/lib/business-decisions/pending-decision-router";
 
 const TOOL_CALL_SELECT =
   "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind";
@@ -425,6 +426,35 @@ export async function POST(request: Request) {
         });
       })();
     };
+
+    // Paridad de canal con Telegram: las decisiones HITL pendientes (revisión
+    // de descripción, precio, datos/revisión de contrato, titularidad,
+    // comparables) reclaman el turno ANTES del routing conversacional y del
+    // agente. Mismo router determinístico que el webhook. Defensivo: un fallo
+    // aquí no debe romper el chat general.
+    try {
+      const pendingDecisionTurn = await resolvePendingDecisionTurn(db, {
+        userId: user.id,
+        text: message,
+        channel: "web",
+        isExplicitNewCaseIntent: isPropertyOptioningIntent(message),
+      });
+      if (pendingDecisionTurn.handled) {
+        // read_artifact: en web el texto completo va inline en la respuesta.
+        const responseText = pendingDecisionTurn.artifact
+          ? `${pendingDecisionTurn.message}\n\n${pendingDecisionTurn.artifact.content}`
+          : pendingDecisionTurn.message;
+        if (pendingDecisionTurn.runAfterReply) {
+          await pendingDecisionTurn.runAfterReply();
+        }
+        return await respondConversational(responseText);
+      }
+    } catch (pendingDecisionError) {
+      console.error(
+        "[chat] pending-decision router failed; continuing to agent:",
+        pendingDecisionError
+      );
+    }
 
     try {
       let conversationalCase: OperationalCase | null = null;

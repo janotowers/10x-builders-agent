@@ -24,7 +24,6 @@ import {
 } from "@agents/db";
 import {
   isPropertyOptioningIntent,
-  notifyPriceApprovalForCase,
   runAgent,
 } from "@agents/agent";
 import {
@@ -41,24 +40,12 @@ import { notify } from "@/lib/notify";
 import { resolveSingleRequiredBooleanField } from "@/lib/notify/contract-data-review-telegram-markup";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
-import {
-  parsePriceApprovalDecision,
-  runDeferredControlledE2ETick,
-} from "@/lib/business-decisions/price-approval";
-import {
-  handleComparablesExpansionDecision,
-  parseComparablesExpansionDecision,
-} from "@/lib/business-decisions/comparables-expansion-decision";
+import { runDeferredControlledE2ETick } from "@/lib/business-decisions/price-approval";
 import {
   handleContractRevisionUploadAndSend,
-  parseContractReviewDecision,
   runDeferredContractControlledE2ETick,
 } from "@/lib/business-decisions/contract-review";
-import { parseTitularidadReviewDecision } from "@/lib/business-decisions/titularidad-review";
-import {
-  runDeferredListingDescriptionControlledE2ETick,
-  shouldRouteTelegramTextToListingDescriptionReview,
-} from "@/lib/business-decisions/listing-description-review";
+import { runDeferredListingDescriptionControlledE2ETick } from "@/lib/business-decisions/listing-description-review";
 import { runDeferredPublishDestinationControlledE2ETick } from "@/lib/business-decisions/publish-destination-approval";
 import { finalizeCaseAfterToolDecision } from "@/lib/operational-cases/finalize-case-after-tool-decision";
 import {
@@ -66,6 +53,7 @@ import {
 } from "@/lib/operational-cases/settings-test-tool-policy";
 import { buildPublicationAwareE2EToolApprovalPolicy } from "@/lib/operational-cases/publication-tool-policy";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
+import { resolvePendingDecisionTurn } from "@/lib/business-decisions/pending-decision-router";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
   looksLikeNewCaseIntent,
@@ -266,76 +254,6 @@ function isTelegramCommand(text: string): boolean {
   return /^\s*\//.test(text);
 }
 
-async function handleTelegramListingDescriptionReviewText(params: {
-  db: ReturnType<typeof createServerClient>;
-  chatId: number;
-  userId: string;
-  notification: InternalUserNotification;
-  text: string;
-}) {
-  const result = await businessDecisionHandler("listing_description_review").handle(
-    params.db,
-    {
-      userId: params.userId,
-      notificationId: params.notification.id,
-      text: params.text,
-      deferControlledE2ETick: true,
-    }
-  );
-
-  // Read-only request for the full draft: deliver the artifact as .txt and
-  // keep the review pending (no decision was made).
-  const artifact =
-    result.status === "artifact_text" &&
-    isObjectRecord(result.artifact) &&
-    typeof result.artifact.content === "string" &&
-    typeof result.artifact.filename === "string"
-      ? { filename: result.artifact.filename, content: result.artifact.content }
-      : null;
-  if (artifact) {
-    try {
-      await sendTelegramDocument(params.chatId, {
-        filename: artifact.filename,
-        bytes: Buffer.from(artifact.content, "utf-8"),
-        contentType: "text/plain; charset=utf-8",
-        caption:
-          typeof result.message === "string" && result.message.trim()
-            ? result.message
-            : "Borrador completo de la descripción comercial.",
-      });
-    } catch {
-      // Fallback: plain message so the advisor still gets the draft.
-      await sendTelegramMessage(
-        params.chatId,
-        truncateTelegramText(
-          `${result.message ?? "Te comparto el borrador completo."}\n\n${artifact.content}`
-        )
-      );
-    }
-    return NextResponse.json({
-      ok: true,
-      routed: "listing_description_artifact_sent",
-      notification_id: params.notification.id,
-    });
-  }
-
-  await sendTelegramMessage(
-    params.chatId,
-    result.message ??
-      (result.ok
-        ? "Listo, procesé tu revisión de descripción."
-        : "No pude procesar la revisión de descripción.")
-  );
-  await maybeRunDeferredListingDescriptionTick(params.db, result);
-  return NextResponse.json({
-    ok: true,
-    routed: result.ok
-      ? "listing_description_review"
-      : "listing_description_review_rejected",
-    notification_id: params.notification.id,
-  });
-}
-
 const TELEGRAM_INTAKE_ROUTED: Record<ConversationalIntakeRoute, string> = {
   intake_missing_fields_requested: "operational_case_intake_missing_fields",
   intake_reopen_blocked: "operational_case_intake_reopen_blocked",
@@ -463,22 +381,6 @@ async function appendRawPhoto(params: {
     ? fallbackContext.raw_photos.length
     : 0;
   return { opCase: current, photoAdded: false, photoCount: fallbackCount };
-}
-
-function notificationMissingContractFields(notification: {
-  metadata_jsonb?: unknown;
-}): string[] {
-  const metadata =
-    notification.metadata_jsonb &&
-    typeof notification.metadata_jsonb === "object" &&
-    !Array.isArray(notification.metadata_jsonb)
-      ? (notification.metadata_jsonb as Record<string, unknown>)
-      : {};
-  const raw = metadata.missing_required_fields;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (field): field is string => typeof field === "string" && field.trim().length > 0
-  );
 }
 
 function normalizeForTelegramRouting(value: string) {
@@ -2149,304 +2051,58 @@ export async function POST(request: Request) {
     limit: 30,
   });
 
-  const pendingListingDescriptionReviews = pendingInternal.filter(
-    (notification) => notification.kind === "listing_description_review"
-  );
-  const pendingListingDescriptionReply = pendingListingDescriptionReviews.find(
-    (notification) => {
-      const metadata = isObjectRecord(notification.metadata_jsonb)
-        ? notification.metadata_jsonb
-        : {};
-      return metadata.telegram_pending_reply_intent === "request_changes";
-    }
-  );
-  const listingDescriptionReviewTarget =
-    pendingListingDescriptionReply ??
-    pendingListingDescriptionReviews[0];
-
-  // Resolve early whether this chat already owns an incomplete conversational
-  // intake. That turn must beat a *sticky keyword* listing-description HITL
-  // from another (often stale) case — otherwise intake replies get misclassified
-  // as copy edits. An explicit «Pedir cambios» pending-reply intent still wins
-  // (see shouldRouteTelegramTextToListingDescriptionReview).
-  const earlyPendingBindings =
-    pendingListingDescriptionReviews.length > 0
-      ? await findPendingConversationBindings(db, {
-          userId,
-          channel: "telegram",
+  // Gates 1-6 (listing description, precio, datos/revisión de contrato,
+  // titularidad, comparables) viven en el router compartido con el chat web.
+  // property_data_review permanece abajo: está ligado al chat del contacto
+  // externo (sin equivalente web).
+  const pendingDecisionTurn = await resolvePendingDecisionTurn(db, {
+    userId,
+    text,
+    channel: "telegram",
+    chatId,
+    isCommand: isTelegramCommand(text),
+    isExplicitNewCaseIntent: deterministicPropertyIntent,
+    pendingNotifications: pendingInternal,
+  });
+  if (pendingDecisionTurn.handled) {
+    if (pendingDecisionTurn.artifact) {
+      // read_artifact: entrega el borrador completo como .txt; la revisión
+      // sigue pendiente (sin cambio de estado).
+      try {
+        await sendTelegramDocument(chatId, {
+          filename: pendingDecisionTurn.artifact.filename,
+          bytes: Buffer.from(pendingDecisionTurn.artifact.content, "utf-8"),
+          contentType: "text/plain; charset=utf-8",
+          caption: pendingDecisionTurn.message,
+        });
+      } catch {
+        await sendTelegramMessage(
           chatId,
-        })
-      : [];
-  let hasCompetingActiveConversationalIntake = false;
-  if (earlyPendingBindings.length > 0) {
-    const reviewCaseId =
-      typeof listingDescriptionReviewTarget?.case_id === "string"
-        ? listingDescriptionReviewTarget.case_id
-        : null;
-    for (const binding of earlyPendingBindings) {
-      if (reviewCaseId && binding.case_id === reviewCaseId) continue;
-      const boundCase = await getOperationalCase(db, binding.case_id);
-      if (
-        boundCase &&
-        boundCase.status !== "paused" &&
-        boundCase.status !== "completed" &&
-        boundCase.status !== "failed" &&
-        isIntakeInProgress(boundCase)
-      ) {
-        hasCompetingActiveConversationalIntake = true;
-        break;
+          truncateTelegramText(
+            `${pendingDecisionTurn.message}\n\n${pendingDecisionTurn.artifact.content}`
+          )
+        );
       }
+    } else {
+      await sendTelegramMessage(chatId, pendingDecisionTurn.message);
     }
-  }
-
-  const shouldRouteListingDescriptionText =
-    shouldRouteTelegramTextToListingDescriptionReview({
-      text,
-      isTelegramCommand: isTelegramCommand(text),
-      pendingReviewCount: pendingListingDescriptionReviews.length,
-      hasPendingReplyIntent: Boolean(pendingListingDescriptionReply),
-      isExplicitNewCaseIntent: deterministicPropertyIntent,
-      hasCompetingActiveConversationalIntake,
-    });
-  if (shouldRouteListingDescriptionText && listingDescriptionReviewTarget) {
-    return handleTelegramListingDescriptionReviewText({
-      db,
-      chatId,
-      userId,
-      notification: listingDescriptionReviewTarget,
-      text,
-    });
-  }
-  if (
-    pendingListingDescriptionReviews.length > 0 &&
-    (deterministicPropertyIntent || hasCompetingActiveConversationalIntake)
-  ) {
-    console.info(
-      "[telegram-webhook] bypassing listing_description_review for active conversational turn",
-      {
-        pending_review_count: pendingListingDescriptionReviews.length,
-        pending_reply_intent: Boolean(pendingListingDescriptionReply),
-        notification_id: listingDescriptionReviewTarget?.id ?? null,
-        explicit_optioning_intent: deterministicPropertyIntent,
-        competing_active_intake: hasCompetingActiveConversationalIntake,
-      }
-    );
-  }
-
-  const parsedPriceDecision = parsePriceApprovalDecision(text);
-  if (parsedPriceDecision.intent !== "unclear") {
-    const pendingPriceApproval = pendingInternal.find(
-      (notification) => notification.kind === "price_approval"
-    );
-    if (pendingPriceApproval) {
-      const result = await businessDecisionHandler("price_approval").handle(db, {
-        userId,
-        notificationId: pendingPriceApproval.id,
-        text,
-        // Diferimos el avance del caso para enviar primero la confirmación.
-        deferControlledE2ETick: true,
-      });
-      await sendTelegramMessage(
-        chatId,
-        result.message ??
-          (result.ok
-            ? "Listo, procese tu decision de precio."
-            : "No pude procesar la decision de precio.")
-      );
-      // Tras enviar la confirmación, disparamos el tick del agente E2E que
-      // quedó diferido (puede producir sus propios mensajes del siguiente paso).
-      await maybeRunDeferredPriceTick(db, result);
-      return NextResponse.json({
-        ok: true,
-        routed: "price_approval",
-        notification_id: pendingPriceApproval.id,
-      });
+    if (pendingDecisionTurn.runAfterReply) {
+      await pendingDecisionTurn.runAfterReply();
     }
-  }
-
-  const pendingContractData = pendingInternal.find(
-    (notification) => notification.kind === "contract_data_review"
-  );
-  if (pendingContractData && text) {
-    // Always route free text through the central handler (hybrid extractor +
-    // deterministic judge). Never fall through silently on unclear replies.
-    const result = await businessDecisionHandler("contract_data_review").handle(db, {
-      userId,
-      notificationId: pendingContractData.id,
-      text,
-    });
-    await sendTelegramMessage(
-      chatId,
-      result.message ??
-        (result.ok
-          ? result.status === "partial"
-            ? "Registré parte de los datos. Aún faltan pendientes del contrato."
-            : "Listo, registré los datos contractuales."
-          : "No pude registrar los datos contractuales.")
-    );
     return NextResponse.json({
       ok: true,
-      routed: "contract_data_review",
-      notification_id: pendingContractData.id,
-      status: result.status,
+      routed: pendingDecisionTurn.routed,
+      ...(pendingDecisionTurn.caseId
+        ? { case_id: pendingDecisionTurn.caseId }
+        : {}),
+      ...(pendingDecisionTurn.notificationId
+        ? { notification_id: pendingDecisionTurn.notificationId }
+        : {}),
+      ...(pendingDecisionTurn.status ? { status: pendingDecisionTurn.status } : {}),
+      ...(pendingDecisionTurn.decision
+        ? { decision: pendingDecisionTurn.decision }
+        : {}),
     });
-  }
-
-  const parsedContractDecision = parseContractReviewDecision(text);
-  if (parsedContractDecision.intent !== "unclear") {
-    const pendingContractReview = pendingInternal.find(
-      (notification) =>
-        notification.kind === "contract_review" ||
-        (notification.kind === "contract_pending" &&
-          notificationMissingContractFields(notification).length === 0)
-    );
-    if (pendingContractReview) {
-      const result = await businessDecisionHandler("contract_review").handle(db, {
-        userId,
-        notificationId: pendingContractReview.id,
-        text,
-        deferControlledE2ETick: true,
-      });
-      await sendTelegramMessage(
-        chatId,
-        result.message ??
-          (result.ok
-            ? "Listo, procesé tu decisión sobre el contrato."
-            : "No pude procesar la decisión del contrato.")
-      );
-      await maybeRunDeferredContractTick(db, result);
-      return NextResponse.json({
-        ok: true,
-        routed: "contract_review",
-        notification_id: pendingContractReview.id,
-      });
-    }
-  }
-
-  const parsedTitularidadDecision = parseTitularidadReviewDecision(text);
-  if (parsedTitularidadDecision.intent !== "unclear") {
-    const pendingTitularidadReview = pendingInternal.find(
-      (notification) => notification.kind === "titularidad_review"
-    );
-    if (pendingTitularidadReview) {
-      const result = await businessDecisionHandler("titularidad_review").handle(db, {
-        userId,
-        notificationId: pendingTitularidadReview.id,
-        text,
-      });
-      await sendTelegramMessage(
-        chatId,
-        result.message ??
-          (result.ok
-            ? "Titularidad aprobada. Generaré el contrato."
-            : "No pude procesar la decisión de titularidad.")
-      );
-      return NextResponse.json({
-        ok: true,
-        routed: "titularidad_review",
-        notification_id: pendingTitularidadReview.id,
-      });
-    }
-  }
-
-  if (text && parseComparablesExpansionDecision(text) !== "unclear") {
-    const comparablesDecisionCandidates = (
-      await Promise.all(
-        pendingInternal
-          .filter(
-            (notification) =>
-              notification.kind === "comparables_search_expansion_decision"
-          )
-          .map(async (notification) => {
-            if (!notification.case_id) return null;
-            const opCase = await getOperationalCase(db, notification.case_id);
-            if (!opCase || opCase.user_id !== userId) return null;
-            if (opCase.current_step !== "comparables_in_progress") {
-              return null;
-            }
-            return { notification, opCase };
-          })
-      )
-    ).filter(
-      (candidate): candidate is {
-        notification: (typeof pendingInternal)[number];
-        opCase: OperationalCase;
-      } => Boolean(candidate)
-    );
-
-    if (comparablesDecisionCandidates.length > 0) {
-      // pendingInternal ya viene en orden de recencia; tomamos el primer pendiente vigente.
-      const { notification, opCase } = comparablesDecisionCandidates[0]!;
-      const result = await handleComparablesExpansionDecision(db, {
-        userId,
-        notificationId: notification.id,
-        text,
-        source: "telegram",
-        // Diferimos la notificación de precio para enviar primero la
-        // confirmación de la decisión y después la propuesta de precio.
-        deferPriceApprovalNotify: true,
-      });
-      await sendTelegramMessage(
-        chatId,
-        result.message ?? "No pude procesar esa decisión todavía."
-      );
-      // Orden de mensajes: tras confirmar la decisión, disparamos ahora la
-      // notificación de aprobación de precio (propuesta), que quedó diferida
-      // dentro del handler para no adelantarse a la confirmación.
-      if (
-        result.ok &&
-        result.status === "processed" &&
-        result.deferredPriceApproval &&
-        result.case_id
-      ) {
-        try {
-          await notifyPriceApprovalForCase({
-            db,
-            caseId: result.case_id,
-            userId,
-            pricingProposal: result.deferredPriceApproval.pricingProposal,
-            source: `comparables_decision_telegram_${result.decision}`,
-            notifyUser: async (notifyDb, notifyUserId, payload, urgency) =>
-              notify(notifyDb, notifyUserId, payload, urgency),
-          });
-        } catch (notifyError) {
-          console.error(
-            "[telegram-webhook] deferred price approval notify failed:",
-            notifyError
-          );
-        }
-      }
-      if (
-        result.ok &&
-        result.status === "processed" &&
-        result.decision === "expand_search" &&
-        opCase.context_jsonb?.e2e_controlled === true &&
-        result.case_id
-      ) {
-        const refreshedCase = await getOperationalCase(db, result.case_id);
-        if (refreshedCase) {
-          void runSettingsTestCaseAgentTick(db, refreshedCase, refreshedCase.user_id, {
-            source: "telegram_webhook_conversational_e2e_comparables_expand_search",
-            ownerResponseText: text,
-          }).catch((tickError) => {
-            console.error(
-              "[telegram-webhook] comparables decision tick failed:",
-              tickError
-            );
-          });
-        }
-      }
-      return NextResponse.json({
-        ok: true,
-        routed:
-          result.ok && result.status === "processed"
-            ? "comparables_expansion_decision"
-            : "comparables_expansion_decision_rejected",
-        case_id: result.case_id ?? opCase.id,
-        notification_id: result.notification_id ?? notification.id,
-        decision: result.decision,
-      });
-    }
   }
 
   if (text) {

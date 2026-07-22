@@ -48,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no state change, no notification resolution, no misclassification as a
   change request. Editorial imperatives (“reescribe el texto completo”) and
   mixed read+change messages still parse as change requests.
+- **Shared pending-decision router (Telegram/web parity)**: the Telegram
+  webhook's free-text HITL gates (listing-description review, price approval,
+  contract data/review, titularidad, comparables expansion) now live in one
+  module (`resolvePendingDecisionTurn`) used by both the webhook and the web
+  chat route before `runAgent`. Web chat gains the same deterministic claim
+  order Telegram had (decisions can be answered by typing in the web chat,
+  including `read_artifact` inline); Telegram behavior is unchanged, with
+  deferred E2E ticks/notifies preserved via `runAfterReply`.
+  `property_data_review` stays Telegram-only (external-contact chat binding).
 
 ### Fixed
 
