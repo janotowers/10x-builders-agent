@@ -11,7 +11,7 @@ Inventario canónico. **Defaults y lectura de env** viven en [`packages/agent/sr
 | Compaction / memory flush | `COMPACTION_MODEL_ID` | `anthropic/claude-haiku-4.5` | `createCompactionModel` |
 | Skill selector | `SKILL_SELECTOR_MODEL_ID` | `anthropic/claude-haiku-4.5` | `createSkillSelectorModel` |
 | Business Brain reviewer | `BUSINESS_BRAIN_REVIEWER_MODEL_ID` | `anthropic/claude-haiku-4.5` | `createBusinessBrainReviewerModel` |
-| Clasificador conversacional de casos | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` | mismo que main | `apps/web/.../operational-conversation-classifier.ts` |
+| Clasificador conversacional de casos (+ 2ª opinión HITL `unclear`) | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` | `openai/gpt-5.4-mini` | `apps/web/.../operational-conversation-classifier.ts`, `pending-decision-unclear-classifier.ts` |
 | Vision / fotos | `IMAGE_VISION_MODEL_ID` | `openai/gpt-4.1-mini` | `packages/agent/.../realestate-adapters.ts` |
 | Copy de listing | `LISTING_COPY_MODEL_ID` | `openai/gpt-4.1-mini` | `packages/agent/.../realestate-adapters.ts` |
 | Embeddings memoria | `MEMORY_EMBEDDING_MODEL` | `google/gemini-embedding-001` | `packages/agent/src/embeddings.ts` |

@@ -25,7 +25,7 @@
 | Compaction / memory flush | `COMPACTION_MODEL_ID` | `anthropic/claude-haiku-4.5` |
 | Skill selector | `SKILL_SELECTOR_MODEL_ID` | `anthropic/claude-haiku-4.5` |
 | Business Brain reviewer | `BUSINESS_BRAIN_REVIEWER_MODEL_ID` | `anthropic/claude-haiku-4.5` |
-| Clasificador conversacional de casos | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` | mismo default que main |
+| Clasificador conversacional de casos (+ 2ª opinión HITL `unclear`) | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` | `openai/gpt-5.4-mini` |
 | Vision / fotos | `IMAGE_VISION_MODEL_ID` | `openai/gpt-4.1-mini` |
 | Copy de listing | `LISTING_COPY_MODEL_ID` | `openai/gpt-4.1-mini` |
 

@@ -64,7 +64,7 @@ Fallo de API / schema / confidence `low` → **fail-open a aclarar** (comportami
 - No aprueba, ajusta ni registra datos.
 - No toca gates keyword-only (precio/contrato/titularidad/comparables): ahí el parse `unclear` ya implica no reclamar → el agente responde.
 
-Reutiliza el modelo configurado por `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` (mismo stack OpenRouter que el clasificador de intake), con **schema propio** para HITL.
+Reutiliza el modelo configurado por `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` (mismo stack OpenRouter que el clasificador de intake; default en código `openai/gpt-5.4-mini`), con **schema propio** para HITL.
 
 ## Relación con el clasificador de intake
 

@@ -542,7 +542,7 @@ The actually configured environment (`apps/web/.env.local`, dev machine — runt
 | Compaction / memory flush | `anthropic/claude-haiku-4.5` | `anthropic/claude-haiku-4.5` (or env) | mechanical/extractive task |
 | Skill selector | `anthropic/claude-haiku-4.5` | `anthropic/claude-haiku-4.5` (or env) | tiny prompt, JSON out, temp 0 |
 | Business Brain reviewer | `anthropic/claude-haiku-4.5` | `anthropic/claude-haiku-4.5` (or env) | short rewriting task |
-| Operational conversation classifier | `openai/gpt-4o-mini` | `openai/gpt-5.4-mini` | structured JSON; deterministic-rules fallback |
+| Operational conversation classifier (+ HITL unclear) | `openai/gpt-5.4-mini` | `openai/gpt-5.4-mini` | structured JSON; deterministic-rules / fail-open clarify |
 | Image vision / listing copy | `openai/gpt-4.1-mini` | `openai/gpt-4.1-mini` (explicit) | vision-capable slug required |
 
 Global output cap: default 2048, configured 4096 (`OPENROUTER_MAX_TOKENS`). The tiering is real and role-matched — heavier-but-still-cheap model where judgment lives, nano where frequency dominates, haiku-class for mechanical text tasks, vision-capable only where needed. **Post-analysis fix:** code defaults for Haiku-class roles were refreshed to `anthropic/claude-haiku-4.5` in `model.ts`, and vision/listing/classifier IDs were centralized there so the inventory is no longer split across three files without a single source of truth **[B]**.

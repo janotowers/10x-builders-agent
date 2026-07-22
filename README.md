@@ -115,8 +115,9 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `EASYBROKER_PUBLIC_ASSET_BASE_URL` | *(Opcional, necesario para probar upload real de fotos EasyBroker en local)* URL pública base **sin barra final** que EasyBroker puede abrir para descargar imágenes privadas vía redirect corto. En local usa ngrok, ej. `https://abc123.ngrok-free.app`; en producción normalmente basta `NEXT_PUBLIC_SITE_URL`. |
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |
    | `OPENROUTER_MAX_TOKENS` | *(Opcional)* Cap de `max_tokens` de salida por llamada. OpenRouter lo reserva contra tu saldo antes de ejecutar, así que con poco crédito conviene bajarlo. Default: `2048` |
-   | `MAIN_AGENT_MODEL_ID` | *(Opcional)* Override del modelo principal del agente (`runAgent`) para web/telegram/cron/case_runner. Default: `openai/gpt-4o-mini` |
-   | `COMPACTION_MODEL_ID` | *(Opcional)* Override del modelo usado por compaction/memory flush. Default: `anthropic/claude-3-5-haiku` |
+| `MAIN_AGENT_MODEL_ID` | *(Opcional)* Override del modelo principal del agente (`runAgent`) para web/telegram/cron/case_runner. Default: `openai/gpt-4o-mini` |
+| `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` | *(Opcional)* Clasificador JSON de casos (intake/routing) y 2ª opinión HITL cuando un gate sticky responde «no entendí». Default: `openai/gpt-5.4-mini`. Detalle: [pending-decision-routing.md](docs/operational-cases/pending-decision-routing.md) |
+| `COMPACTION_MODEL_ID` | *(Opcional)* Override del modelo usado por compaction/memory flush. Default: `anthropic/claude-3-5-haiku` |
    | `ENCRYPTION_KEY` | 64 caracteres hexadecimales (32 bytes) para cifrar tokens de integraciones en base de datos. Generar: `openssl rand -hex 32` |
    | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(Opcional)* OAuth GitHub; redirect `{NEXT_PUBLIC_SITE_URL}/api/integrations/github/callback` |
    | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | *(Opcional)* OAuth Google por usuario (Calendar + Gmail + futuras integraciones OAuth); redirect `{NEXT_PUBLIC_SITE_URL}/api/integrations/google/callback` |
@@ -256,6 +257,7 @@ de la app, configura `EASYBROKER_PUBLIC_ASSET_BASE_URL` con esa base pública.
 - [docs/manuals/architecture-manual.md](docs/manuals/architecture-manual.md) — manual técnico integrador (skills, memoria, tools, modelos).
 - [docs/manuals/gu-os-agent-architecture-analysis.md](docs/manuals/gu-os-agent-architecture-analysis.md) — análisis de arquitectura agentica (design space, riesgos, recomendaciones).
 - [docs/tools-design/model-providers.md](docs/tools-design/model-providers.md) — roles de modelo actuales + diseño multi-proveedor previsto.
+- [docs/operational-cases/pending-decision-routing.md](docs/operational-cases/pending-decision-routing.md) — routing de HITL de negocio por texto libre (Telegram/web): consultas determinísticas de precio/estado, gates de decisión, escape de preguntas laterales y 2ª opinión LLM solo cuando un gate sticky está a punto de responder «no entendí»; el resto cae al agente.
 - [docs/plan.md](docs/plan.md) — fases y decisiones de implementación.
 - [docs/business-brain-evolution-roadmap.md](docs/business-brain-evolution-roadmap.md) — evolución hacia Business Brain (Skills, Heartbeat, contexto por cuenta); roadmap producto + ingeniería.
 - [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md) — variables `BIGQUERY_*` y credenciales GCP para `bigquery_run_query` en local y producción.

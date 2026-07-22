@@ -255,7 +255,7 @@ Separar responsabilidades permite controlar costo, latencia y calidad.
 | Compaction / memory flush | `anthropic/claude-haiku-4.5` | `COMPACTION_MODEL_ID` (`model.ts`) | Hoy |
 | Selector de skills | `anthropic/claude-haiku-4.5` | `SKILL_SELECTOR_MODEL_ID` (`model.ts`) | Hoy |
 | Reviewer de Business Brain | `anthropic/claude-haiku-4.5` | `BUSINESS_BRAIN_REVIEWER_MODEL_ID` (`model.ts`) | Hoy |
-| Clasificador conversacional de casos | mismo que main | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` (constante en `model.ts`; uso en web) | Hoy |
+| Clasificador conversacional de casos (+ HITL `unclear`) | `openai/gpt-5.4-mini` | `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` (constante en `model.ts`; uso en web) | Hoy |
 | Vision / fotos | `openai/gpt-4.1-mini` | `IMAGE_VISION_MODEL_ID` (constante en `model.ts`; uso en realestate adapters) | Hoy |
 | Copy de listing | `openai/gpt-4.1-mini` | `LISTING_COPY_MODEL_ID` (constante en `model.ts`; uso en realestate adapters) | Hoy |
 | Embeddings memoria | `google/gemini-embedding-001` | `MEMORY_EMBEDDING_MODEL`, `MEMORY_EMBEDDING_DIM=1536` | Hoy |

@@ -46,11 +46,13 @@ export const DEFAULT_SKILL_SELECTOR_MODEL_ID = "anthropic/claude-haiku-4.5";
 export const DEFAULT_BUSINESS_BRAIN_REVIEWER_MODEL_ID =
   "anthropic/claude-haiku-4.5";
 /**
- * Default del clasificador conversacional de casos (edge web/Telegram).
- * Alineado al main agent: misma clase de modelo salvo override explícito.
+ * Default del clasificador conversacional de casos (edge web/Telegram) y de la
+ * 2ª opinión HITL en `unclear` (pending-decision-unclear-classifier).
+ * Independiente del main agent; override con
+ * `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID`.
  */
 export const DEFAULT_OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID =
-  DEFAULT_MAIN_AGENT_MODEL_ID;
+  "openai/gpt-5.4-mini";
 /** Default vision (analyze_property_images y tools de foto). */
 export const DEFAULT_IMAGE_VISION_MODEL_ID = "openai/gpt-4.1-mini";
 /** Default redacción comercial (prepare_listing_description_draft). */
