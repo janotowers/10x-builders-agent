@@ -323,6 +323,10 @@ export async function loadPendingInboxSnapshot(
       prepareDraftFailure:
         notification.metadata_jsonb?.prepare_draft_failure === true ||
         notification.metadata_jsonb?.safe_retry_prepare === true,
+      listingDescriptionFullText: notificationStringMetadata(
+        notification,
+        "listing_description_txt"
+      ),
     };
   });
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {
+  buildListingDescriptionDraftTxtAttachment,
   formatListingDescriptionReviewNotifyText,
+  listingDescriptionReviewExcerptTruncated,
   sanitizeListingDescriptionCommercialCopy,
 } from "./listing-description-review";
 
@@ -67,8 +69,42 @@ const truncated = formatListingDescriptionReviewNotifyText(
 );
 
 assert.match(truncated, /texto recortado/);
+assert.match(truncated, /archivo adjunto/);
+assert.doesNotMatch(truncated, /pídemelo/);
 assert.match(truncated, /Aprobar descripción o Pedir cambios/);
 assert.doesNotMatch(truncated, /_Texto recortado/);
+
+// Truncation detector mirrors the formatter's cap.
+assert.equal(
+  listingDescriptionReviewExcerptTruncated(
+    { description: "a".repeat(80) },
+    { maxDescriptionLength: 30 }
+  ),
+  true
+);
+assert.equal(
+  listingDescriptionReviewExcerptTruncated(
+    { description: "corta" },
+    { maxDescriptionLength: 30 }
+  ),
+  false
+);
+
+// Full-draft .txt attachment: title + summary + full description, ascii filename.
+const txtAttachment = buildListingDescriptionDraftTxtAttachment(
+  {
+    headline: "Casa en venta con fachada protegida en Las Fuentes, Zapopan",
+    short_description: "Dos niveles, 3 recámaras.",
+    description: "b".repeat(2000),
+  },
+  { caseId: "bb595715-6428-491f-a68e-cc242d634299" }
+);
+assert.ok(txtAttachment);
+assert.match(txtAttachment.filename, /^descripcion_comercial_[a-z0-9_]+_bb595715\.txt$/);
+assert.match(txtAttachment.content, /TÍTULO\nCasa en venta/);
+assert.match(txtAttachment.content, /RESUMEN CORTO\nDos niveles/);
+assert.match(txtAttachment.content, /DESCRIPCIÓN\nb{2000}/);
+assert.equal(buildListingDescriptionDraftTxtAttachment({}), null);
 
 const contextFiltered = formatListingDescriptionReviewNotifyText(
   {

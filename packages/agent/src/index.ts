@@ -236,7 +236,9 @@ export type {
 } from "./operational-cases/comparables-analysis";
 export { buildPricingProposalFromComparables, formatPriceApprovalNotifyText } from "./operational-cases/pricing-proposal";
 export {
+  buildListingDescriptionDraftTxtAttachment,
   formatListingDescriptionReviewNotifyText,
+  listingDescriptionReviewExcerptTruncated,
   sanitizeListingDescriptionCommercialCopy,
 } from "./operational-cases/listing-description-review";
 export {

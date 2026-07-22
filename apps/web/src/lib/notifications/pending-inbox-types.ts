@@ -37,6 +37,11 @@ export interface InternalNotificationDisplay {
    * Safe to retry preparation directly (no remote GU-ID to reconcile).
    */
   prepareDraftFailure?: boolean;
+  /**
+   * Listing description review: full draft text when the notification body
+   * shows a truncated excerpt (Telegram gets it as a .txt attachment).
+   */
+  listingDescriptionFullText?: string | null;
 }
 
 export interface ResolvedNotificationDisplay extends InternalNotificationDisplay {

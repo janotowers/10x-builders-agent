@@ -265,7 +265,7 @@ export function formatListingDescriptionReviewNotifyText(
   ];
   if (excerpt.truncated) {
     blocks.push(
-      "Nota: texto recortado para este mensaje. Si necesitas el borrador completo, pídemelo aquí y te lo envío."
+      "Nota: texto recortado en este mensaje. El borrador completo va en el archivo adjunto."
     );
   }
   if (missingIngredients.length > 0) {
@@ -281,4 +281,56 @@ export function formatListingDescriptionReviewNotifyText(
     .filter((line): line is string => line != null)
     .join("\n\n")
     .trim();
+}
+
+/**
+ * Whether the review message will truncate the description (same sanitize +
+ * cap as `formatListingDescriptionReviewNotifyText`). Callers use it to decide
+ * when to attach the full draft as a file.
+ */
+export function listingDescriptionReviewExcerptTruncated(
+  draft: ListingDescriptionDraftLike,
+  options: ListingDescriptionReviewFormatOptions = {}
+): boolean {
+  const description = sanitizeListingDescriptionCommercialCopy(draft.description);
+  const maxDescriptionLength = options.maxDescriptionLength ?? 1200;
+  return description.length > maxDescriptionLength;
+}
+
+/**
+ * Full commercial draft as a plain-text file (title + short summary +
+ * complete description). Sent alongside the review notification when the
+ * inline excerpt is truncated, so the advisor never has to ask for the rest.
+ */
+export function buildListingDescriptionDraftTxtAttachment(
+  draft: ListingDescriptionDraftLike,
+  options: { caseId?: string | null } = {}
+): { filename: string; content: string } | null {
+  const headline = sanitizeListingDescriptionCommercialCopy(draft.headline);
+  const shortDescription = sanitizeListingDescriptionCommercialCopy(
+    draft.short_description
+  );
+  const description = sanitizeListingDescriptionCommercialCopy(draft.description);
+  if (!description && !headline && !shortDescription) return null;
+
+  const sections: string[] = [];
+  if (headline) sections.push(`TÍTULO\n${headline}`);
+  if (shortDescription) sections.push(`RESUMEN CORTO\n${shortDescription}`);
+  if (description) sections.push(`DESCRIPCIÓN\n${description}`);
+  const content = `${sections.join("\n\n")}\n`;
+
+  const slugSource = headline || "descripcion comercial";
+  const slug = slugSource
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48);
+  const caseSuffix =
+    typeof options.caseId === "string" && options.caseId.trim()
+      ? `_${options.caseId.slice(0, 8)}`
+      : "";
+  const filename = `descripcion_comercial_${slug || "borrador"}${caseSuffix}.txt`;
+  return { filename, content };
 }

@@ -1,11 +1,13 @@
 import {
   buildContractCommercialMinimumsSummaryMessage,
   buildContractDataReviewNotifyText,
+  buildListingDescriptionDraftTxtAttachment,
   contractDraftOutputPathFromContext,
   evaluateContractCommercialMinimums,
   evaluatePropertyAdvanceGate,
   formatListingDescriptionReviewNotifyText,
   listingDescriptionDraftContentFromContext,
+  listingDescriptionReviewExcerptTruncated,
   renderCommissionContractForCase,
   runAgent,
   runDocumentFieldExtraction,
@@ -2152,6 +2154,19 @@ export async function runSettingsTestCaseAgentTick(
                 }
               )
             : `Borrador de descripción listo para revisión.\n\n${listingDraftContent.headline}\n\n${listingDraftContent.description}`;
+        const draftForTxt =
+          draftRecord && typeof draftRecord === "object" && !Array.isArray(draftRecord)
+            ? (draftRecord as Record<string, unknown>)
+            : null;
+        const txtAttachment =
+          draftForTxt &&
+          listingDescriptionReviewExcerptTruncated(draftForTxt, {
+            currentContext: contextRecord,
+          })
+            ? buildListingDescriptionDraftTxtAttachment(draftForTxt, {
+                caseId: fresh.id,
+              })
+            : null;
         await notify(
           db,
           userId,
@@ -2163,6 +2178,12 @@ export async function runSettingsTestCaseAgentTick(
               artifact_key: "listing_description_draft",
               actions: ["approve", "request_changes"],
               source: options?.source ?? "settings_test_case_tick",
+              ...(txtAttachment
+                ? {
+                    listing_description_txt: txtAttachment.content,
+                    listing_description_txt_filename: txtAttachment.filename,
+                  }
+                : {}),
             },
           },
           "normal"
