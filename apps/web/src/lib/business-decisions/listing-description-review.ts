@@ -72,23 +72,44 @@ export function splitInstructionAndHighlights(values: string[]) {
   return { editorial, highlights };
 }
 
+/** Explicit approve verbs may carry trailing words ("apruebo la descripción"). */
+const EXPLICIT_APPROVE_VERB = /^(aprobar|aprobado|apruebo)\b/;
+/**
+ * Bare affirmatives approve only when standalone. "ok gracias" after e.g.
+ * asking to see the full draft is an acknowledgment, not an approval — it
+ * must trigger a clarification instead of publishing.
+ */
+const STANDALONE_AFFIRMATIVE =
+  /^(ok(?:ay|ey)?|va(?:le)?|listo|dale|s[ií]|perfecto|de acuerdo)[\s.,!…]*$/;
+/** Affirmative/courtesy opener with extra words → ambiguous, ask. */
+const AFFIRMATIVE_OR_COURTESY_LEAD =
+  /^(ok(?:ay|ey)?|va(?:le)?|listo|dale|s[ií]|perfecto|de acuerdo|entendido|gracias)\b/;
+/** `cambi` (not `cambio`) so imperatives like "cambia el tono" also match. */
+const CHANGE_HINT =
+  /cambi|ajust|corrig|highlight|puntos?\s+clave|elementos?\s+clave/;
+
 export function parseListingDescriptionReviewDecision(
   text: string
 ): ParsedListingDescriptionDecision {
   const normalized = text.trim().toLowerCase();
   if (!normalized) return { intent: "unclear", reason: "Respuesta vacía." };
-  if (
-    /^(aprobar|aprobado|apruebo|ok|va|listo|si|sí)\b/.test(normalized) &&
-    !/cambio|ajust|corrig|highlight|puntos?\s+clave|elementos?\s+clave/.test(normalized)
-  ) {
+  if (EXPLICIT_APPROVE_VERB.test(normalized) && !CHANGE_HINT.test(normalized)) {
     return { intent: "approve" };
   }
-  if (text.trim()) return { intent: "change_request", reason: text.trim() };
-  return {
-    intent: "unclear",
-    reason:
-      "No entendí si quieres aprobar o pedir cambios. Ejemplos: APROBAR DESCRIPCIÓN o indicar qué ajustar/agregar.",
-  };
+  if (STANDALONE_AFFIRMATIVE.test(normalized)) {
+    return { intent: "approve" };
+  }
+  if (
+    AFFIRMATIVE_OR_COURTESY_LEAD.test(normalized) &&
+    !CHANGE_HINT.test(normalized)
+  ) {
+    return {
+      intent: "unclear",
+      reason:
+        "No me queda claro si apruebas la descripción tal cual. Responde APROBAR para aprobarla, o dime qué ajustar.",
+    };
+  }
+  return { intent: "change_request", reason: text.trim() };
 }
 
 const LISTING_DESCRIPTION_REVIEW_TEXT_HINT =

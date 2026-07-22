@@ -21,6 +21,33 @@ const change = parseListingDescriptionReviewDecision(
 );
 assert.equal(change.intent, "change_request");
 
+// Standalone affirmatives approve; courtesy tails are ambiguous and must ask.
+assert.equal(parseListingDescriptionReviewDecision("ok").intent, "approve");
+assert.equal(parseListingDescriptionReviewDecision("Listo.").intent, "approve");
+assert.equal(parseListingDescriptionReviewDecision("sí").intent, "approve");
+assert.equal(
+  parseListingDescriptionReviewDecision("apruebo la descripción").intent,
+  "approve"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("ok gracias").intent,
+  "unclear",
+  "acknowledgment with courtesy tail must not auto-approve"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("gracias").intent,
+  "unclear"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("ok pero cambia el tono").intent,
+  "change_request",
+  "imperative 'cambia' must be detected as a change request"
+);
+assert.equal(
+  parseListingDescriptionReviewDecision("aprobar pero ajusta el título").intent,
+  "change_request"
+);
+
 const freeText = parseListingDescriptionReviewDecision(
   "Hacerlo más sobrio y mencionar zona de hospitales"
 );
