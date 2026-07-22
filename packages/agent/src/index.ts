@@ -239,8 +239,17 @@ export {
   formatListingDescriptionReviewNotifyText,
   sanitizeListingDescriptionCommercialCopy,
 } from "./operational-cases/listing-description-review";
+export {
+  formatPublishDestinationApprovalNotifyText,
+  publicationDestinationLabelFromKind,
+  type PublicationDestinationLabel,
+} from "./operational-cases/publication-destination-approval-copy";
 export { resolveImagePathsFromRawPhotos } from "./tools/realestate-adapters";
 export { normalizeAnalyzeImageStorageRef } from "./tools/realestate-adapters";
+export {
+  renderCommissionContractForCase,
+  type CommissionContractRenderResult,
+} from "./tools/realestate-adapters";
 export {
   isUsableLatLng,
   mergeEasyBrokerCreateInputFromCaseSources,
