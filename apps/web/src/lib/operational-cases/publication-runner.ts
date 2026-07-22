@@ -28,6 +28,8 @@ import {
   canSafelyForceRetryUnggaPublish,
 } from "@/lib/operational-cases/publication-media-recovery";
 import {
+  canFinalizePublicationClosure,
+  shouldIdleFallbackSetWaitingInternal,
   shouldSendCorrectiveListingPublishedSummary,
 } from "@/lib/operational-cases/publication-closure-recovery";
 import {
@@ -692,20 +694,22 @@ export async function requestPublicationProgress(
           fresh.id,
           30
         );
-        const shouldFinalize =
-          action.reason === "all_destinations_resolved" &&
-          areAllPublicationDestinationsResolved(publication) &&
-          !machineWorkInFlight &&
-          !hasInFlightLedger &&
-          canCompleteListingPublishedSummaryFromContext(
+        const shouldFinalize = canFinalizePublicationClosure({
+          idleReason: action.reason,
+          allDestinationsResolved:
+            areAllPublicationDestinationsResolved(publication),
+          machineWorkInFlight,
+          hasInFlightLedgerOperation: hasInFlightLedger,
+          completionOk: canCompleteListingPublishedSummaryFromContext(
             mergedContext,
             recentEventsForGate,
             {
               machineWorkInFlight,
               hasInFlightLedgerOperation: hasInFlightLedger,
             }
-          ).ok &&
-          fresh.current_step === "package_ready";
+          ).ok,
+          currentStep: fresh.current_step,
+        }).ok;
 
         if (shouldFinalize) {
           const recentEvents = recentEventsForGate;
@@ -770,11 +774,18 @@ export async function requestPublicationProgress(
           };
         }
 
-        await updateOperationalCase(db, fresh.id, fresh.version, {
-          context: mergedContext,
-          status: "waiting_internal",
-          nextActionAt: null,
-        });
+        if (
+          shouldIdleFallbackSetWaitingInternal({
+            status: fresh.status,
+            currentStep: fresh.current_step,
+          })
+        ) {
+          await updateOperationalCase(db, fresh.id, fresh.version, {
+            context: mergedContext,
+            status: "waiting_internal",
+            nextActionAt: null,
+          });
+        }
       }
       return {
         ok: true,

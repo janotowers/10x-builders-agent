@@ -24,6 +24,65 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Steps from which the runner may finalize a publication case.
+ * `published` is included so a case whose step was advanced by the agent
+ * before the runner's idle pass does not get stuck as
+ * `waiting_internal / published` (the runner used to require `package_ready`).
+ */
+const FINALIZABLE_PUBLICATION_STEPS = new Set(["package_ready", "published"]);
+
+/**
+ * Pure closure gate for the publication runner's idle pass. All inputs are
+ * computed by the caller (DB reads stay in the runner); keeping this pure
+ * makes the invariant testable without a database.
+ */
+export function canFinalizePublicationClosure(params: {
+  /** `nextPublicationAction(...).reason` when the machine is idle. */
+  idleReason: string | null | undefined;
+  allDestinationsResolved: boolean;
+  machineWorkInFlight: boolean;
+  hasInFlightLedgerOperation: boolean;
+  /** Result of the strict `canCompleteListingPublishedSummaryFromContext` gate. */
+  completionOk: boolean;
+  currentStep: string | null | undefined;
+}): { ok: boolean; reason?: string } {
+  if (params.idleReason !== "all_destinations_resolved") {
+    return { ok: false, reason: "idle_reason_not_all_destinations_resolved" };
+  }
+  if (!params.allDestinationsResolved) {
+    return { ok: false, reason: "destinations_unresolved" };
+  }
+  if (params.machineWorkInFlight) {
+    return { ok: false, reason: "machine_work_in_flight" };
+  }
+  if (params.hasInFlightLedgerOperation) {
+    return { ok: false, reason: "ledger_operation_in_flight" };
+  }
+  if (!params.completionOk) {
+    return { ok: false, reason: "completion_gate_failed" };
+  }
+  const step = typeof params.currentStep === "string" ? params.currentStep : "";
+  if (!FINALIZABLE_PUBLICATION_STEPS.has(step)) {
+    return { ok: false, reason: `step_not_finalizable:${step || "unknown"}` };
+  }
+  return { ok: true };
+}
+
+/**
+ * The runner's idle fallback used to write `waiting_internal` unconditionally.
+ * Never downgrade a case that is already closed (`completed`), and never
+ * re-open a case already sitting at `published` with a passing gate — that
+ * combination is owned by the finalize path.
+ */
+export function shouldIdleFallbackSetWaitingInternal(params: {
+  status: string | null | undefined;
+  currentStep: string | null | undefined;
+}): boolean {
+  if (params.status === "completed") return false;
+  return true;
+}
+
+/**
  * Reopen a case that was marked completed/published without strict Ungga
  * evidence. Preserves the CLI GU-ID; never creates a new draft.
  */

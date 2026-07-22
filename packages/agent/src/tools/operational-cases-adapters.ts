@@ -51,7 +51,11 @@ import {
   formatPriceApprovalNotifyText,
   type PricingProposal,
 } from "../operational-cases/pricing-proposal";
-import { formatListingDescriptionReviewNotifyText } from "../operational-cases/listing-description-review";
+import {
+  buildListingDescriptionDraftTxtAttachment,
+  formatListingDescriptionReviewNotifyText,
+  listingDescriptionReviewExcerptTruncated,
+} from "../operational-cases/listing-description-review";
 import {
   isEasybrokerEffectivelyPublished,
   publicationFromContext,
@@ -4386,6 +4390,8 @@ export function addOperationalCaseTools(
               await updateToolCallStatus(ctx.db, record.id, "failed", out);
               return JSON.stringify(out);
             }
+            let effectiveStatus = input.status;
+            let effectiveCurrentStep = input.current_step;
             if (
               opCase.case_type === "property_optioning" &&
               (input.current_step === "published" || input.status === "completed")
@@ -4401,6 +4407,12 @@ export function addOperationalCaseTools(
                 await updateToolCallStatus(ctx.db, record.id, "failed", out);
                 return JSON.stringify(out);
               }
+              // Gate passed: `published` and `completed` are one atomic pair.
+              // Without this, an agent writing current_step=published with
+              // status=waiting_internal leaves the case open forever
+              // (runner idle fallback used to re-assert waiting_internal).
+              effectiveStatus = "completed";
+              effectiveCurrentStep = "published";
             }
 
             updated = await updateOperationalCase(
@@ -4408,8 +4420,8 @@ export function addOperationalCaseTools(
               opCase.id,
               opCase.version,
               {
-                status: input.status,
-                currentStep: input.current_step,
+                status: effectiveStatus,
+                currentStep: effectiveCurrentStep,
                 nextActionAt: input.next_action_at,
                 dueAt: input.due_at,
                 context: mergedContext,
@@ -5470,6 +5482,10 @@ export function addOperationalCaseTools(
             let contractCommercialForNotify: ReturnType<
               typeof evaluateContractCommercialMinimums
             > | null = null;
+            let listingDescriptionTxtForNotify: {
+              filename: string;
+              content: string;
+            } | null = null;
             if (canonicalKind === "property_data_review") {
               notificationText = canonicalizePropertyDataReviewText(opCase, input.text);
             } else if (canonicalKind === "price_approval" && opCase) {
@@ -5509,6 +5525,16 @@ export function addOperationalCaseTools(
                 notificationText = formatListingDescriptionReviewNotifyText(draft, {
                   currentContext: descriptionContext,
                 });
+                if (
+                  listingDescriptionReviewExcerptTruncated(draft, {
+                    currentContext: descriptionContext,
+                  })
+                ) {
+                  listingDescriptionTxtForNotify =
+                    buildListingDescriptionDraftTxtAttachment(draft, {
+                      caseId,
+                    });
+                }
               }
             } else if (canonicalKind === "contract_data_review") {
               if (opCase) {
@@ -5589,6 +5615,14 @@ export function addOperationalCaseTools(
                     ? {
                         artifact_key: "listing_description_draft",
                         actions: ["approve", "request_changes"],
+                        ...(listingDescriptionTxtForNotify
+                          ? {
+                              listing_description_txt:
+                                listingDescriptionTxtForNotify.content,
+                              listing_description_txt_filename:
+                                listingDescriptionTxtForNotify.filename,
+                            }
+                          : {}),
                       }
                     : {}),
                   ...(canonicalKind === "contract_review" && opCase
