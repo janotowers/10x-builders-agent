@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "type-check": "next typegen && tsc -p tsconfig.typecheck.json --noEmit",
-    "test:business-decisions": "tsx src/lib/business-decisions/price-approval.selftest.ts && tsx src/lib/business-decisions/contract-review.selftest.ts && tsx src/lib/business-decisions/contract-data-review.selftest.ts && tsx src/lib/business-decisions/contract-commercial-extraction.selftest.ts && tsx src/lib/business-decisions/listing-description-review.selftest.ts && tsx src/lib/business-decisions/pending-decision-router.selftest.ts",
+    "test:business-decisions": "tsx src/lib/business-decisions/price-approval.selftest.ts && tsx src/lib/business-decisions/contract-review.selftest.ts && tsx src/lib/business-decisions/contract-data-review.selftest.ts && tsx src/lib/business-decisions/contract-commercial-extraction.selftest.ts && tsx src/lib/business-decisions/listing-description-review.selftest.ts && tsx src/lib/business-decisions/pending-decision-router.selftest.ts && tsx src/lib/business-decisions/case-query.selftest.ts",
     "test:contract-commercial-extraction": "tsx src/lib/business-decisions/contract-commercial-extraction.selftest.ts",
     "test:step-scenario-evidence": "tsx src/lib/operational-cases/step-test-scenario-evidence.selftest.ts",
     "test:step-decision": "tsx src/lib/operational-cases/step-decision.selftest.ts && tsx src/lib/operational-cases/step-decision-ui.selftest.ts && tsx src/lib/operational-cases/step-branch-selected.selftest.ts && tsx src/lib/operational-cases/settings-test-case-lookup.selftest.ts",

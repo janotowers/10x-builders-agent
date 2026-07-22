@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Deterministic read-only case queries (gate 0 of the pending-decision
+  router)**: strict interrogative questions like «¿cuál fue el precio ideal
+  que aprobamos?» or «¿cómo va el caso?» are now answered deterministically
+  from case context (`pricing_proposal` amounts + approval state; current
+  step/status + open decisions) on both Telegram and web, **without resolving
+  notifications or mutating case state**. Decision texts («APROBAR PRECIO»,
+  «AJUSTAR PRECIO salida=…») never match, and on any ambiguity (no case,
+  several candidate cases, missing data) the turn falls through to the agent
+  (`case-query.ts` + selftest).
+- **Side questions escape the `contract_data_review` gate**: while contract
+  data is pending, clearly interrogative data-free messages («¿por qué
+  necesitas el correo del propietario?») now reach the agent instead of
+  dead-ending in «No pude registrar los datos contractuales». Conservative
+  detector: any data signal (email, digits, sí/no near a contract keyword)
+  keeps the current claiming behavior, and the notification stays unread so
+  real data replies are still captured.
+- **Interrogative reads during description review**: questions about the
+  draft content («¿qué dice el título?», «¿cómo quedó la descripción?») are
+  answered with the full artifact (review stays pending), while editorial
+  questions («¿puedes cambiar el título?») remain change requests.
+
 - **Deterministic commission-contract render (lab/prod parity)**: after the
   agent turn, a shared `applyPostAgentContractHandling` now owns the
   `contract_pending` step in both cron and the E2E tick. If a draft already

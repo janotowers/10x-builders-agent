@@ -6,10 +6,13 @@
  * Telegram webhook's text gates so the web chat can run the exact same
  * deterministic routing before `runAgent`:
  *
+ *   0. read-only case queries (price/status) answered deterministically,
+ *      without resolving notifications or mutating case state
  *   1. listing_description_review (incl. read_artifact + pending «Pedir
  *      cambios» reply intent + competing-intake guard)
  *   2. price_approval
- *   3. contract_data_review (claims any text while pending)
+ *   3. contract_data_review (claims any pending text, except clearly
+ *      interrogative data-free side questions, which escape to the agent)
  *   4. contract_review (incl. contract_pending with no missing fields)
  *   5. titularidad_review
  *   6. comparables_search_expansion_decision
@@ -50,6 +53,14 @@ import {
   handleComparablesExpansionDecision,
   parseComparablesExpansionDecision,
 } from "./comparables-expansion-decision";
+import {
+  formatCaseStatusQueryAnswer,
+  formatPricingProposalQueryAnswer,
+  looksLikeSideQuestionNotData,
+  parseCaseQueryIntent,
+  type CaseQueryIntent,
+} from "./case-query";
+import { caseContextFromOperationalCase } from "@/lib/notifications/enrich-case-context";
 import { isIntakeInProgress } from "@/lib/operational-cases/telegram-intake-completion-message";
 
 export type PendingDecisionChannel = "telegram" | "web";
@@ -144,6 +155,98 @@ async function runDeferredTickFromResult(
   }
 }
 
+/**
+ * Resolves the target case for a read-only query and formats the answer.
+ * Returns null on ambiguity or missing data — the turn then falls through to
+ * the conversational routing/agent instead of guessing. Never resolves
+ * notifications nor mutates case state.
+ */
+async function answerCaseQuery(
+  db: DbClient,
+  params: {
+    userId: string;
+    channel: PendingDecisionChannel;
+    chatId?: number | null;
+    intent: CaseQueryIntent;
+    pendingInternal: InternalUserNotification[];
+  }
+): Promise<{ caseId: string; message: string } | null> {
+  const notificationCaseIds = params.pendingInternal
+    .map((notification) => notification.case_id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+
+  let bindingCaseIds: string[] = [];
+  try {
+    const bindings = await findPendingConversationBindings(db, {
+      userId: params.userId,
+      channel: params.channel,
+      chatId: params.channel === "telegram" ? params.chatId : undefined,
+    });
+    bindingCaseIds = bindings.map((binding) => binding.case_id);
+  } catch (bindingError) {
+    console.warn(
+      "[pending-decision-router] case-query bindings lookup failed:",
+      bindingError
+    );
+  }
+
+  const loadOwnedCase = async (caseId: string): Promise<OperationalCase | null> => {
+    const opCase = await getOperationalCase(db, caseId);
+    return opCase && opCase.user_id === params.userId ? opCase : null;
+  };
+
+  if (params.intent === "price") {
+    // Prefer the case of an unread price_approval; else the single candidate
+    // case that actually carries a pricing_proposal.
+    const priceNotification = params.pendingInternal.find(
+      (notification) =>
+        notification.kind === "price_approval" &&
+        typeof notification.case_id === "string"
+    );
+    const orderedCandidates = [
+      ...(priceNotification?.case_id ? [priceNotification.case_id] : []),
+      ...notificationCaseIds,
+      ...bindingCaseIds,
+    ];
+    const seen = new Set<string>();
+    const withProposal: Array<{ caseId: string; message: string }> = [];
+    for (const caseId of orderedCandidates) {
+      if (seen.has(caseId)) continue;
+      seen.add(caseId);
+      const opCase = await loadOwnedCase(caseId);
+      if (!opCase) continue;
+      const context = (opCase.context_jsonb ?? {}) as Record<string, unknown>;
+      const message = formatPricingProposalQueryAnswer(context.pricing_proposal);
+      if (message) withProposal.push({ caseId, message });
+    }
+    if (priceNotification?.case_id) {
+      const preferred = withProposal.find(
+        (candidate) => candidate.caseId === priceNotification.case_id
+      );
+      if (preferred) return preferred;
+    }
+    return withProposal.length === 1 ? withProposal[0] : null;
+  }
+
+  // status: only answer when the turn maps to exactly one candidate case.
+  const distinctCaseIds = [
+    ...new Set([...notificationCaseIds, ...bindingCaseIds]),
+  ];
+  if (distinctCaseIds.length !== 1) return null;
+  const opCase = await loadOwnedCase(distinctCaseIds[0]);
+  if (!opCase) return null;
+  const pendingKinds = params.pendingInternal
+    .filter((notification) => notification.case_id === opCase.id)
+    .map((notification) => notification.kind);
+  return {
+    caseId: opCase.id,
+    message: formatCaseStatusQueryAnswer({
+      context: caseContextFromOperationalCase(opCase),
+      pendingKinds,
+    }),
+  };
+}
+
 export async function resolvePendingDecisionTurn(
   db: DbClient,
   params: PendingDecisionTurnParams
@@ -158,6 +261,40 @@ export async function resolvePendingDecisionTurn(
       statuses: ["unread"],
       limit: 30,
     }));
+
+  // ---- Gate 0: read-only case queries (price/status) ----------------------
+  // Answers known side questions deterministically without closing pendings.
+  // On ambiguity (no case / several cases / missing data) it falls through.
+  const queryIntent =
+    params.isCommand || params.isExplicitNewCaseIntent === true
+      ? null
+      : parseCaseQueryIntent(text);
+  if (queryIntent) {
+    try {
+      const answer = await answerCaseQuery(db, {
+        userId: params.userId,
+        channel: params.channel,
+        chatId: params.chatId,
+        intent: queryIntent,
+        pendingInternal,
+      });
+      if (answer) {
+        return {
+          handled: true,
+          routed: `case_query_${queryIntent}`,
+          ok: true,
+          status: "answered",
+          caseId: answer.caseId,
+          message: answer.message,
+        };
+      }
+    } catch (queryError) {
+      console.error(
+        "[pending-decision-router] case query failed; falling through:",
+        queryError
+      );
+    }
+  }
 
   // ---- Gate 1: listing_description_review -------------------------------
   const pendingListingDescriptionReviews = pendingInternal.filter(
@@ -332,7 +469,19 @@ export async function resolvePendingDecisionTurn(
   const pendingContractData = pendingInternal.find(
     (notification) => notification.kind === "contract_data_review"
   );
-  if (pendingContractData) {
+  if (pendingContractData && looksLikeSideQuestionNotData(text)) {
+    // Clearly interrogative, data-free message: let the agent answer instead
+    // of dead-ending in "No pude registrar los datos contractuales". The
+    // notification stays unread, so the gate keeps claiming real data replies.
+    console.info(
+      "[pending-decision-router] contract_data_review: side question escapes to agent",
+      {
+        channel: params.channel,
+        notification_id: pendingContractData.id,
+        case_id: pendingContractData.case_id ?? null,
+      }
+    );
+  } else if (pendingContractData) {
     // Always route free text through the central handler (hybrid extractor +
     // deterministic judge). Never fall through silently on unclear replies.
     const result = await businessDecisionHandler("contract_data_review").handle(
