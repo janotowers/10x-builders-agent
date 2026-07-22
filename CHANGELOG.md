@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **TypeScript package `rootDir` for TS 6 readiness**: set explicit
+  `"rootDir": "./src"` on `@agents/agent`, `@agents/db`, and `@agents/types`
+  so emit layout stays `dist/` (not `dist/src/`) when TypeScript stops
+  inferring the common source directory.
 - **Ungga publish wrong-card / disabled PUBLICAR**: catalog publish now opens
   cards until the modal GU-ID matches the target, refuses disabled PUBLICAR
   (CRM/import twins), and treats those click failures as safe pre-side-effect
