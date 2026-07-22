@@ -1254,10 +1254,10 @@ export async function POST(request: Request) {
     }
 
     if (action === "price_adjust") {
-      await answerTelegramCallbackQuery(cb.id, "Envia el ajuste para aprobar");
+      await answerTelegramCallbackQuery(cb.id, "Envía el ajuste");
       await sendTelegramMessage(
         cb.message.chat.id,
-        "Claro. Respondeme con los montos para ajustar y aprobar, por ejemplo:\nAJUSTAR PRECIO salida=23500 ideal=22000 minimo=18000"
+        "Claro. Respóndeme con los montos, por ejemplo:\nAJUSTAR PRECIO salida=23500 ideal=22000 minimo=18000"
       );
       return NextResponse.json({
         ok: true,
@@ -1493,10 +1493,10 @@ export async function POST(request: Request) {
 
     if (action === "property_data_confirm" || action === "property_data_correct") {
       if (action === "property_data_correct") {
-        await answerTelegramCallbackQuery(cb.id, "Escribe la corrección");
+        await answerTelegramCallbackQuery(cb.id, "Escribe el ajuste");
         await sendTelegramMessage(
           cb.message.chat.id,
-          "Perfecto. Envíame la corrección en texto, por ejemplo:\nTipo: Terreno · Operación: Venta · Zona: Bucerías"
+          "Perfecto. Envíame el ajuste en texto, por ejemplo:\nTipo: Terreno · Operación: Venta · Zona: Bucerías"
         );
         return NextResponse.json({
           ok: true,

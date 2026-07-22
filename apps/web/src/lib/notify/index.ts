@@ -269,7 +269,7 @@ async function deliverTelegram(
         ],
         [
           {
-            text: "Ajustar y aprobar",
+            text: "Ajustar",
             callback_data: `price_adjust:${actionNotificationId}`,
           },
         ],
@@ -422,7 +422,7 @@ async function deliverTelegram(
         ],
         [
           {
-            text: "Enviar corrección",
+            text: "Ajustar",
             callback_data: `property_data_correct:${actionNotificationId}`,
           },
         ],
@@ -496,6 +496,39 @@ async function deliverTelegram(
       status: "failed",
       reason: lastError ?? "send_failed",
     };
+  }
+
+  // Full commercial draft as .txt when the review excerpt was truncated.
+  // Best-effort: the review message (with buttons) already landed.
+  if (actionKind === "listing_description_review") {
+    const txtContent =
+      typeof payload.data?.listing_description_txt === "string"
+        ? payload.data.listing_description_txt
+        : typeof sourceNotificationMetadata?.listing_description_txt === "string"
+          ? sourceNotificationMetadata.listing_description_txt
+          : "";
+    if (txtContent.trim()) {
+      const filename =
+        (typeof payload.data?.listing_description_txt_filename === "string" &&
+          payload.data.listing_description_txt_filename.trim()) ||
+        (typeof sourceNotificationMetadata?.listing_description_txt_filename ===
+          "string" &&
+          sourceNotificationMetadata.listing_description_txt_filename.trim()) ||
+        "descripcion_comercial.txt";
+      try {
+        await sendTelegramDocument(chatId, {
+          filename,
+          bytes: Buffer.from(txtContent, "utf-8"),
+          contentType: "text/plain; charset=utf-8",
+          caption: "Borrador completo de la descripción comercial.",
+        });
+      } catch (e) {
+        console.warn(
+          "[notify] listing_description_review telegram: txt attach failed",
+          (e as Error).message ?? String(e)
+        );
+      }
+    }
   }
 
   return { channel: "telegram", ok: true, status: "delivered" };

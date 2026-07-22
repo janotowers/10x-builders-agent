@@ -1443,6 +1443,16 @@ export function PendingInboxClient({
                         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700 dark:text-emerald-100">
                           Revisión de descripción
                         </p>
+                        {notification.listingDescriptionFullText ? (
+                          <details className="rounded-xl border border-emerald-200/60 bg-white/60 px-3 py-2 dark:border-emerald-300/20 dark:bg-slate-950/40">
+                            <summary className="cursor-pointer text-[11px] font-semibold text-emerald-700 dark:text-emerald-100">
+                              Ver texto completo
+                            </summary>
+                            <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-xs text-slate-700 dark:text-white/80">
+                              {notification.listingDescriptionFullText}
+                            </pre>
+                          </details>
+                        ) : null}
                         <button
                           type="button"
                           onClick={() =>
@@ -1946,7 +1956,7 @@ export function PendingInboxClient({
                                 setNotificationActionStatus((current) => ({
                                   ...current,
                                   [notification.id]:
-                                    "Escribe una corrección o usa 'Confirmar datos'.",
+                                    "Escribe el ajuste o usa 'Confirmar datos'.",
                                 }));
                                 return;
                               }
@@ -1956,7 +1966,7 @@ export function PendingInboxClient({
                             }}
                             className="rounded-xl border border-sky-200 px-3 py-2 font-semibold text-sky-700 hover:bg-sky-50 dark:border-sky-300/20 dark:text-sky-100"
                           >
-                            Enviar corrección
+                            Ajustar
                           </button>
                         </div>
                         {notificationActionStatus[notification.id] ? (
