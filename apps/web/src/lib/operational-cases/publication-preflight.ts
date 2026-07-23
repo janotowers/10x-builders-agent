@@ -663,17 +663,46 @@ export function looksLikeUnggaPrepareDraftCommissionFailure(
 }
 
 /**
+ * Ungga prepare_draft media failures (URL download / upload count) before save.
+ * Distinct from form/nav and commission — never label these as "formulario".
+ */
+export function looksLikeUnggaPrepareDraftMediaFailure(
+  error: string | null | undefined,
+  extras?: UnggaPrepareDraftFailureExtras
+): boolean {
+  if (looksLikeUnggaPrepareDraftCommissionFailure(error, extras)) return false;
+  const haystack = unggaPrepareDraftFailureHaystack(error, extras);
+  if (!haystack.trim()) return false;
+  if (
+    typeof extras?.last_step?.step === "string" &&
+    /media_preflight|media_upload|media_download/i.test(extras.last_step.step)
+  ) {
+    return true;
+  }
+  return (
+    haystack.includes("ungga_media_source_unreachable") ||
+    haystack.includes("image download http") ||
+    haystack.includes("media incomplete") ||
+    haystack.includes("image download rejected content-type")
+  );
+}
+
+/**
  * Any Ungga prepare_draft failure before saveAsDraft (safe to retry; no GU-ID).
- * Covers form/navigation failures and commission failures.
+ * Covers media, form/navigation, and commission failures.
  */
 export function looksLikeUnggaPrepareDraftFailure(
   error: string | null | undefined,
   extras?: UnggaPrepareDraftFailureExtras
 ): boolean {
+  if (looksLikeUnggaPrepareDraftMediaFailure(error, extras)) return true;
   if (looksLikeUnggaPrepareDraftCommissionFailure(error, extras)) return true;
   const haystack = unggaPrepareDraftFailureHaystack(error, extras);
   if (!haystack.trim()) return false;
   return (
+    /_not_called\b/i.test(haystack) ||
+    haystack.includes("publication_execution_result_missing") ||
+    haystack.includes("expected_publication_tool_not_executed") ||
     haystack.includes("no listing fields found") ||
     haystack.includes("ungga_cli_publish_path") ||
     haystack.includes("publish path not found") ||
@@ -689,25 +718,48 @@ export function looksLikeUnggaPrepareDraftFailure(
   );
 }
 
+export function resolveUnggaPrepareDraftFailureCause(
+  error: string | null | undefined,
+  extras?: UnggaPrepareDraftFailureExtras & {
+    cause?: "media" | "commission" | "form" | "tool_not_called" | "generic";
+  }
+): "media" | "commission" | "form" | "tool_not_called" {
+  if (
+    extras?.cause === "media" ||
+    extras?.cause === "commission" ||
+    extras?.cause === "form" ||
+    extras?.cause === "tool_not_called"
+  ) {
+    return extras.cause;
+  }
+  const haystack = unggaPrepareDraftFailureHaystack(error, extras);
+  if (
+    /_not_called\b/i.test(haystack) ||
+    haystack.includes("publication_execution_result_missing") ||
+    haystack.includes("expected_publication_tool_not_executed")
+  ) {
+    return "tool_not_called";
+  }
+  if (looksLikeUnggaPrepareDraftCommissionFailure(error, extras)) {
+    return "commission";
+  }
+  if (looksLikeUnggaPrepareDraftMediaFailure(error, extras)) {
+    return "media";
+  }
+  return "form";
+}
+
 export function formatUnggaPrepareDraftFailureNotifyText(extras?: {
-  cause?: "commission" | "form" | "generic";
+  cause?: "media" | "commission" | "form" | "tool_not_called" | "generic";
   commission_expected?: number | null;
   commission_actual?: number | null;
   last_step?: { step?: string; ok?: boolean; error?: string } | null;
   commission_verify?: { error?: string | null; stage?: string | null } | null;
 }): string {
-  const cause =
-    extras?.cause === "commission" || extras?.cause === "form"
-      ? extras.cause
-      : looksLikeUnggaPrepareDraftCommissionFailure(
-            extras?.last_step?.error ?? extras?.commission_verify?.error,
-            {
-              commission_verify: extras?.commission_verify ?? null,
-              last_step: extras?.last_step ?? null,
-            }
-          )
-        ? "commission"
-        : "form";
+  const cause = resolveUnggaPrepareDraftFailureCause(
+    extras?.last_step?.error ?? extras?.commission_verify?.error,
+    extras
+  );
   const expected =
     typeof extras?.commission_expected === "number" &&
     Number.isFinite(extras.commission_expected)
@@ -728,37 +780,51 @@ export function formatUnggaPrepareDraftFailureNotifyText(extras?: {
   const lines =
     cause === "commission"
       ? [
-          `No pude preparar el borrador: no se pudo capturar/verificar la comisión del ${expected}%.`,
+          `No pude publicar en Ungga: no se pudo capturar/verificar la comisión del ${expected}%.`,
           "",
-          "No hubo publicación y el borrador no se guardó en Ungga.",
+          "No se publicó nada y el borrador no se guardó en Ungga.",
           `Comisión observada: ${actual}%.`,
         ]
-      : [
-          "No pude preparar el borrador en Ungga: no se pudo abrir/completar el formulario.",
-          "",
-          "No hubo publicación y el borrador no se guardó en Ungga.",
-        ];
+      : cause === "media"
+        ? [
+            "No pude terminar de publicar en Ungga porque no se pudieron cargar las fotos del anuncio (error temporal al descargar las imágenes).",
+            "",
+            "No se publicó nada y el borrador no se guardó en Ungga.",
+          ]
+        : cause === "tool_not_called"
+          ? [
+              "No pude terminar de publicar en Ungga: el intento no llegó a ejecutar la preparación (la herramienta no se invocó).",
+              "",
+              "No se publicó nada y el borrador no se guardó en Ungga.",
+            ]
+          : [
+              "No pude terminar de publicar en Ungga: no se pudo completar el borrador en el formulario.",
+              "",
+              "No se publicó nada y el borrador no se guardó en Ungga.",
+            ];
   if (detailError) {
-    lines.push(`Detalle: ${detailError}`);
+    lines.push(`(Detalle técnico: ${detailError})`);
   }
   if (
     extras?.last_step &&
     typeof extras.last_step.step === "string" &&
-    extras.last_step.step.trim()
+    extras.last_step.step.trim() &&
+    // Hide ledger-style keys from the realtor-facing body; keep CLI steps.
+    !/^create_draft:|^publish:/i.test(extras.last_step.step)
   ) {
     lines.push(
-      `Último paso: ${extras.last_step.step}${
-        extras.last_step.ok === false ? " (falló)" : ""
-      }.`
+      `(Paso técnico: ${extras.last_step.step}${
+        extras.last_step.ok === false ? " falló" : ""
+      })`
     );
   }
   lines.push(
     "",
-    "Esto ocurrió antes de guardar el borrador (sin GU-ID). Puedes reintentar la preparación.",
+    "Esto ocurrió antes de guardar el borrador (sin publicación en Ungga). Puedes reintentar.",
     "",
     "Usa los botones:",
-    "• Reintentar preparación",
-    "• Pausar publicación"
+    "• Reintentar publicación en Ungga",
+    "• Pausar y avisar a soporte"
   );
   return lines.join("\n");
 }
@@ -810,23 +876,34 @@ export function formatPublicationReviewNotifyText(
   if (credentialFailure) {
     return formatPublicationCredentialFailureNotifyText(destination);
   }
+  const prepareExtras = {
+    commission_verify: extras?.commission_verify ?? null,
+    last_step: extras?.last_step ?? null,
+  };
   const commissionPrepareFailure =
     destination === "ungga" &&
-    looksLikeUnggaPrepareDraftCommissionFailure(extras?.last_step?.error, {
-      commission_verify: extras?.commission_verify ?? null,
-      last_step: extras?.last_step ?? null,
-    });
+    looksLikeUnggaPrepareDraftCommissionFailure(
+      extras?.last_step?.error,
+      prepareExtras
+    );
+  const mediaPrepareFailure =
+    destination === "ungga" &&
+    looksLikeUnggaPrepareDraftMediaFailure(
+      extras?.last_step?.error,
+      prepareExtras
+    );
   const prepareDraftFailure =
     destination === "ungga" &&
     (extras?.prepare_draft_failure === true ||
       commissionPrepareFailure ||
-      looksLikeUnggaPrepareDraftFailure(extras?.last_step?.error, {
-        commission_verify: extras?.commission_verify ?? null,
-        last_step: extras?.last_step ?? null,
-      }));
+      mediaPrepareFailure ||
+      looksLikeUnggaPrepareDraftFailure(extras?.last_step?.error, prepareExtras));
   if (prepareDraftFailure && !extras?.has_draft_artifact && !extras?.ungga_property_id) {
     return formatUnggaPrepareDraftFailureNotifyText({
-      cause: commissionPrepareFailure ? "commission" : "form",
+      cause: resolveUnggaPrepareDraftFailureCause(
+        extras?.last_step?.error,
+        prepareExtras
+      ),
       commission_expected: extras?.commission_expected,
       commission_actual: extras?.commission_actual,
       last_step: extras?.last_step,
@@ -894,12 +971,12 @@ export function formatPublicationReviewNotifyText(
     "",
     "Usa los botones:",
     prepareDraftFailure && !extras?.has_draft_artifact && !extras?.ungga_property_id
-      ? "- Reintentar preparación"
+      ? "- Reintentar publicación en Ungga"
       : extras?.has_draft_artifact || extras?.ungga_property_id
         ? "- Aprobar y continuar (solo si confirmaste el borrador existente; no recreará si ya hay GU-ID)"
         : "- Aprobar y continuar (autoriza reintento de create si no hay artifact)",
     ...(prepareDraftFailure && !extras?.has_draft_artifact && !extras?.ungga_property_id
-      ? ["- Pausar publicación"]
+      ? ["- Pausar y avisar a soporte"]
       : ["- Corregir etiquetas/datos", "- Detener y revisar"])
   );
   return lines.join("\n");

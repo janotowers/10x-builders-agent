@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  formatAlreadyAppliedDestinationAck,
   formatPublishDestinationDecisionAck,
   isEasybrokerPublishedInContext,
   parsePublishDestinationApprovalDecision,
@@ -12,6 +13,13 @@ assert.equal(
     decision: "approved",
   }),
   "Publicación en EasyBroker aprobada. Sigo con la publicación…"
+);
+assert.match(
+  formatAlreadyAppliedDestinationAck({
+    destination: "ungga",
+    decision: "approved",
+  }),
+  /ya estaba aprobada.*Reintentar publicación en Ungga/s
 );
 assert.ok(
   formatPublishDestinationDecisionAck({

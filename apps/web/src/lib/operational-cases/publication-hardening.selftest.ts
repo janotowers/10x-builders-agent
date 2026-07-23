@@ -4,12 +4,17 @@ import {
   easyBrokerSnapshot,
 } from "./publication-remote-snapshot";
 import { resolvePublicationRolloutMode } from "./publication-rollout";
-import { buildPublicationPersistenceContext, applyProcessMediaPublicationEvents } from "./publication-runner";
+import {
+  buildPublicationPersistenceContext,
+  applyProcessMediaPublicationEvents,
+  inferUnggaPrepareCliStep,
+} from "./publication-runner";
 import { classifyPublicationExecutionFromToolCalls } from "./run-settings-test-case-tick";
 import {
   applyPublicationEvent,
   emptyPublicationState,
   nextPublicationAction,
+  publicationFromContext,
   type PublicationMachineAction,
 } from "./publication-workflow";
 
@@ -234,5 +239,58 @@ const verifiedInline = applyProcessMediaPublicationEvents(mediaState, "easybroke
 });
 assert.equal(verifiedInline.destinations.easybroker.media.verified, true);
 assert.equal(nextPublicationAction(verifiedInline).type, "validate");
+
+assert.equal(
+  inferUnggaPrepareCliStep(
+    "ungga_media_source_unreachable: image download HTTP 404 for index 0"
+  ),
+  "media_preflight"
+);
+assert.equal(
+  inferUnggaPrepareCliStep(
+    "Media incomplete: expected 6 photos, observed 0 (cause: image download HTTP 404 for index 0)"
+  ),
+  "media_upload"
+);
+assert.equal(
+  inferUnggaPrepareCliStep("timeout", "create_draft:ungga:new"),
+  "prepare_draft",
+  "ledger operation_key must not be used as CLI step"
+);
+assert.equal(
+  inferUnggaPrepareCliStep("timeout", "media_preflight"),
+  "media_preflight"
+);
+
+{
+  let publication = emptyPublicationState();
+  publication = applyPublicationEvent(publication, {
+    type: "approval_decided",
+    destination: "easybroker",
+    approval: "skipped",
+  });
+  publication = applyPublicationEvent(publication, {
+    type: "approval_decided",
+    destination: "ungga",
+    approval: "approved",
+  });
+  publication = {
+    ...publication,
+    destinations: {
+      ...publication.destinations,
+      ungga: {
+        ...publication.destinations.ungga,
+        phase: "draft_pending",
+        prepare_auto_retries_used: 1,
+        last_error: "ungga_media_source_unreachable: image download HTTP 404 for index 0",
+      },
+    },
+  };
+  const roundTrip = publicationFromContext({
+    ...buildPublicationPersistenceContext({}, publication),
+  });
+  assert.equal(roundTrip.destinations.ungga.prepare_auto_retries_used, 1);
+  assert.equal(nextPublicationAction(roundTrip).type, "create_draft");
+}
 
 console.log("publication-hardening.selftest: ok");

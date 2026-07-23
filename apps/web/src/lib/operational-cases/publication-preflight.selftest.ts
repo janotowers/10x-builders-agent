@@ -7,6 +7,7 @@ import {
   looksLikePublicationCredentialAuthFailure,
   looksLikeUnggaPrepareDraftCommissionFailure,
   looksLikeUnggaPrepareDraftFailure,
+  looksLikeUnggaPrepareDraftMediaFailure,
   runPublicationPreflight,
 } from "./publication-preflight";
 
@@ -346,6 +347,30 @@ assert.equal(
   looksLikeUnggaPrepareDraftFailure("commission_input_not_filled"),
   true
 );
+assert.equal(
+  looksLikeUnggaPrepareDraftMediaFailure(
+    "ungga_media_source_unreachable: image download HTTP 404 for index 0",
+    { last_step: { step: "media_preflight", error: "image download HTTP 404 for index 0" } }
+  ),
+  true
+);
+assert.equal(
+  looksLikeUnggaPrepareDraftMediaFailure(
+    "Media incomplete: expected 6 photos, observed 0 (cause: image download HTTP 404 for index 0)"
+  ),
+  true
+);
+assert.equal(
+  looksLikeUnggaPrepareDraftMediaFailure("No listing fields found at /app/propiedades"),
+  false
+);
+assert.equal(
+  looksLikeUnggaPrepareDraftFailure(
+    "ungga_media_source_unreachable: image download HTTP 404 for index 0",
+    { last_step: { step: "media_preflight", error: "image download HTTP 404 for index 0" } }
+  ),
+  true
+);
 const prepareFailText = formatUnggaPrepareDraftFailureNotifyText({
   cause: "commission",
   commission_expected: 4,
@@ -353,10 +378,10 @@ const prepareFailText = formatUnggaPrepareDraftFailureNotifyText({
   last_step: { step: "verify_commission", ok: false, error: "commission_input_not_filled" },
   commission_verify: { error: "commission_input_not_filled", stage: "fill_input" },
 });
-assert.ok(prepareFailText.includes("No pude preparar el borrador"));
+assert.ok(prepareFailText.includes("No pude publicar en Ungga"));
 assert.ok(prepareFailText.includes("comisión del 4%"));
-assert.ok(prepareFailText.includes("Reintentar preparación"));
-assert.ok(prepareFailText.includes("Pausar publicación"));
+assert.ok(prepareFailText.includes("Reintentar publicación en Ungga"));
+assert.ok(prepareFailText.includes("Pausar y avisar a soporte"));
 assert.ok(!prepareFailText.includes("Corregir etiquetas"));
 assert.ok(!prepareFailText.includes("No hay GU-ID de borrador"));
 const formFailText = formatUnggaPrepareDraftFailureNotifyText({
@@ -368,11 +393,24 @@ const formFailText = formatUnggaPrepareDraftFailureNotifyText({
       "No listing fields found at https://ungga.com/app/propiedades. Adjust UNGGA_CLI_PUBLISH_PATH/selectors.",
   },
 });
-assert.ok(formFailText.includes("no se pudo abrir/completar el formulario"));
+assert.ok(formFailText.includes("no se pudo completar el borrador en el formulario"));
 assert.ok(formFailText.includes("No listing fields found"));
-assert.ok(formFailText.includes("Reintentar preparación"));
+assert.ok(formFailText.includes("Reintentar publicación en Ungga"));
 assert.ok(!formFailText.includes("comisión del"));
 assert.ok(!formFailText.includes("Comisión observada"));
+const mediaFailText = formatUnggaPrepareDraftFailureNotifyText({
+  cause: "media",
+  last_step: {
+    step: "media_preflight",
+    ok: false,
+    error: "ungga_media_source_unreachable: image download HTTP 404 for index 0",
+  },
+});
+assert.ok(mediaFailText.includes("no se pudieron cargar las fotos"));
+assert.ok(mediaFailText.includes("Detalle técnico"));
+assert.ok(mediaFailText.includes("HTTP 404"));
+assert.ok(!mediaFailText.includes("formulario"));
+assert.ok(mediaFailText.includes("Reintentar publicación en Ungga"));
 const prepareViaReview = formatPublicationReviewNotifyText(
   "ungga",
   {
@@ -407,11 +445,11 @@ const prepareViaReview = formatPublicationReviewNotifyText(
     commission_verify: { error: "commission_input_not_filled" },
   }
 );
-assert.ok(prepareViaReview.includes("No pude preparar el borrador"));
+assert.ok(prepareViaReview.includes("No pude publicar en Ungga"));
 assert.ok(prepareViaReview.includes("comisión del 4%"));
 assert.ok(!prepareViaReview.includes("No hay GU-ID de borrador"));
 assert.ok(!prepareViaReview.includes("fotos esperadas"));
-assert.ok(prepareViaReview.includes("Reintentar preparación"));
+assert.ok(prepareViaReview.includes("Reintentar publicación en Ungga"));
 const formViaReview = formatPublicationReviewNotifyText(
   "ungga",
   {
@@ -438,9 +476,47 @@ const formViaReview = formatPublicationReviewNotifyText(
     },
   }
 );
-assert.ok(formViaReview.includes("no se pudo abrir/completar el formulario"));
+assert.ok(formViaReview.includes("no se pudo completar el borrador en el formulario"));
 assert.ok(formViaReview.includes("No listing fields found"));
 assert.ok(!formViaReview.includes("comisión del"));
-assert.ok(formViaReview.includes("Reintentar preparación"));
+assert.ok(formViaReview.includes("Reintentar publicación en Ungga"));
+const mediaViaReview = formatPublicationReviewNotifyText(
+  "ungga",
+  {
+    status: "review_required",
+    summary: "Fallo prepare_draft (formulario)",
+    issues: [
+      {
+        code: "ungga_prepare_draft_failed",
+        field: "prepare_draft",
+        severity: "critical",
+        message: "No se pudo abrir/completar el formulario.",
+      },
+    ],
+  },
+  {
+    prepare_draft_failure: true,
+    has_draft_artifact: false,
+    ungga_property_id: null,
+    last_step: {
+      step: "media_preflight",
+      ok: false,
+      error: "ungga_media_source_unreachable: image download HTTP 404 for index 0",
+    },
+  }
+);
+assert.ok(mediaViaReview.includes("no se pudieron cargar las fotos"));
+assert.ok(!mediaViaReview.includes("abrir/completar el formulario"));
+assert.ok(mediaViaReview.includes("Reintentar publicación en Ungga"));
+const notCalledText = formatUnggaPrepareDraftFailureNotifyText({
+  last_step: {
+    step: "prepare_draft",
+    ok: false,
+    error: "ungga_publish_listing_not_called",
+  },
+});
+assert.ok(notCalledText.includes("la herramienta no se invocó"));
+assert.ok(!notCalledText.includes("formulario"));
+assert.ok(notCalledText.includes("Reintentar publicación en Ungga"));
 
 console.log("publication-preflight.selftest: ok");

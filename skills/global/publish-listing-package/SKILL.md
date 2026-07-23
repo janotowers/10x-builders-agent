@@ -134,14 +134,26 @@ Producir y entregar:
 
 9. **Ungga (dos fases)**:
    - Solo tras EasyBroker remotamente publicado u omisión explícita.
-   - `ungga_publish_listing(action=prepare_draft, case_id)` (omitir strings vacíos).
-     `commission_pct` llena **Comisión (%)** en el modal Operación; el %
-     opcional al colaborador no se envía a Ungga.
+   - `ungga_publish_listing(action=prepare_draft, case_id)` — pasa **solo**
+     `action` + `case_id` (omitir strings vacíos). El adapter enriquece título,
+     precio, comisión e `image_urls` desde el caso / `photo_manifest`; **no**
+     copies ni inventes URLs de fotos.
+     `commission_pct` (desde el caso) llena **Comisión (%)** en el modal
+     Operación; el % opcional al colaborador no se envía a Ungga.
    - Preflight condicional sobre el draft (GU-ID real, no dry-run).
    - Si pass → `ungga_publish_listing(action=publish_draft, ungga_property_id)`.
    - Timeout/kill → `unknown_outcome` (ledger + revisión); nunca auto-reintentar
      `prepare_draft`.
    - Nunca `publish_draft` sin GU-ID persistido.
+   - Si `publish_draft` falla como `open_modal_guid_mismatch` o botón
+     PUBLICAR deshabilitado (error `ungga_publish_button_disabled:*`), son
+     fallos **pre-side-effect** (no se publicó nada): reintenta
+     `ungga_publish_listing(action=publish_draft, ungga_property_id)` (retry
+     seguro) o detente y espera revisión humana / reconciliación. **Nunca**
+     intentes "arreglar" el estado con `operational_case_update_state` sobre
+     `publication`/`published`/`publish_approvals`/`photo_manifest`: el runner
+     los rechaza (`protected_context_keys`) y repetir ese update_state solo
+     genera un loop.
 
    La orquestación entra **solo** por el publication runner
    (`requestPublicationProgress`) con modo explícito `off|shadow|active`
@@ -167,7 +179,14 @@ Producir y entregar:
 - Publicar sin `listing_description_approved`.
 - Afirmar mobiliario/equipamiento movible por evidencia fotográfica sola
   (venta o renta) sin confirmación explícita del asesor.
-- Automatizar con Playwright contra portales externos (ver
-  docs/operational-cases/future-considerations.md sección 4).
+- Inventar automatizaciones Playwright ad hoc contra portales externos
+  (Inmuebles24, etc.). Excepciones soportadas con adaptadores oficiales,
+  credenciales y guardrails: Ungga CLI (`ungga_publish_listing`) y EasyBroker
+  MLS (`easybroker_search_listings` / `easybroker_search_closed_deals`). Ver
+  docs/operational-cases/future-considerations.md sección 4.
 - Marcar `completed` antes de tener al menos UN destino publicado o
   paquete manual entregado.
+- Reintentar `operational_case_update_state` con claves protegidas
+  (`publication`, `published`, `publish_approvals`, `photo_manifest`) tras un
+  fallo de publicación. Reintenta la herramienta de publicación (retry seguro)
+  o espera revisión humana; el runner es dueño de ese estado.

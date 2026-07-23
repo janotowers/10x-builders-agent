@@ -228,8 +228,13 @@ async function maybeRunDeferredPublishDestinationTick(
     typeof (deferred as { source?: unknown }).source === "string"
       ? (deferred as { source: string }).source
       : "publish_destination_easybroker_approved";
+  const forceRetryFailedOperation =
+    (deferred as { forceRetryFailedOperation?: unknown }).forceRetryFailedOperation ===
+    true;
   try {
-    await runDeferredPublishDestinationControlledE2ETick(db, caseId, source);
+    await runDeferredPublishDestinationControlledE2ETick(db, caseId, source, {
+      forceRetryFailedOperation,
+    });
   } catch (tickError) {
     console.error(
       "[telegram-webhook] deferred publish-destination tick failed:",

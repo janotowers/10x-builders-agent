@@ -1213,6 +1213,7 @@ function buildCaseE2ETickMessage(
       : {};
   const explicitDocumentRequestTarget =
     operationalCaseDocumentRequestTargetFromContext(context);
+  const forceInstruction = options?.ownerResponseText?.trim() ?? "";
   if (
     shouldProcessOwnerResponseAsDocumentsReplyForTest({
       currentStep: opCase.current_step,
@@ -1470,7 +1471,7 @@ function buildCaseE2ETickMessage(
               (!unggaDecision || unggaDecision === "pending")
                 ? "Solo ahora (EasyBroker ya publicado remotamente, skipped o rejected): si Ungga aún no tiene decisión y ya subiste fotos (o no hay fotos), envía notify_user(kind=ungga_publish_approval)."
                 : !runnerHint && unggaDecision === "approved"
-                  ? "PUBLICATION: publish_approvals.ungga=approved. Si aún no hay ungga_property_id, llama ungga_publish_listing(action=prepare_draft, case_id) UNA vez (omitir strings vacíos). NO uses publish_draft hasta tener GU-ID y preflight pass. Si el runner indica publish, usa action=publish_draft con ungga_property_id del contexto."
+                  ? "PUBLICATION: publish_approvals.ungga=approved. Si aún no hay ungga_property_id, llama ungga_publish_listing({ action: \"prepare_draft\", case_id }) UNA vez — SOLO action+case_id (sin image_urls). NO uses publish_draft hasta tener GU-ID y preflight pass. Si el runner indica publish, usa action=publish_draft con ungga_property_id del contexto."
                   : !runnerHint
                     ? "NO solicites Ungga hasta que EasyBroker esté publicado remotamente (phase=published) o quede skipped/rejected."
                     : "",
@@ -1515,7 +1516,10 @@ function buildCaseE2ETickMessage(
           ].join(" ");
         })()
       : "",
-  ].join(" ");
+    forceInstruction,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export type SettingsTestCaseTickResult = {
@@ -1552,18 +1556,53 @@ export function createPublicationRunnerOwnedAgentTick(
   action: PublicationMachineAction
 ) => Promise<PublicationExecutionResult> {
   return async (opCase, action) => {
-    const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
-      ...options,
-      source: `${sourcePrefix}:${action.type}`,
-      skipLock: true,
-      publicationRunnerOwned: true,
-    });
-    return (
-      tick.publication_execution ?? {
-        status: "not_executed",
-        error: "publication_execution_result_missing",
-      }
-    );
+    const toolName = publicationToolForAction(action);
+    const runOnce = async (ownerResponseText?: string) => {
+      const tick = await runSettingsTestCaseAgentTick(db, opCase, userId, {
+        ...options,
+        source: `${sourcePrefix}:${action.type}`,
+        skipLock: true,
+        publicationRunnerOwned: true,
+        ...(ownerResponseText?.trim()
+          ? { ownerResponseText: ownerResponseText.trim() }
+          : {}),
+      });
+      return (
+        tick.publication_execution ?? {
+          status: "not_executed" as const,
+          error: "publication_execution_result_missing",
+        }
+      );
+    };
+
+    let execution = await runOnce();
+    // Models sometimes "complete" by narrating a prior media/form failure without
+    // calling the publication tool (~few seconds). Retry once with an explicit
+    // force-call instruction before the runner marks *_not_called.
+    if (
+      execution.status === "not_executed" &&
+      typeof execution.error === "string" &&
+      (execution.error.endsWith("_not_called") ||
+        execution.error === "publication_execution_result_missing")
+    ) {
+      console.warn(
+        `[publication-runner] ${execution.error} after first tick; retrying once to force ${toolName ?? "publication tool"}`
+      );
+      const fresh = await getOperationalCase(db, opCase.id);
+      if (fresh) opCase = fresh;
+      execution = await runOnce(
+        [
+          "REINTENTO OBLIGATORIO DEL PUBLICATION RUNNER.",
+          toolName
+            ? `En este turno DEBES llamar ${toolName} ahora (no es opcional).`
+            : "En este turno DEBES llamar la herramienta de publicación ahora.",
+          "NO resumas ni reutilices fallos de turnos anteriores.",
+          "NO digas que falló media/formulario si no acabas de ejecutar la tool en ESTE turno.",
+          "Si no llamas la tool, el caso queda bloqueado.",
+        ].join(" ")
+      );
+    }
+    return execution;
   };
 }
 

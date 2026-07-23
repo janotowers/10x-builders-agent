@@ -174,7 +174,8 @@ try {
   const fixture = await readFixture();
   let filledFields = null;
   if (fixture) {
-    filledFields = await fillGeneralTab(session.page, fixture);
+    const general = await fillGeneralTab(session.page, fixture);
+    filledFields = general?.filled ?? general;
     await session.page.waitForTimeout(500);
     tabs.GENERAL_FILLED = await dumpFields(session.page);
   }

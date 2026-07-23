@@ -37,6 +37,8 @@ import {
   looksLikePublicationCredentialAuthFailure,
   looksLikeUnggaPrepareDraftCommissionFailure,
   looksLikeUnggaPrepareDraftFailure,
+  looksLikeUnggaPrepareDraftMediaFailure,
+  resolveUnggaPrepareDraftFailureCause,
   runPublicationPreflight,
   type PreflightResult,
 } from "@/lib/operational-cases/publication-preflight";
@@ -122,6 +124,39 @@ function stringResult(
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
+}
+
+/** Infer CLI diagnostic step from error text (not ledger operation_key). */
+export function inferUnggaPrepareCliStep(
+  errorText: string | null | undefined,
+  resultLastStep?: string | null
+): string {
+  if (typeof resultLastStep === "string" && resultLastStep.trim()) {
+    const step = resultLastStep.trim();
+    // Reject ledger-style keys if they leaked into last_step.
+    if (!/^create_draft:|^publish:|^process_media:/i.test(step)) {
+      return step;
+    }
+  }
+  const error = typeof errorText === "string" ? errorText.toLowerCase() : "";
+  if (!error) return "prepare_draft";
+  if (
+    error.includes("ungga_media_source_unreachable") ||
+    error.includes("media_preflight")
+  ) {
+    return "media_preflight";
+  }
+  if (
+    error.includes("media incomplete") ||
+    error.includes("image download") ||
+    error.includes("media_upload")
+  ) {
+    return "media_upload";
+  }
+  if (error.includes("commission") || error.includes("comisi")) {
+    return "verify_commission";
+  }
+  return "prepare_draft";
 }
 
 /**
@@ -385,9 +420,13 @@ async function requestConditionalReview(
   const hasDraftArtifact = Boolean(
     dest.artifact.listing_id || dest.artifact.ungga_property_id
   );
+  // Classify from the CLI/error text — never use ledger operation_key
+  // (create_draft:ungga:new) as last_step.step; that broke prepare_draft_failure
+  // metadata and showed the wrong Telegram CTA.
+  const cliStep = inferUnggaPrepareCliStep(lastErrorText);
   const prepareDraftExtras = {
     last_step: lastErrorText
-      ? { step: dest.operation_key ?? "prepare_draft", error: lastErrorText }
+      ? { step: cliStep, error: lastErrorText }
       : null,
   };
   const commissionPrepareFailure =
@@ -397,29 +436,23 @@ async function requestConditionalReview(
       lastErrorText,
       prepareDraftExtras
     );
+  const mediaPrepareFailure =
+    destination === "ungga" &&
+    !hasDraftArtifact &&
+    looksLikeUnggaPrepareDraftMediaFailure(lastErrorText, prepareDraftExtras);
   const prepareDraftFailure =
     destination === "ungga" &&
     !hasDraftArtifact &&
     (commissionPrepareFailure ||
+      mediaPrepareFailure ||
       looksLikeUnggaPrepareDraftFailure(lastErrorText, prepareDraftExtras));
-  const lastStep =
-    typeof dest.operation_key === "string"
-      ? {
-          step: dest.operation_key,
-          ok: false as const,
-          error: lastErrorText ?? dest.review_reason ?? undefined,
-        }
-      : lastErrorText
-        ? {
-            step: commissionPrepareFailure
-              ? "verify_commission"
-              : prepareDraftFailure
-                ? "prepare_draft"
-                : "publication",
-            ok: false as const,
-            error: lastErrorText,
-          }
-        : null;
+  const lastStep = lastErrorText
+    ? {
+        step: cliStep,
+        ok: false as const,
+        error: lastErrorText,
+      }
+    : null;
   const commissionMatch = lastErrorText?.match(
     /expected\s+(\d+(?:\.\d+)?)%/i
   );
@@ -1992,14 +2025,16 @@ export async function requestPublicationProgress(
         action.destination === "ungga" &&
         action.type === "create_draft"
       ) {
+        const resultLastStep =
+          typeof result.last_step === "object" &&
+          result.last_step &&
+          typeof (result.last_step as { step?: unknown }).step === "string"
+            ? String((result.last_step as { step: string }).step)
+            : null;
+        const cliStep = inferUnggaPrepareCliStep(errorText, resultLastStep);
         const prepareExtras = {
           last_step: {
-            step:
-              typeof result.last_step === "object" &&
-              result.last_step &&
-              typeof (result.last_step as { step?: unknown }).step === "string"
-                ? String((result.last_step as { step: string }).step)
-                : "prepare_draft",
+            step: cliStep,
             error: errorText,
           },
           commission_verify:
@@ -2015,6 +2050,116 @@ export async function requestPublicationProgress(
               ? result.commission_verified
               : undefined,
         };
+        const expectedCount =
+          typeof result.expected_image_count === "number"
+            ? result.expected_image_count
+            : publication.destinations.ungga.media.expected_count;
+        const uploadedCount =
+          typeof result.uploaded_image_count === "number"
+            ? result.uploaded_image_count
+            : typeof result.image_count === "number"
+              ? result.image_count
+              : null;
+
+        // Project media counts so HITL does not show "observadas ?"
+        if (
+          typeof expectedCount === "number" ||
+          typeof uploadedCount === "number"
+        ) {
+          const destNow = publication.destinations.ungga;
+          publication = {
+            ...publication,
+            destinations: {
+              ...publication.destinations,
+              ungga: {
+                ...destNow,
+                media: {
+                  ...destNow.media,
+                  expected_count:
+                    typeof expectedCount === "number" && expectedCount > 0
+                      ? expectedCount
+                      : destNow.media.expected_count,
+                  remote_count:
+                    typeof uploadedCount === "number"
+                      ? uploadedCount
+                      : destNow.media.remote_count,
+                },
+                updated_at: new Date().toISOString(),
+              },
+            },
+          };
+          const projected = await persistPublication(db, opCase, publication);
+          if (projected) opCase = projected;
+        }
+
+        const mediaPrepareFailure = looksLikeUnggaPrepareDraftMediaFailure(
+          errorText,
+          prepareExtras
+        );
+        const destAfterFail = publication.destinations.ungga;
+        const autoRetriesUsed =
+          typeof destAfterFail.prepare_auto_retries_used === "number"
+            ? destAfterFail.prepare_auto_retries_used
+            : 0;
+        if (mediaPrepareFailure && autoRetriesUsed < 1) {
+          publication = {
+            ...publication,
+            destinations: {
+              ...publication.destinations,
+              ungga: {
+                ...destAfterFail,
+                phase: "draft_pending",
+                operation_key: null,
+                review_reason: null,
+                prepare_auto_retries_used: autoRetriesUsed + 1,
+                last_error: errorText,
+                updated_at: new Date().toISOString(),
+              },
+            },
+          };
+          const resumeAt = new Date(Date.now() + 20_000).toISOString();
+          const contextNow = isRecord(opCase.context_jsonb)
+            ? opCase.context_jsonb
+            : {};
+          const scheduled = await updateOperationalCase(
+            db,
+            opCase.id,
+            opCase.version,
+            {
+              status: "active",
+              nextActionAt: resumeAt,
+              context: {
+                ...contextNow,
+                ...buildPublicationContextPatch(publication),
+                package_ready_machine_work_in_flight: false,
+                publication_runner_pending_action: null,
+              },
+            }
+          );
+          if (scheduled) opCase = scheduled;
+          await insertOperationalCaseEvent(db, {
+            caseId: opCase.id,
+            eventType: "state_changed",
+            actor: "system",
+            stepKey: "package_ready",
+            payload: {
+              kind: "ungga_prepare_draft_auto_retry",
+              destination: "ungga",
+              cause: errorText,
+              attempt: autoRetriesUsed + 1,
+              resume_at: resumeAt,
+            },
+          });
+          return {
+            ok: true,
+            status: "waiting_remote",
+            actions_run: actionsRun,
+            next_action: { type: "create_draft", destination: "ungga" },
+            publication,
+            message: "ungga_prepare_draft_media_auto_retry",
+          };
+        }
+
         if (
           looksLikeUnggaPrepareDraftCommissionFailure(errorText, prepareExtras)
         ) {
@@ -2026,28 +2171,54 @@ export async function requestPublicationProgress(
                 field: "commission_pct",
                 severity: "critical",
                 message:
-                  "No se pudo capturar/verificar la comisión antes de guardar el borrador Ungga.",
+                  "No se pudo capturar/verificar la comisión pactada antes de guardar el borrador en Ungga.",
               },
             ],
             summary:
-              "Fallo conocido de prepare_draft (comisión); reintento seguro disponible.",
+              "No se pudo publicar en Ungga (comisión); puedes reintentar de forma segura.",
           });
-        } else if (
-          looksLikeUnggaPrepareDraftFailure(errorText, prepareExtras)
-        ) {
+        } else if (mediaPrepareFailure) {
           await requestConditionalReview(db, opCase, action.destination, {
             status: "review_required",
             issues: [
               {
-                code: "ungga_prepare_draft_failed",
-                field: "prepare_draft",
+                code: "ungga_prepare_draft_media_failed",
+                field: "media",
                 severity: "critical",
                 message:
-                  "No se pudo abrir/completar el formulario de Ungga antes de guardar el borrador.",
+                  "No se pudieron cargar las fotos del anuncio en Ungga antes de guardar el borrador.",
               },
             ],
             summary:
-              "Fallo conocido de prepare_draft (formulario); reintento seguro disponible.",
+              "No se pudieron cargar las fotos en Ungga; puedes reintentar la publicación de forma segura.",
+          });
+        } else if (
+          looksLikeUnggaPrepareDraftFailure(errorText, prepareExtras)
+        ) {
+          const cause = resolveUnggaPrepareDraftFailureCause(
+            errorText,
+            prepareExtras
+          );
+          await requestConditionalReview(db, opCase, action.destination, {
+            status: "review_required",
+            issues: [
+              {
+                code:
+                  cause === "media"
+                    ? "ungga_prepare_draft_media_failed"
+                    : "ungga_prepare_draft_failed",
+                field: cause === "media" ? "media" : "prepare_draft",
+                severity: "critical",
+                message:
+                  cause === "media"
+                    ? "No se pudieron cargar las fotos del anuncio en Ungga antes de guardar el borrador."
+                    : "No se pudo completar el borrador en Ungga antes de guardarlo.",
+              },
+            ],
+            summary:
+              cause === "media"
+                ? "No se pudieron cargar las fotos en Ungga; puedes reintentar la publicación de forma segura."
+                : "No se pudo completar el borrador en Ungga; puedes reintentar la publicación de forma segura.",
           });
         }
       }
@@ -2229,11 +2400,13 @@ export function buildPublicationAgentHint(
   if (action.type === "create_draft" && destination === "ungga") {
     return [
       "PUBLICATION RUNNER: prepara borrador Ungga.",
-      "Llama ungga_publish_listing(action=prepare_draft, case_id) UNA vez.",
+      "OBLIGATORIO: llama ungga_publish_listing({ action: \"prepare_draft\", case_id }) UNA vez en ESTE turno.",
+      "Pasa SOLO action + case_id. NO pases image_urls, title ni price; el adapter los deriva del caso.",
       "NO uses publish_draft.",
+      "NO narres fallos previos de media/formulario sin haber ejecutado la tool ahora.",
       urls.length
-        ? `Incluye image_urls del manifest: ${JSON.stringify(urls)}.`
-        : "Si no hay image_urls públicas, el adapter debe enriquecerlas o fallar claramente.",
+        ? `El caso ya tiene ${urls.length} public_url en photo_manifest (el adapter las usa).`
+        : "Si faltan public_url en photo_manifest, el adapter fallará con hint claro.",
       "Omite strings vacíos.",
     ].join(" ");
   }

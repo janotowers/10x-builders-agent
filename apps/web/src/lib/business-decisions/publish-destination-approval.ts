@@ -19,6 +19,11 @@ import {
   publicationFromContext,
 } from "@/lib/operational-cases/publication-workflow";
 import { requestPublicationProgress } from "@/lib/operational-cases/publication-runner";
+import {
+  forceRetryPublicationResetPhase,
+  publicationReviewContinueGuidance,
+  shouldForceRetryPublicationCreateAfterReview,
+} from "@/lib/business-decisions/publication-review";
 
 type PublishDestinationIntent = "approve" | "reject" | "skip" | "unclear";
 
@@ -58,6 +63,22 @@ export function formatPublishDestinationDecisionAck(params: {
     return `Publicación en ${label} rechazada; el caso queda en revisión interna.`;
   }
   return `Decisión de publicación en ${label} registrada.`;
+}
+
+/** Ack when the user re-taps an already-decided destination approval button. */
+export function formatAlreadyAppliedDestinationAck(params: {
+  destination: string;
+  decision: "approved" | "skipped" | "rejected" | string;
+}): string {
+  const label = publishDestinationDisplayName(params.destination);
+  if (params.decision === "approved") {
+    return (
+      `La publicación en ${label} ya estaba aprobada. ` +
+      `Si falló al preparar el borrador, usa «Reintentar publicación en ${label}» ` +
+      `del mensaje de revisión (no el botón «Publicar en ${label}» anterior).`
+    );
+  }
+  return `Destino ${label} ya estaba ${params.decision}.`;
 }
 
 function destinationFromNotificationKind(kind: string):
@@ -258,13 +279,15 @@ function shouldRunPublishDestinationAgentTick(opCase: {
 async function triggerControlledE2EAgentTick(
   db: DbClient,
   updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
-  source: string
+  source: string,
+  options?: { forceRetryFailedOperation?: boolean }
 ) {
   const { createPublicationRunnerOwnedAgentTick } = await import(
     "@/lib/operational-cases/run-settings-test-case-tick"
   );
   // Prefer serialized publication runner; it may delegate to the agent tick.
   await requestPublicationProgress(db, updated.id, source, {
+    forceRetryFailedOperation: options?.forceRetryFailedOperation === true,
     runAgentTick: createPublicationRunnerOwnedAgentTick(
       db,
       updated.user_id,
@@ -280,11 +303,12 @@ async function triggerControlledE2EAgentTick(
 export async function runDeferredPublishDestinationControlledE2ETick(
   db: DbClient,
   caseId: string,
-  source: string
+  source: string,
+  options?: { forceRetryFailedOperation?: boolean }
 ): Promise<void> {
   const opCase = await getOperationalCase(db, caseId);
   if (!opCase) return;
-  await triggerControlledE2EAgentTick(db, opCase, source);
+  await triggerControlledE2EAgentTick(db, opCase, source, options);
 }
 
 export async function handlePublishDestinationApprovalDecision(
@@ -337,20 +361,130 @@ export async function handlePublishDestinationApprovalDecision(
         ? "skipped"
         : "rejected";
 
-  // Idempotency: if destination already decided the same way, no-op.
+  // Idempotency: if destination already decided the same way, normally no-op.
+  // Exception: stale "Publicar en Ungga/EasyBroker" after a failed prepare —
+  // treat re-approve as force-retry so the old Telegram button still unblocks.
   if (destination !== "manual") {
-    const existingApproval =
-      publication.destinations[
-        destination as "easybroker" | "ungga"
-      ]?.approval;
+    const destKey = destination as "easybroker" | "ungga";
+    const existingApproval = publication.destinations[destKey]?.approval;
     if (existingApproval === nextState) {
+      const canForceRetry =
+        nextState === "approved" &&
+        shouldForceRetryPublicationCreateAfterReview({
+          destination: destKey,
+          publication,
+          lastError: publication.destinations[destKey].last_error,
+        });
+      if (!canForceRetry) {
+        return {
+          ok: true,
+          status: "already_applied",
+          message: formatAlreadyAppliedDestinationAck({
+            destination,
+            decision: nextState,
+          }),
+          destination,
+          case_id: opCase.id,
+          deferredControlledE2ETick: null,
+        };
+      }
+
+      await claimUnreadInternalNotification(db, {
+        id: notification.id,
+        userId: params.userId,
+        status: "actioned",
+      }).catch(() => null);
+      await resolveInternalNotificationWithReminders(db, {
+        id: notification.id,
+        userId: params.userId,
+        status: "actioned",
+      }).catch(() => null);
+      await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+        userId: params.userId,
+        caseId: opCase.id,
+        kind: "publication_review_required",
+        status: "actioned",
+      }).catch(() => null);
+
+      const dest = publication.destinations[destKey];
+      const resetPhase = forceRetryPublicationResetPhase({
+        destination: destKey,
+        publication,
+        lastError: dest.last_error,
+      });
+      const nowIso = new Date().toISOString();
+      const nextPublication = {
+        ...publication,
+        destinations: {
+          ...publication.destinations,
+          [destKey]: {
+            ...dest,
+            phase: resetPhase,
+            last_error: null,
+            review_reason: null,
+            preflight: resetPhase === "publish_pending" ? "pass" : null,
+            operation_key: null,
+            updated_at: nowIso,
+          },
+        },
+      };
+      const publicationPatch = buildPublicationContextPatch(nextPublication);
+      const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+        status: "active",
+        currentStep: opCase.current_step ?? "package_ready",
+        nextActionAt: nowIso,
+        context: {
+          ...context,
+          ...publicationPatch,
+        },
+      });
+      if (!updated) {
+        return {
+          ok: false,
+          status: "version_conflict",
+          message: "El caso cambió; intenta de nuevo.",
+        };
+      }
+      await insertOperationalCaseEvent(db, {
+        caseId: opCase.id,
+        eventType: "human_decision",
+        actor: "user",
+        stepKey: "package_ready",
+        payload: {
+          kind: "publish_destination_reapprove_force_retry",
+          destination: destKey,
+          reset_phase: resetPhase,
+          decided_at: nowIso,
+        },
+      });
+
+      const runAgentTick = shouldRunPublishDestinationAgentTick(opCase);
+      const tickSource = `publish_destination_${destKey}_reapprove_force_retry`;
+      const deferTick = runAgentTick && params.deferControlledE2ETick === true;
+      if (runAgentTick && !deferTick) {
+        void triggerControlledE2EAgentTick(db, updated, tickSource, {
+          forceRetryFailedOperation: true,
+        }).catch((tickError) => {
+          console.error(
+            "[publish-destination-approval] reapprove force-retry tick failed:",
+            tickError
+          );
+        });
+      }
+
       return {
         ok: true,
-        status: "already_applied",
-        message: `Destino ${destination} ya estaba ${nextState}.`,
+        status: "approved",
+        message: publicationReviewContinueGuidance({
+          destination: destKey,
+          publication: nextPublication,
+          forceRetry: true,
+        }),
         destination,
         case_id: opCase.id,
-        deferredControlledE2ETick: null,
+        deferredControlledE2ETick: deferTick
+          ? { source: tickSource, forceRetryFailedOperation: true }
+          : null,
       };
     }
   }

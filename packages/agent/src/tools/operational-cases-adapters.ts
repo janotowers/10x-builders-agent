@@ -57,6 +57,7 @@ import {
   listingDescriptionReviewExcerptTruncated,
 } from "../operational-cases/listing-description-review";
 import {
+  containsProtectedPublicationKeys,
   isEasybrokerEffectivelyPublished,
   publicationFromContext,
 } from "../operational-cases/publication-workflow";
@@ -4210,23 +4211,22 @@ export function addOperationalCaseTools(
                 : undefined;
             if (contextPatch) {
               const definedContextPatch = contextPatch;
-              const protectedKeys = [
-                "publication",
-                "published",
-                "publish_approvals",
-                "photo_manifest",
-                "e2e_control_status",
-                "package_ready_lab_auto_continue_listing_id",
-                "package_ready_machine_work_in_flight",
-              ].filter((key) => key in definedContextPatch);
+              const protectedKeys = containsProtectedPublicationKeys(
+                definedContextPatch,
+              );
               if (protectedKeys.length > 0) {
                 const out = {
                   ok: false,
                   error: "protected_context_keys",
                   protected_keys: protectedKeys,
                   hint:
-                    "No escribas publication/published/publish_approvals/photo_manifest desde operational_case_update_state. El publication runner y los adapters de destino son dueños de ese estado.",
+                    "No escribas publication/published/publish_approvals/photo_manifest desde operational_case_update_state; el publication runner y los adapters de destino son dueños de ese estado. Si una publicación falló (p. ej. Ungga open_modal_guid_mismatch o botón deshabilitado), NO intentes 'arreglar' el contexto por aquí: reintenta la herramienta de publicación (ungga_publish_listing action=publish_draft es un retry seguro pre-side-effect) o detente y espera la revisión humana / reconciliación. No repitas este update_state.",
                 };
+                // Telemetry: surface repeated protected-key attempts so we can
+                // detect the agent looping instead of retrying publish_draft.
+                console.warn(
+                  `[operational-cases] protected_context_keys reject case=${opCase.id} step=${opCase.current_step ?? "?"} keys=${protectedKeys.join(",")}`,
+                );
                 await updateToolCallStatus(ctx.db, record.id, "failed", out);
                 return JSON.stringify(out);
               }

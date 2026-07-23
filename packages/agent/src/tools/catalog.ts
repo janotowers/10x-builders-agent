@@ -1444,73 +1444,34 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "ungga_publish_listing",
     name: "ungga_publish_listing",
     description:
-      "Ungga listing in two phases: action=prepare_draft creates a draft for human review (HITL); after approval, action=publish_draft publishes using ungga_property_id or draft_url. Internal API preferred; Playwright CLI fallback in dev.",
+      "Ungga listing in two phases: prepare_draft then publish_draft. Prefer case_id + action only; adapter enriches listing fields and photo URLs from the case. publish_draft also needs ungga_property_id or draft_url. Internal API preferred; supported CLI/Playwright fallback in pocs/ungga-cli.",
     risk: "high",
     requires_integration: "ungga",
     parameters_schema: {
       type: "object",
       properties: {
+        case_id: {
+          type: "string",
+          description:
+            "Operational case id (required). Adapter enriches title/price/commission/image_urls from case context.",
+        },
         action: {
           type: "string",
           enum: ["prepare_draft", "publish_draft"],
           description:
             "prepare_draft: wizard + save draft. publish_draft: publish an approved draft by GU-ID.",
         },
-        ungga_property_id: { type: "string" },
-        draft_url: { type: "string" },
-        title: { type: "string" },
-        description: { type: "string" },
-        operation: { type: "string" },
-        property_type: { type: "string" },
-        price: { type: "number" },
-        currency: { type: "string" },
-        construction_m2: { type: "number" },
-        land_m2: { type: "number" },
-        land_unit: { type: "string" },
-        condition: { type: "string" },
-        age_range: { type: "string" },
-        country: { type: "string" },
-        address: { type: "string" },
-        location: { type: "object" },
-        bedrooms: { type: "number" },
-        bathrooms_full: { type: "number" },
-        bathrooms_half: { type: "number" },
-        parking_spaces: { type: "number" },
-        covered_parking: { type: "boolean" },
-        floor: { type: "string" },
-        location_type: { type: "string" },
-        current_status: { type: "string" },
-        amenities: { type: "array", items: { type: "string" } },
-        video_url: { type: "string" },
-        tour_url: { type: "string" },
-        commission_pct: {
-          type: "number",
+        ungga_property_id: {
+          type: "string",
+          description: "GU-ID for publish_draft when draft_url is absent.",
+        },
+        draft_url: {
+          type: "string",
           description:
-            "Owner commission % for Ungga Operación modal (from commission_terms.commission_pct).",
+            "Optional publish_draft shortcut pointing to /app/propiedades/{GU-ID}.",
         },
-        operations: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              type: {
-                type: "string",
-                enum: ["sale", "rent", "rent_temporary", "presale"],
-              },
-              price: { type: "number" },
-              currency: { type: "string" },
-              commission_pct: {
-                type: "number",
-                description: "Owner commission % filled in the operation modal.",
-              },
-            },
-            required: ["type", "price"],
-          },
-        },
-        image_urls: { type: "array", items: { type: "string" } },
-        case_id: { type: "string" },
       },
-      required: [],
+      required: ["case_id"],
     },
   },
   {

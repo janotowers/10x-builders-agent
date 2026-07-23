@@ -407,6 +407,119 @@ function composeAddressFromRecord(address: Record<string, unknown>): string | nu
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
+export type UnggaLocationSource =
+  | "input"
+  | "property_data"
+  | "geocode"
+  | "zone_context";
+
+/**
+ * Canonical Ungga address string: legal_address first, then composed address
+ * object, then street fragments. Never lets bare street beat legal_address.
+ */
+export function resolveUnggaCanonicalAddress(
+  propertyData: Record<string, unknown> | null | undefined
+): string | null {
+  const data = asRecord(propertyData) ?? {};
+  const addressObj = asRecord(data.address);
+  const composed = addressObj ? composeAddressFromRecord(addressObj) : null;
+  return firstNonEmptyString(
+    data.legal_address,
+    typeof data.address === "string" ? data.address : null,
+    composed,
+    data.street,
+    data.calle
+  );
+}
+
+/**
+ * Resolve usable lat/lng for Ungga prepare (parity with EasyBroker merge).
+ * Rejects 0,0 / near-zero placeholders via isUsableLatLng.
+ */
+export function resolveUnggaLocationFromCaseSources(sources: {
+  inputLocation?: Record<string, unknown> | null;
+  propertyData?: Record<string, unknown> | null;
+  geocode?: Record<string, unknown> | null;
+  zoneContext?: Record<string, unknown> | null;
+}): {
+  latitude: number;
+  longitude: number;
+  source: UnggaLocationSource;
+} | null {
+  const inputLoc = asRecord(sources.inputLocation) ?? {};
+  const inputLat = safeNumber(inputLoc.latitude ?? inputLoc.lat);
+  const inputLng = safeNumber(
+    inputLoc.longitude ?? inputLoc.lng ?? inputLoc.lon
+  );
+  if (isUsableLatLng(inputLat, inputLng)) {
+    return {
+      latitude: inputLat as number,
+      longitude: inputLng as number,
+      source: "input",
+    };
+  }
+
+  const propertyData = asRecord(sources.propertyData) ?? {};
+  const address = asRecord(propertyData.address) ?? {};
+  const propertyLoc = asRecord(propertyData.location) ?? {};
+  const geocode = asRecord(sources.geocode) ?? {};
+  const zoneContext = asRecord(sources.zoneContext) ?? {};
+  const zoneCoordinates = asRecord(zoneContext.coordinates) ?? {};
+
+  const candidates: Array<{
+    lat: unknown;
+    lng: unknown;
+    source: UnggaLocationSource;
+  }> = [
+    {
+      lat: address.latitude ?? address.lat,
+      lng: address.longitude ?? address.lng ?? address.lon,
+      source: "property_data",
+    },
+    {
+      lat: propertyLoc.latitude ?? propertyLoc.lat,
+      lng: propertyLoc.longitude ?? propertyLoc.lng ?? propertyLoc.lon,
+      source: "property_data",
+    },
+    {
+      lat: propertyData.latitude ?? propertyData.lat,
+      lng: propertyData.longitude ?? propertyData.lng ?? propertyData.lon,
+      source: "property_data",
+    },
+    {
+      lat: geocode.latitude ?? geocode.lat,
+      lng: geocode.longitude ?? geocode.lng ?? geocode.lon,
+      source: "geocode",
+    },
+    {
+      lat: zoneContext.latitude ?? zoneContext.lat,
+      lng: zoneContext.longitude ?? zoneContext.lng ?? zoneContext.lon,
+      source: "zone_context",
+    },
+    {
+      lat: zoneCoordinates.latitude ?? zoneCoordinates.lat,
+      lng:
+        zoneCoordinates.longitude ??
+        zoneCoordinates.lng ??
+        zoneCoordinates.lon,
+      source: "zone_context",
+    },
+  ];
+
+  for (const candidate of candidates) {
+    const lat = safeNumber(candidate.lat);
+    const lng = safeNumber(candidate.lng);
+    if (isUsableLatLng(lat, lng)) {
+      return {
+        latitude: lat as number,
+        longitude: lng as number,
+        source: candidate.source,
+      };
+    }
+  }
+  return null;
+}
+
 function normalizeMissingIngredientsForDisplay(input: {
   missingIngredients: string[];
   ingredientPayload: Record<string, unknown>;
@@ -686,6 +799,10 @@ export interface RealEstateToolDeps {
   /** Notifica al inmobiliario (web/Telegram según preferencias). */
   notifyUser?: NotifyUserFn;
 }
+
+/** Structured Outputs–safe optional: accepts null and coerces to undefined. */
+const nullableOptional = <T extends z.ZodTypeAny>(schema: T) =>
+  schema.nullish().transform((value) => value ?? undefined);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function addRealEstateTools(
@@ -1565,65 +1682,38 @@ export function addRealEstateTools(
 
   // ── Ungga publish — prepare_draft (HITL) + publish_draft (post-aprobación) ─
   if (toolEnabled("ungga_publish_listing", ctx)) {
+    // Canonical model surface: action + case_id (+ GU-ID fields for publish).
+    // .passthrough() keeps programmatic/tool-readiness extras; adapter owns
+    // listing fields + image_urls from case context (never trust model URLs).
     const unggaPublishSchema = z.preprocess(
       stripEmptyAndNullishProps,
       z
         .object({
-          action: z
-            .enum(["prepare_draft", "publish_draft"])
-            .default("prepare_draft")
-            .describe(
-              "prepare_draft: llena wizard y guarda borrador. publish_draft: publica un borrador ya validado usando ungga_property_id o draft_url."
-            ),
-          ungga_property_id: z.string().min(1).optional(),
-          draft_url: z.string().url().optional(),
-          title: z.string().min(1).optional(),
-          description: z.string().optional(),
-          operation: z.string().min(1).optional(),
-          property_type: z.string().min(1).optional(),
-          price: z.number().positive().optional(),
-          currency: z.string().optional(),
-          construction_m2: z.number().positive().optional(),
-          land_m2: z.number().positive().optional(),
-          land_unit: z.string().optional(),
-          condition: z.string().optional(),
-          age_range: z.string().optional(),
-          country: z.string().optional(),
-          address: z.string().optional(),
-          location: z.record(z.string(), z.any()).optional(),
-          bedrooms: z.number().nonnegative().optional(),
-          bathrooms_full: z.number().nonnegative().optional(),
-          bathrooms_half: z.number().nonnegative().optional(),
-          parking_spaces: z.number().nonnegative().optional(),
-          covered_parking: z.boolean().optional(),
-          floor: z.string().optional(),
-          location_type: z.string().optional(),
-          current_status: z.string().optional(),
-          amenities: z.array(z.string()).optional(),
-          video_url: z.string().optional(),
-          tour_url: z.string().optional(),
-          commission_pct: z.number().positive().max(100).optional(),
-          collaboration_enabled: z.boolean().optional(),
-          exclusive: z.boolean().optional(),
-          collaboration_notes: z.string().optional(),
-          operations: z
-            .array(
-              z.object({
-                type: z.enum(["sale", "rent", "rent_temporary", "presale"]),
-                price: z.number().positive(),
-                currency: z.string().optional(),
-                commission_pct: z.number().positive().max(100).optional(),
-              })
-            )
-            .optional(),
-          image_urls: z.array(z.string().url()).optional(),
           case_id: z
             .string()
             .min(1)
-            .describe("Operational property_optioning case that authorizes this write."),
+            .describe(
+              "Operational property_optioning case_id (required). Adapter enriches listing fields and photo_manifest.public_url from the case."
+            ),
+          action: nullableOptional(z.enum(["prepare_draft", "publish_draft"]))
+            .transform((value) => value ?? "prepare_draft")
+            .describe(
+              "prepare_draft: wizard + save draft. publish_draft: publish an approved draft by GU-ID. Prefer only this + case_id."
+            ),
+          ungga_property_id: nullableOptional(z.string().min(1)).describe(
+            "Required for publish_draft when draft_url is absent."
+          ),
+          draft_url: nullableOptional(z.string().url()).describe(
+            "Optional publish_draft shortcut: /app/propiedades/{GU-ID}."
+          ),
         })
+        .passthrough()
         .superRefine((data, refineCtx) => {
-          if (data.action === "publish_draft") {
+          const action =
+            typeof data.action === "string" && data.action.trim()
+              ? data.action.trim()
+              : "prepare_draft";
+          if (action === "publish_draft") {
             if (!resolveUnggaPropertyId(data)) {
               refineCtx.addIssue({
                 code: z.ZodIssueCode.custom,
@@ -1656,9 +1746,13 @@ export function addRealEstateTools(
             await updateToolCallStatus(ctx.db, record.id, "failed", out);
             return JSON.stringify(out);
           }
+          // Drop model-supplied image_urls before enrichment — photo_manifest wins.
+          const { image_urls: _discardImageUrls, ...inputWithoutModelUrls } =
+            input;
+          void _discardImageUrls;
           let inputForExecution = await enrichUnggaPublishInputFromCaseContext(
             ctx,
-            { ...input, case_id: caseId }
+            { ...inputWithoutModelUrls, case_id: caseId }
           );
           const action =
             typeof inputForExecution.action === "string" &&
@@ -1751,7 +1845,7 @@ export function addRealEstateTools(
                   error:
                     "prepare_draft requires image_urls from photo_manifest.public_url when the case has photos; refusing empty image_urls",
                   expected_image_count: manifest.length || rawPhotos.length,
-                  hint: "Ejecuta image_watermark(case_id) / easybroker_upload_images primero para persistir public_url en photo_manifest, o pasa image_urls explícitas.",
+                  hint: "Ejecuta image_watermark(case_id) / easybroker_upload_images primero para persistir public_url en photo_manifest; el adapter no acepta image_urls del modelo.",
                 };
                 await updateToolCallStatus(ctx.db, record.id, "failed", out);
                 return JSON.stringify(out);
@@ -1833,6 +1927,13 @@ export function addRealEstateTools(
                   typeof out.draft_url === "string" ? out.draft_url : null,
                 published_url:
                   typeof out.published_url === "string" ? out.published_url : null,
+                ...(asRecord(out.location_accuracy_warning)
+                  ? {
+                      location_accuracy_warning: asRecord(
+                        out.location_accuracy_warning
+                      ),
+                    }
+                  : {}),
               },
             });
           }
@@ -1841,7 +1942,7 @@ export function addRealEstateTools(
         {
           name: "ungga_publish_listing",
           description:
-            "Ungga listing in two phases on the same tool: action=prepare_draft creates a draft; after conditional preflight pass, action=publish_draft publishes that draft using ungga_property_id or draft_url. case_id is required so the adapter enforces the publication gate and enriches fields. Omit empty strings.",
+            "Ungga listing in two phases: prepare_draft then publish_draft. Call with case_id + action only; the adapter enriches title/price/commission/image_urls from the case (do not invent or copy image_urls). publish_draft also needs ungga_property_id or draft_url. Omit empty strings.",
           schema: unggaPublishSchema,
         }
       )
@@ -5867,12 +5968,7 @@ async function enrichUnggaPublishInputFromCaseContext(
     propertyData.full_bathrooms,
     propertyData.banos
   );
-  fillString(
-    "address",
-    propertyData.address,
-    propertyData.street,
-    propertyData.legal_address
-  );
+  fillString("address", resolveUnggaCanonicalAddress(propertyData));
   fillString(
     "ungga_property_id",
     unggaArtifact?.ungga_property_id,
@@ -5884,32 +5980,36 @@ async function enrichUnggaPublishInputFromCaseContext(
     unggaPublished.draft_url
   );
 
-  if (!Array.isArray(next.image_urls) || next.image_urls.length === 0) {
+  // Always prefer photo_manifest.public_url when present. The model often
+  // rewrites/corrupts asset UUIDs in image_urls (seen: …-490a-… → …-4900-…
+  // from case_id …-4900-…), which yields HTTP 404 on /api/public/account-assets.
+  {
     const manifest = Array.isArray(context.photo_manifest)
       ? context.photo_manifest
       : [];
     const urls = manifest
       .map((item) =>
         asRecord(item) && typeof item.public_url === "string"
-          ? item.public_url
+          ? item.public_url.trim()
           : null
       )
       .filter((url): url is string => Boolean(url));
     if (urls.length > 0) next.image_urls = urls;
   }
 
-  if (!asRecord(next.location)) {
-    const loc = asRecord(propertyData.location) ?? {};
-    const lat =
-      safeNumber(loc.latitude) ??
-      safeNumber(propertyData.latitude) ??
-      safeNumber(context.geocode && asRecord(context.geocode)?.latitude);
-    const lng =
-      safeNumber(loc.longitude) ??
-      safeNumber(propertyData.longitude) ??
-      safeNumber(context.geocode && asRecord(context.geocode)?.longitude);
-    if (lat != null && lng != null) {
-      next.location = { latitude: lat, longitude: lng };
+  {
+    const resolvedLocation = resolveUnggaLocationFromCaseSources({
+      inputLocation: asRecord(next.location),
+      propertyData,
+      geocode: asRecord(context.geocode),
+      zoneContext: asRecord(context.zone_context),
+    });
+    if (resolvedLocation) {
+      next.location = {
+        latitude: resolvedLocation.latitude,
+        longitude: resolvedLocation.longitude,
+        source: resolvedLocation.source,
+      };
     }
   }
 
@@ -10222,6 +10322,9 @@ export function buildUnggaCliToolResponse(
 
   const draftReady =
     ok && cliMode === "save_draft" && Boolean(propertyId) && Boolean(draftUrl);
+  const locationAccuracyWarning =
+    asRecord(nestedResult.location_accuracy_warning) ??
+    asRecord(parsed.location_accuracy_warning);
   return {
     ok,
     action,
@@ -10252,6 +10355,9 @@ export function buildUnggaCliToolResponse(
     commission_verified: expectedCommissionPct == null ? true : commissionVerified && ok,
     ...(lastStep ? { last_step: lastStep } : {}),
     ...(contractError ? { error: contractError } : {}),
+    ...(locationAccuracyWarning
+      ? { location_accuracy_warning: locationAccuracyWarning }
+      : {}),
     ...(draftReady
       ? {
           next_action: {

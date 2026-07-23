@@ -7,7 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Property-data review ownership source label**: «Fuente de titularidad»
+  now shows human copy (`Boleta registral`) instead of the technical slug
+  (`boleta_registral`); same for other known document/source kinds.
+- **Property-optioning intake title**: bare titles that are only the property
+  type (e.g. LLM returns `Casa`) are treated as weak. Merge prefers a
+  descriptive deterministic title when available, otherwise composes
+  `Casa en venta en {zona}` so the confirmation no longer duplicates
+  «Tipo de propiedad».
+- **Ungga location pin accuracy (non-blocking)**: enrichment now prefers
+  `property_data.legal_address` (then composed address object) over bare
+  `street`, and fills `location` lat/lng from `property_data` → `geocode` →
+  `zone_context` (parity with EasyBroker; rejects `0,0`). The Ungga CLI
+  verifies the map pin when coords are present (haversine; one correction
+  attempt) and surfaces `location_accuracy_warning` without failing
+  `prepare_draft` or opening HITL. Street View thumbnails may still not match
+  the house facade.
+- **Ungga `ungga_publish_listing` schema surface**: model-facing Zod/catalog now
+  require `case_id` and prefer `action` + `case_id` only (plus GU-ID fields for
+  `publish_draft`). Optional fields use `.nullish()` for Structured Outputs;
+  model-supplied `image_urls` are discarded before enrichment from
+  `photo_manifest`. Skill antipattern clarifies supported Playwright adapters
+  (Ungga CLI + EasyBroker MLS) vs ad-hoc portal automation.
+- **Ungga `*_not_called` after human retry**: publication-runner-owned ticks that
+  narrate a prior media/form failure without invoking `ungga_publish_listing`
+  (~few seconds) now get **one forced re-tick** before marking
+  `ungga_publish_listing_not_called`. HITL copy no longer labels that as
+  “formulario”.
+- **Ungga prepare_draft image 404 from corrupted asset UUIDs**: the model was
+  passing `image_urls` with a mangled account-asset id (`…-490a-…` →
+  `…-4900-…`, borrowing a segment from `case_id`). Enrichment now **always**
+  overwrites `image_urls` from `photo_manifest.public_url` when the case has
+  them (instead of only when the array was empty).
+- **Stale «Publicar en Ungga» after prepare failure**: re-tapping the old
+  destination-approval button when Ungga was already approved but
+  `prepare_draft` failed now force-retries (same path as «Reintentar
+  publicación en Ungga») instead of answering `Destino ungga ya estaba
+  approved`. Pure no-ops get a clearer Spanish hint pointing to the review CTA.
+- **Ungga prepare_draft media transient failures**: CLI downloads `image_urls`
+  with retries (404/408/429/5xx/network) and runs a **media preflight before
+  opening the wizard**, returning `ungga_media_source_unreachable:…` /
+  `last_step=media_preflight` without burning ~3 minutes of form fill.
+  Predownloaded files are reused on the MEDIA tab; `Media incomplete` now
+  preserves `(cause: …)`. The publication runner auto-retries **once** (silent,
+  +20s) for media failures without a GU-ID; only then opens HITL. Classification
+  no longer labels media as “formulario”, and `prepare_draft_failure` metadata
+  no longer depends on the ledger key `create_draft:ungga:new` (wrong CTA).
+  Photo expected/observed counts are projected on failure so notify does not
+  show `observadas ?`. Still reuses `photo_manifest.public_url` (no new URL
+  architecture).
+- **Ungga `publish_draft` GU-ID find hardened**: the CLI now locates the target
+  draft by its real GU-ID before clicking PUBLICAR, avoiding twin/imported
+  cards. New order: (1) publish straight from the detail page
+  `/app/propiedades/{GU-ID}` (URL is the GU-ID, no title matching), (2) catalog
+  Borrador search **by GU-ID** then by title, opening each candidate and
+  requiring the exact GU-ID in the modal (with a GU-ID `href` fallback when the
+  card text doesn't echo it). A disabled PUBLICAR on the exact-GU-ID listing is
+  terminal (`ungga_publish_button_disabled:*`); otherwise it returns
+  `open_modal_guid_mismatch` (never publishes a duplicate). All of these remain
+  classified as safe pre-side-effect retries.
+- **`protected_context_keys` loop guard made actionable**: after a publication
+  failure the agent no longer has license to "fix" state by re-writing
+  `publication`/`published`/`publish_approvals`/`photo_manifest` via
+  `operational_case_update_state`. The reject `hint` now tells it to retry
+  `ungga_publish_listing(action=publish_draft)` (safe pre-side-effect) or wait
+  for HITL/reconciliation, and logs a telemetry line on each reject. The adapter
+  now reuses the canonical `containsProtectedPublicationKeys` /
+  `PUBLICATION_PROTECTED_CONTEXT_KEYS` instead of an inline list. The
+  `publish-listing-package` skill gained matching guidance + antipattern.
+
 ### Changed
+
+- **Ungga prepare-failure HITL copy for the realtor**: Telegram / Pendientes
+  CTAs are now **Reintentar publicación en Ungga** / **Pausar y avisar a
+  soporte** (legacy phrases still parse). Notify text is human-first with an
+  optional `(Detalle técnico: …)` line; media vs commission vs form causes are
+  distinct.
+
 
 - **Shared HITL Telegram attachment transport**: `contract_review` and
   `listing_description_review` now share one planner/executor

@@ -17,6 +17,13 @@ import {
   MAX_UNGGA_IMAGE_DOWNLOADS,
   resolveUnggaTimeoutMs,
 } from "./prepare-draft-contract.mjs";
+import {
+  classifyLocationDistance,
+  evaluateLocationAccuracy,
+  haversineMeters,
+  parseLatLngFromText,
+  pickTargetLocation,
+} from "./location-accuracy.mjs";
 
 export {
   evaluatePrepareDraftSuccess,
@@ -24,6 +31,13 @@ export {
   lastMeaningfulStep,
   resolveUnggaTimeoutMs,
 } from "./prepare-draft-contract.mjs";
+export {
+  classifyLocationDistance,
+  evaluateLocationAccuracy,
+  haversineMeters,
+  parseLatLngFromText,
+  pickTargetLocation,
+} from "./location-accuracy.mjs";
 
 function envFlag(name, fallback = false) {
   const raw = process.env[name]?.trim().toLowerCase();
@@ -140,7 +154,50 @@ export async function publishListingDraft(page, opts, metrics = []) {
   const dryRun = opts.dryRun !== false;
   const listing = opts.listing;
   const t0 = Date.now();
+  let predownloadedMedia = null;
   try {
+    const expectedImageCount = Array.isArray(listing.image_urls)
+      ? listing.image_urls.filter((u) => typeof u === "string" && u.trim()).length
+      : 0;
+
+    // Cheap media preflight: download (with retries) before opening the wizard
+    // so a transient 404 does not burn ~3 minutes of Playwright form fill.
+    if (expectedImageCount > 0) {
+      const tPreflight = Date.now();
+      try {
+        predownloadedMedia = await downloadListingImagesToTemp(listing, metrics);
+        metrics.push({
+          step: "media_preflight",
+          ok: true,
+          duration_ms: Date.now() - tPreflight,
+          expected_image_count: expectedImageCount,
+          uploaded_image_count: predownloadedMedia.localPaths.length,
+        });
+      } catch (e) {
+        const cause = e?.message ?? String(e);
+        const msg = `ungga_media_source_unreachable: ${cause}`;
+        metrics.push({
+          step: "media_preflight",
+          ok: false,
+          duration_ms: Date.now() - tPreflight,
+          expected_image_count: expectedImageCount,
+          uploaded_image_count: 0,
+          error: msg,
+        });
+        push("prepare_draft", false, Date.now() - t0, msg);
+        return {
+          ok: false,
+          dry_run: dryRun,
+          error: msg,
+          expected_image_count: expectedImageCount,
+          uploaded_image_count: 0,
+          images_submitted: false,
+          images_verified: false,
+          last_step: lastMeaningfulStep(metrics),
+        };
+      }
+    }
+
     const publishPath =
       process.env.UNGGA_CLI_PUBLISH_PATH?.trim() || "/app/propiedades/nueva";
     const publishUrl = resolveTargetUrl(page.url(), publishPath);
@@ -159,11 +216,10 @@ export async function publishListingDraft(page, opts, metrics = []) {
     await clickCreatePropertyIfPresent(page, metrics);
     await page.waitForTimeout(500);
 
-    const expectedImageCount = Array.isArray(listing.image_urls)
-      ? listing.image_urls.filter((u) => typeof u === "string" && u.trim()).length
-      : 0;
     const stages = [];
-    let generalFilled = await fillGeneralTab(page, listing);
+    let generalResult = await fillGeneralTab(page, listing, metrics);
+    let generalFilled = generalResult.filled;
+    let locationAccuracyWarning = generalResult.location_accuracy_warning ?? null;
     if (generalFilled.length === 0) {
       const fallbackUrl = resolveCreatePropertyFallbackUrl(page.url());
       const tFallback = Date.now();
@@ -173,7 +229,10 @@ export async function publishListingDraft(page, opts, metrics = []) {
           timeout: resolveUnggaTimeoutMs("nav"),
         });
         await page.waitForTimeout(500);
-        generalFilled = await fillGeneralTab(page, listing);
+        generalResult = await fillGeneralTab(page, listing, metrics);
+        generalFilled = generalResult.filled;
+        locationAccuracyWarning =
+          generalResult.location_accuracy_warning ?? locationAccuracyWarning;
         metrics.push({
           step: "open_create_property_fallback",
           ok: generalFilled.length > 0,
@@ -215,7 +274,9 @@ export async function publishListingDraft(page, opts, metrics = []) {
 
     await clickWizardTab(page, "MEDIA");
     await page.waitForTimeout(800);
-    const mediaFilled = await fillMediaTab(page, listing, metrics);
+    const mediaFilled = await fillMediaTab(page, listing, metrics, {
+      localPaths: predownloadedMedia?.localPaths ?? null,
+    });
     stages.push({ tab: "MEDIA", filled: mediaFilled.filled });
     const uploadedImageCount = mediaFilled.uploaded_image_count;
     const placeholderImageCount =
@@ -226,7 +287,13 @@ export async function publishListingDraft(page, opts, metrics = []) {
       expectedImageCount > 0 &&
       uploadedImageCount < expectedImageCount
     ) {
-      const msg = `Media incomplete: expected ${expectedImageCount} photos, observed ${uploadedImageCount}`;
+      const cause =
+        typeof mediaFilled.error === "string" && mediaFilled.error.trim()
+          ? mediaFilled.error.trim()
+          : null;
+      const msg = cause
+        ? `Media incomplete: expected ${expectedImageCount} photos, observed ${uploadedImageCount} (cause: ${cause})`
+        : `Media incomplete: expected ${expectedImageCount} photos, observed ${uploadedImageCount}`;
       push("prepare_draft", false, Date.now() - t0, msg);
       await maybeCapture(page, "media-incomplete", metrics);
       return {
@@ -243,6 +310,9 @@ export async function publishListingDraft(page, opts, metrics = []) {
         images_submitted: uploadedImageCount > 0,
         images_verified: false,
         last_step: lastMeaningfulStep(metrics),
+        ...(locationAccuracyWarning
+          ? { location_accuracy_warning: locationAccuracyWarning }
+          : {}),
       };
     }
     await advanceWizard(page, "MEDIA", metrics);
@@ -285,6 +355,9 @@ export async function publishListingDraft(page, opts, metrics = []) {
         commission_verified: false,
         commission_verify: commissionVerify,
         last_step: lastMeaningfulStep(metrics),
+        ...(locationAccuracyWarning
+          ? { location_accuracy_warning: locationAccuracyWarning }
+          : {}),
       };
     }
 
@@ -364,12 +437,22 @@ export async function publishListingDraft(page, opts, metrics = []) {
         expectedCommission == null ? true : commissionVerify.persisted === true,
       commission_verify: commissionVerify,
       last_step: lastMeaningfulStep(metrics),
+      ...(locationAccuracyWarning
+        ? { location_accuracy_warning: locationAccuracyWarning }
+        : {}),
       ...(verdict.error ? { error: verdict.error } : {}),
     };
   } catch (e) {
     push("prepare_draft", false, Date.now() - t0, e?.message ?? String(e));
     await maybeCapture(page, "publish-failed", metrics);
     throw e;
+  } finally {
+    if (predownloadedMedia?.tempDir) {
+      await rm(predownloadedMedia.tempDir, {
+        recursive: true,
+        force: true,
+      }).catch(() => {});
+    }
   }
 }
 
@@ -672,56 +755,139 @@ export async function publishExistingDraft(page, opts, metrics = []) {
  * Must match the exact GU-ID in the modal: titles can collide with EasyBroker
  * imports that keep PUBLICAR disabled ("gestiona desde tu portal o CRM").
  */
-async function openDraftCardAndClickPublish(page, params) {
-  const { origin, propertyId, listingTitle, metrics = [] } = params;
-  await page.goto(`${origin}/app/propiedades`, {
-    waitUntil: "domcontentloaded",
-    timeout: resolveUnggaTimeoutMs("nav"),
+/**
+ * Click PUBLICAR inside a modal/scope already confirmed to carry the target
+ * GU-ID. Returns a terminal result (ok / disabled / action-missing).
+ */
+async function clickModalPublishAction(page, scope, params) {
+  const { propertyId, metrics = [], step, cardIndex } = params;
+  await maybeCapture(page, "publish-catalog-modal", metrics);
+  const publishProbe = await resolveModalPublishAction(scope);
+  if (!publishProbe.action) {
+    return {
+      ok: false,
+      error: "Acción PUBLICAR no encontrada en el modal del catálogo.",
+      stage: "modal_publicar",
+      property_id: propertyId,
+    };
+  }
+  if (publishProbe.disabled) {
+    const reason =
+      publishProbe.title || "PUBLICAR deshabilitado en el modal del catálogo";
+    metrics.push({
+      step,
+      ok: false,
+      property_id: propertyId,
+      error: reason,
+    });
+    return {
+      ok: false,
+      error: `ungga_publish_button_disabled:${reason}`,
+      stage: "modal_publicar_disabled",
+      property_id: propertyId,
+    };
+  }
+  await publishProbe.action.click({ timeout: 8_000 });
+  await page.waitForTimeout(1500);
+  metrics.push({
+    step,
+    ok: true,
+    property_id: propertyId,
+    ...(cardIndex != null ? { card_index: cardIndex } : {}),
   });
+  return { ok: true, stage: "modal_publicar", property_id: propertyId };
+}
+
+/**
+ * Strategy 1: publish straight from the listing detail page
+ * (`/app/propiedades/{GU-ID}`). Using the GU-ID URL sidesteps twin cards
+ * entirely — no title matching, no risk of a duplicate. Returns:
+ *   - ok:true                      → published action clicked
+ *   - stage:modal_publicar_disabled → correct listing but PUBLICAR disabled
+ *   - {ok:false, terminal:false}    → detail path unavailable; caller falls
+ *                                     back to the catalog search
+ */
+async function tryPublishFromDetailModal(page, params) {
+  const { origin, propertyId, metrics = [] } = params;
+  await page
+    .goto(`${origin}/app/propiedades/${propertyId}`, {
+      waitUntil: "domcontentloaded",
+      timeout: resolveUnggaTimeoutMs("nav"),
+    })
+    .catch(() => {});
   await page.waitForTimeout(1000);
   await dismissStrayModals(page);
 
-  const draftTab = await firstVisible([
-    page.getByRole("button", { name: /^borrador/i }),
-    page.getByRole("tab", { name: /^borrador/i }),
-    page.locator("button, a, [role='tab']").filter({ hasText: /^borrador/i }),
-  ]);
-  if (draftTab) {
-    await draftTab.click({ timeout: 5_000 }).catch(() => {});
-    await page.waitForTimeout(1200);
+  const detailText =
+    ((await page.locator("body").innerText().catch(() => "")) || "").trim();
+  // Confirm this is the right listing before touching any publish action.
+  if (!detailText.includes(propertyId)) {
+    metrics.push({
+      step: "detail_publish_guid_absent",
+      ok: false,
+      property_id: propertyId,
+    });
+    return { ok: false, terminal: false, stage: "detail_guid_absent" };
+  }
+  if (/\bPUBLICADO\b/i.test(detailText) && !/\bBORRADOR\b/i.test(detailText)) {
+    // Already published (e.g. a prior tick's click landed). Let the caller's
+    // verify step confirm; report success so we don't loop.
+    metrics.push({
+      step: "detail_publish_already_published",
+      ok: true,
+      property_id: propertyId,
+    });
+    return { ok: true, stage: "modal_publicar_detail", property_id: propertyId };
   }
 
-  if (listingTitle) {
-    const search = await firstVisible([
-      page.getByPlaceholder(/buscar por título|buscar/i),
-      page.locator('input[type="search"], input[placeholder*="Buscar" i]'),
-    ]);
-    if (search) {
-      await search.fill(listingTitle).catch(() => {});
-      await page.keyboard.press("Enter").catch(() => {});
-      await page.waitForTimeout(1000);
-    }
+  const modal = await findCatalogPropertyModal(page);
+  const scope = modal ?? page.locator("body");
+  const probe = await resolveModalPublishAction(scope);
+  if (!probe.action) {
+    metrics.push({
+      step: "detail_publish_action_absent",
+      ok: false,
+      property_id: propertyId,
+    });
+    return { ok: false, terminal: false, stage: "detail_action_absent" };
   }
-
-  const titleNeedle = listingTitle
-    ? listingTitle.split(",")[0].trim().slice(0, 48)
-    : "";
-  const cardCandidates = page.locator("div, article, a, li").filter({
-    hasText: titleNeedle
-      ? new RegExp(escapeRegex(titleNeedle), "i")
-      : new RegExp(escapeRegex(propertyId), "i"),
+  const result = await clickModalPublishAction(page, scope, {
+    propertyId,
+    metrics,
+    step: "detail_modal_publicar_click",
   });
-  const count = await cardCandidates.count().catch(() => 0);
+  // A disabled button on the exact GU-ID URL is terminal (right listing).
+  return result;
+}
+
+/**
+ * Scan Borrador cards, open each and require the exact GU-ID in the modal
+ * before clicking PUBLICAR. Never publishes a card whose modal GU-ID differs
+ * (twin/imported listings). Returns { done, result?, tried }.
+ */
+async function scanDraftCandidatesForGuid(page, params) {
+  const { propertyId, titleNeedle, metrics = [] } = params;
+  const needleSource = titleNeedle
+    ? `${escapeRegex(propertyId)}|${escapeRegex(titleNeedle)}`
+    : escapeRegex(propertyId);
+  let cardCandidates = page
+    .locator("div, article, a, li")
+    .filter({ hasText: new RegExp(needleSource, "i") });
+  let count = await cardCandidates.count().catch(() => 0);
+  // After a GU-ID search narrowed the catalog, the card DOM may not echo the
+  // GU-ID/title text; fall back to GU-ID anchor hrefs, then generic cards.
+  if (count === 0) {
+    cardCandidates = page.locator(
+      `a[href*="/app/propiedades/${propertyId}"]`
+    );
+    count = await cardCandidates.count().catch(() => 0);
+  }
   const tried = [];
   for (let i = 0; i < Math.min(count, 40); i += 1) {
     const candidate = cardCandidates.nth(i);
     const text = ((await candidate.innerText().catch(() => "")) || "").trim();
-    if (text.length > 1200 || text.length < 20) continue;
+    if (text.length > 1200) continue;
     if (!(await candidate.isVisible().catch(() => false))) continue;
-    // Prefer BORRADOR cards; skip obvious non-cards.
-    if (titleNeedle && !new RegExp(escapeRegex(titleNeedle), "i").test(text)) {
-      continue;
-    }
 
     await page.keyboard.press("Escape").catch(() => {});
     await page.waitForTimeout(300);
@@ -746,44 +912,78 @@ async function openDraftCardAndClickPublish(page, params) {
       await page.waitForTimeout(300);
       continue;
     }
-
-    await maybeCapture(page, "publish-catalog-modal", metrics);
-    const publishProbe = await resolveModalPublishAction(modal);
-    if (!publishProbe.action) {
-      return {
-        ok: false,
-        error: "Acción PUBLICAR no encontrada en el modal del catálogo.",
-        stage: "modal_publicar",
-        property_id: propertyId,
-      };
-    }
-    if (publishProbe.disabled) {
-      const reason =
-        publishProbe.title ||
-        "PUBLICAR deshabilitado en el modal del catálogo";
-      metrics.push({
-        step: "catalog_modal_publicar_click",
-        ok: false,
-        property_id: propertyId,
-        error: reason,
-      });
-      return {
-        ok: false,
-        error: `ungga_publish_button_disabled:${reason}`,
-        stage: "modal_publicar_disabled",
-        property_id: propertyId,
-      };
-    }
-
-    await publishProbe.action.click({ timeout: 8_000 });
-    await page.waitForTimeout(1500);
-    metrics.push({
+    const result = await clickModalPublishAction(page, modal, {
+      propertyId,
+      metrics,
       step: "catalog_modal_publicar_click",
-      ok: true,
-      property_id: propertyId,
-      card_index: i,
+      cardIndex: i,
     });
-    return { ok: true, stage: "modal_publicar", property_id: propertyId };
+    return { done: true, result, tried };
+  }
+  return { done: false, tried };
+}
+
+/**
+ * Catalog → Borrador → open listing card modal → click PUBLICAR action icon.
+ * Must match the exact GU-ID in the modal: titles can collide with EasyBroker
+ * imports that keep PUBLICAR disabled ("gestiona desde tu portal o CRM").
+ */
+async function openDraftCardAndClickPublish(page, params) {
+  const { origin, propertyId, listingTitle, metrics = [] } = params;
+
+  // Strategy 1: detail page by GU-ID URL (no twin risk).
+  const detail = await tryPublishFromDetailModal(page, {
+    origin,
+    propertyId,
+    metrics,
+  });
+  if (detail.ok || detail.stage === "modal_publicar_disabled") return detail;
+
+  // Strategy 2/3: catalog Borrador, search by GU-ID first, then by title.
+  await page.goto(`${origin}/app/propiedades`, {
+    waitUntil: "domcontentloaded",
+    timeout: resolveUnggaTimeoutMs("nav"),
+  });
+  await page.waitForTimeout(1000);
+  await dismissStrayModals(page);
+
+  const draftTab = await firstVisible([
+    page.getByRole("button", { name: /^borrador/i }),
+    page.getByRole("tab", { name: /^borrador/i }),
+    page.locator("button, a, [role='tab']").filter({ hasText: /^borrador/i }),
+  ]);
+  if (draftTab) {
+    await draftTab.click({ timeout: 5_000 }).catch(() => {});
+    await page.waitForTimeout(1200);
+  }
+
+  const titleNeedle = listingTitle
+    ? listingTitle.split(",")[0].trim().slice(0, 48)
+    : "";
+  const searchQueries = [propertyId, ...(listingTitle ? [listingTitle] : [])];
+  const allTried = [];
+  let sawSearchBox = false;
+  for (const query of searchQueries) {
+    const search = await firstVisible([
+      page.getByPlaceholder(/buscar por título|buscar/i),
+      page.locator('input[type="search"], input[placeholder*="Buscar" i]'),
+    ]);
+    if (search) {
+      sawSearchBox = true;
+      await search.fill("").catch(() => {});
+      await search.fill(query).catch(() => {});
+      await page.keyboard.press("Enter").catch(() => {});
+      await page.waitForTimeout(1000);
+    }
+    const scan = await scanDraftCandidatesForGuid(page, {
+      propertyId,
+      titleNeedle,
+      metrics,
+    });
+    if (scan.done) return scan.result;
+    allTried.push(...scan.tried);
+    // No search box: one full pass over the list is all we can do.
+    if (!search && !sawSearchBox) break;
   }
 
   await maybeCapture(page, "publish-modal-missing", metrics);
@@ -791,13 +991,13 @@ async function openDraftCardAndClickPublish(page, params) {
     step: "catalog_modal_guid_search",
     ok: false,
     property_id: propertyId,
-    tried,
+    tried: allTried,
   });
   return {
     ok: false,
     error: `Modal del borrador con GU-ID ${propertyId} no encontrado (hay fichas con título similar; no se usó un duplicado).`,
     stage: "open_modal_guid_mismatch",
-    tried_count: tried.length,
+    tried_count: allTried.length,
   };
 }
 
@@ -926,10 +1126,11 @@ async function verifyListingPublishedStatus(page, params) {
 
 /**
  * Llena la pestaña "GENERAL" del wizard usando los labels reales mapeados en
- * artifacts/wizard-map.json. Devuelve la lista de campos llenados.
+ * artifacts/wizard-map.json. Devuelve `{ filled, location_accuracy_warning }`.
  */
-export async function fillGeneralTab(page, listing) {
+export async function fillGeneralTab(page, listing, metrics = []) {
   const filled = [];
+  let location_accuracy_warning = null;
   if (
     listing.property_type &&
     (await selectByLabel(page, /TIPO DE PROPIEDAD/i, listing.property_type))
@@ -998,8 +1199,12 @@ export async function fillGeneralTab(page, listing) {
   const address = pickAddress(listing);
   if (address && (await fillAddressAutocomplete(page, address))) {
     filled.push("address");
+    const pin = await verifyAndCorrectMapPin(page, listing, metrics);
+    if (pin?.location_accuracy_warning) {
+      location_accuracy_warning = pin.location_accuracy_warning;
+    }
   }
-  return filled;
+  return { filled, location_accuracy_warning };
 }
 
 function pickAddress(listing) {
@@ -1107,6 +1312,154 @@ async function fillAddressAutocomplete(page, address) {
   } catch {
     return false;
   }
+}
+
+async function readObservedMapCenter(page) {
+  const snippets = [];
+  snippets.push(page.url());
+  try {
+    const iframeSrcs = await page
+      .locator("iframe[src*='google'], iframe[src*='maps'], iframe[src*='ungga']")
+      .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("src") || ""));
+    snippets.push(...iframeSrcs);
+  } catch {
+    // ignore
+  }
+  try {
+    const hrefs = await page
+      .locator("a[href*='maps'], a[href*='@']")
+      .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("href") || "").slice(0, 8));
+    snippets.push(...hrefs);
+  } catch {
+    // ignore
+  }
+  try {
+    const html = await page.content();
+    // Prefer map-ish substrings to avoid scanning the whole DOM repeatedly.
+    const mapChunks = html.match(
+      /(?:google\.com\/maps|maps\.google|@-?\d+\.\d+,-?\d+\.\d+|!3d-?\d+\.\d+!4d-?\d+\.\d+|center=-?\d+\.\d+,-?\d+\.\d+)[^"'<\s]{0,120}/gi
+    );
+    if (mapChunks) snippets.push(...mapChunks.slice(0, 12));
+  } catch {
+    // ignore
+  }
+  for (const text of snippets) {
+    const parsed = parseLatLngFromText(String(text ?? ""));
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+/**
+ * After Places autocomplete: if listing has usable lat/lng, verify pin distance
+ * and attempt one non-blocking correction. Never fails prepare_draft.
+ */
+async function verifyAndCorrectMapPin(page, listing, metrics = []) {
+  const target = pickTargetLocation(listing);
+  if (!target) return { location_accuracy_warning: null };
+
+  const t0 = Date.now();
+  let observed = await readObservedMapCenter(page);
+  let corrected = false;
+
+  if (observed) {
+    const distance_m = haversineMeters(
+      target.latitude,
+      target.longitude,
+      observed.latitude,
+      observed.longitude
+    );
+    const bucket = classifyLocationDistance(distance_m);
+    metrics.push({
+      step: "location_pin_check",
+      ok: bucket !== "retry",
+      duration_ms: Date.now() - t0,
+      distance_m,
+      bucket,
+      expected: {
+        latitude: target.latitude,
+        longitude: target.longitude,
+      },
+      observed,
+      source: target.source,
+    });
+
+    if (bucket === "retry") {
+      const coordQuery = `${target.latitude}, ${target.longitude}`;
+      const tCorr = Date.now();
+      const correctedViaAutocomplete = await fillAddressAutocomplete(
+        page,
+        coordQuery
+      );
+      if (!correctedViaAutocomplete) {
+        // Soft fallback: click near map canvas if present (best-effort).
+        const map = page
+          .locator(
+            "canvas, [aria-label*='mapa' i], [class*='map' i], iframe[src*='maps']"
+          )
+          .first();
+        if ((await map.count().catch(() => 0)) > 0) {
+          await map.click({ timeout: 2_000 }).catch(() => {});
+          await page.waitForTimeout(800);
+        }
+      }
+      corrected = true;
+      await page.waitForTimeout(1200);
+      observed = (await readObservedMapCenter(page)) ?? observed;
+      const afterDistance =
+        observed &&
+        haversineMeters(
+          target.latitude,
+          target.longitude,
+          observed.latitude,
+          observed.longitude
+        );
+      metrics.push({
+        step: "location_pin_correction",
+        ok:
+          typeof afterDistance === "number" &&
+          classifyLocationDistance(afterDistance) !== "retry",
+        duration_ms: Date.now() - tCorr,
+        distance_m: afterDistance ?? null,
+        method: correctedViaAutocomplete ? "coords_autocomplete" : "map_click",
+        source: target.source,
+      });
+    }
+  } else {
+    metrics.push({
+      step: "location_pin_check",
+      ok: true,
+      duration_ms: Date.now() - t0,
+      distance_m: null,
+      bucket: "unreadable",
+      expected: {
+        latitude: target.latitude,
+        longitude: target.longitude,
+      },
+      observed: null,
+      source: target.source,
+    });
+  }
+
+  const verdict = evaluateLocationAccuracy({
+    expected: target,
+    observed,
+    source: target.source,
+    corrected,
+  });
+  if (verdict.location_accuracy_warning) {
+    metrics.push({
+      step: "location_accuracy_warning",
+      ok: true,
+      duration_ms: Date.now() - t0,
+      ...verdict.location_accuracy_warning,
+    });
+  }
+  return {
+    location_accuracy_warning: verdict.location_accuracy_warning,
+    status: verdict.status,
+    distance_m: verdict.distance_m,
+  };
 }
 
 /**
@@ -1237,7 +1590,7 @@ export async function fillDetailsTab(page, listing) {
 }
 
 /** Llena pestaña MEDIA: video/tour opcionales + carga real de image_urls. */
-export async function fillMediaTab(page, listing, metrics = []) {
+export async function fillMediaTab(page, listing, metrics = [], options = {}) {
   const filled = [];
   const t0 = Date.now();
   if (listing.video_url) {
@@ -1271,13 +1624,19 @@ export async function fillMediaTab(page, listing, metrics = []) {
     };
   }
 
-  let tempDir = null;
+  const providedLocalPaths = Array.isArray(options.localPaths)
+    ? options.localPaths.filter((p) => typeof p === "string" && p.trim())
+    : null;
+  let ownedTempDir = null;
   try {
-    tempDir = await mkdtemp(path.join(tmpdir(), "ungga-media-"));
-    const localPaths = [];
-    for (let i = 0; i < imageUrls.length; i += 1) {
-      const localPath = await downloadImageToTemp(imageUrls[i], tempDir, i);
-      localPaths.push(localPath);
+    let localPaths = providedLocalPaths;
+    if (!localPaths || localPaths.length !== imageUrls.length) {
+      ownedTempDir = await mkdtemp(path.join(tmpdir(), "ungga-media-"));
+      localPaths = [];
+      for (let i = 0; i < imageUrls.length; i += 1) {
+        const localPath = await downloadImageToTemp(imageUrls[i], ownedTempDir, i);
+        localPaths.push(localPath);
+      }
     }
 
     const baseline = await countVisibleMediaThumbnails(page);
@@ -1395,13 +1754,81 @@ export async function fillMediaTab(page, listing, metrics = []) {
       error: msg,
     };
   } finally {
-    if (tempDir) {
-      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    if (ownedTempDir) {
+      await rm(ownedTempDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 }
 
+const IMAGE_DOWNLOAD_MAX_ATTEMPTS = 3;
+const IMAGE_DOWNLOAD_RETRY_BACKOFF_MS = 1500;
+
+function isRetryableImageDownloadError(error) {
+  const msg = String(error?.message ?? error ?? "").toLowerCase();
+  if (!msg) return false;
+  if (/image download http (404|408|429|5\d\d)/i.test(msg)) return true;
+  if (/abort|timed?\s*out|network|econnreset|enotfound|fetch failed/i.test(msg)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Download all listing image_urls into a temp dir (with per-URL retries).
+ * Caller owns cleanup of `tempDir`.
+ */
+async function downloadListingImagesToTemp(listing, metrics = []) {
+  const imageUrls = Array.isArray(listing.image_urls)
+    ? listing.image_urls
+        .filter((u) => typeof u === "string" && u.trim())
+        .map((u) => u.trim())
+        .slice(0, MAX_UNGGA_IMAGE_DOWNLOADS)
+    : [];
+  if (imageUrls.length === 0) {
+    return { tempDir: null, localPaths: [], expected_image_count: 0 };
+  }
+  const tempDir = await mkdtemp(path.join(tmpdir(), "ungga-media-preflight-"));
+  try {
+    const localPaths = [];
+    for (let i = 0; i < imageUrls.length; i += 1) {
+      const localPath = await downloadImageToTemp(imageUrls[i], tempDir, i);
+      localPaths.push(localPath);
+    }
+    return {
+      tempDir,
+      localPaths,
+      expected_image_count: imageUrls.length,
+    };
+  } catch (e) {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    metrics.push({
+      step: "media_download_batch",
+      ok: false,
+      error: e?.message ?? String(e),
+      expected_image_count: imageUrls.length,
+    });
+    throw e;
+  }
+}
+
 async function downloadImageToTemp(url, tempDir, index) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= IMAGE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await downloadImageToTempOnce(url, tempDir, index);
+    } catch (e) {
+      lastError = e;
+      const retryable = isRetryableImageDownloadError(e);
+      if (!retryable || attempt >= IMAGE_DOWNLOAD_MAX_ATTEMPTS) {
+        throw e;
+      }
+      await sleepMs(IMAGE_DOWNLOAD_RETRY_BACKOFF_MS);
+    }
+  }
+  throw lastError ?? new Error(`image download failed for index ${index}`);
+}
+
+async function downloadImageToTempOnce(url, tempDir, index) {
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(),

@@ -3,7 +3,68 @@ import {
   buildUnggaCliFailureResponse,
   buildUnggaCliToolResponse,
   normalizeUnggaUiFields,
+  resolveUnggaCanonicalAddress,
+  resolveUnggaLocationFromCaseSources,
 } from "./realestate-adapters";
+
+{
+  const address = resolveUnggaCanonicalAddress({
+    street: "CIRCUNVALACION SUR",
+    legal_address:
+      "Circunvalación Sur 123, Col. El Palomar, Tlajomulco, Jalisco",
+    address: {
+      street: "CIRCUNVALACION SUR",
+      neighborhood: "El Palomar",
+      municipality: "Tlajomulco",
+      state: "Jalisco",
+      latitude: 0,
+      longitude: 0,
+    },
+  });
+  assert.match(String(address), /Circunvalación Sur 123/i);
+  assert.ok(!/^CIRCUNVALACION SUR$/i.test(String(address)));
+}
+
+{
+  const loc = resolveUnggaLocationFromCaseSources({
+    inputLocation: { latitude: 0, longitude: 0 },
+    propertyData: {
+      address: { latitude: 0, longitude: 0 },
+      latitude: 0,
+      longitude: 0,
+    },
+    geocode: null,
+    zoneContext: {
+      latitude: 20.6200855,
+      longitude: -103.4256502,
+    },
+  });
+  assert.ok(loc);
+  assert.equal(loc?.source, "zone_context");
+  assert.equal(loc?.latitude, 20.6200855);
+  assert.equal(loc?.longitude, -103.4256502);
+}
+
+{
+  const loc = resolveUnggaLocationFromCaseSources({
+    propertyData: {
+      address: { latitude: 20.1, longitude: -103.1 },
+    },
+    geocode: { latitude: 20.2, longitude: -103.2 },
+    zoneContext: { latitude: 20.3, longitude: -103.3 },
+  });
+  assert.equal(loc?.source, "property_data");
+  assert.equal(loc?.latitude, 20.1);
+}
+
+{
+  const loc = resolveUnggaLocationFromCaseSources({
+    inputLocation: { latitude: 20.5, longitude: -103.5 },
+    zoneContext: { latitude: 20.6, longitude: -103.6 },
+  });
+  assert.equal(loc?.source, "input");
+  assert.equal(loc?.latitude, 20.5);
+}
 
 {
   const mapped = normalizeUnggaUiFields({
@@ -219,6 +280,41 @@ import {
   });
   assert.equal(timeout.status, "unknown_outcome");
   assert.match(String(timeout.hint), /no reintentes prepare_draft/i);
+}
+
+{
+  const warning = {
+    expected: { latitude: 20.6200855, longitude: -103.4256502 },
+    observed: { latitude: 20.621281, longitude: -103.428369 },
+    distance_m: 312,
+    source: "zone_context",
+    reason: "pin_still_far_after_correction",
+  };
+  const out = buildUnggaCliToolResponse(
+    {
+      action: "prepare_draft",
+      image_urls: ["https://example.com/1.jpg"],
+    },
+    {
+      ok: true,
+      mode: "save_draft",
+      result: {
+        save_outcome: { ok: true },
+        ungga_property_id: "GU-OK",
+        draft_url: "https://ungga.com/app/propiedades/GU-OK",
+        expected_image_count: 1,
+        uploaded_image_count: 1,
+        images_submitted: true,
+        images_verified: true,
+        location_accuracy_warning: warning,
+      },
+    },
+    ""
+  );
+  assert.equal(out.ok, true);
+  assert.equal(out.status, "draft_created");
+  assert.equal(out.requires_human_review, true);
+  assert.deepEqual(out.location_accuracy_warning, warning);
 }
 
 console.log("realestate-adapters-ungga-cli.selftest: ok");

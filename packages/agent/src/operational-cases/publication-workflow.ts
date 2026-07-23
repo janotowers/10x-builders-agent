@@ -85,6 +85,8 @@ export type PublicationDestinationState = {
   operation_key: string | null;
   review_reason: string | null;
   updated_at: string | null;
+  /** Silent prepare_draft media auto-retries used (runner-owned; max 1). */
+  prepare_auto_retries_used?: number;
 };
 
 export type PublicationState = {
@@ -141,6 +143,7 @@ export function emptyDestinationState(
     operation_key: null,
     review_reason: null,
     updated_at: null,
+    prepare_auto_retries_used: 0,
   };
 }
 
@@ -383,6 +386,14 @@ export function publicationFromContext(
             : fallback.review_reason,
         updated_at:
           typeof raw.updated_at === "string" ? raw.updated_at : fallback.updated_at,
+        prepare_auto_retries_used:
+          typeof raw.prepare_auto_retries_used === "number" &&
+          Number.isFinite(raw.prepare_auto_retries_used) &&
+          raw.prepare_auto_retries_used >= 0
+            ? Math.floor(raw.prepare_auto_retries_used)
+            : typeof fallback.prepare_auto_retries_used === "number"
+              ? fallback.prepare_auto_retries_used
+              : 0,
       };
     }
     return merged;

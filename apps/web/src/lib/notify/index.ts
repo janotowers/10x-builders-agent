@@ -359,13 +359,13 @@ async function deliverTelegram(
           ? [
               [
                 {
-                  text: "Reintentar preparación",
+                  text: "Reintentar publicación en Ungga",
                   callback_data: `pubrev_approve:${actionNotificationId}`,
                 },
               ],
               [
                 {
-                  text: "Pausar publicación",
+                  text: "Pausar y avisar a soporte",
                   callback_data: `pubrev_stop:${actionNotificationId}`,
                 },
               ],

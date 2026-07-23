@@ -39,6 +39,8 @@ function parsePublicationReviewDecision(text: string): {
     normalized === "aprobar y continuar" ||
     normalized.includes("reintentar preparación") ||
     normalized.includes("reintentar preparacion") ||
+    normalized.includes("reintentar publicación en ungga") ||
+    normalized.includes("reintentar publicacion en ungga") ||
     /ya actualic[eé].*api key/.test(normalized) ||
     normalized.includes("ya actualicé la api key") ||
     normalized.includes("ya actualice la api key")
@@ -49,7 +51,8 @@ function parsePublicationReviewDecision(text: string): {
     /\b(detener|rechazar|stop|pausar)\b/.test(normalized) ||
     normalized.includes("detener y revisar") ||
     normalized.includes("pausar publicación") ||
-    normalized.includes("pausar publicacion")
+    normalized.includes("pausar publicacion") ||
+    normalized.includes("pausar y avisar a soporte")
   ) {
     return { intent: "stop" };
   }
@@ -79,7 +82,7 @@ function parsePublicationReviewDecision(text: string): {
   return {
     intent: "unclear",
     reason:
-      "No entendí. Usa «Aprobar y continuar» / «Reintentar preparación» / «Ya actualicé la API key — reintentar», «Detener y revisar» / «Pausar publicación», o envía JSON con labels corregidas.",
+      "No entendí. Usa «Aprobar y continuar» / «Reintentar publicación en Ungga» / «Reintentar preparación» / «Ya actualicé la API key — reintentar», «Detener y revisar» / «Pausar y avisar a soporte» / «Pausar publicación», o envía JSON con labels corregidas.",
   };
 }
 

@@ -1557,7 +1557,7 @@ export function PendingInboxClient({
                           {notification.credentialFailure
                             ? "Credencial de publicación inválida"
                             : notification.prepareDraftFailure
-                              ? "Fallo al preparar borrador"
+                              ? "No se pudo publicar en Ungga"
                               : "Revisión condicional de publicación"}
                         </p>
                         <div className="flex flex-wrap gap-1">
@@ -1573,7 +1573,7 @@ export function PendingInboxClient({
                             {notification.credentialFailure
                               ? "Ya actualicé la API key — reintentar"
                               : notification.prepareDraftFailure
-                                ? "Reintentar preparación"
+                                ? "Reintentar publicación en Ungga"
                                 : "Aprobar y continuar"}
                           </button>
                           <button
@@ -1585,10 +1585,11 @@ export function PendingInboxClient({
                             }
                             className="rounded-full border border-rose-200 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-300/20 dark:text-rose-100"
                           >
-                            {notification.credentialFailure ||
-                            notification.prepareDraftFailure
+                            {notification.credentialFailure
                               ? "Pausar publicación"
-                              : "Detener y revisar"}
+                              : notification.prepareDraftFailure
+                                ? "Pausar y avisar a soporte"
+                                : "Detener y revisar"}
                           </button>
                         </div>
                         {notificationActionStatus[notification.id] ? (
