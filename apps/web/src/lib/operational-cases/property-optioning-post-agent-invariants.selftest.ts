@@ -3,6 +3,7 @@ import {
   mergeDocumentAddressIntoContextPropertyData,
   mergeDocumentLegalIdentityIntoContextPropertyData,
   mergeDocumentSurfacesIntoContextPropertyData,
+  ownershipSourceDisplayLabel,
   propertyDataReviewTextFromContext,
 } from "./property-optioning-post-agent-invariants";
 import type { OperationalCase } from "@agents/types";
@@ -483,6 +484,44 @@ function propertyDataOf(result: {
     documentFields: {},
   });
   assert.doesNotMatch(text, /cajones de estacionamiento/i);
+}
+
+{
+  assert.equal(
+    ownershipSourceDisplayLabel("boleta_registral"),
+    "Boleta registral"
+  );
+  assert.equal(
+    ownershipSourceDisplayLabel("documentos_compartidos"),
+    "Documentos compartidos"
+  );
+  assert.equal(ownershipSourceDisplayLabel("escritura"), "Escritura");
+  assert.equal(ownershipSourceDisplayLabel("predial"), "Predial");
+  assert.equal(
+    ownershipSourceDisplayLabel("Boleta registral"),
+    "Boleta registral"
+  );
+}
+
+{
+  const opCase = {
+    id: "case-ownership-source-label",
+    context_jsonb: {
+      property_title: "Casa en venta en Las Fuentes",
+      property_zone: "Las Fuentes, Zapopan, Jalisco",
+      operation_type: "Venta",
+      property_type: "Casa",
+    },
+  } as unknown as OperationalCase;
+  const text = propertyDataReviewTextFromContext({
+    opCase,
+    documentFields: {
+      owner_names: "MARIA CONCEPCION CASTAÑEDA GARCIA",
+      owner_names_source: "boleta_registral",
+    },
+  });
+  assert.match(text, /Fuente de titularidad: Boleta registral/);
+  assert.doesNotMatch(text, /Fuente de titularidad: boleta_registral/);
 }
 
 console.log("property-optioning-post-agent-invariants.selftest: ok");

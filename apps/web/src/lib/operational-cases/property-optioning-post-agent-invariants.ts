@@ -1066,6 +1066,38 @@ function operationLabel(value: unknown): string {
   return value.trim();
 }
 
+/** Labels legibles para slugs de fuente de titularidad / tipo documental. */
+const OWNERSHIP_SOURCE_DISPLAY_LABELS: Record<string, string> = {
+  boleta_registral: "Boleta registral",
+  escritura: "Escritura",
+  escritura_descripcion: "Escritura",
+  escritura_primera_hoja: "Escritura (primera hoja)",
+  escritura_ultima_hoja: "Escritura (última hoja)",
+  predial: "Predial",
+  documentos_compartidos: "Documentos compartidos",
+  ine: "Identificación oficial",
+  comprobante_domicilio: "Comprobante de domicilio",
+};
+
+/**
+ * Convierte slugs técnicos (`boleta_registral`) a copy humano para mensajes
+ * de revisión. Si ya viene en lenguaje natural, se deja igual.
+ */
+export function ownershipSourceDisplayLabel(
+  source: string | null | undefined
+): string {
+  if (typeof source !== "string") return "";
+  const trimmed = source.trim();
+  if (!trimmed) return "";
+  const normalized = trimmed.toLowerCase();
+  if (OWNERSHIP_SOURCE_DISPLAY_LABELS[normalized]) {
+    return OWNERSHIP_SOURCE_DISPLAY_LABELS[normalized]!;
+  }
+  if (!normalized.includes("_")) return trimmed;
+  const humanized = normalized.replace(/_/g, " ");
+  return humanized.charAt(0).toUpperCase() + humanized.slice(1);
+}
+
 export function propertyDataReviewTextFromContext(params: {
   opCase: OperationalCase;
   documentFields: Record<string, unknown>;
@@ -1120,7 +1152,9 @@ export function propertyDataReviewTextFromContext(params: {
     "Datos encontrados en documentos:",
     `- Dueño/titular: ${value("owner_names") || "pendiente"}`,
     value("owner_names_source")
-      ? `- Fuente de titularidad: ${value("owner_names_source")}`
+      ? `- Fuente de titularidad: ${ownershipSourceDisplayLabel(
+          value("owner_names_source")
+        )}`
       : null,
     value("owner_consistency_note")
       ? `- Verificación de titularidad: ${value("owner_consistency_note")}`

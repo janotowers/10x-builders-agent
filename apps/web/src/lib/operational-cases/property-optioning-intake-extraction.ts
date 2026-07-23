@@ -43,18 +43,27 @@ function sentenceCapitalize(value: string) {
   return value[0]!.toUpperCase() + value.slice(1);
 }
 
+const PROPERTY_TYPE_TOKEN =
+  String.raw`casa|departamento|depa|terreno|propiedad|inmueble`;
+
 function looksLikeWeakGenericTitle(value: string) {
   const normalized = normalizeForIntent(value);
   if (!normalized) return true;
   if (/^(es|es una|es un)\s+/.test(normalized)) return true;
+  // Bare type ("Casa") is not a usable listing title — it duplicates property_type.
+  if (new RegExp(String.raw`^(?:${PROPERTY_TYPE_TOKEN})$`).test(normalized)) {
+    return true;
+  }
   if (
-    /^(casa|departamento|depa|terreno|propiedad|inmueble)\s+(en\s+)?(venta|renta|alquiler)$/.test(
-      normalized
-    )
+    new RegExp(
+      String.raw`^(?:${PROPERTY_TYPE_TOKEN})\s+(?:en\s+)?(?:venta|renta|alquiler)$`
+    ).test(normalized)
   ) {
     return true;
   }
-  const hasProperty = /\b(casa|departamento|depa|terreno|propiedad|inmueble)\b/.test(normalized);
+  const hasProperty = new RegExp(String.raw`\b(?:${PROPERTY_TYPE_TOKEN})\b`).test(
+    normalized
+  );
   const hasOperation = /\b(venta|renta|alquiler)\b/.test(normalized);
   const hasLocation = /\b(zona|colonia|zapopan|guadalajara|jalisco|en\s+[a-záéíóúüñ]{3,})\b/.test(
     normalized
@@ -82,6 +91,15 @@ function enrichTitleWithZoneIfNeeded(values: Record<string, unknown>) {
   if (!title || !zone) return title || null;
   if (!looksLikeWeakGenericTitle(title)) return title;
   const normalizedTitle = normalizeForIntent(title);
+  // Prefer "Casa en venta en {zona}" over appending zone to a bare type token.
+  if (
+    new RegExp(
+      String.raw`^(?:${PROPERTY_TYPE_TOKEN})(?:\s+(?:en\s+)?(?:venta|renta|alquiler))?$`
+    ).test(normalizedTitle)
+  ) {
+    const fallback = buildFallbackPropertyTitle(values);
+    if (fallback) return fallback;
+  }
   const normalizedZone = normalizeForIntent(zone);
   if (normalizedZone && normalizedTitle.includes(normalizedZone)) return title;
   return sentenceCapitalize(`${title} en ${zone}`);

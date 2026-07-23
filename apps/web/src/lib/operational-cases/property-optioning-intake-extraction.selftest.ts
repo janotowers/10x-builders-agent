@@ -158,4 +158,48 @@ assert.deepEqual(
   }
 );
 
+// LLM often collapses the title to bare property_type ("Casa"); prefer the
+// descriptive deterministic title from free text.
+assert.deepEqual(
+  mergeIntakePatches(
+    {
+      property_title: "Casa",
+      property_zone: "Las Fuentes, Zapopan, Jalisco",
+      operation_type: "Venta",
+      property_type: "Casa",
+    },
+    {
+      property_title: "Casa en venta en Las Fuentes",
+      property_zone: "Las Fuentes, Zapopan, Jalisco",
+      operation_type: "Venta",
+      property_type: "Casa",
+    }
+  ),
+  {
+    property_title: "Casa en venta en Las Fuentes",
+    property_zone: "Las Fuentes, Zapopan, Jalisco",
+    operation_type: "Venta",
+    property_type: "Casa",
+  }
+);
+
+// Bare LLM title with no deterministic title → compose type + operation + zone.
+assert.deepEqual(
+  mergeIntakePatches(
+    {
+      property_title: "Casa",
+      property_zone: "Las Fuentes, Zapopan, Jalisco",
+      operation_type: "Venta",
+      property_type: "Casa",
+    },
+    {}
+  ),
+  {
+    property_title: "Casa en venta en Las Fuentes, Zapopan, Jalisco",
+    property_zone: "Las Fuentes, Zapopan, Jalisco",
+    operation_type: "Venta",
+    property_type: "Casa",
+  }
+);
+
 console.log("property-optioning-intake-extraction.selftest.ts: ok");
