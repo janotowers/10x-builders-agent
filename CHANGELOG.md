@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Shared HITL Telegram attachment transport**: `contract_review` and
+  `listing_description_review` now share one planner/executor
+  (`hitl-telegram-attachment-delivery` → `document_with_actions` /
+  `text_with_actions_then_attach` / `text_only`). Listing description keeps
+  the rich truncated review + buttons and attaches the full `.txt` afterward
+  when the caption cannot hold the full body (no compacted substitute
+  caption). Web parity unchanged (notification metadata / download link).
 - **Main agent + conversation classifier default models**: code fallbacks for
   `MAIN_AGENT_MODEL_ID` and `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` are
   now both `openai/gpt-5.4-mini` (classifier no longer inherits the main-agent

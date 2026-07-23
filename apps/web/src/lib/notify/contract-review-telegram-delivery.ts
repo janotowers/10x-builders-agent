@@ -2,18 +2,29 @@
  * Pure helpers for Telegram delivery of `contract_review`:
  * prefer one sendDocument (caption + HITL buttons), fall back to text +
  * best-effort attach when the caption/binary path cannot carry the review.
+ *
+ * Transport planning is shared with other HITL attachments
+ * (`hitl-telegram-attachment-delivery.ts`). Caption preparation below is
+ * contract-specific (preserve download link + action cues when truncating
+ * for a caption attempt).
  */
-import { TELEGRAM_MAX_CAPTION_LENGTH } from "@/lib/telegram/send-message";
+import {
+  HITL_TELEGRAM_ATTACHMENT_SOFT_MAX_BYTES,
+  TELEGRAM_MAX_CAPTION_LENGTH,
+  canDeliverHitlAsSingleDocument,
+  hitlTelegramAttachmentDeliveryPlan,
+  shouldAttachAfterTextFallback,
+  type HitlTelegramAttachmentDeliveryPlan,
+} from "./hitl-telegram-attachment-delivery";
 
 export { TELEGRAM_MAX_CAPTION_LENGTH };
 
-/** Soft cap used before attempting sendDocument for contract drafts. */
-export const CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES = 20 * 1024 * 1024;
+/** @deprecated Prefer HITL_TELEGRAM_ATTACHMENT_SOFT_MAX_BYTES; alias kept for callers. */
+export const CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES =
+  HITL_TELEGRAM_ATTACHMENT_SOFT_MAX_BYTES;
 
 export type ContractReviewTelegramDeliveryPlan =
-  | "document_with_actions"
-  | "text_with_actions_then_attach"
-  | "text_only";
+  HitlTelegramAttachmentDeliveryPlan;
 
 const DOWNLOAD_HINT =
   /descargar borrador del contrato|\/documents\/contract_draft\/download|\/api\/public\/operational-cases\/documents\/download/i;
@@ -26,9 +37,16 @@ export const CONTRACT_REVIEW_FALLBACK_ATTACH_CAPTION =
 export const CONTRACT_REVIEW_BUTTONS_ONLY_FOLLOWUP_TEXT =
   "Borrador adjunto arriba. Responde “mándalo al dueño” o “pedir cambios”, o usa los botones.";
 
+export const LISTING_DESCRIPTION_FALLBACK_ATTACH_CAPTION =
+  "Borrador completo de la descripción comercial.";
+
+export const LISTING_DESCRIPTION_BUTTONS_ONLY_FOLLOWUP_TEXT =
+  "Borrador completo adjunto arriba. Usa los botones: Aprobar descripción o Pedir cambios.";
+
 /**
  * Truncate review copy for a document caption without dropping the download
  * link or the action instruction when they fit in the budget.
+ * Only used when attempting `document_with_actions` for contract_review.
  */
 export function prepareContractReviewDocumentCaption(
   text: string,
@@ -70,14 +88,10 @@ export function canDeliverContractReviewAsSingleDocument(params: {
   byteLength?: number;
   captionFits: boolean;
 }): boolean {
-  if (!params.hasBytes) return false;
-  if (
-    typeof params.byteLength === "number" &&
-    params.byteLength > CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES
-  ) {
-    return false;
-  }
-  return params.captionFits;
+  return canDeliverHitlAsSingleDocument({
+    ...params,
+    softMaxBytes: CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES,
+  });
 }
 
 /**
@@ -91,27 +105,17 @@ export function contractReviewTelegramDeliveryPlan(params: {
   originalTextLength: number;
   captionFitsWithoutTruncation: boolean;
 }): ContractReviewTelegramDeliveryPlan {
-  const softCapOk =
-    typeof params.byteLength !== "number" ||
-    params.byteLength <= CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES;
-  if (
-    canDeliverContractReviewAsSingleDocument({
-      hasBytes: params.hasBytes,
-      byteLength: params.byteLength,
-      captionFits: params.captionFitsWithoutTruncation && softCapOk,
-    })
-  ) {
-    return "document_with_actions";
-  }
-  if (params.hasBytes && softCapOk) {
-    return "text_with_actions_then_attach";
-  }
-  return "text_only";
+  return hitlTelegramAttachmentDeliveryPlan({
+    hasBytes: params.hasBytes,
+    byteLength: params.byteLength,
+    captionFitsWithoutTruncation: params.captionFitsWithoutTruncation,
+    softMaxBytes: CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES,
+  });
 }
 
 /** Whether a successful document_with_actions delivery should skip a follow-up attach. */
 export function shouldAttachContractDraftAfterTextFallback(
   plan: ContractReviewTelegramDeliveryPlan
 ): boolean {
-  return plan === "text_with_actions_then_attach";
+  return shouldAttachAfterTextFallback(plan);
 }

@@ -69,11 +69,18 @@ import {
   CONTRACT_REVIEW_BUTTONS_ONLY_FOLLOWUP_TEXT,
   CONTRACT_REVIEW_FALLBACK_ATTACH_CAPTION,
   CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES,
+  LISTING_DESCRIPTION_BUTTONS_ONLY_FOLLOWUP_TEXT,
+  LISTING_DESCRIPTION_FALLBACK_ATTACH_CAPTION,
   contractReviewTelegramDeliveryPlan,
   prepareContractReviewDocumentCaption,
-  shouldAttachContractDraftAfterTextFallback,
   type ContractReviewTelegramDeliveryPlan,
 } from "@/lib/notify/contract-review-telegram-delivery";
+import {
+  hitlTelegramAttachmentDeliveryPlan,
+  reviewTextFitsTelegramCaption,
+  shouldAttachAfterTextFallback,
+  type HitlTelegramAttachmentDeliveryPlan,
+} from "@/lib/notify/hitl-telegram-attachment-delivery";
 import {
   buildHitlApprovalTelegramMarkup,
   resolveHitlDetailUrlForTelegram,
@@ -470,6 +477,16 @@ async function deliverTelegram(
     });
   }
 
+  if (actionKind === "listing_description_review") {
+    return deliverListingDescriptionReviewTelegram({
+      chatId,
+      payload,
+      text,
+      replyMarkup,
+      sourceNotificationMetadata,
+    });
+  }
+
   let lastError: string | undefined;
   let attemptedReplyMarkup = replyMarkup;
   let delivered = false;
@@ -496,39 +513,6 @@ async function deliverTelegram(
       status: "failed",
       reason: lastError ?? "send_failed",
     };
-  }
-
-  // Full commercial draft as .txt when the review excerpt was truncated.
-  // Best-effort: the review message (with buttons) already landed.
-  if (actionKind === "listing_description_review") {
-    const txtContent =
-      typeof payload.data?.listing_description_txt === "string"
-        ? payload.data.listing_description_txt
-        : typeof sourceNotificationMetadata?.listing_description_txt === "string"
-          ? sourceNotificationMetadata.listing_description_txt
-          : "";
-    if (txtContent.trim()) {
-      const filename =
-        (typeof payload.data?.listing_description_txt_filename === "string" &&
-          payload.data.listing_description_txt_filename.trim()) ||
-        (typeof sourceNotificationMetadata?.listing_description_txt_filename ===
-          "string" &&
-          sourceNotificationMetadata.listing_description_txt_filename.trim()) ||
-        "descripcion_comercial.txt";
-      try {
-        await sendTelegramDocument(chatId, {
-          filename,
-          bytes: Buffer.from(txtContent, "utf-8"),
-          contentType: "text/plain; charset=utf-8",
-          caption: "Borrador completo de la descripción comercial.",
-        });
-      } catch (e) {
-        console.warn(
-          "[notify] listing_description_review telegram: txt attach failed",
-          (e as Error).message ?? String(e)
-        );
-      }
-    }
   }
 
   return { channel: "telegram", ok: true, status: "delivered" };
@@ -601,40 +585,54 @@ async function loadContractReviewTelegramDocument(params: {
   return { filename: downloaded.filename, bytes };
 }
 
-async function deliverContractReviewTelegram(params: {
-  db: ReturnType<typeof createServerClient>;
-  userId: string;
+type HitlTelegramAttachableDocument = {
+  filename: string;
+  bytes: Buffer;
+  contentType: string;
+};
+
+/**
+ * Shared HITL Telegram delivery: document+actions when the full caption fits,
+ * otherwise rich text+buttons and then best-effort attach. Used by
+ * contract_review and listing_description_review so attachment flows share
+ * one transport pattern (web keeps metadata/link parity separately).
+ */
+async function deliverHitlTelegramWithOptionalAttachment(params: {
+  logLabel: string;
   chatId: number;
-  payload: NotifyPayload;
   text: string;
   replyMarkup: TelegramReplyMarkup | undefined;
+  document: HitlTelegramAttachableDocument | null;
+  /** Caption used only for document_with_actions (must be the intended caption). */
+  documentCaption: string;
+  captionFitsWithoutTruncation: boolean;
+  fallbackAttachCaption: string;
+  buttonsOnlyFollowUpText: string;
+  plan?: HitlTelegramAttachmentDeliveryPlan;
 }): Promise<NotifyChannelResult> {
-  const document = await loadContractReviewTelegramDocument({
-    db: params.db,
-    userId: params.userId,
-    payload: params.payload,
-  });
-  const prepared = prepareContractReviewDocumentCaption(params.text);
-  let plan: ContractReviewTelegramDeliveryPlan = contractReviewTelegramDeliveryPlan({
-    hasBytes: Boolean(document),
-    byteLength: document?.bytes.byteLength,
-    originalTextLength: params.text.length,
-    captionFitsWithoutTruncation: prepared.fitsWithoutTruncation,
-  });
+  let plan: HitlTelegramAttachmentDeliveryPlan =
+    params.plan ??
+    hitlTelegramAttachmentDeliveryPlan({
+      hasBytes: Boolean(params.document),
+      byteLength: params.document?.bytes.byteLength,
+      captionFitsWithoutTruncation: params.captionFitsWithoutTruncation,
+    });
 
-  if (!document) {
-    console.warn("[notify] contract_review telegram: missing_bytes; using text path");
-  } else if (!prepared.fitsWithoutTruncation) {
+  if (!params.document) {
     console.warn(
-      "[notify] contract_review telegram: caption_too_long; using text path"
+      `[notify] ${params.logLabel} telegram: missing_bytes; using text path`
+    );
+  } else if (!params.captionFitsWithoutTruncation) {
+    console.warn(
+      `[notify] ${params.logLabel} telegram: caption_too_long; using text+attach path`
     );
   }
 
-  if (plan === "document_with_actions" && document) {
-    const docResult = await sendContractReviewDocumentAttempt({
+  if (plan === "document_with_actions" && params.document) {
+    const docResult = await sendHitlTelegramDocumentAttempt({
       chatId: params.chatId,
-      document,
-      caption: prepared.caption,
+      document: params.document,
+      caption: params.documentCaption,
       replyMarkup: params.replyMarkup,
     });
     if (docResult.status === "delivered_with_actions") {
@@ -643,21 +641,21 @@ async function deliverContractReviewTelegram(params: {
     if (docResult.status === "delivered_document_only") {
       const buttonsFollowUp = await sendTelegramTextWithOptionalButtons(
         params.chatId,
-        CONTRACT_REVIEW_BUTTONS_ONLY_FOLLOWUP_TEXT,
+        params.buttonsOnlyFollowUpText,
         params.replyMarkup
       );
       if (buttonsFollowUp.ok) {
         return { channel: "telegram", ok: true, status: "delivered" };
       }
       console.warn(
-        "[notify] contract_review telegram: buttons follow-up failed after document; falling back to full text",
+        `[notify] ${params.logLabel} telegram: buttons follow-up failed after document; falling back to full text`,
         buttonsFollowUp.error
       );
       // Document already in chat — do not attach again after the text fallback.
       plan = "text_only";
     } else {
       console.warn(
-        "[notify] contract_review telegram: sendDocument_failed; falling back to text",
+        `[notify] ${params.logLabel} telegram: sendDocument_failed; falling back to text`,
         docResult.error
       );
       plan = "text_with_actions_then_attach";
@@ -678,25 +676,21 @@ async function deliverContractReviewTelegram(params: {
     };
   }
 
-  if (
-    document &&
-    shouldAttachContractDraftAfterTextFallback(plan)
-  ) {
+  if (params.document && shouldAttachAfterTextFallback(plan)) {
     try {
       await sendTelegramDocument(
         params.chatId,
         {
-          filename: document.filename,
-          bytes: document.bytes,
-          contentType:
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          caption: CONTRACT_REVIEW_FALLBACK_ATTACH_CAPTION,
+          filename: params.document.filename,
+          bytes: params.document.bytes,
+          contentType: params.document.contentType,
+          caption: params.fallbackAttachCaption,
         },
         { throwOnError: true }
       );
     } catch (error) {
       console.warn(
-        "[notify] contract_review telegram: attach_best_effort_failed",
+        `[notify] ${params.logLabel} telegram: attach_best_effort_failed`,
         error
       );
     }
@@ -705,9 +699,115 @@ async function deliverContractReviewTelegram(params: {
   return { channel: "telegram", ok: true, status: "delivered" };
 }
 
-async function sendContractReviewDocumentAttempt(params: {
+async function deliverContractReviewTelegram(params: {
+  db: ReturnType<typeof createServerClient>;
+  userId: string;
   chatId: number;
-  document: { filename: string; bytes: Buffer };
+  payload: NotifyPayload;
+  text: string;
+  replyMarkup: TelegramReplyMarkup | undefined;
+}): Promise<NotifyChannelResult> {
+  const loaded = await loadContractReviewTelegramDocument({
+    db: params.db,
+    userId: params.userId,
+    payload: params.payload,
+  });
+  const document: HitlTelegramAttachableDocument | null = loaded
+    ? {
+        filename: loaded.filename,
+        bytes: loaded.bytes,
+        contentType:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }
+    : null;
+  const prepared = prepareContractReviewDocumentCaption(params.text);
+  const plan: ContractReviewTelegramDeliveryPlan =
+    contractReviewTelegramDeliveryPlan({
+      hasBytes: Boolean(document),
+      byteLength: document?.bytes.byteLength,
+      originalTextLength: params.text.length,
+      captionFitsWithoutTruncation: prepared.fitsWithoutTruncation,
+    });
+  return deliverHitlTelegramWithOptionalAttachment({
+    logLabel: "contract_review",
+    chatId: params.chatId,
+    text: params.text,
+    replyMarkup: params.replyMarkup,
+    document,
+    documentCaption: prepared.caption,
+    captionFitsWithoutTruncation: prepared.fitsWithoutTruncation,
+    fallbackAttachCaption: CONTRACT_REVIEW_FALLBACK_ATTACH_CAPTION,
+    buttonsOnlyFollowUpText: CONTRACT_REVIEW_BUTTONS_ONLY_FOLLOWUP_TEXT,
+    plan,
+  });
+}
+
+function loadListingDescriptionTelegramDocument(params: {
+  payload: NotifyPayload;
+  sourceNotificationMetadata: Record<string, unknown> | null;
+}): HitlTelegramAttachableDocument | null {
+  const txtContent =
+    typeof params.payload.data?.listing_description_txt === "string"
+      ? params.payload.data.listing_description_txt
+      : typeof params.sourceNotificationMetadata?.listing_description_txt ===
+          "string"
+        ? params.sourceNotificationMetadata.listing_description_txt
+        : "";
+  if (!txtContent.trim()) return null;
+  const filename =
+    (typeof params.payload.data?.listing_description_txt_filename === "string" &&
+      params.payload.data.listing_description_txt_filename.trim()) ||
+    (typeof params.sourceNotificationMetadata?.listing_description_txt_filename ===
+      "string" &&
+      params.sourceNotificationMetadata.listing_description_txt_filename.trim()) ||
+    "descripcion_comercial.txt";
+  const bytes = Buffer.from(txtContent, "utf-8");
+  if (bytes.byteLength === 0) return null;
+  if (bytes.byteLength > CONTRACT_REVIEW_TELEGRAM_SOFT_MAX_BYTES) {
+    console.warn(
+      `[notify] listing_description_review telegram document skipped: soft_cap bytes=${bytes.byteLength}`
+    );
+    return null;
+  }
+  return {
+    filename,
+    bytes,
+    contentType: "text/plain; charset=utf-8",
+  };
+}
+
+async function deliverListingDescriptionReviewTelegram(params: {
+  chatId: number;
+  payload: NotifyPayload;
+  text: string;
+  replyMarkup: TelegramReplyMarkup | undefined;
+  sourceNotificationMetadata: Record<string, unknown> | null;
+}): Promise<NotifyChannelResult> {
+  const document = loadListingDescriptionTelegramDocument({
+    payload: params.payload,
+    sourceNotificationMetadata: params.sourceNotificationMetadata,
+  });
+  // Do not compact the review body for a single-document attempt: only use
+  // document_with_actions when the full formatted review fits in a caption.
+  // Truncated commercial drafts almost always take text_with_actions_then_attach
+  // (rich preview + buttons, then .txt) — same UX as before, shared planner.
+  const captionFits = reviewTextFitsTelegramCaption(params.text);
+  return deliverHitlTelegramWithOptionalAttachment({
+    logLabel: "listing_description_review",
+    chatId: params.chatId,
+    text: params.text,
+    replyMarkup: params.replyMarkup,
+    document,
+    documentCaption: params.text,
+    captionFitsWithoutTruncation: captionFits,
+    fallbackAttachCaption: LISTING_DESCRIPTION_FALLBACK_ATTACH_CAPTION,
+    buttonsOnlyFollowUpText: LISTING_DESCRIPTION_BUTTONS_ONLY_FOLLOWUP_TEXT,
+  });
+}
+
+async function sendHitlTelegramDocumentAttempt(params: {
+  chatId: number;
+  document: HitlTelegramAttachableDocument;
   caption: string;
   replyMarkup: TelegramReplyMarkup | undefined;
 }): Promise<
@@ -721,8 +821,7 @@ async function sendContractReviewDocumentAttempt(params: {
       {
         filename: params.document.filename,
         bytes: params.document.bytes,
-        contentType:
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        contentType: params.document.contentType,
         caption: params.caption,
         replyMarkup: params.replyMarkup,
       },
@@ -738,8 +837,7 @@ async function sendContractReviewDocumentAttempt(params: {
           {
             filename: params.document.filename,
             bytes: params.document.bytes,
-            contentType:
-              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            contentType: params.document.contentType,
             caption: params.caption,
           },
           { throwOnError: true }

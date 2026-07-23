@@ -69,3 +69,19 @@ Reutiliza el modelo configurado por `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_I
 ## Relación con el clasificador de intake
 
 `classifyOperationalConversationMessage` (intake / start_case / deliver_documents) es **otra capa**, anterior o paralela al flujo conversacional. No es el árbitro de “decisión vs consulta” dentro de los gates HITL de negocio.
+
+## Adjuntos HITL en Telegram (patrón de transporte)
+
+Código: [`hitl-telegram-attachment-delivery.ts`](../../apps/web/src/lib/notify/hitl-telegram-attachment-delivery.ts) + ejecutor en `notify/index.ts`.
+
+Plan compartido para notificaciones con archivo opcional (`contract_review` DOCX, `listing_description_review` `.txt`):
+
+| Plan | Cuándo | UX Telegram |
+|------|--------|-------------|
+| `document_with_actions` | Hay bytes y el **texto completo** de revisión cabe en caption (≤1024) | Un mensaje: archivo + caption + botones |
+| `text_with_actions_then_attach` | Hay bytes pero el texto no cabe sin compactar | Texto formateado + botones, luego adjunto |
+| `text_only` | Sin bytes / soft-cap | Solo texto + botones |
+
+**No se compacta** el body de revisión de descripción para forzar un solo mensaje: si el excerpt truncado + instrucciones supera 1024 (caso típico), se usa `text_with_actions_then_attach` a propósito, para conservar negrillas/preview y el `.txt` completo.
+
+**Paridad web:** no hay `sendDocument`; el canal web persiste la notificación y expone el borrador completo vía metadata (`listing_description_txt`) / link de descarga (contrato). Misma semántica HITL, adaptador distinto.
