@@ -20,6 +20,8 @@
 
 Confidence levels: High / Medium / Low.
 
+**Related analysis (wording alignment, 2026-07-26):** This document still uses “durable workflow engine” for operational cases in the comparative sense of the Claude Code paper (durable multi-day state + events + locking + cron, which none of Claude Code / OpenClaw / Hermes ship as a first-class product plane). A later, deeper review of the same subsystem — [Gu OS Flexible Workflows Architecture Analysis](./gu-os-flexible-workflows-architecture-analysis.md) — qualifies that claim: `operational_flow_jsonb` *is* read at runtime to select the step’s skill, the intake successor, and BigQuery injection, but it is **not** the post-intake transition authority (those steps are model-proposed and code-guarded). Prefer that manual for workflow semantics, work graphs, impact/invalidation, and the evolution plan; prefer this one for agent-loop design, HITL, tenancy, and channel trust.
+
 ---
 
 ## 1. Executive Summary
