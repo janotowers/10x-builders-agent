@@ -24,6 +24,8 @@
 6. Case vocabulary and work vocabulary never mix (UI or schema).
 7. New shared runtime primitives live in a new **`packages/workflows`** package [D — name tentative] so `apps/web` and `packages/agent` consume the *same* evaluator/dispatcher/verifier objects (parity rule).
 8. Per-slice definition of done always includes: `npm run type-check` and `npm run lint` clean at root; affected selftest scripts green; new selftests wired into an npm script.
+9. Model selection for new agentic workers uses Technical Plan §9.1 (`model_policy_jsonb` + role `*_MODEL_ID` env defaults). Do not hardcode vendor model strings in workflow definitions.
+10. Workflow customization is **fork-with-lineage**, never silent shadow of a published global (mirrors `account_skills` ownership, not its collision semantics for published defs).
 
 **Verification commands:** `cd apps/web && npm run test:business-decisions` · `npm run test:readiness-test-ui` · `npm run test:publication-workflow` · `npm run test:step-decision` (etc. per `apps/web/package.json` L11–20); root `npm run type-check && npm run lint`.
 
@@ -107,16 +109,16 @@
 ### Slice 1.1 — `workflow_definitions` schema + case pinning
 
 **Status:** [ ] pending
-**Objective:** versioned definitions exist; every case is pinned.
+**Objective:** versioned definitions exist; every case is pinned; ownership/catalog fields leave room for private forks and multi-industry catalogs.
 
 **Tasks:**
-- [ ] 1. Migration `00064_workflow_definitions.sql` [D]: table per Technical Plan §5.1 (incl. `definition_hash`, `status` check, `unique (user_id, case_type, version)`), RLS per 0.5-5 convention.
+- [ ] 1. Migration `00064_workflow_definitions.sql` [D]: table per Technical Plan §5.1 — include `owner_scope`, `user_id`, reserved `organization_id`, `workflow_key`, `industry`, `domain_tags`, `derived_from_definition_id`, `derived_from_version`, `visibility`, `definition_hash`, ownership CHECK. **Do not** use `UNIQUE (user_id, case_type, version)` alone (NULL ≠ NULL). Use the two partial unique indexes from §5.1. RLS: globals readable by authenticated service paths; private rows only for owning `user_id` (match `account_skills` pattern).
 - [ ] 2. Migration `00065_operational_cases_definition_pin.sql` [D]: add nullable `workflow_definition_id uuid references workflow_definitions(id)`, `workflow_definition_version integer` to `operational_cases`.
-- [ ] 3. Backfill inside `00065`: for each `operational_case_types` row, insert a `workflow_definitions` v1 row with `graph_jsonb` = placeholder transformation marker (real transform lands in S1.2 — see ordering note below) — **or** sequence `00064`+transform+`00065` so the backfill writes real graphs. Decide at implementation: preferred order is S1.2 transformer built first, then one migration pass; if migrations must land earlier, backfill in a follow-up migration `00066`.
-- [ ] 4. `packages/db/src/queries/workflow-definitions.ts` [D]: `getPublishedDefinition(userId, caseType, version)`, `getLatestPublishedDefinition(userId, caseType)`, `insertDraftDefinition(...)`, `publishDefinition(...)` (immutability enforced: published rows never updated — publish = status flip of a `validated` row), all with required `userId`.
-- [ ] 5. Set pin at creation in `createOperationalCase` (`packages/db/src/queries/operational-cases.ts` L194): resolve latest published definition for the case type and stamp both columns.
+- [ ] 3. Backfill inside `00065`: for each `operational_case_types` row, insert a **global** `workflow_definitions` v1 (`owner_scope='global'`, `user_id` null, `industry='real_estate'`, `domain_tags={'real_estate','property_optioning'}`) with `graph_jsonb` = placeholder or real transform (prefer S1.2 first; else follow-up `00066`).
+- [ ] 4. `packages/db/src/queries/workflow-definitions.ts` [D]: `getPublishedDefinition`, `getLatestPublishedDefinitionForUser` (**resolution order:** user's latest published private for `case_type`, else latest published global), `insertDraftDefinition`, `forkDefinition(userId, sourceDefinitionId)` (copies graph/specs, sets lineage, `owner_scope='user'`), `publishDefinition` (immutability: published rows never updated). All take required `userId` except pure-global admin reads gated on `is_ungga_admin`.
+- [ ] 5. Set pin at creation in `createOperationalCase` (`packages/db/src/queries/operational-cases.ts` L194): use `getLatestPublishedDefinitionForUser` and stamp both columns.
 
-**Types:** add `WorkflowDefinition`, `WorkflowGraph` to `packages/types/src/` (new file `workflow-definitions.ts`, exported from `index.ts`). **Tests:** query selftest (insert draft → validate → publish → immutable), pin-on-create selftest. **Flags:** none — pinning is inert until the evaluator reads it. **Security:** RLS + required `userId`; service-role writes only. **Evidence:** every existing case backfilled to v1 (SQL count check); new case gets a pin. **Rollback:** columns nullable and unread; flag-off world unchanged. **Depends on:** 0.5-3, 0.5-5.
+**Types:** add `WorkflowDefinition`, `WorkflowGraph`, `WorkflowOwnerScope` to `packages/types/src/workflow-definitions.ts`. **Tests:** global uniqueness (two global same case_type+version rejected); private fork unique per user; fork lineage fields set; pin-on-create prefers private over global; publish immutability. **Flags:** none — pinning inert until evaluator reads it. **Security:** RLS + required `userId`; no cross-user private reads. **Evidence:** every existing case backfilled to global v1; new case gets a pin. **Rollback:** columns nullable and unread. **Depends on:** 0.5-3, 0.5-5.
 
 ### Slice 1.2 — `packages/workflows` package: graph schema + flow→graph transformer
 
@@ -314,16 +316,17 @@
 
 **Depends on:** 3.2.
 
-### Slice 3.4 — Worker profiles + first three workers
+### Slice 3.4 — Worker profiles + first three workers + model policy
 
 **Status:** [ ] pending
-- [ ] 1. Migration `00069_worker_profiles.sql` [D] per §9; queries module with required `userId`; no credentials fields.
-- [ ] 2. Register deterministic services: `publication_reconciliation` (wrap `publication-reconcile.ts` + `publication-remote-snapshot.ts`) and `extraction_consolidation` (extract the consolidation section of `property-optioning-post-agent-invariants.ts` behind an explicit input/output contract — refactor, not rewrite; keep the original callable until v2 owns it).
-- [ ] 3. Valuation verifier as `specialized_agent` [D]: isolated context = comparable set + property facts **only** (never the recommendation's reasoning); output pass/fail + findings; read-only tool surface (empty `allowed_tools` beyond read adapters); its evidence gates the price-recommendation artifact.
-- [ ] 4. Runtime scope enforcement: executor selection checks `allowed_tools`/`allowed_data_scopes` before dispatch (deny + `blocked_reason` on mismatch).
-- [ ] 5. Cost attribution events per attempt (profile, model, tokens, duration).
+- [ ] 1. Migration `00069_worker_profiles.sql` [D] per Technical Plan §9; queries module with required `userId`; no credentials fields.
+- [ ] 2. Register deterministic services: `publication_reconciliation` (wrap `publication-reconcile.ts` + `publication-remote-snapshot.ts`) and `extraction_consolidation` (extract the consolidation section of `property-optioning-post-agent-invariants.ts` behind an explicit input/output contract — refactor, not rewrite; keep the original callable until v2 owns it). Deterministic profiles have empty/ignored `model_policy_jsonb`.
+- [ ] 3. Valuation verifier as `specialized_agent` [D]: isolated context = comparable set + property facts **only** (never the recommendation's reasoning); output pass/fail + findings; read-only tool surface; evidence gates the price-recommendation artifact. Seed `model_policy_jsonb` with `role: valuation_verifier`, `model_alias: reasoning_high` (or `reasoning_standard` until upgrade criteria trip).
+- [ ] 4. Implement `ModelPolicyResolver` in `packages/workflows` (or `packages/agent/src/model.ts` extension) per Technical Plan §9.1: profile policy → role env (`WORKFLOW_VERIFIER_MODEL_ID`, etc.) → `MAIN_AGENT_MODEL_ID`. Add defaults/exports next to existing `DEFAULT_*_MODEL_ID` constants; document in `.env.example` / architecture notes (do not commit secrets).
+- [ ] 5. Runtime scope enforcement: executor selection checks `allowed_tools`/`allowed_data_scopes` before dispatch (deny + `blocked_reason` on mismatch).
+- [ ] 6. Cost attribution events per attempt (profile, **resolved model id**, tokens, duration). Record verifier false-accept/reject counters for the §9.1 upgrade criteria.
 
-**Depends on:** 2.4, 3.2. **Security:** scopes enforced at selection, not prompt; tenant inheritance from work item's `user_id` with no exceptions.
+**Depends on:** 2.4, 3.2. **Security:** scopes enforced at selection, not prompt; tenant inheritance from work item's `user_id`; model allowlist cannot point outside configured OpenRouter roles.
 
 ### Slice 3.5 — Impact view + case-view staleness indicators
 
@@ -341,23 +344,37 @@
 ### Slice 4.1 — Conservative intent decomposition
 
 **Status:** [ ] pending
-- [ ] 1. `apps/web/src/lib/business-decisions/intent-decomposer.ts` [D]: model-backed splitter (model role + zod schema following `operational-conversation-classifier.ts` conventions) with confidence floor; below floor ⇒ single intent = whole turn (today's behavior).
+- [ ] 1. `apps/web/src/lib/business-decisions/intent-decomposer.ts` [D]: model-backed splitter (zod schema following `operational-conversation-classifier.ts` conventions) with confidence floor; below floor ⇒ single intent = whole turn. Resolve model via `WORKFLOW_INTENT_DECOMPOSER_MODEL_ID` → `OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID` → `MAIN_AGENT_MODEL_ID` (§9.1).
 - [ ] 2. Run before the gate chain; each intent flows through the existing chain independently; results composed into one response (composition helper + selftest).
 - [ ] 3. Residual from 0.1 remains the safety net for anything the decomposer misses.
-- [ ] 4. Scenario selftests: A1/A2/B1/B2/D from Technical Plan §12 as fixtures (LLM-dependent assertions follow the existing classifier-selftest pattern for mocking/live-key gating [A — confirm how classifier selftests handle the API key]).
+- [ ] 4. Scenario selftests: A1/A2/B1/B2/D from Technical Plan §12 as fixtures (LLM-dependent assertions follow the existing classifier-selftest pattern for mocking/live-key gating [A — confirm how classifier selftests handle the API key]). Instrument residual/mis-split rates for model-upgrade criteria.
 
 **Depends on:** 0.1, 0.2; C-intents need 3.2 to land effects.
 
 ### Slice 4.2 — Compiler artifacts + gates + studio + publication
 
 **Status:** [ ] pending
-- [ ] 1. Spec artifacts: business spec + implementation spec + capability map schemas in `packages/workflows/src/compiler/` [D]; capability map resolves against skills catalog, `TOOL_CATALOG`, and worker profiles; unresolved = explicit gap list.
+- [ ] 1. Spec artifacts: business spec + implementation spec + capability map schemas in `packages/workflows/src/compiler/` [D]; capability map resolves against skills catalog, `TOOL_CATALOG`, and worker profiles; unresolved = explicit gap list. Compiler LLM uses `WORKFLOW_COMPILER_MODEL_ID` (§9.1).
 - [ ] 2. Validation gates: schema, acyclicity, reachability, capability resolution, permission validation, credential-shape rejection — each emits evidence records.
 - [ ] 3. Simulation gate: replay harness (1.6) + scenario suite against the draft definition.
-- [ ] 4. Studio UI (route family per §16 decision [H]): describe → clarify (bounded) → spec views → capability/gap panel → validation findings → simulation results → publish/reject (publication = §10.5-gated human approval; draft → validated → published).
+- [ ] 4. Studio UI (route family per §16 decision [H]): describe → clarify (bounded) → spec views → capability/gap panel → validation findings → simulation results → publish/reject. Support **fork from global template** into a private definition (Technical Plan §5.1.1) and show `industry` / `domain_tags` as catalog fields (not runtime switches).
 - [ ] 5. Retire `/settings/operational-case-types` authoring after the studio covers it (keep capability-lab diagnostics; redirect + deprecation notice first release).
 
-**Phase 4 exit checks:** [ ] A1/A2/B1/B2/D selftests pass · [ ] a non-engineer publishes a simple workflow that runs on a synthetic case · [ ] publication is evidence-gated + human-approved · [ ] settings lab authoring retired.
+**Phase 4 exit checks:** [ ] A1/A2/B1/B2/D selftests pass · [ ] a non-engineer creates/forks, validates, simulates, and publishes a simple workflow that runs on a synthetic case · [ ] publication is evidence-gated + human-approved · [ ] settings lab authoring retired.
+
+### Slice 4.3 — Skill package interoperability (deferred foundation; not a Phase 0–2 blocker)
+
+**Status:** [ ] pending · **Depends on:** Phase 4 compiler landing; ADR-011 draft accepted.
+**Objective:** document and, when prioritized, implement import-with-adaptation toward the portable skill package shape without allowing download-and-run scripts.
+
+**Tasks (when scheduled):**
+- [ ] 1. Write ADR-011 from Technical Plan §9.2 (portable core vs Gu extensions; quarantine; no silent activation).
+- [ ] 2. Design `account_skill_files` **or** object-storage bundle + manifest hash so private skills can carry `references/` / `assets/` (closes the `body_md`-only gap vs globals).
+- [ ] 3. Import pipeline stub: validate `SKILL.md` → map Gu fields → capability/gap report → human activation as `account_skills` (private) or global PR path.
+- [ ] 4. Scripts: accept into quarantine only; promotion path is “register deterministic_service”, never model-chosen arbitrary execution.
+- [ ] 5. Optional frontmatter `industry` / `domains` on Gu skills after parser schema bump (catalog only).
+
+**Do not** block Phases 0–3 on this slice.
 
 ---
 
@@ -370,9 +387,12 @@
 | 1 | 2026-07-26 | No CI and no root test aggregator exist (plan §25 assumes wiring is possible; it is — task 0.5-7) | Low | Taken: add `test:selftests` + GitHub Actions in 0.5-7 |
 | 2 | 2026-07-26 | No feature-flag framework (plan §24 [A] confirmed) | Medium | Needed: 0.5-4 mechanism decision |
 | 3 | 2026-07-26 | **Valuation methodology verified in repo** (closes former [H] on valuation inputs). Hard search filters for comparables are: `zona`/`neighborhood`, `operation`, `property_type`, area band from `area_construida_m2` (else `area_total_m2`) with residential strict −15%/+85% (`deriveComparableAreaBand` / `buildComparableSearchFilters` in `packages/agent/src/operational-cases/comparable-search-contract.ts`). Skill `perform-comparable-analysis` L100–101: "No uses recámaras/baños/estacionamientos ni topes de precio inventados como filtros duros." `sanitizeComparableSearchFilters` drops bedrooms/bathrooms/parking; selftest L57–58 and L164–168 assert they stay undefined. Pricing (`prepare-listing-price` / `pricing-proposal.ts`) prefers `price_per_m2` p25/p50 × subject area. Fallback ladder: `expanded` → `wide` → `location_only` (drops area, still not bedrooms). Avaclick is contrast/informational for casas/depto. | High (unlocks 3.2-3) | **Taken:** encode impact edges as in slice 3.2 task 3; C1/C2 acceptance criteria remain correct |
+| 4 | 2026-07-27 | Model selection for workers was only implied by empty `model_policy_jsonb`. | Medium | **Taken:** Technical Plan §9.1 + slices 3.4 / 4.1 / 4.2 — role env vars + resolver + evidence-based upgrades; main agent stays cheap |
+| 5 | 2026-07-27 | `UNIQUE (user_id, case_type, version)` would allow duplicate global definitions (NULL uniqueness). Private customization must not silently shadow published globals. | High | **Taken:** partial unique indexes + explicit `forkDefinition` lineage (Technical Plan §5.1 / §5.1.1; slice 1.1) |
+| 6 | 2026-07-27 | `account_skills` is body-only; globals already use Anthropic-like package dirs (`references/`, reserved `scripts/`). Marketplace import needs adaptation, not download-and-run. | Medium (Phase 4+) | **Taken:** Technical Plan §9.2 + ADR-011 + deferred slice 4.3; Phases 0–3 unblocked |
 | — | | *(append as found)* | | |
 
-**Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX).
+**Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3).
 
 ---
 

@@ -99,23 +99,64 @@ Eight planes, each owning one question (diagram and full rationale: analysis §6
 -- Tentative. Names illustrative.
 create table workflow_definitions (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid references profiles(id),        -- null = global
-  case_type text not null,
+  -- Ownership mirrors account_skills: null user_id = global template;
+  -- non-null = private to that user. owner_scope leaves room for organization later.
+  owner_scope text not null default 'global'
+    check (owner_scope in ('global','user','organization')),
+  user_id uuid references profiles(id),        -- null when owner_scope = global
+  organization_id uuid,                        -- reserved; unused until org-owned defs ship
+  case_type text not null,                     -- slug, e.g. property_optioning
+  workflow_key text not null,                  -- stable key within owner (often = case_type)
   version integer not null,
   status text not null check (status in ('draft','validated','published','deprecated')),
+  -- Catalog metadata only — never drives runtime semantics by itself.
+  industry text,                               -- e.g. real_estate | legal | insurance | automotive | education
+  domain_tags text[] not null default '{}',
   business_spec_jsonb jsonb not null default '{}',
   implementation_spec_jsonb jsonb not null default '{}',
   graph_jsonb jsonb not null,                  -- the executable artifact
   definition_hash text not null,               -- content hash; evidence pins to this
+  -- Explicit fork lineage (do not silently shadow a live global definition).
+  derived_from_definition_id uuid references workflow_definitions(id),
+  derived_from_version integer,
+  visibility text not null default 'private'
+    check (visibility in ('private','shared_template')),
   published_at timestamptz,
   published_by uuid references profiles(id),
   provenance_jsonb jsonb not null default '{}',-- compiler run, source text, approvals
   created_at timestamptz not null default now(),
-  unique (user_id, case_type, version)
+  check (
+    (owner_scope = 'global' and user_id is null) or
+    (owner_scope = 'user' and user_id is not null) or
+    (owner_scope = 'organization' and organization_id is not null)
+  )
 );
+
+-- Postgres UNIQUE treats NULLs as distinct, so a single UNIQUE (user_id, …)
+-- would allow duplicate globals. Use partial unique indexes instead.
+create unique index workflow_definitions_global_uniq
+  on workflow_definitions (case_type, version)
+  where user_id is null and owner_scope = 'global';
+create unique index workflow_definitions_user_uniq
+  on workflow_definitions (user_id, case_type, version)
+  where user_id is not null;
 ```
 
-`graph_jsonb` deliberately does **not** reuse the name `operational_flow_jsonb`: the existing column's own comment declares it non-runtime, and the rename prevents that ambiguity from carrying forward. Migration for v1 is a mechanical transformation of the existing flow JSON plus a version-1 row per case type.
+`graph_jsonb` deliberately does **not** reuse the name `operational_flow_jsonb`: the existing column's own comment declares it non-runtime, and the rename prevents that ambiguity from carrying forward. Migration for v1 is a mechanical transformation of the existing flow JSON plus a version-1 row per case type. `industry` / `domain_tags` are catalog filters only; methodology and impact edges stay inside `graph_jsonb` per workflow.
+
+### 5.1.1 Global templates vs private customizations [T/D]
+
+Skills already have this pattern: `skills/global/*` ∪ `account_skills` with account winning on slug collision (`packages/agent/src/skills/runtime.ts`, migration `00020`). Workflows follow the same ownership idea, but **customization is by explicit fork, not silent shadow of a published global**:
+
+```text
+Global property_optioning v3
+        ↓ fork (copy + lineage)
+Private property_optioning-custom v1
+  owner_scope = user, user_id = X
+  derived_from_definition_id = <global v3 id>
+```
+
+Rules: a published global is immutable; private forks pin their lineage and do not auto-adopt later global versions; adopting upstream changes is an explicit merge/rebase with human approval and a new private version; RLS / required `userId` keep private definitions invisible to other users. Organization-scoped definitions are reserved in the schema (`owner_scope = organization`) but not implemented until product decides whether brokerage-level sharing is required [H]. Resolution order when starting a case: user's latest published private definition for `case_type` if any, else latest published global.
 
 ### 5.2 Executable graph shape (tentative JSON contract)
 
@@ -267,6 +308,81 @@ create table worker_profiles (
 ```
 
 **Activation bar** [T]: a specialized worker requires at least two of — sustained parallelism, context isolation, materially different model/modality, independent verification, different tool permission set, long-running execution, failure isolation. **Introduce now:** the valuation/comparables verifier (independent verification + context isolation; read-only, cannot damage anything) and two deterministic services lifted from existing code (publication reconciliation; document-extraction consolidation). **Defer:** document extraction as worker, durable worker processes (hosting question), independent case-completion verification (define completion evidence first). Profiles never embed credentials (§21).
+
+### 9.1 Model policy: cheap default, stronger where evidence justifies it [T/D]
+
+Do **not** change the main-agent default to a frontier model. Gu OS keeps dense scaffolding around cheap models (`MAIN_AGENT_MODEL_ID`, today defaulting to `openai/gpt-5.4-mini`). Stronger models are selected **per worker role**, not as a global upgrade.
+
+**Resolution order** (first hit wins):
+
+1. `worker_profiles.model_policy_jsonb` (logical alias + budgets for that profile);
+2. Role env default (mirrors existing `*_MODEL_ID` pattern in `packages/agent/src/model.ts`);
+3. `MAIN_AGENT_MODEL_ID` as last resort for agentic modes only (never for deterministic services).
+
+**Role env vars to add** (alongside existing ones; names tentative):
+
+| Env var | Role | Typical use |
+|---|---|---|
+| `MAIN_AGENT_MODEL_ID` | main / case runner | keep cheap unless measured failure demands otherwise |
+| `WORKFLOW_VERIFIER_MODEL_ID` | valuation / independent verifiers | candidate for a stronger or different model |
+| `WORKFLOW_INTENT_DECOMPOSER_MODEL_ID` | multi-intent splitter | start on mini; upgrade only if A2/B/D fail |
+| `WORKFLOW_COMPILER_MODEL_ID` | NL → spec / clarify | higher judgment, low volume |
+
+**Tentative `model_policy_jsonb` shape:**
+
+```json
+{
+  "role": "valuation_verifier",
+  "model_alias": "reasoning_high",
+  "fallback_aliases": ["reasoning_standard"],
+  "max_output_tokens": 3000,
+  "temperature": 0,
+  "max_cost_cents_per_run": 8
+}
+```
+
+Aliases resolve through a central map in code (OpenRouter model ids), so definitions do not hardcode vendor strings. Tenant overrides are allowed only inside the global allowlist and the profile's `cost_ceiling_cents`.
+
+**Upgrade criteria (evidence, not preference):** false-accept / false-reject rate of the verifier; decomposer residual / mis-split rate on A2/B/D; human correction rate on compiler drafts; cost and latency per case. Promote a stronger model only when a metric crosses a stated threshold and a side-by-side replay shows improvement.
+
+### 9.2 Skills packaging: Gu contract vs portable ecosystem format [T/D]
+
+Gu OS skills are **not** limited to prose, and the plans do **not** require inventing a proprietary skill shape from scratch. The registry already follows the common package layout (`packages/agent/src/skills/registry.ts`):
+
+```text
+skills/global/<slug>/
+  SKILL.md          required
+  references/       optional — progressive disclosure via read_skill_reference
+  assets/           optional — ignored at load today
+  scripts/          reserved for V2+, ignored at load today
+```
+
+Slugs already follow the Anthropic Skills convention. Gu adds multi-tenant metadata the portable core does not know about: `scope`, `allowed_tools`, `includes`, `requires_tenant_context`, `memory_extraction`, `heartbeat`, `guardrails` (see `skills/global/skill-authoring/references/skill-contract.md`). Optional catalog metadata `industry` / `domains` may be added later to frontmatter the same way — parser is `.strict()`, so any new field needs an explicit schema bump.
+
+**Layering (do not collapse):**
+
+| Layer | Role |
+|---|---|
+| `SKILL.md` + `references/` | Policy, routing, progressive disclosure |
+| Tools / adapters (`packages/agent`) | Governed executable code (tenancy, HITL, audit) |
+| Deterministic / specialized workers | Capability-bound execution with verification contracts |
+| Workflow definition | Orchestrates skills/workers; never embeds inline code |
+
+Anthropic-style “skill with scripts the agent runs as black boxes” maps in Gu OS to **tools and registered deterministic services**, not to unrestricted `scripts/` execution. That is deliberate for multi-tenant SaaS: downloaded scripts are supply-chain code.
+
+**Interoperability target:** adapt toward the emerging package standard so external skills are *importable with adaptation*, never *executable on download*.
+
+```text
+Import package → identify format/license/provenance
+→ validate portable SKILL.md
+→ map into Gu extensions (tools, tenant, HITL, heartbeat)
+→ resolve capabilities / gap list
+→ quarantine scripts (no credentials, no free network)
+→ evals + human review
+→ activate as account_skill (private) or global template
+```
+
+**Private skill gap [V]:** `account_skills` stores only `body_md` + `metadata_jsonb` today — no `references/` / `assets/` / `scripts/` package. True import parity needs either `account_skill_files` or object-storage bundles with a manifest hash. That work is **Phase 4+ / post-compiler**, not a Phase 0–2 blocker; until then private skills remain single-file markdown (current product behavior). Scripts, if ever enabled, enter only as quarantined candidates that promote into registered deterministic services after review — never as model-chosen arbitrary execution.
 
 ---
 
@@ -453,7 +569,7 @@ All additive; nothing alters existing tables beyond nullable columns on `operati
 
 | Table | Plane | Introduced |
 |---|---|---|
-| `workflow_definitions` | Definition | Phase 1 |
+| `workflow_definitions` (incl. ownership, industry/domain_tags, fork lineage) | Definition | Phase 1 |
 | `operational_cases` + `workflow_definition_id/_version` | Case | Phase 1 |
 | `work_items`, `work_item_attempts`, `work_item_dependencies`, `work_item_events` | Work | Phase 2 |
 | `worker_profiles` | Worker | Phase 2 (rows in Phase 3) |
@@ -594,6 +710,8 @@ Definition of done per phase: §30.
 6. **Approval whose evidence changed:** re-derive then re-approve, or surface immediately and let the human decide? Determines whether repair work is automatic or human-triggered.
 7. ~~**Valuation methodology declaration**~~ — **Resolved 2026-07-26 [V]** from `perform-comparable-analysis` SKILL.md, `comparable-search-contract.ts` (`buildComparableSearchFilters` / `deriveComparableAreaBand` / `sanitizeComparableSearchFilters`), and `comparable-search-contract.selftest.ts`: hard inputs are zona, operation, property_type, and area band (`area_construida_m2` preferred, else `area_total_m2`; residential strict −15%/+85%); bedrooms/bathrooms/parking are explicitly not hard filters; pricing prefers `price_per_m2` × subject area. See detailed implementation plan §X finding 3.
 8. **Route/IA naming** for the workflow studio family (after navigation/role examination).
+9. **Owner of shared brokerage workflows** — user-private only for Phase 1–3, or implement `owner_scope = organization` earlier? Default: user + global only until brokerage multi-seat sharing is a real ask.
+10. **Skill import / marketplace** — when to build the import pipeline and `account_skill_files` storage; deferred past Phase 4 compiler unless a concrete partner skill pack appears sooner.
 
 ---
 
@@ -614,7 +732,7 @@ Definition of done per phase: §30.
 
 **Phase 0 done when:** a mixed-intent message produces a response acknowledging the unhandled part; an approval naming a different amount than the proposal clarifies instead of approving; no medium/high-risk tool executes from a scheduled task without an allowlist entry; volume/correction dashboards exist (rates accumulate in parallel); no `heartbeat` terminology remains for claim liveness in docs/plan/UI copy; §29 items 1, 3, 5, 6 answered.
 
-**Phase 1 done when:** every active case is pinned to a definition version; an illegal proposed transition is rejected with an appended event (enforcing mode, at least one tenant); historical replay of v1 cases through the evaluator produces identical terminal states; at least one lab check demonstrably executes the production evaluator against a pinned draft version; minimal evidence records exist for gate runs.
+**Phase 1 done when:** every active case is pinned to a definition version; global uniqueness prevents duplicate `(case_type, version)` globals; private fork + lineage works and resolution prefers private over global; an illegal proposed transition is rejected with an appended event (enforcing mode, at least one tenant); historical replay of v1 cases through the evaluator produces identical terminal states; at least one lab check demonstrably executes the production evaluator against a pinned draft version; minimal evidence records exist for gate runs.
 
 **Phase 2 done when:** a v2 case completes end to end with at least one parallel branch; §12.2-style equivalence holds against v1 on replay; claim contention and stale-claim recovery pass self-tests and a soak period with zero silent double-claims; abandoned attempts appear as `claim_expired` events; an item at `max_attempts` lands in `blocked` with a case notification; the operator work view is role-gated and uses the §10 liveness vocabulary.
 
@@ -638,10 +756,14 @@ Definition of done per phase: §30.
 8. SDD loop with failure classification to the owning artifact; evidence-gated states; bounded iterations.
 9. Lab evolution per analysis §11.8; production-primitive parity is non-negotiable.
 10. Pilot: brownfield, flagged, equivalence-first, new-cases-only, rollback by flag.
+11. Main agent stays on cheap models by default; stronger models are role/profile-scoped via env defaults + `model_policy_jsonb`, promoted only on evidence (§9.1).
+12. Workflow ownership mirrors skills: global templates + per-user private defs; customization is **explicit fork with lineage**, not silent shadow of a published global; partial unique indexes for NULL-safe global uniqueness (§5.1 / §5.1.1).
+13. `industry` / `domain_tags` are optional catalog metadata on definitions (and optionally skills later); they never invent runtime semantics.
+14. Skills stay on the portable package shape (`SKILL.md` + `references/` + reserved `scripts/`); Gu extensions carry tenancy/HITL/tools; external skills are imported with adaptation, never executed as downloaded scripts (§9.2).
 
 ### B. Unresolved decisions
 
-The eight [H] items in §28.
+The [H] items in §28 (including owner_scope for organizations and skill-import timing).
 
 ### C. Repository validations still required
 
@@ -656,17 +778,18 @@ Vercel-style serverless constraints persist (durable workers deferred on hosting
 1. **ADR-001** Workflow definition as runtime transition authority (advisory→enforcing rollout).
 2. **ADR-002** Work plane as separate tables; attempt-scoped claim/liveness fields.
 3. **ADR-003** Executor-liveness terminology and the `Gu OS Heartbeat` reservation.
-4. **ADR-004** Capability-based executor selection; worker profiles; activation bar.
+4. **ADR-004** Capability-based executor selection; worker profiles; activation bar; model-policy resolution (§9.1).
 5. **ADR-005** Evidence-bound approvals and suspension semantics.
 6. **ADR-006** Methodology-declared impact dependencies (no field-name inference).
 7. **ADR-007** Verification contracts as registry-composed checks; claims vs evidence.
 8. **ADR-008** Lab/testing parity: shared production primitives for execution, simulation, replay.
-9. **ADR-009** Definition versioning, active-case pinning, migration, and rollback.
+9. **ADR-009** Definition versioning, active-case pinning, migration, rollback; global vs private ownership and fork lineage (§5.1.1).
 10. **ADR-010** Tenant scoping as required parameters + RLS defense in depth on new planes.
+11. **ADR-011** Skill package interoperability: portable core + Gu extensions; import-with-adaptation; scripts quarantine; account skill file storage when import ships (§9.2).
 
 ### F. Proposed technical contracts (first drafts to write)
 
-`TransitionEvaluator`, `WorkDispatcher`, `ExecutorAdapter` (per execution mode), `VerificationRunner`, `ImpactEngine`, `IntentDecomposer` (§20); the `graph_jsonb` JSON Schema (§5.2); the verification-contract and reconciliation-query schemas (§13, §22); the evidence-record shape (§13).
+`TransitionEvaluator`, `WorkDispatcher`, `ExecutorAdapter` (per execution mode), `VerificationRunner`, `ImpactEngine`, `IntentDecomposer` (§20); the `graph_jsonb` JSON Schema (§5.2); the verification-contract and reconciliation-query schemas (§13, §22); the evidence-record shape (§13); `ModelPolicyResolver` (alias → OpenRouter id from env role defaults + `model_policy_jsonb`, §9.1); `forkWorkflowDefinition` / resolution order private-over-global (§5.1.1).
 
 ### G. Next specification package to create
 
