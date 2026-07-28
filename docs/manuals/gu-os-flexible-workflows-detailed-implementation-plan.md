@@ -26,6 +26,7 @@
 8. Per-slice definition of done always includes: `npm run type-check` and `npm run lint` clean at root; affected selftest scripts green; new selftests wired into an npm script.
 9. Model selection for new agentic workers uses Technical Plan §9.1 (`model_policy_jsonb` + role `*_MODEL_ID` env defaults). Do not hardcode vendor model strings in workflow definitions.
 10. Workflow customization is **fork-with-lineage**, never silent shadow of a published global (mirrors `account_skills` ownership, not its collision semantics for published defs).
+11. AI usage metering is internal observability, not billing: capture one append-only event per model call; do not add customer prices, credits, quotas, balances, invoices, billable-usage rules, or broker-facing usage UI.
 
 **Verification commands:** `cd apps/web && npm run test:business-decisions` · `npm run test:readiness-test-ui` · `npm run test:publication-workflow` · `npm run test:step-decision` (etc. per `apps/web/package.json` L11–20); root `npm run type-check && npm run lint`.
 
@@ -76,15 +77,19 @@
 ### Slice 0.4 — Instrumentation and metrics
 
 **Status:** [ ] pending
-**Objective:** the measurements the go/no-go thresholds need: case volume, step durations, correction frequency/targets, retry counts.
+**Objective:** establish the measurements the go/no-go thresholds need and close the existing predictable-cost gap with tenant-scoped, call-level AI usage attribution before new workers are introduced.
 
 **Tasks:**
 - [ ] 1. Derive step durations and volumes from existing data first: `operational_case_events` already timestamps `state_changed` — write read-only queries in `packages/db/src/queries/operational-case-metrics.ts` [D] (all take `userId` or an explicit admin-wide flag gated on `is_ungga_admin`).
-- [ ] 2. Add correction detection: count `operational_case_update_intake` writes that overwrite an existing non-null key (instrument at the adapter in `packages/agent/src/tools/operational-cases-adapters.ts` by appending event `fact_overwritten` [D] with key name — no behavior change).
-- [ ] 3. Minimal dashboard: extend the existing operational-cases admin page or add a settings section rendering the metrics queries (server component; no new client state). Keep it crude — the numbers matter, not the chrome.
-- [ ] 4. Wire the §23 counters skeleton (retry counts come with Phase 2; leave TODO markers referencing slice 2.3).
+- [ ] 2. Migration `00064_ai_usage_events.sql` [D]: create append-only `ai_usage_events` per Technical Plan §23.1 with required `user_id`, `provider`, `resource_type='ai_model'`, `operation`, `model_id`, `model_role`, token-category columns, reported/estimated cost in integer micro-USD, `currency`, `pricing_version`, latency/status/retry/provider-request fields, and nullable correlation IDs (`session_id`, `turn_id`, `operational_case_id`, future workflow/work IDs). Add indexes for `(user_id, occurred_at)`, `(user_id, turn_id)`, `(user_id, operational_case_id)`, and future attempt correlation. Do not add FKs to future tables. Add update/delete rejection trigger; RLS denies ordinary user reads/writes and follows the existing service-role + `is_ungga_admin` pattern for internal rollups.
+- [ ] 3. Add `AiUsageEventInput`, `AiUsageContext`, token/cost breakdown types in `packages/types/src/ai-usage.ts`; export from `packages/types/src/index.ts`. Add service-write and admin/tenant-rollup queries in `packages/db/src/queries/ai-usage.ts`, exported from `packages/db/src/index.ts`. `agent_sessions.budget_tokens_used` remains non-authoritative; optionally update it only as a derived compatibility counter.
+- [ ] 4. Create `packages/agent/src/usage/ai-usage-meter.ts` [D]: normalize LangChain/OpenRouter usage metadata, preserve reported and estimated cost separately, use a versioned model-price catalog only when provider cost is absent, and persist best-effort. Unknown token categories stay `null`. A metering write failure logs a structured error and increments a dropped-meter counter but never fails the user turn.
+- [ ] 5. Instrument the shared model boundary and inventory every bypass: model factories/callbacks in `packages/agent/src/model.ts`; graph main/selector/compaction calls; direct OpenRouter calls in `embeddings.ts`, `tools/realestate-adapters.ts`, `tools/operational-cases-adapters.ts`, and `tools/predial-extraction-probe.ts`; and model-backed classifiers/extractors under `apps/web/src/lib/`. Pass explicit `AiUsageContext` from web, Telegram, cron, operational-case cron, scheduled-task, and Gu OS Heartbeat entry points. One turn with N calls writes N events; retries increment `retry_ordinal`, never overwrite the first event.
+- [ ] 6. Add correction detection: count `operational_case_update_intake` writes that overwrite an existing non-null key (instrument at the adapter in `packages/agent/src/tools/operational-cases-adapters.ts` by appending event `fact_overwritten` [D] with key name — no behavior change).
+- [ ] 7. Add rollups by day, tenant, model, role, channel, turn, case, and workflow definition. Minimal internal/admin UI: extend the operational-cases admin surface with tokens/cost by day, cost per case, model/role distribution, most expensive calls, reported-vs-estimated coverage, retries/errors, and dropped-meter count. No broker-facing usage view.
+- [ ] 8. Wire the remaining §23 counters skeleton (work retry counts arrive in Phase 2; leave TODO markers referencing Slice 2.3).
 
-**Migrations:** none (event-based). **Tests:** selftest for the overwrite-detection helper. **Evidence:** dashboard shows volume + correction rate after the observation window; numbers recorded into the analysis's [E] gaps. **Rollback:** revert; events are inert. **Depends on:** nothing. **Note:** the *window* (1–2 weeks) runs in parallel with Phase 1 — do not block on it.
+**Files:** modify the call sites in task 5 and the relevant API/cron adapters; create migration, types, DB queries, usage meter, price-catalog fixture, and selftests. **Tests:** usage normalization fixtures for provider-reported usage/cost, estimated-cost fallback, cache/reasoning tokens, missing metadata, retry attribution, and persistence failure; tenant-isolation SQL/query selftest; overwrite-detection helper; representative main-agent, classifier, embedding, vision/copy, cron, and Gu OS Heartbeat calls each produce an attributable event. Assert no prompt/response/tool arguments enter `metadata_jsonb`. **Flags/compat:** `AI_USAGE_METERING_ENABLED` [D], off locally/test unless a fixture recorder is injected; enable per environment after migration. Metering failure never changes model-call behavior. **Security:** required `user_id`; service writes only; admin-wide reads gated; allowlisted metadata; no user content or secrets. **Evidence:** internal dashboard explains tokens/cost by model/role/channel/turn/case; reported-vs-estimated coverage and dropped-meter count visible; volume + correction rates accumulate. **Rollback:** disable flag; append-only rows remain inert audit data; revert UI/query consumers before dropping nothing. **Depends on:** nothing. **Scope:** AI-model usage only; explicitly no billing or customer pricing. **Note:** the 1–2 week observation window runs in parallel with Phase 1.
 
 ### Slice 0.5 — Repository validations and hygiene (Technical Plan §29)
 
@@ -112,9 +117,9 @@
 **Objective:** versioned definitions exist; every case is pinned; ownership/catalog fields leave room for private forks and multi-industry catalogs.
 
 **Tasks:**
-- [ ] 1. Migration `00064_workflow_definitions.sql` [D]: table per Technical Plan §5.1 — include `owner_scope`, `user_id`, reserved `organization_id`, `workflow_key`, `industry`, `domain_tags`, `derived_from_definition_id`, `derived_from_version`, `visibility`, `definition_hash`, ownership CHECK. **Do not** use `UNIQUE (user_id, case_type, version)` alone (NULL ≠ NULL). Use the two partial unique indexes from §5.1. RLS: globals readable by authenticated service paths; private rows only for owning `user_id` (match `account_skills` pattern).
-- [ ] 2. Migration `00065_operational_cases_definition_pin.sql` [D]: add nullable `workflow_definition_id uuid references workflow_definitions(id)`, `workflow_definition_version integer` to `operational_cases`.
-- [ ] 3. Backfill inside `00065`: for each `operational_case_types` row, insert a **global** `workflow_definitions` v1 (`owner_scope='global'`, `user_id` null, `industry='real_estate'`, `domain_tags={'real_estate','property_optioning'}`) with `graph_jsonb` = placeholder or real transform (prefer S1.2 first; else follow-up `00066`).
+- [ ] 1. Migration `00065_workflow_definitions.sql` [D]: table per Technical Plan §5.1 — include `owner_scope`, `user_id`, reserved `organization_id`, `workflow_key`, `industry`, `domain_tags`, `derived_from_definition_id`, `derived_from_version`, `visibility`, `definition_hash`, ownership CHECK. **Do not** use `UNIQUE (user_id, case_type, version)` alone (NULL ≠ NULL). Use the two partial unique indexes from §5.1. RLS: globals readable by authenticated service paths; private rows only for owning `user_id` (match `account_skills` pattern).
+- [ ] 2. Migration `00066_operational_cases_definition_pin.sql` [D]: add nullable `workflow_definition_id uuid references workflow_definitions(id)`, `workflow_definition_version integer` to `operational_cases`.
+- [ ] 3. Backfill inside `00066`: for each `operational_case_types` row, insert a **global** `workflow_definitions` v1 (`owner_scope='global'`, `user_id` null, `industry='real_estate'`, `domain_tags={'real_estate','property_optioning'}`) with `graph_jsonb` = placeholder or real transform (prefer S1.2 first; else follow-up `00067`).
 - [ ] 4. `packages/db/src/queries/workflow-definitions.ts` [D]: `getPublishedDefinition`, `getLatestPublishedDefinitionForUser` (**resolution order:** user's latest published private for `case_type`, else latest published global), `insertDraftDefinition`, `forkDefinition(userId, sourceDefinitionId)` (copies graph/specs, sets lineage, `owner_scope='user'`), `publishDefinition` (immutability: published rows never updated). All take required `userId` except pure-global admin reads gated on `is_ungga_admin`.
 - [ ] 5. Set pin at creation in `createOperationalCase` (`packages/db/src/queries/operational-cases.ts` L194): use `getLatestPublishedDefinitionForUser` and stamp both columns.
 
@@ -171,7 +176,7 @@
 **Objective:** gate runs produce persisted, hash-pinned evidence.
 
 **Tasks:**
-- [ ] 1. Migration `00066_evidence_records.sql` [D] per Technical Plan §13 (scrub rule: `detail_jsonb` passes through a secret-scrubber before insert — implement `packages/workflows/src/evidence.ts` with a redaction list seeded from env-var names).
+- [ ] 1. Migration `00068_evidence_records.sql` [D] per Technical Plan §13 (scrub rule: `detail_jsonb` passes through a secret-scrubber before insert — implement `packages/workflows/src/evidence.ts` with a redaction list seeded from env-var names).
 - [ ] 2. `packages/db/src/queries/evidence-records.ts`: `insertEvidenceRecord`, `listEvidenceForSubject` (required `userId`).
 - [ ] 3. Emit evidence from: transition selftest runs (S1.3) when executed via the lab, and replay runs (S1.6).
 
@@ -212,7 +217,7 @@
 **Objective:** `work_items`, `work_item_attempts`, `work_item_dependencies`, `work_item_events` exist per Technical Plan §7/§10.
 
 **Tasks:**
-- [ ] 1. Migration `00067_work_plane.sql` [D]: four tables exactly as Technical Plan §7/§10 (attempt-scoped claim/liveness fields; `last_liveness_at` comment "Unrelated to the Gu OS Heartbeat proactive-execution feature"; seven statuses; `unique (case_id, idempotency_key)`; deferred FK `work_items.current_attempt_id`).
+- [ ] 1. Migration `00069_work_plane.sql` [D]: four tables exactly as Technical Plan §7/§10 (attempt-scoped claim/liveness fields; `last_liveness_at` comment "Unrelated to the Gu OS Heartbeat proactive-execution feature"; seven statuses; `unique (case_id, idempotency_key)`; deferred FK `work_items.current_attempt_id`).
 - [ ] 2. Indexes: partial ready-dispatch, `(case_id, status)`, running-attempt `claim_expires_at`, `(depends_on_id)`.
 - [ ] 3. Append-only trigger on `work_item_events` (00019 pattern).
 - [ ] 4. RLS per 0.5-5 convention on all four.
@@ -286,7 +291,7 @@
 ### Slice 3.1 — Facts/artifacts/approvals schema
 
 **Status:** [ ] pending
-- [ ] 1. Migration `00068_impact_plane.sql` [D]: `case_facts` (append-only + trigger), `case_artifacts`, `artifact_inputs`, `case_approvals` per Technical Plan §11 / analysis §7.3; RLS convention.
+- [ ] 1. Migration `00070_impact_plane.sql` [D]: `case_facts` (append-only + trigger), `case_artifacts`, `artifact_inputs`, `case_approvals` per Technical Plan §11 / analysis §7.3; RLS convention.
 - [ ] 2. Queries `packages/db/src/queries/case-facts.ts`, `case-artifacts.ts`, `case-approvals.ts` [D] (required `userId`; fact insert supersedes prior via `superseded_by`, never updates).
 - [ ] 3. Types in `packages/types/src/impact.ts` (status vocab `current|stale|suspended|invalid|superseded`).
 
@@ -319,12 +324,12 @@
 ### Slice 3.4 — Worker profiles + first three workers + model policy
 
 **Status:** [ ] pending
-- [ ] 1. Migration `00069_worker_profiles.sql` [D] per Technical Plan §9; queries module with required `userId`; no credentials fields.
+- [ ] 1. Migration `00071_worker_profiles.sql` [D] per Technical Plan §9; queries module with required `userId`; no credentials fields.
 - [ ] 2. Register deterministic services: `publication_reconciliation` (wrap `publication-reconcile.ts` + `publication-remote-snapshot.ts`) and `extraction_consolidation` (extract the consolidation section of `property-optioning-post-agent-invariants.ts` behind an explicit input/output contract — refactor, not rewrite; keep the original callable until v2 owns it). Deterministic profiles have empty/ignored `model_policy_jsonb`.
 - [ ] 3. Valuation verifier as `specialized_agent` [D]: isolated context = comparable set + property facts **only** (never the recommendation's reasoning); output pass/fail + findings; read-only tool surface; evidence gates the price-recommendation artifact. Seed `model_policy_jsonb` with `role: valuation_verifier`, `model_alias: reasoning_high` (or `reasoning_standard` until upgrade criteria trip).
 - [ ] 4. Implement `ModelPolicyResolver` in `packages/workflows` (or `packages/agent/src/model.ts` extension) per Technical Plan §9.1: profile policy → role env (`WORKFLOW_VERIFIER_MODEL_ID`, etc.) → `MAIN_AGENT_MODEL_ID`. Add defaults/exports next to existing `DEFAULT_*_MODEL_ID` constants; document in `.env.example` / architecture notes (do not commit secrets).
 - [ ] 5. Runtime scope enforcement: executor selection checks `allowed_tools`/`allowed_data_scopes` before dispatch (deny + `blocked_reason` on mismatch).
-- [ ] 6. Cost attribution events per attempt (profile, **resolved model id**, tokens, duration). Record verifier false-accept/reject counters for the §9.1 upgrade criteria.
+- [ ] 6. Reuse the Phase 0 `ai_usage_events` ledger; populate `workflow_definition_id`, `work_item_id`, `work_item_attempt_id`, worker profile in allowlisted metadata, and the **resolved model id** for every model-backed attempt. Do not create a second worker-cost event store. Record verifier false-accept/reject counters for the §9.1 upgrade criteria.
 
 **Depends on:** 2.4, 3.2. **Security:** scopes enforced at selection, not prompt; tenant inheritance from work item's `user_id`; model allowlist cannot point outside configured OpenRouter roles.
 

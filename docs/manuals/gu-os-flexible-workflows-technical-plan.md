@@ -645,6 +645,38 @@ Work-item creation is idempotent via `idempotency_key` unique per case (safe und
 
 Phase 0 instrumentation (the measurements the go/no-go thresholds depend on): case volume; step durations; correction frequency and which facts; retry counts; verified- vs fluent-completion on unattended channels. Ongoing: per-attempt executor events with profile, model, tokens, duration (cost attribution); claim-contention and stale-claim counters; invalidation/repair counts and over-invalidation ratio (staled-but-repair-found-unnecessary); decomposer confidence distribution and residual rates; Temporal-revisit thresholds tracked explicitly (≈10k transitions/day; ≈500 concurrent cases; >15-min items; >20 definitions; exactly-once compliance need — any two ⇒ revisit).
 
+### 23.1 AI usage metering and cost attribution [T/D]
+
+Cost attribution starts in **Phase 0**, before the work plane exists. Waiting for Phase 3 worker profiles would leave the current main agent, selectors, classifiers, compaction, vision/copy models, cron, and Gu OS Heartbeat unmeasured. The atomic unit is one provider/model call — **not one turn** — because one turn can cause several calls and retries.
+
+Add an append-only `ai_usage_events` ledger [D; migration number fixed in the detailed plan]. Minimum fields:
+
+```text
+id, user_id, occurred_at
+provider, resource_type='ai_model', operation, model_id, model_role, channel
+session_id?, turn_id?, operational_case_id?
+workflow_definition_id?, workflow_definition_version?
+work_item_id?, work_item_attempt_id?
+input_tokens, output_tokens, cache_read_tokens?, cache_write_tokens?, reasoning_tokens?, total_tokens
+reported_cost_microusd?, estimated_cost_microusd?, currency='USD', pricing_version?
+latency_ms, status, retry_ordinal, provider_request_id?, metadata_jsonb
+```
+
+The Phase 0 migration stores future workflow/work identifiers as nullable correlation UUIDs without foreign keys; their tables do not exist yet and usage retention must not be coupled to deletion of operational entities. Phase 1–3 runtimes populate those fields when available. `agent_sessions.budget_tokens_used` is not the accounting source of truth; it may become a derived convenience counter.
+
+**Capture rules:**
+
+1. Prefer provider-reported usage and cost from OpenRouter/LangChain response metadata. Preserve `reported_cost_microusd` separately from `estimated_cost_microusd`; never overwrite one with the other.
+2. If cost is absent, estimate from a versioned model-price catalog captured by `pricing_version`. Historical events are never repriced using today's rates.
+3. Capture token categories separately where supplied (input, output, cache read/write, reasoning); unknown values remain `null`, never fabricated as zero.
+4. Instrument the shared model boundary/callback and inventory direct OpenRouter/raw-fetch paths so specialized calls do not bypass metering. Persistence failure is observable but does not fail the user turn; use bounded best-effort delivery and an explicit dropped-meter counter.
+5. Store no prompts, responses, tool arguments, credentials, or user content in usage events. `metadata_jsonb` is allowlisted operational metadata only.
+6. Every event is tenant-scoped by required `user_id`. Writes are service-role only; cross-tenant and ordinary end-user reads are denied. Admin-wide rollups require the existing `is_ungga_admin` gate.
+
+Daily rollups support internal views by tenant, model, role, channel, case, and workflow definition. Required diagnostics: tokens/cost by day; cost per case; distribution by model/role; most expensive calls; reported-vs-estimated coverage; retries/errors; dropped-meter count. Raw events remain the audit source.
+
+**Scope boundary:** this is internal AI observability and cost measurement, **not billing**. No customer prices, credits, quotas, balances, invoices, billable-usage rules, or broker-facing consumption UI enter this plan. The ledger uses `resource_type='ai_model'` plus an operation (`chat_completion`, `embedding`, `vision`, etc.) so later non-model provider costs can be added without redesign, but only AI-model usage is implemented now.
+
 Dashboards are hours of build; trustworthy rates need the observation window (§26).
 
 ---
@@ -673,7 +705,7 @@ Phases exit on **evidence**, not elapsed time. Two clocks per phase: *build effo
 
 | Phase | Content (dependency-ordered) | Build effort | Calendar / observation |
 |---|---|---|---|
-| **0 — Instrument & fix** | Metrics (§23); residual-intent field; price-approval amount mismatch; scheduled-task tool-risk allowlist; duplicate-migration cleanup; terminology cleanup (no "heartbeat" for liveness in code/docs/UI); §29 validation tasks | 1–3 days | 1–2 weeks metrics collection (parallel with Phase 1 build) |
+| **0 — Instrument & fix** | Metrics (§23), including per-model-call AI usage ledger + internal cost rollups; residual-intent field; price-approval amount mismatch; scheduled-task tool-risk allowlist; duplicate-migration cleanup; terminology cleanup (no "heartbeat" for liveness in code/docs/UI); §29 validation tasks | 2–4 days | 1–2 weeks metrics collection (parallel with Phase 1 build) |
 | **1 — Definition executable** | `workflow_definitions` + hash; flow→graph transformation to v1; case pinning; transition evaluator advisory→enforcing; historical replay; minimal `evidence_records`; lab re-anchored to pinned versions + production evaluator (fork closed) | 2–5 days | days–1 week advisory validation on real cases |
 | **2 — Work plane** | Work items/attempts/dependencies/events; readiness propagation; claims/leases/executor liveness/stale-claim recovery; attempt limits; dispatch generalization; advancement predicate; operator work view (+ first role gating) | 3–7 days | days of concurrency soak under flag |
 | **3 — Impact & workers** | Facts/artifacts/edges/evidence-bound approvals; selective invalidation + repair templates; worker profiles; valuation verifier + two deterministic services; impact view | 3–7 days | enough real corrections to calibrate over/under-invalidation |
@@ -695,7 +727,7 @@ Definition of done per phase: §30.
 | Dual dispatch paths during flag period | Time-box the overlap; equivalence-by-replay reduces reliance on parallel operation; explicit tolerance decision [H] |
 | Compiler emits valid-but-operationally-wrong definitions | Simulation gate + human publication approval; unimplementable business specs preserved as gap lists, not force-fitted |
 | Approval fatigue / habituation | Risk-justified gate list only (§3.10); differentiated inbox; boundaries over prompts |
-| Cost runaway in model-backed workers | `cost_ceiling_cents` per profile; attempt limits; cost attribution events |
+| Cost runaway or unexplainable AI spend | `cost_ceiling_cents` per profile; attempt limits; Phase 0 call-level usage ledger; reported-vs-estimated cost coverage; anomaly diagnostics |
 | Append-only growth with personal data | Retention policy before Phase 3 (§21) |
 
 ---
@@ -730,7 +762,7 @@ Definition of done per phase: §30.
 
 ## 30. Definition of done by phase
 
-**Phase 0 done when:** a mixed-intent message produces a response acknowledging the unhandled part; an approval naming a different amount than the proposal clarifies instead of approving; no medium/high-risk tool executes from a scheduled task without an allowlist entry; volume/correction dashboards exist (rates accumulate in parallel); no `heartbeat` terminology remains for claim liveness in docs/plan/UI copy; §29 items 1, 3, 5, 6 answered.
+**Phase 0 done when:** a mixed-intent message produces a response acknowledging the unhandled part; an approval naming a different amount than the proposal clarifies instead of approving; no medium/high-risk tool executes from a scheduled task without an allowlist entry; volume/correction dashboards exist (rates accumulate in parallel); representative main-agent, classifier, compaction, vision/copy, cron, and Gu OS Heartbeat model calls persist tenant-scoped usage events or are explicitly proven inapplicable; internal rollups explain tokens and cost by model/role/channel/turn/case with reported-vs-estimated coverage and dropped-meter visibility; no billing semantics or customer-facing usage UI is introduced; no `heartbeat` terminology remains for claim liveness in docs/plan/UI copy; §29 items 1, 3, 5, 6 answered.
 
 **Phase 1 done when:** every active case is pinned to a definition version; global uniqueness prevents duplicate `(case_type, version)` globals; private fork + lineage works and resolution prefers private over global; an illegal proposed transition is rejected with an appended event (enforcing mode, at least one tenant); historical replay of v1 cases through the evaluator produces identical terminal states; at least one lab check demonstrably executes the production evaluator against a pinned draft version; minimal evidence records exist for gate runs.
 
@@ -760,6 +792,7 @@ Definition of done per phase: §30.
 12. Workflow ownership mirrors skills: global templates + per-user private defs; customization is **explicit fork with lineage**, not silent shadow of a published global; partial unique indexes for NULL-safe global uniqueness (§5.1 / §5.1.1).
 13. `industry` / `domain_tags` are optional catalog metadata on definitions (and optionally skills later); they never invent runtime semantics.
 14. Skills stay on the portable package shape (`SKILL.md` + `references/` + reserved `scripts/`); Gu extensions carry tenancy/HITL/tools; external skills are imported with adaptation, never executed as downloaded scripts (§9.2).
+15. AI cost measurement is call-level, tenant-scoped, append-only, and begins in Phase 0; it is internal observability, not customer billing (§23.1).
 
 ### B. Unresolved decisions
 
