@@ -462,6 +462,20 @@ Shippable steps, each independent:
 
 Normative acceptance criteria: A1/A2 (side questions, including during sticky gates, must not depend on phrasing luck and must be recorded as released), B1/B2 (split effects; mismatch clarifies), D (no silent discard; partial success composed) — full text in analysis §12.5.
 
+### 12.1 Cross-channel continuity boundary [T/D]
+
+Web chat and Telegram already share internal-user decision routing and operational truth, but they retain separate sessions, short-term histories and channel-scoped case bindings. The governing design is [Gu OS Cross-channel Continuity Architecture](./gu-os-cross-channel-continuity-architecture.md).
+
+This plan preserves three distinct mechanisms:
+
+1. `case_id` + bindings for operational messages;
+2. user-scoped pending notifications + the shared decision router for HITL;
+3. a future, conservative antecedent resolver over recent turns/structured turn artifacts for general follow-ups such as “of the ten leads you showed me in web…”.
+
+The Phase 4 decomposer **wraps rather than replaces** the deterministic case/decision routers. Phases 0–3 do not depend on a universal conversation entity. A universal `conversation_id`, unified web/Telegram transcript and automatic ingestion of transient results into memory/Brain are explicitly **not approved**.
+
+Cross-channel antecedent resolution is evidence-gated Phase 4 backlog: activate it when real channel switches or a committed third interactive channel justify the complexity. It must use required `user_id`, bounded recency, structured result provenance, high-confidence single-candidate resolution and explicit clarification otherwise. Exact query result sets are transient turn artifacts with TTL, not durable memories.
+
 ---
 
 ## 13. Verification and evidence architecture [T/D]
@@ -709,7 +723,7 @@ Phases exit on **evidence**, not elapsed time. Two clocks per phase: *build effo
 | **1 — Definition executable** | `workflow_definitions` + hash; flow→graph transformation to v1; case pinning; transition evaluator advisory→enforcing; historical replay; minimal `evidence_records`; lab re-anchored to pinned versions + production evaluator (fork closed) | 2–5 days | days–1 week advisory validation on real cases |
 | **2 — Work plane** | Work items/attempts/dependencies/events; readiness propagation; claims/leases/executor liveness/stale-claim recovery; attempt limits; dispatch generalization; advancement predicate; operator work view (+ first role gating) | 3–7 days | days of concurrency soak under flag |
 | **3 — Impact & workers** | Facts/artifacts/edges/evidence-bound approvals; selective invalidation + repair templates; worker profiles; valuation verifier + two deterministic services; impact view | 3–7 days | enough real corrections to calibrate over/under-invalidation |
-| **4 — Multiplexer & compiler** | Conservative decomposition; per-intent dispatch; composition; business/implementation specs; capability mapping; simulation gates; governed publication; compiler studio absorbing verification/release surfaces; `/settings` lab retirement | multiplexer 2–5 days; compiler days–weeks (product-shaped) | UX iteration with the intended author [H] |
+| **4 — Multiplexer & compiler** | Conservative decomposition; per-intent dispatch; composition; evidence gate for cross-channel antecedent resolution (deferred unless activated); business/implementation specs; capability mapping; simulation gates; governed publication; compiler studio absorbing verification/release surfaces; `/settings` lab retirement | multiplexer 2–5 days; compiler days–weeks (product-shaped); antecedent resolver separately sized if activated | UX iteration with the intended author [H] |
 
 Definition of done per phase: §30.
 
@@ -728,6 +742,7 @@ Definition of done per phase: §30.
 | Compiler emits valid-but-operationally-wrong definitions | Simulation gate + human publication approval; unimplementable business specs preserved as gap lists, not force-fitted |
 | Approval fatigue / habituation | Risk-justified gate list only (§3.10); differentiated inbox; boundaries over prompts |
 | Cost runaway or unexplainable AI spend | `cost_ceiling_cents` per profile; attempt limits; Phase 0 call-level usage ledger; reported-vs-estimated cost coverage; anomaly diagnostics |
+| Wrong cross-channel case/antecedent association | Domain IDs before generic threads; deterministic stage evidence; one high-confidence candidate or clarify; tenant-scoped lookup; transient artifacts with provenance/TTL (§12.1) |
 | Append-only growth with personal data | Retention policy before Phase 3 (§21) |
 
 ---
@@ -744,6 +759,7 @@ Definition of done per phase: §30.
 8. **Route/IA naming** for the workflow studio family (after navigation/role examination).
 9. **Owner of shared brokerage workflows** — user-private only for Phase 1–3, or implement `owner_scope = organization` earlier? Default: user + global only until brokerage multi-seat sharing is a real ask.
 10. **Skill import / marketplace** — when to build the import pipeline and `account_skill_files` storage; deferred past Phase 4 compiler unless a concrete partner skill pack appears sooner.
+11. **Cross-channel antecedent resolver activation** — require evidence of web↔Telegram follow-up failures, a committed third interactive channel, or product prioritization. Until then preserve current case/HITL parity and collect examples; do not create a universal conversation entity (§12.1).
 
 ---
 
@@ -770,7 +786,7 @@ Definition of done per phase: §30.
 
 **Phase 3 done when:** C1 passes (listing artifacts `stale`, valuation/price approval `current`, contract work valid); C2 passes (valuation chain `stale`, approval `suspended`, revaluation work created); the valuation verifier runs read-only under its contract and its evidence gates the price recommendation; publication reconciliation and extraction consolidation execute as deterministic-service workers; over-invalidation ratio is measured.
 
-**Phase 4 done when:** Scenarios A1/A2/B1/B2/D pass as self-tests; a non-engineer creates, validates, simulates, and publishes a simple workflow that runs correctly on a synthetic case; publication is evidence-gated and human-approved; the readiness lab's authoring/verification concerns live in the studio and `/settings/operational-case-types` is retired.
+**Phase 4 done when:** Scenarios A1/A2/B1/B2/D pass as self-tests; a non-engineer creates, validates, simulates, and publishes a simple workflow that runs correctly on a synthetic case; publication is evidence-gated and human-approved; the readiness lab's authoring/verification concerns live in the studio and `/settings/operational-case-types` is retired. Cross-channel antecedent resolution is not an exit requirement unless §28.11 activates it; if activated, its web→Telegram and Telegram→web scenarios must pass without silent or cross-tenant association.
 
 ---
 
@@ -793,6 +809,7 @@ Definition of done per phase: §30.
 13. `industry` / `domain_tags` are optional catalog metadata on definitions (and optionally skills later); they never invent runtime semantics.
 14. Skills stay on the portable package shape (`SKILL.md` + `references/` + reserved `scripts/`); Gu extensions carry tenancy/HITL/tools; external skills are imported with adaptation, never executed as downloaded scripts (§9.2).
 15. AI cost measurement is call-level, tenant-scoped, append-only, and begins in Phase 0; it is internal observability, not customer billing (§23.1).
+16. Cross-channel continuity uses domain identities first: cases for operational turns, notifications for decisions, and evidence-gated turn artifacts for general antecedents; no universal `conversation_id` is approved (§12.1).
 
 ### B. Unresolved decisions
 

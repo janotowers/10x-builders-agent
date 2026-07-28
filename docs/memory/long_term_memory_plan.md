@@ -774,6 +774,21 @@ No se reescribe ni altera la lógica de `compaction_node`, `agent_node`, `toolEx
 - El nodo de inyección reescribe **solo** el contenido del primer `SystemMessage` (por `id`); cualquier otro mensaje queda como está.
 - El bloque `[MEMORIA DEL USUARIO]` pasa por `compaction_node` como parte del primer `SystemMessage`, que ya está en `keepIds`. Su tamaño está acotado (≤ 1500 chars) para no inflar la estimación de tokens que dispara la etapa 2 de compaction.
 
+### Límite de la continuidad cross-channel
+
+“Cruce de canales” en este plan significa que un **hecho durable** extraído en
+web puede recuperarse en Telegram (y viceversa). No significa que ambos canales
+compartan los últimos mensajes ni que el modelo pueda reconstruir exactamente
+una lista, query result, opción numerada o borrador transitorio producido en la
+otra sesión.
+
+No se debe ampliar `memory_flush` para guardar cada respuesta como memoria:
+contaminaría retrieval con datos efímeros/obsoletos y mezclaría memoria personal
+con resultados operacionales. Los follow-ups generales cross-channel se
+resolverán, si la evidencia los prioriza, mediante turnos recientes y
+**turn artifacts** tenant-scoped con provenance y TTL. Ver
+[Gu OS Cross-channel Continuity Architecture](../manuals/gu-os-cross-channel-continuity-architecture.md).
+
 ## Criterios de aceptación
 
 - Inyección: en un turno normal, el primer `SystemMessage` visto por `agent_node` contiene el bloque `[MEMORIA DEL USUARIO]` cuando hay recuerdos relevantes, y su contenido original se preserva íntegro.
@@ -783,7 +798,7 @@ No se reescribe ni altera la lógica de `compaction_node`, `agent_node`, `toolEx
 - Extracción: solo corre cuando hay ≥ `FLUSH_MIN_NEW_MESSAGES` sin flushear y al menos una señal (shift / count / idle). No corre si hay `pendingConfirmation`.
 - Watermark: tras un flush exitoso, `last_flushed_at` y `last_flushed_message_id` avanzan; tras un fallo (parse o embedding), no avanzan.
 - Dedup: dos turnos que describen el mismo hecho generan UN solo renglón en `memories` (por `UNIQUE (user_id, content_hash)`).
-- Cruce de canales: un recuerdo extraído en sesión Web aparece en búsqueda de sesión Telegram del mismo `user_id` (y viceversa).
+- Cruce de canales: un **recuerdo durable** extraído en sesión Web aparece en búsqueda de sesión Telegram del mismo `user_id` (y viceversa); este criterio no promete transcript ni result sets exactos compartidos.
 - Compaction: con inyección activa, las pruebas existentes de `compaction_node` siguen pasando (preservación del primer `SystemMessage`, `iterationCount`, etc.).
 
 ## Validación técnica

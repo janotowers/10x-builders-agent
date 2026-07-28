@@ -1994,6 +1994,20 @@ Decisiones conscientes de descartar para esta fase:
 >
 > **Benchmark upstream `[v1.5]`:** G Brain v0.42 exporta contrato publicado [`gbrain/ingestion`](https://github.com/garrytan/gbrain/blob/master/src/core/ingestion/index.ts) (`IngestionSource`), CLI `gbrain capture`, webhook `/ingest`, inbox folder, skillpacks por fuente ([`docs/skillpack-anatomy.md`](https://github.com/garrytan/gbrain/blob/master/docs/skillpack-anatomy.md)). Nuestro `SourceConnector` (abajo) debe ser **isomorfo en responsabilidades**, no copy-paste de API. Telegram externo de operational_cases hoy es conector **operacional**, no brain ingestion — no confundir.
 
+#### Frontera con continuidad conversacional cross-channel `[v1.5.2]`
+
+La Ingestion Layer resuelve **identidad de entidades entre fuentes** (“Carlos de
+WhatsApp = Carlos del CRM = Carlos de Calendar”) y convierte evidencia durable
+en candidatos para Memory/Graph/Signal. No resuelve a qué turno previo se refiere
+un mensaje como “de los diez leads que me diste en web”.
+
+Esa segunda tarea pertenece a la capa de interacción: routing de casos/HITL y,
+si se prioriza, resolución conservadora de antecedentes sobre turnos/artefactos
+recientes. Brain puede consumir posteriormente un artefacto canónico que tenga
+valor durable, pero no debe ser el transcript corto ni ingerir automáticamente
+cada lista/query result transitorio. Documento rector:
+[Gu OS Cross-channel Continuity Architecture](../manuals/gu-os-cross-channel-continuity-architecture.md).
+
 #### Por qué es una capa, no un parche por fuente
 
 La tentación natural cuando llega "necesitamos integrar EasyBroker" es escribir un script ad-hoc que importa leads y los inserta en `brain_pages`. Repetida esa decisión 8 veces (EasyBroker, WhatsApp, Drive, Calendar, Outlook, voice notes, Excel, scrapers), termina con 8 scripts incompatibles, sin contrato común, sin retry, sin dedupe cross-source, sin identity resolution. El **bootstrap problem** (cómo nace el brain de cada nuevo cliente) se vuelve el cuello de botella de adopción.

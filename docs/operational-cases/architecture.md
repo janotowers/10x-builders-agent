@@ -274,6 +274,24 @@ Reglas:
 - `paused` significa pausa deliberada; no representa intake pendiente. La espera
   conversacional se modela con el binding `awaiting_user`.
 
+### Paridad web/Telegram y límite cross-channel actual
+
+Las decisiones del **usuario interno** no requieren la bandeja web: web chat y
+Telegram ejecutan el mismo `resolvePendingDecisionTurn` antes del agente general.
+La bandeja **Pendientes** complementa el chat con descubrimiento, evidencia y
+acciones estructuradas; no es el único lugar para aprobar, corregir o responder.
+`property_data_review` del contacto externo permanece ligado a su chat Telegram
+y no contradice esta paridad interna.
+
+La continuidad operacional usa `case_id`, pero el binding conversacional actual
+sigue siendo **por canal**: el índice activo es `(case_id, channel)` y
+`findPendingConversationBindings` filtra por `channel`. Por ello una aclaración
+abierta en Telegram no está garantizada como aclaración pendiente al responder
+en web; el segundo canal puede re-derivar el caso o tratar el texto como general.
+Esto es una limitación conocida, no una razón para crear hoy una conversación
+universal. Dirección y criterios de activación:
+[Gu OS Cross-channel Continuity Architecture](../manuals/gu-os-cross-channel-continuity-architecture.md).
+
 ### Bindings rutables vs bindings crudos
 
 Los adapters (Telegram y web) **no** enrutan contra la lista cruda de bindings

@@ -27,6 +27,7 @@
 9. Model selection for new agentic workers uses Technical Plan §9.1 (`model_policy_jsonb` + role `*_MODEL_ID` env defaults). Do not hardcode vendor model strings in workflow definitions.
 10. Workflow customization is **fork-with-lineage**, never silent shadow of a published global (mirrors `account_skills` ownership, not its collision semantics for published defs).
 11. AI usage metering is internal observability, not billing: capture one append-only event per model call; do not add customer prices, credits, quotas, balances, invoices, billable-usage rules, or broker-facing usage UI.
+12. Cross-channel continuity follows [Gu OS Cross-channel Continuity Architecture](./gu-os-cross-channel-continuity-architecture.md): cases own operational continuity, notifications own pending decisions, and general antecedents use evidence-gated turn artifacts; do not invent a universal conversation thread.
 
 **Verification commands:** `cd apps/web && npm run test:business-decisions` · `npm run test:readiness-test-ui` · `npm run test:publication-workflow` · `npm run test:step-decision` (etc. per `apps/web/package.json` L11–20); root `npm run type-check && npm run lint`.
 
@@ -365,7 +366,7 @@
 - [ ] 4. Studio UI (route family per §16 decision [H]): describe → clarify (bounded) → spec views → capability/gap panel → validation findings → simulation results → publish/reject. Support **fork from global template** into a private definition (Technical Plan §5.1.1) and show `industry` / `domain_tags` as catalog fields (not runtime switches).
 - [ ] 5. Retire `/settings/operational-case-types` authoring after the studio covers it (keep capability-lab diagnostics; redirect + deprecation notice first release).
 
-**Phase 4 exit checks:** [ ] A1/A2/B1/B2/D selftests pass · [ ] a non-engineer creates/forks, validates, simulates, and publishes a simple workflow that runs on a synthetic case · [ ] publication is evidence-gated + human-approved · [ ] settings lab authoring retired.
+**Phase 4 exit checks:** [ ] A1/A2/B1/B2/D selftests pass · [ ] a non-engineer creates/forks, validates, simulates, and publishes a simple workflow that runs on a synthetic case · [ ] publication is evidence-gated + human-approved · [ ] settings lab authoring retired · [ ] if Slice 4.4 was activated, its cross-channel scenarios pass without silent/cross-tenant association.
 
 ### Slice 4.3 — Skill package interoperability (deferred foundation; not a Phase 0–2 blocker)
 
@@ -380,6 +381,22 @@
 - [ ] 5. Optional frontmatter `industry` / `domains` on Gu skills after parser schema bump (catalog only).
 
 **Do not** block Phases 0–3 on this slice.
+
+### Slice 4.4 — Cross-channel antecedent resolution (deferred; evidence-gated)
+
+**Status:** [ ] deferred · **Activation gate:** Technical Plan §28.11. Do not schedule solely because a future channel is imaginable.
+**Objective:** let an internal user safely continue a recent non-case result across web and Telegram (for example, “of the ten leads you showed me in web…”) without merging all channel histories or promoting transient results to memory.
+
+**Tasks (only when activated):**
+- [ ] 1. Baseline current behavior with fixtures: web→Telegram and Telegram→web for (a) unique recent result, (b) two ambiguous result sets, (c) missing/expired antecedent, (d) cross-tenant attempt, and (e) operational-case follow-up that must stay on existing case routing.
+- [ ] 2. Define `TurnArtifact` in `packages/types` and first try a bounded, allowlisted representation in existing `agent_messages.structured_payload` / `tool_calls.result_json`; create a new `turn_artifacts` table only if retention/query/security requirements cannot be met safely. Required fields follow the cross-channel architecture §5 (`user_id`, `turn_id`, channel/session, type, source tool, normalized scope, stable entity refs, provenance, TTL).
+- [ ] 3. Add `cross-channel-antecedent-resolver.ts` [D] before skill selection/per-intent dispatch: trigger only on referential language; search recent interactive sessions for the same `user_id`; rank by structural compatibility, entity/count/filter match and recency; return `resolved | clarify | missing`, never an unconstrained model guess.
+- [ ] 4. For dynamic warehouse results, re-query current data using the recovered entity/filter scope; disclose refresh/staleness. Do not reconstruct exact members from model prose or personal memory.
+- [ ] 5. Compose channel-neutral UX: “Retomando la lista consultada hoy en web…” on one high-confidence match; concise date/filter/channel options on ambiguity; request missing context otherwise.
+- [ ] 6. Instrument candidate count, auto-resolution, clarification, user correction, missing/expired and cross-channel direction. A wrong-association report disables auto-resolution by feature flag while clarification-only mode remains.
+- [ ] 7. Tests: tenant isolation, artifact expiry, no prompts/secrets in artifact metadata, no authority widening after channel switch, case/HITL routing precedence, exact ten-lead scenario in both directions.
+
+**Flags/compat:** `CROSS_CHANNEL_ANTECEDENTS_MODE=off|clarify_only|resolve` [D], default `off`; rollout per tenant after replay. **Security:** required tenant scope; verified internal Telegram account only; external-contact messages excluded; bounded artifact payload and retention. **Rollback:** set flag `off`; artifacts remain inert until retention cleanup. **Depends on:** 4.1; may reuse Phase 0 metrics and model policy. **Non-goals:** unified transcript UI, universal `conversation_id`, automatic channel-switch commands, durable-memory ingestion of every answer. **Phase impact:** optional unless the activation gate is taken.
 
 ---
 

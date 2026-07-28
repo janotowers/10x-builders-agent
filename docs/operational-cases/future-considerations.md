@@ -368,6 +368,44 @@ disparan `runSettingsTestCaseAgentTick` con side-effects de canal.
 lab (crear caso, intake, aclaración multi-caso, documento por Telegram como
 contacto externo).
 
+### 10.1 Continuidad cross-channel de casos (backlog evidence-gated)
+
+Documento rector:
+[Gu OS Cross-channel Continuity Architecture](../manuals/gu-os-cross-channel-continuity-architecture.md).
+
+**Lo que ya funciona:** `case_id` conserva la verdad operacional; web y Telegram
+comparten intake/routing y el router de decisiones del usuario interno. El usuario
+puede aprobar o corregir por chat en cualquiera de los dos canales; Pendientes es
+una superficie complementaria.
+
+**Gap acotado:** los bindings pendientes se consultan por canal. Cambiar de canal
+durante un intake o una aclaración puede perder la expectativa conversacional,
+aunque el caso siga intacto.
+
+**Opciones a evaluar antes de migrar schema:**
+
+1. Consulta cross-channel de bindings existentes por `(user_id, case_id)` con
+   dedupe y la misma lógica de candidatos.
+2. Un pending expectation user/case-scoped con endpoints de entrega separados.
+3. Mantener bindings por canal y crear el del segundo canal sólo cuando el
+   resolver encuentre un único caso stage-compatible.
+
+No elegir opción hasta ejecutar fixtures web→Telegram y Telegram→web. En todos
+los diseños: el caso es la identidad operacional; el endpoint no amplía
+permisos; un único candidato de alta confianza puede continuar; varios candidatos
+obligan a aclarar.
+
+**Gatillos para priorizar:**
+
+- reportes reales de cambio de canal durante intake/aclaración;
+- llegada comprometida de un tercer canal interactivo;
+- múltiples `case_type` concurrentes elevan aclaraciones fallidas;
+- métricas muestran pérdida/repetición material de datos por canal.
+
+El follow-up general a un resultado previo (“de los diez leads que me diste…”)
+es otro backlog: antecedent resolution + turn artifacts con TTL, no
+`operational_case` ni memoria durable.
+
 ---
 
 ## 11. Solicitud de documentos: rutas y vinculación externa

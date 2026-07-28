@@ -1099,6 +1099,27 @@ skills) y V1.6 (account_skills mínimo).
 `organizations`, memberships, optional dynamic multi-skill router and subagents;
 shared skills and integrations.
 
+### Cross-channel continuity (evidence-gated product capability)
+
+Web chat and Telegram already share user identity, operational cases, internal
+decisions and durable personal memory; they do not share exact short-term
+history. This roadmap does not treat Brain Layer as a transcript store.
+
+The recommended future increment is deliberately bounded:
+
+- operational follow-ups continue through `case_id` + conservative bindings;
+- decisions remain actionable in either chat via the shared pending router;
+- general references to a prior result use recent-turn antecedent resolution and
+  structured artifacts with TTL/provenance;
+- one high-confidence candidate may resolve automatically; ambiguity clarifies;
+- no universal `conversation_id` or unified transcript until multi-thread,
+  multi-party or committed new-channel evidence requires it.
+
+Prioritize after measured web↔Telegram failures or before a third interactive
+channel. It does not block Brain pages/graph/signals or flexible-workflows
+Phases 0–3. Canonical design:
+[Gu OS Cross-channel Continuity Architecture](manuals/gu-os-cross-channel-continuity-architecture.md).
+
 ---
 
 ## V4+ — Governance
