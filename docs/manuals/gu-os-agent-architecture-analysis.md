@@ -514,7 +514,7 @@ The decision is documented with activation criteria and anti-patterns ("'quiero 
 
 ### 9.12 Verification, evaluation, observability
 
-**Observability (can operators see?):** good for a system this size — `tool_calls` with `turn_id` and `executor_kind`, structured `AgentTurnEvent`s in UI ("Herramientas del turno", IA vs Determinístico badges), three local log files (turn/compaction/memory), Sentry present, friendly error surfacing. Gaps: logs are process-local files (lost on serverless); no token/cost accounting (only chars/4 estimates in logs); no tracing platform; SSE events not persisted (documented pending) **[B]**.
+**Observability (can operators see?):** good for a system this size — `tool_calls` with `turn_id` and `executor_kind`, structured `AgentTurnEvent`s in UI ("Herramientas del turno", IA vs Determinístico badges), three local log files (turn/compaction/memory), Sentry present, friendly error surfacing. **Partially closed (Slice 0.4 / 0.4.1–0.4.2):** append-only `ai_usage_events` ledger with per-call tokens/cost (OpenRouter reported + versioned catalog estimate), admin dashboard at `/settings/ai-usage` (`is_ungga_admin`; sidebar **Configuración → Uso de IA**). Flag: `AI_USAGE_METERING_ENABLED`. Internal observability only — not billing. Remaining gaps: logs are process-local files (lost on serverless); no distributed tracing platform; SSE events not persisted (documented pending) **[B]**.
 
 **Evaluation (was it correct?):** the honest answer — *deterministic contracts yes, semantic evaluation no*:
 - Strong: ~160 selftests over pure logic; N1–N5 readiness lab validating "reproducible business contracts, not just no-exception" [A: testing-framework §1]; publication preflight/reconcile checks against remote state (real environment ground-truth verification — the paper's "verify results" phase, implemented deterministically for the highest-stakes action) [B].
@@ -559,11 +559,11 @@ Global output cap: default 2048, configured 4096 (`OPENROUTER_MAX_TOKENS`). The 
 
 ### 9.15 Cost, token economics, latency, scale
 
-Economics are a stated design driver with real mechanisms (cheap models, output caps, metadata-only selector, microcompact, embedding reuse, 12-message windows, heartbeat model overrides, cron temp 0.1) — but **no measurement**: no per-turn token/cost capture from API responses, no per-tenant attribution, no budget alarms; the 402-fast-pause is the only cost circuit breaker [B]. Call-count anatomy per interactive turn: 1 selector + 1 embedding + N agent iterations (+ compaction rarely + flush occasionally) — a fixed ~2-call overhead per turn that is the price of auditable routing [B]. Latency: selector + embedding are serial pre-graph additions (~hundreds of ms each [D]); acceptable for chat, immaterial for cron.
+Economics are a stated design driver with real mechanisms (cheap models, output caps, metadata-only selector, microcompact, embedding reuse, 12-message windows, heartbeat model overrides, cron temp 0.1). **Measurement (Slice 0.4+):** one append-only row per model call in `ai_usage_events` with tenant attribution, provider-reported cost when available, catalog estimate for comparison/fallback, and admin rollups by day/model/function/channel/execution/case — see [`docs/tools-design/model-providers.md`](../tools-design/model-providers.md) and `/settings/ai-usage`. Still absent: budget alarms and broker-facing usage UI; the 402-fast-pause remains the only automated cost circuit breaker [B]. Call-count anatomy per interactive turn: 1 selector + 1 embedding + N agent iterations (+ compaction rarely + flush occasionally) — a fixed ~2-call overhead per turn that is the price of auditable routing [B]. Latency: selector + embedding are serial pre-graph additions (~hundreds of ms each [D]); acceptable for chat, immaterial for cron.
 
 Scale posture: explicitly small-scale with documented degradation signals and escalation levers (batch caps, concurrency env caps, stagger guidance, "when to consider Temporal") — the *plan* for scale substitutes for scale engineering, which is the right call pre-product-market-fit [A].
 
-**Verdict:** HARDEN measurement (P2: persist token usage per turn from OpenRouter responses — near-zero effort, unblocks the "predictable costs" requirement); otherwise KEEP.
+**Verdict:** KEEP measurement mechanisms (ledger + dashboard); optional P2: budget alarms. Otherwise KEEP.
 
 ### 9.16 Governance, auditability, compliance
 
@@ -685,7 +685,7 @@ Fundamental (not implementation mistakes):
 | R6 | No CI — selftests unenforced | Process gap | [B] no workflows | Any regression | High | Medium | Medium | Convention | Wire selftests+type-check to CI | **P2** |
 | R7 | Stale scheduled-task lease after crash mid-run | Reliability (suspected) | [E] `markTaskRunning` sets paused; reclamation not found | Process crash during run | Low | Medium (task frozen) | Medium (UI shows "Ejecutándose") | Manual resume | Verify; add lease TTL reclamation | P2 |
 | R8 | Single-process state (SSE, logs, caches, registry) | Scaling risk | [B]; docs acknowledge SSE persistence pending | Multi-instance deploy | Certain at that point | Medium | High | Documented | Redis/DB-backed events + log shipping when scaling | P2→P1 on scale |
-| R9 | No cost/token measurement | Requirement gap ("predictable costs") | [B] | Growth | High | Medium | — | Output caps | Persist usage per turn; per-tenant rollups | P2 |
+| R9 | Budget alarms / broker usage UI (measurement done) | Requirement gap (partial) | [B] Slice 0.4+ `ai_usage_events`, `/settings/ai-usage` | Growth without spend guardrails | High | Medium | High (admin dashboard) | Ledger + rollups; output caps | Budget thresholds; optional broker-facing view | P2 |
 | R10 | Catalog risk misclassification silently removes HITL | Config hazard | [D] single-plane config | Human error on new tool | Low | High | Low | Review | Risk-lint (writes⇒≥medium) + test | P2 |
 | R11 | Mega-file accumulation (realestate 9.6k, telegram 3.7k, graph 2.8k) | Tech debt | [B] | Continued growth | High | Low-Med (velocity) | High | Selftests | Split by domain seams | P3 |
 | R12 | No retention/deletion machinery | Compliance (future) | [B/E] | Enterprise/regulatory demand | Medium | Medium | — | — | Design on trigger; stamp versions now | P3 |
@@ -800,7 +800,7 @@ Note: rows 1–4 are *evaluators*; rows 5–8 are *observability*. Both are need
 | Models: gpt-4o-mini main / haiku aux / 2048 cap for credit reservation | B | High | README env table | `model.ts` L27–47, L96–151 | Economic rationale in comments |
 | Docs deliberately reject thin-harness/Obsidian/marketplace/script-skills | A | High | `agentic-principles-alignment.md` §8; roadmap "Qué NO copiar" | — | Design-point self-awareness |
 | Deep readiness testing (N0–N5) validating business contracts | A+B | High | `docs/operational-cases/testing-framework.md` | `/api/tool-readiness/*`; `operational-case-tests` | Evaluation of *procedures*, not model outputs |
-| No token/cost measurement | B | High | — | absence in `model.ts`/`turn_log.ts` (chars/4 only) | Contradicts "predictable costs" requirement maturity |
+| AI usage ledger + admin dashboard (Slice 0.4+) | B | High | `docs/tools-design/model-providers.md`; flexible-workflows plan §0.4 | `ai_usage_events`, `/settings/ai-usage` | Internal observability; not billing; flag-gated |
 
 ---
 

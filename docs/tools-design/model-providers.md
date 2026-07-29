@@ -117,7 +117,7 @@ El ledger `ai_usage_events` prefiere el costo facturado de OpenRouter (`usage.co
 3. El costo operativo del dashboard es **contabilizado** = `reported ?? estimated ?? 0` por evento; reportado y estimado pueden coexistir en la misma fila para comparación, pero no se suman.
 4. Filas históricas con `pricing_version = '2026-07-29.1'` se reproducen contra ese snapshot aunque el catálogo activo sea más nuevo.
 
-Dashboard interno: `/settings/ai-usage` (admin Ungga). Flag: `AI_USAGE_METERING_ENABLED=true`.
+Dashboard interno: `/settings/ai-usage` (admin Ungga; sidebar **Configuración → Uso de IA**). Exploración interactiva: filtros client-side, ventana `?days=7|30|90`, rollups por proveedor/función/ejecución/caso. Flag: `AI_USAGE_METERING_ENABLED=true`.
 
 ## Relación con otros documentos
 

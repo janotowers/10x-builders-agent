@@ -210,6 +210,22 @@ Migraciones en `packages/db/supabase/migrations/`:
 - `00014_heartbeat_runs.sql` — extiende `agent_sessions.channel` con `heartbeat` y crea `heartbeat_runs` con RLS/índices.
 - `00015_scheduled_tasks_display_fields.sql` — agrega `user_request` y `display_title` a `scheduled_tasks` para UI legible.
 - `00052_telegram_webhook_updates.sql` — ledger de idempotencia por `update_id` de Telegram (`processing` / `completed`, `turn_id`) para evitar respuestas duplicadas cuando el webhook se reentrega.
+- `00064_ai_usage_events.sql` — ledger append-only de llamadas a modelos (tokens/costo por evento; observabilidad interna, no billing). Ver sección *Uso de IA* abajo.
+
+## Uso de IA (observabilidad interna)
+
+Medición de llamadas a modelos (Slice 0.4 / flexible-workflows plan). **No es facturación** ni UI para brokers.
+
+| Pieza | Detalle |
+| --- | --- |
+| Tabla | `ai_usage_events` — una fila por llamada; append-only (trigger anti-update/delete) |
+| Flag | `AI_USAGE_METERING_ENABLED=true` en el server (ver `apps/web/.env.example`) |
+| Escritura | Service role desde rutas/crons (`packages/agent/src/usage/ai-usage-meter.ts`) |
+| Lectura admin | `/settings/ai-usage` — solo `profiles.is_ungga_admin`; sidebar **Configuración → Uso de IA** |
+| Costo contabilizado | `reported_cost_micro_usd ?? estimated_cost_micro_usd ?? 0` por evento |
+| Catálogo | Snapshots inmutables en `packages/agent/src/usage/catalogs/` — ver [`docs/tools-design/model-providers.md`](tools-design/model-providers.md) |
+
+Requisitos para activar: migración `00064` aplicada + flag en entorno. Rollback: desactivar flag; filas existentes quedan como auditoría inerte.
 
 ## Seguridad
 
