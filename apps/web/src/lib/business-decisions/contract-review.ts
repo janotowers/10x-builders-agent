@@ -33,6 +33,11 @@ export type ParsedContractReviewDecision = {
   intent: ContractReviewIntent;
   change_notes?: string;
   reason?: string;
+  /**
+   * Remanente del texto que el parser NO consumió (slice 0.1, preservación de
+   * intención residual). `null` cuando la decisión consumió todo el texto.
+   */
+  residual?: string | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -68,10 +73,20 @@ export async function runDeferredContractControlledE2ETick(
 }
 
 export function parseContractReviewDecision(text: string): ParsedContractReviewDecision {
-  const normalized = text.trim().toLowerCase();
+  const trimmed = text.trim();
+  const normalized = trimmed.toLowerCase();
   if (!normalized) {
     return { intent: "unclear", reason: "Respuesta vacía." };
   }
+
+  // Slice 0.1: la parte del texto que el patrón de decisión no cubrió se
+  // reporta como remanente para que la respuesta lo reconozca.
+  const residualAfterMatch = (match: RegExpMatchArray): string | null => {
+    if (match.index == null) return null;
+    const remainder =
+      `${trimmed.slice(0, match.index)} ${trimmed.slice(match.index + match[0].length)}`;
+    return remainder.trim() ? remainder : null;
+  };
 
   const approveSendPatterns = [
     /^(s[ií]|ok|va|dale|perfecto)\s*[,.]?\s*(m[aá]ndalo|env[ií]alo|enviar|mandar)/i,
@@ -83,8 +98,11 @@ export function parseContractReviewDecision(text: string): ParsedContractReviewD
     /enviar\s+por\s+email/i,
     /enviar\s+por\s+correo/i,
   ];
-  if (approveSendPatterns.some((pattern) => pattern.test(normalized))) {
-    return { intent: "approve_send" };
+  for (const pattern of approveSendPatterns) {
+    const match = trimmed.match(pattern);
+    if (match) {
+      return { intent: "approve_send", residual: residualAfterMatch(match) };
+    }
   }
 
   const changePatterns = [
@@ -95,14 +113,20 @@ export function parseContractReviewDecision(text: string): ParsedContractReviewD
     /contrato\s+corregido\s+y\s+enviar/i,
   ];
   if (changePatterns.some((pattern) => pattern.test(normalized))) {
+    // Las notas de cambio consumen todo el texto: sin remanente.
     return {
       intent: "request_changes",
-      change_notes: text.trim(),
+      change_notes: trimmed,
+      residual: null,
     };
   }
 
-  if (/^(aprobar|aprobado|apruebo)(\s+contrato)?\b/i.test(normalized)) {
-    return { intent: "approve_send" };
+  const bareApproveMatch = trimmed.match(/^(aprobar|aprobado|apruebo)(\s+contrato)?\b/i);
+  if (bareApproveMatch) {
+    return {
+      intent: "approve_send",
+      residual: residualAfterMatch(bareApproveMatch),
+    };
   }
 
   return {

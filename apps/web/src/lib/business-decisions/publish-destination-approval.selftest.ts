@@ -19,7 +19,7 @@ assert.match(
     destination: "ungga",
     decision: "approved",
   }),
-  /ya estaba aprobada.*Reintentar publicación en Ungga/s
+  /ya estaba aprobada[\s\S]*Reintentar publicación en Ungga/
 );
 assert.ok(
   formatPublishDestinationDecisionAck({

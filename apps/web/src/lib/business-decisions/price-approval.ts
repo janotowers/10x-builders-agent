@@ -8,6 +8,7 @@ import {
   type DbClient,
 } from "@agents/db";
 import { isControlledE2EOperationalCase } from "@agents/types";
+import { removeConsumedSegments } from "./residual-intent";
 
 type PriceDecisionIntent = "approve" | "adjust" | "reject" | "unclear";
 
@@ -19,6 +20,23 @@ type ParsedPriceDecision = {
     minimo?: number;
   };
   reason?: string;
+  /**
+   * Monto nombrado junto a una aprobación simple ("Aprobar $4.8 millones").
+   * Slice 0.2: si difiere de la propuesta registrada, el handler aclara en
+   * lugar de aprobar.
+   */
+  approvalAmount?: number | null;
+  /**
+   * Escalas plausibles del monto nombrado cuando no trae unidad explícita
+   * ("aprobar 4.8" → 4.8 | 4,800 | 4,800,000). La comparación con la
+   * propuesta es de igualdad exacta contra cualquiera de los candidatos.
+   */
+  approvalAmountCandidates?: number[];
+  /**
+   * Remanente del texto que el parser NO consumió (slice 0.1). El router lo
+   * convierte en `ResidualIntent` para reconocerlo en la respuesta.
+   */
+  residual?: string | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -36,34 +54,110 @@ function parseAmount(value: string) {
   return parsed < 1000 ? parsed * 1000 : Math.round(parsed);
 }
 
-function extractField(text: string, field: "salida" | "ideal" | "minimo") {
+type FieldMatch = {
+  value: number;
+  segment: { index: number; length: number };
+};
+
+function extractFieldWithMatch(
+  text: string,
+  field: "salida" | "ideal" | "minimo"
+): FieldMatch | null {
   const patterns = [
     new RegExp(`${field}\\s*[:=]?\\s*\\$?\\s*([\\d.,]+\\s*(?:mil|k)?)`, "i"),
     new RegExp(`${field}\\s+(?:a|en)\\s+\\$?\\s*([\\d.,]+\\s*(?:mil|k)?)`, "i"),
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match?.[1]) return parseAmount(match[1]);
+    if (match?.[1] && match.index != null) {
+      const value = parseAmount(match[1]);
+      if (value != null) {
+        return {
+          value,
+          segment: { index: match.index, length: match[0].length },
+        };
+      }
+    }
   }
   return null;
 }
 
+/**
+ * Monto nombrado en texto libre tras una aprobación ("$4.8 millones",
+ * "5,200,000", "4.8 mdp", "500 mil"). Devuelve valores candidatos ya
+ * normalizados: con unidad explícita hay un único candidato; sin unidad se
+ * consideran las escalas plausibles (literal, miles, millones) porque la
+ * comparación posterior es de igualdad exacta, nunca difusa.
+ */
+export function extractApprovalAmount(text: string): {
+  candidates: number[];
+  segment: { index: number; length: number };
+} | null {
+  const pattern =
+    /(?:^|[\s,;:])(?:en\s+|a\s+|por\s+)?\$?\s*(\d[\d.,]*)\s*(millones|millón|millon|mdp|mil|k|m)?(?=[\s,;.]|$)/i;
+  const match = text.match(pattern);
+  if (!match?.[1] || match.index == null) return null;
+  const numericRaw = match[1].replace(/,/g, "");
+  const base = Number(numericRaw);
+  if (!Number.isFinite(base) || base <= 0) return null;
+  const unit = match[2]?.toLowerCase() ?? null;
+  let candidates: number[];
+  if (unit === "millones" || unit === "millón" || unit === "millon" || unit === "mdp" || unit === "m") {
+    candidates = [Math.round(base * 1_000_000)];
+  } else if (unit === "mil" || unit === "k") {
+    candidates = [Math.round(base * 1_000)];
+  } else {
+    // Sin unidad: "4,800,000" es literal; "4800" podría ser miles; "4.8"
+    // podría ser millones. Igualdad exacta contra la propuesta decide.
+    candidates = [...new Set([base, base * 1_000, base * 1_000_000])].map(
+      (value) => Math.round(value)
+    );
+  }
+  return {
+    candidates,
+    segment: { index: match.index, length: match[0].length },
+  };
+}
+
 export function parsePriceApprovalDecision(text: string): ParsedPriceDecision {
-  const normalized = text.trim().toLowerCase();
+  const trimmed = text.trim();
+  const normalized = trimmed.toLowerCase();
   if (!normalized) return { intent: "unclear", reason: "Respuesta vacia." };
-  if (/^(aprobar|aprobado|apruebo|ok|va|sí|si)(\s+precio)?\b/i.test(normalized)) {
-    return { intent: "approve" };
+  const approveMatch = trimmed.match(
+    /^(aprobar|aprobado|apruebo|ok|va|sí|si)(\s+(el\s+)?precio)?\b/i
+  );
+  if (approveMatch) {
+    const remainder = trimmed.slice(approveMatch[0].length);
+    const amount = extractApprovalAmount(remainder);
+    const residualRaw = amount
+      ? removeConsumedSegments(remainder, [amount.segment])
+      : remainder;
+    return {
+      intent: "approve",
+      approvalAmount: amount ? amount.candidates[0] : null,
+      ...(amount ? { approvalAmountCandidates: amount.candidates } : {}),
+      residual: residualRaw.trim() ? residualRaw : null,
+    };
   }
   if (/^(rechazar|rechazo|no aprobar|no apruebo|cancelar)(\s+precio)?\b/i.test(normalized)) {
-    return { intent: "reject", reason: text.trim() };
+    // El resto del texto se consume como motivo del rechazo.
+    return { intent: "reject", reason: trimmed, residual: null };
   }
+  const fieldMatches: Partial<Record<"salida" | "ideal" | "minimo", FieldMatch>> = {
+    salida: extractFieldWithMatch(trimmed, "salida") ?? undefined,
+    ideal: extractFieldWithMatch(trimmed, "ideal") ?? undefined,
+    minimo: extractFieldWithMatch(trimmed, "minimo") ?? undefined,
+  };
   const patch = {
-    salida: extractField(text, "salida") ?? undefined,
-    ideal: extractField(text, "ideal") ?? undefined,
-    minimo: extractField(text, "minimo") ?? undefined,
+    salida: fieldMatches.salida?.value,
+    ideal: fieldMatches.ideal?.value,
+    minimo: fieldMatches.minimo?.value,
   };
   const hasPatch = Object.values(patch).some((value) => value != null);
-  if (hasPatch || /\b(ajust|cambia|baja|sube|modifica)\w*/i.test(normalized)) {
+  const adjustVerbMatch = trimmed.match(
+    /\b(ajust\w*|cambia\w*|baja\w*|sube\w*|modifica\w*)(\s+(el\s+|los\s+)?precios?)?\b/i
+  );
+  if (hasPatch || adjustVerbMatch) {
     if (!hasPatch) {
       return {
         intent: "unclear",
@@ -71,7 +165,20 @@ export function parsePriceApprovalDecision(text: string): ParsedPriceDecision {
           "Entendi que quieres ajustar, pero necesito un valor. Ejemplo: AJUSTAR PRECIO salida=23000 ideal=22000 minimo=18000.",
       };
     }
-    return { intent: "adjust", patch };
+    const consumed = [
+      ...Object.values(fieldMatches)
+        .filter((match): match is FieldMatch => Boolean(match))
+        .map((match) => match.segment),
+      ...(adjustVerbMatch && adjustVerbMatch.index != null
+        ? [{ index: adjustVerbMatch.index, length: adjustVerbMatch[0].length }]
+        : []),
+    ];
+    const residualRaw = removeConsumedSegments(trimmed, consumed);
+    return {
+      intent: "adjust",
+      patch,
+      residual: residualRaw.trim() ? residualRaw : null,
+    };
   }
   return {
     intent: "unclear",
@@ -83,6 +190,55 @@ export function parsePriceApprovalDecision(text: string): ParsedPriceDecision {
 function pricingProposalFromCase(context: Record<string, unknown>) {
   const proposal = context.pricing_proposal;
   return isRecord(proposal) ? proposal : null;
+}
+
+function proposalNumber(proposal: Record<string, unknown>, key: string): number | null {
+  const value = proposal[key];
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+export function formatMxnAmount(value: number): string {
+  return `$${value.toLocaleString("es-MX")}`;
+}
+
+/**
+ * Slice 0.2 — Amarre de monto en aprobaciones.
+ *
+ * Una aprobación simple que nombra un monto solo aprueba si ese monto
+ * coincide exactamente (tras normalización de separadores/escala) con la
+ * `salida` o la `ideal` de la propuesta registrada. La `salida` es el precio
+ * de publicación (el que una aprobación simple autoriza); se acepta también
+ * `ideal` porque el asesor a veces cita ese número. Cualquier otro monto ⇒
+ * aclaración, nunca aprobación. Sin tolerancia difusa.
+ */
+export function detectPriceApprovalAmountMismatch(params: {
+  approvalAmountCandidates: number[] | null | undefined;
+  proposal: Record<string, unknown>;
+}): {
+  mismatch: boolean;
+  namedAmount: number | null;
+  salida: number | null;
+  ideal: number | null;
+} {
+  const salida = proposalNumber(params.proposal, "salida");
+  const ideal = proposalNumber(params.proposal, "ideal");
+  const candidates = params.approvalAmountCandidates ?? [];
+  if (candidates.length === 0) {
+    return { mismatch: false, namedAmount: null, salida, ideal };
+  }
+  const matches = candidates.some(
+    (candidate) =>
+      (salida != null && candidate === salida) ||
+      (ideal != null && candidate === ideal)
+  );
+  return {
+    mismatch: !matches,
+    namedAmount: candidates[0] ?? null,
+    salida,
+    ideal,
+  };
 }
 
 function isSettingsTestCase(context: Record<string, unknown>) {
@@ -173,6 +329,47 @@ export async function handlePriceApprovalDecision(
   }
 
   if (parsed.intent === "approve") {
+    // Slice 0.2: si la aprobación nombra un monto distinto a la propuesta
+    // registrada, aclaramos en lugar de aprobar. El pendiente sigue abierto.
+    const amountCheck = detectPriceApprovalAmountMismatch({
+      approvalAmountCandidates: parsed.approvalAmountCandidates,
+      proposal,
+    });
+    if (amountCheck.mismatch) {
+      await insertOperationalCaseEvent(db, {
+        caseId: opCase.id,
+        eventType: "human_decision",
+        actor: "user",
+        stepKey: "price_proposal_pending",
+        payload: {
+          kind: "price_approval_amount_mismatch",
+          named_amount: amountCheck.namedAmount,
+          proposal_salida: amountCheck.salida,
+          proposal_ideal: amountCheck.ideal,
+          text: params.text,
+        },
+      });
+      const registered = [
+        amountCheck.salida != null
+          ? `salida ${formatMxnAmount(amountCheck.salida)}`
+          : null,
+        amountCheck.ideal != null
+          ? `ideal ${formatMxnAmount(amountCheck.ideal)}`
+          : null,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(", ");
+      return {
+        ok: false,
+        status: "amount_mismatch",
+        message: `Mencionaste ${
+          amountCheck.namedAmount != null
+            ? formatMxnAmount(amountCheck.namedAmount)
+            : "un monto"
+        }, pero la propuesta registrada es ${registered || "otra"}. No aprobé nada. Si quieres ese monto, responde AJUSTAR PRECIO salida=NUEVO_MONTO; si quieres aprobar la propuesta tal cual, responde APROBAR PRECIO.`,
+        case_id: opCase.id,
+      };
+    }
     const nextProposal = {
       ...proposal,
       approval_status: "approved",

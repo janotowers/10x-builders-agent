@@ -10,7 +10,11 @@
  */
 
 import { z } from "zod";
-import { OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID } from "@agents/agent";
+import {
+  OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID,
+  recordOpenRouterCallUsage,
+  type OpenRouterUsagePayload,
+} from "@agents/agent";
 
 export type PendingDecisionUnclearGate =
   | "listing_description_review"
@@ -102,6 +106,7 @@ async function invokeOpenRouterClassifier(
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return null;
   const model = OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID;
+  const startedAt = Date.now();
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -114,6 +119,8 @@ async function invokeOpenRouterClassifier(
       temperature: 0,
       max_tokens: 120,
       response_format: { type: "json_object" },
+      // Slice 0.4: pide el costo facturado en la respuesta (usage.cost).
+      usage: { include: true },
       messages: [
         {
           role: "system",
@@ -125,6 +132,14 @@ async function invokeOpenRouterClassifier(
     }),
   });
   if (!response.ok) {
+    void recordOpenRouterCallUsage({
+      modelId: model,
+      modelRole: "pending_decision_unclear_classifier",
+      operation: "classification",
+      latencyMs: Date.now() - startedAt,
+      status: "error",
+      errorCode: `http_${response.status}`,
+    });
     console.warn(
       "[pending-decision-unclear-classifier] OpenRouter failed:",
       response.status,
@@ -133,8 +148,18 @@ async function invokeOpenRouterClassifier(
     return null;
   }
   const json = (await response.json()) as {
+    id?: string;
     choices?: Array<{ message?: { content?: unknown } }>;
+    usage?: OpenRouterUsagePayload;
   };
+  void recordOpenRouterCallUsage({
+    modelId: model,
+    modelRole: "pending_decision_unclear_classifier",
+    operation: "classification",
+    usage: json.usage ?? null,
+    providerRequestId: typeof json.id === "string" ? json.id : null,
+    latencyMs: Date.now() - startedAt,
+  });
   return parseJsonContent(json.choices?.[0]?.message?.content);
 }
 

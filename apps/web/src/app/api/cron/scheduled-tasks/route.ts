@@ -36,6 +36,12 @@ import { Cron } from "croner";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import type { ScheduledTask } from "@agents/db";
 import { normalizeToolApprovalPolicy } from "@agents/agent";
+import { notify } from "@/lib/notify";
+import { TOOL_CONFIRMATION_PENDING_KIND } from "@/lib/notifications/pending-inbox-dedupe";
+import {
+  buildScheduledTaskToolApprovalPolicy,
+  isScheduledTaskLegacyAutoApproveEnabled,
+} from "@/lib/scheduled-tasks/scheduled-task-tool-policy";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 
@@ -218,9 +224,16 @@ async function runTask(
     const session = await getOrCreateSession(db, task.user_id, "cron");
     agentSessionId = session.id;
 
-    // Run the agent with autoApproveTools=true: the user already approved
-    // this exact task when scheduling it (schedule_task is itself HITL),
-    // so inner risky tools (bash/write_file/etc.) execute without a second approval.
+    // Slice 0.3 — risk-scoped allowlist. Scheduling a task (HITL) no longer
+    // implies blanket approval of every inner side effect: low-risk tools
+    // auto-execute; medium/high-risk tools route to the pending inbox unless
+    // the legacy escape hatch (SCHEDULED_TASKS_LEGACY_AUTOAPPROVE=true) is on.
+    // `autoApproveTools` stays true for its non-approval cron semantics
+    // (prompt addendum, memory no-ops); the explicit per-tool policy takes
+    // precedence over it in `resolveToolApprovalMode`, so approvals are
+    // governed by the allowlist alone.
+    const legacyAutoApprove = isScheduledTaskLegacyAutoApproveEnabled();
+    const taskPolicy = normalizeToolApprovalPolicy(task.tool_approval_policy);
     const result = await runAgent({
       message: sanitizeScheduledTaskPromptForExecution(task.prompt),
       userId: task.user_id,
@@ -241,9 +254,9 @@ async function runTask(
       googleCalendarAccessToken,
       autoApproveTools: true,
       forcedSkillId: task.skill_id ?? null,
-      toolApprovalPolicy: normalizeToolApprovalPolicy(
-        task.tool_approval_policy
-      ),
+      toolApprovalPolicy: legacyAutoApprove
+        ? taskPolicy
+        : buildScheduledTaskToolApprovalPolicy({ taskPolicy }),
     });
 
     const chatId = await getTelegramChatId(db, task.user_id);
@@ -251,8 +264,56 @@ async function runTask(
     console.log(
       `[cron] task ${task.id} run finished — toolCalls=${JSON.stringify(
         result.toolCalls
-      )} responseLen=${result.response?.length ?? 0}`
+      )} responseLen=${result.response?.length ?? 0} pending_confirmation=${
+        result.pendingConfirmation ? "yes" : "no"
+      }`
     );
+
+    // Slice 0.3: a non-allowlisted tool paused the run awaiting approval.
+    // Surface it in the pending inbox (web card + Telegram approve/reject
+    // buttons via the shared notify path) instead of auto-executing. This is
+    // information, not a regression: it reveals tasks that silently depended
+    // on blanket auto-approval.
+    if (result.pendingConfirmation) {
+      console.warn(
+        `[cron] task ${task.id} routed tool "${result.pendingConfirmation.toolName}" to the pending inbox (risk allowlist; legacy_autoapprove=off)`
+      );
+      try {
+        await notify(
+          db,
+          task.user_id,
+          {
+            kind: TOOL_CONFIRMATION_PENDING_KIND,
+            text: `La tarea programada necesita tu aprobación para ejecutar «${result.pendingConfirmation.toolName}».\n\n${result.pendingConfirmation.message}`,
+            data: {
+              title: "Aprobación pendiente (tarea programada)",
+              action_url: "/chat/pending",
+              scheduled_task_id: task.id,
+              pending_tool_name: result.pendingConfirmation.toolName,
+              pending_tool_call_id: result.pendingConfirmation.toolCallId,
+            },
+          },
+          "high"
+        );
+        notified = true;
+      } catch (notifyError) {
+        notificationError =
+          (notifyError as Error)?.message ?? "Error notificando aprobación pendiente";
+      }
+
+      const nextRunAtPending =
+        task.schedule_type === "recurring" && task.cron_expr
+          ? computeNextRunAt(task.cron_expr, task.timezone)
+          : null;
+      await rescheduleOrComplete(db, task, nextRunAtPending);
+      await finishTaskRun(db, run.id, {
+        status: "completed",
+        agentSessionId,
+        notified,
+        notificationError,
+      });
+      return { task_id: task.id, status: "ok" };
+    }
 
     // Notify via Telegram with the agent response (distinct from the "you scheduled this" reply in chat)
     if (chatId) {

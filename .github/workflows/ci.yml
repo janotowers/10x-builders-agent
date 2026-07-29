@@ -1,0 +1,49 @@
+# CI seed (flexible-workflows plan, Slice 0.5-7 / Technical Plan §25 prerequisite).
+# Runs type-check, lint, skill + migration validation and the chained selftests
+# on every PR and on pushes to main.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate skills
+        run: npm run validate:skills
+
+      - name: Validate migrations
+        run: npm run validate:migrations
+
+      - name: Validate model price catalog
+        run: npm run validate:model-price-catalog
+
+      - name: Type-check
+        run: npm run type-check
+
+      # Lint is non-blocking until the pre-existing errors listed in the
+      # implementation plan §X are burned down; flip to blocking afterwards.
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Selftests
+        run: npm run test:selftests

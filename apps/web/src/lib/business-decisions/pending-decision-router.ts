@@ -34,6 +34,7 @@
 import {
   findPendingConversationBindings,
   getOperationalCase,
+  insertOperationalCaseEvent,
   listInternalUserNotifications,
   type DbClient,
 } from "@agents/db";
@@ -55,9 +56,11 @@ import {
   shouldRouteTelegramTextToListingDescriptionReview,
 } from "./listing-description-review";
 import {
+  computeComparablesExpansionResidual,
   handleComparablesExpansionDecision,
   parseComparablesExpansionDecision,
 } from "./comparables-expansion-decision";
+import { residualFromRemainder, type ResidualIntent } from "./residual-intent";
 import {
   formatCaseStatusQueryAnswer,
   formatPricingProposalQueryAnswer,
@@ -108,6 +111,12 @@ export type PendingDecisionTurn =
       message: string;
       /** read_artifact: full draft; Telegram sends .txt, web inlines it. */
       artifact?: { filename: string; content: string } | null;
+      /**
+       * Slice 0.1 — text the claiming gate did NOT act on. Channel adapters
+       * append the fixed acknowledgment line ("No actué sobre: …") when
+       * non-empty. Absent/null = the decision consumed the whole turn.
+       */
+      residual?: ResidualIntent | null;
       /** Run after the reply is delivered (deferred ticks/notifies). */
       runAfterReply?: () => Promise<void>;
     };
@@ -195,6 +204,51 @@ async function maybeReleaseUnclearToAgent(params: {
     release,
   });
   return release;
+}
+
+/**
+ * Slice 0.1 — builds the `ResidualIntent` for a successfully handled decision
+ * and appends a `residual_reported` case event (payload.kind discriminator on
+ * `human_decision`, matching the repo's event vocabulary) when a case is
+ * bound. Event failures never block the turn.
+ */
+async function reportResidualIfAny(
+  db: DbClient,
+  params: {
+    remainder: string | null | undefined;
+    ok: boolean;
+    routed: string;
+    channel: PendingDecisionChannel;
+    caseId: string | null | undefined;
+    stepKey?: string | null;
+  }
+): Promise<ResidualIntent | null> {
+  if (!params.ok) return null;
+  const residual = residualFromRemainder(params.remainder);
+  if (!residual) return null;
+  if (params.caseId) {
+    try {
+      await insertOperationalCaseEvent(db, {
+        caseId: params.caseId,
+        eventType: "human_decision",
+        actor: "user",
+        ...(params.stepKey ? { stepKey: params.stepKey } : {}),
+        payload: {
+          kind: "residual_reported",
+          residual_text: residual.text,
+          reason: residual.reason,
+          routed: params.routed,
+          channel: params.channel,
+        },
+      });
+    } catch (eventError) {
+      console.error(
+        "[pending-decision-router] residual_reported event failed:",
+        eventError
+      );
+    }
+  }
+  return residual;
 }
 
 async function runDeferredTickFromResult(
@@ -350,6 +404,8 @@ export async function resolvePendingDecisionTurn(
           status: "answered",
           caseId: answer.caseId,
           message: answer.message,
+          // Consulta de solo lectura: responde el turno completo, sin remanente.
+          residual: null,
         };
       }
     } catch (queryError) {
@@ -444,6 +500,7 @@ export async function resolvePendingDecisionTurn(
         message:
           result.message ?? "Te comparto el borrador completo de la descripción.",
         artifact,
+        residual: null,
       };
     }
     if (result.status === "unclear") {
@@ -473,6 +530,9 @@ export async function resolvePendingDecisionTurn(
         (result.ok
           ? "Listo, procesé tu revisión de descripción."
           : "No pude procesar la revisión de descripción."),
+      // El handler de descripción interpreta el texto completo (LLM +
+      // parser propio); no hay segmento determinístico que restar.
+      residual: null,
       runAfterReply: deferTicks
         ? () =>
             runDeferredTickFromResult(
@@ -516,6 +576,14 @@ export async function resolvePendingDecisionTurn(
         text,
         deferControlledE2ETick: deferTicks,
       });
+      const residual = await reportResidualIfAny(db, {
+        remainder: parsedPriceDecision.residual,
+        ok: result.ok === true,
+        routed: "price_approval",
+        channel: params.channel,
+        caseId: stringOrNull(result.case_id) ?? pendingPriceApproval.case_id,
+        stepKey: "price_proposal_pending",
+      });
       return {
         handled: true,
         routed: "price_approval",
@@ -528,6 +596,7 @@ export async function resolvePendingDecisionTurn(
           (result.ok
             ? "Listo, procese tu decision de precio."
             : "No pude procesar la decision de precio."),
+        residual,
         runAfterReply: deferTicks
           ? () =>
               runDeferredTickFromResult(
@@ -596,6 +665,9 @@ export async function resolvePendingDecisionTurn(
             ? "Registré parte de los datos. Aún faltan pendientes del contrato."
             : "Listo, registré los datos contractuales."
           : "No pude registrar los datos contractuales."),
+      // El extractor híbrido consume el turno completo como datos; no hay
+      // segmento determinístico que restar.
+      residual: null,
     };
   }
 
@@ -612,6 +684,14 @@ export async function resolvePendingDecisionTurn(
         text,
         deferControlledE2ETick: deferTicks,
       });
+      const residual = await reportResidualIfAny(db, {
+        remainder: parsedContractDecision.residual,
+        ok: result.ok === true,
+        routed: "contract_review",
+        channel: params.channel,
+        caseId: stringOrNull(result.case_id) ?? pendingContractReview.case_id,
+        stepKey: "contract_pending",
+      });
       return {
         handled: true,
         routed: "contract_review",
@@ -624,6 +704,7 @@ export async function resolvePendingDecisionTurn(
           (result.ok
             ? "Listo, procesé tu decisión sobre el contrato."
             : "No pude procesar la decisión del contrato."),
+        residual,
         runAfterReply: deferTicks
           ? () =>
               runDeferredTickFromResult(
@@ -653,6 +734,14 @@ export async function resolvePendingDecisionTurn(
           text,
         }
       );
+      const residual = await reportResidualIfAny(db, {
+        remainder: parsedTitularidadDecision.residual,
+        ok: result.ok === true,
+        routed: "titularidad_review",
+        channel: params.channel,
+        caseId: stringOrNull(result.case_id) ?? pendingTitularidadReview.case_id,
+        stepKey: "contract_pending",
+      });
       return {
         handled: true,
         routed: "titularidad_review",
@@ -665,6 +754,7 @@ export async function resolvePendingDecisionTurn(
           (result.ok
             ? "Titularidad aprobada. Generaré el contrato."
             : "No pude procesar la decisión de titularidad."),
+        residual,
       };
     }
   }
@@ -765,6 +855,14 @@ export async function resolvePendingDecisionTurn(
           }
         }
       };
+      const residual = await reportResidualIfAny(db, {
+        remainder: computeComparablesExpansionResidual(text),
+        ok: result.ok === true && result.status === "processed",
+        routed: "comparables_expansion_decision",
+        channel: params.channel,
+        caseId: result.case_id ?? opCase.id,
+        stepKey: "comparables_in_progress",
+      });
       return {
         handled: true,
         routed:
@@ -777,6 +875,7 @@ export async function resolvePendingDecisionTurn(
         notificationId: result.notification_id ?? notification.id,
         decision: result.decision,
         message: result.message ?? "No pude procesar esa decisión todavía.",
+        residual,
         runAfterReply,
       };
     }

@@ -23,36 +23,66 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function parseComparablesExpansionDecision(
-  text: string
-): ComparablesExpansionIntent {
-  const normalized = text
+const COMPARABLES_DECISION_PREFIXES: Array<{
+  intent: Exclude<ComparablesExpansionIntent, "unclear">;
+  pattern: RegExp;
+}> = [
+  {
+    intent: "use_current_comparables",
+    pattern:
+      /^(1|uno|opcion 1|avanzar con los comparables|comparables actuales|aceptar comparables)\b/,
+  },
+  {
+    intent: "use_avaclick_primary",
+    pattern: /^(2|dos|opcion 2|usar avaclick|avaclick|avanzar con avaclick)\b/,
+  },
+  {
+    intent: "expand_search",
+    pattern: /^(3|tres|opcion 3|ampliar|expandir|expand search)\b/,
+  },
+  {
+    intent: "manual_unavailable",
+    pattern: /^(4|cuatro|opcion 4|manual|cargar comparables)\b/,
+  },
+];
+
+function normalizeComparablesDecisionText(text: string): string {
+  return text
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+}
+
+export function parseComparablesExpansionDecision(
+  text: string
+): ComparablesExpansionIntent {
+  const normalized = normalizeComparablesDecisionText(text);
   if (!normalized) return "unclear";
-  if (
-    /^(1|uno|opcion 1|avanzar con los comparables|comparables actuales|aceptar comparables)\b/.test(
-      normalized
-    )
-  ) {
-    return "use_current_comparables";
-  }
-  if (
-    /^(2|dos|opcion 2|usar avaclick|avaclick|avanzar con avaclick)\b/.test(
-      normalized
-    )
-  ) {
-    return "use_avaclick_primary";
-  }
-  if (/^(3|tres|opcion 3|ampliar|expandir|expand search)\b/.test(normalized)) {
-    return "expand_search";
-  }
-  if (/^(4|cuatro|opcion 4|manual|cargar comparables)\b/.test(normalized)) {
-    return "manual_unavailable";
+  for (const { intent, pattern } of COMPARABLES_DECISION_PREFIXES) {
+    if (pattern.test(normalized)) return intent;
   }
   return "unclear";
+}
+
+/**
+ * Slice 0.1 — remanente no consumido por el prefijo de decisión ("3 y avísame
+ * cuando esté" → "y avísame cuando esté"). La normalización NFD preserva la
+ * longitud por carácter en español, así que el corte aplica sobre el texto
+ * original recortado.
+ */
+export function computeComparablesExpansionResidual(text: string): string | null {
+  const trimmed = text.trim();
+  const normalized = normalizeComparablesDecisionText(text);
+  if (!normalized) return null;
+  for (const { pattern } of COMPARABLES_DECISION_PREFIXES) {
+    const match = normalized.match(pattern);
+    if (match && match.index != null) {
+      const remainder = trimmed.slice(match.index + match[0].length);
+      return remainder.trim() ? remainder : null;
+    }
+  }
+  return null;
 }
 
 export async function handleComparablesExpansionDecision(

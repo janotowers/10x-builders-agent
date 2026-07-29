@@ -1,5 +1,9 @@
 import { z } from "zod";
 import {
+  recordOpenRouterCallUsage,
+  type OpenRouterUsagePayload,
+} from "@agents/agent";
+import {
   parseOwnerCharacteristics,
 } from "./parse-owner-characteristics";
 
@@ -185,6 +189,7 @@ async function invokeOpenRouterExtractor(
   const model =
     process.env.OWNER_CHARACTERISTICS_EXTRACTOR_MODEL_ID?.trim() ||
     DEFAULT_EXTRACTOR_MODEL;
+  const startedAt = Date.now();
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -197,6 +202,8 @@ async function invokeOpenRouterExtractor(
       temperature: 0,
       max_tokens: 400,
       response_format: { type: "json_object" },
+      // Slice 0.4: pide el costo facturado en la respuesta (usage.cost).
+      usage: { include: true },
       messages: [
         {
           role: "system",
@@ -208,6 +215,15 @@ async function invokeOpenRouterExtractor(
     }),
   });
   if (!response.ok) {
+    void recordOpenRouterCallUsage({
+      modelId: model,
+      modelRole: "owner_characteristics_extraction",
+      operation: "extraction",
+      latencyMs: Date.now() - startedAt,
+      status: "error",
+      errorCode: `http_${response.status}`,
+      retryOrdinal: previousErrors && previousErrors.length > 0 ? 1 : 0,
+    });
     console.warn(
       "[owner-characteristics-extraction] OpenRouter failed:",
       response.status,
@@ -216,8 +232,19 @@ async function invokeOpenRouterExtractor(
     return null;
   }
   const json = (await response.json()) as {
+    id?: string;
     choices?: Array<{ message?: { content?: unknown } }>;
+    usage?: OpenRouterUsagePayload;
   };
+  void recordOpenRouterCallUsage({
+    modelId: model,
+    modelRole: "owner_characteristics_extraction",
+    operation: "extraction",
+    usage: json.usage ?? null,
+    providerRequestId: typeof json.id === "string" ? json.id : null,
+    latencyMs: Date.now() - startedAt,
+    retryOrdinal: previousErrors && previousErrors.length > 0 ? 1 : 0,
+  });
   return parseJsonContent(json.choices?.[0]?.message?.content);
 }
 

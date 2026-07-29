@@ -12,6 +12,11 @@ import { runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settin
 type ParsedTitularidadReviewReply = {
   intent: "approve_override" | "request_more_docs" | "unclear";
   reason?: string;
+  /**
+   * Remanente del texto que el parser NO consumió (slice 0.1, preservación de
+   * intención residual). `null` cuando la frase de decisión cubrió todo.
+   */
+  residual?: string | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -21,7 +26,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function parseTitularidadReviewDecision(
   text: string
 ): ParsedTitularidadReviewReply {
-  const normalized = text.trim().toLowerCase();
+  const trimmed = text.trim();
+  const normalized = trimmed.toLowerCase();
   if (!normalized) {
     return {
       intent: "unclear",
@@ -29,19 +35,32 @@ export function parseTitularidadReviewDecision(
         "Responde «aprobar titularidad» para continuar o «pedir documentos» para solicitar evidencia adicional.",
     };
   }
-  if (
-    /\b(aprobar titularidad|aprobada titularidad|apruebo titularidad|ok titularidad|continuar contrato|procede contrato|adelante contrato)\b/.test(
-      normalized
-    )
-  ) {
-    return { intent: "approve_override" };
+  // Slice 0.1: el texto fuera de la frase de decisión se reporta como
+  // remanente. `normalized` conserva los índices de `trimmed` (solo cambia
+  // mayúsculas/minúsculas), así que el remanente se corta del original.
+  const residualAfterMatch = (match: RegExpMatchArray): string | null => {
+    if (match.index == null) return null;
+    const remainder =
+      `${trimmed.slice(0, match.index)} ${trimmed.slice(match.index + match[0].length)}`;
+    return remainder.trim() ? remainder : null;
+  };
+  const approveMatch = normalized.match(
+    /\b(aprobar titularidad|aprobada titularidad|apruebo titularidad|ok titularidad|continuar contrato|procede contrato|adelante contrato)\b/
+  );
+  if (approveMatch) {
+    return {
+      intent: "approve_override",
+      residual: residualAfterMatch(approveMatch),
+    };
   }
-  if (
-    /\b(pedir documentos|solicitar documentos|subir documento|subir evidencia|revisar titularidad)\b/.test(
-      normalized
-    )
-  ) {
-    return { intent: "request_more_docs" };
+  const moreDocsMatch = normalized.match(
+    /\b(pedir documentos|solicitar documentos|subir documento|subir evidencia|revisar titularidad)\b/
+  );
+  if (moreDocsMatch) {
+    return {
+      intent: "request_more_docs",
+      residual: residualAfterMatch(moreDocsMatch),
+    };
   }
   return {
     intent: "unclear",

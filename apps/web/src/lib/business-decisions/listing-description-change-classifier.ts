@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  recordOpenRouterCallUsage,
+  type OpenRouterUsagePayload,
+} from "@agents/agent";
 
 const DEFAULT_CLASSIFIER_MODEL = "openai/gpt-4o-mini";
 
@@ -107,6 +111,7 @@ async function invokeOpenRouterListingDescriptionClassifier(
   const model =
     process.env.LISTING_DESCRIPTION_CHANGE_CLASSIFIER_MODEL_ID?.trim() ||
     DEFAULT_CLASSIFIER_MODEL;
+  const startedAt = Date.now();
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -119,6 +124,8 @@ async function invokeOpenRouterListingDescriptionClassifier(
       temperature: 0,
       max_tokens: 320,
       response_format: { type: "json_object" },
+      // Slice 0.4: pide el costo facturado en la respuesta (usage.cost).
+      usage: { include: true },
       messages: [
         {
           role: "system",
@@ -130,6 +137,14 @@ async function invokeOpenRouterListingDescriptionClassifier(
     }),
   });
   if (!response.ok) {
+    void recordOpenRouterCallUsage({
+      modelId: model,
+      modelRole: "listing_description_change_classifier",
+      operation: "classification",
+      latencyMs: Date.now() - startedAt,
+      status: "error",
+      errorCode: `http_${response.status}`,
+    });
     console.warn(
       "[listing-description-change-classifier] OpenRouter failed:",
       response.status,
@@ -138,8 +153,18 @@ async function invokeOpenRouterListingDescriptionClassifier(
     return null;
   }
   const json = (await response.json()) as {
+    id?: string;
     choices?: Array<{ message?: { content?: unknown } }>;
+    usage?: OpenRouterUsagePayload;
   };
+  void recordOpenRouterCallUsage({
+    modelId: model,
+    modelRole: "listing_description_change_classifier",
+    operation: "classification",
+    usage: json.usage ?? null,
+    providerRequestId: typeof json.id === "string" ? json.id : null,
+    latencyMs: Date.now() - startedAt,
+  });
   return parseJsonContent(json.choices?.[0]?.message?.content);
 }
 
