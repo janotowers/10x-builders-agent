@@ -11,7 +11,11 @@ import {
   insertOperationalCaseEvent,
   updateOperationalCase,
 } from "@agents/db";
-import { isPropertyOptioningIntent, runAgent } from "@agents/agent";
+import {
+  bindAiUsageContext,
+  isPropertyOptioningIntent,
+  runAgent,
+} from "@agents/agent";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { publishTurnEvent } from "@/lib/agent-turn-events";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
@@ -51,6 +55,7 @@ import {
 } from "@/lib/operational-cases/external-contact-link";
 import { handleContractRevisionUploadAndSend } from "@/lib/business-decisions/contract-review";
 import { resolvePendingDecisionTurn } from "@/lib/business-decisions/pending-decision-router";
+import { appendResidualAcknowledgment } from "@/lib/business-decisions/residual-intent";
 
 const TOOL_CALL_SELECT =
   "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind";
@@ -378,6 +383,18 @@ export async function POST(request: Request) {
       );
     }
 
+    // Slice 0.4: contexto ambiente de metering AI para clasificadores y
+    // extractores pre-agente (runAgent lo enriquece con turn/case ids).
+    bindAiUsageContext(
+      {
+        userId: user.id,
+        channel: "web",
+        sessionId: session.id,
+        turnId: requestTurnId ?? null,
+      },
+      db
+    );
+
     const googleCalendarAccessToken =
       (await getGoogleCalendarAccessToken(db, user.id)) ?? undefined;
 
@@ -440,10 +457,15 @@ export async function POST(request: Request) {
         isExplicitNewCaseIntent: isPropertyOptioningIntent(message),
       });
       if (pendingDecisionTurn.handled) {
+        // Slice 0.1: reconoce el texto sobre el que la decisión NO actuó.
+        const messageWithResidual = appendResidualAcknowledgment(
+          pendingDecisionTurn.message,
+          pendingDecisionTurn.residual
+        );
         // read_artifact: en web el texto completo va inline en la respuesta.
         const responseText = pendingDecisionTurn.artifact
-          ? `${pendingDecisionTurn.message}\n\n${pendingDecisionTurn.artifact.content}`
-          : pendingDecisionTurn.message;
+          ? `${messageWithResidual}\n\n${pendingDecisionTurn.artifact.content}`
+          : messageWithResidual;
         if (pendingDecisionTurn.runAfterReply) {
           await pendingDecisionTurn.runAfterReply();
         }

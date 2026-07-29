@@ -1,0 +1,32 @@
+{
+  "version": "2026-07-29.1",
+  "source_url": "manual-bootstrap",
+  "retrieved_at": "2026-07-29T00:00:00.000Z",
+  "notes": "Historical bootstrap catalog used by early Slice 0.4 rows. Immutable — do not edit. GPT-5.4 Mini prices here were later corrected in 2026-07-29.2 from the OpenRouter models API.",
+  "models": {
+    "openai/gpt-5.4-mini": {
+      "inputUsdPerMTok": 0.6,
+      "outputUsdPerMTok": 2.4
+    },
+    "openai/gpt-4.1-mini": {
+      "inputUsdPerMTok": 0.4,
+      "outputUsdPerMTok": 1.6,
+      "cacheReadUsdPerMTok": 0.1
+    },
+    "openai/gpt-4o-mini": {
+      "inputUsdPerMTok": 0.15,
+      "outputUsdPerMTok": 0.6,
+      "cacheReadUsdPerMTok": 0.075
+    },
+    "anthropic/claude-haiku-4.5": {
+      "inputUsdPerMTok": 1.0,
+      "outputUsdPerMTok": 5.0,
+      "cacheReadUsdPerMTok": 0.1,
+      "cacheWriteUsdPerMTok": 1.25
+    },
+    "google/gemini-embedding-001": {
+      "inputUsdPerMTok": 0.15,
+      "outputUsdPerMTok": 0
+    }
+  }
+}

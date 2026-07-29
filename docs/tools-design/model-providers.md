@@ -98,6 +98,27 @@ El desglose de tareas (dependencias npm, refactor de `model.ts` / `graph.ts`, cl
 
 Archivos previstos a tocar en la implementación: principalmente [`packages/agent/src/model.ts`](../../packages/agent/src/model.ts), [`packages/agent/src/graph.ts`](../../packages/agent/src/graph.ts) y, de forma menor, los runners [`apps/web/src/app/api/cron/scheduled-tasks/route.ts`](../../apps/web/src/app/api/cron/scheduled-tasks/route.ts) y [`apps/web/src/app/api/cron/heartbeat/route.ts`](../../apps/web/src/app/api/cron/heartbeat/route.ts) para alinear detección de errores persistentes con respuestas de Google.
 
+## Catálogo de precios (metering / Slice 0.4.1)
+
+El ledger `ai_usage_events` prefiere el costo facturado de OpenRouter (`usage.cost` → `reported_cost_micro_usd`). El catálogo local solo aporta **estimados de referencia** (`estimated_cost_micro_usd`) y se versiona de forma inmutable:
+
+| Pieza | Ubicación |
+| --- | --- |
+| Snapshots | [`packages/agent/src/usage/catalogs/`](../../packages/agent/src/usage/catalogs/) — un JSON por `pricing_version` |
+| Loader | [`packages/agent/src/usage/model-price-catalog.ts`](../../packages/agent/src/usage/model-price-catalog.ts) |
+| Generar versión nueva | `npm run generate:model-price-catalog -- --version YYYY-MM-DD.N` |
+| Validar (CI / prebuild) | `npm run validate:model-price-catalog` |
+| Drift vs OpenRouter (manual) | `npm run check:model-price-catalog-drift` |
+
+**Reglas:**
+
+1. Nunca editar un snapshot existente. Cualquier cambio de precio = archivo nuevo + import activo actualizado en `model-price-catalog.ts`.
+2. Generar precios desde las APIs públicas de OpenRouter (`/api/v1/models` + `/api/v1/embeddings/models`), no a mano.
+3. El costo operativo del dashboard es **contabilizado** = `reported ?? estimated ?? 0` por evento; reportado y estimado pueden coexistir en la misma fila para comparación, pero no se suman.
+4. Filas históricas con `pricing_version = '2026-07-29.1'` se reproducen contra ese snapshot aunque el catálogo activo sea más nuevo.
+
+Dashboard interno: `/settings/ai-usage` (admin Ungga). Flag: `AI_USAGE_METERING_ENABLED=true`.
+
 ## Relación con otros documentos
 
 - Arquitectura general: [`docs/architecture.md`](../architecture.md) — tabla de stack y sección de modelo.

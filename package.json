@@ -13,7 +13,12 @@
     "type-check": "turbo run type-check",
     "setup:pocs": "npm install --prefix pocs/ungga-cli && npm install --prefix pocs/easybroker-mls-cli && npx --prefix pocs/ungga-cli playwright install chromium && npx --prefix pocs/easybroker-mls-cli playwright install chromium",
     "validate:skills": "node scripts/validate-skills.mjs",
-    "prebuild": "node scripts/validate-skills.mjs"
+    "validate:migrations": "node scripts/validate-migrations.mjs",
+    "validate:model-price-catalog": "node scripts/validate-model-price-catalog.mjs",
+    "generate:model-price-catalog": "node scripts/generate-model-price-catalog.mjs",
+    "check:model-price-catalog-drift": "node scripts/check-model-price-catalog-drift.mjs",
+    "test:selftests": "npm run test:business-decisions --workspace @agents/web && npm run test:scheduled-task-policy --workspace @agents/web && npm run test:intake-extraction --workspace @agents/web && npm run test:ai-usage-meter --workspace @agents/agent && npm run test:model-price-catalog --workspace @agents/agent && npm run test:ai-usage --workspace @agents/db",
+    "prebuild": "node scripts/validate-skills.mjs && node scripts/validate-migrations.mjs && node scripts/validate-model-price-catalog.mjs"
   },
   "devDependencies": {
     "turbo": "^2"

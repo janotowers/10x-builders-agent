@@ -348,3 +348,44 @@ export type {
   CompileBusinessBrainSoulInput,
   CompileBusinessBrainSoulResult,
 } from "./business-brain/reviewer";
+export {
+  bindAiUsageContext,
+  runWithAiUsageContext,
+  enrichAiUsageContext,
+  currentAiUsageContext,
+} from "./usage/ai-usage-context";
+export {
+  recordAiUsageEvent,
+  recordOpenRouterCallUsage,
+  createAiUsageCallbackHandler,
+  setAiUsageRecorder,
+  getDroppedAiUsageMeterCount,
+  isAiUsageMeteringEnabled,
+  sanitizeUsageMetadata,
+  normalizeOpenRouterUsage,
+  normalizeLangChainUsage,
+  extractLangChainReportedCostMicroUsd,
+  extractLangChainProviderRequestId,
+  enrichWithCatalogEstimate,
+  withEstimatedCost,
+} from "./usage/ai-usage-meter";
+export type { OpenRouterUsagePayload, AiUsageRecorder } from "./usage/ai-usage-meter";
+export {
+  MODEL_PRICE_CATALOG_VERSION,
+  getModelPrice,
+  getCatalogSnapshot,
+  estimateCostMicroUsd,
+  listModelPriceCatalogVersions,
+  CATALOG_REQUIRED_MODEL_IDS,
+} from "./usage/model-price-catalog";
+export type {
+  ModelPrice,
+  ModelPriceCatalogSnapshot,
+} from "./usage/model-price-catalog";
+export {
+  createOpenRouterMeteringFetch,
+  openRouterClientConfiguration,
+  stashOpenRouterUsage,
+  takeStashedOpenRouterUsage,
+  clearOpenRouterUsageStash,
+} from "./usage/openrouter-usage-capture";

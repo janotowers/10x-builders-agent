@@ -23,6 +23,7 @@ import {
   upsertConversationBinding,
 } from "@agents/db";
 import {
+  bindAiUsageContext,
   isPropertyOptioningIntent,
   runAgent,
 } from "@agents/agent";
@@ -54,6 +55,7 @@ import {
 import { buildPublicationAwareE2EToolApprovalPolicy } from "@/lib/operational-cases/publication-tool-policy";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { resolvePendingDecisionTurn } from "@/lib/business-decisions/pending-decision-router";
+import { appendResidualAcknowledgment } from "@/lib/business-decisions/residual-intent";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
   looksLikeNewCaseIntent,
@@ -2070,6 +2072,11 @@ export async function POST(request: Request) {
     pendingNotifications: pendingInternal,
   });
   if (pendingDecisionTurn.handled) {
+    // Slice 0.1: reconoce el texto sobre el que la decisión NO actuó.
+    const decisionMessage = appendResidualAcknowledgment(
+      pendingDecisionTurn.message,
+      pendingDecisionTurn.residual
+    );
     if (pendingDecisionTurn.artifact) {
       // read_artifact: entrega el borrador completo como .txt; la revisión
       // sigue pendiente (sin cambio de estado).
@@ -2078,18 +2085,18 @@ export async function POST(request: Request) {
           filename: pendingDecisionTurn.artifact.filename,
           bytes: Buffer.from(pendingDecisionTurn.artifact.content, "utf-8"),
           contentType: "text/plain; charset=utf-8",
-          caption: pendingDecisionTurn.message,
+          caption: decisionMessage,
         });
       } catch {
         await sendTelegramMessage(
           chatId,
           truncateTelegramText(
-            `${pendingDecisionTurn.message}\n\n${pendingDecisionTurn.artifact.content}`
+            `${decisionMessage}\n\n${pendingDecisionTurn.artifact.content}`
           )
         );
       }
     } else {
-      await sendTelegramMessage(chatId, pendingDecisionTurn.message);
+      await sendTelegramMessage(chatId, decisionMessage);
     }
     if (pendingDecisionTurn.runAfterReply) {
       await pendingDecisionTurn.runAfterReply();
@@ -2241,6 +2248,17 @@ export async function POST(request: Request) {
     await sendTelegramMessage(chatId, "Error interno creando sesión.");
     return NextResponse.json({ ok: true });
   }
+
+  // Slice 0.4: contexto ambiente de metering AI para clasificadores y
+  // extractores pre-agente (runAgent lo enriquece con turn/case ids).
+  bindAiUsageContext(
+    {
+      userId,
+      channel: "telegram",
+      sessionId: session.id,
+    },
+    db
+  );
 
   // Load profile, tools, integrations
   const { data: profile } = await db

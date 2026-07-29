@@ -43,7 +43,10 @@
     "test:skill-references": "tsx src/tools/skill-references.selftest.ts",
     "test:tenant-context": "tsx src/business-brain/tenant-context.selftest.ts",
     "test:business-brain-compiler": "tsx src/business-brain/compiler.selftest.ts",
-    "test:business-brain-reviewer": "tsx src/business-brain/reviewer.selftest.ts"
+    "test:business-brain-reviewer": "tsx src/business-brain/reviewer.selftest.ts",
+    "test:ai-usage-meter": "tsx src/usage/ai-usage-meter.selftest.ts",
+    "test:model-price-catalog": "tsx src/usage/model-price-catalog.selftest.ts",
+    "test:ai-usage-openrouter-probe": "tsx src/usage/ai-usage-openrouter-probe.selftest.ts"
   },
   "dependencies": {
     "@agents/db": "*",

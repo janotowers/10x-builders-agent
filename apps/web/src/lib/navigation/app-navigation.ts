@@ -23,9 +23,12 @@ export type AppNavNode = {
     | "plug"
     | "channel"
     | "key"
-    | "account";
+    | "account"
+    | "usage";
   href?: string;
   matcher?: AppNavMatcher;
+  /** Only shown when `profiles.is_ungga_admin` is true. */
+  adminOnly?: boolean;
   children?: AppNavNode[];
 };
 
@@ -126,6 +129,14 @@ export const APP_NAV_TREE: AppNavNode[] = [
         matcher: { kind: "settings-view", view: "integrations" },
       },
       {
+        key: "ai-usage",
+        label: "Uso de IA",
+        shortLabel: "Uso IA",
+        icon: "usage",
+        href: "/settings/ai-usage",
+        adminOnly: true,
+      },
+      {
         key: "account-session",
         label: "Cuenta y sesión",
         shortLabel: "Cuenta",
@@ -136,4 +147,20 @@ export const APP_NAV_TREE: AppNavNode[] = [
     ],
   },
 ];
+
+/** Filters admin-only nodes when the viewer is not an Ungga admin. */
+export function resolveAppNavTree(isUnggaAdmin: boolean): AppNavNode[] {
+  const keep = (node: AppNavNode): AppNavNode | null => {
+    if (node.adminOnly && !isUnggaAdmin) return null;
+    if (!node.children?.length) return node;
+    const children = node.children
+      .map(keep)
+      .filter((child): child is AppNavNode => child != null);
+    if (children.length === 0 && !node.href) return null;
+    return { ...node, children };
+  };
+  return APP_NAV_TREE.map(keep).filter(
+    (node): node is AppNavNode => node != null
+  );
+}
 

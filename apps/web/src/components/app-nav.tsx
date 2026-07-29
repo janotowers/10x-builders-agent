@@ -1,9 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
+import { createBrowserClient } from "@supabase/ssr";
 import {
-  APP_NAV_TREE,
+  resolveAppNavTree,
   type AppNavMatcher,
   type AppNavNode,
 } from "@/lib/navigation/app-navigation";
@@ -56,6 +58,10 @@ function NavIcon({ name }: { name: NavIconName }) {
       return <svg {...common}><circle cx="8" cy="12" r="4" /><path d="M12 12h8M17 12v3M20 12v2" /></svg>;
     case "account":
       return <svg {...common}><path d="M7 10V8a5 5 0 0 1 10 0v2" /><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M12 14v2" /></svg>;
+    case "usage":
+      return <svg {...common}><path d="M4 19V5M4 19h16" /><path d="M8 15v-3M12 15V8M16 15v-6" /></svg>;
+    default:
+      return null;
   }
 }
 
@@ -196,11 +202,51 @@ function renderNode(
 export function AppNav({ compact = false }: { compact?: boolean }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [isUnggaAdmin, setIsUnggaAdmin] = useState(false);
+
+  useEffect(() => {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anon) return;
+
+    let cancelled = false;
+    try {
+      const supabase = createBrowserClient(url, anon);
+      void (async () => {
+        try {
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
+          if (!user || cancelled) return;
+          const { data } = await supabase
+            .from("profiles")
+            .select("is_ungga_admin")
+            .eq("id", user.id)
+            .maybeSingle();
+          if (!cancelled) {
+            setIsUnggaAdmin(data?.is_ungga_admin === true);
+          }
+        } catch {
+          // Keep non-admin nav tree if profile lookup fails.
+        }
+      })();
+    } catch {
+      // Keep non-admin nav tree if browser client cannot be created.
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Always resolve from the full tree so Configuración children (including
+  // "Cuenta y sesión") stay visible; only admin-only items are gated.
+  const tree = resolveAppNavTree(isUnggaAdmin);
 
   return (
     <nav aria-label="Navegación principal">
       <ul className="space-y-4">
-        {APP_NAV_TREE.map((node) =>
+        {tree.map((node) =>
           renderNode(node, pathname, searchParams, compact)
         )}
       </ul>

@@ -1087,3 +1087,4 @@ export {
   normalizeGeneratedDocumentArgs,
   type GeneratedDocumentDedupOptions,
 } from "./generated-document-dedup";
+export * from "./ai-usage";

@@ -37,74 +37,88 @@
 
 ### Slice 0.1 — Residual-intent preservation
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29)
 **Objective:** a gate that claims a turn reports the text it did not consume; the composed response acknowledges it. Silent loss → visible loss.
 
 **Tasks (ordered):**
-- [ ] 1. Read `pending-decision-router.ts` L78–120 and map every `handled: true` return site (L347, 438, 463, 520, 586, 616, 657, 769).
-- [ ] 2. Extend the handled branch of `PendingDecisionTurn` (L97) with `residual?: { text: string; reason: "unparsed_remainder" | "unmatched_intent" } | null`.
-- [ ] 3. In each deterministic parser that claims a prefix/pattern (`parsePriceApprovalDecision` and the gate-3+ handlers), compute the unconsumed remainder (text minus the matched decision segment, trimmed; empty ⇒ `null`).
-- [ ] 4. Populate `residual` at every `handled: true` return site.
-- [ ] 5. In the channel adapters that render the handler `message` (web chat + Telegram paths that consume `resolvePendingDecisionTurn`), append a fixed-format acknowledgment line when `residual` is non-empty: "No actué sobre: “…”".
-- [ ] 6. Append a case event (`insertOperationalCaseEvent`, `event_type: "residual_reported"` [D]) when residual is non-empty and a case is bound.
+- [x] 1. Read `pending-decision-router.ts` L78–120 and map every `handled: true` return site (L347, 438, 463, 520, 586, 616, 657, 769).
+- [x] 2. Extend the handled branch of `PendingDecisionTurn` (L97) with `residual?: { text: string; reason: "unparsed_remainder" | "unmatched_intent" } | null`.
+- [x] 3. In each deterministic parser that claims a prefix/pattern (`parsePriceApprovalDecision` and the gate-3+ handlers), compute the unconsumed remainder (text minus the matched decision segment, trimmed; empty ⇒ `null`). *(New shared module `apps/web/src/lib/business-decisions/residual-intent.ts`.)*
+- [x] 4. Populate `residual` at every `handled: true` return site.
+- [x] 5. In the channel adapters that render the handler `message` (web chat + Telegram paths that consume `resolvePendingDecisionTurn`), append a fixed-format acknowledgment line when `residual` is non-empty: "No actué sobre: “…”". *(Shared `appendResidualAcknowledgment`.)*
+- [x] 6. Append a case event when residual is non-empty and a case is bound. *(Implemented as `event_type: "human_decision"` with `payload.kind: "residual_reported"` — the `operational_case_events.event_type` CHECK constraint closes the vocabulary; the payload discriminator is the repo pattern.)*
 
 **Modify:** `apps/web/src/lib/business-decisions/pending-decision-router.ts`, `price-approval.ts`, gate handlers in `business-decisions/`, the adapter call sites (locate via grep for `resolvePendingDecisionTurn`). **Create:** none. **Migrations:** none. **Types:** the union-branch extension only. **UI:** message text only. **Tests:** extend `pending-decision-router.selftest.ts` + `price-approval.selftest.ts` — mixed-intent fixture asserts `residual` non-empty and message contains the acknowledgment; single-intent fixture asserts `residual` null. **Flags:** none (additive field; absence = current behavior). **Security:** none new. **Evidence:** selftests green; a Scenario-B fixture shows the acknowledgment string. **Rollback:** revert commit. **Depends on:** nothing.
 
 ### Slice 0.2 — Price-approval amount binding (Finding 3)
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29)
 **Objective:** a bare approval that names an amount different from the proposal on record clarifies instead of approving.
 
 **Tasks:**
-- [ ] 1. In `price-approval.ts`, add an amount extractor for the approval branch (reuse the existing `adjust`-branch amount parsing for `salida=`/`ideal=`/`minimo=` as the pattern base; add bare `$X` / `X millones` forms).
-- [ ] 2. In the handler (approval path around L176–200): if the parsed text names an amount and it differs from `context.pricing_proposal` (compare against `salida`/`ideal` per the proposal's own semantics — confirm which field a bare approval targets [A, ask if ambiguous]), return a clarification `message` and **do not** call `updateOperationalCase`; append event `price_approval_amount_mismatch` [D].
-- [ ] 3. Tolerance rule: exact-match after normalization (thousands separators, "millones" scaling); no fuzzy tolerance in this slice.
+- [x] 1. In `price-approval.ts`, add an amount extractor for the approval branch (reuse the existing `adjust`-branch amount parsing for `salida=`/`ideal=`/`minimo=` as the pattern base; add bare `$X` / `X millones` forms). *(`extractApprovalAmount` + `approvalAmountCandidates`.)*
+- [x] 2. In the handler (approval path around L176–200): if the parsed text names an amount and it differs from `context.pricing_proposal`, return a clarification `message` and **do not** call `updateOperationalCase`. *(A bare approval amount matches if it equals **either** `salida` or `ideal` — resolves the [A]: both are proposal-record amounts, so naming either is consistent. Mismatch event uses `event_type: "human_decision"` + `payload.kind: "price_approval_amount_mismatch"`, same constraint rationale as 0.1-6.)*
+- [x] 3. Tolerance rule: exact-match after normalization (thousands separators, "millones" scaling); no fuzzy tolerance in this slice.
 
 **Modify:** `apps/web/src/lib/business-decisions/price-approval.ts`. **Tests:** extend `price-approval.selftest.ts`: "Aprobar $4.8 millones" vs proposal 5.2M ⇒ no approval + clarification; "Aprobar" bare ⇒ approves as today; "Aprobar $5.2 millones" matching ⇒ approves. **Flags:** none — this is a correctness fix. **Rollback:** revert. **Acceptance:** the three fixtures above; router selftest unaffected. **Depends on:** 0.1 (shares parser edits; do 0.1 first to avoid rebase).
 
 ### Slice 0.3 — Scheduled-task tool-risk allowlist (Finding 15)
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29)
 **Objective:** no medium/high-risk tool executes from a scheduled task without an explicit allowlist entry.
 
 **Tasks:**
-- [ ] 1. Read `apps/web/src/app/api/cron/scheduled-tasks/route.ts` L200–260 and `apps/web/src/lib/operational-cases/operational-case-cron-tool-policy.ts` (+ its selftest) — the operational-case cron's narrow policy is the model.
-- [ ] 2. Create `apps/web/src/lib/scheduled-tasks/scheduled-task-tool-policy.ts` [D]: risk-scoped allowlist defaulting to the low-risk set; per-task `toolApprovalPolicy` may *narrow*, never widen.
-- [ ] 3. Replace `autoApproveTools: true` (L242) with the policy object; non-allowlisted tool calls route to the pending inbox (existing HITL path) instead of auto-executing.
-- [ ] 4. Add `scheduled-task-tool-policy.selftest.ts` and wire an npm script (`test:scheduled-task-policy`).
+- [x] 1. Read `apps/web/src/app/api/cron/scheduled-tasks/route.ts` L200–260 and `apps/web/src/lib/operational-cases/operational-case-cron-tool-policy.ts` (+ its selftest) — the operational-case cron's narrow policy is the model.
+- [x] 2. Create `apps/web/src/lib/scheduled-tasks/scheduled-task-tool-policy.ts` [D]: risk-scoped allowlist defaulting to the low-risk set; per-task `toolApprovalPolicy` may *narrow*, never widen.
+- [x] 3. Replace `autoApproveTools: true` (L242) with the policy object; non-allowlisted tool calls route to the pending inbox (existing HITL path) instead of auto-executing. *(Pending confirmations send a `tool_confirmation_pending` notification via `notify` and skip the normal Telegram result.)*
+- [x] 4. Add `scheduled-task-tool-policy.selftest.ts` and wire an npm script (`test:scheduled-task-policy`).
 
 **Modify:** `scheduled-tasks/route.ts`. **Create:** policy module + selftest. **Flags/compat:** env escape hatch `SCHEDULED_TASKS_LEGACY_AUTOAPPROVE=true` for one release [D], default off. **Risks (expected, per plan):** tasks that silently depended on auto-approval start landing in the inbox — information, not regression; log each occurrence. **Evidence:** selftest proves `calendar_delete_event` / `telegram_send_message_to_contact` / `easybroker_publish_listing` are not auto-approved; a seeded task run shows inbox routing. **Rollback:** env flag on → prior behavior. **Depends on:** nothing.
 
 ### Slice 0.4 — Instrumentation and metrics
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29) — observation window now accumulating once `AI_USAGE_METERING_ENABLED=true` is set per environment after the migration is applied
 **Objective:** establish the measurements the go/no-go thresholds need and close the existing predictable-cost gap with tenant-scoped, call-level AI usage attribution before new workers are introduced.
 
 **Tasks:**
-- [ ] 1. Derive step durations and volumes from existing data first: `operational_case_events` already timestamps `state_changed` — write read-only queries in `packages/db/src/queries/operational-case-metrics.ts` [D] (all take `userId` or an explicit admin-wide flag gated on `is_ungga_admin`).
-- [ ] 2. Migration `00064_ai_usage_events.sql` [D]: create append-only `ai_usage_events` per Technical Plan §23.1 with required `user_id`, `provider`, `resource_type='ai_model'`, `operation`, `model_id`, `model_role`, token-category columns, reported/estimated cost in integer micro-USD, `currency`, `pricing_version`, latency/status/retry/provider-request fields, and nullable correlation IDs (`session_id`, `turn_id`, `operational_case_id`, future workflow/work IDs). Add indexes for `(user_id, occurred_at)`, `(user_id, turn_id)`, `(user_id, operational_case_id)`, and future attempt correlation. Do not add FKs to future tables. Add update/delete rejection trigger; RLS denies ordinary user reads/writes and follows the existing service-role + `is_ungga_admin` pattern for internal rollups.
-- [ ] 3. Add `AiUsageEventInput`, `AiUsageContext`, token/cost breakdown types in `packages/types/src/ai-usage.ts`; export from `packages/types/src/index.ts`. Add service-write and admin/tenant-rollup queries in `packages/db/src/queries/ai-usage.ts`, exported from `packages/db/src/index.ts`. `agent_sessions.budget_tokens_used` remains non-authoritative; optionally update it only as a derived compatibility counter.
-- [ ] 4. Create `packages/agent/src/usage/ai-usage-meter.ts` [D]: normalize LangChain/OpenRouter usage metadata, preserve reported and estimated cost separately, use a versioned model-price catalog only when provider cost is absent, and persist best-effort. Unknown token categories stay `null`. A metering write failure logs a structured error and increments a dropped-meter counter but never fails the user turn.
-- [ ] 5. Instrument the shared model boundary and inventory every bypass: model factories/callbacks in `packages/agent/src/model.ts`; graph main/selector/compaction calls; direct OpenRouter calls in `embeddings.ts`, `tools/realestate-adapters.ts`, `tools/operational-cases-adapters.ts`, and `tools/predial-extraction-probe.ts`; and model-backed classifiers/extractors under `apps/web/src/lib/`. Pass explicit `AiUsageContext` from web, Telegram, cron, operational-case cron, scheduled-task, and Gu OS Heartbeat entry points. One turn with N calls writes N events; retries increment `retry_ordinal`, never overwrite the first event.
-- [ ] 6. Add correction detection: count `operational_case_update_intake` writes that overwrite an existing non-null key (instrument at the adapter in `packages/agent/src/tools/operational-cases-adapters.ts` by appending event `fact_overwritten` [D] with key name — no behavior change).
-- [ ] 7. Add rollups by day, tenant, model, role, channel, turn, case, and workflow definition. Minimal internal/admin UI: extend the operational-cases admin surface with tokens/cost by day, cost per case, model/role distribution, most expensive calls, reported-vs-estimated coverage, retries/errors, and dropped-meter count. No broker-facing usage view.
-- [ ] 8. Wire the remaining §23 counters skeleton (work retry counts arrive in Phase 2; leave TODO markers referencing Slice 2.3).
+- [x] 1. Derive step durations and volumes from existing data first: `operational_case_events` already timestamps `state_changed` — write read-only queries in `packages/db/src/queries/operational-case-metrics.ts` [D] (all take `userId` or an explicit admin-wide flag gated on `is_ungga_admin`). *(Note: `step_key` lives inside `payload_jsonb`, not as a column.)*
+- [x] 2. Migration `00064_ai_usage_events.sql` [D]: create append-only `ai_usage_events` per Technical Plan §23.1 with required `user_id`, `provider`, `resource_type='ai_model'`, `operation`, `model_id`, `model_role`, token-category columns, reported/estimated cost in integer micro-USD, `currency`, `pricing_version`, latency/status/retry/provider-request fields, and nullable correlation IDs (`session_id`, `turn_id`, `operational_case_id`, future workflow/work IDs). Add indexes for `(user_id, occurred_at)`, `(user_id, turn_id)`, `(user_id, operational_case_id)`, and future attempt correlation. Do not add FKs to future tables. Add update/delete rejection trigger; RLS denies ordinary user reads/writes and follows the existing service-role + `is_ungga_admin` pattern for internal rollups.
+- [x] 3. Add `AiUsageEventInput`, `AiUsageContext`, token/cost breakdown types in `packages/types/src/ai-usage.ts`; export from `packages/types/src/index.ts`. Add service-write and admin/tenant-rollup queries in `packages/db/src/queries/ai-usage.ts`, exported from `packages/db/src/index.ts`. `agent_sessions.budget_tokens_used` remains non-authoritative (left untouched; no derived counter added).
+- [x] 4. Create `packages/agent/src/usage/ai-usage-meter.ts` [D]: normalize LangChain/OpenRouter usage metadata, preserve reported and estimated cost separately, use a versioned model-price catalog only when provider cost is absent, and persist best-effort. Unknown token categories stay `null`. A metering write failure logs a structured error and increments a dropped-meter counter but never fails the user turn.
+- [x] 5. Instrument the shared model boundary and inventory every bypass: model factories/callbacks in `packages/agent/src/model.ts` (main/compaction/selector/reviewer via LangChain callbacks); direct OpenRouter calls in `embeddings.ts`, `tools/realestate-adapters.ts` (`callOpenRouterJsonTool`: vision + listing copy), `tools/operational-cases-adapters.ts` (predial vision extraction); and the five model-backed classifiers/extractors under `apps/web/src/lib/` (pending-decision-unclear, operational-conversation, listing-description-change, contract-commercial, owner-characteristics). Attribution is **ambient** (`AsyncLocalStorage` in `usage/ai-usage-context.ts`) rather than explicit parameter threading: web chat and Telegram webhook bind at the route entry (covers pre-agent classifiers); `runAgent` binds/enriches for graph, cron, scheduled-task and Heartbeat paths. Direct calls now send `usage: { include: true }` so OpenRouter returns billed cost. **Deliberately unmetered:** `tools/predial-extraction-probe.ts` — standalone CLI dev harness (reads `.env.local` directly, hardcoded local PDF), never runs in a tenant context.
+- [x] 6. Add correction detection: `detectIntakeFactOverwrites` in `operational-cases-adapters.ts` appends `event_type: "state_changed"` + `payload.kind: "fact_overwritten"` with the overwritten key names (same CHECK-constraint rationale as 0.1-6) — no behavior change.
+- [x] 7. Add rollups by day, tenant, model, role, channel, turn, case, and workflow definition (pure helpers in `packages/db/src/queries/ai-usage.ts`). Internal/admin UI at `/settings/ai-usage` (metering is global, not case-only; sidebar link for `is_ungga_admin`). Tokens/cost by day, cost per case, model/role/channel/tenant distribution, most expensive calls, reported-vs-estimated coverage, errors/retries and dropped-meter count. No broker-facing usage view.
+- [x] 8. Wire the remaining §23 counters skeleton (work retry counts arrive in Phase 2; TODO markers referencing Slice 2.3 at the bottom of `ai-usage-meter.ts`).
 
 **Files:** modify the call sites in task 5 and the relevant API/cron adapters; create migration, types, DB queries, usage meter, price-catalog fixture, and selftests. **Tests:** usage normalization fixtures for provider-reported usage/cost, estimated-cost fallback, cache/reasoning tokens, missing metadata, retry attribution, and persistence failure; tenant-isolation SQL/query selftest; overwrite-detection helper; representative main-agent, classifier, embedding, vision/copy, cron, and Gu OS Heartbeat calls each produce an attributable event. Assert no prompt/response/tool arguments enter `metadata_jsonb`. **Flags/compat:** `AI_USAGE_METERING_ENABLED` [D], off locally/test unless a fixture recorder is injected; enable per environment after migration. Metering failure never changes model-call behavior. **Security:** required `user_id`; service writes only; admin-wide reads gated; allowlisted metadata; no user content or secrets. **Evidence:** internal dashboard explains tokens/cost by model/role/channel/turn/case; reported-vs-estimated coverage and dropped-meter count visible; volume + correction rates accumulate. **Rollback:** disable flag; append-only rows remain inert audit data; revert UI/query consumers before dropping nothing. **Depends on:** nothing. **Scope:** AI-model usage only; explicitly no billing or customer pricing. **Note:** the 1–2 week observation window runs in parallel with Phase 1.
 
+### Slice 0.4.1 — Metering reliability (LangChain cost + auditable catalog)
+
+**Status:** [x] done (2026-07-29)
+**Objective:** close the production gap where LangChain roles (`main_agent`, `skill_selector`, …) fell back to catalog estimates while direct-fetch call sites already stored OpenRouter `usage.cost`; make catalog estimates auditable and keep dashboard semantics unambiguous.
+
+**Tasks:**
+- [x] 1. Capture OpenRouter billed cost on the LangChain path: keep `__includeRawResponse: true`, extract `provider_request_id` + `usage.cost` from message metadata/`__raw_response`, and add a shared `configuration.fetch` interceptor (`openrouter-usage-capture.ts`) that stashes `{id, usage}` from non-streaming `/chat/completions` JSON before LangChain reshapes the payload. Apply to all OpenRouter ChatOpenAI factories in `model.ts`.
+- [x] 2. Dual-cost persistence: always stamp `estimated_cost_micro_usd` + `pricing_version` when tokens + catalog allow, even when reported cost exists. Accounted cost remains `reported ?? estimated ?? 0` (never sum both for one event).
+- [x] 3. Immutable catalog snapshots under `packages/agent/src/usage/catalogs/`: preserve historical `2026-07-29.1`; active `2026-07-29.2` generated from OpenRouter public model APIs (corrects GPT-5.4 Mini to $0.75 / $4.50 per 1M). Scripts: `generate-model-price-catalog.mjs`, `validate-model-price-catalog.mjs` (CI/prebuild), optional `check-model-price-catalog-drift.mjs` (manual/scheduled, not CI).
+- [x] 4. Rollups/dashboard: bucket `effectiveCostMicroUsd` summed per event; coverage shown as `N de M (pct)` plus money coverage; rename UI label to **Costo contabilizado**; show reportado/estimado as components with per-bucket event counts; dual-cost Δ when both present; truncation warning at 10k rows; historical LangChain caveat note.
+- [x] 5. Tests: extended meter/catalog/db selftests (stash fallback, dual-cost, no double-count in rollups, historical snapshot replay); opt-in live probe `AI_USAGE_OPENROUTER_PROBE=true` (`test:ai-usage-openrouter-probe`).
+
+**Evidence:** new LangChain events should carry `reported_cost_micro_usd` + `provider_request_id`; dashboard accounted total matches Σ reported when coverage is 100%; estimates remain for comparison only. **Limitation:** append-only historical rows from before this slice may still lack reported cost on LangChain roles — do not rewrite them. **Depends on:** 0.4. **Blocks:** trusting metering as go/no-go evidence before Phase 1.
+
 ### Slice 0.5 — Repository validations and hygiene (Technical Plan §29)
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29)
 **Objective:** answer the [A] items that size Phase 1; clean known hygiene issues.
 
 **Tasks:**
-- [ ] 1. **Flow vs SKILL.md diff** (§29.1): extract `operational_flow_jsonb` for `property_optioning` and diff step order/branches against the SKILL.md prose the runtime injects. Output: a findings note appended to this document under §X. Sizes the S1.2 transformation.
-- [ ] 2. **Harness fork investigation** (§29.2): compare `run-settings-test-case-tick.ts` against the cron route's tick path; list every divergence (functions reimplemented vs imported). Output: findings note + the S1.6 parity work list.
-- [ ] 3. **Duplicate migrations** (§29.3): inspect `00036`/`00044`/`00045` duplicates; verify how the Supabase migration runner ordered them in the deployed DB; renumber or document as immutable history per findings. Prefer documenting + guarding future numbering (add `scripts/validate-migrations.mjs` invoked from `prebuild` alongside `validate-skills.mjs`).
-- [ ] 4. **Flag mechanism** (§29.5): confirmed — no flag framework exists. Decide and document the mechanism now [D proposal]: per-tenant boolean in a new `account_feature_flags` table **or** reuse of an existing per-user settings surface; env var only for global kill-switches. Record decision in §X; S1.4 consumes it.
-- [ ] 5. **Child-table tenancy convention** (§29.6): inspect `operational_case_documents` (00037) RLS/`user_id` pattern; adopt the same for all new child tables; record.
-- [ ] 6. **Terminology sweep** (§29 / plan §3.8): grep repo docs + UI copy for `heartbeat` used for claim liveness (runtime code currently has none — the lease is the only mechanism; keep it that way in names).
-- [ ] 7. **CI seed:** add a root npm script `test:selftests` that chains the existing `apps/web` test scripts, and a GitHub Actions workflow running `type-check`, `lint`, `validate:skills`, and `test:selftests` on PR [D — file `.github/workflows/ci.yml`]. This is the §25 prerequisite.
+- [x] 1. **Flow vs SKILL.md diff** (§29.1): done — findings note in §X.1. Sizes the S1.2 transformation.
+- [x] 2. **Harness fork investigation** (§29.2): done — findings note + S1.6 parity work list in §X.2.
+- [x] 3. **Duplicate migrations** (§29.3): documented as immutable history (the Supabase CLI orders lexicographically by full filename, so within each duplicated number the `_name` suffix decided order; renumbering would desync `schema_migrations` on deployed environments). Guard added: `scripts/validate-migrations.mjs` (freezes the 00036/00044/00045 pairs, fails prebuild on any NEW duplicate or malformed name), wired into root `prebuild` and `validate:migrations`.
+- [x] 4. **Flag mechanism** (§29.5): decision recorded in §X (finding 7): per-tenant boolean rows in a new `account_feature_flags` table (`user_id`, `flag_key`, `enabled`, service-role writes, user reads own row — same tenancy pattern as 0.5-5); env vars only for global kill-switches (e.g. `AI_USAGE_METERING_ENABLED`, `SCHEDULED_TASKS_LEGACY_AUTOAPPROVE`). Migration ships with S1.4 (its first consumer).
+- [x] 5. **Child-table tenancy convention** (§29.6): `operational_case_documents` (00037) pattern confirmed and adopted for all new child tables: denormalized `user_id uuid not null references profiles(id) on delete cascade` alongside the parent FK; composite indexes lead with `user_id`; RLS = user `select using (auth.uid() = user_id)` + service-role manage-all. `00064_ai_usage_events` already follows it (stricter: no user read policy — internal-only ledger).
+- [x] 6. **Terminology sweep** (§29 / plan §3.8): clean — every runtime `heartbeat` reference is the Gu OS Heartbeat product feature (channel enum value, `api/cron/heartbeat`, prefetchers/checklist/skill `heartbeat:` mode) or Telegram's typing-indicator helper (`withTypingHeartbeat`, UX keepalive, unrelated to claims). The case lease (`markCaseProcessing`) never uses the word. No renames needed.
+- [x] 7. **CI seed:** root `test:selftests` chains `apps/web` business-decisions / scheduled-task-policy / intake-extraction plus `@agents/agent` ai-usage-meter; `.github/workflows/ci.yml` runs `validate:skills`, `validate:migrations`, `type-check`, `lint` (non-blocking until the pre-existing lint errors in §X finding 10 are burned down) and `test:selftests` on PR + main.
 
 **Evidence:** findings notes in §X; CI workflow runs green on a no-op PR. **Depends on:** nothing. **Blocks:** S1.2 (needs 1), S1.6 (needs 2), all Phase ≥1 migrations (needs 3), S1.4 (needs 4).
 
@@ -412,9 +426,61 @@
 | 4 | 2026-07-27 | Model selection for workers was only implied by empty `model_policy_jsonb`. | Medium | **Taken:** Technical Plan §9.1 + slices 3.4 / 4.1 / 4.2 — role env vars + resolver + evidence-based upgrades; main agent stays cheap |
 | 5 | 2026-07-27 | `UNIQUE (user_id, case_type, version)` would allow duplicate global definitions (NULL uniqueness). Private customization must not silently shadow published globals. | High | **Taken:** partial unique indexes + explicit `forkDefinition` lineage (Technical Plan §5.1 / §5.1.1; slice 1.1) |
 | 6 | 2026-07-27 | `account_skills` is body-only; globals already use Anthropic-like package dirs (`references/`, reserved `scripts/`). Marketplace import needs adaptation, not download-and-run. | Medium (Phase 4+) | **Taken:** Technical Plan §9.2 + ADR-011 + deferred slice 4.3; Phases 0–3 unblocked |
+| 7 | 2026-07-29 | Flag mechanism (0.5-4): no framework exists; existing per-user surfaces (`user_tool_settings`, `user_skill_settings`) are entity-scoped, not free-form flags. | Medium | **Taken:** new `account_feature_flags` table — `user_id uuid not null` (00037 tenancy pattern), `flag_key text`, `enabled boolean`, `unique (user_id, flag_key)`; service-role writes, user reads own rows. Env vars only for global kill-switches. Migration lands with S1.4 (first consumer). |
+| 8 | 2026-07-29 | Duplicate migration numbers 00036/00044/00045 (0.5-3) are deployed history; Supabase CLI ordered them lexicographically by full filename. | Low | **Taken:** frozen as immutable; `scripts/validate-migrations.mjs` allowlists exactly those pairs and fails prebuild/CI on any new duplicate. |
+| 9 | 2026-07-29 | `operational_case_events.event_type` has a closed CHECK constraint; plan tasks named new event types (`residual_reported`, `price_approval_amount_mismatch`, `fact_overwritten`). | Low | **Taken:** repo pattern — reuse an allowed `event_type` and discriminate with `payload.kind`. Used by 0.1-6 (`human_decision`/`residual_reported`), 0.2-2 (`human_decision`/`price_approval_amount_mismatch`), 0.4-6 (`state_changed`/`fact_overwritten`). |
+| 10 | 2026-07-29 | Pre-existing lint errors (8) unrelated to Phase 0 work: `app-shell.tsx` (setState-in-effect), `publication-review.ts` / `publication-reconcile.ts` / `publication-runner.ts` (prefer-const), `telegram/webhook/route.ts` L~2890 (prefer-const), `scripts/lab/retry-ungga-publish-case.ts` (2× no-explicit-any). One selftest regex flag error (`publish-destination-approval.selftest.ts` `/s` flag vs tsc target) was fixed in Phase 0. | Low | Needed: burn down, then flip the CI lint step from `continue-on-error` to blocking. |
+| 11 | 2026-07-29 | LangChain `@langchain/openai@0.4.9` only copies `usage` into `response_metadata` when `system_fingerprint` is present; OpenRouter often omits it. Early Slice 0.4 smokes showed `main_agent` / `skill_selector` with estimated-only cost despite OpenRouter returning `usage.cost` on direct-fetch paths. Hardcoded catalog also understated GPT-5.4 Mini ($0.60/$2.40 vs live $0.75/$4.50). | High (metering trust) | **Taken:** Slice 0.4.1 — HTTP fetch stash + dual-cost + immutable OpenRouter-sourced catalog snapshots; dashboard “Costo contabilizado”. |
 | — | | *(append as found)* | | |
 
 **Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3).
+
+### X.1 Findings note — Flow vs SKILL.md diff (§29.1, feeds S1.2)
+
+**Verdict: three sources of truth disagree on the step inventory.** `operational_flow_jsonb` for `property_optioning` has **8 step_keys** ending at `package_ready`; runtime/guards additionally use **`property_data_review`** and **`published`** as `current_step` values; the coach SKILL map omits both.
+
+**Reconstructed final step order** (migrations `00025` seed → `00027`, `00038`, `00039`, `00043`–`00046`, `00050`, `00051` [rename `photos_scheduled`→`photos_requested`], `00053`–`00056`, `00058`–`00061` [branches/`step_decision`]; `00048` intake-schema only; `00062`/`00063` don't touch the flow):
+
+1. `intake` — tools `operational_case_create`/`operational_case_update_state`; no step skill; no `step_decision`.
+2. `awaiting_documents` — skill `request-property-documents`; branch `document_request_target`: `internal_user` → `waiting_internal` + `notify_user`; `external_contact` → `waiting_external` + Telegram.
+3. `documents_received` — skill `extract-property-characteristics`; branch `critical_property_data`: `complete` → notify + "avanza a `property_data_review`" (named in branch prose only); `pending_external` / `pending_internal` → stay.
+4. `comparables_in_progress` — skill `perform-comparable-analysis`; branch `defensible_comparables_sample`: `defensible` (`usable_count > 0`) → `price_proposal_pending`; `insufficient` → stay + notify.
+5. `price_proposal_pending` — `prepare-listing-price`.
+6. `contract_pending` — `prepare-commission-contract`.
+7. `photos_requested` — `request-property-photos`.
+8. `package_ready` — `publish-listing-package` (last element; no `published` step_key).
+
+**Divergences (flow jsonb × SKILL prose × hardcoded guards):**
+
+| # | Topic | Divergence |
+|---|---|---|
+| D1 | Step inventory | Flow: 8 keys. Coach map (`property-optioning-coach/SKILL.md` L118–134): same 8, omits `property_data_review`/`published`. `PROPERTY_OPTIONING_STEP_ORDER` (`operational-cases-adapters.ts` L3729–3740): inserts **both**. Triple mismatch. |
+| D2 | `property_data_review` | Only named in branch *description* (00060/00061), not a flow step → step-bound skill resolution returns null there; guards/notify gates set it as a real `current_step`. |
+| D3 | `published` | Absent from flow + coach map; `publish-listing-package` prose L166–167 and completion gate (L4396–4415) both require `published`/`completed` pairing. |
+| D4 | Awaiting-docs guard | `blockedAwaitingDocumentsTransitionReason` (L3713–3727) requires a recent `external_response` with **no internal exception**, contradicting the `internal_user` branch (flow + request skill advance on internal upload/"listo"). |
+| D5 | Comparables threshold | Flow branch metadata says `usable_count > 0`; guards require persist + `defensible_sample` / `unique_comparable_count >= 3` (`MIN_DEFENSIBLE_UNIQUE_COMPARABLES`, `comparables-analysis.ts` L93). Flow understates the runtime threshold. |
+| D6 | Post-docs next step | `extract-property-characteristics` prose L155–156 jumps to `comparables_in_progress`, skipping the intermediate `property_data_review` rank that guards enforce. |
+| D7 | Intake tools | Flow intake `step_tools` (00039) omit `operational_case_update_intake`; coach prose and runtime complete intake with exactly that tool. |
+| D8 | HITL wording | Coach guardrails say the human approves price, not comparable rows; adapters implement comparables-expansion/Avaclick HITL kinds. Soft copy mismatch. |
+| D9 | Missing steps → skill fallback | Ticks on `property_data_review`/`published`/`intake` fall through to `default_skill_slug` (coach composite) instead of a step-bound skill. |
+
+**S1.2 consumption:** (1) promote `property_data_review` and `published` to first-class graph states (or stop using them as `current_step`); (2) align coach map + extract prose with that choice; (3) fix the awaiting-documents guard for the `internal_user` branch; (4) encode the comparables transition as `unique_comparable_count >= 3` / `defensible_sample`, not `usable_count > 0`. Each becomes an explicit `transitions` decision in the transformer, not a silent choice.
+
+### X.2 Findings note — Harness fork investigation (§29.2, feeds S1.6)
+
+**Verdict:** `runSettingsTestCaseAgentTick` (lab harness) and cron `processCase` are **forked tick implementations with an inverted dependency**: the cron route imports `applyPostAgentContractHandling` and `createPublicationRunnerOwnedAgentTick` *from the harness file*, and production `package_ready` publication ticks actually execute **through the harness** via `createPublicationRunnerOwnedAgentTick` → `runSettingsTestCaseAgentTick`. The cron also carries a dead import of `runSettingsTestCaseAgentTick` (route.ts L98).
+
+**Key divergences by phase** (cron `apps/web/src/app/api/cron/operational-cases/route.ts` vs harness `apps/web/src/lib/operational-cases/run-settings-test-case-tick.ts`):
+
+- **Claim/lease:** same `markCaseProcessing` primitive, divergent policy — cron 5-min lease, no retry; harness 1-min lease, up to 4 retries for controlled E2E.
+- **Tool policy:** cron uses `buildOperationalCaseCronToolApprovalPolicy` (bookkeeping-only auto-exec); harness uses `buildPublicationAwareE2EToolApprovalPolicy` + `SETTINGS_TEST_AUTO_EXECUTE_TOOLS` (much wider). `toolCallSource` set only by harness (`"agent_e2e"`).
+- **Tick message:** cron `buildCaseTickMessage` (short trigger) vs harness `buildCaseE2ETickMessage` (L1206–1523, step-scripted prose).
+- **Cron-only phases the harness skips:** media-group ack flush, pending-HITL short-circuit + advisor notice, stale tool-confirmation cleanup, `syncContractDraftFromToolCalls`, `stabilizeInternalDocumentWait`, error event + `+10min` backoff, stuck `+5min` re-arm.
+- **Harness-only phases:** `healStalePublishFlowBlockers`, document-extraction preflight, deterministic agent bypass for `documents_received`/`price_proposal_pending`, large owned `package_ready` remediation block (L2060–2400), `package_ready` entry gated on `listingDescriptionIsApproved` (cron always enters `requestPublicationProgress`).
+- **Weaker reimplementations in harness:** incomplete-intake skip returns a message without clearing `nextActionAt` or inserting the skip event (cron does both).
+- **Correctly shared already:** DB primitives (`markCaseProcessing`, case CRUD, events, sessions), `runAgent`, `ensureAgentToolDepsWired`, `applyPropertyOptioningPostAgentInvariants`, `requestPublicationProgress`, intake-successor/step-order guards (agent adapters), suppress/settings-test predicates.
+
+**S1.6 parity work list (priority order):** P0 — extract one shared `runOperationalCaseAgentTick` (claim → HITL skip → message → `runAgent` → invariants → contract → schedule) with lab behaviors as flags; unify tick message, tool policy (one production policy + explicit lab wideners), and claim/lease policy (`claimCaseForTick({ leaseMinutes, retries })`); move `applyPostAgentContractHandling` + `createPublicationRunnerOwnedAgentTick` out of the lab file and delete the dead cron import. P1 — share incomplete-intake skip side effects, HITL short-circuit/advisor notice, `stabilizeInternalDocumentWait`, `syncContractDraftFromToolCalls`, stuck/error scheduling policy, and align the `package_ready` entry gate. P2 — keep deterministic bypasses/doc-extraction preflight/`healStalePublishFlowBlockers` as explicitly lab-only hooks (or promote deliberately); relocate `classifyPublicationExecutionFromToolCalls` next to `publication-runner.ts`; extract a shared `listTurnToolCalls` helper.
 
 ---
 

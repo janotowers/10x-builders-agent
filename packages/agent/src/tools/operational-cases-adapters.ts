@@ -75,6 +75,10 @@ import type {
 } from "@agents/types";
 import type { ToolContext } from "./tool-context";
 import { createTrackedToolCall } from "./tool-call-audit";
+import {
+  recordOpenRouterCallUsage,
+  type OpenRouterUsagePayload,
+} from "../usage/ai-usage-meter";
 
 const STATUS_VALUES = [
   "active",
@@ -2840,6 +2844,7 @@ async function callOpenRouterForJson(input: {
   model: string;
   messages: Array<Record<string, unknown>>;
 }) {
+  const startedAt = Date.now();
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -2852,13 +2857,28 @@ async function callOpenRouterForJson(input: {
       temperature: 0,
       max_tokens: 900,
       messages: input.messages,
+      // Slice 0.4: pide el costo facturado en la respuesta (usage.cost).
+      usage: { include: true },
     }),
   });
   const body = (await res.json().catch(() => ({}))) as {
+    id?: string;
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: OpenRouterUsagePayload;
     error?: { message?: string };
   };
   const content = body.choices?.[0]?.message?.content;
+  // Slice 0.4 — metering best-effort (nunca bloquea la extracción).
+  void recordOpenRouterCallUsage({
+    modelId: input.model,
+    modelRole: "predial_extraction",
+    operation: "vision",
+    usage: body.usage ?? null,
+    providerRequestId: typeof body.id === "string" ? body.id : null,
+    latencyMs: Date.now() - startedAt,
+    status: res.ok && content ? "ok" : "error",
+    errorCode: res.ok && content ? null : `http_${res.status}`,
+  });
   if (!res.ok || !content) {
     throw new Error(body.error?.message ?? `model_request_failed_${res.status}`);
   }
@@ -3812,6 +3832,27 @@ export function buildOperationalCaseIntakeUpdateContext(params: {
   };
 }
 
+/**
+ * Slice 0.4 task 6 — correction detection (observability, no behavior change).
+ * A "fact overwrite" is a sanitized intake-patch key whose existing context
+ * value was already non-null/non-empty and the patch replaces it with a
+ * DIFFERENT value. Re-sending the same value is not an overwrite.
+ */
+export function detectIntakeFactOverwrites(
+  existingContext: Record<string, unknown>,
+  sanitizedPatch: Record<string, unknown>
+): string[] {
+  const overwritten: string[] = [];
+  for (const [key, nextValue] of Object.entries(sanitizedPatch)) {
+    if (!(key in existingContext)) continue;
+    const prevValue = existingContext[key];
+    if (prevValue === null || prevValue === undefined || prevValue === "") continue;
+    if (JSON.stringify(prevValue) === JSON.stringify(nextValue)) continue;
+    overwritten.push(key);
+  }
+  return overwritten;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function addOperationalCaseTools(
   ctx: ToolContext,
@@ -4098,6 +4139,35 @@ export function addOperationalCaseTools(
               ...(input.note ? { reason: input.note } : {}),
             },
           });
+
+          // Slice 0.4 task 6 — correction-rate observability, sin cambiar
+          // comportamiento: registra qué claves de intake fueron sobrescritas.
+          const overwrittenKeys = detectIntakeFactOverwrites(
+            opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+              ? (opCase.context_jsonb as Record<string, unknown>)
+              : {},
+            intakeUpdate.intakePatch
+          );
+          if (overwrittenKeys.length > 0) {
+            try {
+              await insertOperationalCaseEvent(ctx.db, {
+                caseId: opCase.id,
+                eventType: "state_changed",
+                actor: "agent",
+                payload: {
+                  kind: "fact_overwritten",
+                  source: "operational_case_update_intake",
+                  keys: overwrittenKeys,
+                  case_version: updated.version,
+                },
+              });
+            } catch (eventError) {
+              console.error(
+                "[operational_case_update_intake] fact_overwritten event failed:",
+                eventError
+              );
+            }
+          }
 
           const out = {
             ok: true,

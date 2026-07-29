@@ -1,4 +1,6 @@
 import { ChatOpenAI } from "@langchain/openai";
+import { createAiUsageCallbackHandler } from "./usage/ai-usage-meter";
+import { openRouterClientConfiguration } from "./usage/openrouter-usage-capture";
 
 /** Opciones runtime del modelo de chat. Se eligen en graph.ts según canal. */
 export interface CreateChatModelOptions {
@@ -116,30 +118,54 @@ function resolveMaxTokens(): number {
   return Math.floor(n);
 }
 
-export function createChatModel(options: CreateChatModelOptions = {}) {
+/**
+ * Shared ChatOpenAI options for every OpenRouter factory: raw response
+ * retention (LangChain metadata path) + fetch interceptor (HTTP usage.cost
+ * stash) + usage metering callback.
+ */
+function openRouterChatOpenAIOptions(params: {
+  modelName: string;
+  modelRole: string;
+  temperature: number;
+  maxTokens: number;
+}) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
 
+  return {
+    modelName: params.modelName,
+    temperature: params.temperature,
+    maxTokens: params.maxTokens,
+    configuration: openRouterClientConfiguration(),
+    apiKey,
+    // Conserva `usage.cost` de OpenRouter en additional_kwargs.__raw_response
+    // (ChatOpenAI solo copia usage a response_metadata si hay system_fingerprint).
+    __includeRawResponse: true as const,
+    // Belt-and-suspenders: OpenRouter currently returns usage by default;
+    // older docs required usage.include.
+    modelKwargs: { usage: { include: true } },
+    callbacks: [
+      createAiUsageCallbackHandler({
+        modelId: params.modelName,
+        modelRole: params.modelRole,
+      }),
+    ],
+  };
+}
+
+export function createChatModel(options: CreateChatModelOptions = {}) {
   const temperature = options.temperature ?? DEFAULT_INTERACTIVE_TEMPERATURE;
   const modelName = options.modelName ?? MAIN_AGENT_MODEL_ID;
   const maxTokens = options.maxTokens ?? resolveMaxTokens();
 
-  return new ChatOpenAI({
-    modelName,
-    temperature,
-    // Capamos max_tokens de salida para evitar rechazos de OpenRouter por
-    // saldo insuficiente (si no lo fijamos, el SDK pide el máximo del modelo
-    // ≈16k y una cuenta con pocos créditos lo rechaza con 402).
-    // Configurable por `OPENROUTER_MAX_TOKENS`; default 2048.
-    maxTokens,
-    configuration: {
-      baseURL: "https://openrouter.ai/api/v1",
-      defaultHeaders: {
-        "HTTP-Referer": "https://agents.local",
-      },
-    },
-    apiKey,
-  });
+  return new ChatOpenAI(
+    openRouterChatOpenAIOptions({
+      modelName,
+      modelRole: "main_agent",
+      temperature,
+      maxTokens,
+    })
+  );
 }
 
 /**
@@ -150,21 +176,14 @@ export function createChatModel(options: CreateChatModelOptions = {}) {
  * es suficiente para la tarea mecánica de resumir.
  */
 export function createCompactionModel() {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
-
-  return new ChatOpenAI({
-    modelName: COMPACTION_MODEL_ID,
-    temperature: 0,
-    maxTokens: 2048,
-    configuration: {
-      baseURL: "https://openrouter.ai/api/v1",
-      defaultHeaders: {
-        "HTTP-Referer": "https://agents.local",
-      },
-    },
-    apiKey,
-  });
+  return new ChatOpenAI(
+    openRouterChatOpenAIOptions({
+      modelName: COMPACTION_MODEL_ID,
+      modelRole: "compaction",
+      temperature: 0,
+      maxTokens: 2048,
+    })
+  );
 }
 
 /**
@@ -173,21 +192,14 @@ export function createCompactionModel() {
  * and tests are stable.
  */
 export function createSkillSelectorModel() {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
-
-  return new ChatOpenAI({
-    modelName: SKILL_SELECTOR_MODEL_ID,
-    temperature: 0,
-    maxTokens: 128,
-    configuration: {
-      baseURL: "https://openrouter.ai/api/v1",
-      defaultHeaders: {
-        "HTTP-Referer": "https://agents.local",
-      },
-    },
-    apiKey,
-  });
+  return new ChatOpenAI(
+    openRouterChatOpenAIOptions({
+      modelName: SKILL_SELECTOR_MODEL_ID,
+      modelRole: "skill_selector",
+      temperature: 0,
+      maxTokens: 128,
+    })
+  );
 }
 
 /**
@@ -195,19 +207,12 @@ export function createSkillSelectorModel() {
  * user-authored preferences into structured, system-compatible copy.
  */
 export function createBusinessBrainReviewerModel() {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
-
-  return new ChatOpenAI({
-    modelName: BUSINESS_BRAIN_REVIEWER_MODEL_ID,
-    temperature: 0,
-    maxTokens: 700,
-    configuration: {
-      baseURL: "https://openrouter.ai/api/v1",
-      defaultHeaders: {
-        "HTTP-Referer": "https://agents.local",
-      },
-    },
-    apiKey,
-  });
+  return new ChatOpenAI(
+    openRouterChatOpenAIOptions({
+      modelName: BUSINESS_BRAIN_REVIEWER_MODEL_ID,
+      modelRole: "business_brain_reviewer",
+      temperature: 0,
+      maxTokens: 700,
+    })
+  );
 }

@@ -25,6 +25,8 @@ export * from "./queries/account-assets";
 export * from "./queries/operational-case-documents";
 export * from "./queries/notifications";
 export * from "./queries/publication-operations";
+export * from "./queries/ai-usage";
+export * from "./queries/operational-case-metrics";
 export { encryptToken, decryptToken, encryptJson, decryptJson } from "./crypto";
 export {
   GOOGLE_CALENDAR_PROVIDER,

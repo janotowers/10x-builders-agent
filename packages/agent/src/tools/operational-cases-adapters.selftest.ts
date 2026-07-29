@@ -9,6 +9,7 @@ import {
   canonicalizeNotifyKindForTest,
   canonicalizePropertyDataReviewText,
   contractDraftOutputPathFromContext,
+  detectIntakeFactOverwrites,
   documentExtractionMinimumsContext,
   evaluateContractReviewNotifyGate,
   evaluateListingDescriptionReviewNotifyGate,
@@ -1098,5 +1099,30 @@ const multiFieldReviewText = buildContractDataReviewNotifyText([
 ]);
 assert.match(multiFieldReviewText, /owner_name/);
 assert.match(multiFieldReviewText, /property_address/);
+
+// Slice 0.4 task 6 — fact-overwrite detection (correction-rate observability).
+assert.deepEqual(
+  detectIntakeFactOverwrites(
+    {
+      property_address: "Av. Siempre Viva 123",
+      owner_name: "Ana",
+      notes: null,
+      price: "",
+    },
+    {
+      property_address: "Calle Nueva 456", // non-null → different value: overwrite
+      owner_name: "Ana", // same value: not an overwrite
+      notes: "primera nota", // previous null: not an overwrite
+      price: "5000000", // previous empty string: not an overwrite
+      property_zone: "Providencia", // new key: not an overwrite
+    }
+  ),
+  ["property_address"]
+);
+assert.deepEqual(detectIntakeFactOverwrites({}, { a: 1 }), []);
+assert.deepEqual(
+  detectIntakeFactOverwrites({ rooms: 2 }, { rooms: 3 }),
+  ["rooms"]
+);
 
 console.log("operational-cases-adapters surface selftest ok");

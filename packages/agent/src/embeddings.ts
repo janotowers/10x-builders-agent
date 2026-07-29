@@ -12,6 +12,11 @@
  * los defaults y las variables de entorno que los overridean.
  */
 
+import {
+  recordOpenRouterCallUsage,
+  type OpenRouterUsagePayload,
+} from "./usage/ai-usage-meter";
+
 export const DEFAULT_EMBEDDING_MODEL = "google/gemini-embedding-001";
 export const DEFAULT_EMBEDDING_DIM = 1536;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -66,6 +71,27 @@ export async function generateEmbedding(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+  const recordUsage = (input: {
+    usage: OpenRouterUsagePayload | null;
+    providerRequestId?: string | null;
+    startedAt: number;
+    status: "ok" | "error";
+    errorCode?: string | null;
+  }) => {
+    // Slice 0.4 — metering best-effort (nunca bloquea el embedding).
+    void recordOpenRouterCallUsage({
+      modelId: model,
+      modelRole: "embeddings",
+      operation: "embedding",
+      usage: input.usage,
+      providerRequestId: input.providerRequestId ?? null,
+      latencyMs: Date.now() - input.startedAt,
+      status: input.status,
+      errorCode: input.errorCode ?? null,
+    });
+  };
+
+  const startedAt = Date.now();
   try {
     const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",
@@ -87,20 +113,37 @@ export async function generateEmbedding(
         input: trimmed,
         encoding_format: "float",
         dimensions: expectedDim,
+        // Slice 0.4.1 — ask for usage.cost (OpenRouter includes it by default
+        // today; keep the flag for older accounting docs / future changes).
+        usage: { include: true },
       }),
       signal: controller.signal,
     });
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
+      recordUsage({
+        usage: null,
+        startedAt,
+        status: "error",
+        errorCode: `http_${response.status}`,
+      });
       throw new Error(
         `OpenRouter embeddings ${response.status}: ${body.slice(0, 300)}`
       );
     }
 
     const json = (await response.json()) as {
+      id?: string;
       data?: Array<{ embedding?: unknown }>;
+      usage?: OpenRouterUsagePayload;
     };
+    recordUsage({
+      usage: json?.usage ?? null,
+      providerRequestId: typeof json.id === "string" ? json.id : null,
+      startedAt,
+      status: "ok",
+    });
     const raw = json?.data?.[0]?.embedding;
     if (!Array.isArray(raw)) {
       throw new Error("OpenRouter embeddings response missing data[0].embedding");

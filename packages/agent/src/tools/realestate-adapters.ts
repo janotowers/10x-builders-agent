@@ -33,6 +33,10 @@ import {
   LISTING_COPY_MODEL_ID,
 } from "../model";
 import {
+  recordOpenRouterCallUsage,
+  type OpenRouterUsagePayload,
+} from "../usage/ai-usage-meter";
+import {
   executeBigQueryQuery,
   type BigQueryParamValue,
 } from "./bigquery-adapter";
@@ -317,6 +321,7 @@ async function callOpenRouterJsonTool(input: {
   if (!apiKey) {
     throw new Error("missing_openrouter_api_key");
   }
+  const startedAt = Date.now();
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -329,13 +334,33 @@ async function callOpenRouterJsonTool(input: {
       temperature: Number.isFinite(input.temperature) ? input.temperature : 0,
       max_tokens: Number.isFinite(input.maxTokens) ? input.maxTokens : 1000,
       messages: input.messages,
+      // Slice 0.4: pide el costo facturado en la respuesta (usage.cost).
+      usage: { include: true },
     }),
   });
   const body = (await res.json().catch(() => ({}))) as {
+    id?: string;
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: OpenRouterUsagePayload;
     error?: { message?: string };
   };
   const content = body.choices?.[0]?.message?.content;
+  // Slice 0.4 — metering best-effort (nunca bloquea la tool).
+  void recordOpenRouterCallUsage({
+    modelId: input.model,
+    modelRole:
+      input.model === IMAGE_VISION_MODEL_ID
+        ? "image_vision"
+        : input.model === LISTING_COPY_MODEL_ID
+          ? "listing_copy"
+          : "realestate_json_tool",
+    operation: input.model === IMAGE_VISION_MODEL_ID ? "vision" : "chat_completion",
+    usage: body.usage ?? null,
+    providerRequestId: typeof body.id === "string" ? body.id : null,
+    latencyMs: Date.now() - startedAt,
+    status: res.ok && content ? "ok" : "error",
+    errorCode: res.ok && content ? null : `http_${res.status}`,
+  });
   if (!res.ok || !content) {
     throw new Error(body.error?.message ?? `model_request_failed_${res.status}`);
   }

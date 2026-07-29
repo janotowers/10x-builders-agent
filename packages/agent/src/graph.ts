@@ -50,6 +50,7 @@ import {
   DEFAULT_HEARTBEAT_TEMPERATURE,
   DEFAULT_INTERACTIVE_TEMPERATURE,
 } from "./model";
+import { bindAiUsageContext } from "./usage/ai-usage-context";
 import {
   buildLangChainTools,
   resolveToolApprovalMode,
@@ -1121,6 +1122,23 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     | "cron"
     | "heartbeat"
     | "case_runner" = channel ? channel : input.autoApproveTools ? "cron" : "web";
+
+  // Slice 0.4 — AI usage metering: ata la atribución del turno (tenant,
+  // canal, sesión, turn, caso) al contexto async. Los modelos del grafo
+  // (main/selector/compaction) y las llamadas OpenRouter internas de los
+  // adapters la leen sin pasar parámetros; una falla de metering nunca rompe
+  // el turno.
+  bindAiUsageContext(
+    {
+      userId,
+      channel: resolvedChannelForRuntime,
+      sessionId,
+      turnId,
+      operationalCaseId: input.caseId ?? null,
+    },
+    db
+  );
+
   // Temperatura/modelo por canal:
   // - web/telegram: conversacional (~0.3)
   // - cron/heartbeat: determinista (~0.1)

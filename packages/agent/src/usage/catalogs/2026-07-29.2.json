@@ -1,0 +1,33 @@
+{
+  "version": "2026-07-29.2",
+  "source_url": "https://openrouter.ai/api/v1/models + https://openrouter.ai/api/v1/embeddings/models",
+  "retrieved_at": "2026-07-29T18:56:00.000Z",
+  "notes": "Generated from OpenRouter public model APIs. Prices are USD per 1M tokens. Immutable — bump version for any change.",
+  "models": {
+    "openai/gpt-5.4-mini": {
+      "inputUsdPerMTok": 0.75,
+      "outputUsdPerMTok": 4.5,
+      "cacheReadUsdPerMTok": 0.075
+    },
+    "openai/gpt-4.1-mini": {
+      "inputUsdPerMTok": 0.4,
+      "outputUsdPerMTok": 1.6,
+      "cacheReadUsdPerMTok": 0.1
+    },
+    "openai/gpt-4o-mini": {
+      "inputUsdPerMTok": 0.15,
+      "outputUsdPerMTok": 0.6,
+      "cacheReadUsdPerMTok": 0.075
+    },
+    "anthropic/claude-haiku-4.5": {
+      "inputUsdPerMTok": 1,
+      "outputUsdPerMTok": 5,
+      "cacheReadUsdPerMTok": 0.1,
+      "cacheWriteUsdPerMTok": 1.25
+    },
+    "google/gemini-embedding-001": {
+      "inputUsdPerMTok": 0.15,
+      "outputUsdPerMTok": 0
+    }
+  }
+}
