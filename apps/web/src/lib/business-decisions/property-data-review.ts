@@ -3,9 +3,9 @@ import {
   getOperationalCase,
   insertOperationalCaseEvent,
   resolveInternalNotificationWithReminders,
-  updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import { isControlledE2EOperationalCase } from "@agents/types";
 import { runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settings-test-case-tick";
 import { classifyOperationalConversationMessage } from "@/lib/operational-cases/operational-conversation-classifier";
@@ -283,7 +283,7 @@ export async function handlePropertyDataReviewDecision(
     };
   }
   const caseWithPatch = hasPatch
-    ? await updateOperationalCase(db, opCase.id, opCase.version, {
+    ? await advisedUpdateCase(db, opCase, opCase.version, {
         context: {
           ...context,
           ...correctionPatch.contextPatch,
@@ -334,9 +334,9 @@ export async function handlePropertyDataReviewDecision(
   });
 
   const reviewAdvanceNextActionAt = settingsTestCase ? null : new Date().toISOString();
-  const advancedCase = await updateOperationalCase(
+  const advancedCase = await advisedUpdateCase(
     db,
-    caseWithPatch.id,
+    caseWithPatch,
     caseWithPatch.version,
     {
       status:

@@ -3,9 +3,9 @@ import {
   getOperationalCase,
   insertOperationalCaseEvent,
   setInternalUserNotificationStatus,
-  updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 
 function isSettingsTestCase(context: Record<string, unknown>) {
   return (
@@ -59,7 +59,7 @@ export async function handleContractOwnerSignedDecision(
     params.fileId?.trim() ||
     (/\bfile_id[=:\s]+([^\s]+)/i.exec(params.text)?.[1] ?? "signed_contract_test");
 
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updated = await advisedUpdateCase(db, opCase, opCase.version, {
     status: settingsTestCase ? "paused" : "active",
     currentStep: "photos_requested",
     nextActionAt: settingsTestCase ? null : new Date().toISOString(),

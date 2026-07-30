@@ -389,3 +389,10 @@ export {
   takeStashedOpenRouterUsage,
   clearOpenRouterUsageStash,
 } from "./usage/openrouter-usage-capture";
+
+// Flexible workflows (Phase 1): transition evaluation against pinned
+// definitions — advisory logging shared by the three proposal sites.
+export {
+  adviseCaseTransition,
+  type CaseTransitionAdvice,
+} from "./workflows/transition-advisor";

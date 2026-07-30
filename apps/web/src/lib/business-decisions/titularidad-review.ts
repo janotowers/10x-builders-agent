@@ -3,9 +3,9 @@ import {
   getOperationalCase,
   insertOperationalCaseEvent,
   resolveInternalNotificationWithReminders,
-  updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import { isControlledE2EOperationalCase } from "@agents/types";
 import { runSettingsTestCaseAgentTick } from "@/lib/operational-cases/run-settings-test-case-tick";
 
@@ -132,7 +132,7 @@ export async function handleTitularidadReviewDecision(
     : {};
   const nowIso = new Date().toISOString();
 
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updated = await advisedUpdateCase(db, opCase, opCase.version, {
     nextActionAt: nowIso,
     context: {
       ...context,

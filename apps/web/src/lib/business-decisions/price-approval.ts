@@ -7,6 +7,7 @@ import {
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import { isControlledE2EOperationalCase } from "@agents/types";
 import { removeConsumedSegments } from "./residual-intent";
 
@@ -379,7 +380,7 @@ export async function handlePriceApprovalDecision(
     const settingsTestCase = isSettingsTestCase(context);
     const controlledE2ECase = isControlledE2EOperationalCase(opCase);
     const shouldPauseBeforeContract = settingsTestCase && !controlledE2ECase;
-    const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+    const updated = await advisedUpdateCase(db, opCase, opCase.version, {
       status: shouldPauseBeforeContract ? "paused" : "active",
       currentStep: "contract_pending",
       nextActionAt: shouldPauseBeforeContract ? null : new Date().toISOString(),
@@ -459,7 +460,7 @@ export async function handlePriceApprovalDecision(
       rejected_by: params.userId,
       rejection_reason: parsed.reason ?? params.text,
     };
-    const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+    const updated = await advisedUpdateCase(db, opCase, opCase.version, {
       status: "active",
       currentStep: "price_proposal_pending",
       nextActionAt: new Date().toISOString(),
@@ -501,7 +502,7 @@ export async function handlePriceApprovalDecision(
   const settingsTestCase = isSettingsTestCase(context);
   const controlledE2ECase = isControlledE2EOperationalCase(opCase);
   const shouldPauseBeforeContract = settingsTestCase && !controlledE2ECase;
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updated = await advisedUpdateCase(db, opCase, opCase.version, {
     status: shouldPauseBeforeContract ? "paused" : "active",
     currentStep: "contract_pending",
     nextActionAt: shouldPauseBeforeContract ? null : new Date().toISOString(),

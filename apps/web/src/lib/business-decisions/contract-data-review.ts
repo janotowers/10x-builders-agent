@@ -4,9 +4,9 @@ import {
   insertOperationalCaseEvent,
   refreshInternalUserNotificationContent,
   resolveInternalNotificationWithReminders,
-  updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import {
   applyCommissionTermsPatch,
   buildContractCommercialMinimumsSummaryMessage,
@@ -322,7 +322,7 @@ export async function handleContractDataReviewDecision(
     Object.entries(patch).filter(([, value]) => value !== undefined)
   );
 
-  const updatedCase = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updatedCase = await advisedUpdateCase(db, opCase, opCase.version, {
     // Only resume agent/cron when required commercial fields are complete.
     nextActionAt: capturedComplete ? new Date().toISOString() : null,
     context: {

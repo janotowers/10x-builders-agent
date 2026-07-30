@@ -3,9 +3,9 @@ import {
   getOperationalCase,
   insertOperationalCaseEvent,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
-  updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import {
   tryAdvanceComparablesAfterPersist,
   type PricingProposal,
@@ -244,7 +244,7 @@ export async function handleComparablesExpansionDecision(
     };
   }
 
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, updatePayload);
+  const updated = await advisedUpdateCase(db, opCase, opCase.version, updatePayload);
   if (!updated) {
     return {
       ok: false,

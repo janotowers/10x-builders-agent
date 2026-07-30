@@ -2,6 +2,7 @@
  * Máquina de estados determinística para publicación por destino
  * (EasyBroker / Ungga). El LLM no decide el orden de side effects.
  */
+import { WORKFLOW_PUBLICATION_PROTECTED_CONTEXT_KEYS } from "@agents/workflows";
 
 export const PUBLICATION_DESTINATIONS = ["easybroker", "ungga"] as const;
 export type PublicationDestination = (typeof PUBLICATION_DESTINATIONS)[number];
@@ -98,15 +99,11 @@ export type PublicationState = {
   feature_enabled?: boolean;
 };
 
-export const PUBLICATION_PROTECTED_CONTEXT_KEYS = [
-  "publication",
-  "published",
-  "publish_approvals",
-  "photo_manifest",
-  "e2e_control_status",
-  "package_ready_lab_auto_continue_listing_id",
-  "package_ready_machine_work_in_flight",
-] as const;
+// Canonical list lives in @agents/workflows so the transition evaluator and
+// this runtime adapter can never drift (Slice 1.4). Re-exported here to keep
+// existing import sites stable.
+export const PUBLICATION_PROTECTED_CONTEXT_KEYS =
+  WORKFLOW_PUBLICATION_PROTECTED_CONTEXT_KEYS;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);

@@ -10,6 +10,7 @@ import {
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import { isControlledE2EOperationalCase } from "@agents/types";
 import { sendGmailMessage } from "@/lib/gmail/send-message";
 import { notify } from "@/lib/notify";
@@ -502,7 +503,7 @@ export async function handleContractReviewDecision(
 
   if (parsed.intent === "request_changes") {
     const ownerEmail = resolveOwnerEmail(context);
-    const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+    const updated = await advisedUpdateCase(db, opCase, opCase.version, {
       status: "waiting_internal",
       currentStep: "contract_pending",
       nextActionAt: new Date().toISOString(),
@@ -658,7 +659,7 @@ export async function handleContractReviewDecision(
   }
 
   const shouldPauseAfterContractSent = settingsTestCase && !controlledE2ECase;
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updated = await advisedUpdateCase(db, opCase, opCase.version, {
     status: shouldPauseAfterContractSent ? "paused" : "active",
     currentStep: "photos_requested",
     nextActionAt: shouldPauseAfterContractSent ? null : new Date().toISOString(),
@@ -875,7 +876,7 @@ export async function handleContractRevisionUploadAndSend(
 
   const settingsTestCase = isSettingsTestCase(mergedContext);
   const shouldPauseAfterContractSent = settingsTestCase && !controlledE2ECase;
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updated = await advisedUpdateCase(db, opCase, opCase.version, {
     status: shouldPauseAfterContractSent ? "paused" : "active",
     currentStep: "photos_requested",
     nextActionAt: shouldPauseAfterContractSent ? null : new Date().toISOString(),

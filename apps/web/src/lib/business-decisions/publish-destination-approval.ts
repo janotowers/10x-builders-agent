@@ -8,6 +8,7 @@ import {
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import {
   isControlledE2EOperationalCase,
   isSettingsOperationalTestCase,
@@ -429,7 +430,7 @@ export async function handlePublishDestinationApprovalDecision(
         },
       };
       const publicationPatch = buildPublicationContextPatch(nextPublication);
-      const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+      const updated = await advisedUpdateCase(db, opCase, opCase.version, {
         status: "active",
         currentStep: opCase.current_step ?? "package_ready",
         nextActionAt: nowIso,
@@ -526,7 +527,7 @@ export async function handlePublishDestinationApprovalDecision(
     ? context.publish_approvals
     : {};
 
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updated = await advisedUpdateCase(db, opCase, opCase.version, {
     status: parsed.intent === "reject" ? "waiting_internal" : "active",
     currentStep: opCase.current_step ?? "package_ready",
     nextActionAt: parsed.intent === "reject" ? null : new Date().toISOString(),

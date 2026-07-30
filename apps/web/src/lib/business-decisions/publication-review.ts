@@ -4,9 +4,9 @@ import {
   getOperationalCase,
   insertOperationalCaseEvent,
   resolveInternalNotificationWithReminders,
-  updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import {
   isControlledE2EOperationalCase,
   isSettingsOperationalTestCase,
@@ -337,7 +337,7 @@ export async function handlePublicationReviewDecision(
         destination,
       },
     });
-    await updateOperationalCase(db, opCase.id, opCase.version, {
+    await advisedUpdateCase(db, opCase, opCase.version, {
       status: "waiting_internal",
       nextActionAt: null,
     });
@@ -351,7 +351,7 @@ export async function handlePublicationReviewDecision(
   }
 
   const patch = buildPublicationContextPatch(publication);
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updated = await advisedUpdateCase(db, opCase, opCase.version, {
     status: "active",
     nextActionAt: new Date().toISOString(),
     context: {

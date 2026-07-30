@@ -26,6 +26,7 @@ import {
   updateOperationalCase,
   upsertConversationBinding,
 } from "@agents/db";
+import { advisedRuntimeCaseUpdate } from "@/lib/operational-cases/advised-case-update";
 import {
   buildOperationalCaseIntakeUpdateContext,
   isPropertyOptioningIntent,
@@ -478,7 +479,9 @@ export async function resolveConversationalIntakeTurn(params: {
     const nextStep = intakeUpdate.complete
       ? firstOperationalStepAfterIntake(caseType.operational_flow_jsonb)
       : "intake";
-    let updatedCase = await updateOperationalCase(db, opCase.id, opCase.version, {
+    // Slice 1.4 (site 3): el paso sucesor de intake se evalúa contra la
+    // definición pinned (advisory registra divergencias).
+    let updatedCase = await advisedRuntimeCaseUpdate(db, opCase, opCase.version, {
       status: intakeUpdate.complete ? "active" : "waiting_internal",
       currentStep: nextStep,
       nextActionAt:
@@ -497,7 +500,7 @@ export async function resolveConversationalIntakeTurn(params: {
         const retryNextStep = intakeUpdate.complete
           ? firstOperationalStepAfterIntake(caseType.operational_flow_jsonb)
           : "intake";
-        updatedCase = await updateOperationalCase(db, fresh.id, fresh.version, {
+        updatedCase = await advisedRuntimeCaseUpdate(db, fresh, fresh.version, {
           status: intakeUpdate.complete ? "active" : "waiting_internal",
           currentStep: retryNextStep,
           nextActionAt:

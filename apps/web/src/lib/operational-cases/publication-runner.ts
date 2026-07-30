@@ -73,6 +73,7 @@ import {
   type UnggaListingSnapshot,
 } from "@/lib/operational-cases/publication-remote-snapshot";
 import { resolvePublicationRolloutMode } from "@/lib/operational-cases/publication-rollout";
+import { advisedRuntimeCaseUpdate } from "@/lib/operational-cases/advised-case-update";
 import { reconcilePublicationCaseRecord } from "@/lib/operational-cases/publication-reconcile";
 
 export type PublicationProgressResult = {
@@ -758,9 +759,11 @@ export async function requestPublicationProgress(
           const sendCorrective =
             alreadySent &&
             shouldSendCorrectiveListingPublishedSummary(recentEvents);
-          const closed = await updateOperationalCase(
+          // Slice 1.4 (site 3): la clausura published/completed se evalúa
+          // contra la definición pinned (advisory registra divergencias).
+          const closed = await advisedRuntimeCaseUpdate(
             db,
-            fresh.id,
+            fresh,
             fresh.version,
             {
               context: mergedContext,

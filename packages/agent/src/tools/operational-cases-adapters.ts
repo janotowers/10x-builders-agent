@@ -66,6 +66,7 @@ import {
   formatListingPublishedSummaryNotifyText,
 } from "../operational-cases/listing-published-summary";
 import { requiresAvaclick } from "../operational-cases/comparable-search-contract";
+import { adviseCaseTransition } from "../workflows/transition-advisor";
 import type {
   OperationalCaseActivationPolicy,
   OperationalCaseDocument,
@@ -4256,6 +4257,48 @@ export function addOperationalCaseTools(
             }
 
             opCaseBefore = opCase;
+
+            // Slice 1.4: evaluate the proposal against the case's pinned
+            // workflow definition. Advisory mode logs divergences as case
+            // events and continues; enforcing mode (S1.7) rejects.
+            const workflowAdvice = await adviseCaseTransition({
+              db: ctx.db,
+              opCase,
+              proposal: {
+                toStep: input.current_step ?? null,
+                toStatus: input.status ?? null,
+                proposer: "model",
+                contextPatchKeys: input.context_patch
+                  ? Object.keys(input.context_patch)
+                  : undefined,
+              },
+              recentEventTypes:
+                opCase.current_step === "awaiting_documents" &&
+                input.current_step &&
+                input.current_step !== "awaiting_documents"
+                  ? (
+                      await getRecentOperationalCaseEvents(ctx.db, opCase.id, 30)
+                    ).map((event) => event.event_type)
+                  : undefined,
+              site: "operational_case_update_state",
+            });
+            if (workflowAdvice.reject) {
+              const out = {
+                ok: false,
+                error: "workflow_transition_rejected",
+                reason: workflowAdvice.verdict?.reason ?? "illegal",
+                failed_guards: (workflowAdvice.verdict?.guardResults ?? [])
+                  .filter((guard) => !guard.pass)
+                  .map((guard) => guard.guard),
+                current_step: opCase.current_step,
+                requested_step: input.current_step ?? null,
+                hint:
+                  "La definición del workflow no permite esta transición. Continúa desde el paso actual o pide intervención humana si necesitas una excepción.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+
             let contextPatch =
               input.context_patch && Object.keys(input.context_patch).length > 0
                 ? { ...input.context_patch }

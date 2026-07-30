@@ -6,6 +6,7 @@ import {
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import {
   isControlledE2EOperationalCase,
   isSettingsOperationalTestCase,
@@ -383,7 +384,7 @@ export async function handleListingDescriptionReviewDecision(
       approved_by: params.userId,
       source: "listing_description_review",
     };
-    const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+    const updated = await advisedUpdateCase(db, opCase, opCase.version, {
       status: "active",
       currentStep: "package_ready",
       nextActionAt: new Date().toISOString(),
@@ -444,7 +445,7 @@ export async function handleListingDescriptionReviewDecision(
     const notes =
       params.text.trim() ||
       "Sin borrador previo: generar photo_analysis, zone_context y listing_description_draft.";
-    const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+    const updated = await advisedUpdateCase(db, opCase, opCase.version, {
       status: "active",
       currentStep: "package_ready",
       nextActionAt: new Date().toISOString(),
@@ -565,7 +566,7 @@ export async function handleListingDescriptionReviewDecision(
       }
     : null;
 
-  const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+  const updated = await advisedUpdateCase(db, opCase, opCase.version, {
     status: "active",
     currentStep: "package_ready",
     nextActionAt: new Date().toISOString(),
