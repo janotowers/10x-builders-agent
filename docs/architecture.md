@@ -211,6 +211,10 @@ Migraciones en `packages/db/supabase/migrations/`:
 - `00015_scheduled_tasks_display_fields.sql` — agrega `user_request` y `display_title` a `scheduled_tasks` para UI legible.
 - `00052_telegram_webhook_updates.sql` — ledger de idempotencia por `update_id` de Telegram (`processing` / `completed`, `turn_id`) para evitar respuestas duplicadas cuando el webhook se reentrega.
 - `00064_ai_usage_events.sql` — ledger append-only de llamadas a modelos (tokens/costo por evento; observabilidad interna, no billing). Ver sección *Uso de IA* abajo.
+- `00065_workflow_definitions.sql` — definiciones de workflow versionadas (`graph_jsonb` ejecutable, `definition_hash`, ownership global/user con partial unique indexes, lineage de forks); filas `published` inmutables por trigger. Ver sección *Workflows ejecutables* abajo.
+- `00066_operational_cases_definition_pin.sql` — pin `workflow_definition_id`/`_version` en `operational_cases` + seed de definiciones globales v1 (`property_optioning`, `lead_follow_up`) generadas con el transformer real + backfill de todos los casos.
+- `00067_account_feature_flags.sql` — flags por tenant (`flag_key`, `enabled`, `value_text`); primer consumidor: `workflow_enforcement_mode` (`off`/`advisory`/`enforcing`, default advisory).
+- `00068_evidence_records.sql` — evidencia append-only de gates (replay/lab) pinneada a `artifact_hash`; `detail_jsonb` pasa por scrubber de secretos.
 
 ## Uso de IA (observabilidad interna)
 
@@ -226,6 +230,21 @@ Medición de llamadas a modelos (Slice 0.4 / flexible-workflows plan). **No es f
 | Catálogo | Snapshots inmutables en `packages/agent/src/usage/catalogs/` — ver [`docs/tools-design/model-providers.md`](tools-design/model-providers.md) |
 
 Requisitos para activar: migración `00064` aplicada + flag en entorno. Rollback: desactivar flag; filas existentes quedan como auditoría inerte.
+
+## Workflows ejecutables (Fase 1 — flexible workflows)
+
+El plano de definición vive en `workflow_definitions`: `graph_jsonb` es el artefacto ejecutable (estados, transiciones con guards nombrados, bindings, completion) y `operational_flow_jsonb` en `operational_case_types` queda como metadata de presentación/QA. Cada caso queda **pinneado** a `(workflow_definition_id, version)` al crearse (privado publicado > global publicado).
+
+| Pieza | Detalle |
+| --- | --- |
+| Paquete | `packages/workflows` — schema zod + gates estructurales, transformer flow→graph, hash canónico (`sha256:`), registry de guards puros, `evaluateTransition` (§20), replay histórico, scrubber de evidencia |
+| Guards v1 | `step_order_no_regression`, `external_response_exists`, `publication_keys_protected` (lista canónica aquí; `publication-workflow.ts` la re-exporta), `completion_pairing`, `defensible_comparables_sample` |
+| Modo | `account_feature_flags` → `workflow_enforcement_mode`: `off` / `advisory` (default, solo registra divergencias) / `enforcing` (rechaza) |
+| Sitios evaluados | (1) adapter `operational_case_update_state` (proposer `model`); (2) decision handlers vía `advisedUpdateCase` (`decision_handler`); (3) clausura de publicación + sucesor de intake vía `advisedRuntimeCaseUpdate` (`runtime`) |
+| Divergencias | Evento `state_changed` con `payload.kind = "transition_divergence"` (o `transition_rejected` en enforcing) + pin de definición (id/version/hash) |
+| Evidencia | `evidence_records` (append-only, hash-pinned); replay histórico: `npm run test:replay --workspace @agents/web` |
+
+Estado: advisory activo desde S1.4; el flip a enforcing por tenant es solo datos (flag) tras el triage de divergencias. Detalle en `docs/manuals/gu-os-flexible-workflows-detailed-implementation-plan.md`.
 
 ## Seguridad
 

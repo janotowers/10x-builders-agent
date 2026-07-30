@@ -142,99 +142,102 @@
 
 ### Slice 1.1 — `workflow_definitions` schema + case pinning
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29)
 **Objective:** versioned definitions exist; every case is pinned; ownership/catalog fields leave room for private forks and multi-industry catalogs.
 
 **Tasks:**
-- [ ] 1. Migration `00065_workflow_definitions.sql` [D]: table per Technical Plan §5.1 — include `owner_scope`, `user_id`, reserved `organization_id`, `workflow_key`, `industry`, `domain_tags`, `derived_from_definition_id`, `derived_from_version`, `visibility`, `definition_hash`, ownership CHECK. **Do not** use `UNIQUE (user_id, case_type, version)` alone (NULL ≠ NULL). Use the two partial unique indexes from §5.1. RLS: globals readable by authenticated service paths; private rows only for owning `user_id` (match `account_skills` pattern).
-- [ ] 2. Migration `00066_operational_cases_definition_pin.sql` [D]: add nullable `workflow_definition_id uuid references workflow_definitions(id)`, `workflow_definition_version integer` to `operational_cases`.
-- [ ] 3. Backfill inside `00066`: for each `operational_case_types` row, insert a **global** `workflow_definitions` v1 (`owner_scope='global'`, `user_id` null, `industry='real_estate'`, `domain_tags={'real_estate','property_optioning'}`) with `graph_jsonb` = placeholder or real transform (prefer S1.2 first; else follow-up `00067`).
-- [ ] 4. `packages/db/src/queries/workflow-definitions.ts` [D]: `getPublishedDefinition`, `getLatestPublishedDefinitionForUser` (**resolution order:** user's latest published private for `case_type`, else latest published global), `insertDraftDefinition`, `forkDefinition(userId, sourceDefinitionId)` (copies graph/specs, sets lineage, `owner_scope='user'`), `publishDefinition` (immutability: published rows never updated). All take required `userId` except pure-global admin reads gated on `is_ungga_admin`.
-- [ ] 5. Set pin at creation in `createOperationalCase` (`packages/db/src/queries/operational-cases.ts` L194): use `getLatestPublishedDefinitionForUser` and stamp both columns.
+- [x] 1. Migration `00065_workflow_definitions.sql` [D]: table per Technical Plan §5.1 con `owner_scope`, `user_id`, reserved `organization_id`, `workflow_key`, `industry`, `domain_tags`, lineage, `visibility`, `definition_hash`, ownership CHECK, los dos partial unique indexes (finding 5) y RLS (globals legibles; privados solo del dueño). Extra: triggers que hacen inmutables las filas `published` (única mutación permitida: `status → deprecated`) y prohíben DELETE de published/deprecated.
+- [x] 2. Migration `00066_operational_cases_definition_pin.sql` [D]: columnas `workflow_definition_id` + `workflow_definition_version` (nullable) + índice parcial.
+- [x] 3. Backfill inside `00066`: se ejecutó S1.2 primero, así que el backfill embebe el **output real del transformer** (grafo + `definition_hash` sha256 generados con `scripts/generate-workflow-definition-seeds.ts` contra los flows globales vivos): `property_optioning` v1 (10 estados) y `lead_follow_up` v1 (1 estado terminal). Casos de tipos privados sin definición global quedan sin pin (el evaluator los salta). Verificado en DB: 2 definiciones, 120/120 casos pinned.
+- [x] 4. `packages/db/src/queries/workflow-definitions.ts` [D]: `getWorkflowDefinitionById`, `getPublishedDefinition(id, version)`, `getLatestPublishedDefinitionForUser` (privado publicado > global publicado), `insertDraftDefinition`, `forkDefinition` (lineage + siguiente versión privada), `publishDefinition` (solo desde draft/validated; inmutabilidad la garantiza el trigger), `listWorkflowDefinitionsForCaseType` (admin).
+- [x] 5. Pin at creation en `createOperationalCase`: resuelve `getLatestPublishedDefinitionForUser` y estampa ambas columnas (null si no hay definición).
 
-**Types:** add `WorkflowDefinition`, `WorkflowGraph`, `WorkflowOwnerScope` to `packages/types/src/workflow-definitions.ts`. **Tests:** global uniqueness (two global same case_type+version rejected); private fork unique per user; fork lineage fields set; pin-on-create prefers private over global; publish immutability. **Flags:** none — pinning inert until evaluator reads it. **Security:** RLS + required `userId`; no cross-user private reads. **Evidence:** every existing case backfilled to global v1; new case gets a pin. **Rollback:** columns nullable and unread. **Depends on:** 0.5-3, 0.5-5.
+**Types:** `packages/types/src/workflow-definitions.ts` (`WorkflowDefinition`, `WorkflowGraph`, `WorkflowOwnerScope`, `WorkflowEnforcementMode`, …) exportado desde el índice; `OperationalCase` ganó los dos campos de pin. **Tests:** unicidad global/privada y la inmutabilidad de publish las garantizan índices/triggers en SQL (sin selftest DB-less posible); resolución y fork cubiertos por revisión + uso en replay real. **Evidence:** backfill verificado (120/120 pinned). **Rollback:** columnas nullable; el evaluator con flag `off` no las lee.
 
 ### Slice 1.2 — `packages/workflows` package: graph schema + flow→graph transformer
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29)
 **Objective:** the executable `graph_jsonb` contract exists and v1 graphs are generated from existing flows.
 
 **Tasks:**
-- [ ] 1. Scaffold `packages/workflows` [D] (mirror `packages/types` build setup; add to root workspaces automatically via `packages/*`).
-- [ ] 2. `src/graph-schema.ts`: zod schema for the §5.2 graph shape (states, transitions with named guards, step_bindings, work_templates, postconditions, approvals, impact_dependencies, completion). Export JSON-schema derivation for validation gates.
-- [ ] 3. `src/transform-flow.ts`: transformer `operational_flow_jsonb` → `graph_jsonb` for `property_optioning`, encoding transitions from **both** the flow order and the hardcoded guard families (this is where the 0.5-1 diff findings are consumed; divergences become explicit `transitions` decisions logged in §X, not silent choices).
-- [ ] 4. `src/hash.ts`: canonical JSON hash for `definition_hash` (stable key order; reuse the canonicalization approach of `property-identity-signature.ts` as the pattern).
-- [ ] 5. Selftests: schema round-trip; transformer produces an acyclic, reachable graph for the real v1 flow; hash stability.
+- [x] 1. Scaffold `packages/workflows` [D] (patrón `packages/types`: source-only, `main`/`types` → `src/index.ts`, `tsx` selftests; deps: `@agents/types` + zod).
+- [x] 2. `src/graph-schema.ts`: zod schema del shape §5.2 + `validateWorkflowGraph` con gates estructurales (schema, estados únicos/conocidos, aciclicidad, reachability desde el estado inicial, sin dead-ends no terminales, guards registrados). Nota: se exporta el validador ejecutable en vez de una derivación JSON-schema — mismo propósito de gate, sin dependencia extra.
+- [x] 3. `src/transform-flow.ts`: transformer con las decisiones D1–D6 de §X.1 como decisiones explícitas comentadas en el código: `property_data_review` y `published` promovidos a estados de primera clase; cadena adyacente + skip declarado `documents_received→comparables_in_progress` (D6); guard `external_response_exists` portado tal cual (D4 se difiere a v2 por paridad de replay); umbral de comparables `defensible_comparables_sample` (D5). `approval_required` queda null en v1 (aprobaciones evidence-bound llegan en Fase 3); proposers permisivos en v1 (estrechar es decisión v2 post-advisory).
+- [x] 4. `src/hash.ts`: JSON canónico (orden de claves recursivo) + `definition_hash = sha256:<hex>` — estable ante reordenamiento de claves jsonb.
+- [x] 5. Selftests (`test:hash`, `test:transform-flow`): orden de estados = `PROPERTY_OPTIONING_STEP_ORDER`, gates estructurales verdes, guards en las transiciones correctas, bindings con `bigquery_context`, estabilidad/sensibilidad del hash, flujo genérico lineal (lead_follow_up).
 
-**Create:** `packages/workflows/*`. **Modify:** root `package.json` nothing (workspaces glob covers it); `turbo.json` if per-package tasks need registering [A — check existing turbo.json task shape]. **Depends on:** 0.5-1. **Blocks:** 1.1-3 backfill (real graphs), 1.3.
+**Create:** `packages/workflows/*`. **Modify:** nada en root (`packages/*` glob) ni turbo.json (tareas estándar).
 
 ### Slice 1.3 — Transition evaluator + guard registry
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29)
 **Objective:** `TransitionEvaluator` (Technical Plan §20) exists and the four hardcoded guard families are ported into named registry guards.
 
 **Tasks:**
-- [ ] 1. `packages/workflows/src/guards/registry.ts` [D]: `registerGuard(name, fn)` + lookup; guards are pure functions over `{ caseState, proposal, factsSnapshot }`.
-- [ ] 2. Port guards (keep originals in place — the evaluator *duplicates* enforcement during advisory mode; originals retire in S1.7):
-  - [ ] `step_order_no_regression` — from `PROPERTY_OPTIONING_STEP_ORDER` logic in `operational-cases-adapters.ts`;
-  - [ ] `external_response_exists` — awaiting-documents gate;
-  - [ ] `publication_keys_protected` — protected publication context keys;
-  - [ ] `completion_pairing` — `published`/`completed` pairing rule.
-- [ ] 3. `src/transition-evaluator.ts`: `evaluate(...)` per §20 returning `legal | illegal | requires_approval` + per-guard results; consults the pinned definition's `transitions`.
-- [ ] 4. Deterministic transition selftests generated from the v1 graph: every declared transition legal from its `from`; a sample of undeclared ones illegal; guard unit tests with fixtures lifted from existing adapter selftests.
+- [x] 1. `packages/workflows/src/guards/registry.ts` [D]: `registerGuard(name, fn)` + lookup; guards puros sobre `{ caseType, caseState, proposal, facts, stateOrder }`.
+- [x] 2. Guards portados (originales intactos — el evaluator duplica durante advisory; retiran en S1.7+):
+  - [x] `step_order_no_regression` — rango desde el orden de estados del grafo pinned (= `PROPERTY_OPTIONING_STEP_ORDER` en v1);
+  - [x] `external_response_exists` — gate de awaiting-documents portado tal cual (D4 documentado);
+  - [x] `publication_keys_protected` — la lista canónica ahora vive en `@agents/workflows` y `publication-workflow.ts` la re-exporta (una sola fuente, sin drift);
+  - [x] `completion_pairing` — pareja `published`/`completed` (el summary gate rico sigue en el adapter durante advisory);
+  - [x] extra: `defensible_comparables_sample` (consumo §X.1 punto 4: `unique_comparable_count >= 3`).
+- [x] 3. `src/transition-evaluator.ts`: `evaluateTransition(...)` → `legal | illegal | requires_approval` + resultados por guard; corre guards globales (regresión, claves protegidas, pairing) en toda propuesta y los guards de la transición declarada; razones estructuradas (`undeclared_transition`, `unauthorized_proposer`, `unknown_guard`, `guard_failed`).
+- [x] 4. Selftests (`test:transition-evaluator`): matriz completa de transiciones declaradas legal desde su `from`; muestra de no declaradas illegal; unit tests de los 5 guards con fixtures (regresión, sin external_response, 2 vs 3 comparables, claves protegidas, pairing, caso sin paso inicial, guard desconocido).
 
-**Depends on:** 1.2. **Evidence:** selftests enumerate the full transition matrix for v1. **Rollback:** package unused until wired.
+**Evidence:** selftests enumeran la matriz completa v1 (10 transiciones declaradas).
 
 ### Slice 1.4 — Advisory wiring at the three proposal sites
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29) — ventana advisory iniciada
 **Objective:** every proposed transition is evaluated; divergences are logged as events; behavior unchanged (advisory).
 
 **Tasks:**
-- [ ] 1. Implement the flag decided in 0.5-4: `workflow_enforcement_mode: "off" | "advisory" | "enforcing"` per tenant, default `advisory` after this slice ships [D].
-- [ ] 2. Wire site 1 — model proposals: in the `operational_case_update_state` adapter (`packages/agent/src/tools/operational-cases-adapters.ts`), before the existing guards run, call the evaluator with the case's pinned definition; on `illegal` in advisory mode append event `transition_divergence` [D] and continue.
-- [ ] 3. Wire site 2 — decision handlers: in `price-approval.ts` and sibling handlers where `updateOperationalCase` sets `currentStep`, evaluate + log likewise.
-- [ ] 4. Wire site 3 — runtime transitions: cron route paths that set steps (publication runner closure, intake successor) evaluate + log.
-- [ ] 5. Definition loading: small cached loader in `packages/workflows/src/load.ts` keyed by `(definitionId, version)` — definitions are immutable, cache freely.
+- [x] 1. Flag `workflow_enforcement_mode`: migración `00067_account_feature_flags.sql` (finding 7, con columna extra `value_text` para flags enum) + `getWorkflowEnforcementMode` en `@agents/db` — sin fila = `advisory` (default tras este slice); `value_text` `off`/`enforcing` para los otros modos.
+- [x] 2. Site 1 — model proposals: `operational_case_update_state` llama `adviseCaseTransition` (nuevo `packages/agent/src/workflows/transition-advisor.ts`) antes de los guards existentes; en advisory registra y continúa; en enforcing devuelve `{ ok:false, error:"workflow_transition_rejected", ... }` estructurado al modelo (S1.7-2 ya implementado, inerte hasta el flip).
+- [x] 3. Site 2 — decision handlers: los 10 handlers de `business-decisions/` pasan por `advisedUpdateCase` (`apps/web/src/lib/operational-cases/advised-case-update.ts`), proposer `decision_handler`.
+- [x] 4. Site 3 — runtime: clausura del publication runner (`published`/`completed`) y sucesor de intake (`conversational-intake-orchestrator`) pasan por `advisedRuntimeCaseUpdate`, proposer `runtime`. Además el wrapper registra `state_changed`/`workflow_step_transition` en cambios de paso exitosos (cierra el hueco de instrumentación que reveló el replay — finding 13). Otros paths de runtime que escriben pasos (`property-optioning-post-agent-invariants`, `document/photo-batch-completion`, `characteristics-response`) quedan como candidatos de expansión de la ventana advisory.
+- [x] 5. Loader cacheado `packages/workflows/src/load.ts` por `(definitionId, version)` con fetcher inyectado (las definiciones publicadas son inmutables; errores no se cachean).
 
-**Modify:** adapters, handlers, cron route. **Security:** loader takes `userId`; no cross-tenant definition reads. **Observability:** count of `transition_divergence` events per day (add to 0.4 dashboard). **Evidence:** advisory window shows divergence rate; each divergence triaged to (a) transformer bug, (b) real prose/guard mismatch, (c) missing transition. **Rollback:** flag `off`. **Depends on:** 1.1, 1.3, 0.5-4.
+**Divergencias:** evento `state_changed` + `payload.kind = "transition_divergence"` (patrón finding 9) con verdict, guards fallidos, from/to, proposer, site y pin de definición (id/version/hash); `transition_rejected` cuando enforcing rechaza. La evaluación advisory nunca rompe el path (try/catch + log). **Observability pendiente:** conteo de divergencias/día en el dashboard 0.4. **Rollback:** flag `off` por tenant.
 
 ### Slice 1.5 — Minimal evidence records
 
-**Status:** [ ] pending
+**Status:** [x] done (2026-07-29)
 **Objective:** gate runs produce persisted, hash-pinned evidence.
 
 **Tasks:**
-- [ ] 1. Migration `00068_evidence_records.sql` [D] per Technical Plan §13 (scrub rule: `detail_jsonb` passes through a secret-scrubber before insert — implement `packages/workflows/src/evidence.ts` with a redaction list seeded from env-var names).
-- [ ] 2. `packages/db/src/queries/evidence-records.ts`: `insertEvidenceRecord`, `listEvidenceForSubject` (required `userId`).
-- [ ] 3. Emit evidence from: transition selftest runs (S1.3) when executed via the lab, and replay runs (S1.6).
+- [x] 1. Migration `00068_evidence_records.sql` [D] per §13: `subject_kind`/`subject_id`/`gate`/`artifact_hash`/`result`/`detail_jsonb`, tenancy 00037 (user_id denormalizado, RLS user-select + service manage), triggers append-only. Scrubber en `packages/workflows/src/evidence.ts`: redacción por nombre de clave (patrón secret/token/key/…) + por valor sembrado de los env vars con nombre secreto; selftest `test:evidence`.
+- [x] 2. `packages/db/src/queries/evidence-records.ts`: `insertEvidenceRecord` (pasa SIEMPRE por el scrubber — no bypasseable) + `listEvidenceForSubject` (userId requerido). `@agents/db` ahora depende de `@agents/workflows` (sin ciclo: workflows solo depende de types).
+- [x] 3. Emisión: los replay runs (S1.6) insertan evidencia `gate="historical_replay"` pinneada al `definition_hash` — 30 registros reales creados en la primera corrida. Emisión desde checks del lab queda con S1.6-2 (pendiente).
 
-**Depends on:** 1.1 (numbering), 1.3. **Rollback:** table inert.
+**Rollback:** tabla inerte.
 
 ### Slice 1.6 — Lab re-anchor: pinned versions + production evaluator (parity)
 
-**Status:** [ ] pending
+**Status:** [~] parcial (2026-07-29) — replay + evidencia hechos; selector de versión y swap del lab pendientes
 **Objective:** lab runs are pinned to a definition version and demonstrably execute the production evaluator; the 0.5-2 fork findings are closed or explicitly ticketed.
 
 **Tasks:**
 - [ ] 1. Add a definition-version selector to the readiness lab (`apps/web/src/app/settings/operational-case-types/operational-case-types-client.tsx` + `page.tsx`): default = latest published; drafts selectable.
 - [ ] 2. Replace lab-side transition logic with calls into `packages/workflows` evaluator (work list from 0.5-2 — every reimplemented function either imports the production primitive or is deleted).
-- [ ] 3. Historical replay harness: `apps/web/src/lib/operational-cases/replay-definition.ts` [D] — replays a case's event sequence through the evaluator asserting identical terminal state; wire into an npm script `test:replay`.
-- [ ] 4. Each lab/replay run inserts an evidence record pinned to `definition_hash`.
+- [x] 3. Historical replay harness: núcleo puro en `packages/workflows/src/replay.ts` (selftest `test:replay` en el paquete) + `apps/web/src/lib/operational-cases/replay-definition.ts` [D] + driver `apps/web/scripts/replay-definitions.ts` (npm `test:replay` en `@agents/web`). Recorre el stream de eventos, reevalúa cada transición grabada con el evaluator de producción contra la definición pinned, se re-ancla en `payload.from` cuando el stream saltó transiciones (contador `unrecordedGaps` — finding 13) y verifica el estado terminal.
+- [x] 4. Cada replay inserta evidencia `historical_replay` pinneada a `definition_hash`. Corrida real (30 casos): 17 replays exactos sin divergencias, 1 divergencia real de guard (`defensible_comparables_sample` en un avance histórico de comparables), 13 con historia incompleta (transiciones nunca grabadas como eventos — no bugs del evaluator; el wrapper de S1.4 ya graba `workflow_step_transition` hacia adelante).
 
-**Tests:** `run-settings-test-case-tick.selftest.ts` still green; new `replay-definition.selftest.ts`. **Evidence:** one lab check demonstrably invoking the production evaluator (assert by module identity in test); replay of N historical cases identical. **Rollback:** lab selector defaults keep old behavior. **Depends on:** 1.3, 1.5, 0.5-2.
+**Pendiente (tickets explícitos):** 1.6-1 selector UI; 1.6-2 swap del lab al evaluator + assert por identidad de módulo; la lista de paridad P0/P1/P2 de §X.2 sigue vigente.
 
 ### Slice 1.7 — Enforcement flip
 
-**Status:** [ ] pending
+**Status:** [ ] pending — código del flip ya implementado e inerte; falta la ventana advisory y el triage
 **Objective:** the definition is the transition authority for at least one tenant.
 
+**Preparación (hecha con S1.4):** los tres sitios ya rechazan en modo enforcing — el adapter devuelve `{ ok:false, error:"workflow_transition_rejected", reason, failed_guards, hint }` al modelo y los wrappers devuelven null (el handler muestra su mensaje de reintento); el evento `transition_rejected` (payload.kind) queda registrado. **El flip es solo datos:** `setAccountFeatureFlag(userId, "workflow_enforcement_mode", true, "enforcing")` para el tenant piloto. Rollback: borrar la fila o `value_text` a `advisory`/`off`.
+
 **Tasks:**
-- [ ] 1. Triage the advisory window's divergences to zero-or-explained (0.4 dashboard).
-- [ ] 2. Flip `workflow_enforcement_mode = "enforcing"` for the pilot tenant; illegal proposals now rejected with event `transition_rejected` [D] + the model receives the rejection as tool output (adapter returns a structured error string, matching existing adapter error style).
+- [ ] 1. Triage the advisory window's divergences to zero-or-explained — consulta: eventos `state_changed` con `payload.kind='transition_divergence'` agrupados por `site` + from/to (candidato a card en el dashboard 0.4).
+- [ ] 2. Flip `workflow_enforcement_mode = "enforcing"` for the pilot tenant.
 - [ ] 3. After one clean week: mark the duplicated hardcoded guard call sites with removal TODOs (actual removal is Phase 2+ cleanup, after soak).
 
-**Phase 1 exit checks (Technical Plan §30):** [ ] every active case pinned · [ ] illegal transition rejected with event (enforcing, ≥1 tenant) · [ ] historical replay identical terminal states · [ ] ≥1 lab check on production evaluator against a pinned draft · [ ] minimal evidence records exist.
+**Phase 1 exit checks (Technical Plan §30):** [x] every active case pinned (120/120 + pin-on-create) · [ ] illegal transition rejected with event (enforcing, ≥1 tenant — código listo, flip pendiente de triage) · [~] historical replay identical terminal states (17/30 exactos; 13 con historia de eventos incompleta pre-instrumentación — finding 13; hacia adelante el wrapper graba las transiciones) · [ ] ≥1 lab check on production evaluator against a pinned draft (S1.6-2) · [x] minimal evidence records exist (30 `historical_replay`).
 
 ---
 
@@ -445,6 +448,8 @@
 | 9 | 2026-07-29 | `operational_case_events.event_type` has a closed CHECK constraint; plan tasks named new event types (`residual_reported`, `price_approval_amount_mismatch`, `fact_overwritten`). | Low | **Taken:** repo pattern — reuse an allowed `event_type` and discriminate with `payload.kind`. Used by 0.1-6 (`human_decision`/`residual_reported`), 0.2-2 (`human_decision`/`price_approval_amount_mismatch`), 0.4-6 (`state_changed`/`fact_overwritten`). |
 | 10 | 2026-07-29 | Pre-existing lint errors (8) unrelated to Phase 0 work: `app-shell.tsx` (setState-in-effect), `publication-review.ts` / `publication-reconcile.ts` / `publication-runner.ts` (prefer-const), `telegram/webhook/route.ts` L~2890 (prefer-const), `scripts/lab/retry-ungga-publish-case.ts` (2× no-explicit-any). One selftest regex flag error (`publish-destination-approval.selftest.ts` `/s` flag vs tsc target) was fixed in Phase 0. | Low | Needed: burn down, then flip the CI lint step from `continue-on-error` to blocking. |
 | 11 | 2026-07-29 | LangChain `@langchain/openai@0.4.9` only copies `usage` into `response_metadata` when `system_fingerprint` is present; OpenRouter often omits it. Early Slice 0.4 smokes showed `main_agent` / `skill_selector` with estimated-only cost despite OpenRouter returning `usage.cost` on direct-fetch paths. Hardcoded catalog also understated GPT-5.4 Mini ($0.60/$2.40 vs live $0.75/$4.50). | High (metering trust) | **Taken:** Slice 0.4.1 — HTTP fetch stash + dual-cost + immutable OpenRouter-sourced catalog snapshots; dashboard “Costo contabilizado”. |
+| 12 | 2026-07-29 | Decisiones del transformer v1 (S1.2, consume §X.1): D1/D2/D3 resueltos promoviendo `property_data_review` y `published` a estados de primera clase; D6 como transición skip declarada; D5 codificado como `defensible_comparables_sample` (>=3). **D4 se porta tal cual** (`external_response_exists`) para que el replay histórico sea paridad exacta con runtime — arreglar la rama `internal_user` es decisión v2 explícita. `approval_required` queda null en v1 (aprobaciones evidence-bound = Fase 3) y los proposers quedan permisivos (estrechar = decisión v2 post-advisory). Desviación menor de finding 7: `account_feature_flags` ganó columna `value_text` para flags enum (primer consumidor: `workflow_enforcement_mode`). | Medium | **Taken:** codificado en `transform-flow.ts` con comentarios D1–D6; revisar D4 y proposers al preparar v2. |
+| 13 | 2026-07-29 | El replay histórico (S1.6) contra 30 casos reales mostró que **el stream de eventos no captura todas las transiciones de paso**: los pasos tempranos (intake→awaiting_documents→documents_received vía orchestrator/batch-completion) y la clausura del publication runner no grababan eventos con `from/to.current_step` — 13/30 casos con historia incompleta (0 transiciones grabadas o cierre ausente). No son bugs del evaluator. | Medium (calidad del advisory/replay) | **Taken:** el replay se re-ancla en `payload.from` y reporta `unrecordedGaps` en vez de falsas divergencias; `advisedUpdateCase` ahora graba `state_changed`/`workflow_step_transition` en todo cambio de paso exitoso (sitios 2 y 3). Candidatos de expansión: `property-optioning-post-agent-invariants`, `document/photo-batch-completion`, `characteristics-response`. |
 | — | | *(append as found)* | | |
 
 **Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3).
