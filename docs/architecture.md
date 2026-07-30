@@ -240,11 +240,12 @@ El plano de definición vive en `workflow_definitions`: `graph_jsonb` es el arte
 | Paquete | `packages/workflows` — schema zod + gates estructurales, transformer flow→graph, hash canónico (`sha256:`), registry de guards puros, `evaluateTransition` (§20), replay histórico, scrubber de evidencia |
 | Guards v1 | `step_order_no_regression`, `external_response_exists`, `publication_keys_protected` (lista canónica aquí; `publication-workflow.ts` la re-exporta), `completion_pairing`, `defensible_comparables_sample` |
 | Modo | `account_feature_flags` → `workflow_enforcement_mode`: `off` / `advisory` (default, solo registra divergencias) / `enforcing` (rechaza) |
-| Sitios evaluados | (1) adapter `operational_case_update_state` (proposer `model`); (2) decision handlers vía `advisedUpdateCase` (`decision_handler`); (3) clausura de publicación + sucesor de intake vía `advisedRuntimeCaseUpdate` (`runtime`) |
-| Divergencias | Evento `state_changed` con `payload.kind = "transition_divergence"` (o `transition_rejected` en enforcing) + pin de definición (id/version/hash) |
-| Evidencia | `evidence_records` (append-only, hash-pinned); replay histórico: `npm run test:replay --workspace @agents/web` |
+| Sitios evaluados | (1) adapter `operational_case_update_state` (proposer `model`); (2) decision handlers vía `advisedUpdateCase` (`decision_handler`); (3) clausura de publicación + sucesor de intake vía `advisedRuntimeCaseUpdate` (`runtime`); (4) tick compartido cron/webhook/lab (`agent_tick`) e invariants post-agente (`post_agent_invariants`); (5) lab: safe check N0 (`lab_safe_check`) y merge determinista de respuesta del dueño (`lab_owner_simulation`) |
+| Paridad lab/prod | Por construcción (S1.6): el lab usa el mismo tick/invariants/evaluador que producción; los seeds N3/N4 son teleports de fixture deliberados fuera del evaluador. Regenerar el caso lab re-pinnea la definición; `POST /api/operational-case-tests` acepta `workflow_definition_id` para probar drafts |
+| Divergencias | Evento `state_changed` con `payload.kind = "transition_divergence"` (o `transition_rejected` en enforcing) + pin de definición (id/version/hash). Triage: `npm run triage:divergences --workspace @agents/web` (sites `lab_*` separados) |
+| Evidencia | `evidence_records` (append-only, hash-pinned); replay histórico: `npm run test:replay --workspace @agents/web`; cada corrida del lab inserta evidencia `gate="lab_run_replay"` |
 
-Estado: advisory activo desde S1.4; el flip a enforcing por tenant es solo datos (flag) tras el triage de divergencias. Detalle en `docs/manuals/gu-os-flexible-workflows-detailed-implementation-plan.md`.
+Estado: advisory activo (default de código + flag explícito por tenant vía `apps/web/scripts/set-workflow-enforcement.ts`); el flip a enforcing por tenant es solo datos (flag) tras el triage de divergencias. Detalle en `docs/manuals/gu-os-flexible-workflows-detailed-implementation-plan.md`.
 
 ## Seguridad
 

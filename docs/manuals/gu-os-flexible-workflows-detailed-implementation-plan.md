@@ -208,36 +208,37 @@
 **Tasks:**
 - [x] 1. Migration `00068_evidence_records.sql` [D] per §13: `subject_kind`/`subject_id`/`gate`/`artifact_hash`/`result`/`detail_jsonb`, tenancy 00037 (user_id denormalizado, RLS user-select + service manage), triggers append-only. Scrubber en `packages/workflows/src/evidence.ts`: redacción por nombre de clave (patrón secret/token/key/…) + por valor sembrado de los env vars con nombre secreto; selftest `test:evidence`.
 - [x] 2. `packages/db/src/queries/evidence-records.ts`: `insertEvidenceRecord` (pasa SIEMPRE por el scrubber — no bypasseable) + `listEvidenceForSubject` (userId requerido). `@agents/db` ahora depende de `@agents/workflows` (sin ciclo: workflows solo depende de types).
-- [x] 3. Emisión: los replay runs (S1.6) insertan evidencia `gate="historical_replay"` pinneada al `definition_hash` — 30 registros reales creados en la primera corrida. Emisión desde checks del lab queda con S1.6-2 (pendiente).
+- [x] 3. Emisión: los replay runs (S1.6) insertan evidencia `gate="historical_replay"` pinneada al `definition_hash` — 30 registros reales creados en la primera corrida. Las corridas del lab (safe_check/agent_e2e) insertan evidencia `gate="lab_run_replay"` al cierre de cada run.
 
 **Rollback:** tabla inerte.
 
 ### Slice 1.6 — Lab re-anchor: pinned versions + production evaluator (parity)
 
-**Status:** [~] parcial (2026-07-29) — replay + evidencia hechos; selector de versión y swap del lab pendientes
+**Status:** [x] completed (2026-07-29) — paridad por construcción; solo el dropdown UI del selector queda ticketed
 **Objective:** lab runs are pinned to a definition version and demonstrably execute the production evaluator; the 0.5-2 fork findings are closed or explicitly ticketed.
 
 **Tasks:**
-- [ ] 1. Add a definition-version selector to the readiness lab (`apps/web/src/app/settings/operational-case-types/operational-case-types-client.tsx` + `page.tsx`): default = latest published; drafts selectable.
-- [ ] 2. Replace lab-side transition logic with calls into `packages/workflows` evaluator (work list from 0.5-2 — every reimplemented function either imports the production primitive or is deleted).
+- [~] 1. Definition-version selector: soporte API completo — `POST /api/operational-case-tests` acepta `workflow_definition_id` opcional (drafts propios o globales del case_type; valida pertenencia), regenerar **re-pinnea** a la definición resuelta (cierra el hueco de casos lab con pin null u obsoleto), y `createOperationalCase` acepta pin explícito (`workflowDefinition`). Pendiente solo el dropdown en `operational-case-types-client.tsx` (ticket 1.6-1; útil cuando existan drafts — Phase 2/4 authoring).
+- [x] 2. Paridad lab/producción **por construcción** (hallazgo clave: `run-settings-test-case-tick.ts` e `property-optioning-post-agent-invariants.ts` son compartidos por cron/webhook/chat/lab — no hay dos caminos). Todas las transiciones de paso de esos módulos compartidos + `settings-test-safe-check.ts` (N0) + el merge determinista de respuesta del dueño pasan ahora por `createAdvisedCaseUpdate` → `adviseCaseTransition` → `evaluateTransition` (sites: `agent_tick`, `post_agent_invariants`, `lab_safe_check`, `lab_owner_simulation`). Los seeds N3/N4 y la preparación de simulación quedan como teleports de fixture deliberados (comentados en código), fuera del evaluador. Escrituras solo-contexto siguen directas (no proponen transición).
 - [x] 3. Historical replay harness: núcleo puro en `packages/workflows/src/replay.ts` (selftest `test:replay` en el paquete) + `apps/web/src/lib/operational-cases/replay-definition.ts` [D] + driver `apps/web/scripts/replay-definitions.ts` (npm `test:replay` en `@agents/web`). Recorre el stream de eventos, reevalúa cada transición grabada con el evaluator de producción contra la definición pinned, se re-ancla en `payload.from` cuando el stream saltó transiciones (contador `unrecordedGaps` — finding 13) y verifica el estado terminal.
 - [x] 4. Cada replay inserta evidencia `historical_replay` pinneada a `definition_hash`. Corrida real (30 casos): 17 replays exactos sin divergencias, 1 divergencia real de guard (`defensible_comparables_sample` en un avance histórico de comparables), 13 con historia incompleta (transiciones nunca grabadas como eventos — no bugs del evaluator; el wrapper de S1.4 ya graba `workflow_step_transition` hacia adelante).
+- [x] 5. Evidencia por corrida del lab: `POST /api/operational-case-tests/run` (safe_check y agent_e2e) cierra con un replay best-effort del caso contra su definición pinneada e inserta evidencia `gate="lab_run_replay"`; el resultado viaja en la respuesta (`workflow_replay`) para superficie futura en la UI.
 
-**Pendiente (tickets explícitos):** 1.6-1 selector UI; 1.6-2 swap del lab al evaluator + assert por identidad de módulo; la lista de paridad P0/P1/P2 de §X.2 sigue vigente.
+**Pendiente (ticket explícito):** 1.6-1 dropdown del selector en la UI del lab (el backend ya lo soporta; tiene sentido construirlo junto con el primer flujo que produzca drafts).
 
 ### Slice 1.7 — Enforcement flip
 
-**Status:** [ ] pending — código del flip ya implementado e inerte; falta la ventana advisory y el triage
+**Status:** [~] ventana advisory activa (2026-07-29) — flip pendiente de triage limpio con tráfico real
 **Objective:** the definition is the transition authority for at least one tenant.
 
 **Preparación (hecha con S1.4):** los tres sitios ya rechazan en modo enforcing — el adapter devuelve `{ ok:false, error:"workflow_transition_rejected", reason, failed_guards, hint }` al modelo y los wrappers devuelven null (el handler muestra su mensaje de reintento); el evento `transition_rejected` (payload.kind) queda registrado. **El flip es solo datos:** `setAccountFeatureFlag(userId, "workflow_enforcement_mode", true, "enforcing")` para el tenant piloto. Rollback: borrar la fila o `value_text` a `advisory`/`off`.
 
 **Tasks:**
-- [ ] 1. Triage the advisory window's divergences to zero-or-explained — consulta: eventos `state_changed` con `payload.kind='transition_divergence'` agrupados por `site` + from/to (candidato a card en el dashboard 0.4).
-- [ ] 2. Flip `workflow_enforcement_mode = "enforcing"` for the pilot tenant.
+- [~] 1. Triage the advisory window's divergences to zero-or-explained. Tooling listo: `apps/web/scripts/set-workflow-enforcement.ts` (fijó `advisory` para el tenant activo el 2026-07-29) + `apps/web/scripts/triage-divergences.ts` (npm `triage:divergences` en `@agents/web`; agrupa por proposer/site/from→to/causa, clasifica preliminarmente a/b/c/d y separa sites `lab_*` del tráfico de producción). Falta: ~5-7 días de uso real (≥20-30 transiciones) y el triage humano de cada grupo.
+- [ ] 2. Flip `workflow_enforcement_mode = "enforcing"` for the pilot tenant (`set-workflow-enforcement.ts --mode enforcing`; rollback instantáneo con `--mode advisory`).
 - [ ] 3. After one clean week: mark the duplicated hardcoded guard call sites with removal TODOs (actual removal is Phase 2+ cleanup, after soak).
 
-**Phase 1 exit checks (Technical Plan §30):** [x] every active case pinned (120/120 + pin-on-create) · [ ] illegal transition rejected with event (enforcing, ≥1 tenant — código listo, flip pendiente de triage) · [~] historical replay identical terminal states (17/30 exactos; 13 con historia de eventos incompleta pre-instrumentación — finding 13; hacia adelante el wrapper graba las transiciones) · [ ] ≥1 lab check on production evaluator against a pinned draft (S1.6-2) · [x] minimal evidence records exist (30 `historical_replay`).
+**Phase 1 exit checks (Technical Plan §30):** [x] every active case pinned (120/120 + pin-on-create + re-pin al regenerar caso lab) · [ ] illegal transition rejected with event (enforcing, ≥1 tenant — código listo, flip pendiente de triage) · [~] historical replay identical terminal states (17/30 exactos; 13 con historia de eventos incompleta pre-instrumentación — finding 13; hacia adelante el wrapper graba las transiciones) · [~] lab checks on production evaluator (hecho por construcción — tick/invariants/safe_check advised + evidencia `lab_run_replay` por corrida; "against a pinned draft" queda ejercitable vía `workflow_definition_id` en cuanto exista el primer draft) · [x] minimal evidence records exist (30 `historical_replay`).
 
 ---
 
