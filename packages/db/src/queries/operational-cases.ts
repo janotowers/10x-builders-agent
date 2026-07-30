@@ -25,6 +25,7 @@ import type {
   OperationalCaseTypeStatus,
   OperationalCaseTypeVisibility,
 } from "@agents/types";
+import { getLatestPublishedDefinitionForUser } from "./workflow-definitions";
 
 // ============================================================
 // Catálogo: operational_case_types
@@ -195,12 +196,21 @@ export async function createOperationalCase(
   db: DbClient,
   input: CreateOperationalCaseInput
 ): Promise<OperationalCase> {
+  // Slice 1.1: pin the case to its workflow definition at creation (private
+  // fork wins over global). Inert until the transition evaluator reads it.
+  const definition = await getLatestPublishedDefinitionForUser(
+    db,
+    input.userId,
+    input.caseType
+  );
   const { data, error } = await db
     .from("operational_cases")
     .insert({
       user_id: input.userId,
       case_type_id: input.caseTypeId,
       case_type: input.caseType,
+      workflow_definition_id: definition?.id ?? null,
+      workflow_definition_version: definition?.version ?? null,
       status: input.status ?? "active",
       current_step: input.currentStep ?? null,
       assigned_to_user_id: input.assignedToUserId ?? input.userId,

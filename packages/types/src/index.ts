@@ -453,6 +453,9 @@ export interface OperationalCase {
   due_at: string | null;
   context_jsonb: Record<string, unknown>;
   version: number;
+  /** Pin a la definición de workflow (Slice 1.1); null en casos sin definición global. */
+  workflow_definition_id: string | null;
+  workflow_definition_version: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -1088,3 +1091,4 @@ export {
   type GeneratedDocumentDedupOptions,
 } from "./generated-document-dedup";
 export * from "./ai-usage";
+export * from "./workflow-definitions";

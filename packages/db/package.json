@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",
-    "@agents/types": "*"
+    "@agents/types": "*",
+    "@agents/workflows": "*"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

@@ -1,0 +1,22 @@
+{
+  "name": "@agents/workflows",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "test:hash": "tsx src/hash.selftest.ts",
+    "test:transform-flow": "tsx src/transform-flow.selftest.ts",
+    "test:transition-evaluator": "tsx src/transition-evaluator.selftest.ts",
+    "test:evidence": "tsx src/evidence.selftest.ts",
+    "test:replay": "tsx src/replay.selftest.ts"
+  },
+  "dependencies": {
+    "@agents/types": "*",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5"
+  }
+}
