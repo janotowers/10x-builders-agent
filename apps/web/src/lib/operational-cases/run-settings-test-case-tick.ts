@@ -69,6 +69,7 @@ import {
   shouldAutoExecuteApprovedPublishToolsFromContext,
 } from "@/lib/operational-cases/publication-tool-policy";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
+import { createAdvisedCaseUpdate } from "@/lib/operational-cases/advised-case-update";
 import {
   countRawPhotos,
   dismissPhotosUploadRequestedNotifications,
@@ -77,6 +78,10 @@ import {
   RAW_PHOTOS_MIN_COUNT,
 } from "@/lib/operational-cases/photo-batch-completion";
 import { resolvePropertyDisplayLabel } from "@/lib/operational-cases/property-display-label";
+
+// Paridad lab/producción (S1.6): el tick es compartido por cron, webhook y
+// laboratorio; sus transiciones de paso/estado pasan por el mismo evaluador.
+const advisedTickCaseUpdate = createAdvisedCaseUpdate("agent_tick", "runtime");
 import { telegramChatIdFromCase } from "@/lib/operational-cases/settings-test-telegram-lab";
 
 type PostAgentInvariantAction = Awaited<
@@ -2107,9 +2112,9 @@ export async function runSettingsTestCaseAgentTick(
         },
       });
       if (caseAfterDeterministicFallback.status !== "waiting_internal") {
-        const waiting = await updateOperationalCase(
+        const waiting = await advisedTickCaseUpdate(
           db,
-          caseAfterDeterministicFallback.id,
+          caseAfterDeterministicFallback,
           caseAfterDeterministicFallback.version,
           {
             status: "waiting_internal",
@@ -2384,9 +2389,9 @@ export async function runSettingsTestCaseAgentTick(
         });
         responsePreviewForEvent = null;
         if (continueCase.status !== "waiting_internal") {
-          const waiting = await updateOperationalCase(
+          const waiting = await advisedTickCaseUpdate(
             db,
-            fresh.id,
+            continueCase,
             continueCase.version ?? fresh.version,
             {
               status: "waiting_internal",

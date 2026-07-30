@@ -4,8 +4,10 @@ import {
   createServerClient,
   findLatestConversationalOperationalCase,
   getActiveE2ELabSession,
+  getLatestPublishedDefinitionForUser,
   getOperationalCase,
   getOperationalCaseTypeById,
+  getWorkflowDefinitionById,
   insertOperationalCaseEvent,
   updateOperationalCase,
 } from "@agents/db";
@@ -170,6 +172,8 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       case_type_id?: string;
       validate_registration?: boolean;
+      /** S1.6: pin opcional del caso de prueba a una definición concreta (p. ej. un draft). */
+      workflow_definition_id?: string;
     };
     const caseTypeId = body.case_type_id?.trim();
     if (!caseTypeId) {
@@ -210,6 +214,35 @@ export async function POST(request: Request) {
       "Contacto de prueba";
     const telegramChatId = Number(context.telegram_chat_id);
 
+    // S1.6: resolver la definición a pinnear. Con id explícito se permite un
+    // draft propio (para probarlo en el lab antes de publicar); sin id se usa
+    // la última publicada, igual que producción.
+    const explicitDefinitionId = body.workflow_definition_id?.trim();
+    let pinnedDefinition: { id: string; version: number } | null = null;
+    if (explicitDefinitionId) {
+      const requested = await getWorkflowDefinitionById(db, explicitDefinitionId);
+      const usable =
+        !!requested &&
+        requested.case_type === caseType.case_type &&
+        (requested.user_id === user.id || requested.user_id === null);
+      if (!usable) {
+        return NextResponse.json(
+          { error: "workflow_definition_not_found" },
+          { status: 400 }
+        );
+      }
+      pinnedDefinition = { id: requested.id, version: requested.version };
+    } else {
+      const latest = await getLatestPublishedDefinitionForUser(
+        db,
+        user.id,
+        caseType.case_type
+      );
+      pinnedDefinition = latest
+        ? { id: latest.id, version: latest.version }
+        : null;
+    }
+
     const existing = await findLatestSettingsTestCase(
       db,
       user.id,
@@ -245,6 +278,10 @@ export async function POST(request: Request) {
           },
           status: "active",
           current_step: "intake",
+          // S1.6: regenerar re-pinnea la definición (los casos previos al pin
+          // o con definición obsoleta quedan anclados a la resuelta arriba).
+          workflow_definition_id: pinnedDefinition?.id ?? null,
+          workflow_definition_version: pinnedDefinition?.version ?? null,
           updated_at: new Date().toISOString(),
         })
         .eq("id", existing.id)
@@ -280,6 +317,7 @@ export async function POST(request: Request) {
           ...context,
           controlled_test_playthrough_anchor_at: playthroughAnchorAt,
         },
+        workflowDefinition: pinnedDefinition,
       });
       await insertOperationalCaseEvent(db, {
         caseId: opCase.id,

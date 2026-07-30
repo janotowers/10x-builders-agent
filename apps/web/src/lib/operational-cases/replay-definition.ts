@@ -43,7 +43,11 @@ async function listAllCaseEvents(
 export async function replayDefinitionForCase(
   db: DbClient,
   caseId: string,
-  options?: { recordEvidence?: boolean }
+  options?: {
+    recordEvidence?: boolean;
+    /** Gate del evidence record; por defecto "historical_replay" (S1.6-3). Las corridas del lab usan "lab_run_replay". */
+    gate?: string;
+  }
 ): Promise<CaseReplayOutcome | null> {
   const opCase = await getOperationalCase(db, caseId);
   if (!opCase) return null;
@@ -73,7 +77,7 @@ export async function replayDefinitionForCase(
       userId: opCase.user_id,
       subjectKind: "workflow_definition",
       subjectId: definition.id,
-      gate: "historical_replay",
+      gate: options?.gate ?? "historical_replay",
       artifactHash: definition.definition_hash,
       result: result.ok && result.divergences.length === 0 ? "pass" : "fail",
       detail: {

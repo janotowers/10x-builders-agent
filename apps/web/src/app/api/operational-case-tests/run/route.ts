@@ -36,6 +36,19 @@ import {
 import { buildLastE2ETransitionOutcome } from "@/lib/operational-cases/settings-test-e2e-transitions";
 import { runSettingsTestSafeCheck } from "@/lib/operational-cases/settings-test-safe-check";
 import { controlledE2EPublicationContextPatch } from "@/lib/operational-cases/publication-tool-policy";
+import { createAdvisedCaseUpdate } from "@/lib/operational-cases/advised-case-update";
+import {
+  replayDefinitionForCase,
+  type CaseReplayOutcome,
+} from "@/lib/operational-cases/replay-definition";
+
+// Paridad lab/producción (S1.6): el merge determinista de la respuesta del
+// dueño emula una transición real, así que pasa por el mismo evaluador.
+const advisedOwnerSimulationUpdate = createAdvisedCaseUpdate(
+  "lab_owner_simulation",
+  "runtime"
+);
+
 type RunMode = "safe_check" | "agent_e2e";
 
 type RunBody = {
@@ -186,7 +199,7 @@ async function processCharacteristicsOwnerResponseDeterministically(
   };
   const criticalMissing = missingOwnerResponseCriticalFields(propertyData);
   const mergedContext = syncIntakeFieldsFromPropertyData(currentContext, propertyData);
-  const updated = await updateOperationalCase(db, fresh.id, fresh.version, {
+  const updated = await advisedOwnerSimulationUpdate(db, fresh, fresh.version, {
     currentStep: "documents_received",
     status: criticalMissing.length === 0 ? "waiting_internal" : "waiting_external",
     nextActionAt: null,
@@ -310,6 +323,8 @@ export async function POST(request: Request) {
       let caseForOwnerResponse = opCase;
       await expireExternalContactNotificationsForCase(db, opCase.id);
       if (settingsTestCase && isCharacteristicsOwnerResponseSimulation(body)) {
+        // Teleport de fixture deliberado (S1.6): coloca el caso en el paso a
+        // simular sin pasar por el evaluador; no es la transición bajo prueba.
         const prepared = await updateOperationalCase(db, opCase.id, opCase.version, {
           currentStep: "documents_received",
           status: "waiting_external",
@@ -492,6 +507,22 @@ export async function POST(request: Request) {
       resultCase = safe.case;
     }
 
+    // S1.6: cada corrida del lab deja evidencia hash-pinneada — replay del
+    // stream de eventos del caso contra su definición pinneada. Best-effort:
+    // un fallo del replay no invalida la corrida.
+    let replayOutcome: CaseReplayOutcome | null = null;
+    try {
+      replayOutcome = await replayDefinitionForCase(db, resultCase.id, {
+        recordEvidence: true,
+        gate: "lab_run_replay",
+      });
+    } catch (error) {
+      console.warn(
+        "[operational-case-tests/run] lab replay evidence failed:",
+        error
+      );
+    }
+
     const telegramSentToolCallId =
       agentMeta?.telegram_sent && agentMeta.pendingConfirmation?.toolCallId
         ? agentMeta.pendingConfirmation.toolCallId
@@ -540,6 +571,17 @@ export async function POST(request: Request) {
       agent: agentMeta,
       business_outcome: businessOutcome,
       last_transition,
+      workflow_replay: replayOutcome
+        ? {
+            definition_id: replayOutcome.definitionId,
+            definition_version: replayOutcome.definitionVersion,
+            definition_hash: replayOutcome.definitionHash,
+            terminal_match: replayOutcome.result.ok,
+            divergence_count: replayOutcome.result.divergences.length,
+            unrecorded_gaps: replayOutcome.result.unrecordedGaps,
+            evidence_id: replayOutcome.evidenceId,
+          }
+        : null,
     });
   } catch (err) {
     console.error("[POST /api/operational-case-tests/run] failed:", err);

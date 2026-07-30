@@ -26,6 +26,15 @@ import {
 import { notify } from "@/lib/notify";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
 import { resolveParkingSpacesForDisplay } from "./parse-owner-characteristics";
+import { createAdvisedCaseUpdate } from "./advised-case-update";
+
+// Paridad lab/producción (S1.6): las transiciones de paso de los invariants
+// pasan por el mismo evaluador de definiciones que el resto del runtime. Las
+// escrituras solo-contexto siguen directas (no proponen transición).
+const advisedInvariantCaseUpdate = createAdvisedCaseUpdate(
+  "post_agent_invariants",
+  "runtime"
+);
 
 type ApplyPropertyOptioningPostAgentInvariantsResult = {
   case: OperationalCase | null;
@@ -1042,7 +1051,7 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
     },
   });
 
-  const updated = await updateOperationalCase(db, workingCase.id, workingCase.version, {
+  const updated = await advisedInvariantCaseUpdate(db, workingCase, workingCase.version, {
     status: "waiting_internal",
     currentStep: "comparables_in_progress",
     nextActionAt: null,
@@ -1422,7 +1431,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           },
         });
       }
-      const updated = await updateOperationalCase(db, workingCase.id, workingCase.version, {
+      const updated = await advisedInvariantCaseUpdate(db, workingCase, workingCase.version, {
         status: "waiting_internal",
         currentStep: "documents_received",
         nextActionAt: null,
@@ -1547,9 +1556,9 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
             },
           });
         }
-        const escalated = await updateOperationalCase(
+        const escalated = await advisedInvariantCaseUpdate(
           db,
-          workingCase.id,
+          workingCase,
           workingCase.version,
           {
             status: "waiting_internal",
@@ -1684,9 +1693,9 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           text_preview: text.slice(0, 200),
         },
       });
-      const updated = await updateOperationalCase(
+      const updated = await advisedInvariantCaseUpdate(
         db,
-        workingCase.id,
+        workingCase,
         workingCase.version,
         {
           status: "waiting_internal",
@@ -1742,7 +1751,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
         text_preview: text.slice(0, 200),
       },
     });
-    const updated = await updateOperationalCase(db, workingCase.id, workingCase.version, {
+    const updated = await advisedInvariantCaseUpdate(db, workingCase, workingCase.version, {
       status: "waiting_external",
       currentStep: "documents_received",
       nextActionAt: null,
@@ -1796,7 +1805,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
       document_fields_used: documentFields,
     },
   });
-  const updated = await updateOperationalCase(db, workingCase.id, workingCase.version, {
+  const updated = await advisedInvariantCaseUpdate(db, workingCase, workingCase.version, {
     status: "waiting_internal",
     currentStep: "property_data_review",
     nextActionAt: null,

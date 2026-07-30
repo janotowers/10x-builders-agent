@@ -190,6 +190,11 @@ export interface CreateOperationalCaseInput {
   nextActionAt?: string | null;
   dueAt?: string | null;
   context?: Record<string, unknown>;
+  /**
+   * Pin explícito a una definición (S1.6: el laboratorio puede anclar un caso
+   * de prueba a un draft). Si se omite, se resuelve la última publicada.
+   */
+  workflowDefinition?: { id: string; version: number } | null;
 }
 
 export async function createOperationalCase(
@@ -198,11 +203,9 @@ export async function createOperationalCase(
 ): Promise<OperationalCase> {
   // Slice 1.1: pin the case to its workflow definition at creation (private
   // fork wins over global). Inert until the transition evaluator reads it.
-  const definition = await getLatestPublishedDefinitionForUser(
-    db,
-    input.userId,
-    input.caseType
-  );
+  const definition =
+    input.workflowDefinition ??
+    (await getLatestPublishedDefinitionForUser(db, input.userId, input.caseType));
   const { data, error } = await db
     .from("operational_cases")
     .insert({

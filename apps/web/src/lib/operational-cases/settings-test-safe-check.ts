@@ -1,15 +1,23 @@
 import {
   createServerClient,
   insertOperationalCaseEvent,
-  updateOperationalCase,
 } from "@agents/db";
 import type {
   OperationalCase,
   OperationalCaseActivationPolicy,
   OperationalCaseFlowStep,
 } from "@agents/types";
+import { createAdvisedCaseUpdate } from "./advised-case-update";
 
 type Db = ReturnType<typeof createServerClient>;
+
+// Paridad lab/producción (S1.6): el avance seguro N0 propone la misma
+// transición que haría el flujo real (intake → primer paso operacional) y se
+// evalúa contra la definición pinneada del caso, igual que en producción.
+const advisedSafeCheckCaseUpdate = createAdvisedCaseUpdate(
+  "lab_safe_check",
+  "runtime"
+);
 
 export type SettingsTestSafeCheckResult =
   | { case: OperationalCase }
@@ -64,7 +72,7 @@ export async function runSettingsTestSafeCheck(
     },
   });
 
-  const updated = await updateOperationalCase(db, fresh.id, fresh.version, {
+  const updated = await advisedSafeCheckCaseUpdate(db, fresh, fresh.version, {
     status: "paused",
     currentStep: fresh.current_step === startStep ? successStep : fresh.current_step,
     nextActionAt: null,
