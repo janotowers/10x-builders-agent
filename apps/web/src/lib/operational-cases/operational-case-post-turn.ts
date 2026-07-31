@@ -280,6 +280,7 @@ export async function maybeRecoverPackageReadyContinue(params: {
     !pkgCase ||
     pkgCase.case_type !== "property_optioning" ||
     pkgCase.current_step !== "package_ready" ||
+    !pkgContext ||
     !listingDescriptionIsApproved(pkgContext)
   ) {
     return { handled: false };
