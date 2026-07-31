@@ -13,6 +13,7 @@ El rediseño se trabajara por fases para no bloquear la mejora visual con la ins
 - Crear una estructura visual consistente para la app web: sidebar, header, fondo, cards y lenguaje visual Ungga.
 - Redisenar `/chat` como pantalla principal de consola.
 - Resolver el auto-scroll inicial en `apps/web/src/app/chat/chat-interface.tsx`.
+- Stick-to-bottom + burbuja «ir al último mensaje» (chrome del canal, estilo Telegram): el viewport solo se pega al final cuando el usuario ya está cerca del fondo; si sube el historial aparece un botón flotante sobre el composer. Implementado en `chat-interface.tsx` (no es ítem de paridad HITL web↔Telegram).
 - Integrar mejor el avatar o imagen de Gu que ya viene de `business_brain.agent_identity`.
 - Mantener el backend actual request/response para reducir riesgo.
 
@@ -53,7 +54,7 @@ flowchart LR
 ```
 
 - **Sidebar:** árbol en `APP_NAV_TREE` (`apps/web/src/lib/navigation/app-navigation.ts`), renderizado por `AppNav` dentro de `AppShell`: **Chat** (Conversación, Pendientes), **Operaciones** (Flujos en curso, Plantillas de flujos), **Proactividad**, **Conocimiento** (Memoria), **Configuración** (Perfil del usuario, Perfil del agente, Capacidades del agente, Integraciones, Cuenta y sesión). Modo expandido/compacto con iconos; estado persistido en `localStorage`.
-- **Chat central:** conversacion, input fijo, confirmaciones HITL integradas.
+- **Chat central:** conversacion, input fijo, confirmaciones HITL integradas; burbuja de salto al final cuando el historial no está pegado abajo.
 - **Input multimodal:** texto, adjuntos, mensaje de voz y futura voz en tiempo real.
 - **Panel derecho:** Gu visual, estado, tools recientes, memoria, checklist de trabajo, heartbeat, scheduled tasks y presencia.
 - **Admin futuro:** selector de usuario/cuenta arriba cuando `is_ungga_admin` aplique.
@@ -64,7 +65,7 @@ flowchart LR
 - `apps/web/src/components/app-nav.tsx`: navegacion lateral; scroll al top al cambiar de ruta.
 - `apps/web/src/lib/navigation/app-navigation.ts`: arbol `APP_NAV_TREE` (labels, hrefs, matchers).
 - `apps/web/src/app/chat/page.tsx`: carga inicial del chat, perfil, sesion y mensajes.
-- `apps/web/src/app/chat/chat-interface.tsx`: UI del chat, scroll, input y confirmaciones.
+- `apps/web/src/app/chat/chat-interface.tsx`: UI del chat, scroll (stick-to-bottom + jump-to-bottom), input y confirmaciones.
 - `apps/web/src/app/settings/page.tsx`: carga de datos de ajustes (server); enruta por `?view=` y `?section=`.
 - `apps/web/src/app/settings/settings-form.tsx`: UI de ajustes por vista (perfil, agente, capacidades, integraciones, proactividad, cuenta); tabs client-side con `history.replaceState` dentro de la misma vista.
 - `apps/web/src/app/settings/settings-page-meta.ts`: titulos y descripciones del header segun vista/seccion activa.
