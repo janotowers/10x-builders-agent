@@ -358,21 +358,72 @@ export function buildHitlActionsForKind(
   return [];
 }
 
+function matchHitlActionByTelegramPrefix(
+  actions: HitlActionDef[],
+  callbackAction: string
+): HitlActionDef | null {
+  const needle = callbackAction.trim();
+  if (!needle) return null;
+  // Solo prefijos/aliases de Telegram — NUNCA action.id suelto
+  // (`approve` colisionaría con tool-confirmation y price_approval).
+  return (
+    actions.find(
+      (action) =>
+        action.telegramCallbackPrefix === needle ||
+        action.telegramCallbackAliases?.includes(needle)
+    ) ?? null
+  );
+}
+
 export function resolveHitlActionByTelegramCallback(params: {
   kind: string;
   callbackAction: string;
   data?: Record<string, unknown>;
 }): HitlActionDef | null {
-  const actions = buildHitlActionsForKind(params.kind, params.data);
-  const needle = params.callbackAction.trim();
-  return (
-    actions.find(
-      (action) =>
-        action.telegramCallbackPrefix === needle ||
-        action.telegramCallbackAliases?.includes(needle) ||
-        action.id === needle
-    ) ?? null
+  return matchHitlActionByTelegramPrefix(
+    buildHitlActionsForKind(params.kind, params.data),
+    params.callbackAction
   );
+}
+
+/**
+ * Resuelve un prefijo de callback Telegram (`comp_current`, `titularidad_continue`…)
+ * al kind + action canónicos sin que el webhook hardcodee strings por decisión.
+ */
+export function resolveTelegramHitlCallback(params: {
+  callbackAction: string;
+  data?: Record<string, unknown>;
+  /** Si se conoce el kind (p. ej. desde la notification), se busca primero ahí. */
+  preferredKind?: string | null;
+}): { kind: string; action: HitlActionDef } | null {
+  const needle = params.callbackAction.trim();
+  if (!needle) return null;
+
+  const preferred =
+    typeof params.preferredKind === "string" && params.preferredKind.trim()
+      ? params.preferredKind.trim()
+      : null;
+  if (preferred) {
+    const action = resolveHitlActionByTelegramCallback({
+      kind: preferred,
+      callbackAction: needle,
+      data: params.data,
+    });
+    if (action) return { kind: preferred, action };
+  }
+
+  for (const kind of HITL_MIRROR_KINDS) {
+    if (kind === preferred) continue;
+    // contract_data_review / publication_review dependen de data para labels,
+    // pero sus prefijos son estables; pasar data cuando exista.
+    const action = resolveHitlActionByTelegramCallback({
+      kind,
+      callbackAction: needle,
+      data: params.data,
+    });
+    if (action) return { kind, action };
+  }
+  return null;
 }
 
 export function buildTelegramInlineKeyboardForKind(params: {

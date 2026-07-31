@@ -98,6 +98,7 @@ import {
   maybeRecoverContractPendingTurn,
   maybeRecoverPackageReadyContinue,
 } from "@/lib/operational-cases/operational-case-post-turn";
+import { resolveTelegramHitlCallback } from "@/lib/operational-cases/hitl-action-contract";
 import { handleComparablesExpansionDecision } from "@/lib/business-decisions/comparables-expansion-decision";
 import { notifyPriceApprovalForCase } from "@agents/agent";
 import { notifyUserRespectingActiveInternalChannel } from "@/lib/operational-cases/deliver-internal-case-follow-up";
@@ -1407,37 +1408,34 @@ export async function POST(request: Request) {
       });
     }
 
-    if (
-      action === "titularidad_continue" ||
-      action === "titularidad_approve"
-    ) {
-      // Motivo obligatorio: el botón solo inicia la captura por texto libre.
-      await answerTelegramCallbackQuery(cb.id, "Indica el motivo");
-      await sendTelegramMessage(
-        cb.message.chat.id,
-        "Para **continuar bajo excepción**, responde con el motivo. Ejemplo:\n«continuar bajo excepción: revisé INE y escritura; el OCR omitió el segundo apellido»."
-      );
-      return NextResponse.json({
-        ok: true,
-        routed: "titularidad_review_reason_prompt",
-        notification_id: targetId,
-      });
-    }
-
-    if (
-      action === "titularidad_request_external" ||
-      action === "titularidad_request_internal"
-    ) {
+    // Prefijos HITL canónicos (titularidad, comparables, …) vía contrato
+    // compartido — evita drift si cambian labels/prefixes en un solo lado.
+    const hitlCallback = resolveTelegramHitlCallback({
+      callbackAction: action,
+    });
+    if (hitlCallback?.kind === "titularidad_review") {
+      const actionId = hitlCallback.action.id;
+      if (actionId === "continue_override") {
+        // Motivo obligatorio: el botón solo inicia la captura por texto libre.
+        await answerTelegramCallbackQuery(cb.id, "Indica el motivo");
+        await sendTelegramMessage(
+          cb.message.chat.id,
+          "Para **continuar bajo excepción**, responde con el motivo. Ejemplo:\n«continuar bajo excepción: revisé INE y escritura; el OCR omitió el segundo apellido»."
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "titularidad_review_reason_prompt",
+          notification_id: targetId,
+          action_id: actionId,
+        });
+      }
       const result = await businessDecisionHandler("titularidad_review").handle(
         db,
         {
           userId,
           notificationId: targetId,
           text: "",
-          action:
-            action === "titularidad_request_external"
-              ? "request_external_evidence"
-              : "request_internal_docs",
+          action: actionId,
           source: "telegram",
         }
       );
@@ -1457,16 +1455,13 @@ export async function POST(request: Request) {
         routed: "titularidad_review",
         notification_id: targetId,
         status: result.status,
+        action_id: actionId,
       });
     }
 
-    if (
-      action === "comp_current" ||
-      action === "comp_avaclick" ||
-      action === "comp_expand"
-    ) {
+    if (hitlCallback?.kind === "comparables_search_expansion_decision") {
       const decisionText =
-        action === "comp_current" ? "1" : action === "comp_avaclick" ? "2" : "3";
+        hitlCallback.action.freeText?.trim() || hitlCallback.action.id;
       const result = await handleComparablesExpansionDecision(db, {
         userId,
         notificationId: targetId,
@@ -1537,6 +1532,7 @@ export async function POST(request: Request) {
         routed: "comparables_expansion_decision",
         notification_id: targetId,
         decision: result.decision,
+        action_id: hitlCallback.action.id,
       });
     }
 

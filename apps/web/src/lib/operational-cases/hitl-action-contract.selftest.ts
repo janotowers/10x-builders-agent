@@ -5,6 +5,7 @@ import {
   hitlActionIdsForKind,
   HITL_MIRROR_KINDS,
   resolveHitlActionByTelegramCallback,
+  resolveTelegramHitlCallback,
 } from "./hitl-action-contract";
 
 const kinds = [
@@ -75,6 +76,22 @@ const legacyApprove = resolveHitlActionByTelegramCallback({
   callbackAction: "titularidad_approve",
 });
 assert.equal(legacyApprove?.id, "continue_override");
+
+const fromPrefix = resolveTelegramHitlCallback({
+  callbackAction: "comp_avaclick",
+});
+assert.equal(fromPrefix?.kind, "comparables_search_expansion_decision");
+assert.equal(fromPrefix?.action.id, "use_avaclick_primary");
+assert.equal(fromPrefix?.action.freeText, "2");
+
+const titularidadFromAlias = resolveTelegramHitlCallback({
+  callbackAction: "titularidad_approve",
+});
+assert.equal(titularidadFromAlias?.kind, "titularidad_review");
+assert.equal(titularidadFromAlias?.action.id, "continue_override");
+
+// Tool-confirm `approve` must NOT collide with HITL action ids.
+assert.equal(resolveTelegramHitlCallback({ callbackAction: "approve" }), null);
 
 const comparablesKb = buildTelegramInlineKeyboardForKind({
   kind: "comparables_search_expansion_decision",
