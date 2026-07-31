@@ -9,8 +9,9 @@
  */
 import { setBuildLangChainToolsDeps } from "@agents/agent";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
-import { notify, type NotifyResult } from "@/lib/notify";
+import type { NotifyResult } from "@/lib/notify";
 import type { DbClient } from "@agents/db";
+import { notifyUserRespectingActiveInternalChannel } from "@/lib/operational-cases/deliver-internal-case-follow-up";
 
 let wired = false;
 
@@ -24,7 +25,13 @@ export function ensureAgentToolDepsWired(): void {
       payload: { text: string; kind?: string; data?: Record<string, unknown> },
       urgency?: "low" | "normal" | "high"
     ): Promise<NotifyResult> => {
-      return notify(db, userId, payload, urgency ?? "normal");
+      // Paridad Web ↔ Telegram: follow-ups de caso van al canal activo.
+      return notifyUserRespectingActiveInternalChannel(
+        db,
+        userId,
+        payload,
+        urgency ?? "normal"
+      );
     },
     sendTelegramMessage: async (chatId: number, text: string) => {
       await sendTelegramMessage(chatId, text, undefined, { throwOnError: true });

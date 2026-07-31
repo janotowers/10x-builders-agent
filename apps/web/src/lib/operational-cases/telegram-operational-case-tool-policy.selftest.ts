@@ -7,6 +7,7 @@ assert.deepEqual(
     operational_case_update_intake: "auto_execute",
     operational_case_create: "auto_execute",
     operational_case_update_state: "deny",
+    operational_case_add_event: "deny",
   }
 );
 
@@ -16,6 +17,8 @@ assert.deepEqual(
   }),
   {
     operational_case_update_intake: "auto_execute",
+    operational_case_update_state: "auto_execute",
+    operational_case_add_event: "auto_execute",
   }
 );
 

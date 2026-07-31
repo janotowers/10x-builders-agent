@@ -8,10 +8,6 @@ import {
 } from "@agents/db";
 import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import {
-  isControlledE2EOperationalCase,
-  isSettingsOperationalTestCase,
-} from "@agents/types";
-import {
   applyPublicationEvent,
   buildPublicationContextPatch,
   publicationFromContext,
@@ -379,12 +375,11 @@ export async function handlePublicationReviewDecision(
     },
   });
 
-  const shouldTick =
-    isControlledE2EOperationalCase(opCase) ||
-    isSettingsOperationalTestCase(opCase);
+  // Continuar tras revisión condicional: siempre despertar publication runner
+  // (producción + lab). Antes solo E2E/settings → botones web no avanzaban.
   const tickSource = `publication_review_${destination}_${parsed.intent}`;
-  const deferTick = shouldTick && params.deferControlledE2ETick === true;
-  if (shouldTick && !deferTick) {
+  const deferTick = params.deferControlledE2ETick === true;
+  if (!deferTick) {
     void triggerProgress(db, updated.id, params.userId, tickSource, {
       forceRetryFailedOperation,
     }).catch((error) => {

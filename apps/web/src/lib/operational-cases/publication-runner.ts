@@ -22,7 +22,7 @@ import {
   formatListingPublishedSummaryNotifyText,
   formatPublishDestinationApprovalNotifyText,
 } from "@agents/agent";
-import { notify } from "@/lib/notify";
+import { notifyUserRespectingActiveInternalChannel } from "./deliver-internal-case-follow-up";
 import {
   canSafelyForceRetryProcessMedia,
   canSafelyForceRetryUnggaPublish,
@@ -75,6 +75,10 @@ import {
 import { resolvePublicationRolloutMode } from "@/lib/operational-cases/publication-rollout";
 import { advisedRuntimeCaseUpdate } from "@/lib/operational-cases/advised-case-update";
 import { reconcilePublicationCaseRecord } from "@/lib/operational-cases/publication-reconcile";
+import {
+  listingDescriptionIsApproved,
+  propertyOptioningPublicationEnablementPatch,
+} from "@/lib/operational-cases/publication-tool-policy";
 
 export type PublicationProgressResult = {
   ok: boolean;
@@ -354,7 +358,7 @@ async function requestDestinationApproval(
   if ((existing ?? []).length > 0) {
     return "waiting_hitl";
   }
-  await notify(
+  await notifyUserRespectingActiveInternalChannel(
     db,
     opCase.user_id,
     {
@@ -460,7 +464,7 @@ async function requestConditionalReview(
   const commissionActualMatch = lastErrorText?.match(
     /got\s+(null|\d+(?:\.\d+)?)/i
   );
-  await notify(
+  await notifyUserRespectingActiveInternalChannel(
     db,
     opCase.user_id,
     {
@@ -562,7 +566,36 @@ export async function requestPublicationProgress(
     return { ok: false, status: "case_not_found", actions_run: [] };
   }
 
-  const context = isRecord(loaded.context_jsonb) ? loaded.context_jsonb : {};
+  let context = isRecord(loaded.context_jsonb) ? loaded.context_jsonb : {};
+  // Conversational property_optioning: si ya hay descripción aprobada y el caso
+  // nunca fijó publication_mode, activar (si no, el runner no-op con default off).
+  if (listingDescriptionIsApproved(context)) {
+    const enablement = propertyOptioningPublicationEnablementPatch({
+      caseType: loaded.case_type,
+      context,
+    });
+    if (enablement) {
+      const enabled = await updateOperationalCase(
+        db,
+        loaded.id,
+        loaded.version,
+        {
+          context: {
+            ...context,
+            ...enablement,
+          },
+        }
+      ).catch(() => null);
+      if (enabled) {
+        loaded = enabled;
+        context = isRecord(enabled.context_jsonb) ? enabled.context_jsonb : context;
+        console.info(
+          "[publication-runner] enabled publication_mode=active for property_optioning",
+          { case_id: loaded.id, source }
+        );
+      }
+    }
+  }
   const profile = await getProfile(db, loaded.user_id).catch(() => null);
   const rolloutMode = resolvePublicationRolloutMode(
     context,
@@ -775,14 +808,18 @@ export async function requestPublicationProgress(
           if (closed && (!alreadySent || sendCorrective)) {
             try {
               const summaryText = formatListingPublishedSummaryNotifyText(closed);
-              const result = await notify(db, closed.user_id, {
+              const result = await notifyUserRespectingActiveInternalChannel(
+                db,
+                closed.user_id,
+                {
                 text: summaryText,
                 kind: "listing_published_summary",
                 data: {
                   case_id: closed.id,
                   ...(sendCorrective ? { corrective: true } : {}),
                 },
-              });
+                }
+              );
               if (result.delivered.length > 0) {
                 await insertOperationalCaseEvent(db, {
                   caseId: closed.id,

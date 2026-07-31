@@ -132,6 +132,37 @@ export async function getConversationBindingForCase(
   return (data as OperationalCaseConversationBinding | null) ?? null;
 }
 
+/** Marca el canal/sesión que recibió el último turno sin borrar su envelope. */
+export async function touchConversationBindingForCase(
+  db: DbClient,
+  params: {
+    caseId: string;
+    channel: "telegram" | "web";
+    sessionId?: string | null;
+    lastUserMessageAt?: string;
+  }
+): Promise<void> {
+  const binding = await getConversationBindingForCase(db, {
+    caseId: params.caseId,
+    channel: params.channel,
+    statuses: ["awaiting_user", "clarification_needed"],
+  });
+  if (!binding) return;
+  const now = params.lastUserMessageAt ?? new Date().toISOString();
+  const patch: Record<string, unknown> = {
+    updated_at: now,
+    last_user_message_at: now,
+  };
+  if (params.sessionId !== undefined) {
+    patch.session_id = params.sessionId;
+  }
+  const { error } = await db
+    .from("operational_case_conversation_bindings")
+    .update(patch)
+    .eq("id", binding.id);
+  if (error) throw error;
+}
+
 export async function setConversationBindingStatus(
   db: DbClient,
   params: {

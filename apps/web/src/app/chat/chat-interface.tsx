@@ -22,11 +22,26 @@ import {
 } from "@/lib/skill-display";
 import { formatToolForUserPanel } from "@/lib/tool-display";
 import { CHAT_ATTACHMENT_ACCEPT } from "@/lib/chat/extract-attachment-text";
+import { resolveUserMessageDisplay } from "@/lib/chat/attachment-message-display";
+import {
+  caseCoverPhotoApiPath,
+  extractEasybrokerUrlFromSummaryText,
+} from "@/lib/operational-cases/case-cover-photo";
+import {
+  buildWebHitlSubmitRequest,
+  type WebHitlActionDef,
+  WEB_HITL_MIRROR_KINDS,
+} from "@/lib/operational-cases/web-hitl-client";
 
 interface ChatAttachmentMeta {
   fileName: string;
   truncated?: boolean;
   sizeBytes?: number;
+  downloadUrl?: string;
+  contentType?: string;
+  /** Click-through for image previews (e.g. EasyBroker listing). */
+  href?: string;
+  label?: string;
 }
 
 interface PendingAttachment {
@@ -582,10 +597,17 @@ type ChatTimelineItem =
   | { type: "date"; key: string; label: string }
   | { type: "message"; key: string; message: Message; index: number };
 
+function isPendingConfirmationMessage(message: Message): boolean {
+  return message.structured_payload?.type === "pending_confirmation";
+}
+
 function buildChatTimeline(messages: Message[]): ChatTimelineItem[] {
   const items: ChatTimelineItem[] = [];
   let lastDayKey = "";
   messages.forEach((message, index) => {
+    // El texto de HITL se muestra en la tarjeta Aprobar/Cancelar; el mensaje
+    // persistido (y el sync) no debe duplicarlo como burbuja del chat.
+    if (isPendingConfirmationMessage(message)) return;
     if (message.created_at) {
       const dayKey = dayKeyFromIso(message.created_at);
       if (dayKey && dayKey !== lastDayKey) {
@@ -607,32 +629,109 @@ function buildChatTimeline(messages: Message[]): ChatTimelineItem[] {
   return items;
 }
 
-function messageAttachmentMeta(
-  payload: Record<string, unknown> | null | undefined
-): ChatAttachmentMeta[] {
-  const raw = payload?.attachments;
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((item) => {
-    if (!item || typeof item !== "object") return [];
-    const record = item as Record<string, unknown>;
-    if (typeof record.fileName !== "string" || !record.fileName.trim()) return [];
-    return [
-      {
-        fileName: record.fileName,
-        truncated: record.truncated === true,
-        sizeBytes:
-          typeof record.sizeBytes === "number" ? record.sizeBytes : undefined,
-      },
-    ];
-  });
+function messageAttachmentMeta(message: Message): ChatAttachmentMeta[] {
+  if (message.role === "user") {
+    return resolveUserMessageDisplay({
+      content: message.content,
+      structuredPayload: message.structured_payload,
+    }).attachments;
+  }
+  // Adjuntos del asistente (p. ej. DOCX de contract_review) viven en payload;
+  // si falta el payload (mensajes viejos), inferimos el chip desde la URL
+  // canónica del borrador embebida en el texto.
+  const raw = message.structured_payload?.attachments;
+  if (Array.isArray(raw) && raw.length > 0) {
+    return raw.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const record = item as Record<string, unknown>;
+      if (typeof record.fileName !== "string" || !record.fileName.trim()) {
+        return [];
+      }
+      return [
+        {
+          fileName: record.fileName,
+          ...(typeof record.downloadUrl === "string"
+            ? { downloadUrl: record.downloadUrl }
+            : {}),
+          ...(typeof record.contentType === "string"
+            ? { contentType: record.contentType }
+            : {}),
+          ...(typeof record.sizeBytes === "number"
+            ? { sizeBytes: record.sizeBytes }
+            : {}),
+          ...(typeof record.href === "string" ? { href: record.href } : {}),
+          ...(typeof record.label === "string" ? { label: record.label } : {}),
+        },
+      ];
+    });
+  }
+  const draftUrlMatch = message.content.match(
+    /https?:\/\/[^\s)\]>"']+\/api\/operational-cases\/[^/\s]+\/documents\/contract_draft\/download/i
+  );
+  if (!draftUrlMatch?.[0]) return [];
+  return [
+    {
+      fileName: "contrato_comision.docx",
+      downloadUrl: draftUrlMatch[0],
+      contentType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    },
+  ];
 }
 
 function messageDisplayText(message: Message): string {
+  if (message.role !== "user") return message.content;
+  return resolveUserMessageDisplay({
+    content: message.content,
+    structuredPayload: message.structured_payload,
+  }).userText;
+}
+
+function isImageAttachment(attachment: ChatAttachmentMeta): boolean {
+  return Boolean(
+    attachment.contentType?.startsWith("image/") && attachment.downloadUrl
+  );
+}
+
+/**
+ * Preview visual del resumen final (paridad con link preview de Telegram).
+ * Usa adjunto si existe; si no (mensajes ya espejados), infiere case_id + EB URL.
+ */
+function listingPublishedSummaryPreview(message: Message): {
+  coverUrl: string;
+  href: string | null;
+  label: string;
+} | null {
+  if (message.role !== "assistant") return null;
   const payload = message.structured_payload;
-  if (message.role === "user" && payload && typeof payload.userText === "string") {
-    return payload.userText;
+  const kind = typeof payload?.kind === "string" ? payload.kind : "";
+  const looksLikeSummary =
+    kind === "listing_published_summary" ||
+    /^\*\*Resumen final de publicación\*\*/i.test(message.content.trim()) ||
+    /^Resumen final de publicación/i.test(message.content.trim());
+  if (!looksLikeSummary) return null;
+
+  const attachments = messageAttachmentMeta(message);
+  const imageAttachment = attachments.find(isImageAttachment);
+  if (imageAttachment?.downloadUrl) {
+    return {
+      coverUrl: imageAttachment.downloadUrl,
+      href: imageAttachment.href?.trim() ||
+        extractEasybrokerUrlFromSummaryText(message.content),
+      label: imageAttachment.label?.trim() || "Ver en EasyBroker",
+    };
   }
-  return message.content;
+
+  const caseId =
+    typeof payload?.case_id === "string" && payload.case_id.trim()
+      ? payload.case_id.trim()
+      : null;
+  if (!caseId) return null;
+  return {
+    coverUrl: caseCoverPhotoApiPath(caseId),
+    href: extractEasybrokerUrlFromSummaryText(message.content),
+    label: "Ver en EasyBroker",
+  };
 }
 
 function buildAgentMessageText(
@@ -1440,26 +1539,310 @@ function PanelSectionTitle({
   );
 }
 
+/** CommonMark no trata «•» como lista; lo normalizamos a «-» para <ul>/<li>. */
+function normalizeAssistantMarkdownLists(content: string): string {
+  return content.replace(/^(?:\s*)•\s+/gm, "- ");
+}
+
+/**
+ * ReactMarkdown no autolinkea URLs sueltas; Telegram sí las hace clickables.
+ * No tocar destinos ya en markdown `](https://...)`: el `(` del destino
+ * matcheaba el prefijo y anidaba `[url](url)`, dejando href vacío → /chat.
+ */
+function autolinkBareUrlsInMarkdown(content: string): string {
+  return content.replace(
+    /(^|[\s(])((https?:\/\/)[^\s<>"'`)\]]+)/g,
+    (full, prefix: string, url: string, _protocol: string, offset: number, whole: string) => {
+      if (
+        prefix === "(" &&
+        typeof offset === "number" &&
+        typeof whole === "string" &&
+        offset > 0 &&
+        whole[offset - 1] === "]"
+      ) {
+        return full;
+      }
+      const trailingMatch = url.match(/[),.]+$/);
+      const trailing = trailingMatch?.[0] ?? "";
+      const cleaned = trailing ? url.slice(0, -trailing.length) : url;
+      if (!cleaned) return full;
+      return `${prefix}[${cleaned}](${cleaned})${trailing}`;
+    }
+  );
+}
+
 const AssistantMarkdown = memo(function AssistantMarkdown({
   content,
 }: {
   content: string;
 }) {
+  const markdown = autolinkBareUrlsInMarkdown(
+    normalizeAssistantMarkdownLists(content)
+  );
+  // Ritmo cercano a Telegram (texto plano con líneas en blanco): más aire
+  // entre párrafos/listas y bullets visibles (list-disc).
   return (
-    <div className="prose prose-sm max-w-none prose-p:my-1 prose-li:my-0.5 prose-ol:my-1 prose-ul:my-1 prose-a:text-violet-700 prose-a:underline dark:prose-invert dark:prose-a:text-violet-200">
+    <div className="prose prose-sm max-w-none break-words prose-p:my-2.5 prose-headings:my-3 prose-li:my-1 prose-ol:my-3 prose-ul:my-3 prose-ul:list-disc prose-ol:list-decimal prose-li:marker:text-slate-500 dark:prose-li:marker:text-white/50 prose-a:text-violet-700 prose-a:underline dark:prose-invert dark:prose-a:text-violet-200">
       <ReactMarkdown
         components={{
-          a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          ),
+          a: ({ href, children }) => {
+            // href vacío lo resuelve el browser a la página actual (/chat).
+            if (typeof href !== "string" || !href.trim()) {
+              return <>{children}</>;
+            }
+            return (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="break-all"
+              >
+                {children}
+              </a>
+            );
+          },
+          img: ({ src, alt }) => {
+            if (typeof src !== "string" || !src.trim()) return null;
+            return (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={src}
+                alt={typeof alt === "string" ? alt : ""}
+                className="my-2 max-h-56 w-full rounded-2xl object-cover"
+              />
+            );
+          },
         }}
       >
-        {content}
+        {markdown}
       </ReactMarkdown>
     </div>
   );
+});
+
+function hitlActionsFromMessage(message: Message): {
+  kind: string;
+  notificationId: string;
+  actions: WebHitlActionDef[];
+} | null {
+  if (message.role !== "assistant") return null;
+  const payload = message.structured_payload;
+  if (!payload || typeof payload.kind !== "string") return null;
+  if (payload.actions_resolved === true) return null;
+  if (!WEB_HITL_MIRROR_KINDS.has(payload.kind) && payload.kind !== "contract_pending") {
+    return null;
+  }
+  const notificationId =
+    typeof payload.notification_id === "string"
+      ? payload.notification_id.trim()
+      : "";
+  if (!notificationId) return null;
+  const raw = payload.actions;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const actions = raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.id !== "string" || typeof record.label !== "string") {
+      return [];
+    }
+    const action: WebHitlActionDef = {
+      id: record.id,
+      label: record.label,
+      ...(record.variant === "primary" ||
+      record.variant === "secondary" ||
+      record.variant === "danger"
+        ? { variant: record.variant }
+        : {}),
+      ...(record.acceptsNotes === true ? { acceptsNotes: true } : {}),
+      ...(typeof record.notesPlaceholder === "string"
+        ? { notesPlaceholder: record.notesPlaceholder }
+        : {}),
+      ...(typeof record.defaultNotes === "string"
+        ? { defaultNotes: record.defaultNotes }
+        : {}),
+      ...(record.requiresNotes === true ? { requiresNotes: true } : {}),
+      ...(record.body && typeof record.body === "object" && !Array.isArray(record.body)
+        ? { body: record.body as Record<string, unknown> }
+        : {}),
+    };
+    return [action];
+  });
+  if (actions.length === 0) return null;
+  return { kind: payload.kind, notificationId, actions };
+}
+
+function hitlButtonClassName(variant: WebHitlActionDef["variant"]): string {
+  if (variant === "primary") {
+    return "rounded-xl bg-emerald-600 px-3 py-2 text-center text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60";
+  }
+  if (variant === "danger") {
+    return "rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60 dark:border-rose-300/30 dark:bg-rose-400/10 dark:text-rose-100";
+  }
+  return "rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-center text-xs font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60 dark:border-violet-300/30 dark:bg-violet-400/10 dark:text-violet-100";
+}
+
+const HitlInlineActions = memo(function HitlInlineActions({
+  kind,
+  notificationId,
+  actions,
+  onResult,
+}: {
+  kind: string;
+  notificationId: string;
+  actions: WebHitlActionDef[];
+  onResult?: (text: string) => void;
+}) {
+  const [status, setStatus] = useState<string | null>(null);
+  const [busyActionId, setBusyActionId] = useState<string | null>(null);
+  const [resolved, setResolved] = useState(false);
+  const [notes, setNotes] = useState("");
+  const notesAction = actions.find((action) => action.acceptsNotes);
+  const busy = busyActionId != null;
+
+  async function submit(action: WebHitlActionDef) {
+    if (busy || resolved) return;
+    const request = buildWebHitlSubmitRequest({
+      kind,
+      notificationId,
+      action,
+      notes,
+    });
+    if ("error" in request) {
+      setStatus(
+        request.error === "notes_required"
+          ? "Escribe el ajuste en el campo de texto."
+          : "No pude preparar la acción."
+      );
+      return;
+    }
+    setBusyActionId(action.id);
+    setStatus(null);
+    try {
+      const res = await fetch(request.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request.body),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        message?: string;
+        error?: string;
+        ackText?: string;
+      };
+      const message =
+        data.message ??
+        data.ackText ??
+        data.error ??
+        (res.ok ? "Listo." : "No se pudo procesar.");
+      setStatus(message);
+      if (res.ok && data.ok !== false) {
+        setResolved(true);
+        // contract_review: el API ya espeja el acuse al chat (paridad
+        // Telegram); el sync lo trae. Otros kinds: burbuja local inmediata.
+        if (
+          kind !== "contract_review" &&
+          kind !== "contract_pending" &&
+          (action.variant === "primary" ||
+            action.id === "approve" ||
+            action.id === "approve_continue" ||
+            action.id === "confirm" ||
+            action.id === "upload_done")
+        ) {
+          onResult?.(message);
+        }
+      }
+    } catch {
+      setStatus("No se pudo procesar. Intenta de nuevo.");
+    } finally {
+      setBusyActionId(null);
+    }
+  }
+
+  return (
+    <div
+      className="mt-3 space-y-2 border-t border-slate-200/80 pt-3 dark:border-white/10"
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      {!resolved ? (
+        <>
+          <div className="flex flex-col gap-2">
+            {actions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                disabled={busy}
+                onClick={() => void submit(action)}
+                className={hitlButtonClassName(action.variant)}
+              >
+                {busyActionId === action.id ? "Procesando…" : action.label}
+              </button>
+            ))}
+          </div>
+          {notesAction ? (
+            <input
+              value={notes}
+              disabled={busy}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder={
+                notesAction.notesPlaceholder ?? "Opcional: comentario"
+              }
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-violet-300 dark:border-white/10 dark:bg-slate-950"
+            />
+          ) : null}
+        </>
+      ) : (
+        <p className="rounded-xl bg-emerald-50 px-3 py-2 text-center text-xs font-medium text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-100">
+          Decisión registrada
+        </p>
+      )}
+      {status ? (
+        <p className="text-[11px] text-slate-500 dark:text-white/60">{status}</p>
+      ) : null}
+    </div>
+  );
+});
+
+const ListingCoverPreviewCard = memo(function ListingCoverPreviewCard({
+  coverUrl,
+  href,
+  label,
+}: {
+  coverUrl: string;
+  href: string | null;
+  label: string;
+}) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+  const image = (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={coverUrl}
+      alt={label}
+      onError={() => setHidden(true)}
+      className="aspect-[16/10] w-full object-cover"
+    />
+  );
+  const shellClass =
+    "mb-3 block overflow-hidden rounded-2xl border border-slate-200/80 bg-slate-50 shadow-sm dark:border-white/10 dark:bg-white/5";
+  if (href) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(event) => event.stopPropagation()}
+        className={`${shellClass} transition hover:opacity-95`}
+        title={label}
+      >
+        {image}
+        <div className="px-3 py-2 text-xs font-medium text-violet-700 dark:text-violet-200">
+          {label}
+        </div>
+      </a>
+    );
+  }
+  return <div className={shellClass}>{image}</div>;
 });
 
 const ChatMessageBubble = memo(function ChatMessageBubble({
@@ -1470,6 +1853,7 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
   userAvatarUrl,
   userName,
   onSelectTurn,
+  onHitlResult,
 }: {
   message: Message;
   agentAvatarUrl?: string;
@@ -1478,11 +1862,17 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
   userAvatarUrl?: string;
   userName?: string;
   onSelectTurn: (turnId: string) => void;
+  onHitlResult?: (text: string) => void;
 }) {
   const msg = message;
   const sourceLabel = messageSourceLabel(msg);
-  const attachmentMeta = messageAttachmentMeta(msg.structured_payload);
+  const attachmentMeta = messageAttachmentMeta(msg);
+  const listingPreview = listingPublishedSummaryPreview(msg);
+  const chipAttachments = listingPreview
+    ? attachmentMeta.filter((attachment) => !isImageAttachment(attachment))
+    : attachmentMeta;
   const displayText = messageDisplayText(msg);
+  const hitlActions = hitlActionsFromMessage(msg);
   return (
     <div
       role={msg.turn_id ? "button" : undefined}
@@ -1511,7 +1901,7 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
         />
       )}
       <div
-        className={`max-w-[82%] rounded-3xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
+        className={`min-w-0 max-w-[82%] overflow-hidden rounded-3xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
           msg.role === "user"
             ? "bg-gradient-to-br from-violet-700 to-fuchsia-600 text-white shadow-violet-900/20"
             : "border border-slate-200/70 bg-white text-slate-900 dark:border-white/10 dark:bg-white/10 dark:text-white"
@@ -1522,18 +1912,92 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
             {sourceLabel}
           </div>
         ) : null}
-        {attachmentMeta.length > 0 ? (
+        {listingPreview ? (
+          <ListingCoverPreviewCard
+            coverUrl={listingPreview.coverUrl}
+            href={listingPreview.href}
+            label={listingPreview.label}
+          />
+        ) : null}
+        {chipAttachments.length > 0 ? (
           <div className="mb-2 flex flex-wrap gap-1.5">
-            {attachmentMeta.map((attachment) => (
-              <span
-                key={attachment.fileName}
-                className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-medium text-white/90 ring-1 ring-white/20"
-              >
-                <span aria-hidden="true">📎</span>
-                {attachment.fileName}
-                {attachment.truncated ? " · truncado" : ""}
-              </span>
-            ))}
+            {chipAttachments.map((attachment) => {
+              const chipClass =
+                msg.role === "user"
+                  ? "inline-flex max-w-full min-w-0 items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-medium text-white/90 ring-1 ring-white/20"
+                  : "inline-flex max-w-full min-w-0 items-center gap-1 rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-800 ring-1 ring-violet-200 hover:bg-violet-100 dark:bg-violet-400/10 dark:text-violet-100 dark:ring-violet-400/30";
+              const nameClass = "min-w-0 truncate";
+              if (
+                isImageAttachment(attachment) &&
+                attachment.downloadUrl
+              ) {
+                const imageCard = (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={attachment.downloadUrl}
+                    alt={attachment.fileName}
+                    className="max-h-48 max-w-full rounded-xl object-cover"
+                  />
+                );
+                if (attachment.href) {
+                  return (
+                    <a
+                      key={attachment.fileName}
+                      href={attachment.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={attachment.label || attachment.fileName}
+                      onClick={(event) => event.stopPropagation()}
+                      className="block overflow-hidden rounded-xl"
+                    >
+                      {imageCard}
+                    </a>
+                  );
+                }
+                return (
+                  <a
+                    key={attachment.fileName}
+                    href={attachment.downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={attachment.fileName}
+                    onClick={(event) => event.stopPropagation()}
+                    className="block overflow-hidden rounded-xl"
+                  >
+                    {imageCard}
+                  </a>
+                );
+              }
+              if (attachment.downloadUrl) {
+                return (
+                  <a
+                    key={attachment.fileName}
+                    href={attachment.downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={attachment.fileName}
+                    onClick={(event) => event.stopPropagation()}
+                    className={chipClass}
+                  >
+                    <span aria-hidden="true">📎</span>
+                    <span className={nameClass}>{attachment.fileName}</span>
+                  </a>
+                );
+              }
+              return (
+                <span
+                  key={attachment.fileName}
+                  title={attachment.fileName}
+                  className={chipClass}
+                >
+                  <span aria-hidden="true">📎</span>
+                  <span className={nameClass}>
+                    {attachment.fileName}
+                    {attachment.truncated ? " · truncado" : ""}
+                  </span>
+                </span>
+              );
+            })}
           </div>
         ) : null}
         {msg.role === "assistant" ? (
@@ -1542,6 +2006,14 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
           <p className="whitespace-pre-wrap">{displayText}</p>
         ) : attachmentMeta.length > 0 ? (
           <p className="text-white/80">Archivo adjunto enviado.</p>
+        ) : null}
+        {hitlActions ? (
+          <HitlInlineActions
+            kind={hitlActions.kind}
+            notificationId={hitlActions.notificationId}
+            actions={hitlActions.actions}
+            onResult={onHitlResult}
+          />
         ) : null}
         {msg.created_at ? (
           <p
@@ -1646,7 +2118,7 @@ const ChatComposer = memo(function ChatComposer({
         <button
           type="button"
           aria-label="Adjuntar archivo"
-          title="Adjuntar PDF, Word, Excel o texto (máx. 5 MB)"
+          title="Adjuntar fotos, PDF, Word, Excel o texto (fotos máx. 10 MB)"
           disabled={disabled}
           onClick={() => fileInputRef.current?.click()}
           className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-violet-50 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
@@ -1784,6 +2256,22 @@ export function ChatInterface({
   );
   const handleSelectTurn = useCallback((turnId: string) => {
     setSelectedTurnId(turnId);
+  }, []);
+  const handleHitlResult = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content: trimmed,
+        created_at: new Date().toISOString(),
+        structured_payload: {
+          source: "operational_case",
+          kind: "hitl_action_result",
+        },
+      },
+    ]);
   }, []);
   const isComposingRef = useRef(false);
   const handleComposingChange = useCallback((composing: boolean) => {
@@ -2181,25 +2669,7 @@ export function ChatInterface({
     };
 
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: agentMessage,
-          turnId: clientTurnId,
-          attachments: attachmentsForTurn.map((attachment) => ({
-            fileName: attachment.fileName,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-            storageBucket: attachment.storageBucket,
-            storagePath: attachment.storagePath,
-            sha256: attachment.sha256,
-            suggestedKind: attachment.suggestedKind,
-          })),
-        }),
-      });
-
-      const data = (await res.json()) as {
+      type ChatPostResponse = {
         response?: string | null;
         turnId?: string;
         appliedSkills?: AppliedSkillDisplay[];
@@ -2207,24 +2677,77 @@ export function ChatInterface({
         pendingConfirmation?: PendingConfirmation | null;
         toolCalls?: Array<RecentToolCall | string>;
         error?: string;
+        reason?: string;
+        retryable?: boolean;
+        structuredPayload?: Record<string, unknown>;
       };
+      const chatBody = JSON.stringify({
+        message: agentMessage,
+        turnId: clientTurnId,
+        attachments: attachmentsForTurn.map((attachment) => ({
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          storageBucket: attachment.storageBucket,
+          storagePath: attachment.storagePath,
+          sha256: attachment.sha256,
+          suggestedKind: attachment.suggestedKind,
+        })),
+      });
+      const maxChatAttempts = 3;
+      let res: Response | null = null;
+      let data: ChatPostResponse = {};
+      for (let attempt = 0; attempt < maxChatAttempts; attempt += 1) {
+        res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: chatBody,
+        });
+        data = (await res.json().catch(() => ({}))) as ChatPostResponse;
+        if (res.ok) break;
+        const retryableAuth =
+          res.status === 503 ||
+          data.retryable === true ||
+          data.reason === "auth_unreachable" ||
+          data.error === "auth_unavailable";
+        if (!retryableAuth || attempt >= maxChatAttempts - 1) break;
+        await new Promise((resolve) =>
+          setTimeout(resolve, 250 * (attempt + 1))
+        );
+      }
+      if (!res) return;
 
       if (!res.ok) {
-        const errText =
-          typeof data.error === "string"
-            ? data.error
-            : `Error HTTP ${res.status}`;
+        const isTransientAuth =
+          res.status === 503 ||
+          data.error === "auth_unavailable" ||
+          data.reason === "auth_unreachable";
+        const isSessionAuthFailure =
+          isTransientAuth ||
+          res.status === 401 ||
+          (typeof data.error === "string" &&
+            /unauthorized|unauthenticated|session/i.test(data.error));
+        const errText = isTransientAuth
+          ? "No pude verificar tu sesión porque Auth no respondió a tiempo (ya reintenté). Espera un momento y vuelve a enviar el mensaje, o recarga la página."
+          : isSessionAuthFailure
+            ? "No pude verificar tu sesión (puede haber caducado). Recarga la página o vuelve a iniciar sesión e intenta de nuevo."
+            : typeof data.error === "string"
+              ? data.error
+              : `Error HTTP ${res.status}`;
         const errIso = new Date().toISOString();
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant" as const,
-            content: `Error: ${errText}`,
+            content: isSessionAuthFailure ? errText : `Error: ${errText}`,
             created_at: errIso,
             turn_id: data.turnId ?? clientTurnId,
             structured_payload: {
               appliedSkills: data.appliedSkills ?? [],
               memoryUsed: data.memoryUsed ?? [],
+              ...(isSessionAuthFailure
+                ? { source: "session_auth_failure", reason: data.reason ?? null }
+                : {}),
             },
           },
         ]);
@@ -2256,6 +2779,7 @@ export function ChatInterface({
             structured_payload: {
               appliedSkills: data.appliedSkills ?? [],
               memoryUsed: data.memoryUsed ?? [],
+              ...(data.structuredPayload ?? {}),
             },
           },
         ]);
@@ -2488,6 +3012,7 @@ export function ChatInterface({
                 userAvatarUrl={userAvatarUrl}
                 userName={userName}
                 onSelectTurn={handleSelectTurn}
+                onHitlResult={handleHitlResult}
               />
             );
           })}

@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { createHash, randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
-import { CASE_DOCUMENTS_BUCKET } from "@agents/db";
+import { CASE_DOCUMENTS_BUCKET, createServerClient } from "@agents/db";
 import {
   CHAT_ATTACHMENT_MAX_BYTES,
+  CHAT_IMAGE_ATTACHMENT_MAX_BYTES,
   extractAttachmentText,
+  isChatImageAttachment,
 } from "@/lib/chat/extract-attachment-text";
 import {
   documentExtensionFromPath,
@@ -12,6 +14,14 @@ import {
   safeDocumentPathSegment,
 } from "@/lib/operational-cases/case-document-ingestion";
 
+/**
+ * Staging de adjuntos del chat web.
+ *
+ * Auth con el cliente de sesión (usuario); upload con service role porque el
+ * bucket `case-documents` solo permite INSERT a service_role (00037). Al enviar
+ * el mensaje, `ingestStagedCaseDocument` mueve el archivo a
+ * `{userId}/{caseId}/…` y registra la fila — paridad con Telegram.
+ */
 export async function POST(request: Request) {
   const supabase = await createClient();
   const {
@@ -30,9 +40,21 @@ export async function POST(request: Request) {
   if (fileValue.size <= 0) {
     return NextResponse.json({ error: "empty_file" }, { status: 400 });
   }
-  if (fileValue.size > CHAT_ATTACHMENT_MAX_BYTES) {
+  const mimeType = fileValue.type || "application/octet-stream";
+  const isImage = isChatImageAttachment({
+    fileName: fileValue.name,
+    mimeType,
+  });
+  const maxBytes = isImage
+    ? CHAT_IMAGE_ATTACHMENT_MAX_BYTES
+    : CHAT_ATTACHMENT_MAX_BYTES;
+  if (fileValue.size > maxBytes) {
     return NextResponse.json(
-      { error: "El archivo supera el límite de 5 MB." },
+      {
+        error: isImage
+          ? "La foto supera el límite de 10 MB."
+          : "El archivo supera el límite de 5 MB.",
+      },
       { status: 400 }
     );
   }
@@ -41,7 +63,7 @@ export async function POST(request: Request) {
     const buffer = Buffer.from(await fileValue.arrayBuffer());
     const { text, truncated } = await extractAttachmentText({
       fileName: fileValue.name,
-      mimeType: fileValue.type || "application/octet-stream",
+      mimeType,
       buffer,
     });
     if (!text.trim()) {
@@ -51,28 +73,41 @@ export async function POST(request: Request) {
       );
     }
     const sha256 = createHash("sha256").update(buffer).digest("hex");
-    const extension = documentExtensionFromPath(fileValue.name, "bin");
+    const extension = documentExtensionFromPath(
+      fileValue.name,
+      isImage ? "jpg" : "bin"
+    );
     const baseName = safeDocumentPathSegment(fileValue.name.replace(/\.[^.]+$/, ""));
-    const storagePath = `${user.id}/chat-attachments/${randomUUID()}-${baseName}.${extension}`;
-    const { error: uploadError } = await supabase.storage
+    const storagePath = `${user.id}/chat-staging/${randomUUID()}-${baseName}.${extension}`;
+    // Service role: la política del bucket deniega INSERT al JWT de usuario.
+    const db = createServerClient();
+    const { error: uploadError } = await db.storage
       .from(CASE_DOCUMENTS_BUCKET)
       .upload(storagePath, buffer, {
-        contentType: fileValue.type || "application/octet-stream",
+        contentType: mimeType,
         upsert: false,
       });
     if (uploadError) {
+      console.error("[chat/attachments] storage upload failed:", {
+        code: uploadError.name,
+        message: uploadError.message,
+        bucket: CASE_DOCUMENTS_BUCKET,
+        path: `${user.id}/chat-staging/…`,
+      });
       return NextResponse.json(
         { error: "No se pudo guardar el adjunto para el caso." },
         { status: 500 }
       );
     }
-    const suggestedKind = inferCaseDocumentKind({
-      text,
-      fileName: fileValue.name,
-    });
+    const suggestedKind = isImage
+      ? "property_photo"
+      : inferCaseDocumentKind({
+          text,
+          fileName: fileValue.name,
+        });
     return NextResponse.json({
       fileName: fileValue.name,
-      mimeType: fileValue.type || "application/octet-stream",
+      mimeType,
       sizeBytes: fileValue.size,
       text,
       truncated,

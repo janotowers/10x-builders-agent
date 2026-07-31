@@ -8,6 +8,7 @@ import {
   type DbClient,
 } from "@agents/db";
 import { advisedUpdateCase } from "../operational-cases/advised-case-update";
+import { ensureContractCommercialDataAsk } from "../operational-cases/ensure-contract-commercial-ask";
 import { isControlledE2EOperationalCase } from "@agents/types";
 import { removeConsumedSegments } from "./residual-intent";
 
@@ -120,27 +121,52 @@ export function extractApprovalAmount(text: string): {
   };
 }
 
+function foldPriceDecisionText(text: string): string {
+  // NFD + strip accents: "sí apruebo" → "si apruebo". Evita el fallo de `\b`
+  // en JS tras vocales acentuadas (í no es \w).
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
 export function parsePriceApprovalDecision(text: string): ParsedPriceDecision {
   const trimmed = text.trim();
-  const normalized = trimmed.toLowerCase();
+  const normalized = foldPriceDecisionText(trimmed);
   if (!normalized) return { intent: "unclear", reason: "Respuesta vacia." };
-  const approveMatch = trimmed.match(
-    /^(aprobar|aprobado|apruebo|ok|va|sí|si)(\s+(el\s+)?precio)?\b/i
+  // Lookahead en lugar de `\b`: "si"/"sí" quedan bien tras fold.
+  const approveMatch = normalized.match(
+    /^(aprobar|aprobado|apruebo|ok|va|si)(\s+(el\s+)?precio)?(?=\s|$|[^a-z0-9])/i
   );
   if (approveMatch) {
+    // Tras fold, la longitud del prefijo coincide en caracteres base con el
+    // texto original recortado lo bastante para residuales (sin acentos en el
+    // resto tampoco afecta el ack).
     const remainder = trimmed.slice(approveMatch[0].length);
     const amount = extractApprovalAmount(remainder);
     const residualRaw = amount
       ? removeConsumedSegments(remainder, [amount.segment])
       : remainder;
+    const residualTrimmed = residualRaw.trim();
+    // "sí apruebo" / "si, aprobar precio": el resto solo reitera la aprobación.
+    const foldedResidual = foldPriceDecisionText(residualTrimmed);
+    const restatesApproval =
+      Boolean(foldedResidual) &&
+      /^(apruebo|aprobar|aprobado|ok|va|si)(\s+(el\s+)?precio)?$/.test(
+        foldedResidual
+      );
     return {
       intent: "approve",
       approvalAmount: amount ? amount.candidates[0] : null,
       ...(amount ? { approvalAmountCandidates: amount.candidates } : {}),
-      residual: residualRaw.trim() ? residualRaw : null,
+      residual: residualTrimmed && !restatesApproval ? residualRaw : null,
     };
   }
-  if (/^(rechazar|rechazo|no aprobar|no apruebo|cancelar)(\s+precio)?\b/i.test(normalized)) {
+  if (
+    /^(rechazar|rechazo|no aprobar|no apruebo|cancelar)(\s+precio)?(?=\s|$|[^a-z0-9])/i.test(
+      normalized
+    )
+  ) {
     // El resto del texto se consume como motivo del rechazo.
     return { intent: "reject", reason: trimmed, residual: null };
   }
@@ -438,6 +464,20 @@ export async function handlePriceApprovalDecision(
       void triggerControlledE2EAgentTick(db, updated, "price_approved").catch((tickError) => {
         console.error("[price-approval] e2e tick failed:", tickError);
       });
+    } else if (!shouldPauseBeforeContract && !controlledE2ECase) {
+      // Producción: pedir datos contractuales de inmediato (no esperar al cron).
+      try {
+        await ensureContractCommercialDataAsk({
+          db,
+          opCase: updated,
+          source: "price_approved",
+        });
+      } catch (askError) {
+        console.error(
+          "[price-approval] ensure contract commercial ask failed:",
+          askError
+        );
+      }
     }
     return {
       ok: true,
@@ -563,6 +603,19 @@ export async function handlePriceApprovalDecision(
         console.error("[price-approval] e2e tick failed:", tickError);
       }
     );
+  } else if (!shouldPauseBeforeContract && !controlledE2ECase) {
+    try {
+      await ensureContractCommercialDataAsk({
+        db,
+        opCase: updated,
+        source: "price_adjusted_and_approved",
+      });
+    } catch (askError) {
+      console.error(
+        "[price-approval] ensure contract commercial ask failed:",
+        askError
+      );
+    }
   }
   return {
     ok: true,

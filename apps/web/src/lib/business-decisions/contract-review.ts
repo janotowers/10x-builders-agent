@@ -13,7 +13,7 @@ import {
 import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import { isControlledE2EOperationalCase } from "@agents/types";
 import { sendGmailMessage } from "@/lib/gmail/send-message";
-import { notify } from "@/lib/notify";
+import { deliverInternalCaseFollowUp } from "@/lib/operational-cases/deliver-internal-case-follow-up";
 import { buildExternalCaseDocumentDownloadUrl } from "@/lib/operational-cases/case-document-download-token";
 import { resolveContractDraftDeliveryUrl } from "@/lib/operational-cases/contract-draft-document";
 import {
@@ -533,21 +533,16 @@ export async function handleContractReviewDecision(
       userId: params.userId,
       status: "actioned",
     });
-    await notify(
+    await deliverInternalCaseFollowUp({
       db,
-      params.userId,
-      {
-        kind: "contract_revision_upload",
-        text: ownerEmail
-          ? `Sube el contrato corregido en DOCX o PDF para enviarlo automaticamente por email a ${ownerEmail}.`
-          : "Sube el contrato corregido en DOCX o PDF para enviarlo automaticamente por email al propietario.",
-        data: {
-          case_id: opCase.id,
-          owner_email: ownerEmail || null,
-        },
-      },
-      "normal"
-    );
+      userId: params.userId,
+      caseId: opCase.id,
+      kind: "contract_revision_upload",
+      text: ownerEmail
+        ? `Sube el contrato corregido en DOCX o PDF para enviarlo automaticamente por email a ${ownerEmail}.`
+        : "Sube el contrato corregido en DOCX o PDF para enviarlo automaticamente por email al propietario.",
+      data: { owner_email: ownerEmail || null },
+    });
     return {
       ok: true,
       status: "changes_requested",

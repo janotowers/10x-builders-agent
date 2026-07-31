@@ -2,8 +2,32 @@ import assert from "node:assert/strict";
 import {
   buildPublicationAwareE2EToolApprovalPolicy,
   controlledE2EPublicationContextPatch,
+  propertyOptioningPublicationEnablementPatch,
   shouldClearStalePublicationRunnerPendingAction,
 } from "./publication-tool-policy";
+
+const enableUnset = propertyOptioningPublicationEnablementPatch({
+  caseType: "property_optioning",
+  context: {},
+});
+assert.equal(enableUnset?.publication_mode, "active");
+assert.equal(enableUnset?.publication_workflow_v1, true);
+
+assert.equal(
+  propertyOptioningPublicationEnablementPatch({
+    caseType: "property_optioning",
+    context: { publication_mode: "off" },
+  }),
+  null,
+  "explicit off must be respected"
+);
+assert.equal(
+  propertyOptioningPublicationEnablementPatch({
+    caseType: "other",
+    context: {},
+  }),
+  null
+);
 
 const easyBrokerCreateContext = {
   publication_mode: "active",

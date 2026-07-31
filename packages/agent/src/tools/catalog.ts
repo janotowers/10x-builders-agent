@@ -542,12 +542,20 @@ export const TOOL_CATALOG: ToolDefinition[] = [
           ],
         },
         current_step: { type: "string" },
-        next_action_at: { type: "string", description: "ISO 8601 datetime." },
-        due_at: { type: "string", description: "ISO 8601 datetime." },
+        next_action_at: {
+          type: ["string", "null"],
+          description:
+            "ISO 8601 datetime, or null to clear. Never send the literal string \"null\".",
+        },
+        due_at: {
+          type: ["string", "null"],
+          description:
+            "ISO 8601 datetime, or null to clear. Never send the literal string \"null\".",
+        },
         context_patch: {
           type: "object",
           description:
-            "Object merged shallowly into context_jsonb (does NOT replace existing keys not present here).",
+            "Object merged shallowly into context_jsonb (does NOT replace existing keys not present here). Forbidden: documents_received (source of truth is operational_case_documents).",
         },
         external_contact: {
           type: "object",

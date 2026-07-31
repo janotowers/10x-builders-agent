@@ -206,6 +206,40 @@ export type ControlledE2EPublicationContextPatch = {
   e2e_control_case_type?: string;
 };
 
+function publicationModeValue(value: unknown): "off" | "shadow" | "active" | null {
+  return value === "off" || value === "shadow" || value === "active"
+    ? value
+    : null;
+}
+
+/**
+ * Activa publicación en property_optioning cuando el caso aún no tiene modo
+ * explícito (el default del runner es off y deja el flujo colgado tras aprobar
+ * la descripción). Respeta `off`/`shadow`/`active` ya puestos en el caso.
+ */
+export function propertyOptioningPublicationEnablementPatch(params: {
+  caseType: string | null | undefined;
+  context?: Record<string, unknown> | null;
+}): ControlledE2EPublicationContextPatch | null {
+  if (params.caseType !== "property_optioning") return null;
+  const context = isRecord(params.context) ? params.context : {};
+  const publication = isRecord(context.publication) ? context.publication : {};
+  const explicitMode =
+    publicationModeValue(context.publication_mode) ??
+    publicationModeValue(publication.mode);
+  if (explicitMode != null) return null;
+
+  return {
+    publication_mode: "active",
+    publication_workflow_v1: true,
+    publication: {
+      ...publication,
+      feature_enabled: true,
+      mode: "active",
+    },
+  };
+}
+
 /**
  * Controlled property_optioning lab cases must run publication with mode=active.
  * Control markers remain reusable for other case types during E2E adoption.

@@ -74,6 +74,9 @@ export async function GET(request: Request) {
   const automatedSessions = activeSessions.filter(
     (session) => session.channel === "cron" || session.channel === "heartbeat"
   );
+  const webSessionIds = activeSessions
+    .filter((session) => session.channel === "web")
+    .map((session) => session.id);
   const sessionIds = activeSessions.map((session) => session.id);
   const automatedSessionIds = automatedSessions.map((session) => session.id);
   const channelBySessionId = new Map(
@@ -107,6 +110,35 @@ export async function GET(request: Request) {
         },
       };
     });
+  }
+  // Follow-ups operativos se espejan en la sesión web con
+  // structured_payload.source=operational_case. El sync anterior solo leía
+  // cron/heartbeat, por lo que esos mensajes existían en DB pero no aparecían
+  // hasta recargar la página.
+  if (webSessionIds.length > 0) {
+    let webQuery = supabase
+      .from("agent_messages")
+      .select("id, session_id, role, content, created_at, turn_id, structured_payload")
+      .in("session_id", webSessionIds)
+      .eq("role", "assistant")
+      .eq("structured_payload->>source", "operational_case")
+      .order("created_at", { ascending: true })
+      .limit(30);
+    if (after) webQuery = webQuery.gt("created_at", after);
+    const { data } = await webQuery;
+    messages.push(
+      ...(data ?? []).map((message: Record<string, unknown>) => ({
+        id: typeof message.id === "string" ? message.id : undefined,
+        role: String(message.role ?? ""),
+        content: String(message.content ?? ""),
+        created_at: String(message.created_at ?? ""),
+        turn_id: typeof message.turn_id === "string" ? message.turn_id : null,
+        structured_payload: asRecord(message.structured_payload),
+      }))
+    );
+    messages.sort((a, b) =>
+      String(a.created_at ?? "").localeCompare(String(b.created_at ?? ""))
+    );
   }
 
   let toolCalls: Array<Record<string, unknown>> = [];

@@ -188,3 +188,98 @@ export async function ingestCaseDocument(
     },
   };
 }
+
+export interface IngestStagedCaseDocumentInput {
+  db: DbClient;
+  caseId: string;
+  userId: string;
+  source: OperationalCaseDocumentSource;
+  fileName: string;
+  contentType: string;
+  sha256: string;
+  sizeBytes: number;
+  stagedBucket: string;
+  stagedPath: string;
+  /** Texto/caption acompañante para clasificar el tipo (texto extraído en staging). */
+  captionText?: string | null;
+  /** Kind ya inferido en staging; se recalcula si falta. */
+  suggestedKind?: string | null;
+  sourceMetadata?: Record<string, unknown>;
+}
+
+/**
+ * Promueve un archivo ya subido a staging (`{userId}/chat-staging/…`) a la
+ * ruta canónica del caso (`{userId}/{caseId}/…`) y registra la fila con la
+ * misma lógica que `ingestCaseDocument`. Usado por el chat web tras resolver
+ * el case_id al enviar el mensaje.
+ */
+export async function ingestStagedCaseDocument(
+  input: IngestStagedCaseDocumentInput
+): Promise<IngestedCaseDocument> {
+  if (!input.stagedPath.startsWith(`${input.userId}/`)) {
+    throw new Error("staged_path_not_owned_by_user");
+  }
+
+  const kind =
+    (typeof input.suggestedKind === "string" && input.suggestedKind.trim()
+      ? input.suggestedKind.trim()
+      : null) ??
+    inferCaseDocumentKind({
+      text: input.captionText ?? undefined,
+      fileName: input.fileName,
+    });
+  const extension = documentExtensionFromPath(input.fileName, "bin");
+  const baseName = safeDocumentPathSegment(
+    input.fileName.replace(/\.[^.]+$/, "")
+  );
+  const finalPath = `${input.userId}/${input.caseId}/${randomUUID()}-${baseName}.${extension}`;
+  const bucket = input.stagedBucket || CASE_DOCUMENTS_BUCKET;
+
+  const { error: moveError } = await input.db.storage
+    .from(bucket)
+    .move(input.stagedPath, finalPath);
+  if (moveError) {
+    // Fallback: copy + remove if move no está soportado / falla por path.
+    const { error: copyError } = await input.db.storage
+      .from(bucket)
+      .copy(input.stagedPath, finalPath);
+    if (copyError) throw moveError;
+    await input.db.storage.from(bucket).remove([input.stagedPath]).catch(() => {
+      // Best-effort cleanup of staging; the final object is what matters.
+    });
+  }
+
+  const document = await createOperationalCaseDocument(input.db, {
+    caseId: input.caseId,
+    userId: input.userId,
+    kind,
+    displayName: kind === "unknown" ? null : kind,
+    storageBucket: bucket,
+    storagePath: finalPath,
+    originalName: input.fileName,
+    contentType: input.contentType,
+    fileSizeBytes: input.sizeBytes,
+    sha256: input.sha256,
+    source: input.source,
+    sourceMetadata: {
+      ...(input.sourceMetadata ?? {}),
+      staged_path: input.stagedPath,
+    },
+    blocking: kind === "boleta_registral",
+  });
+
+  return {
+    document,
+    kind: document.kind,
+    sha256: input.sha256,
+    payload: {
+      document_id: document.id,
+      kind: document.kind,
+      storage_bucket: document.storage_bucket,
+      storage_path: document.storage_path,
+      original_name: input.fileName,
+      content_type: input.contentType,
+      sha256: input.sha256,
+    },
+  };
+}

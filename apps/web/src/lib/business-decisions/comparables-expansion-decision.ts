@@ -10,7 +10,8 @@ import {
   tryAdvanceComparablesAfterPersist,
   type PricingProposal,
 } from "@agents/agent";
-import { notify } from "@/lib/notify";
+import { notifyUserRespectingActiveInternalChannel } from "@/lib/operational-cases/deliver-internal-case-follow-up";
+import { cleanResidualRemainder } from "./residual-intent";
 
 type ComparablesExpansionIntent =
   | "use_current_comparables"
@@ -34,7 +35,8 @@ const COMPARABLES_DECISION_PREFIXES: Array<{
   },
   {
     intent: "use_avaclick_primary",
-    pattern: /^(2|dos|opcion 2|usar avaclick|avaclick|avanzar con avaclick)\b/,
+    pattern:
+      /^(2|dos|opcion 2|usar avaclick|avaclick|avanzar con avaclick|avanza usando avaclick|avanzar usando avaclick|usando avaclick)\b/,
   },
   {
     intent: "expand_search",
@@ -75,11 +77,15 @@ export function computeComparablesExpansionResidual(text: string): string | null
   const trimmed = text.trim();
   const normalized = normalizeComparablesDecisionText(text);
   if (!normalized) return null;
-  for (const { pattern } of COMPARABLES_DECISION_PREFIXES) {
+  for (const { intent, pattern } of COMPARABLES_DECISION_PREFIXES) {
     const match = normalized.match(pattern);
     if (match && match.index != null) {
       const remainder = trimmed.slice(match.index + match[0].length);
-      return remainder.trim() ? remainder : null;
+      const cleaned = cleanResidualRemainder(remainder);
+      if (!cleaned) return null;
+      // "2, avanza usando Avaclick" — el resto solo reitera la misma decisión.
+      if (parseComparablesExpansionDecision(cleaned) === intent) return null;
+      return remainder;
     }
   }
   return null;
@@ -273,8 +279,7 @@ export async function handleComparablesExpansionDecision(
       // el evento `price_proposal_prepared` sin enviar aún `price_approval`.
       notifyUser: params.deferPriceApprovalNotify
         ? undefined
-        : async (notifyDb, notifyUserId, payload, urgency) =>
-            notify(notifyDb, notifyUserId, payload, urgency),
+        : notifyUserRespectingActiveInternalChannel,
       allowLimitedSample: parsedComparablesDecision === "use_current_comparables",
       preferAvaclickPrimary: parsedComparablesDecision === "use_avaclick_primary",
     });

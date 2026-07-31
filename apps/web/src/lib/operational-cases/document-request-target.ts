@@ -26,7 +26,7 @@ import {
   type OperationalConversationClassifierModel,
 } from "./operational-conversation-classifier";
 import { looksLikeNewCaseIntent } from "./conversational-case-routing";
-import { isAwaitingCharacteristicsResponse } from "./characteristics-response";
+import { shouldProcessInternalCharacteristicsReply } from "./characteristics-response";
 import {
   conversationalStepLabel,
   operationalCaseModeLabel,
@@ -690,16 +690,26 @@ export async function resolveCharacteristicsReplyAgainstBindings(params: {
     seen.add(binding.case_id);
     const opCase = await getOperationalCase(params.db, binding.case_id);
     if (!opCase) continue;
-    if (!isInternalDocumentCollectionCase(opCase)) continue;
-    if (opCase.current_step !== "documents_received" || opCase.status !== "waiting_internal") {
-      continue;
-    }
-    if (await isAwaitingCharacteristicsResponse(params.db, opCase)) {
+    // Preferir el caso que realmente espera características (mínimos
+    // faltantes o reminder), no cualquier binding filtrado/routable.
+    if (
+      await shouldProcessInternalCharacteristicsReply({
+        db: params.db,
+        opCase,
+        text,
+      })
+    ) {
       candidates.push(opCase);
     }
   }
 
   if (candidates.length === 0) return { matchedCase: null, ambiguous: false };
+  // Más reciente primero si hay ambigüedad real (dos casos en ficha mínima).
+  candidates.sort((a, b) => {
+    const aMs = typeof a.updated_at === "string" ? Date.parse(a.updated_at) : 0;
+    const bMs = typeof b.updated_at === "string" ? Date.parse(b.updated_at) : 0;
+    return (Number.isFinite(bMs) ? bMs : 0) - (Number.isFinite(aMs) ? aMs : 0);
+  });
   return { matchedCase: candidates[0]!, ambiguous: candidates.length > 1 };
 }
 

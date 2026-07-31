@@ -22,8 +22,9 @@
  * Keyword gates (2/4/5/6) only claim when their deterministic parse is not
  * unclear, so those turns already fall through to the agent without LLM help.
  *
- * `property_data_review` stays in the Telegram webhook: it is bound to the
- * external contact's chat and has no web-chat equivalent.
+ * `property_data_review` for the *external* contact stays in the Telegram
+ * webhook (chat_id match). For the *internal* advisor path, gate 5b below
+ * handles confirm/correct replies on web and Telegram advisor chats.
  *
  * Message ordering: when `deferChannelTicks` is true (Telegram), E2E ticks and
  * follow-up notifications are returned as `runAfterReply` so the caller can
@@ -40,7 +41,7 @@ import {
 } from "@agents/db";
 import type { InternalUserNotification, OperationalCase } from "@agents/types";
 import { notifyPriceApprovalForCase } from "@agents/agent";
-import { notify } from "@/lib/notify";
+import { notifyUserRespectingActiveInternalChannel } from "@/lib/operational-cases/deliver-internal-case-follow-up";
 import { businessDecisionHandler } from "./registry";
 import {
   parsePriceApprovalDecision,
@@ -55,11 +56,23 @@ import {
   runDeferredListingDescriptionControlledE2ETick,
   shouldRouteTelegramTextToListingDescriptionReview,
 } from "./listing-description-review";
+import { runDeferredPublishDestinationControlledE2ETick } from "./publish-destination-approval";
 import {
   computeComparablesExpansionResidual,
   handleComparablesExpansionDecision,
   parseComparablesExpansionDecision,
 } from "./comparables-expansion-decision";
+import {
+  handlePropertyDataReviewDecision,
+  looksLikePropertyDataReviewReply,
+} from "./property-data-review";
+import {
+  createPublicationRunnerOwnedAgentTick,
+  kickContractPendingAfterDataCapture,
+  runSettingsTestCaseAgentTick,
+} from "@/lib/operational-cases/run-settings-test-case-tick";
+import { ensurePhotosUploadRequestForCase } from "@/lib/operational-cases/ensure-photos-upload-request";
+import { requestPublicationProgress } from "@/lib/operational-cases/publication-runner";
 import { residualFromRemainder, type ResidualIntent } from "./residual-intent";
 import {
   formatCaseStatusQueryAnswer,
@@ -533,16 +546,24 @@ export async function resolvePendingDecisionTurn(
       // El handler de descripción interpreta el texto completo (LLM +
       // parser propio); no hay segmento determinístico que restar.
       residual: null,
-      runAfterReply: deferTicks
-        ? () =>
-            runDeferredTickFromResult(
-              db,
-              result,
-              runDeferredListingDescriptionControlledE2ETick,
-              "listing_description_approved",
-              "listing-description"
-            )
-        : undefined,
+      runAfterReply:
+        // Approve: el handler ya dispara publication runner si !defer.
+        // Diferido (Telegram ack-first): correr aquí el kick.
+        // Change-request / regeneración: tick de agente solo vía deferred o
+        // el propio handler (E2E/settings).
+        result.ok === true &&
+        typeof result.case_id === "string" &&
+        deferTicks
+          ? async () => {
+              await runDeferredTickFromResult(
+                db,
+                result,
+                runDeferredListingDescriptionControlledE2ETick,
+                "listing_description_approved",
+                "listing-description"
+              );
+            }
+          : undefined,
     };
   }
   if (
@@ -561,6 +582,128 @@ export async function resolvePendingDecisionTurn(
         competing_active_intake: hasCompetingActiveConversationalIntake,
       }
     );
+  }
+
+  // ---- Gate 1b: publish destination approvals ----------------------------
+  const pendingPublishDestination = pendingInternal.find(
+    (notification) =>
+      notification.kind === "easybroker_publish_approval" ||
+      notification.kind === "ungga_publish_approval"
+  );
+  if (pendingPublishDestination) {
+    const handler = businessDecisionHandler("publish_destination_approval");
+    const parsed = handler.parse(text);
+    if (parsed.intent !== "unclear") {
+      const result = await handler.handle(db, {
+        userId: params.userId,
+        notificationId: pendingPublishDestination.id,
+        text,
+        deferControlledE2ETick: deferTicks,
+      });
+      return {
+        handled: true,
+        routed: "publish_destination_approval",
+        ok: result.ok === true,
+        status: result.status,
+        caseId: stringOrNull(result.case_id),
+        notificationId: pendingPublishDestination.id,
+        message:
+          result.message ??
+          (result.ok
+            ? "Listo, procesé tu decisión de publicación."
+            : "No pude procesar la decisión de publicación."),
+        residual: null,
+        runAfterReply:
+          // Approve/skip: el handler ya dispara publication runner si !defer.
+          // Diferido (Telegram/web buttons ack-first): correr aquí el kick.
+          result.ok === true &&
+          typeof result.case_id === "string" &&
+          ["approved", "skipped", "already_applied"].includes(
+            String(result.status)
+          ) &&
+          deferTicks
+            ? async () => {
+                await runDeferredTickFromResult(
+                  db,
+                  result,
+                  (tickDb, caseId, source) =>
+                    runDeferredPublishDestinationControlledE2ETick(
+                      tickDb,
+                      caseId,
+                      source
+                    ),
+                  `publish_destination_${params.channel}`,
+                  "publish-destination"
+                );
+              }
+            : undefined,
+      };
+    }
+  }
+
+  // ---- Gate 1c: conditional publication review ---------------------------
+  const pendingPublicationReview = pendingInternal.find(
+    (notification) => notification.kind === "publication_review_required"
+  );
+  if (pendingPublicationReview) {
+    const handler = businessDecisionHandler("publication_review");
+    const parsed = handler.parse(text);
+    if (parsed.intent !== "unclear") {
+      const result = await handler.handle(db, {
+        userId: params.userId,
+        notificationId: pendingPublicationReview.id,
+        text,
+        deferControlledE2ETick: deferTicks,
+      });
+      return {
+        handled: true,
+        routed: "publication_review",
+        ok: result.ok === true,
+        status: result.status,
+        caseId: stringOrNull(result.case_id),
+        notificationId: pendingPublicationReview.id,
+        message:
+          result.message ??
+          (result.ok
+            ? "Listo, procesé la revisión de publicación."
+            : "No pude procesar la revisión de publicación."),
+        residual: null,
+        runAfterReply:
+          // Handler ya dispara si !defer; diferido (ack-first) corre aquí.
+          result.ok === true &&
+          typeof result.case_id === "string" &&
+          deferTicks &&
+          result.deferredControlledE2ETick
+            ? async () => {
+                const source =
+                  isRecord(result.deferredControlledE2ETick) &&
+                  typeof (result.deferredControlledE2ETick as { source?: unknown })
+                    .source === "string"
+                    ? (result.deferredControlledE2ETick as { source: string })
+                        .source
+                    : `publication_review_${params.channel}`;
+                const forceRetryFailedOperation =
+                  isRecord(result.deferredControlledE2ETick) &&
+                  (result.deferredControlledE2ETick as {
+                    forceRetryFailedOperation?: unknown;
+                  }).forceRetryFailedOperation === true;
+                await requestPublicationProgress(
+                  db,
+                  result.case_id as string,
+                  source,
+                  {
+                    forceRetryFailedOperation,
+                    runAgentTick: createPublicationRunnerOwnedAgentTick(
+                      db,
+                      params.userId,
+                      source
+                    ),
+                  }
+                );
+              }
+            : undefined,
+      };
+    }
   }
 
   // ---- Gate 2: price_approval --------------------------------------------
@@ -597,16 +740,34 @@ export async function resolvePendingDecisionTurn(
             ? "Listo, procese tu decision de precio."
             : "No pude procesar la decision de precio."),
         residual,
-        runAfterReply: deferTicks
-          ? () =>
-              runDeferredTickFromResult(
-                db,
-                result,
-                runDeferredControlledE2ETick,
-                "price_approved",
-                "price"
-              )
-          : undefined,
+        runAfterReply:
+          result.ok === true &&
+          result.status === "approved" &&
+          typeof result.case_id === "string"
+            ? async () => {
+                if (deferTicks) {
+                  await runDeferredTickFromResult(
+                    db,
+                    result,
+                    runDeferredControlledE2ETick,
+                    "price_approved",
+                    "price"
+                  );
+                  return;
+                }
+                const contractCase = await getOperationalCase(
+                  db,
+                  result.case_id as string
+                );
+                if (contractCase?.current_step === "contract_pending") {
+                  await kickContractPendingAfterDataCapture({
+                    db,
+                    opCase: contractCase,
+                    source: `price_approved_${params.channel}`,
+                  });
+                }
+              }
+            : undefined,
       };
     }
   }
@@ -668,6 +829,25 @@ export async function resolvePendingDecisionTurn(
       // El extractor híbrido consume el turno completo como datos; no hay
       // segmento determinístico que restar.
       residual: null,
+      runAfterReply:
+        result.ok === true &&
+        result.status === "captured" &&
+        typeof result.case_id === "string"
+          ? async () => {
+              const capturedCase = await getOperationalCase(
+                db,
+                result.case_id as string
+              );
+              if (!capturedCase || capturedCase.context_jsonb?.e2e_controlled === true) {
+                return;
+              }
+              await kickContractPendingAfterDataCapture({
+                db,
+                opCase: capturedCase,
+                source: `contract_data_review_${params.channel}`,
+              });
+            }
+          : undefined,
     };
   }
 
@@ -705,16 +885,37 @@ export async function resolvePendingDecisionTurn(
             ? "Listo, procesé tu decisión sobre el contrato."
             : "No pude procesar la decisión del contrato."),
         residual,
-        runAfterReply: deferTicks
-          ? () =>
-              runDeferredTickFromResult(
-                db,
-                result,
-                runDeferredContractControlledE2ETick,
-                "contract_email_sent",
-                "contract"
-              )
-          : undefined,
+        runAfterReply:
+          result.ok === true
+            ? async () => {
+                if (deferTicks) {
+                  await runDeferredTickFromResult(
+                    db,
+                    result,
+                    runDeferredContractControlledE2ETick,
+                    "contract_email_sent",
+                    "contract"
+                  );
+                }
+                if (
+                  (result.status === "approved_send" ||
+                    result.status === "revision_uploaded_and_sent") &&
+                  typeof result.case_id === "string"
+                ) {
+                  const photosCase = await getOperationalCase(
+                    db,
+                    result.case_id as string
+                  );
+                  if (photosCase?.current_step === "photos_requested") {
+                    await ensurePhotosUploadRequestForCase({
+                      db,
+                      opCase: photosCase,
+                      source: `contract_review_${params.channel}`,
+                    });
+                  }
+                }
+              }
+            : undefined,
       };
     }
   }
@@ -759,6 +960,66 @@ export async function resolvePendingDecisionTurn(
     }
   }
 
+  // ---- Gate 5b: property_data_review (asesor interno, web/Telegram) --------
+  // El webhook de Telegram sigue cubriendo al contacto externo por chat_id.
+  // Aquí reclamamos confirmaciones/correcciones del asesor cuando hay un
+  // pendiente de revisión de ficha (ruta internal_user / inbox).
+  if (looksLikePropertyDataReviewReply(text)) {
+    const propertyDataReviewCandidates = (
+      await Promise.all(
+        pendingInternal
+          .filter(
+            (notification) =>
+              notification.kind === "property_data_review" ||
+              notification.kind === "property_data_quality_review"
+          )
+          .map(async (notification) => {
+            if (!notification.case_id) return null;
+            const opCase = await getOperationalCase(db, notification.case_id);
+            if (!opCase || opCase.user_id !== params.userId) return null;
+            if (
+              opCase.status !== "waiting_internal" ||
+              (opCase.current_step !== "documents_received" &&
+                opCase.current_step !== "property_data_review")
+            ) {
+              return null;
+            }
+            return { notification, opCase };
+          })
+      )
+    ).filter(
+      (
+        candidate
+      ): candidate is {
+        notification: InternalUserNotification;
+        opCase: OperationalCase;
+      } => Boolean(candidate)
+    );
+
+    if (propertyDataReviewCandidates.length === 1) {
+      const { notification, opCase } = propertyDataReviewCandidates[0]!;
+      const result = await handlePropertyDataReviewDecision(db, {
+        userId: params.userId,
+        notificationId: notification.id,
+        text,
+      });
+      // El handler ya dispara tick E2E cuando confirma; no duplicar aquí.
+      return {
+        handled: true,
+        routed: "property_data_review",
+        ok: result.ok === true,
+        status: result.status,
+        caseId: opCase.id,
+        notificationId: notification.id,
+        message:
+          result.message ??
+          (result.ok
+            ? "Datos confirmados. El caso avanzó a comparables."
+            : "No pude procesar la revisión de datos."),
+      };
+    }
+  }
+
   // ---- Gate 6: comparables_search_expansion_decision -----------------------
   if (parseComparablesExpansionDecision(text) !== "unclear") {
     const comparablesDecisionCandidates = (
@@ -793,13 +1054,14 @@ export async function resolvePendingDecisionTurn(
         notificationId: notification.id,
         text,
         source: params.channel,
-        deferPriceApprovalNotify: deferTicks,
+        // Web y Telegram: ack de la decisión primero, luego price_approval
+        // en el canal activo (evita push Telegram cuando el asesor está en Web).
+        deferPriceApprovalNotify: true,
       });
       const runAfterReply = async () => {
         // Orden de mensajes: tras confirmar la decisión, disparamos la
         // notificación de precio que quedó diferida dentro del handler.
         if (
-          deferTicks &&
           result.ok &&
           result.status === "processed" &&
           result.deferredPriceApproval &&
@@ -812,8 +1074,7 @@ export async function resolvePendingDecisionTurn(
               userId: params.userId,
               pricingProposal: result.deferredPriceApproval.pricingProposal,
               source: `comparables_decision_${params.channel}_${result.decision}`,
-              notifyUser: async (notifyDb, notifyUserId, payload, urgency) =>
-                notify(notifyDb, notifyUserId, payload, urgency),
+              notifyUser: notifyUserRespectingActiveInternalChannel,
             });
           } catch (notifyError) {
             console.error(

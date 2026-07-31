@@ -66,7 +66,9 @@ export async function isAwaitingCharacteristicsResponse(
     return false;
   }
 
-  const events = await getRecentOperationalCaseEvents(db, opCase.id, 20);
+  // Lookback amplio: un lote documental deja muchos eventos y el reminder
+  // de características puede salir del top-20.
+  const events = await getRecentOperationalCaseEvents(db, opCase.id, 80);
   return events.some((event) => {
     const payload = event.payload_jsonb;
     return (
@@ -76,6 +78,34 @@ export async function isAwaitingCharacteristicsResponse(
       (payload as Record<string, unknown>).purpose === expectedPurpose
     );
   });
+}
+
+/**
+ * ¿Debemos mezclar este texto como respuesta de características (ruta interna)?
+ * True si el invariante pidió los mínimos (reminder) O aún faltan campos mínimos
+ * en `documents_received` — así no caemos al clarify multi-caso / LLM cuando el
+ * reminder ya salió del lookback de eventos.
+ */
+export async function shouldProcessInternalCharacteristicsReply(params: {
+  db: DbClient;
+  opCase: OperationalCase;
+  text: string;
+}): Promise<boolean> {
+  if (
+    !isInternalCharacteristicsReplyCandidate({
+      opCase: params.opCase,
+      text: params.text,
+    })
+  ) {
+    return false;
+  }
+  if (await isAwaitingCharacteristicsResponse(params.db, params.opCase)) {
+    return true;
+  }
+  const missing = evaluatePropertyDataMinimumsForReview(
+    isRecord(params.opCase.context_jsonb) ? params.opCase.context_jsonb : {}
+  ).missing;
+  return missing.length > 0;
 }
 
 export async function mergeCharacteristicsOwnerResponseDeterministically(params: {

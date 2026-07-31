@@ -11,14 +11,12 @@ import {
   findOperationalCaseByExternalChatId,
   getInternalUserNotification,
   getOperationalCase,
-  getRecentOperationalCaseEvents,
   getActiveE2ELabSession,
   getTelegramChatId,
   insertOperationalCaseEvent,
   listInternalUserNotifications,
   linkE2ELabSessionToCase,
   updateInternalUserNotificationMetadata,
-  updateOperationalCase,
   updateToolCallStatus,
   upsertConversationBinding,
 } from "@agents/db";
@@ -89,7 +87,12 @@ import {
   isIntakeInProgress,
 } from "@/lib/operational-cases/telegram-intake-completion-message";
 import { classifyOperationalConversationMessage } from "@/lib/operational-cases/operational-conversation-classifier";
-import { processCharacteristicsReplyDeterministically } from "@/lib/operational-cases/characteristics-response";
+import {
+  isAwaitingCharacteristicsResponse,
+  processCharacteristicsReplyDeterministically,
+  shouldProcessInternalCharacteristicsReply,
+} from "@/lib/operational-cases/characteristics-response";
+import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 import {
   resolveConversationalIntakeTurn,
   type ConversationalIntakeRoute,
@@ -122,6 +125,10 @@ import {
   completeDocumentBatchForCase,
   looksLikeDocumentBatchComplete,
 } from "@/lib/operational-cases/document-batch-completion";
+import {
+  appendRawPhoto,
+  internalCaseMediaRegisteredKind,
+} from "@/lib/operational-cases/append-raw-photo";
 import { photosUploadProgressAckText } from "@/lib/operational-cases/photo-batch-completion";
 import { completeUploadBatch } from "@/lib/operational-cases/upload-batch-completion";
 import {
@@ -272,122 +279,9 @@ const TELEGRAM_INTAKE_ROUTED: Record<ConversationalIntakeRoute, string> = {
 };
 
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
-const PHOTO_FILE_EXTENSION = /\.(jpe?g|png|webp|heic|heif|gif|bmp|tiff?)$/i;
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function looksLikeRawPhotoUpload(params: {
-  contentType: string;
-  fileName: string;
-}): boolean {
-  const contentType = params.contentType.toLowerCase();
-  if (contentType.startsWith("image/")) return true;
-  return PHOTO_FILE_EXTENSION.test(params.fileName);
-}
-
-async function appendRawPhoto(params: {
-  db: ReturnType<typeof createServerClient>;
-  opCase: OperationalCase;
-  ingested: Awaited<ReturnType<typeof ingestCaseDocument>>;
-}): Promise<{
-  opCase: OperationalCase;
-  photoAdded: boolean;
-  photoCount: number;
-}> {
-  if (
-    !looksLikeRawPhotoUpload({
-      contentType: params.ingested.document.content_type ?? "",
-      fileName: params.ingested.document.original_name ?? "",
-    })
-  ) {
-    return { opCase: params.opCase, photoAdded: false, photoCount: 0 };
-  }
-
-  // Optimistic-lock retries: concurrent album webhooks often race on version.
-  const maxAttempts = 4;
-  let current = params.opCase;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (current.current_step !== "photos_requested") {
-      return { opCase: current, photoAdded: false, photoCount: 0 };
-    }
-    const currentContext = isObjectRecord(current.context_jsonb)
-      ? (current.context_jsonb as Record<string, unknown>)
-      : {};
-    const existingRawPhotos = Array.isArray(currentContext.raw_photos)
-      ? currentContext.raw_photos.filter(
-          (item): item is Record<string, unknown> => isObjectRecord(item)
-        )
-      : [];
-    const duplicate = existingRawPhotos.some((item) => {
-      const sameDocument =
-        typeof item.document_id === "string" &&
-        item.document_id === params.ingested.document.id;
-      const samePath =
-        typeof item.storage_path === "string" &&
-        item.storage_path === params.ingested.document.storage_path;
-      return sameDocument || samePath;
-    });
-    if (duplicate) {
-      return {
-        opCase: current,
-        photoAdded: false,
-        photoCount: existingRawPhotos.length,
-      };
-    }
-
-    const nextRawPhotos = [
-      ...existingRawPhotos,
-      {
-        document_id: params.ingested.document.id,
-        storage_bucket: params.ingested.document.storage_bucket,
-        storage_path: params.ingested.document.storage_path,
-        original_name: params.ingested.document.original_name,
-        content_type: params.ingested.document.content_type,
-        sha256: params.ingested.sha256,
-        source: params.ingested.document.source,
-        uploaded_at: new Date().toISOString(),
-      },
-    ];
-    const nextCase = await updateOperationalCase(
-      params.db,
-      current.id,
-      current.version,
-      {
-        currentStep: "photos_requested",
-        status: "waiting_internal",
-        context: {
-          ...currentContext,
-          raw_photos: nextRawPhotos,
-        },
-      }
-    );
-    if (nextCase) {
-      return {
-        opCase: nextCase,
-        photoAdded: true,
-        photoCount: nextRawPhotos.length,
-      };
-    }
-    const fresh = await getOperationalCase(params.db, current.id);
-    if (!fresh) {
-      return {
-        opCase: current,
-        photoAdded: false,
-        photoCount: existingRawPhotos.length,
-      };
-    }
-    current = fresh;
-  }
-
-  const fallbackContext = isObjectRecord(current.context_jsonb)
-    ? (current.context_jsonb as Record<string, unknown>)
-    : {};
-  const fallbackCount = Array.isArray(fallbackContext.raw_photos)
-    ? fallbackContext.raw_photos.length
-    : 0;
-  return { opCase: current, photoAdded: false, photoCount: fallbackCount };
 }
 
 function normalizeForTelegramRouting(value: string) {
@@ -430,40 +324,6 @@ function shouldIgnoreConversationalE2EIntakeEcho(params: {
 }
 
 /**
- * ¿El caso está esperando que el dueño (externo) o el asesor (interno) respondan
- * los campos mínimos de características que el sistema pidió?
- *
- * Simétrico por ruta: el invariante post-agente emite `characteristics_pending`
- * al contacto externo (`waiting_external`) o `characteristics_pending_internal`
- * al asesor (`waiting_internal`). Reconocer ambos es lo que permite procesar la
- * respuesta de forma determinística en cualquier ruta, sin delegar al LLM.
- */
-async function isAwaitingCharacteristicsResponse(
-  db: ReturnType<typeof createServerClient>,
-  opCase: OperationalCase
-) {
-  if (opCase.current_step !== "documents_received") return false;
-  let expectedPurpose: string;
-  if (opCase.status === "waiting_external") {
-    expectedPurpose = "characteristics_pending";
-  } else if (opCase.status === "waiting_internal") {
-    expectedPurpose = "characteristics_pending_internal";
-  } else {
-    return false;
-  }
-  const events = await getRecentOperationalCaseEvents(db, opCase.id, 20);
-  return events.some((event) => {
-    const payload = event.payload_jsonb;
-    return (
-      event.event_type === "reminder_sent" &&
-      payload &&
-      typeof payload === "object" &&
-      (payload as Record<string, unknown>).purpose === expectedPurpose
-    );
-  });
-}
-
-/**
  * Procesa de forma determinística una respuesta (interna o externa) a la
  * solicitud de características faltantes. Punto único de verdad para las tres
  * entradas (responder externo E2E, responder externo real, asesor interno):
@@ -472,8 +332,8 @@ async function isAwaitingCharacteristicsResponse(
  *   2. Resuelve el pendiente interno `property_data_minimums_missing` (no-op si
  *      la respuesta vino por canal externo, que no crea ese pendiente).
  *   3. Acusa recibo en el chat.
- *   4. Dispara el tick E2E sólo si el caso es controlado; en producción el cron
- *      reanuda el caso con `next_action_at`.
+ *   4. Dispara el tick E2E sólo si el caso es controlado; en producción pide
+ *      `property_data_review` de inmediato vía invariants (canal activo).
  *
  * No duplica lógica de merge: reutiliza `processCharacteristicsReplyDeterministically`.
  */
@@ -505,6 +365,17 @@ async function processCharacteristicsReply(params: {
       console.error(
         "[telegram-webhook] characteristics response tick failed:",
         tickError
+      );
+    });
+  } else {
+    void applyPropertyOptioningPostAgentInvariants({
+      db: params.db,
+      opCase: merged,
+      source: "telegram_webhook_characteristics_response",
+    }).catch((invariantError) => {
+      console.error(
+        "[telegram-webhook] characteristics post-agent invariants failed:",
+        invariantError
       );
     });
   }
@@ -1001,6 +872,21 @@ async function resumeAgentFromCallback(
           resumePricing.approval_status === "approved",
       })
     : undefined;
+  const opsResumePolicy = buildTelegramOperationalCaseToolApprovalPolicy(
+    resumeCase?.user_id === userId ? resumeCase : null
+  );
+  const resumeToolApprovalPolicy = {
+    ...(opsResumePolicy ?? {}),
+    ...(e2eResumePolicy ?? {}),
+  };
+  const hasResumePolicy =
+    Boolean(opsResumePolicy) || Boolean(e2eResumePolicy);
+  console.info("[telegram-webhook] resume policy", {
+    case_id: caseId ?? null,
+    current_step: resumeCase?.current_step ?? null,
+    policy_keys: hasResumePolicy ? Object.keys(resumeToolApprovalPolicy) : [],
+    e2e: Boolean(e2eResumePolicy),
+  });
 
   const result = await runAgent({
     resumeDecision: "approve",
@@ -1045,7 +931,7 @@ async function resumeAgentFromCallback(
     googleCalendarAccessToken,
     caseId,
     toolCallSource: isAgentE2EToolCall(toolCall) ? "agent_e2e" : undefined,
-    toolApprovalPolicy: e2eResumePolicy,
+    toolApprovalPolicy: hasResumePolicy ? resumeToolApprovalPolicy : undefined,
   });
   await finalizeCaseAfterToolDecision(db, {
     toolCall,
@@ -1157,7 +1043,7 @@ export async function POST(request: Request) {
         cb.message.chat.id,
         result.message ??
           (result.ok
-            ? "Descripción aprobada. El caso puede continuar."
+            ? "Descripción aprobada. El caso avanzó a aprobación de publicación."
             : "No pude procesar la revisión de descripción.")
       );
       await maybeRunDeferredListingDescriptionTick(db, result);
@@ -1361,6 +1247,24 @@ export async function POST(request: Request) {
             : "No pude procesar la decisión del contrato.")
       );
       await maybeRunDeferredContractTick(db, result);
+      if (
+        result.ok &&
+        (result.status === "approved_send" ||
+          result.status === "revision_uploaded_and_sent") &&
+        typeof result.case_id === "string"
+      ) {
+        const photosCase = await getOperationalCase(db, result.case_id);
+        if (photosCase?.current_step === "photos_requested") {
+          const { ensurePhotosUploadRequestForCase } = await import(
+            "@/lib/operational-cases/ensure-photos-upload-request"
+          );
+          await ensurePhotosUploadRequestForCase({
+            db,
+            opCase: photosCase,
+            source: "telegram_contract_review_callback",
+          });
+        }
+      }
       return NextResponse.json({
         ok: true,
         routed: "contract_review",
@@ -1432,6 +1336,26 @@ export async function POST(request: Request) {
             ? "Listo, registré tu respuesta."
             : "No pude registrar los datos contractuales.")
       );
+      if (
+        result.ok &&
+        result.status === "captured" &&
+        typeof result.case_id === "string"
+      ) {
+        const capturedCase = await getOperationalCase(db, result.case_id);
+        if (
+          capturedCase &&
+          capturedCase.context_jsonb?.e2e_controlled !== true
+        ) {
+          const { kickContractPendingAfterDataCapture } = await import(
+            "@/lib/operational-cases/run-settings-test-case-tick"
+          );
+          await kickContractPendingAfterDataCapture({
+            db,
+            opCase: capturedCase,
+            source: "telegram_contract_data_callback",
+          });
+        }
+      }
       return NextResponse.json({
         ok: true,
         routed: "contract_data_review",
@@ -2929,7 +2853,7 @@ export async function POST(request: Request) {
         eventType: "external_response",
         actor: "user",
         payload: {
-          kind: isInternalPhotosStep ? "photo_registered" : "document_registered",
+          kind: internalCaseMediaRegisteredKind(conversationalCase.current_step),
           source: "advisor_telegram",
           document_id: ingested.document.id,
           document_kind: ingested.document.kind,
@@ -3165,13 +3089,11 @@ export async function POST(request: Request) {
     agentMessageText &&
     !inboundMedia &&
     conversationalCase &&
-    conversationalCase.current_step === "documents_received" &&
-    conversationalCase.status === "waiting_internal" &&
-    operationalCaseDocumentRequestTargetFromContext(
-      conversationalCase.context_jsonb
-    ) === "internal_user" &&
-    !looksLikeDocumentBatchComplete(agentMessageText) &&
-    (await isAwaitingCharacteristicsResponse(db, conversationalCase))
+    (await shouldProcessInternalCharacteristicsReply({
+      db,
+      opCase: conversationalCase,
+      text: agentMessageText,
+    }))
   ) {
     conversationalCase = await processCharacteristicsReply({
       db,

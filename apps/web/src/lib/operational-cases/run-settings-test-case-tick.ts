@@ -28,6 +28,8 @@ import {
   insertOperationalCaseEvent,
   listOperationalCaseDocuments,
   markCaseProcessing,
+  countPendingToolCallsForCase,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   updateOperationalCase,
   updateToolCallStatus,
 } from "@agents/db";
@@ -42,7 +44,11 @@ import {
   type PendingConfirmation,
 } from "@agents/types";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
-import { notify } from "@/lib/notify";
+import { notifyUserRespectingActiveInternalChannel } from "@/lib/operational-cases/deliver-internal-case-follow-up";
+import {
+  getActiveCaseInternalChannel,
+  mirrorCaseAssistantMessageToWebChat,
+} from "@/lib/operational-cases/mirror-case-message-to-web-chat";
 import { buildDocumentChecklistLines } from "@/lib/operational-cases/case-document-collection";
 import { healStalePublishFlowBlockers } from "@/lib/operational-cases/finalize-case-after-tool-decision";
 import {
@@ -455,9 +461,9 @@ export function contractGenerationFailureNotify(params: {
       };
     case "owner_corroboration_incomplete":
       return {
-        kind: "case_update",
+        kind: "document_extraction_failed",
         text:
-          "Estoy terminando de verificar la identificación/comprobante del propietario para armar el contrato. Lo reintento automáticamente en cuanto quede lista.",
+          "No pude leer completamente la identificación o el comprobante del propietario después de reintentarlo. Revisa esos archivos y vuelve a subir una copia legible para poder generar el contrato.",
       };
     case "pending_confirmation":
       return {
@@ -501,23 +507,62 @@ async function ensureContractReviewNotification(
   caseId: string,
   source: string
 ): Promise<void> {
+  const contractUrl = buildContractDraftDownloadUrl(caseId);
+  // Texto plano para inbox/Telegram; el espejo web usa markdown + chip
+  // (buildContractReviewWebChatPresentation vía deliver-internal).
+  const reviewText = `Borrador de contrato listo para revisión.\n\nDescargar borrador del contrato: ${contractUrl}\n\nResponde “mándalo al dueño” o “pedir cambios”, o usa los botones.`;
+  // Cuando el propio /api/chat va a devolver el borrador en la respuesta HTTP,
+  // no espejar: evita el doble bubble (mirror sync + respondConversational).
+  const skipWebMirror = source.startsWith("web_chat_");
   const hasUnreadReview = await hasUnreadContractReviewNotification(
     db,
     userId,
     caseId
   );
-  if (hasUnreadReview) return;
-  const contractUrl = buildContractDraftDownloadUrl(caseId);
-  await notify(
+  if (hasUnreadReview) {
+    if (skipWebMirror) return;
+    const activeChannel = await getActiveCaseInternalChannel({ db, caseId }).catch(
+      () => null
+    );
+    if (activeChannel === "web") {
+      const notificationId = await getUnreadContractReviewNotificationId(
+        db,
+        userId,
+        caseId
+      );
+      const { buildWebHitlPresentation } = await import(
+        "@/lib/operational-cases/web-hitl-presentation"
+      );
+      const webPresentation = buildWebHitlPresentation({
+        kind: "contract_review",
+        caseId,
+        text: "",
+        notificationId,
+      });
+      await mirrorCaseAssistantMessageToWebChat({
+        db,
+        userId,
+        caseId,
+        text: webPresentation.text,
+        kind: "contract_review",
+        notificationId,
+        actions: webPresentation.actions,
+        attachments: webPresentation.attachments,
+      });
+    }
+    return;
+  }
+  await notifyUserRespectingActiveInternalChannel(
     db,
     userId,
     {
-      text: `Borrador de contrato listo para revisión.\n\nDescargar borrador del contrato: ${contractUrl}\n\nResponde “mándalo al dueño” o “pedir cambios”, o usa los botones.`,
+      text: reviewText,
       kind: "contract_review",
       data: {
         case_id: caseId,
         contract_draft_ready: true,
         contract_draft_url: contractUrl,
+        ...(skipWebMirror ? { skip_web_mirror: true } : {}),
       },
     },
     "normal"
@@ -572,7 +617,7 @@ async function ensureContractDataReviewNotification(params: {
     requiredMissing.length > 0 || commercial.known.length > 0
       ? buildContractCommercialMinimumsSummaryMessage(commercial)
       : buildContractDataReviewNotifyText(missingKeys);
-  await notify(
+  await notifyUserRespectingActiveInternalChannel(
     db,
     userId,
     {
@@ -624,7 +669,7 @@ async function emitContractGenerationFailure(params: {
     },
   });
   const notifyPayload = contractGenerationFailureNotify({ failure, caseId });
-  await notify(
+  await notifyUserRespectingActiveInternalChannel(
     db,
     userId,
     {
@@ -729,7 +774,24 @@ export async function applyPostAgentContractHandling(params: {
     integrations: params.toolContext.integrations,
     userTimezone: params.toolContext.userTimezone,
   };
-  const result = await renderCommissionContractForCase(ctx, { caseId });
+  let result = await renderCommissionContractForCase(ctx, { caseId });
+  if (result.kind === "owner_corroboration_incomplete") {
+    // Este bloqueo es deterministic-owned: termina extracción y reevalúa una
+    // vez antes de pedir intervención humana.
+    for (const documentId of result.documentIds) {
+      await runDocumentFieldExtraction(db, {
+        userId,
+        documentId,
+        force: true,
+      }).catch((extractionError) => {
+        console.warn(
+          "[contract-handling] owner corroboration extraction failed:",
+          extractionError
+        );
+      });
+    }
+    result = await renderCommissionContractForCase(ctx, { caseId });
+  }
 
   switch (result.kind) {
     case "rendered":
@@ -772,10 +834,12 @@ export async function applyPostAgentContractHandling(params: {
         userId,
         caseId,
         source,
-        failure: { kind: "owner_corroboration_incomplete" },
+        failure: {
+          kind: "owner_corroboration_incomplete",
+          detail: result.documentIds.join(","),
+        },
       });
-      // Recuperable de forma automática: el cron puede reintentar.
-      return { handled: true, humanWait: false };
+      return { handled: true, humanWait: true };
     case "infrastructure_error":
     case "failed":
     default:
@@ -788,6 +852,85 @@ export async function applyPostAgentContractHandling(params: {
       });
       return { handled: true, humanWait: false };
   }
+}
+
+/**
+ * Tras capturar datos comerciales en producción (no E2E): genera el borrador
+ * de inmediato y notifica `contract_review` en el canal activo. Evita depender
+ * del cron para la paridad Telegram «Generaré el borrador» → DOCX.
+ */
+export async function kickContractPendingAfterDataCapture(params: {
+  db: ReturnType<typeof createServerClient>;
+  opCase: OperationalCase;
+  source: string;
+}): Promise<{ handled: boolean; humanWait: boolean }> {
+  const { db, source } = params;
+  const userId = params.opCase.user_id;
+  // Versiones anteriores podían dejar este render interno como HITL técnico.
+  // Se supersede antes de usar el renderer determinístico.
+  const { data: staleGenerateCalls } = await db
+    .from("tool_calls")
+    .select("id")
+    .eq("status", "pending_confirmation")
+    .eq("tool_name", "generate_document_from_template")
+    .eq("arguments_json->>case_id", params.opCase.id);
+  for (const row of staleGenerateCalls ?? []) {
+    if (typeof row.id !== "string") continue;
+    await updateToolCallStatus(db, row.id, "rejected", {
+      source,
+      reason: "superseded_by_deterministic_contract_renderer",
+    });
+  }
+  const pendingAfterSupersede = await countPendingToolCallsForCase(
+    db,
+    params.opCase.id
+  );
+  if (pendingAfterSupersede === 0) {
+    await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+      userId,
+      caseId: params.opCase.id,
+      kind: "tool_confirmation_pending",
+      status: "actioned",
+    });
+  }
+  const [toolSettings, integrations, profile, session] = await Promise.all([
+    getUserToolSettings(db, userId),
+    getUserIntegrations(db, userId),
+    getProfile(db, userId),
+    getOrCreateSession(db, userId, "case_runner"),
+  ]);
+  const result = await applyPostAgentContractHandling({
+    db,
+    userId,
+    opCase: params.opCase,
+    toolCalls: [],
+    pendingConfirmation: false,
+    source,
+    toolContext: {
+      sessionId: session.id,
+      enabledTools: toolSettings,
+      integrations,
+      userTimezone: (profile?.timezone as string | undefined) ?? undefined,
+    },
+  });
+  if (result.humanWait) {
+    const fresh = (await getOperationalCase(db, params.opCase.id)) ?? params.opCase;
+    await advisedTickCaseUpdate(db, fresh, fresh.version, {
+      status: "waiting_internal",
+      currentStep: "contract_pending",
+      nextActionAt: null,
+    });
+  } else if (result.handled) {
+    // Fallo recuperable de infraestructura: el mensaje promete reintento, así
+    // que debe existir un wake-up real y no quedar next_action_at=null.
+    const fresh = (await getOperationalCase(db, params.opCase.id)) ?? params.opCase;
+    await advisedTickCaseUpdate(db, fresh, fresh.version, {
+      status: "active",
+      currentStep: "contract_pending",
+      nextActionAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+    });
+  }
+  return result;
 }
 
 /** Ingredientes faltantes reportados por prepare_listing_description_draft en el turno. */
@@ -967,11 +1110,11 @@ async function dismissPrematureListingDescriptionReviewNotifications(
     .eq("status", "unread");
 }
 
-async function hasUnreadContractReviewNotification(
+async function getUnreadContractReviewNotificationId(
   db: ReturnType<typeof createServerClient>,
   userId: string,
   caseId: string
-) {
+): Promise<string | null> {
   const { data, error } = await db
     .from("internal_user_notifications")
     .select("id")
@@ -979,10 +1122,30 @@ async function hasUnreadContractReviewNotification(
     .eq("case_id", caseId)
     .eq("kind", "contract_review")
     .eq("status", "unread")
+    .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (error) return false;
-  return Boolean(data?.id);
+  if (error || !data?.id) return null;
+  return String(data.id);
+}
+
+async function hasUnreadContractReviewNotification(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  caseId: string
+) {
+  return (
+    (await getUnreadContractReviewNotificationId(db, userId, caseId)) != null
+  );
+}
+
+/** Exportado para /api/chat: botones HITL del bubble de contract_review. */
+export async function resolveUnreadContractReviewNotificationId(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  caseId: string
+): Promise<string | null> {
+  return getUnreadContractReviewNotificationId(db, userId, caseId);
 }
 
 async function hasUnreadContractDataNotification(
@@ -2083,7 +2246,7 @@ export async function runSettingsTestCaseAgentTick(
         caseId: fresh.id,
         appUrl,
       });
-      await notify(
+      await notifyUserRespectingActiveInternalChannel(
         db,
         userId,
         {
@@ -2211,7 +2374,7 @@ export async function runSettingsTestCaseAgentTick(
                 caseId: fresh.id,
               })
             : null;
-        await notify(
+        await notifyUserRespectingActiveInternalChannel(
           db,
           userId,
           {
@@ -2280,7 +2443,7 @@ export async function runSettingsTestCaseAgentTick(
         fresh.id
       );
       if (!hasUnreadListingReview) {
-        await notify(
+        await notifyUserRespectingActiveInternalChannel(
           db,
           userId,
           {
@@ -2358,7 +2521,7 @@ export async function runSettingsTestCaseAgentTick(
         const easybroker = isRecord(published.easybroker)
           ? published.easybroker
           : {};
-        await notify(
+        await notifyUserRespectingActiveInternalChannel(
           db,
           userId,
           {

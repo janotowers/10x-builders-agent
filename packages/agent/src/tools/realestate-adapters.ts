@@ -2696,12 +2696,14 @@ export async function renderCommissionContractForCase(
   ) {
     // Persistencia idéntica a la del wrapper, pero con actor=system porque el
     // render lo dispara el runtime, no el modelo.
-    const opCase = await getOperationalCase(ctx.db, caseId);
-    if (opCase) {
+    let persisted = false;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const opCase = await getOperationalCase(ctx.db, caseId);
+      if (!opCase) break;
       const baseContext = isRecord(opCase.context_jsonb)
         ? opCase.context_jsonb
         : {};
-      await updateOperationalCase(ctx.db, caseId, opCase.version, {
+      const updated = await updateOperationalCase(ctx.db, caseId, opCase.version, {
         context: {
           ...baseContext,
           contract_draft: {
@@ -2715,6 +2717,16 @@ export async function renderCommissionContractForCase(
           },
         },
       });
+      if (updated) {
+        persisted = true;
+        break;
+      }
+    }
+    if (!persisted) {
+      return {
+        kind: "failed",
+        error: "contract_draft_persist_conflict",
+      };
     }
     await insertOperationalCaseEvent(ctx.db, {
       caseId,

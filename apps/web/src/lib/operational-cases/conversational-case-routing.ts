@@ -5,6 +5,7 @@ import type {
 } from "@agents/types";
 import { looksLikeDocumentBatchComplete } from "./document-batch-completion";
 import { looksLikeDocumentUploadSideText } from "./case-document-collection";
+import { operationalCaseDocumentRequestTargetFromContext } from "@agents/types";
 
 function normalize(value: string) {
   return value
@@ -71,10 +72,10 @@ export function looksLikeNewCaseIntent(message: string): boolean {
 }
 
 /**
- * When the user sends a fresh property-optioning start phrase (e.g. "quiero
- * opcionar una propiedad") but an existing conversational case is already past
- * intake, we must not silently adopt that case — otherwise the agent runs on
- * the wrong step and may trigger HITL for operational_case_update_state.
+ * Fallback when there is NO pending binding to clarify against (or the user
+ * already chose "nueva"): a fresh start phrase must not silently adopt a case
+ * already past intake. Prefer asking continue-vs-new via routing when bindings
+ * exist (web step 1.5 / Telegram gate before ensure).
  */
 export function shouldForceNewConversationalCaseOnExplicitStartIntent(
   message: string,
@@ -105,6 +106,21 @@ export function shouldBindTelegramMessageToConversationalCase(params: {
     (params.opCase.current_step === "documents_received" ||
       params.opCase.current_step === "property_data_review");
   if (reviewingPropertyData) return looksLikePropertyDataReviewResponse(text);
+
+  // Respuesta a la pregunta interno/externo: no pedir aclaración multi-caso.
+  // (Check local para no importar document-request-target → ciclo.)
+  if (
+    params.opCase.context_jsonb?.created_from === "agent_conversation" &&
+    params.opCase.current_step === "awaiting_documents" &&
+    operationalCaseDocumentRequestTargetFromContext(
+      params.opCase.context_jsonb
+    ) == null &&
+    /\b(interno|interna|externo|externa|ambos|ambas|los dos|las dos|dueno|dueño|propietario|equipo interno|contacto externo)\b/.test(
+      text
+    )
+  ) {
+    return true;
+  }
 
   // Cierre de lote de fotos («listo») o texto lateral de subida en photos_requested.
   if (params.opCase.current_step === "photos_requested") {

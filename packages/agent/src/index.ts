@@ -39,7 +39,10 @@ export {
   runDocumentFieldExtraction,
   missingRequiredIntakeFields,
   operationalCaseIntakeSuccessStep,
+  normalizeOptionalIsoTimestamp,
+  forbiddenUpdateStateContextKeys,
 } from "./tools/operational-cases-adapters";
+export { buildToolConfirmationMessage } from "./tools/confirmation-messages";
 export type {
   PropertyAdvanceTransition,
   PropertyAdvanceGateBlockReason,

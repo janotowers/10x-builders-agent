@@ -1,5 +1,15 @@
 import { redirect } from "next/navigation";
-import { defaultSkillsRoot, loadGlobalSkillRegistry, TOOL_CATALOG } from "@agents/agent";
+import {
+  buildToolConfirmationMessage,
+  defaultSkillsRoot,
+  loadGlobalSkillRegistry,
+  TOOL_CATALOG,
+} from "@agents/agent";
+import {
+  createServerClient,
+  rejectSupersededPendingToolCallsForCase,
+  updateToolCallStatus,
+} from "@agents/db";
 import {
   findExistingScheduledTaskForConfirmation,
   isScheduleTaskConfirmation,
@@ -7,6 +17,12 @@ import {
 import { sortScheduledTasksForDisplay } from "@/lib/scheduled-task-display-order";
 import { createClient } from "@/lib/supabase/server";
 import { hiddenInboxNotificationKinds } from "@/lib/internal-notifications/registry";
+import {
+  selectStaleSessionPendingIds,
+  uniqueCaseIdsFromPendingRows,
+  type SessionPendingToolCallRow,
+} from "@/lib/agent/repair-session-pending-confirmations";
+import { findPendingConfirmationCheckpoint } from "@/lib/agent/pending-confirmation-checkpoint";
 import { AppShell } from "@/components/app-shell";
 import { ChatInterface } from "./chat-interface";
 
@@ -327,43 +343,121 @@ export default async function ChatPage({
   }
 
   if (webSession?.id) {
+    const db = createServerClient();
+    const { data: sessionPendingRows } = await supabase
+      .from("tool_calls")
+      .select(
+        "id, tool_name, arguments_json, metadata_jsonb, created_at, turn_id"
+      )
+      .eq("session_id", webSession.id)
+      .eq("status", "pending_confirmation")
+      .order("created_at", { ascending: false })
+      .limit(20);
+    const pendingRows = (sessionPendingRows ??
+      []) as SessionPendingToolCallRow[];
+
+    // 1) Cierra pending superados por un intento más reciente del mismo tool/caso.
+    for (const caseId of uniqueCaseIdsFromPendingRows(pendingRows)) {
+      try {
+        await rejectSupersededPendingToolCallsForCase(
+          db,
+          caseId,
+          "superseded_on_web_session_rehydrate"
+        );
+      } catch (err) {
+        console.warn(
+          "[chat-page] supersede pending on rehydrate failed:",
+          caseId,
+          err
+        );
+      }
+    }
+
+    // 2) Una sola tarjeta activa: marca el resto de pending de la sesión como
+    // superados (no borra historial).
+    const { data: remainingPending } = await supabase
+      .from("tool_calls")
+      .select(
+        "id, tool_name, arguments_json, metadata_jsonb, created_at, turn_id"
+      )
+      .eq("session_id", webSession.id)
+      .eq("status", "pending_confirmation")
+      .order("created_at", { ascending: false })
+      .limit(20);
+    const remainingRows = (remainingPending ??
+      []) as SessionPendingToolCallRow[];
+    const { keepId, staleIds } = selectStaleSessionPendingIds(remainingRows);
+    for (const staleId of staleIds) {
+      try {
+        await updateToolCallStatus(db, staleId, "rejected", {
+          reason: "superseded_stale_session_pending",
+          session_id: webSession.id,
+          kept_tool_call_id: keepId,
+        });
+      } catch (err) {
+        console.warn(
+          "[chat-page] reject stale session pending failed:",
+          staleId,
+          err
+        );
+      }
+    }
+
+    type StoredPendingConfirmation = {
+      toolCallId: string;
+      toolName: string;
+      message: string;
+      args: Record<string, unknown>;
+      turnId?: string | null;
+      appliedSkills?: AppliedSkill[];
+      memoryUsed?: AppliedMemory[];
+      checkpointThreadId: string;
+    };
+
     const { data: pendingMessages } = await supabase
       .from("agent_messages")
       .select("structured_payload")
       .eq("session_id", webSession.id)
       .not("structured_payload", "is", null)
       .order("created_at", { ascending: false })
-      .limit(5);
+      .limit(20);
 
-    const pendingMsg = pendingMessages?.find(
-      (m) =>
-        (m.structured_payload as Record<string, unknown>)?.type ===
-        "pending_confirmation"
-    );
-    if (pendingMsg) {
-      const sp = pendingMsg.structured_payload as {
-        pendingConfirmation?: {
-          toolCallId: string;
-          toolName: string;
-          message: string;
-          args: Record<string, unknown>;
-          turnId?: string | null;
-          appliedSkills?: AppliedSkill[];
-          memoryUsed?: AppliedMemory[];
-          checkpointThreadId: string;
+    const storedConfirmations = (pendingMessages ?? [])
+      .map((m) => {
+        const sp = m.structured_payload as {
+          type?: unknown;
+          pendingConfirmation?: StoredPendingConfirmation;
         };
-      };
-      if (sp.pendingConfirmation) {
-        const { data: stillPending } = await supabase
-          .from("tool_calls")
-          .select("id, turn_id")
-          .eq("id", sp.pendingConfirmation.toolCallId)
-          .eq("status", "pending_confirmation")
-          .maybeSingle();
-        const scheduleConfirmation = {
-          toolName: sp.pendingConfirmation.toolName,
-          args: sp.pendingConfirmation.args,
-        };
+        return sp?.type === "pending_confirmation"
+          ? sp.pendingConfirmation ?? null
+          : null;
+      })
+      .filter((item): item is StoredPendingConfirmation => Boolean(item));
+
+    const activeToolCallId = keepId;
+    const storedForActive = activeToolCallId
+      ? storedConfirmations.find((item) => item.toolCallId === activeToolCallId)
+      : storedConfirmations[0];
+
+    if (activeToolCallId) {
+      const { data: stillPending } = await supabase
+        .from("tool_calls")
+        .select("id, turn_id, tool_name, arguments_json")
+        .eq("id", activeToolCallId)
+        .eq("status", "pending_confirmation")
+        .maybeSingle();
+      if (stillPending) {
+        const toolName =
+          typeof stillPending.tool_name === "string"
+            ? stillPending.tool_name
+            : storedForActive?.toolName ?? "unknown_tool";
+        const args =
+          stillPending.arguments_json &&
+          typeof stillPending.arguments_json === "object" &&
+          !Array.isArray(stillPending.arguments_json)
+            ? (stillPending.arguments_json as Record<string, unknown>)
+            : storedForActive?.args ?? {};
+        const scheduleConfirmation = { toolName, args };
         const alreadyScheduled = isScheduleTaskConfirmation(scheduleConfirmation)
           ? await findExistingScheduledTaskForConfirmation(supabase, {
               userId: user.id,
@@ -371,13 +465,31 @@ export default async function ChatPage({
               fallbackTimezone: (profile?.timezone as string | null) ?? null,
             })
           : null;
-        if (stillPending && !alreadyScheduled) {
-          initialPendingConfirmation = {
-            ...sp.pendingConfirmation,
-            turnId:
-              sp.pendingConfirmation.turnId ??
-              ((stillPending.turn_id as string | null) ?? null),
-          };
+        if (!alreadyScheduled) {
+          const checkpointThreadId =
+            storedForActive?.checkpointThreadId ??
+            (await findPendingConfirmationCheckpoint(db, {
+              sessionId: webSession.id,
+              toolCallId: activeToolCallId,
+              turnId: (stillPending.turn_id as string | null) ?? null,
+            }));
+          if (checkpointThreadId) {
+            initialPendingConfirmation = {
+              toolCallId: activeToolCallId,
+              toolName,
+              args,
+              // Copy semántico actual; no confiar en texto persistido antiguo.
+              message: buildToolConfirmationMessage(toolName, args, {
+                userTimezone: (profile?.timezone as string | null) ?? null,
+              }),
+              turnId:
+                storedForActive?.turnId ??
+                ((stillPending.turn_id as string | null) ?? null),
+              appliedSkills: storedForActive?.appliedSkills,
+              memoryUsed: storedForActive?.memoryUsed,
+              checkpointThreadId,
+            };
+          }
         }
       }
     }

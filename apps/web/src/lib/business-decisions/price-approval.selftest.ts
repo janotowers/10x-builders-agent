@@ -18,6 +18,16 @@ assert.deepEqual(parsePriceApprovalDecision("APROBAR PRECIO"), {
   residual: null,
 });
 
+assert.equal(parsePriceApprovalDecision("sí").intent, "approve");
+assert.equal(parsePriceApprovalDecision("sí apruebo").intent, "approve");
+assert.equal(
+  parsePriceApprovalDecision("sí apruebo").residual,
+  null,
+  "restating approve after sí must not yield residual"
+);
+assert.equal(parsePriceApprovalDecision("si apruebo el precio").intent, "approve");
+assert.equal(parsePriceApprovalDecision("si apruebo el precio").residual, null);
+
 assert.deepEqual(parsePriceApprovalDecision("salida 24 ideal 22.5 minimo 19"), {
   intent: "adjust",
   patch: {

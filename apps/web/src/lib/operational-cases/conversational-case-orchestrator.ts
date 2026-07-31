@@ -23,7 +23,11 @@ import {
   linkE2ELabSessionToCase,
 } from "@agents/db";
 import { isPropertyOptioningIntent } from "@agents/agent";
-import type { OperationalCase, ToolApprovalPolicy } from "@agents/types";
+import {
+  operationalCaseDocumentRequestTargetFromContext,
+  type OperationalCase,
+  type ToolApprovalPolicy,
+} from "@agents/types";
 import { ensureConversationalCase } from "./ensure-conversational-case";
 import {
   looksLikeNewCaseIntent,
@@ -37,14 +41,23 @@ type DbClient = Parameters<typeof getActiveE2ELabSession>[0];
 const PROPERTY_OPTIONING_CASE_TYPE = "property_optioning";
 
 /**
- * Política de aprobación de tools para un caso operacional, derivada solo de
- * `current_step`. Es pura e idéntica en cualquier canal: durante `intake`
- * dejamos que el agente cree/actualice intake sin fricción pero bloqueamos
- * transiciones de estado; fuera de intake solo el update de intake es
- * auto-ejecutable.
+ * Política de aprobación de tools para un caso operacional, derivada de su
+ * paso y destino documental. Es pura e idéntica en cualquier canal.
+ *
+ * Confianza graduada por efecto de negocio: el bookkeeping interno
+ * (`update_state`, `add_event`) se auto-ejecuta fuera de intake — el usuario
+ * no debe aprobar operaciones técnicas. La red de seguridad queda en los
+ * guards duros del adapter + optimistic locking + advisor de workflows.
+ * Durante `intake` denegamos `update_state` y `add_event` para evitar saltos
+ * de paso prematuros antes de completar el formulario determinístico.
  */
 export function buildOperationalCaseToolApprovalPolicy(
-  opCase: Pick<OperationalCase, "current_step"> | null | undefined
+  opCase:
+    | (Pick<OperationalCase, "current_step"> & {
+        context_jsonb?: OperationalCase["context_jsonb"];
+      })
+    | null
+    | undefined
 ): ToolApprovalPolicy | undefined {
   if (!opCase) return undefined;
 
@@ -55,9 +68,33 @@ export function buildOperationalCaseToolApprovalPolicy(
   if (opCase.current_step === "intake") {
     policy.operational_case_create = "auto_execute";
     policy.operational_case_update_state = "deny";
+    policy.operational_case_add_event = "deny";
+  } else {
+    policy.operational_case_update_state = "auto_execute";
+    policy.operational_case_add_event = "auto_execute";
+  }
+  if (
+    operationalCaseDocumentRequestTargetFromContext(opCase.context_jsonb) ===
+    "internal_user"
+  ) {
+    policy.telegram_send_message_to_contact = "deny";
   }
 
   return policy;
+}
+
+/** Combina políticas (la última gana por tool). Devuelve undefined si no hay ninguna. */
+export function mergeToolApprovalPolicies(
+  ...policies: Array<ToolApprovalPolicy | undefined | null>
+): ToolApprovalPolicy | undefined {
+  const merged: ToolApprovalPolicy = {};
+  let hasAny = false;
+  for (const policy of policies) {
+    if (!policy) continue;
+    hasAny = true;
+    Object.assign(merged, policy);
+  }
+  return hasAny ? merged : undefined;
 }
 
 export interface ResolveConversationalCaseResult {

@@ -323,8 +323,9 @@ export async function handleContractDataReviewDecision(
   );
 
   const updatedCase = await advisedUpdateCase(db, opCase, opCase.version, {
-    // Only resume agent/cron when required commercial fields are complete.
-    nextActionAt: capturedComplete ? new Date().toISOString() : null,
+    // La continuación la dispara el adapter del canal DESPUÉS de entregar el
+    // ack. No despertar cron aquí: competiría creando un HITL técnico.
+    nextActionAt: null,
     context: {
       ...interimContext,
       commission_terms: nextTerms,
@@ -444,6 +445,7 @@ export async function handleContractDataReviewDecision(
     }),
     owner_email: evaluation.owner_email,
     commission_terms: nextTerms,
+    case_id: updatedCase.id,
   };
 }
 

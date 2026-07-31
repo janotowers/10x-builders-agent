@@ -269,11 +269,48 @@ function shouldRunListingDescriptionAgentTick(opCase: {
   );
 }
 
+/**
+ * Tras aprobar la descripción: el publication runner pide EasyBroker HITL
+ * (y sigue el flujo). Misma vía que cron / approve de destino — no solo E2E.
+ */
+async function kickPublicationAfterListingDescriptionApproved(
+  db: DbClient,
+  updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
+  source: string
+) {
+  const { requestPublicationProgress } = await import(
+    "@/lib/operational-cases/publication-runner"
+  );
+  const { createPublicationRunnerOwnedAgentTick } = await import(
+    "@/lib/operational-cases/run-settings-test-case-tick"
+  );
+  const progress = await requestPublicationProgress(db, updated.id, source, {
+    runAgentTick: createPublicationRunnerOwnedAgentTick(
+      db,
+      updated.user_id,
+      source
+    ),
+  });
+  console.info("[listing-description-review] publication kick after approve", {
+    case_id: updated.id,
+    source,
+    status: progress.status,
+    message: progress.message ?? null,
+    actions_run: progress.actions_run,
+  });
+  return progress;
+}
+
+/** Regeneración / ticks de laboratorio: agent tick completo. */
 async function triggerControlledE2EAgentTick(
   db: DbClient,
   updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
   source: string
 ) {
+  if (source === "listing_description_approved") {
+    await kickPublicationAfterListingDescriptionApproved(db, updated, source);
+    return;
+  }
   const { runSettingsTestCaseAgentTick } = await import(
     "@/lib/operational-cases/run-settings-test-case-tick"
   );
@@ -384,12 +421,21 @@ export async function handleListingDescriptionReviewDecision(
       approved_by: params.userId,
       source: "listing_description_review",
     };
+    const { propertyOptioningPublicationEnablementPatch } = await import(
+      "@/lib/operational-cases/publication-tool-policy"
+    );
+    const publicationEnablement =
+      propertyOptioningPublicationEnablementPatch({
+        caseType: opCase.case_type,
+        context,
+      }) ?? {};
     const updated = await advisedUpdateCase(db, opCase, opCase.version, {
       status: "active",
       currentStep: "package_ready",
       nextActionAt: new Date().toISOString(),
       context: {
         ...context,
+        ...publicationEnablement,
         listing_description_review: {
           status: "approved",
           decided_at: nowIso,
@@ -416,19 +462,28 @@ export async function handleListingDescriptionReviewDecision(
       userId: params.userId,
       status: "actioned",
     });
-    const runAgentTick = shouldRunListingDescriptionAgentTick(opCase);
-    const deferTick = runAgentTick && params.deferControlledE2ETick === true;
-    if (runAgentTick && !deferTick) {
-      void triggerControlledE2EAgentTick(db, updated, "listing_description_approved").catch(
-        (tickError) => {
-          console.error("[listing-description-review] e2e tick failed:", tickError);
-        }
-      );
+    // Await: en Next el void fire-and-forget se corta al cerrar la response.
+    // También activa publication_mode si el caso aún no lo tenía (default off).
+    const deferTick = params.deferControlledE2ETick === true;
+    if (!deferTick) {
+      try {
+        await kickPublicationAfterListingDescriptionApproved(
+          db,
+          updated,
+          "listing_description_approved"
+        );
+      } catch (tickError) {
+        console.error(
+          "[listing-description-review] publication kick after approve failed:",
+          tickError
+        );
+      }
     }
     return {
       ok: true,
       status: "approved",
-      message: "Descripción aprobada. El caso puede continuar a publicación.",
+      message:
+        "Descripción aprobada. El caso avanzó a aprobación de publicación.",
       case_id: opCase.id,
       deferredControlledE2ETick: deferTick
         ? { source: "listing_description_approved" as const }

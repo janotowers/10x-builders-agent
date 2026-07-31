@@ -47,6 +47,62 @@ export function contractDraftDownloadLabel(storagePath?: string | null) {
   return defaultDownloadLabel(storagePath, binding.defaultDownloadLabel);
 }
 
+/** Acciones HITL en timeline web (= botones inline de Telegram). */
+export const CONTRACT_REVIEW_WEB_ACTIONS = [
+  { id: "approve_send" as const, label: "Enviar por email" },
+  {
+    id: "request_changes" as const,
+    label: "Subir contrato corregido y enviar",
+  },
+];
+
+/**
+ * Texto + adjunto para el timeline web. Telegram manda el DOCX con
+ * sendDocument; en web el paridad es enlace markdown clickable + chip
+ * de descarga autenticada (no URL pública/token de contacto externo).
+ */
+export function buildContractReviewWebChatPresentation(params: {
+  caseId: string;
+  storagePath?: string | null;
+  includeButtonsHint?: boolean;
+}): {
+  text: string;
+  downloadUrl: string;
+  attachment: {
+    fileName: string;
+    downloadUrl: string;
+    contentType: string;
+  };
+  actions: typeof CONTRACT_REVIEW_WEB_ACTIONS;
+} {
+  const downloadUrl = buildContractDraftDownloadUrl(params.caseId);
+  const fileName =
+    typeof params.storagePath === "string" && params.storagePath.trim()
+      ? params.storagePath.split(/[/\\]/).pop() || "contrato_comision.docx"
+      : "contrato_comision.docx";
+  const buttonsHint =
+    params.includeButtonsHint === false
+      ? "Responde “mándalo al dueño” o “pedir cambios”."
+      : "Responde “mándalo al dueño” o “pedir cambios”, o usa los botones.";
+  return {
+    downloadUrl,
+    text: [
+      "Borrador de contrato listo para revisión.",
+      "",
+      `[Descargar borrador del contrato](${downloadUrl})`,
+      "",
+      buttonsHint,
+    ].join("\n"),
+    attachment: {
+      fileName,
+      downloadUrl,
+      contentType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    },
+    actions: CONTRACT_REVIEW_WEB_ACTIONS,
+  };
+}
+
 export function normalizeContractReviewNotifyText(params: {
   text: string;
   caseId?: string;

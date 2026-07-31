@@ -29,6 +29,11 @@ import {
   shouldBindTelegramMessageToConversationalCase,
 } from "./conversational-case-routing";
 import { buildConversationCaseIdentity } from "./conversation-case-identity";
+import {
+  buildPendingMessageEnvelope,
+  parsePendingAttachments,
+  type PendingAttachmentRef,
+} from "./pending-attachment-envelope";
 
 type DbClient = ReturnType<typeof createServerClient>;
 
@@ -178,10 +183,12 @@ export type ClarificationReplyResult =
       status: "resolved_case";
       case: OperationalCase | null;
       effectiveMessage: string | null;
+      effectiveAttachments: PendingAttachmentRef[];
     }
   | {
       status: "resolved_new_case";
       effectiveMessage: string | null;
+      effectiveAttachments: PendingAttachmentRef[];
     }
   | { status: "resolved_no"; responseText: string }
   | { status: "invalid_index"; responseText: string }
@@ -241,6 +248,10 @@ export async function resolveConversationalClarificationReply(params: {
       typeof binding.pending_message_jsonb?.text === "string"
         ? binding.pending_message_jsonb.text.trim()
         : "";
+    const pendingAttachments = parsePendingAttachments(
+      binding.pending_message_jsonb as Record<string, unknown> | null,
+      { userId: binding.user_id }
+    );
     const clarifiedCase = await getOperationalCase(db, chosenCaseId);
     await setConversationBindingStatus(db, {
       bindingId: binding.id,
@@ -259,6 +270,7 @@ export async function resolveConversationalClarificationReply(params: {
       status: "resolved_case",
       case: clarifiedCase,
       effectiveMessage: pendingMessageText || null,
+      effectiveAttachments: pendingAttachments,
     };
   }
 
@@ -273,6 +285,10 @@ export async function resolveConversationalClarificationReply(params: {
       typeof binding.pending_message_jsonb?.text === "string"
         ? binding.pending_message_jsonb.text.trim()
         : "";
+    const pendingAttachments = parsePendingAttachments(
+      binding.pending_message_jsonb as Record<string, unknown> | null,
+      { userId: binding.user_id }
+    );
     await setConversationBindingStatus(db, {
       bindingId: binding.id,
       status: "awaiting_user",
@@ -287,6 +303,7 @@ export async function resolveConversationalClarificationReply(params: {
     return {
       status: "resolved_new_case",
       effectiveMessage: pendingMessageText || null,
+      effectiveAttachments: pendingAttachments,
     };
   }
 
@@ -386,6 +403,11 @@ export async function routeConversationalMessageAgainstBindings(params: {
   pendingBindings: OperationalCaseConversationBinding[];
   explicitIntent: boolean;
   candidateCasesById?: Map<string, OperationalCase>;
+  /**
+   * Adjuntos del turno (web staging). Se persisten en pending_message_jsonb
+   * al pedir aclaración para no perderlos al responder 1/sí.
+   */
+  attachments?: PendingAttachmentRef[];
 }): Promise<ConversationalRouteResult> {
   const { db, message, pendingBindings, explicitIntent } = params;
   let candidateCasesById = params.candidateCasesById;
@@ -432,15 +454,18 @@ export async function routeConversationalMessageAgainstBindings(params: {
       await setConversationBindingStatus(db, {
         bindingId: primary.bindingId ?? pendingBindings[0]!.id,
         status: "clarification_needed",
-        pendingMessage: {
+        pendingMessage: buildPendingMessageEnvelope({
           text: message,
-          received_at: new Date().toISOString(),
-        },
+          attachments: params.attachments,
+        }),
         candidateRoutes: routeDecision.candidates,
         metadataMerge: {
           clarification_reason: routeDecision.reason,
           clarification_case_id: primaryCase.id,
           clarification_allow_new_case: shouldOfferNewCaseOption,
+          clarification_has_attachments: Boolean(
+            params.attachments && params.attachments.length > 0
+          ),
         },
         lastUserMessageAt: new Date().toISOString(),
       });

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { createServerClient } from "@agents/db";
+import { createServerClient, getOperationalCase } from "@agents/db";
 import { createClient } from "@/lib/supabase/server";
 import { handleContractDataReviewDecision } from "@/lib/business-decisions/contract-data-review";
+import { kickContractPendingAfterDataCapture } from "@/lib/operational-cases/run-settings-test-case-tick";
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -29,11 +30,26 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await handleContractDataReviewDecision(createServerClient(), {
+  const db = createServerClient();
+  const result = await handleContractDataReviewDecision(db, {
     userId: user.id,
     notificationId,
     text: text || undefined,
     patch,
   });
+  if (
+    result.ok &&
+    result.status === "captured" &&
+    typeof result.case_id === "string"
+  ) {
+    const opCase = await getOperationalCase(db, result.case_id);
+    if (opCase && opCase.context_jsonb?.e2e_controlled !== true) {
+      await kickContractPendingAfterDataCapture({
+        db,
+        opCase,
+        source: "contract_data_review_inbox",
+      });
+    }
+  }
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }

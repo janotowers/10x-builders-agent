@@ -2,15 +2,20 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   addMessage,
-  createOperationalCaseDocument,
   createServerClient,
   decryptToken,
   findPendingConversationBindings,
   getGoogleCalendarAccessToken,
   getActiveE2ELabSession,
+  getOperationalCase,
   insertOperationalCaseEvent,
-  updateOperationalCase,
+  touchConversationBindingForCase,
 } from "@agents/db";
+import {
+  appendRawPhoto,
+  internalCaseMediaRegisteredKind,
+} from "@/lib/operational-cases/append-raw-photo";
+import { ingestStagedCaseDocument } from "@/lib/operational-cases/case-document-ingestion";
 import {
   bindAiUsageContext,
   isPropertyOptioningIntent,
@@ -39,15 +44,25 @@ import {
   resolveCharacteristicsReplyAgainstBindings,
   resolveDocumentTargetReplyAgainstBindings,
   resolveInternalDocumentMessageCase,
+  resolveInternalDocumentUploadCaseForMedia,
   shouldPromptCaseDocumentRequestTarget,
 } from "@/lib/operational-cases/document-request-target";
 import {
-  isAwaitingCharacteristicsResponse,
-  isInternalCharacteristicsReplyCandidate,
   processCharacteristicsReplyDeterministically,
+  shouldProcessInternalCharacteristicsReply,
 } from "@/lib/operational-cases/characteristics-response";
+import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
+import { ensureContractCommercialDataAsk } from "@/lib/operational-cases/ensure-contract-commercial-ask";
+import {
+  kickContractPendingAfterDataCapture,
+  resolveUnreadContractReviewNotificationId,
+} from "@/lib/operational-cases/run-settings-test-case-tick";
+import { contractDraftOutputPathFromContext } from "@agents/agent";
+import { buildContractReviewWebChatPresentation } from "@/lib/operational-cases/contract-draft-document";
+import { buildWebHitlActions } from "@/lib/operational-cases/web-hitl-client";
 import { looksLikeDocumentBatchComplete } from "@/lib/operational-cases/document-batch-completion";
 import { photosUploadProgressAckText } from "@/lib/operational-cases/photo-batch-completion";
+import { listingDescriptionIsApproved } from "@/lib/operational-cases/publication-tool-policy";
 import { completeUploadBatch } from "@/lib/operational-cases/upload-batch-completion";
 import {
   buildExternalContactDeepLink,
@@ -56,6 +71,12 @@ import {
 import { handleContractRevisionUploadAndSend } from "@/lib/business-decisions/contract-review";
 import { resolvePendingDecisionTurn } from "@/lib/business-decisions/pending-decision-router";
 import { appendResidualAcknowledgment } from "@/lib/business-decisions/residual-intent";
+import { buildMediaGroupReceivedAck } from "@/lib/operational-cases/case-document-collection";
+import type { PendingAttachmentRef } from "@/lib/operational-cases/pending-attachment-envelope";
+import {
+  buildUserMessageStructuredPayload,
+  stripEmbeddedAttachmentOcr,
+} from "@/lib/chat/attachment-message-display";
 
 const TOOL_CALL_SELECT =
   "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind";
@@ -78,17 +99,23 @@ async function loadTurnToolCalls(
   return (data ?? []) as Array<Record<string, unknown>>;
 }
 
-type IncomingAttachment = {
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  storageBucket: string;
-  storagePath: string;
-  sha256: string;
-  suggestedKind?: string;
-};
+type IncomingAttachment = PendingAttachmentRef;
 
-const PHOTO_ATTACHMENT_EXTENSION = /\.(jpe?g|png|webp|heic|heif|gif|bmp|tiff?)$/i;
+function attachmentOwnedByUser(
+  attachment: IncomingAttachment,
+  userId: string
+): boolean {
+  return attachment.storagePath.startsWith(`${userId}/`);
+}
+
+function filterAttachmentsOwnedByUser(
+  attachments: IncomingAttachment[],
+  userId: string
+): IncomingAttachment[] {
+  return attachments.filter((attachment) =>
+    attachmentOwnedByUser(attachment, userId)
+  );
+}
 
 function fileExtensionFromName(fileName: string): string {
   const parts = fileName.toLowerCase().split(".");
@@ -110,13 +137,16 @@ function caseWaitingContractRevisionUpload(opCase: OperationalCase): boolean {
   return (review as Record<string, unknown>).status === "awaiting_revision_upload";
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function looksLikePhotoAttachment(attachment: IncomingAttachment): boolean {
-  if (attachment.mimeType.toLowerCase().startsWith("image/")) return true;
-  return PHOTO_ATTACHMENT_EXTENSION.test(attachment.fileName);
+/** «continua» / «sigue» / etc. — incluye acentos y puntuación trivial. */
+function isOperationalContinueNudge(text: string): boolean {
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+  return /^(continua|continuar|sigue|seguir|adelante|reintenta|reintentar|ok|listo)[.!?]?$/.test(
+    normalized
+  );
 }
 
 function normalizeIncomingAttachments(raw: unknown): IncomingAttachment[] {
@@ -160,6 +190,7 @@ async function registerInternalCaseAttachments(params: {
   opCase: OperationalCase;
   photosAdded: number;
   rawPhotosCount: number;
+  registeredFiles: Array<{ originalName: string; kind: string }>;
 }> {
   if (params.attachments.length === 0) {
     return {
@@ -167,6 +198,7 @@ async function registerInternalCaseAttachments(params: {
       opCase: params.opCase,
       photosAdded: 0,
       rawPhotosCount: 0,
+      registeredFiles: [],
     };
   }
   // Paridad Telegram: persistir inferencia interna si el asesor sube docs
@@ -191,93 +223,84 @@ async function registerInternalCaseAttachments(params: {
       opCase: currentCase,
       photosAdded: 0,
       rawPhotosCount: 0,
+      registeredFiles: [],
     };
   }
 
   let registered = 0;
   let photosAdded = 0;
   let rawPhotosCount = 0;
-  for (const attachment of params.attachments) {
-    const document = await createOperationalCaseDocument(params.db, {
+  const registeredFiles: Array<{ originalName: string; kind: string }> = [];
+  const ownedAttachments = filterAttachmentsOwnedByUser(
+    params.attachments,
+    currentCase.user_id
+  );
+  for (const attachment of ownedAttachments) {
+    // Paridad Telegram: promover staging → ruta canónica del caso + misma
+    // fila/kind/blocking que ingestCaseDocument.
+    const ingested = await ingestStagedCaseDocument({
+      db: params.db,
       caseId: currentCase.id,
       userId: currentCase.user_id,
-      kind: attachment.suggestedKind ?? "unknown",
-      displayName: attachment.suggestedKind ?? "unknown",
-      storageBucket: attachment.storageBucket,
-      storagePath: attachment.storagePath,
-      originalName: attachment.fileName,
-      contentType: attachment.mimeType,
-      fileSizeBytes: attachment.sizeBytes,
-      sha256: attachment.sha256,
       source: "advisor_web",
-      sourceMetadata: {
-        source: "chat_web_attachment",
-      },
-      blocking: (attachment.suggestedKind ?? "unknown") === "boleta_registral",
+      fileName: attachment.fileName,
+      contentType: attachment.mimeType,
+      sha256: attachment.sha256,
+      sizeBytes: attachment.sizeBytes,
+      stagedBucket: attachment.storageBucket,
+      stagedPath: attachment.storagePath,
+      suggestedKind: attachment.suggestedKind,
+      sourceMetadata: { source: "chat_web_attachment" },
+    });
+    const document = ingested.document;
+    console.info("[chat] attachment promoted", {
+      case_id: currentCase.id,
+      staging_path: attachment.storagePath,
+      final_path: document.storage_path,
+      kind: document.kind,
     });
     await insertOperationalCaseEvent(params.db, {
       caseId: currentCase.id,
       eventType: "external_response",
       actor: "user",
       payload: {
-        kind: "document_registered",
+        kind: internalCaseMediaRegisteredKind(currentCase.current_step),
         source: "advisor_web_chat",
         document_id: document.id,
         document_kind: document.kind,
         current_step: currentCase.current_step,
         step_key: currentCase.current_step,
+        original_name: attachment.fileName,
       },
     });
     registered += 1;
+    registeredFiles.push({
+      originalName: attachment.fileName,
+      kind: document.kind,
+    });
 
-    if (!supportsInternalPhotos || !looksLikePhotoAttachment(attachment)) {
+    if (!supportsInternalPhotos) {
       continue;
     }
-    const context = isRecord(currentCase.context_jsonb)
-      ? (currentCase.context_jsonb as Record<string, unknown>)
-      : {};
-    const existingRawPhotos = Array.isArray(context.raw_photos)
-      ? context.raw_photos.filter((item): item is Record<string, unknown> => isRecord(item))
-      : [];
-    const duplicate = existingRawPhotos.some((item) => {
-      const sameDocument = typeof item.document_id === "string" && item.document_id === document.id;
-      const samePath =
-        typeof item.storage_path === "string" && item.storage_path === attachment.storagePath;
-      return sameDocument || samePath;
+    const photoResult = await appendRawPhoto({
+      db: params.db,
+      opCase: currentCase,
+      ingested,
     });
-    if (duplicate) continue;
-
-    const nextRawPhotos = [
-      ...existingRawPhotos,
-      {
-        document_id: document.id,
-        storage_bucket: attachment.storageBucket,
-        storage_path: attachment.storagePath,
-        original_name: attachment.fileName,
-        content_type: attachment.mimeType,
-        sha256: attachment.sha256,
-        source: "advisor_web",
-        uploaded_at: new Date().toISOString(),
-      },
-    ];
-    const updated = await updateOperationalCase(params.db, currentCase.id, currentCase.version, {
-      currentStep: "photos_requested",
-      status: "waiting_internal",
-      context: {
-        ...context,
-        raw_photos: nextRawPhotos,
-      },
-    });
-    if (!updated) continue;
-    currentCase = updated;
-    photosAdded += 1;
-    rawPhotosCount = nextRawPhotos.length;
+    currentCase = photoResult.opCase;
+    if (photoResult.photoAdded) {
+      photosAdded += 1;
+    }
+    if (photoResult.photoCount > 0) {
+      rawPhotosCount = photoResult.photoCount;
+    }
   }
   return {
     registered,
     opCase: currentCase,
     photosAdded,
     rawPhotosCount,
+    registeredFiles,
   };
 }
 
@@ -307,7 +330,10 @@ export async function POST(request: Request) {
       typeof body.turnId === "string" && uuidRe.test(body.turnId)
         ? body.turnId
         : undefined;
-    const incomingAttachments = normalizeIncomingAttachments(body.attachments);
+    const incomingAttachments = filterAttachmentsOwnedByUser(
+      normalizeIncomingAttachments(body.attachments),
+      user.id
+    );
 
     const db = createServerClient();
 
@@ -419,19 +445,33 @@ export async function POST(request: Request) {
     // cualquier fallo no debe romper el chat general.
     let conversationalCaseId: string | undefined;
     let operationalToolApprovalPolicy: ToolApprovalPolicy | undefined;
-    // El mensaje sobre el que se actúa: tras resolver una aclaración, es el
-    // mensaje original pendiente, no la respuesta ("1" / "sí").
+    // El mensaje/adjuntos sobre los que se actúa: tras resolver una aclaración,
+    // son el envelope pendiente (texto + staging refs), no la respuesta ("1"/"sí").
     let effectiveMessage = message;
+    let effectiveAttachments: IncomingAttachment[] = incomingAttachments;
 
-    const respondConversational = (responseText: string) => {
+    const respondConversational = (
+      responseText: string,
+      options?: { assistantStructuredPayload?: Record<string, unknown> }
+    ) => {
       // Persistimos el turno en el historial web para que sobreviva al refresh
       // (Telegram no lo necesita: su historial vive en Telegram).
       return (async () => {
+        // Guardamos chips de adjunto + userText; el content puede llevar OCR
+        // para el agente, pero el UI no debe rehidratar ese dump crudo.
+        const userPayload = buildUserMessageStructuredPayload({
+          message,
+          attachments: effectiveAttachments,
+        });
         await addMessage(db, session.id, "user", message, {
           turn_id: requestTurnId ?? null,
+          structured_payload: userPayload,
         });
         await addMessage(db, session.id, "assistant", responseText, {
           turn_id: requestTurnId ?? null,
+          ...(options?.assistantStructuredPayload
+            ? { structured_payload: options.assistantStructuredPayload }
+            : {}),
         });
         return NextResponse.json({
           response: responseText,
@@ -440,6 +480,9 @@ export async function POST(request: Request) {
           memoryUsed: [],
           pendingConfirmation: null,
           toolCalls: [],
+          ...(options?.assistantStructuredPayload
+            ? { structuredPayload: options.assistantStructuredPayload }
+            : {}),
         });
       })();
     };
@@ -457,6 +500,15 @@ export async function POST(request: Request) {
         isExplicitNewCaseIntent: isPropertyOptioningIntent(message),
       });
       if (pendingDecisionTurn.handled) {
+        if (pendingDecisionTurn.caseId) {
+          await touchConversationBindingForCase(db, {
+            caseId: pendingDecisionTurn.caseId,
+            channel: "web",
+            sessionId: session.id,
+          }).catch((touchError) => {
+            console.warn("[chat] touch pending-decision web binding failed:", touchError);
+          });
+        }
         // Slice 0.1: reconoce el texto sobre el que la decisión NO actuó.
         const messageWithResidual = appendResidualAcknowledgment(
           pendingDecisionTurn.message,
@@ -466,10 +518,20 @@ export async function POST(request: Request) {
         const responseText = pendingDecisionTurn.artifact
           ? `${messageWithResidual}\n\n${pendingDecisionTurn.artifact.content}`
           : messageWithResidual;
+        // Paridad Telegram: primero el ack en el timeline, luego follow-ups
+        // diferidos (p. ej. price_approval) para que no adelanten al ack.
+        const response = await respondConversational(responseText);
         if (pendingDecisionTurn.runAfterReply) {
-          await pendingDecisionTurn.runAfterReply();
+          try {
+            await pendingDecisionTurn.runAfterReply();
+          } catch (afterReplyError) {
+            console.error(
+              "[chat] pending-decision runAfterReply failed:",
+              afterReplyError
+            );
+          }
         }
-        return await respondConversational(responseText);
+        return response;
       }
     } catch (pendingDecisionError) {
       console.error(
@@ -531,10 +593,101 @@ export async function POST(request: Request) {
           forceNewConversationalCase = true;
           explicitOperationalIntent = true;
           if (reply.effectiveMessage) effectiveMessage = reply.effectiveMessage;
+          if (reply.effectiveAttachments.length > 0) {
+            effectiveAttachments = reply.effectiveAttachments;
+          }
         }
         if (reply.status === "resolved_case" && reply.case) {
           conversationalCase = reply.case;
           if (reply.effectiveMessage) effectiveMessage = reply.effectiveMessage;
+          if (reply.effectiveAttachments.length > 0) {
+            effectiveAttachments = reply.effectiveAttachments;
+          }
+        }
+        // Tras restaurar el envelope ("sí apruebo"), re-intentar decisiones
+        // HITL pendientes: el primer pase corrió sobre "1" y no las vio.
+        if (
+          (reply.status === "resolved_case" ||
+            reply.status === "resolved_new_case") &&
+          effectiveMessage.trim() &&
+          effectiveMessage.trim() !== message.trim()
+        ) {
+          try {
+            const restoredDecision = await resolvePendingDecisionTurn(db, {
+              userId: user.id,
+              text: effectiveMessage,
+              channel: "web",
+              isExplicitNewCaseIntent: isPropertyOptioningIntent(effectiveMessage),
+            });
+            if (restoredDecision.handled) {
+              if (restoredDecision.caseId) {
+                await touchConversationBindingForCase(db, {
+                  caseId: restoredDecision.caseId,
+                  channel: "web",
+                  sessionId: session.id,
+                }).catch((touchError) => {
+                  console.warn(
+                    "[chat] touch restored-decision web binding failed:",
+                    touchError
+                  );
+                });
+              }
+              const messageWithResidual = appendResidualAcknowledgment(
+                restoredDecision.message,
+                restoredDecision.residual
+              );
+              const responseText = restoredDecision.artifact
+                ? `${messageWithResidual}\n\n${restoredDecision.artifact.content}`
+                : messageWithResidual;
+              const response = await respondConversational(responseText);
+              if (restoredDecision.runAfterReply) {
+                try {
+                  await restoredDecision.runAfterReply();
+                } catch (afterReplyError) {
+                  console.error(
+                    "[chat] restored pending-decision runAfterReply failed:",
+                    afterReplyError
+                  );
+                }
+              }
+              return response;
+            }
+          } catch (restoredDecisionError) {
+            console.error(
+              "[chat] restored pending-decision after clarify failed:",
+              restoredDecisionError
+            );
+          }
+        }
+      }
+
+      // (1.5) Paridad Telegram: con bindings activos + intención de opcionar,
+      // preguntar «continuar vs nueva» ANTES de crear/adoptar. Si corremos
+      // ensure primero, `shouldForceNew…` abre un caso nuevo en silencio cuando
+      // el existente ya pasó intake.
+      if (
+        !conversationalCase &&
+        !forceNewConversationalCase &&
+        !activeE2ELabSession &&
+        routingWebBindings.length > 0 &&
+        deterministicPropertyIntent
+      ) {
+        explicitOperationalIntent = true;
+        const startRoute = await routeConversationalMessageAgainstBindings({
+          db,
+          channel: "web",
+          message: effectiveMessage,
+          pendingBindings: routingWebBindings,
+          explicitIntent: true,
+          candidateCasesById: routingCasesById,
+          attachments: effectiveAttachments,
+        });
+        if (startRoute.route === "clarify") {
+          // Con adjuntos: el envelope ya quedó en pending_message_jsonb.
+          return await respondConversational(startRoute.responseText);
+        }
+        if (startRoute.route === "case") {
+          conversationalCase = startRoute.case;
         }
       }
 
@@ -558,15 +711,40 @@ export async function POST(request: Request) {
 
       // (2b) Respuesta interno/externo a un caso que espera esa decisión:
       // resolver el caso correcto ANTES del routing genérico para no disparar
-      // una desambiguación multi-caso innecesaria.
+      // una desambiguación multi-caso innecesaria. Usa pendingWebBindings
+      // (sin filtro E2E) porque la respuesta es inequívoca al prompt del caso.
       if (!conversationalCase) {
         const targetReply = await resolveDocumentTargetReplyAgainstBindings({
           db,
           message: effectiveMessage,
-          pendingBindings: routingWebBindings,
+          pendingBindings: pendingWebBindings,
         });
         if (targetReply.matchedCase) {
           conversationalCase = targetReply.matchedCase;
+        }
+      }
+
+      // (2b-media) Paridad Telegram: adjuntos reales → caso interno de
+      // recolección más reciente. El OCR del PDF hace el mensaje demasiado
+      // largo para el gate de texto (2c) y caería en clarify multi-caso.
+      if (!conversationalCase && effectiveAttachments.length > 0) {
+        try {
+          const mediaCase = await resolveInternalDocumentUploadCaseForMedia({
+            db,
+            pendingBindings: pendingWebBindings,
+          });
+          if (mediaCase) {
+            conversationalCase = mediaCase;
+            console.info("[chat] media-first case resolved", {
+              case_id: mediaCase.id,
+              attachment_count: effectiveAttachments.length,
+            });
+          }
+        } catch (err) {
+          console.error(
+            "[chat] media-first internal case resolution failed:",
+            err
+          );
         }
       }
 
@@ -586,18 +764,42 @@ export async function POST(request: Request) {
 
       // (2d) Respuesta esperada a características faltantes en ruta interna:
       // resolver ANTES del routing genérico para evitar clarificación innecesaria.
+      // Usar bindings crudos (como document-target): un caso en ficha mínima no
+      // debe perderse por el filtro routable.
       if (!conversationalCase) {
         const characteristicsReply = await resolveCharacteristicsReplyAgainstBindings({
           db,
           message: effectiveMessage,
-          pendingBindings: routingWebBindings,
+          pendingBindings: pendingWebBindings,
         });
         if (characteristicsReply.matchedCase) {
           conversationalCase = characteristicsReply.matchedCase;
         }
       }
 
+      // (2e) «continua»: si hay exactamente un caso en contract_pending entre
+      // los bindings, le pertenece (con o sin borrador). Evita el aclarador
+      // multi-caso contra otro caso en «Solicitar documentos» / intake.
+      if (!conversationalCase && isOperationalContinueNudge(effectiveMessage)) {
+        const contractCandidates = (
+          await Promise.all(
+            pendingWebBindings.map((binding) =>
+              getOperationalCase(db, binding.case_id)
+            )
+          )
+        ).filter(
+          (candidate): candidate is OperationalCase =>
+            Boolean(candidate && candidate.current_step === "contract_pending")
+        );
+        const unique = [
+          ...new Map(contractCandidates.map((item) => [item.id, item])).values(),
+        ];
+        if (unique.length === 1) conversationalCase = unique[0]!;
+      }
+
       // (3) Enrutamiento contra bindings pendientes (asociar o pedir aclaración).
+      // Con adjuntos: si hace falta selección se aclara, pero el envelope
+      // (texto + staging refs) queda persistido — nunca se pierde el archivo.
       if (!conversationalCase) {
         const routeResult = await routeConversationalMessageAgainstBindings({
           db,
@@ -606,6 +808,7 @@ export async function POST(request: Request) {
           pendingBindings: routingWebBindings,
           explicitIntent: explicitOperationalIntent,
           candidateCasesById: routingCasesById,
+          attachments: effectiveAttachments,
         });
         if (routeResult.route === "clarify") {
           return await respondConversational(routeResult.responseText);
@@ -642,14 +845,23 @@ export async function POST(request: Request) {
             conversationalCase.context_jsonb?.intake_status !== "complete");
       }
 
-      // (4) Motor de intake determinístico.
+      // (4) Motor de intake determinístico / respuesta de características.
+      if (conversationalCase) {
+        await touchConversationBindingForCase(db, {
+          caseId: conversationalCase.id,
+          channel: "web",
+          sessionId: session.id,
+        }).catch((touchError) => {
+          console.warn("[chat] touch conversational web binding failed:", touchError);
+        });
+      }
       if (
         conversationalCase &&
-        isInternalCharacteristicsReplyCandidate({
+        (await shouldProcessInternalCharacteristicsReply({
+          db,
           opCase: conversationalCase,
           text: effectiveMessage,
-        }) &&
-        (await isAwaitingCharacteristicsResponse(db, conversationalCase))
+        }))
       ) {
         const isE2EControlled = conversationalCase.context_jsonb?.e2e_controlled === true;
         conversationalCase = await processCharacteristicsReplyDeterministically({
@@ -670,6 +882,19 @@ export async function POST(request: Request) {
             }
           ).catch((tickError) => {
             console.error("[chat] characteristics response tick failed:", tickError);
+          });
+        } else {
+          // Producción: pedir property_data_review de inmediato (paridad
+          // Telegram histórica). El sync del chat web trae el bubble de revisión.
+          void applyPropertyOptioningPostAgentInvariants({
+            db,
+            opCase: conversationalCase,
+            source: "web_chat_characteristics_response",
+          }).catch((invariantError) => {
+            console.error(
+              "[chat] characteristics post-agent invariants failed:",
+              invariantError
+            );
           });
         }
         return await respondConversational(
@@ -739,23 +964,70 @@ export async function POST(request: Request) {
         const attachmentRegistration = await registerInternalCaseAttachments({
           db,
           opCase: conversationalCase,
-          attachments: incomingAttachments,
+          attachments: effectiveAttachments,
         });
         conversationalCase = attachmentRegistration.opCase;
+        // Paridad Telegram caption+listo: el OCR embebido no debe ocultar la
+        // señal de cierre ("listo"). Evaluamos el texto del usuario, no el dump.
+        const batchCompleteSignal = looksLikeDocumentBatchComplete(
+          stripEmbeddedAttachmentOcr(effectiveMessage)
+        );
+        const target = resolveOperationalCaseDocumentRequestTarget({
+          externalContact: conversationalCase.external_contact_jsonb,
+          context: conversationalCase.context_jsonb,
+        });
+        const canCompleteUploadBatch =
+          conversationalCase.current_step === "photos_requested" ||
+          (target === "internal_user" &&
+            conversationalCase.current_step === "awaiting_documents");
+
+        const finalizeUploadBatchTurn = async () => {
+          const source =
+            conversationalCase!.current_step === "photos_requested"
+              ? "web_chat_internal_photos_marked_ready"
+              : "web_chat_internal_documents_marked_ready";
+          const completion = await completeUploadBatch({
+            db,
+            caseId: conversationalCase!.id,
+            channel: "web",
+            source,
+          });
+          conversationalCase = completion.case;
+          if (
+            (completion.status === "advanced" ||
+              completion.status === "already_advanced") &&
+            conversationalCase.context_jsonb?.e2e_controlled === true
+          ) {
+            void runSettingsTestCaseAgentTick(
+              db,
+              conversationalCase,
+              conversationalCase.user_id,
+              { source }
+            ).catch((tickError) => {
+              console.error(
+                "[chat] upload batch marked ready tick failed:",
+                tickError
+              );
+            });
+          }
+          return completion;
+        };
+
         if (
-          incomingAttachments.length > 0 &&
+          effectiveAttachments.length > 0 &&
           attachmentRegistration.photosAdded > 0 &&
-          conversationalCase.current_step === "photos_requested"
+          conversationalCase.current_step === "photos_requested" &&
+          !batchCompleteSignal
         ) {
           return await respondConversational(
             photosUploadProgressAckText(attachmentRegistration.rawPhotosCount)
           );
         }
         if (
-          incomingAttachments.length > 0 &&
+          effectiveAttachments.length > 0 &&
           caseWaitingContractRevisionUpload(conversationalCase)
         ) {
-          const contractAttachment = incomingAttachments.find((attachment) =>
+          const contractAttachment = effectiveAttachments.find((attachment) =>
             isAllowedContractRevisionAttachment(attachment.fileName)
           );
           if (!contractAttachment) {
@@ -778,41 +1050,36 @@ export async function POST(request: Request) {
                   "Recibí el archivo, pero no pude enviarlo por email. Revisa Gmail y owner_email."
           );
         }
-        const target = resolveOperationalCaseDocumentRequestTarget({
-          externalContact: conversationalCase.external_contact_jsonb,
-          context: conversationalCase.context_jsonb,
-        });
-        if (
-          looksLikeDocumentBatchComplete(effectiveMessage) &&
-          (conversationalCase.current_step === "photos_requested" ||
-            (target === "internal_user" &&
-              conversationalCase.current_step === "awaiting_documents"))
-        ) {
-          const source =
-            conversationalCase.current_step === "photos_requested"
-              ? "web_chat_internal_photos_marked_ready"
-              : "web_chat_internal_documents_marked_ready";
-          const completion = await completeUploadBatch({
-            db,
-            caseId: conversationalCase.id,
-            channel: "web",
-            source,
+        // Acuse determinístico ANTES del LLM. Si el mismo turno trae «listo»
+        // (paridad Telegram markReadyFromCaption), cerramos el lote aquí.
+        if (attachmentRegistration.registered > 0) {
+          console.info("[chat] deterministic document ack", {
+            case_id: conversationalCase.id,
+            current_step: conversationalCase.current_step,
+            registered: attachmentRegistration.registered,
+            mark_ready: batchCompleteSignal && canCompleteUploadBatch,
           });
-          conversationalCase = completion.case;
-          if (
-            (completion.status === "advanced" ||
-              completion.status === "already_advanced") &&
-            conversationalCase.context_jsonb?.e2e_controlled === true
-          ) {
-            void runSettingsTestCaseAgentTick(
-              db,
-              conversationalCase,
-              conversationalCase.user_id,
-              { source }
-            ).catch((tickError) => {
-              console.error("[chat] upload batch marked ready tick failed:", tickError);
+          const receiveAck = buildMediaGroupReceivedAck(
+            attachmentRegistration.registeredFiles,
+            {
+              expectMore: !(batchCompleteSignal && canCompleteUploadBatch),
+            }
+          );
+          if (batchCompleteSignal && canCompleteUploadBatch) {
+            const completion = await finalizeUploadBatchTurn();
+            console.info("[chat] upload+listo batch completed", {
+              case_id: conversationalCase.id,
+              status: completion.status,
+              current_step: conversationalCase.current_step,
             });
+            return await respondConversational(
+              `${receiveAck}\n\n${completion.ackText}`
+            );
           }
+          return await respondConversational(receiveAck);
+        }
+        if (batchCompleteSignal && canCompleteUploadBatch) {
+          const completion = await finalizeUploadBatchTurn();
           return await respondConversational(completion.ackText);
         }
         conversationalCaseId = conversationalCase.id;
@@ -838,6 +1105,214 @@ export async function POST(request: Request) {
         "[chat] resolve conversational case failed; continuing without case:",
         err
       );
+    }
+
+    // Si el caso ya está en contrato sin pedir datos comerciales (p. ej. el LLM
+    // avanzó tras un clarify), recuperar la paridad Telegram aquí.
+    if (conversationalCaseId) {
+      try {
+        const contractCase = await getOperationalCase(db, conversationalCaseId);
+        if (
+          contractCase?.case_type === "property_optioning" &&
+          contractCase.current_step === "contract_pending"
+        ) {
+          const ask = await ensureContractCommercialDataAsk({
+            db,
+            opCase: contractCase,
+            source: "web_chat_contract_pending_ensure",
+          });
+          if (ask.asked && ask.text) {
+            return await respondConversational(ask.text);
+          }
+          // Datos comerciales listos: generar borrador si falta, y entregar
+          // UNA sola burbuja web con chip (el kick con source web_chat_* no
+          // espeja; evita mirror sync + esta respuesta = duplicado).
+          if (ask.reason === "no_missing_fields") {
+            const hadDraft =
+              contractDraftOutputPathFromContext(contractCase.context_jsonb) !=
+              null;
+            // Tras aclaración multi-caso, `message` es "1" pero el envelope
+            // restaurado (`effectiveMessage`) sigue siendo «continua».
+            const isContinueNudge =
+              isOperationalContinueNudge(message) ||
+              isOperationalContinueNudge(effectiveMessage);
+            let kickResult: Awaited<
+              ReturnType<typeof kickContractPendingAfterDataCapture>
+            > | null = null;
+            let afterKick = contractCase;
+            if (!hadDraft) {
+              kickResult = await kickContractPendingAfterDataCapture({
+                db,
+                opCase: contractCase,
+                source: "web_chat_contract_pending_draft_kick",
+              });
+              afterKick =
+                (await getOperationalCase(db, contractCase.id)) ?? contractCase;
+            }
+            if (
+              contractDraftOutputPathFromContext(afterKick.context_jsonb) != null
+            ) {
+              if (!hadDraft || isContinueNudge) {
+                // Otro path (kick async post-captura) pudo espejar ya el
+                // review con chip + botones; no duplicar el bubble.
+                const { data: priorReviews } = await db
+                  .from("agent_messages")
+                  .select("structured_payload")
+                  .eq("session_id", session.id)
+                  .eq("role", "assistant")
+                  .eq("structured_payload->>source", "operational_case")
+                  .eq("structured_payload->>case_id", afterKick.id)
+                  .eq("structured_payload->>kind", "contract_review")
+                  .order("created_at", { ascending: false })
+                  .limit(3);
+                const hasActionableReview = (priorReviews ?? []).some((row) => {
+                  const payload = row.structured_payload as {
+                    attachments?: unknown;
+                    notification_id?: unknown;
+                    actions?: unknown;
+                  } | null;
+                  return (
+                    Array.isArray(payload?.attachments) &&
+                    payload.attachments.length > 0 &&
+                    typeof payload?.notification_id === "string" &&
+                    payload.notification_id.trim().length > 0 &&
+                    Array.isArray(payload?.actions) &&
+                    payload.actions.length > 0
+                  );
+                });
+                if (hasActionableReview) {
+                  return await respondConversational(
+                    "El borrador ya está arriba (archivo + botones). Usa “Enviar por email” o “Subir contrato corregido y enviar”, o responde en texto."
+                  );
+                }
+                const webPresentation = buildContractReviewWebChatPresentation({
+                  caseId: afterKick.id,
+                });
+                const notificationId =
+                  await resolveUnreadContractReviewNotificationId(
+                    db,
+                    user.id,
+                    afterKick.id
+                  );
+                return await respondConversational(webPresentation.text, {
+                  assistantStructuredPayload: {
+                    source: "operational_case",
+                    kind: "contract_review",
+                    case_id: afterKick.id,
+                    ...(notificationId
+                      ? { notification_id: notificationId }
+                      : {}),
+                    actions: buildWebHitlActions("contract_review"),
+                    attachments: [webPresentation.attachment],
+                  },
+                });
+              }
+            } else if (kickResult?.humanWait) {
+              const { data: blockers } = await db
+                .from("internal_user_notifications")
+                .select("kind,body")
+                .eq("user_id", user.id)
+                .eq("case_id", afterKick.id)
+                .eq("status", "unread")
+                .in("kind", [
+                  "contract_template_missing",
+                  "titularidad_review",
+                  "document_extraction_failed",
+                  "contract_data_review",
+                ])
+                .order("created_at", { ascending: false })
+                .limit(1);
+              const blocker = blockers?.[0] as
+                | { kind?: string; body?: string }
+                | undefined;
+              if (typeof blocker?.body === "string" && blocker.body.trim()) {
+                return await respondConversational(blocker.body.trim());
+              }
+              return await respondConversational(
+                "El borrador quedó detenido por una revisión humana pendiente. Revisa el pendiente del caso para continuar."
+              );
+            } else if (!hadDraft) {
+              return await respondConversational(
+                "No pude terminar el borrador en este intento. Dejé el caso programado para reintento y registré el error en Pendientes."
+              );
+            }
+          }
+        }
+      } catch (contractAskError) {
+        console.error(
+          "[chat] ensure contract commercial ask failed:",
+          contractAskError
+        );
+      }
+    }
+
+    // package_ready + descripción aprobada + «continua»: despertar publication
+    // runner (p. ej. si el approve web no disparó EasyBroker HITL).
+    if (
+      conversationalCaseId &&
+      (isOperationalContinueNudge(message) ||
+        isOperationalContinueNudge(effectiveMessage))
+    ) {
+      try {
+        const pkgCase = await getOperationalCase(db, conversationalCaseId);
+        const pkgContext =
+          pkgCase?.context_jsonb &&
+          typeof pkgCase.context_jsonb === "object" &&
+          !Array.isArray(pkgCase.context_jsonb)
+            ? (pkgCase.context_jsonb as Record<string, unknown>)
+            : null;
+        if (
+          pkgCase?.case_type === "property_optioning" &&
+          pkgCase.current_step === "package_ready" &&
+          listingDescriptionIsApproved(pkgContext)
+        ) {
+          const { data: pendingPublish } = await db
+            .from("internal_user_notifications")
+            .select("id")
+            .eq("user_id", user.id)
+            .eq("case_id", pkgCase.id)
+            .eq("status", "unread")
+            .in("kind", [
+              "easybroker_publish_approval",
+              "ungga_publish_approval",
+              "publication_review_required",
+            ])
+            .limit(1);
+          if ((pendingPublish ?? []).length === 0) {
+            const { requestPublicationProgress } = await import(
+              "@/lib/operational-cases/publication-runner"
+            );
+            const { createPublicationRunnerOwnedAgentTick } = await import(
+              "@/lib/operational-cases/run-settings-test-case-tick"
+            );
+            void requestPublicationProgress(
+              db,
+              pkgCase.id,
+              "web_chat_package_ready_continue",
+              {
+                runAgentTick: createPublicationRunnerOwnedAgentTick(
+                  db,
+                  user.id,
+                  "web_chat_package_ready_continue"
+                ),
+              }
+            ).catch((progressError) => {
+              console.error(
+                "[chat] package_ready continue publication kick failed:",
+                progressError
+              );
+            });
+            return await respondConversational(
+              "Retomé la publicación. En un momento te llega la aprobación del siguiente destino (p. ej. EasyBroker)."
+            );
+          }
+        }
+      } catch (packageReadyContinueError) {
+        console.error(
+          "[chat] package_ready continue check failed:",
+          packageReadyContinueError
+        );
+      }
     }
 
     const result = await runAgent({
@@ -887,6 +1362,24 @@ export async function POST(request: Request) {
         if (eventTurnId) publishTurnEvent(eventTurnId, event);
       },
     });
+
+    // Paridad cron/Telegram: tras el agente en property_optioning, correr
+    // invariants (review, comparables decision, etc.) en el canal activo.
+    if (conversationalCaseId && !result.pendingConfirmation) {
+      void (async () => {
+        try {
+          const refreshed = await getOperationalCase(db, conversationalCaseId);
+          if (!refreshed || refreshed.case_type !== "property_optioning") return;
+          await applyPropertyOptioningPostAgentInvariants({
+            db,
+            opCase: refreshed,
+            source: "web_chat_post_agent",
+          });
+        } catch (invariantError) {
+          console.error("[chat] post-agent invariants failed:", invariantError);
+        }
+      })();
+    }
 
     // Flush POST fire-and-forget: solo si el turno cerró (sin pendingConfirmation).
     // Un turno con HITL pendiente no "terminó" todavía; el flush se lanzará

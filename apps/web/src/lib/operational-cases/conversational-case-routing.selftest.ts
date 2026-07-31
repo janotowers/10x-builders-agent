@@ -57,7 +57,22 @@ assert.equal(
   false
 );
 
-console.log("conversational-case-routing.selftest: ok");
+// «interno»/«externo» sobre un caso que espera esa decisión: continuar el caso
+// (no caer en single_binding_ambiguous_followup).
+assert.equal(
+  shouldBindTelegramMessageToConversationalCase({
+    message: "interno",
+    opCase: operationalCase,
+  }),
+  true
+);
+assert.equal(
+  shouldBindTelegramMessageToConversationalCase({
+    message: "externo",
+    opCase: operationalCase,
+  }),
+  true
+);
 
 const binding = {
   id: "binding-1",
@@ -80,6 +95,14 @@ const binding = {
   updated_at: new Date().toISOString(),
 } as OperationalCaseConversationBinding;
 
+const decisionInterno = resolveTelegramConversationRoute({
+  message: "interno",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", operationalCase]]),
+  explicitIntent: false,
+});
+assert.equal(decisionInterno.route, "case");
+
 const decisionCase = resolveTelegramConversationRoute({
   message: "Es un terreno en Sendas",
   bindings: [binding],
@@ -95,6 +118,22 @@ const explicitStartSingle = resolveTelegramConversationRoute({
   explicitIntent: true,
 });
 assert.equal(explicitStartSingle.route, "clarify");
+
+// Start intent con caso YA pasado de intake: aclarar continuar vs nueva
+// (no adoptar en silencio ni forzar case nuevo sin preguntar).
+const explicitStartPastIntake = resolveTelegramConversationRoute({
+  message: "quiero opcionar una propiedad",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", operationalCase]]),
+  explicitIntent: true,
+});
+assert.equal(explicitStartPastIntake.route, "clarify");
+if (explicitStartPastIntake.route === "clarify") {
+  assert.equal(
+    explicitStartPastIntake.reason,
+    "explicit_intent_with_active_bindings"
+  );
+}
 
 // Precedencia de intake: responder con DATOS de propiedad al único caso en
 // intake incompleto debe continuar ese caso, aunque el clasificador marque

@@ -44,4 +44,8 @@ assert.equal(documentExtensionFromPath("photo.JPG"), "jpg");
 assert.equal(documentExtensionFromPath("sinextension"), "bin");
 assert.equal(documentExtensionFromPath("weird.<<<", "jpg"), "jpg");
 
+// Staging paths must stay under the user folder (ingestStagedCaseDocument guard).
+assert.ok("user-1/chat-staging/x.pdf".startsWith("user-1/"));
+assert.equal("other/chat-staging/x.pdf".startsWith("user-1/"), false);
+
 console.log("case-document-ingestion.selftest: ok");

@@ -142,6 +142,31 @@ function hasCorrectionSignals(text: string) {
   );
 }
 
+/**
+ * Texto que el router de decisiones pendientes puede reclamar para
+ * `property_data_review` en canal interno (web/Telegram asesor). Evita
+ * robar turns irrelevantes ("hola") cuando hay un pendiente sticky.
+ */
+export function looksLikePropertyDataReviewReply(text: string): boolean {
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+  if (!normalized) return false;
+  if (
+    /^(si|ok|okay|correcto|confirmo|confirmado|perfecto|de acuerdo|va|dale|listo|aprobado|procede)\b/.test(
+      normalized
+    )
+  ) {
+    return true;
+  }
+  if (hasCorrectionSignals(text)) return true;
+  return /\b(recamaras?|habitaciones?|banos?|medios?\s*banos?|pisos?|plantas?|estacionamientos?|cocheras?|cocina|tipo|operacion|zona|direccion|metros|m2)\b/.test(
+    normalized
+  );
+}
+
 export async function handlePropertyDataReviewDecision(
   db: DbClient,
   params: {

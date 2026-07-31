@@ -137,6 +137,8 @@ export interface NotifyChannelResult {
 export interface NotifyResult {
   attempted: NotifyChannelResult[];
   delivered: NotifyChannelResult[];
+  /** Inbox row created/upserted for this notify (HITL buttons / web actions). */
+  notificationId?: string | null;
 }
 
 export interface NotifyOptions {
@@ -219,6 +221,15 @@ async function deliverTelegram(
       reminderSourceNotificationId
     );
     if (sourceNotification?.user_id === userId) {
+      // No empujar Telegram si el pendiente fuente ya fue cancelado/resuelto.
+      if (sourceNotification.status !== "unread") {
+        return {
+          channel: "telegram",
+          ok: false,
+          status: "failed",
+          reason: "source_notification_not_unread",
+        };
+      }
       actionKind = sourceNotification.kind;
       sourceNotificationCaseId =
         typeof sourceNotification.case_id === "string"
@@ -1125,5 +1136,5 @@ export async function notify(
     });
   }
 
-  return { attempted, delivered };
+  return { attempted, delivered, notificationId: notification.id };
 }

@@ -10,10 +10,6 @@ import {
 } from "@agents/db";
 import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import {
-  isControlledE2EOperationalCase,
-  isSettingsOperationalTestCase,
-} from "@agents/types";
-import {
   applyPublicationEvent,
   buildPublicationContextPatch,
   isEasybrokerEffectivelyPublished,
@@ -269,14 +265,6 @@ export function parsePublishDestinationApprovalDecision(
   };
 }
 
-function shouldRunPublishDestinationAgentTick(opCase: {
-  context_jsonb?: Record<string, unknown> | null;
-}): boolean {
-  return (
-    isControlledE2EOperationalCase(opCase) || isSettingsOperationalTestCase(opCase)
-  );
-}
-
 async function triggerControlledE2EAgentTick(
   db: DbClient,
   updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
@@ -459,10 +447,12 @@ export async function handlePublishDestinationApprovalDecision(
         },
       });
 
-      const runAgentTick = shouldRunPublishDestinationAgentTick(opCase);
+      // Producción + lab: siempre continuar el publication runner (Ungga /
+      // cierre). Antes solo E2E/settings dejaba deferred set → botones web/
+      // Telegram no despertaban el flujo en casos reales.
       const tickSource = `publish_destination_${destKey}_reapprove_force_retry`;
-      const deferTick = runAgentTick && params.deferControlledE2ETick === true;
-      if (runAgentTick && !deferTick) {
+      const deferTick = params.deferControlledE2ETick === true;
+      if (!deferTick) {
         void triggerControlledE2EAgentTick(db, updated, tickSource, {
           forceRetryFailedOperation: true,
         }).catch((tickError) => {
@@ -497,13 +487,27 @@ export async function handlePublishDestinationApprovalDecision(
     status: "actioned",
   });
   if (!claimed) {
+    // Reintento/duplicado: igual despertar el runner (puede faltar Ungga HITL
+    // o el resumen final si el kick anterior no corrió).
+    const resumeSource = `publish_destination_${destination}_already_applied`;
+    const deferTick = params.deferControlledE2ETick === true;
+    if (!deferTick) {
+      void triggerControlledE2EAgentTick(db, opCase, resumeSource).catch(
+        (tickError) => {
+          console.error(
+            "[publish-destination-approval] already_applied kick failed:",
+            tickError
+          );
+        }
+      );
+    }
     return {
       ok: true,
       status: "already_applied",
       message: `Destino ${destination} ya estaba procesado.`,
       destination,
       case_id: opCase.id,
-      deferredControlledE2ETick: null,
+      deferredControlledE2ETick: deferTick ? { source: resumeSource } : null,
     };
   }
   await resolveInternalNotificationWithReminders(db, {
@@ -579,13 +583,12 @@ export async function handlePublishDestinationApprovalDecision(
   // Patrón gated transition: approve/skip desbloquean el flujo (publicar o
   // pedir el siguiente destino). reject deja waiting_internal a propósito.
   const shouldContinueFlow = nextState === "approved" || nextState === "skipped";
-  const runAgentTick =
-    shouldContinueFlow && shouldRunPublishDestinationAgentTick(opCase);
   const tickSource = `publish_destination_${destination}_${nextState}`;
-  const deferTick = runAgentTick && params.deferControlledE2ETick === true;
-  if (runAgentTick && !deferTick) {
+  const deferTick =
+    shouldContinueFlow && params.deferControlledE2ETick === true;
+  if (shouldContinueFlow && !deferTick) {
     void triggerControlledE2EAgentTick(db, updated, tickSource).catch((tickError) => {
-      console.error("[publish-destination-approval] e2e tick failed:", tickError);
+      console.error("[publish-destination-approval] publication kick failed:", tickError);
     });
   }
 

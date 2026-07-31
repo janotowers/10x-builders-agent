@@ -22,6 +22,10 @@ import {
 } from "@/lib/operational-cases/settings-test-tool-policy";
 import { buildPublicationAwareE2EToolApprovalPolicy } from "@/lib/operational-cases/publication-tool-policy";
 import { finalizeCaseAfterToolDecision } from "@/lib/operational-cases/finalize-case-after-tool-decision";
+import {
+  buildOperationalCaseToolApprovalPolicy,
+  mergeToolApprovalPolicies,
+} from "@/lib/operational-cases/conversational-case-orchestrator";
 
 const TOOL_CALL_SELECT =
   "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind";
@@ -225,6 +229,21 @@ export async function POST(request: Request) {
             resumePricing.approval_status === "approved",
         })
       : undefined;
+    const opsResumePolicy = buildOperationalCaseToolApprovalPolicy(
+      resumeCase?.user_id === user.id ? resumeCase : null
+    );
+    const resumeToolApprovalPolicy = mergeToolApprovalPolicies(
+      opsResumePolicy,
+      e2eResumePolicy
+    );
+    console.info("[chat-confirm] resume policy", {
+      case_id: caseId ?? null,
+      current_step: resumeCase?.current_step ?? null,
+      policy_keys: resumeToolApprovalPolicy
+        ? Object.keys(resumeToolApprovalPolicy)
+        : [],
+      e2e: Boolean(e2eResumePolicy),
+    });
 
     const result = await runAgent({
       resumeDecision: "approve",
@@ -272,7 +291,7 @@ export async function POST(request: Request) {
       googleCalendarAccessToken,
       caseId,
       toolCallSource: isAgentE2EToolCall(toolCall) ? "agent_e2e" : undefined,
-      toolApprovalPolicy: e2eResumePolicy,
+      toolApprovalPolicy: resumeToolApprovalPolicy,
       onEvent: (event) => {
         const eventTurnId =
           event.turnId ?? ((toolCall.turn_id as string | null) ?? undefined);

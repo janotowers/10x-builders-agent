@@ -3781,6 +3781,45 @@ export function blockedPropertyOptioningStepRegressionReason(params: {
   return null;
 }
 
+/**
+ * No saltar la confirmación humana de ficha (`property_data_review`) hacia
+ * comparables u pasos posteriores. El agente puede mover a
+ * `property_data_review`; avanzar más allá exige
+ * `property_data_review_confirmed` (o `property_data_review_confirmed_at`).
+ */
+export function blockedPropertyDataReviewSkipReason(params: {
+  caseType: string | null | undefined;
+  currentStep: string | null | undefined;
+  nextStep: string | null | undefined;
+  recentPayloadKinds?: string[];
+  reviewConfirmedAt?: unknown;
+}): string | null {
+  if (params.caseType !== "property_optioning" || !params.nextStep) return null;
+  const from = params.currentStep;
+  if (from !== "documents_received" && from !== "property_data_review") {
+    return null;
+  }
+  if (
+    params.nextStep === "documents_received" ||
+    params.nextStep === "property_data_review"
+  ) {
+    return null;
+  }
+  const nextRank = propertyOptioningStepRank(params.nextStep);
+  const reviewRank = propertyOptioningStepRank("property_data_review");
+  if (nextRank == null || reviewRank == null || nextRank <= reviewRank) {
+    return null;
+  }
+  const confirmedAt =
+    typeof params.reviewConfirmedAt === "string" &&
+    params.reviewConfirmedAt.trim().length > 0;
+  const confirmedEvent = Boolean(
+    params.recentPayloadKinds?.includes("property_data_review_confirmed")
+  );
+  if (confirmedAt || confirmedEvent) return null;
+  return "property_data_review_required";
+}
+
 function sanitizeIntakePatch(
   intakeSchema: readonly OperationalCaseIntakeField[] | undefined,
   patch: Record<string, unknown>
@@ -3839,6 +3878,52 @@ export function buildOperationalCaseIntakeUpdateContext(params: {
  * value was already non-null/non-empty and the patch replaces it with a
  * DIFFERENT value. Re-sending the same value is not an overwrite.
  */
+/**
+ * Normaliza timestamps opcionales de tools (next_action_at / due_at) antes de
+ * tocar PostgreSQL. Structured outputs a veces mandan el literal `"null"` o
+ * `""` en vez de JSON null; nunca debemos reenviarlos al driver.
+ *
+ * - omitido (`undefined`) → no tocar el campo
+ * - `null` / `""` / `"null"` → limpiar (SQL NULL)
+ * - ISO parseable → ISO canónico
+ * - basura → error (el adapter rechaza la tool)
+ */
+export function normalizeOptionalIsoTimestamp(
+  value: unknown
+):
+  | { ok: true; value: string | null | undefined }
+  | { ok: false; error: "invalid_timestamp"; raw: string } {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (value === null) return { ok: true, value: null };
+  if (typeof value !== "string") {
+    return { ok: false, error: "invalid_timestamp", raw: String(value) };
+  }
+  const trimmed = value.trim();
+  if (
+    trimmed === "" ||
+    trimmed.toLowerCase() === "null" ||
+    trimmed.toLowerCase() === "undefined"
+  ) {
+    return { ok: true, value: null };
+  }
+  const ms = Date.parse(trimmed);
+  if (Number.isNaN(ms)) {
+    return { ok: false, error: "invalid_timestamp", raw: trimmed };
+  }
+  return { ok: true, value: new Date(ms).toISOString() };
+}
+
+/** Claves de context_patch que el LLM no puede inventar (fuente de verdad externa). */
+export const UPDATE_STATE_FORBIDDEN_CONTEXT_KEYS = [
+  "documents_received",
+] as const;
+
+export function forbiddenUpdateStateContextKeys(
+  patch: Record<string, unknown>
+): string[] {
+  return UPDATE_STATE_FORBIDDEN_CONTEXT_KEYS.filter((key) => key in patch);
+}
+
 export function detectIntakeFactOverwrites(
   existingContext: Record<string, unknown>,
   sanitizedPatch: Record<string, unknown>
@@ -4214,8 +4299,8 @@ export function addOperationalCaseTools(
           expected_version: number;
           status?: (typeof STATUS_VALUES)[number];
           current_step?: string;
-          next_action_at?: string;
-          due_at?: string;
+          next_action_at?: string | null;
+          due_at?: string | null;
           context_patch?: Record<string, unknown>;
           external_contact?: Record<string, unknown>;
           note?: string;
@@ -4324,6 +4409,22 @@ export function addOperationalCaseTools(
                 : undefined;
             if (contextPatch) {
               const definedContextPatch = contextPatch;
+              const forbiddenDocKeys =
+                forbiddenUpdateStateContextKeys(definedContextPatch);
+              if (forbiddenDocKeys.length > 0) {
+                const out = {
+                  ok: false,
+                  error: "forbidden_context_keys",
+                  forbidden_keys: forbiddenDocKeys,
+                  hint:
+                    "No escribas documents_received en context_patch. La fuente de verdad es operational_case_documents (ingestión determinística del canal). Tras registrar documentos reales, avanza el caso con evidencia de eventos/documentos; no inventes acuses.",
+                };
+                console.warn(
+                  `[operational-cases] forbidden_context_keys reject case=${opCase.id} step=${opCase.current_step ?? "?"} keys=${forbiddenDocKeys.join(",")}`,
+                );
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
               const protectedKeys = containsProtectedPublicationKeys(
                 definedContextPatch,
               );
@@ -4402,6 +4503,41 @@ export function addOperationalCaseTools(
               };
               await updateToolCallStatus(ctx.db, record.id, "failed", out);
               return JSON.stringify(out);
+            }
+            if (input.current_step) {
+              const reviewEvents = await getRecentOperationalCaseEvents(
+                ctx.db,
+                opCase.id,
+                40
+              );
+              const reviewSkipReason = blockedPropertyDataReviewSkipReason({
+                caseType: opCase.case_type,
+                currentStep: opCase.current_step,
+                nextStep: input.current_step,
+                recentPayloadKinds: reviewEvents.map((event) => {
+                  const payload = event.payload_jsonb;
+                  return payload &&
+                    typeof payload === "object" &&
+                    typeof (payload as Record<string, unknown>).kind === "string"
+                    ? ((payload as Record<string, unknown>).kind as string)
+                    : "";
+                }),
+                reviewConfirmedAt: isRecord(opCase.context_jsonb)
+                  ? opCase.context_jsonb.property_data_review_confirmed_at
+                  : undefined,
+              });
+              if (reviewSkipReason) {
+                const out = {
+                  ok: false,
+                  error: reviewSkipReason,
+                  current_step: opCase.current_step,
+                  requested_step: input.current_step,
+                  hint:
+                    "Los mínimos de ficha deben confirmarse con notify_user(kind=property_data_review) y la confirmación humana antes de avanzar a comparables.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
             }
             if (
               opCase.current_step === "awaiting_documents" &&
@@ -4528,6 +4664,33 @@ export function addOperationalCaseTools(
               effectiveCurrentStep = "published";
             }
 
+            const nextActionAtNorm = normalizeOptionalIsoTimestamp(
+              input.next_action_at
+            );
+            if (!nextActionAtNorm.ok) {
+              const out = {
+                ok: false,
+                error: "invalid_next_action_at",
+                raw: nextActionAtNorm.raw,
+                hint:
+                  "next_action_at debe ser ISO 8601 o null. No uses el literal \"null\" ni strings vacíos.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+            const dueAtNorm = normalizeOptionalIsoTimestamp(input.due_at);
+            if (!dueAtNorm.ok) {
+              const out = {
+                ok: false,
+                error: "invalid_due_at",
+                raw: dueAtNorm.raw,
+                hint:
+                  "due_at debe ser ISO 8601 o null. No uses el literal \"null\" ni strings vacíos.",
+              };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+
             updated = await updateOperationalCase(
               ctx.db,
               opCase.id,
@@ -4535,8 +4698,8 @@ export function addOperationalCaseTools(
               {
                 status: effectiveStatus,
                 currentStep: effectiveCurrentStep,
-                nextActionAt: input.next_action_at,
-                dueAt: input.due_at,
+                nextActionAt: nextActionAtNorm.value,
+                dueAt: dueAtNorm.value,
                 context: mergedContext,
                 externalContact: mergeExternalContactPatch(
                   opCase.external_contact_jsonb,
@@ -4632,19 +4795,29 @@ export function addOperationalCaseTools(
         {
           name: "operational_case_update_state",
           description:
-            "Updates the active operational case (status/current_step/next_action_at/...). Optimistic-locked by version. Do NOT put publication/published/publish_approvals/photo_manifest/e2e_control_status in context_patch — the publication runner and destination adapters own that state.",
+            "Updates the active operational case (status/current_step/next_action_at/...). Optimistic-locked by version. Do NOT put publication/published/publish_approvals/photo_manifest/e2e_control_status/documents_received in context_patch — documents live in operational_case_documents; the publication runner owns publication state.",
           schema: z.object({
             case_id: z.string().min(1),
             expected_version: z.number().int().nonnegative(),
             status: z.enum(STATUS_VALUES).optional(),
             current_step: z.string().min(1).optional(),
-            next_action_at: z.string().optional(),
-            due_at: z.string().optional(),
+            next_action_at: z
+              .union([z.string(), z.null()])
+              .optional()
+              .describe(
+                "ISO 8601 datetime, or null to clear. Never send the literal string \"null\"."
+              ),
+            due_at: z
+              .union([z.string(), z.null()])
+              .optional()
+              .describe(
+                "ISO 8601 datetime, or null to clear. Never send the literal string \"null\"."
+              ),
             context_patch: z
               .record(z.string(), z.any())
               .optional()
               .describe(
-                "Partial context merge. Forbidden keys (rejected): publication, published, publish_approvals, photo_manifest, e2e_control_status, package_ready_lab_auto_continue_listing_id, package_ready_machine_work_in_flight. The publication runner and destination adapters own those."
+                "Partial context merge. Forbidden keys (rejected): documents_received, publication, published, publish_approvals, photo_manifest, e2e_control_status, package_ready_lab_auto_continue_listing_id, package_ready_machine_work_in_flight."
               ),
             external_contact: z.record(z.string(), z.any()).optional(),
             note: z.string().optional(),

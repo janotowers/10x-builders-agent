@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   blockedAwaitingDocumentsTransitionReason,
+  blockedPropertyDataReviewSkipReason,
   blockedPropertyOptioningStepRegressionReason,
   buildPropertyDataMinimumsSummaryMessage,
   buildContractDataReviewNotifyText,
@@ -18,10 +19,12 @@ import {
   evaluatePredialBuiltAreaQualityForTest,
   extractPredialSurfacesFromTextForTest,
   extractSurfaceTotalM2FromTextForTest,
+  forbiddenUpdateStateContextKeys,
   looksLikeComparablesSummaryNotificationForTest,
   looksLikeComparablesCompletionProseForTest,
   comparablesSearchExpansionDecisionAlreadyRequestedForTest,
   matchesOwnedContractDataReviewForTest,
+  normalizeOptionalIsoTimestamp,
   priceApprovalNotificationAlreadyDeliveredForTest,
   missingRequiredIntakeFields,
   normalizePredialExtractionSurfacesForTest,
@@ -295,6 +298,41 @@ assert.equal(
     caseType: "property_optioning",
     currentStep: "package_ready",
     nextStep: "published",
+  }),
+  null
+);
+
+assert.equal(
+  blockedPropertyDataReviewSkipReason({
+    caseType: "property_optioning",
+    currentStep: "documents_received",
+    nextStep: "comparables_in_progress",
+  }),
+  "property_data_review_required"
+);
+assert.equal(
+  blockedPropertyDataReviewSkipReason({
+    caseType: "property_optioning",
+    currentStep: "documents_received",
+    nextStep: "property_data_review",
+  }),
+  null
+);
+assert.equal(
+  blockedPropertyDataReviewSkipReason({
+    caseType: "property_optioning",
+    currentStep: "property_data_review",
+    nextStep: "comparables_in_progress",
+    recentPayloadKinds: ["property_data_review_confirmed"],
+  }),
+  null
+);
+assert.equal(
+  blockedPropertyDataReviewSkipReason({
+    caseType: "property_optioning",
+    currentStep: "documents_received",
+    nextStep: "comparables_in_progress",
+    reviewConfirmedAt: "2026-07-30T21:00:00.000Z",
   }),
   null
 );
@@ -1124,5 +1162,45 @@ assert.deepEqual(
   detectIntakeFactOverwrites({ rooms: 2 }, { rooms: 3 }),
   ["rooms"]
 );
+
+// Nullable date contract for update_state.
+assert.deepEqual(normalizeOptionalIsoTimestamp(undefined), {
+  ok: true,
+  value: undefined,
+});
+assert.deepEqual(normalizeOptionalIsoTimestamp(null), {
+  ok: true,
+  value: null,
+});
+assert.deepEqual(normalizeOptionalIsoTimestamp(""), {
+  ok: true,
+  value: null,
+});
+assert.deepEqual(normalizeOptionalIsoTimestamp("null"), {
+  ok: true,
+  value: null,
+});
+assert.deepEqual(normalizeOptionalIsoTimestamp("NULL"), {
+  ok: true,
+  value: null,
+});
+const validIso = normalizeOptionalIsoTimestamp("2026-07-30T18:00:00.000Z");
+assert.equal(validIso.ok, true);
+if (validIso.ok) {
+  assert.equal(validIso.value, "2026-07-30T18:00:00.000Z");
+}
+const invalidIso = normalizeOptionalIsoTimestamp("not-a-date");
+assert.equal(invalidIso.ok, false);
+if (!invalidIso.ok) {
+  assert.equal(invalidIso.error, "invalid_timestamp");
+  assert.equal(invalidIso.raw, "not-a-date");
+}
+
+// documents_received is owned by operational_case_documents, not context_patch.
+assert.deepEqual(
+  forbiddenUpdateStateContextKeys({ documents_received: [{ name: "x.pdf" }] }),
+  ["documents_received"]
+);
+assert.deepEqual(forbiddenUpdateStateContextKeys({ notes: "ok" }), []);
 
 console.log("operational-cases-adapters surface selftest ok");

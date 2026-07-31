@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   buildContractDraftDownloadUrl,
+  buildContractReviewWebChatPresentation,
   contractDraftDownloadPath,
   normalizeContractReviewNotifyText,
   parseGenerateDocumentRenderResult,
@@ -15,6 +16,28 @@ assert.equal(
 assert.equal(
   buildContractDraftDownloadUrl("abc-123"),
   "https://app.test/api/operational-cases/abc-123/documents/contract_draft/download"
+);
+
+const webPresentation = buildContractReviewWebChatPresentation({
+  caseId: "abc-123",
+  storagePath: "u/generated-documents/commission_contract/foo.docx",
+});
+assert.match(
+  webPresentation.text,
+  /\[Descargar borrador del contrato\]\(https:\/\/app\.test\/api\/operational-cases\/abc-123\/documents\/contract_draft\/download\)/
+);
+assert.equal(webPresentation.attachment.fileName, "foo.docx");
+assert.equal(
+  webPresentation.attachment.downloadUrl,
+  "https://app.test/api/operational-cases/abc-123/documents/contract_draft/download"
+);
+assert.equal(webPresentation.actions.length, 2);
+assert.equal(webPresentation.actions[0]?.id, "approve_send");
+assert.equal(webPresentation.actions[0]?.label, "Enviar por email");
+assert.equal(webPresentation.actions[1]?.id, "request_changes");
+assert.equal(
+  webPresentation.actions[1]?.label,
+  "Subir contrato corregido y enviar"
 );
 
 const longUrl =

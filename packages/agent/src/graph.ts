@@ -22,6 +22,7 @@ import {
   getOperationalCase,
   getOperationalCaseTypeById,
   getRecentOperationalCaseEvents,
+  rejectSiblingPendingToolCallsForCase,
 } from "@agents/db";
 import type {
   UserToolSetting,
@@ -81,6 +82,7 @@ import { appendTenantContextBlock } from "./business-brain/tenant-context";
 import { appendBusinessBrainContextBlock } from "./business-brain/compiler";
 import { getBusinessBrainWarehouse } from "./business-brain/schema";
 import { toolRequiresConfirmation } from "./tools/catalog";
+import { buildToolConfirmationMessage } from "./tools/confirmation-messages";
 import { userMessageIsScheduleIntent } from "./tools/schedule-intent";
 import { getCheckpointer } from "./checkpointer";
 import { GraphState, type GraphStateType } from "./state";
@@ -1935,117 +1937,10 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       args: Record<string, unknown>,
       extras: { memoryContent?: string | null; memoryAlreadyArchived?: boolean } = {}
     ): string {
-      const short = (s: string, max = 140) =>
-        s.length > max ? `${s.slice(0, max).trim()}…` : s;
-      const recurringScheduleLabel = (
-        cronExpr: unknown,
-        timezone: unknown
-      ): string => {
-        const cron = String(cronExpr ?? "").trim();
-        const tz = String(timezone ?? userTimezone ?? "UTC");
-        const everyMinutes = cron.match(/^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$/);
-        if (everyMinutes) return `cada ${everyMinutes[1]} minutos`;
-        const hourly = cron.match(/^(\d+)\s+\*\s+\*\s+\*\s+\*$/);
-        if (hourly) return `cada hora, al minuto ${hourly[1]}`;
-        return `${cron || "frecuencia recurrente"} (${tz})`;
-      };
-      if (toolName === "archive_user_memory") {
-        const id = String(args.memory_id ?? "");
-        const content = extras.memoryContent?.trim();
-        const alreadyNote = extras.memoryAlreadyArchived
-          ? "\n(Este recuerdo ya estaba archivado; aprobar no cambia nada.)"
-          : "";
-        if (content) {
-          return `Confirma archivar este recuerdo (reversible):\n\n«${content}»\n\nID: ${id}${alreadyNote}`;
-        }
-        return `Confirma archivar este recuerdo (reversible):\nID: ${id}${alreadyNote}`;
-      }
-      if (toolName === "delete_user_memory") {
-        const id = String(args.memory_id ?? "");
-        const content = extras.memoryContent?.trim();
-        if (content) {
-          return `Confirma borrar definitivamente este recuerdo (irreversible):\n\n«${content}»\n\nID: ${id}`;
-        }
-        return `Confirma borrar definitivamente este recuerdo (irreversible):\nID: ${id}`;
-      }
-      if (toolName === "github_create_repo") {
-        return `Se necesita tu confirmación para crear el repositorio "${String(args.name ?? "")}"${args.private ? " (privado)" : ""}.`;
-      }
-      if (toolName === "github_create_issue") {
-        return `Se necesita tu confirmación para crear el issue "${String(args.title ?? "")}" en ${String(args.owner ?? "")}/${String(args.repo ?? "")}.`;
-      }
-      if (toolName === "calendar_create_event") {
-        const fmt = (iso: unknown): string => {
-          try {
-            const d = new Date(String(iso));
-            if (isNaN(d.getTime())) return String(iso);
-            return d.toLocaleString("es-MX", {
-              weekday: "long",
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-              timeZone: userTimezone ?? "America/Mexico_City",
-            });
-          } catch {
-            return String(iso);
-          }
-        };
-        return `Confirma crear el evento "${String(args.summary ?? "")}" de ${fmt(args.start_datetime)} a ${fmt(args.end_datetime)}.`;
-      }
-      if (toolName === "calendar_update_event") {
-        return `Confirma actualizar el evento ${String(args.event_id ?? "")}.`;
-      }
-      if (toolName === "calendar_delete_event") {
-        return `Confirma eliminar el evento ${String(args.event_id ?? "")}.`;
-      }
-      if (toolName === "bash") {
-        const term = String(args.terminal ?? "default");
-        const p = String(args.prompt ?? "");
-        const preview = p.length > 200 ? `${p.slice(0, 200)}…` : p;
-        return `Confirma ejecutar en el servidor (etiqueta: "${term}") el comando:\n${preview}`;
-      }
-      if (toolName === "write_file") {
-        const p = String(args.path ?? "");
-        const c = String(args.content ?? "");
-        const bytes = Buffer.byteLength(c, "utf8");
-        return `Confirma escribir (crear o sobrescribir) el archivo \`${p}\` en el workspace del servidor (${bytes} bytes).`;
-      }
-      if (toolName === "edit_file") {
-        const p = String(args.path ?? "");
-        const oldS = String(args.old_string ?? "");
-        const newS = String(args.new_string ?? "");
-        return `Confirma editar el archivo \`${p}\`: reemplazar\n«${short(oldS)}»\npor\n«${short(newS)}».`;
-      }
-      if (toolName === "schedule_task") {
-        const prompt = String(args.prompt ?? "");
-        const type = String(args.schedule_type ?? "");
-        const title = String(args.display_title ?? "").trim();
-        const taskLine = title || short(prompt);
-        if (type === "one_time") {
-          const when = args.run_at
-            ? (() => {
-                try {
-                  return new Date(String(args.run_at)).toLocaleString("es-MX", {
-                    weekday: "long",
-                    year: "numeric",
-                    month: "long",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    timeZone: userTimezone ?? "UTC",
-                  });
-                } catch {
-                  return String(args.run_at);
-                }
-              })()
-            : "hora no especificada";
-          return `Programar tarea para ${when}.\n\nTarea: «${taskLine}»`;
-        }
-        return `Programar tarea recurrente ${recurringScheduleLabel(args.cron_expr, args.timezone)}.\n\nTarea: «${taskLine}»`;
-      }
-      return `Confirma ejecutar la herramienta ${toolName}.`;
+      return buildToolConfirmationMessage(toolName, args, {
+        ...extras,
+        userTimezone,
+      });
     }
 
     function invalidMemoryMutationArgs(
@@ -2233,6 +2128,45 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           // The user already approved the schedule_task itself; bothering them
           // again at execution time defeats the purpose of "scheduled".
           if (approvalMode === "auto_execute") {
+            const caseIdForSupersede =
+              typeof toolArgs.case_id === "string" && toolArgs.case_id.trim()
+                ? toolArgs.case_id.trim()
+                : typeof input.caseId === "string" && input.caseId.trim()
+                  ? input.caseId.trim()
+                  : null;
+            console.info("[agent] tool approval", {
+              tool: tc.name,
+              approval_mode: approvalMode,
+              case_id: caseIdForSupersede,
+              current_step: boundOperationalStepKey ?? null,
+              policy_key: input.toolApprovalPolicy?.[tc.name] ?? null,
+            });
+            // Antes de autoejecutar: cierra HITL equivalentes antiguos del
+            // mismo tool/caso para que la UI no rehidrate tarjetas obsoletas.
+            if (caseIdForSupersede) {
+              try {
+                const superseded = await rejectSiblingPendingToolCallsForCase(
+                  db,
+                  {
+                    caseId: caseIdForSupersede,
+                    toolName: tc.name,
+                    reason: "superseded_by_auto_execute",
+                  }
+                );
+                if (superseded > 0) {
+                  console.info("[agent] superseded stale pending confirmations", {
+                    case_id: caseIdForSupersede,
+                    tool: tc.name,
+                    count: superseded,
+                  });
+                }
+              } catch (supersedeErr) {
+                console.warn(
+                  "[agent] failed to supersede sibling pending tool calls:",
+                  supersedeErr
+                );
+              }
+            }
             // Tools de negocio (generate_document, notify_user, etc.) ya
             // crean su fila en tool_calls dentro del handler; una fila previa
             // aquí duplicaba la auditoría sin ejecutar la tool dos veces.

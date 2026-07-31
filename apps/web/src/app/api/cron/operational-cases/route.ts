@@ -32,6 +32,7 @@ import {
   getUserIntegrations,
   getGoogleCalendarAccessToken,
   getDueOperationalCases,
+  getInternalUserNotification,
   getOperationalCase,
   getRecentOperationalCaseEvents,
   getTelegramChatId,
@@ -69,6 +70,10 @@ import {
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import { notify } from "@/lib/notify";
 import { buildHitlApprovalTelegramMarkup } from "@/lib/notify/hitl-telegram-markup";
+import { notifyUserRespectingActiveInternalChannel } from "@/lib/operational-cases/deliver-internal-case-follow-up";
+import { getActiveCaseInternalChannel } from "@/lib/operational-cases/mirror-case-message-to-web-chat";
+import { isInternalCaseNotificationObsolete } from "@/lib/operational-cases/obsolete-case-notification";
+import { ensurePhotosUploadRequestForCase } from "@/lib/operational-cases/ensure-photos-upload-request";
 import { buildOperationalCaseCronToolApprovalPolicy } from "@/lib/operational-cases/operational-case-cron-tool-policy";
 import {
   isInternalDocumentEventDrivenWait,
@@ -95,6 +100,7 @@ import { requestPublicationProgress } from "@/lib/operational-cases/publication-
 import {
   applyPostAgentContractHandling,
   createPublicationRunnerOwnedAgentTick,
+  listingDescriptionReviewNeedsRegeneration,
   runSettingsTestCaseAgentTick,
   type TurnToolCallRow,
 } from "@/lib/operational-cases/run-settings-test-case-tick";
@@ -290,6 +296,12 @@ async function maybeSendPendingToolButtonsToAdvisor(
 ) {
   const firstPending = pendingCalls[0];
   if (!firstPending) return;
+  // Paridad de canal: si el asesor opera el caso en Web, no empujar Telegram.
+  const activeChannel = await getActiveCaseInternalChannel({
+    db,
+    caseId: opCase.id,
+  }).catch(() => null);
+  if (activeChannel === "web") return;
   const chatId = await getTelegramChatId(db, opCase.user_id);
   if (!chatId) return;
   const recentEvents = await getRecentOperationalCaseEvents(db, opCase.id, 30);
@@ -623,6 +635,15 @@ async function maybeSelfHealToolConfirmationNotification(
   return refreshed ?? notification;
 }
 
+async function getInternalUserNotificationStillUnread(
+  db: ReturnType<typeof createServerClient>,
+  notificationId: string,
+  userId: string
+): Promise<boolean> {
+  const fresh = await getInternalUserNotification(db, notificationId);
+  return Boolean(fresh && fresh.user_id === userId && fresh.status === "unread");
+}
+
 async function processInternalNotificationReminder(
   db: ReturnType<typeof createServerClient>,
   stepLabelResolver: OperationalStepLabelResolver,
@@ -630,6 +651,26 @@ async function processInternalNotificationReminder(
   deliveryContextCache: Map<string, ReminderDeliveryContext>
 ) {
   let currentNotification = notification;
+  if (currentNotification.case_id) {
+    const notificationCase = await getOperationalCase(
+      db,
+      currentNotification.case_id
+    );
+    if (
+      notificationCase &&
+      isInternalCaseNotificationObsolete({
+        notification: currentNotification,
+        opCase: notificationCase,
+      })
+    ) {
+      await setInternalUserNotificationStatus(db, {
+        id: currentNotification.id,
+        userId: currentNotification.user_id,
+        status: "actioned",
+      });
+      return "resolved_obsolete_stage";
+    }
+  }
   if (await resolveStaleToolConfirmationNotification(db, currentNotification)) {
     return "resolved_stale";
   }
@@ -644,13 +685,19 @@ async function processInternalNotificationReminder(
     deliveryContextCache
   );
   const kindConfig = internalNotificationKindConfig(currentNotification.kind);
+  const activeChannelForPolicy = currentNotification.case_id
+    ? await getActiveCaseInternalChannel({
+        db,
+        caseId: currentNotification.case_id,
+      }).catch(() => null)
+    : null;
   const policy = resolveEngagementPolicy(
     {
       audience: "internal_user",
       intent: kindConfig.intent ?? "reminder",
       kind: kindConfig.kind,
       priority: currentNotification.priority,
-      channel: "telegram",
+      channel: activeChannelForPolicy === "web" ? "web" : "telegram",
     },
     deliveryContext.engagementOverrides
   );
@@ -678,7 +725,14 @@ async function processInternalNotificationReminder(
     const pendingToolCallId = notificationMetadataPendingToolCallId(
       currentNotification.metadata_jsonb
     );
-    await notify(
+    // Re-check: el usuario pudo cancelar/descartar mientras corría el cron.
+    const stillUnreadEscalation = await getInternalUserNotificationStillUnread(
+      db,
+      currentNotification.id,
+      currentNotification.user_id
+    );
+    if (!stillUnreadEscalation) return "resolved_before_send";
+    await notifyUserRespectingActiveInternalChannel(
       db,
       currentNotification.user_id,
       {
@@ -760,7 +814,13 @@ async function processInternalNotificationReminder(
     // fileCount === 0: keep the original request nudge (still waiting for uploads).
   }
 
-  await notify(
+  const stillUnreadReminder = await getInternalUserNotificationStillUnread(
+    db,
+    currentNotification.id,
+    currentNotification.user_id
+  );
+  if (!stillUnreadReminder) return "resolved_before_send";
+  await notifyUserRespectingActiveInternalChannel(
     db,
     currentNotification.user_id,
     {
@@ -774,7 +834,7 @@ async function processInternalNotificationReminder(
         ...(uploadBatchPurpose ? { purpose: uploadBatchPurpose } : {}),
       },
     },
-    currentNotification.priority
+    currentNotification.priority === "high" ? "high" : "normal"
   );
   await markInternalNotificationReminderSent(db, currentNotification);
   if (currentNotification.case_id) {
@@ -979,6 +1039,28 @@ async function processCase(
     return { case_id: opCase.id, status: "skipped" };
   }
   if (opCase.current_step === "package_ready") {
+    const packageContext =
+      opCase.context_jsonb &&
+      typeof opCase.context_jsonb === "object" &&
+      !Array.isArray(opCase.context_jsonb)
+        ? (opCase.context_jsonb as Record<string, unknown>)
+        : {};
+    const listingApproved = Boolean(packageContext.listing_description_approved);
+    if (
+      !listingApproved ||
+      listingDescriptionReviewNeedsRegeneration(packageContext)
+    ) {
+      await runSettingsTestCaseAgentTick(
+        db,
+        opCase,
+        opCase.user_id,
+        { source: "cron_package_ready_listing_review" }
+      );
+      return {
+        case_id: opCase.id,
+        status: "ok",
+      };
+    }
     const progress = await requestPublicationProgress(
       db,
       opCase.id,
@@ -1126,7 +1208,7 @@ async function processCase(
       autoApproveTools: false,
       // Bookkeeping interno del caso no es una decisión humana. Las acciones
       // externas/comerciales de riesgo conservan su HITL normal.
-      toolApprovalPolicy: buildOperationalCaseCronToolApprovalPolicy(),
+      toolApprovalPolicy: buildOperationalCaseCronToolApprovalPolicy(opCase),
       caseId: opCase.id,
     });
 
@@ -1162,10 +1244,21 @@ async function processCase(
       opCase: fresh,
       source: "post_agent_invariant_cron",
     });
-    const caseAfterInvariants = await stabilizeInternalDocumentWait(
+    let caseAfterInvariants = await stabilizeInternalDocumentWait(
       db,
       invariantResult.case ?? fresh
     );
+    if (
+      !result.pendingConfirmation &&
+      caseAfterInvariants?.current_step === "photos_requested"
+    ) {
+      const photosRequest = await ensurePhotosUploadRequestForCase({
+        db,
+        opCase: caseAfterInvariants,
+        source: "operational_cases_cron",
+      });
+      caseAfterInvariants = photosRequest.case;
+    }
 
     if (result.pendingConfirmation) {
       // Notify in the same tick that created HITL — don't wait for the next

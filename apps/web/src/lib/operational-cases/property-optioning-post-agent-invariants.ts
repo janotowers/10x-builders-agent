@@ -23,10 +23,14 @@ import {
   operationalCaseDocumentRequestTargetFromContext,
   type OperationalCase,
 } from "@agents/types";
-import { notify } from "@/lib/notify";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
 import { resolveParkingSpacesForDisplay } from "./parse-owner-characteristics";
 import { createAdvisedCaseUpdate } from "./advised-case-update";
+import {
+  deliverInternalCaseFollowUp,
+  notifyUserRespectingActiveInternalChannel,
+} from "./deliver-internal-case-follow-up";
+import { ensureContractCommercialDataAsk } from "./ensure-contract-commercial-ask";
 
 // Paridad lab/producción (S1.6): las transiciones de paso de los invariants
 // pasan por el mismo evaluador de definiciones que el resto del runtime. Las
@@ -52,7 +56,8 @@ type ApplyPropertyOptioningPostAgentInvariantsResult = {
     | "remediated_comparables"
     | "requested_comparables_decision"
     | "advanced_to_price_proposal"
-    | "requested_property_data_quality_review";
+    | "requested_property_data_quality_review"
+    | "requested_contract_data_review";
 };
 
 /**
@@ -943,8 +948,7 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
         opCase: workingCase,
         userId: workingCase.user_id,
         source,
-        notifyUser: async (notifyDb, userId, payload, urgency) =>
-          notify(notifyDb, userId, payload, urgency),
+        notifyUser: notifyUserRespectingActiveInternalChannel,
       });
       if (advanceResult.case) {
         workingCase = advanceResult.case;
@@ -977,8 +981,7 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
           opCase: workingCase,
           userId: workingCase.user_id,
           source: `${source}_ensure_price_approval`,
-          notifyUser: async (notifyDb, userId, payload, urgency) =>
-            notify(notifyDb, userId, payload, urgency),
+          notifyUser: notifyUserRespectingActiveInternalChannel,
         });
         if (ensureApprovalResult.case) {
           workingCase = ensureApprovalResult.case;
@@ -1025,19 +1028,14 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
     return { case: workingCase, action: remediated ? "remediated_comparables" : "no_action" };
   }
 
-  const notifyResult = await notify(
+  const delivery = await deliverInternalCaseFollowUp({
     db,
-    workingCase.user_id,
-    {
-      text: comparablesDecisionText({ opCase: workingCase, comparablesAnalysis }),
-      kind: "comparables_search_expansion_decision",
-      data: {
-        case_id: workingCase.id,
-        source,
-      },
-    },
-    "normal"
-  );
+    userId: workingCase.user_id,
+    caseId: workingCase.id,
+    text: comparablesDecisionText({ opCase: workingCase, comparablesAnalysis }),
+    kind: "comparables_search_expansion_decision",
+    data: { source },
+  });
 
   await insertOperationalCaseEvent(db, {
     caseId: workingCase.id,
@@ -1047,7 +1045,9 @@ async function applyPropertyOptioningComparablesPostAgentInvariants(params: {
     payload: {
       kind: "comparables_search_expansion_decision_requested",
       source,
-      notify_delivered: notifyResult.delivered,
+      active_internal_channel: delivery.activeChannel,
+      notify_delivered: delivery.notifyDelivered,
+      web_chat_mirrored: delivery.webChatMirrored,
     },
   });
 
@@ -1205,6 +1205,32 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
 }): Promise<ApplyPropertyOptioningPostAgentInvariantsResult> {
   const { db, opCase, source } = params;
   if (!opCase) return { case: null, action: "not_applicable" };
+
+  if (
+    opCase.case_type === "property_optioning" &&
+    opCase.current_step === "contract_pending"
+  ) {
+    try {
+      const ask = await ensureContractCommercialDataAsk({
+        db,
+        opCase,
+        source,
+      });
+      if (ask.asked) {
+        return {
+          case: ask.case,
+          action: "requested_contract_data_review",
+        };
+      }
+      return { case: ask.case, action: "no_action" };
+    } catch (askError) {
+      console.warn(
+        "[post-agent-invariants] ensure contract commercial ask failed:",
+        askError
+      );
+      return { case: opCase, action: "no_action" };
+    }
+  }
 
   if (isPropertyOptioningComparablesReviewPoint(opCase)) {
     return applyPropertyOptioningComparablesPostAgentInvariants({
@@ -1402,21 +1428,24 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
         ]
           .filter((line): line is string => line != null)
           .join("\n");
-        const notifyResult = await notify(
+        const delivery = await deliverInternalCaseFollowUp({
           db,
-          workingCase.user_id,
-          {
-            text: qualityText,
-            kind: "property_data_quality_review",
-            data: {
-              case_id: workingCase.id,
-              source,
-              observed_value_m2: observed ?? null,
-              suggested_value_m2: suggested ?? null,
-            },
+          userId: workingCase.user_id,
+          caseId: workingCase.id,
+          text: qualityText,
+          kind: "property_data_quality_review",
+          data: {
+            source,
+            observed_value_m2: observed ?? null,
+            suggested_value_m2: suggested ?? null,
           },
-          "high"
-        );
+          urgency: "high",
+        });
+        const notifyResult = {
+          delivered: delivery.notifyDelivered,
+          activeChannel: delivery.activeChannel,
+          webChatMirrored: delivery.webChatMirrored,
+        };
         await insertOperationalCaseEvent(db, {
           caseId: workingCase.id,
           eventType: "human_decision",
@@ -1527,21 +1556,24 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
             )}`,
             "Revisa los documentos en el caso y, si están ilegibles, pide al dueño que los reenvíe con mejor calidad.",
           ].join("\n");
-          const notifyResult = await notify(
+          const delivery = await deliverInternalCaseFollowUp({
             db,
-            workingCase.user_id,
-            {
-              text: escalationText,
-              kind: "document_extraction_failed",
-              data: {
-                case_id: workingCase.id,
-                title: "No pude leer documentos del caso",
-                source,
-                exhausted_document_ids: deterministicIds,
-              },
+            userId: workingCase.user_id,
+            caseId: workingCase.id,
+            text: escalationText,
+            kind: "document_extraction_failed",
+            data: {
+              title: "No pude leer documentos del caso",
+              source,
+              exhausted_document_ids: deterministicIds,
             },
-            "high"
-          );
+            urgency: "high",
+          });
+          const notifyResult = {
+            delivered: delivery.notifyDelivered,
+            activeChannel: delivery.activeChannel,
+            webChatMirrored: delivery.webChatMirrored,
+          };
           await insertOperationalCaseEvent(db, {
             caseId: workingCase.id,
             eventType: "escalated",
@@ -1661,21 +1693,18 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
       missing: minimums.missing,
     });
     if (requestTarget === "internal_user") {
-      const notifyResult = await notify(
+      const delivery = await deliverInternalCaseFollowUp({
         db,
-        workingCase.user_id,
-        {
-          text,
-          kind: "property_data_minimums_missing",
-          data: {
-            case_id: workingCase.id,
-            source,
-            missing: minimums.missing,
-            property_type: minimums.propertyType,
-          },
+        userId: workingCase.user_id,
+        caseId: workingCase.id,
+        text,
+        kind: "property_data_minimums_missing",
+        data: {
+          source,
+          missing: minimums.missing,
+          property_type: minimums.propertyType,
         },
-        "normal"
-      );
+      });
       await insertOperationalCaseEvent(db, {
         caseId: workingCase.id,
         eventType: "reminder_sent",
@@ -1686,7 +1715,9 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           channel: "notify_user",
           purpose: "characteristics_pending_internal",
           audience: "internal_user",
-          notify_delivered: notifyResult.delivered,
+          active_internal_channel: delivery.activeChannel,
+          notify_delivered: delivery.notifyDelivered,
+          web_chat_mirrored: delivery.webChatMirrored,
           reask: isReAsk,
           missing: minimums.missing,
           document_fields_used: documentFields,
@@ -1779,20 +1810,17 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
     opCase: workingCase,
     documentFields,
   });
-  const notifyResult = await notify(
+  const delivery = await deliverInternalCaseFollowUp({
     db,
-    workingCase.user_id,
-    {
-      text: reviewText,
-      kind: "property_data_review",
-      data: {
-        case_id: workingCase.id,
-        title: "Revisión de datos de propiedad",
-        source,
-      },
+    userId: workingCase.user_id,
+    caseId: workingCase.id,
+    text: reviewText,
+    kind: "property_data_review",
+    data: {
+      title: "Revisión de datos de propiedad",
+      source,
     },
-    "normal"
-  );
+  });
   await insertOperationalCaseEvent(db, {
     caseId: workingCase.id,
     eventType: "human_decision",
@@ -1801,7 +1829,9 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
     payload: {
       kind: "property_data_review_requested",
       source,
-      notify_delivered: notifyResult.delivered,
+      active_internal_channel: delivery.activeChannel,
+      notify_delivered: delivery.notifyDelivered,
+      web_chat_mirrored: delivery.webChatMirrored,
       document_fields_used: documentFields,
     },
   });

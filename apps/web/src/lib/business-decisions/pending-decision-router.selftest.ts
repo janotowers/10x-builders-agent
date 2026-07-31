@@ -119,6 +119,11 @@ assert.equal(
 );
 assert.equal(computeComparablesExpansionResidual("ampliar"), null);
 assert.equal(computeComparablesExpansionResidual("no entiendo"), null);
+assert.equal(
+  computeComparablesExpansionResidual("2, avanza usando Avaclick"),
+  null,
+  "restating the same Avaclick decision must not yield residual"
+);
 
 // Scenario-B style fixture: composed message carries the acknowledgment.
 {
