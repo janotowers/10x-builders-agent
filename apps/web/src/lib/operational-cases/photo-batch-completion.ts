@@ -3,15 +3,21 @@ import {
   getOperationalCase,
   insertOperationalCaseEvent,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
-  updateOperationalCase,
 } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
+import { createAdvisedCaseUpdate } from "./advised-case-update";
 import { looksLikeDocumentBatchComplete } from "./document-batch-completion";
+import { PHOTOS_UPLOAD_REQUESTED_NOTIFICATION_KIND } from "./upload-batch-shared";
 
 type DbClient = ReturnType<typeof createServerClient>;
 
+const advisedBatchUpdate = createAdvisedCaseUpdate(
+  "photo_batch_completion",
+  "runtime"
+);
+
 export const RAW_PHOTOS_MIN_COUNT = 5;
-export const PHOTOS_UPLOAD_REQUESTED_NOTIFICATION_KIND = "photos_upload_requested";
+export { PHOTOS_UPLOAD_REQUESTED_NOTIFICATION_KIND };
 
 export { looksLikeDocumentBatchComplete as looksLikePhotoBatchComplete };
 
@@ -154,7 +160,7 @@ export async function completePhotoBatchForCase(params: {
   const nextActionAt = isE2EControlled ? null : new Date().toISOString();
 
   for (let attempt = 0; attempt < MAX_TRANSITION_ATTEMPTS; attempt += 1) {
-    const updated = await updateOperationalCase(db, current.id, current.version, {
+    const updated = await advisedBatchUpdate(db, current, current.version, {
       status: "active",
       currentStep: "package_ready",
       nextActionAt,

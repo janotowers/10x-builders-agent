@@ -153,10 +153,9 @@ export async function reconcilePublicationCaseRecord(
   }
 ): Promise<PublicationReconcileResult> {
   const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
-  let { publication, changes } = rebuildPublicationStateFromCaseContext(
-    context,
-    options
-  );
+  const rebuilt = rebuildPublicationStateFromCaseContext(context, options);
+  let publication = rebuilt.publication;
+  const { changes } = rebuilt;
   const photoManifest = buildPhotoManifestFromRawPhotos(
     context.raw_photos,
     parsePhotoManifest(context.photo_manifest)

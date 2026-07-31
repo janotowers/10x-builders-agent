@@ -27,7 +27,7 @@ import {
 } from "@/lib/notifications/pending-action-display";
 import { pendingInlineActionKind } from "@/lib/notifications/pending-action-registry";
 import { contractDataReviewBooleanButtonLabels } from "@/lib/notify/contract-data-review-telegram-markup";
-import { isUploadBatchNotificationKind } from "@/lib/operational-cases/upload-batch-completion";
+import { isUploadBatchNotificationKind } from "@/lib/operational-cases/upload-batch-shared";
 import type {
   InternalNotificationDisplay,
   PendingInboxCounts,

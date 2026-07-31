@@ -4,14 +4,19 @@ import {
   insertOperationalCaseEvent,
   listOperationalCaseDocuments,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
-  updateOperationalCase,
 } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
+import { createAdvisedCaseUpdate } from "./advised-case-update";
+import { DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND } from "./upload-batch-shared";
 
 type DbClient = ReturnType<typeof createServerClient>;
 
-export const DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND =
-  "documents_upload_requested";
+const advisedBatchUpdate = createAdvisedCaseUpdate(
+  "document_batch_completion",
+  "runtime"
+);
+
+export { DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND };
 
 export async function dismissDocumentsUploadRequestedNotifications(params: {
   db: DbClient;
@@ -111,7 +116,7 @@ export async function completeDocumentBatchForCase(params: {
 
   for (let attempt = 0; attempt < MAX_TRANSITION_ATTEMPTS; attempt += 1) {
     const fromStep = current.current_step ?? null;
-    const updated = await updateOperationalCase(db, current.id, current.version, {
+    const updated = await advisedBatchUpdate(db, current, current.version, {
       status: "waiting_internal",
       currentStep: "documents_received",
       nextActionAt: new Date().toISOString(),

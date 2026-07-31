@@ -3,16 +3,21 @@ import {
   getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
-  updateOperationalCase,
   type DbClient,
 } from "@agents/db";
 import {
   operationalCaseDocumentRequestTargetFromContext,
   type OperationalCase,
 } from "@agents/types";
+import { createAdvisedCaseUpdate } from "./advised-case-update";
 import { looksLikeDocumentBatchComplete } from "./document-batch-completion";
 import { extractOwnerCharacteristics } from "./owner-characteristics-extraction";
 import { syncIntakeFieldsFromPropertyData } from "./parse-owner-characteristics";
+
+const advisedCharacteristicsUpdate = createAdvisedCaseUpdate(
+  "characteristics_response",
+  "runtime"
+);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -139,9 +144,9 @@ export async function mergeCharacteristicsOwnerResponseDeterministically(params:
     currentContext,
     propertyData
   );
-  const updated = await updateOperationalCase(
+  const updated = await advisedCharacteristicsUpdate(
     params.db,
-    params.opCase.id,
+    params.opCase,
     params.opCase.version,
     {
       status: "waiting_internal",

@@ -270,7 +270,7 @@ export async function handlePublicationReviewDecision(
 
   const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
   let publication = publicationFromContext(context);
-  let nextContext: Record<string, unknown> = { ...context };
+  const nextContext: Record<string, unknown> = { ...context };
   const forceRetryFailedOperation =
     parsed.intent === "approve_continue" &&
     shouldForceRetryPublicationCreateAfterReview({

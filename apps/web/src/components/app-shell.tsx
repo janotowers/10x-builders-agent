@@ -47,8 +47,22 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [headerTitle, setHeaderTitle] = useState(title);
-  const [headerDescription, setHeaderDescription] = useState(description);
+  const [headerOverride, setHeaderOverride] = useState<{
+    title: string;
+    description?: string;
+  } | null>(null);
+  const [syncedTitle, setSyncedTitle] = useState(title);
+  const [syncedDescription, setSyncedDescription] = useState(description);
+  // Adjust local header state while rendering when route props change
+  // (React-recommended alternative to setState-in-effect).
+  if (title !== syncedTitle || description !== syncedDescription) {
+    setSyncedTitle(title);
+    setSyncedDescription(description);
+    setHeaderOverride(null);
+  }
+  const headerTitle = headerOverride?.title ?? title;
+  const headerDescription =
+    headerOverride != null ? headerOverride.description : description;
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => {
     if (typeof window === "undefined") return "hover";
     const saved = window.localStorage.getItem(SIDEBAR_MODE_STORAGE_KEY);
@@ -70,19 +84,16 @@ export function AppShell({
   }, [sidebarMode]);
 
   useEffect(() => {
-    setHeaderTitle(title);
-    setHeaderDescription(description);
-  }, [title, description]);
-
-  useEffect(() => {
     const onHeaderEvent = (event: Event) => {
       const customEvent = event as CustomEvent<{
         title?: string;
         description?: string;
       }>;
       if (!customEvent.detail?.title) return;
-      setHeaderTitle(customEvent.detail.title);
-      setHeaderDescription(customEvent.detail.description);
+      setHeaderOverride({
+        title: customEvent.detail.title,
+        description: customEvent.detail.description,
+      });
     };
     window.addEventListener("app-shell-header", onHeaderEvent as EventListener);
     return () => {

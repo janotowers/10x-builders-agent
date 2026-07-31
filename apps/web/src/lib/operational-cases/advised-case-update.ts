@@ -1,4 +1,5 @@
 import {
+  getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
   updateOperationalCase,
   type DbClient,
@@ -40,6 +41,19 @@ export function createAdvisedCaseUpdate(
     expectedVersion: number,
     patch: UpdateOperationalCaseInput
   ): Promise<OperationalCase | null> {
+    // Paridad con el adapter del modelo: al salir de awaiting_documents el
+    // guard D4 necesita recentEventTypes (p. ej. external_response emitido al
+    // registrar documentos, incluso en la rama internal_user).
+    const leavingAwaitingDocuments =
+      opCase.current_step === "awaiting_documents" &&
+      typeof patch.currentStep === "string" &&
+      patch.currentStep !== "awaiting_documents";
+    const recentEventTypes = leavingAwaitingDocuments
+      ? (await getRecentOperationalCaseEvents(db, opCase.id, 30)).map(
+          (event) => event.event_type
+        )
+      : undefined;
+
     const advice = await adviseCaseTransition({
       db,
       opCase,
@@ -48,6 +62,7 @@ export function createAdvisedCaseUpdate(
         toStatus: patch.status ?? null,
         proposer,
       },
+      recentEventTypes,
       site,
     });
     if (advice.reject) return null;

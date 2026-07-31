@@ -2924,7 +2924,7 @@ export async function POST(request: Request) {
       },
     });
     conversationalCase = inferredTarget.opCase;
-    let requestTarget = operationalCaseDocumentRequestTargetFromContext(
+    const requestTarget = operationalCaseDocumentRequestTargetFromContext(
       conversationalCase.context_jsonb
     );
     const isInternalDocumentStep =

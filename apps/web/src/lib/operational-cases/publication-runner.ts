@@ -296,7 +296,7 @@ async function ensurePublicationSeeded(
   opCase: OperationalCase
 ): Promise<{ opCase: OperationalCase; publication: PublicationState }> {
   const context = isRecord(opCase.context_jsonb) ? opCase.context_jsonb : {};
-  let publication = reconcilePublicationWithArtifacts(
+  const publication = reconcilePublicationWithArtifacts(
     publicationFromContext(context),
     context
   );

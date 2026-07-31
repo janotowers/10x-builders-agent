@@ -11,7 +11,7 @@ import type {
   HitlTelegramKeyboardButton,
   HitlTelegramReplyMarkup,
 } from "@/lib/notify/hitl-telegram-markup";
-import { UPLOAD_BATCH_DONE_CALLBACK_PREFIX } from "./upload-batch-completion";
+import { UPLOAD_BATCH_DONE_CALLBACK_PREFIX } from "./upload-batch-shared";
 
 export type HitlActionVariant = "primary" | "secondary" | "danger";
 

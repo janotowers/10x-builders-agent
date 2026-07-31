@@ -20,6 +20,30 @@ async function main() {
   const { caseId, userId } = await resolveRecoveryCaseContext(db, {});
 
   const before = await getOperationalCase(db, caseId);
+  const beforeContext =
+    before?.context_jsonb &&
+    typeof before.context_jsonb === "object" &&
+    !Array.isArray(before.context_jsonb)
+      ? (before.context_jsonb as Record<string, unknown>)
+      : {};
+  const beforePublication =
+    beforeContext.publication &&
+    typeof beforeContext.publication === "object" &&
+    !Array.isArray(beforeContext.publication)
+      ? (beforeContext.publication as Record<string, unknown>)
+      : null;
+  const beforeDestinations =
+    beforePublication?.destinations &&
+    typeof beforePublication.destinations === "object" &&
+    !Array.isArray(beforePublication.destinations)
+      ? (beforePublication.destinations as Record<string, unknown>)
+      : null;
+  const beforeUngga =
+    beforeDestinations?.ungga &&
+    typeof beforeDestinations.ungga === "object" &&
+    !Array.isArray(beforeDestinations.ungga)
+      ? (beforeDestinations.ungga as Record<string, unknown>)
+      : null;
   console.log(
     "BEFORE",
     JSON.stringify(
@@ -27,8 +51,7 @@ async function main() {
         status: before?.status,
         current_step: before?.current_step,
         version: before?.version,
-        ungga_phase: (before?.context_jsonb as any)?.publication?.destinations?.ungga
-          ?.phase,
+        ungga_phase: beforeUngga?.phase ?? null,
       },
       null,
       2
@@ -66,16 +89,45 @@ async function main() {
   );
 
   const final = await getOperationalCase(db, caseId);
-  const ctx = (final?.context_jsonb as any) || {};
+  const ctx =
+    final?.context_jsonb &&
+    typeof final.context_jsonb === "object" &&
+    !Array.isArray(final.context_jsonb)
+      ? (final.context_jsonb as Record<string, unknown>)
+      : {};
+  const publication =
+    ctx.publication &&
+    typeof ctx.publication === "object" &&
+    !Array.isArray(ctx.publication)
+      ? (ctx.publication as Record<string, unknown>)
+      : null;
+  const destinations =
+    publication?.destinations &&
+    typeof publication.destinations === "object" &&
+    !Array.isArray(publication.destinations)
+      ? (publication.destinations as Record<string, unknown>)
+      : null;
+  const ungga =
+    destinations?.ungga &&
+    typeof destinations.ungga === "object" &&
+    !Array.isArray(destinations.ungga)
+      ? (destinations.ungga as Record<string, unknown>)
+      : null;
+  const published =
+    ctx.published &&
+    typeof ctx.published === "object" &&
+    !Array.isArray(ctx.published)
+      ? (ctx.published as Record<string, unknown>)
+      : null;
   console.log(
     "FINAL",
     JSON.stringify(
       {
         status: final?.status,
         current_step: final?.current_step,
-        ungga_phase: ctx.publication?.destinations?.ungga?.phase,
-        ungga_error: ctx.publication?.destinations?.ungga?.last_error,
-        ungga_published: ctx.published?.ungga,
+        ungga_phase: ungga?.phase ?? null,
+        ungga_error: ungga?.last_error ?? null,
+        ungga_published: published?.ungga ?? null,
       },
       null,
       2

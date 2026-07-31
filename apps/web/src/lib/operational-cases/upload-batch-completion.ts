@@ -11,7 +11,6 @@ import type { OperationalCase } from "@agents/types";
 import { operationalCaseDocumentRequestTargetFromContext } from "@agents/types";
 import {
   completeDocumentBatchForCase,
-  DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
   type DocumentBatchCompletionStatus,
 } from "./document-batch-completion";
 import {
@@ -23,12 +22,25 @@ import {
   type PhotoBatchCompletionStatus,
 } from "./photo-batch-completion";
 import { resolvePropertyDisplayLabel } from "./property-display-label";
+import {
+  DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
+  isUploadBatchNotificationKind,
+  PHOTOS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
+  UPLOAD_BATCH_CONFIRMATION_PURPOSE,
+  UPLOAD_BATCH_DONE_CALLBACK_PREFIX,
+  uploadBatchKindFromNotificationKind,
+} from "./upload-batch-shared";
 
 type DbClient = ReturnType<typeof createServerClient>;
 
-export { DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND };
-export const UPLOAD_BATCH_CONFIRMATION_PURPOSE = "upload_batch_confirmation";
-export const UPLOAD_BATCH_DONE_CALLBACK_PREFIX = "upload_done:";
+export {
+  DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
+  isUploadBatchNotificationKind,
+  PHOTOS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
+  UPLOAD_BATCH_CONFIRMATION_PURPOSE,
+  UPLOAD_BATCH_DONE_CALLBACK_PREFIX,
+  uploadBatchKindFromNotificationKind,
+};
 
 export type UploadBatchKind = "documents" | "photos";
 
@@ -208,17 +220,3 @@ export function formatUploadBatchConfirmationReminderText(params: {
   ].join("\n");
 }
 
-export function isUploadBatchNotificationKind(kind: string | null | undefined): boolean {
-  return (
-    kind === "photos_upload_requested" ||
-    kind === DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND
-  );
-}
-
-export function uploadBatchKindFromNotificationKind(
-  kind: string | null | undefined
-): UploadBatchKind | null {
-  if (kind === "photos_upload_requested") return "photos";
-  if (kind === DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND) return "documents";
-  return null;
-}
