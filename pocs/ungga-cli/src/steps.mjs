@@ -531,79 +531,6 @@ export async function publishExistingDraft(page, opts, metrics = []) {
           commission_verify: commissionVerify,
         };
       }
-      // Persist commission before navigating to Publicar (pencil confirm alone
-      // is not always enough on Ungga's published/edit flow).
-      if (!dryRun) {
-        const saveOutcome = await saveAsDraft(page, metrics);
-        if (saveOutcome?.ok !== true) {
-          // Soft: some edit surfaces lack "Guardar como borrador"; re-read after
-          // a short wait still helps when the palomita already persisted.
-          metrics.push({
-            step: "commission_save_before_publish",
-            ok: false,
-            error: saveOutcome?.error ?? "save_as_draft_unavailable",
-          });
-        } else {
-          metrics.push({
-            step: "commission_save_before_publish",
-            ok: true,
-          });
-        }
-        // Read-only re-check after save attempt.
-        await clickWizardTab(page, "OPERACIÓN").catch(() => {});
-        const card = await findOperationCard(page, op);
-        if (card) {
-          const pencil = await findPencilInCard(card);
-          if (pencil) {
-            await pencil.click({ timeout: 5_000 }).catch(() => {});
-            await page.waitForTimeout(800);
-            const reread = await readCommissionInputValue(page);
-            await page.keyboard.press("Escape").catch(() => {});
-            commissionVerify = {
-              ...commissionVerify,
-              actual: reread.actual,
-              persisted:
-                reread.ok &&
-                reread.actual != null &&
-                Number(reread.actual) === Number(expectedCommission),
-              error:
-                reread.ok &&
-                reread.actual != null &&
-                Number(reread.actual) === Number(expectedCommission)
-                  ? null
-                  : "commission_not_persisted_after_save",
-            };
-            metrics.push({
-              step: "commission_reread_after_save",
-              ok: commissionVerify.persisted === true,
-              expected: expectedCommission,
-              actual: commissionVerify.actual,
-              ...(commissionVerify.error
-                ? { error: commissionVerify.error }
-                : {}),
-            });
-            if (commissionVerify.persisted !== true) {
-              const msg = `Commission not persisted after save: expected ${expectedCommission}%, got ${commissionVerify.actual ?? "null"}`;
-              push("publish_draft", false, Date.now() - t0, msg);
-              await maybeCapture(
-                page,
-                "commission-not-persisted-after-save",
-                metrics
-              );
-              return {
-                ok: false,
-                error: msg,
-                property_id: propertyId,
-                url: page.url(),
-                commission_expected: expectedCommission,
-                commission_actual: commissionVerify.actual,
-                commission_verified: false,
-                commission_verify: commissionVerify,
-              };
-            }
-          }
-        }
-      }
     }
 
     // Real Ungga publish path (2026 UI):
@@ -618,21 +545,13 @@ export async function publishExistingDraft(page, opts, metrics = []) {
           ? opts.title.trim()
           : null;
 
-    await page.goto(`${origin}/app/propiedades/${propertyId}/editar`, {
-      waitUntil: "domcontentloaded",
-      timeout: resolveUnggaTimeoutMs("nav"),
+    const saveResult = await saveExistingDraftEditorChanges(page, {
+      origin,
+      propertyId,
+      metrics,
     });
-    await page.waitForTimeout(800);
-    await dismissStrayModals(page);
-    await clickWizardTab(page, "PUBLICAR").catch(() => {});
-    await page.waitForTimeout(500);
-
-    const saveChanges = await firstVisible([
-      page.getByRole("button", { name: /^guardar cambios$/i }),
-      page.locator("button").filter({ hasText: /^guardar cambios$/i }),
-    ]);
-    if (!saveChanges) {
-      const msg = "Botón 'Guardar cambios' no encontrado en pestaña PUBLICAR.";
+    if (!saveResult.ok) {
+      const msg = saveResult.error;
       push("publish_draft", false, Date.now() - t0, msg);
       await maybeCapture(page, "publish-save-changes-missing", metrics);
       return { ok: false, error: msg, property_id: propertyId, url: page.url() };
@@ -652,14 +571,97 @@ export async function publishExistingDraft(page, opts, metrics = []) {
       };
     }
 
-    await saveChanges.click({ timeout: 10_000 });
-    await page.waitForTimeout(2000);
-    metrics.push({
-      step: "publish_save_changes",
-      ok: true,
-      url: page.url(),
-    });
     await maybeCapture(page, "publish-after-save-changes", metrics);
+
+    if (expectedCommission != null) {
+      const op =
+        Array.isArray(opts.listing?.operations) && opts.listing.operations[0]
+          ? opts.listing.operations[0]
+          : { type: "sale", commission_pct: expectedCommission };
+      let reread = await readPersistedOperationCommission(page, {
+        origin,
+        propertyId,
+        op,
+      });
+      let persisted =
+        reread.ok &&
+        reread.actual != null &&
+        Number(reread.actual) === Number(expectedCommission);
+
+      // Bounded repair on the exact GU-ID. Ungga can accept the pencil modal
+      // locally yet omit commission on the first editor save.
+      if (!persisted) {
+        metrics.push({
+          step: "commission_repair_after_editor_save",
+          ok: false,
+          expected: expectedCommission,
+          actual: reread.actual,
+          error: reread.error ?? "commission_not_persisted_after_editor_save",
+        });
+        commissionVerify = await verifyAndFixOperationCommission(page, {
+          op,
+          expectedCommission,
+          collaborationEnabled:
+            opts.listing?.collaboration_enabled === true ||
+            opts.collaboration_enabled === true,
+        });
+        if (commissionVerify.persisted === true) {
+          const repairSave = await saveExistingDraftEditorChanges(page, {
+            origin,
+            propertyId,
+            metrics,
+            step: "publish_save_changes_after_commission_repair",
+          });
+          if (repairSave.ok) {
+            reread = await readPersistedOperationCommission(page, {
+              origin,
+              propertyId,
+              op,
+            });
+            persisted =
+              reread.ok &&
+              reread.actual != null &&
+              Number(reread.actual) === Number(expectedCommission);
+          }
+        }
+      }
+
+      commissionVerify = {
+        ...commissionVerify,
+        actual: reread.actual,
+        persisted,
+        error: persisted
+          ? null
+          : reread.error ?? "commission_not_persisted_after_editor_save",
+        stage: persisted ? "verified_after_editor_save" : "editor_save_mismatch",
+      };
+      metrics.push({
+        step: "commission_reread_after_editor_save",
+        ok: persisted,
+        expected: expectedCommission,
+        actual: reread.actual,
+        ...(commissionVerify.error ? { error: commissionVerify.error } : {}),
+      });
+      if (!persisted) {
+        const msg = `Commission not persisted after editor save: expected ${expectedCommission}%, got ${reread.actual ?? "null"}`;
+        push("publish_draft", false, Date.now() - t0, msg);
+        await maybeCapture(
+          page,
+          "commission-not-persisted-after-editor-save",
+          metrics
+        );
+        return {
+          ok: false,
+          error: msg,
+          property_id: propertyId,
+          url: page.url(),
+          commission_expected: expectedCommission,
+          commission_actual: reread.actual,
+          commission_verified: false,
+          commission_verify: commissionVerify,
+        };
+      }
+    }
 
     const modalPublish = await openDraftCardAndClickPublish(page, {
       origin,
@@ -748,6 +750,81 @@ export async function publishExistingDraft(page, opts, metrics = []) {
     await maybeCapture(page, "publish-draft-failed", metrics);
     throw e;
   }
+}
+
+async function saveExistingDraftEditorChanges(page, params) {
+  const {
+    origin,
+    propertyId,
+    metrics = [],
+    step = "publish_save_changes",
+  } = params;
+  await page.goto(`${origin}/app/propiedades/${propertyId}/editar`, {
+    waitUntil: "domcontentloaded",
+    timeout: resolveUnggaTimeoutMs("nav"),
+  });
+  await page.waitForTimeout(800);
+  await dismissStrayModals(page);
+  await clickWizardTab(page, "PUBLICAR").catch(() => {});
+  await page.waitForTimeout(500);
+
+  const saveChanges = await firstVisible([
+    page.getByRole("button", { name: /^guardar cambios$/i }),
+    page.locator("button").filter({ hasText: /^guardar cambios$/i }),
+  ]);
+  if (!saveChanges) {
+    return {
+      ok: false,
+      error: "Botón 'Guardar cambios' no encontrado en pestaña PUBLICAR.",
+    };
+  }
+
+  await saveChanges.click({ timeout: 10_000 });
+  await page.waitForTimeout(2000);
+  metrics.push({ step, ok: true, url: page.url() });
+  return { ok: true };
+}
+
+async function readPersistedOperationCommission(page, params) {
+  const { origin, propertyId, op } = params;
+  await page.goto(`${origin}/app/propiedades/${propertyId}/editar`, {
+    waitUntil: "domcontentloaded",
+    timeout: resolveUnggaTimeoutMs("nav"),
+  });
+  await page.waitForTimeout(800);
+  await dismissStrayModals(page);
+  await clickWizardTab(page, "OPERACIÓN").catch(() => {});
+  await page.waitForTimeout(400);
+
+  const card = await findOperationCard(page, op);
+  if (!card) {
+    return {
+      ok: false,
+      actual: null,
+      error: "operation_card_missing_after_editor_save",
+    };
+  }
+  const pencil = await findPencilInCard(card);
+  if (!pencil) {
+    return {
+      ok: false,
+      actual: null,
+      error: "pencil_missing_after_editor_save",
+    };
+  }
+  await pencil.click({ timeout: 5_000 }).catch(() => {});
+  const modal = await waitForOperationModal(page);
+  if (!modal) {
+    return {
+      ok: false,
+      actual: null,
+      error: "operation_modal_missing_after_editor_save",
+    };
+  }
+  const reread = await readCommissionInputValue(modal);
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForTimeout(300);
+  return reread;
 }
 
 /**
