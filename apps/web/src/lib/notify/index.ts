@@ -44,8 +44,11 @@ import { defaultDueAtForEngagement } from "@/lib/engagement-policies/registry";
 import {
   DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
   isUploadBatchNotificationKind,
-  UPLOAD_BATCH_DONE_CALLBACK_PREFIX,
 } from "@/lib/operational-cases/upload-batch-completion";
+import {
+  buildTelegramInlineKeyboardForKind,
+  HITL_MIRROR_KINDS,
+} from "@/lib/operational-cases/hitl-action-contract";
 import type { NotificationChannel } from "@agents/types";
 import {
   buildCaseDocumentDownloadUrl,
@@ -64,7 +67,6 @@ import {
 } from "@/lib/operational-cases/generated-case-document";
 import { buildExternalCaseDocumentDownloadUrl } from "@/lib/operational-cases/case-document-download-token";
 import { resolvePendingToolCallId } from "@/lib/notify/pending-tool-call-id";
-import { buildContractDataReviewTelegramMarkup } from "@/lib/notify/contract-data-review-telegram-markup";
 import {
   CONTRACT_REVIEW_BUTTONS_ONLY_FOLLOWUP_TEXT,
   CONTRACT_REVIEW_FALLBACK_ATTACH_CAPTION,
@@ -89,14 +91,6 @@ import {
 export type NotifyUrgency = "low" | "normal" | "high";
 
 const DEFAULT_PRIORITY: NotificationChannel[] = ["web", "telegram"];
-const CONTRACT_CALLBACK_EMAIL = "contract_email";
-const CONTRACT_CALLBACK_UPLOAD = "contract_upload";
-
-function publishDestinationLabel(kind: string | undefined) {
-  if (kind === "easybroker_publish_approval") return "EasyBroker";
-  if (kind === "ungga_publish_approval") return "Ungga";
-  return "destino";
-}
 
 /** Botones HITL de contrato solo cuando hay borrador real para revisar. */
 function contractReviewOffersHitlActions(payload: NotifyPayload): boolean {
@@ -276,203 +270,41 @@ async function deliverTelegram(
         });
       }
     }
-  } else if (actionKind === "price_approval" && actionNotificationId) {
-    replyMarkup = {
-      inline_keyboard: [
-        [
-          {
-            text: "Aprobar precio",
-            callback_data: `price_approve:${actionNotificationId}`,
-          },
-        ],
-        [
-          {
-            text: "Ajustar",
-            callback_data: `price_adjust:${actionNotificationId}`,
-          },
-        ],
-      ],
-    };
-  } else if (actionKind === "listing_description_review" && actionNotificationId) {
-    replyMarkup = {
-      inline_keyboard: [
-        [
-          {
-            text: "Aprobar descripción",
-            callback_data: `ld_approve:${actionNotificationId}`,
-          },
-        ],
-        [
-          {
-            text: "Pedir cambios",
-            callback_data: `ld_changes:${actionNotificationId}`,
-          },
-        ],
-      ],
-    };
-  } else if (
-    (actionKind === "easybroker_publish_approval" ||
-      actionKind === "ungga_publish_approval") &&
-    actionNotificationId
-  ) {
-    const destination = publishDestinationLabel(actionKind);
-    replyMarkup = {
-      inline_keyboard: [
-        [
-          {
-            text: `Publicar en ${destination}`,
-            callback_data: `pub_approve:${actionNotificationId}`,
-          },
-        ],
-        [
-          {
-            text: `Omitir ${destination}`,
-            callback_data: `pub_skip:${actionNotificationId}`,
-          },
-        ],
-        [
-          {
-            text: "Pausar publicación",
-            callback_data: `pub_reject:${actionNotificationId}`,
-          },
-        ],
-      ],
-    };
-  } else if (
-    actionKind === "publication_review_required" &&
-    actionNotificationId
-  ) {
-    const credentialFailure =
-      payload.data?.credential_failure === true ||
-      sourceNotificationMetadata?.credential_failure === true;
-    const prepareDraftFailure =
-      payload.data?.prepare_draft_failure === true ||
-      payload.data?.safe_retry_prepare === true ||
-      sourceNotificationMetadata?.prepare_draft_failure === true ||
-      sourceNotificationMetadata?.safe_retry_prepare === true;
-    replyMarkup = {
-      inline_keyboard: credentialFailure
-        ? [
-            [
-              {
-                text: "Ya actualicé la API key — reintentar",
-                callback_data: `pubrev_approve:${actionNotificationId}`,
-              },
-            ],
-            [
-              {
-                text: "Pausar publicación",
-                callback_data: `pubrev_stop:${actionNotificationId}`,
-              },
-            ],
-          ]
-        : prepareDraftFailure
-          ? [
-              [
-                {
-                  text: "Reintentar publicación en Ungga",
-                  callback_data: `pubrev_approve:${actionNotificationId}`,
-                },
-              ],
-              [
-                {
-                  text: "Pausar y avisar a soporte",
-                  callback_data: `pubrev_stop:${actionNotificationId}`,
-                },
-              ],
-            ]
-          : [
-              [
-                {
-                  text: "Aprobar y continuar",
-                  callback_data: `pubrev_approve:${actionNotificationId}`,
-                },
-              ],
-              [
-                {
-                  text: "Detener y revisar",
-                  callback_data: `pubrev_stop:${actionNotificationId}`,
-                },
-              ],
-            ],
-    };
   } else if (
     actionKind === "contract_review" &&
     actionNotificationId &&
-    contractReviewOffersHitlActions(payload)
+    !contractReviewOffersHitlActions(payload)
   ) {
-    replyMarkup = {
-      inline_keyboard: [
-        [
-          {
-            text: "Enviar por email",
-            callback_data: `${CONTRACT_CALLBACK_EMAIL}:${actionNotificationId}`,
-          },
-        ],
-        [
-          {
-            text: "Subir contrato corregido y enviar",
-            callback_data: `${CONTRACT_CALLBACK_UPLOAD}:${actionNotificationId}`,
-          },
-        ],
-      ],
+    // Sin borrador real: no ofrecer botones de envío/corrección.
+    replyMarkup = undefined;
+  } else if (actionKind && actionNotificationId) {
+    const keyboardData: Record<string, unknown> = {
+      ...(payload.data ?? {}),
+      ...(sourceNotificationMetadata ?? {}),
     };
-  } else if (actionKind === "contract_data_review" && actionNotificationId) {
-    const missingFields = Array.isArray(
-      sourceNotificationMetadata?.missing_fields
-    )
-      ? sourceNotificationMetadata.missing_fields
-      : Array.isArray(payload.data?.missing_fields)
-        ? payload.data.missing_fields
-        : [];
-    replyMarkup = buildContractDataReviewTelegramMarkup(
-      actionNotificationId,
-      missingFields
-    );
-  } else if (actionKind === "property_data_review" && actionNotificationId) {
-    replyMarkup = {
-      inline_keyboard: [
-        [
-          {
-            text: "Confirmar datos",
-            callback_data: `property_data_confirm:${actionNotificationId}`,
-          },
-        ],
-        [
-          {
-            text: "Ajustar",
-            callback_data: `property_data_correct:${actionNotificationId}`,
-          },
-        ],
-      ],
-    };
-  } else if (actionKind === "titularidad_review" && actionNotificationId) {
-    replyMarkup = {
-      inline_keyboard: [
-        [
-          {
-            text: "Aprobar titularidad",
-            callback_data: `titularidad_approve:${actionNotificationId}`,
-          },
-        ],
-      ],
-    };
-  } else if (isUploadBatchNotificationKind(actionKind)) {
+    if (
+      Array.isArray(sourceNotificationMetadata?.missing_fields) &&
+      !Array.isArray(keyboardData.missing_fields)
+    ) {
+      keyboardData.missing_fields = sourceNotificationMetadata.missing_fields;
+    }
     const uploadCaseId =
       (typeof payload.data?.case_id === "string" && payload.data.case_id.trim()) ||
       sourceNotificationCaseId ||
       "";
-    if (uploadCaseId) {
-      replyMarkup = {
-        inline_keyboard: [
-          [
-            {
-              text: "Terminé de subir",
-              callback_data: `${UPLOAD_BATCH_DONE_CALLBACK_PREFIX}${uploadCaseId}`,
-            },
-          ],
-        ],
-      };
+    // Tipos de negocio (price, listing, publish, titularidad, comparables…).
+    // tool_confirmation_pending ya se resolvió arriba.
+    if (
+      actionKind !== "tool_confirmation_pending" &&
+      (HITL_MIRROR_KINDS.has(actionKind) ||
+        isUploadBatchNotificationKind(actionKind))
+    ) {
+      replyMarkup = buildTelegramInlineKeyboardForKind({
+        kind: actionKind,
+        notificationId: actionNotificationId,
+        data: keyboardData,
+        caseId: uploadCaseId || null,
+      });
     }
   }
   const text = truncateTelegramText(payload.text);

@@ -100,13 +100,13 @@ assert.equal(appendResidualAcknowledgment("Listo.", null), "Listo.");
   const mixed = parseTitularidadReviewDecision(
     "aprobar titularidad y avísame cuando esté el contrato"
   );
-  assert.equal(mixed.intent, "approve_override");
+  assert.equal(mixed.intent, "continue_override");
   const residual = residualFromRemainder(mixed.residual);
   assert.ok(residual, "mixed titularidad decision must yield residual");
   assert.equal(residual.text, "avísame cuando esté el contrato");
 
   const single = parseTitularidadReviewDecision("aprobar titularidad");
-  assert.equal(single.intent, "approve_override");
+  assert.equal(single.intent, "continue_override");
   assert.equal(residualFromRemainder(single.residual), null);
 }
 

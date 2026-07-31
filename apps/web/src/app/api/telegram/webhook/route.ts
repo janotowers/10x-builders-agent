@@ -94,6 +94,14 @@ import {
 } from "@/lib/operational-cases/characteristics-response";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
 import {
+  finalizePropertyOptioningAgentTurn,
+  maybeRecoverContractPendingTurn,
+  maybeRecoverPackageReadyContinue,
+} from "@/lib/operational-cases/operational-case-post-turn";
+import { handleComparablesExpansionDecision } from "@/lib/business-decisions/comparables-expansion-decision";
+import { notifyPriceApprovalForCase } from "@agents/agent";
+import { notifyUserRespectingActiveInternalChannel } from "@/lib/operational-cases/deliver-internal-case-follow-up";
+import {
   resolveConversationalIntakeTurn,
   type ConversationalIntakeRoute,
 } from "@/lib/operational-cases/conversational-intake-orchestrator";
@@ -1399,27 +1407,136 @@ export async function POST(request: Request) {
       });
     }
 
-    if (action === "titularidad_approve") {
-      const result = await businessDecisionHandler("titularidad_review").handle(db, {
-        userId,
-        notificationId: targetId,
-        text: "aprobar titularidad",
+    if (
+      action === "titularidad_continue" ||
+      action === "titularidad_approve"
+    ) {
+      // Motivo obligatorio: el botón solo inicia la captura por texto libre.
+      await answerTelegramCallbackQuery(cb.id, "Indica el motivo");
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        "Para **continuar bajo excepción**, responde con el motivo. Ejemplo:\n«continuar bajo excepción: revisé INE y escritura; el OCR omitió el segundo apellido»."
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "titularidad_review_reason_prompt",
+        notification_id: targetId,
       });
+    }
+
+    if (
+      action === "titularidad_request_external" ||
+      action === "titularidad_request_internal"
+    ) {
+      const result = await businessDecisionHandler("titularidad_review").handle(
+        db,
+        {
+          userId,
+          notificationId: targetId,
+          text: "",
+          action:
+            action === "titularidad_request_external"
+              ? "request_external_evidence"
+              : "request_internal_docs",
+          source: "telegram",
+        }
+      );
       await answerTelegramCallbackQuery(
         cb.id,
-        result.ok ? "Titularidad aprobada" : "No pude procesarlo"
+        result.ok ? "Registrado" : "No pude procesarlo"
       );
       await sendTelegramMessage(
         cb.message.chat.id,
         result.message ??
           (result.ok
-            ? "Titularidad aprobada. Generaré el contrato."
+            ? "Listo, registré tu decisión de titularidad."
             : "No pude procesar la decisión de titularidad.")
       );
       return NextResponse.json({
         ok: true,
         routed: "titularidad_review",
         notification_id: targetId,
+        status: result.status,
+      });
+    }
+
+    if (
+      action === "comp_current" ||
+      action === "comp_avaclick" ||
+      action === "comp_expand"
+    ) {
+      const decisionText =
+        action === "comp_current" ? "1" : action === "comp_avaclick" ? "2" : "3";
+      const result = await handleComparablesExpansionDecision(db, {
+        userId,
+        notificationId: targetId,
+        text: decisionText,
+        source: "telegram",
+        deferPriceApprovalNotify: true,
+      });
+      await answerTelegramCallbackQuery(
+        cb.id,
+        result.ok ? "Decisión registrada" : "No pude procesarlo"
+      );
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        result.message ??
+          (result.ok
+            ? "Registré tu decisión de comparables."
+            : "No pude procesar la decisión de comparables.")
+      );
+      if (
+        result.ok &&
+        result.status === "processed" &&
+        result.deferredPriceApproval &&
+        result.case_id
+      ) {
+        try {
+          await notifyPriceApprovalForCase({
+            db,
+            caseId: result.case_id,
+            userId,
+            pricingProposal: result.deferredPriceApproval.pricingProposal,
+            source: `comparables_decision_telegram_${result.decision}`,
+            notifyUser: notifyUserRespectingActiveInternalChannel,
+          });
+        } catch (notifyError) {
+          console.error(
+            "[telegram-webhook] deferred price approval notify failed:",
+            notifyError
+          );
+        }
+      }
+      if (
+        result.ok &&
+        result.status === "processed" &&
+        result.decision === "expand_search" &&
+        result.case_id
+      ) {
+        const refreshedCase = await getOperationalCase(db, result.case_id);
+        if (refreshedCase?.context_jsonb?.e2e_controlled === true) {
+          void runSettingsTestCaseAgentTick(
+            db,
+            refreshedCase,
+            refreshedCase.user_id,
+            {
+              source:
+                "telegram_webhook_conversational_e2e_comparables_expand_search",
+              ownerResponseText: decisionText,
+            }
+          ).catch((tickError) => {
+            console.error(
+              "[telegram-webhook] comparables expand tick failed:",
+              tickError
+            );
+          });
+        }
+      }
+      return NextResponse.json({
+        ok: true,
+        routed: "comparables_expansion_decision",
+        notification_id: targetId,
+        decision: result.decision,
       });
     }
 
@@ -3240,6 +3357,47 @@ export async function POST(request: Request) {
     });
   }
 
+  // Recuperaciones channel-agnostic (paridad web): contract_pending / package_ready.
+  if (conversationalCase?.id && text) {
+    try {
+      const contractRecovery = await maybeRecoverContractPendingTurn({
+        db,
+        userId,
+        caseId: conversationalCase.id,
+        channel: "telegram",
+        message: text,
+      });
+      if (contractRecovery.handled) {
+        await sendTelegramMarkdownMessage(chatId, contractRecovery.responseText);
+        return NextResponse.json({
+          ok: true,
+          routed: "operational_case_contract_pending_recovery",
+          case_id: conversationalCase.id,
+        });
+      }
+      const packageRecovery = await maybeRecoverPackageReadyContinue({
+        db,
+        userId,
+        caseId: conversationalCase.id,
+        channel: "telegram",
+        message: text,
+      });
+      if (packageRecovery.handled) {
+        await sendTelegramMarkdownMessage(chatId, packageRecovery.responseText);
+        return NextResponse.json({
+          ok: true,
+          routed: "operational_case_package_ready_continue",
+          case_id: conversationalCase.id,
+        });
+      }
+    } catch (recoveryError) {
+      console.error(
+        "[telegram-webhook] operational recovery failed:",
+        recoveryError
+      );
+    }
+  }
+
   // Catch-up de memoria larga ANTES de runAgent. Ver comentario equivalente
   // en `apps/web/src/app/api/chat/route.ts`. En callbacks (resume HITL) NO
   // se ejecuta — ese branch sale mucho antes.
@@ -3391,6 +3549,15 @@ export async function POST(request: Request) {
       ) {
         await sendTelegramMarkdownMessage(chatId, result.response);
       }
+
+      // Paridad web: invariants post-agente en el mismo turno (no solo cron).
+      void finalizePropertyOptioningAgentTurn({
+        db,
+        caseId: conversationalCaseBeforeAgent?.id ?? conversationalCase?.id,
+        source: "telegram_webhook_post_agent",
+        hasPendingConfirmation: false,
+      });
+
       // Flush POST fire-and-forget: solo si el turno cerró limpio.
       // Callbacks (resume HITL) no entran aquí — ese branch retorna antes.
       fireAndForgetFlush({

@@ -277,14 +277,20 @@ Reglas:
 ### Paridad web/Telegram y límite cross-channel actual
 
 Las decisiones del **usuario interno** no requieren la bandeja web: web chat y
-Telegram ejecutan el mismo `resolvePendingDecisionTurn` antes del agente general.
+Telegram ejecutan el mismo `resolvePendingDecisionTurn` antes del agente general
+y comparten el **contrato HITL** (`hitl-action-contract`) + finalizador post-turno
+(`operational-case-post-turn`: invariants, recoveries de contrato/publicación).
 La bandeja **Pendientes** complementa el chat con descubrimiento, evidencia y
 acciones estructuradas; no es el único lugar para aprobar, corregir o responder.
 Además, cuando el caso se opera en web, los follow-ups operativos
 (`notify_user` / HITL / resumen de publicación) se espejan al timeline del chat
 web y se evita el push Telegram sorpresivo (`getActiveCaseInternalChannel` +
-`deliverInternalCaseFollowUp`). `property_data_review` del contacto externo
-permanece ligado a su chat Telegram y no contradice esta paridad interna.
+`deliverInternalCaseFollowUp`).
+
+**Frontera de producto:** paridad completa del journey del asesor interno.
+El contacto externo opera por canales conversacionales populares (Telegram hoy;
+WhatsApp y similares después). `property_data_review` del contacto externo
+permanece ligado a su chat externo y no contradice esta paridad interna.
 
 La continuidad operacional usa `case_id`, pero el binding conversacional actual
 sigue siendo **por canal**: el índice activo es `(case_id, channel)` y

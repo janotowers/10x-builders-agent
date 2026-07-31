@@ -933,6 +933,7 @@ export async function resolvePendingDecisionTurn(
           userId: params.userId,
           notificationId: pendingTitularidadReview.id,
           text,
+          source: params.channel,
         }
       );
       const residual = await reportResidualIfAny(db, {
@@ -953,7 +954,7 @@ export async function resolvePendingDecisionTurn(
         message:
           result.message ??
           (result.ok
-            ? "Titularidad aprobada. Generaré el contrato."
+            ? "Registré tu decisión de titularidad."
             : "No pude procesar la decisión de titularidad."),
         residual,
       };

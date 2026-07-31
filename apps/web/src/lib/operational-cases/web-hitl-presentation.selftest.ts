@@ -84,7 +84,12 @@ if (!("error" in upload)) {
 }
 
 const titularidad = buildWebHitlActions("titularidad_review");
-assert.ok(titularidad.some((a) => a.id === "approve"));
-assert.ok(titularidad.some((a) => a.id === "request_documents"));
+assert.ok(titularidad.some((a) => a.id === "continue_override"));
+assert.ok(titularidad.some((a) => a.id === "request_external_evidence"));
+assert.ok(titularidad.some((a) => a.id === "request_internal_docs"));
+assert.equal(
+  titularidad.find((a) => a.id === "continue_override")?.requiresNotes,
+  true
+);
 
 console.log("web-hitl-presentation.selftest: ok");

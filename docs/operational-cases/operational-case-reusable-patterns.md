@@ -103,6 +103,18 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Extensión** | Catálogo por **tool** (`STALENESS_ARTIFACTS_BY_TOOL`), no por `step_key`; añadir entradas al extender a otros pasos |
 | **Relacionado** | `PATTERN_LAB_FORM_PROPERTY_DATA_SYNC`, §13.6 de [`testing-framework.md`](testing-framework.md) |
 
+### `PATTERN_HITL_ACTION_CONTRACT`
+
+| | |
+|--|--|
+| **Capa** | `runtime` + `ux` |
+| **Cuándo usar** | Toda decisión HITL de negocio con botones (precio, contrato, titularidad, comparables, publicación, uploads). Evita definir labels/actions por separado en web y Telegram |
+| **Implementación** | Contrato canónico [`hitl-action-contract.ts`](../../apps/web/src/lib/operational-cases/hitl-action-contract.ts): `buildHitlActionsForKind` + `buildTelegramInlineKeyboardForKind`. Web: `web-hitl-client`. Telegram: `notify/index.ts` → `deliverTelegram`. Handlers compartidos en `business-decisions/*` |
+| **Comportamiento** | Mismos `action id`, semántica y side effects en todos los canales del asesor; solo cambia el render/transporte. Texto libre usa los mismos parsers/ids. Selftest `hitl-action-contract.selftest.ts` falla si un canal pierde acciones |
+| **Producción** | Sí (asesor interno). Externos: adaptadores populares (Telegram hoy; WhatsApp futuro) sin duplicar la decisión de negocio |
+| **Relacionado** | `PATTERN_NOTIFY_USER_CHANNELS`, `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW` |
+| **Principio** | *Una decisión, un contrato; N adaptadores de canal.* |
+
 ### `PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION`
 
 | | |
@@ -134,7 +146,7 @@ Este documento **nominaliza** patrones que hoy están repartidos entre runtime d
 | **Capa** | `runtime` + `test_contract` |
 | **Cuándo usar** | Siempre que un gate determinístico imponga una precondición que la skill (LLM) también debe entender. Evita el *split-brain* donde la skill cree haber terminado pero el gate sigue bloqueando |
 | **Implementación** | Las instrucciones de [`extract-property-characteristics`](../../skills/global/extract-property-characteristics/SKILL.md) y [`prepare-commission-contract`](../../skills/global/prepare-commission-contract/SKILL.md) describen exactamente lo que exige `evaluatePropertyAdvanceGate` para cada `targetTransition`, incluyendo qué error devuelve el tool y cómo remediarlo |
-| **Comportamiento** | Skill y gate comparten vocabulario: la skill sabe que titularidad NO bloquea comparables (solo advierte) pero SÍ bloquea contrato (HITL `titularidad_review` con override auditado en `context.titularidad.override`) |
+| **Comportamiento** | Skill y gate comparten vocabulario: la skill sabe que titularidad NO bloquea comparables (solo advierte) pero SÍ bloquea contrato (HITL `titularidad_review`). La discrepancia **nunca** es bloqueo absoluto: el asesor puede solicitar evidencia externa, subir/corregir documentos, o **continuar bajo excepción** con motivo obligatorio y override auditado en `context.titularidad.override` |
 | **Producción** | Sí |
 | **Relacionado** | `PATTERN_GATED_TRANSITION_WITH_OWNED_REMEDIATION`, `PATTERN_BUSINESS_DECISION_CONTRACT_REVIEW` |
 | **Principio** | *La instrucción del LLM, el gate determinístico y el contrato de prueba deben coincidir en los requisitos.* |

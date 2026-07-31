@@ -17,16 +17,9 @@ export async function POST(request: Request) {
   };
   const notificationId =
     typeof body.notification_id === "string" ? body.notification_id : "";
-  const action = typeof body.action === "string" ? body.action : "";
-  const text =
-    typeof body.text === "string" && body.text.trim()
-      ? body.text.trim()
-      : action === "approve"
-        ? "aprobar titularidad"
-        : action === "request_documents"
-          ? "pedir documentos"
-          : "";
-  if (!notificationId || !text) {
+  const action = typeof body.action === "string" ? body.action.trim() : "";
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!notificationId || (!text && !action)) {
     return NextResponse.json(
       { error: "notification_id and text/action are required" },
       { status: 400 }
@@ -39,6 +32,8 @@ export async function POST(request: Request) {
       userId: user.id,
       notificationId,
       text,
+      action,
+      source: "web",
     }
   );
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });

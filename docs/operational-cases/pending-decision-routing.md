@@ -86,7 +86,21 @@ Plan compartido para notificaciones con archivo opcional (`contract_review` DOCX
 
 **Paridad web:** no hay `sendDocument`; el adaptador web usa el mismo HITL con transporte distinto:
 
-- notificaciones internas + botones inline en el timeline (`web-hitl-client` / `web-hitl-presentation`);
+- **contrato único de acciones** en [`hitl-action-contract.ts`](../../apps/web/src/lib/operational-cases/hitl-action-contract.ts): mismos `action id`, labels y payloads para web y Telegram;
+- web renderiza botones del timeline (`web-hitl-client` / `web-hitl-presentation`); Telegram genera `inline_keyboard` desde el mismo contrato (`buildTelegramInlineKeyboardForKind`);
 - descarga autenticada del borrador (contrato DOCX, descripción `.txt`);
 - follow-ups del caso se espejan al chat web cuando el canal interno activo es `web` (`deliver-internal-case-follow-up` + `mirror-case-message-to-web-chat`);
+- post-turno compartido (`operational-case-post-turn`): invariants + recoveries de `contract_pending` / `package_ready` en ambos canales;
 - el resumen final (`listing_published_summary`) muestra portada del caso con enlace a EasyBroker (paridad visual del link preview de Telegram).
+
+### Titularidad (`titularidad_review`)
+
+Rama de excepción al generar contrato (no happy path). Acciones canónicas (web + Telegram):
+
+1. **Solicitar evidencia al propietario** → contacto externo verificado o setup de deep link.
+2. **Yo subiré/corregiré documentos** → `documents_upload_requested` interno.
+3. **Continuar bajo excepción** → siempre disponible; motivo obligatorio; override auditado en `context.titularidad.override`.
+
+### Comparables (`comparables_search_expansion_decision`)
+
+Tres acciones en ambos canales: muestra actual / Avaclick base / ampliar búsqueda (`comp_current` / `comp_avaclick` / `comp_expand` en Telegram).

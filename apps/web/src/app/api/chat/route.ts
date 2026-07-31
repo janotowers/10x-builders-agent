@@ -52,18 +52,15 @@ import {
   shouldProcessInternalCharacteristicsReply,
 } from "@/lib/operational-cases/characteristics-response";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
-import { ensureContractCommercialDataAsk } from "@/lib/operational-cases/ensure-contract-commercial-ask";
-import {
-  kickContractPendingAfterDataCapture,
-  resolveUnreadContractReviewNotificationId,
-} from "@/lib/operational-cases/run-settings-test-case-tick";
-import { contractDraftOutputPathFromContext } from "@agents/agent";
-import { buildContractReviewWebChatPresentation } from "@/lib/operational-cases/contract-draft-document";
-import { buildWebHitlActions } from "@/lib/operational-cases/web-hitl-client";
 import { looksLikeDocumentBatchComplete } from "@/lib/operational-cases/document-batch-completion";
 import { photosUploadProgressAckText } from "@/lib/operational-cases/photo-batch-completion";
-import { listingDescriptionIsApproved } from "@/lib/operational-cases/publication-tool-policy";
 import { completeUploadBatch } from "@/lib/operational-cases/upload-batch-completion";
+import {
+  finalizePropertyOptioningAgentTurn,
+  isOperationalContinueNudge,
+  maybeRecoverContractPendingTurn,
+  maybeRecoverPackageReadyContinue,
+} from "@/lib/operational-cases/operational-case-post-turn";
 import {
   buildExternalContactDeepLink,
   buildExternalContactSetupMessage,
@@ -135,18 +132,6 @@ function caseWaitingContractRevisionUpload(opCase: OperationalCase): boolean {
   const review = (context as Record<string, unknown>).contract_review;
   if (!review || typeof review !== "object" || Array.isArray(review)) return false;
   return (review as Record<string, unknown>).status === "awaiting_revision_upload";
-}
-
-/** «continua» / «sigue» / etc. — incluye acentos y puntuación trivial. */
-function isOperationalContinueNudge(text: string): boolean {
-  const normalized = text
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim()
-    .toLowerCase();
-  return /^(continua|continuar|sigue|seguir|adelante|reintenta|reintentar|ok|listo)[.!?]?$/.test(
-    normalized
-  );
 }
 
 function normalizeIncomingAttachments(raw: unknown): IncomingAttachment[] {
@@ -1107,136 +1092,26 @@ export async function POST(request: Request) {
       );
     }
 
-    // Si el caso ya está en contrato sin pedir datos comerciales (p. ej. el LLM
-    // avanzó tras un clarify), recuperar la paridad Telegram aquí.
     if (conversationalCaseId) {
       try {
-        const contractCase = await getOperationalCase(db, conversationalCaseId);
-        if (
-          contractCase?.case_type === "property_optioning" &&
-          contractCase.current_step === "contract_pending"
-        ) {
-          const ask = await ensureContractCommercialDataAsk({
-            db,
-            opCase: contractCase,
-            source: "web_chat_contract_pending_ensure",
-          });
-          if (ask.asked && ask.text) {
-            return await respondConversational(ask.text);
-          }
-          // Datos comerciales listos: generar borrador si falta, y entregar
-          // UNA sola burbuja web con chip (el kick con source web_chat_* no
-          // espeja; evita mirror sync + esta respuesta = duplicado).
-          if (ask.reason === "no_missing_fields") {
-            const hadDraft =
-              contractDraftOutputPathFromContext(contractCase.context_jsonb) !=
-              null;
-            // Tras aclaración multi-caso, `message` es "1" pero el envelope
-            // restaurado (`effectiveMessage`) sigue siendo «continua».
-            const isContinueNudge =
-              isOperationalContinueNudge(message) ||
-              isOperationalContinueNudge(effectiveMessage);
-            let kickResult: Awaited<
-              ReturnType<typeof kickContractPendingAfterDataCapture>
-            > | null = null;
-            let afterKick = contractCase;
-            if (!hadDraft) {
-              kickResult = await kickContractPendingAfterDataCapture({
-                db,
-                opCase: contractCase,
-                source: "web_chat_contract_pending_draft_kick",
-              });
-              afterKick =
-                (await getOperationalCase(db, contractCase.id)) ?? contractCase;
-            }
-            if (
-              contractDraftOutputPathFromContext(afterKick.context_jsonb) != null
-            ) {
-              if (!hadDraft || isContinueNudge) {
-                // Otro path (kick async post-captura) pudo espejar ya el
-                // review con chip + botones; no duplicar el bubble.
-                const { data: priorReviews } = await db
-                  .from("agent_messages")
-                  .select("structured_payload")
-                  .eq("session_id", session.id)
-                  .eq("role", "assistant")
-                  .eq("structured_payload->>source", "operational_case")
-                  .eq("structured_payload->>case_id", afterKick.id)
-                  .eq("structured_payload->>kind", "contract_review")
-                  .order("created_at", { ascending: false })
-                  .limit(3);
-                const hasActionableReview = (priorReviews ?? []).some((row) => {
-                  const payload = row.structured_payload as {
-                    attachments?: unknown;
-                    notification_id?: unknown;
-                    actions?: unknown;
-                  } | null;
-                  return (
-                    Array.isArray(payload?.attachments) &&
-                    payload.attachments.length > 0 &&
-                    typeof payload?.notification_id === "string" &&
-                    payload.notification_id.trim().length > 0 &&
-                    Array.isArray(payload?.actions) &&
-                    payload.actions.length > 0
-                  );
-                });
-                if (hasActionableReview) {
-                  return await respondConversational(
-                    "El borrador ya está arriba (archivo + botones). Usa “Enviar por email” o “Subir contrato corregido y enviar”, o responde en texto."
-                  );
+        const contractRecovery = await maybeRecoverContractPendingTurn({
+          db,
+          userId: user.id,
+          caseId: conversationalCaseId,
+          channel: "web",
+          message,
+          effectiveMessage,
+          webSessionId: session.id,
+        });
+        if (contractRecovery.handled) {
+          return await respondConversational(contractRecovery.responseText, {
+            ...(contractRecovery.assistantStructuredPayload
+              ? {
+                  assistantStructuredPayload:
+                    contractRecovery.assistantStructuredPayload,
                 }
-                const webPresentation = buildContractReviewWebChatPresentation({
-                  caseId: afterKick.id,
-                });
-                const notificationId =
-                  await resolveUnreadContractReviewNotificationId(
-                    db,
-                    user.id,
-                    afterKick.id
-                  );
-                return await respondConversational(webPresentation.text, {
-                  assistantStructuredPayload: {
-                    source: "operational_case",
-                    kind: "contract_review",
-                    case_id: afterKick.id,
-                    ...(notificationId
-                      ? { notification_id: notificationId }
-                      : {}),
-                    actions: buildWebHitlActions("contract_review"),
-                    attachments: [webPresentation.attachment],
-                  },
-                });
-              }
-            } else if (kickResult?.humanWait) {
-              const { data: blockers } = await db
-                .from("internal_user_notifications")
-                .select("kind,body")
-                .eq("user_id", user.id)
-                .eq("case_id", afterKick.id)
-                .eq("status", "unread")
-                .in("kind", [
-                  "contract_template_missing",
-                  "titularidad_review",
-                  "document_extraction_failed",
-                  "contract_data_review",
-                ])
-                .order("created_at", { ascending: false })
-                .limit(1);
-              const blocker = blockers?.[0] as
-                | { kind?: string; body?: string }
-                | undefined;
-              if (typeof blocker?.body === "string" && blocker.body.trim()) {
-                return await respondConversational(blocker.body.trim());
-              }
-              return await respondConversational(
-                "El borrador quedó detenido por una revisión humana pendiente. Revisa el pendiente del caso para continuar."
-              );
-            } else if (!hadDraft) {
-              return await respondConversational(
-                "No pude terminar el borrador en este intento. Dejé el caso programado para reintento y registré el error en Pendientes."
-              );
-            }
-          }
+              : {}),
+          });
         }
       } catch (contractAskError) {
         console.error(
@@ -1246,66 +1121,18 @@ export async function POST(request: Request) {
       }
     }
 
-    // package_ready + descripción aprobada + «continua»: despertar publication
-    // runner (p. ej. si el approve web no disparó EasyBroker HITL).
-    if (
-      conversationalCaseId &&
-      (isOperationalContinueNudge(message) ||
-        isOperationalContinueNudge(effectiveMessage))
-    ) {
+    if (conversationalCaseId) {
       try {
-        const pkgCase = await getOperationalCase(db, conversationalCaseId);
-        const pkgContext =
-          pkgCase?.context_jsonb &&
-          typeof pkgCase.context_jsonb === "object" &&
-          !Array.isArray(pkgCase.context_jsonb)
-            ? (pkgCase.context_jsonb as Record<string, unknown>)
-            : null;
-        if (
-          pkgCase?.case_type === "property_optioning" &&
-          pkgCase.current_step === "package_ready" &&
-          listingDescriptionIsApproved(pkgContext)
-        ) {
-          const { data: pendingPublish } = await db
-            .from("internal_user_notifications")
-            .select("id")
-            .eq("user_id", user.id)
-            .eq("case_id", pkgCase.id)
-            .eq("status", "unread")
-            .in("kind", [
-              "easybroker_publish_approval",
-              "ungga_publish_approval",
-              "publication_review_required",
-            ])
-            .limit(1);
-          if ((pendingPublish ?? []).length === 0) {
-            const { requestPublicationProgress } = await import(
-              "@/lib/operational-cases/publication-runner"
-            );
-            const { createPublicationRunnerOwnedAgentTick } = await import(
-              "@/lib/operational-cases/run-settings-test-case-tick"
-            );
-            void requestPublicationProgress(
-              db,
-              pkgCase.id,
-              "web_chat_package_ready_continue",
-              {
-                runAgentTick: createPublicationRunnerOwnedAgentTick(
-                  db,
-                  user.id,
-                  "web_chat_package_ready_continue"
-                ),
-              }
-            ).catch((progressError) => {
-              console.error(
-                "[chat] package_ready continue publication kick failed:",
-                progressError
-              );
-            });
-            return await respondConversational(
-              "Retomé la publicación. En un momento te llega la aprobación del siguiente destino (p. ej. EasyBroker)."
-            );
-          }
+        const packageRecovery = await maybeRecoverPackageReadyContinue({
+          db,
+          userId: user.id,
+          caseId: conversationalCaseId,
+          channel: "web",
+          message,
+          effectiveMessage,
+        });
+        if (packageRecovery.handled) {
+          return await respondConversational(packageRecovery.responseText);
         }
       } catch (packageReadyContinueError) {
         console.error(
@@ -1363,23 +1190,12 @@ export async function POST(request: Request) {
       },
     });
 
-    // Paridad cron/Telegram: tras el agente en property_optioning, correr
-    // invariants (review, comparables decision, etc.) en el canal activo.
-    if (conversationalCaseId && !result.pendingConfirmation) {
-      void (async () => {
-        try {
-          const refreshed = await getOperationalCase(db, conversationalCaseId);
-          if (!refreshed || refreshed.case_type !== "property_optioning") return;
-          await applyPropertyOptioningPostAgentInvariants({
-            db,
-            opCase: refreshed,
-            source: "web_chat_post_agent",
-          });
-        } catch (invariantError) {
-          console.error("[chat] post-agent invariants failed:", invariantError);
-        }
-      })();
-    }
+    void finalizePropertyOptioningAgentTurn({
+      db,
+      caseId: conversationalCaseId,
+      source: "web_chat_post_agent",
+      hasPendingConfirmation: Boolean(result.pendingConfirmation),
+    });
 
     // Flush POST fire-and-forget: solo si el turno cerró (sin pendingConfirmation).
     // Un turno con HITL pendiente no "terminó" todavía; el flush se lanzará

@@ -38,6 +38,10 @@ export interface BusinessDecisionHandlerInput {
   text: string;
   /** Typed commercial patch for contract_data_review (partial capture). */
   patch?: Record<string, unknown>;
+  /** Action id canónico del contrato HITL (web buttons / Telegram callbacks). */
+  action?: string;
+  /** Canal de origen para auditoría / remediaciones (titularidad, etc.). */
+  source?: "web" | "telegram";
   /**
    * Lo usan decisiones que avanzan flujo en casos E2E controlados (por ejemplo
    * `price_approval`, `contract_review`, `listing_description_review`,
