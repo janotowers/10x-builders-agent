@@ -2039,9 +2039,17 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
   );
 });
 
+const NEAR_BOTTOM_PX = 120;
+
 function adjustTextareaHeight(el: HTMLTextAreaElement) {
   el.style.height = "auto";
   el.style.height = `${el.scrollHeight}px`;
+}
+
+function isViewportNearBottom(viewport: HTMLElement) {
+  const distanceFromBottom =
+    viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+  return distanceFromBottom <= NEAR_BOTTOM_PX;
 }
 
 const ChatComposer = memo(function ChatComposer({
@@ -2284,7 +2292,20 @@ export function ChatInterface({
   }, []);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const didInitialScrollRef = useRef(false);
+  const stickToBottomRef = useRef(true);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+
+  const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+    stickToBottomRef.current = true;
+    setShowScrollToBottom(false);
+    viewport.scrollTo({
+      top: viewport.scrollHeight,
+      behavior,
+    });
+  }, []);
   const syncAfterRef = useRef<string | null>(
     initialMessages.at(-1)?.created_at ?? null
   );
@@ -2398,22 +2419,44 @@ export function ChatInterface({
     setExpandedToolCallId(null);
   }, [inspectedTurnId]);
 
+  useEffect(() => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+
+    const syncScrollState = () => {
+      const nearBottom = isViewportNearBottom(viewport);
+      stickToBottomRef.current = nearBottom;
+      setShowScrollToBottom(!nearBottom);
+    };
+
+    syncScrollState();
+    viewport.addEventListener("scroll", syncScrollState, { passive: true });
+    return () => viewport.removeEventListener("scroll", syncScrollState);
+  }, []);
+
   useLayoutEffect(() => {
     const viewport = messagesViewportRef.current;
     if (!viewport) return;
-    const scrollToBottom = (behavior: ScrollBehavior) => {
-      viewport.scrollTo({
-        top: viewport.scrollHeight,
-        behavior,
-      });
-    };
+
+    const shouldStick =
+      !didInitialScrollRef.current || stickToBottomRef.current;
+    if (!shouldStick) {
+      setShowScrollToBottom(!isViewportNearBottom(viewport));
+      return;
+    }
+
     const behavior = didInitialScrollRef.current ? "smooth" : "auto";
-    scrollToBottom(behavior);
+    scrollMessagesToBottom(behavior);
     if (!didInitialScrollRef.current) {
-      requestAnimationFrame(() => scrollToBottom("auto"));
+      requestAnimationFrame(() => scrollMessagesToBottom("auto"));
     }
     didInitialScrollRef.current = true;
-  }, [messages.length, confirmation?.toolCallId, loading]);
+  }, [
+    messages.length,
+    confirmation?.toolCallId,
+    loading,
+    scrollMessagesToBottom,
+  ]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -2967,6 +3010,8 @@ export function ChatInterface({
   const handleAttachmentSelectionRef = useRef(handleAttachmentSelection);
   handleAttachmentSelectionRef.current = handleAttachmentSelection;
   const onComposerSend = useCallback((text: string) => {
+    stickToBottomRef.current = true;
+    setShowScrollToBottom(false);
     void handleSendRef.current(text);
   }, []);
   const onComposerAttachmentSelection = useCallback(
@@ -2981,8 +3026,9 @@ export function ChatInterface({
       <div className="relative grid h-full min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_460px] 2xl:grid-cols-[minmax(0,0.9fr)_520px]">
             <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-xl shadow-violet-950/5 dark:border-white/10 dark:bg-neutral-900">
               {/* Messages */}
-              <div ref={messagesViewportRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
-                <div className="mx-auto max-w-2xl space-y-4">
+              <div className="relative min-h-0 flex-1">
+                <div ref={messagesViewportRef} className="h-full overflow-y-auto px-4 py-6">
+                  <div className="mx-auto max-w-2xl space-y-4">
           {messages.length === 0 && (
             <div className="mx-auto max-w-md rounded-3xl border border-violet-100 bg-violet-50/80 px-6 py-10 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-white/5 dark:text-white/60">
               <p className="text-lg font-semibold text-slate-900 dark:text-white">
@@ -3064,7 +3110,32 @@ export function ChatInterface({
             </div>
           )}
           <div ref={bottomRef} />
+                  </div>
                 </div>
+
+                {showScrollToBottom ? (
+                  <button
+                    type="button"
+                    aria-label="Ir al último mensaje"
+                    title="Ir al último mensaje"
+                    onClick={() => scrollMessagesToBottom("smooth")}
+                    className="absolute bottom-4 right-5 z-10 flex h-10 w-10 cursor-pointer items-center justify-center rounded-full border border-slate-200/80 bg-white text-slate-600 shadow-lg shadow-slate-900/10 transition hover:bg-slate-50 hover:text-violet-700 dark:border-white/15 dark:bg-neutral-800 dark:text-white/80 dark:shadow-black/30 dark:hover:bg-neutral-700 dark:hover:text-white"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="h-5 w-5"
+                      aria-hidden="true"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </button>
+                ) : null}
               </div>
 
               {/* Input */}
