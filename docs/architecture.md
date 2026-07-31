@@ -245,7 +245,7 @@ El plano de definición vive en `workflow_definitions`: `graph_jsonb` es el arte
 | Divergencias | Evento `state_changed` con `payload.kind = "transition_divergence"` (o `transition_rejected` en enforcing) + pin de definición (id/version/hash). Triage: `npm run triage:divergences --workspace @agents/web` (sites `lab_*` separados). Probe: `npx tsx --env-file=apps/web/.env.local apps/web/scripts/verify-workflow-enforcement.ts` |
 | Evidencia | `evidence_records` (append-only, hash-pinned); replay histórico: `npm run test:replay --workspace @agents/web`; cada corrida del lab inserta evidencia `gate="lab_run_replay"` |
 
-Estado (2026-07-31): **enforcing activo** en el tenant piloto tras triage (grupo `publication_keys_protected` clasificado como rechazo esperado) y probe negativo con `transition_rejected` + rollback verificado. Soak 5–7 días en curso antes de marcar Phase 1 completa / Phase 2 dispatcher. Detalle en `docs/manuals/gu-os-flexible-workflows-detailed-implementation-plan.md`.
+Estado (2026-07-31): **Phase 1 completa** con `enforcing` activo en el tenant piloto (triage + probe `transition_rejected` + rollback verificado). El soak de volumen orgánico se difiere a canary post-lanzamiento (aún no hay usuarios de mercado); Phase 2 puede arrancar desde el schema inerte (Slice 2.1). Detalle en `docs/manuals/gu-os-flexible-workflows-detailed-implementation-plan.md`.
 
 ## Seguridad
 

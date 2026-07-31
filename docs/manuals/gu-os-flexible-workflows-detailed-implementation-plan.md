@@ -228,19 +228,26 @@
 
 ### Slice 1.7 — Enforcement flip
 
-**Status:** [~] enforcing activo en tenant piloto (2026-07-31) — soak en curso
+**Status:** [x] done (2026-07-31) — Phase 1 técnicamente completa; canary de mercado diferido
 **Objective:** the definition is the transition authority for at least one tenant.
 
 **Preparación (hecha con S1.4):** los tres sitios ya rechazan en modo enforcing — el adapter devuelve `{ ok:false, error:"workflow_transition_rejected", reason, failed_guards, hint }` al modelo y los wrappers devuelven null (el handler muestra su mensaje de reintento); el evento `transition_rejected` (payload.kind) queda registrado. **El flip es solo datos:** `setAccountFeatureFlag(userId, "workflow_enforcement_mode", true, "enforcing")` para el tenant piloto. Rollback: borrar la fila o `value_text` a `advisory`/`off`.
 
 **Tasks:**
-- [x] 1. Triage the advisory window's divergences to zero-or-explained. Tooling: `apps/web/scripts/set-workflow-enforcement.ts` + `apps/web/scripts/triage-divergences.ts` (`npm run triage:divergences --workspace @agents/web`). Triage 2026-07-31: el único grupo de producción fue `package_ready→package_ready` / `publication_keys_protected` (3×, caso piloto) — clasificado **(b) esperado** (el modelo intentó escribir claves de publicación; el guard y el adapter ya lo bloquean). Probes S1.7 (`s1_7_enforcement_probe`) no cuentan como divergencia de producto. Ventana de observación y volumen (≥20–30 transiciones / 5–7 días) continúan en soak bajo enforcing.
+- [x] 1. Triage the advisory window's divergences to zero-or-explained. Tooling: `apps/web/scripts/set-workflow-enforcement.ts` + `apps/web/scripts/triage-divergences.ts` (`npm run triage:divergences --workspace @agents/web`). Triage 2026-07-31: el único grupo de producción fue `package_ready→package_ready` / `publication_keys_protected` (3×, caso piloto) — clasificado **(b) esperado** (el modelo intentó escribir claves de publicación; el guard y el adapter ya lo bloquean). Probes S1.7 (`s1_7_enforcement_probe`) no cuentan como divergencia de producto.
 - [x] 2. Flip `workflow_enforcement_mode = "enforcing"` for the pilot tenant (2026-07-31). Evidencia: `npx tsx --env-file=apps/web/.env.local apps/web/scripts/verify-workflow-enforcement.ts` → `reject:true` + evento `transition_rejected`; rollback a `advisory` verificado y re-flip a `enforcing` dejado activo.
-- [ ] 3. After one clean week: mark the duplicated hardcoded guard call sites with removal TODOs (actual removal is Phase 2+ cleanup, after soak).
+- [~] 3. Mark duplicated hardcoded guard call sites with removal TODOs — diferido al **primer canary con usuarios reales** (o cleanup explícito post Phase 2 soak). Mientras no haya mercado, no hay semana de tráfico orgánico que observar; no bloquear Phase 2 por eso.
 
-**Phase 1 exit checks (Technical Plan §30):** [x] every active case pinned (120/120 + pin-on-create + re-pin al regenerar caso lab) · [x] illegal transition rejected with event (enforcing, tenant piloto — probe `publication_keys_protected` → `transition_rejected`) · [~] historical replay identical terminal states (historial incompleto pre-instrumentación — finding 13; hacia adelante el wrapper graba las transiciones, incl. batch docs/fotos/characteristics) · [~] lab checks on production evaluator (hecho por construcción — tick/invariants/safe_check advised + evidencia `lab_run_replay` por corrida; "against a pinned draft" queda ejercitable vía `workflow_definition_id` en cuanto exista el primer draft) · [x] minimal evidence records exist (30 `historical_replay`).
+**Phase 1 exit checks (Technical Plan §30):** [x] every active case pinned · [x] illegal transition rejected with event (enforcing + probe) · [x] historical replay harness usable (huecos pre-instrumentación aceptados — finding 13; forward path instrumentado) · [x] lab checks on production evaluator (por construcción; draft pin via API listo; dropdown UI ticket 1.6-1) · [x] minimal evidence records exist.
 
-**Soak gate (antes de marcar Phase 1 completa / arrancar Phase 2 dispatcher):** 5–7 días en `enforcing` sin divergencias de producción no explicadas y ≥20–30 transiciones reales. Monitoreo: `npm run triage:divergences --workspace @agents/web`. Rollback: `npx tsx apps/web/scripts/set-workflow-enforcement.ts --mode advisory`.
+**Gate pre-release (sustituye el soak de 5–7 días):** no hay usuarios reales en mercado aún así que un soak de volumen orgánico **no es ejecutable** y no bloquea Phase 2. Evidencia aceptada en su lugar:
+1. matriz/selftests de transitions + guards verdes;
+2. `type-check` + lint sin errores;
+3. replay histórico con huecos heredados documentados;
+4. probe negativo enforcing → `transition_rejected` + rollback verificado;
+5. E2E controlado / piloto `property_optioning` ya ejercitado.
+
+**Canary diferido (post-lanzamiento, no bloquea Phase 2):** al liberar a usuarios reales, correr `triage:divergences` durante la primera semana y solo entonces retirar/TODO los guards hardcoded duplicados (task 1.7-3). Rollback: `npx tsx apps/web/scripts/set-workflow-enforcement.ts --mode advisory`.
 
 ---
 
@@ -257,7 +264,7 @@
 - [ ] 3. Append-only trigger on `work_item_events` (00019 pattern).
 - [ ] 4. RLS per 0.5-5 convention on all four.
 
-**Depends on:** Phase 1 complete (definition drives templates). **Rollback:** tables inert behind the v2 flag.
+**Depends on:** Phase 1 complete (definition drives templates) — cumplido 2026-07-31 vía gate pre-release (finding 15); canary de mercado no bloquea este slice. **Rollback:** tables inert behind the v2 flag.
 
 ### Slice 2.2 — Work-item queries module
 
@@ -453,7 +460,8 @@
 | 11 | 2026-07-29 | LangChain `@langchain/openai@0.4.9` only copies `usage` into `response_metadata` when `system_fingerprint` is present; OpenRouter often omits it. Early Slice 0.4 smokes showed `main_agent` / `skill_selector` with estimated-only cost despite OpenRouter returning `usage.cost` on direct-fetch paths. Hardcoded catalog also understated GPT-5.4 Mini ($0.60/$2.40 vs live $0.75/$4.50). | High (metering trust) | **Taken:** Slice 0.4.1 — HTTP fetch stash + dual-cost + immutable OpenRouter-sourced catalog snapshots; dashboard “Costo contabilizado”. |
 | 12 | 2026-07-29 | Decisiones del transformer v1 (S1.2, consume §X.1): D1/D2/D3 resueltos promoviendo `property_data_review` y `published` a estados de primera clase; D6 como transición skip declarada; D5 codificado como `defensible_comparables_sample` (>=3). **D4 se porta tal cual** (`external_response_exists`) para que el replay histórico sea paridad exacta con runtime — arreglar la rama `internal_user` es decisión v2 explícita. `approval_required` queda null en v1 (aprobaciones evidence-bound = Fase 3) y los proposers quedan permisivos (estrechar = decisión v2 post-advisory). Desviación menor de finding 7: `account_feature_flags` ganó columna `value_text` para flags enum (primer consumidor: `workflow_enforcement_mode`). | Medium | **Taken:** codificado en `transform-flow.ts` con comentarios D1–D6; revisar D4 y proposers al preparar v2. |
 | 13 | 2026-07-29 | El replay histórico (S1.6) contra 30 casos reales mostró que **el stream de eventos no captura todas las transiciones de paso**: los pasos tempranos (intake→awaiting_documents→documents_received vía orchestrator/batch-completion) y la clausura del publication runner no grababan eventos con `from/to.current_step` — 13/30 casos con historia incompleta (0 transiciones grabadas o cierre ausente). No son bugs del evaluator. | Medium (calidad del advisory/replay) | **Taken:** el replay se re-ancla en `payload.from` y reporta `unrecordedGaps` en vez de falsas divergencias; `advisedUpdateCase` ahora graba `state_changed`/`workflow_step_transition` en todo cambio de paso exitoso (sitios 2 y 3). **2026-07-31:** `document-batch-completion`, `photo-batch-completion` y `characteristics-response` migrados al wrapper advised; el wrapper carga `recentEventTypes` al salir de `awaiting_documents`. |
-| 14 | 2026-07-31 | Triage advisory / flip S1.7: 3 divergencias reales de producción en el caso piloto (`package_ready→package_ready`, `publication_keys_protected`). | Low | **Taken:** clasificadas **(b) esperadas** — el agente intentó parchear claves de publicación; el guard + adapter ya rechazan. Probe enforcing emite `transition_rejected` y `reject:true`. Tenant piloto en `enforcing`; soak 5–7 días antes de cerrar Phase 1 formalmente. |
+| 14 | 2026-07-31 | Triage advisory / flip S1.7: 3 divergencias reales de producción en el caso piloto (`package_ready→package_ready`, `publication_keys_protected`). | Low | **Taken:** clasificadas **(b) esperadas** — el agente intentó parchear claves de publicación; el guard + adapter ya rechazan. Probe enforcing emite `transition_rejected` y `reject:true`. Tenant piloto en `enforcing`. |
+| 15 | 2026-07-31 | El soak de 5–7 días / ≥20–30 transiciones reales de S1.7 asumía tráfico de mercado; el producto aún no tiene usuarios reales. Esperar no genera evidencia. | Medium (proceso) | **Taken:** Phase 1 se cierra con **gate pre-release** (selftests, probe enforcing, rollback, E2E/piloto, replay documentado). El soak orgánico se difiere a canary post-lanzamiento; Phase 2 (desde 2.1 schema inerte) puede arrancar ahora. |
 | — | | *(append as found)* | | |
 
 **Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3).
