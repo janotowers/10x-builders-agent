@@ -280,8 +280,11 @@ Las decisiones del **usuario interno** no requieren la bandeja web: web chat y
 Telegram ejecutan el mismo `resolvePendingDecisionTurn` antes del agente general.
 La bandeja **Pendientes** complementa el chat con descubrimiento, evidencia y
 acciones estructuradas; no es el único lugar para aprobar, corregir o responder.
-`property_data_review` del contacto externo permanece ligado a su chat Telegram
-y no contradice esta paridad interna.
+Además, cuando el caso se opera en web, los follow-ups operativos
+(`notify_user` / HITL / resumen de publicación) se espejan al timeline del chat
+web y se evita el push Telegram sorpresivo (`getActiveCaseInternalChannel` +
+`deliverInternalCaseFollowUp`). `property_data_review` del contacto externo
+permanece ligado a su chat Telegram y no contradice esta paridad interna.
 
 La continuidad operacional usa `case_id`, pero el binding conversacional actual
 sigue siendo **por canal**: el índice activo es `(case_id, channel)` y
@@ -647,8 +650,11 @@ vía `operational_case_update_state`.
 
 Feature flag / rollout por caso (precedencia de caso sobre cuenta):
 `context.publication_mode` o `publication.mode` ∈ `off | shadow | active`
-(default **`off`**). `shadow` calcula reconcile/preflight sin side effects;
-`active` habilita el runner. Flags legados
+(default explícito **`off`** si se setea). `shadow` calcula reconcile/preflight
+sin side effects; `active` habilita el runner. En `property_optioning`, si el
+modo **no** está seteado, al entrar a publicación se auto-habilita `active`
+(`propertyOptioningPublicationEnablementPatch`) para no dejar casos reales
+atascados tras aprobar la descripción. Flags legados
 `context.publication_workflow_v1 === false` /
 `publication.feature_enabled=false` también desactivan.
 
@@ -678,9 +684,11 @@ Orden por destino (EasyBroker antes que Ungga):
    - Ungga: `ungga_publish_listing(action=prepare_draft)` (enrich desde
      `case_id`; `commission_pct` → Comisión (%) vía lápiz en tarjeta Operación
      con confirmación **palomita**, verificación read-only al reabrir el modal,
-     `saveAsDraft` + relectura antes de `publish_draft`; omitir strings vacíos;
-     CLI real con `UNGGA_CLI_DRY_RUN=false` salvo tests). Solo el GU-ID creado
-     por CLI es canónico (`creation_source=cli`); no adoptar `Tipo Importada /
+     persistencia canónica con **Guardar cambios** del editor + relectura antes
+     de `publish_draft` — un “Guardar como borrador” prematuro puede dejar
+     comisión `null`; omitir strings vacíos; CLI real con
+     `UNGGA_CLI_DRY_RUN=false` salvo tests). Solo el GU-ID creado por CLI es
+     canónico (`creation_source=cli`); no adoptar `Tipo Importada /
      Origen EasyBroker`.
 3. Media: `easybroker_upload_images(case_id, listing_id)` es el dueño de la
    secuencia. Si la cuenta tiene asset de watermark, el adapter aplica y

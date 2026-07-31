@@ -469,7 +469,7 @@ Si faltan datos comerciales (correo, colaboración, comisión cobrada al propiet
 |--------|----------------|---------------------------|
 | N3 por habilidad | `PATTERN_STEP_STATUS_N3_VS_N4`, contratos en `run-skill` | **Paso listo para probar** (no **Paso probado**) |
 | N4 | `PATTERN_STEP_TEST_SCENARIO` + semillas en `step-test-seeds.ts` | **Paso probado** tras `step_test_completed` |
-| Publicación | Publication runner, preflight condicional, rollout `off\|shadow\|active` (default **off**) | E2E: `publication_mode: "active"`; legacy `97d9ba19-…` solo recuperación |
+| Publicación | Publication runner, preflight condicional, rollout `off\|shadow\|active` | E2E fuerza `active`; `property_optioning` real auto-habilita `active` si el modo no está seteado; legacy `97d9ba19-…` solo recuperación |
 
 Regresión local: `npm run test:publication-workflow` (web), `npm run test:contract-commercial-terms` y `npm run test:photo-manifest` (agent).
 

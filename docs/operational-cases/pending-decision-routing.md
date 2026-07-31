@@ -84,4 +84,9 @@ Plan compartido para notificaciones con archivo opcional (`contract_review` DOCX
 
 **No se compacta** el body de revisión de descripción para forzar un solo mensaje: si el excerpt truncado + instrucciones supera 1024 (caso típico), se usa `text_with_actions_then_attach` a propósito, para conservar negrillas/preview y el `.txt` completo.
 
-**Paridad web:** no hay `sendDocument`; el canal web persiste la notificación y expone el borrador completo vía metadata (`listing_description_txt`) / link de descarga (contrato). Misma semántica HITL, adaptador distinto.
+**Paridad web:** no hay `sendDocument`; el adaptador web usa el mismo HITL con transporte distinto:
+
+- notificaciones internas + botones inline en el timeline (`web-hitl-client` / `web-hitl-presentation`);
+- descarga autenticada del borrador (contrato DOCX, descripción `.txt`);
+- follow-ups del caso se espejan al chat web cuando el canal interno activo es `web` (`deliver-internal-case-follow-up` + `mirror-case-message-to-web-chat`);
+- el resumen final (`listing_published_summary`) muestra portada del caso con enlace a EasyBroker (paridad visual del link preview de Telegram).

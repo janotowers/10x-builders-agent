@@ -35,8 +35,9 @@ The main interaction surface remains conversational. The web pending inbox is a 
 - Operational cases, case events, documents and business state are tenant-scoped and independent of a channel session.
 - Web and Telegram invoke the shared `resolvePendingDecisionTurn` before the generic agent for internal-user decisions such as price, contract, listing description, titularidad and comparables.
 - Web and Telegram reuse shared intake and conversational-routing primitives.
+- Case follow-ups choose an **active internal channel** from conversation bindings: when web is active, operational notifies are mirrored into the web chat timeline and Telegram push is suppressed; when Telegram is active, push goes to Telegram as before.
 - Long-term personal memories are scoped by `user_id`; a sibling-session catch-up flush makes durable memories retrievable after switching web ↔ Telegram.
-- `notify()` always persists an internal web notification and attempts configured push delivery.
+- `notify()` always persists an internal web notification and attempts configured push delivery (subject to the active-channel push policy above).
 
 ### 2.2 Still channel-scoped
 
