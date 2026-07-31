@@ -2,7 +2,7 @@
 
 **Status:** Architectural direction and evidence-gated backlog (not fully implemented).
 **Scope:** Internal-user continuity across the current web chat and Telegram surfaces. Future channels may reuse the contracts, but they do not justify speculative implementation.
-**Related:** [Agent architecture analysis](./gu-os-agent-architecture-analysis.md) · [Flexible workflows technical plan](./gu-os-flexible-workflows-technical-plan.md) · [Operational-case architecture](../operational-cases/architecture.md) · [Long-term memory plan](../memory/long_term_memory_plan.md) · [G Brain evaluation](../brain/gbrain-evaluation-and-plan.md)
+**Related:** [Agent architecture analysis](./gu-os-agent-architecture-analysis.md) · [Flexible workflows technical plan](./gu-os-flexible-workflows-technical-plan.md) · [Operational-case architecture](../operational-cases/architecture.md) · [Long-term memory plan](../memory/long_term_memory_plan.md) · [G Brain evaluation](../brain/gbrain-evaluation-and-plan.md) · [Talk to Gu vision](../talk-to-gu/vision.md) · [Realtime voice plan](../talk-to-gu/realtime-voice-implementation-plan.md)
 
 ---
 
@@ -160,6 +160,8 @@ Rules:
 
 Existing `agent_messages`, `tool_calls` and `turn_id` provide the starting evidence. A new table is justified only after validating that bounded structured artifacts cannot be represented safely in existing metadata.
 
+**Update 2026-07-31:** the [realtime voice plan](../talk-to-gu/realtime-voice-implementation-plan.md) is the first planned consumer of this contract: visual artifacts referenced from a voice conversation (charts, tables, property sheets — Slice V4.1) and, later, correlated inbound uploads via a temporary `UploadIntent` expectation (deferred V6.1). Two records must stay distinct when implemented: the **artifact** (content, provenance, turn/case binding) and the **delivery receipt** (channel, timestamp, success). Artifact existence never implies successful delivery, and a voice surface may only reference an artifact after a confirmed render/delivery. Inbound association follows ADR-CC-002: one active, compatible expectation resolves; ambiguity asks; temporal proximity alone never binds.
+
 ---
 
 ## 6. UX principles
@@ -236,6 +238,8 @@ Prioritize the deferred work when one or more occurs:
 - multiple concurrent general threads create wrong antecedent selection;
 - clarification/fallback metrics show material lost work;
 - support reports show users expect exact cross-channel continuation.
+
+**Status 2026-07-31:** the third-interactive-channel trigger is in progress — the [realtime voice plan](../talk-to-gu/realtime-voice-implementation-plan.md) commits voice as an interactive channel. Prioritize the turn-artifact work when its Slice V4.1 / deferred V6.1 (`UploadIntent`) are scheduled; until then this backlog remains evidence-gated as stated above.
 
 ---
 
