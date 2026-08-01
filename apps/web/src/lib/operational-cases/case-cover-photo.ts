@@ -60,52 +60,45 @@ export function caseCoverPhotoApiPath(caseId: string): string {
   return `/api/operational-cases/${encodeURIComponent(caseId)}/photos/cover`;
 }
 
-export function resolveCaseCoverPhotoRef(
-  contextJsonb: unknown
-): CaseCoverPhotoRef | null {
-  const context = isRecord(contextJsonb) ? contextJsonb : {};
-  const manifest = parsePhotoManifest(context.photo_manifest);
-  const first = manifest[0];
-  if (first) {
-    if (
-      typeof first.public_url === "string" &&
-      /^https?:\/\//i.test(first.public_url.trim())
-    ) {
-      const url = first.public_url.trim();
-      return { kind: "url", url, contentType: guessImageContentType(url) };
-    }
-    const preferred =
-      (typeof first.watermarked_path === "string" &&
-        first.watermarked_path.trim()) ||
-      first.source_path;
-    if (/^https?:\/\//i.test(preferred)) {
-      return {
-        kind: "url",
-        url: preferred,
-        contentType: guessImageContentType(preferred),
-      };
-    }
-    const storage = parseStorageRef(preferred);
-    if (storage) {
-      return {
-        kind: "storage",
-        bucket: storage.bucket,
-        path: storage.path,
-        contentType: guessImageContentType(storage.path),
-      };
-    }
-  }
+function asHttpUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const url = value.trim();
+  return /^https?:\/\//i.test(url) ? url : null;
+}
 
-  const rawPath = resolveRawPhotoPaths(context.raw_photos)[0];
-  if (!rawPath) return null;
-  if (/^https?:\/\//i.test(rawPath)) {
-    return {
-      kind: "url",
-      url: rawPath,
-      contentType: guessImageContentType(rawPath),
-    };
+/**
+ * Túneles / localhost no sirven bien como `<img>` (intersticial ngrok, host caído).
+ * Se omiten incluso como fallback de `public_url`.
+ */
+export function isUnreliableCoverPublicUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host.endsWith(".ngrok-free.dev") ||
+      host.endsWith(".ngrok-free.app") ||
+      host.endsWith(".ngrok.io") ||
+      host.endsWith(".ngrok.app") ||
+      host.endsWith(".loca.lt") ||
+      host.endsWith(".trycloudflare.com")
+    );
+  } catch {
+    return true;
   }
-  const storage = parseStorageRef(rawPath);
+}
+
+function coverFromHttpUrl(url: string): CaseCoverExternalUrl | null {
+  if (isUnreliableCoverPublicUrl(url)) return null;
+  return {
+    kind: "url",
+    url,
+    contentType: guessImageContentType(url),
+  };
+}
+
+function coverFromStoragePath(path: string): CaseCoverStorageRef | null {
+  const storage = parseStorageRef(path);
   if (!storage) return null;
   return {
     kind: "storage",
@@ -113,6 +106,46 @@ export function resolveCaseCoverPhotoRef(
     path: storage.path,
     contentType: guessImageContentType(storage.path),
   };
+}
+
+/**
+ * Portada del caso: prioriza storage durable; `public_url` solo como fallback
+ * (y nunca túneles/dev hosts).
+ */
+export function resolveCaseCoverPhotoRef(
+  contextJsonb: unknown
+): CaseCoverPhotoRef | null {
+  const context = isRecord(contextJsonb) ? contextJsonb : {};
+  const manifest = parsePhotoManifest(context.photo_manifest);
+  const first = manifest[0];
+  if (first) {
+    const preferred =
+      (typeof first.watermarked_path === "string" &&
+        first.watermarked_path.trim()) ||
+      first.source_path;
+    if (preferred) {
+      const preferredUrl = asHttpUrl(preferred);
+      if (preferredUrl) {
+        const fromUrl = coverFromHttpUrl(preferredUrl);
+        if (fromUrl) return fromUrl;
+      } else {
+        const fromStorage = coverFromStoragePath(preferred);
+        if (fromStorage) return fromStorage;
+      }
+    }
+
+    const publicUrl = asHttpUrl(first.public_url);
+    if (publicUrl) {
+      const fromPublic = coverFromHttpUrl(publicUrl);
+      if (fromPublic) return fromPublic;
+    }
+  }
+
+  const rawPath = resolveRawPhotoPaths(context.raw_photos)[0];
+  if (!rawPath) return null;
+  const rawUrl = asHttpUrl(rawPath);
+  if (rawUrl) return coverFromHttpUrl(rawUrl);
+  return coverFromStoragePath(rawPath);
 }
 
 export function extractEasybrokerUrlFromContext(

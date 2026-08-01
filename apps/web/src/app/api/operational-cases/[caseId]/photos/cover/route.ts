@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { resolveCaseCoverPhotoRef } from "@/lib/operational-cases/case-cover-photo";
 
 /**
- * Portada autenticada del caso (primera foto del manifiesto / raw_photos).
+ * Portada autenticada del caso (storage primero; public_url solo fallback).
  * Usada por el preview del resumen final en chat web (paridad visual con Telegram OG).
  */
 export async function GET(

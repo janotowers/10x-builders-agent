@@ -34,7 +34,8 @@ assert.deepEqual(fromManifest, {
   contentType: "image/jpeg",
 });
 
-const fromPublicUrl = resolveCaseCoverPhotoRef({
+// Storage gana sobre public_url (aunque el CDN sea válido).
+const prefersStorageOverPublicUrl = resolveCaseCoverPhotoRef({
   photo_manifest: [
     {
       source_path: "case-documents:c1/raw.jpg",
@@ -43,10 +44,66 @@ const fromPublicUrl = resolveCaseCoverPhotoRef({
     },
   ],
 });
-assert.deepEqual(fromPublicUrl, {
+assert.deepEqual(prefersStorageOverPublicUrl, {
+  kind: "storage",
+  bucket: "case-documents",
+  path: "c1/raw.jpg",
+  contentType: "image/jpeg",
+});
+
+// public_url como fallback si el path preferido no es usable (p. ej. túnel).
+const fromPublicUrlFallback = resolveCaseCoverPhotoRef({
+  photo_manifest: [
+    {
+      source_path: "https://bad.ngrok-free.dev/gone.jpg",
+      sequence: 0,
+      public_url: "https://cdn.example/public.jpg",
+    },
+  ],
+});
+assert.deepEqual(fromPublicUrlFallback, {
   kind: "url",
   url: "https://cdn.example/public.jpg",
   contentType: "image/jpeg",
+});
+
+// Túnel ngrok en public_url no se usa; se queda el storage.
+const skipsNgrokPublicUrl = resolveCaseCoverPhotoRef({
+  photo_manifest: [
+    {
+      source_path: "case-documents:c1/raw.jpg",
+      sequence: 0,
+      public_url:
+        "https://unadvised-shortsightedly-darla.ngrok-free.dev/api/public/x.jpg",
+    },
+  ],
+});
+assert.deepEqual(skipsNgrokPublicUrl, {
+  kind: "storage",
+  bucket: "case-documents",
+  path: "c1/raw.jpg",
+  contentType: "image/jpeg",
+});
+
+// Solo public_url de túnel → se ignora y se usa raw_photos.
+const ngrokOnlyFallsToRaw = resolveCaseCoverPhotoRef({
+  photo_manifest: [
+    {
+      source_path: "https://bad.ngrok-free.dev/gone.jpg",
+      sequence: 0,
+      public_url:
+        "https://unadvised-shortsightedly-darla.ngrok-free.dev/api/public/x.jpg",
+    },
+  ],
+  raw_photos: [
+    { storage_bucket: "case-documents", storage_path: "c1/first.png" },
+  ],
+});
+assert.deepEqual(ngrokOnlyFallsToRaw, {
+  kind: "storage",
+  bucket: "case-documents",
+  path: "c1/first.png",
+  contentType: "image/png",
 });
 
 const fromRaw = resolveCaseCoverPhotoRef({
