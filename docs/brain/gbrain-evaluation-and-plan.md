@@ -1,10 +1,18 @@
 # Evaluación de G Brain y plan de integración con Ungga / Gu OS
 
-> **Estado:** propuesta para revisión (actualizada julio 2026)
-> **Versión:** 1.5.1 (v1.5 + genealogía **Karpathy LLM Wiki** alineada al [gist oficial](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f); enlaces cruzados roadmap / guía / glosario comercial)
+> **Estado:** propuesta para revisión (actualizada agosto 2026)
+> **Versión:** 1.5.2 (v1.5.1 + coordinación con los planes de **flexible workflows**: secuencia post-workflows, frontera con el impact plane, migraciones como placeholders, knowledge scoping futuro)
 > **Audiencia:** Janot (arquitecto/dueño)
 > **Decide:** si arrancamos la "Brain Layer" como capa nueva paralela a `memories`, siguiendo Opción B (portar **8 ideas** de G Brain sin importar su código), en convivencia explícita con `operational_cases` y `account_skills`
 > **No decide:** si en el futuro lejano se integra G Brain como microservicio (Opción C) — eso queda como puerta abierta, con matiz post-company-brain (ver [§8](#8-recomendación-y-razones))
+
+### Cambios v1.5.2 vs v1.5.1
+
+> Marcadores `[v1.5.2]` en sub-secciones nuevas/modificadas. Ronda de **coordinación** con [`gu-os-flexible-workflows-technical-plan.md`](../manuals/gu-os-flexible-workflows-technical-plan.md) y [`gu-os-qm-reference-analysis.md`](../manuals/gu-os-qm-reference-analysis.md) (agosto 2026). Sin cambio al alcance MVP ni a las 8 ideas de Opción B.
+
+- **Secuencia (decisión del dueño, ago 2026):** la Brain Layer arranca **después** de las fases 0–4 del plan de flexible workflows. Este documento es plan de referencia, no cronograma paralelo.
+- **Migraciones → placeholders relativos:** los números `00053`–`00059` reservados en v1.5 fueron consumidos por property optioning / workflows (`00053`–`00068` ocupadas; el plan detallado de workflows reserva `00069`–`00071` y seguirá consumiendo números). Los números brain en §9/§10/apéndices se leen como **base+N** (base+0 = `brain_pages`, …, base+6 = `brain_proposals`); la base real se toma de la siguiente secuencia libre al implementar (§1.3.1).
+- **[§1.4.8](#148-casos-operacionales-vs-brain-layer-frontera-de-responsabilidades-v15) ampliada:** frontera con el **impact plane** de workflows Phase 3 (`case_facts` / `case_artifacts` / `artifact_inputs`): `case_facts` pasa a ser la **fuente preferida de promoción selectiva** hacia `brain_pages` (mejor provenance que `context_jsonb`); regla de clasificación assets-plantilla vs assets-conocimiento; nota forward-looking de **knowledge scoping** para colaboración multi-seat (QM ref §6).
 
 ### Cambios v1.5.1 vs v1.5
 
@@ -335,13 +343,15 @@ También: reranker (ZeroEntropy default), modos de búsqueda (`conservative` / `
 
 **Renumeración de migraciones:** el plan v1.4 reservaba `00019`–`00024` para brain. Esas secuencias están **ocupadas**:
 
-| Migración | Contenido real (jul 2026) |
-|-----------|---------------------------|
+| Migración | Contenido real |
+|-----------|----------------|
 | 00019 | `operational_cases` (subsistema base) |
 | 00020 | `account_skills` V1 |
 | 00021–00052 | Extensiones operational_cases, property optioning, Telegram, notificaciones, etc. |
+| 00053–00068 `[v1.5.2]` | Más property optioning + arranque de flexible workflows (`00065_workflow_definitions`, `00066` pin, `00067` flags, `00068_evidence_records`) |
+| 00069–00071 `[v1.5.2]` | **Reservadas** por el plan detallado de workflows (work plane, impact plane, worker profiles) |
 
-**Próxima migración brain:** **`00053+`** (ver calendario §10).
+**Próxima migración brain `[v1.5.2]`:** la renumeración v1.5 (`00053`–`00059`) también quedó obsoleta — esas secuencias fueron consumidas por workflows/property optioning, y las fases de workflows seguirán consumiendo números antes de que este plan arranque (decisión: Brain va **después** de las fases de workflows). Por eso los números de migración en §9, §10 y apéndices se leen como **placeholders relativos** `base+N` (base+0 = `brain_pages`, base+1 = `brain_links`, base+2b = hooks, base+3 = `brain_chunks_hybrid`, base+4 = `brain_signals`, base+5 = `brain_maintenance_runs`, base+6 = `brain_proposals`). La **base** se toma de la siguiente secuencia libre en `packages/db/supabase/migrations/` al momento de implementar (≥ `00072` hoy).
 
 ### 1.3.2 Subsistema de casos operacionales — plataforma, no un solo flujo
 
@@ -499,6 +509,7 @@ flowchart LR
   subgraph Workflow_Existente
     OC[operational_cases<br/>expediente multi-día]
     EVT[operational_case_events]
+    CF[case_facts / case_artifacts<br/>impact plane — workflows Phase 3]
     SK[Skill raíz por case_type]
   end
 
@@ -518,6 +529,7 @@ flowchart LR
   SK -.consulta relaciones.-> BL
   BS -.HITL promote.-> BP
   EVT -.promoción selectiva HITL.-> BP
+  CF -.fuente preferida — regla 5, v1.5.2.-> BP
 ```
 
 #### Cuándo un nuevo flujo inmobiliario usa qué
@@ -529,6 +541,25 @@ flowchart LR
 | "¿Qué relación tiene Julieta con estas 3 propiedades?" | — | **`brain_links`** + pages |
 | "Recordatorio one-shot el lunes 9am" | **`scheduled_tasks`** | — |
 | "Revisar checklist cada hora" | **Heartbeat** | — |
+
+#### Frontera con los planes de flexible workflows (work/impact planes) `[v1.5.2]`
+
+> *Las reglas 1–4 de arriba se escribieron contra el subsistema `operational_cases` de julio 2026. Desde entonces, [`gu-os-flexible-workflows-technical-plan.md`](../manuals/gu-os-flexible-workflows-technical-plan.md) introduce en su Phase 3 un **impact plane** (`case_facts`, `case_artifacts`, `artifact_inputs`, `case_approvals` — plan técnico §11) que este plan debe reconocer. **Secuencia decidida (ago 2026): la Brain Layer arranca después de las fases de workflows**, así que esta sub-sección es una nota de coordinación, no un cronograma.*
+
+**Regla 5 — `case_facts` es la fuente preferida de promoción selectiva.** `case_facts` (append-only, con `source_kind`/`source_ref`, confianza y supersession) es la **verdad comercial del caso**; `brain_pages` (compiled truth + timeline) es **cognición cross-caso de entidades** (lead/property/zona). No son lo mismo y no se fusionan. Cuando el Brain arranque, el camino de promoción hacia `brain_pages` es `case_facts → HITL selectivo → brain_pages.timeline / compiled_truth` — **no** minar `context_jsonb` (la regla 2 se actualiza en espíritu: `case_facts` trae provenance y supersession de fábrica, `context_jsonb` no). Sin auto-copy: la regla HITL de la regla 2 aplica igual.
+
+**Regla 6 — assets: insumo operativo ≠ conocimiento.** Con la taxonomía de assets del plan técnico §11 y de [`gu-os-qm-reference-analysis.md`](../manuals/gu-os-qm-reference-analysis.md) §5:
+
+| Clase de asset | ¿Knowledge-bearing? | Camino al Brain |
+|---|---|---|
+| Plantilla / prerequisito de tenant (`account_assets`) | **No** — insumo del capability plane (produce documentos) | Ninguno |
+| Documento de caso (`operational_case_documents`) | A veces — raw evidence; escrituras/contratos contienen hechos duraderos | Extracción existente → `case_facts` → promoción selectiva (regla 5). Nunca ingesta directa del archivo |
+| Artefacto generado (`case_artifacts`: comparables, valuación) | Sí — conocimiento de zona/precios reutilizable cross-caso | Candidato natural de promoción selectiva; misma puerta HITL |
+| Vista channel-linked (futuro) | No — vista sobre verdad, efímera | Ninguno |
+
+**Anti-patrón a vigilar:** cuando exista el panel de assets del Studio (plan detallado de workflows, Slice 2.7), contenido cuyo propósito es **informar al agente** (dossier de zona, guía de brokerage) no debe subirse como `account_assets` solo porque ahí hay UI de upload — pertenece al Brain/knowledge (o, si es procedimiento, a `account_skills`). `account_assets` es exclusivamente para insumos que **producen** documentos.
+
+**Nota forward-looking — knowledge scoping multi-seat.** El MVP brain sigue siendo tenant = usuario (RLS por `auth.uid()`). Si se activa la capa colaborativa (QM ref §6; plan técnico §28.9 `owner_scope = organization`), el conocimiento necesitará la misma dimensión de scope que `workflow_definitions` ya reservó: personal (leads del asesor) / team / org (dossiers de zona, playbooks de la inmobiliaria), siempre **tenant-first** (los grants nunca cruzan tenants). Prior art ya analizado: G Brain company brain (§1.2.1, sources federados + OAuth) y la memoria scope-owned de QM. **No agregar schema por esto en MVP** — solo dejar la pregunta registrada para el diseño de las tablas `brain_*` (un `owner_scope` nullable-futuro es aceptable si sale gratis; nada más).
 
 ---
 
@@ -1014,7 +1045,7 @@ Requisito: Brain Layer Gu OS **bien encapsulada** (tools `brain-*` + RPC) para n
 
 Una sola DB (Supabase), un solo runtime (Node/Next.js), RLS multi-tenant intacto. Las **8 ideas** de G Brain (§7) se implementan como **Brain Layer** paralela a `memories` — sin tocar memoria larga personal ni **sin reemplazar** `operational_cases` / `account_skills`. Ver [§1.4.8](#148-casos-operacionales-vs-brain-layer-frontera-de-responsabilidades-v15).
 
-**Migraciones brain:** `00053`–`00059` (+ `00055b` hooks). Las secuencias `00019`–`00024` del plan v1.4 están ocupadas (§1.3.1).
+**Migraciones brain `[v1.5.2]`:** los números `00053`–`00059` (+ `00055b` hooks) usados en los bloques de esta sección son **placeholders relativos** (`base+0`…`base+6`; ver §1.3.1) — esas secuencias ya fueron consumidas por workflows/property optioning. La base real se toma de la siguiente secuencia libre al implementar (≥ `00072` hoy, y creciendo mientras avancen las fases de workflows, que van primero).
 
 ### Hallazgo crítico que justifica la separación
 
@@ -1889,6 +1920,8 @@ create policy "Users manage own synthesis proposals"
 | 8      | Bloque 5b: synthesize_propose, dedupe_merge + UI propuestas + métricas        | 00059     | Sí (cron semanal, HITL obligatorio)          |
 
 > **Nota `[v1.5]`:** calendario extendido a **8 semanas efectivas** con Bloque 3b; si el equipo prefiere MVP mínimo, Bloque 3b puede diferirse una semana sin desbloquear Bloque 4. Migraciones `00019`–`00052` ya ocupadas por operational_cases (ver §1.3.1).
+>
+> **Nota `[v1.5.2]`:** los números de migración de esta tabla son placeholders relativos (§1.3.1); además, este calendario arranca **después** de las fases 0–4 del plan de flexible workflows (decisión ago 2026) — las semanas son relativas al "go", no a una fecha.
 
 
 ```mermaid
@@ -2359,7 +2392,7 @@ Tres perfiles posibles, en orden de agresividad creciente:
 
 Verificados en el repo (paths reales):
 
-**Migraciones existentes (última: 00052, jul 2026). Próximas brain: 00053+:**
+**Migraciones existentes (00068 ocupada; `00069`–`00071` reservadas por workflows — ver §1.3.1). Próximas brain: siguiente secuencia libre al implementar `[v1.5.2]`:**
 
 - [packages/db/supabase/migrations/00019_operational_cases.sql](../../packages/db/supabase/migrations/00019_operational_cases.sql) — plataforma casos operacionales
 - [packages/db/supabase/migrations/00020_account_skills.sql](../../packages/db/supabase/migrations/00020_account_skills.sql) — skills propias V1
@@ -2596,6 +2629,6 @@ Después de tu revisión:
 3. Decidir la **estrategia de feature flag** del punto [13.3](#133-estrategia-de-feature-flag).
 4. Decidir la **agresividad de auto-extracción** del punto [13.4](#134-auto-extracción-modo-inicial-v11).
 5. Validar que **Bloque 3b** (síntesis) entra en el primer rollout o se difiere una semana.
-6. Cuando digas "go", abrir rama `brain-layer-bloque-1` y empezar por migración **`00053_brain_pages.sql`** + `packages/agent/src/brain/page.ts` con selftests — **después** de revisar §1.4.8 para no duplicar estado de operational_cases.
+6. Cuando digas "go" (recordatorio `[v1.5.2]`: el "go" es **post-fases de workflows**), abrir rama `brain-layer-bloque-1` y empezar por la migración `<base>_brain_pages.sql` (base = siguiente secuencia libre, §1.3.1) + `packages/agent/src/brain/page.ts` con selftests — **después** de revisar §1.4.8 (incluida la frontera con el impact plane: `case_facts` como fuente de promoción) para no duplicar estado de operational_cases ni verdad comercial del caso.
 
 Si tienes preguntas o quieres profundizar (SQL hybrid search, frontera brain vs case, signal detector, cron maintenance), avísame y lo ampliamos sobre este documento.

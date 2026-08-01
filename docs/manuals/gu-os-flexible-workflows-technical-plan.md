@@ -169,7 +169,10 @@ Rules: a published global is immutable; private forks pin their lineage and do n
     "authorized_proposers": ["model", "decision_handler"],
     "approval_required": null
   }],
-  "step_bindings": [{ "state": "comparables_in_progress", "skill": "…", "bigquery_context": true }],
+  "step_bindings": [{
+    "state": "comparables_in_progress", "skill": "…", "bigquery_context": true,
+    "required_assets": [{ "asset_key": "commission_contract_template", "required": true }]
+  }],
   "work_templates": [{
     "on_enter_state": "contract_pending",
     "work_type": "prepare_contract",
@@ -188,13 +191,15 @@ Rules: a published global is immutable; private forks pin their lineage and do n
 
 Guards and postconditions are **names resolved against a code registry**, never inline code. Generated definitions can therefore only compose vetted checks. [T]
 
+**`required_assets` on `step_bindings`** [T/D]: tenant-scoped prerequisites that tools/skills consume before a step can produce its outputs (e.g. `commission_contract_template`, `listing_photo_watermark`). Today these live only in `operational_flow_jsonb` and are uploaded through the readiness lab [V]. The versioned definition is the authority that must carry the declaration once definitions replace flow JSON; the tenant's `account_assets` rows (with content hash / version once §11 ships) are the fulfillment. Missing required assets are **capability gaps**, not runtime errors to invent around — they surface in the capability map (§15) and in the Studio assets panel (§16). Published definitions are immutable: porting `required_assets` into `graph_jsonb` requires a new published version (or a temporary resolver fallback to the lab's existing source until that version exists — see detailed plan Slice 2.7).
+
 ### 5.3 Authority rule
 
 The runner consults the definition on every proposed transition: `operational_case_update_state` (or a decision handler) proposes; the transition evaluator answers *legal / illegal / requires-approval*. Illegal proposals are rejected with an appended case event. During migration the evaluator runs **advisory-only behind a flag** (log divergence, allow) before it becomes enforcing (§24). Existing hardcoded guards are ported into named registry guards and then retired from their hardcoded call sites.
 
 ### 5.4 Validation gates before publication [T]
 
-JSON-schema validity; DAG acyclicity; state reachability (no orphan, no dead-end without terminal); every referenced skill/tool/capability existing and permitted for the tenant; no credential-shaped content; deterministic transition tests; simulation of acceptance scenarios. Publication is a §10.5-gated human act; published definitions are immutable (edits create version *n+1*).
+JSON-schema validity; DAG acyclicity; state reachability (no orphan, no dead-end without terminal); every referenced skill/tool/capability existing and permitted for the tenant; every `required_assets[].asset_key` well-formed and resolvable against the tenant's asset catalog (presence may still be a gap — publication of the *definition* is allowed with an explicit gap list; execution readiness is separate); no credential-shaped content; deterministic transition tests; simulation of acceptance scenarios. Publication is a §10.5-gated human act; published definitions are immutable (edits create version *n+1*).
 
 ---
 
@@ -431,12 +436,23 @@ create table work_item_attempts (
 -- Tentative (full DDL in analysis §7.3)
 case_facts        -- append-only; fact_key, value, source_kind, source_ref, confidence, superseded_by
 case_artifacts    -- artifact_type, artifact status, input_hash, produced_by_work_item_id
-artifact_inputs   -- edges: (artifact_id, input_kind fact|artifact, input_id)
+artifact_inputs   -- edges: (artifact_id, input_kind fact|artifact|account_asset, input_id)
 case_approvals    -- approval_kind, decision approved|rejected|suspended|revoked,
                   -- evidence_hash, evidence_snapshot_jsonb, superseded_by, rationale
 ```
 
-**Mechanism:** on any changed input (fact correction, changed decision/preference, changed scope/instruction) recompute the input hash of every artifact whose declared edges include it; where the hash differs → `stale` + invalidation event + minimum repair template; approvals whose `evidence_hash` no longer matches → `suspended` (mechanical), never auto-`revoked` (business act). Artifacts with unchanged hashes stay `current` — that is the whole selectivity guarantee.
+**`input_kind = account_asset`** [T/D]: tenant templates and similar prerequisites (contract template, watermark) are inputs of generated case artifacts and are neither facts nor case artifacts. Replacing an `account_assets` row must create a new content-hashed version (never rewrite the bytes an existing artifact's `input_hash` was computed from) so a template change can selectively stale only the artifacts that declared that asset as an input — e.g. new `commission_contract_template` version → `contract_draft` stale + repair; valuation chain untouched.
+
+**Asset classes (do not collapse)** [T]:
+
+| Class | Durable unit | Example | Plane |
+|---|---|---|---|
+| Tenant prerequisite asset | `account_assets` (+ versions/hash) | Contract template, watermark | Capability / Studio assets panel |
+| Case document (temporary or durable) | `operational_case_documents` with supersession | Photos during intake; user-uploaded replacement contract | Case |
+| Case-generated artifact | `case_artifacts` + `artifact_inputs` | Valuation, listing description, contract draft | Impact |
+| Channel-linked view (future) | View over case/artifact data; never a second source of truth | Case dashboard, owner report, comparables map | UI (§16.1) |
+
+**Mechanism:** on any changed input (fact correction, changed decision/preference, changed scope/instruction, **account_asset version replacement**) recompute the input hash of every artifact whose declared edges include it; where the hash differs → `stale` + invalidation event + minimum repair template; approvals whose `evidence_hash` no longer matches → `suspended` (mechanical), never auto-`revoked` (business act). Artifacts with unchanged hashes stay `current` — that is the whole selectivity guarantee.
 
 **Status vocabulary:** `current` / `stale` / `suspended` / `invalid` / `superseded` (definitions in analysis §6.5 — keep distinct).
 
@@ -444,8 +460,11 @@ case_approvals    -- approval_kind, decision approved|rejected|suspended|revoked
 
 - **C1 — non-valuation correction:** bedrooms 2→3 ⇒ new fact row with provenance + supersession; listing description, publication fields, brochure, matching filters → `stale` + repair work; comparable set, valuation, price recommendation, price approval stay `current` unless the configured methodology declares bedrooms as an input (Gu OS's current one does not); unaffected contract work stays valid; impact view shows affected *and* unaffected.
 - **C2 — valuation-impacting correction:** construction area 165→185 m², or corrected location ⇒ comparable set, valuation, price recommendation → `stale`; mismatched-evidence approvals → `suspended`; revaluation + re-approval repair work; unrelated artifacts stay `current`.
+- **C3 — account-asset replacement:** new `commission_contract_template` content hash ⇒ contract draft (and only artifacts that declared that asset) → `stale` + repair; valuation / price approval / listing copy stay `current` unless their edges also name the asset.
 
 Existing seeds to reuse, not replace [V]: `property-identity-signature.ts` (the input-hash pattern over identity fields), document supersession, and source scoring in extraction consolidation.
+
+**Out of scope for Phase 3 — Brain promotion:** promoting `case_facts` / `case_artifacts` into the future Brain Layer (entity cognition, [`docs/brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) §1.4.8) is explicitly not Phase 3 work. The Brain program is sequenced after these phases and will consume `case_facts` as a read-only, HITL-gated promotion source; nothing in this plane writes to (or depends on) `brain_*` tables.
 
 ---
 
@@ -530,7 +549,7 @@ Terminal states and limits (analysis §10.2): `needs_clarification` (≤3 clarif
 
 ## 15. Workflow compiler architecture [T/D]
 
-The compiler is an **instance of the §14 lifecycle**, inheriting its gates and governance — no bespoke process. Pipeline: natural-language description → clarification dialogue (bounded) → **business specification** (versioned and preserved even when unimplementable) → capability map against existing skills/tools/workers → **implementation specification** with an explicit gap list (the gap list is customer-worded backlog, not a dead end) → draft `graph_jsonb` → §5.4 validation gates → simulation against synthetic cases → §10.5-gated publication as `workflow_definitions` version *n+1*.
+The compiler is an **instance of the §14 lifecycle**, inheriting its gates and governance — no bespoke process. Pipeline: natural-language description → clarification dialogue (bounded) → **business specification** (versioned and preserved even when unimplementable) → capability map against existing skills/tools/workers/**`required_assets` / integrations** → **implementation specification** with an explicit gap list (the gap list is customer-worded backlog, not a dead end — e.g. "falta la plantilla de contrato de comisión", with a link to the Studio assets panel) → draft `graph_jsonb` → §5.4 validation gates → simulation against synthetic cases → §10.5-gated publication as `workflow_definitions` version *n+1*.
 
 Generated definitions compose only registry-vetted guards/checks. Generated *code* never executes from a runtime path; it follows the isolated development path (draft → isolated branch → tests → security checks → independent verification → human promotion). [T]
 
@@ -542,9 +561,24 @@ Eight distinct concepts, never re-merged: **Case View** (business truth; brokers
 
 **Information architecture** [D/H]: workflow definitions are governed artifacts with draft/publish/rollback lifecycles — not "settings." The authoring/verification surfaces belong under a dedicated route family (e.g. `/workflows` — name tentative), with `/settings/operational-case-types` retiring after Phase 4. Final route names require examining existing navigation and the role question first [H].
 
-**Prerequisite** [V]: no role model exists beyond `profiles.is_ungga_admin`; navigation is identical for all users. Role-based UI gating must be scoped into Phase 2 (work view) explicitly, not discovered mid-phase.
+**Studio shell, early and read-only** [T/D]: a thin Studio surface may ship as soon as published definitions and `account_assets` exist — **catalog of definitions + tenant assets/readiness panel, with upload/replace for required assets, and with zero authoring**. This is the embryo the Phase 4 compiler Studio grows into (panels turn on; the shell is not rebuilt). It is also the required destination for `required_assets` upload before the lab's authoring surface can retire (§17 / detailed plan Slice 2.7). Explicit non-goals until Phase 4: create/edit/fork/publish definitions, simulation, and gap rows beyond assets.
+
+**Prerequisite** [V]: no role model exists beyond `profiles.is_ungga_admin`; navigation is identical for all users. Role-based UI gating must be scoped into Phase 2 (work view) explicitly, not discovered mid-phase. The early Studio shell may expose a user's own definitions and own `account_assets` without inventing a new role model.
 
 Liveness copy per §10's note. Inbox differentiates five ask-kinds (business decisions, blocked work, tool approvals, release approvals, compiler clarifications) rather than one undifferentiated pending list.
+
+### 16.1 Channel-linked views (dynamic interfaces) [P][H]
+
+Generated interactive views (case dashboards, comparables maps, owner reports, similar "artifacts") are a future UI capability, not a Phase 0–3 deliverable. When activated they remain **views over case/artifact truth**, never a second source of truth, and never arbitrary sandboxed app code as the default path (QM's `publish` model is prior art with a weaker security boundary — see `gu-os-qm-reference-analysis.md` §7).
+
+Two link classes — do not collapse:
+
+| Audience | Link kind | AuthZ | Mutability |
+|---|---|---|---|
+| External participant (owner, buyer, …) | Signed, expiring, revocable, tenant+case-scoped URL | Bearer of the signed link only; no Gu principal | **Read-only.** Any action returns via the existing external-response path on the conversational channel |
+| Internal user (asesor, manager, …) | Authenticated deep link into the web app | Viewer's session + normal RBAC | Interactive under role; may navigate/filter; **HITL decisions stay on the notifications/inbox path** (cross-channel continuity) — the view complements chat, it does not become a second approval surface |
+
+Links are channel-agnostic (a URL travels through Telegram/WhatsApp whether or not those channels are fully integrated). Activation criteria: §28.12.
 
 ---
 
@@ -558,6 +592,8 @@ The current readiness lab is **architecturally transitional** (analysis §11.8).
 | **Workflow Verification Studio** | §5.4 static + behavioral gates over a **pinned definition version**, per-gate results (not one "ready" boolean) | Initially the re-anchored lab; absorbed by the compiler studio in Phase 4 |
 | **Scenario Simulation & Replay** | Synthetic + historical cases, corrections mid-flight, mixed-intent turns, external waits, failure injection, retry/reconciliation, v1/v2 comparison, shadow execution | A tab of the Verification Studio, not a separate surface |
 | **Release Evidence View** | "Why may this version publish": spec version, definition hash, gate results, unresolved findings, approvals, rollback target | A tab of the definition object |
+
+**Lab retirement constraint** [T]: `/settings/operational-case-types` today is the only product surface for `account_assets` upload [V]. Its authoring/upload concerns must move to the Studio shell assets panel (§16) **before** the settings route is retired. Capability-lab diagnostics may remain.
 
 **Preserved assets** [V]: fixtures, self-tests, tool/skill diagnostics, controlled test data, staleness detectors (promoted to production in Phase 3), pattern catalogue, replayable scenarios.
 
@@ -721,9 +757,9 @@ Phases exit on **evidence**, not elapsed time. Two clocks per phase: *build effo
 |---|---|---|---|
 | **0 — Instrument & fix** | Metrics (§23), including per-model-call AI usage ledger + internal cost rollups; residual-intent field; price-approval amount mismatch; scheduled-task tool-risk allowlist; duplicate-migration cleanup; terminology cleanup (no "heartbeat" for liveness in code/docs/UI); §29 validation tasks | 2–4 days | 1–2 weeks metrics collection (parallel with Phase 1 build) |
 | **1 — Definition executable** | `workflow_definitions` + hash; flow→graph transformation to v1; case pinning; transition evaluator advisory→enforcing; historical replay; minimal `evidence_records`; lab re-anchored to pinned versions + production evaluator (fork closed) | 2–5 days | days–1 week advisory validation on real cases |
-| **2 — Work plane** | Work items/attempts/dependencies/events; readiness propagation; claims/leases/executor liveness/stale-claim recovery; attempt limits; dispatch generalization; advancement predicate; operator work view (+ first role gating) | 3–7 days | days of concurrency soak under flag |
-| **3 — Impact & workers** | Facts/artifacts/edges/evidence-bound approvals; selective invalidation + repair templates; worker profiles; valuation verifier + two deterministic services; impact view | 3–7 days | enough real corrections to calibrate over/under-invalidation |
-| **4 — Multiplexer & compiler** | Conservative decomposition; per-intent dispatch; composition; evidence gate for cross-channel antecedent resolution (deferred unless activated); business/implementation specs; capability mapping; simulation gates; governed publication; compiler studio absorbing verification/release surfaces; `/settings` lab retirement | multiplexer 2–5 days; compiler days–weeks (product-shaped); antecedent resolver separately sized if activated | UX iteration with the intended author [H] |
+| **2 — Work plane** | Work items/attempts/dependencies/events; readiness propagation; claims/leases/executor liveness/stale-claim recovery; attempt limits; dispatch generalization; advancement predicate; operator work view (+ first role gating); **parallel (not exit-blocking):** Studio shell read-only + tenant assets panel (§16) as destination for `required_assets` upload before lab retirement | 3–7 days (+ parallel Studio shell) | days of concurrency soak under flag |
+| **3 — Impact & workers** | Facts/artifacts/edges (incl. `input_kind=account_asset`)/evidence-bound approvals; selective invalidation + repair templates; `account_assets` content-hash versions; worker profiles; valuation verifier + two deterministic services; impact view | 3–7 days | enough real corrections (incl. template replacement C3) to calibrate over/under-invalidation |
+| **4 — Multiplexer & compiler** | Conservative decomposition; per-intent dispatch; composition; evidence gate for cross-channel antecedent resolution (deferred unless activated); business/implementation specs; capability mapping **including required_assets/integrations**; simulation gates; governed publication; compiler studio **absorbing** the Phase 2 Studio shell + verification/release surfaces; `/settings` lab retirement only after assets panel exists | multiplexer 2–5 days; compiler days–weeks (product-shaped); antecedent resolver separately sized if activated | UX iteration with the intended author [H] |
 
 Definition of done per phase: §30.
 
@@ -744,6 +780,8 @@ Definition of done per phase: §30.
 | Cost runaway or unexplainable AI spend | `cost_ceiling_cents` per profile; attempt limits; Phase 0 call-level usage ledger; reported-vs-estimated cost coverage; anomaly diagnostics |
 | Wrong cross-channel case/antecedent association | Domain IDs before generic threads; deterministic stage evidence; one high-confidence candidate or clarify; tenant-scoped lookup; transient artifacts with provenance/TTL (§12.1) |
 | Append-only growth with personal data | Retention policy before Phase 3 (§21) |
+| Lab retired before assets panel ships | Hard dependency: Slice 2.7 assets panel before 4.2-5; C3 + `account_asset` edges before impact claims completeness |
+| Channel-linked views become a second truth or second HITL surface | §16.1 two-class links; views over case/artifact data only; decisions stay on notifications |
 
 ---
 
@@ -760,6 +798,7 @@ Definition of done per phase: §30.
 9. **Owner of shared brokerage workflows** — user-private only for Phase 1–3, or implement `owner_scope = organization` earlier? Default: user + global only until brokerage multi-seat sharing is a real ask.
 10. **Skill import / marketplace** — when to build the import pipeline and `account_skill_files` storage; deferred past Phase 4 compiler unless a concrete partner skill pack appears sooner.
 11. **Cross-channel antecedent resolver activation** — require evidence of web↔Telegram follow-up failures, a committed third interactive channel, or product prioritization. Until then preserve current case/HITL parity and collect examples; do not create a universal conversation entity (§12.1).
+12. **Channel-linked views (dynamic interfaces)** — when to build signed external read-only links and authenticated internal deep links to case/artifact views delivered through conversational channels (§16.1). Default: deferred until a real multi-channel need (internal advisor and/or external owner) justifies it; HITL stays on notifications; views never become a second source of truth. Design position recorded in `gu-os-qm-reference-analysis.md` §7.
 
 ---
 
@@ -784,9 +823,9 @@ Definition of done per phase: §30.
 
 **Phase 2 done when:** a v2 case completes end to end with at least one parallel branch; §12.2-style equivalence holds against v1 on replay; claim contention and stale-claim recovery pass self-tests and a soak period with zero silent double-claims; abandoned attempts appear as `claim_expired` events; an item at `max_attempts` lands in `blocked` with a case notification; the operator work view is role-gated and uses the §10 liveness vocabulary.
 
-**Phase 3 done when:** C1 passes (listing artifacts `stale`, valuation/price approval `current`, contract work valid); C2 passes (valuation chain `stale`, approval `suspended`, revaluation work created); the valuation verifier runs read-only under its contract and its evidence gates the price recommendation; publication reconciliation and extraction consolidation execute as deterministic-service workers; over-invalidation ratio is measured.
+**Phase 3 done when:** C1 passes (listing artifacts `stale`, valuation/price approval `current`, contract work valid); C2 passes (valuation chain `stale`, approval `suspended`, revaluation work created); C3 passes (template/`account_asset` replacement stales only declared dependents); the valuation verifier runs read-only under its contract and its evidence gates the price recommendation; publication reconciliation and extraction consolidation execute as deterministic-service workers; over-invalidation ratio is measured.
 
-**Phase 4 done when:** Scenarios A1/A2/B1/B2/D pass as self-tests; a non-engineer creates, validates, simulates, and publishes a simple workflow that runs correctly on a synthetic case; publication is evidence-gated and human-approved; the readiness lab's authoring/verification concerns live in the studio and `/settings/operational-case-types` is retired. Cross-channel antecedent resolution is not an exit requirement unless §28.11 activates it; if activated, its web→Telegram and Telegram→web scenarios must pass without silent or cross-tenant association.
+**Phase 4 done when:** Scenarios A1/A2/B1/B2/D pass as self-tests; a non-engineer creates, validates, simulates, and publishes a simple workflow that runs correctly on a synthetic case; publication is evidence-gated and human-approved; the capability map surfaces missing `required_assets` as customer-worded gaps; the readiness lab's authoring/verification concerns live in the studio (which has absorbed the Phase 2 shell) and `/settings/operational-case-types` is retired only after the assets panel exists. Cross-channel antecedent resolution and channel-linked views are not exit requirements unless §28.11 / §28.12 activate them.
 
 ---
 
@@ -810,10 +849,13 @@ Definition of done per phase: §30.
 14. Skills stay on the portable package shape (`SKILL.md` + `references/` + reserved `scripts/`); Gu extensions carry tenancy/HITL/tools; external skills are imported with adaptation, never executed as downloaded scripts (§9.2).
 15. AI cost measurement is call-level, tenant-scoped, append-only, and begins in Phase 0; it is internal observability, not customer billing (§23.1).
 16. Cross-channel continuity uses domain identities first: cases for operational turns, notifications for decisions, and evidence-gated turn artifacts for general antecedents; no universal `conversation_id` is approved (§12.1).
+17. Tenant prerequisite assets (`account_assets` / `required_assets`) are declared on the versioned definition, fulfilled per tenant, and participate in the impact model via `input_kind=account_asset` with content-hashed versions; they are distinct from case documents and from case-generated artifacts (§5.2, §11).
+18. The Workflow Studio may ship early as a **read-only shell** (definitions catalog + assets panel) that Phase 4 grows into; lab retirement is blocked on that assets panel existing (§16, §17).
+19. Channel-linked views, when activated, use two link classes (signed external read-only vs authenticated internal deep link); HITL remains on the notifications path; views are never a second commercial source of truth (§16.1).
 
 ### B. Unresolved decisions
 
-The [H] items in §28 (including owner_scope for organizations and skill-import timing).
+The [H] items in §28 (including owner_scope for organizations, skill-import timing, and channel-linked view activation).
 
 ### C. Repository validations still required
 
@@ -839,7 +881,7 @@ Vercel-style serverless constraints persist (durable workers deferred on hosting
 
 ### F. Proposed technical contracts (first drafts to write)
 
-`TransitionEvaluator`, `WorkDispatcher`, `ExecutorAdapter` (per execution mode), `VerificationRunner`, `ImpactEngine`, `IntentDecomposer` (§20); the `graph_jsonb` JSON Schema (§5.2); the verification-contract and reconciliation-query schemas (§13, §22); the evidence-record shape (§13); `ModelPolicyResolver` (alias → OpenRouter id from env role defaults + `model_policy_jsonb`, §9.1); `forkWorkflowDefinition` / resolution order private-over-global (§5.1.1).
+`TransitionEvaluator`, `WorkDispatcher`, `ExecutorAdapter` (per execution mode), `VerificationRunner`, `ImpactEngine`, `IntentDecomposer` (§20); the `graph_jsonb` JSON Schema including `required_assets` (§5.2); the verification-contract and reconciliation-query schemas (§13, §22); the evidence-record shape (§13); `ModelPolicyResolver` (alias → OpenRouter id from env role defaults + `model_policy_jsonb`, §9.1); `forkWorkflowDefinition` / resolution order private-over-global (§5.1.1); account-asset versioning + `input_kind=account_asset` impact edges (§11); capability-map gap items for missing required assets (§15).
 
 ### G. Next specification package to create
 

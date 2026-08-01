@@ -4,7 +4,7 @@
 
 **How to use this document:** work top-to-bottom within a slice; slices within a phase may interleave only where *Depends on* allows. Update checkboxes and the per-slice **Status** line as you go. `[ ]` pending · `[x]` done · `[~]` in progress · `[!]` blocked (add note).
 
-**Informative implementation reference:** [Gu OS × QM Reference Analysis](./gu-os-qm-reference-analysis.md) records source-verified prior art for selected worker, Skill-governance, and provenance-screening mechanics. It is not a governing source, introduces no QM runtime dependency, and must not override the Technical Plan's contracts.
+**Informative implementation reference:** [Gu OS × QM Reference Analysis](./gu-os-qm-reference-analysis.md) records source-verified prior art for selected worker, Skill-governance, provenance-screening, asset/collaboration, and channel-linked-view mechanics. It is not a governing source, introduces no QM runtime dependency, and must not override the Technical Plan's contracts.
 
 ---
 
@@ -330,6 +330,23 @@
 
 **Phase 2 exit checks:** [ ] v2 case end-to-end with ≥1 parallel branch · [ ] equivalence holds on replay · [ ] contention + stale-claim selftests and soak clean · [ ] `claim_expired` events visible · [ ] max-attempts → `blocked` + notification · [ ] work view role-gated with correct vocabulary.
 
+### Slice 2.7 — Workflow Studio shell (read-only) + tenant assets panel (parallel track)
+
+**Status:** [ ] pending · **Not a Phase 2 exit requirement.** Independent of 2.1–2.6; parallelizable from now (its data dependencies — `workflow_definitions`, `account_assets`, `required_assets`, readiness checks — all exist since Phase 1 or earlier; finding 16). Anchored in Technical Plan §16 / §17 / Annex A.17–18.
+**Objective:** give definitions and tenant assets a real product surface **without any authoring**, and give the required-asset upload a home before the lab retires (4.2-5). This shell is the embryo the Phase 4 Studio grows into — each later phase turns panels on; nothing here is rebuilt.
+
+**Tasks:**
+- [ ] 1. Route family: working name under the operations/workflows family [D — Technical Plan §16 route naming stays [H]; pick an interim name and keep the later rename a cheap redirect, same treatment as 2.5-2].
+- [ ] 2. **Definitions catalog (read-only):** list resolved definitions for the tenant (own private + globals; never cross-tenant): case_type, workflow_key, version, status, short `definition_hash`, fork lineage, pinned active-case count. Detail view renders `graph_jsonb` summary (states, transitions, guards, work templates, `required_assets` when present) — display only.
+- [ ] 3. **Tenant assets panel:** aggregate required assets for the tenant; per asset show label/description, consuming definition+step, current `account_assets` row (or missing), and readiness state. Upload/replace via the existing `api/account-assets` routes enforcing the declared `accept` / `max_size_mb`. Reuse the lab's readiness/asset resolution helpers — extract shared logic if needed, do not fork it (parity rule, convention 7).
+- [ ] 4. **Resolver precedence for required assets** [D]: prefer `graph_jsonb.step_bindings[].required_assets` from the resolved published definition; **until a published definition version carries them** (current v1 graphs do not — `transform-flow` never ported them), fall back to the same source the lab uses today (`operational_flow_jsonb` / tool readiness catalog). Never silently mutate a published definition to add the field.
+- [ ] 5. **Transformer port (feeds next publish, not this shell's MVP):** extend `packages/workflows` `transform-flow` + `graph-schema` so `required_assets` round-trips into `graph_jsonb`; cover with `test:transform-flow`. Publishing a new definition version that includes them is a separate governed publish (may coincide with a later v2 definition publish) — not a blocker for the assets panel MVP, which uses the fallback in task 4.
+- [ ] 6. Access: assets panel is per-account (each user manages own `account_assets`, matching existing RLS); definitions catalog shows only globals + the user's private definitions. No admin-only gate needed for own-tenant read-only data; cross-tenant/admin listings stay out of scope.
+- [ ] 7. **Explicit non-goals** (enforced by review): no create/edit/fork/publish of definitions, no simulation, no gap-list beyond assets (tools/skills/workers rows join in Phases 3–4), no work-plane data, no channel-linked views (§28.12). Authoring arrives only with Slice 4.2 and absorbs this shell.
+- [ ] 8. UI selftests in the `*-ui.selftest.ts` style for status/label mapping, asset-readiness aggregation, and the definition-vs-fallback resolver (task 4).
+
+**Depends on:** Phase 1 (definitions live); nothing in 2.1–2.6. **Evidence:** a tenant can see its pinned definition versions and upload/replace `commission_contract_template` and `listing_photo_watermark` outside the lab. **Rollback:** route behind a flag; API routes unchanged. **Feeds:** 4.2-5 (lab retirement) and the Phase 4 Studio (4.2-4 absorbs this shell rather than replacing it).
+
 ---
 
 ## PHASE 3 — Impact plane and workers
@@ -340,6 +357,8 @@
 - [ ] 1. Migration `00070_impact_plane.sql` [D]: `case_facts` (append-only + trigger), `case_artifacts`, `artifact_inputs`, `case_approvals` per Technical Plan §11 / analysis §7.3; RLS convention.
 - [ ] 2. Queries `packages/db/src/queries/case-facts.ts`, `case-artifacts.ts`, `case-approvals.ts` [D] (required `userId`; fact insert supersedes prior via `superseded_by`, never updates).
 - [ ] 3. Types in `packages/types/src/impact.ts` (status vocab `current|stale|suspended|invalid|superseded`).
+- [ ] 4. `artifact_inputs.input_kind` includes **`account_asset`** [D] alongside `fact|artifact` — templates and watermarks are inputs of generated artifacts and are neither facts nor artifacts (finding 16).
+- [ ] 5. Version `account_assets` [D]: add `content_hash` and an immutable per-replacement version record (`account_asset_versions` table or append pattern — decide against the child-table tenancy convention from 0.5-5). Replacing an asset creates a new version; nothing rewrites the version an existing artifact's `input_hash` was computed from. Backfill: hash current stored objects as version 1.
 
 **Depends on:** Phase 2 (repair items need the work plane).
 
@@ -353,8 +372,9 @@
   - **price_approval** depends on evidence hash of valuation inputs + recommendation (and Avaclick contrast is informational, not a hard filter).
   - **Do not** declare bedrooms, bathrooms, or parking as valuation inputs (skill + `sanitizeComparableSearchFilters` strip them; selftest asserts `min_bedrooms`/`bedrooms` undefined).
   - **listing_description / listing_payload / commercial copy / matching filters** declare bedrooms, bathrooms, parking, amenities, location as inputs.
+  - **contract_draft** declares `account_asset:commission_contract_template` (at its consumed version hash) plus the contract-relevant facts as inputs; **watermarked photos** declare `account_asset:listing_photo_watermark` (finding 16).
 - [ ] 4. Wire fact writes: the intake-update adapter path writes `case_facts` rows (with source class incl. `external_contact`) alongside the existing `context_jsonb` write, then calls the impact engine (v2 cases only).
-- [ ] 5. Selftests: C1 fixture (bedrooms → listing artifacts stale; valuation/approval current), C2 fixture (area/location → valuation chain stale + approval suspended + revaluation work), unaffected-work-stays-valid, over-invalidation guard (an edge-less artifact never stales).
+- [ ] 5. Selftests: C1 fixture (bedrooms → listing artifacts stale; valuation/approval current), C2 fixture (area/location → valuation chain stale + approval suspended + revaluation work), unaffected-work-stays-valid, over-invalidation guard (an edge-less artifact never stales), template-replacement fixture (new `commission_contract_template` version → contract draft `stale` + repair work; valuation chain and approvals untouched).
 - [ ] 6. Evaluate provenance-aware screening at the shared model boundary for `external_contact` and other explicitly external source classes (QM's Auto posture is prior art, not a dependency; reference analysis §3.6/§4.5). Start shadow-only: record classifier verdict, latency, false-positive/false-negative review sample, and unsupported content classes without changing model input. Promotion to enforcement requires a separately approved policy defining fail-open/fail-closed behavior, user-visible handling, and which content classes are covered; classifier approval is never authorization.
 
 **Depends on:** 3.1, definition schema field from 1.2. Task 6 additionally depends on locating one shared model-boundary hook that preserves provenance labels; if none exists, record the gap instead of duplicating screening at channel call sites. **Security:** no external-sourced fact satisfies an approval postcondition without HITL (enforce in engine: approval re-grant requires human decision event).
@@ -387,7 +407,7 @@
 - [ ] 2. Case view: stale-artifact and contested-fact indicators (broker-safe wording; no plane vocabulary leakage).
 - [ ] 3. UI selftests for label mapping.
 
-**Phase 3 exit checks:** [ ] C1 passes · [ ] C2 passes · [ ] verifier runs read-only under contract and gates the recommendation · [ ] two deterministic services dispatch through the work plane · [ ] over-invalidation ratio measured on the dashboard.
+**Phase 3 exit checks:** [ ] C1 passes · [ ] C2 passes · [ ] C3 passes (template/`account_asset` replacement stales only declared dependents) · [ ] verifier runs read-only under contract and gates the recommendation · [ ] two deterministic services dispatch through the work plane · [ ] over-invalidation ratio measured on the dashboard.
 
 ---
 
@@ -406,13 +426,13 @@
 ### Slice 4.2 — Compiler artifacts + gates + studio + publication
 
 **Status:** [ ] pending
-- [ ] 1. Spec artifacts: business spec + implementation spec + capability map schemas in `packages/workflows/src/compiler/` [D]; capability map resolves against skills catalog, `TOOL_CATALOG`, and worker profiles; unresolved = explicit gap list. Compiler LLM uses `WORKFLOW_COMPILER_MODEL_ID` (§9.1).
+- [ ] 1. Spec artifacts: business spec + implementation spec + capability map schemas in `packages/workflows/src/compiler/` [D]; capability map resolves against skills catalog, `TOOL_CATALOG`, worker profiles, **and the definition's `required_assets` / integrations against the tenant's `account_assets` and connected integrations**; unresolved = explicit gap list, customer-worded (e.g. "falta la plantilla de contrato de comisión"), with missing assets linking to the 2.7 assets panel. Compiler LLM uses `WORKFLOW_COMPILER_MODEL_ID` (§9.1).
 - [ ] 2. Validation gates: schema, acyclicity, reachability, capability resolution, permission validation, credential-shape rejection — each emits evidence records.
 - [ ] 3. Simulation gate: replay harness (1.6) + scenario suite against the draft definition.
-- [ ] 4. Studio UI (route family per §16 decision [H]): describe → clarify (bounded) → spec views → capability/gap panel → validation findings → simulation results → publish/reject. Support **fork from global template** into a private definition (Technical Plan §5.1.1) and show `industry` / `domain_tags` as catalog fields (not runtime switches).
-- [ ] 5. Retire `/settings/operational-case-types` authoring after the studio covers it (keep capability-lab diagnostics; redirect + deprecation notice first release).
+- [ ] 4. Studio UI (route family per §16 decision [H]): describe → clarify (bounded) → spec views → capability/gap panel → validation findings → simulation results → publish/reject. **Absorb the 2.7 read-only shell** (definitions catalog + assets panel become tabs of the same surface — grow it, don't rebuild it). Support **fork from global template** into a private definition (Technical Plan §5.1.1) and show `industry` / `domain_tags` as catalog fields (not runtime switches).
+- [ ] 5. Retire `/settings/operational-case-types` authoring after the studio covers it (keep capability-lab diagnostics; redirect + deprecation notice first release). **Hard dependency:** the lab's `required_assets` upload must not be retired before Slice 2.7's assets panel ships — it is today's only upload surface (finding 16).
 
-**Phase 4 exit checks:** [ ] A1/A2/B1/B2/D selftests pass · [ ] a non-engineer creates/forks, validates, simulates, and publishes a simple workflow that runs on a synthetic case · [ ] publication is evidence-gated + human-approved · [ ] settings lab authoring retired · [ ] if Slice 4.4 was activated, its cross-channel scenarios pass without silent/cross-tenant association.
+**Phase 4 exit checks:** [ ] A1/A2/B1/B2/D selftests pass · [ ] a non-engineer creates/forks, validates, simulates, and publishes a simple workflow that runs on a synthetic case · [ ] publication is evidence-gated + human-approved · [ ] capability map surfaces missing `required_assets` as customer-worded gaps linking to the assets panel · [ ] Studio has absorbed the 2.7 shell (not rebuilt) · [ ] settings lab authoring retired **and** 2.7 assets panel was already shipping · [ ] if Slice 4.4 was activated, its cross-channel scenarios pass without silent/cross-tenant association · [ ] channel-linked views (§28.12) are not an exit requirement unless activated.
 
 ### Slice 4.3 — Skill package interoperability (deferred foundation; not a Phase 0–2 blocker)
 
@@ -472,9 +492,10 @@
 | 13 | 2026-07-29 | El replay histórico (S1.6) contra 30 casos reales mostró que **el stream de eventos no captura todas las transiciones de paso**: los pasos tempranos (intake→awaiting_documents→documents_received vía orchestrator/batch-completion) y la clausura del publication runner no grababan eventos con `from/to.current_step` — 13/30 casos con historia incompleta (0 transiciones grabadas o cierre ausente). No son bugs del evaluator. | Medium (calidad del advisory/replay) | **Taken:** el replay se re-ancla en `payload.from` y reporta `unrecordedGaps` en vez de falsas divergencias; `advisedUpdateCase` ahora graba `state_changed`/`workflow_step_transition` en todo cambio de paso exitoso (sitios 2 y 3). **2026-07-31:** `document-batch-completion`, `photo-batch-completion` y `characteristics-response` migrados al wrapper advised; el wrapper carga `recentEventTypes` al salir de `awaiting_documents`. |
 | 14 | 2026-07-31 | Triage advisory / flip S1.7: 3 divergencias reales de producción en el caso piloto (`package_ready→package_ready`, `publication_keys_protected`). | Low | **Taken:** clasificadas **(b) esperadas** — el agente intentó parchear claves de publicación; el guard + adapter ya rechazan. Probe enforcing emite `transition_rejected` y `reject:true`. Tenant piloto en `enforcing`. |
 | 15 | 2026-07-31 | El soak de 5–7 días / ≥20–30 transiciones reales de S1.7 asumía tráfico de mercado; el producto aún no tiene usuarios reales. Esperar no genera evidencia. | Medium (proceso) | **Taken:** Phase 1 se cierra con **gate pre-release** (selftests, probe enforcing, rollback, E2E/piloto, replay documentado). El soak orgánico se difiere a canary post-lanzamiento; Phase 2 (desde 2.1 schema inerte) puede arrancar ahora. |
+| 16 | 2026-08-01 | **Assets del tenant sin destino post-lab ni presencia en el contrato de definición.** `required_assets` vive solo en `operational_flow_jsonb` (00031) y el shape de `graph_jsonb` (Technical Plan §5.2) no lo contemplaba; la única UI de subida de `account_assets` es el lab (`operational-case-types-client.tsx`; las rutas `api/account-assets` no tienen otra superficie), y el retiro del lab (4.2-5) no tenía destino declarado. Además `account_assets` se actualiza in-place sin hash/versión, por lo que el impact model de Fase 3 no podría pinnear artefactos generados (p. ej. contrato) a la versión de plantilla que los produjo, y `artifact_inputs.input_kind fact\|artifact` no representa plantillas. Las v1 definitions publicadas tampoco traen `required_assets` porque `transform-flow` nunca los portó. | Medium (bloquea retiro del lab; ciega parte del impact model) | **Taken:** Technical Plan §5.2/§11/§15/§16/§16.1/§17 + Annex A.17–19; Slice 2.7 (Studio shell + assets panel, con fallback al source del lab hasta el próximo publish que porte el campo); 3.1/3.2 extienden `account_assets` (hash + versiones), `input_kind=account_asset` y escenario C3; 4.2-1/4.2-4/4.2-5 absorben el shell y bloquean el retiro del lab en 2.7; posición de channel-linked views en §28.12 + QM reference §7. |
 | — | | *(append as found)* | | |
 
-**Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3).
+**Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 2.7-1, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3); channel-linked generated views (Technical Plan §28.12 — no slice until activated).
 
 ### X.1 Findings note — Flow vs SKILL.md diff (§29.1, feeds S1.2)
 

@@ -1,6 +1,6 @@
 # Gu OS × QM (yc-software/qm) — Reference Analysis
 
-**Status:** External-system reference analysis. Informative, not normative. Subordinate to `gu-os-flexible-workflows-architecture-analysis.md` (architectural source of truth) and to `gu-os-flexible-workflows-technical-plan.md` (the phased plan). This document changes **no** accepted decision in either; it records code-verified findings about QM and the adoption opportunities they suggest, so they can be cited when the referenced open decisions are eventually taken.
+**Status:** External-system reference analysis. Informative for prior art; selected positions have been folded into the Technical Plan / detailed plan (see §8). Still subordinate to `gu-os-flexible-workflows-architecture-analysis.md` (architectural source of truth) and to `gu-os-flexible-workflows-technical-plan.md`. It does not invent architecture outside those fold-ins; remaining [P]/[H] items stay non-binding until activated.
 
 **QM snapshot analyzed:** `yc-software/qm` @ `7f2c916360f1797a8ff2a77ce2ce40c5fabab087` (main, 2026-07-31). QM self-describes as early, experimental software; every claim below is pinned to this snapshot and may not hold for later revisions.
 
@@ -27,10 +27,10 @@ For Gu OS:
 
 - **Not a market competitor today.** QM requires self-hosting in the customer's own cloud account with a technical deployment operator, and assumes one organization of trusted internal users. That buyer profile has near-zero overlap with a MX/Latam brokerage buying governed real-estate processes as SaaS.
 - **Not an architecture substitute.** Its durable unit is the agentic session/turn inside a workspace; Gu OS's durable unit is the business case and (per the plan) the work item.
-- **Primarily a design reference** for concrete mechanisms Gu OS has already decided to build: claim/lease/liveness workers (plan §10), Skill governance lifecycle (plan §9.2 / §28.10 / ADR-011), provenance-based screening of external content (plan §21), and — as a future product capability — a team/project collaboration layer (§6 of this document).
+- **Primarily a design reference** for concrete mechanisms Gu OS has already decided to build or has now folded in: claim/lease/liveness workers (plan §10), Skill governance lifecycle (plan §9.2 / §28.10 / ADR-011), provenance-based screening (plan §21), Studio shell + tenant assets (plan §16 / detailed Slice 2.7), and — still future — multi-seat collaboration (§6) and channel-linked views (§7 / plan §16.1).
 - **Potentially a specialized external executor later** (e.g. `required_capability: software_engineering`), but only if the project demonstrates continuity (§4.6 governance risk).
 
-**No change to the current phase plan is required or recommended.** QM validates the plan's direction and de-risks parts of its implementation.
+**Phase order and architecture stay intact.** Fold-ins localize contracts and slices; they do not reorder Phases 0–4 or replace the case/work/impact core.
 
 ---
 
@@ -123,10 +123,12 @@ Exhaustive search of `src/` at the snapshot for `workflow`, `depends_on`, `depen
 | Horizon | Item | Anchor | What QM contributes |
 |---|---|---|---|
 | Phase 0–1 | — nothing — | | QM touches none of transition authority, pinning, instrumentation |
+| Phase 2 (parallel) | Studio shell + tenant assets panel | plan §16 / detailed Slice 2.7 | UX inspiration: resources (Files/Skills/Deploys) as first-class nav; **not** QM's workspace-as-truth model. Gu's shell is read-only catalog + assets upload over existing `account_assets` |
 | Phase 2 | Work dispatcher/worker implementation | plan §10 | Read (not copy) `run-store` + `worker`: claim→renew→detect-loss→abort loop; lost-beat threshold; reaper with requeue/park (park ≈ `blocked` at `max_attempts`, plan §8.5) |
 | Phase 3 | Provenance-based screening of external content | plan §21 | Pattern: classifier over provenance-labelled external data before it reaches the model, pluggable screening proxy ("Auto" posture) |
+| Phase 3 | Account-asset edges in impact model | plan §11 C3 | Contrast only: QM shares files in scopes; Gu versions templates and selectively stales generated artifacts |
 | Phase 4+ / §28.10 | Skill import + governance lifecycle | plan §9.2, ADR-011 | Concrete lifecycle: review-before-publish, publish blocked until required capabilities granted, re-draft on edit, admin-gated scope promotion, content signature. Adopt the capability-gated publish rule verbatim for the import pipeline |
-| Medium [P] | Generated artifacts beside the conversation | UI plane (plan §16) | Case dashboards, comparables maps, owner reports as **views**, never sources of truth |
+| Medium [P][H] | Channel-linked views (dynamic interfaces) | plan §16.1 / §28.12 | QM `publish` (durable internal web apps + share grants) and Claude Cowork/Code live artifacts are prior art — adopt the *product shape*, not QM's bearer-link/container default (§7) |
 | Medium [P][H] | Org/team scope resolution | plan §28.9 (`owner_scope = organization`) | Precedence-based resolution + grants as reference; must be re-derived inside Gu's tenant model, never copied |
 | Long [P][H] | Sandbox as executor profile | plan §9 `worker_profiles` | `sandboxMode: none / ephemeral / durable` as a profile extension; enables specialized workers without making Gu a shell agent |
 | Long [P][H] | QM (or similar) as external executor | plan §9 executor kinds | Only after continuity is demonstrated and a real work item requires it |
@@ -141,11 +143,28 @@ The GPT 5.6 comparative analysis (2026-07-31, no repo access) was verified contr
 
 ---
 
-## 5. Collaboration layer as a future Gu OS product capability [P][H]
+## 5. Asset classes and the Studio shell (fold-in complete; product position)
 
-This section records the product possibility QM illustrates best. **Nothing here is planned work.** It exists so the eventual §28.9-adjacent decision starts from a written position.
+Gu OS already distinguishes more asset classes than QM's "files in a scope" model. Collapsing them would break the case/work/impact separation.
 
-### 5.1 Why it plausibly matters for MX/Latam brokerages
+| Class | Gu unit today / planned | QM analogue | Notes |
+|---|---|---|---|
+| Tenant prerequisite | `account_assets` + flow/`graph` `required_assets` | Skills/files shared by grant | Must exist *before* some steps can run (templates, watermarks). Studio assets panel (detailed Slice 2.7) is the upload home before lab retirement |
+| Case document | `operational_case_documents` (supersession) | Workspace files in a session | Temporary (intake photos) or durable replacements (user-uploaded contract over generated draft) |
+| Case-generated artifact | `case_artifacts` + `artifact_inputs` (Phase 3) | Published app output / files | Impact model; `input_kind` includes `account_asset` so template changes selectively stale dependents (C3) |
+| Channel-linked view | Future (§16.1 / §7 below) | QM `publish`; Claude live artifacts | Views over truth, not truth; two link classes |
+
+**Studio shell stance (now planned, not speculative):** ship early as read-only definitions catalog + assets/readiness panel; Phase 4 absorbs it. Explicitly **no authoring** until the compiler Studio. This is Gu's disciplined answer to QM's resource-centric sidebar without importing workspace-as-OS.
+
+**Knowledge relation (Brain Layer boundary):** not every asset class is knowledge. Tenant prerequisites (templates) are capability-plane inputs and never feed the Brain; case documents are raw evidence whose durable business facts reach knowledge only via extraction → `case_facts` → selective HITL promotion; case-generated artifacts (comparables, valuations) are the genuinely knowledge-bearing class (zone/price cognition reusable across cases); channel-linked views carry none. The normative boundary — including the anti-pattern of uploading agent-informing content (zone dossiers, brokerage guides) into the Studio assets panel because it has an upload UI — lives in the Brain plan, [`gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) §1.4.8 (v1.5.2). The Brain program is explicitly sequenced **after** the workflows phases.
+
+---
+
+## 6. Collaboration layer as a future Gu OS product capability [P][H]
+
+This section records the multi-seat product possibility QM illustrates. **Nothing here is scheduled work** beyond the Studio shell/assets fold-in in §5. It exists so the eventual §28.9-adjacent decision starts from a written position.
+
+### 6.1 Why it plausibly matters for MX/Latam brokerages
 
 Mid-size and large brokerages in Mexico/Latam are structurally multi-seat: a director, office managers, teams of asesores, and *desarrollos*/projects with several asesores assigned. That maps almost one-to-one to QM's scope kinds (`org`, `team`, `group`/project, `personal`). Concrete collaborative moments in the vertical:
 
@@ -154,14 +173,15 @@ Mid-size and large brokerages in Mexico/Latam are structurally multi-seat: a dir
 - shared reusable artifacts: valuation templates, zone dossiers, owner-report formats;
 - handoff of a case between asesores (vacation, exit, specialization) with full provenance.
 
-### 5.2 Architectural principles if/when this is built
+### 6.2 Architectural principles if/when this is built
 
 1. **Collaboration is an access-and-visibility layer over cases and work — never a second source of truth.** The case plane remains the only commercial truth; sharing a case must not mean sharing a workspace/filesystem with live credentials in it (QM's model, and its weakest security property — §3.6).
 2. **Tenant first, scope second.** Any team/project scoping nests strictly inside the tenant boundary; grants never cross tenants. QM's resolution/precedence logic is a reference for *within-tenant* sharing only.
 3. **Roles precede collaboration.** The plan already flags that no role model exists beyond `profiles.is_ungga_admin` [V]. A collaboration layer without roles is unbuildable; role modeling (Phase 2's work-view gating) is the true prerequisite.
 4. **Artifacts shared by reference with provenance**, not by copying files into shared folders; staleness/impact semantics (plan §11) must survive sharing.
+5. **Knowledge scoping follows the same tenant-first rule.** If multi-seat activates, the future Brain Layer's knowledge needs the scope dimension `workflow_definitions` already reserved (personal — an asesor's leads; team; org — zone dossiers, brokerage playbooks), nested strictly inside the tenant. Prior art: QM's scope-owned `memory` primitive and its "company brain" connectors, and G Brain v0.40+ company brain (federated sources + per-person OAuth). Recorded as a forward-looking note in [`gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) §1.4.8 — no brain schema exists yet, and none should be added for this before activation.
 
-### 5.3 Tentative shape (illustrative only)
+### 6.3 Tentative shape (illustrative only)
 
 ```text
 Tenant (inmobiliaria)
@@ -175,7 +195,7 @@ Tenant (inmobiliaria)
 
 UI/UX implications worth prototyping when the time comes: an **operator/manager workbench** (multiple cases/sessions observable side-by-side, artifacts opening next to conversation — QM's strongest UX idea) as a *role-gated additional surface*; the asesor's primary UI remains case/next-action-centric, not a session desktop.
 
-### 5.4 Activation triggers (do not build before)
+### 6.4 Activation triggers (do not build before)
 
 - Real multi-seat tenants asking for shared visibility/handoff (not hypothetical);
 - role model shipped (Phase 2 exit);
@@ -184,9 +204,39 @@ UI/UX implications worth prototyping when the time comes: an **operator/manager 
 
 ---
 
-## 6. Relationship to existing documents
+## 7. Channel-linked views (dynamic interfaces) [P][H]
 
-- **No edits required** to `gu-os-flexible-workflows-architecture-analysis.md` or `gu-os-flexible-workflows-technical-plan.md`. QM confirms accepted decisions (plan Annex A: 4, 5, 11, 14) and adds implementation references; it contradicts none.
-- **Localized fold-in completed 2026-07-31** in `gu-os-flexible-workflows-detailed-implementation-plan.md`: Phase 2 now cites §3.3 as non-normative worker prior art while preserving attempts-scoped claims and separate liveness/renewal; Phase 3 adds a shadow-only, evidence-gated provenance-screening evaluation; Slice 4.3 makes the governed Skill lifecycle and capability-gated publication explicit. No phase, priority, or accepted architecture decision changed.
-- Remaining future fold-in points, only when their product decisions activate: §28.9 + §16 (collaboration layer and operator workbench — cite §5) and any sandbox/external-executor profile (§4.5).
+Same product family as QM's `publish` tool and Claude Cowork/Code **live artifacts**: agent-produced interactive UI reachable beside (or instead of) chat, often via a link. Gu OS does **not** schedule this until Technical Plan §28.12 activates it. The design position below is normative *when* activated.
+
+### 7.1 Prior art (verified)
+
+- **QM** (`src/harness/pi-tools.ts` `publish`): durable scope-bound internal web app from a workspace directory; stable `/d/<name>/` link; versions + rollback; share via grants. Apps run as containers; `SECURITY.md` admits published-app links are **bearer authorization** (anyone with the link reaches that app; no QM principal).
+- **Claude Cowork / Claude Code live artifacts** (public docs, 2026): persistent interactive HTML pages; connector-backed views refresh with data; sharing uses the **viewer's** permissions; connector-backed artifacts are deliberately **not** public-linkable.
+
+### 7.2 Gu OS position — two link classes, never one
+
+| Audience | Mechanism | AuthZ | Mutability | Examples |
+|---|---|---|---|---|
+| External participant (owner, buyer, …) | Signed, expiring, revocable URL scoped to tenant+case (+ artifact) | Bearer of the signed token only; not a Gu principal | **Read-only.** Actions return via existing external-response / channel association | Owner report, price simulation snapshot, document package view |
+| Internal user (asesor, manager, …) | Authenticated **deep link** into the web app | Viewer's session + RBAC | Interactive under role (filter, navigate). **HITL decisions stay on notifications/inbox** — the view complements Telegram/WhatsApp chat; it is not a second approval surface | Case dashboard, comparables map, work summary |
+
+Links are channel-agnostic: the same URL works when delivered over Telegram, WhatsApp, or email whether or not those channels are fully integrated as Gu surfaces.
+
+### 7.3 What Gu must not copy from QM here
+
+1. Arbitrary containerized app code as the default "artifact" path (violates "generated code never executes from a runtime path").
+2. Bearer links for anything that can mutate commercial state.
+3. Treating a published app / shared folder as commercial truth — case plane + `case_artifacts` remain authoritative; the view reads them.
+
+Preferred v1 shape when §28.12 activates: **server-rendered or tightly allowlisted interactive views** over case/artifact data, not a general `publish` substrate. Reusable calculators that outgrow a view graduate to registered tools / deterministic services — not to ad-hoc sandboxed apps.
+
+---
+
+## 8. Relationship to existing documents
+
+- **`gu-os-flexible-workflows-architecture-analysis.md`:** no edit required for this fold-in; accepted decisions remain intact. Material product positions that later need architecture-level promotion should go through the normal analysis → technical plan path.
+- **`gu-os-flexible-workflows-technical-plan.md` (2026-08-01):** §5.2 `required_assets`; §11 `input_kind=account_asset`, asset-class table, C3; §15 capability map includes assets; §16 Studio shell early/read-only; §16.1 channel-linked views; §17 lab-retirement constraint; §26/§28.12/§30/Annex A.17–19 updated accordingly.
+- **`gu-os-flexible-workflows-detailed-implementation-plan.md`:** Slice 2.7 (Studio shell + assets panel + resolver fallback + transformer port); 3.1/3.2 C3 and account-asset versioning; 4.2 absorbs shell / blocks lab retirement on 2.7; finding 16; prior QM fold-ins (lease/liveness, provenance screening, Skill governance) unchanged in intent.
+- **`docs/brain/gbrain-evaluation-and-plan.md` (v1.5.2):** owns the knowledge/Brain boundary this document touches — `case_facts` as the preferred selective-promotion source into `brain_pages` (§1.4.8), the asset-classes × knowledge table, and the multi-seat knowledge-scoping note that pairs with §6 here. The Brain program is sequenced after the workflows phases; nothing in this analysis accelerates it.
+- Remaining future fold-ins only when product decisions activate: §28.9 + §6 (multi-seat collaboration / operator workbench), §28.12 + §7 (channel-linked views implementation), sandbox/external-executor profiles (§4.5).
 - This document should be **re-verified against QM's `main`** before being cited in any ADR, given QM's velocity and experimental status.
