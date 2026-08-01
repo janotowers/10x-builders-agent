@@ -4,6 +4,8 @@
 
 **How to use this document:** work top-to-bottom within a slice; slices within a phase may interleave only where *Depends on* allows. Update checkboxes and the per-slice **Status** line as you go. `[ ]` pending · `[x]` done · `[~]` in progress · `[!]` blocked (add note).
 
+**Informative implementation reference:** [Gu OS × QM Reference Analysis](./gu-os-qm-reference-analysis.md) records source-verified prior art for selected worker, Skill-governance, and provenance-screening mechanics. It is not a governing source, introduces no QM runtime dependency, and must not override the Technical Plan's contracts.
+
 ---
 
 ## 0. Global conventions (read once, apply everywhere)
@@ -275,6 +277,7 @@
 - [ ] 1. `packages/db/src/queries/work-items.ts` [D]: `createWorkItemsFromTemplates(userId, caseId, defVersion, templates[])` (idempotent via keys), `propagateReadiness(userId, caseId?)` (set-based UPDATE), `claimNextReady(userId, runnerRef, leaseMs)` (attempt insert + CAS on parent, `markCaseProcessing` shape), `reportLiveness(userId, attemptId, { renewLease })`, `recoverStaleClaims(userId)`, `completeAttempt(...)`, `blockItem(...)`, plus event insert helper.
 - [ ] 2. Types in `packages/types/src/work-items.ts` (statuses, attempt statuses, event types incl. `claimed`, `liveness_updated`, `claim_renewed`, `claim_expired`, `verified`, `blocked`, `done`).
 - [ ] 3. Selftests: CAS contention (two claimers, one wins), stale-claim recovery (expired attempt → `claim_expired` event + parent `ready` + nothing incremented), max-attempts → `blocked` + reason, readiness propagation incl. fan-in/fan-out fixtures. Wire `test:work-plane` npm script.
+- [ ] 4. Preserve the Technical Plan §10 distinction in API and tests: a liveness update can succeed without renewing the lease, and lease renewal emits its own append-only event. QM's worker loop is informative prior art only (reference analysis §3.3); do not copy its lease-on-run schema or collapsed `heartbeat` call.
 
 **Depends on:** 2.1.
 
@@ -289,6 +292,7 @@
 - [ ] 3. Work-template instantiation: on case state entry (evaluator-authorized transitions), create items from the definition's `work_templates` (`on_enter_state`).
 - [ ] 4. Advancement predicate: on `completeAttempt` success, evaluate the definition's per-state completion requirements; if satisfied, advance the case via `updateOperationalCase` + case event (never set `current_step` from work code directly — single call site in the dispatcher).
 - [ ] 5. Retry counters into the 0.4 dashboard (close the TODO from 0.4-4).
+- [ ] 6. Lost-claim containment: executor completion must fail closed when its attempt no longer owns a valid lease, and a running executor must receive cancellation when repeated renewal results prove the claim was lost. Choose the consecutive-failure threshold from Gu's lease TTL, renewal interval, and measured transient-failure behavior; **do not adopt QM's value of 3 as an unexplained constant**. Selftest transient renewal error (continue), confirmed lease loss (cancel), and late completion after reassignment (reject).
 
 **Depends on:** 2.2, 1.4 (evaluator), v2 flag from 0.5-4. **Evidence:** synthetic v2 case runs a two-item chain end to end in the lab. **Rollback:** v2 flag off; v1 loop untouched.
 
@@ -351,8 +355,9 @@
   - **listing_description / listing_payload / commercial copy / matching filters** declare bedrooms, bathrooms, parking, amenities, location as inputs.
 - [ ] 4. Wire fact writes: the intake-update adapter path writes `case_facts` rows (with source class incl. `external_contact`) alongside the existing `context_jsonb` write, then calls the impact engine (v2 cases only).
 - [ ] 5. Selftests: C1 fixture (bedrooms → listing artifacts stale; valuation/approval current), C2 fixture (area/location → valuation chain stale + approval suspended + revaluation work), unaffected-work-stays-valid, over-invalidation guard (an edge-less artifact never stales).
+- [ ] 6. Evaluate provenance-aware screening at the shared model boundary for `external_contact` and other explicitly external source classes (QM's Auto posture is prior art, not a dependency; reference analysis §3.6/§4.5). Start shadow-only: record classifier verdict, latency, false-positive/false-negative review sample, and unsupported content classes without changing model input. Promotion to enforcement requires a separately approved policy defining fail-open/fail-closed behavior, user-visible handling, and which content classes are covered; classifier approval is never authorization.
 
-**Depends on:** 3.1, definition schema field from 1.2. **Security:** no external-sourced fact satisfies an approval postcondition without HITL (enforce in engine: approval re-grant requires human decision event).
+**Depends on:** 3.1, definition schema field from 1.2. Task 6 additionally depends on locating one shared model-boundary hook that preserves provenance labels; if none exists, record the gap instead of duplicating screening at channel call sites. **Security:** no external-sourced fact satisfies an approval postcondition without HITL (enforce in engine: approval re-grant requires human decision event).
 
 ### Slice 3.3 — Evidence-bound approvals in the price chain
 
@@ -416,10 +421,15 @@
 
 **Tasks (when scheduled):**
 - [ ] 1. Write ADR-011 from Technical Plan §9.2 (portable core vs Gu extensions; quarantine; no silent activation).
-- [ ] 2. Design `account_skill_files` **or** object-storage bundle + manifest hash so private skills can carry `references/` / `assets/` (closes the `body_md`-only gap vs globals).
-- [ ] 3. Import pipeline stub: validate `SKILL.md` → map Gu fields → capability/gap report → human activation as `account_skills` (private) or global PR path.
-- [ ] 4. Scripts: accept into quarantine only; promotion path is “register deterministic_service”, never model-chosen arbitrary execution.
-- [ ] 5. Optional frontmatter `industry` / `domains` on Gu skills after parser schema bump (catalog only).
+- [ ] 2. Define the Gu governance record around (not inside) the portable package: immutable version, canonical manifest/content hash, lifecycle `draft → reviewed → published → deprecated|archived`, creator/reviewer/publisher provenance, required capabilities, granted capabilities, and rollback target. A published version is immutable; any content change creates a new draft version (never silently mutates or keeps prior approval).
+- [ ] 3. Design `account_skill_files` **or** object-storage bundle + canonical manifest hash so private skills can carry `references/` / `assets/` (closes the `body_md`-only gap vs globals). The hash covers every package file and executable bit/path metadata, not only `SKILL.md`.
+- [ ] 4. Import pipeline stub: validate `SKILL.md` → identify license/provenance → map Gu fields → capability/gap report → quarantine → review → human publication as `account_skills` (private) or global PR path. Publication fails closed while any required capability is ungranted or any required gate lacks passing evidence.
+- [ ] 5. Governance transitions: review records the reviewed content hash; post-review edits return the candidate to `draft`; publish accepts only the same reviewed hash; deprecate/archive preserves prior versions for audit and rollback. Add transition/hash-tampering/capability-gap selftests.
+- [ ] 6. Scope promotion remains admin-gated and explicit. Do not implement organization promotion until Technical Plan §28.9 activates organization ownership; when it does, promotion creates a new organization-scoped governed version with lineage rather than moving or mutating the source.
+- [ ] 7. Scripts: accept into quarantine only; promotion path is “register deterministic_service”, never model-chosen arbitrary execution.
+- [ ] 8. Optional frontmatter `industry` / `domains` on Gu skills after parser schema bump (catalog only).
+
+**Evidence when scheduled:** lifecycle transition matrix; content-hash tampering rejection; publication blocked by missing capability; edit-after-review requires re-review; rollback resolves the prior immutable version; tenant/scope isolation fixture. QM's lifecycle is implementation prior art (reference analysis §3.4), not a data model to copy.
 
 **Do not** block Phases 0–3 on this slice.
 
