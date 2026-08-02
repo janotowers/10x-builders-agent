@@ -2,7 +2,7 @@
 
 > **Estado:** referencia viva (no plan de implementacion)
 > **Audiencia:** Janot (arquitecto/dueño), autores de skills, reviewers de roadmap
-> **Fuentes:** ensayos de Garry Tan sobre GStack / G Brain (abril 2026), contrastados con el repo y docs actuales de Gu OS
+> **Fuentes:** Karpathy LLM Wiki; ensayos de Garry Tan sobre GStack / G Brain (abril 2026); charlas YC de Tom Blomfield y Diana Hu sobre compañías AI-native, contrastados con el repo y docs actuales de Gu OS
 > **Relacion:** complementa [`gu-os-understanding.md`](gu-os-understanding.md) (narrativa), [`business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) (roadmap; Inspiration 2 = Karpathy LLM Wiki, Inspiration 3 = GStack), [`brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) (Brain Layer; §1.1 genealogía) y [`skills-tools-architecture.md`](../skills-tools-architecture.md) (skills vs tools)
 
 ---
@@ -32,6 +32,8 @@ Este documento captura:
 | **Thin Harness, Fat Skills** (Garry Tan, 2026-04-09) | Cinco definiciones (skill, harness, resolver, latent/deterministic, diarization); arquitectura de tres capas; loop de auto-mejora; guia skill vs code | Valida skills + tools + routing + separacion juicio/ejecucion. Brain Layer y Pattern→Skill son la frontera pendiente. |
 | **Homebrew for Personal AI** (Garry Tan, 2026-04-11) | Markdown como codigo; recipes como paquetes distribuibles; el agente implementa capacidades nativas desde una spec | Valida `SKILL.md` + `references/` + `account_skills`. Capability packs (V3+) y recipe distribution quedan como direccion futura, no como producto hoy. |
 | **Skill Development Cycle** (GBrain repo, `skill-development.md`) | Discovery → draft → quality bar → activation; MECE ownership; no promover sin evidencia | Mapea a Skill Lab + N0–N5 + rúbrica `skill-authoring`; quality bar instrumentable en [`testing-framework.md`](../operational-cases/testing-framework.md) §13. |
+| **How to Build a Self-Improving Company with AI** (Tom Blomfield, [YC](https://www.youtube.com/watch?v=X_JsIHUfUjc)) | Loops Observe → Decide → Act → Evaluate → Learn; company legibility; mejora recursiva y artefactos regenerables | Informa el contrato de [`ai-native-loops.md`](ai-native-loops.md), outcome economics, improvement authority y vistas regenerables. |
+| **How To Build A Company With AI From The Ground Up** (Diana Hu, [YC](https://www.youtube.com/watch?v=EN7frwQIbKc)) | IA como capa organizacional; open vs closed loops; empresa queryable; software factory; DRI y adopción progresiva | Refuerza la narrativa OS de Gu, el criterio closed-loop, la captura gobernada de decisiones/compromisos, la software factory interna y el patrón de piloto acotado. |
 
 Lecturas profundas en el repo:
 
@@ -288,3 +290,28 @@ La tesis AI-native `Observe → Decide → Act → Evaluate → Learn → Repeat
 Hoy `Act` y la gobernanza HITL están más maduros que `Learn`. Repetir un cron no equivale a self-improvement. Cada loop debe declarar outcome, sensors, policy, escalation, evaluation, memory, improvement targets y DRI; ver [`ai-native-loops.md`](ai-native-loops.md).
 
 Regla adicional: agentes pueden proponer mejoras a Skills, workflows, contexto o código, pero el target determina los gates. Cambios de producción pasan por versión, eval/simulación, aprobación, publicación/canary y rollback. Costo por caso ya existe en `ai_usage_events`; falta correlacionarlo con outcome y human effort.
+
+---
+
+## 13. Software factory interna: especificación y evidencia primero
+
+La misma disciplina aplica a cómo Ungga construye Gu OS. El objetivo no es maximizar código o tokens generados, sino aumentar la capacidad de una persona para dirigir trabajo verificable:
+
+```text
+intención
+  -> especificación y restricciones
+  -> criterios de aceptación, tests y evals
+  -> implementación asistida por agentes
+  -> verificación independiente contra evidencia
+  -> revisión / aprobación
+  -> release, observación y rollback
+```
+
+Los humanos conservan arquitectura, límites, trade-offs, riesgo, quality bar y responsabilidad por el resultado. Los agentes pueden investigar, implementar, probar, documentar y revisar en paralelo, pero una afirmación del agente no prueba que el cambio funcione; la evidencia proviene del entorno, tests, evals, seguridad y revisión proporcional al riesgo.
+
+No confundir dos fábricas relacionadas:
+
+- El **workflow compiler** transforma una especificación de negocio en una definición gobernada que Gu OS puede ejecutar para sus usuarios.
+- La **software factory interna** transforma intención de producto/ingeniería en cambios versionados del propio Gu OS mediante el flujo normal de código, PR, tests y release.
+
+Código generado no se ejecuta silenciosamente desde rutas runtime ni convierte políticas, permisos, fórmulas críticas o datos en artefactos desechables. La métrica sigue siendo outcome validado por costo de inferencia, esfuerzo humano y rework; “más tokens” y “más líneas” son inputs, no éxito.

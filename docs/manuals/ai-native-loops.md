@@ -17,6 +17,7 @@ Every production loop should document:
 | Field | Question |
 | --- | --- |
 | Outcome | What business result must it produce? |
+| Target / baseline | What expected result or prior performance is the outcome compared with? |
 | Sensors | What events/data make the situation observable? |
 | Context | What domain and tenant knowledge is required? |
 | Policy | What decisions may it make? |
@@ -24,10 +25,26 @@ Every production loop should document:
 | Tools | What systems may it read or modify? |
 | Evaluation | How is success verified? |
 | Memory | What evidence and result must be retained? |
+| Feedback linkage | How does the evaluated result reach the next cycle? |
 | Improvement targets | What may the loop propose or change? |
 | DRI | Which human remains accountable for the outcome? |
 
 The contract belongs at the workflow/loop level. A Skill supplies procedure; it does not by itself define sensors, outcomes, evaluation, or improvement authority.
+
+### 1.1 Open-loop vs closed-loop
+
+An **open loop** may observe, decide and act, but its result is not systematically compared with a target and fed into the next cycle. A cron, summary or one-time automation may be useful while remaining open-loop.
+
+A loop qualifies as **closed-loop** only when all of the following are true:
+
+1. the target or baseline is explicit;
+2. the result is observable and linked to the action/version that produced it;
+3. evaluation compares result against target with declared quality and safety criteria;
+4. an allowlisted mechanism may adjust the next action, procedure or proposal;
+5. the evaluated result actually reaches the next cycle; and
+6. the DRI can inspect evidence, intervene and retain or roll back the adjustment.
+
+Missing any item is a documented maturity gap, not permission to infer success. Closing the feedback path does not imply autonomous self-modification: improvement authority remains governed by §4.
 
 ## 2. Maturity model
 
@@ -118,10 +135,21 @@ Tokens alone are an input metric, not success.
 
 ## 7. Company legibility backlog
 
+An organization is queryable when an authorized user or agent can reconstruct important operational state from governed evidence—not merely retrieve semantically similar text. For a declared scope, Gu OS should progressively answer:
+
+- **State:** What is happening now, what is blocked, and what changed?
+- **Decision:** What was decided, by whom, when, and for what rationale?
+- **Commitment:** What was promised, to whom, by when, and who owns follow-up?
+- **Outcome:** What result was expected, what occurred, and which actions/version preceded it?
+- **Responsibility:** Who is assigned, who may approve, and who is the DRI?
+- **Evidence:** Which authoritative source, timestamp, scope and provenance support the answer?
+
 The organization should continuously identify:
 
 - Questions agents could not answer.
 - Decisions without rationale/provenance.
+- Commitments without owner, due date, source, or follow-up.
+- Important meetings or conversations whose approved decisions never reached an operational timeline.
 - Exceptions that exist only in conversations.
 - Processes known by one person.
 - Missing or unauthorized sources.
@@ -129,7 +157,7 @@ The organization should continuously identify:
 - Stale pages/manuals.
 - Outcomes not connected to actions.
 
-These gaps become governed ingestion, documentation, policy, eval, or Skill work—not automatic broad recording. Consent, minimization, retention, PII, and access control remain part of the architecture.
+These gaps become governed ingestion, documentation, policy, eval, or Skill work—not automatic broad recording. Raw transcripts are evidence sources, not universal memory. Consent, participant expectations, minimization, retention, PII, and access control remain part of the architecture.
 
 ## 8. Regenerable artifacts and software
 

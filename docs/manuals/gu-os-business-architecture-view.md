@@ -20,6 +20,19 @@ Una forma breve de expresarlo:
 
 La palabra importante aquí es **governed**: el sistema debe avanzar trabajo con permisos, trazabilidad, políticas y aprobación humana cuando corresponde. No se trata de autonomía teatral ni de un agente que “hace todo solo” sin control.
 
+La segunda idea importante es que las capas forman un ciclo, no sólo una pila:
+
+```text
+operación y eventos
+  → contexto e inteligencia
+  → decisión y ejecución gobernada
+  → resultado y evidencia
+  → evaluación y aprendizaje
+  → siguiente ciclo
+```
+
+Gu OS busca que una inmobiliaria sea progresivamente **consultable**: que usuarios y agentes autorizados puedan reconstruir qué está ocurriendo, qué se decidió y por qué, qué se prometió, quién responde por el resultado y qué evidencia lo sustenta. Hoy esa capacidad proviene parcialmente de datos operativos, casos y eventos; la futura Brain Layer amplía cognición y retrieval. No significa grabar todo, exponer información privada ni reemplazar los sistemas de verdad existentes.
+
 ---
 
 ## 2. Mapeo de capas

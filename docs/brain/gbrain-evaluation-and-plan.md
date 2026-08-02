@@ -771,6 +771,16 @@ El original nunca se sustituye por Markdown. Markdown es excelente para authorin
 
 **Empresa legible para IA** significa que datos, decisiones, reglas, excepciones, criterios de calidad y razones son accesibles bajo permisos deliberados, con identidad, temporalidad y provenance. También requiere schemas, IDs, relaciones, APIs, políticas y evals. No significa "todo visible a todo modelo" ni "capturar todo".
 
+**Decisiones y compromisos no equivalen a transcripts.** Reuniones, llamadas, mensajes y notas de voz pueden ser evidencia original, pero el objetivo cognitivo es extraer candidatos estructurados —decisión, rationale, compromiso, owner, due date, participantes y source reference— y enviarlos al destino que corresponda:
+
+- decisiones/aprobaciones de un caso permanecen en el case/impact plane;
+- compromisos ejecutables se convierten en next action, work item o scheduled task;
+- hechos durables sobre una entidad pueden promoverse a timeline/Brain con provenance y HITL según riesgo;
+- cambios de política o procedimiento se proponen como Skill/workflow versionado; y
+- el transcript crudo conserva su política de fuente, acceso y retención; no se vuelve memoria universal por defecto.
+
+La captura debe ser source-specific y consent-aware. Una reunión importante que no produjo ninguna decisión o compromiso puede conservarse sólo como evidencia o no ingerirse; que algo sea capturable no lo hace conocimiento durable.
+
 ### 1.5.9 Ownership scopes: platform → user `[v1.6]`
 
 El conocimiento se autoriza en una dimensión distinta de su tipo cognitivo:
@@ -805,6 +815,8 @@ El Dream Cycle debe reportar cobertura, no solo higiene:
 - Contradicciones y entidades huérfanas.
 - Preguntas repetidas sin respuesta.
 - Decisiones sin rationale.
+- Compromisos sin owner, due date, source o seguimiento.
+- Reuniones/conversaciones importantes cuyas decisiones aprobadas nunca llegaron al timeline operacional.
 - Procedimientos tácitos sin Skill.
 - Outputs valiosos pendientes de promoción.
 

@@ -1081,6 +1081,23 @@ Ver
 | **M6** | V1.6 | Cuentas pueden tener `account_skills` propias que prevalecen sobre las globales del mismo slug |
 | **M7** | V1.7 | El primer caso operacional end-to-end (`property_optioning` para Alebrixe) corre con cron, binding directo de skill, HITL y notificaciones multi-canal |
 
+### Patrón de adopción en organizaciones existentes
+
+Gu OS entra en empresas que ya operan con clientes, equipos, sistemas y obligaciones. La adopción recomendada es un **skunkworks acotado y gobernado**, no desplegar copilots a toda la organización ni reemplazar procesos críticos de una vez:
+
+1. elegir un proceso valioso, repetible y con outcome observable;
+2. identificar un equipo/tenant piloto, su DRI y un baseline;
+3. instrumentar el proceso actual antes de automatizarlo;
+4. empezar en modo read-only o asistido;
+5. habilitar acciones acotadas con HITL, flags y rollback;
+6. comparar outcome, calidad, cycle time, human touches, costo y rework;
+7. observar 3–10 instancias reales cuando el riesgo lo permita; y
+8. expandir a nuevos casos/equipos sólo si cumple criterios explícitos de retención y no-regresión.
+
+La implementación técnica reutiliza activación privada, definiciones versionadas, advisory → enforcing, canary y el piloto brownfield de [`manuals/gu-os-flexible-workflows-technical-plan.md`](manuals/gu-os-flexible-workflows-technical-plan.md) §18. La barra de evidencia vive en [`operational-cases/testing-framework.md`](operational-cases/testing-framework.md) §13; la economía del outcome en [`manuals/ai-native-loops.md`](manuals/ai-native-loops.md) §6.
+
+Un piloto no se gradúa por generar más actividad, respuestas o tokens. Se gradúa cuando produce resultados validados con riesgo y esfuerzo aceptables, conserva una vía de intervención humana y demuestra que el aprendizaje puede llegar al siguiente ciclo sin reescribir silenciosamente políticas o verdad operacional.
+
 ---
 
 ## V2 — Custom skills lifecycle
