@@ -30,6 +30,7 @@
 10. Workflow customization is **fork-with-lineage**, never silent shadow of a published global (mirrors `account_skills` ownership, not its collision semantics for published defs).
 11. AI usage metering is internal observability, not billing: capture one append-only event per model call; do not add customer prices, credits, quotas, balances, invoices, billable-usage rules, or broker-facing usage UI.
 12. Cross-channel continuity follows [Gu OS Cross-channel Continuity Architecture](./gu-os-cross-channel-continuity-architecture.md): cases own operational continuity, notifications own pending decisions, and general antecedents use evidence-gated turn artifacts; do not invent a universal conversation thread.
+13. Technical Plan §11's additional artifact classes (knowledge artifact, executable artifact, situational software, turn artifact) and §14's loop operating contract (`outcome … dri`) are **governance taxonomy, not Phase 0–3 schema**: Slice 3.1 creates only `case_facts` / `case_artifacts` / `artifact_inputs` / `case_approvals` (+ asset versioning); do not add tables or definition fields for the other classes or for `dri`/`improvement_targets` without a Technical Plan change and its own slice. Semantics live in [`ai-native-loops.md`](./ai-native-loops.md), [`ADR-104`](../adr/ADR-104-governed-improvement.md) and [`ADR-105`](../adr/ADR-105-shareable-regenerable-views.md); knowledge ownership scopes in [`knowledge-scope-and-ownership.md`](./knowledge-scope-and-ownership.md) stay inert until §28.9 activates organization ownership.
 
 **Verification commands:** `cd apps/web && npm run test:business-decisions` · `npm run test:readiness-test-ui` · `npm run test:publication-workflow` · `npm run test:step-decision` (etc. per `apps/web/package.json` L11–20); root `npm run type-check && npm run lint`.
 
@@ -359,6 +360,8 @@
 - [ ] 3. Types in `packages/types/src/impact.ts` (status vocab `current|stale|suspended|invalid|superseded`).
 - [ ] 4. `artifact_inputs.input_kind` includes **`account_asset`** [D] alongside `fact|artifact` — templates and watermarks are inputs of generated artifacts and are neither facts nor artifacts (finding 16).
 - [ ] 5. Version `account_assets` [D]: add `content_hash` and an immutable per-replacement version record (`account_asset_versions` table or append pattern — decide against the child-table tenancy convention from 0.5-5). Replacing an asset creates a new version; nothing rewrites the version an existing artifact's `input_hash` was computed from. Backfill: hash current stored objects as version 1.
+
+**Scope guard (rule 13):** the Technical Plan §11 "additional classes" (knowledge artifact, executable artifact, situational software, turn artifact) do **not** add tables here — knowledge artifacts wait for the Brain program, turn artifacts for Slice 4.4, executable/situational software for the §14/§15 lifecycle.
 
 **Depends on:** Phase 2 (repair items need the work plane).
 

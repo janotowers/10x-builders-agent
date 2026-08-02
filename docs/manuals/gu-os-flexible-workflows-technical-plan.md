@@ -452,6 +452,17 @@ case_approvals    -- approval_kind, decision approved|rejected|suspended|revoked
 | Case-generated artifact | `case_artifacts` + `artifact_inputs` | Valuation, listing description, contract draft | Impact |
 | Channel-linked view (future) | View over case/artifact data; never a second source of truth | Case dashboard, owner report, comparables map | UI (§16.1) |
 
+Additional classes keep the same authority rule:
+
+| Class | Meaning | Governance |
+| --- | --- | --- |
+| Knowledge artifact | Durable generated manual, dossier, report or deck sourced from Brain/evidence | Version, citations, input hash, approval where authoritative |
+| Executable artifact | Generated code/spec implementing a calculator, verifier or internal tool | Isolated build, tests, security review, version/promotion/rollback |
+| Situational software | Narrow UI/tool cheaper to regenerate than maintain | May be disposable; data, permissions and critical rules are not |
+| Turn artifact | Bounded recent result used for continuity | TTL + provenance; never auto-promoted to durable Brain |
+
+Do not confuse **regeneration** (inputs changed, so repair the declared dependent artifact) with **self-improvement** (outcomes indicate the specification/logic should change). The latter follows §14 gates and never silently rewrites a published workflow, policy or critical formula.
+
 **Mechanism:** on any changed input (fact correction, changed decision/preference, changed scope/instruction, **account_asset version replacement**) recompute the input hash of every artifact whose declared edges include it; where the hash differs → `stale` + invalidation event + minimum repair template; approvals whose `evidence_hash` no longer matches → `suspended` (mechanical), never auto-`revoked` (business act). Artifacts with unchanged hashes stay `current` — that is the whole selectivity guarantee.
 
 **Status vocabulary:** `current` / `stale` / `suspended` / `invalid` / `superseded` (definitions in analysis §6.5 — keep distinct).
@@ -523,6 +534,23 @@ create table evidence_records (
 
 ## 14. SDD and loop-engineering lifecycle [T]
 
+Every production workflow/loop must declare a compact operating contract:
+
+| Field | Required meaning |
+| --- | --- |
+| `outcome` | Business result owned by the loop |
+| `sensors` | Events/data that make the situation observable |
+| `context` | Domain/tenant knowledge required |
+| `policy` | Autonomous decision boundary |
+| `escalation` | Human approval/exception conditions |
+| `tools` | Read/write systems available |
+| `evaluation` | Verification and post-production success criteria |
+| `memory` | Evidence/outcome retained for future runs |
+| `improvement_targets` | Context, Skill, definition, code or policy it may only propose/change under gates |
+| `dri` | Human accountable for the outcome |
+
+This contract is conceptual until the corresponding definition/work-plane fields are approved. `dri` is not automatically `user_id`, assignee, approver or organization owner. Canonical loop semantics: [`ai-native-loops.md`](ai-native-loops.md).
+
 ```text
 Policy/Constitution → Describe → Clarify → Business Specification → Validate Spec
 → Technical Plan → Contracts, Tasks & Acceptance Tests → Cross-Artifact Analysis
@@ -553,6 +581,8 @@ The compiler is an **instance of the §14 lifecycle**, inheriting its gates and 
 
 Generated definitions compose only registry-vetted guards/checks. Generated *code* never executes from a runtime path; it follows the isolated development path (draft → isolated branch → tests → security checks → independent verification → human promotion). [T]
 
+Improvement authority is allowlisted per target: mechanical index/health repair may be autonomous; Brain removals/modifications require diff + HITL; Skills and workflows are proposals until reviewed/published; policy/permission changes remain human-governed; production code uses the normal PR/release path.
+
 ---
 
 ## 16. UI/UX and information architecture [T/D/H]
@@ -570,6 +600,8 @@ Liveness copy per §10's note. Inbox differentiates five ask-kinds (business dec
 ### 16.1 Channel-linked views (dynamic interfaces) [P][H]
 
 Generated interactive views (case dashboards, comparables maps, owner reports, similar "artifacts") are a future UI capability, not a Phase 0–3 deliverable. When activated they remain **views over case/artifact truth**, never a second source of truth, and never arbitrary sandboxed app code as the default path (QM's `publish` model is prior art with a weaker security boundary — see `gu-os-qm-reference-analysis.md` §7).
+
+A calculator may be only a generated view over a registered/versioned formula tool. If generated code contains the business formula itself, it is an **executable artifact** and requires isolated tests, evidence, promotion and rollback. Cheap UI generation never makes authorization, financial/legal rules, audit or integration logic disposable.
 
 Two link classes — do not collapse:
 
@@ -695,11 +727,11 @@ Work-item creation is idempotent via `idempotency_key` unique per case (safe und
 
 Phase 0 instrumentation (the measurements the go/no-go thresholds depend on): case volume; step durations; correction frequency and which facts; retry counts; verified- vs fluent-completion on unattended channels. Ongoing: per-attempt executor events with profile, model, tokens, duration (cost attribution); claim-contention and stale-claim counters; invalidation/repair counts and over-invalidation ratio (staled-but-repair-found-unnecessary); decomposer confidence distribution and residual rates; Temporal-revisit thresholds tracked explicitly (≈10k transitions/day; ≈500 concurrent cases; >15-min items; >20 definitions; exactly-once compliance need — any two ⇒ revisit).
 
-### 23.1 AI usage metering and cost attribution [T/D]
+### 23.1 AI usage metering and cost attribution [V/T]
 
-Cost attribution starts in **Phase 0**, before the work plane exists. Waiting for Phase 3 worker profiles would leave the current main agent, selectors, classifiers, compaction, vision/copy models, cron, and Gu OS Heartbeat unmeasured. The atomic unit is one provider/model call — **not one turn** — because one turn can cause several calls and retries.
+Cost attribution started in **Phase 0** and is now implemented through append-only `ai_usage_events`, ambient context propagation and the internal `/settings/ai-usage` dashboard. It already groups calls/cost by `operational_case_id`. Waiting for Phase 3 worker profiles would have left the main agent, selectors, classifiers, compaction, vision/copy models, cron, and Gu OS Heartbeat unmeasured. The atomic unit is one provider/model call — **not one turn** — because one turn can cause several calls and retries.
 
-Add an append-only `ai_usage_events` ledger [D; migration number fixed in the detailed plan]. Minimum fields:
+The implemented append-only `ai_usage_events` ledger contains:
 
 ```text
 id, user_id, occurred_at
@@ -728,6 +760,19 @@ Daily rollups support internal views by tenant, model, role, channel, case, and 
 **Scope boundary:** this is internal AI observability and cost measurement, **not billing**. No customer prices, credits, quotas, balances, invoices, billable-usage rules, or broker-facing consumption UI enter this plan. The ledger uses `resource_type='ai_model'` plus an operation (`chat_completion`, `embedding`, `vision`, etc.) so later non-model provider costs can be added without redesign, but only AI-model usage is implemented now.
 
 Dashboards are hours of build; trustworthy rates need the observation window (§26).
+
+### 23.2 Outcome economics and human intervention [T/D]
+
+Case attribution already exists. The next step is to join—not duplicate—the ledger with operational truth:
+
+- terminal case/workflow outcome and quality;
+- cycle time;
+- approvals, rejections, corrections and human touches;
+- retries, rework, stale/repaired artifacts and external errors;
+- workflow/definition version and baseline;
+- business value where it can be measured safely.
+
+The target comparison is validated outcomes divided by inference cost + human effort + error/rework. Tokens and spend remain inputs, not success metrics. Raw `ai_usage_events` stays immutable/internal observability; outcome joins are derived views and must not introduce billing semantics.
 
 ---
 
@@ -878,6 +923,10 @@ Vercel-style serverless constraints persist (durable workers deferred on hosting
 9. **ADR-009** Definition versioning, active-case pinning, migration, rollback; global vs private ownership and fork lineage (§5.1.1).
 10. **ADR-010** Tenant scoping as required parameters + RLS defense in depth on new planes.
 11. **ADR-011** Skill package interoperability: portable core + Gu extensions; import-with-adaptation; scripts quarantine; account skill file storage when import ships (§9.2).
+12. **Knowledge/storage planes:** Object Storage/SOR externo for raw, Postgres for compiled/indexed truth, Markdown as representation — see [`ADR-100`](../adr/ADR-100-hybrid-knowledge-storage.md).
+13. **Knowledge ownership scopes:** platform/industry/organization/team/user, distinct from Skill `scope` — see [`ADR-102`](../adr/ADR-102-knowledge-ownership-scopes.md) and [`ADR-101`](../adr/ADR-101-organization-tenancy.md).
+14. **Governed improvement authority:** proposal/eval/publish/canary/rollback boundaries by target — see [`ADR-104`](../adr/ADR-104-governed-improvement.md).
+15. **Shareable views:** authenticated internal RBAC vs signed expiring external read-only links — see [`ADR-105`](../adr/ADR-105-shareable-regenerable-views.md).
 
 ### F. Proposed technical contracts (first drafts to write)
 

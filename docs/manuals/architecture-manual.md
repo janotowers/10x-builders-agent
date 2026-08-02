@@ -176,6 +176,35 @@ En Gu OS hoy:
 - Ese `organization_id` debe coincidir con el que existe en BigQuery/Firebase.
 - Si se configura un ID inexistente o incorrecto, los queries de negocio fallan o devuelven vacio. No es un fallo de razonamiento del agente; es un binding inconsistente.
 
+### Modelo de tenant: hoy y direccion V3
+
+El `organization_id` externo ya identifica a la inmobiliaria. `org_name` es un atributo legible y mutable; no debe usarse como clave. `role_user='super-admin'` identifica al usuario principal que administra o recibe leads, pero **no convierte al usuario en la organizacion**. Esto permite cambiar al administrador, tener varios administradores o reasignar vendedores sin cambiar la identidad del negocio.
+
+```text
+organization (external org_id)
+├── owner / super-admin
+├── org admins
+├── vendedores / asesores
+├── legal / marketing / operaciones
+└── teams
+```
+
+La integracion futura debe conservar el ID externo en una columna estable, por ejemplo `organizations.external_org_id`, y separar:
+
+- **Membership:** a que organizacion pertenece el usuario.
+- **Role:** que puede hacer (`owner`, `org_admin`, `sales_agent`, `legal_reviewer`, etc.).
+- **Team:** con quien comparte trabajo o conocimiento (area, sucursal, region, pod o proyecto).
+- **Assignment:** de que lead, caso o work item es responsable.
+- **DRI:** quien responde por el outcome; no siempre coincide con assignee o approver.
+
+Para leads, la propiedad logica es de la organizacion aunque el sistema externo hoy la resuelva indirectamente mediante el usuario `super-admin`. Gu OS puede empezar con el adapter `lead -> receiving user -> external org_id`; el contrato futuro preferido es `lead.organization_id` + `lead.assigned_to_user_id`. El sistema externo sigue siendo SOR de intake/asignacion mientras Gu OS referencia `external_lead_id`, `external_org_id` y el assignee vigente.
+
+No confundir tres autoridades:
+
+- `profiles.is_ungga_admin`: staff interno de la plataforma.
+- `role_user='super-admin'`: owner/admin externo de una inmobiliaria.
+- DRI de un caso/loop: humano accountable por un outcome concreto.
+
 ### Matriz de propiedad de datos
 
 | Tipo | Ejemplo | Propietario logico | Storage actual | Notas |
@@ -963,6 +992,61 @@ Documento:
 
 - `docs/brain/gbrain-evaluation-and-plan.md`
 
+### Pipeline hibrido de conocimiento
+
+La Brain Layer no implica guardar todos los bytes empresariales en Postgres ni convertir toda fuente a Markdown como unica copia. La arquitectura integrada es:
+
+```text
+1. Raw evidence
+   PDF, DOCX, PPTX, email MIME, audio, imagen, transcript, API event
+   -> bytes inmutables en Object Storage o referencia al SOR externo
+
+2. Parse / normalize
+   texto o Markdown derivado, estructura, metadata, identidad y provenance
+
+3. Index
+   chunks, full-text, embeddings e indices jerarquicos, filtrados por tenant/scope
+
+4. Distill
+   facts, timeline, compiled truth, hard links, soft signals y playbooks candidatos
+
+5. Act / express
+   skills, tools, operational cases, artefactos y vistas compartibles
+
+6. Evaluate / learn
+   outcomes, evidencia, costo, intervencion humana y propuestas de mejora gobernadas
+```
+
+Fuentes de verdad por plano:
+
+- **Object Storage / fuente externa:** evidencia original e inmutable.
+- **Postgres:** metadata, permisos, provenance, indices, estado operacional y conocimiento compilado.
+- **BigQuery/CRM:** registros transaccionales donde asi se declare.
+- **Markdown:** representacion legible, authoring, import/export y portabilidad; no SOR universal.
+- **Artefactos/vistas:** productos regenerables de hechos y conocimiento; no otra fuente de verdad.
+
+Una empresa es "legible para IA" cuando sus datos, decisiones, reglas, excepciones, criterios de calidad y razones son accesibles bajo permisos deliberados, con identidad, tiempo y provenance. Markdown ayuda, pero legibilidad tambien requiere schemas, IDs, relaciones, ACL, APIs y evals.
+
+### Mapa de loops AI-native
+
+Gu OS no es solo un agente con memoria. Es una plataforma de **loops gobernados** que observan, deciden, actuan, evaluan y —cuando la evidencia lo permite— proponen mejoras:
+
+```text
+Observe -> Decide -> Act -> Evaluate -> Learn -> Repeat
+```
+
+| Loop | Estado |
+|---|---|
+| Turno interactivo (chat/Telegram) | **Hoy** |
+| Casos operacionales + cron | **Hoy** (+ impact plane previsto) |
+| Heartbeat | **Hoy** (read-oriented V1) |
+| Scheduled tasks | **Hoy** |
+| Workflow lifecycle (definition → verify → publish) | **Parcial** Phase 1; fases posteriores previstas |
+| Brain Ingest / Query / Lint / Dream Cycle | **Previsto** |
+| Pattern → Skill | **Previsto** (proposal + HITL) |
+
+Cada loop debe declarar outcome, sensores, politica, escalacion, tools, evaluacion, memoria, improvement targets y DRI. Detalle canónico: [`ai-native-loops.md`](ai-native-loops.md). Autonomia se gana por operacion con evidencia; no se asume porque un cron se repita.
+
 ---
 
 ## 15. Ingestion y fuentes externas
@@ -1007,6 +1091,8 @@ Prioridad sugerida para real estate:
 7. Excel/sheets.
 
 Regla: no "ingest everything". Primero fuentes de alto valor operacional, con dry-run y safety gates.
+
+La captura masiva debe respetar consentimiento, minimizacion, retencion, PII, borrado, legal hold y permisos por fuente. El original nunca se sustituye por la extraccion. Texto/Markdown y chunks son derivados regenerables; solo conocimiento durable y relevante se promueve al Brain.
 
 ---
 
@@ -1088,6 +1174,11 @@ El agente no debe mezclar usuarios, organizaciones ni permisos. Hay tres mecanis
 | Que casos operacionales estan vivos | `operational_cases` | Supabase |
 | Que paso/historico tiene un caso | `operational_case_events` (append-only) | Supabase |
 | Que tipos de procedimiento existen | `operational_case_types` | Supabase |
+| Donde viven los archivos originales | Buckets privados / SOR externo + metadata | Object Storage / externo + Supabase |
+| Donde vive texto o Markdown extraido | Derivado asociado a archivo/fuente | Supabase; schema general previsto |
+| Que hechos y artefactos produjo un caso | `case_facts`, `case_artifacts`, `artifact_inputs` | Previsto (impact plane) |
+| Que vista se comparte con un usuario interno/externo | Vista autorizada sobre facts/artifacts | Previsto; nunca segundo SOR |
+| Que costo IA tuvo una instancia de caso | `ai_usage_events.operational_case_id` | Supabase; implementado |
 | Que memoria operacional del negocio existira | `brain_*` | Previsto |
 
 ---
@@ -1126,6 +1217,14 @@ El agente no debe mezclar usuarios, organizaciones ni permisos. Hay tres mecanis
 
 **Binding directo de skill:** cuando hay `case_id` activo y el `case_type` define `default_skill_slug`, el agente la carga sin pasar por el selector libre. Reduce el riesgo de "el modelo elige otra skill por confusión".
 
+**Artefacto:** resultado durable y versionable derivado de hechos/otros artefactos, con inputs y provenance declarados.
+
+**Vista regenerable:** interfaz o documento proyectado desde hechos/artefactos. Puede ser compartible, pero no es una segunda fuente de verdad.
+
+**Software situacional:** codigo regenerable para una necesidad acotada. La UI puede ser efimera; datos, reglas criticas, permisos y evidencia permanecen durables.
+
+**Loop AI-native:** sistema gobernado que observa, decide, actua, evalua, aprende y repite con un DRI y limites explicitos de mejora.
+
 ---
 
 ## 20. Documentos relacionados
@@ -1146,6 +1245,11 @@ El agente no debe mezclar usuarios, organizaciones ni permisos. Hay tres mecanis
 | BigQuery env/setup | [`docs/env-bigquery-setup.md`](../env-bigquery-setup.md) |
 | Roadmap Business Brain / Skills / Heartbeat | [`docs/business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) |
 | Brain Layer futura | [`docs/brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) |
+| Indice documental | [`docs/README.md`](../README.md) |
+| Knowledge scope y ownership | [`docs/manuals/knowledge-scope-and-ownership.md`](knowledge-scope-and-ownership.md) |
+| Loops AI-native | [`docs/manuals/ai-native-loops.md`](ai-native-loops.md) |
+| ADRs | [`docs/adr/README.md`](../adr/README.md) |
+| Flexible workflows (plan tecnico) | [`docs/manuals/gu-os-flexible-workflows-technical-plan.md`](gu-os-flexible-workflows-technical-plan.md) |
 | Casos operacionales (plan) | [`docs/operational-cases/plan.md`](../operational-cases/plan.md) |
 | Casos operacionales (arquitectura) | [`docs/operational-cases/architecture.md`](../operational-cases/architecture.md) |
 | Casos operacionales (consideraciones futuras) | [`docs/operational-cases/future-considerations.md`](../operational-cases/future-considerations.md) |
@@ -1164,6 +1268,10 @@ Estas preguntas no bloquean el entendimiento del sistema actual, pero conviene r
 6. **Skill mining:** cuanto dato operacional y que metrica de outcome se requieren antes de proponer skills implicitas.
 7. **Multi-proveedor LLM:** cuando implementar Google directo / Vertex y fallback por canal.
 8. **Skills por organizacion:** como versionar playbooks compartidos por brokerage sin permitir codigo arbitrario.
+9. **Knowledge scopes:** cuando activar organization/team y que grants/precedencia aplican.
+10. **Artefactos compartibles:** criterios de activacion para links internos autenticados y externos firmados.
+11. **Outcome economics:** que outcomes y human touches se unen al costo por caso ya instrumentado.
+12. **Improvement authority:** que loops pueden proponer o publicar cambios a contexto, skills, workflows, codigo o politicas.
 
 ---
 

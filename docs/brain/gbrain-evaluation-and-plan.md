@@ -1,10 +1,19 @@
 # Evaluación de G Brain y plan de integración con Ungga / Gu OS
 
 > **Estado:** propuesta para revisión (actualizada agosto 2026)
-> **Versión:** 1.5.2 (v1.5.1 + coordinación con los planes de **flexible workflows**: secuencia post-workflows, frontera con el impact plane, migraciones como placeholders, knowledge scoping futuro)
+> **Versión:** 1.6 (v1.5.2 + pipeline híbrido, legibilidad empresarial, scopes platform→user y artefactos/vistas regenerables)
 > **Audiencia:** Janot (arquitecto/dueño)
 > **Decide:** si arrancamos la "Brain Layer" como capa nueva paralela a `memories`, siguiendo Opción B (portar **8 ideas** de G Brain sin importar su código), en convivencia explícita con `operational_cases` y `account_skills`
 > **No decide:** si en el futuro lejano se integra G Brain como microservicio (Opción C) — eso queda como puerta abierta, con matiz post-company-brain (ver [§8](#8-recomendación-y-razones))
+
+### Cambios v1.6 vs v1.5.2
+
+- Distingue SOR por plano: evidencia raw en Object Storage/SOR externo; conocimiento compilado, metadata, permisos e índices en Postgres; Markdown como representación y portabilidad.
+- Define "empresa legible para IA" sin reducirla a archivos `.md`.
+- Registra scopes `platform | industry | organization | team | user` y enlaza su semántica canónica.
+- Amplía el modelo a artefactos de conocimiento y vistas regenerables sin convertirlos en una segunda fuente de verdad.
+- Añade knowledge coverage y backlog de legibilidad como inputs del mantenimiento cognitivo.
+- Mantiene alcance y secuencia: estas decisiones complementan el diseño; Brain sigue post-workflows.
 
 ### Cambios v1.5.2 vs v1.5.1
 
@@ -112,6 +121,9 @@
 1.4. [Modelo de capas: 7 capas, 4 dominios](#14-modelo-de-capas-7-capas-4-dominios) `[v1.4]`
    - 1.4.8. [Casos operacionales vs Brain Layer (frontera)](#148-casos-operacionales-vs-brain-layer-frontera-de-responsabilidades-v15) `[v1.5]`
 1.5. [Principios rectores de la Brain Layer](#15-principios-rectores-de-la-brain-layer) `[v1.1]`
+   - 1.5.8. [Pipeline híbrido y legibilidad empresarial](#158-pipeline-híbrido-y-legibilidad-empresarial-v16) `[v1.6]`
+   - 1.5.9. [Ownership scopes: platform → user](#159-ownership-scopes-platform--user-v16) `[v1.6]`
+   - 1.5.10. [Artefactos, vistas regenerables y knowledge coverage](#1510-artefactos-vistas-regenerables-y-knowledge-coverage-v16) `[v1.6]`
 2. [Ficha técnica comparativa](#2-ficha-técnica-comparativa)
 3. [Traslapes reales](#3-traslapes-reales)
 4. [Complementariedad real (lo que G Brain tiene y Ungga no)](#4-complementariedad-real)
@@ -737,6 +749,66 @@ Cuando llegue cualquier nueva pieza de información (de Ingestion, de un turno d
 **Anti-patrón crítico a evitar:** "no me cabe claro de qué tipo es, lo meto en `compiled_truth` que es lo que siempre queda corto". Esa decisión, repetida muchas veces, es exactamente cómo `compiled_truth` se vuelve un dump donde conviven hechos verificables, interpretaciones probabilísticas, relaciones que deberían ser links, y procedimientos que deberían ser skills. **Si dudas del destino, defiere a HITL** (escribe a `brain_signals` o `brain_skill_candidates` como candidato), nunca al destino más generoso.
 
 **Corolario para diseño de tools:** cada tool nueva que escribe al Brain Layer debe declarar explícitamente a qué destino(s) escribe. Una tool que escribe a 3+ destinos simultáneamente es señal de que hace demasiado y probablemente debería separarse en tools especializadas. Mismo principio que en el extractor: separación de responsabilidades por destino.
+
+### 1.5.8 Pipeline híbrido y legibilidad empresarial `[v1.6]`
+
+La frase "Postgres es source of truth del Brain" aplica al **conocimiento compilado**, no a todos los bytes que produce una empresa. La arquitectura separa:
+
+```text
+raw evidence -> parse/normalize -> chunks/index -> distill -> artifacts/actions -> outcomes/learning
+```
+
+| Plano | SOR | Ejemplos |
+| --- | --- | --- |
+| Evidencia original | Object Storage privado o sistema externo | PDF, DOCX, email MIME, audio, transcript, evento CRM |
+| Derivados de parsing | Regenerables, ligados por hash/source_id | Texto, Markdown, OCR, estructura, metadata |
+| Índices | Postgres | chunks, tsvector, embeddings, índices generados |
+| Conocimiento compilado | Postgres Brain | pages, timeline, links, signals, versions |
+| Procedimiento | Skills/workflow definitions | Cómo actuar, permisos y gates |
+| Artefactos/vistas | Impact/UI planes | Reportes, manuales, dashboards, mapas, calculadoras |
+
+El original nunca se sustituye por Markdown. Markdown es excelente para authoring, agentes, diff, import/export y auditoría, pero no resuelve por sí solo identidad, ACL, RLS, concurrencia, queries operacionales, provenance ni retención.
+
+**Empresa legible para IA** significa que datos, decisiones, reglas, excepciones, criterios de calidad y razones son accesibles bajo permisos deliberados, con identidad, temporalidad y provenance. También requiere schemas, IDs, relaciones, APIs, políticas y evals. No significa "todo visible a todo modelo" ni "capturar todo".
+
+### 1.5.9 Ownership scopes: platform → user `[v1.6]`
+
+El conocimiento se autoriza en una dimensión distinta de su tipo cognitivo:
+
+- `platform`: conocimiento general curado por Gu OS.
+- `industry`: conocimiento semántico compartido de real estate u otra vertical.
+- `organization`: políticas, dossiers y conocimiento de una inmobiliaria.
+- `team`: conocimiento de área, sucursal, región, pod o proyecto.
+- `user`: conocimiento privado del operador.
+
+El MVP Brain permanece `user_id`-scoped. La activación de organization/team depende de `organizations` + memberships y RLS org-aware. Platform/industry son superficies compartidas de lectura curada; nunca convierten memoria tenant-owned en cross-tenant.
+
+Autorización se filtra **antes** del ranking. Retrieval conserva scope y provenance. La precedencia de configuración `user > team > organization > industry > platform` no sustituye autoridad factual/legal: conflictos se muestran, no se fusionan silenciosamente.
+
+Semántica canónica y puente con `org_id`, `super-admin` y `vendedor`: [`knowledge-scope-and-ownership.md`](../manuals/knowledge-scope-and-ownership.md).
+
+### 1.5.10 Artefactos, vistas regenerables y knowledge coverage `[v1.6]`
+
+Una page no es la única expresión del Brain. El conocimiento puede producir:
+
+- Manual o dossier regenerable.
+- Reporte/deck durable y versionado.
+- Dashboard, mapa o calculadora como vista sobre facts/artifacts.
+- Índice jerárquico para humano/agente.
+
+La vista nunca es un segundo SOR. Un snapshot aprobado sí puede persistirse como artefacto con inputs, hash, provenance y versión. Regenerar por cambios de inputs es reparación; cambiar la lógica porque outcomes fueron pobres es self-improvement y sigue propuesta → eval → aprobación → canary/publicación → medición/rollback.
+
+El Dream Cycle debe reportar cobertura, no solo higiene:
+
+- Fuentes esperadas conectadas/no conectadas.
+- Páginas/claims stale o sin evidencia.
+- Contradicciones y entidades huérfanas.
+- Preguntas repetidas sin respuesta.
+- Decisiones sin rationale.
+- Procedimientos tácitos sin Skill.
+- Outputs valiosos pendientes de promoción.
+
+Estos gaps forman un backlog gobernado de legibilidad; no autorizan ingestión indiscriminada.
 
 ---
 
@@ -1973,7 +2045,7 @@ gantt
 
 Decisiones conscientes de descartar para esta fase:
 
-1. **Markdown como source of truth en disco** — descartado por fricción multi-tenant. Si quieres exportar a `.md` para auditoría/git -> endpoint `/api/brain/export` en futura fase.
+1. **Markdown como source of truth universal en disco** — descartado por fricción multi-tenant. Markdown sí se conserva como authoring de conocimiento global/industry, representación derivada, import/export, auditoría/git y posible vault compatible; endpoint `/api/brain/export` en futura fase. Originales permanecen en Object Storage/SOR externo y el Brain compilado en Postgres.
 2. **MCP server propio** — no es necesario para Ungga hoy. Si en el futuro otros clientes (p. ej. Claude Code de tus brokers) deben acceder al brain, montar un MCP server delgado que envuelva las tools de `brain-*-tools.ts`. 1-2 semanas de trabajo adicional cuando se justifique.
 3. **Multi-LLM provider** — sigue siendo OpenRouter. La fachada multi-provider es Fase 8 de tu plan original (`docs/tools-design/model-providers.md`).
 4. **Importar código de G Brain** — todo es nuevo en tu stack. Las ideas vienen de leer los archivos del repo G Brain como referencia conceptual. **No hay copy-paste** ni dependencia de `@garrytan/gbrain`.

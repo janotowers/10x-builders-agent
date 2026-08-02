@@ -192,6 +192,8 @@ there is sandboxing, permissions, quotas, observability, and rollback.
 4. **Brain Health Checks:** contradictions, stale claims, orphan pages, missing concept pages, missing cross-refs, unreviewed signal clusters.
 5. **Query-to-Knowledge Feedback:** a high-value answer, report, chart, or deck can become an artifact or candidate memory when it has durable operational value and provenance.
 6. **Index pages as complement:** human-readable catalogs generated from structured Brain data — navigation aid, not source of truth.
+7. **Regenerable views:** manuals, dossiers, dashboards and reports may be regenerated from evidence + compiled knowledge; approved snapshots remain versioned artifacts.
+8. **Compiler rules as governed assets:** humans curate sources, schemas, policies and evals; agents may maintain pages under those rules but do not silently co-evolve production policy.
 
 #### Ideas not adopted as-is
 
@@ -199,6 +201,8 @@ there is sandboxing, permissions, quotas, observability, and rollback.
 - Gu OS should not drop hybrid retrieval because a personal wiki fits in context or an index file. Multi-tenant operational search needs structured filters, permissions, hybrid retrieval, and auditability.
 - Gu OS should not train customer-specific facts into model weights. Synthetic data belongs in evals, regression tests, skill QA, routing, extraction, and safety review.
 - Gu OS should not expose a per-tenant `CLAUDE.md` wiki constitution in MVP. Domain schema is product-defined (real estate `kind`s); tenant customization stays in `business_brain`, skills, and future Brain UI — not co-evolved markdown rules files.
+
+**Revisable surfaces:** rejection as primary UX/SOR is not rejection of the formats. Git + reviewed Markdown remain appropriate for platform/industry knowledge and global Skills; Brain pages may export/import Markdown; an Obsidian-compatible vault may become an optional audit, portability or power-user surface. Reconsider only with concrete demand and without bypassing tenant authorization, provenance or the Postgres runtime model.
 
 ### Inspiration 3: Garry Tan / GStack (Thin Harness, Fat Skills; Homebrew for Personal AI; Skill Development Cycle)
 
@@ -1096,8 +1100,40 @@ skills) y V1.6 (account_skills mínimo).
 
 ## V3 — Shared workspace, roles, routing
 
-`organizations`, memberships, optional dynamic multi-skill router and subagents;
-shared skills and integrations.
+`organizations`, memberships, teams, optional dynamic multi-skill router and
+subagents; shared skills, knowledge and integrations.
+
+The organization becomes the tenant boundary while the user remains the runtime
+identity. Preserve the external operating-system identity rather than inventing
+an incompatible brokerage key:
+
+```text
+organizations.external_org_id <- external org_id / organization_id
+organizations.name            <- external org_name
+membership.role=owner/admin   <- role_user=super-admin
+membership.role=sales_agent   <- role_user=vendedor
+```
+
+`org_name` is display data, not identity. `super-admin` is a role/account
+relationship, not the organization itself, and must not be confused with
+`profiles.is_ungga_admin` (Gu platform staff).
+
+V3 target primitives:
+
+- `organizations` and `organization_memberships`;
+- `teams` and `team_memberships` when real collaboration needs justify them;
+- roles/permission grants separate from team and assignment;
+- organization-owned leads referenced by `external_lead_id` /
+  `external_org_id`, with assignee tracked separately;
+- organization/team-owned skills, workflow definitions, assets and Brain
+  knowledge;
+- authenticated internal sharing plus signed, expiring, revocable external
+  views;
+- RLS migration/backfill tests proving cross-tenant denial.
+
+Knowledge ownership uses `platform | industry | organization | team | user`;
+this is separate from Skill `scope: business | personal | shared`. Canonical
+semantics: [`manuals/knowledge-scope-and-ownership.md`](manuals/knowledge-scope-and-ownership.md).
 
 ### Cross-channel continuity (evidence-gated product capability)
 
@@ -1233,6 +1269,9 @@ The `[MEMORIA …]` block is added by the `memory_injection` node by **swapping 
 | Data warehouse | No BQ | **Atomic BQ tool + data skill** (skill optional; one-shot SQL via direct tool call also supported) |
 | Playbooks | Prompt + code addendums | **Skills + composites** with **`scope`** (business / personal / shared); **no-skill turns** stay first-class |
 | UI | Tools toggles | + **Skills toggles grouped by scope**, Heartbeat, history |
+| Tenant ownership | `user_id` + external org binding | `organizations` + memberships, roles, teams and org-aware RLS |
+| Organizational knowledge | Skill references / external data | Hybrid raw→index→Brain pipeline with platform/industry/org/team/user scopes |
+| Improvement | Manual tuning | Governed Observe→Decide→Act→Evaluate→Learn loops with DRI and rollback |
 
 ---
 
@@ -1276,3 +1315,7 @@ The `[MEMORIA …]` block is added by the `memory_injection` node by **swapping 
 - [operational-cases/plan.md](operational-cases/plan.md) — plan del subsistema de Casos operacionales y piloto Alebrixe (V1.7)
 - [operational-cases/architecture.md](operational-cases/architecture.md) — arquitectura técnica del subsistema
 - [operational-cases/future-considerations.md](operational-cases/future-considerations.md) — cuándo justificar subagentes, escalar selector, migrar a Temporal, browser automation, WhatsApp, evoluciones de `account_skills`
+- [manuals/knowledge-scope-and-ownership.md](manuals/knowledge-scope-and-ownership.md) — ownership y visibilidad platform→user
+- [manuals/ai-native-loops.md](manuals/ai-native-loops.md) — contrato de loops, DRI, improvement authority y outcome economics
+- [README.md](README.md) — indice y jerarquia documental
+- [adr/README.md](adr/README.md) — decisiones arquitectónicas (storage híbrido, tenancy, scopes, retrieval, mejora gobernada, vistas compartibles)

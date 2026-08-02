@@ -269,3 +269,22 @@ El sistema debe **inferir la forma** (caso vs skill) desde NL con clarificacion,
 | Casos operacionales / QA | [`testing-framework.md`](../operational-cases/testing-framework.md) §13 |
 | Ingenieria runtime | §3.2–3.3 + [`skill-routing.md`](../tools-design/skill-routing.md) |
 | Brain Layer | §3.5, §4 + [`gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md) |
+
+---
+
+## 12. Company loops: marco integrador
+
+La tesis AI-native `Observe → Decide → Act → Evaluate → Learn → Repeat` no sustituye las capas Gu OS; las conecta:
+
+| Etapa | Gu OS |
+| --- | --- |
+| Observe | Ingestion, Heartbeat, mensajes, caso/event streams, BigQuery, signals |
+| Decide | Skills, workflow definitions, policies, transition evaluator, HITL |
+| Act | Tools, workers, adapters, channels |
+| Evaluate | Verification contracts, evidence records, N0–N5, outcomes |
+| Learn | Memory, compiled Brain, Pattern→Skill, nuevas definiciones |
+| Repeat | Cron, dispatcher, Dream Cycle y publicación versionada |
+
+Hoy `Act` y la gobernanza HITL están más maduros que `Learn`. Repetir un cron no equivale a self-improvement. Cada loop debe declarar outcome, sensors, policy, escalation, evaluation, memory, improvement targets y DRI; ver [`ai-native-loops.md`](ai-native-loops.md).
+
+Regla adicional: agentes pueden proponer mejoras a Skills, workflows, contexto o código, pero el target determina los gates. Cambios de producción pasan por versión, eval/simulación, aprobación, publicación/canary y rollback. Costo por caso ya existe en `ai_usage_events`; falta correlacionarlo con outcome y human effort.

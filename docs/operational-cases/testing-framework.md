@@ -835,6 +835,32 @@ Además de `dependency_status`, la vista previa y el resultado de N1 pueden incl
 
 Ver `PATTERN_ARTIFACT_IDENTITY_STALENESS` en [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md).
 
+### 13.7 Outcome, costo e intervención humana post-activación
+
+Readiness pre-release no demuestra mejora empresarial. Después de activar una definición/version, correlacionar:
+
+- outcome terminal y calidad verificada;
+- duración del caso y de sus pasos;
+- costo/llamadas IA ya atribuidos por `ai_usage_events.operational_case_id`;
+- aprobaciones, rechazos, correcciones y human touches;
+- reintentos, rework, artefactos stale/reparados y errores externos;
+- versión de workflow/skill/model policy;
+- baseline o versión anterior comparable.
+
+No crear un ledger paralelo de consumo: `ai_usage_events` ya agrupa por instancia de caso en la UI interna. Los joins con `operational_cases`, eventos, approvals y futuros work items son vistas/rollups derivados.
+
+La métrica de dirección es:
+
+```text
+outcomes empresariales validados
+---------------------------------------------
+costo de inferencia + esfuerzo humano + rework
+```
+
+Tokens, aprobación alta o una corrida técnicamente exitosa no bastan. Una mejora de Skill/workflow debe declarar hipótesis, muestra, guardrails de no-regresión y criterio de retain/rollback. Pattern→Skill y cambios de definición permanecen proposal-only/HITL hasta cumplir su quality bar.
+
+Para loops sin caso operacional, usar el mismo principio con su correlación natural (`turn_id`, `workflow_definition_id`, `work_item_attempt_id` o run id) y un outcome explícito. No forzar `operational_case_id` donde no existe.
+
 ---
 
 ## 14. Archivos de referencia en código
