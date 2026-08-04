@@ -163,6 +163,56 @@ export async function forkDefinition(
 }
 
 /**
+ * Flip draft → validated (Slice 4.2-2): se llama SOLO después de que todos
+ * los gates §5.4 + simulación pasaron y su evidencia quedó registrada. El
+ * flip es informativo (la publicación re-corre los gates de todos modos).
+ */
+export async function markDefinitionValidated(
+  db: DbClient,
+  definitionId: string
+): Promise<WorkflowDefinition> {
+  const { data, error } = await db
+    .from("workflow_definitions")
+    .update({ status: "validated" satisfies WorkflowDefinitionStatus })
+    .eq("id", definitionId)
+    .eq("status", "draft")
+    .select("*")
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) {
+    throw new Error(
+      `workflow definition ${definitionId} not in draft (cannot mark validated)`
+    );
+  }
+  return data as WorkflowDefinition;
+}
+
+/**
+ * Descarta un borrador/validado propio. Published/deprecated quedan
+ * protegidos por el trigger SQL de DELETE; este filtro evita incluso
+ * intentar el borrado.
+ */
+export async function deleteDraftDefinition(
+  db: DbClient,
+  input: { userId: string; definitionId: string }
+): Promise<void> {
+  const { data, error } = await db
+    .from("workflow_definitions")
+    .delete()
+    .eq("id", input.definitionId)
+    .eq("user_id", input.userId)
+    .in("status", ["draft", "validated"])
+    .select("id")
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) {
+    throw new Error(
+      `workflow definition ${input.definitionId} not deletable (missing, not owned, or not draft/validated)`
+    );
+  }
+}
+
+/**
  * Publish a draft/validated definition. Immutability after publication is
  * enforced by the DB trigger; this only performs the status flip.
  */

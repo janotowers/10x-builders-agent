@@ -1,180 +1,115 @@
 /**
- * Workflow Studio — shell read-only (Slice 2.7).
+ * Workflow Studio — catálogo (shell 2.7, absorbido por el Studio 4.2-4).
  *
  * Catálogo de definiciones resueltas para el tenant: globales + privadas
- * propias, JAMÁS privadas de otros tenants (2.7-6; no requiere gate de admin
- * porque es lectura del propio tenant). El detalle renderiza un resumen del
- * graph_jsonb — solo display, sin edición/fork/publish (non-goals 2.7-7).
- *
- * [D 2.7-1] Nombre de ruta interino: /operations/workflows. Renombrar después
- * es un redirect barato; no bloqueamos el slice en la decisión de naming.
+ * propias, JAMÁS privadas de otros tenants (2.7-6). Agrupa versiones por
+ * familia, oculta fixtures de soak por defecto y ofrece fork/discard seguros.
  */
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
   countPinnedActiveCasesByDefinition,
   createServerClient,
+  getOperationalCaseTypeForUser,
   listWorkflowDefinitionsVisibleToUser,
 } from "@agents/db";
+import { getSkillRegistryForUser } from "@agents/agent";
 import type { WorkflowDefinition } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { AppShell } from "@/components/app-shell";
 import {
+  filterCatalogDefinitions,
+  groupDefinitionFamilies,
   toDefinitionCatalogRow,
-  type DefinitionCatalogRow,
+  type DefinitionFamily,
 } from "@/lib/workflow-studio/definition-catalog";
+import {
+  applyGraphOnlyStepFallbacks,
+  emptyHelpCatalog,
+  helpCatalogFromFlow,
+  mergeSkillRegistryHelp,
+  withRootSkill,
+  type DefinitionHelpCatalog,
+} from "@/lib/workflow-studio/definition-help";
+import { WorkflowStudioTabs } from "./studio-tabs";
+import { DefinitionDetail } from "./definition-detail";
 
 export const dynamic = "force-dynamic";
 
-function DetailSection({
-  title,
-  children,
+function FamilyCard({
+  family,
+  catalogQuery,
 }: {
-  title: string;
-  children: React.ReactNode;
+  family: DefinitionFamily;
+  catalogQuery: string;
 }) {
+  const draftHint =
+    family.draftCount > 0
+      ? family.draftCount === 1
+        ? " · 1 borrador"
+        : ` · ${family.draftCount} borradores`
+      : "";
   return (
-    <section className="rounded-xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-        {title}
-      </h3>
-      <div className="mt-2 space-y-1 text-xs text-neutral-700 dark:text-neutral-300">
-        {children}
+    <Link
+      href={`/operations/workflows?definition=${family.head.id}${catalogQuery}`}
+      className="rounded-2xl border border-neutral-200 bg-white p-4 text-xs shadow-sm transition hover:border-violet-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-violet-700"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <p className="font-semibold text-neutral-900 dark:text-neutral-100">
+          {family.title}
+        </p>
+        <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+          {family.headStatusLabel}
+        </span>
       </div>
-    </section>
+      <p className="mt-1 text-neutral-500">
+        {family.caseType} · {family.scopeLabel} · v{family.head.version}
+        {draftHint}
+      </p>
+      <p className="mt-1 text-neutral-500">{family.pinnedLabel}</p>
+      {family.lineage ? (
+        <p className="mt-1 text-neutral-400">{family.lineage}</p>
+      ) : null}
+    </Link>
   );
 }
 
-function DefinitionDetail({
-  definition,
-  row,
+function FamilySection({
+  title,
+  families,
+  catalogQuery,
 }: {
-  definition: WorkflowDefinition;
-  row: DefinitionCatalogRow;
+  title: string;
+  families: DefinitionFamily[];
+  catalogQuery: string;
 }) {
-  const graph = definition.graph_jsonb;
+  if (families.length === 0) return null;
   return (
-    <div className="space-y-3">
-      <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-950">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h2 className="text-sm font-semibold">
-            {row.workflowKey} · v{row.version}
-          </h2>
-          <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] dark:bg-neutral-800">
-            {row.statusLabel}
-          </span>
-          <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] dark:bg-neutral-800">
-            {row.scopeLabel}
-          </span>
-          <code className="text-[10px] text-neutral-500">{row.shortHash}</code>
-        </div>
-        <p className="mt-1 text-xs text-neutral-500">
-          Tipo de caso: {row.caseType} · {row.pinnedLabel}
-          {row.lineage ? ` · ${row.lineage}` : ""}
-        </p>
+    <section className="space-y-2">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+        {title}
+      </h3>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {families.map((family) => (
+          <FamilyCard
+            key={family.key}
+            family={family}
+            catalogQuery={catalogQuery}
+          />
+        ))}
       </div>
-
-      <div className="grid gap-3 md:grid-cols-2">
-        <DetailSection title={`Estados (${graph.states.length})`}>
-          {graph.states.map((state) => (
-            <p key={state.key}>
-              <code>{state.key}</code>
-              {state.label ? ` — ${state.label}` : ""}
-              {state.kind === "terminal" ? " · terminal" : ""}
-            </p>
-          ))}
-        </DetailSection>
-
-        <DetailSection title={`Transiciones (${graph.transitions.length})`}>
-          {graph.transitions.map((t, i) => (
-            <p key={`${t.from}-${t.to}-${i}`}>
-              <code>{t.from}</code> → <code>{t.to}</code>
-              {t.guards.length > 0 ? ` · guards: ${t.guards.join(", ")}` : ""}
-              {t.approval_required ? ` · aprobación: ${t.approval_required}` : ""}
-            </p>
-          ))}
-        </DetailSection>
-
-        <DetailSection title={`Pasos y skills (${graph.step_bindings.length})`}>
-          {graph.step_bindings.map((binding) => (
-            <p key={binding.state}>
-              <code>{binding.state}</code> —{" "}
-              {binding.skill ? <code>{binding.skill}</code> : "sin skill"}
-              {binding.bigquery_context ? " · contexto BigQuery" : ""}
-              {binding.required_assets?.length
-                ? ` · assets: ${binding.required_assets
-                    .map((asset) => asset.asset_key)
-                    .join(", ")}`
-                : ""}
-            </p>
-          ))}
-        </DetailSection>
-
-        <DetailSection title={`Plantillas de trabajo (${graph.work_templates.length})`}>
-          {graph.work_templates.length === 0 ? (
-            <p className="text-neutral-400">Sin plantillas de trabajo.</p>
-          ) : (
-            graph.work_templates.map((template, i) => (
-              <p key={`${template.on_enter_state}-${template.work_type}-${i}`}>
-                Al entrar a <code>{template.on_enter_state}</code>:{" "}
-                <code>{template.work_type}</code>
-                {template.required_capability
-                  ? ` · capacidad: ${template.required_capability}`
-                  : ""}
-                {template.depends_on?.length
-                  ? ` · depende de: ${template.depends_on.join(", ")}`
-                  : ""}
-              </p>
-            ))
-          )}
-        </DetailSection>
-
-        <DetailSection title="Completitud">
-          <p>
-            Estados terminales:{" "}
-            {graph.completion.terminal_states.map((s, i) => (
-              <span key={s}>
-                {i > 0 ? ", " : ""}
-                <code>{s}</code>
-              </span>
-            ))}
-          </p>
-          <p>
-            Evidencia requerida:{" "}
-            {graph.completion.required_evidence.length > 0
-              ? graph.completion.required_evidence.join(", ")
-              : "ninguna (v1)"}
-          </p>
-        </DetailSection>
-
-        <DetailSection title={`Postcondiciones y aprobaciones`}>
-          {graph.postconditions.length === 0 && graph.approvals.length === 0 ? (
-            <p className="text-neutral-400">Sin postcondiciones ni aprobaciones.</p>
-          ) : (
-            <>
-              {graph.postconditions.map((p) => (
-                <p key={p.state}>
-                  <code>{p.state}</code>: {p.checks.join(", ")}
-                </p>
-              ))}
-              {graph.approvals.map((a) => (
-                <p key={a.kind}>
-                  Aprobación <code>{a.kind}</code> · evidencia:{" "}
-                  {a.evidence_inputs.join(", ")}
-                </p>
-              ))}
-            </>
-          )}
-        </DetailSection>
-      </div>
-    </div>
+    </section>
   );
 }
 
 export default async function WorkflowStudioCatalogPage({
   searchParams,
 }: {
-  searchParams: Promise<{ definition?: string }>;
+  searchParams: Promise<{
+    definition?: string;
+    tests?: string;
+    error?: string;
+  }>;
 }) {
   const auth = await createClient();
   const {
@@ -183,6 +118,11 @@ export default async function WorkflowStudioCatalogPage({
   if (!user) redirect("/login");
 
   const sp = await searchParams;
+  const showTests = sp.tests === "1";
+  const catalogQuery = showTests ? "&tests=1" : "";
+  const catalogHref = showTests
+    ? "/operations/workflows?tests=1"
+    : "/operations/workflows";
   const db = createServerClient();
 
   let definitions: WorkflowDefinition[] = [];
@@ -197,82 +137,162 @@ export default async function WorkflowStudioCatalogPage({
     unavailable = true;
   }
 
-  const rows = definitions.map((definition) =>
-    toDefinitionCatalogRow(definition, pinnedCounts)
+  const visibleForCatalog = filterCatalogDefinitions(definitions, { showTests });
+  const byId = new Map(
+    definitions.map((definition) => [definition.id, definition])
   );
+  const families = groupDefinitionFamilies(visibleForCatalog, pinnedCounts);
+  const ownFamilies = families.filter((family) => family.ownerScope === "user");
+  const globalFamilies = families.filter(
+    (family) => family.ownerScope === "global"
+  );
+  const otherFamilies = families.filter(
+    (family) =>
+      family.ownerScope !== "user" && family.ownerScope !== "global"
+  );
+
   // El detalle solo resuelve ids ya visibles para el tenant — nunca se
-  // consulta un id arbitrario (2.7-6).
+  // consulta un id arbitrario (2.7-6). Incluye soak aunque esté filtrado
+  // del listado, si el usuario llega con ?definition=… (p. ej. link directo).
   const selected = sp.definition
     ? definitions.find((definition) => definition.id === sp.definition)
     : undefined;
   const selectedRow = selected
-    ? rows.find((row) => row.id === selected.id)
+    ? toDefinitionCatalogRow(selected, pinnedCounts, { byId })
     : undefined;
+  const selectedSiblings = selected
+    ? (groupDefinitionFamilies(
+        filterCatalogDefinitions(
+          definitions.filter(
+            (definition) =>
+              definition.case_type === selected.case_type &&
+              definition.owner_scope === selected.owner_scope &&
+              definition.user_id === selected.user_id
+          ),
+          // En detalle de soak, mostrar hermanas soak aunque el listado las oculte.
+          { showTests: true }
+        ),
+        pinnedCounts
+      )[0]?.versions ?? [selected])
+    : [];
+
+  const hiddenTestCount = definitions.filter(
+    (definition) =>
+      definition.case_type === "work_plane_soak_synthetic"
+  ).length;
+
+  let help: DefinitionHelpCatalog = emptyHelpCatalog();
+  if (selected && !unavailable) {
+    try {
+      const [caseType, registry] = await Promise.all([
+        getOperationalCaseTypeForUser(db, user.id, selected.case_type),
+        getSkillRegistryForUser(db, user.id).catch(() => null),
+      ]);
+      const skillSources =
+        registry?.list().map((skill) => ({
+          name: skill.name,
+          description: skill.description,
+          includes: skill.includes,
+        })) ?? [];
+      help = helpCatalogFromFlow(caseType?.operational_flow_jsonb);
+      help = applyGraphOnlyStepFallbacks(help, selected.graph_jsonb);
+      help = mergeSkillRegistryHelp(help, skillSources);
+      help = withRootSkill(
+        help,
+        caseType?.default_skill_slug,
+        skillSources
+      );
+    } catch {
+      help = emptyHelpCatalog();
+    }
+  }
 
   return (
     <AppShell
-      title="Workflows"
-      description="Catálogo read-only de definiciones de workflow: globales y privadas de tu cuenta."
+      title="Diseño de flujos"
+      description="Catálogo de definiciones de workflow: globales y privadas de tu cuenta."
     >
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <p className="text-xs text-neutral-500">
-          Solo lectura: crear, editar, fork y publish llegan en fases
-          posteriores del Workflow Studio.
-        </p>
-        <Link
-          href="/operations/workflows/assets"
-          className="shrink-0 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800"
-        >
-          Recursos de la cuenta
-        </Link>
-      </div>
+      <WorkflowStudioTabs active="catalog" />
+
+      {!unavailable && !selected ? (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-500">
+          <p>
+            Una tarjeta por flujo; las versiones se eligen en el detalle.
+          </p>
+          {hiddenTestCount > 0 || showTests ? (
+            <Link
+              href={
+                showTests
+                  ? "/operations/workflows"
+                  : "/operations/workflows?tests=1"
+              }
+              className="font-semibold text-violet-700 underline dark:text-violet-300"
+            >
+              {showTests
+                ? "Ocultar definiciones de prueba"
+                : "Mostrar definiciones de prueba"}
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
 
       {unavailable ? (
         <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
           El catálogo de definiciones no está disponible en este entorno.
         </div>
-      ) : rows.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-          No hay definiciones de workflow publicadas ni en borrador todavía.
-        </div>
       ) : selected && selectedRow ? (
         <div className="space-y-3">
           <Link
-            href="/operations/workflows"
+            href={catalogHref}
             className="inline-block text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
           >
             ← Volver al catálogo
           </Link>
-          <DefinitionDetail definition={selected} row={selectedRow} />
+          <DefinitionDetail
+            definition={selected}
+            row={selectedRow}
+            siblings={selectedSiblings}
+            byId={byId}
+            viewerUserId={user.id}
+            catalogQuery={catalogQuery}
+            help={help}
+            error={sp.error}
+          />
+        </div>
+      ) : families.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
+          No hay definiciones de workflow publicadas ni en borrador todavía.
+          {hiddenTestCount > 0 && !showTests ? (
+            <span>
+              {" "}
+              Hay definiciones de prueba ocultas —{" "}
+              <Link
+                href="/operations/workflows?tests=1"
+                className="font-semibold underline"
+              >
+                mostrarlas
+              </Link>
+              .
+            </span>
+          ) : null}
         </div>
       ) : (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {rows.map((row) => (
-            <Link
-              key={row.id}
-              href={`/operations/workflows?definition=${row.id}`}
-              className="rounded-2xl border border-neutral-200 bg-white p-4 text-xs shadow-sm transition hover:border-violet-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-violet-700"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <p className="font-semibold text-neutral-900 dark:text-neutral-100">
-                  {row.workflowKey} · v{row.version}
-                </p>
-                <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                  {row.statusLabel}
-                </span>
-              </div>
-              <p className="mt-1 text-neutral-500">
-                {row.caseType} · {row.scopeLabel}
-              </p>
-              <p className="mt-1 text-neutral-500">
-                <code className="text-[10px]">{row.shortHash}</code> ·{" "}
-                {row.pinnedLabel}
-              </p>
-              {row.lineage ? (
-                <p className="mt-1 text-neutral-400">{row.lineage}</p>
-              ) : null}
-            </Link>
-          ))}
+        <div className="space-y-6">
+          <FamilySection
+            title="Mis flujos"
+            families={ownFamilies}
+            catalogQuery={catalogQuery}
+          />
+          <FamilySection
+            title="Plantillas globales"
+            families={globalFamilies}
+            catalogQuery={catalogQuery}
+          />
+          <FamilySection
+            title="Otras"
+            families={otherFamilies}
+            catalogQuery={catalogQuery}
+          />
         </div>
       )}
     </AppShell>

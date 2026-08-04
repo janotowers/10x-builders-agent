@@ -3654,18 +3654,6 @@ function intakeOptionLabel(option: string | OperationalCaseIntakeOption) {
   return typeof option === "string" ? option : (option.label ?? option.value);
 }
 
-function draftValue(value: unknown): string | string[] {
-  if (value == null) return "";
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => (typeof item === "string" ? item : String(item ?? "")))
-      .filter(Boolean);
-  }
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value);
-}
-
 function draftString(value: string | string[] | undefined) {
   return typeof value === "string" ? value : "";
 }
@@ -7715,11 +7703,16 @@ export function OperationalCaseTypesClient({
       window.removeEventListener("pageshow", handleNavigationRestore);
       window.removeEventListener("popstate", handleNavigationRestore);
     };
+    // syncWorkspaceFromUrl/refresh* se recrean en cada render; el efecto ya se
+    // re-suscribe con los estados que esas funciones leen (caseTypes,
+    // selectedCaseType, activeTab), así que los closures quedan frescos.
+    // Incluir las funciones re-registraría los listeners en CADA render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseTypes, selectedCaseType, activeTab]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (activeTab !== "lab" || !selectedCaseType) return;
+    if (activeTab !== "lab" || !selectedCaseType?.id) return;
     const url = new URL(window.location.href);
     if (activeConversationalCaseId) {
       url.searchParams.set("observe_case", activeConversationalCaseId);
@@ -7746,6 +7739,10 @@ export function OperationalCaseTypesClient({
       return;
     }
     void refreshToolReadiness(selectedCaseType);
+    // refreshToolReadiness se recrea en cada render; incluirla dispararía el
+    // fetch en cada render. Las condiciones (toolReadiness/loading/error) ya
+    // gobiernan cuándo debe correr.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeTab,
     selectedCaseType,
@@ -7759,6 +7756,9 @@ export function OperationalCaseTypesClient({
       return;
     }
     void refreshE2ELabMode(selectedCaseType);
+    // Keyed por id a propósito: el objeto selectedCaseType cambia de identidad
+    // en cada refetch y dispararía este fetch sin que el caso haya cambiado.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, selectedCaseType?.id]);
 
   useEffect(() => {
@@ -7775,6 +7775,9 @@ export function OperationalCaseTypesClient({
     initialLabCaseLoadRef.current = selectedCaseType.id;
     void refreshTestCase(selectedCaseType);
     void refreshConversationalCase(selectedCaseType);
+    // Las funciones refresh* se recrean en cada render; el ref de carga única
+    // por case type ya garantiza la semántica "exactamente una vez".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, selectedCaseType]);
 
   useEffect(() => {
@@ -7788,6 +7791,10 @@ export function OperationalCaseTypesClient({
       });
     }, conversationalPollingMs);
     return () => window.clearInterval(intervalId);
+    // refreshConversationalCase se recrea en cada render; incluirla reiniciaría
+    // el intervalo de polling en cada render. Los parámetros que el poll usa
+    // (case type, caso observado) ya están en las dependencias.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, conversationalPollingMs, selectedCaseType, activeConversationalCaseId]);
 
   useEffect(() => {
@@ -7807,6 +7814,10 @@ export function OperationalCaseTypesClient({
       caseId: activeConversationalCaseId,
       silent: true,
     });
+    // refreshConversationalCase se recrea en cada render; la condición sobre
+    // conversationalLabResult?.case?.id ya corta el re-fetch cuando el dato
+    // sincronizó con el caso seleccionado.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeTab,
     activeConversationalCaseId,
@@ -8534,7 +8545,7 @@ export function OperationalCaseTypesClient({
       if (data.mode === "agent_e2e") {
         setTestContextMessage(
           data.agent?.pending_confirmation
-            ? "Transición con agente ejecutada: hay acciones pendientes de aprobación humana. Revisa Flujos en curso o el chat."
+            ? "Transición con agente ejecutada: hay acciones pendientes de aprobación humana. Revisa Casos en curso o el chat."
             : "Transición con agente completada. Revisa el resumen de avance y la auditoría abajo."
         );
       } else {
@@ -9400,7 +9411,7 @@ export function OperationalCaseTypesClient({
                     href={`/operational-cases?case=${testCaseResult.case.id}`}
                     className="inline-flex items-center rounded border border-neutral-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-700 hover:bg-neutral-50"
                   >
-                    Abrir en Flujos en curso
+                    Abrir en Casos en curso
                   </a>
                 </div>
                 <TestCaseBusinessSnapshot

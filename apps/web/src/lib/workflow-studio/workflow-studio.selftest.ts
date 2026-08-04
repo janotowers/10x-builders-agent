@@ -14,13 +14,39 @@ import type {
   WorkflowGraph,
 } from "@agents/types";
 import {
+  approvalKindLabel,
+  checkLabel,
   definitionStatusLabel,
+  emptyWorkTemplatesMessage,
+  evidenceInputLabel,
+  filterCatalogDefinitions,
+  findIdenticalOwnFork,
   forkLineageLabel,
+  friendlyCaseTypeLabel,
+  groupDefinitionFamilies,
+  happyPathStates,
+  isInternalTestDefinition,
   ownerScopeLabel,
   pinnedCasesLabel,
+  resolveForkLineageLabel,
   shortDefinitionHash,
   toDefinitionCatalogRow,
+  transitionSummary,
 } from "./definition-catalog";
+import {
+  applyGraphOnlyStepFallbacks,
+  helpCatalogFromFlow,
+  looksLikeTechnicalSkillCopy,
+  mergeSkillRegistryHelp,
+  resolveSkillDescription,
+  resolveSkillRoutingHint,
+  resolveSkillTechnicalNotes,
+  resolveStepDescription,
+  softenSkillCopyForOperator,
+  splitSkillDescriptionForStudio,
+  studioLabelsEquivalent,
+  withRootSkill,
+} from "./definition-help";
 import {
   aggregateTenantAssets,
   resolveRequiredAssetsForDefinition,
@@ -327,5 +353,330 @@ assert.equal(row.shortHash, "feedfacecafe");
 assert.equal(row.pinnedActiveCases, 2);
 assert.equal(row.pinnedLabel, "2 casos activos");
 assert.equal(row.lineage, null);
+
+// ---------------------------------------------------------------------------
+// 6. Filtro soak, familias, linaje amigable, dedupe fork, copy work_templates.
+// ---------------------------------------------------------------------------
+
+assert.equal(isInternalTestDefinition({ case_type: "work_plane_soak_synthetic" }), true);
+assert.equal(isInternalTestDefinition({ case_type: "property_optioning" }), false);
+assert.equal(
+  friendlyCaseTypeLabel("property_optioning"),
+  "Opcionamiento de propiedad"
+);
+assert.equal(friendlyCaseTypeLabel("lead_follow_up"), "Seguimiento de leads");
+assert.equal(friendlyCaseTypeLabel("custom_flow_x"), "Custom Flow X");
+assert.equal(approvalKindLabel("price"), "Aprobación de precio");
+assert.equal(checkLabel("publication_preflight"), "Verificación previa a la publicación");
+assert.equal(evidenceInputLabel("comparables_analysis"), "Análisis de comparables");
+assert.ok(
+  emptyWorkTemplatesMessage().includes("plano de trabajo"),
+  "mensaje estable cuando no hay work_templates"
+);
+
+const globalPublished = makeDefinition(true);
+const soakV1: WorkflowDefinition = {
+  ...makeDefinition(false),
+  id: "soak-1",
+  case_type: "work_plane_soak_synthetic",
+  workflow_key: "work_plane_soak_synthetic",
+  version: 1,
+  status: "published",
+  definition_hash: "soakhash0001",
+};
+const soakV2: WorkflowDefinition = {
+  ...soakV1,
+  id: "soak-2",
+  version: 2,
+  definition_hash: "soakhash0002",
+};
+const privateDraftV1: WorkflowDefinition = {
+  ...globalPublished,
+  id: "priv-1",
+  owner_scope: "user",
+  user_id: "user-1",
+  version: 1,
+  status: "draft",
+  definition_hash: globalPublished.definition_hash,
+  derived_from_definition_id: globalPublished.id,
+  derived_from_version: 3,
+  published_at: null,
+  visibility: "private",
+};
+const privateDraftV2: WorkflowDefinition = {
+  ...privateDraftV1,
+  id: "priv-2",
+  version: 2,
+};
+
+const filtered = filterCatalogDefinitions(
+  [globalPublished, soakV1, soakV2, privateDraftV1],
+  { showTests: false }
+);
+assert.deepEqual(
+  filtered.map((definition) => definition.id).sort(),
+  ["def-1", "priv-1"]
+);
+assert.equal(
+  filterCatalogDefinitions([globalPublished, soakV1], { showTests: true }).length,
+  2
+);
+
+const families = groupDefinitionFamilies(
+  [globalPublished, privateDraftV1, privateDraftV2, soakV1, soakV2],
+  { "def-1": 3, "soak-2": 0 }
+);
+assert.equal(families.length, 3, "tres familias: privada, global, soak");
+const privateFamily = families.find((family) => family.ownerScope === "user");
+assert.ok(privateFamily);
+assert.equal(privateFamily.head.id, "priv-2", "draft de mayor versión es cabeza");
+assert.equal(privateFamily.draftCount, 2);
+assert.equal(privateFamily.pinnedActiveCases, 0, "drafts no aportan pins; sin published propia");
+const globalFamily = families.find(
+  (family) =>
+    family.ownerScope === "global" && family.caseType === "property_optioning"
+);
+assert.ok(globalFamily);
+assert.equal(globalFamily.head.id, "def-1");
+assert.equal(globalFamily.pinnedActiveCases, 3);
+assert.equal(families[0].ownerScope, "user", "Mis flujos primero");
+
+const byId = new Map(
+  [globalPublished, privateDraftV2].map((definition) => [definition.id, definition])
+);
+assert.equal(
+  resolveForkLineageLabel(privateDraftV2, byId),
+  "Fork de property_optioning Global v3"
+);
+assert.equal(
+  resolveForkLineageLabel(
+    {
+      derived_from_definition_id: "missing-id-000000000000000000000000",
+      derived_from_version: 1,
+    },
+    byId
+  ),
+  "Derivada de missing-id-0… v1"
+);
+
+const identical = findIdenticalOwnFork(
+  [privateDraftV1, privateDraftV2],
+  globalPublished
+);
+assert.ok(identical);
+assert.equal(identical.id, "priv-2", "elige el de mayor versión");
+assert.equal(
+  findIdenticalOwnFork(
+    [{ ...privateDraftV2, definition_hash: "otro-hash" }],
+    globalPublished
+  ),
+  null,
+  "hash distinto no es idéntico"
+);
+
+const path = happyPathStates(globalPublished.graph_jsonb);
+assert.equal(path[0].label, "Registro");
+assert.equal(path[path.length - 1].isTerminal, true);
+const transitions = transitionSummary(globalPublished.graph_jsonb);
+assert.equal(transitions[0].fromLabel, "Registro");
+assert.equal(transitions[0].toLabel, "Preparar contrato");
+
+// ---------------------------------------------------------------------------
+// 7. Ayudas/descripciones: prioriza copy de operador; jerga → notas técnicas.
+// ---------------------------------------------------------------------------
+
+const helpFromFlow = helpCatalogFromFlow([
+  {
+    step_key: "intake",
+    step_label: "Registro",
+    step_description: "Recolecta los datos mínimos del caso.",
+    step_skills: [
+      {
+        skill_slug: "request-property-documents",
+        skill_label: "Pedir documentos",
+        skill_description: "Prepara el mensaje al propietario.",
+      },
+    ],
+  },
+]);
+assert.equal(
+  resolveStepDescription("intake", helpFromFlow),
+  "Recolecta los datos mínimos del caso."
+);
+assert.equal(
+  resolveSkillDescription("request-property-documents", helpFromFlow),
+  "Prepara el mensaje al propietario."
+);
+
+const merged = mergeSkillRegistryHelp(helpFromFlow, [
+  {
+    name: "request-property-documents",
+    description: "Descripción del registry que NO debe sobrescribir el flow.",
+  },
+  {
+    name: "prepare-listing-price",
+    description: "Primera línea del registry.\n\nPárrafo largo ignorado.",
+  },
+]);
+assert.equal(
+  resolveSkillDescription("request-property-documents", merged),
+  "Prepara el mensaje al propietario.",
+  "el flow humano no se sobrescribe"
+);
+assert.equal(
+  resolveSkillDescription("prepare-listing-price", merged),
+  "Primera línea del registry. Párrafo largo ignorado."
+);
+assert.equal(resolveStepDescription("missing", merged), null);
+
+const technicalFlow = helpCatalogFromFlow([
+  {
+    step_key: "awaiting_documents",
+    step_label: "Reunir documentos",
+    step_skills: [
+      {
+        skill_slug: "request-property-documents",
+        skill_label: "Solicitud de documentos",
+        skill_description:
+          "Según `document_request_target`: pide subida al equipo interno (`notify_user`) o Telegram.",
+      },
+    ],
+  },
+]);
+assert.ok(
+  looksLikeTechnicalSkillCopy(
+    "Según `document_request_target`: pide (`notify_user`)."
+  )
+);
+assert.equal(
+  resolveSkillTechnicalNotes("request-property-documents", technicalFlow),
+  "Según `document_request_target`: pide subida al equipo interno (`notify_user`) o Telegram."
+);
+assert.ok(
+  !resolveSkillDescription(
+    "request-property-documents",
+    technicalFlow
+  )?.includes("document_request_target"),
+  "el summary suaviza tokens de lab"
+);
+assert.ok(
+  resolveSkillDescription(
+    "request-property-documents",
+    technicalFlow
+  )?.includes("quién debe aportar los documentos")
+);
+
+const operatorOverTechnical = mergeSkillRegistryHelp(technicalFlow, [
+  {
+    name: "request-property-documents",
+    description: "Reúne el expediente documental del inmueble para el asesor.",
+  },
+]);
+assert.equal(
+  resolveSkillDescription(
+    "request-property-documents",
+    operatorOverTechnical
+  ),
+  "Reúne el expediente documental del inmueble para el asesor.",
+  "registry humano gana sobre flow técnico"
+);
+assert.ok(
+  resolveSkillTechnicalNotes(
+    "request-property-documents",
+    operatorOverTechnical
+  )?.includes("document_request_target"),
+  "la jerga del flow queda como nota técnica"
+);
+
+const softened = softenSkillCopyForOperator(
+  "En `awaiting_documents` usa notify_user según document_request_target."
+);
+assert.equal(
+  softened.summary,
+  "En el paso de espera de documentos usa notificación al asesor según quién debe aportar los documentos."
+);
+assert.ok(softened.technicalNotes);
+
+assert.ok(studioLabelsEquivalent("Reunir documentos", "reunir documentos"));
+assert.ok(!studioLabelsEquivalent("Reunir documentos", "Solicitud de documentos"));
+
+const splitMixed = splitSkillDescriptionForStudio(
+  "Procedimiento end-to-end para obtener la exclusiva. Use when the case_type is `property_optioning`. Do not use for other workflows."
+);
+assert.equal(
+  splitMixed.summary,
+  "Procedimiento end-to-end para obtener la exclusiva."
+);
+assert.equal(
+  splitMixed.routing,
+  "Use when the case_type is `property_optioning`. Do not use for other workflows."
+);
+assert.equal(
+  splitSkillDescriptionForStudio("Solo descripción humana.").routing,
+  null
+);
+
+const withRoot = withRootSkill(merged, "property-optioning-coach", [
+  {
+    name: "property-optioning-coach",
+    description:
+      "Coach end-to-end del flujo.\nUse when the user wants to opcionar una propiedad.",
+    includes: ["request-property-documents", "prepare-listing-price"],
+  },
+]);
+assert.ok(withRoot.rootSkill);
+assert.equal(withRoot.rootSkill.slug, "property-optioning-coach");
+assert.equal(withRoot.rootSkill.description, "Coach end-to-end del flujo.");
+assert.equal(
+  withRoot.rootSkill.routingHint,
+  "Use when the user wants to opcionar una propiedad."
+);
+assert.equal(withRoot.rootSkill.technicalNotes, null);
+assert.deepEqual(withRoot.rootSkill.includes, [
+  "request-property-documents",
+  "prepare-listing-price",
+]);
+
+const registrySplit = mergeSkillRegistryHelp(helpCatalogFromFlow([]), [
+  {
+    name: "publish-listing-package",
+    description:
+      "Publica el paquete final. Use when the case reaches package_ready.",
+  },
+]);
+assert.equal(
+  resolveSkillDescription("publish-listing-package", registrySplit),
+  "Publica el paquete final."
+);
+assert.equal(
+  resolveSkillRoutingHint("publish-listing-package", registrySplit),
+  "Use when the case reaches package_ready."
+);
+
+const withFallback = applyGraphOnlyStepFallbacks(merged, {
+  ...globalPublished.graph_jsonb,
+  states: [
+    ...globalPublished.graph_jsonb.states,
+    {
+      key: "property_data_review",
+      label: "Revisión de datos",
+      kind: "operational",
+    },
+  ],
+});
+assert.ok(
+  resolveStepDescription("property_data_review", withFallback)?.includes(
+    "Revisión humana"
+  ),
+  "fallback para estados solo-del-grafo"
+);
+assert.equal(
+  resolveStepDescription("intake", applyGraphOnlyStepFallbacks(helpFromFlow, {
+    ...globalPublished.graph_jsonb,
+    states: [{ key: "intake", kind: "operational" }],
+  })),
+  "Recolecta los datos mínimos del caso.",
+  "el fallback no sobrescribe el flow"
+);
 
 console.log("workflow-studio.selftest: OK");

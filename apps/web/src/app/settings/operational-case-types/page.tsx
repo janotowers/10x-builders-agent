@@ -68,18 +68,36 @@ export default async function OperationalCaseTypesPage() {
   return (
     <AppShell
       title="Plantillas de flujos"
-      description="Diseña, prueba y activa plantillas operativas que generan flujos en curso."
+      description="Diseña, prueba y activa plantillas operativas que generan casos en curso."
       actions={
         <a
           href="/operational-cases"
           title="Bandeja global con todas las instancias, sin filtrar por plantilla"
           className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
         >
-          Ver flujos en curso
+          Ver casos en curso
         </a>
       }
     >
       <div className="space-y-6">
+        {/* Slice 4.2-5: aviso de retiro del authoring del lab. El diseño y la
+            publicación de definiciones viven ahora en el Workflow Studio; este
+            laboratorio se conserva para diagnósticos (readiness de tools,
+            pruebas E2E) hasta que el Studio cubra también la edición de
+            plantillas de case types. */}
+        <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+          El diseño de flujos nuevos se movió a{" "}
+          <a
+            href="/operations/workflows/design"
+            className="font-semibold underline"
+          >
+            Diseño de flujos
+          </a>
+          : ahí se describe el flujo, se valida, se simula y se publica con
+          evidencia. Este laboratorio sigue disponible para diagnósticos
+          (herramientas por paso, pruebas E2E) y para editar plantillas
+          existentes mientras se completa la migración.
+        </p>
         <p className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-300">
           Las políticas globales de recordatorios y ventanas de entrega se
           configuran en{" "}

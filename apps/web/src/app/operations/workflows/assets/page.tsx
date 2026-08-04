@@ -14,7 +14,6 @@
  * Subida/reemplazo vía POST /api/account-assets existente (2.7-3). Acceso
  * por cuenta, sin gate de admin (2.7-6).
  */
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
   createServerClient,
@@ -34,6 +33,7 @@ import {
   type TenantAssetEntry,
 } from "@/lib/workflow-studio/required-assets";
 import { AssetUploadControl } from "./upload-control";
+import { WorkflowStudioTabs } from "../studio-tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -117,14 +117,7 @@ export default async function TenantAssetsPanelPage() {
       title="Recursos de la cuenta"
       description="Archivos que tus workflows necesitan: qué definición y paso los consumen, y qué falta por subir."
     >
-      <div className="mb-4">
-        <Link
-          href="/operations/workflows"
-          className="text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
-        >
-          ← Volver al catálogo de workflows
-        </Link>
-      </div>
+      <WorkflowStudioTabs active="assets" />
 
       {unavailable ? (
         <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
