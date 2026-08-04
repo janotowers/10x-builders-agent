@@ -2,6 +2,10 @@
 // `graph_jsonb` is the executable artifact; `operational_flow_jsonb` on
 // operational_case_types remains presentation/QA metadata and is NOT runtime.
 
+// Import type-only desde el barrel: legal en TS (se borra al compilar) y
+// mantiene UN solo shape canónico de required asset (finding 16).
+import type { OperationalCaseRequiredAsset } from "./index";
+
 export type WorkflowOwnerScope = "global" | "user" | "organization";
 
 export type WorkflowDefinitionStatus =
@@ -36,6 +40,14 @@ export interface WorkflowGraphStepBinding {
   state: string;
   skill: string | null;
   bigquery_context?: boolean;
+  /**
+   * Assets de cuenta que el paso requiere (Technical Plan §5.2, finding 16;
+   * Slice 2.7-5). Mismo shape que `OperationalCaseRequiredAsset` del flow.
+   * Ausente en definiciones publicadas antes del port del transformer — los
+   * consumidores usan el fallback del lab (Slice 2.7-4) hasta el siguiente
+   * publish.
+   */
+  required_assets?: OperationalCaseRequiredAsset[];
 }
 
 export interface WorkflowGraphWorkTemplate {

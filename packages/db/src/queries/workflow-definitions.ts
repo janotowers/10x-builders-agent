@@ -191,6 +191,36 @@ export async function publishDefinition(
   return data as WorkflowDefinition;
 }
 
+/**
+ * Catálogo del tenant (Slice 2.7-2/2.7-6): definiciones globales + las
+ * privadas del usuario. JAMÁS expone privadas de otros tenants. No requiere
+ * gate de admin: es lectura del propio tenant.
+ */
+export async function listWorkflowDefinitionsVisibleToUser(
+  db: DbClient,
+  userId: string
+): Promise<WorkflowDefinition[]> {
+  const { data: globals, error: globalError } = await db
+    .from("workflow_definitions")
+    .select("*")
+    .is("user_id", null)
+    .eq("owner_scope", "global")
+    .order("case_type", { ascending: true })
+    .order("version", { ascending: false });
+  if (globalError) throw globalError;
+  const { data: own, error: ownError } = await db
+    .from("workflow_definitions")
+    .select("*")
+    .eq("user_id", userId)
+    .order("case_type", { ascending: true })
+    .order("version", { ascending: false });
+  if (ownError) throw ownError;
+  return [
+    ...((own ?? []) as WorkflowDefinition[]),
+    ...((globals ?? []) as WorkflowDefinition[]),
+  ];
+}
+
 /** Admin-wide listing (caller must gate on is_ungga_admin). */
 export async function listWorkflowDefinitionsForCaseType(
   db: DbClient,

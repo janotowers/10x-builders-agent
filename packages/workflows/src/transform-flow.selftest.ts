@@ -39,12 +39,68 @@ const propertyOptioningFlow: OperationalCaseFlowStep[] = [
   {
     step_key: "contract_pending",
     step_label: "Preparar contrato",
-    step_skills: [{ skill_slug: "prepare-commission-contract" }],
+    step_skills: [
+      {
+        skill_slug: "prepare-commission-contract",
+        skill_tools: [
+          {
+            tool_id: "generate_document_from_template",
+            required_assets: [
+              {
+                asset_key: "commission_contract_template",
+                label: "Plantilla de contrato de comisión",
+                accept: [
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                  ".docx",
+                ],
+                max_size_mb: 15,
+                required: true,
+              },
+            ],
+            // Los test_assets son del lab y NO deben viajar al grafo.
+            test_assets: [
+              {
+                asset_key: "test_property_document",
+                label: "Documento de prueba",
+              },
+            ],
+          },
+        ],
+      },
+    ],
   },
   {
     step_key: "photos_requested",
     step_label: "Coordinar fotos",
-    step_skills: [{ skill_slug: "request-property-photos" }],
+    step_skills: [
+      {
+        skill_slug: "request-property-photos",
+        skill_tools: [
+          {
+            tool_id: "image_watermark",
+            required_assets: [
+              {
+                asset_key: "listing_photo_watermark",
+                label: "Marca de agua para fotos",
+                accept: ["image/png"],
+                required: false,
+              },
+            ],
+          },
+          {
+            // Duplicado deliberado del mismo asset en otra tool del paso:
+            // el binding lo dedupe por asset_key.
+            tool_id: "easybroker_upload_listing",
+            required_assets: [
+              {
+                asset_key: "listing_photo_watermark",
+                label: "Marca de agua para fotos",
+              },
+            ],
+          },
+        ],
+      },
+    ],
   },
   {
     step_key: "package_ready",
@@ -123,6 +179,39 @@ assert.equal(comparablesBinding?.bigquery_context, true);
 assert.equal(
   graph.step_bindings.find((b) => b.state === "intake")?.skill,
   null
+);
+
+// 8b. required_assets round-trip (finding 16 / Slice 2.7-5): los assets de
+// cuenta del flow viajan al binding del paso; test_assets NO; duplicados por
+// asset_key entre tools del mismo paso se dedupe-an; pasos sin assets no
+// llevan el campo.
+const contractBinding = graph.step_bindings.find(
+  (b) => b.state === "contract_pending"
+);
+assert.deepEqual(
+  contractBinding?.required_assets?.map((a) => a.asset_key),
+  ["commission_contract_template"]
+);
+assert.deepEqual(contractBinding?.required_assets?.[0].accept, [
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".docx",
+]);
+const photosBinding = graph.step_bindings.find(
+  (b) => b.state === "photos_requested"
+);
+assert.deepEqual(
+  photosBinding?.required_assets?.map((a) => a.asset_key),
+  ["listing_photo_watermark"],
+  "duplicados entre tools del mismo paso deben dedupe-arse"
+);
+assert.ok(
+  !JSON.stringify(graph.step_bindings).includes("test_property_document"),
+  "test_assets jamás viajan al grafo"
+);
+assert.equal(
+  graph.step_bindings.find((b) => b.state === "intake")?.required_assets,
+  undefined,
+  "pasos sin assets no llevan el campo"
 );
 
 // 9. Hash stability: same flow → same hash; different flow → different hash.

@@ -20,10 +20,25 @@ const transitionSchema = z.object({
   approval_required: z.string().nullable(),
 });
 
+// Shape espejo de OperationalCaseRequiredAsset (finding 16 / Slice 2.7-5).
+const requiredAssetSchema = z.object({
+  asset_key: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().optional(),
+  accept: z.array(z.string()).optional(),
+  max_size_mb: z.number().optional(),
+  required: z.boolean().optional(),
+  param: z.string().optional(),
+  min_count: z.number().optional(),
+  max_count: z.number().optional(),
+  collection: z.boolean().optional(),
+});
+
 const stepBindingSchema = z.object({
   state: z.string().min(1),
   skill: z.string().nullable(),
   bigquery_context: z.boolean().optional(),
+  required_assets: z.array(requiredAssetSchema).optional(),
 });
 
 const workTemplateSchema = z.object({

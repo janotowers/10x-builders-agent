@@ -140,6 +140,26 @@ export function transformFlowToGraph(params: {
     );
     const binding: WorkflowGraphStepBinding = { state: step.step_key, skill };
     if (usesBigQuery) binding.bigquery_context = true;
+    // Port de required_assets al contrato ejecutable (finding 16 / 2.7-5):
+    // unión de los required_assets de cuenta de todas las tools del paso,
+    // dedupe por asset_key. Los test_assets son del lab y NO viajan al grafo.
+    const requiredAssets = new Map<
+      string,
+      NonNullable<WorkflowGraphStepBinding["required_assets"]>[number]
+    >();
+    for (const stepSkill of step.step_skills ?? []) {
+      for (const tool of stepSkill.skill_tools ?? []) {
+        for (const asset of tool.required_assets ?? []) {
+          if (!asset.asset_key?.trim() || !asset.label?.trim()) continue;
+          if (!requiredAssets.has(asset.asset_key)) {
+            requiredAssets.set(asset.asset_key, asset);
+          }
+        }
+      }
+    }
+    if (requiredAssets.size > 0) {
+      binding.required_assets = [...requiredAssets.values()];
+    }
     return binding;
   });
 
