@@ -57,6 +57,9 @@ const UPLOAD_BATCH_KINDS = new Set([
   "documents_upload_requested",
 ]);
 
+/** Límite duro de Telegram para callback_data de botones inline. */
+export const TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64;
+
 export function isUploadBatchHitlKind(kind: string | undefined): boolean {
   return Boolean(kind && UPLOAD_BATCH_KINDS.has(kind));
 }
@@ -264,14 +267,19 @@ export function buildHitlActionsForKind(
         id: "request_external_evidence",
         label: "Solicitar evidencia al propietario",
         variant: "primary",
-        telegramCallbackPrefix: "titularidad_request_external",
+        // Prefijo corto: `prefix:uuid` debe caber en los 64 bytes de
+        // callback_data de Telegram (el prefijo largo daba 65 y Telegram
+        // rechazaba el mensaje completo con BUTTON_DATA_INVALID).
+        telegramCallbackPrefix: "tit_req_ext",
+        telegramCallbackAliases: ["titularidad_request_external"],
         freeText: "solicitar evidencia al propietario",
       },
       {
         id: "request_internal_docs",
         label: "Yo subiré/corregiré documentos",
         variant: "secondary",
-        telegramCallbackPrefix: "titularidad_request_internal",
+        telegramCallbackPrefix: "tit_req_int",
+        telegramCallbackAliases: ["titularidad_request_internal"],
         freeText: "yo subire documentos",
       },
       {
@@ -445,10 +453,19 @@ export function buildTelegramInlineKeyboardForKind(params: {
       ? (params.caseId ?? "").trim()
       : params.notificationId.trim();
     if (!targetId) continue;
+    const callbackData = `${prefix}:${targetId}`;
+    // Telegram rechaza el MENSAJE COMPLETO si un callback_data excede 64
+    // bytes (BUTTON_DATA_INVALID); mejor omitir el botón que perder todos.
+    if (Buffer.byteLength(callbackData, "utf8") > TELEGRAM_CALLBACK_DATA_MAX_BYTES) {
+      console.warn(
+        `[hitl-action-contract] callback_data supera ${TELEGRAM_CALLBACK_DATA_MAX_BYTES} bytes; botón omitido: ${callbackData}`
+      );
+      continue;
+    }
     rows.push([
       {
         text: action.label,
-        callback_data: `${prefix}:${targetId}`,
+        callback_data: callbackData,
       },
     ]);
   }

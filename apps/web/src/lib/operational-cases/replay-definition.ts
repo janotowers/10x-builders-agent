@@ -69,6 +69,10 @@ export async function replayDefinitionForCase(
     finalStep: opCase.current_step,
     finalContext:
       (opCase.context_jsonb as Record<string, unknown> | null) ?? {},
+    // Ancla en el estado inicial del grafo (states[0], convención del
+    // paquete): un caso sin transiciones grabadas que sigue en su estado
+    // inicial replaya OK en vez de terminar en null y fallar en falso.
+    initialStep: definition.graph_jsonb.states[0]?.key ?? null,
   });
 
   let evidenceId: string | null = null;

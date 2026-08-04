@@ -155,10 +155,16 @@ export function looksLikePropertyDataReviewReply(text: string): boolean {
     .trim();
   if (!normalized) return false;
   if (
-    /^(si|ok|okay|correcto|confirmo|confirmado|perfecto|de acuerdo|va|dale|listo|aprobado|procede)\b/.test(
+    /^(si|ok|okay|correcto|confirmo|confirmado|perfecto|de acuerdo|va|dale|listo|aprobado|apruebo|aprobamos|aprobar|procede)\b/.test(
       normalized
     )
   ) {
+    return true;
+  }
+  // "Todo correcto / todo bien / todo en orden" — confirmación natural que no
+  // empieza con el verbo. El gate de precio corre antes, así que un "apruebo"
+  // con price_approval pendiente sigue yendo a precio primero.
+  if (/^todo\s+(correcto|bien|en orden|ok)\b/.test(normalized)) {
     return true;
   }
   if (hasCorrectionSignals(text)) return true;

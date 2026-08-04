@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { isActionableContractReviewNotification } from "./pending-decision-router";
+import { businessDecisionHandler } from "./registry";
 import { parseContractReviewDecision } from "./contract-review";
 import { parseTitularidadReviewDecision } from "./titularidad-review";
 import { computeComparablesExpansionResidual } from "./comparables-expansion-decision";
@@ -124,6 +125,41 @@ assert.equal(
   null,
   "restating the same Avaclick decision must not yield residual"
 );
+
+// ── Desambiguación gate 1c vs titularidad (hallazgo walkthrough E2E) ────────
+// «Continuar bajo excepción: …» es freeText de titularidad pero el parser de
+// publication_review también lo reclama (verbo genérico «continuar»). El gate
+// 1c cede cuando el texto parsea claro para titularidad y ese pendiente
+// existe; estos asserts fijan las dos mitades de esa condición.
+{
+  const overrideText =
+    "Continuar bajo excepcion: titularidad verificada manualmente por el asesor";
+  assert.equal(
+    parseTitularidadReviewDecision(overrideText).intent,
+    "continue_override"
+  );
+  const publicationParse = businessDecisionHandler("publication_review").parse(
+    overrideText
+  );
+  assert.notEqual(
+    publicationParse.intent,
+    "unclear",
+    "si publication_review deja de reclamar este texto, la cesión del gate 1c ya no es necesaria"
+  );
+  // Las frases canónicas de publicación NO parsean como titularidad: la
+  // cesión nunca les quita el turno al gate de publicación.
+  for (const canonical of [
+    "Aprobar y continuar",
+    "Reintentar publicación en Ungga",
+    "Detener y revisar",
+  ]) {
+    assert.equal(
+      parseTitularidadReviewDecision(canonical).intent,
+      "unclear",
+      `frase canónica de publicación reclamada por titularidad: ${canonical}`
+    );
+  }
+}
 
 // Scenario-B style fixture: composed message carries the acknowledgment.
 {

@@ -6,6 +6,7 @@ import {
   HITL_MIRROR_KINDS,
   resolveHitlActionByTelegramCallback,
   resolveTelegramHitlCallback,
+  TELEGRAM_CALLBACK_DATA_MAX_BYTES,
 } from "./hitl-action-contract";
 
 const kinds = [
@@ -21,6 +22,11 @@ const kinds = [
   "documents_upload_requested",
   "comparables_search_expansion_decision",
 ] as const;
+
+// Ids reales son UUID (36 chars): todo `prefix:uuid` debe caber en los 64
+// bytes de callback_data de Telegram, o Telegram rechaza el mensaje entero
+// (BUTTON_DATA_INVALID — hallazgo del walkthrough E2E con titularidad_review).
+const UUID_LENGTH_ID = "123e4567-e89b-42d3-a456-426614174000";
 
 for (const kind of kinds) {
   assert.ok(HITL_MIRROR_KINDS.has(kind), `mirror kind missing: ${kind}`);
@@ -38,7 +44,23 @@ for (const kind of kinds) {
       action.telegramCallbackPrefix,
       `missing telegram prefix for ${kind}/${action.id}`
     );
+    const callbackData = `${action.telegramCallbackPrefix}:${UUID_LENGTH_ID}`;
+    assert.ok(
+      Buffer.byteLength(callbackData, "utf8") <= TELEGRAM_CALLBACK_DATA_MAX_BYTES,
+      `callback_data de ${kind}/${action.id} excede ${TELEGRAM_CALLBACK_DATA_MAX_BYTES} bytes con uuid: ${callbackData}`
+    );
   }
+  // Con ids largos reales el teclado debe conservar TODOS los botones.
+  const uuidKeyboard = buildTelegramInlineKeyboardForKind({
+    kind,
+    notificationId: UUID_LENGTH_ID,
+    caseId: UUID_LENGTH_ID,
+  });
+  assert.equal(
+    uuidKeyboard!.inline_keyboard.length,
+    actions.length,
+    `botones omitidos por longitud en ${kind}`
+  );
 }
 
 const titularidadIds = hitlActionIdsForKind("titularidad_review");
@@ -57,10 +79,20 @@ assert.ok(
     row.some(
       (btn) =>
         "callback_data" in btn &&
-        btn.callback_data === "titularidad_request_external:n-tit"
+        btn.callback_data === "tit_req_ext:n-tit"
     )
   )
 );
+// Los prefijos largos previos siguen resolviendo como alias (webhooks in-flight).
+const titularidadLegacyExternal = resolveTelegramHitlCallback({
+  callbackAction: "titularidad_request_external",
+});
+assert.equal(titularidadLegacyExternal?.kind, "titularidad_review");
+assert.equal(titularidadLegacyExternal?.action.id, "request_external_evidence");
+const titularidadShortInternal = resolveTelegramHitlCallback({
+  callbackAction: "tit_req_int",
+});
+assert.equal(titularidadShortInternal?.action.id, "request_internal_docs");
 assert.ok(
   titularidadKb!.inline_keyboard.some((row) =>
     row.some(

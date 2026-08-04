@@ -45,6 +45,11 @@ assert.equal(parsePriceApprovalDecision("no entiendo").intent, "unclear");
 
 // Single-intent approval: no residual.
 assert.equal(parsePriceApprovalDecision("Aprobar").residual, null);
+assert.equal(
+  parsePriceApprovalDecision("Apruebo el precio propuesto").residual,
+  null,
+  "propuesto reitera el objeto; no es residual"
+);
 
 // Mixed-intent approval: the unmatched remainder is preserved verbatim-ish.
 {

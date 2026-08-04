@@ -137,8 +137,10 @@ export function parsePriceApprovalDecision(text: string): ParsedPriceDecision {
   const normalized = foldPriceDecisionText(trimmed);
   if (!normalized) return { intent: "unclear", reason: "Respuesta vacia." };
   // Lookahead en lugar de `\b`: "si"/"sí" quedan bien tras fold.
+  // "Apruebo el precio propuesto" — "propuesto/sugerido/recomendado" es
+  // reiteración del objeto, no un intent residual (hallazgo walkthrough E2E).
   const approveMatch = normalized.match(
-    /^(aprobar|aprobado|apruebo|ok|va|si)(\s+(el\s+)?precio)?(?=\s|$|[^a-z0-9])/i
+    /^(aprobar|aprobado|apruebo|ok|va|si)(\s+(el\s+)?precio(\s+(propuesto|sugerido|recomendado))?)?(?=\s|$|[^a-z0-9])/i
   );
   if (approveMatch) {
     // Tras fold, la longitud del prefijo coincide en caracteres base con el
@@ -154,7 +156,7 @@ export function parsePriceApprovalDecision(text: string): ParsedPriceDecision {
     const foldedResidual = foldPriceDecisionText(residualTrimmed);
     const restatesApproval =
       Boolean(foldedResidual) &&
-      /^(apruebo|aprobar|aprobado|ok|va|si)(\s+(el\s+)?precio)?$/.test(
+      /^(apruebo|aprobar|aprobado|ok|va|si|propuesto|sugerido|recomendado)(\s+(el\s+)?precio(\s+(propuesto|sugerido|recomendado))?)?$/.test(
         foldedResidual
       );
     return {

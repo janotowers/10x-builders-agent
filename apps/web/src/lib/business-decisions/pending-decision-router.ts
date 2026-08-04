@@ -647,7 +647,20 @@ export async function resolvePendingDecisionTurn(
   if (pendingPublicationReview) {
     const handler = businessDecisionHandler("publication_review");
     const parsed = handler.parse(text);
-    if (parsed.intent !== "unclear") {
+    // Desambiguación entre pendientes simultáneos (hallazgo walkthrough E2E):
+    // los verbos de este gate son genéricos («aprobar», «continuar»,
+    // «publicar»...) y reclamaban turnos dirigidos al gate de titularidad,
+    // que corre después — «continuar bajo excepción: …» aprobó la publicación
+    // de OTRO caso. Las frases de titularidad son muy específicas (no se
+    // solapan con las canónicas de publicación), así que ceder es seguro.
+    // No se cede a price_approval: su parser acepta «aprobar» genérico y
+    // robaría las frases canónicas de este gate.
+    const claimedByTitularidadGate =
+      parseTitularidadReviewDecision(text).intent !== "unclear" &&
+      pendingInternal.some(
+        (notification) => notification.kind === "titularidad_review"
+      );
+    if (parsed.intent !== "unclear" && !claimedByTitularidadGate) {
       const result = await handler.handle(db, {
         userId: params.userId,
         notificationId: pendingPublicationReview.id,
@@ -809,7 +822,21 @@ export async function resolvePendingDecisionTurn(
   const pendingContractData = pendingInternal.find(
     (notification) => notification.kind === "contract_data_review"
   );
-  if (pendingContractData && looksLikeSideQuestionNotData(text)) {
+  // Desambiguación (hallazgo walkthrough E2E): contract_pending puede dejar
+  // DOS pendientes en el mismo caso (datos comerciales + titularidad). Como
+  // este gate reclama cualquier texto, la decisión de titularidad quedaba
+  // inalcanzable («keep_clarifying» eterno). Sus frases son específicas
+  // («continuar bajo excepción», «solicitar evidencia»...), no datos de
+  // contrato: se ceden al gate 5.
+  const contractDataTextIsTitularidadDecision =
+    parseTitularidadReviewDecision(text).intent !== "unclear" &&
+    pendingInternal.some(
+      (notification) => notification.kind === "titularidad_review"
+    );
+  if (pendingContractData && contractDataTextIsTitularidadDecision) {
+    // Cede el turno; la notificación de datos sigue unread para el próximo
+    // mensaje con datos reales.
+  } else if (pendingContractData && looksLikeSideQuestionNotData(text)) {
     // Clearly interrogative, data-free message: let the agent answer instead
     // of dead-ending in "No pude registrar los datos contractuales". The
     // notification stays unread, so the gate keeps claiming real data replies.
