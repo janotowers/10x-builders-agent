@@ -11,7 +11,8 @@
     "type-check": "tsc --noEmit",
     "test:messages": "tsx src/queries/messages.selftest.ts",
     "test:memories": "tsx src/queries/memories.selftest.ts",
-    "test:ai-usage": "tsx src/queries/ai-usage.selftest.ts"
+    "test:ai-usage": "tsx src/queries/ai-usage.selftest.ts",
+    "test:work-plane": "tsx src/queries/work-items.selftest.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",

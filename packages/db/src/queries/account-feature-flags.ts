@@ -57,6 +57,32 @@ export async function setAccountFeatureFlag(
 
 export const WORKFLOW_ENFORCEMENT_MODE_FLAG_KEY = "workflow_enforcement_mode";
 
+/** Slice 2.3: plano de trabajo v2 por tenant. Sin fila = apagado. */
+export const WORK_PLANE_V2_FLAG_KEY = "work_plane_v2";
+
+export async function isWorkPlaneV2Enabled(
+  db: DbClient,
+  userId: string
+): Promise<boolean> {
+  const flag = await getAccountFeatureFlag(db, userId, WORK_PLANE_V2_FLAG_KEY);
+  return flag?.enabled === true;
+}
+
+/**
+ * Tenants con el work plane v2 habilitado (lectura service-role para el pass
+ * del cron). Devuelve solo user_ids; el dispatch por tenant sigue exigiendo
+ * userId en cada query (regla 3).
+ */
+export async function listWorkPlaneV2Tenants(db: DbClient): Promise<string[]> {
+  const { data, error } = await db
+    .from("account_feature_flags")
+    .select("user_id")
+    .eq("flag_key", WORK_PLANE_V2_FLAG_KEY)
+    .eq("enabled", true);
+  if (error) throw error;
+  return ((data ?? []) as Array<{ user_id: string }>).map((row) => row.user_id);
+}
+
 /**
  * Per-tenant evaluator mode (S1.4). No row (or unknown value) = "advisory":
  * divergences are logged as case events without changing behavior. "off"

@@ -30,6 +30,7 @@ export * from "./queries/operational-case-metrics";
 export * from "./queries/workflow-definitions";
 export * from "./queries/account-feature-flags";
 export * from "./queries/evidence-records";
+export * from "./queries/work-items";
 export { encryptToken, decryptToken, encryptJson, decryptJson } from "./crypto";
 export {
   GOOGLE_CALENDAR_PROVIDER,
