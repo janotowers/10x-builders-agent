@@ -42,3 +42,35 @@ export {
   type ReplayResult,
   type ReplayTransition,
 } from "./replay";
+export {
+  createWorkDispatcher,
+  evaluateAdvancement,
+  templateSpecsForState,
+  verifyOutputContract,
+  type AdvancementDecision,
+  type ClaimedWork,
+  type DispatchableCase,
+  type ExecutorAdapter,
+  type ExecutorContext,
+  type ExecutorReport,
+  type OutputContractVerdict,
+  type StoreCompleteAttemptInput,
+  type StoreCompleteAttemptResult,
+  type WorkDispatcher,
+  type WorkDispatcherDeps,
+  type WorkPlaneStore,
+  type WorkPlaneTickInput,
+  type WorkPlaneTickResult,
+} from "./dispatcher";
+export {
+  buildWorkItemExecutionMessage,
+  createMainAgentExecutor,
+  type MainAgentTurnParams,
+  type MainAgentTurnResult,
+  type MainAgentTurnRunner,
+} from "./executors/main-agent";
+export {
+  createDeterministicServiceExecutor,
+  type DeterministicWorkFn,
+} from "./executors/deterministic-service";
+export { createHumanExecutor, type HumanWorkNotifier } from "./executors/human";
