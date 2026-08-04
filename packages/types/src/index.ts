@@ -914,6 +914,12 @@ export interface AccountAsset {
   source_tool_id: string | null;
   case_type_id: string | null;
   metadata_jsonb: Record<string, unknown>;
+  /**
+   * SHA-256 hex del contenido vigente (Slice 3.1). La historia inmutable por
+   * reemplazo vive en account_asset_versions. Null: filas previas al backfill
+   * o upserts sin bytes disponibles para hashear.
+   */
+  content_hash: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1093,3 +1099,4 @@ export {
 export * from "./ai-usage";
 export * from "./workflow-definitions";
 export * from "./work-items";
+export * from "./impact";

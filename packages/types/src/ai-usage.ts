@@ -40,6 +40,12 @@ export const AI_USAGE_MODEL_ROLES = {
   PREDIAL_EXTRACTION: "predial_extraction",
   EMBEDDINGS: "embeddings",
   HEARTBEAT: "heartbeat",
+  /** Verificador independiente de valuación (Slice 3.4; §9.1). */
+  VALUATION_VERIFIER: "valuation_verifier",
+  /** Descomposición conservadora de intents por turno (Slice 4.1; §12). */
+  INTENT_DECOMPOSER: "intent_decomposer",
+  /** Compilador NL → business/implementation spec + grafo (Slice 4.2; §15). */
+  WORKFLOW_COMPILER: "workflow_compiler",
 } as const;
 
 export type AiUsageStatus = "ok" | "error";

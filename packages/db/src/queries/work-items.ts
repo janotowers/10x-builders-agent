@@ -124,7 +124,7 @@ export async function listWorkItemsForCase(
 export async function listWorkItemsForUser(
   db: DbClient,
   userId: string,
-  opts: { statuses?: WorkItemStatus[]; limit?: number } = {}
+  opts: { statuses?: WorkItemStatus[]; origin?: string; limit?: number } = {}
 ): Promise<WorkItem[]> {
   let query = db
     .from("work_items")
@@ -135,6 +135,9 @@ export async function listWorkItemsForUser(
     .limit(Math.max(1, Math.min(opts.limit ?? 200, 500)));
   if (opts.statuses && opts.statuses.length > 0) {
     query = query.in("status", opts.statuses);
+  }
+  if (opts.origin) {
+    query = query.eq("origin", opts.origin);
   }
   const { data, error } = await query;
   if (error) throw error;

@@ -66,6 +66,60 @@ export type WorkItemEventType = (typeof WORK_ITEM_EVENT_TYPES)[number];
 
 export type WorkItemEventActor = "system" | "agent" | "user" | "external";
 
+/**
+ * Executor kinds (Technical Plan §9). All first-class in vocabulary; only
+ * main_agent, deterministic_service, specialized_agent and human have
+ * runtime executors in Phase 3 — the rest stay declared-but-unimplemented.
+ */
+export const WORKER_EXECUTION_MODES = [
+  "main_agent",
+  "deterministic_service",
+  "specialized_agent",
+  "ephemeral_subagent",
+  "durable_worker",
+  "external_service",
+  "human",
+] as const;
+
+export type WorkerExecutionMode = (typeof WORKER_EXECUTION_MODES)[number];
+
+/**
+ * Model policy per worker profile (Technical Plan §9.1). The alias resolves
+ * through a central map in code — profiles never hardcode vendor model ids.
+ */
+export interface WorkerModelPolicy {
+  role?: string;
+  model_alias?: string;
+  fallback_aliases?: string[];
+  max_output_tokens?: number;
+  temperature?: number;
+  max_cost_cents_per_run?: number;
+}
+
+/**
+ * Worker profile (Slice 3.4-1; Technical Plan §9). `user_id` null = global
+ * catalog profile; execution is always tenant-scoped (inherits the work
+ * item's user_id). Profiles NEVER embed credentials (§21).
+ */
+export interface WorkerProfile {
+  id: string;
+  user_id: string | null;
+  slug: string;
+  capabilities: string[];
+  execution_mode: WorkerExecutionMode;
+  allowed_tools: string[];
+  allowed_data_scopes: string[];
+  model_policy_jsonb: WorkerModelPolicy & Record<string, unknown>;
+  approval_policy_jsonb: Record<string, unknown>;
+  timeout_seconds: number;
+  retry_policy_jsonb: Record<string, unknown>;
+  verification_contract_jsonb: Record<string, unknown>;
+  max_concurrency: number;
+  cost_ceiling_cents: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WorkItem {
   id: string;
   case_id: string;
