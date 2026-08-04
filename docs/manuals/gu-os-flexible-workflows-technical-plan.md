@@ -217,6 +217,8 @@ The case plane must not learn about work items beyond a summary (count/blocked i
 
 Statuses (seven, generic, deliberately different from case vocabulary): `todo`, `ready`, `running`, `blocked`, `review`, `done`, `cancelled`. `ready` is computed from dependency satisfaction, never set by hand. Hermes's `triage` is dropped (work is born classified by the definition) and `archived` is dropped (retention policy on `done`/`cancelled` instead).
 
+**Provenance.** `origin` records how the item came to exist: `definition_template` (instantiated `on_enter_state`, Phase 2), `impact_repair` (created by the impact engine, §11/Phase 3), `agent_proposed` and `human` (reserved seams — declared but unconsumed until verification contracts exist; agent-proposed work under the worker-profile envelope is a post-Phase-3 capability, never a Phase 2 one). Dispatch, readiness, and claim logic never branch on `origin`; it exists for audit, replay equivalence, and to keep the schema from hard-assuming template-only creation. (Implementation-plan finding 17, 2026-08-03.)
+
 ```sql
 -- Tentative. Claim-scoped fields live on attempts, not on the item (see §10).
 create table work_items (
@@ -225,6 +227,8 @@ create table work_items (
   user_id uuid not null references profiles(id) on delete cascade,
   workflow_definition_version integer not null,
   work_type text not null,
+  origin text not null default 'definition_template' check (origin in
+    ('definition_template','impact_repair','agent_proposed','human')),
   status text not null default 'todo' check (status in
     ('todo','ready','running','blocked','review','done','cancelled')),
   priority integer not null default 100,
