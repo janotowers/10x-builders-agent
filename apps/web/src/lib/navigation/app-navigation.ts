@@ -83,6 +83,26 @@ export const APP_NAV_TREE: AppNavNode[] = [
         href: "/settings?view=proactivity&section=pulse",
         matcher: { kind: "settings-view", view: "proactivity" },
       },
+      {
+        // Vista del operador del plano de trabajo (Slice 2.5). Rol interino:
+        // is_ungga_admin (Technical Plan §16 deja abierto el sistema de roles).
+        key: "work-plane",
+        label: "Plano de trabajo",
+        shortLabel: "Trabajo",
+        icon: "tool",
+        href: "/operations/work",
+        adminOnly: true,
+      },
+      {
+        // Workflow Studio shell read-only (Slice 2.7). Sin gate de admin:
+        // catálogo del propio tenant (globales + privadas propias) y panel
+        // de recursos de la cuenta (2.7-6).
+        key: "workflow-studio",
+        label: "Workflows",
+        shortLabel: "Wf",
+        icon: "template",
+        href: "/operations/workflows",
+      },
     ],
   },
   {

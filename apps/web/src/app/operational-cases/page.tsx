@@ -13,6 +13,7 @@ import {
   listActiveAccountSkillsForUser,
   listOperationalCasesForUser,
   listOperationalCaseTypesForUser,
+  summarizeCaseWork,
   updateOperationalCase,
 } from "@agents/db";
 import { getSkillRegistryForUser } from "@agents/agent";
@@ -48,6 +49,7 @@ import {
   caseDocumentRequestTargetLabel,
   setCaseDocumentRequestTarget,
 } from "@/lib/operational-cases/document-request-target";
+import { caseWorkChipLabel } from "@/lib/operations/work-view-labels";
 
 export const dynamic = "force-dynamic";
 
@@ -554,6 +556,23 @@ export default async function OperationalCasesPage({
     : filterOperationalCases(cases, listFilters, caseTypeMap, CASE_STATUSES);
   const listQuery = operationalCasesListQuerySuffix(listFilters);
 
+  // Chip de resumen del plano de trabajo (Slice 2.5-3): solo conteo +
+  // indicador de bloqueo; los estados de trabajo no se muestran al broker.
+  // Tolerante a entornos donde la migración 00069 aún no se aplica.
+  let workSummaryByCaseId = new Map<
+    string,
+    { caseId: string; total: number; blocked: number }
+  >();
+  try {
+    workSummaryByCaseId = await summarizeCaseWork(
+      db,
+      user.id,
+      filteredCases.map((c) => c.id)
+    );
+  } catch {
+    workSummaryByCaseId = new Map();
+  }
+
   const selectedEvents = selectedCase
     ? await getRecentOperationalCaseEvents(db, selectedCase.id, 200)
     : [];
@@ -676,6 +695,10 @@ export default async function OperationalCasesPage({
               getHref={(opCase) =>
                 operationalCasesListHref(listFilters, { caseId: opCase.id })
               }
+              getWorkChip={(opCase) => {
+                const summary = workSummaryByCaseId.get(opCase.id);
+                return summary ? caseWorkChipLabel(summary) : null;
+              }}
               getCaseTypeDisplayName={(opCase) =>
                 caseTypeForInstance(opCase, caseTypes, caseTypeMap)
                   ?.display_name ??

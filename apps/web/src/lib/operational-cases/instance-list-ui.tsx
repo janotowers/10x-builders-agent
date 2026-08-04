@@ -146,6 +146,7 @@ export function OperationalCaseInstanceCard({
   stepLabel,
   skillMeta,
   latestEvent,
+  workChip,
 }: {
   opCase: OperationalCase;
   href: string;
@@ -153,6 +154,12 @@ export function OperationalCaseInstanceCard({
   stepLabel?: string | null;
   skillMeta?: OperationalCaseInstanceSkillMeta | null;
   latestEvent?: OperationalCaseInstanceLatestEvent | null;
+  /**
+   * Chip de resumen del plano de trabajo (Slice 2.5-3): solo n items +
+   * indicador de bloqueo. Los estados de trabajo NUNCA se muestran en la
+   * superficie del broker.
+   */
+  workChip?: string | null;
 }) {
   const isTestCase = opCase.context_jsonb?.test_mode === true;
   const resolvedStepLabel = opCase.current_step
@@ -200,6 +207,11 @@ export function OperationalCaseInstanceCard({
                 title="Este caso lo creó el agente a partir de una conversación (chat o Telegram), no del formulario web."
               >
                 Conversacional
+              </span>
+            ) : null}
+            {workChip ? (
+              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                {workChip}
               </span>
             ) : null}
           </div>
@@ -255,6 +267,7 @@ export function OperationalCaseInstanceList({
   getStepLabel,
   getSkillMeta,
   getLatestEvent,
+  getWorkChip,
 }: {
   cases: OperationalCase[];
   getHref: (opCase: OperationalCase) => string;
@@ -264,6 +277,7 @@ export function OperationalCaseInstanceList({
   getLatestEvent?: (
     opCase: OperationalCase
   ) => OperationalCaseInstanceLatestEvent | null;
+  getWorkChip?: (opCase: OperationalCase) => string | null;
 }) {
   return (
     <div className="grid w-full gap-3">
@@ -276,6 +290,7 @@ export function OperationalCaseInstanceList({
           stepLabel={getStepLabel?.(opCase) ?? null}
           skillMeta={getSkillMeta?.(opCase) ?? null}
           latestEvent={getLatestEvent?.(opCase) ?? null}
+          workChip={getWorkChip?.(opCase) ?? null}
         />
       ))}
     </div>
