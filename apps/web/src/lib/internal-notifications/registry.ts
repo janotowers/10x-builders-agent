@@ -272,6 +272,20 @@ export const INTERNAL_NOTIFICATION_KIND_CONFIGS: Record<
     intent: "review",
     reviewCtaLabel: "Subir plantilla en preparación",
   },
+  work_item_review: {
+    kind: "work_item_review",
+    label: "Trabajo pendiente de revisión",
+    visibleInInbox: true,
+    intent: "review",
+    reviewCtaLabel: "Revisar trabajo",
+  },
+  work_item_blocked: {
+    kind: "work_item_blocked",
+    label: "Trabajo bloqueado",
+    visibleInInbox: true,
+    intent: "review",
+    reviewCtaLabel: "Ver plano de trabajo",
+  },
   internal_notification_reminder: {
     kind: "internal_notification_reminder",
     label: "Recordatorio",

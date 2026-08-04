@@ -319,6 +319,55 @@ export async function getDueOperationalCases(
 }
 
 /**
+ * Casos activos pinneados a una definición, para el pass v2 del work plane
+ * (Slice 2.3). Solo lectura; el dispatcher no comparte estado mutable con el
+ * loop v1 del cron.
+ */
+export async function listPinnedActiveOperationalCases(
+  db: DbClient,
+  userId: string,
+  opts: { limit?: number } = {}
+): Promise<OperationalCase[]> {
+  const limit = Math.max(1, Math.min(opts.limit ?? 100, 200));
+  const { data, error } = await db
+    .from("operational_cases")
+    .select("*")
+    .eq("user_id", userId)
+    .in("status", ["active", "waiting_internal", "waiting_external"])
+    .not("workflow_definition_id", "is", null)
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as OperationalCase[];
+}
+
+/**
+ * Conteo de casos activos pinneados por definición (Slice 2.7-2: el catálogo
+ * del tenant muestra cuántos casos activos apuntan a cada versión).
+ */
+export async function countPinnedActiveCasesByDefinition(
+  db: DbClient,
+  userId: string
+): Promise<Record<string, number>> {
+  const { data, error } = await db
+    .from("operational_cases")
+    .select("workflow_definition_id")
+    .eq("user_id", userId)
+    .in("status", ["active", "waiting_internal", "waiting_external"])
+    .not("workflow_definition_id", "is", null);
+  if (error) throw error;
+  const counts: Record<string, number> = {};
+  for (const row of (data ?? []) as Array<{
+    workflow_definition_id: string | null;
+  }>) {
+    if (!row.workflow_definition_id) continue;
+    counts[row.workflow_definition_id] =
+      (counts[row.workflow_definition_id] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/**
  * Lock optimista con lease real: bumpea version y deja next_action_at en el
  * futuro (+leaseMinutes) para exclusión mutua. Devuelve true si el lock se
  * tomó; false si la versión no coincidía o hay un lease activo (next_action_at

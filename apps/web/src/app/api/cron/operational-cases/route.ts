@@ -122,6 +122,10 @@ import {
   OperationalStepLabelResolver,
   humanizeOperationalStepKey,
 } from "@/lib/operational-cases/operational-step-labels";
+import {
+  runWorkPlaneCronPass,
+  type WorkPlaneCronSummary,
+} from "@/lib/operational-cases/work-plane-tick";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 const TOOL_CONFIRMATION_PENDING_KIND = "tool_confirmation_pending";
@@ -1454,12 +1458,14 @@ export async function POST(request: Request) {
   ).length;
 
   if (dueCases.length === 0) {
+    const workPlane = await runWorkPlanePassSafely(db);
     return NextResponse.json({
       processed: 0,
       results: [],
       skipped_settings_test_cases: skippedSettingsTestCases,
       skipped_controlled_e2e_cases: skippedControlledE2ECases,
       notification_reminders: notificationReminderResults,
+      work_plane: workPlane,
     });
   }
 
@@ -1481,11 +1487,42 @@ export async function POST(request: Request) {
     results.map((r) => `${r.case_id}=${r.status}`).join(", ")
   );
 
+  // Pass v2 (work plane, Slice 2.3): corre después del loop v1, solo para
+  // tenants con el flag `work_plane_v2`. Sin estado mutable compartido con v1.
+  const workPlane = await runWorkPlanePassSafely(db);
+
   return NextResponse.json({
     processed: results.length,
     results,
     skipped_settings_test_cases: skippedSettingsTestCases,
     skipped_controlled_e2e_cases: skippedControlledE2ECases,
     notification_reminders: notificationReminderResults,
+    work_plane: workPlane,
   });
+}
+
+/** El pass v2 nunca rompe el response del cron v1. */
+async function runWorkPlanePassSafely(
+  db: ReturnType<typeof createServerClient>
+): Promise<WorkPlaneCronSummary | { error: string }> {
+  try {
+    const summary = await runWorkPlaneCronPass(db);
+    if (summary.enabledTenants > 0) {
+      console.log(
+        `[ops-case-cron] work-plane pass: ${summary.tenants.length}/${summary.enabledTenants} tenants,`,
+        summary.tenants
+          .map(
+            (t) =>
+              `${t.userId}={items:${t.tick.processed.length},advanced:${t.tick.advanced.length},recovered:${t.tick.recovered}}`
+          )
+          .join(", "),
+        summary.errors.length > 0 ? summary.errors : ""
+      );
+    }
+    return summary;
+  } catch (e) {
+    const message = (e as Error)?.message ?? "work plane pass failed";
+    console.error("[ops-case-cron] work-plane pass failed:", message);
+    return { error: message };
+  }
 }

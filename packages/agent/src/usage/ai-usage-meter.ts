@@ -480,8 +480,7 @@ export function createAiUsageCallbackHandler(params: {
   return new AiUsageCallbackHandler();
 }
 
-// ── TODO (Technical Plan §23, remaining counters skeleton) ──────────────────
-// Work-plane retry counters land with Slice 2.3 (dispatcher): populate
-// `work_item_id` / `work_item_attempt_id` on every model-backed attempt and
-// add per-attempt retry rollups to the admin dashboard. See plan Slice 0.4
-// task 8 and Slice 2.3 task 5.
+// Work-plane retry counters (Technical Plan §23): closed in Slices 2.3/2.4.
+// `runAgent` accepts `workItemId`/`workItemAttemptId` (bound by the
+// main-agent executor) and the admin dashboard shows retry rollups via
+// `summarizeWorkPlaneRetries`. See plan Slice 2.3 task 5 and Slice 2.4.

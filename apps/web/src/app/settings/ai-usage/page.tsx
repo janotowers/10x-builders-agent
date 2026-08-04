@@ -13,6 +13,8 @@ import { redirect } from "next/navigation";
 import {
   createServerClient,
   listAiUsageEvents,
+  summarizeWorkPlaneRetries,
+  type WorkPlaneRetrySummary,
 } from "@agents/db";
 import { getDroppedAiUsageMeterCount } from "@agents/agent";
 import { createClient } from "@/lib/supabase/server";
@@ -95,6 +97,15 @@ export default async function AiUsageAdminPage({
   const droppedThisProcess = getDroppedAiUsageMeterCount();
   const truncated = events.length >= EVENT_LIMIT;
 
+  // Contadores de reintentos del work plane (Slice 2.3-5). Tolerante a
+  // entornos donde la migración 00069 aún no se aplica (tablas ausentes).
+  let workPlaneRetries: WorkPlaneRetrySummary | null = null;
+  try {
+    workPlaneRetries = await summarizeWorkPlaneRetries(db, { adminWide: true });
+  } catch {
+    workPlaneRetries = null;
+  }
+
   const tenantIds = [...new Set(events.map((event) => event.user_id))];
   const emailByUserId: Record<string, string> = {};
   if (tenantIds.length > 0) {
@@ -144,6 +155,22 @@ export default async function AiUsageAdminPage({
       title="Uso de IA (interno)"
       description={`Ledger append-only de llamadas a modelos — últimos ${windowDays} días, todas las cuentas. Observabilidad interna, no facturación. Horas en ${adminTimeZone} (perfil del admin).`}
     >
+      {workPlaneRetries && workPlaneRetries.totalItems > 0 ? (
+        <div className="mb-4 rounded-2xl border border-neutral-200 bg-white p-4 text-sm dark:border-neutral-800 dark:bg-neutral-900">
+          <p className="font-semibold">
+            Reintentos del plano de trabajo (todas las cuentas)
+          </p>
+          <p className="mt-1 text-neutral-600 dark:text-neutral-400">
+            {workPlaneRetries.totalItems} work items ·{" "}
+            {workPlaneRetries.itemsWithRetries} con reintentos ·{" "}
+            {workPlaneRetries.blockedByMaxAttempts} bloqueados por max_attempts ·
+            intentos por estado:{" "}
+            {Object.entries(workPlaneRetries.attemptsByStatus)
+              .map(([status, count]) => `${status}=${count}`)
+              .join(", ") || "—"}
+          </p>
+        </div>
+      ) : null}
       <Suspense
         fallback={
           <p className="text-xs text-neutral-500">Cargando exploración…</p>

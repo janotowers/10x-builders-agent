@@ -155,6 +155,14 @@ export interface AgentInput {
    * en canal `case_runner`.
    */
   caseId?: string | null;
+  /**
+   * Correlación con el plano de trabajo (Slice 2.4 / TODO 0.4-8): cuando el
+   * turno lo dispara el executor main_agent de un work item, estos ids se
+   * atan al contexto de metering para que cada llamada a modelo quede
+   * atribuida al item/attempt (rollups de reintentos del dashboard 0.4).
+   */
+  workItemId?: string | null;
+  workItemAttemptId?: string | null;
   /** Stored on tool_calls.metadata_jsonb.source (defaults from channel). */
   toolCallSource?: ToolCallSource;
   /**
@@ -1137,6 +1145,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       sessionId,
       turnId,
       operationalCaseId: input.caseId ?? null,
+      workItemId: input.workItemId ?? null,
+      workItemAttemptId: input.workItemAttemptId ?? null,
     },
     db
   );
