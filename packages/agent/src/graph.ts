@@ -163,6 +163,8 @@ export interface AgentInput {
    */
   workItemId?: string | null;
   workItemAttemptId?: string | null;
+  /** Definición pineada del caso (3.4-6): atribución completa en el ledger. */
+  workflowDefinitionId?: string | null;
   /** Stored on tool_calls.metadata_jsonb.source (defaults from channel). */
   toolCallSource?: ToolCallSource;
   /**
@@ -1145,6 +1147,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       sessionId,
       turnId,
       operationalCaseId: input.caseId ?? null,
+      workflowDefinitionId: input.workflowDefinitionId ?? null,
       workItemId: input.workItemId ?? null,
       workItemAttemptId: input.workItemAttemptId ?? null,
     },

@@ -5,6 +5,10 @@ import type {
   WorkflowGraphStepBinding,
   WorkflowGraphTransition,
 } from "@agents/types";
+import {
+  PROPERTY_OPTIONING_IMPACT_DEPENDENCIES,
+  PROPERTY_OPTIONING_PRICE_APPROVAL_EVIDENCE_INPUTS,
+} from "./property-optioning-impact";
 
 /**
  * Flow→graph transformer (Slice 1.2): turns presentation-oriented
@@ -181,32 +185,22 @@ export function transformFlowToGraph(params: {
         ? [
             {
               kind: "price",
-              evidence_inputs: ["comparables_analysis", "pricing_proposal"],
+              // 3.2-3: evidencia = entradas de valuación + recomendación. El
+              // motor de impacto suspende cuando el evidence_hash recalculado
+              // deja de coincidir (nunca revoca — eso es acto humano).
+              evidence_inputs: [
+                ...PROPERTY_OPTIONING_PRICE_APPROVAL_EVIDENCE_INPUTS,
+              ],
             },
           ]
         : [],
     impact_dependencies:
       caseType === "property_optioning"
-        ? {
-            // Methodology-verified hard inputs (§X finding 3): zone, operation,
-            // property type, area band; bedrooms/bathrooms/parking are NOT
-            // valuation inputs but do drive the listing description.
-            valuation: [
-              "property.search_zone",
-              "property.operation",
-              "property.property_type",
-              "property.area_construida_m2",
-              "property.area_total_m2",
-              "comparable_set",
-              "methodology",
-            ],
-            listing_description: [
-              "property.bedrooms",
-              "property.bathrooms",
-              "property.parking_spots",
-              "property.neighborhood",
-            ],
-          }
+        ? // Mapa canónico de la metodología verificada (§X finding 3, Slice
+          // 3.2-3): la cadena de valuación NUNCA declara recámaras/baños/
+          // estacionamientos; la capa comercial sí. Definiciones ya
+          // publicadas son inmutables: este mapa entra al próximo publish.
+          structuredClone(PROPERTY_OPTIONING_IMPACT_DEPENDENCIES)
         : {},
     completion: {
       terminal_states: terminalStates,

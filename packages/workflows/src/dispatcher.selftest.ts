@@ -440,6 +440,57 @@ async function testNoExecutorForCapabilityBlocks(): Promise<void> {
   console.log("✓ capability sin ejecutor → blocked explícito");
 }
 
+async function testScopeEnforcementDenyBlocks(): Promise<void> {
+  const store = makeStore();
+  let executed = 0;
+  const dispatcher = createWorkDispatcher({
+    store,
+    resolveExecutor: () =>
+      makeAdapter("specialized_agent", async () => {
+        executed += 1;
+        return { outcome: "succeeded", result: {} };
+      }),
+    // 3.4-5: el perfil no permite la tool exigida por el contrato ⇒ deny en
+    // la SELECCIÓN — el ejecutor jamás corre.
+    enforceScopes: async (item) =>
+      Array.isArray(item.input_contract_jsonb.required_tools)
+        ? { ok: false, reason: "scope_mismatch:tool_not_allowed:easybroker_write" }
+        : { ok: true },
+  });
+  await store.createWorkItemsFromTemplates({
+    userId: USER,
+    caseId: CASE,
+    workflowDefinitionVersion: 1,
+    templates: [
+      {
+        work_type: "sensitive_write",
+        required_capability: "agent:writer",
+        input_contract: { required_tools: ["easybroker_write"] },
+      },
+    ],
+  });
+
+  const result = await dispatcher.runTick({
+    userId: USER,
+    runnerRef: "tick-1",
+    cases: [],
+    leaseMs: 60_000,
+    advanceCase: async () => false,
+  });
+
+  assert.deepEqual(
+    result.processed.map((p) => p.outcome),
+    ["blocked"]
+  );
+  assert.equal(executed, 0, "deny en selección: el ejecutor no corre");
+  assert.equal(
+    store.items[0].blocked_reason,
+    "scope_mismatch:tool_not_allowed:easybroker_write"
+  );
+  assert.equal(store.items[0].status, "blocked");
+  console.log("✓ scope enforcement en selección → deny + blocked_reason");
+}
+
 async function testHumanReviewParksItemInReview(): Promise<void> {
   const store = makeStore();
   const dispatcher = createWorkDispatcher({
@@ -680,6 +731,7 @@ async function main(): Promise<void> {
   await testFullTickWithDependencyChainAndAdvancement();
   await testOutputContractViolationRetriesThenBlocks();
   await testNoExecutorForCapabilityBlocks();
+  await testScopeEnforcementDenyBlocks();
   await testHumanReviewParksItemInReview();
   await testConfirmedClaimLossAbortsExecutor();
   await testTransientRenewalFailuresExhaustWindow();

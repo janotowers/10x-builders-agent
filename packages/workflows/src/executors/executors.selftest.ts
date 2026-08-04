@@ -18,6 +18,10 @@ import {
   createDeterministicServiceExecutor,
   type DeterministicWorkFn,
 } from "./deterministic-service";
+import {
+  createSpecializedAgentExecutor,
+  type SpecializedAgentWorkFn,
+} from "./specialized-agent";
 import { createHumanExecutor } from "./human";
 
 function item(over: Partial<WorkItem> = {}): WorkItem {
@@ -175,6 +179,46 @@ async function testDeterministicRegistry(): Promise<void> {
   console.log("✓ deterministic-service: hit / miss explícito / throw contenido");
 }
 
+async function testSpecializedAgentExecutor(): Promise<void> {
+  const registry = new Map<string, SpecializedAgentWorkFn>([
+    [
+      "verify_valuation",
+      async () => ({
+        result: { verdict: "fail", findings: ["banda fuera de rango"] },
+        evidence: { verdict: "fail", findings: ["banda fuera de rango"] },
+        requiresHumanReview: true,
+      }),
+    ],
+    [
+      "verify_ok",
+      async () => ({ result: { verdict: "pass", findings: [] } }),
+    ],
+  ]);
+  const executor = createSpecializedAgentExecutor(registry);
+  assert.equal(executor.executionMode, "specialized_agent");
+
+  // Verdict fail de negocio: succeeded + review humano, NUNCA retry ciego.
+  const fail = await executor.execute(ctx(item({ work_type: "verify_valuation" })));
+  assert.equal(fail.outcome, "succeeded");
+  assert.equal(fail.requiresHumanReview, true);
+  assert.deepEqual(fail.evidence, {
+    verdict: "fail",
+    findings: ["banda fuera de rango"],
+  });
+
+  const pass = await executor.execute(ctx(item({ work_type: "verify_ok" })));
+  assert.equal(pass.outcome, "succeeded");
+  assert.equal(pass.requiresHumanReview, undefined);
+
+  const miss = await executor.execute(ctx(item({ work_type: "unknown" })));
+  assert.equal(miss.outcome, "failed");
+  assert.equal(
+    (miss.error as { reason: string }).reason,
+    "registered_specialized_agent_not_found"
+  );
+  console.log("✓ specialized-agent: verdict→review / pass / miss explícito");
+}
+
 async function testHumanExecutor(): Promise<void> {
   const notified: string[] = [];
   const executor = createHumanExecutor(async ({ item: workItem }) => {
@@ -201,6 +245,7 @@ async function main(): Promise<void> {
   testExecutionMessageDiscipline();
   await testMainAgentReportMapping();
   await testDeterministicRegistry();
+  await testSpecializedAgentExecutor();
   await testHumanExecutor();
   console.log("executors selftest: all green");
 }

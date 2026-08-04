@@ -11,7 +11,9 @@
     "test:evidence": "tsx src/evidence.selftest.ts",
     "test:replay": "tsx src/replay.selftest.ts",
     "test:dispatcher": "tsx src/dispatcher.selftest.ts",
+    "test:impact-engine": "tsx src/impact-engine.selftest.ts",
     "test:executors": "tsx src/executors/executors.selftest.ts",
+    "test:compiler": "tsx src/compiler/compiler.selftest.ts",
     "test:soak": "tsx src/soak.selftest.ts"
   },
   "dependencies": {

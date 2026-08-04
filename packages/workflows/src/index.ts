@@ -1,5 +1,34 @@
 export { canonicalizeJson, computeDefinitionHash } from "./hash";
 export {
+  cleanText,
+  numberOrNull,
+  stableRounded,
+  normalizeImpactValue,
+  computeImpactInputHash,
+} from "./impact-hash";
+export {
+  PROPERTY_OPTIONING_VALUATION_FACTS,
+  PROPERTY_OPTIONING_METHODOLOGY_FACT,
+  PROPERTY_OPTIONING_LISTING_FACTS,
+  PROPERTY_OPTIONING_CONTRACT_FACTS,
+  PROPERTY_OPTIONING_IMPACT_DEPENDENCIES,
+  PROPERTY_OPTIONING_PRICE_APPROVAL_EVIDENCE_INPUTS,
+} from "./property-optioning-impact";
+export {
+  parseImpactInputRef,
+  affectedArtifactTypes,
+  computeExpectedInputHashForType,
+  buildEvidenceEntries,
+  computeApprovalEvidenceHash,
+  applyInputChange,
+  type ImpactInputRef,
+  type ImpactSnapshot,
+  type ImpactPlaneStore,
+  type ImpactInputChange,
+  type ImpactChangeResult,
+  type ApplyInputChangeParams,
+} from "./impact-engine";
+export {
   workflowGraphSchema,
   parseWorkflowGraph,
   validateWorkflowGraph,
@@ -73,4 +102,43 @@ export {
   createDeterministicServiceExecutor,
   type DeterministicWorkFn,
 } from "./executors/deterministic-service";
+export {
+  createSpecializedAgentExecutor,
+  type SpecializedAgentWorkFn,
+} from "./executors/specialized-agent";
 export { createHumanExecutor, type HumanWorkNotifier } from "./executors/human";
+export {
+  BUSINESS_SPEC_VERSION,
+  IMPLEMENTATION_SPEC_VERSION,
+  businessSpecSchema,
+  implementationSpecSchema,
+  compilerOutputSchema,
+  acceptanceScenarioSchema,
+  isClarificationRound,
+  specIsPresent,
+  type BusinessSpec,
+  type ImplementationSpec,
+  type CompilerOutput,
+} from "./compiler/spec-schemas";
+export {
+  resolveCapabilityMap,
+  type CapabilityCatalogs,
+  type CapabilityMapEntry,
+  type CapabilityMapResult,
+  type CapabilityGap,
+  type CapabilityRequirementKind,
+} from "./compiler/capability-map";
+export {
+  runDefinitionValidationGates,
+  type CompilerGateName,
+  type CompilerGateResult,
+  type DefinitionValidationInput,
+  type DefinitionValidationResult,
+} from "./compiler/validation-gates";
+export {
+  buildSyntheticHappyPathScenario,
+  runSimulationGate,
+  type SimulationScenario,
+  type SimulationScenarioOutcome,
+  type SimulationGateResult,
+} from "./compiler/simulation";

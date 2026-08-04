@@ -286,6 +286,16 @@ export interface WorkDispatcherDeps {
   store: WorkPlaneStore;
   /** Resolución capability → adapter; null ⇒ blocked (no adivinar ejecutores). */
   resolveExecutor: (item: WorkItem) => ExecutorAdapter | null;
+  /**
+   * Enforcement de scopes del worker profile EN LA SELECCIÓN (Slice 3.4-5;
+   * §9): se evalúa después de resolver el adapter y ANTES de ejecutar. Deny
+   * ⇒ attempt fallido + item blocked con `blocked_reason` explícito — nunca
+   * se "recorta el prompt" como sustituto de permiso.
+   */
+  enforceScopes?: (
+    item: WorkItem,
+    adapter: ExecutorAdapter
+  ) => Promise<{ ok: true } | { ok: false; reason: string }>;
   /** Intervalo de renovación; default leaseMs/3 (3 oportunidades por lease). */
   renewIntervalMs?: (leaseMs: number) => number;
   /** Backoff para reintentos tras fallo; default 60s lineal por attempt. */
@@ -406,6 +416,38 @@ export function createWorkDispatcher(deps: WorkDispatcherDeps) {
         outcome: "blocked",
       });
       return;
+    }
+
+    if (deps.enforceScopes) {
+      let scopeVerdict: { ok: true } | { ok: false; reason: string };
+      try {
+        scopeVerdict = await deps.enforceScopes(work.item, adapter);
+      } catch (error) {
+        scopeVerdict = {
+          ok: false,
+          reason: `scope_enforcement_error:${(error as Error)?.message ?? "unknown"}`,
+        };
+      }
+      if (!scopeVerdict.ok) {
+        await deps.store.completeAttempt({
+          userId,
+          attemptId: work.attempt.id,
+          outcome: "failed",
+          errorJsonb: { reason: "scope_enforcement_denied", detail: scopeVerdict.reason },
+        });
+        await deps.store.blockItem({
+          userId,
+          itemId: work.item.id,
+          reason: scopeVerdict.reason,
+        });
+        result.processed.push({
+          workItemId: work.item.id,
+          workType: work.item.work_type,
+          caseId: work.item.case_id,
+          outcome: "blocked",
+        });
+        return;
+      }
     }
 
     let report: ExecutorReport | null = null;

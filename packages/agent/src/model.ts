@@ -96,6 +96,134 @@ export const IMAGE_VISION_MODEL_ID =
 export const LISTING_COPY_MODEL_ID =
   process.env.LISTING_COPY_MODEL_ID?.trim() || DEFAULT_LISTING_COPY_MODEL_ID;
 
+// ============================================================
+// Model policy de workers (§9.1, Slice 3.4-4)
+// ============================================================
+
+/**
+ * Default del verificador de valuación (§9.1). Arranca en la clase barata;
+ * se promueve a un modelo más fuerte SOLO cuando los contadores de
+ * falso-accept/reject crucen el umbral declarado, nunca por preferencia.
+ */
+export const DEFAULT_WORKFLOW_VERIFIER_MODEL_ID = "openai/gpt-5.4-mini";
+/** Default del descomponedor de intents (Phase 4; mini hasta que A2/B/D fallen). */
+export const DEFAULT_WORKFLOW_INTENT_DECOMPOSER_MODEL_ID = "openai/gpt-5.4-mini";
+/** Default del compilador NL → spec (Phase 4; juicio alto, volumen bajo). */
+export const DEFAULT_WORKFLOW_COMPILER_MODEL_ID = "openai/gpt-5.4-mini";
+
+/** Verificadores independientes de workflows (env override > default). */
+export const WORKFLOW_VERIFIER_MODEL_ID =
+  process.env.WORKFLOW_VERIFIER_MODEL_ID?.trim() ||
+  DEFAULT_WORKFLOW_VERIFIER_MODEL_ID;
+
+/** Descomponedor de intents multi-parte (env override > default). */
+export const WORKFLOW_INTENT_DECOMPOSER_MODEL_ID =
+  process.env.WORKFLOW_INTENT_DECOMPOSER_MODEL_ID?.trim() ||
+  DEFAULT_WORKFLOW_INTENT_DECOMPOSER_MODEL_ID;
+
+/** Compilador de workflows NL → spec (env override > default). */
+export const WORKFLOW_COMPILER_MODEL_ID =
+  process.env.WORKFLOW_COMPILER_MODEL_ID?.trim() ||
+  DEFAULT_WORKFLOW_COMPILER_MODEL_ID;
+
+/**
+ * Mapa central alias lógico → id de OpenRouter (§9.1). Los perfiles de
+ * worker declaran aliases, NUNCA strings de vendor; este mapa es el
+ * allowlist — un alias fuera de él no resuelve (y el caller cae al
+ * siguiente paso de la cadena de resolución). Mantener los ids dentro del
+ * catálogo de precios (`CATALOG_REQUIRED_MODEL_IDS`) para que el metering
+ * pueda estimar costo.
+ */
+export const WORKER_MODEL_ALIAS_MAP: Readonly<Record<string, string>> = {
+  // Clase razonamiento: hoy ambos apuntan al default barato; `reasoning_high`
+  // se re-apunta a un modelo más fuerte cuando los criterios §9.1 lo exijan
+  // (el alias es el punto de corte, no los perfiles ya publicados).
+  reasoning_standard: "openai/gpt-5.4-mini",
+  reasoning_high: "openai/gpt-5.4-mini",
+  fast_cheap: "anthropic/claude-haiku-4.5",
+};
+
+/** Cadena env por rol de worker (paso 2 de la resolución §9.1). */
+const WORKER_ROLE_ENV_MODEL_IDS: Readonly<Record<string, string>> = {
+  valuation_verifier: WORKFLOW_VERIFIER_MODEL_ID,
+  intent_decomposer: WORKFLOW_INTENT_DECOMPOSER_MODEL_ID,
+  workflow_compiler: WORKFLOW_COMPILER_MODEL_ID,
+};
+
+export interface ResolveWorkerModelInput {
+  /** `model_policy_jsonb` del worker profile (puede venir vacío). */
+  modelPolicy?: {
+    role?: string;
+    model_alias?: string;
+    fallback_aliases?: string[];
+    max_output_tokens?: number;
+    temperature?: number;
+  } | null;
+  /**
+   * Modo de ejecución del perfil. Los deterministas NUNCA resuelven modelo
+   * (§9.1 paso 3 aplica solo a modos agénticos).
+   */
+  executionMode: string;
+}
+
+export interface ResolvedWorkerModel {
+  modelId: string;
+  /** Qué paso de la cadena resolvió: profile_alias | role_env | main_agent. */
+  resolvedVia: "profile_alias" | "role_env" | "main_agent";
+  maxTokens: number;
+  temperature: number;
+}
+
+/**
+ * ModelPolicyResolver (§9.1). Orden de resolución — primer hit gana:
+ *   1. alias del perfil (model_alias, luego fallback_aliases) contra el
+ *      allowlist central;
+ *   2. env default del rol (`WORKFLOW_VERIFIER_MODEL_ID`, …);
+ *   3. `MAIN_AGENT_MODEL_ID` como último recurso, SOLO para modos agénticos
+ *      (un deterministic_service que llegue aquí es un bug del caller ⇒ null).
+ */
+export function resolveWorkerModel(
+  input: ResolveWorkerModelInput
+): ResolvedWorkerModel | null {
+  if (
+    input.executionMode === "deterministic_service" ||
+    input.executionMode === "external_service" ||
+    input.executionMode === "human"
+  ) {
+    return null;
+  }
+  const policy = input.modelPolicy ?? {};
+  const maxTokens =
+    typeof policy.max_output_tokens === "number" && policy.max_output_tokens > 0
+      ? Math.floor(policy.max_output_tokens)
+      : DEFAULT_MAX_TOKENS;
+  const temperature =
+    typeof policy.temperature === "number" ? policy.temperature : 0;
+
+  const aliases = [
+    ...(policy.model_alias ? [policy.model_alias] : []),
+    ...(policy.fallback_aliases ?? []),
+  ];
+  for (const alias of aliases) {
+    const modelId = WORKER_MODEL_ALIAS_MAP[alias];
+    if (modelId) {
+      return { modelId, resolvedVia: "profile_alias", maxTokens, temperature };
+    }
+  }
+
+  const roleEnv = policy.role ? WORKER_ROLE_ENV_MODEL_IDS[policy.role] : undefined;
+  if (roleEnv) {
+    return { modelId: roleEnv, resolvedVia: "role_env", maxTokens, temperature };
+  }
+
+  return {
+    modelId: MAIN_AGENT_MODEL_ID,
+    resolvedVia: "main_agent",
+    maxTokens,
+    temperature,
+  };
+}
+
 /**
  * Heartbeat: si `HEARTBEAT_MODEL_ID` está vacío, el canal hereda el modelo
  * principal en `graph.ts` (no hay un default barato aparte en código).
@@ -213,6 +341,26 @@ export function createBusinessBrainReviewerModel() {
       modelRole: "business_brain_reviewer",
       temperature: 0,
       maxTokens: 700,
+    })
+  );
+}
+
+/**
+ * Factory para workers model-backed del plano de trabajo (Slice 3.4). El
+ * caller resuelve primero la política con `resolveWorkerModel` y pasa el
+ * resultado; `modelRole` viaja al metering de ai_usage_events junto con el
+ * id RESUELTO (3.4-6) — nunca el alias.
+ */
+export function createWorkerModel(params: {
+  resolved: ResolvedWorkerModel;
+  modelRole: string;
+}) {
+  return new ChatOpenAI(
+    openRouterChatOpenAIOptions({
+      modelName: params.resolved.modelId,
+      modelRole: params.modelRole,
+      temperature: params.resolved.temperature,
+      maxTokens: params.resolved.maxTokens,
     })
   );
 }

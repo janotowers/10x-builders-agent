@@ -15,11 +15,22 @@ export {
   OPERATIONAL_CONVERSATION_CLASSIFIER_MODEL_ID,
   IMAGE_VISION_MODEL_ID,
   LISTING_COPY_MODEL_ID,
+  DEFAULT_WORKFLOW_VERIFIER_MODEL_ID,
+  DEFAULT_WORKFLOW_INTENT_DECOMPOSER_MODEL_ID,
+  DEFAULT_WORKFLOW_COMPILER_MODEL_ID,
+  WORKFLOW_VERIFIER_MODEL_ID,
+  WORKFLOW_INTENT_DECOMPOSER_MODEL_ID,
+  WORKFLOW_COMPILER_MODEL_ID,
+  WORKER_MODEL_ALIAS_MAP,
+  resolveWorkerModel,
   resolveHeartbeatModelId,
   createChatModel,
   createCompactionModel,
   createSkillSelectorModel,
   createBusinessBrainReviewerModel,
+  createWorkerModel,
+  type ResolveWorkerModelInput,
+  type ResolvedWorkerModel,
 } from "./model";
 export { isPropertyOptioningIntent } from "./skills/property-optioning-intent";
 export {
@@ -282,6 +293,24 @@ export type {
   PricingProposal,
   PricingProposalPerSource,
 } from "./operational-cases/pricing-proposal";
+export {
+  verifyValuationRecommendation,
+  runDeterministicValuationChecks,
+  type ValuationVerifierInput,
+  type ValuationVerifierResult,
+  type ValuationVerifierChecks,
+  type VerifierModelInvoke,
+} from "./operational-cases/valuation-verifier";
+export {
+  bindImpactPlaneStore,
+  recordCaseFactsAndApplyImpact,
+  applyAccountAssetImpact,
+  buildCaseApprovalEvidence,
+  grantCaseApprovalWithEvidence,
+  type CaseApprovalEvidence,
+  type RecordCaseFactsResult,
+  type AccountAssetImpactResult,
+} from "./operational-cases/impact-plane";
 
 export {
   HEARTBEAT_CHECKLIST_TEMPLATES,

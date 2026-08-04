@@ -66,6 +66,7 @@ import {
   formatListingPublishedSummaryNotifyText,
 } from "../operational-cases/listing-published-summary";
 import { requiresAvaclick } from "../operational-cases/comparable-search-contract";
+import { recordCaseFactsAndApplyImpact } from "../operational-cases/impact-plane";
 import { adviseCaseTransition } from "../workflows/transition-advisor";
 import type {
   OperationalCaseActivationPolicy,
@@ -4253,6 +4254,35 @@ export function addOperationalCaseTools(
                 eventError
               );
             }
+          }
+
+          // Slice 3.2-4 — plano de impacto: los hechos de intake se escriben
+          // como case_facts (con clase de fuente) junto al context_jsonb, y
+          // cada hecho realmente cambiado dispara el motor. Solo casos v2
+          // (gate dentro del helper); best-effort: jamás rompe el update.
+          try {
+            await recordCaseFactsAndApplyImpact(ctx.db, {
+              userId: ctx.userId,
+              opCase: updated,
+              factPatch: intakeUpdate.intakePatch,
+              factKeyPrefix: "property.",
+              // Turnos automatizados consolidan/derivan; turnos de canal
+              // escriben lo que el inmobiliario aportó. Las respuestas del
+              // propietario externo entran por characteristics-response con
+              // source_kind='external_contact', no por esta tool.
+              sourceKind:
+                ctx.toolCallSource === "cron" ||
+                ctx.toolCallSource === "case_runner" ||
+                ctx.toolCallSource === "heartbeat"
+                  ? "derived"
+                  : "user",
+              sourceRef: record.id,
+            });
+          } catch (impactError) {
+            console.error(
+              "[operational_case_update_intake] impact-plane pass failed:",
+              impactError
+            );
           }
 
           const out = {
