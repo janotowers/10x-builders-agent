@@ -7,6 +7,8 @@ import {
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
+import { grantCaseApprovalWithEvidence } from "@agents/agent";
+import type { OperationalCase } from "@agents/types";
 import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import { ensureContractCommercialDataAsk } from "../operational-cases/ensure-contract-commercial-ask";
 import { isControlledE2EOperationalCase } from "@agents/types";
@@ -275,6 +277,38 @@ function isSettingsTestCase(context: Record<string, unknown>) {
   );
 }
 
+/**
+ * Slice 3.3-1 — camino v2: la decisión de precio queda anclada a la
+ * evidencia vigente en `case_approvals` (evidence_hash + snapshot al momento
+ * de decidir). El helper es no-op fuera de v2 (tenant sin flag, caso sin pin
+ * o definición sin la clase `price`); best-effort: jamás rompe la decisión.
+ */
+async function recordPriceApprovalEvidence(
+  db: DbClient,
+  params: {
+    userId: string;
+    opCase: OperationalCase;
+    decision: "approved" | "rejected";
+    rationale: string;
+  }
+): Promise<void> {
+  try {
+    await grantCaseApprovalWithEvidence(db, {
+      userId: params.userId,
+      opCase: params.opCase,
+      approvalKind: "price",
+      decision: params.decision,
+      decidedBy: params.userId,
+      rationale: params.rationale,
+    });
+  } catch (evidenceError) {
+    console.error(
+      "[price-approval] evidence-bound approval write failed:",
+      evidenceError
+    );
+  }
+}
+
 async function triggerControlledE2EAgentTick(
   db: DbClient,
   updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
@@ -435,6 +469,12 @@ export async function handlePriceApprovalDecision(
         pricing_proposal: nextProposal,
       },
     });
+    await recordPriceApprovalEvidence(db, {
+      userId: params.userId,
+      opCase: updated,
+      decision: "approved",
+      rationale: params.text,
+    });
     if (!shouldPauseBeforeContract) {
       await insertOperationalCaseEvent(db, {
         caseId: opCase.id,
@@ -518,6 +558,12 @@ export async function handlePriceApprovalDecision(
         reason: parsed.reason ?? params.text,
       },
     });
+    await recordPriceApprovalEvidence(db, {
+      userId: params.userId,
+      opCase: updated,
+      decision: "rejected",
+      rationale: parsed.reason ?? params.text,
+    });
     await resolveInternalNotificationWithReminders(db, {
       id: notification.id,
       userId: params.userId,
@@ -571,6 +617,12 @@ export async function handlePriceApprovalDecision(
       patch: parsed.patch,
       pricing_proposal: nextProposal,
     },
+  });
+  await recordPriceApprovalEvidence(db, {
+    userId: params.userId,
+    opCase: updated,
+    decision: "approved",
+    rationale: params.text,
   });
   if (!shouldPauseBeforeContract) {
     await insertOperationalCaseEvent(db, {

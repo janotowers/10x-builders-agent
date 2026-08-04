@@ -64,11 +64,7 @@ import {
 } from "@/lib/operational-cases/publication-runner";
 import { unggaMediaCountSatisfied } from "@/lib/operational-cases/publication-remote-snapshot";
 import type { PublicationMachineAction } from "@/lib/operational-cases/publication-workflow";
-import {
-  buildContractDraftDownloadUrl,
-  parseContractDraftFromContext,
-  parseGenerateDocumentRenderResult,
-} from "@/lib/operational-cases/contract-draft-document";
+import { buildContractDraftDownloadUrl } from "@/lib/operational-cases/contract-draft-document";
 import {
   buildPublicationAwareE2EToolApprovalPolicy,
   listingDescriptionIsApproved,
@@ -282,14 +278,6 @@ async function listTurnToolCalls(
     .eq("turn_id", turnId);
   if (error) return [];
   return (data ?? []) as TurnToolCallRow[];
-}
-
-function hasRenderedContractDraftFromToolCalls(toolCalls: TurnToolCallRow[]): boolean {
-  return toolCalls.some((call) => {
-    if (call.tool_name !== "generate_document_from_template") return false;
-    if (call.status !== "executed") return false;
-    return parseGenerateDocumentRenderResult(call.result_json ?? undefined) != null;
-  });
 }
 
 export function missingContractFieldsFromToolCalls(toolCalls: TurnToolCallRow[]): string[] {

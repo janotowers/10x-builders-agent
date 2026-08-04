@@ -13,7 +13,6 @@ import {
 } from "@agents/agent";
 import {
   createServerClient,
-  getOperationalCase,
   getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
   listOperationalCaseDocuments,
@@ -1198,6 +1197,117 @@ export function propertyDataReviewTextFromContext(params: {
     .join("\n");
 }
 
+export interface ConsolidateDocumentExtractionResult {
+  /** Caso tras persistir (o el mismo si no hubo cambios). */
+  case: OperationalCase;
+  /** Campos mínimos extraídos de los documentos recibidos. */
+  documentFields: Record<string, unknown>;
+  /** true si algún merge (superficies/dirección/identidad legal) persistió. */
+  changed: boolean;
+}
+
+/**
+ * Consolidación de extracción documental → `context.property_data`
+ * (Slice 3.4-2). Es la MISMA sección que corría inline en los post-agent
+ * invariants, extraída tras un contrato explícito de entrada/salida para
+ * registrarse como servicio determinista (`extraction_consolidation`) del
+ * plano de trabajo — refactor, no rewrite: los invariants la siguen llamando
+ * y su comportamiento (merges, precedencia por fuente, eventos) es idéntico.
+ */
+export async function consolidateDocumentExtractionIntoCase(params: {
+  db: ReturnType<typeof createServerClient>;
+  opCase: OperationalCase;
+  documents: Awaited<ReturnType<typeof listOperationalCaseDocuments>>;
+  source: string;
+}): Promise<ConsolidateDocumentExtractionResult> {
+  const { db, documents, source } = params;
+  let workingCase = params.opCase;
+  const documentFields = documentExtractionMinimumsContext(documents);
+  const mergedSurfaces = mergeDocumentSurfacesIntoContextPropertyData({
+    context: workingCase.context_jsonb,
+    documentFields,
+  });
+  const mergedAddress = mergeDocumentAddressIntoContextPropertyData({
+    context: mergedSurfaces.context,
+    documentFields,
+  });
+  const mergedLegalIdentity = mergeDocumentLegalIdentityIntoContextPropertyData({
+    context: mergedAddress.context,
+    documentFields,
+  });
+  const changed =
+    mergedSurfaces.changed || mergedAddress.changed || mergedLegalIdentity.changed;
+  if (changed) {
+    const mergedContext = mergedLegalIdentity.context;
+    const persisted = await updateOperationalCase(
+      db,
+      workingCase.id,
+      workingCase.version,
+      { context: mergedContext }
+    );
+    workingCase = persisted ?? { ...workingCase, context_jsonb: mergedContext };
+    if (mergedSurfaces.changed) {
+      await insertOperationalCaseEvent(db, {
+        caseId: workingCase.id,
+        eventType: "state_changed",
+        actor: "system",
+        stepKey: workingCase.current_step ?? undefined,
+        payload: {
+          kind: "document_surfaces_consolidated_to_property_data",
+          source,
+          adopted: mergedSurfaces.adopted,
+        },
+      });
+    }
+    // Evento de consolidación SOLO si se adoptó un campo de dirección visible.
+    // Evita "Dirección consolidada" genérico cuando el único delta fue metadata
+    // (source) o un conflicto sin adopción de calle/número.
+    if (mergedAddress.changed && addressAdoptedHasVisibleField(mergedAddress.adopted)) {
+      await insertOperationalCaseEvent(db, {
+        caseId: workingCase.id,
+        eventType: "state_changed",
+        actor: "system",
+        stepKey: workingCase.current_step ?? undefined,
+        payload: {
+          kind: "document_address_consolidated_to_property_data",
+          source,
+          adopted: mergedAddress.adopted,
+        },
+      });
+    }
+    // Evento dedicado para conflictos NUEVOS de dirección: hace visible la
+    // discrepancia real (calle/número entre fuentes) sin reusar el label de
+    // consolidación. No se emite para conflictos ya registrados (idempotente).
+    if (mergedAddress.newConflicts.length > 0) {
+      await insertOperationalCaseEvent(db, {
+        caseId: workingCase.id,
+        eventType: "state_changed",
+        actor: "system",
+        stepKey: workingCase.current_step ?? undefined,
+        payload: {
+          kind: "document_address_conflict_detected",
+          source,
+          conflicts: mergedAddress.newConflicts,
+        },
+      });
+    }
+    if (mergedLegalIdentity.changed) {
+      await insertOperationalCaseEvent(db, {
+        caseId: workingCase.id,
+        eventType: "state_changed",
+        actor: "system",
+        stepKey: workingCase.current_step ?? undefined,
+        payload: {
+          kind: "document_legal_identity_consolidated_to_property_data",
+          source,
+          adopted: mergedLegalIdentity.adopted,
+        },
+      });
+    }
+  }
+  return { case: workingCase, documentFields, changed };
+}
+
 export async function applyPropertyOptioningPostAgentInvariants(params: {
   db: ReturnType<typeof createServerClient>;
   opCase: OperationalCase | null;
@@ -1250,93 +1360,17 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
     statuses: ["received"],
   });
   const recentEvents = await getRecentOperationalCaseEvents(db, workingCase.id, 30);
+  // Slice 3.4-2: delega en la sección extraída (contrato explícito); el
+  // comportamiento es idéntico al closure inline previo.
   const consolidateDocumentContext = async () => {
-    const documentFields = documentExtractionMinimumsContext(workingDocuments);
-    const mergedSurfaces = mergeDocumentSurfacesIntoContextPropertyData({
-      context: workingCase.context_jsonb,
-      documentFields,
+    const consolidated = await consolidateDocumentExtractionIntoCase({
+      db,
+      opCase: workingCase,
+      documents: workingDocuments,
+      source,
     });
-    const mergedAddress = mergeDocumentAddressIntoContextPropertyData({
-      context: mergedSurfaces.context,
-      documentFields,
-    });
-    const mergedLegalIdentity = mergeDocumentLegalIdentityIntoContextPropertyData({
-      context: mergedAddress.context,
-      documentFields,
-    });
-    if (
-      mergedSurfaces.changed ||
-      mergedAddress.changed ||
-      mergedLegalIdentity.changed
-    ) {
-      const mergedContext = mergedLegalIdentity.context;
-      const persisted = await updateOperationalCase(
-        db,
-        workingCase.id,
-        workingCase.version,
-        { context: mergedContext }
-      );
-      workingCase = persisted ?? { ...workingCase, context_jsonb: mergedContext };
-      if (mergedSurfaces.changed) {
-        await insertOperationalCaseEvent(db, {
-          caseId: workingCase.id,
-          eventType: "state_changed",
-          actor: "system",
-          stepKey: workingCase.current_step ?? undefined,
-          payload: {
-            kind: "document_surfaces_consolidated_to_property_data",
-            source,
-            adopted: mergedSurfaces.adopted,
-          },
-        });
-      }
-      // Evento de consolidación SOLO si se adoptó un campo de dirección visible.
-      // Evita "Dirección consolidada" genérico cuando el único delta fue metadata
-      // (source) o un conflicto sin adopción de calle/número.
-      if (mergedAddress.changed && addressAdoptedHasVisibleField(mergedAddress.adopted)) {
-        await insertOperationalCaseEvent(db, {
-          caseId: workingCase.id,
-          eventType: "state_changed",
-          actor: "system",
-          stepKey: workingCase.current_step ?? undefined,
-          payload: {
-            kind: "document_address_consolidated_to_property_data",
-            source,
-            adopted: mergedAddress.adopted,
-          },
-        });
-      }
-      // Evento dedicado para conflictos NUEVOS de dirección: hace visible la
-      // discrepancia real (calle/número entre fuentes) sin reusar el label de
-      // consolidación. No se emite para conflictos ya registrados (idempotente).
-      if (mergedAddress.newConflicts.length > 0) {
-        await insertOperationalCaseEvent(db, {
-          caseId: workingCase.id,
-          eventType: "state_changed",
-          actor: "system",
-          stepKey: workingCase.current_step ?? undefined,
-          payload: {
-            kind: "document_address_conflict_detected",
-            source,
-            conflicts: mergedAddress.newConflicts,
-          },
-        });
-      }
-      if (mergedLegalIdentity.changed) {
-        await insertOperationalCaseEvent(db, {
-          caseId: workingCase.id,
-          eventType: "state_changed",
-          actor: "system",
-          stepKey: workingCase.current_step ?? undefined,
-          payload: {
-            kind: "document_legal_identity_consolidated_to_property_data",
-            source,
-            adopted: mergedLegalIdentity.adopted,
-          },
-        });
-      }
-    }
-    return documentFields;
+    workingCase = consolidated.case;
+    return consolidated.documentFields;
   };
 
   // Fuente única de verdad: gate de avance a comparables (WS1/WS2). La

@@ -67,6 +67,7 @@ import {
 } from "@/lib/operational-cases/external-contact-link";
 import { handleContractRevisionUploadAndSend } from "@/lib/business-decisions/contract-review";
 import { resolvePendingDecisionTurn } from "@/lib/business-decisions/pending-decision-router";
+import { resolveDecomposedPendingDecisionTurn } from "@/lib/business-decisions/decomposed-turn";
 import { appendResidualAcknowledgment } from "@/lib/business-decisions/residual-intent";
 import { buildMediaGroupReceivedAck } from "@/lib/operational-cases/case-document-collection";
 import type { PendingAttachmentRef } from "@/lib/operational-cases/pending-attachment-envelope";
@@ -475,10 +476,11 @@ export async function POST(request: Request) {
     // Paridad de canal con Telegram: las decisiones HITL pendientes (revisión
     // de descripción, precio, datos/revisión de contrato, titularidad,
     // comparables) reclaman el turno ANTES del routing conversacional y del
-    // agente. Mismo router determinístico que el webhook. Defensivo: un fallo
-    // aquí no debe romper el chat general.
+    // agente. Mismo router determinístico que el webhook, envuelto por el
+    // multiplexer de intents (Slice 4.1). Defensivo: un fallo aquí no debe
+    // romper el chat general.
     try {
-      const pendingDecisionTurn = await resolvePendingDecisionTurn(db, {
+      const pendingDecisionTurn = await resolveDecomposedPendingDecisionTurn(db, {
         userId: user.id,
         text: message,
         channel: "web",

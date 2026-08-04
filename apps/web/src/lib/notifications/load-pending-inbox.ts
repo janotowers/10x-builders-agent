@@ -241,7 +241,6 @@ export async function loadPendingInboxSnapshot(
 }> {
   const db = createServerClient();
   const excludedKinds = hiddenInboxNotificationKinds();
-  const actionableExcludedKinds = [...excludedKinds, REMINDER_KIND];
   let notifications = await listInternalUserNotifications(db, userId, {
     statuses: ["unread"],
     excludeKinds: excludedKinds,

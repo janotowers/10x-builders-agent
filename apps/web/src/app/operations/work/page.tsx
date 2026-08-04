@@ -22,6 +22,7 @@ import {
 import type { WorkItem, WorkItemAttempt, WorkItemStatus } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { AppShell } from "@/components/app-shell";
+import { OperationsControlTabs } from "@/app/operations/operations-control-tabs";
 import {
   blockedReasonLabel,
   executorKindLabel,
@@ -165,7 +166,7 @@ export default async function OperatorWorkViewPage({
   if ("denied" in gate) {
     return (
       <AppShell
-        title="Plano de trabajo"
+        title="Control operativo"
         description="Vista del operador: estado de ejecución de los work items."
       >
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
@@ -262,21 +263,22 @@ export default async function OperatorWorkViewPage({
 
   return (
     <AppShell
-      title="Plano de trabajo"
-      description="Vista del operador: work items por estado, con ejecutor, reintentos, verificación y vitalidad de claims."
+      title="Control operativo"
+      description="Trabajo interno: work items por estado, con ejecutor, reintentos, verificación y vitalidad de claims."
     >
-      {historicalCount > 0 ? (
-        <div className="mb-4 flex items-center justify-end">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <OperationsControlTabs active="work" />
+        {historicalCount > 0 ? (
           <Link
             href={showHistory ? "/operations/work" : "/operations/work?historial=1"}
-            className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="mb-4 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
           >
             {showHistory
               ? "Ocultar historial"
               : `Mostrar historial (${historicalCount} de casos terminados)`}
           </Link>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
       {unavailable ? (
         <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
           El plano de trabajo no está disponible en este entorno (la migración

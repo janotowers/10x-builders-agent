@@ -1,25 +1,16 @@
+/**
+ * Firma de identidad de la propiedad (detección de cambios de identidad
+ * durante intake/revisión). Las primitivas de normalización viven en
+ * `@agents/workflows` (impact-hash, Slice 3.2-2): este módulo fue el seed
+ * de esa generalización y ahora las importa para que la firma y el
+ * input-hash del plano de impacto no puedan divergir.
+ */
+import { cleanText, numberOrNull, stableRounded } from "@agents/workflows";
+
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function cleanText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function numberOrNull(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value.replace(/,/g, ""));
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
-function stableRounded(value: number | null) {
-  if (value == null) return null;
-  return Math.round(value * 100) / 100;
 }
 
 export type PropertyIdentitySnapshot = {
@@ -66,4 +57,3 @@ export function buildPropertyIdentitySignature(
 ): string {
   return JSON.stringify(buildPropertyIdentitySnapshot(source));
 }
-

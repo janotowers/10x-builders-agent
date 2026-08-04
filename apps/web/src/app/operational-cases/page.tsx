@@ -13,6 +13,7 @@ import {
   listActiveAccountSkillsForUser,
   listOperationalCasesForUser,
   listOperationalCaseTypesForUser,
+  summarizeCaseImpact,
   summarizeCaseWork,
   updateOperationalCase,
 } from "@agents/db";
@@ -50,6 +51,7 @@ import {
   setCaseDocumentRequestTarget,
 } from "@/lib/operational-cases/document-request-target";
 import { caseWorkChipLabel } from "@/lib/operations/work-view-labels";
+import { caseImpactIndicators } from "@/lib/operations/impact-view-labels";
 
 export const dynamic = "force-dynamic";
 
@@ -321,8 +323,8 @@ function formatDate(value: string | null): string {
 }
 
 function casesEnOperacionLabel(count: number): string {
-  if (count === 1) return "1 flujo en curso";
-  return `${count} flujos en curso`;
+  if (count === 1) return "1 caso en curso";
+  return `${count} casos en curso`;
 }
 
 const STEP_LABELS: Record<string, string> = {
@@ -573,6 +575,33 @@ export default async function OperationalCasesPage({
     workSummaryByCaseId = new Map();
   }
 
+  // Indicadores broker-safe del plano de impacto (Slice 3.5-2): frases ya
+  // traducidas; nunca vocabulario técnico (stale/artifact/hash) en esta
+  // superficie. Tolerante a entornos sin la migración 00070.
+  let impactSummaryByCaseId = new Map<
+    string,
+    {
+      caseId: string;
+      staleArtifacts: number;
+      invalidArtifacts: number;
+      suspendedApprovals: number;
+    }
+  >();
+  try {
+    const impactCaseIds = isFocusedDetailView
+      ? selectedCase
+        ? [selectedCase.id]
+        : []
+      : filteredCases.map((c) => c.id);
+    impactSummaryByCaseId = await summarizeCaseImpact(db, user.id, impactCaseIds);
+  } catch {
+    impactSummaryByCaseId = new Map();
+  }
+  const impactNoticesFor = (caseId: string): string[] => {
+    const summary = impactSummaryByCaseId.get(caseId);
+    return summary ? caseImpactIndicators(summary) : [];
+  };
+
   const selectedEvents = selectedCase
     ? await getRecentOperationalCaseEvents(db, selectedCase.id, 200)
     : [];
@@ -616,7 +645,7 @@ export default async function OperationalCasesPage({
   }
   return (
     <AppShell
-      title="Flujos en curso"
+      title="Casos en curso"
       description="Bandeja global con instancias de todas las plantillas para seguimiento operativo y soporte."
       actions={
         <a
@@ -640,20 +669,34 @@ export default async function OperationalCasesPage({
 
           {!selectedCase ? (
             <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-              No encontramos ese flujo en curso. Puede haber sido eliminado
+              No encontramos ese caso en curso. Puede haber sido eliminado
               o no pertenecer a tu cuenta.
             </div>
           ) : (
-            <CaseDetail
-              opCase={selectedCase}
-              type={caseTypeMap.get(selectedCase.case_type_id) ?? null}
-              events={selectedEvents}
-              documents={selectedDocuments}
-              skillInfo={skillInfo(
-                caseTypeMap.get(selectedCase.case_type_id)
-                  ?.default_skill_slug ?? ""
-              )}
-            />
+            <>
+              {impactNoticesFor(selectedCase.id).length > 0 ? (
+                <div className="space-y-1.5">
+                  {impactNoticesFor(selectedCase.id).map((notice) => (
+                    <p
+                      key={notice}
+                      className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/40 dark:text-amber-200"
+                    >
+                      {notice}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+              <CaseDetail
+                opCase={selectedCase}
+                type={caseTypeMap.get(selectedCase.case_type_id) ?? null}
+                events={selectedEvents}
+                documents={selectedDocuments}
+                skillInfo={skillInfo(
+                  caseTypeMap.get(selectedCase.case_type_id)
+                    ?.default_skill_slug ?? ""
+                )}
+              />
+            </>
           )}
         </section>
       ) : (
@@ -676,7 +719,7 @@ export default async function OperationalCasesPage({
 
           {cases.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-              Aún no hay flujos en curso para esta cuenta. Lo recomendado es
+              Aún no hay casos en curso para esta cuenta. Lo recomendado es
               iniciar por chat o Telegram.
             </div>
           ) : filteredCases.length === 0 ? (
@@ -699,6 +742,7 @@ export default async function OperationalCasesPage({
                 const summary = workSummaryByCaseId.get(opCase.id);
                 return summary ? caseWorkChipLabel(summary) : null;
               }}
+              getImpactNotices={(opCase) => impactNoticesFor(opCase.id)}
               getCaseTypeDisplayName={(opCase) =>
                 caseTypeForInstance(opCase, caseTypes, caseTypeMap)
                   ?.display_name ??

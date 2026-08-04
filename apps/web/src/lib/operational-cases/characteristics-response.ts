@@ -1,4 +1,7 @@
-import { evaluatePropertyDataMinimumsForReview } from "@agents/agent";
+import {
+  evaluatePropertyDataMinimumsForReview,
+  recordCaseFactsAndApplyImpact,
+} from "@agents/agent";
 import {
   getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
@@ -186,6 +189,30 @@ export async function mergeCharacteristicsOwnerResponseDeterministically(params:
       validation_errors: extraction.validationErrors,
     },
   });
+
+  // Slice 3.2-4 — plano de impacto: las características extraídas se
+  // escriben como case_facts con su clase de fuente real. `waiting_external`
+  // ⇒ respondió el contacto externo (propietario): source_kind
+  // 'external_contact' — ningún hecho de esa fuente satisface una
+  // postcondición de aprobación sin humano (Technical Plan §21). Ruta
+  // interna ⇒ el inmobiliario relayó: 'user'. Solo casos v2 (gate en el
+  // helper); best-effort.
+  try {
+    await recordCaseFactsAndApplyImpact(params.db, {
+      userId: mergedCase.user_id,
+      opCase: mergedCase,
+      factPatch: extraction.patch,
+      factKeyPrefix: "property.",
+      sourceKind:
+        params.opCase.status === "waiting_external" ? "external_contact" : "user",
+      sourceRef: params.source,
+    });
+  } catch (impactError) {
+    console.error(
+      "[characteristics-response] impact-plane pass failed:",
+      impactError
+    );
+  }
 
   return mergedCase;
 }

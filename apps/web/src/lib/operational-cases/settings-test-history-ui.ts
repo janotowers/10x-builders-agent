@@ -4,10 +4,7 @@ import {
   OPERATIONAL_CASE_STATUS_LABELS,
   operationalCaseDisplayTitle,
 } from "@/lib/operational-cases/instance-list-ui";
-import {
-  buildOperationalStepLabelMap,
-  type OperationalStepLabelMap,
-} from "@/lib/operational-cases/operational-step-labels";
+import { type OperationalStepLabelMap } from "@/lib/operational-cases/operational-step-labels";
 
 export {
   buildOperationalStepLabelMap,

@@ -81,6 +81,8 @@ export function makeWorkItemAgentTurnRunner(db: DbClient): MainAgentTurnRunner {
         caseId: params.caseId,
         workItemId: params.workItemId,
         workItemAttemptId: params.attemptId,
+        // 3.4-6: atribución completa work item → definición en el ledger.
+        workflowDefinitionId: opCase?.workflow_definition_id ?? null,
       });
 
       return {

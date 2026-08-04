@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { applyAccountAssetImpact } from "@agents/agent";
 import {
   createServerClient,
   deleteAccountAsset,
@@ -156,9 +158,13 @@ export async function POST(request: Request) {
     const path = `${user.id}/${assetKey}/${Date.now()}-${safeSegment(
       file.name.replace(/\.[^.]+$/, "")
     )}.${fileExtension(file.name)}`;
+    // Hash del contenido (Slice 3.1): pinea la versión inmutable del asset
+    // para que artifact_inputs pueda referenciar exactamente lo consumido.
+    const fileBytes = Buffer.from(await file.arrayBuffer());
+    const contentHash = createHash("sha256").update(fileBytes).digest("hex");
     const { error: uploadError } = await supabase.storage
       .from(ACCOUNT_ASSETS_BUCKET)
-      .upload(path, file, { upsert: true, contentType: file.type });
+      .upload(path, fileBytes, { upsert: true, contentType: file.type });
     if (uploadError) {
       return NextResponse.json({ error: uploadError.message }, { status: 400 });
     }
@@ -173,6 +179,7 @@ export async function POST(request: Request) {
       storagePath: path,
       contentType: file.type || null,
       fileSizeBytes: file.size,
+      contentHash,
       sourceToolId: sourceToolId || null,
       caseTypeId: caseTypeId || null,
       metadata: {
@@ -182,6 +189,22 @@ export async function POST(request: Request) {
           : {}),
       },
     });
+
+    // Slice 3.2 (escenario C3): reemplazar un asset stalea SOLO los
+    // artefactos que lo declararon como entrada (p. ej. contract_draft ←
+    // commission_contract_template). Gate v2 dentro del helper; best-effort.
+    try {
+      await applyAccountAssetImpact(db, {
+        userId: user.id,
+        assetKey,
+        detail: { content_hash: contentHash, source: "account_assets_upload" },
+      });
+    } catch (impactError) {
+      console.error(
+        "[POST /api/account-assets] impact-plane pass failed:",
+        impactError
+      );
+    }
 
     return NextResponse.json({ ok: true, asset });
   } catch (err) {

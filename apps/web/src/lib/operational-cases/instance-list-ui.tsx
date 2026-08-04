@@ -147,6 +147,7 @@ export function OperationalCaseInstanceCard({
   skillMeta,
   latestEvent,
   workChip,
+  impactNotices,
 }: {
   opCase: OperationalCase;
   href: string;
@@ -160,6 +161,12 @@ export function OperationalCaseInstanceCard({
    * superficie del broker.
    */
   workChip?: string | null;
+  /**
+   * Indicadores broker-safe del plano de impacto (Slice 3.5-2): frases ya
+   * traducidas por caseImpactIndicators. El vocabulario técnico (stale,
+   * artifact, hash) NUNCA llega a este componente.
+   */
+  impactNotices?: string[] | null;
 }) {
   const isTestCase = opCase.context_jsonb?.test_mode === true;
   const resolvedStepLabel = opCase.current_step
@@ -256,6 +263,19 @@ export function OperationalCaseInstanceCard({
           · {formatOperationalCaseDateTime(latestEvent.createdAt)}
         </p>
       ) : null}
+
+      {impactNotices && impactNotices.length > 0 ? (
+        <div className="mt-3 space-y-1">
+          {impactNotices.map((notice) => (
+            <p
+              key={notice}
+              className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/40 dark:text-amber-200"
+            >
+              {notice}
+            </p>
+          ))}
+        </div>
+      ) : null}
     </a>
   );
 }
@@ -268,6 +288,7 @@ export function OperationalCaseInstanceList({
   getSkillMeta,
   getLatestEvent,
   getWorkChip,
+  getImpactNotices,
 }: {
   cases: OperationalCase[];
   getHref: (opCase: OperationalCase) => string;
@@ -278,6 +299,7 @@ export function OperationalCaseInstanceList({
     opCase: OperationalCase
   ) => OperationalCaseInstanceLatestEvent | null;
   getWorkChip?: (opCase: OperationalCase) => string | null;
+  getImpactNotices?: (opCase: OperationalCase) => string[] | null;
 }) {
   return (
     <div className="grid w-full gap-3">
@@ -291,6 +313,7 @@ export function OperationalCaseInstanceList({
           skillMeta={getSkillMeta?.(opCase) ?? null}
           latestEvent={getLatestEvent?.(opCase) ?? null}
           workChip={getWorkChip?.(opCase) ?? null}
+          impactNotices={getImpactNotices?.(opCase) ?? null}
         />
       ))}
     </div>

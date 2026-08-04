@@ -109,8 +109,7 @@ function buildToolToStepKeysMap(
  */
 export function resolveToolCallFlowStepKey(
   call: ToolCall,
-  flow: OperationalCaseFlowStep[],
-  _currentStep?: string | null | undefined
+  flow: OperationalCaseFlowStep[]
 ): string | null {
   const fromMetadata = resolveToolCallStepKeyFromMetadata(call);
   if (fromMetadata) return fromMetadata;
@@ -386,7 +385,7 @@ function toolCallBelongsToStep(
   flow: OperationalCaseFlowStep[],
   currentStep: string | null | undefined
 ): boolean {
-  const resolved = resolveToolCallFlowStepKey(call, flow, currentStep);
+  const resolved = resolveToolCallFlowStepKey(call, flow);
   if (resolved === stepKey) return true;
   if (!resolved && stepToolIds.has(call.tool_name)) {
     return currentStep === stepKey;

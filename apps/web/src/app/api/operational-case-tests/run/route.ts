@@ -14,10 +14,7 @@ import type {
   OperationalCase,
   PendingConfirmation,
 } from "@agents/types";
-import {
-  isControlledE2EOperationalCase,
-  isSettingsOperationalTestCase,
-} from "@agents/types";
+import { isSettingsOperationalTestCase } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { evaluateOwnerResponseBusinessOutcome } from "@/lib/operational-cases/evaluate-owner-response-outcome";
 import {

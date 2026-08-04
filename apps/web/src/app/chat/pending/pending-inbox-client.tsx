@@ -723,19 +723,6 @@ export function PendingInboxClient({
     }
     return map;
   }, [visibleNotifications, notificationById]);
-  const pendingHitlCaseIds = useMemo(
-    () =>
-      new Set(
-        pendingToolConfirmations
-          .map((pending) => pending.caseId)
-          .filter((caseId): caseId is string => Boolean(caseId))
-      ),
-    [pendingToolConfirmations]
-  );
-  const pendingHitlToolCallIds = useMemo(
-    () => new Set(pendingToolConfirmations.map((pending) => pending.toolCallId)),
-    [pendingToolConfirmations]
-  );
   const renderedNotifications = useMemo(
     () =>
       listRenderableNotifications(

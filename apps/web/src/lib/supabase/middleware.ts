@@ -57,7 +57,7 @@ async function getUserWithRetry(
       }
       // Sesión realmente ausente/inválida: no reintentar.
       return { user: null, transientFailure: false };
-    } catch (error) {
+    } catch {
       // Un throw en getUser casi siempre es red/Auth caído, no sesión inválida.
       transientFailure = true;
       if (attempt < AUTH_GET_USER_ATTEMPTS - 1) {

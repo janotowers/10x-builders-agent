@@ -4,7 +4,6 @@ import {
   getGlobalOperationalCaseTypeBySlug,
   getOperationalCase,
   getOperationalCaseTypeById,
-  updateOperationalCase,
 } from "@agents/db";
 import type {
   OperationalCase,

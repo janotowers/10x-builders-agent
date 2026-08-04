@@ -81,6 +81,11 @@ function matchesRule(
     const currentView = searchParams.get("view") ?? "profile-user";
     return pathname === "/settings" && currentView === matcher.view;
   }
+  if (matcher.kind === "path-prefix") {
+    return matcher.prefixes.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+    );
+  }
   return false;
 }
 

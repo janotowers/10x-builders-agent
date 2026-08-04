@@ -50,7 +50,7 @@ export function OperationalCasesFilters({
     <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold">Flujos en curso</h2>
+          <h2 className="text-sm font-semibold">Casos en curso</h2>
           <p className="mt-1 text-xs text-neutral-500">
             {resultCount === totalCount
               ? `${totalCount} en total`

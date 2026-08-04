@@ -25,6 +25,10 @@ import {
 } from "./publish-destination-approval";
 import { handlePublicationReviewDecision } from "./publication-review";
 import {
+  handleApprovalSuspendedDecision,
+  parseApprovalSuspendedDecision,
+} from "./approval-suspended";
+import {
   BUSINESS_DECISION_LABELS,
   type BusinessDecisionKind,
 } from "./business-decision-kinds";
@@ -141,6 +145,13 @@ export const BUSINESS_DECISION_HANDLERS: Record<
       return { intent: "unclear", reason: "Respuesta no reconocida." };
     },
     handle: handlePublicationReviewDecision,
+  },
+  approval_suspended: {
+    kind: "approval_suspended",
+    notificationKind: "approval_suspended",
+    label: BUSINESS_DECISION_LABELS.approval_suspended,
+    parse: parseApprovalSuspendedDecision,
+    handle: handleApprovalSuspendedDecision,
   },
 };
 

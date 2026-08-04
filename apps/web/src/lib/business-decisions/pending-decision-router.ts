@@ -69,7 +69,6 @@ import {
 import {
   createPublicationRunnerOwnedAgentTick,
   kickContractPendingAfterDataCapture,
-  runSettingsTestCaseAgentTick,
 } from "@/lib/operational-cases/run-settings-test-case-tick";
 import { ensurePhotosUploadRequestForCase } from "@/lib/operational-cases/ensure-photos-upload-request";
 import { requestPublicationProgress } from "@/lib/operational-cases/publication-runner";
@@ -703,6 +702,40 @@ export async function resolvePendingDecisionTurn(
               }
             : undefined,
       };
+    }
+  }
+
+  // ---- Gate 1d: approval_suspended (re-aprobar / revocar explícitos) ------
+  // Verbos exclusivos ("re-aprobar", "revocar"): un "aprobar" simple sigue
+  // perteneciendo al gate de price_approval y no colisiona aquí.
+  {
+    const suspendedHandler = businessDecisionHandler("approval_suspended");
+    const parsedSuspended = suspendedHandler.parse(text);
+    if (parsedSuspended.intent !== "unclear") {
+      const pendingSuspended = pendingInternal.find(
+        (notification) => notification.kind === "approval_suspended"
+      );
+      if (pendingSuspended) {
+        const result = await suspendedHandler.handle(db, {
+          userId: params.userId,
+          notificationId: pendingSuspended.id,
+          text,
+        });
+        return {
+          handled: true,
+          routed: "approval_suspended",
+          ok: result.ok === true,
+          status: result.status,
+          caseId: stringOrNull(result.case_id),
+          notificationId: pendingSuspended.id,
+          message:
+            result.message ??
+            (result.ok
+              ? "Listo, procesé tu decisión sobre la aprobación en pausa."
+              : "No pude procesar la decisión sobre la aprobación en pausa."),
+          residual: null,
+        };
+      }
     }
   }
 

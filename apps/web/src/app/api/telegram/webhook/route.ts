@@ -35,7 +35,6 @@ import {
   truncateTelegramText,
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
-import { notify } from "@/lib/notify";
 import { resolveSingleRequiredBooleanField } from "@/lib/notify/contract-data-review-telegram-markup";
 import { maybeCatchUpFlush, fireAndForgetFlush } from "@/lib/memory/trigger";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
@@ -52,7 +51,7 @@ import {
 } from "@/lib/operational-cases/settings-test-tool-policy";
 import { buildPublicationAwareE2EToolApprovalPolicy } from "@/lib/operational-cases/publication-tool-policy";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
-import { resolvePendingDecisionTurn } from "@/lib/business-decisions/pending-decision-router";
+import { resolveDecomposedPendingDecisionTurn } from "@/lib/business-decisions/decomposed-turn";
 import { appendResidualAcknowledgment } from "@/lib/business-decisions/residual-intent";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
@@ -2098,8 +2097,10 @@ export async function POST(request: Request) {
   // Gates 1-6 (listing description, precio, datos/revisión de contrato,
   // titularidad, comparables) viven en el router compartido con el chat web.
   // property_data_review permanece abajo: está ligado al chat del contacto
-  // externo (sin equivalente web).
-  const pendingDecisionTurn = await resolvePendingDecisionTurn(db, {
+  // externo (sin equivalente web). Slice 4.1: el multiplexer descompone
+  // turnos multi-intent antes de la cadena de gates y compone la respuesta;
+  // cuando no aplica, es exactamente el router de siempre.
+  const pendingDecisionTurn = await resolveDecomposedPendingDecisionTurn(db, {
     userId,
     text,
     channel: "telegram",

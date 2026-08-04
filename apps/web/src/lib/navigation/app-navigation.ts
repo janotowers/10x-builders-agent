@@ -1,7 +1,9 @@
 export type AppNavMatcher =
   | "chat-conversation"
   | "chat-pending"
-  | { kind: "settings-view"; view: string };
+  | { kind: "settings-view"; view: string }
+  /** Activo cuando el pathname empieza con cualquiera de los prefijos. */
+  | { kind: "path-prefix"; prefixes: string[] };
 
 export type AppNavNode = {
   key: string;
@@ -63,17 +65,10 @@ export const APP_NAV_TREE: AppNavNode[] = [
     children: [
       {
         key: "running-flows",
-        label: "Flujos en curso",
-        shortLabel: "Flujos",
+        label: "Casos en curso",
+        shortLabel: "Casos",
         icon: "flow",
         href: "/operational-cases",
-      },
-      {
-        key: "flow-templates",
-        label: "Plantillas de flujos",
-        shortLabel: "Plant",
-        icon: "template",
-        href: "/settings/operational-case-types",
       },
       {
         key: "proactivity",
@@ -84,24 +79,37 @@ export const APP_NAV_TREE: AppNavNode[] = [
         matcher: { kind: "settings-view", view: "proactivity" },
       },
       {
-        // Vista del operador del plano de trabajo (Slice 2.5). Rol interino:
-        // is_ungga_admin (Technical Plan §16 deja abierto el sistema de roles).
-        key: "work-plane",
-        label: "Plano de trabajo",
-        shortLabel: "Trabajo",
+        // Superficie unificada del operador (consolidación de navegación,
+        // inicio de Phase 4): /operations/work y /operations/impact son
+        // pestañas de "Control operativo". Mismo rol interino is_ungga_admin
+        // (Technical Plan §16 deja abierto el sistema de roles).
+        key: "operations-control",
+        label: "Control operativo",
+        shortLabel: "Control",
         icon: "tool",
         href: "/operations/work",
+        matcher: {
+          kind: "path-prefix",
+          prefixes: ["/operations/work", "/operations/impact"],
+        },
         adminOnly: true,
       },
       {
-        // Workflow Studio shell read-only (Slice 2.7). Sin gate de admin:
-        // catálogo del propio tenant (globales + privadas propias) y panel
-        // de recursos de la cuenta (2.7-6).
+        // Workflow Studio (Slice 4.2-4): absorbe "Plantillas de flujos" y
+        // "Workflows" en una sola entrada (acuerdo de navegación 4.0-4).
+        // Pestañas: Catálogo / Diseño / Recursos. El laboratorio de
+        // /settings/operational-case-types sigue accesible desde el Studio
+        // para diagnósticos (readiness de tools, pruebas E2E) mientras migra.
+        // Sin gate de admin: todo es lectura/escritura del propio tenant.
         key: "workflow-studio",
-        label: "Workflows",
-        shortLabel: "Wf",
+        label: "Diseño de flujos",
+        shortLabel: "Diseño",
         icon: "template",
         href: "/operations/workflows",
+        matcher: {
+          kind: "path-prefix",
+          prefixes: ["/operations/workflows", "/settings/operational-case-types"],
+        },
       },
     ],
   },

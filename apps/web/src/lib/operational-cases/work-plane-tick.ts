@@ -33,7 +33,10 @@ import {
 } from "@agents/workflows";
 import type { WorkflowGraph } from "@agents/types";
 import { createAdvisedCaseUpdate } from "./advised-case-update";
-import { createWorkPlaneExecutorResolver } from "./work-plane-executors";
+import {
+  createWorkPlaneExecutorResolver,
+  createWorkerScopeEnforcement,
+} from "./work-plane-executors";
 
 const advisedWorkPlaneCaseUpdate = createAdvisedCaseUpdate(
   "work_plane_dispatcher",
@@ -152,6 +155,8 @@ export async function runWorkPlaneCronPass(
   const dispatcher = createWorkDispatcher({
     store: bindStore(db),
     resolveExecutor: createWorkPlaneExecutorResolver(db),
+    // 3.4-5: scopes del worker profile se hacen valer en la selección.
+    enforceScopes: createWorkerScopeEnforcement(db),
     retryBackoffMs: opts.retryBackoffMs,
   });
   const runnerRef =
