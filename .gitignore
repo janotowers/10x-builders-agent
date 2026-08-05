@@ -8,3 +8,4 @@ dist/
 *.tsbuildinfo
 packages/agent/logs/
 pocs/ungga-cli/artifacts/
+.cache/ms-playwright/

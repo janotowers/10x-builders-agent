@@ -10032,6 +10032,12 @@ async function runUnggaCliFallback(
   }
 
   const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  // Keep the browser revision outside ephemeral Cursor/TEMP caches. The same
+  // path is used by `npm run setup:pocs`; Cloud Run images may override it
+  // with their baked browser directory.
+  childEnv.PLAYWRIGHT_BROWSERS_PATH =
+    process.env.POC_PLAYWRIGHT_BROWSERS_PATH ??
+    path.resolve(pocDir, "..", "..", ".cache", "ms-playwright");
   if (cliCreds) {
     childEnv.UNGGA_STAGING_URL = cliCreds.loginUrl;
     childEnv.UNGGA_STAGING_EMAIL = cliCreds.email;

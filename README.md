@@ -245,7 +245,9 @@ de la app, configura `EASYBROKER_PUBLIC_ASSET_BASE_URL` con esa base pública.
 | `npm run dev` | Desarrollo (monorepo) |
 | `npm run build` | Build de todos los paquetes que definan `build` |
 | `npm run lint` | Lint |
-| `npm run setup:pocs` | Instala dependencias y Chromium de Playwright para `pocs/easybroker-mls-cli` y `pocs/ungga-cli` (pruebas de tools MLS/Ungga en local) |
+| `npm run setup:pocs` | Verifica dependencias y, solo si falta, instala Chromium en `.cache/ms-playwright` (estable, fuera de TEMP/Cursor) para los POCs MLS/Ungga |
+| `npm run verify:pocs` | Verificación read-only de dependencias + binario Chromium; útil como health/build gate |
+| `npm run prepare:runtime` | Prepara dependencias nativas del runtime; debe ejecutarse durante el build de la imagen GCP |
 | `cd apps/web && npx next build` | Build solo de la app Next (útil para comprobar tipos antes de desplegar) |
 
 ---
@@ -275,5 +277,6 @@ de la app, configura `EASYBROKER_PUBLIC_ASSET_BASE_URL` con esa base pública.
 - **BigQuery devuelve `not_configured`**: revisa `BIGQUERY_PROJECT_ID` y credenciales en **`apps/web/.env.local`**, reinicia `npm run dev`, y la guía [docs/env-bigquery-setup.md](docs/env-bigquery-setup.md).
 - **Skill `company-data` nunca se activa (`[skills] active=none reason=empty_registry`)**: el agente no encontró `skills/global/`. Revisa el log de arranque `[skills] registry loaded root=… count=…`. Si el `root` no apunta al repo, define `SKILLS_ROOT_DIR=C:\ruta\al\repo` en `.env.local` y reinicia.
 - **`[checkpointer] PostgresSaver failed to connect ETIMEDOUT … :6543`**: red local sin ruta IPv6 al pooler de Supabase. La app aplica `ipv4first` por defecto; si sigue fallando, ejecuta `powershell -ExecutionPolicy Bypass -File scripts\diagnose-supabase.ps1` para confirmar y prueba el host IPv4 del pooler (Supavisor) en `DATABASE_URL`.
+- **Playwright dice `Executable doesn't exist` bajo `Temp\cursor-sandbox-cache`**: una instalación anterior quedó en un caché efímero o corresponde a otra revisión. `npm run dev` ejecuta una comprobación automática y descarga solo si falta; también puedes correr `npm run setup:pocs`. Los POCs están fijados a Playwright 1.60.0 y usan `.cache/ms-playwright`. No instales browsers dentro de una request.
 
-Si quieres, el siguiente paso natural es desplegar **Vercel** (o similar) para `apps/web`, definir las mismas variables de entorno en el panel del proveedor y usar la URL de producción en Supabase y en el webhook de Telegram.
+Para producción con automatización web de portales, usa una imagen de **GCP Cloud Run** que ejecute `npm run prepare:runtime` durante el build y conserve el browser en la imagen (o define `POC_PLAYWRIGHT_BROWSERS_PATH` a la ruta horneada). No descargues Chromium al arrancar una instancia ni durante una request: aumenta cold starts, requiere red/escritura y puede producir carreras entre instancias.
