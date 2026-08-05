@@ -456,11 +456,7 @@ export default async function OperatorWorkViewPage({
           {visibleItems.length === 0 ? (
             <div className="rounded-xl border border-dashed border-neutral-300 bg-white px-4 py-3 text-sm text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
               {historicalCount > 0 ? (
-                <>
-                  No hay trabajo en casos vigentes. Hay {historicalCount} item
-                  {historicalCount === 1 ? "" : "s"} de casos ya terminados en
-                  el historial.
-                </>
+                <>No hay trabajo en casos vigentes.</>
               ) : (
                 <>
                   No hay work items todavía. Los casos con definición pinneada y
