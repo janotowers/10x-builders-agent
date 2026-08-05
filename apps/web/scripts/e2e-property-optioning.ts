@@ -7,6 +7,7 @@
 //
 // Uso (desde apps/web):
 //   npx tsx scripts/e2e-property-optioning.ts create [--user <uuid>]
+//     add --fresh to avoid reusing history/impact rows from a prior run
 //   npx tsx scripts/e2e-property-optioning.ts status
 //   npx tsx scripts/e2e-property-optioning.ts tick [--owner "<texto>"]
 //   npx tsx scripts/e2e-property-optioning.ts owner-docs "<texto respuesta dueño>"
@@ -61,8 +62,10 @@ async function main() {
   const {
     createServerClient,
     createOperationalCase,
+    createWorkItemsFromTemplates,
     getOperationalCase,
     getLatestPublishedDefinitionForUser,
+    getPublishedDefinition,
     insertOperationalCaseEvent,
     markCaseProcessing,
     associateExternalResponseWithCase,
@@ -71,6 +74,7 @@ async function main() {
     listCaseFacts,
     listCaseArtifactsForCase,
     listCaseApprovalsForCase,
+    propagateReadiness,
   } = await import("@agents/db");
   const db = createServerClient();
 
@@ -158,7 +162,7 @@ async function main() {
     const pinned = latest ? { id: latest.id, version: latest.version } : null;
     if (!pinned) throw new Error("no published definition to pin");
 
-    if (existing) {
+    if (existing && !process.argv.includes("--fresh")) {
       const { data, error } = await db
         .from("operational_cases")
         .update({
@@ -234,6 +238,65 @@ async function main() {
   const { existing } = await findTestCase();
   if (!existing) throw new Error("no settings test case; run `create` first");
   const caseId = existing.id;
+
+  if (command === "work-sync") {
+    const opCase = await getOperationalCase(db, caseId);
+    if (
+      !opCase ||
+      !opCase.current_step ||
+      !opCase.workflow_definition_id ||
+      opCase.workflow_definition_version == null
+    ) {
+      throw new Error("case has no current step or pinned definition");
+    }
+    const definition = await getPublishedDefinition(
+      db,
+      opCase.workflow_definition_id,
+      opCase.workflow_definition_version
+    );
+    if (!definition) throw new Error("pinned published definition not found");
+    const templates = definition.graph_jsonb.work_templates.flatMap(
+      (template) =>
+        template.on_enter_state === opCase.current_step &&
+        template.required_capability
+          ? [
+              {
+                work_type: template.work_type,
+                required_capability: template.required_capability,
+                depends_on: template.depends_on,
+                verification_contract: template.verification_contract,
+              },
+            ]
+          : []
+    );
+    const result = await createWorkItemsFromTemplates(db, {
+      userId,
+      caseId,
+      workflowDefinitionVersion: definition.version,
+      onEnterState: opCase.current_step,
+      templates,
+    });
+    const readiness = await propagateReadiness(db, { userId, caseId });
+    console.log(
+      `work-sync step=${opCase.current_step}: templates=${templates.length} created=${result.created.length} existing=${result.existing.length} ready=${readiness.readyIds.length}`
+    );
+    return;
+  }
+
+  if (command === "work-run") {
+    const { runWorkPlaneCronPass } = await import(
+      "../src/lib/operational-cases/work-plane-tick"
+    );
+    const summary = await runWorkPlaneCronPass(db, {
+      onlyUserId: userId,
+      onlyCaseId: caseId,
+      maxItemsPerTenant: 5,
+      runnerRef: `property-optioning-e2e:${Date.now()}`,
+      retryBackoffMs: () => 0,
+    });
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
 
   if (command === "status") {
     const opCase = await getOperationalCase(db, caseId);
@@ -377,6 +440,7 @@ async function main() {
       "../src/lib/operational-cases/advised-case-update"
     );
     const { notify } = await import("../src/lib/notify");
+    const { recordCaseFactsAndApplyImpact } = await import("@agents/agent");
     const advisedOwnerSimulationUpdate = createAdvisedCaseUpdate(
       "lab_owner_simulation",
       "runtime"
@@ -457,6 +521,15 @@ async function main() {
       },
     });
     if (!updated) throw new Error("owner_response_deterministic_update_failed");
+
+    await recordCaseFactsAndApplyImpact(db, {
+      userId: fresh.user_id,
+      opCase: updated,
+      factPatch: parsed,
+      factKeyPrefix: "property.",
+      sourceKind: "external_contact",
+      sourceRef: "readiness_owner_simulation",
+    });
 
     if (criticalMissing.length === 0) {
       const reviewText = buildPropertyDataReviewMessage({

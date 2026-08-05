@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { recordCaseFactsAndApplyImpact } from "@agents/agent";
 import {
   createServerClient,
   associateExternalResponseWithCase,
@@ -213,6 +214,24 @@ async function processCharacteristicsOwnerResponseDeterministically(
 
   if (!updated) {
     throw new Error("owner_response_deterministic_update_failed");
+  }
+
+  // Paridad con characteristics-response de producción: el merge
+  // determinista del lab también alimenta case_facts/impact plane en casos v2.
+  try {
+    await recordCaseFactsAndApplyImpact(db, {
+      userId: fresh.user_id,
+      opCase: updated,
+      factPatch: parsed,
+      factKeyPrefix: "property.",
+      sourceKind: "external_contact",
+      sourceRef: "readiness_owner_simulation",
+    });
+  } catch (impactError) {
+    console.error(
+      "[operational-case-tests/run] owner simulation impact-plane pass failed:",
+      impactError
+    );
   }
 
   let internalReviewSent = false;

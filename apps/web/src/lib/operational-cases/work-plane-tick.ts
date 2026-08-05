@@ -127,6 +127,9 @@ export async function runWorkPlaneCronPass(
     runnerRef?: string;
     /** Backoff de reintentos; el soak lo baja a 0 para drenar rápido. */
     retryBackoffMs?: (attemptCount: number) => number;
+    /** Scope diagnóstico/E2E; omitidos en cron para procesar todo lo habilitado. */
+    onlyUserId?: string;
+    onlyCaseId?: string;
   } = {}
 ): Promise<WorkPlaneCronSummary> {
   const summary: WorkPlaneCronSummary = {
@@ -138,6 +141,9 @@ export async function runWorkPlaneCronPass(
   let tenants: string[] = [];
   try {
     tenants = await listWorkPlaneV2Tenants(db);
+    if (opts.onlyUserId) {
+      tenants = tenants.filter((userId) => userId === opts.onlyUserId);
+    }
   } catch (error) {
     summary.errors.push({
       userId: "*",
@@ -164,7 +170,10 @@ export async function runWorkPlaneCronPass(
 
   for (const userId of tenants) {
     try {
-      const pinnedCases = await listPinnedActiveOperationalCases(db, userId);
+      const allPinnedCases = await listPinnedActiveOperationalCases(db, userId);
+      const pinnedCases = opts.onlyCaseId
+        ? allPinnedCases.filter((opCase) => opCase.id === opts.onlyCaseId)
+        : allPinnedCases;
       const dispatchables: DispatchableCase[] = [];
       for (const opCase of pinnedCases) {
         if (
