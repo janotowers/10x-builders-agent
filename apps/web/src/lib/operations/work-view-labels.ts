@@ -6,14 +6,49 @@
  */
 import type { WorkItem, WorkItemAttempt, WorkItemStatus } from "@agents/types";
 
-export const WORK_VIEW_COLUMNS: Array<{
+export type WorkViewColumn = {
   status: WorkItemStatus;
   label: string;
-}> = [
+  /** Etiqueta corta para cabeceras de columna estrechas (5 en fila). */
+  shortLabel?: string;
+};
+
+/**
+ * Camino feliz del tablero (izquierda → derecha). Bloqueado NO va aquí:
+ * es una excepción que reencola a `ready`, no una etapa del flujo.
+ */
+export const WORK_VIEW_FLOW_COLUMNS: WorkViewColumn[] = [
   { status: "todo", label: "Por hacer" },
-  { status: "ready", label: "Listo para ejecutar" },
+  {
+    status: "ready",
+    label: "Listo para ejecutar",
+    shortLabel: "Listo",
+  },
   { status: "running", label: "En ejecución" },
-  { status: "blocked", label: "Bloqueado" },
+  { status: "review", label: "En revisión" },
+  { status: "done", label: "Terminado" },
+];
+
+/** Bandeja de excepción (fuera de la secuencia del camino feliz). */
+export const WORK_VIEW_BLOCKED_COLUMN: WorkViewColumn = {
+  status: "blocked",
+  label: "Bloqueado",
+};
+
+/**
+ * Todas las columnas del vocabulario de la vista (flujo + excepción).
+ * El orden histórico del plan mantiene `blocked` entre running y review
+ * para etiquetas/status; el layout del tablero usa FLOW + BLOCKED aparte.
+ */
+export const WORK_VIEW_COLUMNS: WorkViewColumn[] = [
+  { status: "todo", label: "Por hacer" },
+  {
+    status: "ready",
+    label: "Listo para ejecutar",
+    shortLabel: "Listo",
+  },
+  { status: "running", label: "En ejecución" },
+  WORK_VIEW_BLOCKED_COLUMN,
   { status: "review", label: "En revisión" },
   { status: "done", label: "Terminado" },
 ];

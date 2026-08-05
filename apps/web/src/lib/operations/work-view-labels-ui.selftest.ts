@@ -15,10 +15,19 @@ import {
   verificationStateLabel,
   workItemStatusLabel,
   workTypeLabel,
+  WORK_VIEW_BLOCKED_COLUMN,
   WORK_VIEW_COLUMNS,
+  WORK_VIEW_FLOW_COLUMNS,
 } from "./work-view-labels";
 
-// Columnas: las seis del plan, en orden.
+// Camino feliz: 5 etapas en progresión; bloqueado es excepción aparte.
+assert.deepEqual(
+  WORK_VIEW_FLOW_COLUMNS.map((c) => c.status),
+  ["todo", "ready", "running", "review", "done"]
+);
+assert.equal(WORK_VIEW_BLOCKED_COLUMN.status, "blocked");
+assert.equal(WORK_VIEW_FLOW_COLUMNS[1]?.shortLabel, "Listo");
+// Vocabulario completo (orden histórico del plan, blocked entre running/review).
 assert.deepEqual(
   WORK_VIEW_COLUMNS.map((c) => c.status),
   ["todo", "ready", "running", "blocked", "review", "done"]

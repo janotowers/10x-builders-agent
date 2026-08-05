@@ -5,14 +5,17 @@
  * abierto el sistema de roles; no inventamos uno en este slice]. La entrada de
  * navegación también está oculta para no-admins (app-navigation adminOnly).
  *
- * Columnas Todo/Ready/Running/Blocked/Review/Done; sin drag-and-drop en v1 —
- * las únicas transiciones manuales son botones de acción explicada donde son
- * legales (review→done y blocked→ready). Vocabulario de liveness §10; la
- * palabra "heartbeat" jamás se renderiza aquí (verificado por UI selftest).
+ * Layout: camino feliz en una fila (Todo → Ready → Running → Review → Done);
+ * Bloqueado es bandeja de excepción arriba (reencola a Ready, no es etapa).
+ * Sin drag-and-drop en v1 — las únicas transiciones manuales son botones de
+ * acción explicada donde son legales (review→done y blocked→ready).
+ * Vocabulario de liveness §10; la palabra "heartbeat" jamás se renderiza aquí
+ * (verificado por UI selftest).
  */
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import type { ReactNode } from "react";
 import {
   approveReviewedItem,
   createServerClient,
@@ -29,8 +32,10 @@ import {
   livenessCue,
   retryStateLabel,
   verificationStateLabel,
-  WORK_VIEW_COLUMNS,
+  WORK_VIEW_BLOCKED_COLUMN,
+  WORK_VIEW_FLOW_COLUMNS,
   workTypeLabel,
+  type WorkViewColumn,
 } from "@/lib/operations/work-view-labels";
 
 // Acentos semánticos por columna: rojo/ámbar = piden acción del operador,
@@ -155,6 +160,152 @@ function caseLabel(row: CaseLabelRow | undefined, caseId: string): string {
   return candidate || `${row.case_type} · ${row.id.slice(0, 8)}…`;
 }
 
+function ColumnHeader({
+  column,
+  count,
+  useShortLabel = false,
+}: {
+  column: WorkViewColumn;
+  count: number;
+  useShortLabel?: boolean;
+}) {
+  const accents = COLUMN_ACCENTS[column.status];
+  const label =
+    useShortLabel && column.shortLabel ? column.shortLabel : column.label;
+  return (
+    <h2 className="flex items-center justify-between gap-1 px-1 text-sm font-semibold">
+      <span className="flex min-w-0 items-center gap-1.5" title={column.label}>
+        <span className={`h-2 w-2 shrink-0 rounded-full ${accents.dot}`} />
+        <span className="truncate">{label}</span>
+      </span>
+      <span
+        className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${accents.count}`}
+      >
+        {count}
+      </span>
+    </h2>
+  );
+}
+
+function WorkItemCard({
+  item,
+  attempt,
+  caseLabelText,
+  depCount,
+  compact = false,
+}: {
+  item: WorkItem;
+  attempt: WorkItemAttempt | null;
+  caseLabelText: string;
+  depCount: number;
+  compact?: boolean;
+}) {
+  const cue = item.status === "running" ? livenessCue(attempt) : "";
+  return (
+    <article
+      className={`rounded-xl border border-neutral-200 bg-white text-xs shadow-sm dark:border-neutral-800 dark:bg-neutral-900 ${
+        compact ? "p-2.5" : "p-3"
+      }`}
+    >
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold leading-snug text-neutral-900 dark:text-neutral-100">
+            {workTypeLabel(item.work_type)}
+          </p>
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-neutral-400">
+            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+              {retryStateLabel(item)}
+            </span>
+            <code className="truncate">{item.work_type}</code>
+          </p>
+        </div>
+      </div>
+      <p className="mt-1.5 truncate text-neutral-500" title={caseLabelText}>
+        Caso: {caseLabelText}
+      </p>
+      <p className="mt-1.5 flex flex-wrap items-center gap-1 text-neutral-500">
+        <span
+          className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${executorBadgeClasses(attempt?.executor_kind)}`}
+        >
+          {executorKindLabel(attempt?.executor_kind)}
+        </span>
+        {depCount > 0 ? (
+          <span>
+            {depCount} dep{depCount === 1 ? "" : "s"}
+          </span>
+        ) : null}
+        {item.due_at ? (
+          <span>Vence: {new Date(item.due_at).toLocaleString("es-MX")}</span>
+        ) : null}
+      </p>
+      <p className="mt-1 truncate text-neutral-500" title={verificationStateLabel(item)}>
+        Verificación: {verificationStateLabel(item)}
+      </p>
+      {cue ? (
+        <p className="mt-1 font-medium text-violet-700 dark:text-violet-300">
+          {cue}
+        </p>
+      ) : null}
+      {item.status === "blocked" ? (
+        <p className="mt-1 text-red-600 dark:text-red-400">
+          Motivo: {blockedReasonLabel(item.blocked_reason)}
+        </p>
+      ) : null}
+      {item.status === "review" ? (
+        <form action={approveReviewedItemAction} className="mt-2">
+          <input type="hidden" name="work_item_id" value={item.id} />
+          <button
+            type="submit"
+            className="rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+            title="Aprueba el resultado revisado y marca el item como terminado (review → done)."
+          >
+            Aprobar y terminar
+          </button>
+        </form>
+      ) : null}
+      {item.status === "blocked" ? (
+        <form action={retryBlockedItemAction} className="mt-2">
+          <input type="hidden" name="work_item_id" value={item.id} />
+          <button
+            type="submit"
+            className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+            title="Reencola el item bloqueado para un nuevo intento (blocked → ready); amplía max_attempts en 1 si el bloqueo fue por límite de intentos."
+          >
+            Reintentar
+          </button>
+        </form>
+      ) : null}
+    </article>
+  );
+}
+
+function FlowColumn({
+  column,
+  items,
+  renderCard,
+}: {
+  column: WorkViewColumn;
+  items: WorkItem[];
+  renderCard: (item: WorkItem) => ReactNode;
+}) {
+  return (
+    <section
+      className={`min-w-0 rounded-2xl border border-t-4 border-neutral-200 bg-neutral-50 p-2.5 dark:border-neutral-800 dark:bg-neutral-950 ${COLUMN_ACCENTS[column.status].border}`}
+    >
+      <ColumnHeader column={column} count={items.length} useShortLabel />
+      <div className="mt-2 space-y-2">
+        {items.length === 0 ? (
+          <p className="px-1 py-4 text-center text-xs text-neutral-400">
+            Sin items
+          </p>
+        ) : (
+          items.map((item) => renderCard(item))
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default async function OperatorWorkViewPage({
   searchParams,
 }: {
@@ -256,10 +407,24 @@ export default async function OperatorWorkViewPage({
     );
   };
 
-  const columns = WORK_VIEW_COLUMNS.map((column) => ({
+  const flowColumns = WORK_VIEW_FLOW_COLUMNS.map((column) => ({
     ...column,
     items: visibleItems.filter((item) => item.status === column.status),
   }));
+  const blockedItems = visibleItems.filter(
+    (item) => item.status === WORK_VIEW_BLOCKED_COLUMN.status
+  );
+
+  const renderCard = (item: WorkItem, compact = false) => (
+    <WorkItemCard
+      key={item.id}
+      item={item}
+      attempt={currentAttemptFor(item)}
+      caseLabelText={caseLabel(caseLabels.get(item.case_id), item.case_id)}
+      depCount={dependencyCounts.get(item.id) ?? 0}
+      compact={compact}
+    />
+  );
 
   return (
     <AppShell
@@ -301,126 +466,45 @@ export default async function OperatorWorkViewPage({
           )}
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {columns.map((column) => (
-            <section
-              key={column.status}
-              className={`rounded-2xl border border-t-4 border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950 ${COLUMN_ACCENTS[column.status].border}`}
-            >
-              <h2 className="flex items-center justify-between px-1 text-sm font-semibold">
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`h-2 w-2 rounded-full ${COLUMN_ACCENTS[column.status].dot}`}
-                  />
-                  {column.label}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${COLUMN_ACCENTS[column.status].count}`}
-                >
-                  {column.items.length}
-                </span>
-              </h2>
-              <div className="mt-2 space-y-2">
-                {column.items.length === 0 ? (
-                  <p className="px-1 py-4 text-center text-xs text-neutral-400">
-                    Sin items
-                  </p>
-                ) : (
-                  column.items.map((item) => {
-                    const attempt = currentAttemptFor(item);
-                    const cue =
-                      item.status === "running" ? livenessCue(attempt) : "";
-                    const depCount = dependencyCounts.get(item.id) ?? 0;
-                    return (
-                      <article
-                        key={item.id}
-                        className="rounded-xl border border-neutral-200 bg-white p-3 text-xs shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="font-semibold text-neutral-900 dark:text-neutral-100">
-                              {workTypeLabel(item.work_type)}
-                            </p>
-                            <p className="truncate text-[10px] text-neutral-400">
-                              <code>{item.work_type}</code>
-                            </p>
-                          </div>
-                          <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                            {retryStateLabel(item)}
-                          </span>
-                        </div>
-                        <p className="mt-1.5 truncate text-neutral-500">
-                          Caso: {caseLabel(caseLabels.get(item.case_id), item.case_id)}
-                        </p>
-                        <p className="mt-1.5 flex flex-wrap items-center gap-1 text-neutral-500">
-                          <span
-                            className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${executorBadgeClasses(attempt?.executor_kind)}`}
-                          >
-                            {executorKindLabel(attempt?.executor_kind)}
-                          </span>
-                          {depCount > 0 ? (
-                            <span>
-                              {depCount} dependencia{depCount === 1 ? "" : "s"}
-                            </span>
-                          ) : null}
-                          {item.due_at ? (
-                            <span>
-                              Vence: {new Date(item.due_at).toLocaleString("es-MX")}
-                            </span>
-                          ) : null}
-                        </p>
-                        <p className="mt-1 text-neutral-500">
-                          Verificación: {verificationStateLabel(item)}
-                        </p>
-                        {cue ? (
-                          <p className="mt-1 font-medium text-violet-700 dark:text-violet-300">
-                            {cue}
-                          </p>
-                        ) : null}
-                        {item.status === "blocked" ? (
-                          <p className="mt-1 text-red-600 dark:text-red-400">
-                            Motivo: {blockedReasonLabel(item.blocked_reason)}
-                          </p>
-                        ) : null}
-                        {item.status === "review" ? (
-                          <form action={approveReviewedItemAction} className="mt-2">
-                            <input
-                              type="hidden"
-                              name="work_item_id"
-                              value={item.id}
-                            />
-                            <button
-                              type="submit"
-                              className="rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
-                              title="Aprueba el resultado revisado y marca el item como terminado (review → done)."
-                            >
-                              Aprobar y terminar
-                            </button>
-                          </form>
-                        ) : null}
-                        {item.status === "blocked" ? (
-                          <form action={retryBlockedItemAction} className="mt-2">
-                            <input
-                              type="hidden"
-                              name="work_item_id"
-                              value={item.id}
-                            />
-                            <button
-                              type="submit"
-                              className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
-                              title="Reencola el item bloqueado para un nuevo intento (blocked → ready); amplía max_attempts en 1 si el bloqueo fue por límite de intentos."
-                            >
-                              Reintentar
-                            </button>
-                          </form>
-                        ) : null}
-                      </article>
-                    );
-                  })
-                )}
+        <div className="space-y-4">
+          {/* Excepción: bloqueado reencola a Listo; no es etapa del camino feliz. */}
+          <section
+            className={`rounded-2xl border border-t-4 border-neutral-200 bg-red-50/60 p-3 dark:border-neutral-800 dark:bg-red-950/20 ${COLUMN_ACCENTS.blocked.border}`}
+          >
+            <div className="flex flex-wrap items-baseline justify-between gap-2 px-1">
+              <ColumnHeader
+                column={WORK_VIEW_BLOCKED_COLUMN}
+                count={blockedItems.length}
+              />
+              <p className="text-[11px] text-red-800/80 dark:text-red-200/80">
+                Excepción · Reintentar vuelve a Listo (no es etapa del flujo)
+              </p>
+            </div>
+            {blockedItems.length === 0 ? (
+              <p className="mt-2 px-1 py-2 text-xs text-neutral-500">
+                Sin items bloqueados
+              </p>
+            ) : (
+              <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {blockedItems.map((item) => renderCard(item, true))}
               </div>
-            </section>
-          ))}
+            )}
+          </section>
+
+          {/* Camino feliz: una fila en pantallas anchas para percibir progresión. */}
+          <div
+            className="grid gap-3 md:grid-cols-2 xl:grid-cols-5"
+            aria-label="Camino feliz del trabajo: por hacer, listo, en ejecución, en revisión, terminado"
+          >
+            {flowColumns.map((column) => (
+              <FlowColumn
+                key={column.status}
+                column={column}
+                items={column.items}
+                renderCard={(item) => renderCard(item, true)}
+              />
+            ))}
+          </div>
         </div>
       )}
     </AppShell>
