@@ -867,6 +867,7 @@ function shouldReuseActiveNotification(payload: NotifyPayload, caseId: string | 
     "manual_publish_package_approval",
     "publication_review_required",
     "photos_upload_requested",
+    "titularidad_review",
     DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
     // Corrective re-close after premature summary must upsert, not insert
     // (unique active index on user/case/kind).
@@ -927,9 +928,27 @@ export async function notify(
     deliveredChannels: channelMap([webResult]),
     metadata: effectivePayload.data ?? {},
   };
-  const notification = shouldReuseActiveNotification(effectivePayload, caseId)
-    ? await upsertActiveInternalUserNotification(db, notificationInput)
-    : await createInternalUserNotification(db, notificationInput);
+  let notification;
+  if (shouldReuseActiveNotification(effectivePayload, caseId)) {
+    notification = await upsertActiveInternalUserNotification(db, notificationInput);
+  } else {
+    try {
+      notification = await createInternalUserNotification(db, notificationInput);
+    } catch (err) {
+      // Índice único de notificación activa por (user, case, kind): si otra
+      // ruta ya dejó una unread del mismo kind, refrescamos esa en lugar de
+      // tumbar el tick completo con un 23505 sin manejar.
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "23505" && caseId) {
+        notification = await upsertActiveInternalUserNotification(
+          db,
+          notificationInput
+        );
+      } else {
+        throw err;
+      }
+    }
+  }
 
   for (const channel of priority) {
     if (channel === "web") continue;
