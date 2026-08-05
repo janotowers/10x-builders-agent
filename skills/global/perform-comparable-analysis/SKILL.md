@@ -112,6 +112,11 @@ Producir un objeto `context_jsonb.comparables_analysis`:
       omitas silenciosamente): ejecútala antes de persistir comparables.
     - Si faltan lat/lng, resuelve primero `geocode_property_address` con la
       dirección canónica del inmueble (boleta/predial/intake).
+    - Si el geocode sale **ambiguo o falla**, NO omitas Avaclick por eso:
+      llama `get_avaclick_valuation` de todas formas en el mismo turno. Devolverá
+      `status="geocode_unresolved"`, ese intento queda registrado y
+      `operational_case_persist_comparables_analysis` lo acepta (persiste con
+      warning de geocoding en lugar de bloquear el caso).
     - Si Avaclick devuelve `status="geocode_unresolved"`, NO trates eso como
       fallo del proveedor: deja warning de geocoding y continúa con EasyBroker/BigQuery.
     - Si el tipo no es compatible o la cuenta no está configurada, continúa con

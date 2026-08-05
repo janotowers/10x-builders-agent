@@ -139,6 +139,80 @@ function avaclickAttemptedNonRecoverable(call: PersistedToolCallRow): boolean {
   );
 }
 
+function avaclickBlockedByUnresolvedGeocode(call: PersistedToolCallRow): boolean {
+  if (call.tool_name !== "get_avaclick_valuation") return false;
+  const result = isRecord(call.result_json) ? call.result_json : null;
+  return result?.status === "geocode_unresolved";
+}
+
+function geocodeAttemptUnresolved(call: PersistedToolCallRow): boolean {
+  if (call.tool_name !== "geocode_property_address") return false;
+  const result = isRecord(call.result_json) ? call.result_json : null;
+  if (!result) return call.status === "failed";
+  if (result.ok === true) return false;
+  const status = typeof result.status === "string" ? result.status : null;
+  return (
+    status === "ambiguous" ||
+    status === "zero_results" ||
+    status === "failed" ||
+    call.status === "failed"
+  );
+}
+
+/**
+ * El persist de comparables exige Avaclick para residencial con datos
+ * confiables, pero NO debe dejar el caso en bucle cuando la dirección es
+ * ingeocodificable: si en el mismo turno el geocode quedó irresuelto
+ * (ambiguo/fallido, sin ningún geocode exitoso) y el caso NO tiene
+ * coordenadas persistidas, `get_avaclick_valuation` sería un no-op
+ * determinista (`geocode_unresolved` sin contactar al proveedor). En ese
+ * escenario el requisito se exime y el análisis persiste con warning de
+ * geocoding (alineado con el skill perform-comparable-analysis). Si el caso
+ * sí tiene coordenadas utilizables, Avaclick puede correr y se sigue
+ * exigiendo el intento real.
+ */
+export function avaclickPersistRequirementSatisfiedForTest(
+  rows: PersistedToolCallRow[],
+  opts: { caseHasCoordinates?: boolean } = {}
+): boolean {
+  if (rows.some((call) => avaclickAttemptedNonRecoverable(call))) return true;
+  const geocodeCalls = rows.filter(
+    (call) => call.tool_name === "geocode_property_address"
+  );
+  const geocodeResolved = geocodeCalls.some(
+    (call) =>
+      call.status === "executed" &&
+      isRecord(call.result_json) &&
+      call.result_json.ok === true
+  );
+  const geocodeUnresolvedThisTurn =
+    !geocodeResolved && geocodeCalls.some((call) => geocodeAttemptUnresolved(call));
+  if (!geocodeUnresolvedThisTurn) return false;
+  if (opts.caseHasCoordinates === true) {
+    // Con coordenadas del caso, Avaclick es ejecutable: exigir el intento.
+    return rows.some((call) => avaclickBlockedByUnresolvedGeocode(call));
+  }
+  return true;
+}
+
+/** Coordenadas persistidas en property_data.address (lat/lng finitas, no 0). */
+export function propertyDataHasCoordinatesForTest(
+  propertyData: Record<string, unknown>
+): boolean {
+  const address = isRecord(propertyData.address) ? propertyData.address : null;
+  if (!address) return false;
+  const coordinate = (value: unknown): boolean => {
+    const n =
+      typeof value === "number"
+        ? value
+        : typeof value === "string"
+          ? Number(value.trim())
+          : NaN;
+    return Number.isFinite(n) && n !== 0;
+  };
+  return coordinate(address.latitude) && coordinate(address.longitude);
+}
+
 /**
  * Kinds de notify_user que están ligados a un caso operativo y por tanto deben
  * cargar el `opCase` para evaluar sus guards (HITL real vs. informativo).
@@ -4886,6 +4960,9 @@ export function addOperationalCaseTools(
               "easybroker_search_closed_deals",
               "bigquery_lookup_local_comparables",
               "get_avaclick_valuation",
+              // Solo para el guard de Avaclick (geocode irresuelto); se filtra
+              // antes de construir el artefacto de comparables.
+              "geocode_property_address",
             ])
             .order("created_at", { ascending: true });
           if (error) {
@@ -4933,13 +5010,15 @@ export function addOperationalCaseTools(
               ? context.property_data
               : context;
             analysis = buildComparablesAnalysisFromToolCalls(
-              ((data ?? []) as PersistedToolCallRow[]).map((call) => ({
-                tool_name: call.tool_name,
-                status: call.status,
-                arguments_json: call.arguments_json ?? null,
-                result_json: call.result_json ?? null,
-                created_at: call.created_at ?? null,
-              })),
+              ((data ?? []) as PersistedToolCallRow[])
+                .filter((call) => call.tool_name !== "geocode_property_address")
+                .map((call) => ({
+                  tool_name: call.tool_name,
+                  status: call.status,
+                  arguments_json: call.arguments_json ?? null,
+                  result_json: call.result_json ?? null,
+                  created_at: call.created_at ?? null,
+                })),
               {
                 subject_area_m2: resolveSubjectAreaM2FromPropertyData(propertyData),
               }
@@ -4963,8 +5042,9 @@ export function addOperationalCaseTools(
               : {};
             const propertyDataUntrusted =
               analysisDataQuality.property_data_untrusted === true;
-            const avaclickSatisfied = ((data ?? []) as PersistedToolCallRow[]).some(
-              (call) => avaclickAttemptedNonRecoverable(call)
+            const avaclickSatisfied = avaclickPersistRequirementSatisfiedForTest(
+              (data ?? []) as PersistedToolCallRow[],
+              { caseHasCoordinates: propertyDataHasCoordinatesForTest(propertyData) }
             );
             const avaclickRequired = requiresAvaclick(propertyData);
             const builtAreaReliable =
@@ -4985,7 +5065,7 @@ export function addOperationalCaseTools(
                 retryable: true,
                 missing_source: "get_avaclick_valuation",
                 hint:
-                  "Ejecuta get_avaclick_valuation antes de operational_case_persist_comparables_analysis para inmuebles residenciales con datos confiables.",
+                  "Ejecuta get_avaclick_valuation antes de operational_case_persist_comparables_analysis para inmuebles residenciales con datos confiables. Si el geocode salió ambiguo/fallido, llama get_avaclick_valuation de todas formas en este turno: su geocode_unresolved queda registrado y el persist procede con warning.",
               };
               await updateToolCallStatus(ctx.db, record.id, "failed", out);
               return JSON.stringify(out);

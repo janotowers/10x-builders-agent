@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  avaclickPersistRequirementSatisfiedForTest,
+  propertyDataHasCoordinatesForTest,
   blockedAwaitingDocumentsTransitionReason,
   blockedPropertyDataReviewSkipReason,
   blockedPropertyOptioningStepRegressionReason,
@@ -1202,5 +1204,88 @@ assert.deepEqual(
   ["documents_received"]
 );
 assert.deepEqual(forbiddenUpdateStateContextKeys({ notes: "ok" }), []);
+
+// Guard de Avaclick en persist de comparables: intentos no recuperables
+// satisfacen; con geocode del turno irresuelto y caso sin coordenadas,
+// Avaclick sería un no-op determinista y el requisito se exime. Evita el
+// bucle infinito con direcciones ingeocodificables.
+const avaclickExecutedCall = {
+  tool_name: "get_avaclick_valuation",
+  status: "executed",
+  result_json: { ok: true },
+};
+const avaclickGeocodeUnresolvedCall = {
+  tool_name: "get_avaclick_valuation",
+  status: "failed",
+  result_json: { ok: false, status: "geocode_unresolved", retryable: true },
+};
+const geocodeAmbiguousCall = {
+  tool_name: "geocode_property_address",
+  status: "failed",
+  result_json: { ok: false, status: "ambiguous", retryable: false },
+};
+const geocodeResolvedCall = {
+  tool_name: "geocode_property_address",
+  status: "executed",
+  result_json: { ok: true, latitude: 20.7, longitude: -103.38 },
+};
+assert.equal(
+  avaclickPersistRequirementSatisfiedForTest([avaclickExecutedCall]),
+  true,
+  "avaclick ejecutado satisface el guard"
+);
+assert.equal(
+  avaclickPersistRequirementSatisfiedForTest([geocodeAmbiguousCall]),
+  true,
+  "geocode ambiguo sin coordenadas del caso exime el requisito (no-op determinista)"
+);
+assert.equal(
+  avaclickPersistRequirementSatisfiedForTest([
+    geocodeAmbiguousCall,
+    avaclickGeocodeUnresolvedCall,
+  ]),
+  true,
+  "geocode ambiguo + avaclick geocode_unresolved satisface (persistir con warning)"
+);
+assert.equal(
+  avaclickPersistRequirementSatisfiedForTest([avaclickGeocodeUnresolvedCall]),
+  false,
+  "geocode_unresolved sin intento de geocode NO satisface"
+);
+assert.equal(
+  avaclickPersistRequirementSatisfiedForTest([
+    geocodeAmbiguousCall,
+    geocodeResolvedCall,
+    avaclickGeocodeUnresolvedCall,
+  ]),
+  false,
+  "si hubo un geocode exitoso en el turno, avaclick debe reintentarse con lat/lng"
+);
+assert.equal(
+  avaclickPersistRequirementSatisfiedForTest([geocodeAmbiguousCall], {
+    caseHasCoordinates: true,
+  }),
+  false,
+  "con coordenadas del caso, avaclick sí es ejecutable: exigir intento"
+);
+assert.equal(
+  avaclickPersistRequirementSatisfiedForTest(
+    [geocodeAmbiguousCall, avaclickGeocodeUnresolvedCall],
+    { caseHasCoordinates: true }
+  ),
+  true,
+  "con coordenadas del caso, el intento geocode_unresolved satisface"
+);
+assert.equal(
+  propertyDataHasCoordinatesForTest({
+    address: { latitude: 20.7, longitude: -103.38 },
+  }),
+  true
+);
+assert.equal(propertyDataHasCoordinatesForTest({ address: {} }), false);
+assert.equal(
+  propertyDataHasCoordinatesForTest({ address: { latitude: 0, longitude: 0 } }),
+  false
+);
 
 console.log("operational-cases-adapters surface selftest ok");
