@@ -10,7 +10,7 @@
  */
 
 import {
-  insertEvidenceRecord,
+  insertEvidenceRecords,
   getUserIntegrations,
   listAccountAssets,
   listAccountToolSecretsPublic,
@@ -118,9 +118,9 @@ export async function validateDefinitionForUser(
 }
 
 /**
- * Persiste el reporte como evidence records (uno por gate). Best-effort por
- * gate: un insert fallido no oculta los demás; el error se propaga al final
- * para que el caller sepa que la evidencia quedó incompleta.
+ * Persiste el reporte como evidence records (uno por gate) en un solo batch
+ * atómico: nunca deja evidencia parcial y evita ocho
+ * round-trips/statement timeouts antes de publicar.
  */
 export async function recordDefinitionValidationEvidence(
   db: DbClient,
@@ -130,25 +130,16 @@ export async function recordDefinitionValidationEvidence(
     gates: CompilerGateResult[];
   }
 ): Promise<void> {
-  let firstError: unknown = null;
-  for (const gate of params.gates) {
-    try {
-      await insertEvidenceRecord(db, {
-        userId: params.userId,
-        subjectKind: "workflow_definition",
-        subjectId: params.definition.id,
-        gate: gate.gate,
-        artifactHash: params.definition.definition_hash,
-        result: gate.result,
-        detail: gate.detail,
-      });
-    } catch (error) {
-      firstError ??= error;
-      console.error(
-        `[workflow-studio] evidence insert failed for gate ${gate.gate}:`,
-        error
-      );
-    }
-  }
-  if (firstError) throw firstError;
+  await insertEvidenceRecords(
+    db,
+    params.gates.map((gate) => ({
+      userId: params.userId,
+      subjectKind: "workflow_definition",
+      subjectId: params.definition.id,
+      gate: gate.gate,
+      artifactHash: params.definition.definition_hash,
+      result: gate.result,
+      detail: gate.detail,
+    }))
+  );
 }

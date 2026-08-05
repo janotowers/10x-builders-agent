@@ -8,6 +8,7 @@ import {
   formatListingDescriptionReviewNotifyText,
   listingDescriptionDraftContentFromContext,
   listingDescriptionReviewExcerptTruncated,
+  bindAiUsageContext,
   renderCommissionContractForCase,
   runAgent,
   runDocumentFieldExtraction,
@@ -1672,6 +1673,14 @@ function buildCaseE2ETickMessage(
           ].join(" ");
         })()
       : "",
+    // Evita el falso éxito observado en el walkthrough E2E: un tick
+    // operacional debe ejecutar tools (o producir un HITL), no limitarse a
+    // narrar qué debería hacer el runner.
+    [
+      "Criterio de salida del tick:",
+      "ejecuta al menos una tool aplicable o deja una decisión humana pendiente;",
+      "no respondas solo con instrucciones, disculpas ni una descripción del siguiente paso.",
+    ].join(" "),
     forceInstruction,
   ]
     .filter(Boolean)
@@ -1774,6 +1783,17 @@ export async function runSettingsTestCaseAgentTick(
   options?: SettingsTestCaseTickOptions
 ): Promise<SettingsTestCaseTickResult> {
   ensureAgentToolDepsWired();
+  // El preflight y algunos caminos deterministas llaman modelos antes (o sin)
+  // runAgent; atribuirlos aquí evita drops de metering en runners headless.
+  bindAiUsageContext(
+    {
+      userId,
+      channel: "case_runner",
+      operationalCaseId: opCase.id,
+      workflowDefinitionId: opCase.workflow_definition_id,
+    },
+    db
+  );
 
   if (
     isControlledE2EOperationalCase(opCase) ||
@@ -2177,6 +2197,30 @@ export async function runSettingsTestCaseAgentTick(
   const caseAfterDeterministicFallback = invariantResult.case ?? afterAgent;
   let caseForFinalUpdate = caseAfterDeterministicFallback;
   const turnToolCalls = await listTurnToolCalls(db, agentResult.turnId);
+  if (
+    turnToolCalls.length === 0 &&
+    !agentResult.pendingConfirmation &&
+    caseWithTarget.current_step
+  ) {
+    console.warn("[run-settings-test-case-tick] agent tick returned no tool calls", {
+      case_id: caseWithTarget.id,
+      step: caseWithTarget.current_step,
+      turn_id: agentResult.turnId ?? null,
+    });
+    await insertOperationalCaseEvent(db, {
+      caseId: caseWithTarget.id,
+      eventType: "error",
+      actor: "system",
+      payload: {
+        kind: "agent_tick_no_tool_calls",
+        source: options?.source ?? "settings_test_case_tick",
+        step_key: caseWithTarget.current_step,
+        turn_id: agentResult.turnId ?? null,
+        response_preview: agentResult.response?.slice(0, 500) ?? null,
+        retryable: true,
+      },
+    });
+  }
   const missingListingIngredients =
     missingListingDescriptionIngredientsFromToolCalls(turnToolCalls);
   const draftedListingThisTurn = hasListingDescriptionDraftFromToolCalls(turnToolCalls);

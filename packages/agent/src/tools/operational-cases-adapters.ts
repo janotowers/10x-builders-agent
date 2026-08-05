@@ -82,6 +82,10 @@ import {
   type OpenRouterUsagePayload,
 } from "../usage/ai-usage-meter";
 
+/** OpenAI Structured Outputs: optional fields must also accept null. */
+const nullableOptional = <T extends z.ZodTypeAny>(schema: T) =>
+  schema.nullish().transform((value) => value ?? undefined);
+
 const STATUS_VALUES = [
   "active",
   "waiting_internal",
@@ -4088,11 +4092,11 @@ export function addOperationalCaseTools(
           schema: z.object({
             case_type: z.string().min(1),
             context: z.record(z.string(), z.any()),
-            external_contact: z.record(z.string(), z.any()).optional(),
-            next_action_at: z.string().optional(),
-            due_at: z.string().optional(),
-            allow_incomplete_intake: z.boolean().optional(),
-            e2e_controlled: z.boolean().optional(),
+            external_contact: nullableOptional(z.record(z.string(), z.any())),
+            next_action_at: nullableOptional(z.string()),
+            due_at: nullableOptional(z.string()),
+            allow_incomplete_intake: nullableOptional(z.boolean()),
+            e2e_controlled: nullableOptional(z.boolean()),
           }),
         }
       )
@@ -4312,9 +4316,9 @@ export function addOperationalCaseTools(
             case_id: z.string().min(1),
             expected_version: z.number().int().nonnegative(),
             intake_patch: z.record(z.string(), z.any()),
-            external_contact: z.record(z.string(), z.any()).optional(),
-            next_action_at: z.string().optional(),
-            note: z.string().optional(),
+            external_contact: nullableOptional(z.record(z.string(), z.any())),
+            next_action_at: nullableOptional(z.string()),
+            note: nullableOptional(z.string()),
           }),
         }
       )
@@ -4829,28 +4833,22 @@ export function addOperationalCaseTools(
           schema: z.object({
             case_id: z.string().min(1),
             expected_version: z.number().int().nonnegative(),
-            status: z.enum(STATUS_VALUES).optional(),
-            current_step: z.string().min(1).optional(),
-            next_action_at: z
-              .union([z.string(), z.null()])
-              .optional()
+            status: nullableOptional(z.enum(STATUS_VALUES)),
+            current_step: nullableOptional(z.string().min(1)),
+            next_action_at: nullableOptional(z.union([z.string(), z.null()]))
               .describe(
                 "ISO 8601 datetime, or null to clear. Never send the literal string \"null\"."
               ),
-            due_at: z
-              .union([z.string(), z.null()])
-              .optional()
+            due_at: nullableOptional(z.union([z.string(), z.null()]))
               .describe(
                 "ISO 8601 datetime, or null to clear. Never send the literal string \"null\"."
               ),
-            context_patch: z
-              .record(z.string(), z.any())
-              .optional()
+            context_patch: nullableOptional(z.record(z.string(), z.any()))
               .describe(
                 "Partial context merge. Forbidden keys (rejected): documents_received, publication, published, publish_approvals, photo_manifest, e2e_control_status, package_ready_lab_auto_continue_listing_id, package_ready_machine_work_in_flight."
               ),
-            external_contact: z.record(z.string(), z.any()).optional(),
-            note: z.string().optional(),
+            external_contact: nullableOptional(z.record(z.string(), z.any())),
+            note: nullableOptional(z.string()),
           }),
         }
       )
@@ -5093,7 +5091,7 @@ export function addOperationalCaseTools(
           schema: z.object({
             case_id: z.string().min(1),
             expected_version: z.number().int().nonnegative(),
-            note: z.string().optional(),
+            note: nullableOptional(z.string()),
           }),
         }
       )
@@ -5135,7 +5133,7 @@ export function addOperationalCaseTools(
             case_id: z.string().min(1),
             event_type: z.enum(EVENT_TYPE_VALUES),
             actor: z.enum(ACTOR_VALUES),
-            payload: z.record(z.string(), z.any()).optional(),
+            payload: nullableOptional(z.record(z.string(), z.any())),
           }),
         }
       )
@@ -5212,17 +5210,23 @@ export function addOperationalCaseTools(
             case_id: z.string().min(1),
             kind: z.string().min(1),
             storage_path: z.string().min(1),
-            storage_bucket: z.string().min(1).optional(),
-            display_name: z.string().optional(),
-            original_name: z.string().optional(),
-            content_type: z.string().optional(),
-            file_size_bytes: z.number().int().nonnegative().optional(),
-            sha256: z.string().optional(),
-            source: z
-              .enum(["external_telegram", "advisor_web", "advisor_telegram", "settings_test", "unknown"])
-              .optional(),
-            blocking: z.boolean().optional(),
-            metadata: z.record(z.string(), z.any()).optional(),
+            storage_bucket: nullableOptional(z.string().min(1)),
+            display_name: nullableOptional(z.string()),
+            original_name: nullableOptional(z.string()),
+            content_type: nullableOptional(z.string()),
+            file_size_bytes: nullableOptional(z.number().int().nonnegative()),
+            sha256: nullableOptional(z.string()),
+            source: nullableOptional(
+              z.enum([
+                "external_telegram",
+                "advisor_web",
+                "advisor_telegram",
+                "settings_test",
+                "unknown",
+              ])
+            ),
+            blocking: nullableOptional(z.boolean()),
+            metadata: nullableOptional(z.record(z.string(), z.any())),
           }),
         }
       )
@@ -5298,7 +5302,7 @@ export function addOperationalCaseTools(
             "Runs cached multimodal extraction for a case document image and stores the extracted JSON on operational_case_documents.",
           schema: z.object({
             document_id: z.string().uuid(),
-            force: z.boolean().optional(),
+            force: nullableOptional(z.boolean()),
           }),
         }
       )
@@ -6050,9 +6054,9 @@ export function addOperationalCaseTools(
             "Notifies the inmobiliario via their preferred channel (web/telegram).",
           schema: z.object({
             text: z.string().min(1),
-            kind: z.string().min(1).optional(),
-            urgency: z.enum(["low", "normal", "high"]).optional(),
-            case_id: z.string().min(1).optional(),
+            kind: nullableOptional(z.string().min(1)),
+            urgency: nullableOptional(z.enum(["low", "normal", "high"])),
+            case_id: nullableOptional(z.string().min(1)),
           }),
         }
       )

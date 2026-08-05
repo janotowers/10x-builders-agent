@@ -26,7 +26,11 @@ import {
   markDefinitionValidated,
   publishDefinition,
 } from "@agents/db";
-import { WORKFLOW_COMPILER_MODEL_ID, TOOL_CATALOG } from "@agents/agent";
+import {
+  runWithAiUsageContext,
+  WORKFLOW_COMPILER_MODEL_ID,
+  TOOL_CATALOG,
+} from "@agents/agent";
 import { computeDefinitionHash } from "@agents/workflows";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -109,15 +113,20 @@ export async function compileDescriptionAction(
 
   const db = createServerClient();
   const catalogs = await buildCapabilityCatalogsForUser(db, user.id);
-  const result = await compileWorkflowDescription({
-    description,
-    caseType,
-    clarificationAnswers: answers,
-    availableGuards: [...catalogs.knownGuards],
-    availableSkills: [...catalogs.skillSlugs],
-    availableCapabilities: [...new Set(catalogs.workerCapabilities)],
-    availableTools: TOOL_CATALOG.map((tool) => tool.id),
-  });
+  const result = await runWithAiUsageContext(
+    { userId: user.id, channel: "web" },
+    db,
+    () =>
+      compileWorkflowDescription({
+        description,
+        caseType,
+        clarificationAnswers: answers,
+        availableGuards: [...catalogs.knownGuards],
+        availableSkills: [...catalogs.skillSlugs],
+        availableCapabilities: [...new Set(catalogs.workerCapabilities)],
+        availableTools: TOOL_CATALOG.map((tool) => tool.id),
+      })
+  );
 
   if (result.kind === "error") {
     return { ...base, status: "error", error: result.message };
