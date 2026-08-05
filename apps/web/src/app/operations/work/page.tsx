@@ -471,29 +471,26 @@ export default async function OperatorWorkViewPage({
             </div>
           ) : null}
 
-          {/* Excepción: bloqueado reencola a Listo; no es etapa del camino feliz. */}
-          <section
-            className={`rounded-2xl border border-t-4 border-neutral-200 bg-red-50/60 p-3 dark:border-neutral-800 dark:bg-red-950/20 ${COLUMN_ACCENTS.blocked.border}`}
-          >
-            <div className="flex flex-wrap items-baseline justify-between gap-2 px-1">
-              <ColumnHeader
-                column={WORK_VIEW_BLOCKED_COLUMN}
-                count={blockedItems.length}
-              />
-              <p className="text-[11px] text-red-800/80 dark:text-red-200/80">
-                Excepción · Reintentar vuelve a Listo (no es etapa del flujo)
-              </p>
-            </div>
-            {blockedItems.length === 0 ? (
-              <p className="mt-2 px-1 py-2 text-xs text-neutral-500">
-                Sin items bloqueados
-              </p>
-            ) : (
+          {/* Excepción: solo visible con items. Vacía no aporta progresión y
+              el acento rojo distrae; Reintentar reencola a Listo. */}
+          {blockedItems.length > 0 ? (
+            <section
+              className={`rounded-2xl border border-t-4 border-neutral-200 bg-red-50/60 p-3 dark:border-neutral-800 dark:bg-red-950/20 ${COLUMN_ACCENTS.blocked.border}`}
+            >
+              <div className="flex flex-wrap items-baseline justify-between gap-2 px-1">
+                <ColumnHeader
+                  column={WORK_VIEW_BLOCKED_COLUMN}
+                  count={blockedItems.length}
+                />
+                <p className="text-[11px] text-red-800/80 dark:text-red-200/80">
+                  Excepción · Reintentar vuelve a Listo (no es etapa del flujo)
+                </p>
+              </div>
               <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 {blockedItems.map((item) => renderCard(item, true))}
               </div>
-            )}
-          </section>
+            </section>
+          ) : null}
 
           {/* Camino feliz: una fila en pantallas anchas para percibir progresión. */}
           <div
