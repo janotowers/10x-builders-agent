@@ -75,7 +75,10 @@ export function removeConsumedSegments(
 
 /**
  * Fixed-format acknowledgment line appended by the channel adapters
- * (web chat + Telegram) when a handled turn reports residual intent.
+ * (web chat + Telegram) when a handled turn reports residual intent that
+ * will NOT be re-dispatched to the agent (Slice 0.1). When
+ * `deferredAgentContinuationText` applies, adapters must NOT append this
+ * line — they answer the question instead (Slice 4.1-5 / B1).
  */
 export function appendResidualAcknowledgment(
   message: string,
@@ -83,4 +86,19 @@ export function appendResidualAcknowledgment(
 ): string {
   if (!residual || !residual.text.trim()) return message;
   return `${message}\n\nNo actué sobre: “${residual.text}”`;
+}
+
+/**
+ * Texto a re-despachar al flujo conversacional/agente tras el ack compuesto
+ * de una decisión (Slice 4.1-5). Solo `unmatched_intent` — intents que ningún
+ * gate reclamó. Los `unparsed_remainder` siguen siendo ack-only (el parser
+ * ya consumió la decisión; el sobrante no es una pregunta diferida limpia).
+ */
+export function deferredAgentContinuationText(params: {
+  residual?: ResidualIntent | null;
+}): string | null {
+  const residual = params.residual;
+  if (!residual || residual.reason !== "unmatched_intent") return null;
+  const text = residual.text.trim();
+  return text.length > 0 ? text : null;
 }

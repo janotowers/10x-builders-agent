@@ -52,7 +52,10 @@ import {
 import { buildPublicationAwareE2EToolApprovalPolicy } from "@/lib/operational-cases/publication-tool-policy";
 import { businessDecisionHandler } from "@/lib/business-decisions/registry";
 import { resolveDecomposedPendingDecisionTurn } from "@/lib/business-decisions/decomposed-turn";
-import { appendResidualAcknowledgment } from "@/lib/business-decisions/residual-intent";
+import {
+  appendResidualAcknowledgment,
+  deferredAgentContinuationText,
+} from "@/lib/business-decisions/residual-intent";
 import { handlePropertyDataReviewDecision } from "@/lib/business-decisions/property-data-review";
 import {
   looksLikeNewCaseIntent,
@@ -1591,7 +1594,9 @@ export async function POST(request: Request) {
 
   const telegramUserId = message.from.id;
   const chatId = message.chat.id;
-  const text = (message.text ?? message.caption ?? "").trim();
+  // `let`: Slice 4.1-5 puede reasignar al residual unmatched_intent para
+  // continuar al agente tras el ack de una decisión multi-intent.
+  let text = (message.text ?? message.caption ?? "").trim();
   const inboundMedia = bestTelegramMedia(message);
   let agentMessageText = text;
   const { command, args } = parseBotCommand(text);
@@ -2110,11 +2115,17 @@ export async function POST(request: Request) {
     pendingNotifications: pendingInternal,
   });
   if (pendingDecisionTurn.handled) {
-    // Slice 0.1: reconoce el texto sobre el que la decisión NO actuó.
-    const decisionMessage = appendResidualAcknowledgment(
-      pendingDecisionTurn.message,
-      pendingDecisionTurn.residual
-    );
+    // Slice 4.1-5: si hay pregunta diferida (unmatched_intent), el ack NO
+    // lleva "No actué sobre" — se responde abajo vía el flujo conversacional.
+    const continuation = deferredAgentContinuationText({
+      residual: pendingDecisionTurn.residual,
+    });
+    const decisionMessage = continuation
+      ? pendingDecisionTurn.message
+      : appendResidualAcknowledgment(
+          pendingDecisionTurn.message,
+          pendingDecisionTurn.residual
+        );
     if (pendingDecisionTurn.artifact) {
       // read_artifact: entrega el borrador completo como .txt; la revisión
       // sigue pendiente (sin cambio de estado).
@@ -2139,20 +2150,27 @@ export async function POST(request: Request) {
     if (pendingDecisionTurn.runAfterReply) {
       await pendingDecisionTurn.runAfterReply();
     }
-    return NextResponse.json({
-      ok: true,
-      routed: pendingDecisionTurn.routed,
-      ...(pendingDecisionTurn.caseId
-        ? { case_id: pendingDecisionTurn.caseId }
-        : {}),
-      ...(pendingDecisionTurn.notificationId
-        ? { notification_id: pendingDecisionTurn.notificationId }
-        : {}),
-      ...(pendingDecisionTurn.status ? { status: pendingDecisionTurn.status } : {}),
-      ...(pendingDecisionTurn.decision
-        ? { decision: pendingDecisionTurn.decision }
-        : {}),
-    });
+    if (!continuation) {
+      return NextResponse.json({
+        ok: true,
+        routed: pendingDecisionTurn.routed,
+        ...(pendingDecisionTurn.caseId
+          ? { case_id: pendingDecisionTurn.caseId }
+          : {}),
+        ...(pendingDecisionTurn.notificationId
+          ? { notification_id: pendingDecisionTurn.notificationId }
+          : {}),
+        ...(pendingDecisionTurn.status
+          ? { status: pendingDecisionTurn.status }
+          : {}),
+        ...(pendingDecisionTurn.decision
+          ? { decision: pendingDecisionTurn.decision }
+          : {}),
+      });
+    }
+    // Re-despachar SOLO el residual (nunca el turno original multi-intent).
+    text = continuation;
+    agentMessageText = continuation;
   }
 
   if (text) {

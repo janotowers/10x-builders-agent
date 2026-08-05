@@ -8,9 +8,10 @@
  *   - Ningún intent manejado ⇒ `{ handled: false }`: el turno COMPLETO cae
  *     al agente conversacional, como hoy (nada se pierde).
  *   - ≥1 manejado ⇒ una respuesta compuesta; los intents NO manejados van al
- *     residual con reason "unmatched_intent", así el adaptador de canal los
- *     reconoce explícitamente ("No actué sobre: …") — nunca descarte
- *     silencioso (Escenario D).
+ *     residual con reason "unmatched_intent". Los adaptadores (Slice 4.1-5)
+ *     re-despachan ese texto al agente tras el ack; "No actué sobre: …"
+ *     queda para unparsed_remainder / fallback — nunca descarte silencioso
+ *     (Escenario D / B1).
  *   - `ok` compuesto = todos los manejados ok (un mismatch de monto B2 deja
  *     ok=false y NO aprueba; los demás efectos sí persisten).
  *

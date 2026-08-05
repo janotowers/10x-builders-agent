@@ -19,7 +19,7 @@ import type {
   PendingDecisionTurnParams,
 } from "./pending-decision-router";
 import type { IntentDecomposition } from "./intent-decomposer";
-import { appendResidualAcknowledgment } from "./residual-intent";
+import { deferredAgentContinuationText } from "./residual-intent";
 
 const db = null as unknown as DbClient;
 
@@ -208,13 +208,29 @@ async function scenarioB1() {
     turn.residual?.text.includes("leads"),
     "B1: la pregunta no consumida queda en el residual"
   );
-  const rendered = appendResidualAcknowledgment(turn.message, turn.residual);
-  assert.ok(rendered.includes("No actué sobre:"), "B1: reconocimiento explícito");
+  // Slice 4.1-5: el residual unmatched_intent es señal de continuación al
+  // agente (los adaptadores re-despachan este texto tras el ack). El ack
+  // "No actué sobre" queda solo para unparsed_remainder / fallback.
+  const continuation = deferredAgentContinuationText({ residual: turn.residual });
+  assert.ok(continuation, "B1: hay texto de continuación al agente");
+  assert.ok(
+    continuation!.includes("leads"),
+    "B1: la continuación es la pregunta diferida"
+  );
+  assert.equal(
+    deferredAgentContinuationText({
+      residual: { text: "resto del parser", reason: "unparsed_remainder" },
+    }),
+    null,
+    "B1: unparsed_remainder NO continúa al agente"
+  );
   assert.ok(
     logs.some((entry) => entry.event === "decomposition_applied"),
     "B1: instrumentación del split"
   );
-  console.log("✓ B1: decisión + pregunta ⇒ efecto aplicado + deferral explícito");
+  console.log(
+    "✓ B1: decisión + pregunta ⇒ efecto aplicado + continuación al agente"
+  );
 }
 
 async function scenarioB2() {

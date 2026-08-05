@@ -68,7 +68,10 @@ import {
 import { handleContractRevisionUploadAndSend } from "@/lib/business-decisions/contract-review";
 import { resolvePendingDecisionTurn } from "@/lib/business-decisions/pending-decision-router";
 import { resolveDecomposedPendingDecisionTurn } from "@/lib/business-decisions/decomposed-turn";
-import { appendResidualAcknowledgment } from "@/lib/business-decisions/residual-intent";
+import {
+  appendResidualAcknowledgment,
+  deferredAgentContinuationText,
+} from "@/lib/business-decisions/residual-intent";
 import { buildMediaGroupReceivedAck } from "@/lib/operational-cases/case-document-collection";
 import type { PendingAttachmentRef } from "@/lib/operational-cases/pending-attachment-envelope";
 import {
@@ -496,18 +499,20 @@ export async function POST(request: Request) {
             console.warn("[chat] touch pending-decision web binding failed:", touchError);
           });
         }
-        // Slice 0.1: reconoce el texto sobre el que la decisión NO actuó.
-        const messageWithResidual = appendResidualAcknowledgment(
-          pendingDecisionTurn.message,
-          pendingDecisionTurn.residual
-        );
-        // read_artifact: en web el texto completo va inline en la respuesta.
-        const responseText = pendingDecisionTurn.artifact
-          ? `${messageWithResidual}\n\n${pendingDecisionTurn.artifact.content}`
-          : messageWithResidual;
-        // Paridad Telegram: primero el ack en el timeline, luego follow-ups
-        // diferidos (p. ej. price_approval) para que no adelanten al ack.
-        const response = await respondConversational(responseText);
+        // Slice 4.1-5: unmatched_intent → continuar al agente; unparsed_remainder
+        // → ack "No actué sobre" (Slice 0.1).
+        const continuation = deferredAgentContinuationText({
+          residual: pendingDecisionTurn.residual,
+        });
+        const decisionBase = continuation
+          ? pendingDecisionTurn.message
+          : appendResidualAcknowledgment(
+              pendingDecisionTurn.message,
+              pendingDecisionTurn.residual
+            );
+        let responseText = pendingDecisionTurn.artifact
+          ? `${decisionBase}\n\n${pendingDecisionTurn.artifact.content}`
+          : decisionBase;
         if (pendingDecisionTurn.runAfterReply) {
           try {
             await pendingDecisionTurn.runAfterReply();
@@ -518,7 +523,88 @@ export async function POST(request: Request) {
             );
           }
         }
-        return response;
+        if (!continuation) {
+          return await respondConversational(responseText);
+        }
+        // Misma respuesta HTTP: ack de decisión + respuesta del agente a la
+        // pregunta diferida (Telegram envía dos mensajes; aquí se componen).
+        try {
+          const continued = await runAgent({
+            message: continuation,
+            turnId: requestTurnId,
+            userId: user.id,
+            sessionId: session.id,
+            caseId: pendingDecisionTurn.caseId ?? undefined,
+            systemPrompt:
+              (profile?.agent_system_prompt as string) ??
+              "Eres un asistente útil.",
+            db,
+            enabledTools: (toolSettings ?? []).map(
+              (t: Record<string, unknown>) => ({
+                id: t.id as string,
+                user_id: t.user_id as string,
+                tool_id: t.tool_id as string,
+                enabled: t.enabled as boolean,
+                config_json: (t.config_json as Record<string, unknown>) ?? {},
+              })
+            ),
+            enabledSkills: (skillSettings ?? []).map(
+              (s: Record<string, unknown>) => ({
+                id: s.id as string,
+                user_id: s.user_id as string,
+                skill_id: s.skill_id as string,
+                enabled: s.enabled as boolean,
+                config_json: (s.config_json as Record<string, unknown>) ?? {},
+              })
+            ),
+            integrations: (integrations ?? []).map(
+              (i: Record<string, unknown>) => ({
+                id: i.id as string,
+                user_id: i.user_id as string,
+                provider: i.provider as string,
+                scopes: (i.scopes as string[]) ?? [],
+                status: i.status as "active" | "revoked" | "expired",
+                created_at: i.created_at as string,
+              })
+            ),
+            githubToken,
+            userTimezone: (profile?.timezone as string) ?? undefined,
+            userName: (profile?.name as string | null) ?? null,
+            userEmail: (profile?.email as string | null) ?? null,
+            userPhone: (profile?.phone as string | null) ?? null,
+            businessBrain:
+              (profile?.business_brain as Record<string, unknown> | null) ?? {},
+            isUnggaAdmin: (profile?.is_ungga_admin as boolean | null) ?? false,
+            channel: "web",
+            googleCalendarAccessToken,
+          });
+          if (
+            !continued.pendingConfirmation &&
+            typeof continued.response === "string" &&
+            continued.response.trim()
+          ) {
+            responseText = `${responseText}\n\n${continued.response.trim()}`;
+          } else if (continued.pendingConfirmation) {
+            // HITL del agente: entregar ack + avisar que hay confirmación.
+            responseText = `${responseText}\n\nNecesito tu confirmación para continuar con esa consulta.`;
+          }
+          void finalizePropertyOptioningAgentTurn({
+            db,
+            caseId: pendingDecisionTurn.caseId ?? undefined,
+            source: "web_chat_deferred_continuation",
+            hasPendingConfirmation: Boolean(continued.pendingConfirmation),
+          });
+        } catch (continuationError) {
+          console.error(
+            "[chat] deferred agent continuation failed; falling back to residual ack:",
+            continuationError
+          );
+          responseText = appendResidualAcknowledgment(
+            pendingDecisionTurn.message,
+            pendingDecisionTurn.residual
+          );
+        }
+        return await respondConversational(responseText);
       }
     } catch (pendingDecisionError) {
       console.error(
@@ -619,14 +705,18 @@ export async function POST(request: Request) {
                   );
                 });
               }
-              const messageWithResidual = appendResidualAcknowledgment(
-                restoredDecision.message,
-                restoredDecision.residual
-              );
-              const responseText = restoredDecision.artifact
-                ? `${messageWithResidual}\n\n${restoredDecision.artifact.content}`
-                : messageWithResidual;
-              const response = await respondConversational(responseText);
+              const restoredContinuation = deferredAgentContinuationText({
+                residual: restoredDecision.residual,
+              });
+              const restoredBase = restoredContinuation
+                ? restoredDecision.message
+                : appendResidualAcknowledgment(
+                    restoredDecision.message,
+                    restoredDecision.residual
+                  );
+              let restoredText = restoredDecision.artifact
+                ? `${restoredBase}\n\n${restoredDecision.artifact.content}`
+                : restoredBase;
               if (restoredDecision.runAfterReply) {
                 try {
                   await restoredDecision.runAfterReply();
@@ -637,7 +727,80 @@ export async function POST(request: Request) {
                   );
                 }
               }
-              return response;
+              if (restoredContinuation) {
+                try {
+                  const continued = await runAgent({
+                    message: restoredContinuation,
+                    turnId: requestTurnId,
+                    userId: user.id,
+                    sessionId: session.id,
+                    caseId: restoredDecision.caseId ?? undefined,
+                    systemPrompt:
+                      (profile?.agent_system_prompt as string) ??
+                      "Eres un asistente útil.",
+                    db,
+                    enabledTools: (toolSettings ?? []).map(
+                      (t: Record<string, unknown>) => ({
+                        id: t.id as string,
+                        user_id: t.user_id as string,
+                        tool_id: t.tool_id as string,
+                        enabled: t.enabled as boolean,
+                        config_json:
+                          (t.config_json as Record<string, unknown>) ?? {},
+                      })
+                    ),
+                    enabledSkills: (skillSettings ?? []).map(
+                      (s: Record<string, unknown>) => ({
+                        id: s.id as string,
+                        user_id: s.user_id as string,
+                        skill_id: s.skill_id as string,
+                        enabled: s.enabled as boolean,
+                        config_json:
+                          (s.config_json as Record<string, unknown>) ?? {},
+                      })
+                    ),
+                    integrations: (integrations ?? []).map(
+                      (i: Record<string, unknown>) => ({
+                        id: i.id as string,
+                        user_id: i.user_id as string,
+                        provider: i.provider as string,
+                        scopes: (i.scopes as string[]) ?? [],
+                        status: i.status as "active" | "revoked" | "expired",
+                        created_at: i.created_at as string,
+                      })
+                    ),
+                    githubToken,
+                    userTimezone: (profile?.timezone as string) ?? undefined,
+                    userName: (profile?.name as string | null) ?? null,
+                    userEmail: (profile?.email as string | null) ?? null,
+                    userPhone: (profile?.phone as string | null) ?? null,
+                    businessBrain:
+                      (profile?.business_brain as Record<string, unknown> | null) ??
+                      {},
+                    isUnggaAdmin:
+                      (profile?.is_ungga_admin as boolean | null) ?? false,
+                    channel: "web",
+                    googleCalendarAccessToken,
+                  });
+                  if (
+                    !continued.pendingConfirmation &&
+                    typeof continued.response === "string" &&
+                    continued.response.trim()
+                  ) {
+                    restoredText = `${restoredText}\n\n${continued.response.trim()}`;
+                  }
+                } catch (continuationError) {
+                  console.error(
+                    "[chat] restored deferred continuation failed:",
+                    continuationError
+                  );
+                  restoredText = appendResidualAcknowledgment(
+                    restoredDecision.message,
+                    restoredDecision.residual
+                  );
+                }
+              }
+              return await respondConversational(restoredText);
             }
           } catch (restoredDecisionError) {
             console.error(
