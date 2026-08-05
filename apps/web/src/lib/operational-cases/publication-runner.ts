@@ -33,11 +33,13 @@ import {
   shouldSendCorrectiveListingPublishedSummary,
 } from "@/lib/operational-cases/publication-closure-recovery";
 import {
+  acceptedPublicationReviewSignature,
   formatPublicationReviewNotifyText,
   looksLikePublicationCredentialAuthFailure,
   looksLikeUnggaPrepareDraftCommissionFailure,
   looksLikeUnggaPrepareDraftFailure,
   looksLikeUnggaPrepareDraftMediaFailure,
+  publicationReviewIssueSignature,
   resolveUnggaPrepareDraftFailureCause,
   runPublicationPreflight,
   type PreflightResult,
@@ -384,6 +386,21 @@ async function requestDestinationApproval(
   return "waiting_hitl";
 }
 
+/**
+ * True si el humano ya aceptó («aprobar y continuar») exactamente el mismo
+ * conjunto de incidencias que el preflight vuelve a reportar. Evita el bucle
+ * de re-preguntar la misma revisión condicional tras cada re-preflight.
+ */
+function preflightIssuesAlreadyAccepted(
+  context: Record<string, unknown>,
+  destination: PublicationDestination,
+  preflight: PreflightResult
+): boolean {
+  const accepted = acceptedPublicationReviewSignature(context, destination);
+  if (!accepted) return false;
+  return accepted === publicationReviewIssueSignature(preflight.issues);
+}
+
 async function requestConditionalReview(
   db: DbClient,
   opCase: OperationalCase,
@@ -396,12 +413,15 @@ async function requestConditionalReview(
   const publishedBucket = isRecord(context.published)
     ? context.published[destination]
     : null;
+  // OJO: `publishedBucket.ok === true` NO implica listing en vivo — los
+  // adapters lo escriben desde create_draft (status="created"). Considerar
+  // "en vivo" solo cuando el status remoto/local dice "published"; si no,
+  // el review HITL jamás se abre y la máquina queda en waiting_hitl mudo.
   const alreadyPublished =
     dest.phase === "published" ||
     (isRecord(publishedBucket) &&
       (publishedBucket.remote_status === "published" ||
-        publishedBucket.status === "published" ||
-        publishedBucket.ok === true));
+        publishedBucket.status === "published"));
   // Never open a "review before publish" HITL after the destination is already live.
   if (alreadyPublished) {
     return "waiting_hitl";
@@ -956,6 +976,34 @@ export async function requestPublicationProgress(
         context: contextNow,
         photoManifest: parsePhotoManifest(contextNow.photo_manifest),
       });
+      if (
+        preflightIssuesAlreadyAccepted(contextNow, action.destination, preflight)
+      ) {
+        publication = applyPublicationEvent(publication, {
+          type: "preflight_result",
+          destination: action.destination,
+          status: "pass",
+          reason: `Incidencias aceptadas por el asesor: ${preflight.summary}`,
+        });
+        const persistedAccepted = await persistPublication(
+          db,
+          opCase,
+          publication
+        );
+        if (persistedAccepted) opCase = persistedAccepted;
+        await insertOperationalCaseEvent(db, {
+          caseId: opCase.id,
+          eventType: "state_changed",
+          actor: "system",
+          stepKey: "package_ready",
+          payload: {
+            kind: "publication_review_previously_accepted",
+            destination: action.destination,
+            summary: preflight.summary,
+          },
+        });
+        continue;
+      }
       publication = applyPublicationEvent(publication, {
         type: "preflight_result",
         destination: action.destination,
@@ -1165,14 +1213,38 @@ export async function requestPublicationProgress(
           contractRequired: true,
         },
       });
+      const acceptedByHuman =
+        preflight.status === "review_required" &&
+        preflightIssuesAlreadyAccepted(
+          preflightContext,
+          action.destination,
+          preflight
+        );
       publication = applyPublicationEvent(publication, {
         type: "preflight_result",
         destination: action.destination,
-        status: preflight.status,
-        reason: preflight.summary,
+        status: acceptedByHuman ? "pass" : preflight.status,
+        reason: acceptedByHuman
+          ? `Incidencias aceptadas por el asesor: ${preflight.summary}`
+          : preflight.summary,
       });
       const persisted = await persistPublication(db, opCase, publication);
       if (persisted) opCase = persisted;
+
+      if (acceptedByHuman) {
+        await insertOperationalCaseEvent(db, {
+          caseId: opCase.id,
+          eventType: "state_changed",
+          actor: "system",
+          stepKey: "package_ready",
+          payload: {
+            kind: "publication_review_previously_accepted",
+            destination: action.destination,
+            summary: preflight.summary,
+          },
+        });
+        continue;
+      }
 
       if (preflight.status === "waiting") {
         const resumeAt = new Date(Date.now() + 30_000).toISOString();

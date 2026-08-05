@@ -14,6 +14,7 @@ import {
   type PublicationDestination,
 } from "@/lib/operational-cases/publication-workflow";
 import { requestPublicationProgress } from "@/lib/operational-cases/publication-runner";
+import { publicationReviewIssueSignature } from "@/lib/operational-cases/publication-preflight";
 import { mergePhotoLabelsIntoManifest, parsePhotoManifest } from "@/lib/operational-cases/photo-manifest";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -321,6 +322,26 @@ export async function handlePublicationReviewDecision(
         type: "review_resolved",
         destination,
       });
+      // Registrar QUÉ incidencias aceptó el humano: si el preflight vuelve a
+      // producir exactamente las mismas, el runner no reabre la revisión
+      // (sin esto, «aprobar y continuar» entraba en bucle de re-pregunta).
+      const acceptedIssues = Array.isArray(meta.issues)
+        ? meta.issues.filter(isRecord)
+        : [];
+      const signature = publicationReviewIssueSignature(acceptedIssues);
+      if (signature) {
+        const prior = isRecord(context.publication_review_accepted)
+          ? context.publication_review_accepted
+          : {};
+        nextContext.publication_review_accepted = {
+          ...prior,
+          [destination]: {
+            signature,
+            at: new Date().toISOString(),
+            notification_id: notification.id,
+          },
+        };
+      }
     }
   } else {
     await insertOperationalCaseEvent(db, {

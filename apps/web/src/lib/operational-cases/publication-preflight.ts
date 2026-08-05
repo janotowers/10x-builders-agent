@@ -587,6 +587,45 @@ export function runPublicationPreflight(
 }
 
 /**
+ * Firma estable del conjunto de incidencias de una revisión condicional.
+ * Se usa para que «Aprobar y continuar» quede registrado: si el preflight
+ * vuelve a producir EXACTAMENTE las mismas incidencias, no se reabre la
+ * revisión (antes el humano aprobaba y el runner re-preguntaba en bucle).
+ */
+export function publicationReviewIssueSignature(
+  issues: Array<{ code?: unknown; field?: unknown }>
+): string {
+  const parts = issues
+    .map((issue) => {
+      const code = typeof issue.code === "string" ? issue.code : "";
+      const field = typeof issue.field === "string" ? issue.field : "";
+      return code ? `${code}:${field}` : null;
+    })
+    .filter((part): part is string => Boolean(part));
+  return [...new Set(parts)].sort().join("|");
+}
+
+/**
+ * Lee del contexto del caso la firma de incidencias que el humano ya aceptó
+ * con «Aprobar y continuar» para un destino. Devuelve null si no hay registro.
+ */
+export function acceptedPublicationReviewSignature(
+  context: Record<string, unknown>,
+  destination: PublicationDestination
+): string | null {
+  const bucket = context.publication_review_accepted;
+  if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) {
+    return null;
+  }
+  const entry = (bucket as Record<string, unknown>)[destination];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const signature = (entry as Record<string, unknown>).signature;
+  return typeof signature === "string" && signature.length > 0
+    ? signature
+    : null;
+}
+
+/**
  * Detects auth/credential failures that the advisor can fix in
  * Settings → Cuentas externas (not a data/labels review).
  */

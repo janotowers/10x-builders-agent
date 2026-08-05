@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { emptyPublicationState, applyPublicationEvent } from "./publication-workflow";
 import {
+  acceptedPublicationReviewSignature,
   formatPublicationCredentialFailureNotifyText,
   formatPublicationReviewNotifyText,
   formatUnggaPrepareDraftFailureNotifyText,
@@ -8,6 +9,7 @@ import {
   looksLikeUnggaPrepareDraftCommissionFailure,
   looksLikeUnggaPrepareDraftFailure,
   looksLikeUnggaPrepareDraftMediaFailure,
+  publicationReviewIssueSignature,
   runPublicationPreflight,
 } from "./publication-preflight";
 
@@ -518,5 +520,54 @@ const notCalledText = formatUnggaPrepareDraftFailureNotifyText({
 assert.ok(notCalledText.includes("la herramienta no se invocó"));
 assert.ok(!notCalledText.includes("formulario"));
 assert.ok(notCalledText.includes("Reintentar publicación en Ungga"));
+
+// Firma de incidencias aceptadas («Aprobar y continuar» no debe re-preguntar):
+// misma firma independiente del orden/duplicados; contexto sin registro → null.
+{
+  const issues = [
+    { code: "photo_label_low_confidence", field: "a.jpg" },
+    { code: "photo_label_missing", field: "b.jpg" },
+  ];
+  const shuffled = [
+    { code: "photo_label_missing", field: "b.jpg" },
+    { code: "photo_label_low_confidence", field: "a.jpg" },
+    { code: "photo_label_low_confidence", field: "a.jpg" },
+  ];
+  assert.equal(
+    publicationReviewIssueSignature(issues),
+    publicationReviewIssueSignature(shuffled),
+    "la firma es estable ante orden y duplicados"
+  );
+  assert.notEqual(
+    publicationReviewIssueSignature(issues),
+    publicationReviewIssueSignature([
+      ...issues,
+      { code: "ungga_shared_commission_detail_omitted", field: "" },
+    ]),
+    "incidencias distintas producen firmas distintas"
+  );
+  assert.equal(publicationReviewIssueSignature([]), "");
+  assert.equal(
+    acceptedPublicationReviewSignature({}, "easybroker"),
+    null,
+    "sin registro en contexto → null"
+  );
+  const signature = publicationReviewIssueSignature(issues);
+  const context = {
+    publication_review_accepted: {
+      easybroker: { signature, at: "2026-08-05T00:00:00Z" },
+    },
+  };
+  assert.equal(
+    acceptedPublicationReviewSignature(context, "easybroker"),
+    signature,
+    "recupera la firma aceptada del destino"
+  );
+  assert.equal(
+    acceptedPublicationReviewSignature(context, "ungga"),
+    null,
+    "la aceptación es por destino"
+  );
+}
 
 console.log("publication-preflight.selftest: ok");
