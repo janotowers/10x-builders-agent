@@ -450,6 +450,51 @@ function evaluateEasyBroker(
   }
 }
 
+/** Distancia (m) por encima de la cual el pin Ungga exige revisión HITL. */
+export const UNGGA_LOCATION_REVIEW_MIN_M = 500;
+
+/**
+ * Escala a review_required cuando el CLI dejó un pin lejos del objetivo
+ * (>500 m) o el mapa fue ilegible tras corrección. Distances 80–500 m
+ * siguen siendo warning no bloqueante (el CLI ya intentó una corrección).
+ */
+export function unggaLocationPinRequiresReview(
+  warning: Record<string, unknown> | null | undefined
+): { escalate: boolean; code: string; message: string; distance_m: number | null } {
+  if (!warning) {
+    return {
+      escalate: false,
+      code: "",
+      message: "",
+      distance_m: null,
+    };
+  }
+  const reason = typeof warning.reason === "string" ? warning.reason : "";
+  const distanceRaw = warning.distance_m;
+  const distance_m =
+    typeof distanceRaw === "number" && Number.isFinite(distanceRaw)
+      ? distanceRaw
+      : null;
+  if (reason === "map_center_unreadable") {
+    return {
+      escalate: true,
+      code: "ungga_location_pin_unreadable",
+      message:
+        "No se pudo leer el centro del mapa en Ungga tras colocar la dirección. Revisa el pin en el borrador o aprueba continuar.",
+      distance_m,
+    };
+  }
+  if (distance_m != null && distance_m > UNGGA_LOCATION_REVIEW_MIN_M) {
+    return {
+      escalate: true,
+      code: "ungga_location_pin_far",
+      message: `El pin en Ungga quedó a ~${Math.round(distance_m)} m del objetivo (umbral ${UNGGA_LOCATION_REVIEW_MIN_M} m). Revisa el mapa en el borrador o aprueba continuar.`,
+      distance_m,
+    };
+  }
+  return { escalate: false, code: "", message: "", distance_m };
+}
+
 function evaluateUngga(
   input: PublicationPreflightInput,
   issues: PreflightIssue[]
@@ -463,6 +508,27 @@ function evaluateUngga(
       field: "artifact.ungga_property_id",
       severity: "critical",
       message: "No hay GU-ID de borrador Ungga para publicar.",
+    });
+  }
+
+  const published = isRecord(input.context.published)
+    ? input.context.published
+    : {};
+  const publishedUngga = isRecord(published.ungga) ? published.ungga : {};
+  const pinWarning = isRecord(publishedUngga.location_accuracy_warning)
+    ? publishedUngga.location_accuracy_warning
+    : isRecord(input.context.ungga_location_accuracy_warning)
+      ? input.context.ungga_location_accuracy_warning
+      : null;
+  const pinReview = unggaLocationPinRequiresReview(pinWarning);
+  if (pinReview.escalate) {
+    pushIssue(issues, {
+      code: pinReview.code,
+      field: "location.pin",
+      severity: "critical",
+      message: pinReview.message,
+      actual: pinReview.distance_m,
+      expected: `distance_m <= ${UNGGA_LOCATION_REVIEW_MIN_M}`,
     });
   }
 

@@ -11,6 +11,8 @@ import {
   looksLikeUnggaPrepareDraftMediaFailure,
   publicationReviewIssueSignature,
   runPublicationPreflight,
+  unggaLocationPinRequiresReview,
+  UNGGA_LOCATION_REVIEW_MIN_M,
 } from "./publication-preflight";
 
 function baseContext(overrides: Record<string, unknown> = {}) {
@@ -520,6 +522,104 @@ const notCalledText = formatUnggaPrepareDraftFailureNotifyText({
 assert.ok(notCalledText.includes("la herramienta no se invocó"));
 assert.ok(!notCalledText.includes("formulario"));
 assert.ok(notCalledText.includes("Reintentar publicación en Ungga"));
+
+// Pin Ungga: >500 m o mapa ilegible ⇒ escalate; 80–500 m no bloquea.
+{
+  assert.equal(UNGGA_LOCATION_REVIEW_MIN_M, 500);
+  assert.equal(
+    unggaLocationPinRequiresReview({
+      reason: "pin_still_far_after_correction",
+      distance_m: 312,
+    }).escalate,
+    false,
+    "312 m (entre 80 y 500) no escala a HITL"
+  );
+  const far = unggaLocationPinRequiresReview({
+    reason: "pin_still_far_after_correction",
+    distance_m: 19873,
+  });
+  assert.equal(far.escalate, true);
+  assert.equal(far.code, "ungga_location_pin_far");
+  const unread = unggaLocationPinRequiresReview({
+    reason: "map_center_unreadable",
+    distance_m: null,
+  });
+  assert.equal(unread.escalate, true);
+  assert.equal(unread.code, "ungga_location_pin_unreadable");
+}
+
+{
+  let unggaPub = emptyPublicationState();
+  unggaPub = applyPublicationEvent(unggaPub, {
+    type: "approval_decided",
+    destination: "ungga",
+    approval: "approved",
+  });
+  unggaPub = applyPublicationEvent(unggaPub, {
+    type: "draft_created",
+    destination: "ungga",
+    artifact: {
+      ungga_property_id: "GU-TEST",
+      remote_status: "draft_created",
+    },
+  });
+  unggaPub = applyPublicationEvent(unggaPub, {
+    type: "media_submitted",
+    destination: "ungga",
+    expected_count: 2,
+  });
+  unggaPub = applyPublicationEvent(unggaPub, {
+    type: "media_verified",
+    destination: "ungga",
+    remote_count: 2,
+  });
+  const farContext = baseContext({
+    published: {
+      ungga: {
+        ungga_property_id: "GU-TEST",
+        location_accuracy_warning: {
+          reason: "pin_still_far_after_correction",
+          distance_m: 19873,
+          source: "zone_context",
+        },
+      },
+    },
+  });
+  const farPreflight = runPublicationPreflight({
+    destination: "ungga",
+    publication: unggaPub,
+    context: farContext,
+    photoManifest: farContext.photo_manifest as never,
+  });
+  assert.equal(farPreflight.status, "review_required");
+  assert.ok(
+    farPreflight.issues.some((i) => i.code === "ungga_location_pin_far"),
+    "preflight emite ungga_location_pin_far"
+  );
+
+  const nearContext = baseContext({
+    published: {
+      ungga: {
+        ungga_property_id: "GU-TEST",
+        location_accuracy_warning: {
+          reason: "pin_still_far_after_correction",
+          distance_m: 200,
+          source: "zone_context",
+        },
+      },
+    },
+  });
+  const nearPreflight = runPublicationPreflight({
+    destination: "ungga",
+    publication: unggaPub,
+    context: nearContext,
+    photoManifest: nearContext.photo_manifest as never,
+  });
+  assert.ok(
+    !nearPreflight.issues.some((i) => i.code === "ungga_location_pin_far"),
+    "200 m no escala a review por pin"
+  );
+}
 
 // Firma de incidencias aceptadas («Aprobar y continuar» no debe re-preguntar):
 // misma firma independiente del orden/duplicados; contexto sin registro → null.

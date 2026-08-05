@@ -1932,6 +1932,15 @@ export function addRealEstateTools(
                   typeof out.draft_url === "string" ? out.draft_url : null,
                 status: "draft",
                 creation_source: "cli",
+                // Persistido para que el preflight pueda escalar a
+                // publication_review_required cuando distance_m es grande.
+                ...(asRecord(out.location_accuracy_warning)
+                  ? {
+                      location_accuracy_warning: asRecord(
+                        out.location_accuracy_warning
+                      ),
+                    }
+                  : {}),
               });
             }
             const kind =

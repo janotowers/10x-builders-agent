@@ -5,6 +5,8 @@
 
 export const LOCATION_OK_MAX_M = 40;
 export const LOCATION_SOFT_OK_MAX_M = 80;
+/** Above this, Gu OS escalates to publication_review_required (HITL). */
+export const LOCATION_REVIEW_MIN_M = 500;
 
 export function isUsableLatLng(lat, lng) {
   if (lat == null || lng == null) return false;
