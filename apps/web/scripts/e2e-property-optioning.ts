@@ -75,6 +75,7 @@ async function main() {
     listCaseArtifactsForCase,
     listCaseApprovalsForCase,
     propagateReadiness,
+    updateOperationalCase,
   } = await import("@agents/db");
   const db = createServerClient();
 
@@ -613,6 +614,55 @@ async function main() {
       await turn.runAfterReply();
       console.log("  runAfterReply listo");
     }
+    return;
+  }
+
+  if (command === "photos") {
+    // Simula el lote de fotos del asesor: inyecta entradas sintéticas con la
+    // MISMA forma que appendRawPhoto y cierra el lote con el building block
+    // real (completePhotoBatchForCase), que valida el mínimo y avanza el paso.
+    const { randomUUID } = await import("node:crypto");
+    const { completePhotoBatchForCase, RAW_PHOTOS_MIN_COUNT } = await import(
+      "../src/lib/operational-cases/photo-batch-completion"
+    );
+    const opCase = await getOperationalCase(db, caseId);
+    if (!opCase) throw new Error("case not found");
+    if (opCase.current_step !== "photos_requested") {
+      throw new Error(
+        `case at step=${opCase.current_step}; photos command expects photos_requested`
+      );
+    }
+    const context =
+      opCase.context_jsonb && typeof opCase.context_jsonb === "object"
+        ? (opCase.context_jsonb as Record<string, unknown>)
+        : {};
+    const existing = Array.isArray(context.raw_photos) ? context.raw_photos : [];
+    const needed = Math.max(0, RAW_PHOTOS_MIN_COUNT - existing.length);
+    const synthetic = Array.from({ length: needed }, (_, i) => ({
+      document_id: randomUUID(),
+      storage_bucket: "case-documents",
+      storage_path: `e2e/${caseId}/photo-${Date.now()}-${i + 1}.jpg`,
+      original_name: `foto-e2e-${i + 1}.jpg`,
+      content_type: "image/jpeg",
+      sha256: null,
+      source: "e2e_photo_simulation",
+      uploaded_at: new Date().toISOString(),
+    }));
+    if (synthetic.length > 0) {
+      const updated = await updateOperationalCase(db, opCase.id, opCase.version, {
+        context: { ...context, raw_photos: [...existing, ...synthetic] },
+      });
+      if (!updated) throw new Error("photo context update failed (version race)");
+    }
+    const completion = await completePhotoBatchForCase({
+      db,
+      caseId,
+      channel: "web",
+      source: "e2e_photo_simulation",
+    });
+    console.log(
+      `photos: registered=${existing.length + synthetic.length} status=${completion.status} step=${completion.case.current_step}`
+    );
     return;
   }
 
