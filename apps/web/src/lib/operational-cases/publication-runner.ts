@@ -32,6 +32,7 @@ import {
   shouldIdleFallbackSetWaitingInternal,
   shouldSendCorrectiveListingPublishedSummary,
 } from "@/lib/operational-cases/publication-closure-recovery";
+import { dismissObsoleteInternalNotificationsForCase } from "@/lib/operational-cases/obsolete-case-notification";
 import {
   acceptedPublicationReviewSignature,
   formatPublicationReviewNotifyText,
@@ -825,6 +826,20 @@ export async function requestPublicationProgress(
               nextActionAt: null,
             }
           );
+          // No esperar al cron de recordatorios: cierra HITLs de etapas
+          // anteriores (comparables, titularidad, etc.) al clausurar.
+          if (closed) {
+            await dismissObsoleteInternalNotificationsForCase({
+              db,
+              userId: closed.user_id,
+              opCase: closed,
+            }).catch((err) => {
+              console.warn(
+                "[publication-runner] dismiss obsolete notifications failed:",
+                err
+              );
+            });
+          }
           if (closed && (!alreadySent || sendCorrective)) {
             try {
               const summaryText = formatListingPublishedSummaryNotifyText(closed);

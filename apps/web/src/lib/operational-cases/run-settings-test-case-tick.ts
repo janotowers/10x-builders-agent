@@ -12,6 +12,7 @@ import {
   renderCommissionContractForCase,
   runAgent,
   runDocumentFieldExtraction,
+  titularidadOverrideApproved,
   type ToolContext,
 } from "@agents/agent";
 import {
@@ -657,6 +658,24 @@ async function emitContractGenerationFailure(params: {
       ...(failure.detail ? { failure_detail: failure.detail } : {}),
     },
   });
+  // Si el asesor ya autorizó la excepción de titularidad, un fallo stale del
+  // generate_document (carrera con el tick de override) NO debe reabrir el HITL.
+  if (failure.kind === "titularidad_review_required") {
+    const fresh = await getOperationalCase(db, caseId);
+    const context =
+      fresh?.context_jsonb && typeof fresh.context_jsonb === "object"
+        ? (fresh.context_jsonb as Record<string, unknown>)
+        : {};
+    if (titularidadOverrideApproved(context)) {
+      await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+        userId,
+        caseId,
+        kind: "titularidad_review",
+        status: "actioned",
+      }).catch(() => null);
+      return;
+    }
+  }
   const notifyPayload = contractGenerationFailureNotify({ failure, caseId });
   await notifyUserRespectingActiveInternalChannel(
     db,

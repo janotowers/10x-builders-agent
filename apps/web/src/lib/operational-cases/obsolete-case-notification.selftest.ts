@@ -51,4 +51,24 @@ assert.equal(
 );
 assert.equal(obsolete("publication_review_required", "published"), true);
 
+// titularidad_review: step pasado o override aprobado ⇒ obsolete; en
+// contract_pending sin override sigue accionable.
+assert.equal(obsolete("titularidad_review", "published"), true);
+assert.equal(obsolete("titularidad_review", "package_ready"), true);
+assert.equal(obsolete("titularidad_review", "contract_pending"), false);
+assert.equal(
+  obsolete("titularidad_review", "contract_pending", {
+    titularidad: { override: { approved: true } },
+  }),
+  true
+);
+assert.equal(
+  obsolete("comparables_search_expansion_decision", "published"),
+  true
+);
+assert.equal(
+  obsolete("comparables_search_expansion_decision", "comparables_in_progress"),
+  false
+);
+
 console.log("obsolete-case-notification.selftest: ok");

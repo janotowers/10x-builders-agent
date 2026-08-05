@@ -3,6 +3,7 @@ import {
   getOperationalCase,
   insertOperationalCaseEvent,
   resolveInternalNotificationWithReminders,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   type DbClient,
 } from "@agents/db";
 import { advisedUpdateCase } from "../operational-cases/advised-case-update";
@@ -448,6 +449,15 @@ export async function handleTitularidadReviewDecision(
     userId: params.userId,
     status: "actioned",
   });
+  // Paridad con comparables/price: cierra TODOS los unread del kind, no solo
+  // el id reclamado. Un tick concurrente puede haber creado otro
+  // titularidad_review tras el override y dejarlo zombie en el inbox.
+  await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+    userId: params.userId,
+    caseId: updated.id,
+    kind: "titularidad_review",
+    status: "actioned",
+  }).catch(() => null);
 
   if (isControlledE2EOperationalCase(updated)) {
     void runSettingsTestCaseAgentTick(db, updated, updated.user_id, {
