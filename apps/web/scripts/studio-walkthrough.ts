@@ -8,6 +8,9 @@
  * This does NOT replace the human UI walkthrough (non-engineer create/fork/
  * validate/simulate/publish in the browser). Print the checklist at the end.
  *
+ * Synthetic cases MUST set created_from=case_type_settings_test + test_mode so
+ * production cron suppresses them (isCronSuppressedOperationalCase).
+ *
  * Usage (from apps/web):
  *   npx tsx scripts/studio-walkthrough.ts [--user <uuid>] [--case-type property_optioning]
  *   npx tsx scripts/studio-walkthrough.ts --publish [--user <uuid>]
@@ -181,6 +184,9 @@ async function main() {
     throw new Error(`No active case type for ${caseType}.`);
   }
 
+  // Must carry settings-test markers so isCronSuppressedOperationalCase
+  // skips this row. A bare controlled_test flag is NOT enough (live incident:
+  // d900718d was cron-tickeado y disparó Telegram real).
   const opCase = await createOperationalCase(db, {
     userId,
     caseTypeId: caseTypeRow.id,
@@ -189,6 +195,8 @@ async function main() {
     currentStep: "intake",
     nextActionAt: null,
     context: {
+      created_from: "case_type_settings_test",
+      test_mode: true,
       controlled_test: true,
       controlled_test_status: "ready",
       studio_walkthrough_at: new Date().toISOString(),
@@ -207,10 +215,11 @@ async function main() {
       workflow_definition_version: draft.version,
       status: draft.status,
       test_mode: true,
+      created_from: "case_type_settings_test",
     },
   });
   console.log(
-    `6) synthetic case=${opCase.id} pinned def=${draft.id} v${draft.version} (${draft.status}) step=${opCase.current_step}`
+    `6) synthetic case=${opCase.id} pinned def=${draft.id} v${draft.version} (${draft.status}) step=${opCase.current_step} (cron-suppressed settings test)`
   );
 
   console.log(`
