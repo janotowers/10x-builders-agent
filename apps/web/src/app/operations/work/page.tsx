@@ -449,24 +449,28 @@ export default async function OperatorWorkViewPage({
           El plano de trabajo no está disponible en este entorno (la migración
           00069 aún no se aplica o las tablas no responden).
         </div>
-      ) : visibleItems.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-          {historicalCount > 0 ? (
-            <>
-              No hay trabajo en casos vigentes. Hay {historicalCount} item
-              {historicalCount === 1 ? "" : "s"} de casos ya terminados en el
-              historial.
-            </>
-          ) : (
-            <>
-              No hay work items todavía. Los casos con definición pinneada y
-              flag <code>work_plane_v2</code> los generarán en el próximo tick
-              del cron.
-            </>
-          )}
-        </div>
       ) : (
         <div className="space-y-4">
+          {/* El tablero (columnas + bandeja) se muestra siempre: sin items, las
+              columnas vacías siguen anclando la progresión del flujo. */}
+          {visibleItems.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-neutral-300 bg-white px-4 py-3 text-sm text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
+              {historicalCount > 0 ? (
+                <>
+                  No hay trabajo en casos vigentes. Hay {historicalCount} item
+                  {historicalCount === 1 ? "" : "s"} de casos ya terminados en
+                  el historial.
+                </>
+              ) : (
+                <>
+                  No hay work items todavía. Los casos con definición pinneada y
+                  flag <code>work_plane_v2</code> los generarán en el próximo
+                  tick del cron.
+                </>
+              )}
+            </div>
+          ) : null}
+
           {/* Excepción: bloqueado reencola a Listo; no es etapa del camino feliz. */}
           <section
             className={`rounded-2xl border border-t-4 border-neutral-200 bg-red-50/60 p-3 dark:border-neutral-800 dark:bg-red-950/20 ${COLUMN_ACCENTS.blocked.border}`}
