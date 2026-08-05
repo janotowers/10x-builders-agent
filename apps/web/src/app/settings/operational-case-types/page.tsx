@@ -5,8 +5,13 @@ import {
   getRecentOperationalCaseEvents,
   listOperationalCasesForUser,
   listOperationalCaseTypesForUser,
+  listWorkflowDefinitionsVisibleToUser,
 } from "@agents/db";
 import { getSkillRegistryForUser } from "@agents/agent";
+import {
+  definitionStatusLabel,
+  ownerScopeLabel,
+} from "@/lib/workflow-studio/definition-catalog";
 import { OperationalCaseTypesClient } from "./operational-case-types-client";
 import { BfcacheRecoveryBoundary } from "./bfcache-recovery-boundary";
 import { AppShell } from "@/components/app-shell";
@@ -21,29 +26,46 @@ export default async function OperationalCaseTypesPage() {
   if (!user) redirect("/login");
 
   const db = createServerClient();
-  const [caseTypes, operationalCases, registry] = await Promise.all([
-    listOperationalCaseTypesForUser(db, user.id, {
-      includeArchived: true,
-    }),
-    listOperationalCasesForUser(db, user.id, {
-      statuses: [
-        "active",
-        "waiting_internal",
-        "waiting_external",
-        "paused",
-        "completed",
-        "failed",
-      ],
-      limit: 500,
-    }),
-    getSkillRegistryForUser(db, user.id).catch((err) => {
-      console.warn(
-        "[operational-case-types] failed to load skill registry:",
-        err
-      );
-      return null;
-    }),
-  ]);
+  const [caseTypes, operationalCases, registry, workflowDefinitions] =
+    await Promise.all([
+      listOperationalCaseTypesForUser(db, user.id, {
+        includeArchived: true,
+      }),
+      listOperationalCasesForUser(db, user.id, {
+        statuses: [
+          "active",
+          "waiting_internal",
+          "waiting_external",
+          "paused",
+          "completed",
+          "failed",
+        ],
+        limit: 500,
+      }),
+      getSkillRegistryForUser(db, user.id).catch((err) => {
+        console.warn(
+          "[operational-case-types] failed to load skill registry:",
+          err
+        );
+        return null;
+      }),
+      // Slice 1.6-1: opciones del selector de definición en N0.
+      listWorkflowDefinitionsVisibleToUser(db, user.id).catch((err) => {
+        console.warn(
+          "[operational-case-types] failed to load workflow definitions:",
+          err
+        );
+        return [];
+      }),
+    ]);
+  const labDefinitionOptions = workflowDefinitions.map((definition) => ({
+    id: definition.id,
+    caseType: definition.case_type,
+    workflowKey: definition.workflow_key,
+    version: definition.version,
+    status: definition.status,
+    label: `${definition.workflow_key} · v${definition.version} · ${definitionStatusLabel(definition.status)} · ${ownerScopeLabel(definition.owner_scope)}`,
+  }));
   const skillSummaries =
     registry?.list().map((skill) => ({
       slug: skill.name,
@@ -115,6 +137,7 @@ export default async function OperationalCaseTypesPage() {
             initialOperationalCases={operationalCases}
             initialLatestEventsByCaseId={latestEventsByCaseId}
             initialSkillSummaries={skillSummaries}
+            initialLabDefinitionOptions={labDefinitionOptions}
           />
         </BfcacheRecoveryBoundary>
       </div>

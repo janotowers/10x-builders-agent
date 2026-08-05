@@ -7229,16 +7229,28 @@ function serializeEditingSnapshot(snapshot: EditingSnapshot | null) {
   });
 }
 
+export type LabDefinitionOption = {
+  id: string;
+  caseType: string;
+  workflowKey: string;
+  version: number;
+  status: string;
+  label: string;
+};
+
 export function OperationalCaseTypesClient({
   initialCaseTypes,
   initialOperationalCases,
   initialLatestEventsByCaseId,
   initialSkillSummaries,
+  initialLabDefinitionOptions = [],
 }: {
   initialCaseTypes: OperationalCaseType[];
   initialOperationalCases: OperationalCase[];
   initialLatestEventsByCaseId: Record<string, OperationalCaseEvent>;
   initialSkillSummaries: SkillSummary[];
+  /** Slice 1.6-1: definiciones visibles (propias + globales) para pin en N0. */
+  initialLabDefinitionOptions?: LabDefinitionOption[];
 }) {
   const [caseTypes, setCaseTypes] =
     useState<OperationalCaseType[]>(initialCaseTypes);
@@ -7315,6 +7327,12 @@ export function OperationalCaseTypesClient({
     observedCaseIdFromUrl() ? 0 : Date.now()
   );
   const [testCaseLoading, setTestCaseLoading] = useState(false);
+  // Slice 1.6-1: pin explícito de workflow_definition_id ("" = última publicada).
+  const [selectedWorkflowDefinitionId, setSelectedWorkflowDefinitionId] =
+    useState("");
+  useEffect(() => {
+    setSelectedWorkflowDefinitionId("");
+  }, [selectedCaseType?.case_type]);
   const [testCaseRunningMode, setTestCaseRunningMode] = useState<
     "safe_check" | "agent_e2e" | null
   >(null);
@@ -8413,6 +8431,9 @@ export function OperationalCaseTypesClient({
         body: JSON.stringify({
           case_type_id: selectedCaseType.id,
           validate_registration: true,
+          ...(selectedWorkflowDefinitionId
+            ? { workflow_definition_id: selectedWorkflowDefinitionId }
+            : {}),
         }),
       });
       const data = (await res.json()) as
@@ -9341,6 +9362,29 @@ export function OperationalCaseTypesClient({
         >
           <div className="mt-3 space-y-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
             <div className="flex flex-wrap gap-2">
+              <label className="flex flex-col gap-1 text-[11px] text-neutral-600 dark:text-neutral-300">
+                <span className="font-semibold">Definición del flujo</span>
+                <select
+                  value={selectedWorkflowDefinitionId}
+                  onChange={(event) =>
+                    setSelectedWorkflowDefinitionId(event.target.value)
+                  }
+                  disabled={testCaseLoading || testCaseRunning}
+                  className="rounded border border-neutral-300 bg-white px-2 py-1.5 text-[11px] font-semibold text-neutral-800 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                >
+                  <option value="">Última publicada (producción)</option>
+                  {initialLabDefinitionOptions
+                    .filter(
+                      (option) =>
+                        option.caseType === selectedCaseType?.case_type
+                    )
+                    .map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                </select>
+              </label>
               <button
                 type="button"
                 onClick={createTestCase}
@@ -9367,7 +9411,9 @@ export function OperationalCaseTypesClient({
             <p className="text-[11px] text-neutral-500">
               Regenera datos controlados del laboratorio, valida el registro sin
               invocar al agente y deja el caso listo en el primer paso operativo.
-              Guardar datos no reinicia el recorrido.
+              Por defecto usa la última definición publicada; elige un borrador
+              o versión concreta para probar un pin distinto. Guardar datos no
+              reinicia el recorrido.
             </p>
             {toolsHaveBlocks && testCaseResult?.case ? (
               <p className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
