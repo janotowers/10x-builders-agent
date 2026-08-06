@@ -104,10 +104,11 @@ function soakGraph(variant: "standard" | "human" | "blocked"): WorkflowGraph {
       work_templates: [
         {
           on_enter_state: "collecting",
-          // Capability service pero work_type NO registrado: cada intento
-          // falla explícito hasta agotar max_attempts → blocked + notificación.
+          // Capability sintética resoluble (perfil work_plane_synthetic,
+          // 00072) pero work_type NO registrado: cada intento falla
+          // explícito hasta agotar max_attempts → blocked + notificación.
           work_type: "work_plane_synthetic_unregistered",
-          required_capability: "service",
+          required_capability: "synthetic_work",
         },
       ],
       postconditions: [],
@@ -121,17 +122,17 @@ function soakGraph(variant: "standard" | "human" | "blocked"): WorkflowGraph {
     {
       on_enter_state: "producing",
       work_type: "work_plane_synthetic_branch_a",
-      required_capability: "service",
+      required_capability: "synthetic_work",
     },
     {
       on_enter_state: "producing",
       work_type: "work_plane_synthetic_branch_b",
-      required_capability: "service",
+      required_capability: "synthetic_work",
     },
     {
       on_enter_state: "producing",
       work_type: "work_plane_synthetic_fan_in",
-      required_capability: "service",
+      required_capability: "synthetic_work",
       depends_on: [
         "work_plane_synthetic_branch_a",
         "work_plane_synthetic_branch_b",
@@ -173,7 +174,7 @@ function soakGraph(variant: "standard" | "human" | "blocked"): WorkflowGraph {
       {
         on_enter_state: "collecting",
         work_type: "work_plane_synthetic_echo",
-        required_capability: "service",
+        required_capability: "synthetic_work",
       },
       ...producing,
     ],
@@ -368,7 +369,7 @@ async function main() {
       templates: [
         {
           work_type: "work_plane_synthetic_echo",
-          required_capability: "service",
+          required_capability: "synthetic_work",
         },
       ],
       onEnterState: "collecting",

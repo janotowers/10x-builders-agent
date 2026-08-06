@@ -20,6 +20,7 @@ import {
   getPublishedDefinition,
   getWorkItemById,
   listPinnedActiveOperationalCases,
+  listWorkerProfilesForUser,
   listWorkPlaneV2Tenants,
   upsertActiveInternalUserNotification,
   type DbClient,
@@ -31,7 +32,7 @@ import {
   type WorkPlaneStore,
   type WorkPlaneTickResult,
 } from "@agents/workflows";
-import type { WorkflowGraph } from "@agents/types";
+import type { WorkerProfile, WorkflowGraph } from "@agents/types";
 import { createAdvisedCaseUpdate } from "./advised-case-update";
 import {
   createWorkPlaneExecutorResolver,
@@ -158,9 +159,42 @@ export async function runWorkPlaneCronPass(
   const loadDefinition = createWorkflowDefinitionLoader((id, version) =>
     getPublishedDefinition(db, id, version)
   );
+
+  // Snapshot capability → execution_mode por tenant (perfil = fuente de
+  // verdad del mecanismo; la resolución del dispatcher es síncrona). Un
+  // fallo de carga deja el mapa vacío: los items sin convención humana
+  // bloquean explícito en vez de adivinar ejecutor.
+  const executionModes = new Map<
+    string,
+    Map<string, WorkerProfile["execution_mode"]>
+  >();
+  for (const userId of tenants) {
+    const byCapability = new Map<string, WorkerProfile["execution_mode"]>();
+    try {
+      for (const profile of await listWorkerProfilesForUser(db, userId)) {
+        for (const capability of profile.capabilities) {
+          // Preferencia tenant > global cuando dos perfiles declaran la
+          // misma capability (mismo criterio que resolveWorkerProfileForCapability).
+          if (!byCapability.has(capability) || profile.user_id !== null) {
+            byCapability.set(capability, profile.execution_mode);
+          }
+        }
+      }
+    } catch (error) {
+      summary.errors.push({
+        userId,
+        message: `worker_profiles snapshot failed: ${(error as Error)?.message ?? "unknown"}`,
+      });
+    }
+    executionModes.set(userId, byCapability);
+  }
+
   const dispatcher = createWorkDispatcher({
     store: bindStore(db),
-    resolveExecutor: createWorkPlaneExecutorResolver(db),
+    resolveExecutor: createWorkPlaneExecutorResolver(db, {
+      executionModeFor: (userId, capability) =>
+        executionModes.get(userId)?.get(capability) ?? null,
+    }),
     // 3.4-5: scopes del worker profile se hacen valer en la selección.
     enforceScopes: createWorkerScopeEnforcement(db),
     retryBackoffMs: opts.retryBackoffMs,

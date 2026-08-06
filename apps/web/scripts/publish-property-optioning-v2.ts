@@ -1,9 +1,17 @@
 /**
- * Creates, validates, records gate evidence, and (with --publish) publishes a
- * tenant-private property_optioning v2 definition that activates work/impact
- * plane semantics. Idempotent by definition hash.
+ * Herramienta INTERNA (agente/CI), no paso de operador ni UX.
  *
- * Usage (from apps/web):
+ * Crea, valida, registra evidencia de gates y (con --publish) publica una
+ * definición tenant-private de property_optioning con los work_templates
+ * del plano de trabajo. Idempotente por definition_hash. Tras publicar,
+ * re-apunta casos activos del tenant piloto (solo válido en laboratorio).
+ *
+ * Renames mecánicos de capability: preferir migración SQL + esta herramienta
+ * en el mismo release (quien aplica el release la corre). Cambios de negocio
+ * del flujo → Diseño de flujos en la UI. No pedir al operador que ejecute
+ * este script a mano.
+ *
+ * Usage (from apps/web, agente/CI):
  *   npx tsx scripts/publish-property-optioning-v2.ts [--user <uuid>]
  *   npx tsx scripts/publish-property-optioning-v2.ts --publish [--user <uuid>]
  */
@@ -108,21 +116,23 @@ async function main() {
   if (flow.length === 0) throw new Error("property_optioning flow is empty.");
 
   const graph = transformFlowToGraph({ caseType: CASE_TYPE, flow });
+  // Capabilities = competencia (el mecanismo lo decide el worker profile;
+  // migración 00072). Nada de prefijos service:/agent: en las definiciones.
   graph.work_templates = [
     {
       on_enter_state: "documents_received",
       work_type: "extraction_consolidation",
-      required_capability: "service:extraction_consolidation",
+      required_capability: "extraction_consolidation",
     },
     {
       on_enter_state: "price_proposal_pending",
       work_type: "verify_valuation",
-      required_capability: "agent:valuation_verifier",
+      required_capability: "valuation_verification",
     },
     {
       on_enter_state: "package_ready",
       work_type: "publication_reconciliation",
-      required_capability: "service:publication_reconciliation",
+      required_capability: "publication_reconciliation",
     },
   ];
   const hash = computeDefinitionHash(graph);
@@ -212,6 +222,28 @@ async function main() {
   const published = await publishDefinition(db, draft.id, userId);
   console.log(
     `PUBLISHED property_optioning v${published.version}: ${published.id}`
+  );
+
+  // Re-apunta los casos activos anclados a versiones previas (operación de
+  // laboratorio: los estados del grafo son idénticos; solo cambian los
+  // strings de capability de los work_templates — migración 00072). En
+  // producción con usuarios reales esto exigiría una decisión de versionado
+  // por caso, no un update masivo.
+  const { data: repointed, error: repointError } = await db
+    .from("operational_cases")
+    .update({
+      workflow_definition_id: published.id,
+      workflow_definition_version: published.version,
+    })
+    .eq("user_id", userId)
+    .eq("case_type", CASE_TYPE)
+    .in("status", ["active", "waiting_internal", "waiting_external", "paused"])
+    .not("workflow_definition_id", "is", null)
+    .neq("workflow_definition_id", published.id)
+    .select("id");
+  if (repointError) throw repointError;
+  console.log(
+    `repointed ${repointed?.length ?? 0} active case(s) to v${published.version}`
   );
 }
 

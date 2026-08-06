@@ -1,16 +1,27 @@
 /**
  * Resolución de ejecutores del plano de trabajo (Slices 2.3/2.4; perfiles y
- * scopes en 3.4).
+ * scopes en 3.4; ajuste de nomenclatura 2026-08-05).
  *
- * Convención de `required_capability` → modo de ejecución:
- *   - `human` o `human:<detalle>`   → executor human (notifica + review)
- *   - `service` o `service:<detalle>` → deterministic_service (registro en
- *     código por `work_type`; NUNCA dispatch dinámico de strings de DB a
- *     funciones arbitrarias)
- *   - `agent:valuation_verifier`    → specialized_agent (3.4-3)
- *   - `agent` o `agent:<detalle>`   → main_agent (case-runner existente)
- *   - cualquier otra capability     → null ⇒ el dispatcher bloquea el item
- *     explícitamente (`no_executor_for_capability:<capability>`).
+ * La `required_capability` nombra la COMPETENCIA (qué se necesita:
+ * `valuation_verification`, `extraction_consolidation`…), nunca el
+ * mecanismo. El mecanismo lo decide el worker profile: la resolución
+ * capability → `execution_mode` viene de un snapshot de `worker_profiles`
+ * precargado por tick (el dispatcher exige resolución síncrona), y el modo
+ * elige el adapter:
+ *   - `deterministic_service` → registro en código por `work_type` (NUNCA
+ *     dispatch dinámico de strings de DB a funciones arbitrarias)
+ *   - `specialized_agent`     → registro de workers especializados por
+ *     `work_type` (p. ej. verify_valuation)
+ *   - `main_agent`            → case-runner existente (runAgent)
+ *   - `human`                 → notifica + review
+ *   - modos declarados sin adapter (ephemeral_subagent, durable_worker,
+ *     external_service) y capabilities sin perfil → null ⇒ el dispatcher
+ *     bloquea el item explícito (`no_executor_for_capability:<capability>`).
+ *
+ * Única convención sin perfil: `human` / `human:<detalle>` → executor human.
+ * Las capabilities humanas son abiertas (`human:impact_repair`,
+ * `human:owner_signature`…) y el match perfil↔capability es por string
+ * exacto, así que no se exige una fila de perfil por cada variante humana.
  *
  * Slice 3.4-5: `createWorkerScopeEnforcement` evalúa los worker profiles
  * (allowed_tools / allowed_data_scopes) EN LA SELECCIÓN — deny ⇒ blocked con
@@ -260,7 +271,17 @@ function makeValuationVerifierFn(db: DbClient): SpecializedAgentWorkFn {
 }
 
 export function createWorkPlaneExecutorResolver(
-  db: DbClient
+  db: DbClient,
+  deps: {
+    /**
+     * Snapshot capability → execution_mode del worker profile (tenant
+     * sombrea global). Null ⇒ sin perfil; solo la convención humana aplica.
+     */
+    executionModeFor: (
+      userId: string,
+      capability: string
+    ) => WorkerProfile["execution_mode"] | null;
+  }
 ): (item: WorkItem) => ExecutorAdapter | null {
   const mainAgent = createMainAgentExecutor(makeWorkItemAgentTurnRunner(db));
   const deterministic = createDeterministicServiceExecutor(
@@ -293,16 +314,24 @@ export function createWorkPlaneExecutorResolver(
     });
   });
 
+  // El perfil es la fuente de verdad del mecanismo. Los modos declarados
+  // pero aún sin implementación (ephemeral_subagent, durable_worker,
+  // external_service) caen a null ⇒ blocked explícito, jamás se adivina.
+  const adapterByMode: Partial<
+    Record<WorkerProfile["execution_mode"], ExecutorAdapter>
+  > = {
+    main_agent: mainAgent,
+    deterministic_service: deterministic,
+    specialized_agent: specialized,
+    human,
+  };
+
   return (item: WorkItem): ExecutorAdapter | null => {
     const capability = item.required_capability;
+    const mode = deps.executionModeFor(item.user_id, capability);
+    if (mode) return adapterByMode[mode] ?? null;
+    // Capabilities humanas abiertas sin perfil (ver header).
     if (capability === "human" || capability.startsWith("human:")) return human;
-    if (capability === "service" || capability.startsWith("service:")) {
-      return deterministic;
-    }
-    if (capability === "agent:valuation_verifier") return specialized;
-    if (capability === "agent" || capability.startsWith("agent:")) {
-      return mainAgent;
-    }
     return null;
   };
 }
