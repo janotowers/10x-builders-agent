@@ -24,6 +24,7 @@ import {
 } from "@agents/agent";
 import { notifyUserRespectingActiveInternalChannel } from "./deliver-internal-case-follow-up";
 import {
+  canSafelyForceRetryCreateDraft,
   canSafelyForceRetryProcessMedia,
   canSafelyForceRetryUnggaPublish,
 } from "@/lib/operational-cases/publication-media-recovery";
@@ -117,10 +118,30 @@ export type PublicationExecutionResult = {
   error?: string;
 };
 
+/**
+ * Process/network kills that may have raced a remote write → unknown.
+ * Deterministic Playwright action timeouts (waitForURL/click/…) are known
+ * CLI failures — do NOT treat them as unknown_outcome (that hid login errors
+ * behind a generic review path).
+ */
 function isUnknownExternalFailure(message: string): boolean {
-  return /\b(timeout|timed out|killed|kill signal|sigterm|sigkill|aborted|econnreset|socket hang up)\b/i.test(
-    message
-  );
+  if (
+    /\b(killed|kill signal|sigterm|sigkill|aborted|econnreset|socket hang up)\b/i.test(
+      message
+    )
+  ) {
+    return true;
+  }
+  if (!/\b(timeout|timed out)\b/i.test(message)) return false;
+  // Playwright-style: "page.waitForURL: Timeout 45000ms exceeded."
+  if (
+    /page\.[a-z]+/i.test(message) ||
+    /timeout \d+ms exceeded/i.test(message) ||
+    /waiting for navigation/i.test(message)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function stringResult(
@@ -163,6 +184,14 @@ export function inferUnggaPrepareCliStep(
   }
   if (error.includes("commission") || error.includes("comisi")) {
     return "verify_commission";
+  }
+  // Login is the only waitForURL that runs before the wizard; surface it
+  // when the CLI error (or URL hint) mentions login.
+  if (
+    /\blogin\b/.test(error) ||
+    (/waitforurl/.test(error) && /\/login/.test(error))
+  ) {
+    return "login";
   }
   return "prepare_draft";
 }
@@ -1019,14 +1048,20 @@ export async function requestPublicationProgress(
         });
         continue;
       }
-      publication = applyPublicationEvent(publication, {
-        type: "preflight_result",
-        destination: action.destination,
-        status: "review_required",
-        reason: preflight.summary,
-      });
-      const persisted = await persistPublication(db, opCase, publication);
-      if (persisted) opCase = persisted;
+      // Preserve unknown_outcome/failed so human "Reintentar" still force-retries
+      // create. Remapping to review_required via preflight_result used to clear
+      // shouldForceRetry and leave the ledger row blocking the next attempt.
+      const priorPhase = publication.destinations[action.destination].phase;
+      if (priorPhase !== "unknown_outcome" && priorPhase !== "failed") {
+        publication = applyPublicationEvent(publication, {
+          type: "preflight_result",
+          destination: action.destination,
+          status: "review_required",
+          reason: preflight.summary,
+        });
+        const persisted = await persistPublication(db, opCase, publication);
+        if (persisted) opCase = persisted;
+      }
       await requestConditionalReview(
         db,
         opCase,
@@ -1539,8 +1574,12 @@ export async function requestPublicationProgress(
       // Auto-heal: create_draft failed before any remote artifact (safe retry).
       // Without this, lab «Revisar avance» after «Reintentar preparación» hits
       // failed_terminal because the tick does not pass forceRetryFailedOperation.
+      // Also reclaim known-safe unknown_outcome rows (login/nav timeouts, etc.):
+      // otherwise a remapped review_required approve without forceRetry (or a
+      // cron tick) hard-stops on unknown_outcome_from_prior_operation.
       if (
-        claim?.status === "failed_terminal" &&
+        (claim?.status === "failed_terminal" ||
+          claim?.status === "unknown_outcome") &&
         action.type === "create_draft" &&
         options.forceRetryFailedOperation !== true
       ) {
@@ -1548,7 +1587,15 @@ export async function requestPublicationProgress(
         const hasArtifact = Boolean(
           dest.artifact.listing_id || dest.artifact.ungga_property_id
         );
-        if (!hasArtifact) {
+        const safe = canSafelyForceRetryCreateDraft({
+          operation: {
+            status: claim.operation.status,
+            operation_type: claim.operation.operation_type,
+            error_text: claim.operation.error_text,
+          },
+          hasArtifact,
+        });
+        if (safe) {
           claim = await claimPublicationOperation(
             db,
             {
@@ -1559,7 +1606,10 @@ export async function requestPublicationProgress(
               request: {
                 source,
                 action,
-                auto_force_retry: "pre_artifact_create_draft",
+                auto_force_retry:
+                  claim.status === "unknown_outcome"
+                    ? "safe_unknown_create_draft"
+                    : "pre_artifact_create_draft",
               },
             },
             { forceRetry: true }
@@ -1615,20 +1665,54 @@ export async function requestPublicationProgress(
         continue;
       }
       if (claim?.status === "unknown_outcome") {
-        publication = applyPublicationEvent(publication, {
-          type: "draft_failed",
-          destination: action.destination,
-          error: "unknown_outcome_from_prior_operation",
-          unknown: true,
+        // Last chance: human-authorized forceRetry already passed to claim, but
+        // a concurrent writer may have raced. Only hard-stop when reclaim is
+        // unsafe (artifact present or error is not a known pre-save signature).
+        const dest = publication.destinations[action.destination];
+        const hasArtifact = Boolean(
+          dest.artifact.listing_id || dest.artifact.ungga_property_id
+        );
+        const safe = canSafelyForceRetryCreateDraft({
+          operation: {
+            status: claim.operation.status,
+            operation_type: claim.operation.operation_type,
+            error_text: claim.operation.error_text,
+          },
+          hasArtifact,
         });
-        await persistPublication(db, opCase, publication);
-        return {
-          ok: false,
-          status: "failed",
-          actions_run: actionsRun,
-          publication,
-          message: "unknown_outcome_requires_review",
-        };
+        if (safe || options.forceRetryFailedOperation === true) {
+          claim = await claimPublicationOperation(
+            db,
+            {
+              caseId: opCase.id,
+              destination: action.destination,
+              operationKey,
+              operationType: action.type,
+              request: {
+                source,
+                action,
+                auto_force_retry: "unknown_outcome_create_draft_reclaim",
+              },
+            },
+            { forceRetry: true }
+          ).catch(() => null);
+        }
+        if (claim?.status === "unknown_outcome") {
+          publication = applyPublicationEvent(publication, {
+            type: "draft_failed",
+            destination: action.destination,
+            error: "unknown_outcome_from_prior_operation",
+            unknown: true,
+          });
+          await persistPublication(db, opCase, publication);
+          return {
+            ok: false,
+            status: "failed",
+            actions_run: actionsRun,
+            publication,
+            message: "unknown_outcome_requires_review",
+          };
+        }
       }
       if (claim?.status === "in_flight") {
         // Stale lease from a killed deferred tick (common after Telegram

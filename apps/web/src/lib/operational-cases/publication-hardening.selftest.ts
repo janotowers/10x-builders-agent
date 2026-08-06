@@ -261,6 +261,19 @@ assert.equal(
   inferUnggaPrepareCliStep("timeout", "media_preflight"),
   "media_preflight"
 );
+assert.equal(
+  inferUnggaPrepareCliStep(
+    'page.waitForURL: Timeout 45000ms exceeded.\nwaiting for navigation until "load"',
+    "login"
+  ),
+  "login"
+);
+assert.equal(
+  inferUnggaPrepareCliStep(
+    'page.waitForURL: Timeout 45000ms exceeded. (url=https://ungga.com/login)'
+  ),
+  "login"
+);
 
 {
   let publication = emptyPublicationState();

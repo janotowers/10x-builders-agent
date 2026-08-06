@@ -462,16 +462,45 @@ export async function handleListingDescriptionReviewDecision(
       userId: params.userId,
       status: "actioned",
     });
+    const { dismissObsoleteInternalNotificationsForCase } = await import(
+      "@/lib/operational-cases/obsolete-case-notification"
+    );
+    await dismissObsoleteInternalNotificationsForCase({
+      db,
+      userId: params.userId,
+      opCase: updated,
+    }).catch((error) => {
+      console.warn(
+        "[listing-description-review] dismiss obsolete after approve failed:",
+        error
+      );
+    });
     // Await: en Next el void fire-and-forget se corta al cerrar la response.
     // También activa publication_mode si el caso aún no lo tenía (default off).
     const deferTick = params.deferControlledE2ETick === true;
     if (!deferTick) {
       try {
-        await kickPublicationAfterListingDescriptionApproved(
+        const progress = await kickPublicationAfterListingDescriptionApproved(
           db,
           updated,
           "listing_description_approved"
         );
+        // Si un tick concurrente aún tiene el lease, reprograma para que el
+        // cron retome la aprobación de destino en vez de quedar colgado.
+        if (progress?.status === "already_processing") {
+          const freshAfterKick = await getOperationalCase(db, updated.id);
+          if (freshAfterKick) {
+            await updateOperationalCase(
+              db,
+              freshAfterKick.id,
+              freshAfterKick.version,
+              {
+                status: "active",
+                nextActionAt: new Date(Date.now() + 5_000).toISOString(),
+              }
+            );
+          }
+        }
       } catch (tickError) {
         console.error(
           "[listing-description-review] publication kick after approve failed:",

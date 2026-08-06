@@ -227,7 +227,13 @@ export function propertyOptioningPublicationEnablementPatch(params: {
   const explicitMode =
     publicationModeValue(context.publication_mode) ??
     publicationModeValue(publication.mode);
-  if (explicitMode != null) return null;
+  // active/shadow are intentional product choices. "off" before listing
+  // approval is also respected; after approval, recover from default "off"
+  // persisted by reconcile (which used to materialize the rollout default).
+  if (explicitMode === "active" || explicitMode === "shadow") return null;
+  if (explicitMode === "off" && !listingDescriptionIsApproved(context)) {
+    return null;
+  }
 
   return {
     publication_mode: "active",

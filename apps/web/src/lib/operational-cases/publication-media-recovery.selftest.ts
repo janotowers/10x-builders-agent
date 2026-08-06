@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  canSafelyForceRetryCreateDraft,
   canSafelyForceRetryProcessMedia,
   canSafelyForceRetryUnggaPublish,
   isCaseProcessingLeaseActive,
@@ -193,6 +194,66 @@ assert.equal(
     },
   }),
   true
+);
+
+assert.equal(
+  canSafelyForceRetryCreateDraft({
+    operation: {
+      status: "unknown_outcome",
+      operation_type: "create_draft",
+      error_text:
+        'page.waitForURL: Timeout 45000ms exceeded.\nwaiting for navigation until "load"',
+    },
+    hasArtifact: false,
+  }),
+  true,
+  "login waitForURL unknown_outcome is safe to reclaim"
+);
+assert.equal(
+  canSafelyForceRetryCreateDraft({
+    operation: {
+      status: "unknown_outcome",
+      operation_type: "create_draft",
+      error_text: "unknown_outcome_from_prior_operation",
+    },
+    hasArtifact: false,
+  }),
+  true
+);
+assert.equal(
+  canSafelyForceRetryCreateDraft({
+    operation: {
+      status: "unknown_outcome",
+      operation_type: "create_draft",
+      error_text: "process killed after timeout mid-save",
+    },
+    hasArtifact: false,
+  }),
+  false,
+  "ambiguous kill mid-save must stay blocked without human forceRetry"
+);
+assert.equal(
+  canSafelyForceRetryCreateDraft({
+    operation: {
+      status: "failed",
+      operation_type: "create_draft",
+      error_text: "No listing fields found",
+    },
+    hasArtifact: false,
+  }),
+  true
+);
+assert.equal(
+  canSafelyForceRetryCreateDraft({
+    operation: {
+      status: "unknown_outcome",
+      operation_type: "create_draft",
+      error_text: "page.waitForURL: Timeout",
+    },
+    hasArtifact: true,
+  }),
+  false,
+  "never reclaim create when a GU-ID already exists"
 );
 
 const now = Date.parse("2026-07-14T01:00:00.000Z");

@@ -45,6 +45,49 @@ function envFlag(name, fallback = false) {
   return raw === "1" || raw === "true" || raw === "yes";
 }
 
+/**
+ * Ungga is a SPA: waiting for the full "load" event after client navigations
+ * frequently times out even when the URL already changed. Prefer commit /
+ * pathname polling over Playwright's default waitUntil=load.
+ */
+async function waitForPageUrl(page, urlOrPredicate, options = {}) {
+  const timeout =
+    typeof options.timeout === "number" && options.timeout > 0
+      ? options.timeout
+      : resolveUnggaTimeoutMs("nav");
+  const waitUntil = options.waitUntil ?? "commit";
+  try {
+    await page.waitForURL(urlOrPredicate, { timeout, waitUntil });
+    return;
+  } catch (firstError) {
+    // Same-document / soft navigations sometimes never emit commit/load.
+    // Fall back to polling the current URL.
+    const matches = (href) => {
+      try {
+        if (typeof urlOrPredicate === "function") {
+          return Boolean(urlOrPredicate(new URL(href)));
+        }
+        if (urlOrPredicate instanceof RegExp) {
+          return urlOrPredicate.test(href);
+        }
+        if (typeof urlOrPredicate === "string") {
+          return href.includes(urlOrPredicate) || href === urlOrPredicate;
+        }
+      } catch {
+        return false;
+      }
+      return false;
+    };
+    if (matches(page.url())) return;
+    const deadline = Date.now() + Math.min(timeout, 5_000);
+    while (Date.now() < deadline) {
+      if (matches(page.url())) return;
+      await page.waitForTimeout(150);
+    }
+    throw firstError;
+  }
+}
+
 function resolveExpectedCommissionPct(listing) {
   const ops = Array.isArray(listing?.operations) ? listing.operations : [];
   for (const op of ops) {
@@ -126,15 +169,18 @@ export async function loginToUngga(creds, metrics = []) {
     await page
       .getByRole("button", { name: /^ingresar$|^entrar$|^iniciar sesión$|^login$|^sign in$/i })
       .click({ timeout: resolveUnggaTimeoutMs("action") });
-    await page.waitForURL((url) => !url.pathname.endsWith("/login"), {
+    await waitForPageUrl(page, (url) => !url.pathname.endsWith("/login"), {
       timeout: resolveUnggaTimeoutMs("nav"),
+      waitUntil: "commit",
     });
     push("login", true, Date.now() - tLogin);
   } catch (e) {
-    push("login", false, Date.now() - tLogin, e?.message ?? String(e));
+    const detail = e?.message ?? String(e);
+    const urlHint = page?.url?.() ? ` (url=${page.url()})` : "";
+    push("login", false, Date.now() - tLogin, `${detail}${urlHint}`);
     await maybeCapture(page, "login-failed", metrics);
     await browser.close();
-    throw e;
+    throw new Error(`${detail}${urlHint}`);
   }
 
   return { browser, page };
@@ -2624,10 +2670,10 @@ async function saveAsDraft(page, metrics) {
     await button.click({ timeout: resolveUnggaTimeoutMs("action") });
     // Prefer deterministic draft signals over networkidle (which can hang forever).
     const draftReady = await Promise.race([
-      page
-        .waitForURL(/\/propiedades\/(?!nueva(?:\/|$))[^/?#]+/i, {
-          timeout: resolveUnggaTimeoutMs("nav"),
-        })
+      waitForPageUrl(page, /\/propiedades\/(?!nueva(?:\/|$))[^/?#]+/i, {
+        timeout: resolveUnggaTimeoutMs("nav"),
+        waitUntil: "commit",
+      })
         .then(() => "url")
         .catch(() => null),
       page
@@ -2642,10 +2688,10 @@ async function saveAsDraft(page, metrics) {
         .waitFor({ state: "visible", timeout: resolveUnggaTimeoutMs("nav") })
         .then(() => "toast")
         .catch(() => null),
-      page
-        .waitForURL(/\/app\/propiedades\/?(?:\?|#|$)/i, {
-          timeout: resolveUnggaTimeoutMs("nav"),
-        })
+      waitForPageUrl(page, /\/app\/propiedades\/?(?:\?|#|$)/i, {
+        timeout: resolveUnggaTimeoutMs("nav"),
+        waitUntil: "commit",
+      })
         .then(() => "properties_list")
         .catch(() => null),
       page
@@ -2873,8 +2919,9 @@ async function resolveDraftLinks(page, listing, metrics) {
     } else {
       try {
         await Promise.all([
-          page.waitForURL(/\/propiedades\/[^/?#]+/i, {
+          waitForPageUrl(page, /\/propiedades\/[^/?#]+/i, {
             timeout: resolveUnggaTimeoutMs("action"),
+            waitUntil: "commit",
           }),
           detalle.click({ timeout: 5_000 }),
         ]);

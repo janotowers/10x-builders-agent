@@ -321,8 +321,14 @@ export async function reconcilePublicationCaseRecord(
           : photoManifest,
       publication_workflow_v1:
         options?.featureEnabled === false ? false : context.publication_workflow_v1,
-      publication_mode:
-        options?.publicationMode ?? context.publication_mode ?? "off",
+      // Do not materialize the rollout default "off" into the case — that made
+      // an unset mode look intentional and blocked post-approval enablement.
+      ...(options?.publicationMode != null || context.publication_mode != null
+        ? {
+            publication_mode:
+              options?.publicationMode ?? context.publication_mode,
+          }
+        : {}),
       publication_reconciled_at: new Date().toISOString(),
     },
   });

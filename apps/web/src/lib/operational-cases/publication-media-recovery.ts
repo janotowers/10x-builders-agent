@@ -109,6 +109,52 @@ export function canSafelyForceRetryProcessMedia(params: {
 }
 
 /**
+ * True when create_draft can be reclaimed without risking a duplicate remote
+ * write. Known failures always qualify when there is no artifact; unknown_outcome
+ * only qualifies for pre-save / never-ran signatures (login nav, tool not
+ * called, ledger meta-blocks).
+ */
+export function canSafelyForceRetryCreateDraft(params: {
+  operation: ProcessMediaRecoveryOperation;
+  hasArtifact: boolean;
+}): boolean {
+  if (params.operation.operation_type !== "create_draft") return false;
+  if (params.hasArtifact) return false;
+  if (
+    params.operation.status !== "failed" &&
+    params.operation.status !== "unknown_outcome"
+  ) {
+    return false;
+  }
+  // Deterministic ledger failure: never ran remote create.
+  if (params.operation.status === "failed") return true;
+
+  const error =
+    typeof params.operation.error_text === "string"
+      ? params.operation.error_text.trim().toLowerCase()
+      : "";
+  if (!error) return false;
+  return (
+    error.includes("waitforurl") ||
+    error.includes("waiting for navigation") ||
+    /\blogin\b/.test(error) ||
+    error.includes("no listing fields found") ||
+    error.includes("general validation blocked draft") ||
+    error.includes("open_create_property") ||
+    error.includes("create action did not open") ||
+    error.includes("unknown_outcome_from_prior_operation") ||
+    error.includes("stale_in_flight_reclaimed") ||
+    error.includes("publication_execution_result_missing") ||
+    error.includes("expected_publication_tool_not_executed") ||
+    error.endsWith("_not_called") ||
+    error.includes("ungga_media_source_unreachable") ||
+    error.includes("media incomplete") ||
+    error.includes("commission not verified") ||
+    error.includes("commission_input_")
+  );
+}
+
+/**
  * True when Ungga publish failed before CLI side effects (tool not called /
  * agent hallucinated success). Safe to reclaim the ledger and retry publish
  * on the existing CLI GU-ID without creating a new draft.

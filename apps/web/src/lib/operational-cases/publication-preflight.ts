@@ -816,8 +816,10 @@ export function looksLikeUnggaPrepareDraftFailure(
     haystack.includes("adjust ungga_cli_publish_path") ||
     haystack.includes("general validation blocked draft") ||
     haystack.includes("prepare_draft") ||
+    haystack.includes("waitforurl") ||
+    haystack.includes("waiting for navigation") ||
     (typeof extras?.last_step?.step === "string" &&
-      /prepare_draft|open_create_property|fill_general|verify_commission/i.test(
+      /prepare_draft|open_create_property|fill_general|verify_commission|login/i.test(
         extras.last_step.step
       ))
   );

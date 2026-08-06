@@ -104,6 +104,11 @@ async function triggerProgress(
  * "approve and continue" means "I checked; safe to retry prepare_draft".
  * If a GU-ID/listing already exists, do NOT force-retry create — reconcile instead.
  *
+ * Also treat `review_required` without artifact as create-retry: a cron
+ * request_review tick may remap unknown_outcome/failed → review_required via
+ * preflight_result, which used to drop forceRetry and hit
+ * unknown_outcome_from_prior_operation on the ledger.
+ *
  * Additionally: Ungga publish that failed with *_not_called (pre-side-effect)
  * may force-retry publish on the existing CLI artifact.
  */
@@ -118,7 +123,9 @@ export function shouldForceRetryPublicationCreateAfterReview(params: {
   );
   if (
     !hasArtifact &&
-    (dest.phase === "unknown_outcome" || dest.phase === "failed")
+    (dest.phase === "unknown_outcome" ||
+      dest.phase === "failed" ||
+      dest.phase === "review_required")
   ) {
     return true;
   }

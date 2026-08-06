@@ -19,7 +19,18 @@ assert.equal(
     context: { publication_mode: "off" },
   }),
   null,
-  "explicit off must be respected"
+  "explicit off before listing approval must be respected"
+);
+assert.equal(
+  propertyOptioningPublicationEnablementPatch({
+    caseType: "property_optioning",
+    context: {
+      publication_mode: "off",
+      listing_description_approved: { description: "ok" },
+    },
+  })?.publication_mode,
+  "active",
+  "after listing approval, recover from default-persisted off"
 );
 assert.equal(
   propertyOptioningPublicationEnablementPatch({

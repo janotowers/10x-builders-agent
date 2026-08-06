@@ -348,6 +348,19 @@ assert.equal(
   true
 );
 assert.equal(
+  looksLikeUnggaPrepareDraftFailure(
+    'page.waitForURL: Timeout 45000ms exceeded.\nwaiting for navigation until "load"',
+    {
+      last_step: {
+        step: "login",
+        error:
+          'page.waitForURL: Timeout 45000ms exceeded.\nwaiting for navigation until "load"',
+      },
+    }
+  ),
+  true
+);
+assert.equal(
   looksLikeUnggaPrepareDraftFailure("commission_input_not_filled"),
   true
 );

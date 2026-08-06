@@ -41,6 +41,38 @@ import {
 }
 
 {
+  // Cron request_review may remap unknown_outcome → review_required; human
+  // "Reintentar" must still force-retry create when there is no GU-ID.
+  let publication = emptyPublicationState();
+  publication = applyPublicationEvent(publication, {
+    type: "approval_decided",
+    destination: "ungga",
+    approval: "approved",
+  });
+  publication = applyPublicationEvent(publication, {
+    type: "draft_failed",
+    destination: "ungga",
+    error: "page.waitForURL: Timeout",
+    unknown: true,
+  });
+  publication = applyPublicationEvent(publication, {
+    type: "preflight_result",
+    destination: "ungga",
+    status: "review_required",
+    reason: "ungga_prepare_draft_failed",
+  });
+  assert.equal(publication.destinations.ungga.phase, "review_required");
+  assert.equal(
+    shouldForceRetryPublicationCreateAfterReview({
+      destination: "ungga",
+      publication,
+    }),
+    true,
+    "review_required without artifact still force-retries create"
+  );
+}
+
+{
   let publication = emptyPublicationState();
   publication = applyPublicationEvent(publication, {
     type: "approval_decided",
