@@ -59,12 +59,57 @@ export function workItemStatusLabel(status: WorkItemStatus): string {
   return status === "cancelled" ? "Cancelado" : status;
 }
 
+export type WorkReviewActionPresentation =
+  | {
+      kind: "domain_decision";
+      guidance: string;
+    }
+  | {
+      kind: "manual_close";
+      label: string;
+      title: string;
+    };
+
+/**
+ * Algunas revisiones son proyecciones de una decisión de negocio que vive en
+ * el caso. No deben ofrecer un botón genérico que parezca aprobar esa decisión.
+ */
+export function workReviewActionPresentation(
+  workType: string
+): WorkReviewActionPresentation {
+  if (workType === "verify_valuation") {
+    return {
+      kind: "domain_decision",
+      guidance:
+        "Se resuelve al aprobar o ajustar la propuesta de precio en el caso.",
+    };
+  }
+  return {
+    kind: "manual_close",
+    label: "Aceptar resultado y cerrar",
+    title:
+      "Marca únicamente esta unidad como terminada; no aprueba otras decisiones del caso.",
+  };
+}
+
 export function executorKindLabel(kind: string | null | undefined): string {
   switch (kind) {
     case "main_agent":
       return "Agente principal";
     case "deterministic_service":
       return "Servicio determinista";
+    case "registered_specialized_worker":
+    // Alias histórico: attempts previos al rename de taxonomía (2026-08-06).
+    case "specialized_agent":
+      return "Ejecutor especializado";
+    case "ephemeral_subagent":
+      return "Subagente temporal";
+    case "ephemeral_worker":
+      return "Ejecutor temporal";
+    case "durable_worker":
+      return "Ejecutor durable";
+    case "external_service":
+      return "Servicio externo";
     case "human":
       return "Humano";
     case "unresolved":
@@ -85,6 +130,9 @@ export function retryStateLabel(item: Pick<WorkItem, "attempt_count" | "max_atte
  * tipos conocidos; fallback: humanización genérica del slug.
  */
 const WORK_TYPE_LABELS: Record<string, string> = {
+  verify_valuation: "Verificación de valuación",
+  extraction_consolidation: "Consolidación de extracciones",
+  publication_reconciliation: "Reconciliación de publicación",
   work_plane_synthetic_echo: "Eco de prueba (sintético)",
   work_plane_synthetic_branch_a: "Rama A de prueba (sintético)",
   work_plane_synthetic_branch_b: "Rama B de prueba (sintético)",
@@ -175,4 +223,19 @@ export function caseWorkChipLabel(summary: {
   if (summary.total === 0) return "";
   const base = summary.total === 1 ? "1 trabajo" : `${summary.total} trabajos`;
   return summary.blocked > 0 ? `${base} · ${summary.blocked} bloqueado(s)` : base;
+}
+
+/**
+ * Orden del tablero de Unidades de trabajo: updated_at desc en todas las
+ * columnas (misma señal temporal que Trabajo durable). El despacho
+ * (claimNextReady) sigue usando priority + created_at aparte.
+ */
+export function sortWorkItemsForBoardView<
+  T extends { updated_at: string; id: string },
+>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const byUpdated = b.updated_at.localeCompare(a.updated_at);
+    if (byUpdated !== 0) return byUpdated;
+    return b.id.localeCompare(a.id);
+  });
 }

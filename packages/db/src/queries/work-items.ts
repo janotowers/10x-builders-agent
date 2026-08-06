@@ -126,12 +126,14 @@ export async function listWorkItemsForUser(
   userId: string,
   opts: { statuses?: WorkItemStatus[]; origin?: string; limit?: number } = {}
 ): Promise<WorkItem[]> {
+  // Operator board (/operations/work): most recently touched first, same
+  // temporal cue as Trabajo durable (updated_at desc). Dispatch/claim still
+  // uses priority + created_at in claimNextReady — not this list.
   let query = db
     .from("work_items")
     .select("*")
     .eq("user_id", userId)
-    .order("priority", { ascending: true })
-    .order("created_at", { ascending: true })
+    .order("updated_at", { ascending: false })
     .limit(Math.max(1, Math.min(opts.limit ?? 200, 500)));
   if (opts.statuses && opts.statuses.length > 0) {
     query = query.in("status", opts.statuses);
@@ -901,16 +903,43 @@ export async function completeAttempt(
  */
 export async function approveReviewedItem(
   db: DbClient,
-  params: { userId: string; itemId: string }
+  params: {
+    userId: string;
+    itemId: string;
+    /**
+     * Evidencia de cómo se resolvió la revisión. Cuando falta, es la acción
+     * manual genérica del tablero. Decisiones de dominio (p. ej. aprobar
+     * precio) deben pasar su vínculo para no dejar una transición huérfana.
+     */
+    resolution?: {
+      source: string;
+      decision?: string;
+      rationale?: string | null;
+      relatedEventKind?: string;
+    };
+  }
 ): Promise<WorkItem | null> {
   const item = await getWorkItemById(db, params.userId, params.itemId);
   if (!item || item.status !== "review") return null;
+  const resolvedAt = nowIso();
+  const resolution = {
+    source: params.resolution?.source ?? "operator_review_approval",
+    decision: params.resolution?.decision ?? "approved",
+    rationale: params.resolution?.rationale ?? null,
+    related_event_kind: params.resolution?.relatedEventKind ?? null,
+    resolved_at: resolvedAt,
+    resolved_by: params.userId,
+  };
   const { data, error } = await db
     .from("work_items")
     .update({
       status: "done",
+      result_jsonb: {
+        ...(item.result_jsonb ?? {}),
+        review_resolution: resolution,
+      },
       version: item.version + 1,
-      updated_at: nowIso(),
+      updated_at: resolvedAt,
     })
     .eq("id", item.id)
     .eq("version", item.version)
@@ -924,7 +953,7 @@ export async function approveReviewedItem(
     userId: params.userId,
     eventType: "done",
     actor: "user",
-    payload: { source: "operator_review_approval" },
+    payload: { source: resolution.source, review_resolution: resolution },
   });
   return rows[0];
 }

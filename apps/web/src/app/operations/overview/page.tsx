@@ -2,7 +2,7 @@
  * Trabajo durable de Control operativo — nivel caso / tarea durable.
  *
  * Tablero: bandeja roja Bloqueado (work bloqueado) y bandeja ámbar Pausado
- * arriba si aplican + camino Atención / En marcha / Externos / Finalizado.
+ * arriba si aplican + camino Atención / En marcha / Externos / Terminado.
  * Toggle Lista. Clic → detalle con fechas → unidades de trabajo.
  */
 import Link from "next/link";
@@ -29,6 +29,7 @@ import {
   type DurableWorkColumn,
   type DurableWorkColumnId,
 } from "@/lib/operations/durable-work-view-labels";
+import { formatOperationalCaseTypeForDisplay } from "@/lib/operational-cases/conversation-case-identity";
 import {
   formatOperationalStepForDisplay,
   friendlyOperationalStepLabel,
@@ -354,16 +355,20 @@ function CaseDetailPanel({
     nextActionAt: opCase.next_action_at,
     dueAt: opCase.due_at,
   });
+  // Detalle: natural + técnico entre paréntesis (tarjetas siguen solo natural).
   const stepForDetail = opCase.current_step
     ? formatOperationalStepForDisplay(opCase.current_step, stepLabels)
     : null;
+  const caseTypeForDetail = formatOperationalCaseTypeForDisplay(
+    opCase.case_type
+  );
   return (
     <div className="mb-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-100">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-semibold">{caseTitle(opCase)}</p>
           <p className="mt-0.5 text-xs opacity-80">
-            {opCase.case_type} ·{" "}
+            {caseTypeForDetail} ·{" "}
             <code className="text-[11px]">{opCase.id}</code>
           </p>
           <p className="mt-1 text-xs">
@@ -478,7 +483,7 @@ export default async function OperationsOverviewPage({
       statuses: ["active", "waiting_internal", "waiting_external", "paused"],
       limit: 100,
     });
-    // Finalizado es columna del camino operativo: siempre cargamos recientes.
+    // Terminado es columna del camino operativo: siempre cargamos recientes.
     doneCases = await listOperationalCasesForUser(db, user.id, {
       statuses: ["completed", "failed"],
       limit: 50,

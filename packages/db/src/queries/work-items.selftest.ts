@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { DbClient } from "../client";
 import type { WorkItem, WorkItemAttempt, WorkItemEvent } from "@agents/types";
 import {
+  approveReviewedItem,
   blockItem,
   claimNextReady,
   completeAttempt,
@@ -769,6 +770,52 @@ async function testBlockItemAndEventLog(): Promise<void> {
   console.log("✓ blockItem + event log");
 }
 
+async function testReviewedItemStoresResolutionEvidence(): Promise<void> {
+  const fake = makeFakeDb();
+  const { a } = await seedChain(fake);
+  const row = fake.store.work_items.find((item) => item.id === a.id)!;
+  row.status = "review";
+  row.result_jsonb = { verdict: "fail" };
+
+  const resolved = await approveReviewedItem(fake.client, {
+    userId: USER,
+    itemId: a.id,
+    resolution: {
+      source: "price_business_decision",
+      decision: "human_override_approved",
+      rationale: "Acepto Avaclick como base",
+      relatedEventKind: "price_approved",
+    },
+  });
+
+  assert.equal(resolved?.status, "done");
+  assert.deepEqual(
+    (resolved?.result_jsonb as Record<string, unknown>).review_resolution,
+    {
+      source: "price_business_decision",
+      decision: "human_override_approved",
+      rationale: "Acepto Avaclick como base",
+      related_event_kind: "price_approved",
+      resolved_at: (
+        (resolved?.result_jsonb as Record<string, unknown>)
+          .review_resolution as Record<string, unknown>
+      ).resolved_at,
+      resolved_by: USER,
+    }
+  );
+  const doneEvent = eventsOf(fake, a.id).find(
+    (event) => event.event_type === "done"
+  );
+  assert.equal(
+    (
+      (doneEvent?.payload_jsonb as Record<string, unknown>)
+        .review_resolution as Record<string, unknown>
+    ).decision,
+    "human_override_approved"
+  );
+  console.log("✓ review→done conserva evidencia de resolución");
+}
+
 async function testTenantScoping(): Promise<void> {
   const fake = makeFakeDb();
   await seedChain(fake);
@@ -801,6 +848,7 @@ async function main(): Promise<void> {
   await testLivenessVersusLeaseRenewal();
   await testCompletionFailsClosedOnLostClaim();
   await testBlockItemAndEventLog();
+  await testReviewedItemStoresResolutionEvidence();
   await testTenantScoping();
   console.log("work-items selftest: all green");
 }

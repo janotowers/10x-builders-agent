@@ -7,8 +7,15 @@ import {
   classifyDurableWorkColumn,
   durableCaseDetailDateRows,
   durableCaseStatusLabel,
+  DURABLE_WORK_FLOW_COLUMNS,
   formatDurableDateTime,
 } from "./durable-work-view-labels";
+
+assert.deepEqual(
+  DURABLE_WORK_FLOW_COLUMNS.map((column) => column.id),
+  ["in_progress", "needs_attention", "waiting_external", "done"],
+  "En marcha abre el tablero (preferencia del usuario 2026-08-06)"
+);
 
 assert.equal(
   classifyDurableWorkColumn({ status: "waiting_internal" }),
@@ -69,20 +76,20 @@ const detailActive = durableCaseDetailDateRows({
   nowMs: now,
 });
 assert.ok(
-  detailActive.some((r) => r.label === "Fecha límite"),
-  "due futuro usa Fecha límite"
+  detailActive.some((r) => r.label === "Fecha meta ideal"),
+  "due futuro usa Fecha meta ideal"
 );
 assert.ok(
   detailActive.some((r) => r.label === "Próx. revisión"),
   "next_action_at con valor se muestra"
 );
 assert.ok(
-  !detailActive.some((r) => /vence/i.test(r.label)),
-  "no usar copy Vence"
+  !detailActive.some((r) => /vence|límite/i.test(r.label)),
+  "no usar copy Vence ni Fecha límite"
 );
 assert.deepEqual(
   detailActive.map((r) => r.label),
-  ["Creado", "Actualizado", "Próx. revisión", "Fecha límite"],
+  ["Creado", "Actualizado", "Próx. revisión", "Fecha meta ideal"],
   "orden cronológico por timestamp"
 );
 
@@ -95,8 +102,8 @@ const detailPausedPastDue = durableCaseDetailDateRows({
   nowMs: now,
 });
 assert.ok(
-  !detailPausedPastDue.some((r) => r.label.includes("Fecha límite")),
-  "límite vencido en paused se oculta"
+  !detailPausedPastDue.some((r) => r.label.includes("Fecha meta ideal")),
+  "meta ideal vencida en paused se oculta"
 );
 assert.ok(
   !detailPausedPastDue.some((r) => r.label.includes("Próxima")),
@@ -111,8 +118,8 @@ const detailActivePastDue = durableCaseDetailDateRows({
   nowMs: now,
 });
 assert.ok(
-  detailActivePastDue.some((r) => r.label === "Fecha límite (vencida)"),
-  "en active, límite pasado se marca vencida"
+  !detailActivePastDue.some((r) => /Fecha meta ideal|vencida|límite/i.test(r.label)),
+  "due pasado no se muestra (tampoco como vencida)"
 );
 
 const rendered = [

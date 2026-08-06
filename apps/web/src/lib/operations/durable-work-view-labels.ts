@@ -25,19 +25,21 @@ export interface DurableWorkColumn {
 /**
  * Camino operativo (fila principal). blocked/paused NO van aquí: son
  * bandejas de excepción arriba del tablero (solo si tienen casos).
+ * Orden por preferencia del usuario (2026-08-06): "En marcha" abre el
+ * tablero; "Requiere tu atención" va después.
  */
 export const DURABLE_WORK_FLOW_COLUMNS: DurableWorkColumn[] = [
-  {
-    id: "needs_attention",
-    label: "Requiere tu atención",
-    shortLabel: "Atención",
-    description: "Decisiones, aportaciones o revisión humana pendientes.",
-  },
   {
     id: "in_progress",
     label: "En marcha",
     shortLabel: "En marcha",
     description: "El sistema avanza sin esperar una acción tuya inmediata.",
+  },
+  {
+    id: "needs_attention",
+    label: "Requiere tu atención",
+    shortLabel: "Atención",
+    description: "Decisiones, aportaciones o revisión humana pendientes.",
   },
   {
     id: "waiting_external",
@@ -47,8 +49,8 @@ export const DURABLE_WORK_FLOW_COLUMNS: DurableWorkColumn[] = [
   },
   {
     id: "done",
-    label: "Finalizado",
-    shortLabel: "Finalizado",
+    label: "Terminado",
+    shortLabel: "Terminado",
     description: "Casos completados o fallidos.",
   },
 ];
@@ -166,8 +168,8 @@ export type DurableDetailDateRow = {
  * Fechas del detalle del caso, ordenadas cronológicamente (más antigua → más
  * reciente) para pintarlas en un solo renglón.
  * - Omite `next_action_at` / `due_at` nulos.
- * - `due_at` = "Fecha límite" (no "Vence"); "(vencida)" si ya pasó.
- * - En paused/completed/failed no mostramos límite vencido (ruido histórico).
+ * - `due_at` futuro = "Fecha meta ideal" (SLA opcional del caso, no bloquea).
+ * - `due_at` ya pasado: no se muestra (evita ruido de “vencida”).
  */
 export function durableCaseDetailDateRows(input: {
   status: string;
@@ -202,22 +204,9 @@ export function durableCaseDetailDateRows(input: {
   if (input.dueAt) {
     const dueMs = new Date(input.dueAt).getTime();
     const past = Number.isFinite(dueMs) && dueMs < now;
-    const terminalOrPaused =
-      input.status === "paused" ||
-      input.status === "completed" ||
-      input.status === "failed" ||
-      input.status === "cancelled";
-    if (past && terminalOrPaused) {
-      // Límite viejo en caso ya detenido: no aporta.
-    } else if (past) {
+    if (!past) {
       rows.push({
-        label: "Fecha límite (vencida)",
-        value: formatDurableDateTimeFull(input.dueAt),
-        at: input.dueAt,
-      });
-    } else {
-      rows.push({
-        label: "Fecha límite",
+        label: "Fecha meta ideal",
         value: formatDurableDateTimeFull(input.dueAt),
         at: input.dueAt,
       });

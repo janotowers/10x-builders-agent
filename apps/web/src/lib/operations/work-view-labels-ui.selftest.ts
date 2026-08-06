@@ -12,7 +12,9 @@ import {
   executorKindLabel,
   livenessCue,
   retryStateLabel,
+  sortWorkItemsForBoardView,
   verificationStateLabel,
+  workReviewActionPresentation,
   workItemStatusLabel,
   workTypeLabel,
   WORK_VIEW_BLOCKED_COLUMN,
@@ -35,9 +37,30 @@ assert.deepEqual(
 
 assert.equal(workItemStatusLabel("ready"), "Listo para ejecutar");
 assert.equal(workItemStatusLabel("cancelled"), "Cancelado");
+assert.deepEqual(workReviewActionPresentation("verify_valuation"), {
+  kind: "domain_decision",
+  guidance:
+    "Se resuelve al aprobar o ajustar la propuesta de precio en el caso.",
+});
+assert.deepEqual(workReviewActionPresentation("review_contract"), {
+  kind: "manual_close",
+  label: "Aceptar resultado y cerrar",
+  title:
+    "Marca únicamente esta unidad como terminada; no aprueba otras decisiones del caso.",
+});
 
 assert.equal(executorKindLabel("main_agent"), "Agente principal");
 assert.equal(executorKindLabel("deterministic_service"), "Servicio determinista");
+assert.equal(
+  executorKindLabel("registered_specialized_worker"),
+  "Ejecutor especializado"
+);
+// Alias histórico pre-rename (attempts guardados antes de 2026-08-06).
+assert.equal(executorKindLabel("specialized_agent"), "Ejecutor especializado");
+assert.equal(executorKindLabel("ephemeral_subagent"), "Subagente temporal");
+assert.equal(executorKindLabel("ephemeral_worker"), "Ejecutor temporal");
+assert.equal(executorKindLabel("durable_worker"), "Ejecutor durable");
+assert.equal(executorKindLabel("external_service"), "Servicio externo");
 assert.equal(executorKindLabel("human"), "Humano");
 assert.equal(executorKindLabel(null), "—");
 
@@ -45,6 +68,11 @@ assert.equal(retryStateLabel({ attempt_count: 2, max_attempts: 3 }), "Intento 2/
 
 // Work types: diccionario para los conocidos; humanización genérica como
 // fallback. El slug crudo se muestra aparte en la UI, nunca se pierde.
+assert.equal(workTypeLabel("verify_valuation"), "Verificación de valuación");
+assert.equal(
+  workTypeLabel("extraction_consolidation"),
+  "Consolidación de extracciones"
+);
 assert.equal(workTypeLabel("work_plane_synthetic_echo"), "Eco de prueba (sintético)");
 assert.equal(
   workTypeLabel("work_plane_synthetic_fan_in"),
@@ -176,5 +204,18 @@ assert.ok(
 assert.equal(caseWorkChipLabel({ total: 0, blocked: 0 }), "");
 assert.equal(caseWorkChipLabel({ total: 1, blocked: 0 }), "1 trabajo");
 assert.equal(caseWorkChipLabel({ total: 3, blocked: 1 }), "3 trabajos · 1 bloqueado(s)");
+
+{
+  const sorted = sortWorkItemsForBoardView([
+    { id: "a", updated_at: "2026-08-06T12:00:00.000Z" },
+    { id: "b", updated_at: "2026-08-06T15:00:00.000Z" },
+    { id: "c", updated_at: "2026-08-06T13:00:00.000Z" },
+  ]);
+  assert.deepEqual(
+    sorted.map((i) => i.id),
+    ["b", "c", "a"],
+    "board view sorts all columns by updated_at desc"
+  );
+}
 
 console.log("work-view-labels-ui.selftest: ok");

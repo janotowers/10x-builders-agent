@@ -40,6 +40,8 @@ import {
   verificationStateLabel,
   WORK_VIEW_BLOCKED_COLUMN,
   WORK_VIEW_FLOW_COLUMNS,
+  sortWorkItemsForBoardView,
+  workReviewActionPresentation,
   workTypeLabel,
   type WorkViewColumn,
 } from "@/lib/operations/work-view-labels";
@@ -215,6 +217,21 @@ function formatWorkDateTime(iso: string | null | undefined): string {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+/** Fecha/hora corta en la tarjeta (paridad con Trabajo durable). */
+function formatWorkCardDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString("es-MX", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
     });
   } catch {
     return iso;
@@ -445,6 +462,10 @@ function WorkItemCard({
   detailHref: string;
 }) {
   const cue = item.status === "running" ? livenessCue(attempt) : "";
+  const reviewAction =
+    item.status === "review"
+      ? workReviewActionPresentation(item.work_type)
+      : null;
   return (
     <article
       className={`rounded-xl border bg-white text-xs shadow-sm dark:bg-neutral-900 ${
@@ -507,19 +528,27 @@ function WorkItemCard({
             Motivo: {blockedReasonLabel(item.blocked_reason)}
           </p>
         ) : null}
+        <p className="mt-2 text-[10px] text-neutral-400">
+          Actualizado {formatWorkCardDateTime(item.updated_at)}
+        </p>
         <p className="mt-1.5 text-[10px] font-medium text-sky-700 dark:text-sky-300">
           Ver detalle →
         </p>
       </Link>
-      {item.status === "review" ? (
+      {reviewAction?.kind === "domain_decision" ? (
+        <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          {reviewAction.guidance}
+        </p>
+      ) : null}
+      {reviewAction?.kind === "manual_close" ? (
         <form action={approveReviewedItemAction} className="mt-2">
           <input type="hidden" name="work_item_id" value={item.id} />
           <button
             type="submit"
             className="rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
-            title="Aprueba el resultado revisado y marca el item como terminado (review → done)."
+            title={reviewAction.title}
           >
-            Aprobar y terminar
+            {reviewAction.label}
           </button>
         </form>
       ) : null}
@@ -668,9 +697,9 @@ export default async function OperatorWorkViewPage({
   const scopedItems = filterCaseId
     ? items.filter((i) => i.case_id === filterCaseId)
     : items;
-  const visibleItems = showHistory
-    ? scopedItems
-    : scopedItems.filter((i) => !isHistorical(i));
+  const visibleItems = sortWorkItemsForBoardView(
+    showHistory ? scopedItems : scopedItems.filter((i) => !isHistorical(i))
+  );
   const filterCaseLabel = filterCaseId
     ? caseLabel(caseLabels.get(filterCaseId), filterCaseId)
     : null;
