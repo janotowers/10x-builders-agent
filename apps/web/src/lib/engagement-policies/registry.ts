@@ -2,6 +2,7 @@ import type {
   EngagementDeliveryWindow,
   EngagementPolicyOverride,
   EngagementPolicyOverrides,
+  HumanInvolvementKind,
   NotificationChannel,
   NotificationPriority,
 } from "@agents/types";
@@ -41,6 +42,65 @@ export interface EngagementPolicy {
   respectWorkingHours: boolean;
   allowAutonomousAction: boolean;
   deliveryWindow?: EngagementDeliveryWindow;
+  /** Minutes after last upload before first listo-confirmation nudge (type C). */
+  nudgeAfterUploadMinutes?: number;
+}
+
+export const HUMAN_INVOLVEMENT_KINDS: HumanInvolvementKind[] = [
+  "action_authorization",
+  "business_decision",
+  "human_contribution",
+  "exception_intervention",
+];
+
+/** Map notification kind → human-involvement taxonomy (§3.1). */
+export function involvementKindForNotificationKind(
+  kind: string | null | undefined
+): HumanInvolvementKind | null {
+  if (!kind || !kind.trim()) return null;
+  const key = kind.trim();
+  if (
+    key === "tool_confirmation_pending" ||
+    key === "tool_readiness_test"
+  ) {
+    return "action_authorization";
+  }
+  if (
+    key === "price_approval" ||
+    key === "contract_review" ||
+    key === "contract_approval" ||
+    key === "contract_pending" ||
+    key === "contract_data_review" ||
+    key === "property_data_review" ||
+    key === "property_data_quality_review" ||
+    key === "titularidad_review" ||
+    key === "listing_description_review" ||
+    key === "easybroker_publish_approval" ||
+    key === "ungga_publish_approval" ||
+    key === "manual_publish_package_approval" ||
+    key === "comparables_search_expansion_decision" ||
+    key === "approval_suspended"
+  ) {
+    return "business_decision";
+  }
+  if (
+    key === "documents_upload_requested" ||
+    key === "photos_upload_requested" ||
+    key === "upload_batch_confirmation" ||
+    key === "contract_revision_upload" ||
+    key === "property_data_minimums_missing"
+  ) {
+    return "human_contribution";
+  }
+  if (
+    key === "internal_notification_escalation" ||
+    key === "external_contact_escalation" ||
+    key === "case_escalation" ||
+    key === "publication_review_required"
+  ) {
+    return "exception_intervention";
+  }
+  return null;
 }
 
 const DEFAULT_POLICY: EngagementPolicy = {
@@ -165,16 +225,20 @@ const KIND_POLICIES: Record<string, Partial<EngagementPolicy>> = {
     reminderCooldownHours: 4,
   },
   // Upload-batch confirmation: advisor uploaded docs/photos but may forget «listo».
-  // Timing is account-overridable via engagement_policy_overrides_jsonb.
+  // Timing is account-overridable via engagement_policy_overrides_jsonb /
+  // by_involvement.human_contribution. First nudge after last file uses
+  // nudgeAfterUploadMinutes (default 20).
   photos_upload_requested: {
     defaultDueAfterHours: 8,
     reminderCooldownHours: 8,
     maxReminderAttempts: 3,
+    nudgeAfterUploadMinutes: 20,
   },
   documents_upload_requested: {
     defaultDueAfterHours: 8,
     reminderCooldownHours: 8,
     maxReminderAttempts: 3,
+    nudgeAfterUploadMinutes: 20,
   },
 };
 
@@ -191,6 +255,11 @@ function mergePolicy(...parts: Array<Partial<EngagementPolicy> | undefined>) {
 }
 
 function cleanNumericHours(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function cleanNumericMinutes(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
@@ -241,11 +310,13 @@ function sanitizePolicyOverride(
   const maxAttempts = cleanNumericHours(override.max_attempts);
   const maxReminderAttempts = cleanNumericHours(override.max_reminder_attempts);
   const escalateAfter = cleanNumericHours(override.escalate_after_hours);
+  const nudgeMinutes = cleanNumericMinutes(override.nudge_after_upload_minutes);
   if (due) cleaned.defaultDueAfterHours = due;
   if (cooldown) cleaned.reminderCooldownHours = cooldown;
   if (maxAttempts) cleaned.maxAttempts = maxAttempts;
   if (maxReminderAttempts) cleaned.maxReminderAttempts = maxReminderAttempts;
   if (escalateAfter) cleaned.escalateAfterHours = escalateAfter;
+  if (nudgeMinutes) cleaned.nudgeAfterUploadMinutes = nudgeMinutes;
   if (override.escalation_priority === "high") {
     cleaned.escalationPriority = "high";
   }
@@ -257,12 +328,43 @@ function sanitizePolicyOverride(
   return Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }
 
+function policyOverrideFromCleaned(
+  cleaned: Partial<EngagementPolicy>
+): EngagementPolicyOverride {
+  return {
+    ...(cleaned.defaultDueAfterHours
+      ? { default_due_after_hours: cleaned.defaultDueAfterHours }
+      : {}),
+    ...(cleaned.reminderCooldownHours
+      ? { reminder_cooldown_hours: cleaned.reminderCooldownHours }
+      : {}),
+    ...(cleaned.maxAttempts ? { max_attempts: cleaned.maxAttempts } : {}),
+    ...(cleaned.maxReminderAttempts
+      ? { max_reminder_attempts: cleaned.maxReminderAttempts }
+      : {}),
+    ...(cleaned.escalateAfterHours
+      ? { escalate_after_hours: cleaned.escalateAfterHours }
+      : {}),
+    ...(cleaned.escalationPriority
+      ? { escalation_priority: cleaned.escalationPriority }
+      : {}),
+    ...(typeof cleaned.respectWorkingHours === "boolean"
+      ? { respect_working_hours: cleaned.respectWorkingHours }
+      : {}),
+    ...(cleaned.deliveryWindow ? { delivery_window: cleaned.deliveryWindow } : {}),
+    ...(cleaned.nudgeAfterUploadMinutes
+      ? { nudge_after_upload_minutes: cleaned.nudgeAfterUploadMinutes }
+      : {}),
+  };
+}
+
 export function normalizeEngagementPolicyOverrides(
   raw: unknown
 ): EngagementPolicyOverrides {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const input = raw as EngagementPolicyOverrides;
   const byAudienceInput = input.by_audience ?? {};
+  const byInvolvementInput = input.by_involvement ?? {};
   const byKindInput = input.by_kind ?? {};
   const byAudience: EngagementPolicyOverrides["by_audience"] = {};
   for (const audience of [
@@ -273,59 +375,27 @@ export function normalizeEngagementPolicyOverrides(
   ] as const) {
     const cleaned = sanitizePolicyOverride(byAudienceInput[audience]);
     if (cleaned) {
-      byAudience[audience] = {
-        ...(cleaned.defaultDueAfterHours
-          ? { default_due_after_hours: cleaned.defaultDueAfterHours }
-          : {}),
-        ...(cleaned.reminderCooldownHours
-          ? { reminder_cooldown_hours: cleaned.reminderCooldownHours }
-          : {}),
-        ...(cleaned.maxAttempts ? { max_attempts: cleaned.maxAttempts } : {}),
-        ...(cleaned.maxReminderAttempts
-          ? { max_reminder_attempts: cleaned.maxReminderAttempts }
-          : {}),
-        ...(cleaned.escalateAfterHours
-          ? { escalate_after_hours: cleaned.escalateAfterHours }
-          : {}),
-        ...(cleaned.escalationPriority
-          ? { escalation_priority: cleaned.escalationPriority }
-          : {}),
-        ...(typeof cleaned.respectWorkingHours === "boolean"
-          ? { respect_working_hours: cleaned.respectWorkingHours }
-          : {}),
-        ...(cleaned.deliveryWindow ? { delivery_window: cleaned.deliveryWindow } : {}),
-      };
+      byAudience[audience] = policyOverrideFromCleaned(cleaned);
+    }
+  }
+  const byInvolvement: EngagementPolicyOverrides["by_involvement"] = {};
+  for (const involvement of HUMAN_INVOLVEMENT_KINDS) {
+    const cleaned = sanitizePolicyOverride(byInvolvementInput[involvement]);
+    if (cleaned) {
+      byInvolvement[involvement] = policyOverrideFromCleaned(cleaned);
     }
   }
   const byKind: Record<string, EngagementPolicyOverride> = {};
   for (const [kind, override] of Object.entries(byKindInput)) {
     const cleaned = sanitizePolicyOverride(override);
     if (!cleaned || !kind.trim()) continue;
-    byKind[kind.trim()] = {
-      ...(cleaned.defaultDueAfterHours
-        ? { default_due_after_hours: cleaned.defaultDueAfterHours }
-        : {}),
-      ...(cleaned.reminderCooldownHours
-        ? { reminder_cooldown_hours: cleaned.reminderCooldownHours }
-        : {}),
-      ...(cleaned.maxAttempts ? { max_attempts: cleaned.maxAttempts } : {}),
-      ...(cleaned.maxReminderAttempts
-        ? { max_reminder_attempts: cleaned.maxReminderAttempts }
-        : {}),
-      ...(cleaned.escalateAfterHours
-        ? { escalate_after_hours: cleaned.escalateAfterHours }
-        : {}),
-      ...(cleaned.escalationPriority
-        ? { escalation_priority: cleaned.escalationPriority }
-        : {}),
-      ...(typeof cleaned.respectWorkingHours === "boolean"
-        ? { respect_working_hours: cleaned.respectWorkingHours }
-        : {}),
-      ...(cleaned.deliveryWindow ? { delivery_window: cleaned.deliveryWindow } : {}),
-    };
+    byKind[kind.trim()] = policyOverrideFromCleaned(cleaned);
   }
   return {
     ...(Object.keys(byAudience).length > 0 ? { by_audience: byAudience } : {}),
+    ...(Object.keys(byInvolvement).length > 0
+      ? { by_involvement: byInvolvement }
+      : {}),
     ...(Object.keys(byKind).length > 0 ? { by_kind: byKind } : {}),
   };
 }
@@ -338,6 +408,10 @@ export function resolveEngagementPolicy(
   const overrideByAudience = sanitizePolicyOverride(
     normalizedOverrides.by_audience?.[context.audience]
   );
+  const involvement = involvementKindForNotificationKind(context.kind);
+  const overrideByInvolvement = involvement
+    ? sanitizePolicyOverride(normalizedOverrides.by_involvement?.[involvement])
+    : undefined;
   const overrideByKind = context.kind
     ? sanitizePolicyOverride(normalizedOverrides.by_kind?.[context.kind])
     : undefined;
@@ -348,8 +422,17 @@ export function resolveEngagementPolicy(
     context.kind ? KIND_POLICIES[context.kind] : undefined,
     context.priority ? PRIORITY_POLICIES[context.priority] : undefined,
     overrideByAudience,
+    overrideByInvolvement,
     overrideByKind
   );
+}
+
+/** Default minutes until first upload-confirmation nudge (type C). */
+export function nudgeAfterUploadMinutesForEngagement(
+  context: EngagementPolicyContext,
+  overrides?: EngagementPolicyOverrides | null
+): number {
+  return resolveEngagementPolicy(context, overrides).nudgeAfterUploadMinutes ?? 20;
 }
 
 export function defaultDueAtForEngagement(

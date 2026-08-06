@@ -9,6 +9,7 @@ import {
 } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
 import { operationalCaseDocumentRequestTargetFromContext } from "@agents/types";
+import { REQUIRED_PROPERTY_DOCUMENTS } from "./case-document-collection";
 import {
   completeDocumentBatchForCase,
   type DocumentBatchCompletionStatus,
@@ -61,15 +62,80 @@ export interface UploadBatchCompletionResult {
   ackText: string;
 }
 
-function documentsAckText(status: DocumentBatchCompletionStatus): string {
-  if (status === "no_documents") {
+/** Map a classified document kind onto a checklist key (if any). */
+export function checklistKeyForDocumentKind(
+  kind: string | null | undefined
+): string | null {
+  if (!kind) return null;
+  const normalized = kind.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "boleta_registral" || normalized.includes("boleta")) {
+    return "boleta_registral";
+  }
+  if (normalized.startsWith("escritura") || normalized.includes("escritura")) {
+    return "escritura_descripcion";
+  }
+  if (normalized === "predial" || normalized.includes("predial")) {
+    return "predial";
+  }
+  if (
+    normalized === "ine" ||
+    normalized.startsWith("ine_") ||
+    normalized.includes("identificacion") ||
+    normalized.includes("pasaporte")
+  ) {
+    return "ine";
+  }
+  if (
+    normalized === "comprobante_domicilio" ||
+    normalized.includes("comprobante_domicilio") ||
+    normalized.includes("domicilio")
+  ) {
+    return "comprobante_domicilio";
+  }
+  return null;
+}
+
+export function missingIdealDocumentLabels(params: {
+  coveredKinds: Array<string | null | undefined>;
+}): string[] {
+  const covered = new Set(
+    params.coveredKinds
+      .map((kind) => checklistKeyForDocumentKind(kind))
+      .filter((key): key is string => Boolean(key))
+  );
+  return REQUIRED_PROPERTY_DOCUMENTS.filter((doc) => !covered.has(doc.key)).map(
+    (doc) => doc.label
+  );
+}
+
+export function documentsAckText(params: {
+  status: DocumentBatchCompletionStatus;
+  propertyLabel?: string;
+  missingIdealLabels?: string[];
+}): string {
+  if (params.status === "no_documents") {
     return "Aún no veo documentos registrados en el caso. Sube al menos uno y luego escribe “listo”.";
   }
-  if (status === "failed") {
+  if (params.status === "failed") {
     return "Registré tu confirmación, pero no pude avanzar el caso en este momento. Intenta de nuevo en unos segundos.";
   }
-  // advanced | already_advanced
-  return "Gracias, ya registré que terminaste de enviar documentos. Voy a procesarlos y te aviso el siguiente paso.";
+  const label = params.propertyLabel?.trim() || "la propiedad";
+  const lines = [
+    `Gracias, ya registré que terminaste de enviar documentos de **${label}**. Voy a procesarlos y te aviso el siguiente paso.`,
+  ];
+  const missing = (params.missingIdealLabels ?? []).filter(Boolean);
+  if (missing.length > 0) {
+    lines.push("");
+    lines.push("Documentos ideales aún no clasificados en el expediente:");
+    for (const item of missing) {
+      lines.push(`• ${item}`);
+    }
+    lines.push(
+      "Si los tienes, puedes enviarlos después; no bloquean el procesamiento de lo recibido."
+    );
+  }
+  return lines.join("\n");
 }
 
 function mapDocumentStatus(
@@ -167,13 +233,27 @@ export async function completeUploadBatch(params: {
     channel: params.channel,
     source: params.source,
   });
+  const docs = await listOperationalCaseDocuments(params.db, {
+    caseId: params.caseId,
+    statuses: ["received"],
+  });
+  const missingIdealLabels =
+    completion.status === "advanced" || completion.status === "already_advanced"
+      ? missingIdealDocumentLabels({
+          coveredKinds: docs.map((doc) => doc.kind),
+        })
+      : [];
   return {
     status: mapDocumentStatus(completion.status),
     batchKind: "documents",
     case: completion.case,
     fileCount: completion.documentCount,
     minimumRequired: 1,
-    ackText: documentsAckText(completion.status),
+    ackText: documentsAckText({
+      status: completion.status,
+      propertyLabel: resolvePropertyDisplayLabel(completion.case.context_jsonb),
+      missingIdealLabels,
+    }),
   };
 }
 

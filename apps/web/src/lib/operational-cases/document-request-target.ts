@@ -28,7 +28,7 @@ import {
 import { looksLikeNewCaseIntent } from "./conversational-case-routing";
 import { shouldProcessInternalCharacteristicsReply } from "./characteristics-response";
 import {
-  conversationalStepLabel,
+  conversationalStepStatusPhrase,
   operationalCaseModeLabel,
 } from "./conversation-case-identity";
 import { buildTelegramIntakeCompletionMessage } from "./telegram-intake-completion-message";
@@ -64,12 +64,19 @@ function firstContextString(
 
 function buildCaseScopeLead(opCase: OperationalCase): string {
   const context = caseContext(opCase);
-  const mode = operationalCaseModeLabel(opCase);
+  // Solo etiquetar laboratorio. "[Real]" es jerga de ops/lab, no copy de
+  // broker (mismo criterio que el clarify continuar-vs-nueva).
+  const modePrefix =
+    opCase.context_jsonb?.e2e_controlled === true
+      ? `${operationalCaseModeLabel(opCase)} `
+      : "";
   const title =
     firstContextString(context, ["property_title", "title", "property_name"]) ??
     firstContextString(context, ["property_zone", "zona", "zone"]) ??
     "Propiedad sin título";
-  return `Sobre ${mode} ${title} (${conversationalStepLabel(opCase.current_step)}):`;
+  // Misma frase de estado que el clarify (no el label imperativo del panel
+  // "Solicitar documentos").
+  return `Sobre ${modePrefix}${title} (${conversationalStepStatusPhrase(opCase)}):`;
 }
 
 export function resolveCaseDocumentRequestTarget(

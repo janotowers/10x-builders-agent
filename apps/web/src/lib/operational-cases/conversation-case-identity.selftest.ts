@@ -3,6 +3,7 @@ import type { OperationalCase } from "@agents/types";
 import {
   buildConversationCaseIdentity,
   conversationalStepLabel,
+  formatOperationalCaseTypeForDisplay,
   humanCaseTypeLabel,
   operationalCaseModeLabel,
 } from "./conversation-case-identity";
@@ -19,7 +20,7 @@ const opCase = {
 
 const identity = buildConversationCaseIdentity({ opCase });
 // Etiqueta humana del tipo de caso (no el slug técnico).
-assert.equal(identity.caseTypeLabel, "Opción de propiedad");
+assert.equal(identity.caseTypeLabel, "Opcionamiento de propiedad");
 assert.equal(identity.summary, "Terreno en Sendas");
 assert.equal(identity.technical, "waiting_internal / intake");
 assert.equal(identity.stepLabel, "Registro inicial");
@@ -36,9 +37,21 @@ assert.equal(
 );
 
 // Helpers de etiquetas humanas.
-assert.equal(humanCaseTypeLabel("property_optioning"), "Opción de propiedad");
+assert.equal(
+  humanCaseTypeLabel("property_optioning"),
+  "Opcionamiento de propiedad"
+);
 assert.equal(humanCaseTypeLabel("otro_tipo"), "otro_tipo");
 assert.equal(humanCaseTypeLabel(null), "Caso operacional");
+assert.equal(
+  formatOperationalCaseTypeForDisplay("property_optioning"),
+  "Opcionamiento de propiedad (property_optioning)"
+);
+assert.equal(
+  formatOperationalCaseTypeForDisplay("otro_tipo"),
+  "otro_tipo",
+  "unknown case_type keeps the technical slug alone"
+);
 assert.equal(conversationalStepLabel("awaiting_documents"), "Solicitar documentos");
 assert.equal(conversationalStepLabel("documents_received"), "Revisión documental");
 assert.equal(

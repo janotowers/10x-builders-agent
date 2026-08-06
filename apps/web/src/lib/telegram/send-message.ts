@@ -176,6 +176,32 @@ export async function sendTelegramMessage(
 }
 
 /**
+ * True when product copy uses Markdown markers that Telegram won't render
+ * unless we convert via `sendTelegramMarkdownMessage` (`**bold**`, fences…).
+ */
+export function telegramTextLooksLikeProductMarkdown(text: string): boolean {
+  return /\*\*|__|`/.test(text);
+}
+
+/**
+ * Envía copy de producto: si trae `**`/código usa el camino Markdown→HTML;
+ * si no, texto plano. Evita el bug recurrente de mandar `**«listo»**` por
+ * `sendTelegramMessage` y que Telegram lo muestre literal.
+ */
+export async function sendTelegramProductMessage(
+  chatId: number,
+  text: string,
+  replyMarkup?: Record<string, unknown>,
+  options?: { throwOnError?: boolean }
+): Promise<void> {
+  if (telegramTextLooksLikeProductMarkdown(text)) {
+    await sendTelegramMarkdownMessage(chatId, text, replyMarkup, options);
+    return;
+  }
+  await sendTelegramMessage(chatId, text, replyMarkup, options);
+}
+
+/**
  * Sends product Markdown (`**bold**`, `` `code` ``) with Telegram HTML rendering.
  * Does not imply the text came from the AI agent — deterministic copy uses this too.
  * Falls back to plain text if Telegram rejects the formatted payload.

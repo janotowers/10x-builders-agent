@@ -28,12 +28,23 @@ import {
   resolveTelegramConversationRoute,
   shouldBindTelegramMessageToConversationalCase,
 } from "./conversational-case-routing";
-import { buildConversationCaseIdentity } from "./conversation-case-identity";
+import {
+  buildConversationCaseIdentity,
+  conversationalStepStatusPhrase,
+} from "./conversation-case-identity";
+import {
+  buildClarificationContinueNewTelegramMarkup,
+  buildClarificationContinueNewWebPayload,
+  CLARIFY_CONTINUE_FREE_TEXT,
+  CLARIFY_NEW_FREE_TEXT,
+  isBarePropertyStartIntent,
+} from "./conversation-clarification-actions";
 import {
   buildPendingMessageEnvelope,
   parsePendingAttachments,
   type PendingAttachmentRef,
 } from "./pending-attachment-envelope";
+import type { HitlTelegramReplyMarkup } from "@/lib/notify/hitl-telegram-markup";
 
 type DbClient = ReturnType<typeof createServerClient>;
 
@@ -120,12 +131,47 @@ export async function resolveRoutableConversationBindings(params: {
   candidateCaseRows.forEach((row) => {
     if (row) candidateCasesById.set(row.id, row);
   });
-  return resolveRoutableConversationBindingsSync({
+  const resolution = resolveRoutableConversationBindingsSync({
     pendingBindings,
     candidateCasesById,
     e2eLabSessionActive: params.e2eLabSessionActive,
     caseType: params.caseType,
   });
+
+  // Higiene: un binding cuyo caso terminó (o ya no existe) jamás volverá a
+  // ser ruteable, pero seguía `awaiting_user` para siempre y llenaba la
+  // ventana de findPendingConversationBindings, expulsando a los bindings de
+  // casos vivos (visto 2026-08-06: 10 bindings de casos de prueba terminados
+  // dejaron routableBindings=0 y el arranque explícito adoptó un draft viejo
+  // sin clarify). Expirarlos aquí hace que la ventana se auto-repare.
+  // `paused` NO se expira: el caso puede reanudarse.
+  const expirable = resolution.ignoredBindings.filter(({ binding, reason }) => {
+    if (reason === "case_not_found") return true;
+    if (reason !== "case_not_routable") return false;
+    const status = candidateCasesById.get(binding.case_id)?.status;
+    return status === "completed" || status === "failed";
+  });
+  await Promise.all(
+    expirable.map(({ binding, reason }) =>
+      setConversationBindingStatus(db, {
+        bindingId: binding.id,
+        status: "expired",
+        metadataMerge: {
+          expired_reason: reason,
+          expired_at: new Date().toISOString(),
+        },
+      }).catch((error) => {
+        console.error(
+          "[conversational-routing] failed to expire stale binding:",
+          binding.id,
+          error
+        );
+        return null;
+      })
+    )
+  );
+
+  return resolution;
 }
 
 export type ClarificationSelection =
@@ -155,7 +201,7 @@ export function parseClarificationSelection(
     }
   }
   if (
-    /^(si|sí|ok|dale|va|correcto|afirmativo|confirmo|usar ese caso|completar ese caso)$/.test(
+    /^(si|sí|ok|dale|va|correcto|afirmativo|confirmo|usar ese caso|completar ese caso|continuar|continuar ese|continuar ese caso|seguimos|seguir)$/.test(
       normalized
     )
   ) {
@@ -169,7 +215,7 @@ export function parseClarificationSelection(
     return { kind: "no" };
   }
   if (
-    /^(nueva|nuevo|nueva propiedad|nuevo caso|crear nuevo caso|registrar otra propiedad|iniciar registro de otra propiedad|iniciar nuevo proceso de opcion|iniciar nuevo proceso de opción)$/.test(
+    /^(nueva|nuevo|nueva propiedad|nuevo caso|crear nuevo caso|registrar otra propiedad|iniciar registro de otra propiedad|iniciar nuevo proceso de opcion|iniciar nuevo proceso de opción|empezar otra|empezar nueva)$/.test(
       normalized
     )
   ) {
@@ -266,10 +312,15 @@ export async function resolveConversationalClarificationReply(params: {
       },
       lastUserMessageAt: new Date().toISOString(),
     });
+    // Un arranque explícito pendiente ("Quiero opcionar…") no debe
+    // re-procesarse tras "continuar": el usuario ya eligió el caso.
+    const effectiveMessage = isBarePropertyStartIntent(pendingMessageText)
+      ? null
+      : pendingMessageText || null;
     return {
       status: "resolved_case",
       case: clarifiedCase,
-      effectiveMessage: pendingMessageText || null,
+      effectiveMessage,
       effectiveAttachments: pendingAttachments,
     };
   }
@@ -358,6 +409,20 @@ export function buildClarificationPrompt(params: {
       );
     }
   }
+  // Arranque explícito + un solo caso: copy de producto (sin [Real]/shortId).
+  if (params.allowNewCaseOption && candidates.length === 1) {
+    const primaryCase = candidateCasesById.get(candidates[0]!.caseId);
+    if (primaryCase) {
+      const identity = buildConversationCaseIdentity({ opCase: primaryCase });
+      const statusPhrase = conversationalStepStatusPhrase(primaryCase);
+      return (
+        "Quieres iniciar otro opcionamiento.\n" +
+        `Todavía tienes uno en curso: ${identity.summary} (${statusPhrase}).\n\n` +
+        "¿Continuamos ese, o empezamos uno nuevo?\n" +
+        `Puedes usar los botones o responder: ${CLARIFY_CONTINUE_FREE_TEXT} / ${CLARIFY_NEW_FREE_TEXT}.`
+      );
+    }
+  }
   const lines = candidates.map((candidate, idx) => {
     const candidateCase = candidateCasesById.get(candidate.caseId);
     const label = candidateCase
@@ -365,30 +430,37 @@ export function buildClarificationPrompt(params: {
           const identity = buildConversationCaseIdentity({
             opCase: candidateCase,
           });
+          // Con opción "nueva": lista legible para broker (sin jerga lab).
+          if (params.allowNewCaseOption) {
+            const statusPhrase = conversationalStepStatusPhrase(candidateCase);
+            return `${identity.summary} (${statusPhrase})`;
+          }
           return `${identity.mode} ${identity.summary} · ${identity.caseTypeLabel} · ${identity.stepLabel} · Caso ${identity.shortId}`;
         })()
       : candidate.label || `Caso ${candidate.caseId}`;
     return `${idx + 1}. ${label}`;
   });
-  if (params.allowNewCaseOption && candidates.length === 1) {
-    return (
-      "Tienes un proceso de propiedad en curso:\n" +
-      `${lines[0]}\n\n` +
-      'Responde "1" para continuar ese caso, o escribe "nueva" para iniciar el registro de otra propiedad.'
-    );
-  }
   return (
-    "Tu mensaje podría corresponder a varios casos en curso:\n" +
+    (params.allowNewCaseOption
+      ? "Quieres iniciar otro opcionamiento. Tienes varios en curso:\n"
+      : "Tu mensaje podría corresponder a varios casos en curso:\n") +
     `${lines.join("\n")}\n\n` +
     (params.allowNewCaseOption
-      ? `Responde con el número del caso (1-${candidates.length}) o escribe "nueva" para iniciar el registro de otra propiedad.`
+      ? `Responde con el número del caso (1-${candidates.length}) o escribe "${CLARIFY_NEW_FREE_TEXT}" para empezar otro.`
       : `Responde con el número del caso (1-${candidates.length}) o "ninguno".`)
   );
 }
 
 export type ConversationalRouteResult =
   | { route: "case"; case: OperationalCase }
-  | { route: "clarify"; responseText: string }
+  | {
+      route: "clarify";
+      responseText: string;
+      /** Markup Telegram cuando aplica continuar-vs-nueva. */
+      telegramReplyMarkup?: HitlTelegramReplyMarkup;
+      /** Payload de chips para web chat (mismo freeText que Telegram). */
+      webStructuredPayload?: Record<string, unknown>;
+    }
   | { route: "none" };
 
 /**
@@ -451,8 +523,9 @@ export async function routeConversationalMessageAgainstBindings(params: {
     if (primaryCase) {
       const shouldOfferNewCaseOption =
         routeDecision.reason === "explicit_intent_with_active_bindings";
+      const clarifyBindingId = primary.bindingId ?? pendingBindings[0]!.id;
       await setConversationBindingStatus(db, {
-        bindingId: primary.bindingId ?? pendingBindings[0]!.id,
+        bindingId: clarifyBindingId,
         status: "clarification_needed",
         pendingMessage: buildPendingMessageEnvelope({
           text: message,
@@ -469,14 +542,30 @@ export async function routeConversationalMessageAgainstBindings(params: {
         },
         lastUserMessageAt: new Date().toISOString(),
       });
+      const responseText = buildClarificationPrompt({
+        candidates: routeDecision.candidates,
+        candidateCasesById,
+        allowNewCaseOption: shouldOfferNewCaseOption,
+        forceListSelection: shouldOfferNewCaseOption,
+      });
+      // Botones/chips solo en continuar-vs-nueva con un candidato (el caso
+      // multi-número sigue siendo texto; Telegram no escala bien a N+nueva).
+      const offerContinueNewButtons =
+        shouldOfferNewCaseOption && routeDecision.candidates.length === 1;
       return {
         route: "clarify",
-        responseText: buildClarificationPrompt({
-          candidates: routeDecision.candidates,
-          candidateCasesById,
-          allowNewCaseOption: shouldOfferNewCaseOption,
-          forceListSelection: shouldOfferNewCaseOption,
-        }),
+        responseText,
+        ...(offerContinueNewButtons
+          ? {
+              telegramReplyMarkup: buildClarificationContinueNewTelegramMarkup({
+                bindingId: clarifyBindingId,
+              }),
+              webStructuredPayload: buildClarificationContinueNewWebPayload({
+                bindingId: clarifyBindingId,
+                caseId: primaryCase.id,
+              }),
+            }
+          : {}),
       };
     }
     return { route: "none" };

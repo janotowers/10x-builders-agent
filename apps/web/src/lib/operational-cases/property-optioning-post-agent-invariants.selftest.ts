@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import {
+  latestPropertyDataRefreshAt,
   mergeDocumentAddressIntoContextPropertyData,
   mergeDocumentLegalIdentityIntoContextPropertyData,
   mergeDocumentSurfacesIntoContextPropertyData,
   ownershipSourceDisplayLabel,
+  propertyDataReviewRequestIsStale,
   propertyDataReviewTextFromContext,
 } from "./property-optioning-post-agent-invariants";
 import type { OperationalCase } from "@agents/types";
@@ -522,6 +524,100 @@ function propertyDataOf(result: {
   });
   assert.match(text, /Fuente de titularidad: Boleta registral/);
   assert.doesNotMatch(text, /Fuente de titularidad: boleta_registral/);
+}
+
+{
+  const opCase = {
+    id: "787b17a3-18fa-4606-90bd-abcda722d034",
+    context_jsonb: {
+      property_title: "Propiedad en Zapopan",
+      property_zone: "Zapopan",
+      operation_type: "sale",
+      property_type: "house",
+      property_data: {
+        area_total_m2: 138,
+      },
+    },
+  } as unknown as OperationalCase;
+  const text = propertyDataReviewTextFromContext({
+    opCase,
+    documentFields: {
+      owner_names: "MARIA CONCEPCION",
+      area_construida_m2_pending_quality_review: true,
+      area_construida_m2_observed_implausible: 14.6,
+      area_construida_m2_suggested: 146,
+    },
+  });
+  assert.match(text, /Propiedad en Zapopan/);
+  assert.match(text, /Operación: Venta/);
+  assert.match(text, /Tipo de propiedad: Casa/);
+  assert.match(text, /error decimal/);
+  assert.doesNotMatch(text, /787b17a3-18fa-4606-90bd-abcda722d034/);
+  assert.doesNotMatch(text, /Ninguno mínimo detectado/);
+}
+
+{
+  const result = mergeDocumentSurfacesIntoContextPropertyData({
+    context: { property_data: {} },
+    documentFields: {
+      area_total_m2: 138,
+      area_total_m2_source: "predial",
+      area_construida_m2: 14.6,
+      area_construida_m2_source: "predial",
+      area_construida_m2_pending_quality_review: true,
+    },
+  });
+  assert.equal(propertyDataOf(result).area_total_m2, 138);
+  assert.equal(propertyDataOf(result).area_construida_m2, undefined);
+}
+
+{
+  assert.equal(
+    propertyDataReviewRequestIsStale([
+      {
+        created_at: "2026-08-06T15:20:00.000Z",
+        event_type: "human_decision",
+        payload_jsonb: { kind: "property_data_review_requested" },
+      },
+    ]),
+    false,
+    "review without later refresh is not stale"
+  );
+  assert.equal(
+    propertyDataReviewRequestIsStale([
+      {
+        created_at: "2026-08-06T15:20:00.000Z",
+        event_type: "human_decision",
+        payload_jsonb: { kind: "property_data_review_requested" },
+      },
+      {
+        created_at: "2026-08-06T17:49:00.000Z",
+        event_type: "state_changed",
+        payload_jsonb: { kind: "owner_characteristics_merged" },
+      },
+    ]),
+    true,
+    "characteristics after premature review must refresh the canonical review"
+  );
+}
+
+{
+  // Legacy agent notifications write events with empty payloads; staleness
+  // then falls back to comparing the last data refresh vs notification time.
+  const refreshAt = latestPropertyDataRefreshAt([
+    { created_at: "2026-08-06T15:20:22.000Z", event_type: "reminder_sent", payload_jsonb: {} },
+    {
+      created_at: "2026-08-06T18:00:54.000Z",
+      event_type: "state_changed",
+      payload_jsonb: { kind: "owner_characteristics_merged" },
+    },
+  ]);
+  assert.equal(refreshAt, "2026-08-06T18:00:54.000Z");
+  const notificationCreatedAt = "2026-08-06T15:19:47.000Z";
+  assert.ok(
+    refreshAt != null && refreshAt > notificationCreatedAt,
+    "characteristics after a legacy unread review notification must mark it stale"
+  );
 }
 
 console.log("property-optioning-post-agent-invariants.selftest: ok");

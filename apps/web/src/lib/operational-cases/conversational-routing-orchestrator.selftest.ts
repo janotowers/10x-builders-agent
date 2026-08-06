@@ -20,6 +20,11 @@ assert.deepEqual(parseClarificationSelection("caso 2"), {
 });
 assert.deepEqual(parseClarificationSelection("nueva"), { kind: "new_case" });
 assert.deepEqual(parseClarificationSelection("nuevo caso"), { kind: "new_case" });
+assert.deepEqual(parseClarificationSelection("empezar otra"), { kind: "new_case" });
+assert.deepEqual(parseClarificationSelection("continuar"), { kind: "yes" });
+assert.deepEqual(parseClarificationSelection("continuar ese caso"), {
+  kind: "yes",
+});
 assert.deepEqual(parseClarificationSelection("registrar otra propiedad"), {
   kind: "new_case",
 });
@@ -82,7 +87,7 @@ assert.ok(multiPrompt.includes("Casa Roma"));
 assert.ok(multiPrompt.includes("Depto Condesa"));
 assert.ok(multiPrompt.includes("(1-2)"));
 // Copy humano: etiquetas legibles, NUNCA jerga técnica.
-assert.ok(multiPrompt.includes("Opción de propiedad"));
+assert.ok(multiPrompt.includes("Opcionamiento de propiedad"));
 assert.ok(multiPrompt.includes("Registro inicial"));
 assert.ok(multiPrompt.includes("Solicitar documentos"));
 assert.ok(multiPrompt.includes("[Real]"));
@@ -122,9 +127,35 @@ const startIntentPrompt = buildClarificationPrompt({
   allowNewCaseOption: true,
   forceListSelection: true,
 });
-assert.ok(startIntentPrompt.includes("proceso de propiedad en curso"));
+assert.ok(startIntentPrompt.includes("Quieres iniciar otro opcionamiento"));
+assert.ok(startIntentPrompt.includes("Casa Roma"));
+assert.ok(startIntentPrompt.includes("en registro inicial"));
+assert.ok(startIntentPrompt.includes("continuar"));
 assert.ok(startIntentPrompt.includes("nueva"));
-assert.ok(startIntentPrompt.includes("registro de otra propiedad"));
+assert.ok(
+  !startIntentPrompt.includes("[Real]"),
+  "arranque explícito no debe mostrar jerga [Real]"
+);
+assert.ok(
+  !startIntentPrompt.includes("Caso …"),
+  "arranque explícito no debe mostrar shortId al broker"
+);
+
+const startIntentMulti = buildClarificationPrompt({
+  candidates: [
+    { caseId: caseA.id, label: "A" },
+    { caseId: caseB.id, label: "B" },
+  ],
+  candidateCasesById: new Map([
+    [caseA.id, caseA],
+    [caseB.id, caseB],
+  ]),
+  allowNewCaseOption: true,
+});
+assert.ok(startIntentMulti.includes("varios en curso"));
+assert.ok(startIntentMulti.includes("Casa Roma (en registro inicial)"));
+assert.ok(startIntentMulti.includes("Depto Condesa (esperando documentos)"));
+assert.ok(!startIntentMulti.includes("[Real]"));
 
 // resolveRoutableConversationBindingsSync ─────────────────────────────────────
 const completedCase = {

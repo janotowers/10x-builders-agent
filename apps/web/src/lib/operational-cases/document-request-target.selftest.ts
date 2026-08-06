@@ -154,7 +154,12 @@ for (const negative of [
 const promptWithExternal = buildCaseDocumentRequestTargetPrompt(
   conversationalAwaitingDocs({}, { channel: "telegram", chat_id: 12345 })
 );
-assert.ok(promptWithExternal.includes("Sobre [Real]"));
+assert.ok(promptWithExternal.includes("Sobre "));
+assert.ok(
+  !promptWithExternal.includes("[Real]"),
+  "copy de broker no debe mostrar jerga [Real]"
+);
+assert.ok(promptWithExternal.includes("Propiedad en Zapopan") || /Sobre .+ \(/i.test(promptWithExternal));
 assert.ok(promptWithExternal.includes("necesito estos documentos"));
 assert.ok(/boleta/i.test(promptWithExternal));
 assert.ok(promptWithExternal.includes("(indispensable)"));
@@ -208,6 +213,18 @@ const continuationInternal = buildOperationalCaseContinuationReprompt(
 assert.ok(continuationInternal.includes("ya está registrado"));
 assert.ok(/escritura/i.test(continuationInternal));
 assert.ok(continuationInternal.includes("«listo»"));
+assert.ok(
+  continuationInternal.includes("(esperando documentos)"),
+  "lead debe usar frase de estado, no label imperativo del paso"
+);
+assert.ok(
+  !continuationInternal.includes("Solicitar documentos"),
+  "copy de broker no debe usar label de panel Solicitar documentos"
+);
+assert.ok(
+  !continuationInternal.includes("[Real]"),
+  "continuation de broker no debe mostrar jerga [Real]"
+);
 // Nunca debe pedir los campos de intake (título/zona/operación/tipo).
 assert.ok(
   !/Título \/ propiedad:|Zona \/ colonia:|Operación aplicable:|Tipo de propiedad:/.test(

@@ -28,8 +28,12 @@ guardrails: |
   para que el cron sepa cuándo fue el último intento.
   Cuando lleguen documentos via `external_response` o subida interna, NO
   improvises el checklist: usa el orden canónico (boleta primero como
-  indispensable en copy). El avance por «listo» lo resuelve el runtime con al
-  menos un documento recibido; no inventes gates distintos.
+  indispensable en copy). En la rama interna el avance SOLO ocurre cuando el
+  runtime cierra el lote («listo»/botón → `documents_batch_completed`);
+  archivos sueltos NO son evidencia suficiente. En la rama externa puedes
+  avanzar si el runtime marcó el lote o hay evidencia suficiente. No inventes
+  gates distintos. NO envíes notify_user de "Documentos ideales faltantes"
+  al recibir archivos: el acuse y el reporte de faltantes los emite el runtime.
 ---
 
 # Request property documents
@@ -87,6 +91,11 @@ Más cualquier documento extra que la cuenta exija (revisa
    e. Si enviaste una solicitud, registra
       `operational_case_add_event(reminder_sent, payload={purpose: internal_request})`.
 
+   f. Mientras el asesor sube archivos **sin** confirmar «listo»: NO avances
+      a `documents_received`. Mantén `waiting_internal` / `next_action_at=null`.
+      El runtime cierra el lote y despierta el caso; tú no debes inferir
+      "evidencia suficiente" por conteo de archivos.
+
 3. **Rama externa** — Si `document_request_target !== internal_user` y **aún no se ha mandado el primer mensaje** (no hay evento
    `reminder_sent` con `purpose=initial_request`):
 
@@ -120,22 +129,30 @@ Más cualquier documento extra que la cuenta exija (revisa
       `notify_user(urgency=high, kind=case_escalation)` y mueve
       `status=paused` con un evento `escalated`.
 
-5. Si llegó respuesta del externo (`external_response`):
+5. Si llegó respuesta / documentos:
 
    a. Lee el payload del evento. Si vienen documentos (URLs/IDs de archivos
       o documentos recibidos),
       añádelos a `context_jsonb.documents_received[]`.
 
-   b. Compara contra el checklist. Si ya hay documentos recibidos y el runtime
-      marcó el lote (p. ej. «listo») o hay evidencia suficiente para continuar:
+   b. **Rama interna** (`document_request_target === internal_user`): avanza a
+      `documents_received` / `status=active` / `next_action_at=now()` **solo**
+      si el runtime ya emitió `documents_batch_completed` (confirmación
+      «listo»/botón). NO avances solo porque hay `external_response` de
+      `document_registered`. NO envíes notify de recepción ni de faltantes
+      (el runtime ya acusó y reportará faltantes por kind clasificado).
+
+   c. **Rama externa**: si ya hay documentos y el runtime marcó el lote
+      (p. ej. «listo») **o** hay evidencia suficiente para continuar:
       - mueve `current_step=documents_received`, `status=active`,
         `next_action_at=now()` para que el cron pase a la siguiente
         sub-skill (`extract-property-characteristics`).
-      - manda `notify_user("Documento(s) recibido(s) para caso X; paso a extraer características. Documentos ideales faltantes: ...")` si faltan ideales.
+      - NO envíes el notify genérico de "Documentos ideales faltantes";
+        el runtime / extracción se encargan del reporte canónico.
 
-   c. Si aún no hay material usable: manda mensaje cortés agradeciendo lo que
-      llegó y pidiendo lo pendiente (prioriza boleta). Mantén `waiting_external`
-      y reprograma `next_action_at`.
+   d. Si aún no hay material usable (rama externa): manda mensaje cortés
+      agradeciendo lo que llegó y pidiendo lo pendiente (prioriza boleta).
+      Mantén `waiting_external` y reprograma `next_action_at`.
 
 ## Plantillas (texto base; ajustar tono al perfil del agente)
 

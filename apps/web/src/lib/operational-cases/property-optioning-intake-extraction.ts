@@ -128,6 +128,26 @@ export function inferOperationTypeFromText(text: string) {
   return null;
 }
 
+/**
+ * Un valor plausible de zona/colonia es una frase nominal corta ("Las
+ * Fuentes, Zapopan"), no una oración con instrucciones. Protege contra
+ * mensajes de corrección mal ruteados cuyo texto después de "zona" era una
+ * instrucción completa (visto 2026-07-11: "…entorno/zona con las coordenadas
+ * reales del caso (sin lat/lng 0) e incluye puntos de interés…" quedó
+ * guardado como property_zone del caso).
+ */
+export function looksLikePlausibleZoneValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 80) return false;
+  const normalized = normalizeForIntent(trimmed);
+  if (/^(?:con|sin|para|porque|donde|cuando|como|que)\b/.test(normalized)) {
+    return false;
+  }
+  return !/\b(regenerar?|generar?|usar?|incluye|incluir|actualizar?|corrige|corregir|agregar?|coordenadas?|lat\s*\/?\s*lng|descripcion(?:es)?|puntos de interes)\b/.test(
+    normalized
+  );
+}
+
 export function fieldValueBeforeNextLabel(
   text: string,
   labelPattern: string,
@@ -161,7 +181,7 @@ export function extractConservativeIntakePatch(text: string) {
     cleaned,
     String.raw`(?:la\s+)?zona(?:\s*\/\s*colonia)?`
   );
-  if (zone) {
+  if (zone && looksLikePlausibleZoneValue(zone)) {
     patch.property_zone = zone;
   } else {
     const zoneLoosePatternWithConnector = new RegExp(
@@ -182,8 +202,11 @@ export function extractConservativeIntakePatch(text: string) {
       ?.trim()
       .replace(/[.,;]\s*$/, "")
       .trim();
-    if (zoneLoose) patch.property_zone = zoneLoose;
-    else if (zoneLooseBare) patch.property_zone = zoneLooseBare;
+    if (zoneLoose && looksLikePlausibleZoneValue(zoneLoose)) {
+      patch.property_zone = zoneLoose;
+    } else if (zoneLooseBare && looksLikePlausibleZoneValue(zoneLooseBare)) {
+      patch.property_zone = zoneLooseBare;
+    }
   }
 
   const operation = fieldValueBeforeNextLabel(
@@ -220,8 +243,10 @@ export function normalizeIntakePatchValues(
     : "";
   if (title) normalized.property_title = title;
 
+  // Puerta final compartida por todos los callers (parser regex y
+  // clasificador LLM): una "zona" que parece instrucción no se persiste.
   const zone = hasMeaningfulString(patch.property_zone) ? patch.property_zone.trim() : "";
-  if (zone) normalized.property_zone = zone;
+  if (zone && looksLikePlausibleZoneValue(zone)) normalized.property_zone = zone;
 
   const rawOperation = hasMeaningfulString(patch.operation_type)
     ? patch.operation_type.trim()

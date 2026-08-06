@@ -139,9 +139,33 @@ export async function mergeCharacteristicsOwnerResponseDeterministically(params:
   });
   const parsedKeys = Object.keys(extraction.patch);
 
+  // If the advisor/owner supplies built area while predial OCR was implausible,
+  // treat it as the human confirmation so the advance gate stops soft-locking.
+  const patchArea = extraction.patch.area_construida_m2;
+  const confirmedBuiltArea =
+    typeof patchArea === "number" && Number.isFinite(patchArea) && patchArea > 0
+      ? patchArea
+      : null;
+  const existingSurfaceQuality = isRecord(currentPropertyData.surface_quality)
+    ? currentPropertyData.surface_quality
+    : {};
   const propertyData = {
     ...currentPropertyData,
     ...extraction.patch,
+    ...(confirmedBuiltArea != null
+      ? {
+          area_construida_m2: confirmedBuiltArea,
+          area_construida_m2_source: "human_confirmed_owner_characteristics",
+          surface_quality: {
+            ...existingSurfaceQuality,
+            area_construida_m2: {
+              status: "human_confirmed",
+              confirmed_at: new Date().toISOString(),
+              confirmed_via: "owner_characteristics_merge",
+            },
+          },
+        }
+      : {}),
   };
   const mergedContext = syncIntakeFieldsFromPropertyData(
     currentContext,

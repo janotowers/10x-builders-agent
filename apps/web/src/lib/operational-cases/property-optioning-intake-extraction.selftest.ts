@@ -1,9 +1,40 @@
 import assert from "node:assert/strict";
 import {
   extractConservativeIntakePatch,
+  looksLikePlausibleZoneValue,
   mergeIntakePatches,
   normalizeIntakePatchValues,
 } from "./property-optioning-intake-extraction";
+
+// Regresión 2026-08-06: un mensaje de corrección de descripción mal ruteado
+// ("…entorno/zona con las coordenadas reales del caso…") quedó guardado como
+// property_zone. Una "zona" que parece instrucción no se extrae ni persiste.
+assert.equal(
+  looksLikePlausibleZoneValue("Las Fuentes, Zapopan, Jalisco"),
+  true
+);
+assert.equal(looksLikePlausibleZoneValue("Colomos Providencia"), true);
+assert.equal(
+  looksLikePlausibleZoneValue(
+    "con las coordenadas reales del caso (sin lat/lng 0) e incluye puntos de interés cercanos en la descripción"
+  ),
+  false
+);
+assert.equal(
+  looksLikePlausibleZoneValue("regenera el entorno con datos reales"),
+  false
+);
+{
+  const misroutedCorrection = extractConservativeIntakePatch(
+    "Regenera el entorno/zona con las coordenadas reales del caso (sin lat/lng 0) e incluye puntos de interés cercanos en la descripción"
+  );
+  assert.equal(misroutedCorrection.property_zone, undefined);
+  const normalizedGarbage = normalizeIntakePatchValues({
+    property_zone:
+      "con las coordenadas reales del caso (sin lat/lng 0) e incluye puntos de interés cercanos en la descripción",
+  });
+  assert.equal(normalizedGarbage.property_zone, undefined);
+}
 
 assert.deepEqual(
   extractConservativeIntakePatch(

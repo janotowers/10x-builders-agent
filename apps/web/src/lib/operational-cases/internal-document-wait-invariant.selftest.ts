@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { OperationalCase } from "@agents/types";
 import {
   isInternalDocumentEventDrivenWait,
+  isInternalUploadEventDrivenWait,
   shouldClearInternalDocumentWaitSchedule,
 } from "./internal-document-wait-invariant";
 
@@ -23,6 +24,7 @@ function opCase(patch: Partial<OperationalCase> = {}): OperationalCase {
 }
 
 assert.equal(isInternalDocumentEventDrivenWait(opCase()), true);
+assert.equal(isInternalUploadEventDrivenWait(opCase()), true);
 assert.equal(shouldClearInternalDocumentWaitSchedule(opCase()), true);
 assert.equal(
   shouldClearInternalDocumentWaitSchedule(opCase({ next_action_at: null })),
@@ -41,6 +43,19 @@ assert.equal(
 assert.equal(
   isInternalDocumentEventDrivenWait(
     opCase({ current_step: "documents_received" })
+  ),
+  false
+);
+const photosWait = opCase({
+  current_step: "photos_requested",
+  context_jsonb: { raw_photos: [{ document_id: "photo-1" }] },
+});
+assert.equal(isInternalDocumentEventDrivenWait(photosWait), false);
+assert.equal(isInternalUploadEventDrivenWait(photosWait), true);
+assert.equal(shouldClearInternalDocumentWaitSchedule(photosWait), true);
+assert.equal(
+  isInternalUploadEventDrivenWait(
+    opCase({ current_step: "photos_requested", status: "active" })
   ),
   false
 );

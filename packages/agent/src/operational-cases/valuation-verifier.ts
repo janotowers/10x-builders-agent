@@ -18,7 +18,7 @@
  *      verificador degrada a solo-determinista y lo dice en findings.
  *
  * La evidencia (verdict + findings) gatea el artefacto price_recommendation:
- * el executor specialized_agent falla el work item en fail, y el caller
+ * el executor registered_specialized_worker deja el work item en review en fail, y el caller
  * invalida el artefacto — nunca se auto-aprueba nada aquí (HITL intacto).
  */
 import {
@@ -216,7 +216,7 @@ export async function verifyValuationRecommendation(
 
   const resolved = resolveWorkerModel({
     modelPolicy: deps?.modelPolicy ?? { role: "valuation_verifier" },
-    executionMode: "specialized_agent",
+    executionMode: "registered_specialized_worker",
   });
 
   let modelInfo: ValuationVerifierResult["model"] = null;

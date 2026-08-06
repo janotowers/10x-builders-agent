@@ -173,6 +173,23 @@ export async function ingestCaseDocument(
     blocking: kind === "boleta_registral",
   });
 
+  // Best-effort: pull «listo» confirmation nudge forward after each file.
+  try {
+    const { rescheduleUploadBatchConfirmationNudgeForCase } = await import(
+      "./reschedule-upload-batch-nudge"
+    );
+    await rescheduleUploadBatchConfirmationNudgeForCase({
+      db: input.db,
+      caseId: input.caseId,
+      userId: input.userId,
+    });
+  } catch (error) {
+    console.warn(
+      "[ingestCaseDocument] reschedule upload nudge failed:",
+      error instanceof Error ? error.message : error
+    );
+  }
+
   return {
     document,
     kind: document.kind,
@@ -267,6 +284,22 @@ export async function ingestStagedCaseDocument(
     },
     blocking: kind === "boleta_registral",
   });
+
+  try {
+    const { rescheduleUploadBatchConfirmationNudgeForCase } = await import(
+      "./reschedule-upload-batch-nudge"
+    );
+    await rescheduleUploadBatchConfirmationNudgeForCase({
+      db: input.db,
+      caseId: input.caseId,
+      userId: input.userId,
+    });
+  } catch (error) {
+    console.warn(
+      "[ingestStagedCaseDocument] reschedule upload nudge failed:",
+      error instanceof Error ? error.message : error
+    );
+  }
 
   return {
     document,

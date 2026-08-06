@@ -4,6 +4,7 @@ import {
   buildDocumentChecklistLines,
   buildDocumentReceivedAck,
   buildMediaGroupReceivedAck,
+  buildPhotoMediaGroupReceivedAck,
   documentKindHint,
   looksLikeDocumentUploadSideText,
 } from "./case-document-collection";
@@ -130,5 +131,15 @@ const namelessGroupAck = buildMediaGroupReceivedAck([
 ]);
 assert.ok(namelessGroupAck.includes("Recibí 2 documentos"));
 assert.ok(!namelessGroupAck.includes("• «"));
+
+const photoGroupAck = buildPhotoMediaGroupReceivedAck([
+  { originalName: "fachada.jpeg" },
+  { originalName: "cocina.jpeg" },
+]);
+assert.match(photoGroupAck, /Recibí 2 fotos/);
+assert.match(photoGroupAck, /«fachada\.jpeg»/);
+assert.match(photoGroupAck, /todas las fotos/);
+assert.doesNotMatch(photoGroupAck, /documentos/);
+assert.doesNotMatch(photoGroupAck, /procesarlos/);
 
 console.log("case-document-collection.selftest: ok");

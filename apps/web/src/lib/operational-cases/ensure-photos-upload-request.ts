@@ -12,6 +12,7 @@ import {
   PHOTOS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
   RAW_PHOTOS_MIN_COUNT,
 } from "./photo-batch-completion";
+import { discardPendingMediaGroupAcksForCase } from "./telegram-media-group-ack-store";
 
 const advisedUpdate = createAdvisedCaseUpdate(
   "ensure_photos_upload_request",
@@ -51,6 +52,13 @@ export async function ensurePhotosUploadRequestForCase(params: {
   let opCase = params.opCase;
   if (opCase.current_step !== "photos_requested") {
     return { requested: false, case: opCase };
+  }
+  // Al entrar desde el lote documental no debe sobrevivir ningún acuse
+  // consolidado pendiente. Solo se descarta antes de la primera foto; una
+  // carga de fotos ya iniciada conserva su propio media group.
+  const initialContext = contextRecord(opCase);
+  if (countRawPhotos(initialContext) === 0) {
+    opCase = await discardPendingMediaGroupAcksForCase({ db, opCase });
   }
   const { data: unread } = await db
     .from("internal_user_notifications")

@@ -270,12 +270,18 @@ export function resolveTelegramConversationRoute(params: {
     // intención explícita de "otra propiedad"), continúa ese caso en vez de
     // pedir aclaración. El guard de "explicit intent" abajo es para casos que
     // YA pasaron intake, no para el que apenas estamos llenando.
+    // Excepción: una frase de ARRANQUE determinística ("Quiero opcionar una
+    // propiedad") contiene la palabra "propiedad" y pasaría el heurístico de
+    // datos, adoptando en silencio un draft viejo — debe caer al clarify
+    // continuar-vs-nueva de abajo. Un reply con datos reales ("Casa en venta
+    // en Las Fuentes…") no es frase de arranque y sí continúa.
     const intakeIncomplete =
       opCase?.current_step === "intake" &&
       opCase.context_jsonb?.intake_status !== "complete";
     if (
       opCase &&
       intakeIncomplete &&
+      !isPropertyOptioningIntent(params.message) &&
       !looksLikeNewCaseIntent(params.message) &&
       looksLikePropertyDataDetails(text)
     ) {

@@ -91,6 +91,9 @@ export async function findPendingConversationBindings(
   }
 ): Promise<OperationalCaseConversationBinding[]> {
   const statuses = params.statuses ?? ["awaiting_user", "clarification_needed"];
+  // Default 30 (antes 10): bindings de casos terminados aún no expirados
+  // pueden llenar una ventana chica y expulsar a los de casos vivos; la
+  // expiración perezosa vive en resolveRoutableConversationBindings.
   let query = db
     .from("operational_case_conversation_bindings")
     .select("*")
@@ -98,13 +101,26 @@ export async function findPendingConversationBindings(
     .eq("channel", params.channel)
     .in("status", statuses)
     .order("updated_at", { ascending: false })
-    .limit(Math.max(1, Math.min(params.limit ?? 10, 100)));
+    .limit(Math.max(1, Math.min(params.limit ?? 30, 100)));
   if (params.chatId !== undefined && params.chatId !== null) {
     query = query.eq("chat_id", params.chatId);
   }
   const { data, error } = await query;
   if (error) throw error;
   return (data ?? []) as OperationalCaseConversationBinding[];
+}
+
+export async function getConversationBindingById(
+  db: DbClient,
+  bindingId: string
+): Promise<OperationalCaseConversationBinding | null> {
+  const { data, error } = await db
+    .from("operational_case_conversation_bindings")
+    .select("*")
+    .eq("id", bindingId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as OperationalCaseConversationBinding | null) ?? null;
 }
 
 export async function getConversationBindingForCase(

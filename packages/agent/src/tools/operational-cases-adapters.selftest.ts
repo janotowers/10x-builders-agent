@@ -17,6 +17,7 @@ import {
   evaluateContractReviewNotifyGate,
   evaluateListingDescriptionReviewNotifyGate,
   listingDescriptionDraftContentFromContext,
+  evaluatePropertyAdvanceGate,
   evaluatePropertyDataMinimumsForReview,
   evaluatePredialBuiltAreaQualityForTest,
   extractPredialSurfacesFromTextForTest,
@@ -26,12 +27,14 @@ import {
   looksLikeComparablesCompletionProseForTest,
   comparablesSearchExpansionDecisionAlreadyRequestedForTest,
   matchesOwnedContractDataReviewForTest,
+  mergeDocumentExtractionsForTest,
   normalizeOptionalIsoTimestamp,
   priceApprovalNotificationAlreadyDeliveredForTest,
   missingRequiredIntakeFields,
   normalizePredialExtractionSurfacesForTest,
   operationalCaseIntakeSuccessStep,
   predialSurfacesFromContribuyenteRowValuesForTest,
+  propertyTypeRequirementKeyForTest,
 } from "./operational-cases-adapters";
 import type {
   OperationalCaseDocument,
@@ -274,11 +277,120 @@ assert.equal(
 assert.equal(
   blockedAwaitingDocumentsTransitionReason({
     currentStep: "awaiting_documents",
+    nextStep: "documents_received",
+    recentEventTypes: ["external_response"],
+    documentRequestTarget: "internal_user",
+  }),
+  "awaiting_documents_requires_batch_completion"
+);
+assert.equal(
+  blockedAwaitingDocumentsTransitionReason({
+    currentStep: "awaiting_documents",
+    nextStep: "documents_received",
+    recentEventTypes: ["external_response", "state_changed"],
+    recentPayloadKinds: ["document_registered", "documents_batch_completed"],
+    documentRequestTarget: "internal_user",
+  }),
+  null
+);
+assert.equal(
+  blockedAwaitingDocumentsTransitionReason({
+    currentStep: "awaiting_documents",
     nextStep: "awaiting_documents",
     recentEventTypes: [],
   }),
   null
 );
+
+assert.equal(propertyTypeRequirementKeyForTest("house"), "casa");
+assert.equal(propertyTypeRequirementKeyForTest("Home"), "casa");
+assert.equal(propertyTypeRequirementKeyForTest("apartment"), "departamento");
+
+{
+  const dualMisread = evaluatePredialBuiltAreaQualityForTest({
+    area_total_m2: 13.8,
+    area_construida_m2: 14.6,
+  });
+  assert.equal(dualMisread.implausible, true);
+  assert.equal(dualMisread.suggested_m2, 146);
+}
+
+{
+  const merged = mergeDocumentExtractionsForTest(
+    {
+      document_kind: "predial",
+      area_total_m2: 13.8,
+      area_construida_m2: 14.6,
+    },
+    {
+      document_kind: "predial",
+      area_total_m2: 138,
+      area_construida_m2: 146,
+      predial_contribuyente_row_values: ["U", "138.00", "146.00", "0.00", "0.00"],
+      sup_terr_raw: "138.00",
+      sup_const_raw: "146.00",
+    },
+    "pdf_text_plus_vision",
+    "predial"
+  );
+  assert.equal(merged.area_construida_m2, 146);
+  assert.ok(Array.isArray(merged.predial_contribuyente_row_values));
+}
+
+{
+  const gate = evaluatePropertyAdvanceGate({
+    documents: [
+      {
+        id: "predial-1",
+        kind: "predial",
+        status: "received",
+        extraction_status: "ok",
+        extraction_jsonb: {
+          document_kind: "predial",
+          area_total_m2: 138,
+          area_construida_m2: 14.6,
+          predial_area_construida_quality: {
+            status: "implausible_decimal_misread_suspected",
+            observed_m2: 14.6,
+            suggested_m2: 146,
+          },
+        },
+      } as unknown as OperationalCaseDocument,
+    ],
+    context: {
+      property_type: "house",
+      property_data: { property_type: "house", area_total_m2: 138 },
+    },
+    targetTransition: "comparables_in_progress",
+  });
+  assert.ok(
+    gate.blocks.some((block) => block.reason === "predial_area_construida_implausible"),
+    "house must activate casa predial built-area quality gate"
+  );
+}
+
+{
+  const fields = documentExtractionMinimumsContext([
+    {
+      id: "predial-1",
+      kind: "predial",
+      status: "received",
+      extraction_status: "ok",
+      extraction_jsonb: {
+        document_kind: "predial",
+        area_total_m2: 138,
+        area_construida_m2: 14.6,
+        predial_area_construida_quality: {
+          status: "implausible_decimal_misread_suspected",
+          observed_m2: 14.6,
+          suggested_m2: 146,
+        },
+      },
+    } as unknown as OperationalCaseDocument,
+  ]);
+  assert.equal(fields.area_construida_m2, undefined);
+  assert.equal(fields.area_construida_m2_pending_quality_review, true);
+}
 assert.equal(
   blockedPropertyOptioningStepRegressionReason({
     caseType: "property_optioning",

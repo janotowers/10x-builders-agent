@@ -50,9 +50,29 @@ assert.equal(
   }),
   true
 );
+assert.equal(
+  __testOnly.isFlushable({
+    group,
+    caseId: "case-1",
+    chatId: 123,
+    nowMs: Date.parse("2026-06-20T22:28:08.000Z"),
+    windowMs: 4_000,
+    force: false,
+    mediaGroupId: "a-different-album",
+  }),
+  false,
+  "a new album webhook must not flush an older unrelated group"
+);
 
 const sent = __testOnly.markSentInMap(appended, [key], "2026-06-20T22:28:09.000Z");
 assert.equal(typeof sent[key]?.ack_sent_at, "string");
+assert.deepEqual(__testOnly.pendingAckKeys(appended), [key]);
+assert.deepEqual(__testOnly.pendingAckKeys(sent), []);
+assert.equal(
+  __testOnly.nextPendingAckDueAt(appended, 4_000),
+  "2026-06-20T22:28:07.000Z"
+);
+assert.equal(__testOnly.nextPendingAckDueAt(sent, 4_000), null);
 
 const pendingWhileSettling = __testOnly.inspectPendingMediaGroupAcks({
   context: { telegram_media_group_acks: appended },

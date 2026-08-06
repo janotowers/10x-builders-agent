@@ -1038,6 +1038,19 @@ export function listingDescriptionReviewNeedsRegeneration(
   );
 }
 
+/**
+ * True when package_ready already has a draft and is waiting for the advisor
+ * (or engagement reminders), not for another agent tick.
+ */
+export function listingDescriptionReviewIsAwaitingHuman(
+  context: Record<string, unknown> | null | undefined
+): boolean {
+  if (!context) return false;
+  if (context.listing_description_approved) return false;
+  if (listingDescriptionReviewNeedsRegeneration(context)) return false;
+  return Boolean(listingDescriptionDraftContentFromContext(context));
+}
+
 async function hasUnreadListingDescriptionReviewNotification(
   db: ReturnType<typeof createServerClient>,
   userId: string,
@@ -1515,8 +1528,8 @@ function buildCaseE2ETickMessage(
             "Acción esperada para este paso: solicitar fotos al asesor interno (request-property-photos).",
             "En este tick SOLO fotos internas: notify_user, operational_case_add_event y operational_case_update_state.",
             "NO uses telegram_send_message_to_contact ni herramientas de calendario, contrato o publicación.",
-            photoCount >= RAW_PHOTOS_MIN_COUNT
-              ? `Ya hay ${photoCount} foto(s) en raw_photos. Aun así envía notify_user(kind=photos_upload_requested) recordando el mínimo de ${RAW_PHOTOS_MIN_COUNT} y que responda exactamente **«listo»** (con negrita markdown) para avanzar; no avances a package_ready en este tick.`
+            photoCount > 0
+              ? `Ya hay ${photoCount} foto(s) en raw_photos. NO envíes notify_user ni repitas la solicitud: la espera es event-driven y el sistema de engagement controla el recordatorio de **«listo»**. Conserva waiting_internal; no avances a package_ready en este tick.`
               : `Hay ${photoCount} foto(s) en raw_photos. Envía notify_user(kind=photos_upload_requested) pidiendo al menos ${RAW_PHOTOS_MIN_COUNT} fotos${propertyLabel ? ` de ${propertyLabel}` : ""} aquí (fachada, sala/comedor, cocina, recámara principal, baño principal) e indica que responda exactamente **«listo»** (con negrita markdown) al terminar. No menciones panel ni «Referencia del caso».`,
             "Inserta operational_case_add_event(reminder_sent, purpose=photos_upload_requested).",
             "Deja current_step=photos_requested y status=waiting_internal. NO avances a package_ready sin **«listo»** del asesor.",
@@ -1684,9 +1697,9 @@ function buildCaseE2ETickMessage(
               ? "zone_context ya existe; no rehagas lookup_property_surroundings salvo que points/POIs estén vacíos (entonces reintenta con case_id y SIN latitude/longitude=0)."
               : "Si falta zone_context, llama lookup_property_surroundings(case_id=...) SIN latitude/longitude (no pases 0; reutiliza el geocode del caso).",
             hasDraft
-              ? "listing_description_draft ya existe; envía notify_user(kind=listing_description_review) para revisión humana."
+              ? "listing_description_draft ya existe. Si YA pediste revisión o hay un unread listing_description_review, NO vuelvas a llamar notify_user: la espera es event-driven. Solo envía notify_user(kind=listing_description_review) si aún no se ha solicitado la revisión de ESTE borrador."
               : "Cuando existan photo_analysis y zone_context, llama prepare_listing_description_draft(case_id).",
-            "Solo después de tener listing_description_draft.description envía notify_user(kind=listing_description_review).",
+            "Solo después de tener listing_description_draft.description y si aún no hay revisión pedida para ese borrador, envía notify_user(kind=listing_description_review).",
             "No notifiques listing_description_review sin borrador real. No publiques en destinos sin aprobación explícita.",
             "Deja current_step=package_ready y status=waiting_internal tras solicitar la revisión.",
           ].join(" ");
@@ -2375,98 +2388,96 @@ export async function runSettingsTestCaseAgentTick(
             "Ejecutar analyze_property_images(case_id) y/o lookup_property_surroundings(case_id) antes de prepare_listing_description_draft.",
         },
       });
-    } else if (
-      listingDraftContent &&
-      draftedListingThisTurn &&
-      !(
-        caseAfterDeterministicFallback.context_jsonb &&
-        typeof caseAfterDeterministicFallback.context_jsonb === "object" &&
-        !Array.isArray(caseAfterDeterministicFallback.context_jsonb) &&
-        Boolean(
-          (caseAfterDeterministicFallback.context_jsonb as Record<string, unknown>)
-            .listing_description_approved
-        )
-      )
-    ) {
-      const hasUnreadListingReview = await hasUnreadListingDescriptionReviewNotification(
-        db,
-        userId,
-        fresh.id
-      );
-      if (!hasUnreadListingReview) {
-        const contextRecord =
-          caseAfterDeterministicFallback.context_jsonb &&
-          typeof caseAfterDeterministicFallback.context_jsonb === "object" &&
-          !Array.isArray(caseAfterDeterministicFallback.context_jsonb)
-            ? (caseAfterDeterministicFallback.context_jsonb as Record<string, unknown>)
-            : null;
-        const draftRecord = contextRecord?.listing_description_draft;
-        const notifyText =
-          draftRecord &&
-          typeof draftRecord === "object" &&
-          !Array.isArray(draftRecord)
-            ? formatListingDescriptionReviewNotifyText(
-                draftRecord as Record<string, unknown>,
-                {
-                  currentContext: contextRecord,
-                }
-              )
-            : `Borrador de descripción listo para revisión.\n\n${listingDraftContent.headline}\n\n${listingDraftContent.description}`;
-        const draftForTxt =
-          draftRecord && typeof draftRecord === "object" && !Array.isArray(draftRecord)
-            ? (draftRecord as Record<string, unknown>)
-            : null;
-        const txtAttachment =
-          draftForTxt &&
-          listingDescriptionReviewExcerptTruncated(draftForTxt, {
-            currentContext: contextRecord,
-          })
-            ? buildListingDescriptionDraftTxtAttachment(draftForTxt, {
-                caseId: fresh.id,
-              })
-            : null;
-        await notifyUserRespectingActiveInternalChannel(
-          db,
-          userId,
-          {
-            text: notifyText,
-            kind: "listing_description_review",
-            data: {
-              case_id: fresh.id,
-              artifact_key: "listing_description_draft",
-              actions: ["approve", "request_changes"],
-              source: options?.source ?? "settings_test_case_tick",
-              ...(txtAttachment
-                ? {
-                    listing_description_txt: txtAttachment.content,
-                    listing_description_txt_filename: txtAttachment.filename,
+    } else if (listingDraftContent && draftedListingThisTurn) {
+      // Re-lee el caso: una aprobación concurrente (Telegram) puede haber
+      // cerrado el unread mientras este tick aún corría.
+      const latestForListingNotify =
+        (await getOperationalCase(db, fresh.id)) ?? caseAfterDeterministicFallback;
+      const latestListingContext = contextRecord(latestForListingNotify);
+      if (!latestListingContext.listing_description_approved) {
+        const hasUnreadListingReview =
+          await hasUnreadListingDescriptionReviewNotification(
+            db,
+            userId,
+            fresh.id
+          );
+        const reviewAlreadyRequested =
+          await hasListingDescriptionReviewRequestedEventForCurrentDraft(
+            db,
+            fresh.id,
+            latestListingContext
+          );
+        if (!hasUnreadListingReview && !reviewAlreadyRequested) {
+          const draftRecord = latestListingContext.listing_description_draft;
+          const notifyText =
+            draftRecord &&
+            typeof draftRecord === "object" &&
+            !Array.isArray(draftRecord)
+              ? formatListingDescriptionReviewNotifyText(
+                  draftRecord as Record<string, unknown>,
+                  {
+                    currentContext: latestListingContext,
                   }
-                : {}),
+                )
+              : `Borrador de descripción listo para revisión.\n\n${listingDraftContent.headline}\n\n${listingDraftContent.description}`;
+          const draftForTxt =
+            draftRecord &&
+            typeof draftRecord === "object" &&
+            !Array.isArray(draftRecord)
+              ? (draftRecord as Record<string, unknown>)
+              : null;
+          const txtAttachment =
+            draftForTxt &&
+            listingDescriptionReviewExcerptTruncated(draftForTxt, {
+              currentContext: latestListingContext,
+            })
+              ? buildListingDescriptionDraftTxtAttachment(draftForTxt, {
+                  caseId: fresh.id,
+                })
+              : null;
+          await notifyUserRespectingActiveInternalChannel(
+            db,
+            userId,
+            {
+              text: notifyText,
+              kind: "listing_description_review",
+              data: {
+                case_id: fresh.id,
+                artifact_key: "listing_description_draft",
+                actions: ["approve", "request_changes"],
+                source: options?.source ?? "settings_test_case_tick",
+                ...(txtAttachment
+                  ? {
+                      listing_description_txt: txtAttachment.content,
+                      listing_description_txt_filename: txtAttachment.filename,
+                    }
+                  : {}),
+              },
             },
-          },
-          "normal"
-        );
-      }
-      // Agent notify_user records this event at delivery time. Keep a
-      // post-agent backfill for owned fallback/legacy paths, deduped per draft.
-      const reviewEventAlreadyRecorded =
-        await hasListingDescriptionReviewRequestedEventForCurrentDraft(
-          db,
-          fresh.id,
-          contextRecord(caseAfterDeterministicFallback)
-        );
-      if (!reviewEventAlreadyRecorded) {
-        await insertOperationalCaseEvent(db, {
-          caseId: fresh.id,
-          eventType: "human_decision",
-          actor: "system",
-          stepKey: "package_ready",
-          payload: {
-            kind: "listing_description_review_requested",
-            source: options?.source ?? "settings_test_case_tick",
-            waiting_for: "advisor_response",
-          },
-        });
+            "normal"
+          );
+        }
+        // Agent notify_user records this event at delivery time. Keep a
+        // post-agent backfill for owned fallback/legacy paths, deduped per draft.
+        const reviewEventAlreadyRecorded =
+          await hasListingDescriptionReviewRequestedEventForCurrentDraft(
+            db,
+            fresh.id,
+            latestListingContext
+          );
+        if (!reviewEventAlreadyRecorded) {
+          await insertOperationalCaseEvent(db, {
+            caseId: fresh.id,
+            eventType: "human_decision",
+            actor: "system",
+            stepKey: "package_ready",
+            payload: {
+              kind: "listing_description_review_requested",
+              source: options?.source ?? "settings_test_case_tick",
+              waiting_for: "advisor_response",
+            },
+          });
+        }
       }
     } else if (
       caseAfterDeterministicFallback &&

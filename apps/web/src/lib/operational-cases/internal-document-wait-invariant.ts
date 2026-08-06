@@ -1,11 +1,7 @@
 import { updateOperationalCase, type DbClient } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
 
-/**
- * Internal document collection is event-driven: the advisor uploads a file or
- * replies "listo". While waiting, the cron must not poll/re-run the agent,
- * otherwise it repeats the same request and may create fresh technical HITL.
- */
+/** Internal document collection is event-driven. */
 export function isInternalDocumentEventDrivenWait(
   opCase: OperationalCase | null | undefined
 ): boolean {
@@ -17,11 +13,27 @@ export function isInternalDocumentEventDrivenWait(
   );
 }
 
+/**
+ * Todos los lotes internos son event-driven: el asesor sube archivos o
+ * responde "listo". El cron no debe re-ejecutar al agente mientras espera;
+ * hacerlo repite la solicitud. Fotos usa la misma frontera determinística.
+ */
+export function isInternalUploadEventDrivenWait(
+  opCase: OperationalCase | null | undefined
+): boolean {
+  return Boolean(
+    opCase &&
+      opCase.status === "waiting_internal" &&
+      (isInternalDocumentEventDrivenWait(opCase) ||
+        opCase.current_step === "photos_requested")
+  );
+}
+
 export function shouldClearInternalDocumentWaitSchedule(
   opCase: OperationalCase | null | undefined
 ): boolean {
   return Boolean(
-    isInternalDocumentEventDrivenWait(opCase) && opCase?.next_action_at
+    isInternalUploadEventDrivenWait(opCase) && opCase?.next_action_at
   );
 }
 

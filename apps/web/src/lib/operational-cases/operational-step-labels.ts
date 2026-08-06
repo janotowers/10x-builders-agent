@@ -12,6 +12,22 @@ import type {
 
 export type OperationalStepLabelMap = Record<string, string>;
 
+/**
+ * Fallback en español cuando el flow del tipo de caso no trae step_label
+ * (o trae el slug técnico). Evita "Property Data Review" en UI broker-facing.
+ */
+export const DEFAULT_OPERATIONAL_STEP_LABELS: OperationalStepLabelMap = {
+  intake: "Registro inicial",
+  awaiting_documents: "Solicitar documentos",
+  documents_received: "Revisión documental",
+  property_data_review: "Revisión de datos de propiedad",
+  comparables_in_progress: "Análisis de mercado",
+  photos_requested: "Solicitar fotos",
+  package_ready: "Paquete listo",
+  contract_pending: "Datos para contrato",
+  listing_description_review: "Revisión de descripción",
+};
+
 export function humanizeOperationalStepKey(value: string): string {
   return value
     .replace(/_/g, " ")
@@ -34,7 +50,7 @@ export function buildOperationalStepLabelMap(
 /**
  * Solo el nombre legible (para tarjetas de Trabajo durable / superficies
  * broker-facing). Null si no hay paso. Preferir step_label del flow; si no,
- * humanizar el slug — nunca devolver solo snake_case.
+ * fallback español conocido; si no, humanizar el slug — nunca snake_case crudo.
  */
 export function friendlyOperationalStepLabel(
   stepKey: string | null | undefined,
@@ -42,11 +58,17 @@ export function friendlyOperationalStepLabel(
 ): string | null {
   if (!stepKey?.trim()) return null;
   const key = stepKey.trim();
-  const label = stepLabels?.[key]?.trim();
-  return label && label !== key ? label : humanizeOperationalStepKey(key);
+  const fromFlow = stepLabels?.[key]?.trim();
+  if (fromFlow && fromFlow !== key) return fromFlow;
+  const fromDefault = DEFAULT_OPERATIONAL_STEP_LABELS[key]?.trim();
+  if (fromDefault) return fromDefault;
+  return humanizeOperationalStepKey(key);
 }
 
-/** Formato estándar: label legible + step_key técnico entre paréntesis. */
+/**
+ * Formato con clave técnica (laboratorio / debug). Superficies broker-facing
+ * deben preferir `friendlyOperationalStepLabel`.
+ */
 export function formatOperationalStepForDisplay(
   stepKey: string | null | undefined,
   stepLabels?: OperationalStepLabelMap

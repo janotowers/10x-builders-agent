@@ -5,6 +5,7 @@ import {
   findLatestConversationalOperationalCase,
   findPendingConversationBindings,
   setConversationBindingStatus,
+  getConversationBindingById,
   getPendingToolCall,
   getGoogleCalendarAccessToken,
   associateExternalResponseWithCase,
@@ -32,6 +33,7 @@ import {
   sendTelegramDocument,
   sendTelegramMarkdownMessage,
   sendTelegramMessage,
+  sendTelegramProductMessage,
   truncateTelegramText,
   withTypingHeartbeat,
 } from "@/lib/telegram/send-message";
@@ -67,6 +69,10 @@ import {
   resolveRoutableConversationBindings,
   routeConversationalMessageAgainstBindings,
 } from "@/lib/operational-cases/conversational-routing-orchestrator";
+import {
+  buildClarificationContinueResponse,
+  freeTextForClarificationCallback,
+} from "@/lib/operational-cases/conversation-clarification-actions";
 import {
   documentExtensionFromPath,
   ingestCaseDocument,
@@ -145,6 +151,7 @@ import { completeUploadBatch } from "@/lib/operational-cases/upload-batch-comple
 import {
   buildDocumentReceivedAck,
   buildMediaGroupReceivedAck,
+  buildPhotoMediaGroupReceivedAck,
   looksLikeDocumentUploadSideText,
 } from "@/lib/operational-cases/case-document-collection";
 import {
@@ -412,7 +419,7 @@ async function finalizeInternalDocumentBatch(params: {
     source,
   });
   if (completion.status === "no_files") {
-    await sendTelegramMessage(chatId, completion.ackText);
+    await sendTelegramProductMessage(chatId, completion.ackText);
     return NextResponse.json({
       ok: true,
       routed: "operational_case_internal_documents_no_documents",
@@ -420,14 +427,14 @@ async function finalizeInternalDocumentBatch(params: {
     });
   }
   if (completion.status === "failed" || completion.status === "wrong_step") {
-    await sendTelegramMessage(chatId, completion.ackText);
+    await sendTelegramProductMessage(chatId, completion.ackText);
     return NextResponse.json({
       ok: true,
       routed: "operational_case_internal_documents_failed",
       case_id: caseId,
     });
   }
-  await sendTelegramMessage(chatId, completion.ackText);
+  await sendTelegramProductMessage(chatId, completion.ackText);
   if (completion.case.context_jsonb?.e2e_controlled === true) {
     void runSettingsTestCaseAgentTick(
       db,
@@ -525,7 +532,7 @@ async function finalizeUploadBatchAfterSettling(params: {
   const batchKind = completion.batchKind;
   const isPhotos = batchKind === "photos";
   if (completion.status === "insufficient" || completion.status === "no_files") {
-    await sendTelegramMarkdownMessage(chatId, completion.ackText);
+    await sendTelegramProductMessage(chatId, completion.ackText);
     return NextResponse.json({
       ok: true,
       routed: isPhotos
@@ -537,7 +544,7 @@ async function finalizeUploadBatchAfterSettling(params: {
     });
   }
   if (completion.status === "failed" || completion.status === "wrong_step") {
-    await sendTelegramMessage(chatId, completion.ackText);
+    await sendTelegramProductMessage(chatId, completion.ackText);
     return NextResponse.json({
       ok: true,
       routed: isPhotos
@@ -548,13 +555,7 @@ async function finalizeUploadBatchAfterSettling(params: {
     });
   }
 
-  const ackUsesMarkdown =
-    completion.ackText.includes("**") || completion.ackText.includes("«");
-  if (ackUsesMarkdown) {
-    await sendTelegramMarkdownMessage(chatId, completion.ackText);
-  } else {
-    await sendTelegramMessage(chatId, completion.ackText);
-  }
+  await sendTelegramProductMessage(chatId, completion.ackText);
 
   if (
     (completion.status === "advanced" ||
@@ -1010,6 +1011,131 @@ export async function POST(request: Request) {
       });
     }
     try {
+    const clarifyFreeText = freeTextForClarificationCallback(action);
+    if (clarifyFreeText) {
+      const binding = await getConversationBindingById(db, targetId);
+      if (
+        !binding ||
+        binding.user_id !== userId ||
+        binding.status !== "clarification_needed"
+      ) {
+        await answerTelegramCallbackQuery(cb.id, "Ya no aplica");
+        await sendTelegramMessage(
+          cb.message.chat.id,
+          "Esa opción ya no está activa. Si quieres opcionar una propiedad, escríbemelo de nuevo."
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "clarification_callback_stale",
+        });
+      }
+      const reply = await resolveConversationalClarificationReply({
+        db,
+        binding,
+        message: clarifyFreeText,
+      });
+      if (reply.status === "resolved_case") {
+        await answerTelegramCallbackQuery(cb.id, "Continuamos ese caso");
+        const opCase = reply.case;
+        await sendTelegramProductMessage(
+          cb.message.chat.id,
+          opCase
+            ? buildClarificationContinueResponse(opCase)
+            : "Perfecto, seguimos con ese caso."
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "clarification_callback_continue",
+          case_id: reply.case?.id ?? null,
+        });
+      }
+      if (reply.status === "resolved_new_case") {
+        await answerTelegramCallbackQuery(cb.id, "Empezamos otra");
+        let session = await db
+          .from("agent_sessions")
+          .select("id")
+          .eq("user_id", userId)
+          .eq("channel", "telegram")
+          .eq("status", "active")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+          .then((r) => r.data);
+        if (!session) {
+          const { data: createdSession } = await db
+            .from("agent_sessions")
+            .insert({
+              user_id: userId,
+              channel: "telegram",
+              status: "active",
+              budget_tokens_used: 0,
+              budget_tokens_limit: 100000,
+            })
+            .select("id")
+            .single();
+          session = createdSession;
+        }
+        const ensured = await ensureConversationalCase(db, {
+          userId,
+          caseType: "property_optioning",
+          channel: "telegram",
+          chatId: cb.message.chat.id,
+          forceNew: true,
+        });
+        if (!ensured?.case || !session) {
+          await sendTelegramMessage(
+            cb.message.chat.id,
+            "No pude abrir el nuevo caso. Intenta de nuevo con «Quiero opcionar una propiedad»."
+          );
+          return NextResponse.json({
+            ok: true,
+            routed: "clarification_callback_new_failed",
+          });
+        }
+        await upsertConversationBinding(db, {
+          userId,
+          caseId: ensured.case.id,
+          caseType: ensured.case.case_type,
+          channel: "telegram",
+          chatId: cb.message.chat.id,
+          sessionId: session.id as string,
+          status: "awaiting_user",
+          awaitingFields:
+            (ensured.case.context_jsonb?.missing_required as unknown[]) ?? [],
+          metadata: { source: "telegram_clarification_callback_new" },
+        });
+        const firstPrompt = await resolveConversationalIntakeTurn({
+          db,
+          userId,
+          sessionId: session.id as string,
+          opCase: ensured.case,
+          message: reply.effectiveMessage ?? "Quiero opcionar una propiedad",
+          channel: "telegram",
+          justCreated: true,
+          chatId: cb.message.chat.id,
+        });
+        if (firstPrompt.responseText) {
+          await sendTelegramMarkdownMessage(
+            cb.message.chat.id,
+            firstPrompt.responseText
+          );
+        }
+        return NextResponse.json({
+          ok: true,
+          routed: "clarification_callback_new",
+          case_id: ensured.case.id,
+        });
+      }
+      await answerTelegramCallbackQuery(cb.id, "No pude aplicar la opción");
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        'No pude aplicar esa opción. Responde «continuar» o «nueva».'
+      );
+      return NextResponse.json({
+        ok: true,
+        routed: "clarification_callback_unrecognized",
+      });
+    }
     if (action === "ld_approve" || action === "ld_changes" || action === "ld_highlights") {
       const notification = await getInternalUserNotification(db, targetId);
       if (!isActiveListingDescriptionReviewNotification(notification, userId)) {
@@ -1848,6 +1974,7 @@ export async function POST(request: Request) {
           db,
           opCase: withGroupedAck,
           chatId,
+          mediaGroupId: message.media_group_id,
           sendAck: async (files) => {
             await sendTelegramMessage(chatId, buildMediaGroupReceivedAck(files));
           },
@@ -2489,14 +2616,14 @@ export async function POST(request: Request) {
       message: text,
     });
     if (clarificationReply.status === "invalid_index") {
-      await sendTelegramMessage(chatId, clarificationReply.responseText);
+      await sendTelegramProductMessage(chatId, clarificationReply.responseText);
       return NextResponse.json({
         ok: true,
         routed: "clarification_invalid_index",
       });
     }
     if (clarificationReply.status === "resolved_no") {
-      await sendTelegramMessage(chatId, clarificationReply.responseText);
+      await sendTelegramProductMessage(chatId, clarificationReply.responseText);
       return NextResponse.json({ ok: true, routed: "clarification_resolved_no" });
     }
     if (clarificationReply.status === "resolved_new_case") {
@@ -2512,6 +2639,22 @@ export async function POST(request: Request) {
       }
       if (clarificationReply.effectiveMessage) {
         agentMessageText = clarificationReply.effectiveMessage;
+      } else if (
+        clarificationReply.case &&
+        clarificationReply.effectiveAttachments.length === 0 &&
+        !inboundMedia
+      ) {
+        // "continuar" tras un arranque vacío: retoma el paso del caso
+        // (paridad con el callback; no "¿En qué te ayudo?" genérico).
+        await sendTelegramProductMessage(
+          chatId,
+          buildClarificationContinueResponse(clarificationReply.case)
+        );
+        return NextResponse.json({
+          ok: true,
+          routed: "clarification_resolved_continue",
+          case_id: clarificationReply.case.id,
+        });
       }
     }
   }
@@ -2594,6 +2737,54 @@ export async function POST(request: Request) {
             )
           ) {
             forceNewConversationalCase = true;
+          } else if (
+            latestConversationalCase &&
+            !activeE2ELabSession &&
+            !inboundMedia
+          ) {
+            // Arranque explícito con draft de intake existente: NUNCA adoptar
+            // en silencio (un draft de semanas atrás puede traer contexto
+            // contaminado). Misma UX continuar-vs-nueva del routing con
+            // bindings; se llega aquí cuando el binding del draft quedó fuera
+            // de la ventana o no existe para este canal. E2E lab y mensajes
+            // con archivo conservan la adopción determinística.
+            const draftBinding = await upsertConversationBinding(db, {
+              userId,
+              caseId: latestConversationalCase.id,
+              caseType: latestConversationalCase.case_type,
+              channel: "telegram",
+              chatId,
+              sessionId: session.id,
+              status: "awaiting_user",
+              awaitingFields:
+                (latestConversationalCase.context_jsonb
+                  ?.missing_required as unknown[]) ?? [],
+              metadata: { source: "telegram_webhook_intent_draft_clarify" },
+            });
+            const adoptRoute = await routeConversationalMessageAgainstBindings({
+              db,
+              channel: "telegram",
+              message: agentMessageText,
+              pendingBindings: [draftBinding],
+              explicitIntent: true,
+              candidateCasesById: new Map([
+                [latestConversationalCase.id, latestConversationalCase],
+              ]),
+            });
+            if (adoptRoute.route === "clarify") {
+              await sendTelegramProductMessage(
+                chatId,
+                adoptRoute.responseText,
+                adoptRoute.telegramReplyMarkup
+              );
+              return NextResponse.json({
+                ok: true,
+                routed: "clarification_requested",
+              });
+            }
+            if (adoptRoute.route === "case") {
+              conversationalCase = adoptRoute.case;
+            }
           }
         }
         const ensured = conversationalCase
@@ -2738,7 +2929,11 @@ export async function POST(request: Request) {
         // Salvaguarda: si el mensaje trae archivo, NUNCA cortamos con clarify
         // (el archivo se perdería). La ingestión documental de abajo lo maneja.
         if (!inboundMedia) {
-          await sendTelegramMessage(chatId, routeResult.responseText);
+          await sendTelegramProductMessage(
+            chatId,
+            routeResult.responseText,
+            routeResult.telegramReplyMarkup
+          );
           return NextResponse.json({
             ok: true,
             routed: "clarification_requested",
@@ -3036,8 +3231,14 @@ export async function POST(request: Request) {
           db,
           opCase: conversationalCase,
           chatId,
+          mediaGroupId: message.media_group_id,
           sendAck: async (files) => {
-            await sendTelegramMessage(chatId, buildMediaGroupReceivedAck(files));
+            await sendTelegramMessage(
+              chatId,
+              isInternalPhotosStep
+                ? buildPhotoMediaGroupReceivedAck(files)
+                : buildMediaGroupReceivedAck(files)
+            );
           },
         });
         conversationalCase = flush.opCase;

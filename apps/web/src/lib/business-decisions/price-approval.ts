@@ -1,14 +1,16 @@
 import {
+  approveReviewedItem,
   getInternalUserNotification,
   getOperationalCase,
   insertOperationalCaseEvent,
+  listWorkItemsForCase,
   resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   resolveInternalNotificationWithReminders,
   updateOperationalCase,
   type DbClient,
 } from "@agents/db";
 import { grantCaseApprovalWithEvidence } from "@agents/agent";
-import type { OperationalCase } from "@agents/types";
+import type { OperationalCase, WorkItem } from "@agents/types";
 import { advisedUpdateCase } from "../operational-cases/advised-case-update";
 import { ensureContractCommercialDataAsk } from "../operational-cases/ensure-contract-commercial-ask";
 import { isControlledE2EOperationalCase } from "@agents/types";
@@ -311,6 +313,58 @@ async function recordPriceApprovalEvidence(
   }
 }
 
+export function valuationReviewItemIdsForApprovedPrice(
+  items: Array<Pick<WorkItem, "id" | "status" | "work_type">>
+): string[] {
+  return items
+    .filter(
+      (item) =>
+        item.status === "review" && item.work_type === "verify_valuation"
+    )
+    .map((item) => item.id);
+}
+
+/**
+ * La aprobación/ajuste de precio es la decisión humana de dominio que resuelve
+ * un fail del valuation verifier. Mantiene sincronizados el caso y su work
+ * plane; el item conserva el verdict y añade la evidencia del override.
+ */
+async function resolveValuationReviewAfterApprovedPrice(
+  db: DbClient,
+  params: {
+    userId: string;
+    caseId: string;
+    rationale: string;
+    eventKind: "price_approved" | "price_adjusted_and_approved";
+  }
+): Promise<void> {
+  try {
+    const items = await listWorkItemsForCase(db, params.userId, params.caseId);
+    const ids = valuationReviewItemIdsForApprovedPrice(items);
+    await Promise.all(
+      ids.map((itemId) =>
+        approveReviewedItem(db, {
+          userId: params.userId,
+          itemId,
+          resolution: {
+            source: "price_business_decision",
+            decision: "human_override_approved",
+            rationale: params.rationale,
+            relatedEventKind: params.eventKind,
+          },
+        })
+      )
+    );
+  } catch (error) {
+    // La decisión de precio ya fue persistida. No revertirla por una falla de
+    // proyección del work plane; el cron/operador puede reconciliar después.
+    console.error(
+      "[price-approval] valuation review reconciliation failed:",
+      error
+    );
+  }
+}
+
 async function triggerControlledE2EAgentTick(
   db: DbClient,
   updated: NonNullable<Awaited<ReturnType<typeof updateOperationalCase>>>,
@@ -477,6 +531,12 @@ export async function handlePriceApprovalDecision(
       decision: "approved",
       rationale: params.text,
     });
+    await resolveValuationReviewAfterApprovedPrice(db, {
+      userId: params.userId,
+      caseId: opCase.id,
+      rationale: params.text,
+      eventKind: "price_approved",
+    });
     if (!shouldPauseBeforeContract) {
       await insertOperationalCaseEvent(db, {
         caseId: opCase.id,
@@ -625,6 +685,12 @@ export async function handlePriceApprovalDecision(
     opCase: updated,
     decision: "approved",
     rationale: params.text,
+  });
+  await resolveValuationReviewAfterApprovedPrice(db, {
+    userId: params.userId,
+    caseId: opCase.id,
+    rationale: params.text,
+    eventKind: "price_adjusted_and_approved",
   });
   if (!shouldPauseBeforeContract) {
     await insertOperationalCaseEvent(db, {

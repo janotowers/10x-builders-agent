@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import {
   defaultDueAtForEngagement,
+  involvementKindForNotificationKind,
   isWithinDeliveryWindow,
   nextAllowedDeliveryAt,
   normalizeEngagementPolicyOverrides,
+  nudgeAfterUploadMinutesForEngagement,
   reminderCooldownHoursForEngagement,
   resolveEngagementPolicy,
 } from "./registry";
@@ -147,5 +149,67 @@ assert.equal(
   }).maxReminderAttempts,
   3
 );
+
+assert.equal(
+  involvementKindForNotificationKind("tool_confirmation_pending"),
+  "action_authorization"
+);
+assert.equal(
+  involvementKindForNotificationKind("property_data_review"),
+  "business_decision"
+);
+assert.equal(
+  involvementKindForNotificationKind("documents_upload_requested"),
+  "human_contribution"
+);
+
+assert.equal(
+  nudgeAfterUploadMinutesForEngagement({
+    audience: "internal_user",
+    intent: "reminder",
+    kind: "documents_upload_requested",
+  }),
+  20
+);
+
+{
+  const involvementOverrides = normalizeEngagementPolicyOverrides({
+    by_involvement: {
+      human_contribution: {
+        reminder_cooldown_hours: 2,
+        nudge_after_upload_minutes: 15,
+      },
+    },
+    by_kind: {
+      documents_upload_requested: {
+        reminder_cooldown_hours: 6,
+      },
+    },
+  });
+  assert.equal(
+    reminderCooldownHoursForEngagement(
+      {
+        audience: "internal_user",
+        intent: "reminder",
+        kind: "documents_upload_requested",
+      },
+      involvementOverrides
+    ),
+    6,
+    "by_kind must win over by_involvement"
+  );
+  assert.equal(
+    nudgeAfterUploadMinutesForEngagement(
+      {
+        audience: "internal_user",
+        intent: "reminder",
+        kind: "photos_upload_requested",
+      },
+      involvementOverrides
+    ),
+    15,
+    "photos inherit human_contribution nudge when no by_kind override"
+  );
+}
 
 console.log("engagement-policies registry selftest passed");

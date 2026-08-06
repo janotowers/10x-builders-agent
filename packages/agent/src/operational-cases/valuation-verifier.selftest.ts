@@ -148,7 +148,7 @@ async function main(): Promise<void> {
     // 1) alias del perfil gana.
     const viaAlias = resolveWorkerModel({
       modelPolicy: { role: "valuation_verifier", model_alias: "reasoning_standard" },
-      executionMode: "specialized_agent",
+      executionMode: "registered_specialized_worker",
     });
     assert.ok(viaAlias);
     assert.equal(viaAlias.resolvedVia, "profile_alias");
@@ -157,7 +157,7 @@ async function main(): Promise<void> {
     // 2) alias desconocido → env del rol.
     const viaRole = resolveWorkerModel({
       modelPolicy: { role: "valuation_verifier", model_alias: "no_existe" },
-      executionMode: "specialized_agent",
+      executionMode: "registered_specialized_worker",
     });
     assert.ok(viaRole);
     assert.equal(viaRole.resolvedVia, "role_env");
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
     // 3) sin política → MAIN_AGENT_MODEL_ID (solo modos agénticos).
     const viaMain = resolveWorkerModel({
       modelPolicy: null,
-      executionMode: "specialized_agent",
+      executionMode: "registered_specialized_worker",
     });
     assert.ok(viaMain);
     assert.equal(viaMain.resolvedVia, "main_agent");
@@ -184,7 +184,7 @@ async function main(): Promise<void> {
     // 5) budgets de la política se respetan.
     const budgeted = resolveWorkerModel({
       modelPolicy: { model_alias: "reasoning_standard", max_output_tokens: 3000, temperature: 0 },
-      executionMode: "specialized_agent",
+      executionMode: "registered_specialized_worker",
     });
     assert.equal(budgeted!.maxTokens, 3000);
     assert.equal(budgeted!.temperature, 0);

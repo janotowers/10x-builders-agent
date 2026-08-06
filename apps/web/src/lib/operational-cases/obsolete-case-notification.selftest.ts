@@ -35,6 +35,8 @@ assert.equal(
 );
 assert.equal(obsolete("contract_review", "contract_pending"), false);
 assert.equal(obsolete("photos_upload_requested", "package_ready"), true);
+assert.equal(obsolete("documents_upload_requested", "documents_received"), true);
+assert.equal(obsolete("documents_upload_requested", "awaiting_documents"), false);
 assert.equal(
   obsolete("listing_description_review", "package_ready", {
     listing_description_approved: { description: "Lista" },

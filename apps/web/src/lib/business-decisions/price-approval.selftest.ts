@@ -4,6 +4,7 @@ import {
   detectPriceApprovalAmountMismatch,
   extractApprovalAmount,
   parsePriceApprovalDecision,
+  valuationReviewItemIdsForApprovedPrice,
 } from "./price-approval";
 import {
   appendResidualAcknowledgment,
@@ -11,6 +12,16 @@ import {
 } from "./residual-intent";
 
 assert.equal(businessDecisionHandler("price_approval").notificationKind, "price_approval");
+
+assert.deepEqual(
+  valuationReviewItemIdsForApprovedPrice([
+    { id: "valuation-review", status: "review", work_type: "verify_valuation" },
+    { id: "valuation-done", status: "done", work_type: "verify_valuation" },
+    { id: "other-review", status: "review", work_type: "review_contract" },
+  ]),
+  ["valuation-review"],
+  "price approval resolves only open valuation verification reviews"
+);
 
 assert.deepEqual(parsePriceApprovalDecision("APROBAR PRECIO"), {
   intent: "approve",

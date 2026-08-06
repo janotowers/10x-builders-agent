@@ -24,6 +24,17 @@ assert(
   "card label: humaniza slug desconocido (sin snake_case crudo)"
 );
 assert(
+  friendlyOperationalStepLabel("property_data_review", {}) ===
+    "Revisión de datos de propiedad",
+  "Spanish default when flow omits step_label"
+);
+assert(
+  friendlyOperationalStepLabel("property_data_review", {
+    property_data_review: "property_data_review",
+  }) === "Revisión de datos de propiedad",
+  "Spanish default when flow repeats the technical slug as label"
+);
+assert(
   friendlyOperationalStepLabel(null, map) === null,
   "card label: sin paso ⇒ null"
 );
@@ -31,6 +42,11 @@ assert(
   formatOperationalStepForDisplay("photos_requested", map) ===
     "Solicitar fotos (photos_requested)",
   "format with DB label"
+);
+assert(
+  formatOperationalStepForDisplay("property_data_review", {}) ===
+    "Revisión de datos de propiedad (property_data_review)",
+  "debug format keeps Spanish friendly + technical key"
 );
 assert(
   formatOperationalStepForDisplay("unknown_step", map) ===

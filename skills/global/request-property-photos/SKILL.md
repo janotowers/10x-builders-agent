@@ -31,19 +31,23 @@ al paso de publicación.
    - `context_jsonb.raw_photos` (si ya hay fotos cargadas).
    - `context_jsonb.property_data` para personalizar la solicitud.
 
-2. Si hay menos de 5 fotos confirmadas con «listo»:
+2. Si todavía no hay fotos en `raw_photos`:
    - Llama `notify_user(kind=photos_upload_requested)` con el copy estructurado
      (mínimo 5, checklist sugerida, instrucción de responder **«listo»** al
      terminar; canal-neutral: «aquí»).
    - Inserta `operational_case_add_event(reminder_sent, payload={purpose: photos_upload_requested})`.
    - Mantén `current_step=photos_requested`, `status=waiting_internal`.
 
-3. La subida y el cierre del lote los hace la app de forma determinística
+3. Si ya existe al menos una foto en `raw_photos`, NO repitas la solicitud ni
+   llames `notify_user`: la espera es event-driven y los recordatorios de
+   «listo» pertenecen al sistema de engagement.
+
+4. La subida y el cierre del lote los hace la app de forma determinística
    (web/Telegram): cada foto se agrega a `raw_photos`; cuando el asesor escribe
    «listo», el sistema valida `raw_photos.length >= 5` y avanza a
    `package_ready` si cumple.
 
-4. Si el asesor escribe «listo» con menos de 5 fotos, el sistema responde cuántas
+5. Si el asesor escribe «listo» con menos de 5 fotos, el sistema responde cuántas
    faltan y conserva `waiting_internal`. No avances manualmente en ese caso.
 
 ## Copy sugerido para notify_user

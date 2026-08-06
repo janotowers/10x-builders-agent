@@ -1620,6 +1620,46 @@ const AssistantMarkdown = memo(function AssistantMarkdown({
   );
 });
 
+function clarificationQuickRepliesFromMessage(message: Message): Array<{
+  id: string;
+  label: string;
+  freeText: string;
+  variant?: "primary" | "secondary";
+}> | null {
+  if (message.role !== "assistant") return null;
+  const payload = message.structured_payload;
+  if (!payload || payload.kind !== "conversation_clarification") return null;
+  if (payload.actions_resolved === true) return null;
+  const raw = payload.actions;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const actions: Array<{
+    id: string;
+    label: string;
+    freeText: string;
+    variant?: "primary" | "secondary";
+  }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (
+      typeof record.id !== "string" ||
+      typeof record.label !== "string" ||
+      typeof record.freeText !== "string"
+    ) {
+      continue;
+    }
+    actions.push({
+      id: record.id,
+      label: record.label,
+      freeText: record.freeText,
+      ...(record.variant === "primary" || record.variant === "secondary"
+        ? { variant: record.variant as "primary" | "secondary" }
+        : {}),
+    });
+  }
+  return actions.length > 0 ? actions : null;
+}
+
 function hitlActionsFromMessage(message: Message): {
   kind: string;
   notificationId: string;
@@ -1854,6 +1894,7 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
   userName,
   onSelectTurn,
   onHitlResult,
+  onQuickReply,
 }: {
   message: Message;
   agentAvatarUrl?: string;
@@ -1863,6 +1904,8 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
   userName?: string;
   onSelectTurn: (turnId: string) => void;
   onHitlResult?: (text: string) => void;
+  /** Envía freeText como mensaje normal (paridad botones Telegram). */
+  onQuickReply?: (text: string) => void;
 }) {
   const msg = message;
   const sourceLabel = messageSourceLabel(msg);
@@ -1873,6 +1916,8 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
     : attachmentMeta;
   const displayText = messageDisplayText(msg);
   const hitlActions = hitlActionsFromMessage(msg);
+  const clarificationReplies = clarificationQuickRepliesFromMessage(msg);
+  const [clarificationResolved, setClarificationResolved] = useState(false);
   return (
     <div
       role={msg.turn_id ? "button" : undefined}
@@ -2014,6 +2059,26 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
             actions={hitlActions.actions}
             onResult={onHitlResult}
           />
+        ) : null}
+        {clarificationReplies && !clarificationResolved && onQuickReply ? (
+          <div
+            className="mt-3 flex flex-wrap gap-2"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {clarificationReplies.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                className={hitlButtonClassName(action.variant)}
+                onClick={() => {
+                  setClarificationResolved(true);
+                  onQuickReply(action.freeText);
+                }}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
         ) : null}
         {msg.created_at ? (
           <p
@@ -3059,6 +3124,7 @@ export function ChatInterface({
                 userName={userName}
                 onSelectTurn={handleSelectTurn}
                 onHitlResult={handleHitlResult}
+                onQuickReply={onComposerSend}
               />
             );
           })}

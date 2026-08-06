@@ -29,6 +29,7 @@ import {
   resolveConversationalCaseForChannel,
 } from "@/lib/operational-cases/conversational-case-orchestrator";
 import { resolveConversationalIntakeTurn } from "@/lib/operational-cases/conversational-intake-orchestrator";
+import { buildClarificationContinueResponse } from "@/lib/operational-cases/conversation-clarification-actions";
 import {
   resolveConversationalClarificationReply,
   resolveRoutableConversationBindings,
@@ -672,7 +673,13 @@ export async function POST(request: Request) {
         }
         if (reply.status === "resolved_case" && reply.case) {
           conversationalCase = reply.case;
-          if (reply.effectiveMessage) effectiveMessage = reply.effectiveMessage;
+          if (reply.effectiveMessage) {
+            effectiveMessage = reply.effectiveMessage;
+          } else if (reply.effectiveAttachments.length === 0) {
+            return await respondConversational(
+              buildClarificationContinueResponse(reply.case)
+            );
+          }
           if (reply.effectiveAttachments.length > 0) {
             effectiveAttachments = reply.effectiveAttachments;
           }
@@ -834,7 +841,9 @@ export async function POST(request: Request) {
         });
         if (startRoute.route === "clarify") {
           // Con adjuntos: el envelope ya quedó en pending_message_jsonb.
-          return await respondConversational(startRoute.responseText);
+          return await respondConversational(startRoute.responseText, {
+            assistantStructuredPayload: startRoute.webStructuredPayload,
+          });
         }
         if (startRoute.route === "case") {
           conversationalCase = startRoute.case;
@@ -961,7 +970,9 @@ export async function POST(request: Request) {
           attachments: effectiveAttachments,
         });
         if (routeResult.route === "clarify") {
-          return await respondConversational(routeResult.responseText);
+          return await respondConversational(routeResult.responseText, {
+            assistantStructuredPayload: routeResult.webStructuredPayload,
+          });
         }
         if (routeResult.route === "case") {
           conversationalCase = routeResult.case;

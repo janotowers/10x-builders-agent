@@ -984,6 +984,16 @@ export interface EngagementDeliveryWindow {
   timezone?: string;
 }
 
+/**
+ * Canonical human-involvement taxonomy (Technical Plan §3.1). Prefer this
+ * umbrella over an undifferentiated “HITL” label when configuring delivery.
+ */
+export type HumanInvolvementKind =
+  | "action_authorization"
+  | "business_decision"
+  | "human_contribution"
+  | "exception_intervention";
+
 export interface EngagementPolicyOverride {
   default_due_after_hours?: number;
   reminder_cooldown_hours?: number;
@@ -993,6 +1003,12 @@ export interface EngagementPolicyOverride {
   escalation_priority?: "high";
   respect_working_hours?: boolean;
   delivery_window?: EngagementDeliveryWindow;
+  /**
+   * For human_contribution upload batches: minutes after the last file before
+   * the first “confirm with listo” nudge. Hours-based cooldown still applies
+   * between subsequent reminders.
+   */
+  nudge_after_upload_minutes?: number;
 }
 
 export interface EngagementPolicyOverrides {
@@ -1002,6 +1018,8 @@ export interface EngagementPolicyOverrides {
       EngagementPolicyOverride
     >
   >;
+  /** Overrides keyed by HumanInvolvementKind (A/B/C/D). Lost to by_kind. */
+  by_involvement?: Partial<Record<HumanInvolvementKind, EngagementPolicyOverride>>;
   by_kind?: Record<string, EngagementPolicyOverride>;
 }
 

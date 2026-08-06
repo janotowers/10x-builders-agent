@@ -4,6 +4,7 @@ import {
   contractGenerationFailureNotify,
   deriveControlledE2EStatusForTest,
   isPriceApprovedForContract,
+  listingDescriptionReviewIsAwaitingHuman,
   listingDescriptionReviewNeedsRegeneration,
   missingContractFieldsFromToolCalls,
   missingListingDescriptionIngredientsFromToolCalls,
@@ -171,6 +172,36 @@ assert.equal(
   false
 );
 assert.equal(listingDescriptionReviewNeedsRegeneration({}), false);
+
+assert.equal(
+  listingDescriptionReviewIsAwaitingHuman({
+    listing_description_draft: {
+      headline: "Casa",
+      description: "Texto comercial",
+    },
+  }),
+  true
+);
+assert.equal(
+  listingDescriptionReviewIsAwaitingHuman({
+    listing_description_draft: {
+      headline: "Casa",
+      description: "Texto comercial",
+    },
+    listing_description_approved: { description: "Texto comercial" },
+  }),
+  false
+);
+assert.equal(
+  listingDescriptionReviewIsAwaitingHuman({
+    listing_description_draft: {
+      headline: "Casa",
+      description: "Texto comercial",
+    },
+    listing_description_review: { status: "changes_requested" },
+  }),
+  false
+);
 
 assert.equal(
   shouldAutoExecuteApprovedPublishToolsForTest({

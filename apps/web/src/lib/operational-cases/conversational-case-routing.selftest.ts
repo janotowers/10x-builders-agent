@@ -119,6 +119,23 @@ const explicitStartSingle = resolveTelegramConversationRoute({
 });
 assert.equal(explicitStartSingle.route, "clarify");
 
+// Regresión 2026-08-06: "Quiero opcionar una propiedad" contiene la palabra
+// "propiedad" y pasaba el heurístico de datos de intake, adoptando en
+// silencio un draft viejo. Una frase de ARRANQUE nunca es continuación.
+const explicitStartWithPropertyWord = resolveTelegramConversationRoute({
+  message: "Quiero opcionar una propiedad",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", intakeCase]]),
+  explicitIntent: true,
+});
+assert.equal(explicitStartWithPropertyWord.route, "clarify");
+if (explicitStartWithPropertyWord.route === "clarify") {
+  assert.equal(
+    explicitStartWithPropertyWord.reason,
+    "explicit_intent_with_active_bindings"
+  );
+}
+
 // Start intent con caso YA pasado de intake: aclarar continuar vs nueva
 // (no adoptar en silencio ni forzar case nuevo sin preguntar).
 const explicitStartPastIntake = resolveTelegramConversationRoute({

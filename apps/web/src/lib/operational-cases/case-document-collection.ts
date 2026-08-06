@@ -173,6 +173,29 @@ export function buildMediaGroupReceivedAck(
     .join("\n");
 }
 
+/** Acuse consolidado específico para un álbum de fotos del inmueble. */
+export function buildPhotoMediaGroupReceivedAck(
+  files: Array<{ originalName: string | null | undefined }>,
+  options?: { expectMore?: boolean }
+): string {
+  const detailLines = files
+    .map((file) => file.originalName?.trim())
+    .filter((name): name is string => Boolean(name))
+    .map((name) => `• «${name}»`);
+  const count = files.length;
+  const noun = count === 1 ? "foto" : "fotos";
+  const pronoun = count === 1 ? "la" : "las";
+  return [
+    `Recibí ${count} ${noun} y ${pronoun} registré en el caso.`,
+    detailLines.length > 0 ? detailLines.join("\n") : null,
+    options?.expectMore !== false
+      ? "Cuando termines de subir todas las fotos, escribe «listo» para procesarlas."
+      : "Gracias por confirmar el cierre del envío. Continuaré con el procesamiento.",
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
 function normalizeSideText(value: string): string {
   return value
     .normalize("NFD")

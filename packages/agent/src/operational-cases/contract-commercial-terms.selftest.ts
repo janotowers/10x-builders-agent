@@ -10,6 +10,7 @@ import {
   mapCollaborationToUngga,
   parseCommissionTerms,
   parseContractCommercialReply,
+  resolveOwnerEmailFromSources,
 } from "./contract-commercial-terms";
 
 const empty = evaluateContractCommercialMinimums({});
@@ -43,6 +44,31 @@ assert.equal(
   false
 );
 assert.ok(withEmail.known.some((item) => item.key === "owner_email"));
+
+assert.equal(
+  resolveOwnerEmailFromSources({
+    context: { document_request_target: "internal_user" },
+    externalContact: { email: "alex@ungga.com" },
+  }),
+  null,
+  "internal route must not treat lab/proxy external_contact.email as owner"
+);
+assert.equal(
+  resolveOwnerEmailFromSources({
+    context: { document_request_target: "external_contact" },
+    externalContact: { email: "dueno@example.com" },
+  }),
+  "dueno@example.com",
+  "external route may use verified contact email as owner"
+);
+assert.equal(
+  evaluateContractCommercialMinimums({
+    context: { document_request_target: "internal_user" },
+    externalContact: { email: "alex@ungga.com" },
+  }).missing.some((item) => item.key === "owner_email"),
+  true,
+  "contract ask must still request owner_email on internal route"
+);
 
 let terms = emptyCommissionTerms();
 terms = applyCommissionTermsPatch(terms, {

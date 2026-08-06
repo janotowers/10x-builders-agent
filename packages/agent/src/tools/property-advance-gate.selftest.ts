@@ -162,6 +162,59 @@ const casaContext = {
   assert.deepEqual(gate.blocks[0]!.remediation.document_ids, ["predial-implausible"]);
 }
 
+// --- human-confirmed built area clears OCR implausible soft-lock ----------
+{
+  const gate = evaluatePropertyAdvanceGate({
+    documents: [
+      doc({
+        id: "predial-implausible",
+        kind: "predial",
+        display_name: "PREDIAL 2023.pdf",
+        original_name: "PREDIAL 2023.pdf",
+        extraction_status: "ok",
+        extraction_jsonb: {
+          area_total_m2: 138,
+          area_construida_m2: 14.6,
+        },
+      }),
+      doc({
+        id: "boleta-1",
+        kind: "boleta_registral",
+        display_name: "boleta",
+        original_name: "boleta.pdf",
+        extraction_status: "ok",
+        extraction_jsonb: {
+          owner_name: "Maria",
+          property_address: "Calle 1",
+        },
+      }),
+    ],
+    context: {
+      ...casaContext,
+      property_data: {
+        ...(casaContext.property_data as Record<string, unknown>),
+        area_construida_m2: 146,
+        area_construida_m2_source: "human_confirmed_predial_decimal_review",
+        surface_quality: {
+          area_construida_m2: { status: "human_confirmed" },
+        },
+        floors: 2,
+        bedrooms: 3,
+        bathrooms: 2,
+        half_bathrooms: 0,
+        parking_spots: 2,
+        integral_kitchen: true,
+      },
+    },
+    targetTransition: "comparables_in_progress",
+  });
+  assert.equal(
+    gate.blocks.some((block) => block.reason === "predial_area_construida_implausible"),
+    false,
+    "human-confirmed built area must not re-block on OCR 14.6"
+  );
+}
+
 // --- comparables_in_progress: faltan mínimos -> external -----------------
 {
   const gate = evaluatePropertyAdvanceGate({

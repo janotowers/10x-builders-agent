@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import type { OperationalCase } from "@agents/types";
 import {
   DOCUMENTS_UPLOAD_REQUESTED_NOTIFICATION_KIND,
+  checklistKeyForDocumentKind,
+  documentsAckText,
   formatUploadBatchConfirmationReminderText,
   isUploadBatchNotificationKind,
+  missingIdealDocumentLabels,
   resolveUploadBatchKind,
   uploadBatchKindFromNotificationKind,
 } from "./upload-batch-completion";
@@ -77,5 +80,26 @@ const photosShort = formatUploadBatchConfirmationReminderText({
   context: { property_title: "Depto Condesa" },
 });
 assert.match(photosShort, /3 de las 5/);
+
+assert.equal(checklistKeyForDocumentKind("escritura_primera_hoja"), "escritura_descripcion");
+assert.equal(checklistKeyForDocumentKind("ine_anverso"), "ine");
+{
+  const missing = missingIdealDocumentLabels({
+    coveredKinds: ["boleta_registral", "predial"],
+  });
+  assert.ok(missing.some((label) => /Escritura/i.test(label)));
+  assert.ok(missing.some((label) => /Identificación/i.test(label)));
+  assert.ok(!missing.some((label) => /Boleta/i.test(label)));
+}
+{
+  const ack = documentsAckText({
+    status: "advanced",
+    propertyLabel: "Propiedad en Zapopan",
+    missingIdealLabels: ["Comprobante de domicilio (≤ 3 meses)"],
+  });
+  assert.match(ack, /Propiedad en Zapopan/);
+  assert.match(ack, /Comprobante de domicilio/);
+  assert.doesNotMatch(ack, /[0-9a-f]{8}-[0-9a-f]{4}/i);
+}
 
 console.log("upload-batch-completion.selftest.ts: ok");

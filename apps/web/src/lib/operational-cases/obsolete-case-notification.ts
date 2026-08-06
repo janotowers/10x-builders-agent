@@ -68,6 +68,8 @@ export function isInternalCaseNotificationObsolete(params: {
       );
     case "photos_upload_requested":
       return opCase.current_step !== "photos_requested";
+    case "documents_upload_requested":
+      return opCase.current_step !== "awaiting_documents";
     case "listing_description_review":
       return (
         opCase.current_step !== "package_ready" ||

@@ -423,12 +423,18 @@ export function resolveOwnerEmailFromSources(params: {
   const context = params.context ?? {};
   const propertyData = params.propertyData ?? {};
   const contact = params.externalContact ?? {};
+  // external_contact.email is the property owner only when the case is
+  // actually routed to that contact. On internal_user (or undecided) routes the
+  // field often holds a lab/proxy advisor contact and must not pre-fill the
+  // contract comitente email.
+  const canUseExternalContactEmail =
+    context.document_request_target === "external_contact";
   const candidates = [
     cleanString(context.owner_email),
     cleanString(propertyData.owner_email),
     cleanString(propertyData.email),
     cleanString(context.email),
-    cleanString(contact.email),
+    canUseExternalContactEmail ? cleanString(contact.email) : null,
   ];
   for (const candidate of candidates) {
     if (candidate && looksLikeEmail(candidate)) {

@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
-import { agentMarkdownToTelegramHtml } from "./send-message";
+import {
+  agentMarkdownToTelegramHtml,
+  telegramTextLooksLikeProductMarkdown,
+} from "./send-message";
+
+assert.equal(
+  telegramTextLooksLikeProductMarkdown("confirmar con **«listo»**"),
+  true
+);
+assert.equal(
+  telegramTextLooksLikeProductMarkdown("Perfecto, seguimos con ese caso."),
+  false
+);
 
 assert.equal(
   agentMarkdownToTelegramHtml("**En junio tuvimos 255 leads.**"),

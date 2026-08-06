@@ -76,7 +76,7 @@ import { isInternalCaseNotificationObsolete } from "@/lib/operational-cases/obso
 import { ensurePhotosUploadRequestForCase } from "@/lib/operational-cases/ensure-photos-upload-request";
 import { buildOperationalCaseCronToolApprovalPolicy } from "@/lib/operational-cases/operational-case-cron-tool-policy";
 import {
-  isInternalDocumentEventDrivenWait,
+  isInternalUploadEventDrivenWait,
   stabilizeInternalDocumentWait,
 } from "@/lib/operational-cases/internal-document-wait-invariant";
 import {
@@ -95,16 +95,24 @@ import {
   resolveEngagementPolicy,
 } from "@/lib/engagement-policies/registry";
 import { applyPropertyOptioningPostAgentInvariants } from "@/lib/operational-cases/property-optioning-post-agent-invariants";
-import { buildMediaGroupReceivedAck } from "@/lib/operational-cases/case-document-collection";
+import {
+  buildMediaGroupReceivedAck,
+  buildPhotoMediaGroupReceivedAck,
+} from "@/lib/operational-cases/case-document-collection";
 import { requestPublicationProgress } from "@/lib/operational-cases/publication-runner";
 import {
   applyPostAgentContractHandling,
   createPublicationRunnerOwnedAgentTick,
+  listingDescriptionReviewIsAwaitingHuman,
   listingDescriptionReviewNeedsRegeneration,
   runSettingsTestCaseAgentTick,
   type TurnToolCallRow,
 } from "@/lib/operational-cases/run-settings-test-case-tick";
-import { flushMediaGroupAcksForCase } from "@/lib/operational-cases/telegram-media-group-ack-store";
+import {
+  flushMediaGroupAcksForCase,
+  inspectPendingMediaGroupAcks,
+  MEDIA_GROUP_ACK_WINDOW_MS,
+} from "@/lib/operational-cases/telegram-media-group-ack-store";
 import {
   countCaseUploadFiles,
   formatUploadBatchConfirmationReminderText,
@@ -1050,10 +1058,30 @@ async function processCase(
         ? (opCase.context_jsonb as Record<string, unknown>)
         : {};
     const listingApproved = Boolean(packageContext.listing_description_approved);
-    if (
-      !listingApproved ||
-      listingDescriptionReviewNeedsRegeneration(packageContext)
-    ) {
+    const needsListingRegen =
+      listingDescriptionReviewNeedsRegeneration(packageContext);
+    if (!listingApproved || needsListingRegen) {
+      // Con borrador ya pedido, la espera es event-driven (botones / «Pedir
+      // cambios» / engagement). Re-correr el agente aquí reabre el HITL.
+      if (!needsListingRegen && listingDescriptionReviewIsAwaitingHuman(packageContext)) {
+        const { data: unreadListing } = await db
+          .from("internal_user_notifications")
+          .select("id")
+          .eq("user_id", opCase.user_id)
+          .eq("case_id", opCase.id)
+          .eq("kind", "listing_description_review")
+          .eq("status", "unread")
+          .limit(1);
+        if (Array.isArray(unreadListing) && unreadListing.length > 0) {
+          if (opCase.next_action_at) {
+            await updateOperationalCase(db, opCase.id, opCase.version, {
+              status: "waiting_internal",
+              nextActionAt: null,
+            });
+          }
+          return { case_id: opCase.id, status: "ok" };
+        }
+      }
       await runSettingsTestCaseAgentTick(
         db,
         opCase,
@@ -1118,16 +1146,47 @@ async function processCase(
           sendAck: async (files) => {
             await sendTelegramMessage(
               targetChatId,
-              buildMediaGroupReceivedAck(files)
+              lockedCase.current_step === "photos_requested"
+                ? buildPhotoMediaGroupReceivedAck(files)
+                : buildMediaGroupReceivedAck(files)
             );
           },
         });
         if (flush.flushed > 0) {
-          await updateOperationalCase(db, opCase.id, flush.opCase.version, {
-            nextActionAt: new Date(Date.now() + 15_000).toISOString(),
-          });
+          // flushMediaGroupAcksForCase already clears next_action_at. For the
+          // Internal upload waits (documents and photos) are event-driven:
+          // upload / «listo». Re-arming wakes the agent and repeats the request.
+          if (!isInternalUploadEventDrivenWait(flush.opCase)) {
+            await updateOperationalCase(db, opCase.id, flush.opCase.version, {
+              nextActionAt: new Date(Date.now() + 15_000).toISOString(),
+            });
+          } else {
+            await stabilizeInternalDocumentWait(db, flush.opCase);
+          }
           return { case_id: opCase.id, status: "ok" };
         }
+      }
+      if (isInternalUploadEventDrivenWait(lockedCase)) {
+        const pending = inspectPendingMediaGroupAcks({
+          context: lockedCase.context_jsonb,
+          caseId: lockedCase.id,
+          chatId: targetChatId ?? 0,
+          windowMs: MEDIA_GROUP_ACK_WINDOW_MS,
+        });
+        if (pending.pendingFileCount > 0 && pending.msSinceLastFile != null) {
+          await updateOperationalCase(db, lockedCase.id, lockedCase.version, {
+            nextActionAt: new Date(
+              Date.now() +
+                Math.max(
+                  1_000,
+                  MEDIA_GROUP_ACK_WINDOW_MS - pending.msSinceLastFile
+                )
+            ).toISOString(),
+          });
+        } else {
+          await stabilizeInternalDocumentWait(db, lockedCase);
+        }
+        return { case_id: opCase.id, status: "ok" };
       }
     }
 
@@ -1316,7 +1375,7 @@ async function processCase(
     // Si el agente NO actualizó next_action_at (no movió el caso), lo
     // empujamos a +5min para que no martillemos esto cada minuto. El agente
     // bien escrito lo hace solo, pero esto es defensivo.
-    // Exception: internal document waits are event-driven (upload / «listo»).
+    // Exception: internal upload waits are event-driven (upload / «listo»).
     // Re-arming +5min here undoes stabilizeInternalDocumentWait and re-sends
     // the same document request on every cron pass.
     if (caseAfterInvariants) {
@@ -1325,7 +1384,7 @@ async function processCase(
         caseAfterInvariants.current_step === opCase.current_step;
       if (
         isStillStuckAtLease &&
-        !isInternalDocumentEventDrivenWait(caseAfterInvariants)
+        !isInternalUploadEventDrivenWait(caseAfterInvariants)
       ) {
         await updateOperationalCase(db, caseAfterInvariants.id, caseAfterInvariants.version, {
           nextActionAt: new Date(Date.now() + 5 * 60_000).toISOString(),

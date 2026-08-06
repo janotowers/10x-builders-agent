@@ -1,5 +1,6 @@
 import { shortOperationalCaseId } from "@agents/db";
 import type { OperationalCase } from "@agents/types";
+import { DEFAULT_OPERATIONAL_STEP_LABELS } from "./operational-step-labels";
 
 export interface ConversationCaseIdentity {
   caseTypeLabel: string;
@@ -23,7 +24,8 @@ function firstNonEmptyString(
 }
 
 const CASE_TYPE_LABELS: Record<string, string> = {
-  property_optioning: "Opción de propiedad",
+  property_optioning: "Opcionamiento de propiedad",
+  lead_follow_up: "Seguimiento de leads",
 };
 
 /** Etiqueta humana del tipo de caso (fallback al slug técnico si no hay mapa). */
@@ -32,21 +34,61 @@ export function humanCaseTypeLabel(caseType: string | null | undefined): string 
   return CASE_TYPE_LABELS[caseType] ?? caseType;
 }
 
+/**
+ * Detalle / debug: nombre natural + slug técnico entre paréntesis.
+ * Misma convención que `formatOperationalStepForDisplay`.
+ */
+export function formatOperationalCaseTypeForDisplay(
+  caseType: string | null | undefined
+): string {
+  if (!caseType?.trim()) return "(sin tipo)";
+  const key = caseType.trim();
+  const friendly = humanCaseTypeLabel(key);
+  if (!friendly || friendly === key || friendly === "Caso operacional") {
+    return key;
+  }
+  return `${friendly} (${key})`;
+}
+
 /** Paso operativo en lenguaje humano. Compartido por copys conversacionales. */
 export function conversationalStepLabel(step: string | null | undefined): string {
-  switch (step) {
+  if (!step?.trim()) return "Proceso en curso";
+  const key = step.trim();
+  return DEFAULT_OPERATIONAL_STEP_LABELS[key] ?? key;
+}
+
+/**
+ * Frase de estado para el broker (no imperativo de sistema).
+ * Usada en clarify y leads conversacionales; evita "Solicitar documentos".
+ */
+export function conversationalStepStatusPhrase(
+  opCase: Pick<OperationalCase, "status" | "current_step">
+): string {
+  if (opCase.status === "waiting_external") return "esperando al propietario";
+  if (opCase.status === "waiting_internal") {
+    switch (opCase.current_step) {
+      case "intake":
+        return "en registro inicial";
+      case "awaiting_documents":
+        return "esperando documentos";
+      case "property_data_review":
+      case "documents_received":
+        return "esperando tu revisión";
+      default:
+        return "esperando tu acción";
+    }
+  }
+  switch (opCase.current_step) {
     case "intake":
-      return "Registro inicial";
+      return "en registro inicial";
     case "awaiting_documents":
-      return "Solicitar documentos";
-    case "documents_received":
-      return "Revisión documental";
-    case "property_data_review":
-      return "Revisión de datos de propiedad";
+      return "esperando documentos";
     case "comparables_in_progress":
-      return "Análisis de mercado";
+      return "en análisis de mercado";
+    case "package_ready":
+      return "preparando publicación";
     default:
-      return step && step.trim() ? step.trim() : "Proceso en curso";
+      return "en curso";
   }
 }
 

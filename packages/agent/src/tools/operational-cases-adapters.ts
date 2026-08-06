@@ -1389,11 +1389,16 @@ PROPERTY_TYPE_REQUIREMENTS["nave"] = PROPERTY_TYPE_REQUIREMENTS.bodega;
 
 function propertyTypeRequirementKey(value: unknown) {
   const normalized = normalizePropertyDataValue(value);
-  if (/\b(casa|residencia)\b/.test(normalized)) return "casa";
+  if (/\b(casa|residencia|house|home)\b/.test(normalized)) return "casa";
   if (/\b(departamento|depto|apartment)\b/.test(normalized)) return "departamento";
   if (/\b(terreno|lote|land)\b/.test(normalized)) return "terreno";
   if (/\b(bodega|nave industrial|nave)\b/.test(normalized)) return "bodega";
   return normalized;
+}
+
+/** Exported for selftests / gate consumers that need the same normalization. */
+export function propertyTypeRequirementKeyForTest(value: unknown) {
+  return propertyTypeRequirementKey(value);
 }
 
 export function evaluatePropertyDataMinimumsForReview(
@@ -1663,8 +1668,15 @@ export function documentExtractionMinimumsContext(
       if (signals.predial && builtArea != null) predialAreaConstruidaFound = true;
       const blockedByPendingPredialBuilt =
         hasPredialDocument && !signals.predial && !predialAreaConstruidaFound;
+      const quality = isRecord(extraction.predial_area_construida_quality)
+        ? extraction.predial_area_construida_quality
+        : null;
+      const builtAreaImplausible =
+        signals.predial &&
+        quality?.status === "implausible_decimal_misread_suspected";
       if (
         builtArea != null &&
+        !builtAreaImplausible &&
         areaPriority <= areaConstruidaPriority &&
         !blockedByPendingPredialBuilt
       ) {
@@ -1677,6 +1689,13 @@ export function documentExtractionMinimumsContext(
               ? "escritura"
               : "documento_propiedad";
         areaConstruidaPriority = areaPriority;
+      }
+      if (builtAreaImplausible && builtArea != null) {
+        extracted.area_construida_m2_pending_quality_review = true;
+        extracted.area_construida_m2_observed_implausible = builtArea;
+        if (typeof quality?.suggested_m2 === "number") {
+          extracted.area_construida_m2_suggested = quality.suggested_m2;
+        }
       }
     }
 
@@ -2261,7 +2280,15 @@ function looksLikePredialBuiltAreaDecimalMisread(
     return false;
   }
   if (!isPlausiblePredialSurfaceValue(scaled)) return false;
-  if (scaled > areaTotalM2 * PREDIAL_MISREAD_MAX_TOTAL_RATIO) return false;
+  // Dual decimal misread: both total and built can lose a digit
+  // (e.g. 13.8 / 14.6 instead of 138 / 146). Compare against scaled total
+  // when the observed total itself looks like a /10 misread.
+  const scaledTotalCandidate = areaTotalM2 * 10;
+  const totalLooksMisread =
+    areaTotalM2 < PREDIAL_BUILT_AREA_MISREAD_MAX &&
+    isPlausiblePredialSurfaceValue(scaledTotalCandidate);
+  const comparableTotal = totalLooksMisread ? scaledTotalCandidate : areaTotalM2;
+  if (scaled > comparableTotal * PREDIAL_MISREAD_MAX_TOTAL_RATIO) return false;
   if (scaled <= areaConstruidaM2 * 5) return false;
   return true;
 }
@@ -2853,10 +2880,25 @@ function pdfVisionSupplementWarning(documentKind: string) {
   return "La capa de texto del PDF no trajo superficie; se complementó con visión sobre la primera página.";
 }
 
+export function mergeDocumentExtractionsForTest(
+  primary: Record<string, unknown>,
+  supplement: Record<string, unknown>,
+  extractionSource: string,
+  documentKind?: string
+) {
+  return mergeDocumentExtractions(
+    primary,
+    supplement,
+    extractionSource,
+    documentKind
+  );
+}
+
 function mergeDocumentExtractions(
   primary: Record<string, unknown>,
   supplement: Record<string, unknown>,
-  extractionSource: string
+  extractionSource: string,
+  documentKind?: string
 ) {
   const merged: Record<string, unknown> = { ...primary };
   for (const key of [
@@ -2878,6 +2920,56 @@ function mergeDocumentExtractions(
       merged[key] = supplementValue;
     }
   }
+  // Carry vision corroboration fields even when text already filled areas.
+  // Without these, post-merge normalize cannot reconcile 14.6 → 146.
+  for (const key of [
+    "predial_contribuyente_row_values",
+    "predial_table_values",
+    "sup_terr_raw",
+    "sup_const_raw",
+  ] as const) {
+    const supplementValue = supplement[key];
+    if (
+      (merged[key] == null ||
+        merged[key] === "" ||
+        (Array.isArray(merged[key]) && (merged[key] as unknown[]).length === 0)) &&
+      supplementValue != null &&
+      supplementValue !== ""
+    ) {
+      merged[key] = supplementValue;
+    }
+  }
+  // Prefer supplement surfaces when primary looks like a decimal misread and
+  // supplement is corroborated / more plausible.
+  const primaryTotal =
+    typeof merged.area_total_m2 === "number" ? merged.area_total_m2 : null;
+  const primaryBuilt =
+    typeof merged.area_construida_m2 === "number" ? merged.area_construida_m2 : null;
+  const supplementBuilt =
+    typeof supplement.area_construida_m2 === "number"
+      ? supplement.area_construida_m2
+      : null;
+  if (
+    looksLikePredialBuiltAreaDecimalMisread(primaryTotal, primaryBuilt) &&
+    supplementBuilt != null &&
+    !looksLikePredialBuiltAreaDecimalMisread(
+      typeof supplement.area_total_m2 === "number"
+        ? supplement.area_total_m2
+        : primaryTotal,
+      supplementBuilt
+    )
+  ) {
+    if (typeof supplement.area_total_m2 === "number") {
+      merged.area_total_m2 = supplement.area_total_m2;
+      if (supplement.area_total_m2_source != null) {
+        merged.area_total_m2_source = supplement.area_total_m2_source;
+      }
+    }
+    merged.area_construida_m2 = supplementBuilt;
+    if (supplement.area_construida_m2_source != null) {
+      merged.area_construida_m2_source = supplement.area_construida_m2_source;
+    }
+  }
   const primaryOwners = Array.isArray(merged.owner_names) ? merged.owner_names : [];
   const supplementOwners = Array.isArray(supplement.owner_names)
     ? supplement.owner_names
@@ -2897,6 +2989,13 @@ function mergeDocumentExtractions(
   ].filter((item, index, items) => items.indexOf(item) === index);
   if (warnings.length > 0) merged.warnings = warnings;
   merged.extraction_source = extractionSource;
+  const kind =
+    documentKind ||
+    (typeof merged.document_kind === "string" ? merged.document_kind : "") ||
+    (typeof supplement.document_kind === "string" ? supplement.document_kind : "");
+  if (kind && isPredialKind(kind)) {
+    return normalizePredialExtractionSurfacesForTest(merged, kind);
+  }
   return merged;
 }
 
@@ -3157,7 +3256,8 @@ async function extractPdfDocumentFields(input: {
               ...mergeDocumentExtractions(
                 textExtraction,
                 visionExtraction,
-                "pdf_text_plus_vision"
+                "pdf_text_plus_vision",
+                input.documentKind
               ),
               warnings,
             },
@@ -3248,6 +3348,14 @@ function shouldUseCachedExtraction(input: {
     isPredialKind(extractionDocumentKind) &&
     typeof input.extraction.area_total_m2 !== "number"
   ) {
+    return false;
+  }
+  const quality = input.extraction.predial_area_construida_quality;
+  if (
+    isRecord(quality) &&
+    quality.status === "implausible_decimal_misread_suspected"
+  ) {
+    // Force a fresh extract on remediation retries; do not reuse a bad cache.
     return false;
   }
   if (input.extractionStatus === "ok") return true;
@@ -3511,9 +3619,47 @@ const PREDIAL_AREA_CONSTRUIDA_PATHS = [
 const PENDING_EXTRACTION_STATUSES = ["pending", "failed", "not_applicable"];
 const USABLE_EXTRACTION_STATUSES = ["ok", "low_confidence"];
 
+function builtAreaHumanConfirmed(context: Record<string, unknown>): boolean {
+  const propertyData = propertyDataRecord(context);
+  const surfaceQuality =
+    propertyData.surface_quality &&
+    typeof propertyData.surface_quality === "object" &&
+    !Array.isArray(propertyData.surface_quality)
+      ? (propertyData.surface_quality as Record<string, unknown>)
+      : null;
+  const builtQuality =
+    surfaceQuality?.area_construida_m2 &&
+    typeof surfaceQuality.area_construida_m2 === "object" &&
+    !Array.isArray(surfaceQuality.area_construida_m2)
+      ? (surfaceQuality.area_construida_m2 as Record<string, unknown>)
+      : null;
+  if (builtQuality?.status === "human_confirmed") return true;
+  const source = propertyData.area_construida_m2_source;
+  if (
+    typeof source === "string" &&
+    source.toLowerCase().includes("human_confirmed")
+  ) {
+    return true;
+  }
+  // Recover stuck cases where the advisor already wrote a plausible built area
+  // into property_data (e.g. 146) but OCR still shows the implausible decimal.
+  const confirmedRaw = firstMeaningfulValue(propertyData.area_construida_m2);
+  const confirmedM2 =
+    typeof confirmedRaw === "number" && Number.isFinite(confirmedRaw) && confirmedRaw > 0
+      ? confirmedRaw
+      : null;
+  if (confirmedM2 == null) return false;
+  const quality = evaluatePredialBuiltAreaQualityForTest({
+    area_construida_m2: confirmedM2,
+    area_total_m2: propertyData.area_total_m2 ?? context.area_total_m2,
+  });
+  return !quality.implausible;
+}
+
 function predialAdvanceBlocks(input: {
   propertyType: string;
   documents: OperationalCaseDocument[];
+  context: Record<string, unknown>;
 }): PropertyAdvanceGateBlock[] {
   const predials = input.documents.filter(
     (document) => document.status !== "superseded" && isPredialDocumentCandidate(document)
@@ -3570,7 +3716,9 @@ function predialAdvanceBlocks(input: {
       },
     ];
   }
-  if (requiresBuiltArea) {
+  // Human already confirmed the built area (e.g. 146 vs OCR 14.6). Keep using
+  // property_data; do not re-block on the raw document extraction forever.
+  if (requiresBuiltArea && !builtAreaHumanConfirmed(input.context)) {
     const implausibleDoc = extractedPredials
       .map((document) => {
         const extraction =
@@ -3688,7 +3836,13 @@ export function evaluatePropertyAdvanceGate(input: {
   if (input.targetTransition === "comparables_in_progress") {
     blocks.push(...boletaAdvanceBlocks({ documents: input.documents }));
     if (blocks.length === 0) {
-      blocks.push(...predialAdvanceBlocks({ propertyType, documents: input.documents }));
+      blocks.push(
+        ...predialAdvanceBlocks({
+          propertyType,
+          documents: input.documents,
+          context,
+        })
+      );
     }
     if (blocks.length === 0) {
       const minimums = evaluatePropertyDataMinimumsForReview(context, documentFields);
@@ -3814,13 +3968,24 @@ export function blockedAwaitingDocumentsTransitionReason(params: {
   currentStep: string | null | undefined;
   nextStep: string | null | undefined;
   recentEventTypes?: string[];
+  recentPayloadKinds?: string[];
+  documentRequestTarget?: string | null;
 }): string | null {
   if (params.currentStep !== "awaiting_documents") return null;
   if (!params.nextStep || params.nextStep === "awaiting_documents") return null;
-  if (
-    params.nextStep === "documents_received" &&
-    params.recentEventTypes?.includes("external_response")
-  ) {
+  if (params.nextStep !== "documents_received") {
+    return "awaiting_documents_requires_external_response";
+  }
+  // Internal advisor uploads write `external_response` (document_registered) per
+  // file. That must NOT unlock the step: only an explicit batch close («listo» /
+  // button) which emits payload kind `documents_batch_completed` may advance.
+  if (params.documentRequestTarget === "internal_user") {
+    if (params.recentPayloadKinds?.includes("documents_batch_completed")) {
+      return null;
+    }
+    return "awaiting_documents_requires_batch_completion";
+  }
+  if (params.recentEventTypes?.includes("external_response")) {
     return null;
   }
   return "awaiting_documents_requires_external_response";
@@ -4657,10 +4822,32 @@ export function addOperationalCaseTools(
                 opCase.id,
                 30
               );
+              const context =
+                opCase.context_jsonb &&
+                typeof opCase.context_jsonb === "object" &&
+                !Array.isArray(opCase.context_jsonb)
+                  ? (opCase.context_jsonb as Record<string, unknown>)
+                  : {};
+              const documentRequestTarget =
+                typeof context.document_request_target === "string"
+                  ? context.document_request_target
+                  : null;
+              const recentPayloadKinds = recentEvents
+                .map((event) => {
+                  const payload = event.payload_jsonb;
+                  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+                    return null;
+                  }
+                  const kind = (payload as Record<string, unknown>).kind;
+                  return typeof kind === "string" ? kind : null;
+                })
+                .filter((kind): kind is string => Boolean(kind));
               const blockedReason = blockedAwaitingDocumentsTransitionReason({
                 currentStep: opCase.current_step,
                 nextStep: input.current_step,
                 recentEventTypes: recentEvents.map((event) => event.event_type),
+                recentPayloadKinds,
+                documentRequestTarget,
               });
               if (blockedReason) {
                 const out = {
@@ -4669,7 +4856,9 @@ export function addOperationalCaseTools(
                   current_step: opCase.current_step,
                   requested_step: input.current_step,
                   hint:
-                    "Desde awaiting_documents primero solicita documentos y espera un external_response. No avances a pasos posteriores sin evidencia de respuesta/documentos.",
+                    documentRequestTarget === "internal_user"
+                      ? "En la ruta interna el lote se cierra solo con «listo»/botón (documents_batch_completed). No avances solo porque llegaron archivos."
+                      : "Desde awaiting_documents primero solicita documentos y espera un external_response. No avances a pasos posteriores sin evidencia de respuesta/documentos.",
                 };
                 await updateToolCallStatus(ctx.db, record.id, "failed", out);
                 return JSON.stringify(out);
@@ -5518,6 +5707,20 @@ export function addOperationalCaseTools(
                   status: "property_data_review_already_requested",
                   skipped: true,
                   case_id: opCase.id,
+                };
+                await updateToolCallStatus(ctx.db, record.id, "executed", out);
+                return JSON.stringify(out);
+              }
+              // Emisor único: el invariante post-agent construye y envía el
+              // copy canónico. Si el agente llega aquí con gates OK, no envía.
+              if (opCase.case_type === "property_optioning") {
+                const out = {
+                  ok: true,
+                  status: "property_data_review_delegated_to_invariant",
+                  skipped: true,
+                  case_id: opCase.id,
+                  hint:
+                    "No envíes notify_user(kind=property_data_review) directamente. El invariante post-agent emite una sola revisión canónica cuando los gates lo permiten.",
                 };
                 await updateToolCallStatus(ctx.db, record.id, "executed", out);
                 return JSON.stringify(out);

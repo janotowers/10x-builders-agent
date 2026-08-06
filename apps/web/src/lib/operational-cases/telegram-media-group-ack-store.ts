@@ -155,6 +155,26 @@ function markSentInMap(
   return next;
 }
 
+function nextPendingAckDueAt(
+  map: StoredMediaGroupAckMap,
+  windowMs: number
+): string | null {
+  let earliest = Number.POSITIVE_INFINITY;
+  for (const group of Object.values(map)) {
+    if (group.ack_sent_at) continue;
+    const lastMs = Date.parse(group.last_file_at);
+    if (!Number.isFinite(lastMs)) continue;
+    earliest = Math.min(earliest, lastMs + windowMs);
+  }
+  return Number.isFinite(earliest) ? new Date(earliest).toISOString() : null;
+}
+
+function pendingAckKeys(map: StoredMediaGroupAckMap): string[] {
+  return Object.entries(map)
+    .filter(([, group]) => !group.ack_sent_at)
+    .map(([key]) => key);
+}
+
 export async function appendMediaGroupAckToCase(params: {
   db: DbClient;
   opCase: OperationalCase;
@@ -296,13 +316,75 @@ export async function flushMediaGroupAcksForCase(params: {
     sentKeys.push(key);
     if (group.mark_ready) shouldMarkReady = true;
   }
-  const nextMap = markSentInMap(map, sentKeys, nowIso);
-  const updated =
-    (await updateOperationalCase(params.db, params.opCase.id, params.opCase.version, {
-      context: withAckMap(context, nextMap),
-      nextActionAt: null,
-    })) ?? params.opCase;
-  return { opCase: updated, flushed: sentKeys.length, markReady: shouldMarkReady };
+  // Persistir el ack con optimistic retry. Los webhooks de un álbum actualizan
+  // el mismo case en paralelo; antes, un conflicto aquí se ignoraba y dejaba
+  // el grupo como pendiente aunque su ack ya se hubiera enviado. Ese grupo
+  // reaparecía horas después al llegar otro álbum.
+  let current = params.opCase;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const currentContext = asContextRecord(current.context_jsonb);
+    const currentMap = readAckMap(currentContext);
+    const nextMap = markSentInMap(currentMap, sentKeys, nowIso);
+    const updated = await updateOperationalCase(
+      params.db,
+      current.id,
+      current.version,
+      {
+        context: withAckMap(currentContext, nextMap),
+        // Un webhook concurrente puede haber agregado otro álbum después de
+        // elegir los candidates. No borres su wake-up al marcar éste enviado.
+        nextActionAt: nextPendingAckDueAt(nextMap, windowMs),
+      }
+    );
+    if (updated) {
+      return {
+        opCase: updated,
+        flushed: sentKeys.length,
+        markReady: shouldMarkReady,
+      };
+    }
+    const fresh = await getOperationalCase(params.db, current.id);
+    if (!fresh) break;
+    current = fresh;
+  }
+  return {
+    opCase: current,
+    flushed: sentKeys.length,
+    markReady: shouldMarkReady,
+  };
+}
+
+/**
+ * Cierra sin enviar los acks de álbum que pertenecían al paso anterior.
+ * Se usa al entrar a una nueva fase de carga (p. ej. documentos → fotos), para
+ * que un acuse documental huérfano nunca reaparezca con el siguiente álbum.
+ */
+export async function discardPendingMediaGroupAcksForCase(params: {
+  db: DbClient;
+  opCase: OperationalCase;
+}): Promise<OperationalCase> {
+  let current = params.opCase;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const context = asContextRecord(current.context_jsonb);
+    const map = readAckMap(context);
+    const keys = pendingAckKeys(map);
+    if (keys.length === 0) return current;
+    const settledMap = markSentInMap(map, keys, new Date().toISOString());
+    const updated = await updateOperationalCase(
+      params.db,
+      current.id,
+      current.version,
+      {
+        context: withAckMap(context, settledMap),
+        nextActionAt: null,
+      }
+    );
+    if (updated) return updated;
+    const fresh = await getOperationalCase(params.db, current.id);
+    if (!fresh) return current;
+    current = fresh;
+  }
+  return current;
 }
 
 export const MEDIA_GROUP_ACK_WINDOW_MS = DEFAULT_WINDOW_MS;
@@ -313,5 +395,7 @@ export const __testOnly = {
   appendInMap,
   isFlushable,
   markSentInMap,
+  nextPendingAckDueAt,
+  pendingAckKeys,
   inspectPendingMediaGroupAcks,
 };

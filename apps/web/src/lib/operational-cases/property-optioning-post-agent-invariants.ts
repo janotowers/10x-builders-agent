@@ -16,6 +16,7 @@ import {
   getRecentOperationalCaseEvents,
   insertOperationalCaseEvent,
   listOperationalCaseDocuments,
+  resolveUnreadInternalNotificationsByKindForCaseWithReminders,
   updateOperationalCase,
 } from "@agents/db";
 import {
@@ -30,6 +31,7 @@ import {
   notifyUserRespectingActiveInternalChannel,
 } from "./deliver-internal-case-follow-up";
 import { ensureContractCommercialDataAsk } from "./ensure-contract-commercial-ask";
+import { resolvePropertyDisplayLabel } from "./property-display-label";
 
 // Paridad lab/producción (S1.6): las transiciones de paso de los invariants
 // pasan por el mismo evaluador de definiciones que el resto del runtime. Las
@@ -129,6 +131,13 @@ export function mergeDocumentSurfacesIntoContextPropertyData(input: {
     const sourceField = `${field}_source` as const;
     const incoming = positiveNumberOrNull(documentFields[field]);
     if (incoming == null) return;
+    // Do not silently adopt predial built area flagged as decimal-misread.
+    if (
+      field === "area_construida_m2" &&
+      documentFields.area_construida_m2_pending_quality_review === true
+    ) {
+      return;
+    }
     const existing = positiveNumberOrNull(nextPropertyData[field]);
     const incomingSource = documentFields[sourceField];
     const existingSource = nextPropertyData[sourceField];
@@ -712,6 +721,108 @@ function isPropertyOptioningDocumentsReviewPoint(opCase: OperationalCase) {
   );
 }
 
+function eventPayloadKind(event: {
+  payload_jsonb?: unknown;
+}): string | null {
+  const payload = event.payload_jsonb;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const kind = (payload as Record<string, unknown>).kind;
+  return typeof kind === "string" ? kind : null;
+}
+
+function latestMatchingEventAt(
+  events: Array<{ created_at?: string | null; payload_jsonb?: unknown; event_type?: string }>,
+  match: (event: {
+    created_at?: string | null;
+    payload_jsonb?: unknown;
+    event_type?: string;
+  }) => boolean
+): string | null {
+  let latest: string | null = null;
+  for (const event of events) {
+    if (!match(event)) continue;
+    const at = typeof event.created_at === "string" ? event.created_at : null;
+    if (!at) continue;
+    if (latest == null || at > latest) latest = at;
+  }
+  return latest;
+}
+
+/**
+ * A prior property_data_review is stale when the advisor later supplied new
+ * characteristics (or we re-entered remediation) after that review request.
+ * Without this, a premature review blocks the canonical one forever.
+ */
+/** Latest moment the advisor refreshed property data (characteristics, quality confirm...). */
+export function latestPropertyDataRefreshAt(events: Array<{
+  created_at?: string | null;
+  event_type?: string;
+  payload_jsonb?: unknown;
+}>): string | null {
+  return latestMatchingEventAt(events, (event) => {
+    const kind = eventPayloadKind(event);
+    return (
+      kind === "owner_characteristics_merged" ||
+      kind === "predial_area_quality_confirmed" ||
+      (event.event_type === "human_decision" &&
+        (kind === "predial_area_quality_review_resolved" ||
+          kind === "property_data_review_response"))
+    );
+  });
+}
+
+/**
+ * A prior property_data_review is stale when the advisor later supplied new
+ * characteristics (or we re-entered remediation) after that review request.
+ * Without this, a premature review blocks the canonical one forever.
+ */
+export function propertyDataReviewRequestIsStale(events: Array<{
+  created_at?: string | null;
+  event_type?: string;
+  payload_jsonb?: unknown;
+}>): boolean {
+  const lastReviewAt = latestMatchingEventAt(events, (event) => {
+    const kind = eventPayloadKind(event);
+    return (
+      kind === "property_data_review_requested" || kind === "property_data_review"
+    );
+  });
+  if (!lastReviewAt) return false;
+  const lastRefreshAt = latestPropertyDataRefreshAt(events);
+  return lastRefreshAt != null && lastRefreshAt > lastReviewAt;
+}
+
+/**
+ * Quality ask is only stale after an explicit quality confirmation event.
+ * A later characteristics merge alone must not dismiss an unanswered quality ask.
+ */
+export function predialQualityReviewRequestIsStale(events: Array<{
+  created_at?: string | null;
+  event_type?: string;
+  payload_jsonb?: unknown;
+}>): boolean {
+  const lastQualityAskAt = latestMatchingEventAt(events, (event) => {
+    return (
+      event.event_type === "human_decision" &&
+      eventPayloadKind(event) === "predial_area_quality_review_requested"
+    );
+  });
+  if (!lastQualityAskAt) return false;
+  const lastConfirmAt = latestMatchingEventAt(events, (event) => {
+    const kind = eventPayloadKind(event);
+    return (
+      kind === "predial_area_quality_confirmed" ||
+      (event.event_type === "human_decision" &&
+        (kind === "predial_area_quality_review_resolved" ||
+          // Quality replies reuse this kind via handlePropertyDataReviewDecision.
+          kind === "property_data_review_response"))
+    );
+  });
+  return lastConfirmAt != null && lastConfirmAt > lastQualityAskAt;
+}
+
 function isPropertyOptioningComparablesReviewPoint(opCase: OperationalCase) {
   return (
     opCase.case_type === "property_optioning" &&
@@ -1074,6 +1185,60 @@ function operationLabel(value: unknown): string {
   return value.trim();
 }
 
+function propertyTypeLabel(value: unknown): string {
+  if (Array.isArray(value) && value.length > 0) {
+    return propertyTypeLabel(value[0]);
+  }
+  if (typeof value !== "string") return "pendiente";
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return "pendiente";
+  if (/\b(casa|house|home|residencia)\b/.test(normalized)) return "Casa";
+  if (/\b(departamento|depto|apartment)\b/.test(normalized)) return "Departamento";
+  if (/\b(terreno|lote|land)\b/.test(normalized)) return "Terreno";
+  if (/\b(bodega|nave)\b/.test(normalized)) return "Bodega";
+  return value.trim();
+}
+
+function buildPropertyDataReviewDoubts(params: {
+  merged: Record<string, unknown>;
+  value: (key: string) => string;
+}): string[] {
+  const doubts: string[] = [];
+  if (params.value("owner_consistency_warning")) {
+    doubts.push(params.value("owner_consistency_warning"));
+  }
+  const legal =
+    params.value("legal_addresses") ||
+    params.value("legal_address") ||
+    params.value("property_address");
+  const predialAddress = params.value("predial_address") || params.value("address_predial");
+  if (legal && predialAddress && legal.toLowerCase() !== predialAddress.toLowerCase()) {
+    doubts.push(
+      "Hay conflicto de dirección entre boleta registral/escritura y predial; confirma cuál es canónica."
+    );
+  }
+  if (params.merged.area_construida_m2_pending_quality_review === true) {
+    const observed = params.merged.area_construida_m2_observed_implausible;
+    const suggested = params.merged.area_construida_m2_suggested;
+    doubts.push(
+      `La superficie construida del predial parece tener posible error decimal` +
+        (observed != null ? ` (observado: ${String(observed)} m²` : "") +
+        (suggested != null ? `; sugerido: ${String(suggested)} m²)` : observed != null ? ")" : "") +
+        "."
+    );
+  }
+  const total = params.value("area_total_m2");
+  const built = params.value("area_construida_m2");
+  if (!total) doubts.push("Falta confirmar la superficie de terreno.");
+  if (!built && params.merged.area_construida_m2_pending_quality_review !== true) {
+    doubts.push("Falta confirmar la superficie de construcción.");
+  }
+  if (!params.value("owner_names")) {
+    doubts.push("Falta confirmar el/los titulares.");
+  }
+  return doubts;
+}
+
 /** Labels legibles para slugs de fuente de titularidad / tipo documental. */
 const OWNERSHIP_SOURCE_DISPLAY_LABELS: Record<string, string> = {
   boleta_registral: "Boleta registral",
@@ -1148,14 +1313,23 @@ export function propertyDataReviewTextFromContext(params: {
   ]
     .filter(([, provided]) => provided !== "" && provided != null)
     .map(([label, provided]) => `- ${label}: ${String(provided).trim()}`);
+  const propertyLabel = resolvePropertyDisplayLabel(context, {
+    fallback: String(context.property_title ?? context.title ?? "la propiedad"),
+  });
+  const doubts = buildPropertyDataReviewDoubts({ merged, value });
+  const builtDisplay =
+    value("area_construida_m2") ||
+    (merged.area_construida_m2_pending_quality_review === true
+      ? "pendiente de confirmación"
+      : "pendiente");
   return [
-    `Revisión de datos extraídos para el caso ${params.opCase.id}:`,
+    `Revisión de datos extraídos para **${propertyLabel}**:`,
     "",
     "Datos iniciales confirmados:",
-    `- Título / propiedad: ${String(context.property_title ?? context.title ?? "pendiente")}`,
+    `- Título / propiedad: ${propertyLabel}`,
     `- Zona / colonia: ${String(context.property_zone ?? "pendiente")}`,
     `- Operación: ${operationLabel(context.operation_type)}`,
-    `- Tipo de propiedad: ${String(context.property_type ?? "pendiente")}`,
+    `- Tipo de propiedad: ${propertyTypeLabel(context.property_type)}`,
     "",
     "Datos encontrados en documentos:",
     `- Dueño/titular: ${value("owner_names") || "pendiente"}`,
@@ -1170,6 +1344,9 @@ export function propertyDataReviewTextFromContext(params: {
     value("owner_consistency_warning")
       ? `- Advertencia de titularidad: ${value("owner_consistency_warning")}`
       : null,
+    value("owner_corroboration_sources")
+      ? `- Fuentes de corroboración: ${value("owner_corroboration_sources")}`
+      : null,
     `- Dirección legal: ${
       value("legal_addresses") ||
       value("legal_address") ||
@@ -1178,7 +1355,9 @@ export function propertyDataReviewTextFromContext(params: {
       "pendiente"
     }`,
     `- Superficie terreno: ${value("area_total_m2") || "pendiente"} m²`,
-    `- Superficie construcción: ${value("area_construida_m2") || "pendiente"} m²`,
+    `- Superficie construcción: ${builtDisplay}${
+      value("area_construida_m2") ? " m²" : ""
+    }`,
     value("land_context")
       ? `- Contexto del terreno: ${value("land_context")}`
       : null,
@@ -1189,7 +1368,9 @@ export function propertyDataReviewTextFromContext(params: {
       : ["- Sin datos adicionales confirmados aún."]),
     "",
     "Faltantes o dudas:",
-    "- Ninguno mínimo detectado.",
+    ...(doubts.length > 0
+      ? doubts.map((item) => `- ${item}`)
+      : ["- Ninguno mínimo detectado."]),
     "",
     "Confirma si es correcto o indícame correcciones puntuales.",
   ]
@@ -1382,6 +1563,16 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
     targetTransition: "comparables_in_progress",
   });
   let implausibleBlock = predialImplausibleBlock(gate);
+  if (!implausibleBlock) {
+    // The quality doubt was resolved (e.g. human-confirmed built area);
+    // clear any leftover unread quality ask so it stops routing replies.
+    await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+      userId: workingCase.user_id,
+      caseId: workingCase.id,
+      kind: "property_data_quality_review",
+      status: "actioned",
+    });
+  }
   if (implausibleBlock) {
     const implausibleDocumentId = implausibleBlock.remediation.document_ids?.[0] ?? null;
     const qualityAttempts = predialQualityRemediationAttemptsFromContext(
@@ -1447,6 +1638,23 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
           payload?.kind === "predial_area_quality_review_requested"
         );
       });
+      const qualityAskIsStale = predialQualityReviewRequestIsStale(recentEvents);
+      if (alreadyRequested && !qualityAskIsStale) {
+        const updated = await advisedInvariantCaseUpdate(
+          db,
+          workingCase,
+          workingCase.version,
+          {
+            status: "waiting_internal",
+            currentStep: "documents_received",
+            nextActionAt: null,
+          }
+        );
+        return {
+          case: updated ?? workingCase,
+          action: "requested_property_data_quality_review",
+        };
+      }
       if (!alreadyRequested) {
         const observed = implausibleBlock.remediation.observed_value_m2;
         const suggested = implausibleBlock.remediation.suggested_value_m2;
@@ -1493,16 +1701,29 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
             suggested_value_m2: suggested ?? null,
           },
         });
+        const updated = await advisedInvariantCaseUpdate(
+          db,
+          workingCase,
+          workingCase.version,
+          {
+            status: "waiting_internal",
+            currentStep: "documents_received",
+            nextActionAt: null,
+          }
+        );
+        return {
+          case: updated ?? workingCase,
+          action: "requested_property_data_quality_review",
+        };
       }
-      const updated = await advisedInvariantCaseUpdate(db, workingCase, workingCase.version, {
-        status: "waiting_internal",
-        currentStep: "documents_received",
-        nextActionAt: null,
+      // Quality ask became stale after later data refresh: dismiss leftover
+      // unread and continue toward characteristics / canonical review.
+      await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+        userId: workingCase.user_id,
+        caseId: workingCase.id,
+        kind: "property_data_quality_review",
+        status: "actioned",
       });
-      return {
-        case: updated ?? workingCase,
-        action: "requested_property_data_quality_review",
-      };
     }
   }
   let deterministicIds = deterministicDocumentIdsFromBlocks(gate.blocks);
@@ -1829,16 +2050,51 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
     };
   }
 
-  const alreadyRequested = recentEvents.some((event) => {
-    const payload = event.payload_jsonb;
+  const reviewAlreadyRequested = recentEvents.some((event) => {
+    const kind = eventPayloadKind(event);
     return (
-      payload &&
-      typeof payload === "object" &&
-      ((payload as Record<string, unknown>).kind === "property_data_review_requested" ||
-        (payload as Record<string, unknown>).kind === "property_data_review")
+      kind === "property_data_review_requested" || kind === "property_data_review"
     );
   });
-  if (alreadyRequested) return { case: workingCase, action: "no_action" };
+  const reviewIsStale = propertyDataReviewRequestIsStale(recentEvents);
+  if (reviewAlreadyRequested && !reviewIsStale) {
+    return { case: workingCase, action: "no_action" };
+  }
+
+  // Double idempotency: unread notification may exist without the event
+  // (e.g. agent notify before delegation, or partial write). A stale review
+  // after new characteristics must be replaced, not blocked. Legacy agent
+  // notifications have no matching event, so staleness falls back to the
+  // notification's own created_at vs the last data refresh.
+  const { data: unreadReview } = await db
+    .from("internal_user_notifications")
+    .select("id, created_at")
+    .eq("user_id", workingCase.user_id)
+    .eq("case_id", workingCase.id)
+    .eq("kind", "property_data_review")
+    .eq("status", "unread")
+    .limit(1);
+  if (Array.isArray(unreadReview) && unreadReview.length > 0) {
+    const notificationCreatedAt =
+      typeof unreadReview[0]?.created_at === "string"
+        ? unreadReview[0].created_at
+        : null;
+    const lastRefreshAt = latestPropertyDataRefreshAt(recentEvents);
+    const unreadIsStale =
+      reviewIsStale ||
+      (notificationCreatedAt != null &&
+        lastRefreshAt != null &&
+        lastRefreshAt > notificationCreatedAt);
+    if (!unreadIsStale) {
+      return { case: workingCase, action: "no_action" };
+    }
+    await resolveUnreadInternalNotificationsByKindForCaseWithReminders(db, {
+      userId: workingCase.user_id,
+      caseId: workingCase.id,
+      kind: "property_data_review",
+      status: "actioned",
+    });
+  }
 
   const reviewText = propertyDataReviewTextFromContext({
     opCase: workingCase,
@@ -1853,6 +2109,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
     data: {
       title: "Revisión de datos de propiedad",
       source,
+      refreshed_after_characteristics: reviewIsStale,
     },
   });
   await insertOperationalCaseEvent(db, {
@@ -1867,6 +2124,7 @@ export async function applyPropertyOptioningPostAgentInvariants(params: {
       notify_delivered: delivery.notifyDelivered,
       web_chat_mirrored: delivery.webChatMirrored,
       document_fields_used: documentFields,
+      refreshed_after_characteristics: reviewIsStale,
     },
   });
   const updated = await advisedInvariantCaseUpdate(db, workingCase, workingCase.version, {
