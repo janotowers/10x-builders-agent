@@ -19,9 +19,9 @@ import {
   type DeterministicWorkFn,
 } from "./deterministic-service";
 import {
-  createSpecializedAgentExecutor,
-  type SpecializedAgentWorkFn,
-} from "./specialized-agent";
+  createRegisteredSpecializedWorkerExecutor,
+  type RegisteredSpecializedWorkerFn,
+} from "./registered-specialized-worker";
 import { createHumanExecutor } from "./human";
 
 function item(over: Partial<WorkItem> = {}): WorkItem {
@@ -179,8 +179,8 @@ async function testDeterministicRegistry(): Promise<void> {
   console.log("✓ deterministic-service: hit / miss explícito / throw contenido");
 }
 
-async function testSpecializedAgentExecutor(): Promise<void> {
-  const registry = new Map<string, SpecializedAgentWorkFn>([
+async function testRegisteredSpecializedWorkerExecutor(): Promise<void> {
+  const registry = new Map<string, RegisteredSpecializedWorkerFn>([
     [
       "verify_valuation",
       async () => ({
@@ -194,8 +194,8 @@ async function testSpecializedAgentExecutor(): Promise<void> {
       async () => ({ result: { verdict: "pass", findings: [] } }),
     ],
   ]);
-  const executor = createSpecializedAgentExecutor(registry);
-  assert.equal(executor.executionMode, "specialized_agent");
+  const executor = createRegisteredSpecializedWorkerExecutor(registry);
+  assert.equal(executor.executionMode, "registered_specialized_worker");
 
   // Verdict fail de negocio: succeeded + review humano, NUNCA retry ciego.
   const fail = await executor.execute(ctx(item({ work_type: "verify_valuation" })));
@@ -214,9 +214,11 @@ async function testSpecializedAgentExecutor(): Promise<void> {
   assert.equal(miss.outcome, "failed");
   assert.equal(
     (miss.error as { reason: string }).reason,
-    "registered_specialized_agent_not_found"
+    "registered_specialized_worker_not_found"
   );
-  console.log("✓ specialized-agent: verdict→review / pass / miss explícito");
+  console.log(
+    "✓ registered-specialized-worker: verdict→review / pass / miss explícito"
+  );
 }
 
 async function testHumanExecutor(): Promise<void> {
@@ -245,7 +247,7 @@ async function main(): Promise<void> {
   testExecutionMessageDiscipline();
   await testMainAgentReportMapping();
   await testDeterministicRegistry();
-  await testSpecializedAgentExecutor();
+  await testRegisteredSpecializedWorkerExecutor();
   await testHumanExecutor();
   console.log("executors selftest: all green");
 }

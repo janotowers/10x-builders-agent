@@ -446,7 +446,7 @@ async function testScopeEnforcementDenyBlocks(): Promise<void> {
   const dispatcher = createWorkDispatcher({
     store,
     resolveExecutor: () =>
-      makeAdapter("specialized_agent", async () => {
+      makeAdapter("registered_specialized_worker", async () => {
         executed += 1;
         return { outcome: "succeeded", result: {} };
       }),

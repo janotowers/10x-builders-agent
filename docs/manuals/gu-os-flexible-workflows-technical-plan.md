@@ -349,17 +349,17 @@ Indexes: partial `(status, not_before, priority) where status = 'ready'` (dispat
 
 ## 9. Executor and worker architecture [T/D]
 
-**Executor kinds** (conceptual, all first-class): main agent · deterministic service · specialized agent · ephemeral subagent · durable worker · external service · human. Work items request a `required_capability`; the runtime resolves it to a worker profile and enforces the profile's tool and data scopes at selection time, not via prompts.
+**Executor kinds** (conceptual, all first-class; taxonomy revised 2026-08-06): main agent · deterministic service · registered specialized worker · ephemeral subagent · ephemeral worker · durable worker · external service · human. Work items request a `required_capability`; the runtime resolves it to a worker profile and enforces the profile's tool and data scopes at selection time, not via prompts. The former `specialized_agent` mode was renamed `registered_specialized_worker` (migration 00073): the defining trait is being **registered by `work_type` with an isolated contract** — the implementation may be hybrid (deterministic checks + optional model second opinion) — and "agent" in the name collided with the planned AI subagents. `ephemeral_subagent` is reserved strictly for temporary children delegated by **another agent** (real parent-child delegation); `ephemeral_worker` covers temporary executions started directly by the dispatcher with no parent agent.
 
 **Capability naming** (revised 2026-08-05; supersedes the interim prefix convention): a `required_capability` names the **competency** (what is needed — `valuation_verification`, `extraction_consolidation`, `publication_reconciliation`), never the mechanism. Capabilities are **not** skill slugs. The mechanism comes from the worker profile: the runtime resolves capability → `worker_profiles.execution_mode` (per-tick snapshot; tenant shadows global) and picks the adapter by mode. This keeps the string stable while executors evolve — tomorrow the same competency may be served by a subagent pool, a specialized peer agent, or a human, by changing the profile binding, not the published definitions.
 
 | `execution_mode` (from profile) | How it runs today |
 |---|---|
 | `deterministic_service` | TypeScript function looked up by **`work_type`** in a code-defined registry (e.g. `extraction_consolidation` → `consolidateDocumentExtractionIntoCase`; `publication_reconciliation` → `reconcilePublicationCaseRecord`). Never dynamic dispatch from DB strings to arbitrary functions. |
-| `specialized_agent` | Registered specialized worker by `work_type` (e.g. `verify_valuation` → `verifyValuationRecommendation`: deterministic checks always run; a model second opinion under role `valuation_verifier` is layered on top). **Not** a skill. |
+| `registered_specialized_worker` | Registered specialized worker by `work_type` (e.g. `verify_valuation` → `verifyValuationRecommendation`: deterministic checks always run; a model second opinion under role `valuation_verifier` is layered on top). **Not** a skill. Formerly `specialized_agent`. |
 | `main_agent` | Existing case-runner `runAgent` turn with the work item’s objective / guardrails / exit criteria; may invoke skills and tools under policy. |
 | `human` | Item → `review` + internal notification (`work_item_review`). Human *as executor*, distinct from sticky business-decision HITL (§3.1). |
-| `ephemeral_subagent` / `durable_worker` / `external_service` | Declared, no adapter yet ⇒ explicit `no_executor_for_capability` block (never guessed). Reserved for parallel subagents, peer agents, and dynamic-workflow execution (finding 17: `origin='agent_proposed'`). |
+| `ephemeral_subagent` / `ephemeral_worker` / `durable_worker` / `external_service` | Declared, no adapter yet ⇒ explicit `no_executor_for_capability` block (never guessed). Reserved for parallel subagents (parent-child delegation), dispatcher-initiated ephemeral runs, peer agents, and dynamic-workflow execution (finding 17: `origin='agent_proposed'`). |
 
 The only profile-less convention is `human` / `human:*` (open-ended human capabilities such as `human:impact_repair`; profile↔capability matching is exact-string). A capability with no profile and no human prefix blocks explicitly.
 
@@ -373,8 +373,9 @@ create table worker_profiles (
   slug text not null,
   capabilities text[] not null default '{}',
   execution_mode text not null check (execution_mode in
-    ('main_agent','deterministic_service','specialized_agent','ephemeral_subagent',
-     'durable_worker','external_service','human')),
+    ('main_agent','deterministic_service','registered_specialized_worker',
+     'ephemeral_subagent','ephemeral_worker','durable_worker',
+     'external_service','human')),
   allowed_tools text[] not null default '{}',
   allowed_data_scopes text[] not null default '{}',
   model_policy_jsonb jsonb not null default '{}',

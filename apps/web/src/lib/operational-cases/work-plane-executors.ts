@@ -10,13 +10,15 @@
  * elige el adapter:
  *   - `deterministic_service` → registro en código por `work_type` (NUNCA
  *     dispatch dinámico de strings de DB a funciones arbitrarias)
- *   - `specialized_agent`     → registro de workers especializados por
- *     `work_type` (p. ej. verify_valuation)
+ *   - `registered_specialized_worker` → registro de workers especializados
+ *     por `work_type` (p. ej. verify_valuation); antes `specialized_agent`
+ *     (renombrado 2026-08-06)
  *   - `main_agent`            → case-runner existente (runAgent)
  *   - `human`                 → notifica + review
- *   - modos declarados sin adapter (ephemeral_subagent, durable_worker,
- *     external_service) y capabilities sin perfil → null ⇒ el dispatcher
- *     bloquea el item explícito (`no_executor_for_capability:<capability>`).
+ *   - modos declarados sin adapter (ephemeral_subagent, ephemeral_worker,
+ *     durable_worker, external_service) y capabilities sin perfil → null ⇒
+ *     el dispatcher bloquea el item explícito
+ *     (`no_executor_for_capability:<capability>`).
  *
  * Única convención sin perfil: `human` / `human:<detalle>` → executor human.
  * Las capabilities humanas son abiertas (`human:impact_repair`,
@@ -43,9 +45,9 @@ import {
   createDeterministicServiceExecutor,
   createHumanExecutor,
   createMainAgentExecutor,
-  createSpecializedAgentExecutor,
+  createRegisteredSpecializedWorkerExecutor,
   type DeterministicWorkFn,
-  type SpecializedAgentWorkFn,
+  type RegisteredSpecializedWorkerFn,
 } from "@agents/workflows";
 import {
   runWithAiUsageContext,
@@ -144,7 +146,7 @@ function proposalNumber(value: unknown): number | null {
  * la recomendación. En fail invalida el artefacto price_recommendation
  * (evidence gates the artifact) y deja el item en review humano.
  */
-function makeValuationVerifierFn(db: DbClient): SpecializedAgentWorkFn {
+function makeValuationVerifierFn(db: DbClient): RegisteredSpecializedWorkerFn {
   return async ({ userId, item }) => {
     const opCase = await getOperationalCase(db, item.case_id);
     if (!opCase || opCase.user_id !== userId) {
@@ -221,6 +223,19 @@ function makeValuationVerifierFn(db: DbClient): SpecializedAgentWorkFn {
           { modelPolicy: profile?.model_policy_jsonb ?? null }
         )
     );
+    // La decisión humana puede llegar mientras corre este worker. Releer el
+    // caso al terminar evita dejar `review` huérfano si el asesor ya aprobó
+    // conscientemente la propuesta (incluidas sus advertencias).
+    const freshCase = await getOperationalCase(db, item.case_id);
+    const freshContext =
+      freshCase && isRecord(freshCase.context_jsonb)
+        ? freshCase.context_jsonb
+        : context;
+    const freshProposal = isRecord(freshContext.pricing_proposal)
+      ? freshContext.pricing_proposal
+      : {};
+    const priceAlreadyApproved =
+      freshProposal.approval_status === "approved";
 
     // Contadores §9.1 (falso-accept/reject se auditan sobre estos eventos):
     // cada verdict queda en el stream del caso con el modelo RESUELTO.
@@ -236,11 +251,14 @@ function makeValuationVerifierFn(db: DbClient): SpecializedAgentWorkFn {
         checks: verification.checks,
         model: verification.model,
         work_item_id: item.id,
+        human_price_approval_already_recorded: priceAlreadyApproved,
       },
     });
 
-    // Evidence gates the price recommendation: fail ⇒ artefacto invalid.
-    if (verification.verdict === "fail") {
+    // Evidence gates the recommendation. Si el humano ya aprobó la propuesta,
+    // su decisión es el override explícito y no dejamos un artefacto inválido
+    // ni una revisión pendiente después de avanzar el caso.
+    if (verification.verdict === "fail" && !priceAlreadyApproved) {
       const recommendation = artifacts.find(
         (a) => a.artifact_type === "price_recommendation" && a.status === "current"
       );
@@ -260,12 +278,15 @@ function makeValuationVerifierFn(db: DbClient): SpecializedAgentWorkFn {
         findings: verification.findings,
         checks: verification.checks,
         model: verification.model,
+        human_override_already_recorded:
+          verification.verdict === "fail" && priceAlreadyApproved,
       },
       evidence: {
         verdict: verification.verdict,
         findings: verification.findings,
       },
-      requiresHumanReview: verification.verdict === "fail",
+      requiresHumanReview:
+        verification.verdict === "fail" && !priceAlreadyApproved,
     };
   };
 }
@@ -294,8 +315,8 @@ export function createWorkPlaneExecutorResolver(
       ["extraction_consolidation", makeExtractionConsolidationFn(db)],
     ])
   );
-  const specialized = createSpecializedAgentExecutor(
-    new Map<string, SpecializedAgentWorkFn>([
+  const specialized = createRegisteredSpecializedWorkerExecutor(
+    new Map<string, RegisteredSpecializedWorkerFn>([
       ["verify_valuation", makeValuationVerifierFn(db)],
     ])
   );
@@ -315,14 +336,15 @@ export function createWorkPlaneExecutorResolver(
   });
 
   // El perfil es la fuente de verdad del mecanismo. Los modos declarados
-  // pero aún sin implementación (ephemeral_subagent, durable_worker,
-  // external_service) caen a null ⇒ blocked explícito, jamás se adivina.
+  // pero aún sin implementación (ephemeral_subagent, ephemeral_worker,
+  // durable_worker, external_service) caen a null ⇒ blocked explícito,
+  // jamás se adivina.
   const adapterByMode: Partial<
     Record<WorkerProfile["execution_mode"], ExecutorAdapter>
   > = {
     main_agent: mainAgent,
     deterministic_service: deterministic,
-    specialized_agent: specialized,
+    registered_specialized_worker: specialized,
     human,
   };
 

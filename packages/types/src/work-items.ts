@@ -67,15 +67,26 @@ export type WorkItemEventType = (typeof WORK_ITEM_EVENT_TYPES)[number];
 export type WorkItemEventActor = "system" | "agent" | "user" | "external";
 
 /**
- * Executor kinds (Technical Plan §9). All first-class in vocabulary; only
- * main_agent, deterministic_service, specialized_agent and human have
- * runtime executors in Phase 3 — the rest stay declared-but-unimplemented.
+ * Executor kinds (Technical Plan §9; taxonomy user-approved 2026-08-06).
+ * All first-class in vocabulary; only main_agent, deterministic_service,
+ * registered_specialized_worker and human have runtime executors in Phase 3 —
+ * the rest stay declared-but-unimplemented.
+ *
+ * - registered_specialized_worker: worker registrado por work_type con
+ *   contrato aislado; puede ser híbrido (checks deterministas + segunda
+ *   opinión de modelo opcional). Antes `specialized_agent` — renombrado para
+ *   no colisionar con futuros sub-agentes IA.
+ * - ephemeral_subagent: hijo temporal delegado por OTRO agente (relación
+ *   padre-hijo real).
+ * - ephemeral_worker: ejecución temporal iniciada directamente por el
+ *   dispatcher, sin agente padre.
  */
 export const WORKER_EXECUTION_MODES = [
   "main_agent",
   "deterministic_service",
-  "specialized_agent",
+  "registered_specialized_worker",
   "ephemeral_subagent",
+  "ephemeral_worker",
   "durable_worker",
   "external_service",
   "human",

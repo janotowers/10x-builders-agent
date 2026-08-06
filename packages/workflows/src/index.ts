@@ -103,9 +103,9 @@ export {
   type DeterministicWorkFn,
 } from "./executors/deterministic-service";
 export {
-  createSpecializedAgentExecutor,
-  type SpecializedAgentWorkFn,
-} from "./executors/specialized-agent";
+  createRegisteredSpecializedWorkerExecutor,
+  type RegisteredSpecializedWorkerFn,
+} from "./executors/registered-specialized-worker";
 export { createHumanExecutor, type HumanWorkNotifier } from "./executors/human";
 export {
   BUSINESS_SPEC_VERSION,
