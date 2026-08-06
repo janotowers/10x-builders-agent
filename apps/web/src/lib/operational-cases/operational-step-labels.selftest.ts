@@ -1,6 +1,7 @@
 import {
   buildOperationalStepLabelMap,
   formatOperationalStepForDisplay,
+  friendlyOperationalStepLabel,
   humanizeOperationalStepKey,
 } from "./operational-step-labels";
 
@@ -13,6 +14,19 @@ const map = buildOperationalStepLabelMap([
   { step_key: "photos_requested", step_label: "Solicitar fotos" },
 ]);
 
+assert(
+  friendlyOperationalStepLabel("awaiting_documents", map) ===
+    "Solicitar documentos",
+  "card label: solo step_label del flow"
+);
+assert(
+  friendlyOperationalStepLabel("unknown_step", map) === "Unknown Step",
+  "card label: humaniza slug desconocido (sin snake_case crudo)"
+);
+assert(
+  friendlyOperationalStepLabel(null, map) === null,
+  "card label: sin paso ⇒ null"
+);
 assert(
   formatOperationalStepForDisplay("photos_requested", map) ===
     "Solicitar fotos (photos_requested)",

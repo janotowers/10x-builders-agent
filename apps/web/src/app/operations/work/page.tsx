@@ -19,10 +19,16 @@ import type { ReactNode } from "react";
 import {
   approveReviewedItem,
   createServerClient,
+  listWorkItemEvents,
   listWorkItemsForUser,
   retryBlockedItem,
 } from "@agents/db";
-import type { WorkItem, WorkItemAttempt, WorkItemStatus } from "@agents/types";
+import type {
+  WorkItem,
+  WorkItemAttempt,
+  WorkItemEvent,
+  WorkItemStatus,
+} from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { AppShell } from "@/components/app-shell";
 import { OperationsControlTabs } from "@/app/operations/operations-control-tabs";
@@ -187,70 +193,324 @@ function ColumnHeader({
   );
 }
 
+function workHref(opts: {
+  caseId?: string | null;
+  historial?: boolean;
+  itemId?: string | null;
+}): string {
+  const params = new URLSearchParams();
+  if (opts.caseId) params.set("case", opts.caseId);
+  if (opts.historial) params.set("historial", "1");
+  if (opts.itemId) params.set("item", opts.itemId);
+  const qs = params.toString();
+  return qs ? `/operations/work?${qs}` : "/operations/work";
+}
+
+function formatWorkDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString("es-MX", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function jsonPreview(value: unknown, max = 600): string {
+  try {
+    const text = JSON.stringify(value, null, 2);
+    if (text.length <= max) return text;
+    return `${text.slice(0, max)}…`;
+  } catch {
+    return String(value);
+  }
+}
+
+function WorkItemDetailPanel({
+  item,
+  attempts,
+  events,
+  caseLabelText,
+  clearHref,
+  caseOverviewHref,
+}: {
+  item: WorkItem;
+  attempts: WorkItemAttempt[];
+  events: WorkItemEvent[];
+  caseLabelText: string;
+  clearHref: string;
+  caseOverviewHref: string;
+}) {
+  const sortedAttempts = [...attempts].sort(
+    (a, b) => b.attempt_number - a.attempt_number
+  );
+  return (
+    <div className="mb-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-100">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-semibold">{workTypeLabel(item.work_type)}</p>
+          <p className="mt-0.5 text-xs opacity-80">
+            <code className="text-[11px]">{item.work_type}</code>
+            {" · "}
+            <code className="text-[11px]">{item.id}</code>
+          </p>
+          <p className="mt-1 text-xs">
+            Estado <span className="font-semibold">{item.status}</span>
+            {" · "}
+            {retryStateLabel(item)}
+            {" · capacidad "}
+            <code className="text-[11px]">{item.required_capability}</code>
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href={caseOverviewHref}
+            className="rounded-md border border-sky-400 bg-white px-3 py-1.5 text-xs font-semibold text-sky-900 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-900 dark:text-sky-100"
+          >
+            Ver caso →
+          </Link>
+          <Link
+            href={clearHref}
+            className="rounded-md border border-sky-300 px-3 py-1.5 text-xs font-semibold hover:bg-sky-100 dark:border-sky-800 dark:hover:bg-sky-900"
+          >
+            Cerrar detalle
+          </Link>
+        </div>
+      </div>
+
+      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
+        <div>
+          <dt className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+            Caso
+          </dt>
+          <dd className="font-medium">{caseLabelText}</dd>
+        </div>
+        <div>
+          <dt className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+            Origen
+          </dt>
+          <dd className="font-medium">{item.origin}</dd>
+        </div>
+        <div>
+          <dt className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+            Verificación
+          </dt>
+          <dd className="font-medium">{verificationStateLabel(item)}</dd>
+        </div>
+        <div>
+          <dt className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+            Creado
+          </dt>
+          <dd className="font-medium">{formatWorkDateTime(item.created_at)}</dd>
+        </div>
+        <div>
+          <dt className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+            Actualizado
+          </dt>
+          <dd className="font-medium">{formatWorkDateTime(item.updated_at)}</dd>
+        </div>
+        {item.due_at ? (
+          <div>
+            <dt className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+              Fecha límite del item
+            </dt>
+            <dd className="font-medium">{formatWorkDateTime(item.due_at)}</dd>
+          </div>
+        ) : null}
+        {item.status === "blocked" ? (
+          <div className="sm:col-span-2">
+            <dt className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+              Motivo de bloqueo
+            </dt>
+            <dd className="font-medium text-red-700 dark:text-red-300">
+              {blockedReasonLabel(item.blocked_reason)}
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+
+      {item.result_jsonb ? (
+        <div className="mt-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+            Resultado
+          </p>
+          <pre className="mt-1 max-h-40 overflow-auto rounded-lg border border-sky-200/80 bg-white/70 p-2 text-[10px] text-neutral-800 dark:border-sky-800 dark:bg-sky-900/50 dark:text-sky-100">
+            {jsonPreview(item.result_jsonb)}
+          </pre>
+        </div>
+      ) : null}
+
+      <div className="mt-4">
+        <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+          Intentos ({sortedAttempts.length})
+        </p>
+        {sortedAttempts.length === 0 ? (
+          <p className="mt-1 text-xs opacity-80">Sin attempts todavía.</p>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {sortedAttempts.map((attempt) => (
+              <li
+                key={attempt.id}
+                className="rounded-lg border border-sky-200/80 bg-white/70 p-2.5 text-xs dark:border-sky-800 dark:bg-sky-900/40"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">
+                    Intento {attempt.attempt_number}
+                  </span>
+                  <span
+                    className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${executorBadgeClasses(attempt.executor_kind)}`}
+                  >
+                    {executorKindLabel(attempt.executor_kind)}
+                  </span>
+                  <span className="text-neutral-500">{attempt.status}</span>
+                  {item.current_attempt_id === attempt.id ? (
+                    <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800 dark:bg-sky-950 dark:text-sky-200">
+                      vigente
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-[11px] text-neutral-500">
+                  Claim {formatWorkDateTime(attempt.claimed_at)}
+                  {attempt.completed_at
+                    ? ` · fin ${formatWorkDateTime(attempt.completed_at)}`
+                    : ""}
+                  {attempt.last_liveness_at
+                    ? ` · vitalidad ${formatWorkDateTime(attempt.last_liveness_at)}`
+                    : ""}
+                </p>
+                {attempt.error_jsonb ? (
+                  <pre className="mt-1 max-h-28 overflow-auto rounded border border-red-200 bg-red-50/80 p-1.5 text-[10px] text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100">
+                    {jsonPreview(attempt.error_jsonb, 400)}
+                  </pre>
+                ) : null}
+                {attempt.evidence_jsonb ? (
+                  <pre className="mt-1 max-h-28 overflow-auto rounded border border-neutral-200 bg-neutral-50 p-1.5 text-[10px] text-neutral-800 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
+                    {jsonPreview(attempt.evidence_jsonb, 400)}
+                  </pre>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="mt-4">
+        <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+          Timeline ({events.length})
+        </p>
+        {events.length === 0 ? (
+          <p className="mt-1 text-xs opacity-80">Sin eventos registrados.</p>
+        ) : (
+          <ol className="mt-2 max-h-48 space-y-1.5 overflow-auto text-xs">
+            {events.map((event) => (
+              <li
+                key={event.id}
+                className="rounded border border-sky-200/60 bg-white/50 px-2 py-1.5 dark:border-sky-800 dark:bg-sky-900/30"
+              >
+                <span className="font-semibold">{event.event_type}</span>
+                <span className="opacity-70"> · {event.actor}</span>
+                <span className="opacity-70">
+                  {" · "}
+                  {formatWorkDateTime(event.created_at)}
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function WorkItemCard({
   item,
   attempt,
   caseLabelText,
   depCount,
   compact = false,
+  selected = false,
+  detailHref,
 }: {
   item: WorkItem;
   attempt: WorkItemAttempt | null;
   caseLabelText: string;
   depCount: number;
   compact?: boolean;
+  selected?: boolean;
+  detailHref: string;
 }) {
   const cue = item.status === "running" ? livenessCue(attempt) : "";
   return (
     <article
-      className={`rounded-xl border border-neutral-200 bg-white text-xs shadow-sm dark:border-neutral-800 dark:bg-neutral-900 ${
+      className={`rounded-xl border bg-white text-xs shadow-sm dark:bg-neutral-900 ${
         compact ? "p-2.5" : "p-3"
+      } ${
+        selected
+          ? "border-sky-400 ring-2 ring-sky-200 dark:border-sky-500 dark:ring-sky-900"
+          : "border-neutral-200 dark:border-neutral-800"
       }`}
     >
-      <div className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="font-semibold leading-snug text-neutral-900 dark:text-neutral-100">
-            {workTypeLabel(item.work_type)}
-          </p>
-          <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-neutral-400">
-            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-              {retryStateLabel(item)}
-            </span>
-            <code className="truncate">{item.work_type}</code>
-          </p>
+      {/* El enlace cubre el cuerpo; Aprobar/Reintentar quedan FUERA para no
+          capturar el clic (forms anidados en <a> son ilegales en HTML). */}
+      <Link href={detailHref} className="block outline-none">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold leading-snug text-neutral-900 dark:text-neutral-100">
+              {workTypeLabel(item.work_type)}
+            </p>
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-neutral-400">
+              <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                {retryStateLabel(item)}
+              </span>
+              <code className="truncate">{item.work_type}</code>
+            </p>
+          </div>
         </div>
-      </div>
-      <p className="mt-1.5 truncate text-neutral-500" title={caseLabelText}>
-        Caso: {caseLabelText}
-      </p>
-      <p className="mt-1.5 flex flex-wrap items-center gap-1 text-neutral-500">
-        <span
-          className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${executorBadgeClasses(attempt?.executor_kind)}`}
-        >
-          {executorKindLabel(attempt?.executor_kind)}
-        </span>
-        {depCount > 0 ? (
-          <span>
-            {depCount} dep{depCount === 1 ? "" : "s"}
+        <p className="mt-1.5 truncate text-neutral-500" title={caseLabelText}>
+          Caso: {caseLabelText}
+        </p>
+        <p className="mt-1.5 flex flex-wrap items-center gap-1 text-neutral-500">
+          <span
+            className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${executorBadgeClasses(attempt?.executor_kind)}`}
+          >
+            {executorKindLabel(attempt?.executor_kind)}
           </span>
-        ) : null}
-        {item.due_at ? (
-          <span>Vence: {new Date(item.due_at).toLocaleString("es-MX")}</span>
-        ) : null}
-      </p>
-      <p className="mt-1 truncate text-neutral-500" title={verificationStateLabel(item)}>
-        Verificación: {verificationStateLabel(item)}
-      </p>
-      {cue ? (
-        <p className="mt-1 font-medium text-violet-700 dark:text-violet-300">
-          {cue}
+          {depCount > 0 ? (
+            <span>
+              {depCount} dep{depCount === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {item.due_at ? (
+            <span>
+              Fecha límite: {new Date(item.due_at).toLocaleString("es-MX")}
+            </span>
+          ) : null}
         </p>
-      ) : null}
-      {item.status === "blocked" ? (
-        <p className="mt-1 text-red-600 dark:text-red-400">
-          Motivo: {blockedReasonLabel(item.blocked_reason)}
+        <p
+          className="mt-1 truncate text-neutral-500"
+          title={verificationStateLabel(item)}
+        >
+          Verificación: {verificationStateLabel(item)}
         </p>
-      ) : null}
+        {cue ? (
+          <p className="mt-1 font-medium text-violet-700 dark:text-violet-300">
+            {cue}
+          </p>
+        ) : null}
+        {item.status === "blocked" ? (
+          <p className="mt-1 text-red-600 dark:text-red-400">
+            Motivo: {blockedReasonLabel(item.blocked_reason)}
+          </p>
+        ) : null}
+        <p className="mt-1.5 text-[10px] font-medium text-sky-700 dark:text-sky-300">
+          Ver detalle →
+        </p>
+      </Link>
       {item.status === "review" ? (
         <form action={approveReviewedItemAction} className="mt-2">
           <input type="hidden" name="work_item_id" value={item.id} />
@@ -309,10 +569,14 @@ function FlowColumn({
 export default async function OperatorWorkViewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ historial?: string }>;
+  searchParams: Promise<{ historial?: string; case?: string; item?: string }>;
 }) {
   const sp = await searchParams;
   const showHistory = sp.historial === "1";
+  const filterCaseId =
+    typeof sp.case === "string" && sp.case.trim() ? sp.case.trim() : null;
+  const selectedItemId =
+    typeof sp.item === "string" && sp.item.trim() ? sp.item.trim() : null;
   const gate = await requireOperator();
   if ("denied" in gate) {
     return (
@@ -365,15 +629,30 @@ export default async function OperatorWorkViewPage({
           (dependencyCounts.get(dep.work_item_id) ?? 0) + 1
         );
       }
-      const caseIds = [...new Set(items.map((i) => i.case_id))];
-      const { data: caseRows, error: caseError } = await db
+      const caseIds = [
+        ...new Set([
+          ...items.map((i) => i.case_id),
+          ...(filterCaseId ? [filterCaseId] : []),
+        ]),
+      ];
+      if (caseIds.length > 0) {
+        const { data: caseRows, error: caseError } = await db
+          .from("operational_cases")
+          .select("id, case_type, status, context_jsonb")
+          .in("id", caseIds);
+        if (caseError) throw caseError;
+        for (const row of (caseRows ?? []) as CaseLabelRow[]) {
+          caseLabels.set(row.id, row);
+        }
+      }
+    } else if (filterCaseId) {
+      const { data: caseRow, error: caseError } = await db
         .from("operational_cases")
         .select("id, case_type, status, context_jsonb")
-        .in("id", caseIds);
+        .eq("id", filterCaseId)
+        .maybeSingle();
       if (caseError) throw caseError;
-      for (const row of (caseRows ?? []) as CaseLabelRow[]) {
-        caseLabels.set(row.id, row);
-      }
+      if (caseRow) caseLabels.set(caseRow.id, caseRow as CaseLabelRow);
     }
   } catch {
     unavailable = true;
@@ -386,7 +665,15 @@ export default async function OperatorWorkViewPage({
     return status != null && HISTORICAL_CASE_STATUSES.has(status);
   };
   const historicalCount = items.filter(isHistorical).length;
-  const visibleItems = showHistory ? items : items.filter((i) => !isHistorical(i));
+  const scopedItems = filterCaseId
+    ? items.filter((i) => i.case_id === filterCaseId)
+    : items;
+  const visibleItems = showHistory
+    ? scopedItems
+    : scopedItems.filter((i) => !isHistorical(i));
+  const filterCaseLabel = filterCaseId
+    ? caseLabel(caseLabels.get(filterCaseId), filterCaseId)
+    : null;
 
   // Attempt vigente por item: preferir current_attempt_id; fallback al
   // attempt de mayor attempt_number.
@@ -415,6 +702,26 @@ export default async function OperatorWorkViewPage({
     (item) => item.status === WORK_VIEW_BLOCKED_COLUMN.status
   );
 
+  const selectedItem =
+    selectedItemId != null
+      ? items.find((i) => i.id === selectedItemId) ??
+        visibleItems.find((i) => i.id === selectedItemId) ??
+        null
+      : null;
+  let selectedEvents: WorkItemEvent[] = [];
+  if (selectedItem) {
+    try {
+      selectedEvents = await listWorkItemEvents(
+        db,
+        gate.user.id,
+        selectedItem.id,
+        40
+      );
+    } catch {
+      selectedEvents = [];
+    }
+  }
+
   const renderCard = (item: WorkItem, compact = false) => (
     <WorkItemCard
       key={item.id}
@@ -423,27 +730,73 @@ export default async function OperatorWorkViewPage({
       caseLabelText={caseLabel(caseLabels.get(item.case_id), item.case_id)}
       depCount={dependencyCounts.get(item.id) ?? 0}
       compact={compact}
+      selected={item.id === selectedItemId}
+      detailHref={workHref({
+        caseId: filterCaseId,
+        historial: showHistory,
+        itemId: item.id,
+      })}
     />
   );
 
   return (
     <AppShell
       title="Control operativo"
-      description="Trabajo interno: work items por estado, con ejecutor, reintentos, verificación y vitalidad de claims."
+      description="Trabajo interno: work items por estado. Clic en una tarjeta → intentos, evidencia y timeline (Aprobar/Reintentar siguen en la tarjeta)."
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <OperationsControlTabs active="work" />
-        {historicalCount > 0 ? (
-          <Link
-            href={showHistory ? "/operations/work" : "/operations/work?historial=1"}
-            className="mb-4 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
-          >
-            {showHistory
-              ? "Ocultar historial"
-              : `Mostrar historial (${historicalCount} de casos terminados)`}
-          </Link>
-        ) : null}
+        <div className="mb-4 flex flex-wrap gap-2">
+          {filterCaseId ? (
+            <Link
+              href="/operations/overview"
+              className="rounded-md border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-900 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
+            >
+              Quitar filtro de caso
+            </Link>
+          ) : null}
+          {historicalCount > 0 ? (
+            <Link
+              href={workHref({
+                caseId: filterCaseId,
+                historial: !showHistory,
+                itemId: selectedItemId,
+              })}
+              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              {showHistory
+                ? "Ocultar historial"
+                : `Mostrar historial (${historicalCount} de casos terminados)`}
+            </Link>
+          ) : null}
+        </div>
       </div>
+      {filterCaseId ? (
+        <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-100">
+          Filtrado por caso:{" "}
+          <span className="font-semibold">{filterCaseLabel}</span>
+          .{" "}
+          <Link href="/operations/overview" className="underline">
+            Volver a trabajo durable
+          </Link>
+        </div>
+      ) : null}
+      {selectedItem ? (
+        <WorkItemDetailPanel
+          item={selectedItem}
+          attempts={attemptsByItem.get(selectedItem.id) ?? []}
+          events={selectedEvents}
+          caseLabelText={caseLabel(
+            caseLabels.get(selectedItem.case_id),
+            selectedItem.case_id
+          )}
+          clearHref={workHref({
+            caseId: filterCaseId,
+            historial: showHistory,
+          })}
+          caseOverviewHref={`/operations/overview?case=${selectedItem.case_id}`}
+        />
+      ) : null}
       {unavailable ? (
         <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
           El plano de trabajo no está disponible en este entorno (la migración

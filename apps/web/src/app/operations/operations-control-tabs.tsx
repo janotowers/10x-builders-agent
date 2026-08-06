@@ -1,15 +1,13 @@
 /**
- * Pestañas de "Control operativo" (consolidación de navegación, inicio de
- * Phase 4): una sola entrada del sidebar agrupa las dos superficies del
- * operador — el plano de trabajo (/operations/work) y la vista de impacto
- * (/operations/impact) — como pestañas, siguiendo el patrón de secciones de
- * Proactividad. Cada ruta sigue siendo su propia página de servidor con sus
- * server actions; las pestañas son solo navegación.
+ * Pestañas de "Control operativo": Trabajo durable (casos / tareas),
+ * Unidades de trabajo (work items), Cambios y reparaciones (impacto).
+ * Cada ruta es su propia página de servidor; las pestañas son navegación.
  */
 import Link from "next/link";
 
 const TABS = [
-  { id: "work", label: "Trabajo", href: "/operations/work" },
+  { id: "overview", label: "Trabajo durable", href: "/operations/overview" },
+  { id: "work", label: "Unidades de trabajo", href: "/operations/work" },
   {
     id: "impact",
     label: "Cambios y reparaciones",

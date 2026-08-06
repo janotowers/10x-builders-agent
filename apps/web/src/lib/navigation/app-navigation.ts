@@ -79,18 +79,21 @@ export const APP_NAV_TREE: AppNavNode[] = [
         matcher: { kind: "settings-view", view: "proactivity" },
       },
       {
-        // Superficie unificada del operador (consolidación de navegación,
-        // inicio de Phase 4): /operations/work y /operations/impact son
-        // pestañas de "Control operativo". Mismo rol interino is_ungga_admin
-        // (Technical Plan §16 deja abierto el sistema de roles).
+        // Superficie unificada del operador: Trabajo durable, Unidades de
+        // trabajo e Impacto. Mismo rol interino is_ungga_admin (Technical Plan §16).
+        // No usar prefix "/operations" (chocaría con /operations/workflows).
         key: "operations-control",
         label: "Control operativo",
         shortLabel: "Control",
         icon: "tool",
-        href: "/operations/work",
+        href: "/operations/overview",
         matcher: {
           kind: "path-prefix",
-          prefixes: ["/operations/work", "/operations/impact"],
+          prefixes: [
+            "/operations/overview",
+            "/operations/work",
+            "/operations/impact",
+          ],
         },
         adminOnly: true,
       },

@@ -17,6 +17,7 @@
     "test:intake-extraction": "tsx src/lib/operational-cases/property-optioning-intake-extraction.selftest.ts && tsx src/lib/operational-cases/operational-conversation-classifier.selftest.ts && tsx src/lib/operational-cases/owner-characteristics-extraction.selftest.ts",
     "test:engagement-policies": "tsx src/lib/engagement-policies/registry.selftest.ts",
     "test:work-view": "tsx src/lib/operations/work-view-labels-ui.selftest.ts",
+    "test:durable-work-view": "tsx src/lib/operations/durable-work-view-labels-ui.selftest.ts",
     "test:impact-view": "tsx src/lib/operations/impact-view-labels-ui.selftest.ts",
     "test:workflow-studio": "tsx src/lib/workflow-studio/workflow-studio.selftest.ts && tsx src/lib/workflow-studio/compile-definition.selftest.ts",
     "test:replay": "tsx scripts/replay-definitions.ts --limit 20 --no-evidence",

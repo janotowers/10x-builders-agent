@@ -31,6 +31,21 @@ export function buildOperationalStepLabelMap(
   return map;
 }
 
+/**
+ * Solo el nombre legible (para tarjetas de Trabajo durable / superficies
+ * broker-facing). Null si no hay paso. Preferir step_label del flow; si no,
+ * humanizar el slug — nunca devolver solo snake_case.
+ */
+export function friendlyOperationalStepLabel(
+  stepKey: string | null | undefined,
+  stepLabels?: OperationalStepLabelMap
+): string | null {
+  if (!stepKey?.trim()) return null;
+  const key = stepKey.trim();
+  const label = stepLabels?.[key]?.trim();
+  return label && label !== key ? label : humanizeOperationalStepKey(key);
+}
+
 /** Formato estándar: label legible + step_key técnico entre paréntesis. */
 export function formatOperationalStepForDisplay(
   stepKey: string | null | undefined,
@@ -38,9 +53,7 @@ export function formatOperationalStepForDisplay(
 ): string {
   if (!stepKey?.trim()) return "(sin paso)";
   const key = stepKey.trim();
-  const label = stepLabels?.[key]?.trim();
-  const friendly =
-    label && label !== key ? label : humanizeOperationalStepKey(key);
+  const friendly = friendlyOperationalStepLabel(key, stepLabels);
   return `${friendly} (${key})`;
 }
 

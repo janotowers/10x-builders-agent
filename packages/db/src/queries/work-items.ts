@@ -159,6 +159,22 @@ export async function getWorkItemAttemptById(
   return (data as WorkItemAttempt | null) ?? null;
 }
 
+/** Attempts de un work item (más reciente primero). */
+export async function listWorkItemAttempts(
+  db: DbClient,
+  userId: string,
+  workItemId: string
+): Promise<WorkItemAttempt[]> {
+  const { data, error } = await db
+    .from("work_item_attempts")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("work_item_id", workItemId)
+    .order("attempt_number", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as WorkItemAttempt[];
+}
+
 // ============================================================
 // Instanciación desde templates (idempotente por keys)
 // ============================================================
@@ -960,6 +976,8 @@ export interface CaseWorkSummary {
   caseId: string;
   total: number;
   blocked: number;
+  /** Conteos por estado del work plane (para Control operativo → Trabajo durable). */
+  byStatus: Partial<Record<WorkItemStatus, number>>;
 }
 
 /** Chip de resumen para la superficie del broker: n items + indicador blocked. */
@@ -981,9 +999,12 @@ export async function summarizeCaseWork(
       caseId: row.case_id,
       total: 0,
       blocked: 0,
+      byStatus: {},
     };
     entry.total += 1;
-    if (row.status === "blocked") entry.blocked += 1;
+    const status = row.status as WorkItemStatus;
+    entry.byStatus[status] = (entry.byStatus[status] ?? 0) + 1;
+    if (status === "blocked") entry.blocked += 1;
     result.set(row.case_id, entry);
   }
   return result;
