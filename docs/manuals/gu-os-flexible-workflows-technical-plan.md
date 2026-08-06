@@ -72,6 +72,25 @@ Condensed from the analysis §3–§4; citations are in the analysis. These are 
 9. **One set of runtime primitives.** Production execution, the verification studio, simulation, and replay invoke the same transition evaluator, dispatcher, guards, and verifiers. No lab-only reimplementation.
 10. **HITL is risk-justified, not blanket.** Gates that require a human are enumerated with thresholds (analysis §10.5); everything else is protected by boundaries (validation, allowlists, evidence), because habituated approval is not a control.
 
+### 3.1 Human involvement taxonomy [T]
+
+Any situation where a human must act is **human involvement**. Prefer this umbrella over an undifferentiated “HITL” label. Canonical kinds:
+
+| Kind | Question | Examples in Gu OS |
+|---|---|---|
+| **A. Action / tool authorization** | May Gu execute this side-effecting action? | Medium/high-risk tool confirmation; publish; send email |
+| **B. Business decision** | What commercial/legal outcome does the human choose? | Price approval; contract review; publish-destination approval; titularidad override |
+| **C. Human contribution / task** | What input or action must the human supply? | Upload documents/photos; provide a missing field; OTP/CAPTCHA; owner reply |
+| **D. Exception review / intervention** | What should happen after failure or ambiguity? | Work-item review after verifier fail; blocked-item retry; reconcile publication incident |
+
+Related modes (do not collapse):
+
+- **HITL (blocking):** runtime pauses until the human responds (tool approval, sticky business decision).
+- **Human as executor:** the work item’s `required_capability` is `human` / `human:*` from the start (`work_item_review`).
+- **Human-on-the-loop:** human may supervise or intervene without gating every step (operator Control operativo views).
+
+Inbox / notifications should continue to differentiate ask-kinds (business decisions, blocked work, tool approvals, release approvals, compiler clarifications) rather than one undifferentiated pending list (§16). Cross-channel continuity keeps decisions on the notifications path; views never become a second approval surface (§16.1).
+
 ---
 
 ## 4. Target architecture [T]
@@ -81,6 +100,7 @@ Eight planes, each owning one question (diagram and full rationale: analysis §6
 | Plane | Question owned | Backing (tentative) |
 |---|---|---|
 | Case | What is commercially true? | existing tables + `case_facts`, `case_approvals`, version pin |
+| Durable task (future root) | What durable job is in flight / what did it deliver? | not landed — see §7.0; today forced to hang under a case |
 | Work | What executable work remains, what blocks what? | `work_items`, `work_item_attempts`, dependencies, events |
 | Worker | Who can execute this capability? | `worker_profiles` + executor adapters |
 | Impact | What becomes stale when an input changes? | `artifact_inputs`, input hashes, invalidation events, repair templates |
@@ -215,12 +235,50 @@ The case plane must not learn about work items beyond a summary (count/blocked i
 
 ## 7. Work-plane design [D]
 
+### 7.0 Durable work roots: Case vs independent Durable Task [T]
+
+**Accepted distinction (user-approved 2026-08-05):** duration and HITL do **not** distinguish the two. The question is *what truth is being cared for*.
+
+| | **Case** | **Independent durable task** |
+|---|---|---|
+| Central question | What is commercially/operationally true about this entity or process *now*? | How is this job progressing / what did it deliver? |
+| Identity | Concrete business entity or process (property optioning, lead follow-up, deal close) | A requested job / execution with an objective and result |
+| Status vocabulary | Business: waiting on owner, price pending, published… | Execution: todo / ready / running / blocked / review / done… |
+| Completing means | Commercial outcome reached | Job finished (report produced, batch scored, package prepared) |
+| External participants | Often central | Optional |
+| Documents / uploads | Often become case facts/artifacts (dossier truth) | Inputs/evidence for the job; result is retained with a declared retention policy; may later *promote* into a case |
+| HITL | Common | Allowed whenever risk requires it — not the distinguishing criterion |
+| Skills | Often used | Often used — a Skill is a reusable procedure, not “durable” or “not durable” by itself |
+
+**Classification test:** after it finishes, can Gu answer “where is *this* property/lead/deal commercially?” → **case**. Or only “did the job finish and what did it deliver?” → **durable task**.
+
+**Examples (real-estate):**
+
+- Case: option *Casa Las Fuentes* until published (owner, documents, price approval, listing package).
+- Durable task: “Analyze my 300-listing inventory and return the top underpriced opportunities” (batch job; selected hits may *spawn* cases).
+- Case-bound work item: “verify valuation” inside an optioning case.
+- Not a durable task merely because it is slow: a two-hour OCR batch can be a durable task; a multi-week optioning process is still a case.
+
+**Artifact / retention rules (design position):**
+
+- `account_assets` = tenant reusable resources (templates, logos) — not case- or task-specific uploads.
+- Case artifacts / facts = dossier truth for a business process.
+- Durable-task inputs/results = retained against the task/run with an explicit retention policy (default: results are durable; intermediate inputs may expire sooner). Promotion into a case (or later Brain) is an explicit act, not silent copy.
+- Turn attachments without a durable root remain conversational and short-lived.
+
+**Relation to dynamic workflows:** not the same thing. Dynamic workflows = runtime may *propose* work items (`origin='agent_proposed'`) under worker-profile envelopes and verification. Those items still need a **root**: a case *or* (future) an independent durable task. Designing roots first avoids phantom `case_type=batch_analysis` rows just to satisfy `work_items.case_id`.
+
+**Gap today [V]:** `work_items.case_id` is `NOT NULL`. There is no first-class durable-task / work-run entity. Control operativo → Trabajo durable can only list cases. Closing this gap is **Phase 5** (detailed plan), sequenced *before* general dynamic-workflow activation. Tentative shape (names illustrative): `durable_tasks` (objective) → `work_runs` (one execution) → `work_items` (nullable `case_id` XOR `work_run_id`). Optional schedules create new runs.
+
+---
+
 Statuses (seven, generic, deliberately different from case vocabulary): `todo`, `ready`, `running`, `blocked`, `review`, `done`, `cancelled`. `ready` is computed from dependency satisfaction, never set by hand. Hermes's `triage` is dropped (work is born classified by the definition) and `archived` is dropped (retention policy on `done`/`cancelled` instead).
 
-**Provenance.** `origin` records how the item came to exist: `definition_template` (instantiated `on_enter_state`, Phase 2), `impact_repair` (created by the impact engine, §11/Phase 3), `agent_proposed` and `human` (reserved seams — declared but unconsumed until verification contracts exist; agent-proposed work under the worker-profile envelope is a post-Phase-3 capability, never a Phase 2 one). Dispatch, readiness, and claim logic never branch on `origin`; it exists for audit, replay equivalence, and to keep the schema from hard-assuming template-only creation. (Implementation-plan finding 17, 2026-08-03.)
+**Provenance.** `origin` records how the item came to exist: `definition_template` (instantiated `on_enter_state`, Phase 2), `impact_repair` (created by the impact engine, §11/Phase 3), `agent_proposed` and `human` (reserved seams — declared but unconsumed until verification contracts exist; agent-proposed work under the worker-profile envelope is a post-Phase-3 capability, never a Phase 2 one — and requires §7.0 roots before it can hang off a non-case job). Dispatch, readiness, and claim logic never branch on `origin`; it exists for audit, replay equivalence, and to keep the schema from hard-assuming template-only creation. (Implementation-plan finding 17, 2026-08-03.)
 
 ```sql
 -- Tentative. Claim-scoped fields live on attempts, not on the item (see §10).
+-- Phase 5 will relax case_id NOT NULL once work_run_id (or equivalent) exists (§7.0).
 create table work_items (
   id uuid primary key default gen_random_uuid(),
   case_id uuid not null references operational_cases(id) on delete cascade,
@@ -292,6 +350,20 @@ Indexes: partial `(status, not_before, priority) where status = 'ready'` (dispat
 ## 9. Executor and worker architecture [T/D]
 
 **Executor kinds** (conceptual, all first-class): main agent · deterministic service · specialized agent · ephemeral subagent · durable worker · external service · human. Work items request a `required_capability`; the runtime resolves it to a worker profile and enforces the profile's tool and data scopes at selection time, not via prompts.
+
+**Capability naming** (revised 2026-08-05; supersedes the interim prefix convention): a `required_capability` names the **competency** (what is needed — `valuation_verification`, `extraction_consolidation`, `publication_reconciliation`), never the mechanism. Capabilities are **not** skill slugs. The mechanism comes from the worker profile: the runtime resolves capability → `worker_profiles.execution_mode` (per-tick snapshot; tenant shadows global) and picks the adapter by mode. This keeps the string stable while executors evolve — tomorrow the same competency may be served by a subagent pool, a specialized peer agent, or a human, by changing the profile binding, not the published definitions.
+
+| `execution_mode` (from profile) | How it runs today |
+|---|---|
+| `deterministic_service` | TypeScript function looked up by **`work_type`** in a code-defined registry (e.g. `extraction_consolidation` → `consolidateDocumentExtractionIntoCase`; `publication_reconciliation` → `reconcilePublicationCaseRecord`). Never dynamic dispatch from DB strings to arbitrary functions. |
+| `specialized_agent` | Registered specialized worker by `work_type` (e.g. `verify_valuation` → `verifyValuationRecommendation`: deterministic checks always run; a model second opinion under role `valuation_verifier` is layered on top). **Not** a skill. |
+| `main_agent` | Existing case-runner `runAgent` turn with the work item’s objective / guardrails / exit criteria; may invoke skills and tools under policy. |
+| `human` | Item → `review` + internal notification (`work_item_review`). Human *as executor*, distinct from sticky business-decision HITL (§3.1). |
+| `ephemeral_subagent` / `durable_worker` / `external_service` | Declared, no adapter yet ⇒ explicit `no_executor_for_capability` block (never guessed). Reserved for parallel subagents, peer agents, and dynamic-workflow execution (finding 17: `origin='agent_proposed'`). |
+
+The only profile-less convention is `human` / `human:*` (open-ended human capabilities such as `human:impact_repair`; profile↔capability matching is exact-string). A capability with no profile and no human prefix blocks explicitly.
+
+`work_templates` live on the workflow definition graph (`graph.work_templates`); on enter of `on_enter_state`, the dispatcher instantiates items stamped `origin='definition_template'`.
 
 ```sql
 -- Tentative
@@ -593,13 +665,21 @@ Improvement authority is allowlisted per target: mechanical index/health repair 
 
 Eight distinct concepts, never re-merged: **Case View** (business truth; brokers never see `ready`/`running`/`blocked`), **Work View** (execution; operator-first, role-gated), **Impact View** (changes, staleness, repair), **Timeline** (events + provenance), **Evidence View** (verification results), **Workflow Studio** (spec + authoring), **Verification Studio** (tests + simulation), **Release View** (publication decision + rollback).
 
+**Control operativo — two levels** [D] (landed 2026-08-05 as operator surface): do **not** collapse case and work-item cards into one Kanban row. Tabs:
+
+1. **Trabajo durable** (`/operations/overview`) — durable work at **root** level: today **cases** only; after Phase 5 (§7.0) also **independent durable tasks**. Default **board**: red tray **Bloqueado** (work items blocked) and softer tray **Pausado** above when non-empty + flow columns Atención / En marcha / Externos / Finalizado; plus **list** toggle. Card select → detail panel (created/updated; `next_action_at` as “Próxima revisión del sistema” when set; `due_at` as “Fecha límite del caso”, hidden when stale on paused/terminal) + link to Unidades de trabajo `?case=`. No drag-and-drop. Do **not** invent phantom cases to host batch jobs.
+2. **Unidades de trabajo** (`/operations/work`) — `work_items` Kanban (happy-path columns + blocked exception tray). Card click → detail panel (attempts, evidence/error, events timeline, link to case); Approve/Retry stay outside the link hit-target.
+3. **Cambios y reparaciones** (`/operations/impact`) — impact plane.
+
+Future: toggle “group by case / by durable task / all items”; broker-friendly Trabajo durable without admin gate once roles exist; Studio **authoring router** that classifies NL intent into case workflow vs durable task vs one-shot skill vs schedule (§7.0, Phase 5) so authors never pick ontology jargon.
+
 **Information architecture** [D/H]: workflow definitions are governed artifacts with draft/publish/rollback lifecycles — not "settings." The authoring/verification surfaces belong under a dedicated route family (e.g. `/workflows` — name tentative), with `/settings/operational-case-types` retiring after Phase 4. Final route names require examining existing navigation and the role question first [H].
 
 **Studio shell, early and read-only** [T/D]: a thin Studio surface may ship as soon as published definitions and `account_assets` exist — **catalog of definitions + tenant assets/readiness panel, with upload/replace for required assets, and with zero authoring**. This is the embryo the Phase 4 compiler Studio grows into (panels turn on; the shell is not rebuilt). It is also the required destination for `required_assets` upload before the lab's authoring surface can retire (§17 / detailed plan Slice 2.7). Explicit non-goals until Phase 4: create/edit/fork/publish definitions, simulation, and gap rows beyond assets.
 
 **Prerequisite** [V]: no role model exists beyond `profiles.is_ungga_admin`; navigation is identical for all users. Role-based UI gating must be scoped into Phase 2 (work view) explicitly, not discovered mid-phase. The early Studio shell may expose a user's own definitions and own `account_assets` without inventing a new role model.
 
-Liveness copy per §10's note. Inbox differentiates five ask-kinds (business decisions, blocked work, tool approvals, release approvals, compiler clarifications) rather than one undifferentiated pending list.
+Liveness copy per §10's note. Inbox differentiates five ask-kinds (business decisions, blocked work, tool approvals, release approvals, compiler clarifications) rather than one undifferentiated pending list — aligned with the human-involvement taxonomy in §3.1 (do not collapse A–D into a single “HITL” bucket in UI copy).
 
 ### 16.1 Channel-linked views (dynamic interfaces) [P][H]
 
@@ -809,6 +889,7 @@ Phases exit on **evidence**, not elapsed time. Two clocks per phase: *build effo
 | **2 — Work plane** | Work items/attempts/dependencies/events; readiness propagation; claims/leases/executor liveness/stale-claim recovery; attempt limits; dispatch generalization; advancement predicate; operator work view (+ first role gating); **parallel (not exit-blocking):** Studio shell read-only + tenant assets panel (§16) as destination for `required_assets` upload before lab retirement | 3–7 days (+ parallel Studio shell) | days of concurrency soak under flag |
 | **3 — Impact & workers** | Facts/artifacts/edges (incl. `input_kind=account_asset`)/evidence-bound approvals; selective invalidation + repair templates; `account_assets` content-hash versions; worker profiles; valuation verifier + two deterministic services; impact view | 3–7 days | enough real corrections (incl. template replacement C3) to calibrate over/under-invalidation |
 | **4 — Multiplexer & compiler** | Conservative decomposition; per-intent dispatch; composition; evidence gate for cross-channel antecedent resolution (deferred unless activated); business/implementation specs; capability mapping **including required_assets/integrations**; simulation gates; governed publication; compiler studio **absorbing** the Phase 2 Studio shell + verification/release surfaces; `/settings` lab retirement only after assets panel exists | multiplexer 2–5 days; compiler days–weeks (product-shaped); antecedent resolver separately sized if activated | UX iteration with the intended author [H] |
+| **5 — Durable Work Roots** | Case vs independent durable task taxonomy (§7.0); `durable_tasks` + `work_runs`; XOR root on `work_items`; Control operativo lists both roots; Studio authoring router (NL → case / durable task / skill / schedule); prerequisite for safe `agent_proposed` dynamic work | 3–7 days schema+runtime; Studio router product-shaped | batch durable task E2E without phantom case; overview shows both roots |
 
 Definition of done per phase: §30.
 
@@ -848,6 +929,7 @@ Definition of done per phase: §30.
 10. **Skill import / marketplace** — when to build the import pipeline and `account_skill_files` storage; deferred past Phase 4 compiler unless a concrete partner skill pack appears sooner.
 11. **Cross-channel antecedent resolver activation** — require evidence of web↔Telegram follow-up failures, a committed third interactive channel, or product prioritization. Until then preserve current case/HITL parity and collect examples; do not create a universal conversation entity (§12.1).
 12. **Channel-linked views (dynamic interfaces)** — when to build signed external read-only links and authenticated internal deep links to case/artifact views delivered through conversational channels (§16.1). Default: deferred until a real multi-channel need (internal advisor and/or external owner) justifies it; HITL stays on notifications; views never become a second source of truth. Design position recorded in `gu-os-qm-reference-analysis.md` §7.
+13. **Independent durable-task roots (Phase 5)** — schema names (`durable_tasks` / `work_runs`), retention defaults for task inputs vs results, whether schedules create runs or new tasks, and how Studio’s authoring router surfaces the case-vs-task distinction without ontology jargon. Gate: after property_optioning E2E + human Studio walkthrough; before general dynamic-workflow (`agent_proposed`) activation.
 
 ---
 
@@ -876,6 +958,8 @@ Definition of done per phase: §30.
 
 **Phase 4 done when:** Scenarios A1/A2/B1/B2/D pass as self-tests; a non-engineer creates, validates, simulates, and publishes a simple workflow that runs correctly on a synthetic case; publication is evidence-gated and human-approved; the capability map surfaces missing `required_assets` as customer-worded gaps; the readiness lab's authoring/verification concerns live in the studio (which has absorbed the Phase 2 shell) and `/settings/operational-case-types` is retired only after the assets panel exists. Cross-channel antecedent resolution and channel-linked views are not exit requirements unless §28.11 / §28.12 activate them.
 
+**Phase 5 done when (Durable Work Roots — detailed plan):** an independent durable task can be created without a commercial case; its work items hang off a work-run root (not a phantom case); Trabajo durable lists cases *and* durable tasks; uploads/results follow §7.0 retention rules; Studio authoring router can classify a batch-job NL request as durable task rather than forcing a case workflow; dynamic `agent_proposed` items may attach to either root under verification envelopes.
+
 ---
 
 ## Closing annexes
@@ -901,10 +985,11 @@ Definition of done per phase: §30.
 17. Tenant prerequisite assets (`account_assets` / `required_assets`) are declared on the versioned definition, fulfilled per tenant, and participate in the impact model via `input_kind=account_asset` with content-hashed versions; they are distinct from case documents and from case-generated artifacts (§5.2, §11).
 18. The Workflow Studio may ship early as a **read-only shell** (definitions catalog + assets panel) that Phase 4 grows into; lab retirement is blocked on that assets panel existing (§16, §17).
 19. Channel-linked views, when activated, use two link classes (signed external read-only vs authenticated internal deep link); HITL remains on the notifications path; views are never a second commercial source of truth (§16.1).
+20. Case vs independent durable task is a **truth-kind** distinction (commercial/dossier vs job progress/result), not duration or HITL; Skills are reusable procedures, not roots; work items hang from a case *or* (Phase 5) a durable-task run — never invent phantom cases for batch jobs (§7.0).
 
 ### B. Unresolved decisions
 
-The [H] items in §28 (including owner_scope for organizations, skill-import timing, and channel-linked view activation).
+The [H] items in §28 (including owner_scope for organizations, skill-import timing, channel-linked view activation, and Phase 5 durable-task schema/retention/Studio-router details in §28.13).
 
 ### C. Repository validations still required
 

@@ -23,7 +23,7 @@
 3. Every new query helper takes `userId: string` as a **required** parameter.
 4. Terminology: never `heartbeat` for claim liveness — use *executor liveness / liveness update / lease renewal / stale claim / stale-claim recovery*. `Gu OS Heartbeat` = proactive feature only (`api/cron/heartbeat` remains correctly named).
 5. Agent assertions are claims; gates emit **evidence records** pinned to artifact hashes.
-6. Case vocabulary and work vocabulary never mix (UI or schema).
+6. Case vocabulary and work vocabulary never mix (UI or schema). Independent durable tasks (Phase 5 / Technical Plan §7.0) use execution vocabulary at the root; do not invent phantom cases for batch jobs.
 7. New shared runtime primitives live in a new **`packages/workflows`** package [D — name tentative] so `apps/web` and `packages/agent` consume the *same* evaluator/dispatcher/verifier objects (parity rule).
 8. Per-slice definition of done always includes: `npm run type-check` and `npm run lint` clean at root; affected selftest scripts green; new selftests wired into an npm script.
 9. Model selection for new agentic workers uses Technical Plan §9.1 (`model_policy_jsonb` + role `*_MODEL_ID` env defaults). Do not hardcode vendor model strings in workflow definitions.
@@ -31,6 +31,7 @@
 11. AI usage metering is internal observability, not billing: capture one append-only event per model call; do not add customer prices, credits, quotas, balances, invoices, billable-usage rules, or broker-facing usage UI.
 12. Cross-channel continuity follows [Gu OS Cross-channel Continuity Architecture](./gu-os-cross-channel-continuity-architecture.md): cases own operational continuity, notifications own pending decisions, and general antecedents use evidence-gated turn artifacts; do not invent a universal conversation thread.
 13. Technical Plan §11's additional artifact classes (knowledge artifact, executable artifact, situational software, turn artifact) and §14's loop operating contract (`outcome … dri`) are **governance taxonomy, not Phase 0–3 schema**: Slice 3.1 creates only `case_facts` / `case_artifacts` / `artifact_inputs` / `case_approvals` (+ asset versioning); do not add tables or definition fields for the other classes or for `dri`/`improvement_targets` without a Technical Plan change and its own slice. Semantics live in [`ai-native-loops.md`](./ai-native-loops.md), [`ADR-104`](../adr/ADR-104-governed-improvement.md) and [`ADR-105`](../adr/ADR-105-shareable-regenerable-views.md); knowledge ownership scopes in [`knowledge-scope-and-ownership.md`](./knowledge-scope-and-ownership.md) stay inert until §28.9 activates organization ownership.
+14. **Human involvement** (Technical Plan §3.1): prefer the umbrella over an undifferentiated “HITL” label. Canonical kinds — (A) action/tool authorization, (B) business decision, (C) human contribution/task, (D) exception review/intervention — plus modes HITL-blocking / human-as-executor / human-on-the-loop. Inbox ask-kinds stay differentiated; views never become a second approval surface.
 
 **Verification commands:** `cd apps/web && npm run test:business-decisions` · `npm run test:readiness-test-ui` · `npm run test:publication-workflow` · `npm run test:step-decision` (etc. per `apps/web/package.json` L11–20); root `npm run type-check && npm run lint`.
 
@@ -303,7 +304,7 @@
 **Objective:** `main_agent`, `deterministic_service`, and `human` execution modes work; others stay declared-but-unimplemented.
 
 **Tasks:**
-- [x] 1. `packages/workflows/src/executors/` [D]: adapter interface per §20; `main-agent.ts` invokes the existing `runAgent` case-runner path with the work item's input contract in the case context block; `deterministic-service.ts` invokes a registered function by name; `human.ts` moves the item to `review` and creates an internal notification (reuse `internal-notifications` registry). The main-agent invocation message follows the finding-18 discipline: state the work item's objective, guardrails, and exit criteria; do not port the step-scripted prose style of `buildCaseE2ETickMessage` (§X.2) into work-item execution. *(La invocación de `runAgent` se inyecta — @agents/agent depende de workflows, no al revés; apps/web la cablea en `work-plane-agent-turn.ts` con canal `case_runner`, sin autoApproveTools, la tool policy del caso, y correlación `workItemId`/`workItemAttemptId` en el metering — cierra el TODO 0.4-8. Resolución capability→adapter en `work-plane-executors.ts` por convención de prefijo `human:`/`service:`/`agent:`; capability desconocida ⇒ blocked explícito. `human.ts` usa `upsertActiveInternalUserNotification` kind `work_item_review` (registrado en el registry); si la notificación falla, el reporte falla y reintenta — nunca trabajo humano invisible. Un turno con HITL pendiente ⇒ `review`.)*
+- [x] 1. `packages/workflows/src/executors/` [D]: adapter interface per §20; `main-agent.ts` invokes the existing `runAgent` case-runner path with the work item's input contract in the case context block; `deterministic-service.ts` invokes a registered function by name; `human.ts` moves the item to `review` and creates an internal notification (reuse `internal-notifications` registry). The main-agent invocation message follows the finding-18 discipline: state the work item's objective, guardrails, and exit criteria; do not port the step-scripted prose style of `buildCaseE2ETickMessage` (§X.2) into work-item execution. *(La invocación de `runAgent` se inyecta — @agents/agent depende de workflows, no al revés; apps/web la cablea en `work-plane-agent-turn.ts` con canal `case_runner`, sin autoApproveTools, la tool policy del caso, y correlación `workItemId`/`workItemAttemptId` en el metering — cierra el TODO 0.4-8. Resolución capability→adapter en `work-plane-executors.ts` — originalmente por convención de prefijo `human:`/`service:`/`agent:`; desde 2026-08-05 (finding 22) dirigida por `worker_profiles.execution_mode` con snapshot por tick, y solo `human:*` sobrevive como convención sin perfil; capability desconocida ⇒ blocked explícito. `human.ts` usa `upsertActiveInternalUserNotification` kind `work_item_review` (registrado en el registry); si la notificación falla, el reporte falla y reintenta — nunca trabajo humano invisible. Un turno con HITL pendiente ⇒ `review`.)*
 - [x] 2. Executor reports are claims: all three return `ExecutorReport`; the dispatcher passes reports to the verification step (minimal in Phase 2: output-contract zod check; full contracts in Phase 3). *(`verifyOutputContract` con `required_keys`; violación ⇒ attempt failed con `output_contract_violation`.)*
 - [x] 3. Long-running main-agent executions call `reportLiveness` between tool iterations [A — confirm a safe hook point in `graph.ts`'s tool loop; if none exists cleanly, lease length covers the turn and liveness lands with durable workers later — document choice in §X]. *(Resuelto — finding 19: renovación de lease del lado del dispatcher concurrente a la ejecución; `reportProgress` disponible para los adapters; hook fino entre tools diferido a durable workers.)*
 
@@ -311,12 +312,12 @@
 
 ### Slice 2.5 — Operator work view + first role gating
 
-**Status:** [x] done
+**Status:** [x] done (2026-08-05: Control operativo a dos niveles — Trabajo durable + Unidades + Impacto)
 **Objective:** operators see execution state; brokers do not.
 
 **Tasks:**
-- [x] 1. Role gate: `profiles.is_ungga_admin` as the interim operator role (page renders a "Sin acceso de operador" card otherwise, same pattern as `/settings/ai-usage`). Navigation entry "Plano de trabajo" added under Operaciones with `adminOnly: true` in `app-navigation.ts`.
-- [x] 2. New route `apps/web/src/app/operations/work/page.tsx`: six columns Todo/Ready/Running/Blocked/Review/Done; cards show work type, case label, executor (from current/latest attempt), due, dependency count, retry state (`Intento n/m`), verification status; liveness cues render §10 vocabulary via `work-view-labels.ts` (running items only). No drag-and-drop; the only manual transitions are explained-action buttons: "Aprobar y terminar" (review→done via `approveReviewedItem`) and "Reintentar" (blocked→ready via `retryBlockedItem`, widening `max_attempts` by 1 when blocked by attempt limit). Both run as server actions re-checking the role gate. Page is tolerant to environments where migration 00069 isn't applied yet (shows an unavailable notice).
+- [x] 1. Role gate: `profiles.is_ungga_admin` as the interim operator role (page renders a "Sin acceso de operador" card otherwise, same pattern as `/settings/ai-usage`). Navigation entry **"Control operativo"** under Operaciones with `adminOnly: true` in `app-navigation.ts` (href `/operations/overview`).
+- [x] 2. Routes: `/operations/overview` (Trabajo durable — tablero por situación operativa + toggle Lista; clic selecciona detalle con fechas y CTA a unidades `?case=`), `/operations/work` (Unidades de trabajo — work items Kanban; happy-path columns + blocked tray; filter by case), `/operations/impact` (Cambios y reparaciones). Cards show work type, case label, executor (from current/latest attempt), due, dependency count, retry state (`Intento n/m`), verification status; liveness cues render §10 vocabulary via `work-view-labels.ts` (running items only). No drag-and-drop; the only manual transitions are explained-action buttons: "Aprobar y terminar" (review→done via `approveReviewedItem`) and "Reintentar" (blocked→ready via `retryBlockedItem`, widening `max_attempts` by 1 when blocked by attempt limit). Both run as server actions re-checking the role gate. Page is tolerant to environments where migration 00069 isn't applied yet (shows an unavailable notice). Future: item → attempts/tools/evidence/timeline; “Agrupar por caso” / “Ver todos”.
 - [x] 3. Case view: `summarizeCaseWork` + `caseWorkChipLabel` feed an optional `workChip` on `OperationalCaseInstanceCard` — count + blocked indicator only, never work statuses on the broker surface. Load is try/catch-tolerant pre-migration.
 - [x] 4. UI selftest `apps/web/src/lib/operations/work-view-labels-ui.selftest.ts` (script `test:work-view`, wired into root `test:selftests`): verifies column order, all label mappings, every §10 liveness cue combination, and asserts the word "heartbeat" never renders in any output.
 - [x] 5. *(Polish 2026-08-03, operator feedback after the live soak)* Humanize-without-hiding: `workTypeLabel` (dictionary + generic fallback; raw slug stays visible as secondary text) and `blockedReasonLabel` (known codes `max_attempts_exhausted` / `no_executor_for_capability:<cap>` translated; free text passthrough). Semantic column accents (red=blocked, amber=review, violet=running, green=done) + executor badges. History filter: items whose case is `completed|cancelled|archived` hidden by default, `?historial=1` toggle shows them (soak leftovers kept as visual test data by explicit decision — no deletion).
@@ -419,7 +420,7 @@
 **Status:** [x] done (2026-08-04)
 - [x] 1. Lint a cero warnings en `@agents/web`: 13 imports/variables/funciones muertas eliminadas (verificando caso por caso que no faltara comportamiento) y los 7 `react-hooks/exhaustive-deps` de `operational-case-types-client.tsx` resueltos — 1 fix genuino (`observe_case` keyed por `selectedCaseType?.id`) y 6 excepciones documentadas inline (funciones `refresh*`/`sync*` que se recrean en cada render: incluirlas re-registraría listeners o reiniciaría polling en cada render; los closures ya quedan frescos vía las dependencias de estado).
 - [x] 2. Nav: "Flujos en curso" → **"Casos en curso"** (entrada del sidebar, título de `/operational-cases`, contadores, empty states y cross-links desde plantillas). Desambigua frente a las superficies de workflows: un "caso" es la instancia; un "workflow/plantilla" es el diseño.
-- [x] 3. Nav: "Plano de trabajo" + "Vista de impacto" → una sola entrada adminOnly **"Control operativo"** con pestañas "Trabajo" (`/operations/work`) y "Cambios y reparaciones" (`/operations/impact`) — patrón de secciones de Proactividad; cada ruta sigue siendo su propia página de servidor (`OperationsControlTabs` es solo navegación). Matcher `path-prefix` nuevo en `AppNavMatcher` para que la entrada resalte en ambas rutas.
+- [x] 3. Nav: "Plano de trabajo" + "Vista de impacto" → una sola entrada adminOnly **"Control operativo"** con pestañas (2026-08-05: **Trabajo durable** `/operations/overview` = casos/tareas; **Unidades de trabajo** `/operations/work` = work items; **Cambios y reparaciones** `/operations/impact`) — patrón de secciones de Proactividad; cada ruta sigue siendo su propia página de servidor (`OperationsControlTabs` es solo navegación). Matcher `path-prefix` cubre overview/work/impact (no `/operations` a secas — chocaría con Diseño de flujos). Clic en caso de Trabajo durable → `?case=` en Unidades de trabajo.
 - [x] 4. ~~Pendiente diferido a 4.2-4/4.2-5~~ **Ejecutado en 4.2-4 (2026-08-04):** "Plantillas de flujos" + "Workflows" absorbidos en una sola entrada **"Diseño de flujos"** (el lab sigue accesible desde el Studio y por URL para diagnósticos).
 
 **Evidence:** `npm run lint` (0 warnings) + type-check verdes; sidebar Operaciones queda en 4 entradas: Casos en curso · Plantillas de flujos · Proactividad · Control operativo (+ Workflows hasta 4.2). **Rollback:** revertir labels/entrada de nav; sin cambios de datos.
@@ -483,6 +484,68 @@
 
 ---
 
+## PHASE 5 — Durable Work Roots (post Phase 4 core)
+
+> **Governing note:** Technical Plan §7.0. This phase does **not** reopen Phases 0–4. It closes the gap that every `work_item` must hang from a commercial case. Schedule **after** a real `property_optioning` E2E on Telegram and a human Studio walkthrough; schedule **before** general dynamic-workflow (`origin='agent_proposed'`) activation.
+
+### Slice 5.0 — Taxonomy freeze + ADR
+
+**Status:** [ ] pending  
+**Objective:** freeze Case vs Independent Durable Task vs Work item vs Skill vs Schedule in an ADR; no schema yet.
+
+**Tasks:**
+- [ ] 1. ADR from Technical Plan §7.0: classification test (“commercial truth?” vs “job progress/result?”); HITL/duration are non-discriminators; Skills are procedures, not roots.
+- [ ] 2. Artifact matrix: `account_assets` vs case artifacts/facts vs durable-task inputs/results vs turn attachments; retention defaults [H — §28.13].
+- [ ] 3. Studio authoring-router sketch (product copy in ES): questions that classify NL into one-shot / skill / schedule / durable task / case workflow — never ask the user to pick ontology jargon first.
+- [ ] 4. Explicit non-goals: phantom `case_type` rows for batches; treating “no HITL” as the durable-task definition; merging Brain ingestion into this phase.
+
+**Depends on:** Phase 4.2 core ✓. **Evidence:** ADR merged; §7.0 examples covered.
+
+### Slice 5.1 — Schema: durable_tasks + work_runs; relax work_items root
+
+**Status:** [ ] pending  
+**Objective:** first-class roots so work items need not invent cases.
+
+**Tasks:**
+- [ ] 1. Migration: `durable_tasks` (user_id, objective, status, retention policy, …) and `work_runs` (durable_task_id, status, started/finished, result ref).
+- [ ] 2. `work_items`: add nullable `work_run_id`; enforce XOR `case_id` OR `work_run_id` (exactly one); backfill none — new rows only under flag.
+- [ ] 3. Queries with required `userId`; RLS; events append-only for task/run.
+- [ ] 4. Flag `durable_task_roots` [D]; dual-path with case-only when off.
+- [ ] 5. Selftests: cannot create work item with both/neither roots; tenant isolation; retention metadata present on result.
+
+**Depends on:** 5.0. **Security:** same tenancy rules as work plane. **Rollback:** flag off; no new roots created.
+
+### Slice 5.2 — Runtime + Control operativo surfaces
+
+**Status:** [ ] pending  
+**Objective:** dispatcher/tick can drain work under a work_run; UI lists both roots.
+
+**Tasks:**
+- [ ] 1. Instantiation path: create durable task + run → work items (templates or single-item) without `operational_cases` row.
+- [ ] 2. Cron/work-plane pass: claim/dispatch by root; advancement/completion closes the *run* (not a case step).
+- [ ] 3. `/operations/overview`: show cases **and** durable tasks; filters; no drag-and-drop; paused/blocked trays unchanged in spirit.
+- [ ] 4. `/operations/work`: detail panel links to case **or** durable task/run.
+- [ ] 5. Upload path for task inputs (reuse storage patterns; do not overload `account_assets`); result persistence with retention.
+
+**Depends on:** 5.1. **Evidence:** synthetic batch job completes under flag; overview shows the task without a case card.
+
+### Slice 5.3 — Studio authoring router (minimal)
+
+**Status:** [ ] pending  
+**Objective:** NL “analiza 300 propiedades…” does not force a case workflow draft.
+
+**Tasks:**
+- [ ] 1. Pre-compiler classifier (deterministic + optional model): case_workflow | durable_task | one_shot_skill | schedule | clarify.
+- [ ] 2. Durable-task compile path: objective + acceptance + capability/work_type stubs (may reuse compiler pieces; must not require fake `case_type` graph).
+- [ ] 3. UX: clarification questions in business language only.
+- [ ] 4. Selftests for the two NL fixtures from finding 23 discussions (batch inventory vs option this property).
+
+**Depends on:** 5.0, 4.2. **Non-goal:** full dynamic `agent_proposed` fan-out (separate slice after 5.1–5.2).
+
+**Phase 5 exit checks:** [ ] ADR + §7.0 aligned · [ ] batch durable task E2E under flag without phantom case · [ ] overview lists both roots · [ ] Studio router distinguishes batch vs case NL · [ ] dynamic workflows still gated until verification envelopes + roots land.
+
+---
+
 ## X. Contradiction log and findings
 
 > Record here any material contradiction between repository reality and the Technical Plan, with a proposed decision. Do not resolve architectural contradictions unilaterally.
@@ -510,6 +573,8 @@
 | 19 | 2026-08-03 | **Resolución del [A] de 2.4-3 (liveness en turnos largos de main-agent).** No existe hook limpio entre iteraciones de tools en `graph.ts` para que el *ejecutor* reporte vitalidad, y agregarlo acoplaría el agente al work plane. | Low | **Taken:** la renovación de lease corre del lado del dispatcher, concurrente a la ejecución (`executeWithLiveness`: renovación cada `leaseMs/3`). La semántica de liveness se preserva: si el proceso que ejecuta el turno muere, las renovaciones cesan y el lease expira. El ejecutor conserva `reportProgress` para señal explícita de progreso (`last_progress_at`). El hook fino entre iteraciones de tools queda para durable workers (post-Fase 3), como preveía el propio [A]. |
 | 20 | 2026-08-03 | **El advancement solo se evaluaba tras un claim del mismo tick.** Un caso cuyo último work item se completa FUERA del claim loop — aprobación del operador `review→done` (2.5) o recovery — nunca re-evaluaba su advancement predicate: quedaba con todo el trabajo `done` y sin avanzar jamás. Detectado al diseñar el soak 2.6 (el caso con `owner_approval` humano se atoraba en `producing` tras la aprobación entre ticks). | Medium (correctness del plano) | **Taken:** sweep de advancement en `runTick` (paso 3.5) — helper compartido `advanceIfSatisfied` usado por el sweep y por el paso post-completion; idempotente, el predicate decide, `advanceCase` sigue siendo el único camino de avance. Cubierto por el soak: `case-human` cierra vía sweep en el tick siguiente a la aprobación. |
 | 21 | 2026-08-04 | **No existe hook compartido en la frontera del modelo que preserve etiquetas de procedencia** (resolución del [A] de 3.2-6). La frontera compartida real es `openRouterChatOpenAIOptions` en `packages/agent/src/model.ts` (factories + metering callback), pero recibe mensajes LangChain ya compuestos como texto plano desde `context_jsonb`/prompts — la clase de fuente no sobrevive hasta ahí, así que un screening "provenance-aware" en ese punto no puede distinguir contenido de `external_contact` sin re-parsear texto (frágil y contra §21). | Low (el propio task preveía esta salida) | **Taken:** registrar el gap en vez de duplicar screening por canal (mandato explícito de 3.2-6). Desde 3.2 la procedencia es estructural en `case_facts.source_kind` (incl. `external_contact` desde characteristics-response); el punto de enganche correcto para el shadow screening es cuando los workers (3.4) consuman hechos etiquetados al componer su contexto — ahí las etiquetas llegan intactas. La regla dura de §21 queda cubierta mecánicamente mientras tanto: el motor solo suspende aprobaciones y no tiene camino de re-grant; re-aprobar exige decisión humana (3.3). |
+| 22 | 2026-08-05 | **La convención de prefijos de `required_capability` mentía el mecanismo.** `agent:valuation_verifier` enrutaba (hardcode) a `specialized_agent` cuyo gate principal es determinista con segunda opinión de modelo opcional, mientras `agent:<otro>` caía a `main_agent` — el mismo prefijo significaba dos mecanismos distintos y el string no podía representar los modos futuros (subagentes en paralelo, pares especializados, dynamic workflows con `origin='agent_proposed'`). Detectado en revisión con el usuario. | Medium (claridad del contrato; escalabilidad multi-agente) | **Taken (user-approved 2026-08-05):** las capabilities nombran la COMPETENCIA (`valuation_verification`, `extraction_consolidation`, `publication_reconciliation`); el mecanismo se lee de `worker_profiles.execution_mode` vía snapshot por tick (perfil = fuente de verdad; Technical Plan §9 actualizado). Única convención sin perfil: `human`/`human:*` (capabilities humanas abiertas). Sin usuarios reales: rename limpio sin ventana de alias — migración `00072` (perfiles + data-fix de `work_items` + perfil `work_plane_synthetic` para el soak) y re-publish de `property_optioning` con re-point de casos activos (`publish-property-optioning-v2.ts`). |
+| 23 | 2026-08-05 | **No existe raíz durable que no sea un caso comercial.** `work_items.case_id` es `NOT NULL`; Control operativo → Trabajo durable solo lista casos; el Studio/compiler siempre produce un workflow de caso. Jobs batch (análisis de inventario, OCR masivo, digests) se ven forzados a “casos fantasma” o a turnos no durables. Distinción aclarada con el usuario: caso = verdad comercial/expediente; tarea durable = ejecución/resultado de un trabajo; HITL y duración no distinguen; dynamic workflows (`agent_proposed`) necesitan una raíz (caso *o* tarea). | High (bloquea dynamic workflows sanos y el router de autoría del Studio) | **Taken (user-approved 2026-08-05):** Technical Plan §7.0 + §28.13 + Phase 5 DoD; este plan gana **PHASE 5 — Durable Work Roots** (pendiente). Secuencia: E2E property_optioning + walkthrough humano Studio → Phase 5 → dynamic workflows acotados. No implementar Phase 5 en paralelo a Brain/Talk-to-Gu escritura. |
 | — | | *(append as found)* | | |
 
 **Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 2.7-1, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3); channel-linked generated views (Technical Plan §28.12 — no slice until activated).
