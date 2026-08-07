@@ -12,8 +12,9 @@
  * - CI validates structure + default-model coverage via
  *   `scripts/validate-model-price-catalog.mjs`.
  */
-import catalogActive from "./catalogs/2026-07-29.2.json";
+import catalogActive from "./catalogs/2026-08-06.1.json";
 import catalog202607291 from "./catalogs/2026-07-29.1.json";
+import catalog202607292 from "./catalogs/2026-07-29.2.json";
 
 export interface ModelPrice {
   /** USD per 1M input tokens (uncached). */
@@ -36,6 +37,7 @@ export interface ModelPriceCatalogSnapshot {
 
 const SNAPSHOTS: Record<string, ModelPriceCatalogSnapshot> = {
   [catalog202607291.version]: catalog202607291 as ModelPriceCatalogSnapshot,
+  [catalog202607292.version]: catalog202607292 as ModelPriceCatalogSnapshot,
   [catalogActive.version]: catalogActive as ModelPriceCatalogSnapshot,
 };
 
@@ -105,5 +107,8 @@ export const CATALOG_REQUIRED_MODEL_IDS = [
   "openai/gpt-4.1-mini",
   "openai/gpt-4o-mini",
   "anthropic/claude-haiku-4.5",
+  // Compilador del Studio (rol workflow_compiler, finding 26): juicio alto,
+  // volumen bajo. En catálogo para que el metering pueda estimar costo.
+  "anthropic/claude-opus-5",
   "google/gemini-embedding-001",
 ] as const;

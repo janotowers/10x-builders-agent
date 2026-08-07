@@ -19,7 +19,7 @@ import {
 import { DEFAULT_EMBEDDING_MODEL } from "../embeddings";
 
 function testActiveCatalogCoversDefaults(): void {
-  assert.equal(MODEL_PRICE_CATALOG_VERSION, "2026-07-29.2");
+  assert.equal(MODEL_PRICE_CATALOG_VERSION, "2026-08-06.1");
   const active = getCatalogSnapshot();
   assert.ok(active);
   assert.equal(active!.version, MODEL_PRICE_CATALOG_VERSION);
@@ -46,6 +46,7 @@ function testHistoricalSnapshotImmutablePrices(): void {
   const versions = listModelPriceCatalogVersions();
   assert.ok(versions.includes("2026-07-29.1"));
   assert.ok(versions.includes("2026-07-29.2"));
+  assert.ok(versions.includes("2026-08-06.1"));
 
   const old = getCatalogSnapshot("2026-07-29.1")!;
   assert.equal(old.models["openai/gpt-5.4-mini"]!.inputUsdPerMTok, 0.6);

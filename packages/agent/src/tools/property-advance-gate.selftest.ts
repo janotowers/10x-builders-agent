@@ -192,7 +192,8 @@ const casaContext = {
     context: {
       ...casaContext,
       property_data: {
-        ...(casaContext.property_data as Record<string, unknown>),
+        ...((casaContext as { property_data?: Record<string, unknown> })
+          .property_data ?? {}),
         area_construida_m2: 146,
         area_construida_m2_source: "human_confirmed_predial_decimal_review",
         surface_quality: {

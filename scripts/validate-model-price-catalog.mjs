@@ -44,6 +44,7 @@ const REQUIRED_FALLBACK_IDS = [
   "openai/gpt-4.1-mini",
   "openai/gpt-4o-mini",
   "anthropic/claude-haiku-4.5",
+  "anthropic/claude-opus-5",
   "google/gemini-embedding-001",
 ];
 
