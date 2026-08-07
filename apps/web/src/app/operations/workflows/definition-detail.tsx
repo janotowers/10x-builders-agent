@@ -177,6 +177,7 @@ export function DefinitionDetail({
   catalogQuery,
   help,
   error,
+  notice,
 }: {
   definition: WorkflowDefinition;
   row: DefinitionCatalogRow;
@@ -187,6 +188,8 @@ export function DefinitionDetail({
   catalogQuery: string;
   help: DefinitionHelpCatalog;
   error?: string;
+  /** Aviso post-acto (p. ej. "published" tras Publicar). */
+  notice?: string;
 }) {
   const graph = definition.graph_jsonb;
   const path = happyPathStates(graph);
@@ -200,6 +203,9 @@ export function DefinitionDetail({
     (definition.status === "draft" || definition.status === "validated");
   const canFork = definition.status === "published";
   const labelByKey = new Map(path.map((state) => [state.key, state.label]));
+  const highestPublishedVersion = siblings
+    .filter((sibling) => sibling.status === "published")
+    .reduce((max, sibling) => Math.max(max, sibling.version), 0);
 
   return (
     <div className="space-y-3">
@@ -229,10 +235,21 @@ export function DefinitionDetail({
           {lineage ? ` · ${lineage}` : ""}
         </p>
 
+        {notice === "published" ? (
+          <p className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1.5 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+            Acabas de publicar la v{definition.version}. Esta es la versión que
+            acabas de dejar inmutable; otras versiones de la familia siguen
+            listadas abajo.
+          </p>
+        ) : null}
+
         {siblings.length > 1 ? (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {siblings.map((sibling) => {
               const active = sibling.id === definition.id;
+              const isCurrentPublished =
+                sibling.status === "published" &&
+                sibling.version === highestPublishedVersion;
               return (
                 <Link
                   key={sibling.id}
@@ -244,6 +261,7 @@ export function DefinitionDetail({
                   }`}
                 >
                   v{sibling.version} {definitionStatusLabel(sibling.status)}
+                  {isCurrentPublished ? " · vigente" : ""}
                 </Link>
               );
             })}

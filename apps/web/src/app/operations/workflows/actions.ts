@@ -277,5 +277,9 @@ export async function publishDefinitionAction(formData: FormData) {
   await publishDefinition(db, definition.id, user.id);
   revalidatePath(DESIGN_PATH);
   revalidatePath("/operations/workflows");
-  redirect(`/operations/workflows?definition=${definition.id}`);
+  // notice=published: el detalle muestra "Acabas de publicar vN" para que
+  // el acto no se pierda detrás de otra versión de la misma familia.
+  redirect(
+    `/operations/workflows?definition=${definition.id}&notice=published`
+  );
 }

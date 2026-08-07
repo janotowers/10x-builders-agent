@@ -22,11 +22,14 @@ import {
   filterCatalogDefinitions,
   findIdenticalOwnFork,
   forkLineageLabel,
+  formatEvidenceSeal,
   friendlyCaseTypeLabel,
   groupDefinitionFamilies,
   happyPathStates,
   isInternalTestDefinition,
   ownerScopeLabel,
+  pickFamilyHead,
+  sumPinnedActiveCases,
   pinnedCasesLabel,
   resolveForkLineageLabel,
   shortDefinitionHash,
@@ -429,7 +432,11 @@ const families = groupDefinitionFamilies(
 assert.equal(families.length, 3, "tres familias: privada, global, soak");
 const privateFamily = families.find((family) => family.ownerScope === "user");
 assert.ok(privateFamily);
-assert.equal(privateFamily.head.id, "priv-2", "draft de mayor versión es cabeza");
+assert.equal(
+  privateFamily.head.id,
+  "priv-2",
+  "sin publicadas, draft de mayor versión es cabeza"
+);
 assert.equal(privateFamily.draftCount, 2);
 assert.equal(privateFamily.pinnedActiveCases, 0, "drafts no aportan pins; sin published propia");
 const globalFamily = families.find(
@@ -441,12 +448,73 @@ assert.equal(globalFamily.head.id, "def-1");
 assert.equal(globalFamily.pinnedActiveCases, 3);
 assert.equal(families[0].ownerScope, "user", "Mis flujos primero");
 
+const privatePublishedV5: WorkflowDefinition = {
+  ...privateDraftV2,
+  id: "priv-5",
+  version: 5,
+  status: "published",
+  published_at: "2026-08-06T00:00:00.000Z",
+};
+const privateValidatedV4: WorkflowDefinition = {
+  ...privateDraftV2,
+  id: "priv-4",
+  version: 4,
+  status: "validated",
+};
+const privatePublishedV2: WorkflowDefinition = {
+  ...privateDraftV2,
+  id: "priv-pub-2",
+  version: 2,
+  status: "published",
+  published_at: "2026-08-06T18:00:00.000Z",
+};
+assert.equal(
+  pickFamilyHead([privateValidatedV4, privatePublishedV5, privatePublishedV2]).id,
+  "priv-5",
+  "cabeza = publicada de mayor versión, no el validado"
+);
+assert.equal(
+  sumPinnedActiveCases(
+    [privatePublishedV5, privateValidatedV4, privatePublishedV2],
+    { "priv-pub-2": 2, "priv-5": 1 }
+  ),
+  3,
+  "pins sumados en toda la familia"
+);
+const mixedFamily = groupDefinitionFamilies(
+  [privatePublishedV5, privateValidatedV4, privatePublishedV2],
+  { "priv-pub-2": 2, "priv-5": 1 }
+)[0];
+assert.ok(mixedFamily);
+assert.equal(mixedFamily.head.id, "priv-5");
+assert.equal(mixedFamily.draftCount, 1, "validated cuenta como borrador editable");
+assert.equal(mixedFamily.pinnedActiveCases, 3);
+
+assert.equal(
+  formatEvidenceSeal({
+    evidenceCount: 0,
+    gateCount: 8,
+    latestAt: null,
+    shortHash: "5aa637bc263f",
+  }),
+  null
+);
+assert.match(
+  formatEvidenceSeal({
+    evidenceCount: 8,
+    gateCount: 8,
+    latestAt: "2026-08-06T19:11:12.000Z",
+    shortHash: "5aa637bc263f",
+  }) ?? "",
+  /Sellada el .* · 8\/8 gates · 5aa637bc263f…/
+);
+
 const byId = new Map(
   [globalPublished, privateDraftV2].map((definition) => [definition.id, definition])
 );
 assert.equal(
   resolveForkLineageLabel(privateDraftV2, byId),
-  "Fork de property_optioning Global v3"
+  "Fork de Opcionamiento de propiedad Global v3"
 );
 assert.equal(
   resolveForkLineageLabel(

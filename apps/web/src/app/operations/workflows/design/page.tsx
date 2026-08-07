@@ -26,6 +26,13 @@ import {
 } from "@agents/workflows";
 import { createClient } from "@/lib/supabase/server";
 import { AppShell } from "@/components/app-shell";
+import {
+  filterCatalogDefinitions,
+  formatEvidenceSeal,
+  friendlyCaseTypeLabel,
+  isInternalTestDefinition,
+  shortDefinitionHash,
+} from "@/lib/workflow-studio/definition-catalog";
 import { validateDefinitionForUser } from "@/lib/workflow-studio/definition-validation";
 import { WorkflowStudioTabs } from "../studio-tabs";
 import { publishDefinitionAction, validateDefinitionAction } from "../actions";
@@ -239,17 +246,18 @@ async function DraftDetail({
       <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-950">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <h2 className="text-sm font-semibold">
-            {definition.workflow_key} · v{definition.version}
+            {friendlyCaseTypeLabel(definition.case_type)} · v
+            {definition.version}
           </h2>
           <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] dark:bg-neutral-800">
             {STATUS_LABELS[definition.status] ?? definition.status}
           </span>
           <code className="text-[10px] text-neutral-500">
-            {definition.definition_hash.slice(0, 18)}…
+            {shortDefinitionHash(definition.definition_hash)}…
           </code>
         </div>
         <p className="mt-1 text-xs text-neutral-500">
-          Tipo de caso: {definition.case_type}
+          Tipo: {definition.case_type}
           {definition.derived_from_definition_id
             ? ` · fork de v${definition.derived_from_version}`
             : ""}
@@ -362,6 +370,9 @@ async function DraftDetail({
         </Section>
 
         <Section title="Validación">
+          <p className="mb-2 text-[10px] text-neutral-400">
+            Estado en vivo (se actualiza si cambian recursos o catálogos).
+          </p>
           {report.gates.map((gate) => (
             <div key={gate.gate} className="flex items-start gap-2">
               <span
@@ -386,6 +397,32 @@ async function DraftDetail({
               </div>
             </div>
           ))}
+          {(() => {
+            const latestAt =
+              evidence.length > 0
+                ? evidence.reduce(
+                    (latest, record) =>
+                      record.created_at > latest ? record.created_at : latest,
+                    evidence[0]!.created_at
+                  )
+                : null;
+            const seal = formatEvidenceSeal({
+              evidenceCount: evidence.length,
+              gateCount: report.gates.length,
+              latestAt,
+              shortHash: shortDefinitionHash(definition.definition_hash),
+            });
+            return seal ? (
+              <p className="mt-3 rounded-md bg-emerald-50 px-2 py-1.5 text-[11px] text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+                Evidencia: {seal}
+              </p>
+            ) : (
+              <p className="mt-3 text-[10px] text-neutral-400">
+                Aún no hay evidencia sellada. Usa «Validar y registrar
+                evidencia» para dejar constancia.
+              </p>
+            );
+          })()}
         </Section>
 
         <Section title="Simulación">
@@ -416,23 +453,6 @@ async function DraftDetail({
             ))
           )}
         </Section>
-
-        <Section title="Evidencia registrada">
-          {evidence.length === 0 ? (
-            <p className="text-neutral-400">
-              Aún no hay evidencia registrada para esta versión. Usa «Validar y
-              registrar evidencia».
-            </p>
-          ) : (
-            evidence.map((record) => (
-              <p key={record.id}>
-                {record.result === "pass" ? "✓" : "✗"}{" "}
-                {GATE_LABELS[record.gate as CompilerGateName] ?? record.gate} ·{" "}
-                {new Date(record.created_at).toLocaleString("es-MX")}
-              </p>
-            ))
-          )}
-        </Section>
       </div>
     </div>
   );
@@ -445,6 +465,7 @@ export default async function WorkflowDesignPage({
     definition?: string;
     error?: string;
     notice?: string;
+    tests?: string;
   }>;
 }) {
   const auth = await createClient();
@@ -454,6 +475,10 @@ export default async function WorkflowDesignPage({
   if (!user) redirect("/login");
 
   const sp = await searchParams;
+  const showTests = sp.tests === "1";
+  const designListHref = showTests
+    ? "/operations/workflows/design?tests=1"
+    : "/operations/workflows/design";
   const db = createServerClient();
 
   let visible: WorkflowDefinition[] = [];
@@ -464,20 +489,29 @@ export default async function WorkflowDesignPage({
     unavailable = true;
   }
 
-  const own = visible.filter((definition) => definition.user_id === user.id);
+  const ownAll = visible.filter((definition) => definition.user_id === user.id);
+  const own = filterCatalogDefinitions(ownAll, { showTests });
   const statusRank = (status: string) =>
     status === "draft" ? 0 : status === "validated" ? 1 : 2;
   own.sort(
     (a, b) =>
       statusRank(a.status) - statusRank(b.status) ||
+      b.version - a.version ||
       b.created_at.localeCompare(a.created_at)
   );
-  const knownCaseTypes = [...new Set(visible.map((d) => d.case_type))].sort();
+  const knownCaseTypes = [
+    ...new Set(
+      visible
+        .filter((definition) => !isInternalTestDefinition(definition))
+        .map((d) => d.case_type)
+    ),
+  ].sort();
+  const hiddenTestCount = ownAll.filter(isInternalTestDefinition).length;
 
   // Solo definiciones propias se abren en Diseño (las globales se forkean
-  // desde el catálogo).
+  // desde el catálogo). Incluye soak si llega por ?definition=… directo.
   const selected = sp.definition
-    ? own.find((definition) => definition.id === sp.definition)
+    ? ownAll.find((definition) => definition.id === sp.definition)
     : undefined;
 
   return (
@@ -494,7 +528,7 @@ export default async function WorkflowDesignPage({
       ) : selected ? (
         <div className="space-y-3">
           <Link
-            href="/operations/workflows/design"
+            href={designListHref}
             className="inline-block text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
           >
             ← Volver a mis definiciones
@@ -511,23 +545,59 @@ export default async function WorkflowDesignPage({
           <CompileForm knownCaseTypes={knownCaseTypes} />
 
           <div>
-            <h3 className="mb-2 text-sm font-semibold">Mis definiciones</h3>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Mis definiciones</h3>
+              {hiddenTestCount > 0 || showTests ? (
+                <Link
+                  href={
+                    showTests
+                      ? "/operations/workflows/design"
+                      : "/operations/workflows/design?tests=1"
+                  }
+                  className="text-xs font-semibold text-violet-700 underline dark:text-violet-300"
+                >
+                  {showTests
+                    ? "Ocultar definiciones de prueba"
+                    : "Mostrar definiciones de prueba"}
+                </Link>
+              ) : null}
+            </div>
             {own.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-6 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-                Aún no tienes definiciones propias. Compila una desde una
-                descripción o crea una versión propia (fork) desde el catálogo.
+                {hiddenTestCount > 0 && !showTests ? (
+                  <>
+                    Solo hay definiciones de prueba ocultas.{" "}
+                    <Link
+                      href="/operations/workflows/design?tests=1"
+                      className="font-semibold underline"
+                    >
+                      Mostrarlas
+                    </Link>{" "}
+                    o compila un flujo nuevo / crea una versión propia desde el
+                    catálogo.
+                  </>
+                ) : (
+                  <>
+                    Aún no tienes definiciones propias. Compila una desde una
+                    descripción o crea una versión propia (fork) desde el
+                    catálogo.
+                  </>
+                )}
               </div>
             ) : (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {own.map((definition) => (
                   <Link
                     key={definition.id}
-                    href={`/operations/workflows/design?definition=${definition.id}`}
+                    href={`/operations/workflows/design?definition=${definition.id}${
+                      showTests ? "&tests=1" : ""
+                    }`}
                     className="rounded-2xl border border-neutral-200 bg-white p-4 text-xs shadow-sm transition hover:border-violet-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-violet-700"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <p className="font-semibold text-neutral-900 dark:text-neutral-100">
-                        {definition.workflow_key} · v{definition.version}
+                        {friendlyCaseTypeLabel(definition.case_type)} · v
+                        {definition.version}
                       </p>
                       <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
                         {STATUS_LABELS[definition.status] ?? definition.status}

@@ -63,7 +63,8 @@ function FamilyCard({
         </span>
       </div>
       <p className="mt-1 text-neutral-500">
-        {family.caseType} · {family.scopeLabel} · v{family.head.version}
+        {family.scopeLabel} · v{family.head.version}
+        {family.head.status === "published" ? " vigente" : ""}
         {draftHint}
       </p>
       <p className="mt-1 text-neutral-500">{family.pinnedLabel}</p>
@@ -109,6 +110,7 @@ export default async function WorkflowStudioCatalogPage({
     definition?: string;
     tests?: string;
     error?: string;
+    notice?: string;
   }>;
 }) {
   const auth = await createClient();
@@ -257,6 +259,7 @@ export default async function WorkflowStudioCatalogPage({
             catalogQuery={catalogQuery}
             help={help}
             error={sp.error}
+            notice={sp.notice}
           />
         </div>
       ) : families.length === 0 ? (

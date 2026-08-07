@@ -108,7 +108,7 @@ export function resolveForkLineageLabel(
     definition.derived_from_version != null
       ? definition.derived_from_version
       : source.version;
-  return `Fork de ${source.workflow_key} ${ownerScopeLabel(source.owner_scope)} v${version}`;
+  return `Fork de ${friendlyCaseTypeLabel(source.case_type)} ${ownerScopeLabel(source.owner_scope)} v${version}`;
 }
 
 export function pinnedCasesLabel(count: number): string {
@@ -313,33 +313,66 @@ function familyKey(definition: WorkflowDefinition): string {
   return `${definition.owner_scope}:${definition.user_id ?? "global"}:${definition.case_type}`;
 }
 
-function pickFamilyHead(versions: WorkflowDefinition[]): WorkflowDefinition {
-  const editable = versions.filter(
-    (definition) =>
-      definition.status === "draft" || definition.status === "validated"
-  );
-  if (editable.length > 0) {
-    return editable.reduce((best, current) =>
+/**
+ * Cabeza de familia para la tarjeta del catálogo: la publicada de mayor
+ * versión (lo que un operador entiende como "la vigente"), luego validada,
+ * luego borrador. Los borradores siguen visibles como contador en la tarjeta.
+ */
+export function pickFamilyHead(
+  versions: WorkflowDefinition[]
+): WorkflowDefinition {
+  const byHighestVersion = (list: WorkflowDefinition[]) =>
+    list.reduce((best, current) =>
       current.version > best.version ? current : best
     );
-  }
   const published = versions.filter(
     (definition) => definition.status === "published"
   );
-  if (published.length > 0) {
-    return published.reduce((best, current) =>
-      current.version > best.version ? current : best
-    );
-  }
-  return versions.reduce((best, current) =>
-    current.version > best.version ? current : best
+  if (published.length > 0) return byHighestVersion(published);
+  const validated = versions.filter(
+    (definition) => definition.status === "validated"
+  );
+  if (validated.length > 0) return byHighestVersion(validated);
+  const drafts = versions.filter((definition) => definition.status === "draft");
+  if (drafts.length > 0) return byHighestVersion(drafts);
+  return byHighestVersion(versions);
+}
+
+/** Suma casos pineados de todas las versiones de la familia. */
+export function sumPinnedActiveCases(
+  versions: WorkflowDefinition[],
+  pinnedCounts: Record<string, number>
+): number {
+  return versions.reduce(
+    (total, definition) => total + (pinnedCounts[definition.id] ?? 0),
+    0
   );
 }
 
 /**
+ * Sello corto de evidencia (sin repetir el checklist de gates en vivo).
+ * `null` cuando aún no hay evidencia registrada.
+ */
+export function formatEvidenceSeal(input: {
+  evidenceCount: number;
+  gateCount: number;
+  latestAt: string | null;
+  shortHash: string;
+}): string | null {
+  if (input.evidenceCount <= 0) return null;
+  const when = input.latestAt
+    ? new Date(input.latestAt).toLocaleString("es-MX")
+    : "fecha desconocida";
+  const gates =
+    input.gateCount > 0
+      ? `${input.evidenceCount}/${input.gateCount} gates`
+      : `${input.evidenceCount} registros`;
+  return `Sellada el ${when} · ${gates} · ${input.shortHash}…`;
+}
+
+/**
  * Agrupa definiciones por (case_type, owner_scope, user_id). La cabeza
- * prefiere el borrador/validado de mayor versión; si no hay, la publicada
- * vigente; si no, la de mayor versión.
+ * prefiere la publicada de mayor versión; si no hay, validada/borrador.
  */
 export function groupDefinitionFamilies(
   definitions: WorkflowDefinition[],
@@ -362,12 +395,7 @@ export function groupDefinitionFamilies(
       (definition) =>
         definition.status === "draft" || definition.status === "validated"
     ).length;
-    const publishedHead = versions.find(
-      (definition) => definition.status === "published"
-    );
-    const pinnedActiveCases = publishedHead
-      ? (pinnedCounts[publishedHead.id] ?? 0)
-      : (pinnedCounts[head.id] ?? 0);
+    const pinnedActiveCases = sumPinnedActiveCases(versions, pinnedCounts);
     families.push({
       key,
       caseType: head.case_type,
