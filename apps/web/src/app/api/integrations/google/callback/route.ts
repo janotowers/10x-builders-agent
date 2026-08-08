@@ -71,6 +71,14 @@ function getTokenExchangeRedirectUri(request: NextRequest, flow: Flow): string {
     : `${siteUrl}/api/integrations/google/callback`;
 }
 
+function gmailReturnUrl(request: NextRequest): URL | null {
+  const raw = request.cookies.get("google_gmail_oauth_return_to")?.value;
+  if (!raw?.startsWith("/operations/workflows/design")) return null;
+  const url = new URL(raw, request.url);
+  url.searchParams.set("gmail", "connected");
+  return url;
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
@@ -191,7 +199,10 @@ export async function GET(request: NextRequest) {
   );
 
   const response = NextResponse.redirect(
-    new URL(`/settings?${flowConfig.statusParam}=connected`, request.url)
+    flow === "gmail"
+      ? gmailReturnUrl(request) ??
+          new URL(`/settings?${flowConfig.statusParam}=connected`, request.url)
+      : new URL(`/settings?${flowConfig.statusParam}=connected`, request.url)
   );
 
   response.cookies.set(flowConfig.stateCookie, "", {
@@ -202,6 +213,12 @@ export async function GET(request: NextRequest) {
   });
   if (flow === "gmail") {
     response.cookies.set("google_gmail_oauth_redirect_uri", "", {
+      httpOnly: true,
+      sameSite: "lax",
+      maxAge: 0,
+      path: "/",
+    });
+    response.cookies.set("google_gmail_oauth_return_to", "", {
       httpOnly: true,
       sameSite: "lax",
       maxAge: 0,

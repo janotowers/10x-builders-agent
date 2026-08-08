@@ -1,9 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { randomBytes } from "crypto";
 import { GOOGLE_GMAIL_SCOPES } from "@agents/db";
 
-export async function GET() {
+function safeStudioReturnTo(value: string | null): string | null {
+  if (!value) return null;
+  return value.startsWith("/operations/workflows/design") ? value : null;
+}
+
+export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const {
     data: { user },
@@ -62,6 +67,18 @@ export async function GET() {
     path: "/",
     secure: process.env.NODE_ENV === "production",
   });
+  const returnTo = safeStudioReturnTo(
+    new URL(request.url).searchParams.get("return_to")
+  );
+  if (returnTo) {
+    response.cookies.set("google_gmail_oauth_return_to", returnTo, {
+      httpOnly: true,
+      sameSite: "lax",
+      maxAge: 600,
+      path: "/",
+      secure: process.env.NODE_ENV === "production",
+    });
+  }
 
   return response;
 }

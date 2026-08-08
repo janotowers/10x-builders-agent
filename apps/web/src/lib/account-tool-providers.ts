@@ -230,6 +230,67 @@ export function providerHasAccountConfig(id: string): boolean {
 }
 
 /**
+ * Mapa toolId → provider de `account_tool_secrets`.
+ * Fuente única para readiness (lab + Studio).
+ */
+export const TOOL_TO_ACCOUNT_PROVIDER: Readonly<Record<string, string>> = {
+  easybroker_search_listings: "easybroker_web",
+  easybroker_search_closed_deals: "easybroker_web",
+  easybroker_create_listing: "easybroker",
+  easybroker_upload_images: "easybroker",
+  easybroker_publish_listing: "easybroker",
+  ungga_publish_listing: "ungga_cli",
+  get_avaclick_valuation: "avaclick",
+};
+
+/** Providers que satisfacen la integración de catálogo `ungga`. */
+export const UNGGA_PUBLISH_ACCOUNT_PROVIDERS = ["ungga_cli", "ungga_api"] as const;
+
+/**
+ * Claves de `requires_integration` (TOOL_CATALOG) que quedan cubiertas
+ * cuando hay un secret activo del provider de cuenta dado.
+ * Ej.: `ungga_cli` → `ungga` + `ungga_cli`.
+ */
+const ACCOUNT_PROVIDER_TO_CATALOG_INTEGRATIONS: Readonly<
+  Record<string, readonly string[]>
+> = {
+  easybroker: ["easybroker"],
+  easybroker_web: ["easybroker_web"],
+  ungga_cli: ["ungga", "ungga_cli"],
+  ungga_api: ["ungga", "ungga_api"],
+  avaclick: ["avaclick"],
+};
+
+const CATALOG_INTEGRATION_TO_ACCOUNT_PROVIDERS: Readonly<
+  Record<string, readonly string[]>
+> = {
+  ungga: [...UNGGA_PUBLISH_ACCOUNT_PROVIDERS],
+  ungga_cli: ["ungga_cli"],
+  ungga_api: ["ungga_api"],
+  easybroker: ["easybroker"],
+  easybroker_web: ["easybroker_web"],
+  avaclick: ["avaclick"],
+};
+
+export function accountProviderForTool(toolId: string): string | null {
+  return TOOL_TO_ACCOUNT_PROVIDER[toolId] ?? null;
+}
+
+export function catalogIntegrationsForAccountProvider(
+  providerId: string
+): readonly string[] {
+  return (
+    ACCOUNT_PROVIDER_TO_CATALOG_INTEGRATIONS[providerId] ?? [providerId]
+  );
+}
+
+export function alternativeAccountProvidersForCatalogIntegration(
+  catalogProvider: string
+): readonly string[] {
+  return CATALOG_INTEGRATION_TO_ACCOUNT_PROVIDERS[catalogProvider] ?? [];
+}
+
+/**
  * Valida un payload contra la spec de un provider.
  * Devuelve la separación canónica { config, secret } o un mensaje de error.
  */

@@ -532,6 +532,16 @@ export function SettingsForm({
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const rawReturnTo = searchParams.get("return_to");
+  const studioReturnTo =
+    rawReturnTo?.startsWith("/operations/workflows/design")
+      ? rawReturnTo
+      : null;
+  const gmailAuthorizeHref = studioReturnTo
+    ? `/api/integrations/gmail/authorize?${new URLSearchParams({
+        return_to: studioReturnTo,
+      }).toString()}`
+    : "/api/integrations/gmail/authorize";
   const viewParam = searchParams.get("view");
   const activeView: SettingsView = isSettingsView(viewParam)
     ? viewParam
@@ -2567,7 +2577,7 @@ export function SettingsForm({
                 : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
             }`}
           >
-            Habilidades activadas
+            Capacidades disponibles
           </button>
           <button
             type="button"
@@ -2845,6 +2855,14 @@ export function SettingsForm({
           {gmailIsConnected ? (
             <div className="space-y-2">
               <p className="text-sm text-green-600">Cuenta de Gmail conectada.</p>
+              {studioReturnTo ? (
+                <a
+                  href={studioReturnTo}
+                  className="inline-block text-sm font-medium text-violet-700 underline underline-offset-2 dark:text-violet-300"
+                >
+                  Volver al diseño en Studio
+                </a>
+              ) : null}
               <button
                 type="button"
                 onClick={() => void disconnectGmail()}
@@ -2860,7 +2878,7 @@ export function SettingsForm({
                 Conecta Gmail para gestionar correos desde tu cuenta cuando lo apruebes.
               </p>
               <a
-                href="/api/integrations/gmail/authorize"
+                href={gmailAuthorizeHref}
                 className="inline-block rounded-md bg-neutral-800 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 dark:bg-neutral-200 dark:text-neutral-900 dark:hover:bg-neutral-300"
               >
                 Conectar Gmail
