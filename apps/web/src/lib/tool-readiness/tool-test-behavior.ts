@@ -217,6 +217,29 @@ const BEHAVIOR_BY_TOOL: Record<string, ToolTestBehavior> = {
     data_sources: ["case_context", "case_form", "manual_overrides"],
   },
   notify_user: NOTIFY_GENERIC_READINESS,
+  gmail_send_email: {
+    kind: "case_backed",
+    label: "Envía email aprobado por Gmail",
+    summary:
+      "Valida el envío externo por la cuenta Gmail conectada, con preview HITL y adjuntos vigentes del caso.",
+    mode_hint:
+      "Con formulario/caso permite seleccionar destinatario, cuerpo y documentos reales; siempre requiere aprobación antes del envío.",
+    prerequisites: [
+      "Gmail conectado con scope gmail.send",
+      "destinatario válido",
+      "aprobación explícita",
+    ],
+    reads_from_case: [
+      "documentos recibidos seleccionados como adjuntos",
+      "evidencia resumida para la aprobación",
+    ],
+    persists_to_case: [
+      "tool_call ejecutada/fallida",
+      "evento message_sent channel=email",
+    ],
+    downstream_for: ["espera de respuesta externa", "cierre del envío"],
+    data_sources: ["case_context", "prior_artifacts", "manual_overrides"],
+  },
   operational_case_register_document: {
     kind: "case_backed",
     label: "Registra documento en el caso",

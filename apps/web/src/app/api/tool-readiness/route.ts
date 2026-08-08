@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server";
-import { existsSync } from "node:fs";
-import path from "node:path";
 import { createClient } from "@/lib/supabase/server";
 import {
   createServerClient,
@@ -25,7 +23,16 @@ import type {
   UserIntegration,
   UserToolSetting,
 } from "@agents/types";
-import { providerHasAccountConfig } from "@/lib/account-tool-providers";
+import {
+  TOOL_TO_ACCOUNT_PROVIDER,
+  getAccountToolProvider,
+  providerHasAccountConfig,
+} from "@/lib/account-tool-providers";
+import { deploymentEnvFlagsFromProcessEnv } from "@/lib/tool-readiness/load-tenant-provider-snapshot";
+import {
+  isEasyBrokerWebOperationalFailure,
+  unggaPublishAccountState,
+} from "@/lib/tool-readiness/provider-readiness";
 import {
   mergeStepScenarioEvidenceMaps,
   parseStepScenarioEvidenceFromEvents,
@@ -180,64 +187,8 @@ const TENANT_ASSET_TOOLS = new Set([
   "image_watermark",
 ]);
 
-/**
- * Mapeo tool → provider canónico de `account_tool_secrets` (ver
- * `apps/web/src/lib/account-tool-providers.ts`). Cuando una tool aparece
- * aquí, la presencia de un secret per-account activo se considera
- * equivalente a tener configuración global por env vars.
- */
-const TOOL_TO_ACCOUNT_PROVIDER: Record<string, string> = {
-  easybroker_search_listings: "easybroker_web",
-  easybroker_search_closed_deals: "easybroker_web",
-  easybroker_create_listing: "easybroker",
-  easybroker_upload_images: "easybroker",
-  easybroker_publish_listing: "easybroker",
-  ungga_publish_listing: "ungga_cli",
-  get_avaclick_valuation: "avaclick",
-};
-
-/** Providers que satisfacen `ungga_publish_listing` (cualquiera activo basta). */
-const UNGGA_PUBLISH_ACCOUNT_PROVIDERS = ["ungga_cli", "ungga_api"] as const;
-
-const ACCOUNT_PROVIDER_LABELS: Record<string, string> = {
-  easybroker: "EasyBroker",
-  easybroker_web: "EasyBroker MLS (automatización web)",
-  ungga_api: "Ungga API",
-  ungga_cli: "Ungga (automatización web)",
-  avaclick: "Avaclick",
-};
-
 function accountProviderLabel(providerId: string) {
-  return ACCOUNT_PROVIDER_LABELS[providerId] ?? providerId;
-}
-
-function isEasyBrokerWebOperationalFailure(lastError: string | null | undefined) {
-  if (!lastError) return false;
-  return /command failed|playwright|browser|timeout|storage-state|sesión|session|selector|formulario|captcha|mfa/i.test(
-    lastError
-  );
-}
-
-function unggaPublishAccountState(
-  accountSecretsByProvider: Map<string, AccountToolSecretPublic>
-) {
-  for (const providerId of UNGGA_PUBLISH_ACCOUNT_PROVIDERS) {
-    const secret = accountSecretsByProvider.get(providerId) ?? null;
-    if (secret?.status === "active") {
-      return { providerId, secret, satisfied: true };
-    }
-  }
-  for (const providerId of UNGGA_PUBLISH_ACCOUNT_PROVIDERS) {
-    const secret = accountSecretsByProvider.get(providerId) ?? null;
-    if (secret) {
-      return { providerId, secret, satisfied: false };
-    }
-  }
-  return {
-    providerId: "ungga_cli" as const,
-    secret: null as AccountToolSecretPublic | null,
-    satisfied: false,
-  };
+  return getAccountToolProvider(providerId)?.displayName ?? providerId;
 }
 
 function enabledByUser(toolId: string, settings: UserToolSetting[]) {
@@ -259,75 +210,10 @@ function integrationActive(
 }
 
 function envConfigured(toolId: string) {
-  if (
-    toolId === "easybroker_search_listings" ||
-    toolId === "easybroker_search_closed_deals"
-  ) {
-    return Boolean(
-      process.env.EASYBROKER_WEB_EMAIL?.trim() &&
-        process.env.EASYBROKER_WEB_PASSWORD?.trim()
-    );
-  }
-  if (
-    toolId === "easybroker_create_listing" ||
-    toolId === "easybroker_upload_images"
-  ) {
-    return Boolean(process.env.EASYBROKER_API_KEY?.trim());
-  }
-  if (toolId === "ungga_publish_listing") {
-    return Boolean(
-      process.env.UNGGA_INTERNAL_API_BASE?.trim() &&
-        process.env.UNGGA_INTERNAL_API_TOKEN?.trim()
-    ) || Boolean(
-      process.env.UNGGA_CLI_ENABLED?.trim().toLowerCase() === "true" &&
-        ((
-          process.env.UNGGA_STAGING_URL?.trim() &&
-          process.env.UNGGA_STAGING_EMAIL?.trim() &&
-          process.env.UNGGA_STAGING_PASSWORD?.trim()
-        ) ||
-          localUnggaCliEnvAvailable())
-    ) || localUnggaCliEnvAvailable();
-  }
-  if (toolId === "get_avaclick_valuation") {
-    return Boolean(
-      process.env.AVACLICK_COMPANY_NAME?.trim() &&
-        process.env.AVACLICK_EMAIL?.trim() &&
-        process.env.AVACLICK_PASSWORD?.trim()
-    );
-  }
-  if (toolId === "geocode_property_address") {
-    return Boolean(process.env.GOOGLE_MAPS_API_KEY?.trim());
-  }
-  if (toolId === "lookup_property_surroundings") {
-    return Boolean(process.env.GOOGLE_MAPS_API_KEY?.trim());
-  }
-  if (toolId === "analyze_property_images") {
-    return Boolean(process.env.OPENROUTER_API_KEY?.trim());
-  }
-  if (toolId === "prepare_listing_description_draft") {
-    return Boolean(process.env.OPENROUTER_API_KEY?.trim());
-  }
+  const flags = deploymentEnvFlagsFromProcessEnv();
+  const key = `tool:${toolId}`;
+  if (key in flags) return Boolean(flags[key]);
   return true;
-}
-
-function localUnggaCliEnvAvailable() {
-  if (process.env.NODE_ENV === "production") return false;
-  const pocDir = resolveLocalUnggaCliDir();
-  return Boolean(pocDir && existsSync(path.join(pocDir, ".env")));
-}
-
-function resolveLocalUnggaCliDir() {
-  const configured = process.env.UNGGA_CLI_DIR?.trim();
-  if (configured) return configured;
-  const cwd = process.cwd();
-  const candidates = [
-    path.resolve(cwd, "pocs", "ungga-cli"),
-    path.resolve(cwd, "..", "pocs", "ungga-cli"),
-    path.resolve(cwd, "..", "..", "pocs", "ungga-cli"),
-  ];
-  return candidates.find((candidate) =>
-    existsSync(path.join(candidate, "src", "publish-listing.mjs"))
-  );
 }
 
 function classifyTool(params: {
@@ -848,7 +734,7 @@ type ProviderActionMeta = {
  * Decide cómo resolver una integración faltante según el proveedor.
  *
  * Hoy:
- * - google_calendar y github tienen OAuth implementado: action_url al authorize.
+ * - google_calendar, gmail y github tienen OAuth implementado: action_url al authorize.
  * - telegram_bot se conecta por link code en Ajustes: action_anchor a #telegram.
  * - providers con pantalla por cuenta (ej. easybroker, ungga_api) se
  *   manejan antes de llegar aquí: action_kind="configure_account".
@@ -869,6 +755,19 @@ function providerActionMeta(
       action_message:
         "Conecta tu cuenta de Google Calendar para autorizar a Gu a leer y crear eventos.",
       action_url: "/api/integrations/google/authorize",
+      action_anchor: null,
+      request_kind: null,
+    };
+  }
+  if (provider === "gmail") {
+    return {
+      category: "product_integration",
+      action_kind: "connect_integration",
+      action_label: "Conectar Gmail",
+      action_available: true,
+      action_message:
+        "Conecta Gmail para autorizar a Gu a enviar correos aprobados desde tu cuenta.",
+      action_url: "/api/integrations/gmail/authorize",
       action_anchor: null,
       request_kind: null,
     };

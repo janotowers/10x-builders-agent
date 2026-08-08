@@ -2106,6 +2106,13 @@ const CONTROLLED_WRITE_COPY: Record<
       "Envía un mensaje real al chat_id externo mostrado en los args. El sistema agrega el prefijo [PRUEBA CONTROLADA]. Úsalo sólo con un contacto/chat de prueba. En paso 3 el texto pide características faltantes, no el checklist de documentos.",
     button: "Enviar prueba por Telegram",
   },
+  gmail_send_email: {
+    confirmation: "ENVIAR EMAIL PRUEBA",
+    title: "Prueba real controlada por Gmail",
+    description:
+      "Envía un correo real al destinatario mostrado en los args. El sistema agrega [PRUEBA CONTROLADA] al asunto. Indica una dirección de prueba y verifica destinatario, cuerpo y evidencia antes de ejecutar.",
+    button: "Enviar email de prueba",
+  },
   easybroker_create_listing: {
     confirmation: "CREAR BORRADOR",
     title: "Prueba real controlada",

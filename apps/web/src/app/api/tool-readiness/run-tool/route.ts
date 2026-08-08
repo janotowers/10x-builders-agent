@@ -145,6 +145,13 @@ type ToolRecipeInput = {
 };
 
 const TEST_DEFAULTS: Record<string, Record<string, unknown>> = {
+  gmail_send_email: {
+    subject: "Seguimiento de prueba",
+    body:
+      "Hola. Este es un correo de prueba controlada de Gu OS; no requiere ninguna acción.",
+    evidence_summary:
+      "Prueba N1 manual con destinatario indicado por el operador.",
+  },
   telegram_send_message_to_contact: {
     text: "Hola, soy parte del equipo inmobiliario. Esta es una prueba controlada de mensaje externo; no requiere acción.",
     purpose: "tool_readiness_test",
@@ -475,12 +482,14 @@ const HIGH_RISK_DRY_RUN_TOOLS = new Set([
 
 const CONTROLLED_REAL_WRITE_TOOLS = new Set([
   "telegram_send_message_to_contact",
+  "gmail_send_email",
   "easybroker_create_listing",
   "easybroker_upload_images",
   "calendar_create_event",
 ]);
 const CONTROLLED_REAL_WRITE_CONFIRMATIONS: Record<string, string> = {
   telegram_send_message_to_contact: "ENVIAR PRUEBA",
+  gmail_send_email: "ENVIAR EMAIL PRUEBA",
   easybroker_create_listing: "CREAR BORRADOR",
   easybroker_upload_images: "FOTOS A BORRADOR",
   calendar_create_event: "CREAR EVENTO PRUEBA",
@@ -2174,6 +2183,18 @@ function applyControlledRealWriteSafeguards(
         typeof args.purpose === "string" && args.purpose.trim()
           ? args.purpose
           : "tool_readiness_test",
+    };
+  }
+  if (toolId === "gmail_send_email") {
+    const subject =
+      typeof args.subject === "string" && args.subject.trim()
+        ? args.subject.trim()
+        : "Seguimiento de prueba";
+    return {
+      ...args,
+      subject: subject.startsWith("[PRUEBA CONTROLADA]")
+        ? subject
+        : `[PRUEBA CONTROLADA] ${subject}`,
     };
   }
   if (toolId === "easybroker_upload_images") {
@@ -4050,6 +4071,25 @@ export async function POST(request: Request) {
   }
     if (
       controlledRealWriteRequested &&
+      toolId === "gmail_send_email" &&
+      (!cleanText(resolvedArgs.to) ||
+        !cleanText(resolvedArgs.subject) ||
+        !cleanText(resolvedArgs.body) ||
+        !cleanText(resolvedArgs.evidence_summary))
+    ) {
+      return NextResponse.json(
+        {
+          error: "controlled_real_write_missing_gmail_args",
+          hint:
+            "Para enviar una prueba real por Gmail necesitas to, subject, body y evidence_summary. Indica un destinatario de prueba en los args avanzados.",
+          resolved_args: resolvedArgs,
+          ...baseResolutionMetadata,
+        },
+        { status: 400 }
+      );
+    }
+    if (
+      controlledRealWriteRequested &&
       toolId === "calendar_create_event" &&
       (!cleanText(resolvedArgs.summary) ||
         !cleanText(resolvedArgs.start_datetime) ||
@@ -4151,6 +4191,8 @@ export async function POST(request: Request) {
             ? "Esta herramienta es de riesgo medio; envía confirm:true para ejecutarla desde la prueba individual."
             : toolId === "telegram_send_message_to_contact"
               ? "Esta herramienta enviaría un mensaje real a un contacto externo. En prueba individual sólo se validan los args; usa «Prueba real controlada por Telegram» con un chat de prueba, o ejecuta «Probar habilidad» / tick E2E para pasar por HITL del flow."
+              : toolId === "gmail_send_email"
+                ? "Esta herramienta enviaría un correo real. En prueba individual sólo se validan los args; usa «Prueba real controlada por Gmail» con un destinatario de prueba o ejecútala dentro de un flow con HITL."
               : "Esta herramienta es de riesgo alto. Por seguridad sólo se ejecuta dentro del flow con HITL.",
       });
     }

@@ -1941,6 +1941,7 @@ export function buildLangChainTools(ctx: ToolContext) {
     });
     addRealEstateTools(ctx, tools, {
       sendTelegramMessage: toolWiringDeps.sendTelegramMessage,
+      sendGmailMessage: toolWiringDeps.sendGmailMessage,
       notifyUser: toolWiringDeps.notifyUser,
     });
   }
@@ -1961,6 +1962,7 @@ export function buildLangChainTools(ctx: ToolContext) {
 export interface BuildLangChainToolsDeps {
   notifyUser: import("./operational-cases-adapters").NotifyUserFn;
   sendTelegramMessage: NonNullable<RealEstateToolDeps["sendTelegramMessage"]>;
+  sendGmailMessage: NonNullable<RealEstateToolDeps["sendGmailMessage"]>;
 }
 
 let toolWiringDeps: BuildLangChainToolsDeps | null = null;

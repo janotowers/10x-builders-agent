@@ -521,6 +521,7 @@ function skillCandidateIsEnabled(
  * único turno son siempre un error del modelo, no intención del usuario:
  *  - generate_document_from_template (render DOCX duplicado).
  *  - telegram_send_message_to_contact (mensaje externo duplicado).
+ *  - gmail_send_email (email externo duplicado).
  */
 function idempotentSameMessageDedupKey(
   toolName: string,
@@ -537,6 +538,19 @@ function idempotentSameMessageDedupKey(
       String(args.case_id ?? caseIdFallback ?? ""),
       String(args.purpose ?? ""),
       normalizeTelegramSendText(args.text),
+    ].join("::");
+  }
+  if (toolName === "gmail_send_email") {
+    const attachmentIds = Array.isArray(args.attachment_document_ids)
+      ? args.attachment_document_ids.map(String).sort().join(",")
+      : "";
+    return [
+      "gmail",
+      String(args.to ?? "").trim().toLowerCase(),
+      String(args.subject ?? "").trim(),
+      String(args.body ?? "").replace(/\s+/g, " ").trim(),
+      String(args.case_id ?? caseIdFallback ?? ""),
+      attachmentIds,
     ].join("::");
   }
   return null;
@@ -2499,7 +2513,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           ...(tc.name === "generate_document_from_template"
             ? { skipped_render: true }
             : {}),
-          ...(tc.name === "telegram_send_message_to_contact"
+          ...(tc.name === "telegram_send_message_to_contact" ||
+          tc.name === "gmail_send_email"
             ? { skipped_send: true }
             : {}),
           hint: "El modelo emitió esta tool dos veces en el mismo mensaje; se reutilizó el resultado de la primera llamada sin re-ejecutarla.",

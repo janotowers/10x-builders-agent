@@ -84,6 +84,11 @@ const unggaPublish = normalizeToolTestBehavior("ungga_publish_listing");
 assert.equal(unggaPublish.kind, "case_assembler");
 assert.equal(unggaPublish.label, "Publica o prepara en Ungga");
 
+const gmailSend = normalizeToolTestBehavior("gmail_send_email");
+assert.equal(gmailSend.kind, "case_backed");
+assert.match(gmailSend.label, /Gmail/);
+assert.ok(gmailSend.prerequisites.some((item) => /aprobación/i.test(item)));
+
 const notifyDocs = normalizeToolTestBehavior(
   "notify_user",
   toolTestBehaviorForFlowTool(

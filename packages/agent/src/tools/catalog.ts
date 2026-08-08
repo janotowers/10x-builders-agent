@@ -848,6 +848,46 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "gmail_send_email",
+    name: "gmail_send_email",
+    description:
+      "Sends an email from the authenticated user's Gmail account to an external recipient after explicit HITL approval. The approval preview must include recipient, subject, body, source evidence, and attachment document ids. Attachments must belong to the same operational case.",
+    risk: "high",
+    requires_integration: "gmail",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        to: {
+          type: "string",
+          description: "External recipient email address.",
+        },
+        subject: { type: "string", description: "Email subject." },
+        body: {
+          type: "string",
+          description: "Plain-text UTF-8 email body.",
+        },
+        case_id: {
+          type: "string",
+          description:
+            "Operational case that owns the evidence and attachment documents.",
+        },
+        attachment_document_ids: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 5,
+          description:
+            "Optional operational_case_documents ids owned by case_id and the current tenant.",
+        },
+        evidence_summary: {
+          type: "string",
+          description:
+            "Short summary of the source evidence shown to the approver. Audit-only; never sent to the recipient.",
+        },
+      },
+      required: ["to", "subject", "body", "evidence_summary"],
+    },
+  },
+  {
     id: "easybroker_search_listings",
     name: "easybroker_search_listings",
     description:

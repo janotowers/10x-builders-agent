@@ -18,6 +18,16 @@ assert.match(
   /contacto externo/
 );
 assert.match(
+  buildToolConfirmationMessage("gmail_send_email", {
+    to: "owner@example.com",
+    subject: "Seguimiento",
+    body: "Hola, te comparto el seguimiento.",
+    evidence_summary: "Documento Word aprobado por el asesor",
+    attachment_document_ids: ["doc-1"],
+  }),
+  /Destinatario: owner@example\.com[\s\S]*Adjuntos del caso: 1[\s\S]*Evidencia revisada/
+);
+assert.match(
   buildToolConfirmationMessage("operational_case_update_state", {
     current_step: "awaiting_documents",
   }),

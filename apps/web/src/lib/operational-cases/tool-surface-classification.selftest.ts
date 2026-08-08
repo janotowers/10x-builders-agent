@@ -17,5 +17,7 @@ for (const internalTool of [
 
 assert.equal(isReadinessVisibleTool("notify_user"), true);
 assert.equal(isReadinessVisibleTool("generate_document_from_template"), true);
+assert.equal(toolSurfaceKind("gmail_send_email"), "external_action");
+assert.equal(isReadinessVisibleTool("gmail_send_email"), true);
 
 console.log("tool-surface-classification.selftest: ok");

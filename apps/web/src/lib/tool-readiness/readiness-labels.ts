@@ -53,6 +53,7 @@ const LABELS: Record<string, LabelEntry> = {
   lookup_property_surroundings: { label: "enriquecer entorno de la propiedad" },
   geocode_property_address: { label: "geocodificar dirección de la propiedad" },
   prepare_listing_description_draft: { label: "preparar borrador de descripción" },
+  gmail_send_email: { label: "enviar email por Gmail con aprobación" },
   easybroker_create_listing: { label: "crear publicación en EasyBroker" },
   easybroker_upload_images: { label: "subir fotos a EasyBroker" },
   ungga_publish_listing: { label: "publicar en Ungga" },

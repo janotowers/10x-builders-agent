@@ -21,6 +21,7 @@ export const VERIFIED_ADAPTER_TOOL_IDS = [
   "operational_case_extract_document_fields",
   "notify_user",
   "telegram_send_message_to_contact",
+  "gmail_send_email",
   "easybroker_search_listings",
   "easybroker_search_closed_deals",
   "bigquery_lookup_local_comparables",

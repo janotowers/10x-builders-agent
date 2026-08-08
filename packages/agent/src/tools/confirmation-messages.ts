@@ -157,6 +157,27 @@ export function buildToolConfirmationMessage(
       ? `Confirma enviar este mensaje al contacto externo:\n\n«${preview}»`
       : "Confirma enviar un mensaje al contacto externo por Telegram.";
   }
+  if (toolName === "gmail_send_email") {
+    const to = short(String(args.to ?? ""));
+    const subject = short(String(args.subject ?? ""));
+    const body = short(String(args.body ?? ""));
+    const evidence = short(String(args.evidence_summary ?? ""));
+    const attachmentCount = Array.isArray(args.attachment_document_ids)
+      ? args.attachment_document_ids.length
+      : 0;
+    return [
+      "Confirma enviar este email externo por Gmail:",
+      to ? `Destinatario: ${to}` : null,
+      subject ? `Asunto: ${subject}` : null,
+      body ? `Mensaje: «${body}»` : null,
+      attachmentCount > 0
+        ? `Adjuntos del caso: ${attachmentCount}`
+        : "Sin adjuntos",
+      evidence ? `Evidencia revisada: ${evidence}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   if (toolName === "easybroker_create_listing") {
     return "Confirma crear el borrador de la propiedad en EasyBroker.";
   }

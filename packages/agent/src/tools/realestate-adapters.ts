@@ -60,6 +60,7 @@ import {
   resolveOperationalCaseDocumentRequestTarget,
   SETTINGS_TEST_TELEGRAM_LAB_CHAT_ID,
   telegramSendInputsMatch,
+  type OperationalCaseDocument,
   type ToolCallSource,
 } from "@agents/types";
 import { deriveCommissionContractTemplateData } from "./commission-contract-template-data";
@@ -821,6 +822,15 @@ export interface RealEstateToolDeps {
    * registra el fallo y devuelve `{ ok: false, error }` al modelo.
    */
   sendTelegramMessage?: (chatId: number, text: string) => Promise<void>;
+  /** Envía por Gmail mediante el adapter web; los documentos ya fueron validados por tenant/caso. */
+  sendGmailMessage?: (params: {
+    db: ToolContext["db"];
+    userId: string;
+    to: string;
+    subject: string;
+    body: string;
+    documents: OperationalCaseDocument[];
+  }) => Promise<Record<string, unknown> & { ok: boolean; status: string }>;
   /** Notifica al inmobiliario (web/Telegram según preferencias). */
   notifyUser?: NotifyUserFn;
 }
@@ -1037,6 +1047,143 @@ export function addRealEstateTools(
             text: z.string().min(1).max(4096),
             case_id: z.string().min(1).optional(),
             purpose: z.string().min(1).optional(),
+          }),
+        }
+      )
+    );
+  }
+
+  // ── Gmail (write) — OAuth real, siempre risk=high/HITL ─────────────
+  if (toolEnabled("gmail_send_email", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          to: string;
+          subject: string;
+          body: string;
+          case_id?: string;
+          attachment_document_ids?: string[];
+          evidence_summary: string;
+        }) => {
+          const record = await createTrackedToolCall(
+            ctx,
+            "gmail_send_email",
+            input as unknown as Record<string, unknown>,
+            true
+          );
+          if (!deps.sendGmailMessage) {
+            const out = {
+              ok: false,
+              status: "not_configured",
+              hint: "Gmail send is not wired in this runtime.",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+
+          let documents: OperationalCaseDocument[] = [];
+          const attachmentIds = [...new Set(input.attachment_document_ids ?? [])];
+          if (attachmentIds.length > 0 && !input.case_id) {
+            const out = {
+              ok: false,
+              status: "case_required_for_attachments",
+              hint: "case_id es obligatorio cuando se adjuntan documentos.",
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+          if (input.case_id) {
+            const opCase = await getOperationalCase(ctx.db, input.case_id);
+            if (!opCase || opCase.user_id !== ctx.userId) {
+              const out = { ok: false, status: "case_not_found" };
+              await updateToolCallStatus(ctx.db, record.id, "failed", out);
+              return JSON.stringify(out);
+            }
+            if (attachmentIds.length > 0) {
+              const caseDocuments = await listOperationalCaseDocuments(ctx.db, {
+                caseId: input.case_id,
+                statuses: ["received"],
+              });
+              const byId = new Map(
+                caseDocuments
+                  .filter((document) => document.user_id === ctx.userId)
+                  .map((document) => [document.id, document])
+              );
+              documents = attachmentIds.flatMap((id) => {
+                const document = byId.get(id);
+                return document ? [document] : [];
+              });
+              if (documents.length !== attachmentIds.length) {
+                const out = {
+                  ok: false,
+                  status: "attachment_not_found",
+                  hint:
+                    "Uno o más adjuntos no pertenecen al caso o ya no están vigentes.",
+                };
+                await updateToolCallStatus(ctx.db, record.id, "failed", out);
+                return JSON.stringify(out);
+              }
+            }
+          }
+
+          try {
+            const out = await deps.sendGmailMessage({
+              db: ctx.db,
+              userId: ctx.userId,
+              to: input.to,
+              subject: input.subject,
+              body: input.body,
+              documents,
+            });
+            await updateToolCallStatus(
+              ctx.db,
+              record.id,
+              out.ok ? "executed" : "failed",
+              out
+            );
+            if (out.ok && input.case_id) {
+              await insertOperationalCaseEvent(ctx.db, {
+                caseId: input.case_id,
+                eventType: "state_changed",
+                actor: "agent",
+                stepKey: ctx.operationalStepKey ?? undefined,
+                payload: {
+                  channel: "email",
+                  kind: "email_sent",
+                  recipient: input.to,
+                  subject: input.subject,
+                  gmail_status: out.status,
+                  attachment_document_ids: attachmentIds,
+                  evidence_summary: input.evidence_summary,
+                  tool_call_id: record.id,
+                },
+              });
+            }
+            return JSON.stringify(out);
+          } catch (error) {
+            const out = {
+              ok: false,
+              status: "gmail_send_failed",
+              error: error instanceof Error ? error.message : String(error),
+            };
+            await updateToolCallStatus(ctx.db, record.id, "failed", out);
+            return JSON.stringify(out);
+          }
+        },
+        {
+          name: "gmail_send_email",
+          description:
+            "Sends an approved plain-text email through the user's connected Gmail account. Use attachment_document_ids only with their owning case_id.",
+          schema: z.object({
+            to: z.string().email(),
+            subject: z.string().trim().min(1).max(998),
+            body: z.string().min(1).max(100_000),
+            case_id: z.string().min(1).optional(),
+            attachment_document_ids: z
+              .array(z.string().min(1))
+              .max(5)
+              .optional(),
+            evidence_summary: z.string().trim().min(1).max(2000),
           }),
         }
       )

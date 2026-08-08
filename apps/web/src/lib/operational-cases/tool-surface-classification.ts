@@ -28,6 +28,7 @@ const TOOL_SURFACE_BY_ID: Record<string, ToolSurfaceKind> = {
   operational_case_register_document: "internal_platform",
   notify_user: "internal_notification",
   telegram_send_message_to_contact: "external_action",
+  gmail_send_email: "external_action",
   easybroker_search_listings: "business_integration",
   easybroker_search_closed_deals: "business_integration",
   bigquery_lookup_local_comparables: "business_integration",
