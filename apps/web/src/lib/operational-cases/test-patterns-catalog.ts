@@ -250,9 +250,9 @@ export const OPERATIONAL_TEST_PATTERNS: TestPatternEntry[] = [
   {
     id: "PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE",
     layer: "runtime",
-    label: "0 usables — no avanzar a precio",
+    label: "Muestra insuficiente — no avanzar a precio",
     description:
-      "Si todas las fuentes devuelven 0 comparables usables, permanecer en comparables_in_progress + waiting_internal + notify_user.",
+      "Si no existe una muestra defendible de al menos 3 comparables únicos, permanecer en comparables_in_progress + waiting_internal + notify_user.",
     implementationPaths: [
       "apps/web/src/lib/operational-cases/comparables-analysis-validation.ts",
       "apps/web/src/app/api/tool-readiness/run-skill/route.ts",
@@ -408,6 +408,84 @@ export const OPERATIONAL_TEST_PATTERNS: TestPatternEntry[] = [
     ],
     testLevels: ["n3", "n4"],
     docAnchor: `${DOC}#pattern_notify_delivery_warning`,
+  },
+  {
+    id: "PATTERN_LAB_FORM_PROPERTY_DATA_SYNC",
+    layer: "runtime",
+    label: "Precedencia de datos en laboratorio",
+    description:
+      "Sincroniza el formulario N0 con property_data respetando evidencia documental y evitando que una semilla de prueba sobrescriba datos de mayor autoridad.",
+    implementationPaths: [
+      "apps/web/src/lib/operational-cases/lab-form-property-data-sync.ts",
+    ],
+    settingsTestOnly: true,
+    testLevels: ["n0", "n3", "n4"],
+    docAnchor: `${DOC}#pattern_lab_form_property_data_sync`,
+  },
+  {
+    id: "PATTERN_ARTIFACT_IDENTITY_STALENESS",
+    layer: "runtime",
+    label: "Staleness por identidad del artefacto",
+    description:
+      "Invalida resultados derivados cuando cambia la identidad de propiedad o la evidencia fuente usada para producirlos.",
+    implementationPaths: [
+      "apps/web/src/lib/operational-cases/property-identity-signature.ts",
+      "apps/web/src/app/api/tool-readiness/run-tool/route.ts",
+    ],
+    testLevels: ["n1", "n3", "n4"],
+    docAnchor: `${DOC}#pattern_artifact_identity_staleness`,
+  },
+  {
+    id: "PATTERN_HITL_ACTION_CONTRACT",
+    layer: "runtime",
+    label: "Contrato canónico de acciones HITL",
+    description:
+      "Comparte IDs, callbacks, límites y presentación de las decisiones humanas entre web, Telegram y pruebas.",
+    implementationPaths: [
+      "apps/web/src/lib/operational-cases/hitl-action-contract.ts",
+    ],
+    testLevels: ["n3", "n4"],
+    docAnchor: `${DOC}#pattern_hitl_action_contract`,
+  },
+  {
+    id: "PATTERN_INTEGRATION_RECONNECT_DEGRADED_CONTINUATION",
+    layer: "runtime",
+    label: "Reconexión y continuación degradada",
+    description:
+      "Una integración desconectada produce una acción de reconexión y solo permite continuar con fuentes alternativas cuando el resultado sigue siendo defendible.",
+    implementationPaths: [
+      "packages/agent/src/tools/realestate-adapters.ts",
+      "apps/web/src/lib/operational-cases/comparables-analysis-validation.ts",
+    ],
+    testLevels: ["n1", "n3", "n4"],
+    docAnchor: `${DOC}#pattern_integration_reconnect_degraded_continuation`,
+  },
+  {
+    id: "PATTERN_GENERATED_CASE_DOCUMENT_ACCESS",
+    layer: "runtime",
+    label: "Acceso estable a documentos generados",
+    description:
+      "Publica enlaces autenticados estables ligados al caso y evita exponer signed URLs temporales en mensajes o decisiones.",
+    implementationPaths: [
+      "apps/web/src/lib/operational-cases/generated-case-document.ts",
+    ],
+    appliesToTools: ["generate_document_from_template"],
+    testLevels: ["n3", "n4"],
+    docAnchor: `${DOC}#pattern_generated_case_document_access`,
+  },
+  {
+    id: "PATTERN_BUSINESS_DECISION_CONTRACT_DATA_REVIEW",
+    layer: "test_contract",
+    label: "Revisión humana de datos contractuales",
+    description:
+      "Normaliza la revisión de campos comerciales extraídos antes de generar o enviar un contrato.",
+    implementationPaths: [
+      "apps/web/src/lib/business-decisions/contract-data-review.ts",
+      "apps/web/src/lib/business-decisions/registry.ts",
+    ],
+    appliesToSkills: ["prepare-commission-contract"],
+    testLevels: ["n3", "n4"],
+    docAnchor: `${DOC}#pattern_business_decision_contract_data_review`,
   },
   {
     id: "n2_telegram_abc",
