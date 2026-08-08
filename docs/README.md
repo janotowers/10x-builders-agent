@@ -22,9 +22,11 @@ An accepted target is not implemented merely because it has a proposed schema. T
 | Integrated architecture | [`manuals/architecture-manual.md`](manuals/architecture-manual.md) | Main map of current and future subsystems |
 | Product sequencing | [`business-brain-evolution-roadmap.md`](business-brain-evolution-roadmap.md) | V1–V4 roadmap and locked defaults |
 | Brain / organizational cognition | [`brain/gbrain-evaluation-and-plan.md`](brain/gbrain-evaluation-and-plan.md) | Detailed Brain Layer design and implementation blocks |
+| Business Brain vs platform improvement | [`brain/business-and-platform-brain-boundary.md`](brain/business-and-platform-brain-boundary.md) | Shared 7-layer model, scope boundary and governed internal learning |
 | Personal long-term memory | [`memory/long_term_memory_plan.md`](memory/long_term_memory_plan.md) | Personal memory extraction and retrieval |
 | Operational cases | [`operational-cases/architecture.md`](operational-cases/architecture.md) | Multi-day case runtime |
 | Flexible workflows | [`manuals/gu-os-flexible-workflows-technical-plan.md`](manuals/gu-os-flexible-workflows-technical-plan.md) | Case, work, impact, verification, compiler, and UI planes |
+| Workflow Studio and Pattern Kernel | [`workflow-studio/README.md`](workflow-studio/README.md) | NL authoring, provider capabilities, solution-pattern composition and coverage |
 | Operational readiness | [`operational-cases/testing-framework.md`](operational-cases/testing-framework.md) | N0–N5 tests and activation quality bar |
 | Skills and tools | [`skills-tools-architecture.md`](skills-tools-architecture.md) | Skill registry, tools, authoring, and HITL |
 | Files and attachments | [`tools-design/file-attachments-and-document-skills.md`](tools-design/file-attachments-and-document-skills.md) | Private file storage and document lifecycle |

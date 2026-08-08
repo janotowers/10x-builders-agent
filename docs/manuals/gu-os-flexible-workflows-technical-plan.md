@@ -672,7 +672,7 @@ Eight distinct concepts, never re-merged: **Case View** (business truth; brokers
 2. **Unidades de trabajo** (`/operations/work`) — `work_items` Kanban (happy-path columns + blocked exception tray). Card click → detail panel (attempts, evidence/error, events timeline, link to case); Approve/Retry stay outside the link hit-target.
 3. **Cambios y reparaciones** (`/operations/impact`) — impact plane.
 
-Future: toggle “group by case / by durable task / all items”; broker-friendly Trabajo durable without admin gate once roles exist; Studio **authoring router** that classifies NL intent into case workflow vs durable task vs one-shot skill vs schedule (§7.0, Phase 5) so authors never pick ontology jargon.
+Future: toggle “group by case / by durable task / all items”; broker-friendly Trabajo durable without admin gate once roles exist; Studio **authoring router** that classifies NL authoring intent into `case_workflow | durable_task | reusable_skill | schedule | clarify | redirect_to_chat` (§7.0, Phase 5) so authors never pick ontology jargon. `reusable_skill` has subtype `simple | composite`; `redirect_to_chat` creates no artifact because a one-off query belongs in Chat, not Studio. The former `one_shot_skill` label was removed as undefined/ambiguous (detailed plan finding 29).
 
 **Information architecture** [D/H]: workflow definitions are governed artifacts with draft/publish/rollback lifecycles — not "settings." The authoring/verification surfaces belong under a dedicated route family (e.g. `/workflows` — name tentative), with `/settings/operational-case-types` retiring after Phase 4. Final route names require examining existing navigation and the role question first [H].
 
@@ -931,6 +931,7 @@ Definition of done per phase: §30.
 11. **Cross-channel antecedent resolver activation** — require evidence of web↔Telegram follow-up failures, a committed third interactive channel, or product prioritization. Until then preserve current case/HITL parity and collect examples; do not create a universal conversation entity (§12.1).
 12. **Channel-linked views (dynamic interfaces)** — when to build signed external read-only links and authenticated internal deep links to case/artifact views delivered through conversational channels (§16.1). Default: deferred until a real multi-channel need (internal advisor and/or external owner) justifies it; HITL stays on notifications; views never become a second source of truth. Design position recorded in `gu-os-qm-reference-analysis.md` §7.
 13. **Independent durable-task roots (Phase 5)** — schema names (`durable_tasks` / `work_runs`), retention defaults for task inputs vs results, whether schedules create runs or new tasks, and how Studio’s authoring router surfaces the case-vs-task distinction without ontology jargon. Gate: after property_optioning E2E + human Studio walkthrough; before general dynamic-workflow (`agent_proposed`) activation.
+14. **MCP server connections** — when (if) to let a tenant attach an MCP server so external tools can reach Gu OS. **Not** a fourth Integrations tab competing with Conexiones / Canales / Credenciales API: MCP is a transport, not a business-integration type. Target mapping when activated: connect under **Conexiones** (or a “Servidores / extensiones” subsection) with per-tenant auth/scope; materialize tools into the governed **Tools** catalog (allowlist) before Studio/runtime may compose them; capability-map gaps stay customer-worded (“conecta este servidor”), never raw MCP tool invention. Gate: sandboxing exists **and** a concrete need (e.g. CRM via MCP) or dynamic-workflow widening justifies it. Until then the closed extension surface stands (detailed plan finding 27; architecture analysis K7).
 
 ---
 
@@ -990,7 +991,7 @@ Definition of done per phase: §30.
 
 ### B. Unresolved decisions
 
-The [H] items in §28 (including owner_scope for organizations, skill-import timing, channel-linked view activation, and Phase 5 durable-task schema/retention/Studio-router details in §28.13).
+The [H] items in §28 (including owner_scope for organizations, skill-import timing, channel-linked view activation, Phase 5 durable-task schema/retention/Studio-router details in §28.13, and MCP server connections in §28.14).
 
 ### C. Repository validations still required
 

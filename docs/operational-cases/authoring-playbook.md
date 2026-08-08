@@ -8,7 +8,14 @@
 > - [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) — catálogo de patrones reutilizables (IDs `PATTERN_*`, `n2_*`).
 > - [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) — claridad de ramas (grafo explicativo, no motor).
 > - [`use-case-authoring-vision.md`](use-case-authoring-vision.md) — visión NL → propuesta implementable.
+> - [`../workflow-studio/capabilities-and-solution-patterns.md`](../workflow-studio/capabilities-and-solution-patterns.md) — catálogo por tenant, composición de patrones y Gmail gobernado.
 > - [`../skills-tools-architecture.md`](../skills-tools-architecture.md) — habilidades, tools, HITL.
+>
+> Studio 5.3.1 usa este playbook como restricción de compilación para
+> `case_workflow`; discovery, confirmación y selección del tipo se rigen por
+> `skills/global/skill-authoring/SKILL.md` y
+> [`use-case-authoring-vision.md`](use-case-authoring-vision.md). No duplicar
+> preguntas ni taxonomía aquí.
 
 ---
 

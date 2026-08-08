@@ -130,6 +130,15 @@ This mirrors the useful part of Anthropic's Skills model (progressive
 disclosure and composable capabilities) while preserving the runtime invariants
 we need for multi-tenant data access.
 
+### MCP vs Tools / Integraciones (deferred)
+
+MCP is **not** a fourth Integrations tab and **not** a substitute for the
+governed Tools catalog. It is a transport for external tools. Product position
+(2026-08-07): keep the closed extension surface until sandboxing + a real need;
+when activated, connect under **Conexiones** and materialize tools into
+**Tools** before Studio/runtime may use them. See flexible-workflows detailed
+plan finding 27 and Technical Plan §28.14.
+
 ### When to use each mechanism
 
 | Mechanism | Use when | Avoid when |

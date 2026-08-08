@@ -437,7 +437,7 @@ Inventory and differentiation (all [B] unless noted):
 | Case types (`operational_case_types` + flow JSONB) | New multi-day workflow | Case runner binding | Case block per tick | DB + readiness gates (N0–N5) | DB rows; global vs private ownership | Per-case |
 | Heartbeat checklists/templates + `heartbeat_signals` prefetchers | Proactive checks; deterministic pre-reads | Cron heartbeat | Checklist + signal block | Read-only allowlist | Code (prefetchers) + DB (checklists) | Per-tick |
 | Integrations (OAuth/secrets) | External reach | Adapter execution | None | Encrypted; per-account; `/test` probes | DB | Tool-level |
-| **Absent:** MCP, plugins, third-party hooks, model-provider plugins, channel-adapter SDK | — | — | — | — | Deliberately deferred (roadmap: hooks server-side V3+; packs V3+; no marketplace before sandboxing) [A] | — |
+| **Absent:** MCP, plugins, third-party hooks, model-provider plugins, channel-adapter SDK | — | — | — | — | Deliberately deferred (roadmap: hooks server-side V3+; packs V3+; no marketplace before sandboxing) [A]. **MCP UX mapping (2026-08-07, flexible-workflows finding 27 / Technical Plan §28.14):** when activated, MCP is a *transport* — connect under Integraciones → Conexiones (not a 4th tab); tools materialize into the governed Tools catalog before Studio/runtime compose them. | — |
 
 **Are mechanisms differentiated or accumulated?** Differentiated, with an explicit decision table (skill vs code vs composite vs subagent — `skill-routing.md` "When to use each mechanism"; skill-vs-code guide in `agentic-principles-alignment.md` §5). This is one of the repo's strongest architectural properties. The rule for *this* system: **judgment → skill; repeatable lookup/calculation → tool/wrapper; multi-day orchestration → case type; threshold checks that mustn't depend on model tool-choice → deterministic prefetcher; per-account variation → config before custom body; external service → engineering-owned adapter, never user-supplied code.**
 
@@ -705,7 +705,7 @@ Fundamental (not implementation mistakes):
 - **K4.** HITL-first posture, risk catalog as single source of truth, exact-wording persistence.
 - **K5.** Two-stage compaction sized to short windows; per-turn thread hygiene.
 - **K6.** Memory taxonomy (personal/account/warehouse separation) and conservative extraction with curation UI.
-- **K7.** Closed extension surface (no third-party plugins/hooks/MCP) until sandboxing exists.
+- **K7.** Closed extension surface (no third-party plugins/hooks/MCP) until sandboxing exists. When MCP lands: Conexiones + Tools catalog materialization — never a parallel ungoverned tool path (finding 27 / §28.14).
 
 ### HARDEN
 - **H1 (P1).** Deterministic tenant floor for BigQuery: when tenant context is active and user is non-admin, reject SQL lacking the parameterized org predicate (extend `prepareBigQueryRunArgs`; ~small change, no tool-surface impact). *Validation:* selftest + red-team prompt set. *Trade-off:* occasional false rejections on legitimately tenant-free queries (rare by skill design).

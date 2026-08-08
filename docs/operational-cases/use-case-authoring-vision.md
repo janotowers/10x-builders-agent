@@ -1,6 +1,6 @@
 # Visión: autoría de casos de uso y skills desde lenguaje natural
 
-> **Estado:** v1.1 — documento de visión y roadmap; N5 laboratorio E2E controlado ya implementado en código.
+> **Estado:** v1.2 — visión alineada con Studio Slice 5.3.1; N5 laboratorio E2E controlado ya implementado.
 >
 > **Documentos relacionados**
 > - [`authoring-playbook.md`](authoring-playbook.md) — **playbook obligatorio** para diseñar pasos, habilidad raíz, `current_step` y pruebas.
@@ -18,7 +18,8 @@
 La meta es que un usuario inmobiliario describa un proceso en **lenguaje natural** y el sistema devuelva una **propuesta implementable** — no activación automática — con:
 
 - **discovery primero:** preguntas de clarificación y análisis de gaps antes de etiquetar la forma;
-- clasificación de forma (caso operacional vs skill de un turno vs heartbeat);
+- clasificación gobernada (`case_workflow | durable_task | reusable_skill |
+  schedule`; `clarify | redirect_to_chat` no crean artefacto);
 - pasos, skills compuestas y atómicas, tools por paso;
 - mecanismos (HITL, esperas externas, recordatorios, deadlines);
 - esquema de pruebas alineado al [marco N0–N5](testing-framework.md) o [Skill Lab](../skills-tools-architecture.md#12-skill-lab--readiness-para-skills-sin-caso-operacional);
@@ -28,7 +29,9 @@ La meta es que un usuario inmobiliario describa un proceso en **lenguaje natural
 
 **Principio UX:** no presentar al usuario un fork técnico («¿caso operacional o skill?») como primera pantalla. El sistema infiere la forma, explica en lenguaje de negocio y solo pide aclaración cuando hay ambigüedad (esperas, participantes externos, persistencia multi-día).
 
-Esto extiende lo que hoy existe en Ajustes (borrador básico, `skill-authoring`, heartbeat checklist) hacia un pipeline coherente de **autoría asistida**.
+La superficie primaria es **Studio → Diseño**. Ajustes conserva laboratorios,
+editores avanzados y configuración; no mantiene una doctrina de autoría
+paralela.
 
 ---
 
@@ -45,25 +48,27 @@ La visión reduce la fricción inicial: el usuario describe **qué debe pasar en
 
 ---
 
-## 3. Dos formas de destino (no todo es caso operacional)
+## 3. Destinos gobernados (no todo es caso operacional)
 
 Un error común en plataformas agenticas es forzar todo flujo a un «caso» multi-día. Gu OS debe clasificar primero:
 
 ```mermaid
 flowchart TD
   NL[Descripción NL del usuario] --> DIS[Discovery: preguntas + gap analysis]
-  DIS --> Q{Clasificador de forma}
-  Q -->|Multi-participante, async, multi-día, alto riesgo| OC[Caso operacional]
-  Q -->|Síncrono, bajo riesgo, un turno| SK[Skill compuesta / atómica]
-  Q -->|Revisión periódica, checklist| HB[Heartbeat item]
-  OC --> OCT[operational_case_types + flow + cron]
-  SK --> SKT[account_skill o global + allowed_tools]
-  HB --> HBT[checklist + prefetchers]
-  OC --> TST[Esquema N0–N5]
-  SK --> TST2[Skill Lab: rúbrica + evals]
-  TST --> REV[Revisión humana]
-  TST2 --> REV
-  REV --> ACT[Activación]
+  DIS --> Q{Forma recomendada}
+  Q -->|Expediente comercial durable| OC[case_workflow]
+  Q -->|Trabajo batch / resultado| DT[durable_task]
+  Q -->|Procedimiento reusable| SK[reusable_skill]
+  Q -->|Recurrencia + trabajo subyacente| SC[schedule]
+  Q -->|Ejecución puntual| CHAT[redirect_to_chat]
+  Q -->|Ambigüedad material| CL[clarify]
+  OC --> REV[Esto entendí + confirmación]
+  DT --> REV
+  SK --> REV
+  SC --> REV
+  REV --> DRAFT[Borrador en revisión común]
+  DRAFT --> READY[Readiness proporcional]
+  READY --> ACT[Activación humana controlada]
 ```
 
 ### 3.1 Caso operacional
@@ -163,10 +168,28 @@ interface UseCaseProposal {
   clarifyingQuestions?: string[];
   discoveryComplete: boolean;
 
-  classification: "operational_case" | "single_turn_skill" | "hybrid_review" | "heartbeat";
-  confidence: number;
+  provisionalKind: "case_workflow" | "durable_task" | "reusable_skill" | "schedule" | "clarify" | "redirect_to_chat";
+  finalKind: UseCaseProposal["provisionalKind"];
+  skillSubtype?: "simple" | "composite";
+  confidence: "high" | "medium" | "low";
   rationale: string;
-  recommendedReadiness: "operational_n0_n5" | "skill_lab" | "heartbeat_preview";
+  recommendedReadiness: "operational_n0_n5" | "skill_lab" | "durable_task_acceptance" | "schedule_readiness";
+  coveredDimensions: Array<{
+    key: string;
+    status: "covered" | "partial" | "missing";
+    evidence: Array<{ source: "description" | "answer"; answerIndex?: number; quote: string }>;
+  }>;
+  understanding: {
+    objective: string;
+    sources: string[];
+    actors: string[];
+    decisions: string[];
+    effects: string[];
+    capabilities: string[];
+    acceptanceCriteria: string[];
+    assumptions: string[];
+    gaps: string[];
+  };
 
   displayName: string;
   caseType?: string;
@@ -215,9 +238,10 @@ interface UseCaseProposal {
 
 Nada de lo generado se activa sin:
 
-1. Edición en UI (formulario + JSON avanzado + SKILL.md).
-2. Rúbrica sin ítems `FAIL` bloqueantes (ya parcialmente implementado en Casos de uso).
-3. Batería de readiness según [`testing-framework.md`](testing-framework.md).
+1. Confirmación explícita de `Esto entendí` antes de escribir.
+2. Revisión común en Diseño; formulario/JSON/SKILL.md avanzado como acción posterior.
+3. Rúbrica sin ítems `FAIL` bloqueantes.
+4. Batería de readiness según [`testing-framework.md`](testing-framework.md).
 
 ---
 
@@ -236,12 +260,15 @@ Nada de lo generado se activa sin:
 | Skill Lab documentado | [`skills-tools-architecture.md`](../skills-tools-architecture.md) §12 | v1 |
 | Catálogo tools/skills | `TOOL_CATALOG`, registry global + account | Alta |
 | Caso piloto referencia | `property_optioning` | Alta — plantilla de realidad |
+| Router de artefactos | `authoring-router.ts` | Implementado en Slice 5.3 |
+| Discovery + confirmación | `/api/studio-authoring` + `authoring-discovery.ts` | Slice 5.3.1 |
+| Revisión común | Studio → Diseño | Slice 5.3.1 |
 
 ### 5.2 Brechas principales
 
 | # | Brecha | Impacto |
 |---|--------|---------|
-| 1 | Sin clasificador caso vs skill | Propuestas sobredimensionadas o subdimensionadas |
+| 1 | Clasificador sin discovery semántico | **Cerrada en 5.3.1:** el router es señal; discovery siempre corre antes de confirmar |
 | 2 | Patrones N2 sólo en código React | No generables automáticamente desde flow — ver catálogo [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md) y `test-patterns-catalog.ts` (v1 documental) |
 | 3 | `testPlan` no es salida de skill-authoring | Operador diseña pruebas manualmente — esquema ejemplo en catálogo §9 |
 | 4 | `tested_ok` por ejecución suelta | Falsa sensación de cobertura |
@@ -269,22 +296,22 @@ Nada de lo generado se activa sin:
 
 **Entregable:** añadir un patrón nuevo actualizando catálogo + TS; luego sin tocar lógica React repetitiva.
 
-### Anillo 3 — Autoría asistida ampliada
+### Anillo 3 — Autoría asistida ampliada (implementado en Studio 5.3.1)
 
-- Extender `/api/skill-authoring` (o endpoint hermano) para emitir `testPlan` + `classification`.
-- Validador de gaps contra `TOOL_CATALOG` y skills registry.
-- UI Casos de uso: pestaña «Propuesta» con checklist N0–N5 generado editable (N4/N5 según madurez).
+- Doctrina compartida entre `/api/skill-authoring` y `/api/studio-authoring`.
+- Discovery model-backed con evidencia y gaps contra catálogos reales.
+- Confirmación humana antes de materializar.
 
 **Entregable:** NL → propuesta estructurada + plan de prueba en un flujo.
 
-### Anillo 4 — Clasificación y activación inteligente
+### Anillo 4 — Clasificación y revisión unificadas (implementado; activación sigue gobernada)
 
-- Clasificador caso vs skill con explicación al usuario.
-- Rama «solo skill»: crea/actualiza `account_skill` sin `operational_case_types`.
-- Rama «caso»: pipeline completo actual.
+- Router de seis destinos con explicación al usuario.
+- Materialización separada para workflow, durable task, reusable skill y schedule.
+- Revisión común en Diseño; editor/validación/publicación/activación posteriores.
 - Métricas: tasa de aceptación de propuestas, tiempo hasta activación, fallos post-activación.
 
-**Entregable:** experiencia unificada «Describe tu proceso» en Ajustes.
+**Entregable:** experiencia unificada «Describe algo nuevo» en Studio → Diseño.
 
 ### Anillo 5 — E2E y mejora continua (largo plazo)
 
@@ -299,7 +326,7 @@ Nada de lo generado se activa sin:
 
 ### 7.1 `skill-authoring`
 
-Skill **proposal-only**. Debe evolucionar para:
+Skill **proposal-only** y doctrina compartida. Debe seguir evolucionando para:
 
 - consumir catálogo de patrones de prueba;
 - emitir `testPlan` anotado;
@@ -308,19 +335,17 @@ Skill **proposal-only**. Debe evolucionar para:
 
 Ver guardrails en `skills/global/skill-authoring/SKILL.md`.
 
-### 7.2 Casos de uso — UI de autoría
+### 7.2 Studio Diseño — UI de autoría
 
 Hoy:
 
-- «Generar borrador básico» — fallback local.
-- «Generar borrador optimizado» — stream NDJSON de skill-authoring.
-- Texto de ayuda: «Describe el proceso en lenguaje natural…».
+- `Revisar solicitud` ejecuta router provisional + discovery model-backed.
+- Las respuestas y `Esto entendí` persisten en `studio_authoring_sessions`.
+- `Crear borrador` exige confirmación con hash vigente e idempotencia.
+- Los cuatro artefactos aterrizan en revisión común; Ajustes es editor avanzado.
 
-Falta:
-
-- render del `testPlan` generado;
-- vista de clasificación caso vs skill;
-- enlace directo desde cada ítem del plan a la tool en Preparación operativa.
+Sigue faltando ampliar el render de `testPlan` y enlazar cada ítem del plan a
+su readiness específica.
 
 ### 7.3 Heartbeat checklist NL
 
@@ -329,7 +354,8 @@ En Ajustes → «Generar propuesta desde lenguaje natural»:
 - heurísticas sobre fuentes (`calendar`, `warehouse`, …) y skills candidatos;
 - **no** es el mismo pipeline que casos operacionales.
 
-**Convergencia futura:** módulo compartido `inferOperationalIntent(text)` usado por heartbeat y case authoring, con ramas distintas post-clasificación.
+**Convergencia futura:** Heartbeat puede consumir señales de la misma doctrina,
+pero sigue siendo mecanismo runtime; no debe reaparecer como artefacto Studio.
 
 ### 7.4 Business Brain / GBrain
 
@@ -344,10 +370,15 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 
 ## 8. Principios de diseño
 
-1. **Human-in-the-loop siempre** en activación de casos y skills con side effects.
+1. **Intervención humana específica** — distinguir autorización de acción,
+   decisión de negocio, contribución humana y revisión de excepción; nombrar
+   quién decide qué y con qué evidencia.
 2. **Reutilizar antes de inventar** — wrappers de negocio y tools globales antes de código nuevo.
-3. **Prueba proporcional al riesgo y a la forma** — N0–N5 para casos; Skill Lab para skills de un turno; no exigir wizard A/B/C a una consulta read-only.
-4. **Discovery antes de clasificar** — gaps y preguntas antes de «caso vs skill» visible al usuario.
+3. **Prueba proporcional al riesgo y a la forma** — N0–N5 para casos; Skill
+   Lab para reusable skills; aceptación/work runs para durable tasks; checks de
+   recurrencia y trabajo subyacente para schedules.
+4. **Discovery antes de clasificación final** — el router provisional nunca
+   sustituye preguntas, evidencia y confirmación.
 5. **Propuesta explícita sobre magia** — gaps, confianza y rúbrica visibles.
 6. **Un solo lenguaje visual** — mismos colores y niveles en UI generada o manual ([§10 testing-framework](testing-framework.md#10-reglas-visuales-unificadas)).
 7. **Global code, account configuration** — ver [`architecture.md`](architecture.md) §10.1.
@@ -365,7 +396,7 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 
 | Campo | Valor |
 |-------|-------|
-| Clasificación | `operational_case` (confianza 0.92) |
+| Clasificación | `case_workflow` (confianza alta) |
 | Case type sugerido | `property_optioning` o variante privada |
 | Pasos afectados | documentos + características |
 | Tools | `operational_case_register_document`, `operational_case_extract_document_fields`, `telegram_send_message_to_contact`, `notify_user`, … |
@@ -378,7 +409,7 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 
 | Campo | Valor |
 |-------|-------|
-| Clasificación | `single_turn_skill` |
+| Clasificación | `redirect_to_chat` si es puntual; `reusable_skill/simple` si el usuario confirma que debe reutilizarse |
 | Skill sugerida | `lead-follow-up-draft` (existente) o variante account |
 | testPlan | Skill Lab: rúbrica + 3 evals; sin caso operacional |
 | recommendedReadiness | `skill_lab` |
@@ -399,11 +430,11 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 
 ## 11. Qué hacer ahora (secuencia recomendada)
 
-1. Ejecutar batería manual de `property_optioning` con [`testing-framework.md`](testing-framework.md).
-2. Registrar gaps en issues o en §13 de ese documento.
-3. Diseñar esquema `test_pattern` en JSON (anillo 2) a partir de patrones ya codificados.
-4. Extender skill-authoring para emitir `testPlan` (anillo 3).
-5. Solo entonces unificar entrada NL «Describe tu proceso» con clasificador (anillo 4).
+1. Ejecutar las baterías #1/#2 de
+   [`gu-os-studio-human-walkthrough.md`](../manuals/gu-os-studio-human-walkthrough.md).
+2. Ampliar evals model-backed #1–#10 y pruebas de idempotencia/tenancy.
+3. Completar render de `testPlan` y readiness por tipo sin duplicar N0–N5.
+4. Continuar la batería general de Studio sólo cuando #1/#2 pasen.
 
 ---
 
@@ -411,7 +442,11 @@ Ambos deberían converger en el mismo registry de skills y el mismo marco de pru
 
 | Tema | Ubicación |
 |------|-----------|
-| UI autoría + readiness | `apps/web/src/app/settings/operational-case-types/operational-case-types-client.tsx` |
+| UI primaria de autoría | `apps/web/src/app/operations/workflows/design/compile-form.tsx` |
+| API Studio | `apps/web/src/app/api/studio-authoring/route.ts` |
+| Discovery | `apps/web/src/lib/workflow-studio/authoring-discovery.ts` |
+| Contrato puro | `packages/workflows/src/compiler/authoring-discovery.ts` |
+| Laboratorio N0–N5 | `apps/web/src/app/settings/operational-case-types/operational-case-types-client.tsx` |
 | API skill-authoring | `apps/web/src/app/api/skill-authoring/route.ts` |
 | Skill authoring | `skills/global/skill-authoring/SKILL.md` |
 | Heartbeat NL heurístico | `packages/agent/src/heartbeat/checklist.ts` |

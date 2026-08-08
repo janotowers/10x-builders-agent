@@ -69,7 +69,30 @@ Detalle completo, ejemplos y criterios de autoría: [`authoring-playbook.md`](au
 | **`status`** | `operational_cases` | Modo del motor (`active`, `waiting_external`, …). |
 | **`context_jsonb`** | `operational_cases` | Sub-progreso dentro del hito (flags, artefactos parciales). |
 
-`operational_flow_jsonb` documenta y prueba; **no** sustituye la orquestación en el `SKILL.md` de la habilidad raíz.
+`operational_flow_jsonb` documenta y prueba; **no** es autoridad de
+transiciones. En tenants con definición fijada, `workflow_definitions` +
+evaluator/guards gobiernan la transición; el `SKILL.md` raíz propone y
+orquesta trabajo dentro de ese contrato.
+
+### 2.2 Relación con Studio y raíces durables
+
+Studio → Diseño es la superficie primaria de autoría asistida:
+
+1. router provisional;
+2. discovery model-backed con doctrina `skill-authoring`, catálogos del tenant
+   y evidencia del transcript;
+3. `Esto entendí` + confirmación explícita;
+4. materialización idempotente;
+5. revisión común antes del editor, publicación, activación o ejecución.
+
+No toda creación usa este subsistema. `case_workflow` materializa una
+`workflow_definition`; `durable_task` y `schedule` cuelgan de
+`durable_tasks → work_runs → work_items`; `reusable_skill` materializa
+`account_skills`. Sólo el primer tipo crea/dirige expedientes comerciales en
+`operational_cases`.
+
+Readiness y conexiones usan los resolvers compartidos de Studio; una
+integración disponible no debe evaluarse con lógica distinta en Ajustes.
 
 ---
 

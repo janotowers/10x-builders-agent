@@ -484,65 +484,93 @@
 
 ---
 
-## PHASE 5 — Durable Work Roots (post Phase 4 core)
+## PHASE 5 — Durable Work Roots + authoring foundation (post Phase 4 core)
 
-> **Governing note:** Technical Plan §7.0. This phase does **not** reopen Phases 0–4. It closes the gap that every `work_item` must hang from a commercial case. Schedule **after** a real `property_optioning` E2E on Telegram and a human Studio walkthrough; schedule **before** general dynamic-workflow (`origin='agent_proposed'`) activation.
+> **Governing note:** Technical Plan §7.0. This phase does **not** reopen Phases 0–4. It closes the gap that every `work_item` must hang from a commercial case **and** lands the Studio authoring foundation (router → materialize) so NL no longer always produces case workflows. Schedule **after** a real `property_optioning` E2E on Telegram and a human Studio walkthrough; schedule **before** general dynamic-workflow (`origin='agent_proposed'`) activation. Phase 5 scope = durable roots **plus** authoring foundation (not roots alone).
 
 ### Slice 5.0 — Taxonomy freeze + ADR
 
-**Status:** [ ] pending  
+**Status:** [~] partially done (2026-08-07) — taxonomy frozen in walkthrough + authoring-router; ADR stub at `docs/manuals/adr/0001-durable-work-roots.md`; artifact matrix implemented as `input_requirements` taxonomy (not a separate matrix doc).
 **Objective:** freeze Case vs Independent Durable Task vs Work item vs Skill vs Schedule in an ADR; no schema yet.
 
 **Tasks:**
-- [ ] 1. ADR from Technical Plan §7.0: classification test (“commercial truth?” vs “job progress/result?”); HITL/duration are non-discriminators; Skills are procedures, not roots.
-- [ ] 2. Artifact matrix: `account_assets` vs case artifacts/facts vs durable-task inputs/results vs turn attachments; retention defaults [H — §28.13].
-- [ ] 3. Studio authoring-router sketch (product copy in ES): questions that classify NL into one-shot / skill / schedule / durable task / case workflow — never ask the user to pick ontology jargon first.
-- [ ] 4. Explicit non-goals: phantom `case_type` rows for batches; treating “no HITL” as the durable-task definition; merging Brain ingestion into this phase.
+- [x] 1. ADR from Technical Plan §7.0: classification test (“commercial truth?” vs “job progress/result?”); HITL/duration are non-discriminators; Skills are procedures, not roots. *(Stub ADR + finding 29 taxonomy in walkthrough / `authoring-router.ts`.)*
+- [x] 2. Artifact matrix: `account_assets` vs case artifacts/facts vs durable-task inputs/results vs turn attachments; retention defaults [H — §28.13]. *(Implemented as `input_requirements` taxonomy on implementation specs — separates prerequisite assets from runtime data; retention defaults still [H].)*
+- [x] 3. Studio authoring-router sketch (product copy in ES): questions that classify NL into skill / schedule / durable task / case workflow / clarify / redirect_to_chat — never ask the user to pick ontology jargon first. *(Landed in Slice 5.3.)*
+- [x] 4. Explicit non-goals: phantom `case_type` rows for batches; treating “no HITL” as the durable-task definition; merging Brain ingestion into this phase.
 
-**Depends on:** Phase 4.2 core ✓. **Evidence:** ADR merged; §7.0 examples covered.
+**Depends on:** Phase 4.2 core ✓. **Evidence:** ADR stub + §7.0 / finding 29 taxonomy covered in router + walkthrough.
 
 ### Slice 5.1 — Schema: durable_tasks + work_runs; relax work_items root
 
-**Status:** [ ] pending  
+**Status:** [x] done (2026-08-07)
 **Objective:** first-class roots so work items need not invent cases.
 
 **Tasks:**
-- [ ] 1. Migration: `durable_tasks` (user_id, objective, status, retention policy, …) and `work_runs` (durable_task_id, status, started/finished, result ref).
-- [ ] 2. `work_items`: add nullable `work_run_id`; enforce XOR `case_id` OR `work_run_id` (exactly one); backfill none — new rows only under flag.
-- [ ] 3. Queries with required `userId`; RLS; events append-only for task/run.
-- [ ] 4. Flag `durable_task_roots` [D]; dual-path with case-only when off.
-- [ ] 5. Selftests: cannot create work item with both/neither roots; tenant isolation; retention metadata present on result.
+- [x] 1. Migration `00074_durable_task_roots.sql`: `durable_tasks` (user_id, objective, status, retention policy, …) and `work_runs` (durable_task_id, status, started/finished, result ref).
+- [x] 2. `work_items`: add nullable `work_run_id`; enforce XOR `case_id` OR `work_run_id` (exactly one); backfill none.
+- [x] 3. Queries with required `userId`; RLS; types in `packages/types/src/durable-tasks.ts`; `packages/db/src/queries/durable-tasks.ts`.
+- [x] 4. Durable roots are standard behavior, not a tenant choice: active `work_runs` enroll their tenant in the dispatcher without `durable_task_roots`. Rollback is code rollback; persisted audit rows remain.
+- [x] 5. Selftests: XOR root helper + related work-item / durable-task selftests (cannot create work item with both/neither roots).
 
-**Depends on:** 5.0. **Security:** same tenancy rules as work plane. **Rollback:** flag off; no new roots created.
+**Depends on:** 5.0. **Security:** same tenancy rules as work plane. **Rollback:** code rollback; no destructive schema rollback.
 
 ### Slice 5.2 — Runtime + Control operativo surfaces
 
-**Status:** [ ] pending  
+**Status:** [~] partially done (2026-08-07)
 **Objective:** dispatcher/tick can drain work under a work_run; UI lists both roots.
 
 **Tasks:**
-- [ ] 1. Instantiation path: create durable task + run → work items (templates or single-item) without `operational_cases` row.
-- [ ] 2. Cron/work-plane pass: claim/dispatch by root; advancement/completion closes the *run* (not a case step).
-- [ ] 3. `/operations/overview`: show cases **and** durable tasks; filters; no drag-and-drop; paused/blocked trays unchanged in spirit.
-- [ ] 4. `/operations/work`: detail panel links to case **or** durable task/run.
-- [ ] 5. Upload path for task inputs (reuse storage patterns; do not overload `account_assets`); result persistence with retention.
+- [x] 1. Instantiation path: durable compiler → draft `durable_task`; explicit “Activar y ejecutar” (or schedule) creates `work_run` + `work_items` without an `operational_cases` row.
+- [x] 2. Cron/work-plane pass: active runs enroll tenants without a new flag; items claim/dispatch by XOR root; all-done rollup closes the *run* and persists the task result.
+- [x] 3. `/operations/overview`: cases and durable tasks share list/board columns, selectable detail, run status and result.
+- [x] 4. `/operations/work`: resolves human task titles and detail links to case or durable task/run.
+- [~] 5. Task inputs have a separate table/private bucket, typed requirements, run JSON input and result retention metadata. File upload UI remains to be added; `account_assets` is not overloaded.
 
-**Depends on:** 5.1. **Evidence:** synthetic batch job completes under flag; overview shows the task without a case card.
+**Depends on:** 5.1. **Evidence:** materialize creates a compiled draft without phantom case; explicit run creates XOR-rooted units; schedules enqueue new runs; Control operativo renders both root kinds. Final verification remains open.
 
 ### Slice 5.3 — Studio authoring router (minimal)
 
-**Status:** [ ] pending  
+**Status:** [x] done (2026-08-07)
 **Objective:** NL “analiza 300 propiedades…” does not force a case workflow draft.
 
 **Tasks:**
-- [ ] 1. Pre-compiler classifier (deterministic + optional model): case_workflow | durable_task | one_shot_skill | schedule | clarify.
-- [ ] 2. Durable-task compile path: objective + acceptance + capability/work_type stubs (may reuse compiler pieces; must not require fake `case_type` graph).
-- [ ] 3. UX: clarification questions in business language only.
-- [ ] 4. Selftests for the two NL fixtures from finding 23 discussions (batch inventory vs option this property).
+- [x] 1. Pre-compiler classifier (deterministic + optional model): `case_workflow | durable_task | reusable_skill | schedule | clarify | redirect_to_chat`. `reusable_skill` lleva subtipo `simple | composite`; `redirect_to_chat` no crea artefacto. *(finding 29.)*
+- [x] 2. Durable-task compile / materialize path: typed `DurableTaskSpec` (acceptance, inputs, work templates, result and retention), without fake `case_type` graph.
+- [x] 3. UX: clarification questions in business language; title+slug; streaming progress stages API.
+- [x] 4. Selftests: batería inmobiliaria del walkthrough; fidelity gate; simulation success-terminal + proposer parity (finding 30).
 
 **Depends on:** 5.0, 4.2. **Non-goal:** full dynamic `agent_proposed` fan-out (separate slice after 5.1–5.2).
 
-**Phase 5 exit checks:** [ ] ADR + §7.0 aligned · [ ] batch durable task E2E under flag without phantom case · [ ] overview lists both roots · [ ] Studio router distinguishes batch vs case NL · [ ] dynamic workflows still gated until verification envelopes + roots land.
+### Slice 5.3.1 — Studio discovery + unified draft review
+
+**Status:** [~] implemented in code 2026-08-07; migration apply + manual
+walkthrough #1/#2 pending (finding 31)
+**Objective:** Studio must use Gu's existing authoring doctrine to understand an open-ended request before materializing it, then show a consistent review surface for every creation kind.
+
+**Canonical inputs (reuse, do not fork):**
+
+- `skills/global/skill-authoring/SKILL.md` + `references/skill-contract.md`, `operational-case-authoring.md`, `output-formats.md` — executable authoring playbook.
+- `docs/operational-cases/use-case-authoring-vision.md` — product sequence `discovery → proposal → human review → proportional readiness → controlled activation`.
+- Technical Plan §3.1 / §7.0 / §9.1–9.2 / §14–17 — human involvement, case-vs-durable truth, model role and publication lifecycle.
+- `docs/skills-tools-architecture.md` — skill/tool/deterministic boundary and Skill Lab.
+- `docs/manuals/gu-os-studio-human-walkthrough.md` — operator-facing acceptance contract.
+
+**Tasks:**
+
+- [x] 1. Shared authoring-doctrine loader: `authoring-doctrine.ts`; references use `read_skill_reference`; both APIs preload the same body/references.
+- [x] 2. Model-backed discovery on every authoring request: `authoring-discovery.ts` + pure Zod contract; deterministic router is advisory/fallback only.
+- [x] 3. Deterministic enforcement: schema, 1–4 questions/turn, evidence quote existence, tenant catalogs, side-effect/compiler gates and explicit confirmation.
+- [x] 4. Conversational wizard in Diseño: **Analizar solicitud** → hilo chat (composer único) → checkpoint 3+2 → `Esto entendí` + forma propuesta → **Crear borrador**.
+- [x] 5. Session integrity: tenant-scoped GET resume (reconstruye hilo), confirmation hash, optimistic JSON append, atomic `materializing` claim (migration `00076`), compiled replay and cancellation.
+- [x] 6. Common post-create review in Diseño for all four artifact kinds; skill editor is an explicit later action.
+- [x] 7. Human progress in the thread; technical provenance collapsed; `aria-live` and composer focus after questions.
+- [x] 8. Conversation policy `SOFT_CHECKPOINT=3` / `HARD_LIMIT=5` persisted in `router_output_jsonb.conversation`; compact discovery state reduces tokens after the first answer turn. Automated transcript purge/retention job remains follow-up.
+- [~] 9. Evidence: schema/selftests (incl. conversation policy + thread hydrate), type-check, Studio suite. Manual browser walkthrough #1/#2 and live eval refresh remain.
+
+**Non-goals:** a free-form LangGraph chat; a closed catalog of hardcoded questions as the happy path; auto-activation; replacing workflow/capability/publication gates with model judgment; exposing deterministic/model provenance chips in the default UI.
+
+**Phase 5 exit checks:** [x] ADR + §7.0 aligned · [~] batch durable task compile/run without phantom case (live E2E pending) · [x] Diseño and Control operativo list durable tasks · [x] Studio router distinguishes batch vs case NL · [x] dynamic workflows still gated until verification envelopes + roots land.
 
 ---
 
@@ -578,9 +606,14 @@
 | 24 | 2026-08-06 | **`specialized_agent` como nombre de modo colisionaba con los sub-agentes IA planeados.** El rasgo distintivo del modo es estar REGISTRADO por `work_type` con contrato aislado — la implementación puede ser híbrida (checks deterministas + segunda opinión de modelo opcional, como el valuation verifier) — pero "agent" sugería un agente IA autónomo, y la UI mostraba el slug crudo junto a labels naturales. Detectado en revisión con el usuario. | Low-Medium (claridad del vocabulario antes de multi-agente) | **Taken (user-approved 2026-08-06):** rename `specialized_agent` → `registered_specialized_worker` (enum, executor, perfiles y attempts históricos vía migración 00073; Technical Plan §9 actualizado). `ephemeral_subagent` queda reservado para delegación padre-hijo real entre agentes; se agrega `ephemeral_worker` (ejecución temporal iniciada por el dispatcher) al vocabulario declarado-sin-adapter. UI: labels naturales para todos los modos (`Ejecutor especializado`, etc.) con alias del kind viejo para historial. |
 | 25 | 2026-08-06 | **Revisión de diseño A–Q del Studio con el usuario** (pre-walkthrough). Mayormente validó decisiones ya tomadas (privacidad por tenant, capability map determinista, gaps backlog vs bloqueantes, spec-driven con `description_nl` verbatim, lifecycle §14). Tres adiciones reales: (a) **skill audit** como disciplina permanente — extensión de finding 18 al catálogo de skills: A/B con el harness de replay (con/sin skill) y, en el compilador, preferir "modelo + contexto ya lo hace" antes de proponer skill nuevo (tesis "un skill debe ganarse su lugar con evidencia"); (b) **generalización de patrones al registro**: los aprendizajes probados (acks de álbumes, esperas event-driven, retry seguro) se convierten en entradas de registro/plantillas forkeables, nunca pseudo-código libre; (c) **headless-first con retorno al canal** (links firmados/deep links con vuelta fácil a Telegram) registrado como el mejor argumento de producto hasta ahora para activar §16.1 — sigue diferido hasta necesidad real. | Medium (proceso + backlog de producto) | **Taken (user-approved 2026-08-06):** consolidado en `docs/manuals/gu-os-studio-human-walkthrough.md` (checklist del walkthrough humano, incluye aprendizajes del E2E EasyBroker/Ungga y frontera caso/tarea durable como insumo de Phase 5). |
 | 26 | 2026-08-06 | **El compilador del Studio corría en `gpt-5.4-mini` siendo el rol de mayor juicio y menor volumen del sistema.** Un flujo mal compilado cuesta órdenes de magnitud más que la llamada (compilaciones puntuales, ~decenas de miles de tokens); los gates deterministas son la seguridad, pero la calidad de la propuesta (grafo, preguntas de aclaración, specs) sí depende del modelo. Rompe deliberadamente la regla "cheap by default" de §9.1 para este único rol — el resto (main agent, clasificadores, heartbeat) sigue barato. | Medium (calidad del authoring) | **Taken (user-approved 2026-08-06):** `WORKFLOW_COMPILER_MODEL_ID=anthropic/claude-opus-5` vía env por rol (mecanismo §9.1 existente; default en código sigue mini). Snapshot de catálogo de precios `2026-08-06.1` generado e importado como activo (metering estima costo; finding 11 sigue aplicando: `usage.cost` de OpenRouter es la fuente preferida). Aliases `reasoning_*` NO se re-apuntan — los upgrades de workers siguen siendo evidence-based. |
+| 27 | 2026-08-07 | **¿MCP es una cuarta pestaña de Integraciones, o es lo mismo que Tools?** Pregunta del usuario pre-pasada 2 del walkthrough. Hoy Integraciones = Conexiones (OAuth) / Canales / Credenciales API; Tools = catálogo governado con `requires_integration`. MCP es un *protocolo de transporte* para tools externas, no un tipo de integración de negocio al mismo nivel que EasyBroker o Telegram. Abrir MCP como superficie de UI/runtime ahora competiría con Conexiones, confundiría al operador no técnico y ampliaría ataque sin sandboxing (alineado con K7 del architecture analysis). | Medium (extensibilidad vs superficie de ataque; no bloquea pasada 2) | **Taken (user-approved 2026-08-07):** diferido — no implementar ni añadir pestaña MCP antes del walkthrough. Cuando se active (Technical Plan §28.14): (1) conectar servidor MCP ⊆ **Conexiones** (o subsección "Servidores / extensiones") con auth/scope por tenant; (2) tools MCP solo tras materializarse en el **catálogo de Tools** (allowlist/vetting); (3) Studio/capability map sigue resolviendo solo registro + gaps backlog ("conecta este servidor"), jamás tools MCP crudas en runtime/compilador. Gate: sandboxing + necesidad real (p. ej. CRM vía MCP) o Phase 5/dynamic workflows que ensanchen la superficie. |
+| 28 | 2026-08-07 | **El formulario de Diseño pide `case_type` como slug técnico** (`p. ej. property_optioning`). Un operador inmobiliario no debería inventar identificadores internos; un valor malo (idioma, longitud, espacios, colisiones) ensucia el catálogo y las familias de versiones. | Medium (UX authoring; no bloquea pasada 2 con workaround) | **Taken (user-approved 2026-08-07, diferido a implementación oportuna):** título NL + descripción → sistema propone slug en **inglés** `snake_case` corto (convención del sistema); campo identificador propuesto editable/opcional; reutilizar tipos existentes vía selector `Nombre amigable (slug)`. Documentado en `gu-os-studio-human-walkthrough.md`. Workaround pasada 2: slug `property_visit_coordination`. |
+| 29 | 2026-08-07 | **`one_shot_skill` en el router de autoría no tenía definición y mezclaba ontologías.** Solo aparecía en Slice 5.3 y Technical Plan §16; una consulta puntual no debe crear nada en Studio, mientras un skill por definición es un procedimiento reusable. `capability_gap` tampoco es un tipo de artefacto: es diagnóstico de compilación/readiness. | Medium (contrato del router antes de Phase 5) | **Taken (user-approved 2026-08-07):** artefactos = `case_workflow | durable_task | reusable_skill(simple|composite) | schedule`; resultados sin artefacto = `clarify | redirect_to_chat`. `schedule` referencia/programa trabajo subyacente; no convierte una consulta en skill. Batería del walkthrough actualizada y Slice 5.3 corregido antes de implementación. |
+| 30 | 2026-08-07 | **Studio Pasada 2 reveló que el compilador siempre producía case workflows;** `required_assets` clasificaba mal datos de runtime como assets de cuenta; la simulación BFS elegía terminales `cancelled` como éxito. | High (calidad authoring + gates) | **Taken:** router de autoría antes de compile; taxonomía `input_requirements` (prerrequisitos vs datos de runtime); simulación ancla en success-terminal; parity de proposers; fidelity gate. Phase 5 amplía alcance a *authoring foundation* además de raíces durable. |
+| 31 | 2026-08-07 | **La batería #1 expuso dos pipelines de autoría divergentes.** `skills/global/skill-authoring/SKILL.md` ya exige capturar outcome, trigger, datos/externos, read-vs-write, HITL y overlap, y `use-case-authoring-vision.md` ya define `discovery → propuesta → revisión humana`; sin embargo `/api/studio-authoring` no carga esa doctrina. Una clasificación determinística `reusable_skill/simple` de alta confianza saltó todo juicio de completitud y materializó `owner-followup-message` con `requires_tenant_context:true`, `allowed_tools:[]` y sin saber dónde leer el último acuerdo. Después redirigió al editor raw de Skills de cuenta, sin resumen común ni confirmación. | High (calidad/autoridad de definiciones; UX de Studio) | **Taken (user-approved 2026-08-07):** Slice 5.3.1. Reusar —no duplicar— `skill-authoring` + referencias y fuentes canónicas; discovery model-backed siempre, con preguntas dinámicas y evidencia; enforcement determinístico solo para contratos/tenancy/catálogos/side-effects/confirmación; wizard especializado `Revisar solicitud → preguntas → Esto entendí → Crear borrador`; resultado estándar en Diseño para los cuatro tipos. |
 | — | | *(append as found)* | | |
 
-**Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 2.7-1, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3); channel-linked generated views (Technical Plan §28.12 — no slice until activated).
+**Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 2.7-1, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3); channel-linked generated views (Technical Plan §28.12 — no slice until activated); MCP server connections / tool materialization (Technical Plan §28.14 — finding 27; deferred until sandboxing + real need).
 
 ### X.1 Findings note — Flow vs SKILL.md diff (§29.1, feeds S1.2)
 

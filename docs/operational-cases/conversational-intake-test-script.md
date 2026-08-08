@@ -1,5 +1,9 @@
 # Script de prueba end-to-end — Intake conversacional durable
 
+> **Alcance vigente:** runbook diagnóstico del runtime conversacional; no es
+> aceptación de autoría Studio. Las baterías de discovery/creación están en
+> [`../manuals/gu-os-studio-human-walkthrough.md`](../manuals/gu-os-studio-human-walkthrough.md).
+
 **Audiencia:** producto (Janot) ejecuta; ingeniería observa logs.
 **Duración estimada:** 15-25 minutos.
 **Objetivo:** confirmar que un usuario puede arrancar y continuar un

@@ -31,6 +31,22 @@ Este marco define **cómo probar** un tipo de caso operacional antes de activarl
 
 **Principio rector:** la readiness operacional valida **contratos de negocio reproducibles**, no sólo que una tool no lance excepción.
 
+### 1.1 Readiness proporcional por creación de Studio
+
+Este marco N0–N5 aplica a `case_workflow`. Studio no debe copiarlo
+indiscriminadamente:
+
+- `reusable_skill`: parser/rúbrica + Skill Lab (positivos, near-miss,
+  integración y side effects);
+- `durable_task`: schema, requisitos de input, templates de trabajo, contrato
+  de resultado, retención y una corrida controlada;
+- `schedule`: readiness de la tarea subyacente + cron/timezone/próxima
+  ejecución, idempotencia y autorización de activación;
+- `redirect_to_chat`: no crea artefacto ni abre readiness.
+
+Discovery valida completitud de la solicitud; no sustituye estas pruebas ni
+autoriza activación.
+
 ---
 
 ## 2. Niveles de prueba (N0–N5)

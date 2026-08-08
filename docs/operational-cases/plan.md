@@ -1,6 +1,9 @@
 # Subsistema de Casos operacionales — Plan
 
-> **Estado:** v1.0 — propuesta inicial; algunas tools y POCs dependen de información o accesos externos antes de poder pasar a producción. Ver sección 7 (gating).
+> **Estado:** histórico — plan v1 inicial, mayormente implementado o
+> supersedido. Para trabajo vigente usar
+> [`gu-os-flexible-workflows-detailed-implementation-plan.md`](../manuals/gu-os-flexible-workflows-detailed-implementation-plan.md);
+> este archivo se conserva para trazabilidad.
 >
 > **Documentos relacionados**
 > - [`architecture.md`](architecture.md): explicación técnica del subsistema (sobrevive al plan).

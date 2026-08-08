@@ -417,7 +417,7 @@ IDs conceptuales para `testPlan` y futuro `test_pattern` en el flow. Detalle pro
 
 | Prueba | Escenario / skill | Patrones | Salida esperada |
 |--------|-------------------|----------|-----------------|
-| N3 | `request-property-documents` | `PATTERN_SKILL_TEST_CONTRACT`, `PATTERN_TELEGRAM_DEDUP`, `PATTERN_SKILL_TEST_PROMPT_GUARDRAILS` | Hoy: rama **externa** (`waiting_external`, `reminder_sent`) |
+| N3 | `request-property-documents` | `PATTERN_SKILL_TEST_CONTRACT`, `PATTERN_TELEGRAM_DEDUP_SAME_TURN`, `PATTERN_SKILL_TEST_PROMPT_GUARDRAILS` | Hoy: rama **externa** (`waiting_external`, `reminder_sent`) |
 | N4 | `awaiting_documents_internal_upload` | Idem | Rama interna: `waiting_internal` + `notify_user`, sin Telegram externo |
 | N4 | `awaiting_documents_outreach` | `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_STEP_BRANCH_DECISION` | Rama externa vía raíz |
 
@@ -433,7 +433,7 @@ IDs conceptuales para `testPlan` y futuro `test_pattern` en el flow. Detalle pro
 |--------|-----------|----------|-----------------|
 | N3 | `extract-property-characteristics` (revisión interna) | `PATTERN_SKILL_TEST_CONTRACT`, `PATTERN_NOTIFY_USER_CHANNELS`, `PATTERN_SETTINGS_TEST_SEED_AND_REPAIR`, `PATTERN_SKILL_TEST_PROMPT_GUARDRAILS` | `property_data_review`, `waiting_internal`, `notify_user` |
 | N4 | `documents_received_property_data_review` | `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_STEP_BRANCH_DECISION` | Rama completa → revisión interna |
-| N4 | `documents_received_characteristics_pending` | `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_STEP_BRANCH_DECISION`, `PATTERN_TELEGRAM_DEDUP`, semilla incompleta | Rama faltantes externos → `waiting_external` |
+| N4 | `documents_received_characteristics_pending` | `PATTERN_STEP_TEST_SCENARIO`, `PATTERN_STEP_BRANCH_DECISION`, `PATTERN_TELEGRAM_DEDUP_SAME_TURN`, semilla incompleta | Rama faltantes externos → `waiting_external` |
 | N4 | `documents_received_characteristics_pending_internal` | Idem + seed `document_request_target=internal_user` | Rama faltantes internos → `waiting_internal` + `characteristics_pending_internal` (sin Telegram) |
 
 **Notify interno:** revisión (`kind=property_data_review`) o faltantes internos (`characteristics_pending_internal`). **Faltantes externos:** Telegram; no `notify_user` de revisión.
@@ -511,7 +511,9 @@ Derivado de [`authoring-playbook.md`](authoring-playbook.md) §7, con columna de
 
 ## 9. Ejemplo `testPlan` para propuesta NL (anillo 3)
 
-Bloque que `skill-authoring` (o un endpoint hermano) debería emitir al proponer un caso como `property_optioning`:
+Bloque que la doctrina compartida de `skill-authoring` y Studio puede emitir al
+proponer un `case_workflow` como `property_optioning`. Discovery selecciona la
+forma; este catálogo sólo aporta IDs de prueba existentes:
 
 ```json
 {
@@ -565,8 +567,8 @@ Bloque que `skill-authoring` (o un endpoint hermano) debería emitir al proponer
 | P0 | Ejecutar [`step-branch-clarity-plan.md`](step-branch-clarity-plan.md) Fases B–F — **hecho** (`awaiting_documents`, `documents_received`, `comparables_in_progress`) |
 | P1 | Consumir `test-patterns-catalog.ts` desde UI (sustituir flags `isEasyBroker*`) |
 | P2 | `test_pattern` en `operational_flow_jsonb` |
-| P3 | `skill-authoring` emite `testPlan` con IDs del catálogo |
-| P4 | Clasificador caso vs skill en pipeline NL |
+| P3 | Completar consumo UI del `testPlan` emitido por doctrina compartida |
+| Hecho 5.3/5.3.1 | Router de artefactos + discovery model-backed + confirmación |
 | Futuro A | Deep-link de reconexión para asesores en Telegram/web y retorno guiado al caso |
 | Futuro B | Auto-resume: al reconectar EasyBroker, reprogramar/reintentar automáticamente `comparables_in_progress` pendientes |
 | Futuro C | Health check preventivo de integraciones críticas antes de iniciar pasos sensibles |

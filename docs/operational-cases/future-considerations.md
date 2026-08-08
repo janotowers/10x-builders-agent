@@ -7,14 +7,18 @@
 
 ---
 
-## 0. Dos pistas de readiness (no confundir)
+## 0. Pistas de readiness por raíz (no confundir)
 
 | Pista | Cuándo | Instrumentación |
 |-------|--------|-----------------|
 | **Preparación operativa N0–N5** | Casos multi-día con `current_step`, cron, esperas externas | Settings → Casos de uso; N5 = laboratorio E2E controlado (`agent_e2e`) |
-| **Skill Lab** | Skills de un turno sin instancia de caso | Rúbrica `skill-authoring`, evals, N1 opcional en integraciones |
+| **Skill Lab** | `reusable_skill` sin instancia de caso | Rúbrica `skill-authoring`, evals, N1 opcional en integraciones |
+| **Tarea durable** | Batch/trabajo de resultado bajo `durable_task → work_run` | Schema, inputs, acceptance, templates, resultado, retención y corrida controlada |
+| **Programación** | Recurrencia que referencia trabajo subyacente | Readiness subyacente + cron/timezone/próxima ejecución, idempotencia y activación humana |
 
-No exigir N4/N5 a skills síncronas. No activar casos operacionales sin N0–N2 mínimo. Quality bar instrumentable: [`testing-framework.md`](testing-framework.md) §13.
+No exigir N4/N5 a skills síncronas ni crear casos fantasma para tareas batch.
+No activar casos operacionales sin N0–N2 mínimo. Quality bar instrumentable:
+[`testing-framework.md`](testing-framework.md) §13.
 
 **Autoría de pasos:** un `step_key` es un hito de negocio durable; no crear un paso por cada **habilidad atómica** — la raíz compuesta orquesta dentro del hito ([`authoring-playbook.md`](authoring-playbook.md) §1).
 

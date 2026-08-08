@@ -2,7 +2,7 @@
 
 **Status:** Accepted direction  
 **Date:** 2026-08-02  
-**Related:** [`../manuals/ai-native-loops.md`](../manuals/ai-native-loops.md), [`../manuals/gu-os-flexible-workflows-technical-plan.md`](../manuals/gu-os-flexible-workflows-technical-plan.md) §14–15, [`../operational-cases/testing-framework.md`](../operational-cases/testing-framework.md) §13.7
+**Related:** [`../manuals/ai-native-loops.md`](../manuals/ai-native-loops.md), [`../brain/business-and-platform-brain-boundary.md`](../brain/business-and-platform-brain-boundary.md), [`../manuals/gu-os-flexible-workflows-technical-plan.md`](../manuals/gu-os-flexible-workflows-technical-plan.md) §14–15, [`../operational-cases/testing-framework.md`](../operational-cases/testing-framework.md) §13.7
 
 ## Context
 

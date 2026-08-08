@@ -65,8 +65,15 @@ checks transversales.
 
 ### 4.2 Diseño — describir y aclarar
 
-- [ ] Las preguntas de aclaración están en **lenguaje de negocio**, acotadas
-      (≤3 rondas, ≤5 preguntas por ronda), y no repiten lo ya respondido (O).
+- [ ] Las preguntas de aclaración están **conversacionales y adaptativas**
+      (lenguaje de negocio, 1–4 por turno, sin mostrar “ronda X de N”), con
+      checkpoint interno tras 3 respuestas y extensión voluntaria hasta 5;
+      no repiten lo ya respondido (O). Las preguntas abstractas muestran
+      ejemplos breves y contextuales como inspiración, no como opciones
+      obligatorias.
+- [ ] Mientras Gu analiza, el composer no invita a escribir: se reemplaza por
+      un estado visible y una acción **Detener análisis** que cancela la
+      solicitud en curso.
 - [ ] La transformación es VISIBLE: la descripción NL del operador se preserva
       **verbatim** en la spec de negocio y el operador puede ver ambas — su
       "What" y la interpretación del sistema — lado a lado (H). Si la
@@ -130,6 +137,7 @@ checks transversales.
 | J/K | Nada de código generado ejecutando en runtime; los patrones probados se generalizan como entradas de REGISTRO (guards, templates, ask-kinds), no como pseudo-código. |
 | L/M | (Observación registrada, no check de esta pasada) Headless-first: vistas ricas como links firmados con retorno fácil al canal — insumo para activar §16.1. |
 | N | Formato skill: `SKILL.md` + frontmatter; paridad de paquete completo es Slice 4.3 (diferido). |
+| MCP | (No es check de esta pasada) MCP **no** se evalúa ni se espera como 4ª pestaña de Integraciones. Tools ≠ MCP: MCP es transporte; cuando exista, cae en Conexiones + catálogo de Tools (finding 27 / Technical Plan §28.14). |
 
 ## 6. UI: evaluar antes de construir
 
@@ -159,6 +167,182 @@ Ajustes **candidatos** que siguen abiertos:
   conseguirlo" con un solo CTA.
 - Resumen pre-publicación tipo "estás a punto de activar X; afecta a Y".
 - Limpieza/archivo de versiones huérfanas (muchas v1–v5 de pruebas).
+
+### MCP / extensiones externas (diferido — 2026-08-07)
+
+**No bloquea la pasada 2.** Integraciones hoy = Conexiones · Canales · Credenciales
+API; Tools = catálogo governado. MCP no es “otro tipo de integración de
+negocio”: es el protocolo para traer tools de un servidor externo.
+
+Posición tomada (finding 27 del detailed plan; Technical Plan §28.14):
+
+- No añadir pestaña MCP en Integraciones.
+- Cuando se active: conectar bajo **Conexiones** (o “Servidores / extensiones”);
+  materializar tools en el **catálogo de Tools** antes de que el Studio las
+  componga; gaps del capability map en palabras del cliente.
+- Gate: sandboxing + necesidad real (o ensanche por Phase 5 / dynamic workflows).
+
+### Identificador de tipo / slug en Diseño (diferido — 2026-08-07)
+
+**Hallazgo de pasada 2 (antes de compilar):** pedir `case_type` como slug
+técnico al operador inmobiliario es fricción alta y fuente de basura
+(`property_optioning`-style typos, nombres largos, idioma mezclado).
+
+**Diseño acordado (implementar cuando sea oportuno; no bloquea seguir con
+workaround de slug propuesto):**
+
+1. Operador escribe **título** en lenguaje natural + **descripción**.
+2. Sistema propone `case_type` en **inglés**, `snake_case`, corto (convención
+   del resto del sistema: `property_optioning`, `lead_follow_up`), con
+   unicidad por tenant.
+3. Campo “Identificador interno (propuesto)” visible, editable, opcional.
+4. Al reutilizar un tipo existente: selector con
+   **Nombre amigable (`slug_tecnico`)** — p. ej. `Opcionamiento de propiedad
+   (property_optioning)`.
+
+**Pasada 2 (workaround):** título humano en la descripción; slug a pegar en
+“Tipo de caso” = `property_visit_coordination`.
+
+### Correcciones post-pasada 2 (implementadas)
+
+Hallazgos de Pasada 2 ya corregidos en código (finding 30):
+
+- **Router antes de compile** — clasifica NL → artefacto (`case_workflow` /
+  `durable_task` / `reusable_skill` / `schedule` / `clarify` /
+  `redirect_to_chat`) antes de invocar el compilador de casos.
+- **Streaming de progreso** — etapas visibles durante autoría/compilación
+  (API de progreso por etapas).
+- **Título + slug** — el operador escribe título NL; el sistema propone slug
+  en inglés `snake_case` (ya no solo `case_type` crudo).
+- **Taxonomía `input_requirements`** — separa prerrequisitos de cuenta
+  (`account_assets`) de datos de runtime; evita clasificar mal
+  `required_assets`.
+- **Simulación** — BFS ancla en terminales de éxito (no elige `cancelled`
+  como terminal feliz); parity de proposers.
+- **Reiniciar `next dev`** tras cambiar `WORKFLOW_COMPILER_MODEL_ID` — el
+  proceso Node no recarga ese env en caliente.
+- **Batería #1** — “skill simple reusable” debe rutear a
+  `reusable_skill/simple` (ya no a case workflow).
+
+### Hallazgo de batería #1 — discovery y revisión de borrador
+
+**Implementado en código (finding 31, 2026-08-07); repetición manual #1/#2
+pendiente tras aplicar migración `00076`.**
+La clasificación correcta no prueba que la solicitud esté completa. En
+“Seguimiento cordial a propietarios”, Studio reconoció
+`reusable_skill/simple`, pero materializó sin preguntar de dónde leer el
+historial/último acuerdo: produjo `requires_tenant_context:true` con
+`allowed_tools:[]`. Además redirigió directamente al editor raw de Skills de
+cuenta.
+
+La solución **no** es un catálogo determinístico de preguntas ni una nueva
+doctrina paralela. Las fuentes ya existen:
+
+- `skills/global/skill-authoring/SKILL.md` + referencias: contrato ejecutable
+  de autoría, discovery, MECE, tools, tenant context, HITL, rúbrica y
+  activación;
+- `docs/operational-cases/use-case-authoring-vision.md`: discovery → propuesta
+  → revisión humana → readiness proporcional → activación controlada;
+- Technical Plan §3.1/§7.0/§9/§14–17: human involvement, case vs durable task,
+  modelos, lifecycle y publicación;
+- `docs/skills-tools-architecture.md`: juicio/skill vs ejecución/tool/código y
+  Skill Lab.
+
+Contrato de UX esperado antes de reanudar la batería:
+
+1. La primera acción dice **Analizar solicitud**, no crea todavía.
+2. Discovery model-backed usa la doctrina, catálogos reales y estado compacto
+   del transcript; puede corregir la forma de trabajo provisional. El
+   clasificador determinístico es solo señal/fallback interno (no se muestra
+   como chip al operador).
+3. Conversación tipo chat: Gu hace 1–4 preguntas materiales por turno; la
+   persona responde en un composer único. Tras 3 respuestas hay checkpoint
+   (“Seguir aclarando” / “Preparar propuesta”); el hard limit es 5. No
+   pregunta “¿quieres HITL/botón?”, sino quién decide y qué necesita ver.
+4. El modelo cita qué texto/respuesta cubre cada dimensión. Código
+   determinístico valida schema, límites, evidencia existente, tenancy,
+   catálogo, side effects y autoridad; no pretende decidir suficiencia
+   semántica con regex.
+5. Muestra **Esto entendí** y solo entonces la **Forma propuesta** (skill,
+   caso, tarea durable o programación), junto con supuestos y gaps.
+6. Solo **Crear borrador** materializa tras confirmación humana.
+7. Los cuatro tipos aterrizan en una revisión común dentro de Diseño; el
+   editor técnico de Ajustes se abre como acción posterior explícita.
+8. Progreso humano en el hilo; provenance técnica bajo “Ver detalles”.
+
+Evidencia automatizada:
+
+- contrato Zod + citas de evidencia + selftests;
+- type-check web/workflows/db y suite `test:workflow-studio`;
+- validadores de skills/migraciones;
+- batería live #1–#10 con `anthropic/claude-opus-5`: los diez destinos
+  conservaron la taxonomía esperada; #1/#2 pidieron aclaraciones materiales;
+- compilación live de `owner-followup-message`: SKILL.md válido, tenant-aware y
+  dos tools reales del catálogo, sin persistir el artefacto durante el eval.
+
+### Taxonomía del router de autoría (corregida — 2026-08-07)
+
+El Studio **crea artefactos governados**; no es la superficie para ejecutar
+consultas puntuales. El anterior `one_shot_skill` de Slice 5.3 no tenía
+definición y se retiró por ambiguo (finding 29).
+
+**Artefactos:**
+
+- `case_workflow`
+- `durable_task`
+- `reusable_skill`, subtipo `simple | composite`
+- `schedule` (programa/referencia trabajo subyacente)
+
+**Resultados sin artefacto:**
+
+- `clarify`
+- `redirect_to_chat` (la intención es ejecutar algo una vez)
+
+Un `capability_gap` es diagnóstico posterior de compilación/readiness, no un
+tipo de artefacto.
+
+### Batería inmobiliaria del router / compilador
+
+1. **Skill simple reusable:** “Cada vez que prepares un seguimiento para un
+   propietario, resume el último acuerdo y termina proponiendo una siguiente
+   acción concreta; nunca inventes compromisos ni fechas.”
+   Esperado: clasificación provisional `reusable_skill/simple`; discovery
+   pregunta dónde vive el último acuerdo/historial (y cualquier otra
+   ambigüedad material), no pregunta si debe enviar porque “preparar” ya
+   implica draft-only; resumen `Esto entendí`; creación solo tras confirmar.
+2. **Skill compuesto:** “Antes de una cita de captación, prepara una carpeta
+   con datos de la propiedad, zona, comparables, pendientes, antecedentes del
+   propietario y agenda sugerida.”
+   Esperado: `reusable_skill/composite`; discovery revisa fuentes, overlap y
+   composición contra skills/tools existentes antes de proponer includes.
+3. **Caso operacional — pasada 2 actual:** “Coordinación de visita a
+   propiedad”: prospecto solicita visita → reunir datos → obtener horarios →
+   aprobación del asesor → coordinar/confirmar → recordar → registrar
+   realizada/reprogramada/cancelada/no-show. No inventar disponibilidad ni
+   contactos.
+   Esperado: `case_workflow`; slug temporal `property_visit_coordination`.
+4. **Caso de arrendamiento:** reunir expediente del solicitante, identificar
+   faltantes y pedir decisión al asesor/propietario; Gu no aprueba/rechaza
+   automáticamente.
+   Esperado: `case_workflow` con HITL obligatorio.
+5. **Tarea durable batch:** analizar 300 propiedades activas y producir reporte
+   de posibles subvaluadas, incompletas, duplicadas y prioritarias.
+   Esperado: `durable_task`, sin 300 casos fantasma.
+6. **Tarea durable documental:** revisar expedientes de propiedades activas,
+   detectar documentos faltantes/vencidos y reportar por asesor.
+   Esperado: `durable_task`.
+7. **Programada:** cada lunes 08:00 revisar leads sin actividad en siete días y
+   entregar a cada asesor una lista priorizada.
+   Esperado: `schedule` sobre una tarea durable.
+8. **Integración faltante:** sincronizar leads de portales con “nuestro CRM” y
+   evitar duplicados.
+   Esperado: `clarify` qué CRM; luego gap de conexión/tool si no existe. Nunca
+   inventar adapter o tool MCP.
+9. **Ambigua:** “Ayúdame a mejorar el seguimiento de mis prospectos.”
+   Esperado: `clarify` objetivo, volumen, recurrencia, canales y responsables.
+10. **Consulta puntual en la superficie equivocada:** “Con estos datos,
+    redacta la descripción de esta propiedad.”
+    Esperado: `redirect_to_chat`; no crear skill ni workflow.
 
 ## 7. Registro de hallazgos y salida
 

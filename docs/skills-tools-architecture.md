@@ -104,7 +104,8 @@ Ejemplos:
 - `easybroker_search_listings`;
 - `easybroker_create_listing`;
 - `image_watermark`;
-- `telegram_send_message_to_contact`.
+- `telegram_send_message_to_contact`;
+- `gmail_send_email`.
 
 Las tools tienen:
 
@@ -117,6 +118,13 @@ Las tools tienen:
 
 La skill decide **cuándo** usar una tool. La tool define **cómo** se ejecuta la
 capacidad.
+
+`gmail_send_email` ilustra el contrato completo de una escritura externa:
+catálogo `risk=high`, integración OAuth `gmail`, preview HITL con destinatario,
+asunto, cuerpo, evidencia y adjuntos, validación tenant/caso en el adapter y
+auditoría del resultado. El scope actual es únicamente `gmail.send`; no implica
+lectura de bandeja ni detección de respuestas. Ver
+[`workflow-studio/capabilities-and-solution-patterns.md`](workflow-studio/capabilities-and-solution-patterns.md).
 
 ---
 

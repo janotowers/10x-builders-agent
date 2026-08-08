@@ -183,5 +183,6 @@ AI-native does not mean adding copilots everywhere. It means progressively conve
 - [`gu-os-flexible-workflows-technical-plan.md`](gu-os-flexible-workflows-technical-plan.md)
 - [`../operational-cases/testing-framework.md`](../operational-cases/testing-framework.md)
 - [`../brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md)
+- [`../brain/business-and-platform-brain-boundary.md`](../brain/business-and-platform-brain-boundary.md)
 - [`../adr/ADR-104-governed-improvement.md`](../adr/ADR-104-governed-improvement.md)
 - [`knowledge-scope-and-ownership.md`](knowledge-scope-and-ownership.md)

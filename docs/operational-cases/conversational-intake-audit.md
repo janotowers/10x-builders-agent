@@ -1,6 +1,8 @@
 # Conversational case intake — auditoría previa a Fase A
 
-**Estado:** auditoría, no implementación.
+**Estado:** histórico — auditoría previa al rollout. La arquitectura vigente
+está consolidada en [`architecture.md`](architecture.md) §6.1; no usar este
+archivo como backlog de Studio ni como contrato actual del router.
 **Audiencia:** producto + ingeniería antes de tocar skills o router.
 **Pregunta que responde:** ¿Qué tan lejos estamos hoy de que un usuario
 escriba en Telegram “necesito opcionar una propiedad” y el sistema arme

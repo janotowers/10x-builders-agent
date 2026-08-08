@@ -5,6 +5,11 @@
 > **Audiencia:** Janot (arquitecto/dueño)
 > **Decide:** si arrancamos la "Brain Layer" como capa nueva paralela a `memories`, siguiendo Opción B (portar **8 ideas** de G Brain sin importar su código), en convivencia explícita con `operational_cases` y `account_skills`
 > **No decide:** si en el futuro lejano se integra G Brain como microservicio (Opción C) — eso queda como puerta abierta, con matiz post-company-brain (ver [§8](#8-recomendación-y-razones))
+>
+> **Frontera complementaria:** la distinción entre Business Brain y el
+> conocimiento interno con el que Gu OS mejora su propio producto —sin duplicar
+> el modelo de 7 capas— vive en
+> [`business-and-platform-brain-boundary.md`](business-and-platform-brain-boundary.md).
 
 ### Cambios v1.6 vs v1.5.2
 

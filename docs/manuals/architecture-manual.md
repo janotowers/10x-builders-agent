@@ -1135,6 +1135,7 @@ El agente no debe mezclar usuarios, organizaciones ni permisos. Hay tres mecanis
 |---|---|
 | Supabase | RLS por `auth.uid()` / `user_id` |
 | Integraciones OAuth | Tokens por usuario en `user_integrations`, cifrados |
+| MCP (diferido) | Transporte externo, no 4ª pestaña: conectar bajo Conexiones; tools solo vía catálogo governado tras allowlist (finding 27 / Technical Plan §28.14). Cerrado hasta sandboxing + necesidad real. |
 | BigQuery usuario regular | Debe filtrar por `organization_id` |
 | BigQuery admin Ungga | Puede operar cross-tenant bajo reglas explicitas |
 | Tools riesgosas | HITL por risk `medium/high` |

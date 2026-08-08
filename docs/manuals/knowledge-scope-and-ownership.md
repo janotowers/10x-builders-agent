@@ -154,6 +154,7 @@ Prefer sharing an authorized view over copying the artifact. Revocation must rem
 - [`architecture-manual.md`](architecture-manual.md)
 - [`../business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md)
 - [`../brain/gbrain-evaluation-and-plan.md`](../brain/gbrain-evaluation-and-plan.md)
+- [`../brain/business-and-platform-brain-boundary.md`](../brain/business-and-platform-brain-boundary.md)
 - [`gu-os-flexible-workflows-technical-plan.md`](gu-os-flexible-workflows-technical-plan.md)
 - [`../adr/ADR-101-organization-tenancy.md`](../adr/ADR-101-organization-tenancy.md)
 - [`../adr/ADR-102-knowledge-ownership-scopes.md`](../adr/ADR-102-knowledge-ownership-scopes.md)

@@ -1,6 +1,10 @@
 # Plan: observabilidad E2E y consolidación idempotente (property optioning)
 
-> **Estado:** ✅ IMPLEMENTADO — 2026-06-30 (Fases 1–3). Verificación manual E2E (Fase 4) pendiente del usuario.  
+> **Estado:** histórico / implementado — 2026-06-30 (Fases 1–3). Se conserva
+> como evidencia de ejecución; los contratos vigentes viven en código,
+> [`architecture.md`](architecture.md) y
+> [`operational-case-reusable-patterns.md`](operational-case-reusable-patterns.md).
+> Verificación manual E2E (Fase 4) pendiente del usuario.
 > **Contexto:** prueba E2E conversacional caso `4ed72552…` (Las Fuentes).  
 > **Principio rector:** el panel debe reflejar la realidad del audit trail; los fixes van en la **fuente** (registro, idempotencia, un solo camino de negocio), no en ocultar síntomas en UI.
 
