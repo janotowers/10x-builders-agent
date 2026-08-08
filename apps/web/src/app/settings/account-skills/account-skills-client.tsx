@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AccountSkill, AccountSkillStatus } from "@agents/types";
 
 const DEFAULT_TEMPLATE = `---
@@ -24,8 +24,10 @@ Workflow body in markdown. Keep it short — load references on demand.
 
 export function AccountSkillsClient({
   initialSkills,
+  initialSlug = null,
 }: {
   initialSkills: AccountSkill[];
+  initialSlug?: string | null;
 }) {
   const [skills, setSkills] = useState<AccountSkill[]>(initialSkills);
   const [editing, setEditing] = useState<{
@@ -36,6 +38,18 @@ export function AccountSkillsClient({
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!initialSlug) return;
+    const match = initialSkills.find((skill) => skill.slug === initialSlug);
+    if (!match) return;
+    setEditing({
+      slug: match.slug,
+      body: match.body_md,
+      status: match.status,
+      isNew: false,
+    });
+  }, [initialSlug, initialSkills]);
 
   function startNew() {
     setEditing({

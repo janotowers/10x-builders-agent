@@ -82,6 +82,9 @@ const syntheticEcho: DeterministicWorkFn = async ({ item }) => ({
  */
 function makePublicationReconciliationFn(db: DbClient): DeterministicWorkFn {
   return async ({ userId, item }) => {
+    if (!item.case_id) {
+      throw new Error("case_root_required_for_publication_reconciliation");
+    }
     const opCase = await getOperationalCase(db, item.case_id);
     if (!opCase || opCase.user_id !== userId) {
       throw new Error("case_not_found_for_publication_reconciliation");
@@ -112,6 +115,9 @@ function makePublicationReconciliationFn(db: DbClient): DeterministicWorkFn {
  */
 function makeExtractionConsolidationFn(db: DbClient): DeterministicWorkFn {
   return async ({ userId, item }) => {
+    if (!item.case_id) {
+      throw new Error("case_root_required_for_extraction_consolidation");
+    }
     const opCase = await getOperationalCase(db, item.case_id);
     if (!opCase || opCase.user_id !== userId) {
       throw new Error("case_not_found_for_extraction_consolidation");
@@ -148,7 +154,11 @@ function proposalNumber(value: unknown): number | null {
  */
 function makeValuationVerifierFn(db: DbClient): RegisteredSpecializedWorkerFn {
   return async ({ userId, item }) => {
-    const opCase = await getOperationalCase(db, item.case_id);
+    const caseId = item.case_id;
+    if (!caseId) {
+      throw new Error("case_root_required_for_valuation_verifier");
+    }
+    const opCase = await getOperationalCase(db, caseId);
     if (!opCase || opCase.user_id !== userId) {
       throw new Error("case_not_found_for_valuation_verifier");
     }
@@ -226,7 +236,7 @@ function makeValuationVerifierFn(db: DbClient): RegisteredSpecializedWorkerFn {
     // La decisión humana puede llegar mientras corre este worker. Releer el
     // caso al terminar evita dejar `review` huérfano si el asesor ya aprobó
     // conscientemente la propuesta (incluidas sus advertencias).
-    const freshCase = await getOperationalCase(db, item.case_id);
+    const freshCase = await getOperationalCase(db, caseId);
     const freshContext =
       freshCase && isRecord(freshCase.context_jsonb)
         ? freshCase.context_jsonb

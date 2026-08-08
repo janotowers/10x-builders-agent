@@ -74,6 +74,7 @@ function makeStore(): MemoryStore {
         const row: WorkItem = {
           id: randomUUID(),
           case_id: input.caseId,
+          work_run_id: null,
           user_id: input.userId,
           workflow_definition_version: input.workflowDefinitionVersion,
           work_type: t.work_type,
@@ -616,6 +617,7 @@ function testAdvancementPredicateUnit(): void {
     ({
       id: randomUUID(),
       case_id: CASE,
+      work_run_id: null,
       user_id: USER,
       workflow_definition_version: 1,
       work_type: "gather_facts",

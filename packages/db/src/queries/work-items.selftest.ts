@@ -51,6 +51,7 @@ interface FakeDb {
 
 const TABLE_DEFAULTS: Record<keyof FakeStore, () => Row> = {
   work_items: () => ({
+    work_run_id: null,
     assigned_worker_profile_id: null,
     not_before: null,
     due_at: null,
@@ -78,10 +79,22 @@ const TABLE_DEFAULTS: Record<keyof FakeStore, () => Row> = {
 function uniqueViolation(store: FakeStore, table: keyof FakeStore, row: Row): boolean {
   if (table === "work_items") {
     if (row.idempotency_key == null) return false;
-    return store.work_items.some(
-      (r) =>
-        r.case_id === row.case_id && r.idempotency_key === row.idempotency_key
-    );
+    // Partial uniques por raíz (case_id XOR work_run_id) — migration 00074.
+    if (row.case_id != null) {
+      return store.work_items.some(
+        (r) =>
+          r.case_id === row.case_id &&
+          r.idempotency_key === row.idempotency_key
+      );
+    }
+    if (row.work_run_id != null) {
+      return store.work_items.some(
+        (r) =>
+          r.work_run_id === row.work_run_id &&
+          r.idempotency_key === row.idempotency_key
+      );
+    }
+    return false;
   }
   if (table === "work_item_attempts") {
     return store.work_item_attempts.some(

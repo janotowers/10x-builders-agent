@@ -10,7 +10,7 @@ extra prose and no fences around the sections:
 
 ```text
 <metadata>
-{"suggestedEvals":{"positive":["..."],"nearMiss":["..."],"heartbeat":["..."]},"notes":"<optional <=300 chars, concrete only>"}
+{"suggestedEvals":{"positive":["..."],"nearMiss":["..."],"heartbeat":["..."]},"operationalFlow":[{"step_key":"intake","step_label":"...","step_description":"...","step_skills":[],"step_tools":[]}],"activationPolicy":{"safe_test":{"description":"...","run_button_label":"...","synthetic_data_copy":"...","success_copy":"...","timeline_note":"...","next_action":"...","start_step":"intake","success_step":"..."},"activation_checks":{"skill_valid_copy":"...","readiness_ready_copy":"...","readiness_blocked_copy":"...","safe_test_success_copy":"...","conversational_safe_copy":"...","real_operation_complete_copy":"...","real_operation_pending_copy":"... {stub_count} ...","real_operation_requires_no_stubs":true}},"notes":"<optional <=300 chars, concrete only>"}
 </metadata>
 <skill-draft>
 ---
@@ -33,6 +33,14 @@ Hard rules:
   parser-backed rubric: FAIL blocks, WARN requires review, PASS is ready.
 - `suggestedEvals` lists at most three items per category.
 - Omit the `heartbeat` key when it does not apply.
+- Include `operationalFlow` and `activationPolicy` for `case_workflow`
+  proposals. `operationalFlow` is structured UI/readiness metadata, not the
+  runtime transition authority.
+- Each flow step uses
+  `{step_key, step_label, step_description, step_skills, step_tools}`. Tool and
+  skill ids must exist in the supplied catalogs; do not invent identifiers.
+- `required_assets` are reusable account files/configuration. Runtime data and
+  per-case inputs belong in `input_requirements`, not asset metadata.
 - `notes` is optional and must be <=300 characters. Use it only for concrete
   review notes naming the exact field, step, tool, or risk.
 - The skill-draft block must always be complete, including closing
@@ -55,9 +63,13 @@ When invoked interactively, return:
    - two Heartbeat scenarios when relevant, one action and one no-action.
 4. Activation recommendation:
    - `do_not_activate` if any rubric FAIL or unresolved MECE overlap;
-   - `activate_after_tests` for operational cases until N0-N2, critical N3/N4,
+   - `activate_after_tests` for case workflows until N0-N2, critical N3/N4,
      and N5 happy path pass in a controlled lab;
-   - `skill_only` for single-turn skills after Skill Lab checklist.
+   - `skill_only` for reusable skills after Skill Lab checklist.
+
+Automation endpoints may return localized prose derived by the backend instead
+of these enum labels. The rubric remains authoritative: FAIL blocks, WARN
+requires review, and PASS permits the next controlled readiness step.
 
 Ask for explicit human approval before creating files, calling APIs, enabling a
 skill, or activating a checklist. If creating a private account skill that

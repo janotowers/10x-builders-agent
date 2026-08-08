@@ -10,11 +10,16 @@ import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import {
   createServerClient,
+  getDurableTask,
   listOperationalCasesForUser,
+  listDurableTasksForUser,
+  listWorkRunsForTask,
+  summarizeWorkRuns,
   summarizeCaseWork,
   type CaseWorkSummary,
+  type WorkRunWorkSummary,
 } from "@agents/db";
-import type { OperationalCase } from "@agents/types";
+import type { DurableTask, OperationalCase, WorkRun } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { AppShell } from "@/components/app-shell";
 import { OperationsControlTabs } from "@/app/operations/operations-control-tabs";
@@ -107,6 +112,8 @@ function statusCountsLabel(byStatus: Partial<Record<string, number>>): string {
 function overviewHref(opts: {
   vista: "tablero" | "lista";
   caseId?: string | null;
+  durableTaskId?: string | null;
+  workRunId?: string | null;
   /** Expandir la bandeja Pausado (colapsada por defecto: no tapa el camino). */
   showPaused?: boolean;
 }): string {
@@ -114,6 +121,8 @@ function overviewHref(opts: {
   if (opts.vista === "lista") params.set("vista", "lista");
   if (opts.showPaused) params.set("pausados", "1");
   if (opts.caseId) params.set("case", opts.caseId);
+  if (opts.durableTaskId) params.set("durable_task", opts.durableTaskId);
+  if (opts.workRunId) params.set("run", opts.workRunId);
   const qs = params.toString();
   return qs ? `/operations/overview?${qs}` : "/operations/overview";
 }
@@ -174,6 +183,128 @@ function CaseCard({
         Actualizado {formatDurableDateTime(opCase.updated_at)}
       </p>
     </Link>
+  );
+}
+
+type DurableTaskView = {
+  task: DurableTask;
+  run: WorkRun | null;
+  summary: WorkRunWorkSummary | undefined;
+  column: DurableWorkColumnId;
+};
+
+function classifyDurableTaskView(
+  task: DurableTask,
+  run: WorkRun | null,
+  summary: WorkRunWorkSummary | undefined
+): DurableWorkColumnId {
+  if ((summary?.blocked ?? 0) > 0 || task.status === "failed") return "blocked";
+  if (task.status === "paused") return "paused";
+  if (
+    task.status === "completed" ||
+    (run?.status === "succeeded" && !task.schedule_ref)
+  ) {
+    return "done";
+  }
+  if ((summary?.byStatus.review ?? 0) > 0) return "needs_attention";
+  return "in_progress";
+}
+
+function DurableTaskCard({
+  view,
+  selected,
+  href,
+}: {
+  view: DurableTaskView;
+  selected: boolean;
+  href: string;
+}) {
+  const detail = view.summary ? statusCountsLabel(view.summary.byStatus) : "";
+  return (
+    <Link
+      href={href}
+      className={`block rounded-xl border bg-white p-3 text-xs shadow-sm transition dark:bg-neutral-900 ${
+        selected
+          ? "border-violet-400 ring-2 ring-violet-200 dark:border-violet-500 dark:ring-violet-900"
+          : "border-neutral-200 hover:border-neutral-400 dark:border-neutral-800 dark:hover:border-neutral-600"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 font-semibold leading-snug text-neutral-900 dark:text-neutral-100">
+          {view.task.title}
+        </p>
+        <span className="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-800 dark:bg-violet-950 dark:text-violet-200">
+          Tarea durable
+        </span>
+      </div>
+      <p className="mt-1 text-[11px] text-neutral-500">
+        {DURABLE_TASK_STATUS_LABELS[view.task.status] ?? view.task.status}
+        {view.run ? ` · Run ${view.run.status}` : " · Sin ejecuciones"}
+      </p>
+      {detail ? <p className="mt-1 text-[11px] text-neutral-500">{detail}</p> : null}
+      <p className="mt-2 text-[10px] text-neutral-400">
+        Actualizada {formatDurableDateTime(view.task.updated_at)}
+      </p>
+    </Link>
+  );
+}
+
+const DURABLE_TASK_STATUS_LABELS: Record<string, string> = {
+  draft: "Borrador",
+  active: "Activa",
+  paused: "Pausada",
+  completed: "Completada",
+  cancelled: "Cancelada",
+  failed: "Fallida",
+};
+
+function DurableTaskDetailPanel({
+  view,
+  clearHref,
+}: {
+  view: DurableTaskView;
+  clearHref: string;
+}) {
+  return (
+    <div className="mb-4 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-950 dark:border-violet-900 dark:bg-violet-950 dark:text-violet-100">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-semibold">{view.task.title}</p>
+          <p className="mt-1 text-xs opacity-80">{view.task.objective}</p>
+          <p className="mt-1 text-xs">
+            {DURABLE_TASK_STATUS_LABELS[view.task.status] ?? view.task.status}
+            {view.run ? ` · Ejecución ${view.run.status}` : ""}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {view.run ? (
+            <Link
+              href={`/operations/work?run=${view.run.id}&historial=1`}
+              className="rounded-md border border-violet-400 bg-white px-3 py-1.5 text-xs font-semibold text-violet-900 dark:border-violet-700 dark:bg-violet-900 dark:text-violet-100"
+            >
+              Ver unidades de trabajo →
+            </Link>
+          ) : null}
+          <Link
+            href={clearHref}
+            className="rounded-md border border-violet-300 px-3 py-1.5 text-xs font-semibold"
+          >
+            Cerrar detalle
+          </Link>
+        </div>
+      </div>
+      {view.summary ? (
+        <p className="mt-2 text-xs opacity-80">
+          Unidades: {view.summary.total} ·{" "}
+          {statusCountsLabel(view.summary.byStatus) || "sin actividad"}
+        </p>
+      ) : null}
+      {view.run?.result_jsonb ? (
+        <pre className="mt-3 overflow-x-auto rounded-lg bg-white/70 p-3 text-[11px] dark:bg-violet-900/50">
+          {JSON.stringify(view.run.result_jsonb, null, 2)}
+        </pre>
+      ) : null}
+    </div>
   );
 }
 
@@ -436,6 +567,8 @@ export default async function OperationsOverviewPage({
   searchParams: Promise<{
     vista?: string;
     case?: string;
+    durable_task?: string;
+    run?: string;
     pausados?: string;
   }>;
 }) {
@@ -472,11 +605,18 @@ export default async function OperationsOverviewPage({
   const showPaused = sp.pausados === "1";
   const selectedCaseId =
     typeof sp.case === "string" && sp.case.trim() ? sp.case.trim() : null;
+  const selectedDurableTaskId =
+    typeof sp.durable_task === "string" && sp.durable_task.trim()
+      ? sp.durable_task.trim()
+      : null;
+  const selectedWorkRunId =
+    typeof sp.run === "string" && sp.run.trim() ? sp.run.trim() : null;
 
   const db = createServerClient();
   let activeCases: OperationalCase[] = [];
   let doneCases: OperationalCase[] = [];
   let workByCase = new Map<string, CaseWorkSummary>();
+  let durableTaskViews: DurableTaskView[] = [];
   let unavailable = false;
   try {
     activeCases = await listOperationalCasesForUser(db, user.id, {
@@ -519,6 +659,61 @@ export default async function OperationsOverviewPage({
     }
   } catch {
     unavailable = true;
+  }
+
+  try {
+    const durableTasks = await listDurableTasksForUser(db, user.id, {
+      statuses: ["active", "paused", "completed", "failed"],
+      limit: 100,
+    });
+    if (
+      selectedDurableTaskId &&
+      !durableTasks.some((task) => task.id === selectedDurableTaskId)
+    ) {
+      const selectedTask = await getDurableTask(
+        db,
+        user.id,
+        selectedDurableTaskId
+      );
+      if (selectedTask) durableTasks.unshift(selectedTask);
+    }
+    const taskRuns = new Map<string, WorkRun[]>();
+    for (const task of durableTasks) {
+      taskRuns.set(
+        task.id,
+        await listWorkRunsForTask(db, user.id, task.id, { limit: 20 })
+      );
+    }
+    const selectedRuns = [...taskRuns.values()].flatMap((runs) => {
+      const selected = selectedWorkRunId
+        ? runs.find((run) => run.id === selectedWorkRunId)
+        : null;
+      const run = selected ?? runs[0];
+      return run ? [run] : [];
+    });
+    const summaries = await summarizeWorkRuns(
+      db,
+      user.id,
+      selectedRuns.map((run) => run.id)
+    );
+    durableTaskViews = durableTasks.map((task) => {
+      const runs = taskRuns.get(task.id) ?? [];
+      const run =
+        (selectedWorkRunId
+          ? runs.find((candidate) => candidate.id === selectedWorkRunId)
+          : null) ??
+        runs[0] ??
+        null;
+      const summary = run ? summaries.get(run.id) : undefined;
+      return {
+        task,
+        run,
+        summary,
+        column: classifyDurableTaskView(task, run, summary),
+      };
+    });
+  } catch {
+    // Despliegue aún sin 00074/00075: los casos siguen disponibles.
   }
 
   const allCases = [...activeCases, ...doneCases];
@@ -566,6 +761,12 @@ export default async function OperationsOverviewPage({
     selectedCaseId != null
       ? allCases.find((c) => c.id === selectedCaseId) ?? null
       : null;
+  const selectedDurableTask =
+    selectedDurableTaskId != null
+      ? durableTaskViews.find(
+          (view) => view.task.id === selectedDurableTaskId
+        ) ?? null
+      : null;
 
   const cardHref = (caseId: string) =>
     overviewHref({
@@ -573,6 +774,19 @@ export default async function OperationsOverviewPage({
       caseId,
       showPaused,
     });
+  const durableCardHref = (view: DurableTaskView) =>
+    overviewHref({
+      vista,
+      durableTaskId: view.task.id,
+      workRunId: view.run?.id,
+      showPaused,
+    });
+  const durableBlocked = durableTaskViews.filter(
+    (view) => view.column === "blocked"
+  );
+  const durablePaused = durableTaskViews.filter(
+    (view) => view.column === "paused"
+  );
 
   return (
     <AppShell
@@ -587,6 +801,8 @@ export default async function OperationsOverviewPage({
               href={overviewHref({
                 vista: "tablero",
                 caseId: selectedCaseId,
+                durableTaskId: selectedDurableTaskId,
+                workRunId: selectedWorkRunId,
                 showPaused,
               })}
               aria-current={vista === "tablero" ? "page" : undefined}
@@ -602,6 +818,8 @@ export default async function OperationsOverviewPage({
               href={overviewHref({
                 vista: "lista",
                 caseId: selectedCaseId,
+                durableTaskId: selectedDurableTaskId,
+                workRunId: selectedWorkRunId,
                 showPaused,
               })}
               aria-current={vista === "lista" ? "page" : undefined}
@@ -624,7 +842,12 @@ export default async function OperationsOverviewPage({
         </div>
       ) : (
         <>
-          {selectedCase ? (
+          {selectedDurableTask ? (
+            <DurableTaskDetailPanel
+              view={selectedDurableTask}
+              clearHref={overviewHref({ vista, showPaused })}
+            />
+          ) : selectedCase ? (
             <CaseDetailPanel
               opCase={selectedCase}
               summary={workByCase.get(selectedCase.id)}
@@ -640,10 +863,10 @@ export default async function OperationsOverviewPage({
             </p>
           )}
 
-          {allCases.length === 0 ? (
+          {allCases.length === 0 && durableTaskViews.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-              No hay casos. Cuando inicies un flujo (p. ej. opcionar una
-              propiedad por chat o Telegram), aparecerá aquí. Las unidades de
+              No hay casos ni tareas durables. Cuando inicies un flujo o una
+              tarea batch, aparecerá aquí. Las unidades de
               trabajo internas se listan en la pestaña{" "}
               <Link href="/operations/work" className="underline">
                 Unidades de trabajo
@@ -660,6 +883,15 @@ export default async function OperationsOverviewPage({
                     selected={opCase.id === selectedCaseId}
                     href={cardHref(opCase.id)}
                     stepLabels={stepLabelsByCaseId.get(opCase.id)}
+                  />
+                </li>
+              ))}
+              {durableTaskViews.map((view) => (
+                <li key={`durable:${view.task.id}`}>
+                  <DurableTaskCard
+                    view={view}
+                    selected={view.task.id === selectedDurableTaskId}
+                    href={durableCardHref(view)}
                   />
                 </li>
               ))}
@@ -705,6 +937,36 @@ export default async function OperationsOverviewPage({
                   stepLabelsByCaseId={stepLabelsByCaseId}
                 />
               ) : null}
+              {durableBlocked.length > 0 ? (
+                <Column
+                  column={DURABLE_WORK_BLOCKED_COLUMN}
+                  count={durableBlocked.length}
+                >
+                  {durableBlocked.map((view) => (
+                    <DurableTaskCard
+                      key={view.task.id}
+                      view={view}
+                      selected={view.task.id === selectedDurableTaskId}
+                      href={durableCardHref(view)}
+                    />
+                  ))}
+                </Column>
+              ) : null}
+              {showPaused && durablePaused.length > 0 ? (
+                <Column
+                  column={DURABLE_WORK_PAUSED_COLUMN}
+                  count={durablePaused.length}
+                >
+                  {durablePaused.map((view) => (
+                    <DurableTaskCard
+                      key={view.task.id}
+                      view={view}
+                      selected={view.task.id === selectedDurableTaskId}
+                      href={durableCardHref(view)}
+                    />
+                  ))}
+                </Column>
+              ) : null}
 
               <div
                 className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"
@@ -712,27 +974,40 @@ export default async function OperationsOverviewPage({
               >
                 {DURABLE_WORK_FLOW_COLUMNS.map((column) => {
                   const items = byColumn.get(column.id) ?? [];
+                  const durableItems = durableTaskViews.filter(
+                    (view) => view.column === column.id
+                  );
                   return (
                     <Column
                       key={column.id}
                       column={column}
-                      count={items.length}
+                      count={items.length + durableItems.length}
                     >
-                      {items.length === 0 ? (
+                      {items.length === 0 && durableItems.length === 0 ? (
                         <p className="px-1 py-4 text-center text-xs text-neutral-400">
-                          Sin casos
+                          Sin trabajo
                         </p>
                       ) : (
-                        items.map((opCase) => (
-                          <CaseCard
-                            key={opCase.id}
-                            opCase={opCase}
-                            summary={workByCase.get(opCase.id)}
-                            selected={opCase.id === selectedCaseId}
-                            href={cardHref(opCase.id)}
-                            stepLabels={stepLabelsByCaseId.get(opCase.id)}
-                          />
-                        ))
+                        <>
+                          {items.map((opCase) => (
+                            <CaseCard
+                              key={opCase.id}
+                              opCase={opCase}
+                              summary={workByCase.get(opCase.id)}
+                              selected={opCase.id === selectedCaseId}
+                              href={cardHref(opCase.id)}
+                              stepLabels={stepLabelsByCaseId.get(opCase.id)}
+                            />
+                          ))}
+                          {durableItems.map((view) => (
+                            <DurableTaskCard
+                              key={`durable:${view.task.id}`}
+                              view={view}
+                              selected={view.task.id === selectedDurableTaskId}
+                              href={durableCardHref(view)}
+                            />
+                          ))}
+                        </>
                       )}
                     </Column>
                   );

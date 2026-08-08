@@ -13,7 +13,8 @@
     "test:memories": "tsx src/queries/memories.selftest.ts",
     "test:ai-usage": "tsx src/queries/ai-usage.selftest.ts",
     "test:work-plane": "tsx src/queries/work-items.selftest.ts",
-    "test:impact-plane": "tsx src/queries/impact-plane.selftest.ts"
+    "test:impact-plane": "tsx src/queries/impact-plane.selftest.ts",
+    "test:durable-tasks": "tsx src/queries/durable-tasks.selftest.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",

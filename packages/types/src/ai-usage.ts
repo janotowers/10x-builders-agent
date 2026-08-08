@@ -88,6 +88,8 @@ export interface AiUsageContext {
     | "heartbeat"
     | "case_runner"
     | "settings"
+    /** Local live evals / walkthrough scripts (OpenRouter still billed). */
+    | "cli"
     | null;
   sessionId?: string | null;
   turnId?: string | null;

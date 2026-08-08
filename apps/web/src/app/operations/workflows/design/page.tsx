@@ -12,30 +12,63 @@
  */
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import type { ReactNode } from "react";
 import {
   createServerClient,
+  getAccountSkill,
+  getDurableTask,
+  getStudioAuthoringSession,
+  listAccountSkillsForUser,
+  listDurableTasksForUser,
   listEvidenceForSubject,
+  listOperationalCaseTypesForUser,
+  listScheduledTasks,
   listWorkflowDefinitionsVisibleToUser,
+  type ScheduledTask,
 } from "@agents/db";
-import type { WorkflowDefinition } from "@agents/types";
+import type {
+  AccountSkill,
+  DurableTask,
+  StudioAuthoringSession,
+  WorkflowDefinition,
+} from "@agents/types";
 import {
   businessSpecSchema,
+  durableTaskSpecSchema,
   implementationSpecSchema,
   specIsPresent,
   type CompilerGateName,
 } from "@agents/workflows";
 import { createClient } from "@/lib/supabase/server";
 import { AppShell } from "@/components/app-shell";
+import { getGlobalSkillRegistry } from "@agents/agent";
 import {
+  definitionLifecycleLabel,
   filterCatalogDefinitions,
   formatEvidenceSeal,
   friendlyCaseTypeLabel,
+  groupDefinitionFamilies,
   isInternalTestDefinition,
   shortDefinitionHash,
 } from "@/lib/workflow-studio/definition-catalog";
 import { validateDefinitionForUser } from "@/lib/workflow-studio/definition-validation";
+import {
+  STUDIO_KIND_BADGE,
+  buildStudioInventory,
+  type StudioArtifactCard,
+} from "@/lib/workflow-studio/studio-inventory";
+import {
+  accountSkillProvenanceLabel,
+  buildSkillUsageIndex,
+  classifyAccountSkillProvenance,
+  formatSkillStudioUsageLabel,
+} from "@/lib/skill-provenance";
 import { WorkflowStudioTabs } from "../studio-tabs";
-import { publishDefinitionAction, validateDefinitionAction } from "../actions";
+import {
+  publishDefinitionAction,
+  startDurableTaskRunAction,
+  validateDefinitionAction,
+} from "../actions";
 import { CompileForm } from "./compile-form";
 
 export const dynamic = "force-dynamic";
@@ -49,14 +82,290 @@ const GATE_LABELS: Record<CompilerGateName, string> = {
   permission_validation: "Permisos de herramientas",
   credential_shape: "Sin credenciales embebidas",
   simulation: "Simulación de casos",
+  fidelity: "Fidelidad a la descripción",
 };
 
-const STATUS_LABELS: Record<string, string> = {
+const DURABLE_TASK_STATUS_LABELS: Record<string, string> = {
   draft: "Borrador",
-  validated: "Validado",
-  published: "Publicado",
-  deprecated: "Retirado",
+  active: "Activa",
+  paused: "Pausada",
+  completed: "Completada",
+  cancelled: "Cancelada",
+  failed: "Fallida",
 };
+
+function formatUpdatedAt(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString("es-MX", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function DurableTaskDetail({
+  task,
+  schedule,
+}: {
+  task: DurableTask;
+  schedule?: ScheduledTask | null;
+}) {
+  const parsed = durableTaskSpecSchema.safeParse(task.spec_jsonb);
+  const spec = parsed.success ? parsed.data : null;
+  return (
+    <div className="space-y-3">
+      <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h2 className="text-sm font-semibold">{task.title}</h2>
+          <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] dark:bg-neutral-800">
+            {DURABLE_TASK_STATUS_LABELS[task.status] ?? task.status}
+          </span>
+        </div>
+        <p className="mt-2 text-xs text-neutral-600 dark:text-neutral-300">
+          {task.objective}
+        </p>
+        <p className="mt-2 text-[10px] text-neutral-400">
+          Actualizada {formatUpdatedAt(task.updated_at)}
+        </p>
+      </div>
+      {spec ? (
+        <>
+          {schedule ? (
+            <Section title="Programación">
+              <p>
+                {schedule.cron_expr
+                  ? `Recurrencia ${schedule.cron_expr}`
+                  : schedule.schedule_type}
+                {" · "}
+                {schedule.timezone}
+              </p>
+              <p className="text-[10px] text-neutral-400">
+                Próxima ejecución: {schedule.next_run_at ?? "por calcular"}
+              </p>
+            </Section>
+          ) : null}
+          <Section title="Criterios de aceptación">
+            <ul className="list-disc space-y-1 pl-4">
+              {spec.acceptance_criteria.map((criterion) => (
+                <li key={criterion}>{criterion}</li>
+              ))}
+            </ul>
+          </Section>
+          <Section title="Datos y requisitos">
+            {spec.input_requirements.length === 0 ? (
+              <p className="text-neutral-400">No requiere datos adicionales.</p>
+            ) : (
+              <ul className="space-y-1">
+                {spec.input_requirements.map((requirement) => (
+                  <li key={`${requirement.kind}:${requirement.key}`}>
+                    <span className="font-medium">{requirement.label}</span>
+                    <span className="text-neutral-400">
+                      {" "}
+                      · {requirement.kind}
+                      {requirement.required === false ? " · opcional" : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+          <Section title="Unidades de trabajo">
+            <ol className="list-decimal space-y-1 pl-4">
+              {spec.work_templates.map((template) => (
+                <li key={template.work_type}>
+                  <span className="font-medium">{template.objective}</span>
+                  <span className="text-neutral-400">
+                    {" "}
+                    · {template.required_capability}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </Section>
+          <Section title="Resultado">
+            <p>{spec.result_contract.description}</p>
+            <p className="text-[10px] text-neutral-400">
+              Campos: {spec.result_contract.required_keys.join(", ")}
+            </p>
+          </Section>
+          {task.status === "draft" || task.status === "active" ? (
+            <form
+              action={startDurableTaskRunAction}
+              className="rounded-xl border border-violet-200 bg-violet-50 p-4 text-xs dark:border-violet-900 dark:bg-violet-950/30"
+            >
+              <input type="hidden" name="durable_task_id" value={task.id} />
+              <label className="block font-medium" htmlFor="run_input_json">
+                Datos para esta ejecución
+              </label>
+              <textarea
+                id="run_input_json"
+                name="run_input_json"
+                rows={4}
+                className="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 font-mono text-[11px] dark:border-neutral-700 dark:bg-neutral-950"
+                placeholder='{"clave": "valor"}'
+                defaultValue="{}"
+              />
+              <p className="mt-1 text-[10px] text-neutral-500">
+                Usa las claves mostradas arriba. El inicio es explícito: compilar
+                nunca ejecuta por sí solo.
+              </p>
+              <button
+                type="submit"
+                className="mt-3 rounded-lg bg-violet-700 px-3 py-2 font-semibold text-white hover:bg-violet-800"
+              >
+                {task.schedule_ref ? "Ejecutar ahora" : "Activar y ejecutar"}
+              </button>
+            </form>
+          ) : null}
+        </>
+      ) : (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+          Esta tarea es anterior al contrato durable ejecutable. Vuelve a
+          compilarla para poder ejecutarla.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AccountSkillDetail({ skill }: { skill: AccountSkill }) {
+  const allowedTools = Array.isArray(skill.metadata_jsonb.allowed_tools)
+    ? skill.metadata_jsonb.allowed_tools
+    : [];
+  const includes = Array.isArray(skill.metadata_jsonb.includes)
+    ? skill.metadata_jsonb.includes
+    : [];
+  return (
+    <div className="space-y-3">
+      <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <h2 className="text-sm font-semibold">
+            {String(skill.metadata_jsonb.display_title ?? skill.slug)}
+          </h2>
+          <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] dark:bg-neutral-800">
+            {skill.status === "draft" ? "Borrador" : "Activa"}
+          </span>
+        </div>
+        <p className="mt-2 text-xs text-neutral-600 dark:text-neutral-300">
+          {String(skill.metadata_jsonb.description ?? "")}
+        </p>
+        <p className="mt-2 text-[10px] text-neutral-400">
+          {skill.slug} · v{skill.version} · actualizada{" "}
+          {formatUpdatedAt(skill.updated_at)}
+        </p>
+      </div>
+      <Section title="Capacidades y composición">
+        <p>
+          Herramientas:{" "}
+          {allowedTools.length > 0 ? allowedTools.join(", ") : "ninguna"}
+        </p>
+        <p>
+          Incluye: {includes.length > 0 ? includes.join(", ") : "ningún skill"}
+        </p>
+      </Section>
+      <details className="rounded-xl border border-neutral-200 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+        <summary className="cursor-pointer font-semibold">
+          Ver SKILL.md generado
+        </summary>
+        <pre className="mt-3 max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-lg bg-neutral-950 p-3 text-[10px] text-neutral-100">
+          {skill.body_md}
+        </pre>
+      </details>
+      <Link
+        href={`/settings/account-skills?slug=${encodeURIComponent(skill.slug)}`}
+        className="inline-block rounded-lg border border-neutral-300 px-3 py-2 text-xs font-semibold hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+      >
+        Abrir editor avanzado
+      </Link>
+    </div>
+  );
+}
+
+function AuthoringReviewShell({
+  session,
+  kindLabel,
+  children,
+}: {
+  session: StudioAuthoringSession | null;
+  kindLabel: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-3">
+      {session ? (
+        <div className="rounded-2xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-900 dark:bg-violet-950/30">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-semibold">Borrador creado</h2>
+            <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800 dark:bg-violet-900 dark:text-violet-100">
+              {kindLabel}
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-neutral-700 dark:text-neutral-200">
+            {session.description_nl}
+          </p>
+          <p className="mt-2 text-[10px] text-neutral-500">
+            Revisa el resultado general. Editar, validar, publicar, activar o
+            ejecutar son acciones humanas posteriores.
+          </p>
+        </div>
+      ) : null}
+      {children}
+    </div>
+  );
+}
+
+function StudioArtifactsList({
+  items,
+  emptyHint,
+}: {
+  items: StudioArtifactCard[];
+  emptyHint: ReactNode;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-6 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
+        {emptyHint}
+      </div>
+    );
+  }
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {items.map((item) => {
+        const badge = STUDIO_KIND_BADGE[item.kind];
+        return (
+          <Link
+            key={`${item.kind}:${item.id}`}
+            href={item.href}
+            className="rounded-2xl border border-neutral-200 bg-white p-4 text-xs shadow-sm transition hover:border-violet-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-violet-700"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <p className="min-w-0 font-semibold text-neutral-900 dark:text-neutral-100">
+                {item.title}
+              </p>
+              <span
+                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${badge.className}`}
+              >
+                {badge.label}
+              </span>
+            </div>
+            <p className="mt-1 text-neutral-500">{item.subtitle}</p>
+            {item.provenanceLabel ? (
+              <p className="mt-1 text-[10px] text-neutral-400">
+                {item.provenanceLabel}
+              </p>
+            ) : null}
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-neutral-400">
+              <span>{item.statusLabel}</span>
+              <span>Actualizado {formatUpdatedAt(item.updatedAt)}</span>
+            </div>
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
 
 function Section({
   title,
@@ -218,11 +527,13 @@ function ImplementationSpecView({ value }: { value: unknown }) {
 async function DraftDetail({
   definition,
   userId,
+  siblings,
   gatesError,
   existingForkNotice,
 }: {
   definition: WorkflowDefinition;
   userId: string;
+  siblings: WorkflowDefinition[];
   gatesError: boolean;
   existingForkNotice: boolean;
 }) {
@@ -240,6 +551,7 @@ async function DraftDetail({
     definition.status === "draft" || definition.status === "validated";
   const backlogGaps = report.capabilityMap?.gaps.filter((g) => !g.blocking) ?? [];
   const blockingGaps = report.capabilityMap?.blockingGaps ?? [];
+  const lifecycleLabel = definitionLifecycleLabel(definition, siblings);
 
   return (
     <div className="space-y-3">
@@ -250,7 +562,7 @@ async function DraftDetail({
             {definition.version}
           </h2>
           <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] dark:bg-neutral-800">
-            {STATUS_LABELS[definition.status] ?? definition.status}
+            {lifecycleLabel}
           </span>
           <code className="text-[10px] text-neutral-500">
             {shortDefinitionHash(definition.definition_hash)}…
@@ -261,6 +573,10 @@ async function DraftDetail({
           {definition.derived_from_definition_id
             ? ` · fork de v${definition.derived_from_version}`
             : ""}
+        </p>
+        <p className="mt-1 text-[10px] text-neutral-400">
+          Los casos nuevos usan la versión vigente de mayor número; los
+          existentes conservan su pin.
         </p>
         {editable ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -447,6 +763,9 @@ async function DraftDetail({
                     {divergence.failedGuards.length > 0
                       ? ` · guards: ${divergence.failedGuards.join(", ")}`
                       : ""}
+                    {divergence.reason
+                      ? ` · ${divergence.reason}`
+                      : ""}
                   </p>
                 ))}
               </div>
@@ -463,6 +782,9 @@ export default async function WorkflowDesignPage({
 }: {
   searchParams: Promise<{
     definition?: string;
+    durable_task?: string;
+    account_skill?: string;
+    authoring_session?: string;
     error?: string;
     notice?: string;
     tests?: string;
@@ -489,16 +811,61 @@ export default async function WorkflowDesignPage({
     unavailable = true;
   }
 
+  let durableTasks: DurableTask[] = [];
+  let accountSkills: AccountSkill[] = [];
+  let scheduledTasks: ScheduledTask[] = [];
+  let selectedDurableTask: DurableTask | null = null;
+  let selectedAccountSkill: AccountSkill | null = null;
+  let authoringSession: StudioAuthoringSession | null = null;
+  try {
+    if (sp.durable_task) {
+      selectedDurableTask = await getDurableTask(
+        db,
+        user.id,
+        sp.durable_task
+      );
+    }
+    durableTasks = await listDurableTasksForUser(db, user.id, {
+      limit: 48,
+    });
+  } catch {
+    // Entorno aún sin las migraciones durable: la lista queda vacía.
+  }
+  try {
+    accountSkills = await listAccountSkillsForUser(db, user.id, {
+      statuses: ["draft", "active"],
+    });
+    if (sp.account_skill) {
+      selectedAccountSkill = await getAccountSkill(
+        db,
+        user.id,
+        sp.account_skill
+      );
+    }
+  } catch {
+    // Skills de cuenta ausentes en el entorno.
+  }
+  try {
+    scheduledTasks = (await listScheduledTasks(db, user.id)).filter(
+      (task) => Boolean(task.durable_task_id)
+    );
+  } catch {
+    // Schedules ausentes o sin columna durable_task_id.
+  }
+  if (sp.authoring_session) {
+    try {
+      authoringSession = await getStudioAuthoringSession(
+        db,
+        user.id,
+        sp.authoring_session
+      );
+    } catch {
+      authoringSession = null;
+    }
+  }
+
   const ownAll = visible.filter((definition) => definition.user_id === user.id);
   const own = filterCatalogDefinitions(ownAll, { showTests });
-  const statusRank = (status: string) =>
-    status === "draft" ? 0 : status === "validated" ? 1 : 2;
-  own.sort(
-    (a, b) =>
-      statusRank(a.status) - statusRank(b.status) ||
-      b.version - a.version ||
-      b.created_at.localeCompare(a.created_at)
-  );
   const knownCaseTypes = [
     ...new Set(
       visible
@@ -513,11 +880,92 @@ export default async function WorkflowDesignPage({
   const selected = sp.definition
     ? ownAll.find((definition) => definition.id === sp.definition)
     : undefined;
+  const selectedFamily =
+    selected != null
+      ? groupDefinitionFamilies(ownAll, {}).find((family) =>
+          family.versions.some((version) => version.id === selected.id)
+        )
+      : undefined;
+
+  let globalSkillSlugs: string[] = [];
+  try {
+    const globalRegistry = await getGlobalSkillRegistry();
+    globalSkillSlugs = globalRegistry.list().map((skill) => skill.name);
+  } catch {
+    globalSkillSlugs = [];
+  }
+
+  let caseTypeRoots: Array<{ caseType: string; defaultSkillSlug: string }> =
+    [];
+  try {
+    const caseTypes = await listOperationalCaseTypesForUser(db, user.id);
+    caseTypeRoots = caseTypes
+      .map((caseType) => ({
+        caseType: caseType.case_type,
+        defaultSkillSlug: (caseType.default_skill_slug ?? "").trim(),
+      }))
+      .filter((row) => row.defaultSkillSlug.length > 0);
+  } catch {
+    caseTypeRoots = [];
+  }
+
+  const skillUsage = buildSkillUsageIndex({
+    definitions: own,
+    caseTypeRoots,
+  });
+  const studioArtifacts = buildStudioInventory({
+    ownDefinitions: ownAll,
+    durableTasks,
+    accountSkills,
+    scheduledTasks,
+    globalSkillSlugs,
+    showTests,
+  }).map((card) => {
+    if (card.kind !== "reusable_skill") return card;
+    const skill = accountSkills.find((item) => item.id === card.id);
+    if (!skill) return card;
+    const usage = formatSkillStudioUsageLabel(
+      skillUsage.get(skill.slug),
+      friendlyCaseTypeLabel
+    );
+    const provenance = classifyAccountSkillProvenance({
+      slug: skill.slug,
+      metadata: skill.metadata_jsonb,
+      globalSkillSlugs,
+    });
+    return {
+      ...card,
+      provenanceKind: provenance,
+      provenanceLabel: [
+        accountSkillProvenanceLabel(provenance),
+        usage,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  });
+  const selectedSchedule = selectedDurableTask
+    ? scheduledTasks.find(
+        (task) =>
+          task.id === selectedDurableTask.schedule_ref ||
+          task.durable_task_id === selectedDurableTask.id
+      ) ?? null
+    : null;
+  const authoredKindLabel =
+    authoringSession?.artifact_kind === "case_workflow"
+      ? "Flujo de caso"
+      : authoringSession?.artifact_kind === "durable_task"
+        ? "Tarea durable"
+        : authoringSession?.artifact_kind === "reusable_skill"
+          ? "Skill reusable"
+          : authoringSession?.artifact_kind === "schedule"
+            ? "Programación"
+            : "Creación de Studio";
 
   return (
     <AppShell
-      title="Diseño de flujos"
-      description="Describe un flujo, revisa la especificación y el borrador, resuelve pendientes y publica con evidencia."
+      title="Diseño"
+      description="Describe lo que necesitas: Gu clasifica y produce el borrador (caso, tarea durable, skill o programación)."
     >
       <WorkflowStudioTabs active="design" />
 
@@ -525,20 +973,64 @@ export default async function WorkflowDesignPage({
         <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-8 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
           El diseño de flujos no está disponible en este entorno.
         </div>
+      ) : selectedAccountSkill ? (
+        <div className="space-y-3">
+          <Link
+            href={designListHref}
+            className="inline-block text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
+          >
+            ← Volver a mis creaciones
+          </Link>
+          <AuthoringReviewShell
+            session={authoringSession}
+            kindLabel={authoredKindLabel}
+          >
+            <AccountSkillDetail skill={selectedAccountSkill} />
+          </AuthoringReviewShell>
+        </div>
+      ) : selectedDurableTask ? (
+        <div className="space-y-3">
+          {sp.error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">
+              {sp.error}
+            </div>
+          ) : null}
+          <Link
+            href={designListHref}
+            className="inline-block text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
+          >
+            ← Volver a mis creaciones
+          </Link>
+          <AuthoringReviewShell
+            session={authoringSession}
+            kindLabel={authoredKindLabel}
+          >
+            <DurableTaskDetail
+              task={selectedDurableTask}
+              schedule={selectedSchedule}
+            />
+          </AuthoringReviewShell>
+        </div>
       ) : selected ? (
         <div className="space-y-3">
           <Link
             href={designListHref}
             className="inline-block text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
           >
-            ← Volver a mis definiciones
+            ← Volver a mis creaciones
           </Link>
-          <DraftDetail
-            definition={selected}
-            userId={user.id}
-            gatesError={sp.error === "gates"}
-            existingForkNotice={sp.notice === "existing_fork"}
-          />
+          <AuthoringReviewShell
+            session={authoringSession}
+            kindLabel={authoredKindLabel}
+          >
+            <DraftDetail
+              definition={selected}
+              userId={user.id}
+              siblings={selectedFamily?.versions ?? [selected]}
+              gatesError={sp.error === "gates"}
+              existingForkNotice={sp.notice === "existing_fork"}
+            />
+          </AuthoringReviewShell>
         </div>
       ) : (
         <div className="space-y-4">
@@ -546,7 +1038,7 @@ export default async function WorkflowDesignPage({
 
           <div>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold">Mis definiciones</h3>
+              <h3 className="text-sm font-semibold">Mis creaciones</h3>
               {hiddenTestCount > 0 || showTests ? (
                 <Link
                   href={
@@ -557,57 +1049,73 @@ export default async function WorkflowDesignPage({
                   className="text-xs font-semibold text-violet-700 underline dark:text-violet-300"
                 >
                   {showTests
-                    ? "Ocultar definiciones de prueba"
-                    : "Mostrar definiciones de prueba"}
+                    ? "Ocultar flujos de prueba"
+                    : "Mostrar flujos de prueba"}
                 </Link>
               ) : null}
             </div>
-            {own.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-neutral-300 bg-white p-6 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900">
-                {hiddenTestCount > 0 && !showTests ? (
+            <p className="mb-2 text-[10px] text-neutral-400">
+              Solo contenido de esta cuenta. Las skills globales están en
+              Capacidades disponibles (Ajustes).
+            </p>
+            <StudioArtifactsList
+              items={studioArtifacts}
+              emptyHint={
+                hiddenTestCount > 0 && !showTests ? (
                   <>
-                    Solo hay definiciones de prueba ocultas.{" "}
+                    Solo hay flujos de prueba ocultos.{" "}
                     <Link
                       href="/operations/workflows/design?tests=1"
                       className="font-semibold underline"
                     >
-                      Mostrarlas
+                      Mostrarlos
                     </Link>{" "}
-                    o compila un flujo nuevo / crea una versión propia desde el
-                    catálogo.
+                    o crea un borrador nuevo arriba.
                   </>
                 ) : (
                   <>
-                    Aún no tienes definiciones propias. Compila una desde una
-                    descripción o crea una versión propia (fork) desde el
-                    catálogo.
+                    Aún no hay creaciones. Describe arriba lo que necesitas:
+                    puede ser un flujo de caso, una tarea durable, un skill o una
+                    programación.
                   </>
-                )}
-              </div>
-            ) : (
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {own.map((definition) => (
-                  <Link
-                    key={definition.id}
-                    href={`/operations/workflows/design?definition=${definition.id}${
-                      showTests ? "&tests=1" : ""
-                    }`}
-                    className="rounded-2xl border border-neutral-200 bg-white p-4 text-xs shadow-sm transition hover:border-violet-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-violet-700"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="font-semibold text-neutral-900 dark:text-neutral-100">
-                        {friendlyCaseTypeLabel(definition.case_type)} · v
-                        {definition.version}
-                      </p>
-                      <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                        {STATUS_LABELS[definition.status] ?? definition.status}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-neutral-500">{definition.case_type}</p>
-                  </Link>
-                ))}
-              </div>
-            )}
+                )
+              }
+            />
+          </div>
+
+          <div className="rounded-2xl border border-neutral-200 bg-white p-4 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+            <h3 className="text-sm font-semibold">Capacidades disponibles</h3>
+            <p className="mt-1 text-neutral-500">
+              Catálogo global y ajustes de la cuenta (no son creaciones tuyas).
+            </p>
+            <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-violet-700 dark:text-violet-300">
+              <li>
+                <Link href="/operations/workflows" className="font-semibold underline">
+                  Catálogo de flujos
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/settings?view=capabilities"
+                  className="font-semibold underline"
+                >
+                  Skills globales en Ajustes
+                </Link>
+              </li>
+              <li>
+                <Link href="/settings/account-skills" className="font-semibold underline">
+                  Skills de cuenta
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/settings?view=integrations&section=connections"
+                  className="font-semibold underline"
+                >
+                  Integraciones
+                </Link>
+              </li>
+            </ul>
           </div>
 
           <p className="text-[10px] text-neutral-400">

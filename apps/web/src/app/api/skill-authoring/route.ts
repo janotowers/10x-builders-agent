@@ -13,6 +13,7 @@ import {
   type SkillRecord,
 } from "@agents/agent";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
+import { loadAuthoringDoctrine } from "@/lib/workflow-studio/authoring-doctrine";
 
 type SkillAuthoringRequest = {
   caseType?: unknown;
@@ -685,6 +686,7 @@ export async function POST(request: Request) {
       ? body.activationPolicy
       : {};
     const baseSkillBody = await readGlobalSkillBody(baseSkillSlug);
+    const sharedAuthoringDoctrine = await loadAuthoringDoctrine();
 
     if (!displayName && !description) {
       return NextResponse.json(
@@ -741,6 +743,10 @@ export async function POST(request: Request) {
 
     const baseAuthoringPrompt = [
       "Usa la skill `skill-authoring` para proponer un SKILL.md optimizado para Gu OS.",
+      "La siguiente doctrina compartida está precargada y es autoritativa para este borrador:",
+      "<<<trusted_authoring_doctrine>>>",
+      sharedAuthoringDoctrine.combined,
+      "<<<end_trusted_authoring_doctrine>>>",
       "FORMATO DE SALIDA OBLIGATORIO (no añadas texto fuera de las etiquetas):",
       "<metadata>",
       `{"suggestedEvals":{"positive":["..."],"nearMiss":["..."],"heartbeat":["..."]},"operationalFlow":[{"step_key":"intake","step_label":"Completar registro del caso","step_description":"...","step_skills":[],"step_tools":[{"tool_id":"operational_case_create","tool_label":"Crear caso operacional","tool_description":"...","required_assets":[{"asset_key":"optional_stable_key","label":"Recurso requerido","description":"...","accept":["application/pdf"],"max_size_mb":15,"required":true}]}]}],"activationPolicy":{"safe_test":{"description":"...","run_button_label":"Ejecutar prueba segura inicial","synthetic_data_copy":"...","success_copy":"...","timeline_note":"...","next_action":"...","start_step":"intake","success_step":"<primer paso operativo>"},"activation_checks":{"skill_valid_copy":"...","readiness_ready_copy":"...","readiness_blocked_copy":"...","safe_test_success_copy":"...","conversational_safe_copy":"...","real_operation_complete_copy":"...","real_operation_pending_copy":"... {stub_count} ...","real_operation_requires_no_stubs":true}},"notes":"<opcional, ≤300 chars, solo si es concreta>"}`,

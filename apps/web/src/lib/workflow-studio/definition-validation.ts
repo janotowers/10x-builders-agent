@@ -11,9 +11,7 @@
 
 import {
   insertEvidenceRecords,
-  getUserIntegrations,
   listAccountAssets,
-  listAccountToolSecretsPublic,
   listWorkerProfilesForUser,
   type DbClient,
 } from "@agents/db";
@@ -29,33 +27,31 @@ import {
   type SimulationScenarioOutcome,
 } from "@agents/workflows";
 import type { WorkflowDefinition } from "@agents/types";
+import { loadTenantProviderSnapshot } from "@/lib/tool-readiness/load-tenant-provider-snapshot";
+import { buildConnectedCatalogIntegrations } from "@/lib/tool-readiness/provider-readiness";
 
 export async function buildCapabilityCatalogsForUser(
   db: DbClient,
   userId: string
 ): Promise<CapabilityCatalogs> {
   registerBuiltinGuards();
-  const [registry, profiles, assets, integrations, toolSecrets] =
-    await Promise.all([
-      getSkillRegistryForUser(db, userId),
-      listWorkerProfilesForUser(db, userId),
-      listAccountAssets(db, { userId }),
-      getUserIntegrations(db, userId).catch(() => []),
-      listAccountToolSecretsPublic(db, userId).catch(() => []),
-    ]);
+  const [registry, profiles, assets, providerSnapshot] = await Promise.all([
+    getSkillRegistryForUser(db, userId),
+    listWorkerProfilesForUser(db, userId),
+    listAccountAssets(db, { userId }),
+    // Publish gates: no contar env/CLI del deployment como "conectado".
+    loadTenantProviderSnapshot(db, userId, { includeDeploymentEnv: false }),
+  ]);
 
   const skillAllowedTools = new Map<string, readonly string[]>();
   for (const skill of registry.list()) {
     skillAllowedTools.set(skill.name, skill.allowedTools);
   }
 
-  const connectedIntegrations = new Set<string>([
-    ...integrations.map((integration) => integration.provider),
-    // Credenciales de portales/tools activas también cuentan como conexión.
-    ...toolSecrets
-      .filter((secret) => secret.status === "active")
-      .map((secret) => secret.provider),
-  ]);
+  const connectedIntegrations = buildConnectedCatalogIntegrations(
+    providerSnapshot,
+    { includeDeploymentEnv: false }
+  );
 
   return {
     skillSlugs: [...skillAllowedTools.keys()],

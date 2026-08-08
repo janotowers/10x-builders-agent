@@ -16,6 +16,7 @@ import {
   enrichWithCatalogEstimate,
   extractLangChainProviderRequestId,
   extractLangChainReportedCostMicroUsd,
+  flushPendingAiUsageMeterWrites,
   getDroppedAiUsageMeterCount,
   normalizeLangChainUsage,
   normalizeOpenRouterUsage,
@@ -553,6 +554,35 @@ async function testCallbackUsesFetchStashWhenRawMissing(): Promise<void> {
   assert.ok(recorded[0]!.estimatedCostMicroUsd != null);
 }
 
+async function testFlushPendingMeterWrites(): Promise<void> {
+  let resolveWrite: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    resolveWrite = resolve;
+  });
+  const recorded: AiUsageEventInput[] = [];
+  setAiUsageRecorder(async (event) => {
+    await gate;
+    recorded.push(event);
+  });
+  try {
+    const pending = recordAiUsageEvent({
+      userId: "user-flush",
+      operation: "chat_completion",
+      modelId: "openai/gpt-5.4-mini",
+      modelRole: "main_agent",
+      inputTokens: 1,
+      outputTokens: 1,
+    });
+    assert.equal(recorded.length, 0);
+    resolveWrite?.();
+    await flushPendingAiUsageMeterWrites();
+    await pending;
+    assert.equal(recorded.length, 1);
+  } finally {
+    setAiUsageRecorder(null);
+  }
+}
+
 async function main(): Promise<void> {
   testNormalizeOpenRouterUsageReported();
   testNormalizeOpenRouterUsageMissing();
@@ -567,7 +597,8 @@ async function main(): Promise<void> {
   await testPersistenceFailureNeverThrows();
   await testCallbackHandlerRecordsLlmEnd();
   await testCallbackUsesFetchStashWhenRawMissing();
-  console.log("ai-usage-meter selftest: all 13 cases passed");
+  await testFlushPendingMeterWrites();
+  console.log("ai-usage-meter selftest: all 14 cases passed");
 }
 
 main().catch((error) => {

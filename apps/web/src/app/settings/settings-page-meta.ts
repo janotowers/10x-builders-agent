@@ -53,9 +53,9 @@ export function getSettingsPageMeta(
         };
       }
       return {
-        title: "Habilidades activadas",
+        title: "Capacidades disponibles",
         description:
-          "Playbooks que el agente puede activar según la intención del turno.",
+          "Skills globales del producto que el agente puede activar. No son creaciones tuyas; las propias viven en Diseño y Skills de cuenta.",
       };
     case "integrations":
       if (section === "channels") {

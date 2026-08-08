@@ -24,7 +24,12 @@ import {
   businessSpecSchema,
   implementationSpecSchema,
   specIsPresent,
+  type ImplementationSpec,
 } from "./spec-schemas";
+import {
+  detectUnrequestedSideEffects,
+} from "./authoring-router";
+import { inputRequirementSchema } from "./input-requirements";
 
 export type CompilerGateName =
   | "spec_schema"
@@ -34,6 +39,7 @@ export type CompilerGateName =
   | "capability_resolution"
   | "permission_validation"
   | "credential_shape"
+  | "fidelity"
   | "simulation";
 
 export interface CompilerGateResult {
@@ -233,8 +239,18 @@ export function runDefinitionValidationGates(
   );
 
   let capabilityMap: CapabilityMapResult | null = null;
+  const implParsed = specIsPresent(input.implementationSpecValue)
+    ? implementationSpecSchema.safeParse(input.implementationSpecValue)
+    : null;
+  const inputRequirements =
+    implParsed?.success
+      ? implParsed.data.input_requirements
+      : [];
+
   if (structural.graph) {
-    capabilityMap = resolveCapabilityMap(structural.graph, input.catalogs);
+    capabilityMap = resolveCapabilityMap(structural.graph, input.catalogs, {
+      inputRequirements,
+    });
     gates.push(
       gateResult(
         "capability_resolution",
@@ -254,6 +270,13 @@ export function runDefinitionValidationGates(
       )
     );
     gates.push(runPermissionGate(structural.graph, input.catalogs));
+    gates.push(
+      runFidelityGate({
+        graph: structural.graph,
+        businessSpecValue: input.businessSpecValue,
+        implementationSpec: implParsed?.success ? implParsed.data : null,
+      })
+    );
   } else {
     // Sin grafo parseable no hay nada que resolver: ambos gates fallan con
     // referencia al gate estructural para no duplicar el detalle.
@@ -263,6 +286,7 @@ export function runDefinitionValidationGates(
     gates.push(
       gateResult("permission_validation", ["graph_schema falló: sin grafo"])
     );
+    gates.push(gateResult("fidelity", ["graph_schema falló: sin grafo"]));
   }
 
   return {
@@ -271,4 +295,68 @@ export function runDefinitionValidationGates(
     gates,
     capabilityMap,
   };
+}
+
+function runFidelityGate(params: {
+  graph: WorkflowGraph;
+  businessSpecValue?: unknown;
+  implementationSpec: ImplementationSpec | null;
+}): CompilerGateResult {
+  const failures: string[] = [];
+  const descriptionNl =
+    params.businessSpecValue &&
+    typeof params.businessSpecValue === "object" &&
+    !Array.isArray(params.businessSpecValue) &&
+    typeof (params.businessSpecValue as { description_nl?: unknown })
+      .description_nl === "string"
+      ? ((params.businessSpecValue as { description_nl: string }).description_nl)
+      : "";
+
+  const stateKeys = params.graph.states.map((s) => s.key).join(" ");
+  const summary = params.implementationSpec?.summary ?? "";
+  const sendsMessage =
+    /\b(envio|enviar|mensaje_enviado|send)\b/i.test(stateKeys) ||
+    /\benv[ií]o\b/i.test(summary);
+  const requiresApproval =
+    params.graph.transitions.some((t) => Boolean(t.approval_required)) ||
+    (params.graph.approvals?.length ?? 0) > 0;
+  const hasSchedule = /\b(cron|schedule|recurren|cada lunes)\b/i.test(
+    `${summary} ${descriptionNl}`
+  );
+
+  failures.push(
+    ...detectUnrequestedSideEffects({
+      description: descriptionNl,
+      compiledSignals: {
+        sendsMessage,
+        requiresApproval,
+        hasSchedule: false, // schedule is a router concern; don't double-count NL
+        createsCaseWorkflow: true,
+      },
+    })
+  );
+
+  // Coherence: implementation states should be a subset of graph states.
+  if (params.implementationSpec) {
+    const graphKeys = new Set(params.graph.states.map((s) => s.key));
+    for (const state of params.implementationSpec.states) {
+      if (!graphKeys.has(state.key)) {
+        failures.push(
+          `implementation_spec.state "${state.key}" no existe en el grafo`
+        );
+      }
+    }
+  }
+
+  // Validate typed input requirements if present.
+  for (const req of params.implementationSpec?.input_requirements ?? []) {
+    const parsed = inputRequirementSchema.safeParse(req);
+    if (!parsed.success) {
+      failures.push(`input_requirement inválido: ${req.key}`);
+    }
+  }
+
+  return gateResult("fidelity", failures, {
+    description_present: Boolean(descriptionNl),
+  });
 }

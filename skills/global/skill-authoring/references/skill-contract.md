@@ -19,8 +19,8 @@ requires_tenant_context: false
 memory_extraction: ephemeral | default
 heartbeat: native | compatible | blocked
 guardrails: |
-  Concrete, enforceable rules. Read-only by default. Spell out HITL gates and
-  stop / escalate / no-action criteria.
+  Concrete, enforceable rules. Read-only by default. Name human decisions,
+  authorization gates, evidence, and stop / escalate / no-action criteria.
 ---
 
 # Title
@@ -54,7 +54,7 @@ Any FAIL blocks the draft.
   `shared` only when both apply with the same safety rules.
 - `allowed_tools`: minimal and scoped. Every tool must exist in the catalog.
   Runtime only: appearing in `allowed_tools` does not make a tool N1-visible in
-  Preparacion operativa. Integration/action tools need N1; platform/domain
+  Preparación operativa. Integration/action tools need N1; platform/domain
   `operational_case_*` tools belong in `allowed_tools` but are validated in
   N3/N4 technical detail; `operational_case_create` is `scenario_only`
   (intake/N0).
@@ -102,15 +102,20 @@ Any FAIL blocks the draft.
 - Never create a cycle.
 - Prefer reusing an existing global skill over re-implementing it privately.
 
-## Account Skill vs Global
+## Skill provenance
 
 - A global skill lives in `skills/global/<slug>/SKILL.md` and is versioned in
   Git.
 - An account skill lives in the `account_skills` table for one user/tenant.
-  When the slug matches a global, the account version shadows the global at
-  runtime.
-- For account skills, prefer minimal deltas over full rewrites. Document what
-  changed and why in the body.
+  Classify provenance as:
+  - `global`: product capability with no account override;
+  - `account_override`: account version with the same slug, which replaces the
+    global at runtime;
+  - `account_native`: account capability created in Diseño with no global base.
+- For `account_override`, prefer minimal deltas over full rewrites. Document
+  what changed and why in the body.
+- Do not describe every account skill as a “customization”: native Studio
+  creations and overrides have different provenance.
 - The slug must be unique per scope: globally unique for globals, unique per
   user for account skills.
 
@@ -120,9 +125,16 @@ Any FAIL blocks the draft.
   `requires_tenant_context: true`. The runtime injects the tenant context block
   before tool execution; without it the tool layer cannot resolve tenant
   filters.
-- Write/send tools must be gated by HITL: the skill prepares a plan or draft,
-  the human approves, only then the action runs. Spell this out in guardrails
-  and workflow body.
+- Human involvement must state the actual business contract, not only “HITL”:
+  - **action authorization:** a human explicitly authorizes a send, write,
+    publication, or other external effect;
+  - **business decision:** a human chooses an outcome Gu lacks authority to
+    decide;
+  - **human contribution:** a person supplies documents, facts, availability,
+    or another missing input;
+  - **exception review:** a person resolves low confidence, policy conflict, or
+    failed validation.
+  Name who decides or contributes, what they see, and what resumes afterward.
 - Operational case skills must use `expected_version` when calling
   `operational_case_update_state` and append events for notable changes outside
   state transitions.
@@ -154,6 +166,9 @@ fix instead of declaring success.
   invalid or unsafe. Keep it concise or use exactly `description: |`.
 - Gu's parser only accepts `|` for literal block scalars.
 - `requires_tenant_context: true` is what makes BigQuery and EasyBroker work.
+- Tenant context is not a data source by itself. If the procedure needs
+  history, contacts, agreements, or records, identify the concrete catalog
+  capability or keep the draft blocked on a gap.
 - A skill can be valid at parse time and still useless if `allowed_tools` are
   too broad.
 - Composite skills inherit included tools as a union; do not re-list child
@@ -162,3 +177,5 @@ fix instead of declaring success.
 - Heartbeat skills with `heartbeat: blocked` never run from cron.
 - Anthropic's raw Skills contract differs from Gu's. Do not invent fields like
   `model` or `inputs`.
+- Do not invent MCP servers or ad-hoc adapters for missing capabilities. Record
+  the gap for governed Connections and Tool Catalog review.

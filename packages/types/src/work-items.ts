@@ -1,7 +1,8 @@
 // Work plane (flexible-workflows plan, Phase 2 / Slices 2.1-2.2;
-// Technical Plan §7/§10). Executable work owned by an operational case.
-// Vocabulary is deliberately generic and NEVER mixes with case vocabulary
-// (standing rule 6). Claim-liveness terms never use the word "heartbeat"
+// Technical Plan §7/§10). Executable work owned by an operational case
+// OR a durable work_run (Phase 5 / §7.0 XOR root). Vocabulary is
+// deliberately generic and NEVER mixes with case vocabulary (standing
+// rule 6). Claim-liveness terms never use the word "heartbeat"
 // (standing rule 4): use liveness update / lease renewal / stale claim.
 
 export const WORK_ITEM_STATUSES = [
@@ -133,7 +134,13 @@ export interface WorkerProfile {
 
 export interface WorkItem {
   id: string;
-  case_id: string;
+  /**
+   * Raíz caso XOR work_run (Phase 5 / §7.0): exactamente uno de case_id o
+   * work_run_id es non-null. Filas legacy siempre tienen case_id.
+   */
+  case_id: string | null;
+  /** Raíz durable; ver constraint work_items_root_xor. */
+  work_run_id: string | null;
   user_id: string;
   workflow_definition_version: number;
   work_type: string;
@@ -224,7 +231,8 @@ export interface WorkItemTemplateSpec {
   depends_on?: string[];
   /**
    * Defaults to `<on_enter_state>:<work_type>` at the call site so the same
-   * state entry never duplicates items (unique (case_id, idempotency_key)).
+   * state entry never duplicates items (partial unique on
+   * (case_id|work_run_id, idempotency_key) per root).
    */
   idempotency_key?: string;
 }

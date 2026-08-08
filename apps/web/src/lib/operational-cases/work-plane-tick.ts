@@ -22,6 +22,12 @@ import {
   listPinnedActiveOperationalCases,
   listWorkerProfilesForUser,
   listWorkPlaneV2Tenants,
+  listDurableWorkTenants,
+  listActiveWorkRunsForUser,
+  listWorkItemsForRun,
+  getDurableTask,
+  updateDurableTask,
+  updateWorkRun,
   upsertActiveInternalUserNotification,
   type DbClient,
 } from "@agents/db";
@@ -104,6 +110,7 @@ function bindStore(db: DbClient): WorkPlaneStore {
 export interface WorkPlaneCronTenantResult {
   userId: string;
   cases: number;
+  durableRuns: number;
   tick: WorkPlaneTickResult;
 }
 
@@ -141,7 +148,14 @@ export async function runWorkPlaneCronPass(
 
   let tenants: string[] = [];
   try {
-    tenants = await listWorkPlaneV2Tenants(db);
+    const caseTenants = await listWorkPlaneV2Tenants(db);
+    let durableTenants: string[] = [];
+    try {
+      durableTenants = await listDurableWorkTenants(db);
+    } catch {
+      // Despliegue entre 00073 y 00074: no interrumpir el plano de casos.
+    }
+    tenants = [...new Set([...caseTenants, ...durableTenants])];
     if (opts.onlyUserId) {
       tenants = tenants.filter((userId) => userId === opts.onlyUserId);
     }
@@ -260,7 +274,50 @@ export async function runWorkPlaneCronPass(
           await notifyBlockedWorkItem(db, userId, processed.workItemId);
         }
       }
-      summary.tenants.push({ userId, cases: dispatchables.length, tick });
+      const activeRuns = await listActiveWorkRunsForUser(db, userId);
+      for (const run of activeRuns) {
+        const items = await listWorkItemsForRun(db, userId, run.id);
+        if (items.length === 0) continue;
+        if (run.status === "pending") {
+          await updateWorkRun(db, {
+            userId,
+            workRunId: run.id,
+            status: "running",
+            startedAt: run.started_at ?? new Date().toISOString(),
+          });
+        }
+        if (!items.every((item) => item.status === "done")) continue;
+        const resultJsonb = {
+          work_run_id: run.id,
+          completed_at: new Date().toISOString(),
+          outputs: Object.fromEntries(
+            items.map((item) => [item.work_type, item.result_jsonb ?? {}])
+          ),
+        };
+        await updateWorkRun(db, {
+          userId,
+          workRunId: run.id,
+          status: "succeeded",
+          result: resultJsonb,
+          finishedAt: new Date().toISOString(),
+        });
+        const task = await getDurableTask(db, userId, run.durable_task_id);
+        if (task) {
+          await updateDurableTask(db, {
+            userId,
+            taskId: task.id,
+            expectedVersion: task.version,
+            status: task.schedule_ref ? "active" : "completed",
+            result: resultJsonb,
+          });
+        }
+      }
+      summary.tenants.push({
+        userId,
+        cases: dispatchables.length,
+        durableRuns: activeRuns.length,
+        tick,
+      });
     } catch (error) {
       summary.errors.push({
         userId,

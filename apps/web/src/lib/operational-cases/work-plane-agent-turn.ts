@@ -12,6 +12,8 @@
 import {
   getGoogleCalendarAccessToken,
   getOperationalCase,
+  getDurableTask,
+  getWorkRun,
   getOrCreateSession,
   getProfile,
   getUserIntegrations,
@@ -29,6 +31,9 @@ export function makeWorkItemAgentTurnRunner(db: DbClient): MainAgentTurnRunner {
     try {
       const profile = await getProfile(db, params.userId);
       if (!profile) return { ok: false, error: "profile_not_found" };
+      if (!params.caseId && !params.workRunId) {
+        return { ok: false, error: "work_root_required_for_main_agent" };
+      }
 
       const [toolSettings, skillSettings, integrations] = await Promise.all([
         getUserToolSettings(db, params.userId),
@@ -53,11 +58,33 @@ export function makeWorkItemAgentTurnRunner(db: DbClient): MainAgentTurnRunner {
 
       const googleCalendarAccessToken =
         (await getGoogleCalendarAccessToken(db, params.userId)) ?? undefined;
-      const opCase = await getOperationalCase(db, params.caseId);
+      const opCase = params.caseId
+        ? await getOperationalCase(db, params.caseId)
+        : null;
+      const workRun = params.workRunId
+        ? await getWorkRun(db, params.userId, params.workRunId)
+        : null;
+      const durableTask = workRun
+        ? await getDurableTask(db, params.userId, workRun.durable_task_id)
+        : null;
+      if (params.workRunId && (!workRun || !durableTask)) {
+        return { ok: false, error: "durable_work_root_not_found" };
+      }
       const session = await getOrCreateSession(db, params.userId, "case_runner");
+      const durableContext = durableTask
+        ? [
+            "",
+            "[Tarea durable]",
+            `ID: ${durableTask.id}`,
+            `Título: ${durableTask.title}`,
+            `Objetivo raíz: ${durableTask.objective}`,
+            `Inputs de la corrida: ${JSON.stringify(workRun?.input_jsonb ?? {})}`,
+            "No inventes un caso comercial. Devuelve el resultado del trabajo solicitado.",
+          ].join("\n")
+        : "";
 
       const result = await runAgent({
-        message: params.message,
+        message: `${params.message}${durableContext}`,
         userId: params.userId,
         sessionId: session.id,
         systemPrompt: profile.agent_system_prompt,
@@ -78,7 +105,7 @@ export function makeWorkItemAgentTurnRunner(db: DbClient): MainAgentTurnRunner {
         toolApprovalPolicy: opCase
           ? buildOperationalCaseCronToolApprovalPolicy(opCase)
           : undefined,
-        caseId: params.caseId,
+        caseId: params.caseId ?? undefined,
         workItemId: params.workItemId,
         workItemAttemptId: params.attemptId,
         // 3.4-6: atribución completa work item → definición en el ledger.

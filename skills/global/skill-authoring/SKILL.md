@@ -4,7 +4,7 @@ description: Design, critique, and propose Gu OS SKILL.md drafts and Heartbeat c
 scope: shared
 allowed_tools:
   - get_user_preferences
-  - read_file
+  - read_skill_reference
   - list_enabled_tools
 includes: []
 requires_tenant_context: false
@@ -18,8 +18,8 @@ guardrails: |
   Set requires_tenant_context: true when the skill reads or writes tenant or
   business data (BigQuery, EasyBroker, account-specific configuration, brand,
   business_brain). Default to false otherwise; mis-setting silently breaks tools.
-  Write/send tools (mutation, messaging, publication) must be gated by HITL or
-  escalation paths in both guardrails and body.
+  Write/send tools (mutation, messaging, publication) must name who decides,
+  what evidence they see, and what explicit authorization precedes execution.
   When proposing a private account skill that shadows a global, start from the
   global SKILL.md as baseline and document the delta; do not regenerate from
   scratch unless the user explicitly asks.
@@ -61,26 +61,51 @@ enable, save, or run the proposed skill.
    - read vs write/send tools;
    - output format and HITL gates;
    - existing global skill overlap.
-2. **Classify the form.** Decide whether this is a single-turn skill,
-   heartbeat checklist item, operational case, or hybrid review. Ask if durable
-   state, external waits, cron/case runner activity, or multi-step handoffs are
-   ambiguous.
+2. **Classify the governed form.** Use Gu's current authoring taxonomy:
+   `case_workflow`, `durable_task`, `reusable_skill` (`simple | composite`), or
+   `schedule`. Use `redirect_to_chat` for one-shot execution and `clarify` when
+   a material ambiguity remains. Ask about durable state, external waits,
+   recurrence, actors, decisions, data sources, and side effects in business
+   language; do not ask the user to choose Gu's technical type.
 3. **Load only the references needed for this request.**
-   - Read `references/skill-contract.md` when drafting or auditing any
+   - Call `read_skill_reference("skill-contract")` when drafting or auditing any
      `SKILL.md` field, composition, tenant context, body rule, or gotcha.
-   - Read `references/operational-case-authoring.md` when the proposal has
+   - Call `read_skill_reference("operational-case-authoring")` when the proposal has
      durable steps, documents, approvals, external participants, E2E tests, or
      case-runner behavior.
-   - Read `references/output-formats.md` when invoked by automation or when the
+   - Call `read_skill_reference("output-formats")` when invoked by automation or when the
      user asks for a copy-pasteable draft, evals, or activation recommendation.
-4. **Draft conservatively.** Prefer one dominant owner per workflow. Use atomic
+4. **Discover before drafting.** Compare the verbatim request and prior answers
+   with the tenant's real skills, tools, integrations, assets, and policies.
+   Distinguish reusable account assets from runtime `input_requirements`.
+   Identify evidence already supplied, assumptions, material gaps, actors,
+   decisions, external effects, acceptance criteria, and MECE overlap.
+5. **Review before writing.** Present an “Esto entendí” summary and ask for
+   explicit human confirmation before any API, file, database, or activation
+   write. High classification confidence never proves semantic completeness.
+6. **Draft conservatively.** Prefer one dominant owner per workflow. Use atomic
    `includes` only when a step is reusable elsewhere. Keep `allowed_tools`
    minimal and aligned with body instructions.
-5. **Validate before returning.** Run the rubric from
-   `references/skill-contract.md`. If any item is FAIL, return the draft
+7. **Validate before returning.** Run the rubric from
+   `read_skill_reference("skill-contract")`. If any item is FAIL, return the draft
    annotated with the failure and propose a fix instead of declaring success.
-6. **Recommend activation, never perform it.** Use `do_not_activate`,
+8. **Recommend activation, never perform it.** Use `do_not_activate`,
    `activate_after_tests`, or `skill_only` based on evidence and risk.
+
+## Authoring surfaces
+
+- **Studio Diseño:** discovery is model-backed on every request. A deterministic
+  router can supply advisory signals and enforce mechanical invariants, but
+  cannot skip discovery or act as the final work-form authority. The flow is
+  conversational: `Analizar solicitud` → adaptive clarifying turns (1–4
+  questions, soft checkpoint after 3 answers, hard limit 5) → `Esto entendí`
+  with proposed work form → explicit `Crear borrador`. The four artifact kinds
+  land in a common review shell; the type-specific editor is a later human
+  action.
+- **Skill authoring automation:** remains proposal-only and uses the same
+  doctrine, references, validation rubric, and confirmation-before-write rule.
+- Never create a second Studio-specific doctrine. Share the authoring kernel
+  and keep persistence/UI concerns in their respective surfaces.
 
 ## Skill Development Cycle
 
@@ -88,12 +113,14 @@ enable, save, or run the proposed skill.
   credentials/assets, and MECE overlap before drafting.
 - **Draft and MECE:** one dominant owner; distinct `description`; push
   repeatability into wrappers/adapters before prose.
-- **Readiness proportional to form:** operational cases need `testPlan` with
-  N0-N5 refs; single-turn skills need Skill Lab evals; Heartbeat items need
-  preview, dry-run, and a documented `no_action` path.
+- **Readiness proportional to form:** case workflows need `testPlan` with
+  N0-N5 refs; reusable skills need Skill Lab evals; durable tasks need input,
+  acceptance, result, retention, and work-run checks; schedules additionally
+  need recurrence and underlying-work checks. Heartbeat remains a runtime
+  checklist mechanism, not a Studio artifact kind.
 - **Activation:** `do_not_activate` for any FAIL or unresolved overlap;
-  `activate_after_tests` for operational cases; `skill_only` for single-turn
-  skills after Skill Lab.
+  `activate_after_tests` for case workflows; `skill_only` for reusable skills
+  after Skill Lab.
 
 ## Output Defaults
 
@@ -119,3 +146,6 @@ compact and put the full draft in `<skill-draft>`, never inside JSON.
   skills that must be triggered by a user or operational case runner.
 - For account skills that shadow a global, read the global `SKILL.md` first and
   propose a delta instead of regenerating from scratch.
+- Do not propose an ad-hoc MCP server or adapter when a capability is missing.
+  Mark the gap, ask for the concrete system, and route through governed
+  Connections and Tool Catalog decisions.

@@ -25,6 +25,9 @@ import {
   markTaskPausedDueToFailures,
   getTelegramChatId,
   getOrCreateSession,
+  createWorkRun,
+  createWorkItemsForWorkRun,
+  getDurableTask,
 } from "@agents/db";
 import { runAgent } from "@agents/agent";
 import {
@@ -36,6 +39,10 @@ import { Cron } from "croner";
 import { ensureAgentToolDepsWired } from "@/lib/agent/wire-tool-deps";
 import type { ScheduledTask } from "@agents/db";
 import { normalizeToolApprovalPolicy } from "@agents/agent";
+import {
+  durableTaskSpecSchema,
+  durableTaskTemplatesToWorkItems,
+} from "@agents/workflows";
 import { notify } from "@/lib/notify";
 import { TOOL_CONFIRMATION_PENDING_KIND } from "@/lib/notifications/pending-inbox-dedupe";
 import {
@@ -194,6 +201,51 @@ async function runTask(
   let notificationError: string | undefined;
 
   try {
+    if (task.durable_task_id) {
+      const durableTask = await getDurableTask(
+        db,
+        task.user_id,
+        task.durable_task_id
+      );
+      if (!durableTask || durableTask.status !== "active") {
+        throw new Error("scheduled_durable_task_not_active");
+      }
+      const parsedSpec = durableTaskSpecSchema.safeParse(
+        durableTask.spec_jsonb
+      );
+      if (!parsedSpec.success) {
+        throw new Error("scheduled_durable_task_spec_invalid");
+      }
+      const workRun = await createWorkRun(db, {
+        userId: task.user_id,
+        durableTaskId: durableTask.id,
+        status: "running",
+        startedAt: new Date().toISOString(),
+        scheduledTaskId: task.id,
+        retentionExpiresAt: new Date(
+          Date.now() +
+            parsedSpec.data.retention_policy.result_days * 86_400_000
+        ).toISOString(),
+      });
+      await createWorkItemsForWorkRun(db, {
+        userId: task.user_id,
+        workRunId: workRun.id,
+        workflowDefinitionVersion: durableTask.version,
+        templates: durableTaskTemplatesToWorkItems(parsedSpec.data),
+        onEnterState: "run",
+      });
+      const nextRunAt =
+        task.schedule_type === "recurring" && task.cron_expr
+          ? computeNextRunAt(task.cron_expr, task.timezone)
+          : null;
+      await rescheduleOrComplete(db, task, nextRunAt);
+      await finishTaskRun(db, run.id, {
+        status: "completed",
+        notified: false,
+      });
+      return { task_id: task.id, status: "ok" };
+    }
+
     // Load user context
     const profile = await getProfile(db, task.user_id);
     const toolSettings = await getUserToolSettings(db, task.user_id);

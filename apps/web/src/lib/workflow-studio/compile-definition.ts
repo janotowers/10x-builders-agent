@@ -29,6 +29,7 @@ import {
   type BusinessSpec,
   type CompilerOutput,
   type ImplementationSpec,
+  type SolutionPatternComposition,
 } from "@agents/workflows";
 import type { WorkflowGraph } from "@agents/types";
 
@@ -43,6 +44,7 @@ export interface CompileDescriptionInput {
   availableSkills: string[];
   availableCapabilities: string[];
   availableTools: string[];
+  patternComposition?: SolutionPatternComposition;
 }
 
 export type CompileDescriptionResult =
@@ -86,21 +88,42 @@ export function buildCompilerPrompt(input: CompileDescriptionInput): string {
     "- Write everything user-facing in Spanish.",
     "",
     "implementation_spec shape:",
-    '{"spec_version":1,"summary":string,"states":[{"key":string,"label"?:string,"kind":"operational"|"terminal"}],"capabilities":[{"capability":string,"state":string,"work_type":string}],"skills":string[],"tools":string[],"integrations":string[],"required_assets":[{"asset_key":string,"label":string,"required"?:boolean}],"approvals":[{"kind":string,"evidence_inputs":string[]}],"open_questions":string[]}',
+    '{"spec_version":1,"summary":string,"states":[{"key":string,"label"?:string,"kind":"operational"|"terminal"}],"capabilities":[{"capability":string,"state":string,"work_type":string}],"skills":string[],"tools":string[],"integrations":string[],"required_assets":[{"asset_key":string,"label":string,"required"?:boolean}],"input_requirements":[{"kind":"account_asset"|"runtime_input"|"case_fact"|"business_record"|"knowledge_requirement"|"generated_artifact"|"human_input"|"integration"|"tool","key":string,"label":string,"required"?:boolean,"scope"?:string,"resolve_at"?:string,"source_hint"?:string,"producer_step"?:string}],"approvals":[{"kind":string,"evidence_inputs":string[]}],"open_questions":string[]}',
     "",
     "graph shape:",
     GRAPH_SHAPE_HINT,
     "",
     "Hard rules for the graph:",
     "- The FIRST state in `states` is the initial state; at least one terminal state listed in completion.terminal_states.",
+    "- Prefer terminal keys that distinguish success vs cancelled (e.g. mensaje_enviado vs seguimiento_descartado).",
     "- Directed acyclic: no transition may create a cycle; every state reachable from the first; every non-terminal state needs an outgoing transition.",
+    "- authorized_proposers MUST include at least [\"model\",\"decision_handler\",\"runtime\"] unless a transition is intentionally restricted; never omit runtime for automatic steps.",
     `- guards: ONLY from this registry: ${JSON.stringify(input.availableGuards)}. Use [] when no guard applies. NEVER invent guard names.`,
     `- step_bindings[].skill: ONLY from: ${JSON.stringify(input.availableSkills)} or null.`,
     `- work_templates[].required_capability: ONLY from: ${JSON.stringify(input.availableCapabilities)}. Omit work_templates you cannot map to a capability and record the gap in implementation_spec.open_questions instead.`,
     `- Tools you may reference in implementation_spec.tools: ${JSON.stringify(input.availableTools)}.`,
-    "- required_assets: asset_key in snake_case with a Spanish label; a missing upload is fine (it becomes a customer-facing gap), but the KEY must be well-formed.",
+    "- required_assets / account_asset: ONLY reusable tenant FILES (templates, watermarks, brand books). NEVER put conversation history, agreements, contact data, or drafts here.",
+    "- Use input_requirements for everything else: case_fact (owner contact, last agreement), business_record (warehouse/CRM), runtime_input (per-run upload), generated_artifact (draft output — never an upload gap), human_input, integration, tool.",
+    "- Do NOT invent side effects absent from the description (sending messages, formal approvals, recurrence).",
     "- NEVER embed credentials, API keys, tokens or secrets anywhere.",
     "- If part of the business ask cannot be implemented with the available catalog, still preserve it in business_spec and list it in unimplementable_notes / open_questions — do not drop it silently.",
+    ...(input.patternComposition
+      ? [
+          "",
+          `Registered solution pattern bundle: ${JSON.stringify({
+            base_bundle_id: input.patternComposition.baseBundleId,
+            triggers: input.patternComposition.triggers,
+            pattern_ids: input.patternComposition.patternIds,
+          })}`,
+          "Mandatory pattern directives:",
+          ...input.patternComposition.patterns.flatMap((pattern) =>
+            pattern.compileDirectives.map(
+              (directive) => `- [${pattern.id}] ${directive}`
+            )
+          ),
+          "These directives are trusted registered constraints. Satisfy them using only registered catalogs; never replace them with invented code.",
+        ]
+      : []),
     "",
     `case_type: ${input.caseType}`,
     ...(input.clarificationAnswers?.length
@@ -152,7 +175,7 @@ async function invokeOpenRouterCompiler(
     }),
   });
   if (!response.ok) {
-    void recordOpenRouterCallUsage({
+    await recordOpenRouterCallUsage({
       modelId: model,
       modelRole: "workflow_compiler",
       operation: "chat_completion",
@@ -167,7 +190,7 @@ async function invokeOpenRouterCompiler(
     choices?: Array<{ message?: { content?: unknown } }>;
     usage?: OpenRouterUsagePayload;
   };
-  void recordOpenRouterCallUsage({
+  await recordOpenRouterCallUsage({
     modelId: model,
     modelRole: "workflow_compiler",
     operation: "chat_completion",

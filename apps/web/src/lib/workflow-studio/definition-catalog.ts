@@ -59,6 +59,45 @@ export function definitionStatusLabel(status: WorkflowDefinitionStatus): string 
   }
 }
 
+/**
+ * ¿Es esta la versión publicada que usarán los casos nuevos?
+ * Misma regla que `getLatestPublishedDefinitionForUser` para privadas:
+ * mayor `version` con status `published` en la familia (no depreca hermanas).
+ */
+export function isVigenteForNewCases(
+  definition: Pick<WorkflowDefinition, "id" | "status" | "version">,
+  siblings: ReadonlyArray<Pick<WorkflowDefinition, "id" | "status" | "version">>
+): boolean {
+  if (definition.status !== "published") return false;
+  const published = siblings.filter((item) => item.status === "published");
+  if (published.length === 0) return false;
+  const highest = published.reduce((best, current) =>
+    current.version > best.version ? current : best
+  );
+  return highest.id === definition.id;
+}
+
+/**
+ * Etiqueta de ciclo de vida para UI: distingue publicada vigente vs histórica.
+ */
+export function definitionLifecycleLabel(
+  definition: Pick<WorkflowDefinition, "id" | "status" | "version">,
+  siblings: ReadonlyArray<Pick<WorkflowDefinition, "id" | "status" | "version">>
+): string {
+  switch (definition.status) {
+    case "draft":
+      return "Borrador";
+    case "validated":
+      return "Validada";
+    case "deprecated":
+      return "Obsoleta";
+    case "published":
+      return isVigenteForNewCases(definition, siblings)
+        ? "Vigente (casos nuevos)"
+        : "Publicada (historial)";
+  }
+}
+
 export function ownerScopeLabel(scope: WorkflowOwnerScope): string {
   switch (scope) {
     case "global":
@@ -352,6 +391,9 @@ export function sumPinnedActiveCases(
 /**
  * Sello corto de evidencia (sin repetir el checklist de gates en vivo).
  * `null` cuando aún no hay evidencia registrada.
+ *
+ * Si `evidenceCount < gateCount`, el sello se marca como histórico/incompleto
+ * frente al conjunto actual de gates (p. ej. 8/9 tras añadir un gate nuevo).
  */
 export function formatEvidenceSeal(input: {
   evidenceCount: number;
@@ -367,7 +409,12 @@ export function formatEvidenceSeal(input: {
     input.gateCount > 0
       ? `${input.evidenceCount}/${input.gateCount} gates`
       : `${input.evidenceCount} registros`;
-  return `Sellada el ${when} · ${gates} · ${input.shortHash}…`;
+  const incomplete =
+    input.gateCount > 0 && input.evidenceCount < input.gateCount;
+  const incompleteness = incomplete
+    ? " · sello histórico incompleto frente a gates actuales"
+    : "";
+  return `Sellada el ${when} · ${gates} · ${input.shortHash}…${incompleteness}`;
 }
 
 /**
@@ -407,7 +454,7 @@ export function groupDefinitionFamilies(
       draftCount,
       pinnedActiveCases,
       pinnedLabel: pinnedCasesLabel(pinnedActiveCases),
-      headStatusLabel: definitionStatusLabel(head.status),
+      headStatusLabel: definitionLifecycleLabel(head, versions),
       scopeLabel: ownerScopeLabel(head.owner_scope),
       lineage: resolveForkLineageLabel(head, byId),
     });

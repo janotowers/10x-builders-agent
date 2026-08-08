@@ -3,12 +3,14 @@ import type { WorkflowDefinition } from "@agents/types";
 import {
   approvalKindLabel,
   checkLabel,
+  definitionLifecycleLabel,
   definitionStatusLabel,
   emptyWorkTemplatesMessage,
   evidenceInputLabel,
   friendlyCaseTypeLabel,
   guardLabel,
   happyPathStates,
+  isVigenteForNewCases,
   ownerScopeLabel,
   pinnedCasesLabel,
   resolveForkLineageLabel,
@@ -25,6 +27,10 @@ import {
   studioLabelsEquivalent,
   type DefinitionHelpCatalog,
 } from "@/lib/workflow-studio/definition-help";
+import {
+  skillProvenanceLabel,
+  type SkillProvenanceKind,
+} from "@/lib/skill-provenance";
 import { ForkButton } from "./fork-button";
 import { DiscardButton } from "./discard-button";
 import { ExpandableItem } from "./expandable-item";
@@ -178,6 +184,7 @@ export function DefinitionDetail({
   help,
   error,
   notice,
+  rootSkillProvenance = null,
 }: {
   definition: WorkflowDefinition;
   row: DefinitionCatalogRow;
@@ -190,6 +197,7 @@ export function DefinitionDetail({
   error?: string;
   /** Aviso post-acto (p. ej. "published" tras Publicar). */
   notice?: string;
+  rootSkillProvenance?: SkillProvenanceKind | null;
 }) {
   const graph = definition.graph_jsonb;
   const path = happyPathStates(graph);
@@ -203,9 +211,7 @@ export function DefinitionDetail({
     (definition.status === "draft" || definition.status === "validated");
   const canFork = definition.status === "published";
   const labelByKey = new Map(path.map((state) => [state.key, state.label]));
-  const highestPublishedVersion = siblings
-    .filter((sibling) => sibling.status === "published")
-    .reduce((max, sibling) => Math.max(max, sibling.version), 0);
+  const lifecycleLabel = definitionLifecycleLabel(definition, siblings);
 
   return (
     <div className="space-y-3">
@@ -217,6 +223,9 @@ export function DefinitionDetail({
           <TechId kind="Tipo" value={definition.workflow_key} />
           <span className="text-xs text-neutral-500">v{definition.version}</span>
           <StatusBadge status={definition.status} />
+          <span className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[10px] font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
+            {lifecycleLabel}
+          </span>
           <ScopeBadge
             scopeLabel={row.scopeLabel}
             scope={definition.owner_scope}
@@ -234,6 +243,10 @@ export function DefinitionDetail({
           </span>
           {lineage ? ` · ${lineage}` : ""}
         </p>
+        <p className="mt-1 text-[10px] text-neutral-400">
+          Los casos nuevos usan la versión vigente; los existentes conservan su
+          pin.
+        </p>
 
         {notice === "published" ? (
           <p className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1.5 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
@@ -247,9 +260,10 @@ export function DefinitionDetail({
           <div className="mt-3 flex flex-wrap gap-1.5">
             {siblings.map((sibling) => {
               const active = sibling.id === definition.id;
-              const isCurrentPublished =
-                sibling.status === "published" &&
-                sibling.version === highestPublishedVersion;
+              const siblingLifecycle = definitionLifecycleLabel(
+                sibling,
+                siblings
+              );
               return (
                 <Link
                   key={sibling.id}
@@ -260,8 +274,8 @@ export function DefinitionDetail({
                       : "bg-white text-neutral-600 ring-1 ring-neutral-200 hover:bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-300 dark:ring-neutral-700 dark:hover:bg-neutral-800"
                   }`}
                 >
-                  v{sibling.version} {definitionStatusLabel(sibling.status)}
-                  {isCurrentPublished ? " · vigente" : ""}
+                  v{sibling.version} {siblingLifecycle}
+                  {isVigenteForNewCases(sibling, siblings) ? " · vigente" : ""}
                 </Link>
               );
             })}
@@ -419,8 +433,16 @@ export function DefinitionDetail({
                     <span className="rounded border border-violet-300 bg-violet-50 px-1 py-0.5 text-[10px] font-medium text-violet-800 dark:border-violet-800 dark:bg-violet-950 dark:text-violet-200">
                       Compuesta
                     </span>
+                    {rootSkillProvenance ? (
+                      <span className="rounded border border-neutral-300 bg-neutral-50 px-1 py-0.5 text-[10px] font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-200">
+                        {skillProvenanceLabel(rootSkillProvenance)}
+                      </span>
+                    ) : null}
                   </span>
                   <TechId kind="Habilidad" value={help.rootSkill.slug} />
+                  <span className="text-[10px] text-neutral-400">
+                    Definición reutilizable (no es una instancia de ejecución).
+                  </span>
                 </span>
               }
               details={

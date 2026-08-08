@@ -1118,3 +1118,4 @@ export * from "./ai-usage";
 export * from "./workflow-definitions";
 export * from "./work-items";
 export * from "./impact";
+export * from "./durable-tasks";

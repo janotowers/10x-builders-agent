@@ -38,6 +38,8 @@ export type AiUsageRecorder = (event: AiUsageEventInput) => Promise<void> | void
 
 let injectedRecorder: AiUsageRecorder | null = null;
 let droppedMeterCount = 0;
+/** In-flight persist promises (covers fire-and-forget call sites before exit). */
+const pendingMeterWrites = new Set<Promise<void>>();
 
 /** Test/fixture hook: bypasses the env flag and DB persistence. */
 export function setAiUsageRecorder(recorder: AiUsageRecorder | null): void {
@@ -51,6 +53,24 @@ export function getDroppedAiUsageMeterCount(): number {
 export function isAiUsageMeteringEnabled(): boolean {
   if (injectedRecorder) return true;
   return process.env.AI_USAGE_METERING_ENABLED === "true";
+}
+
+function trackMeterWrite(write: Promise<void>): Promise<void> {
+  pendingMeterWrites.add(write);
+  void write.finally(() => {
+    pendingMeterWrites.delete(write);
+  });
+  return write;
+}
+
+/**
+ * Wait for in-flight meter persists. CLI/eval entry points should call this
+ * before process.exit so `void recordOpenRouterCallUsage(...)` does not drop.
+ */
+export async function flushPendingAiUsageMeterWrites(): Promise<void> {
+  while (pendingMeterWrites.size > 0) {
+    await Promise.allSettled([...pendingMeterWrites]);
+  }
 }
 
 // ── Metadata allowlist ───────────────────────────────────────────────────────
@@ -283,50 +303,53 @@ export async function recordAiUsageEvent(
   // Single choke-point: always stamp catalog estimate when model+tokens allow,
   // so no call site can persist reported-only rows by accident.
   const enriched = enrichWithCatalogEstimate(input.modelId, input);
-  if (injectedRecorder) {
-    try {
-      await injectedRecorder(enriched);
-    } catch (recorderError) {
+  const persist = async (): Promise<void> => {
+    if (injectedRecorder) {
+      try {
+        await injectedRecorder(enriched);
+      } catch (recorderError) {
+        droppedMeterCount += 1;
+        console.error("[ai-usage-meter] injected recorder failed", {
+          model_id: enriched.modelId,
+          model_role: enriched.modelRole,
+          error:
+            recorderError instanceof Error
+              ? recorderError.message
+              : String(recorderError),
+        });
+      }
+      return;
+    }
+    if (process.env.AI_USAGE_METERING_ENABLED !== "true") return;
+    const store = currentAiUsageContext();
+    const db = dbOverride ?? store?.db ?? null;
+    if (!db) {
       droppedMeterCount += 1;
-      console.error("[ai-usage-meter] injected recorder failed", {
+      console.error("[ai-usage-meter] dropped event: no db client bound", {
         model_id: enriched.modelId,
         model_role: enriched.modelRole,
+      });
+      return;
+    }
+    try {
+      await insertAiUsageEvent(db, {
+        ...enriched,
+        metadata: sanitizeUsageMetadata(enriched.metadata),
+      });
+    } catch (persistError) {
+      droppedMeterCount += 1;
+      console.error("[ai-usage-meter] dropped event: persist failed", {
+        model_id: enriched.modelId,
+        model_role: enriched.modelRole,
+        user_id: enriched.userId,
         error:
-          recorderError instanceof Error
-            ? recorderError.message
-            : String(recorderError),
+          persistError instanceof Error
+            ? persistError.message
+            : String(persistError),
       });
     }
-    return;
-  }
-  if (process.env.AI_USAGE_METERING_ENABLED !== "true") return;
-  const store = currentAiUsageContext();
-  const db = dbOverride ?? store?.db ?? null;
-  if (!db) {
-    droppedMeterCount += 1;
-    console.error("[ai-usage-meter] dropped event: no db client bound", {
-      model_id: enriched.modelId,
-      model_role: enriched.modelRole,
-    });
-    return;
-  }
-  try {
-    await insertAiUsageEvent(db, {
-      ...enriched,
-      metadata: sanitizeUsageMetadata(enriched.metadata),
-    });
-  } catch (persistError) {
-    droppedMeterCount += 1;
-    console.error("[ai-usage-meter] dropped event: persist failed", {
-      model_id: enriched.modelId,
-      model_role: enriched.modelRole,
-      user_id: enriched.userId,
-      error:
-        persistError instanceof Error
-          ? persistError.message
-          : String(persistError),
-    });
-  }
+  };
+  await trackMeterWrite(persist());
 }
 
 /**

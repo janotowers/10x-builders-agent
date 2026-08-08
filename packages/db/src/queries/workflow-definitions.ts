@@ -40,7 +40,10 @@ export async function getPublishedDefinition(
 /**
  * Resolution order when starting a case (Technical Plan §5.1.1): the user's
  * latest published private definition for the case type, else the latest
- * published global.
+ * published global. "Latest" = highest `version` among `status='published'`
+ * rows (siblings are not auto-deprecated; older published pins stay valid).
+ * UI label: Vigente (casos nuevos) — see `isVigenteForNewCases` in the web
+ * definition-catalog helpers.
  */
 export async function getLatestPublishedDefinitionForUser(
   db: DbClient,

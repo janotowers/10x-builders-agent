@@ -18,20 +18,29 @@ import { revalidatePath } from "next/cache";
 import {
   countPinnedActiveCasesByDefinition,
   createServerClient,
+  createWorkItemsForWorkRun,
+  createWorkRun,
   deleteDraftDefinition,
   forkDefinition,
   getWorkflowDefinitionById,
+  getDurableTask,
   insertDraftDefinition,
   listWorkflowDefinitionsVisibleToUser,
+  listWorkRunsForTask,
   markDefinitionValidated,
   publishDefinition,
+  updateDurableTask,
 } from "@agents/db";
 import {
   runWithAiUsageContext,
   WORKFLOW_COMPILER_MODEL_ID,
   TOOL_CATALOG,
 } from "@agents/agent";
-import { computeDefinitionHash } from "@agents/workflows";
+import {
+  computeDefinitionHash,
+  durableTaskSpecSchema,
+  durableTaskTemplatesToWorkItems,
+} from "@agents/workflows";
 import { createClient } from "@/lib/supabase/server";
 import {
   buildCapabilityCatalogsForUser,
@@ -45,6 +54,96 @@ const CATALOG_PATH = "/operations/workflows";
 const DESIGN_PATH = "/operations/workflows/design";
 /** §14: máximo 3 rondas de aclaración antes de pedir reformular. */
 const MAX_CLARIFICATION_ROUNDS = 3;
+
+export async function startDurableTaskRunAction(formData: FormData) {
+  const user = await requireUser();
+  const taskId = String(formData.get("durable_task_id") ?? "").trim();
+  if (!taskId) redirect(`${DESIGN_PATH}?error=Falta la tarea durable.`);
+  const db = createServerClient();
+  const task = await getDurableTask(db, user.id, taskId);
+  if (!task || !["draft", "active"].includes(task.status)) {
+    redirect(`${DESIGN_PATH}?error=La tarea durable no está disponible.`);
+  }
+  const parsedSpec = durableTaskSpecSchema.safeParse(task.spec_jsonb);
+  if (!parsedSpec.success) {
+    redirect(
+      `${DESIGN_PATH}?durable_task=${task.id}&error=La especificación durable no es válida.`
+    );
+  }
+  let runInput: Record<string, unknown> = {};
+  const rawInput = String(formData.get("run_input_json") ?? "").trim();
+  if (rawInput) {
+    try {
+      const parsed = JSON.parse(rawInput);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected_object");
+      }
+      runInput = parsed as Record<string, unknown>;
+    } catch {
+      redirect(
+        `${DESIGN_PATH}?durable_task=${task.id}&error=Los datos de entrada deben ser un objeto JSON válido.`
+      );
+    }
+  }
+  const valueRequiredKinds = new Set([
+    "runtime_input",
+    "human_input",
+    "business_record",
+  ]);
+  const missing = parsedSpec.data.input_requirements
+    .filter(
+      (requirement) =>
+        requirement.required !== false &&
+        valueRequiredKinds.has(requirement.kind) &&
+        runInput[requirement.key] == null
+    )
+    .map((requirement) => requirement.label);
+  if (missing.length > 0) {
+    redirect(
+      `${DESIGN_PATH}?durable_task=${task.id}&error=${encodeURIComponent(
+        `Faltan datos de entrada: ${missing.join(", ")}.`
+      )}`
+    );
+  }
+  const activeRuns = (await listWorkRunsForTask(db, user.id, task.id, {
+    limit: 10,
+  })).filter((run) => run.status === "pending" || run.status === "running");
+  if (activeRuns.length > 0) {
+    redirect(
+      `/operations/overview?durable_task=${task.id}&run=${activeRuns[0].id}`
+    );
+  }
+  const run = await createWorkRun(db, {
+    userId: user.id,
+    durableTaskId: task.id,
+    status: "running",
+    startedAt: new Date().toISOString(),
+    input: runInput,
+    retentionExpiresAt: new Date(
+      Date.now() +
+        parsedSpec.data.retention_policy.result_days * 86_400_000
+    ).toISOString(),
+  });
+  await createWorkItemsForWorkRun(db, {
+    userId: user.id,
+    workRunId: run.id,
+    workflowDefinitionVersion: task.version,
+    templates: durableTaskTemplatesToWorkItems(parsedSpec.data),
+    onEnterState: "run",
+  });
+  if (task.status === "draft") {
+    await updateDurableTask(db, {
+      userId: user.id,
+      taskId: task.id,
+      expectedVersion: task.version,
+      status: "active",
+    });
+  }
+  revalidatePath(DESIGN_PATH);
+  revalidatePath("/operations/overview");
+  revalidatePath("/operations/work");
+  redirect(`/operations/overview?durable_task=${task.id}&run=${run.id}`);
+}
 
 async function requireUser() {
   const auth = await createClient();

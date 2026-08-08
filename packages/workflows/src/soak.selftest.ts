@@ -66,7 +66,7 @@ interface SoakEvent {
     | "operator_approved";
   itemId?: string;
   workType?: string;
-  caseId?: string;
+  caseId?: string | null;
   attemptNumber?: number;
   runner?: string;
   detail?: string;
@@ -124,6 +124,7 @@ function makeSoakStore(rng: () => number): SoakStore {
         const row: WorkItem = {
           id: randomUUID(),
           case_id: input.caseId,
+          work_run_id: null,
           user_id: input.userId,
           workflow_definition_version: input.workflowDefinitionVersion,
           work_type: t.work_type,
@@ -556,7 +557,7 @@ interface SuiteOutcome {
   terminalStates: Map<string, string>;
   stateSequences: Map<string, string[]>;
   /** Decisiones humanas (aprobaciones del operador) en orden global. */
-  decisionPoints: Array<{ caseId: string; workType: string }>;
+  decisionPoints: Array<{ caseId: string | null; workType: string }>;
   /** Artefactos por contenido: `${caseId}/${workType}` → result_jsonb. */
   artifacts: Map<string, unknown>;
   attemptsPerItem: Map<string, number>;
@@ -591,7 +592,7 @@ async function runSuite(seed: number): Promise<SuiteOutcome> {
   const stateSequences = new Map<string, string[]>(
     [...caseStates.keys()].map((id) => [id, []])
   );
-  const decisionPoints: Array<{ caseId: string; workType: string }> = [];
+  const decisionPoints: Array<{ caseId: string | null; workType: string }> = [];
 
   // Pre-sembrar un claim stale de un runner "muerto": el item quedó running
   // con lease vencido; el primer recovery debe voltearlo a claim_expired y

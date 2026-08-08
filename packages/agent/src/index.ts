@@ -392,6 +392,7 @@ export {
   createAiUsageCallbackHandler,
   setAiUsageRecorder,
   getDroppedAiUsageMeterCount,
+  flushPendingAiUsageMeterWrites,
   isAiUsageMeteringEnabled,
   sanitizeUsageMetadata,
   normalizeOpenRouterUsage,

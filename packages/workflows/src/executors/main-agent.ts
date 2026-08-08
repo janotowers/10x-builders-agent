@@ -15,7 +15,9 @@ import type { ExecutorAdapter, ExecutorReport } from "../dispatcher";
 
 export interface MainAgentTurnParams {
   userId: string;
-  caseId: string;
+  /** Null when the work item hangs from a durable work_run (Phase 5). */
+  caseId: string | null;
+  workRunId: string | null;
   workItemId: string;
   attemptId: string;
   message: string;
@@ -49,7 +51,7 @@ export function buildWorkItemExecutionMessage(item: WorkItem): string {
   const objective =
     typeof input.objective === "string" && input.objective.trim()
       ? input.objective.trim()
-      : `Completar el trabajo «${item.work_type}» de este caso.`;
+      : `Completar el trabajo «${item.work_type}».`;
   const guardrails = asStringArray(input.guardrails);
   const exitCriteria = asStringArray(
     (item.verification_contract_jsonb ?? {}).exit_criteria
@@ -80,7 +82,9 @@ export function buildWorkItemExecutionMessage(item: WorkItem): string {
   }
   lines.push(
     "",
-    "Decide tú el método usando las herramientas disponibles. Cuando el objetivo esté cumplido, registra el resultado en el caso como lo harías normalmente."
+    item.case_id
+      ? "Decide tú el método usando las herramientas disponibles. Cuando el objetivo esté cumplido, registra el resultado en el caso como lo harías normalmente."
+      : "Decide tú el método usando las herramientas disponibles. Devuelve un resultado verificable; esta tarea no pertenece a un caso comercial."
   );
   return lines.join("\n");
 }
@@ -95,6 +99,7 @@ export function createMainAgentExecutor(
       const turn = await runTurn({
         userId: ctx.userId,
         caseId: item.case_id,
+        workRunId: item.work_run_id,
         workItemId: item.id,
         attemptId: attempt.id,
         message: buildWorkItemExecutionMessage(item),
@@ -109,7 +114,9 @@ export function createMainAgentExecutor(
       return {
         outcome: "succeeded",
         result: { response_summary: turn.responseSummary ?? "" },
-        requiresHumanReview: turn.pendingHuman === true,
+        requiresHumanReview:
+          turn.pendingHuman === true ||
+          item.verification_contract_jsonb?.human_review_required === true,
       };
     },
   };

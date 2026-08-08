@@ -1,122 +1,1120 @@
 "use client";
 
 /**
- * Formulario "Describir → compilar" del Studio (Slice 4.2-4).
+ * Formulario conversacional "Describir → autoría" del Studio (Slice 5.3.1).
  *
- * Maneja las rondas de aclaración del compilador (§14: acotadas a 3): cuando
- * el modelo devuelve preguntas en vez de draft, se muestran y el operador
- * responde en el mismo formulario; la descripción original viaja intacta.
- * El éxito redirige al detalle del draft (lo hace la server action).
+ * Hilo Gu/usuario con composer único, checkpoint 3+2, propuesta confirmable
+ * y provenance técnica oculta bajo detalles.
  */
 
-import { useActionState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  compileDescriptionAction,
-  type CompileFormState,
-} from "../actions";
+  authoringClarifyingQuestionSchema,
+  isGenericAuthoringSlug,
+  suggestEnglishSlug,
+  type AuthoringCapabilityNeed,
+  type AuthoringClarifyingQuestion,
+} from "@agents/workflows";
+import {
+  hydrateAuthoringThread,
+  workFormLabelFromKind,
+  type AuthoringThreadMessage,
+} from "@/lib/workflow-studio/authoring-thread";
 
-const INITIAL_STATE: CompileFormState = {
-  status: "idle",
-  round: 0,
-  description: "",
-  caseType: "",
-  answers: [],
+type ProgressEvent = {
+  type: "stage";
+  stage: string;
+  message: string;
+  ts: number;
+  payload?: Record<string, unknown>;
 };
 
-export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
-  const [state, formAction, pending] = useActionState(
-    compileDescriptionAction,
-    INITIAL_STATE
+type WorkForm =
+  | "case_workflow"
+  | "durable_task"
+  | "reusable_skill"
+  | "schedule"
+  | "redirect_to_chat";
+
+type UnderstandingSummary = {
+  objective: string;
+  sources: string[];
+  actors: string[];
+  decisions: string[];
+  effects: string[];
+  capabilities: string[];
+  acceptance_criteria: string[];
+  assumptions: string[];
+  gaps: string[];
+};
+
+type DiscoveryReview = {
+  final_kind: string;
+  skill_subtype?: string;
+  rationale: string[];
+  material_ambiguities: string[];
+  assumptions: string[];
+  gaps: string[];
+  clarifying_question_details?: AuthoringClarifyingQuestion[];
+  capability_needs?: AuthoringCapabilityNeed[];
+  understanding: UnderstandingSummary;
+  suggested_title?: string;
+  suggested_slug?: string;
+  readiness?: string;
+};
+
+type ConversationPhase =
+  | "intake"
+  | "discovering"
+  | "checkpoint"
+  | "proposal"
+  | "blocked"
+  | "redirect";
+
+type AuthoringAction =
+  | "discover"
+  | "answer"
+  | "confirm"
+  | "continue_discovery"
+  | "proceed_to_proposal";
+
+function suggestSlugFromTitle(title: string): string {
+  const trimmed = title.trim();
+  if (!trimmed) return "";
+  const slug = suggestEnglishSlug(trimmed);
+  return slug === "new_artifact" ? "" : slug;
+}
+
+function isWorkForm(value: unknown): value is WorkForm {
+  return typeof value === "string" && workFormLabelFromKind(value) !== null;
+}
+
+function nextMessageId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function parseQuestionDetails(value: unknown): AuthoringClarifyingQuestion[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const parsed = authoringClarifyingQuestionSchema.safeParse(item);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
+function markProviderConnected(
+  needs: readonly AuthoringCapabilityNeed[] | undefined,
+  providerId: string
+): AuthoringCapabilityNeed[] | undefined {
+  return needs?.map((need) =>
+    need.provider_id === providerId
+      ? {
+          ...need,
+          status: "connected",
+          resolution: "assumed_connected",
+          connect_href: null,
+        }
+      : need
   );
-  const inClarification = state.status === "clarification";
+}
+
+function UnderstandingLists({ understanding }: { understanding: UnderstandingSummary }) {
+  return (
+    <div className="mt-2 space-y-2 text-xs">
+      <p className="text-neutral-700 dark:text-neutral-200">
+        {understanding.objective}
+      </p>
+      {(
+        [
+          ["Fuentes", understanding.sources],
+          ["Actores", understanding.actors],
+          ["Decisiones humanas", understanding.decisions],
+          ["Efectos externos", understanding.effects],
+          ["Capacidades", understanding.capabilities],
+          ["Criterios de éxito", understanding.acceptance_criteria],
+          ["Supuestos", understanding.assumptions],
+          ["Gaps", understanding.gaps],
+        ] as const
+      ).map(([label, values]) =>
+        values.length > 0 ? (
+          <div key={label}>
+            <p className="font-medium">{label}</p>
+            <ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-neutral-600 dark:text-neutral-300">
+              {values.map((value) => (
+                <li key={value}>{value}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null
+      )}
+    </div>
+  );
+}
+
+function CapabilityNeeds({
+  needs,
+}: {
+  needs: readonly AuthoringCapabilityNeed[] | undefined;
+}) {
+  if (!needs?.length) return null;
+  const statusLabel: Record<AuthoringCapabilityNeed["status"], string> = {
+    connected: "Conectada",
+    supported_not_connected: "Disponible; falta conectar",
+    catalog_only: "Opción de catálogo; integración pendiente",
+    unresolved: "Por elegir",
+  };
+  return (
+    <div className="mt-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+        Herramientas e integraciones
+      </p>
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {needs.map((need) => (
+          <span
+            key={need.category_id}
+            className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-white px-2 py-1 text-[11px] text-violet-900 dark:border-violet-800 dark:bg-neutral-950 dark:text-violet-100"
+          >
+            <span>
+              {need.provider_name ?? need.category_label} —{" "}
+              {statusLabel[need.status]}
+            </span>
+            {need.connect_href ? (
+              <a
+                href={need.connect_href}
+                className="font-semibold underline underline-offset-2"
+              >
+                Conectar
+              </a>
+            ) : null}
+          </span>
+        ))}
+      </div>
+      {needs.some((need) => need.resolution === "manual_fallback") ? (
+        <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+          Gu preparará un resultado para uso manual mientras se evalúa una
+          integración gobernada.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
+  const [title, setTitle] = useState("");
+  const [slug, setSlug] = useState("");
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [description, setDescription] = useState("");
+  const [caseTypeHint, setCaseTypeHint] = useState("");
+  const [pending, setPending] = useState(false);
+  const [pendingAction, setPendingAction] = useState<AuthoringAction | null>(
+    null
+  );
+  const [progress, setProgress] = useState<ProgressEvent[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [questions, setQuestions] = useState<string[]>([]);
+  const [composer, setComposer] = useState("");
+  const [phase, setPhase] = useState<ConversationPhase>("intake");
+  const [proposedKind, setProposedKind] = useState<WorkForm | null>(null);
+  const [skillSubtype, setSkillSubtype] = useState<string | null>(null);
+  const [review, setReview] = useState<DiscoveryReview | null>(null);
+  const [confirmationHash, setConfirmationHash] = useState<string | null>(null);
+  const [thread, setThread] = useState<AuthoringThreadMessage[]>([]);
+  const [allowContinue, setAllowContinue] = useState(false);
+  const [allowProceed, setAllowProceed] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const reviewRef = useRef<HTMLDivElement | null>(null);
+  const threadEndRef = useRef<HTMLDivElement | null>(null);
+
+  const inConversation = phase !== "intake";
+  const awaitingConfirmation = phase === "proposal" && confirmationHash !== null;
+  const showCaseTypeReuse = proposedKind === "case_workflow" && phase === "proposal";
+
+  const suggestedSlug = useMemo(
+    () => (title.trim() ? suggestSlugFromTitle(title) : ""),
+    [title]
+  );
+  const effectiveSlug = slugTouched ? slug : slug || suggestedSlug;
+
+  useEffect(() => {
+    if (awaitingConfirmation) reviewRef.current?.focus();
+  }, [awaitingConfirmation]);
+
+  useEffect(() => {
+    if (phase === "discovering" || phase === "checkpoint") {
+      composerRef.current?.focus();
+    }
+  }, [phase, questions]);
+
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [thread, pending]);
+
+  useEffect(() => {
+    const currentParams = new URLSearchParams(window.location.search);
+    const sid = currentParams.get("authoring_session");
+    const gmailJustConnected = currentParams.get("gmail") === "connected";
+    if (!sid || sessionId) return;
+    const controller = new AbortController();
+    void fetch(
+      `/api/studio-authoring?sessionId=${encodeURIComponent(sid)}`,
+      { signal: controller.signal }
+    )
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json()) as {
+          id: string;
+          status: string;
+          description: string;
+          title: string | null;
+          suggestedSlug: string | null;
+          routerKind: unknown;
+          routerOutput: Record<string, unknown>;
+          clarificationRound: number;
+          messages: unknown[];
+        };
+      })
+      .then((data) => {
+        if (!data) return;
+        setSessionId(data.id);
+        setDescription(data.description);
+        setTitle(data.title ?? "");
+        setSlug(
+          data.suggestedSlug && !isGenericAuthoringSlug(data.suggestedSlug)
+            ? data.suggestedSlug
+            : ""
+        );
+        setThread(
+          hydrateAuthoringThread({
+            description: data.description,
+            messages: data.messages ?? [],
+          }).map((message) =>
+            gmailJustConnected && message.role === "gu"
+              ? {
+                  ...message,
+                  capabilityNeeds: markProviderConnected(
+                    message.capabilityNeeds,
+                    "gmail"
+                  ),
+                }
+              : message
+          )
+        );
+
+        const conversation = data.routerOutput?.conversation as
+          | {
+              conversation_phase?: ConversationPhase;
+              allow_continue?: boolean;
+              allow_proceed_to_proposal?: boolean;
+              pending_questions?: string[];
+            }
+          | undefined;
+        const storedDiscovery = data.routerOutput?.discovery as
+          | (DiscoveryReview & { readiness?: string; final_kind?: string })
+          | undefined;
+        const discovery =
+          gmailJustConnected && storedDiscovery
+            ? {
+                ...storedDiscovery,
+                capability_needs: markProviderConnected(
+                  storedDiscovery.capability_needs,
+                  "gmail"
+                ),
+              }
+            : storedDiscovery;
+        const hash = data.routerOutput?.discovery_hash;
+
+        if (conversation?.conversation_phase) {
+          setPhase(conversation.conversation_phase);
+          setAllowContinue(Boolean(conversation.allow_continue));
+          setAllowProceed(Boolean(conversation.allow_proceed_to_proposal));
+          if (conversation.pending_questions?.length) {
+            setQuestions(conversation.pending_questions);
+          }
+        }
+
+        if (discovery && isWorkForm(discovery.final_kind)) {
+          if (
+            conversation?.conversation_phase === "proposal" ||
+            discovery.readiness === "ready_for_confirmation"
+          ) {
+            setProposedKind(discovery.final_kind);
+          }
+        }
+        if (typeof discovery?.skill_subtype === "string") {
+          setSkillSubtype(discovery.skill_subtype);
+        }
+
+        if (
+          discovery?.understanding &&
+          discovery.readiness === "ready_for_confirmation" &&
+          typeof hash === "string"
+        ) {
+          setReview(discovery);
+          setConfirmationHash(hash);
+          setPhase("proposal");
+        }
+
+        if (
+          data.status === "clarifying" &&
+          conversation?.conversation_phase !== "checkpoint" &&
+          conversation?.conversation_phase !== "blocked"
+        ) {
+          const lastQuestion = [...(data.messages ?? [])]
+            .reverse()
+            .find(
+              (message): message is { questions: string[] } =>
+                !!message &&
+                typeof message === "object" &&
+                Array.isArray((message as { questions?: unknown }).questions)
+            );
+          if (lastQuestion) {
+            setQuestions(lastQuestion.questions);
+            setPhase("discovering");
+          }
+        }
+      })
+      .catch((loadError) => {
+        if (
+          !(loadError instanceof DOMException && loadError.name === "AbortError")
+        ) {
+          setError("No se pudo reanudar la sesión de autoría.");
+        }
+      });
+    return () => controller.abort();
+  }, [sessionId]);
+
+  async function runAuthoring(opts: {
+    action: AuthoringAction;
+    clarificationAnswers?: string[];
+  }) {
+    abortRef.current?.abort();
+    const abortController = new AbortController();
+    abortRef.current = abortController;
+    setPending(true);
+    setPendingAction(opts.action);
+    setError(null);
+    setProgress([]);
+
+    if (opts.action === "discover") {
+      setProposedKind(null);
+      setSkillSubtype(null);
+      setReview(null);
+      setConfirmationHash(null);
+      setAllowContinue(false);
+      setAllowProceed(false);
+      setQuestions([]);
+      setPhase("discovering");
+      setThread([
+        {
+          id: nextMessageId("desc"),
+          role: "user",
+          kind: "description",
+          text: description.trim(),
+        },
+      ]);
+    }
+
+    const body: Record<string, unknown> = {
+      action: opts.action,
+      description: description.trim(),
+      title: title.trim() || undefined,
+      slug: (caseTypeHint.trim() || effectiveSlug || undefined)?.replace(
+        /-/g,
+        "_"
+      ),
+      sessionId: sessionId ?? undefined,
+    };
+    if (opts.action === "confirm") {
+      body.confirmationHash = confirmationHash;
+    }
+    if (opts.clarificationAnswers?.length) {
+      body.answers = opts.clarificationAnswers;
+    }
+
+    try {
+      const res = await fetch("/api/studio-authoring", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: abortController.signal,
+      });
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!res.ok && !contentType.includes("application/x-ndjson")) {
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        setError(data.error ?? "No se pudo iniciar la autoría.");
+        return;
+      }
+      if (!res.body || !contentType.includes("application/x-ndjson")) {
+        setError("Respuesta de autoría inesperada (sin stream).");
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let redirectPath: string | null = null;
+
+      const handleEvent = (
+        event: ProgressEvent | { type: "error"; error: string; details?: string }
+      ) => {
+        if (event.type === "error") {
+          setError(
+            event.details ? `${event.error}: ${event.details}` : event.error
+          );
+          setQuestions([]);
+          return;
+        }
+        setProgress((prev) => [...prev, event]);
+        const payload = event.payload ?? {};
+        const conversation = payload.conversation as
+          | {
+              allow_continue?: boolean;
+              allow_proceed_to_proposal?: boolean;
+              pending_questions?: string[];
+              human_message?: string;
+            }
+          | undefined;
+
+        if (event.stage === "session_ready") {
+          const sid = payload.sessionId;
+          if (typeof sid === "string") {
+            setSessionId(sid);
+            const url = new URL(window.location.href);
+            url.searchParams.set("authoring_session", sid);
+            window.history.replaceState({}, "", url);
+          }
+          const serverSlug = payload.suggested_slug;
+          if (
+            typeof serverSlug === "string" &&
+            serverSlug &&
+            !slugTouched &&
+            !slug &&
+            !isGenericAuthoringSlug(serverSlug)
+          ) {
+            setSlug(serverSlug);
+          }
+        }
+
+        if (event.stage === "discovery_ready" || event.stage === "review_ready") {
+          const discovery = payload.discovery as DiscoveryReview | undefined;
+          if (discovery?.suggested_title && !title.trim()) {
+            setTitle(discovery.suggested_title);
+          }
+          if (
+            discovery?.suggested_slug &&
+            !slugTouched &&
+            !isGenericAuthoringSlug(discovery.suggested_slug)
+          ) {
+            setSlug(discovery.suggested_slug);
+          }
+          if (typeof discovery?.skill_subtype === "string") {
+            setSkillSubtype(discovery.skill_subtype);
+          }
+        }
+
+        if (event.stage === "clarifying") {
+          const qs = Array.isArray(payload.questions)
+            ? payload.questions.filter(
+                (q): q is string => typeof q === "string" && q.trim().length > 0
+              )
+            : [];
+          const questionDetails = parseQuestionDetails(payload.questionDetails);
+          setQuestions(qs);
+          setPhase("discovering");
+          setAllowContinue(false);
+          setAllowProceed(false);
+          setReview(null);
+          setConfirmationHash(null);
+          setThread((prev) => [
+            ...prev,
+            {
+              id: nextMessageId("q"),
+              role: "gu",
+              kind: "questions",
+              text:
+                typeof event.message === "string" && event.message
+                  ? event.message
+                  : "Para preparar un borrador seguro, necesito aclarar:",
+              questions: qs,
+              questionDetails,
+            },
+          ]);
+          if (typeof payload.sessionId === "string") {
+            setSessionId(payload.sessionId);
+          }
+        }
+
+        if (event.stage === "checkpoint") {
+          const discovery = payload.discovery as DiscoveryReview | undefined;
+          const qs = Array.isArray(payload.questions)
+            ? payload.questions.filter(
+                (q): q is string => typeof q === "string" && q.trim().length > 0
+              )
+            : conversation?.pending_questions ?? [];
+          const questionDetails = parseQuestionDetails(payload.questionDetails);
+          setPhase("checkpoint");
+          setQuestions(qs);
+          setAllowContinue(Boolean(conversation?.allow_continue ?? qs.length > 0));
+          setAllowProceed(Boolean(conversation?.allow_proceed_to_proposal));
+          if (discovery) setReview(discovery);
+          setThread((prev) => [
+            ...prev,
+            {
+              id: nextMessageId("checkpoint"),
+              role: "gu",
+              kind: "checkpoint",
+              text:
+                conversation?.human_message ||
+                event.message ||
+                "¿Seguimos aclarando o preparo la propuesta con lo entendido?",
+              questions: qs,
+              questionDetails,
+              understanding: discovery?.understanding,
+              capabilityNeeds: discovery?.capability_needs,
+            },
+          ]);
+        }
+
+        if (event.stage === "blocked") {
+          const discovery = payload.discovery as DiscoveryReview | undefined;
+          setPhase("blocked");
+          setQuestions([]);
+          setAllowContinue(Boolean(conversation?.allow_continue));
+          setAllowProceed(false);
+          if (discovery) setReview(discovery);
+          setThread((prev) => [
+            ...prev,
+            {
+              id: nextMessageId("blocked"),
+              role: "gu",
+              kind: "blocked",
+              text:
+                conversation?.human_message ||
+                event.message ||
+                "Aún faltan datos materiales. Reformula la solicitud.",
+              understanding: discovery?.understanding,
+            },
+          ]);
+        }
+
+        if (event.stage === "review_ready") {
+          const value = payload.discovery as DiscoveryReview | undefined;
+          const hash = payload.confirmationHash;
+          if (value?.understanding && typeof hash === "string") {
+            setReview(value);
+            setConfirmationHash(hash);
+            setQuestions([]);
+            setPhase("proposal");
+            setAllowContinue(false);
+            setAllowProceed(false);
+            if (isWorkForm(value.final_kind)) {
+              setProposedKind(value.final_kind);
+            }
+            setThread((prev) => [
+              ...prev,
+              {
+                id: nextMessageId("proposal"),
+                role: "gu",
+                kind: "proposal",
+                text: "Esto entendí. Confirma antes de crear el borrador.",
+                understanding: value.understanding,
+                capabilityNeeds: value.capability_needs,
+              },
+            ]);
+          }
+        }
+
+        if (event.stage === "redirect") {
+          if (typeof payload.path === "string" && payload.path) {
+            redirectPath = payload.path;
+          }
+        }
+
+        if (event.stage === "done") {
+          if (
+            payload.awaiting !== "clarification" &&
+            payload.awaiting !== "checkpoint" &&
+            typeof payload.path === "string" &&
+            payload.path
+          ) {
+            redirectPath = payload.path;
+          }
+          if (
+            payload.awaiting !== "clarification" &&
+            payload.awaiting !== "checkpoint"
+          ) {
+            // Keep questions only while discovery continues.
+          }
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          handleEvent(
+            JSON.parse(trimmed) as
+              | ProgressEvent
+              | { type: "error"; error: string }
+          );
+        }
+      }
+      if (buffer.trim()) {
+        handleEvent(
+          JSON.parse(buffer.trim()) as
+            | ProgressEvent
+            | { type: "error"; error: string }
+        );
+      }
+
+      if (redirectPath) {
+        window.location.href = redirectPath;
+        return;
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (abortRef.current === abortController) {
+        abortRef.current = null;
+        setPending(false);
+        setPendingAction(null);
+      }
+    }
+  }
+
+  function onSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (pending) return;
+
+    if (phase === "intake") {
+      if (!description.trim()) {
+        setError("Describe qué quieres construir.");
+        return;
+      }
+      void runAuthoring({ action: "discover" });
+      return;
+    }
+
+    if (phase === "discovering") {
+      const answer = composer.trim();
+      if (!answer) {
+        setError("Escribe tu respuesta antes de continuar.");
+        return;
+      }
+      setThread((prev) => [
+        ...prev,
+        {
+          id: nextMessageId("answer"),
+          role: "user",
+          kind: "answer",
+          text: answer,
+        },
+      ]);
+      setComposer("");
+      void runAuthoring({
+        action: "answer",
+        clarificationAnswers: [answer],
+      });
+      return;
+    }
+
+    if (phase === "proposal") {
+      void runAuthoring({ action: "confirm" });
+    }
+  }
 
   return (
     <form
-      action={formAction}
+      onSubmit={onSubmit}
       className="space-y-3 rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
     >
       <div>
-        <h3 className="text-sm font-semibold">Describir un flujo nuevo</h3>
+        <h3 className="text-sm font-semibold">Describir algo nuevo</h3>
         <p className="mt-0.5 text-xs text-neutral-500">
-          Describe en tus palabras qué debe hacer el flujo. El compilador
-          produce la especificación y un borrador que pasa por validación y
-          simulación antes de poder publicarse.
+          Describe en tus palabras qué necesitas. Gu hará preguntas solo cuando
+          falte contexto material y te pedirá confirmación antes de crear
+          cualquier borrador.
         </p>
       </div>
 
-      <label className="block text-xs">
-        <span className="font-medium text-neutral-600 dark:text-neutral-300">
-          Tipo de caso
-        </span>
-        <input
-          key={`case-${state.round}`}
-          name="case_type"
-          list="known-case-types"
-          defaultValue={state.caseType}
-          placeholder="p. ej. property_optioning"
-          className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
-          readOnly={inClarification}
-        />
-        <datalist id="known-case-types">
-          {knownCaseTypes.map((caseType) => (
-            <option key={caseType} value={caseType} />
-          ))}
-        </datalist>
-      </label>
-
-      <label className="block text-xs">
-        <span className="font-medium text-neutral-600 dark:text-neutral-300">
-          Descripción del flujo
-        </span>
-        <textarea
-          key={`desc-${state.round}`}
-          name="description"
-          rows={5}
-          defaultValue={state.description}
-          placeholder="Cuando un propietario nos comparte una propiedad, hay que valuar, proponer precio, obtener su aprobación y publicar…"
-          className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
-          readOnly={inClarification}
-        />
-      </label>
-
-      {inClarification ? (
-        <div className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs dark:border-amber-700 dark:bg-amber-950/40">
-          <p className="font-semibold text-amber-800 dark:text-amber-200">
-            El compilador necesita aclarar (ronda {state.round} de 3):
-          </p>
-          <ul className="list-disc space-y-1 pl-4 text-amber-800 dark:text-amber-200">
-            {state.questions?.map((question) => (
-              <li key={question}>{question}</li>
-            ))}
-          </ul>
-          <label className="block">
-            <span className="font-medium">Tus respuestas</span>
-            <textarea
-              name="clarification_answer"
-              rows={3}
-              className="mt-1 w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 dark:border-amber-700 dark:bg-neutral-950"
+      {!inConversation ? (
+        <>
+          <label className="block text-xs">
+            <span className="font-medium text-neutral-600 dark:text-neutral-300">
+              Título
+            </span>
+            <input
+              value={title}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                if (!slugTouched) setSlug(suggestSlugFromTitle(e.target.value));
+              }}
+              placeholder="p. ej. Seguimiento a propietarios"
+              className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
             />
           </label>
+
+          <details className="rounded-lg border border-neutral-200 px-3 py-2 text-xs dark:border-neutral-800">
+            <summary className="cursor-pointer font-medium text-neutral-600 dark:text-neutral-300">
+              Opciones avanzadas
+            </summary>
+            <label className="mt-2 block">
+              <span className="font-medium text-neutral-600 dark:text-neutral-300">
+                Identificador (inglés, opcional)
+              </span>
+              <input
+                value={effectiveSlug}
+                onChange={(e) => {
+                  setSlugTouched(true);
+                  setSlug(
+                    e.target.value
+                      .toLowerCase()
+                      .replace(/[^a-z0-9_]+/g, "_")
+                      .replace(/_+/g, "_")
+                  );
+                }}
+                placeholder={suggestedSlug || "owner_followup_message"}
+                className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-950"
+              />
+            </label>
+            {knownCaseTypes.length > 0 ? (
+              <label className="mt-2 block">
+                <span className="font-medium text-neutral-600 dark:text-neutral-300">
+                  Nueva versión de un flujo ya existente
+                </span>
+                <input
+                  list="known-case-types"
+                  value={caseTypeHint}
+                  onChange={(e) => setCaseTypeHint(e.target.value)}
+                  placeholder="p. ej. property_optioning"
+                  className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
+                />
+                <datalist id="known-case-types">
+                  {knownCaseTypes.map((caseType) => (
+                    <option key={caseType} value={caseType} />
+                  ))}
+                </datalist>
+              </label>
+            ) : null}
+          </details>
+
+          <label className="block text-xs">
+            <span className="font-medium text-neutral-600 dark:text-neutral-300">
+              Descripción
+            </span>
+            <textarea
+              rows={5}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Cada vez que prepares un seguimiento para un propietario…"
+              className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs whitespace-pre-wrap break-words dark:border-neutral-700 dark:bg-neutral-950"
+            />
+          </label>
+        </>
+      ) : null}
+
+      {inConversation ? (
+        <div
+          className="max-h-[28rem] space-y-3 overflow-y-auto rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950/40"
+          aria-live="polite"
+        >
+          {thread.map((message) => (
+            <div
+              key={message.id}
+              className={
+                message.role === "user"
+                  ? "ml-8 rounded-lg bg-white px-3 py-2 text-xs shadow-sm dark:bg-neutral-900"
+                  : "mr-8 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs dark:border-violet-900 dark:bg-violet-950/30"
+              }
+            >
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+                {message.role === "user" ? "Tú" : "Gu"}
+              </p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-neutral-800 dark:text-neutral-100">
+                {message.text}
+              </p>
+              {message.role === "gu" && message.questions?.length ? (
+                <ol className="mt-2 list-decimal space-y-1 pl-4 text-neutral-700 dark:text-neutral-200">
+                  {message.questions.map((question) => {
+                    const detail = message.questionDetails?.find(
+                      (candidate) => candidate.question === question
+                    );
+                    return (
+                      <li
+                        key={question}
+                        className="whitespace-pre-wrap break-words"
+                      >
+                        {question}
+                        {detail?.examples.length ? (
+                          <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                            Por ejemplo: {detail.examples.join("; ")}. Puedes
+                            responder de otra manera.
+                          </p>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ol>
+              ) : null}
+              {message.role === "gu" &&
+              message.understanding &&
+              (message.kind === "checkpoint" ||
+                message.kind === "proposal" ||
+                message.kind === "blocked") ? (
+                <>
+                  <UnderstandingLists understanding={message.understanding} />
+                  <CapabilityNeeds needs={message.capabilityNeeds} />
+                </>
+              ) : null}
+            </div>
+          ))}
+          {pending ? (
+            <div
+              className="mr-8 flex items-center gap-2 rounded-lg border border-violet-300 bg-violet-100 px-3 py-2 text-xs font-medium text-violet-900 dark:border-violet-800 dark:bg-violet-950/60 dark:text-violet-100"
+              role="status"
+            >
+              <span
+                className="h-3 w-3 animate-spin rounded-full border-2 border-violet-300 border-t-violet-700 dark:border-violet-700 dark:border-t-violet-200"
+                aria-hidden="true"
+              />
+              {pendingAction === "confirm"
+                ? "Gu está creando el borrador…"
+                : pendingAction === "answer"
+                  ? "Gu está analizando tu respuesta…"
+                  : "Gu está analizando la solicitud…"}
+            </div>
+          ) : null}
+          <div ref={threadEndRef} />
         </div>
       ) : null}
 
-      {state.status === "error" ? (
-        <p className="rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-300">
-          {state.error}
+      {phase === "proposal" && review ? (
+        <div
+          ref={reviewRef}
+          tabIndex={-1}
+          className="space-y-2 rounded-xl border border-violet-300 bg-violet-50 p-3 text-xs outline-none dark:border-violet-800 dark:bg-violet-950/30"
+        >
+          <p className="font-semibold text-violet-900 dark:text-violet-100">
+            Propuesta lista para confirmar
+          </p>
+          {proposedKind ? (
+            <p className="text-[11px] text-violet-800 dark:text-violet-200">
+              Forma propuesta: {workFormLabelFromKind(proposedKind)}
+              {proposedKind === "reusable_skill" && skillSubtype
+                ? ` · ${skillSubtype}`
+                : ""}
+            </p>
+          ) : null}
+          <CapabilityNeeds needs={review.capability_needs} />
+          {showCaseTypeReuse ? (
+            <label className="block">
+              <span className="font-medium">
+                Nueva versión de un flujo ya existente (opcional)
+              </span>
+              <input
+                list="known-case-types-proposal"
+                value={caseTypeHint}
+                onChange={(e) => setCaseTypeHint(e.target.value)}
+                className="mt-1 w-full rounded-md border border-violet-300 bg-white px-2 py-1.5 dark:border-violet-700 dark:bg-neutral-950"
+              />
+              <datalist id="known-case-types-proposal">
+                {knownCaseTypes.map((caseType) => (
+                  <option key={caseType} value={caseType} />
+                ))}
+              </datalist>
+            </label>
+          ) : null}
+          <details className="rounded-md border border-violet-200 px-2 py-1 dark:border-violet-900">
+            <summary className="cursor-pointer font-medium">
+              Ajustar título o identificador
+            </summary>
+            <label className="mt-2 block">
+              Título
+              <input
+                value={title}
+                onChange={(e) => {
+                  setTitle(e.target.value);
+                  if (!slugTouched) setSlug(suggestSlugFromTitle(e.target.value));
+                }}
+                className="mt-1 w-full rounded-md border border-violet-300 bg-white px-2 py-1.5 dark:border-violet-700 dark:bg-neutral-950"
+              />
+            </label>
+            <label className="mt-2 block">
+              Identificador
+              <input
+                value={effectiveSlug}
+                onChange={(e) => {
+                  setSlugTouched(true);
+                  setSlug(
+                    e.target.value
+                      .toLowerCase()
+                      .replace(/[^a-z0-9_]+/g, "_")
+                      .replace(/_+/g, "_")
+                  );
+                }}
+                className="mt-1 w-full rounded-md border border-violet-300 bg-white px-2 py-1.5 font-mono dark:border-violet-700 dark:bg-neutral-950"
+              />
+            </label>
+          </details>
+        </div>
+      ) : null}
+
+      {phase === "checkpoint" ? (
+        <div className="flex flex-wrap gap-2">
+          {allowContinue ? (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => void runAuthoring({ action: "continue_discovery" })}
+              className="rounded-md border border-violet-300 bg-white px-3 py-1.5 text-xs font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-50 dark:border-violet-700 dark:bg-neutral-950 dark:text-violet-200"
+            >
+              Seguir aclarando
+            </button>
+          ) : null}
+          {allowProceed ? (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => void runAuthoring({ action: "proceed_to_proposal" })}
+              className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-50"
+            >
+              Preparar propuesta con lo entendido
+            </button>
+          ) : null}
+          {!allowProceed ? (
+            <p className="w-full text-xs text-amber-700 dark:text-amber-300">
+              Todavía no hay una forma de trabajo suficientemente clara. Sigue
+              aclarando o reformula la descripción.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {phase === "blocked" ? (
+        <p className="rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          No fue posible cerrar ambigüedades materiales. Reformula la descripción
+          incorporando lo ya aclarado e inicia de nuevo.
         </p>
       ) : null}
 
-      <button
-        type="submit"
-        disabled={pending}
-        className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-50"
-      >
-        {pending
-          ? "Compilando…"
-          : inClarification
-            ? "Responder y recompilar"
-            : "Compilar borrador"}
-      </button>
+      {phase === "discovering" && !pending ? (
+        <label className="block text-xs">
+          <span className="font-medium text-neutral-600 dark:text-neutral-300">
+            Tu respuesta
+          </span>
+          <textarea
+            ref={composerRef}
+            rows={4}
+            value={composer}
+            onChange={(e) => setComposer(e.target.value)}
+            placeholder={
+              questions.length > 1
+                ? "Puedes responder varias preguntas en un solo mensaje…"
+                : "Escribe tu respuesta…"
+            }
+            className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs whitespace-pre-wrap break-words dark:border-neutral-700 dark:bg-neutral-950"
+            disabled={pending}
+          />
+        </label>
+      ) : null}
+
+      {error ? (
+        <p className="rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-300">
+          {error}
+        </p>
+      ) : null}
+
+      <div className="flex items-center gap-2">
+        {!pending &&
+        (phase === "intake" ||
+          phase === "discovering" ||
+          phase === "proposal") ? (
+          <button
+            type="submit"
+            className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-50"
+          >
+            {phase === "discovering"
+              ? "Enviar respuesta"
+              : phase === "proposal"
+                ? "Crear borrador"
+                : "Analizar solicitud"}
+          </button>
+        ) : null}
+        {pending ? (
+          <button
+            type="button"
+            onClick={() => {
+              abortRef.current?.abort();
+              setThread((prev) => [
+                ...prev,
+                {
+                  id: nextMessageId("stopped"),
+                  role: "gu",
+                  kind: "status",
+                  text: "Análisis detenido. Puedes escribir una corrección o continuar cuando estés listo.",
+                },
+              ]);
+            }}
+            className="rounded-md border border-red-300 px-3 py-1.5 text-xs text-red-700 dark:border-red-800 dark:text-red-300"
+          >
+            Detener análisis
+          </button>
+        ) : null}
+        {inConversation && !pending ? (
+          <button
+            type="button"
+            onClick={() => {
+              setPhase("intake");
+              setThread([]);
+              setQuestions([]);
+              setReview(null);
+              setConfirmationHash(null);
+              setSessionId(null);
+              setComposer("");
+              setError(null);
+              const url = new URL(window.location.href);
+              url.searchParams.delete("authoring_session");
+              window.history.replaceState({}, "", url);
+            }}
+            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs dark:border-neutral-700"
+          >
+            Empezar de nuevo
+          </button>
+        ) : null}
+      </div>
+
+      <div aria-live="polite" aria-atomic="true">
+        {progress.length > 0 ? (
+          <details className="rounded-md border border-neutral-200 bg-neutral-50 p-2 text-[10px] dark:border-neutral-800 dark:bg-neutral-950">
+            <summary className="cursor-pointer font-medium">
+              Ver detalles técnicos
+            </summary>
+            <div className="mt-1 max-h-40 space-y-1 overflow-y-auto">
+              <p className="text-neutral-600 dark:text-neutral-300">
+                {progress[progress.length - 1]?.message}
+              </p>
+              {progress.map((event, index) => (
+                <p key={`${event.ts}-${index}`}>
+                  <span className="font-mono text-neutral-400">
+                    {event.stage}
+                  </span>
+                  {" · "}
+                  {event.message}
+                </p>
+              ))}
+            </div>
+          </details>
+        ) : null}
+      </div>
     </form>
   );
 }

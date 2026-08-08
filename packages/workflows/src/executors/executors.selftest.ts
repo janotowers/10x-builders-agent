@@ -28,6 +28,7 @@ function item(over: Partial<WorkItem> = {}): WorkItem {
   return {
     id: "item-1",
     case_id: "case-1",
+    work_run_id: null,
     user_id: "user-1",
     workflow_definition_version: 1,
     work_type: "draft_description",
@@ -124,6 +125,7 @@ async function testMainAgentReportMapping(): Promise<void> {
   const okExecutor = createMainAgentExecutor(async (params) => {
     assert.equal(params.workItemId, "item-1");
     assert.equal(params.attemptId, "attempt-1");
+    assert.ok(params.workRunId === null || params.workRunId === "run-1");
     assert.ok(params.message.includes("[Work item]"));
     return { ok: true, responseSummary: "hecho", pendingHuman: false };
   });
@@ -131,6 +133,17 @@ async function testMainAgentReportMapping(): Promise<void> {
   assert.equal(ok.outcome, "succeeded");
   assert.equal(ok.requiresHumanReview, false);
   assert.deepEqual(ok.result, { response_summary: "hecho" });
+
+  const durableReview = await okExecutor.execute(
+    ctx(
+      item({
+        case_id: null,
+        work_run_id: "run-1",
+        verification_contract_jsonb: { human_review_required: true },
+      })
+    )
+  );
+  assert.equal(durableReview.requiresHumanReview, true);
 
   const hitlExecutor = createMainAgentExecutor(async () => ({
     ok: true,

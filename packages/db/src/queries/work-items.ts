@@ -216,8 +216,8 @@ function templateIdempotencyKey(
 
 /**
  * Crea items desde templates de la definición (o del impact engine en Fase 3).
- * Idempotente: la unicidad (case_id, idempotency_key) es el árbitro final;
- * una colisión 23505 se resuelve releyendo la fila existente.
+ * Idempotente: la unicidad parcial (case_id, idempotency_key) es el árbitro
+ * final; una colisión 23505 se resuelve releyendo la fila existente.
  * Las dependencias declaradas por `depends_on` (work_types hermanos del mismo
  * batch) se resuelven a ids y se insertan como aristas finish_to_start.
  */
@@ -252,6 +252,7 @@ export async function createWorkItemsFromTemplates(
       .from("work_items")
       .insert({
         case_id: input.caseId,
+        work_run_id: null,
         user_id: input.userId,
         workflow_definition_version: input.workflowDefinitionVersion,
         work_type: template.work_type,

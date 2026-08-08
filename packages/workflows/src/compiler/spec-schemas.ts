@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import { workflowGraphSchema } from "../graph-schema";
+import { inputRequirementSchema } from "./input-requirements";
 
 export const BUSINESS_SPEC_VERSION = 1;
 export const IMPLEMENTATION_SPEC_VERSION = 1;
@@ -98,6 +99,11 @@ export const implementationSpecSchema = z.object({
       })
     )
     .default([]),
+  /**
+   * Requisitos tipados (Phase 5). Preferido sobre `required_assets` plano:
+   * distingue plantillas de cuenta vs facts/inputs/artefactos generados.
+   */
+  input_requirements: z.array(inputRequirementSchema).default([]),
   approvals: z
     .array(
       z.object({

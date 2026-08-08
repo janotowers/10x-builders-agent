@@ -155,10 +155,24 @@ type CaseLabelRow = {
   context_jsonb: Record<string, unknown> | null;
 };
 
+type WorkRunLabelRow = {
+  id: string;
+  durable_task_id: string;
+  status: string;
+};
+
+type DurableTaskLabelRow = {
+  id: string;
+  title: string;
+  status: string;
+};
+
 /** Casos que ya no están vigentes: su trabajo es historia, no operación. */
 const HISTORICAL_CASE_STATUSES = new Set(["completed", "cancelled", "archived"]);
+const HISTORICAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
-function caseLabel(row: CaseLabelRow | undefined, caseId: string): string {
+function caseLabel(row: CaseLabelRow | undefined, caseId: string | null): string {
+  if (!caseId) return "Tarea durable";
   if (!row) return `${caseId.slice(0, 8)}…`;
   const ctx = row.context_jsonb ?? {};
   const candidate =
@@ -166,6 +180,18 @@ function caseLabel(row: CaseLabelRow | undefined, caseId: string): string {
     (typeof ctx.title === "string" && ctx.title.trim()) ||
     (typeof ctx.nickname === "string" && ctx.nickname.trim());
   return candidate || `${row.case_type} · ${row.id.slice(0, 8)}…`;
+}
+
+function workRootLabel(
+  item: WorkItem,
+  caseLabels: Map<string, CaseLabelRow>,
+  runLabels: Map<string, WorkRunLabelRow>,
+  taskLabels: Map<string, DurableTaskLabelRow>
+): string {
+  if (item.case_id) return caseLabel(caseLabels.get(item.case_id), item.case_id);
+  const run = item.work_run_id ? runLabels.get(item.work_run_id) : undefined;
+  const task = run ? taskLabels.get(run.durable_task_id) : undefined;
+  return task?.title || `Tarea durable · ${item.work_run_id?.slice(0, 8) ?? "sin raíz"}…`;
 }
 
 function ColumnHeader({
@@ -197,11 +223,13 @@ function ColumnHeader({
 
 function workHref(opts: {
   caseId?: string | null;
+  workRunId?: string | null;
   historial?: boolean;
   itemId?: string | null;
 }): string {
   const params = new URLSearchParams();
   if (opts.caseId) params.set("case", opts.caseId);
+  if (opts.workRunId) params.set("run", opts.workRunId);
   if (opts.historial) params.set("historial", "1");
   if (opts.itemId) params.set("item", opts.itemId);
   const qs = params.toString();
@@ -254,14 +282,16 @@ function WorkItemDetailPanel({
   events,
   caseLabelText,
   clearHref,
-  caseOverviewHref,
+  rootOverviewHref,
+  rootOverviewLabel,
 }: {
   item: WorkItem;
   attempts: WorkItemAttempt[];
   events: WorkItemEvent[];
   caseLabelText: string;
   clearHref: string;
-  caseOverviewHref: string;
+  rootOverviewHref: string;
+  rootOverviewLabel: string;
 }) {
   const sortedAttempts = [...attempts].sort(
     (a, b) => b.attempt_number - a.attempt_number
@@ -286,10 +316,10 @@ function WorkItemDetailPanel({
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
-            href={caseOverviewHref}
+            href={rootOverviewHref}
             className="rounded-md border border-sky-400 bg-white px-3 py-1.5 text-xs font-semibold text-sky-900 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-900 dark:text-sky-100"
           >
-            Ver caso →
+            {rootOverviewLabel} →
           </Link>
           <Link
             href={clearHref}
@@ -598,12 +628,19 @@ function FlowColumn({
 export default async function OperatorWorkViewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ historial?: string; case?: string; item?: string }>;
+  searchParams: Promise<{
+    historial?: string;
+    case?: string;
+    run?: string;
+    item?: string;
+  }>;
 }) {
   const sp = await searchParams;
   const showHistory = sp.historial === "1";
   const filterCaseId =
     typeof sp.case === "string" && sp.case.trim() ? sp.case.trim() : null;
+  const filterWorkRunId =
+    typeof sp.run === "string" && sp.run.trim() ? sp.run.trim() : null;
   const selectedItemId =
     typeof sp.item === "string" && sp.item.trim() ? sp.item.trim() : null;
   const gate = await requireOperator();
@@ -632,6 +669,8 @@ export default async function OperatorWorkViewPage({
   let attempts: WorkItemAttempt[] = [];
   const dependencyCounts = new Map<string, number>();
   const caseLabels = new Map<string, CaseLabelRow>();
+  const runLabels = new Map<string, WorkRunLabelRow>();
+  const taskLabels = new Map<string, DurableTaskLabelRow>();
   let unavailable = false;
   try {
     items = await listWorkItemsForUser(db, gate.user.id, { limit: 500 });
@@ -659,10 +698,12 @@ export default async function OperatorWorkViewPage({
         );
       }
       const caseIds = [
-        ...new Set([
-          ...items.map((i) => i.case_id),
-          ...(filterCaseId ? [filterCaseId] : []),
-        ]),
+        ...new Set(
+          [
+            ...items.map((i) => i.case_id),
+            ...(filterCaseId ? [filterCaseId] : []),
+          ].filter((id): id is string => typeof id === "string")
+        ),
       ];
       if (caseIds.length > 0) {
         const { data: caseRows, error: caseError } = await db
@@ -672,6 +713,42 @@ export default async function OperatorWorkViewPage({
         if (caseError) throw caseError;
         for (const row of (caseRows ?? []) as CaseLabelRow[]) {
           caseLabels.set(row.id, row);
+        }
+      }
+      const runIds = [
+        ...new Set(
+          items
+            .map((item) => item.work_run_id)
+            .filter((id): id is string => typeof id === "string")
+        ),
+      ];
+      if (runIds.length > 0) {
+        const { data: runRows, error: runError } = await db
+          .from("work_runs")
+          .select("id, durable_task_id, status")
+          .eq("user_id", gate.user.id)
+          .in("id", runIds);
+        if (runError) throw runError;
+        for (const row of (runRows ?? []) as WorkRunLabelRow[]) {
+          runLabels.set(row.id, row);
+        }
+        const taskIds = [
+          ...new Set(
+            (runRows ?? []).map(
+              (row: { durable_task_id: string }) => row.durable_task_id
+            )
+          ),
+        ];
+        if (taskIds.length > 0) {
+          const { data: taskRows, error: taskError } = await db
+            .from("durable_tasks")
+            .select("id, title, status")
+            .eq("user_id", gate.user.id)
+            .in("id", taskIds);
+          if (taskError) throw taskError;
+          for (const row of (taskRows ?? []) as DurableTaskLabelRow[]) {
+            taskLabels.set(row.id, row);
+          }
         }
       }
     } else if (filterCaseId) {
@@ -690,18 +767,31 @@ export default async function OperatorWorkViewPage({
   // Filtro de historial: por defecto solo trabajo de casos vigentes; el
   // toggle ?historial=1 muestra también lo de casos completados/cancelados.
   const isHistorical = (item: WorkItem): boolean => {
-    const status = caseLabels.get(item.case_id)?.status;
-    return status != null && HISTORICAL_CASE_STATUSES.has(status);
+    if (item.case_id) {
+      const status = caseLabels.get(item.case_id)?.status;
+      return status != null && HISTORICAL_CASE_STATUSES.has(status);
+    }
+    const status = item.work_run_id
+      ? runLabels.get(item.work_run_id)?.status
+      : null;
+    return status != null && HISTORICAL_RUN_STATUSES.has(status);
   };
   const historicalCount = items.filter(isHistorical).length;
   const scopedItems = filterCaseId
     ? items.filter((i) => i.case_id === filterCaseId)
-    : items;
+    : filterWorkRunId
+      ? items.filter((i) => i.work_run_id === filterWorkRunId)
+      : items;
   const visibleItems = sortWorkItemsForBoardView(
     showHistory ? scopedItems : scopedItems.filter((i) => !isHistorical(i))
   );
   const filterCaseLabel = filterCaseId
     ? caseLabel(caseLabels.get(filterCaseId), filterCaseId)
+    : null;
+  const filterRunLabel = filterWorkRunId
+    ? taskLabels.get(
+        runLabels.get(filterWorkRunId)?.durable_task_id ?? ""
+      )?.title ?? `Tarea durable · ${filterWorkRunId.slice(0, 8)}…`
     : null;
 
   // Attempt vigente por item: preferir current_attempt_id; fallback al
@@ -756,12 +846,13 @@ export default async function OperatorWorkViewPage({
       key={item.id}
       item={item}
       attempt={currentAttemptFor(item)}
-      caseLabelText={caseLabel(caseLabels.get(item.case_id), item.case_id)}
+      caseLabelText={workRootLabel(item, caseLabels, runLabels, taskLabels)}
       depCount={dependencyCounts.get(item.id) ?? 0}
       compact={compact}
       selected={item.id === selectedItemId}
       detailHref={workHref({
         caseId: filterCaseId,
+        workRunId: filterWorkRunId,
         historial: showHistory,
         itemId: item.id,
       })}
@@ -776,7 +867,7 @@ export default async function OperatorWorkViewPage({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <OperationsControlTabs active="work" />
         <div className="mb-4 flex flex-wrap gap-2">
-          {filterCaseId ? (
+          {filterCaseId || filterWorkRunId ? (
             <Link
               href="/operations/overview"
               className="rounded-md border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-900 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100"
@@ -788,6 +879,7 @@ export default async function OperatorWorkViewPage({
             <Link
               href={workHref({
                 caseId: filterCaseId,
+                workRunId: filterWorkRunId,
                 historial: !showHistory,
                 itemId: selectedItemId,
               })}
@@ -800,10 +892,12 @@ export default async function OperatorWorkViewPage({
           ) : null}
         </div>
       </div>
-      {filterCaseId ? (
+      {filterCaseId || filterWorkRunId ? (
         <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-100">
-          Filtrado por caso:{" "}
-          <span className="font-semibold">{filterCaseLabel}</span>
+          Filtrado por {filterCaseId ? "caso" : "tarea durable"}:{" "}
+          <span className="font-semibold">
+            {filterCaseLabel ?? filterRunLabel}
+          </span>
           .{" "}
           <Link href="/operations/overview" className="underline">
             Volver a trabajo durable
@@ -815,15 +909,29 @@ export default async function OperatorWorkViewPage({
           item={selectedItem}
           attempts={attemptsByItem.get(selectedItem.id) ?? []}
           events={selectedEvents}
-          caseLabelText={caseLabel(
-            caseLabels.get(selectedItem.case_id),
-            selectedItem.case_id
+          caseLabelText={workRootLabel(
+            selectedItem,
+            caseLabels,
+            runLabels,
+            taskLabels
           )}
           clearHref={workHref({
             caseId: filterCaseId,
+            workRunId: filterWorkRunId,
             historial: showHistory,
           })}
-          caseOverviewHref={`/operations/overview?case=${selectedItem.case_id}`}
+          rootOverviewHref={
+            selectedItem.case_id
+              ? `/operations/overview?case=${selectedItem.case_id}`
+              : `/operations/overview?durable_task=${
+                  selectedItem.work_run_id
+                    ? runLabels.get(selectedItem.work_run_id)?.durable_task_id ?? ""
+                    : ""
+                }&run=${selectedItem.work_run_id ?? ""}`
+          }
+          rootOverviewLabel={
+            selectedItem.case_id ? "Ver caso" : "Ver tarea durable"
+          }
         />
       ) : null}
       {unavailable ? (

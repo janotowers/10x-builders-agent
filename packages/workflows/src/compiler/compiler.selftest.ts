@@ -239,6 +239,7 @@ ok("gates: grafo y specs válidos ⇒ todos pasan", () => {
     "acyclicity",
     "capability_resolution",
     "credential_shape",
+    "fidelity",
     "graph_schema",
     "permission_validation",
     "reachability",
@@ -422,6 +423,35 @@ ok("simulación: grafo sin ruta a terminal ⇒ fail explícito", () => {
   graph.transitions = graph.transitions.filter((t) => t.to !== "done");
   const { gate } = runSimulationGate({ graph, caseType: "test_case" });
   assert.equal(gate.result, "fail");
+});
+
+ok("simulación: prefiere terminal de éxito sobre descarte más corto", () => {
+  const graph = fixtureGraph();
+  graph.states.push({ key: "seguimiento_descartado", kind: "terminal" });
+  graph.completion.terminal_states.push("seguimiento_descartado");
+  // Rama corta de cancelación desde intake
+  graph.transitions.push({
+    from: "intake",
+    to: "seguimiento_descartado",
+    guards: [],
+    authorized_proposers: ["model", "decision_handler", "runtime"],
+    approval_required: null,
+  });
+  const scenario = buildSyntheticHappyPathScenario(graph);
+  assert.ok(scenario);
+  assert.equal(scenario.finalStep, "done");
+});
+
+ok("simulación: usa proposer autorizado cuando falta runtime", () => {
+  const graph = fixtureGraph();
+  for (const transition of graph.transitions) {
+    transition.authorized_proposers = ["model"];
+  }
+  const { gate, outcomes } = runSimulationGate({
+    graph,
+    caseType: "test_case",
+  });
+  assert.equal(gate.result, "pass", JSON.stringify(outcomes, null, 2));
 });
 
 console.log(`\ncompiler.selftest: ${passed} checks passed`);

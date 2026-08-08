@@ -257,6 +257,9 @@ function RollupTable({
         <div>
           <h2 className="text-sm font-semibold">{title}</h2>
           <p className="mt-1 text-[11px] text-neutral-500">
+            {fixedDaySort
+              ? "Cada fila es un día calendario en la zona del perfil del admin (misma que las horas del detalle), no UTC. "
+              : ""}
             Costo contabilizado = Σ por evento (reportado por proveedor si
             existe; si no, estimado de catálogo). Las fracciones X/Y cuentan
             eventos con esa fuente sellada (componentes; no sumar columnas).
@@ -1227,7 +1230,9 @@ export function AiUsageDashboardClient({
       <RollupTable
         title="Por día"
         keyLabel="Día"
-        buckets={rollupAiUsage(filtered, "day")}
+        buckets={rollupAiUsage(filtered, "day", {
+          timeZone: adminTimeZone,
+        })}
         fixedDaySort
       />
       <AccountSections

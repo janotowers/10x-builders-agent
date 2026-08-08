@@ -10,6 +10,7 @@ import {
   estimatedCostEventCount,
   eventsMissingCatalogEstimate,
   filterAiUsageEvents,
+  aiUsageCalendarDay,
   formatAiUsageOccurredAt,
   formatUsdFromMicro,
   paginateItems,
@@ -214,6 +215,30 @@ function testFormatAiUsageOccurredAt(): void {
     }),
     "2026-07-29 19:13:04"
   );
+}
+
+function testDayRollupUsesViewerTimezone(): void {
+  // 02:00 UTC on Aug 8 = 20:00 on Aug 7 in America/Mexico_City (UTC-6).
+  const lateMexicoEvening = event({
+    id: "tz-1",
+    occurred_at: "2026-08-08T02:00:00.000Z",
+    reported_cost_micro_usd: 1000,
+  });
+  assert.equal(
+    aiUsageCalendarDay(lateMexicoEvening.occurred_at, "America/Mexico_City"),
+    "2026-08-07"
+  );
+  assert.equal(
+    aiUsageCalendarDay(lateMexicoEvening.occurred_at, "UTC"),
+    "2026-08-08"
+  );
+  const byMexicoDay = rollupAiUsage([lateMexicoEvening], "day", {
+    timeZone: "America/Mexico_City",
+  });
+  assert.equal(byMexicoDay.length, 1);
+  assert.equal(byMexicoDay[0]!.key, "2026-08-07");
+  const byUtcDay = rollupAiUsage([lateMexicoEvening], "day");
+  assert.equal(byUtcDay[0]!.key, "2026-08-08");
 }
 
 function testExecutionWithMultipleFunctionsNoDoubleCount(): void {
@@ -575,6 +600,7 @@ function main(): void {
   testCostComparison();
   testFormatUsdFromMicro();
   testFormatAiUsageOccurredAt();
+  testDayRollupUsesViewerTimezone();
   testExecutionWithMultipleFunctionsNoDoubleCount();
   testUncorrelatedReconcilesWithTenantTotal();
   testRecentSortUsesFullTimestamp();
@@ -582,7 +608,7 @@ function main(): void {
   testProviderRollupDynamic();
   testFilterSortPaginate();
   testBuildAiUsageTenantSections();
-  console.log("ai-usage.selftest: all 13 cases passed");
+  console.log("ai-usage.selftest: all 14 cases passed");
 }
 
 main();

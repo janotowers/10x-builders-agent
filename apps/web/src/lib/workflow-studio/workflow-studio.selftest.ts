@@ -22,11 +22,13 @@ import {
   filterCatalogDefinitions,
   findIdenticalOwnFork,
   forkLineageLabel,
+  definitionLifecycleLabel,
   formatEvidenceSeal,
   friendlyCaseTypeLabel,
   groupDefinitionFamilies,
   happyPathStates,
   isInternalTestDefinition,
+  isVigenteForNewCases,
   ownerScopeLabel,
   pickFamilyHead,
   sumPinnedActiveCases,
@@ -506,8 +508,47 @@ assert.match(
     latestAt: "2026-08-06T19:11:12.000Z",
     shortHash: "5aa637bc263f",
   }) ?? "",
-  /Sellada el .* · 8\/8 gates · 5aa637bc263f…/
+  /Sellada el .* · 8\/8 gates · 5aa637bc263f…$/
 );
+assert.match(
+  formatEvidenceSeal({
+    evidenceCount: 8,
+    gateCount: 9,
+    latestAt: "2026-08-06T19:11:12.000Z",
+    shortHash: "5aa637bc263f",
+  }) ?? "",
+  /8\/9 gates · 5aa637bc263f… · sello histórico incompleto frente a gates actuales/
+);
+assert.equal(
+  isVigenteForNewCases(privatePublishedV5, [
+    privatePublishedV5,
+    privateValidatedV4,
+    privatePublishedV2,
+  ]),
+  true
+);
+assert.equal(
+  isVigenteForNewCases(privatePublishedV2, [
+    privatePublishedV5,
+    privatePublishedV2,
+  ]),
+  false
+);
+assert.equal(
+  definitionLifecycleLabel(privatePublishedV5, [
+    privatePublishedV5,
+    privatePublishedV2,
+  ]),
+  "Vigente (casos nuevos)"
+);
+assert.equal(
+  definitionLifecycleLabel(privatePublishedV2, [
+    privatePublishedV5,
+    privatePublishedV2,
+  ]),
+  "Publicada (historial)"
+);
+assert.equal(mixedFamily.headStatusLabel, "Vigente (casos nuevos)");
 
 const byId = new Map(
   [globalPublished, privateDraftV2].map((definition) => [definition.id, definition])

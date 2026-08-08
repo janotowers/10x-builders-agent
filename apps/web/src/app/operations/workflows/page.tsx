@@ -11,9 +11,13 @@ import {
   countPinnedActiveCasesByDefinition,
   createServerClient,
   getOperationalCaseTypeForUser,
+  listAccountSkillsForUser,
   listWorkflowDefinitionsVisibleToUser,
 } from "@agents/db";
-import { getSkillRegistryForUser } from "@agents/agent";
+import {
+  getGlobalSkillRegistry,
+  getSkillRegistryForUser,
+} from "@agents/agent";
 import type { WorkflowDefinition } from "@agents/types";
 import { createClient } from "@/lib/supabase/server";
 import { AppShell } from "@/components/app-shell";
@@ -31,6 +35,10 @@ import {
   withRootSkill,
   type DefinitionHelpCatalog,
 } from "@/lib/workflow-studio/definition-help";
+import {
+  classifySkillProvenance,
+  type SkillProvenanceKind,
+} from "@/lib/skill-provenance";
 import { WorkflowStudioTabs } from "./studio-tabs";
 import { DefinitionDetail } from "./definition-detail";
 
@@ -64,7 +72,6 @@ function FamilyCard({
       </div>
       <p className="mt-1 text-neutral-500">
         {family.scopeLabel} · v{family.head.version}
-        {family.head.status === "published" ? " vigente" : ""}
         {draftHint}
       </p>
       <p className="mt-1 text-neutral-500">{family.pinnedLabel}</p>
@@ -184,12 +191,18 @@ export default async function WorkflowStudioCatalogPage({
   ).length;
 
   let help: DefinitionHelpCatalog = emptyHelpCatalog();
+  let rootSkillProvenance: SkillProvenanceKind | null = null;
   if (selected && !unavailable) {
     try {
-      const [caseType, registry] = await Promise.all([
-        getOperationalCaseTypeForUser(db, user.id, selected.case_type),
-        getSkillRegistryForUser(db, user.id).catch(() => null),
-      ]);
+      const [caseType, registry, accountSkills, globalRegistry] =
+        await Promise.all([
+          getOperationalCaseTypeForUser(db, user.id, selected.case_type),
+          getSkillRegistryForUser(db, user.id).catch(() => null),
+          listAccountSkillsForUser(db, user.id, {
+            statuses: ["draft", "active"],
+          }).catch(() => []),
+          getGlobalSkillRegistry().catch(() => null),
+        ]);
       const skillSources =
         registry?.list().map((skill) => ({
           name: skill.name,
@@ -204,8 +217,22 @@ export default async function WorkflowStudioCatalogPage({
         caseType?.default_skill_slug,
         skillSources
       );
+      const rootSlug = caseType?.default_skill_slug?.trim();
+      if (rootSlug) {
+        const globalSlugs = new Set(
+          globalRegistry?.list().map((skill) => skill.name) ?? []
+        );
+        const accountSkill =
+          accountSkills.find((skill) => skill.slug === rootSlug) ?? null;
+        rootSkillProvenance = classifySkillProvenance({
+          slug: rootSlug,
+          accountSkill,
+          globalSkillSlugs: globalSlugs,
+        });
+      }
     } catch {
       help = emptyHelpCatalog();
+      rootSkillProvenance = null;
     }
   }
 
@@ -260,6 +287,7 @@ export default async function WorkflowStudioCatalogPage({
             help={help}
             error={sp.error}
             notice={sp.notice}
+            rootSkillProvenance={rootSkillProvenance}
           />
         </div>
       ) : families.length === 0 ? (

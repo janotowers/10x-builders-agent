@@ -135,10 +135,15 @@ export type AiUsageRollupDimension =
   | "case"
   | "workflow_definition";
 
-function rollupKey(event: AiUsageEvent, dimension: AiUsageRollupDimension): string {
+function rollupKey(
+  event: AiUsageEvent,
+  dimension: AiUsageRollupDimension,
+  timeZone?: string | null
+): string {
   switch (dimension) {
     case "day":
-      return event.occurred_at.slice(0, 10);
+      // Calendar day in the viewer timezone (not UTC date prefix).
+      return aiUsageCalendarDay(event.occurred_at, timeZone);
     case "tenant":
       return event.user_id;
     case "provider":
@@ -165,11 +170,12 @@ export function effectiveCostMicroUsd(event: AiUsageEvent): number {
 
 export function rollupAiUsage(
   events: readonly AiUsageEvent[],
-  dimension: AiUsageRollupDimension
+  dimension: AiUsageRollupDimension,
+  options?: { timeZone?: string | null }
 ): AiUsageRollupBucket[] {
   const buckets = new Map<string, AiUsageRollupBucket>();
   for (const event of events) {
-    const key = rollupKey(event, dimension);
+    const key = rollupKey(event, dimension, options?.timeZone);
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = {
@@ -386,6 +392,20 @@ export function formatUsdFromMicro(microUsd: number): string {
 }
 
 export type AiUsageOccurredAtPrecision = "minute" | "second";
+
+/**
+ * Calendar day (`yyyy-mm-dd`) of an ISO timestamp in an IANA timezone.
+ * Invalid/empty timezone falls back to UTC. Used by the day rollup so
+ * "Por día" matches the same zone as detail timestamps.
+ */
+export function aiUsageCalendarDay(
+  iso: string,
+  timeZone: string | null | undefined
+): string {
+  const formatted = formatAiUsageOccurredAt(iso, timeZone);
+  const day = formatted.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : iso.slice(0, 10);
+}
 
 /**
  * Formats an ISO timestamp in an IANA timezone as `yyyy-mm-dd HH:mm`

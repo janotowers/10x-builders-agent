@@ -275,7 +275,8 @@ export interface WorkPlaneTickResult {
   processed: Array<{
     workItemId: string;
     workType: string;
-    caseId: string;
+    /** Null when the item hangs from a work_run (Phase 5 dual root). */
+    caseId: string | null;
     outcome: "done" | "review" | "retry" | "blocked" | "completion_rejected";
   }>;
   advanced: Array<{ caseId: string; fromState: string; toState: string }>;
@@ -690,21 +691,24 @@ export function createWorkDispatcher(deps: WorkDispatcherDeps) {
 
       await processClaimed(input.userId, claimed, leaseMs, result);
 
-      // Re-propagar readiness del caso: una completion puede desbloquear a
+      // Re-propagar readiness del caso/run: una completion puede desbloquear a
       // sus dependientes dentro del mismo tick (drena cadenas §8.3).
+      // Phase 5: items under work_run tienen case_id null — propagar sin filtro.
       try {
         await deps.store.propagateReadiness({
           userId: input.userId,
-          caseId: claimed.item.case_id,
+          caseId: claimed.item.case_id ?? undefined,
         });
       } catch (error) {
         result.errors.push({
-          scope: `propagate_after_completion:${claimed.item.case_id}`,
+          scope: `propagate_after_completion:${claimed.item.case_id ?? claimed.item.work_run_id}`,
           message: (error as Error)?.message ?? "unknown",
         });
       }
 
       // 5. Advancement predicate (§8.4) tras cada completion del caso.
+      // Items con raíz durable no avanzan operational_cases.
+      if (!claimed.item.case_id) continue;
       const dispatchable = casesById.get(claimed.item.case_id);
       if (!dispatchable) continue;
       await advanceIfSatisfied(dispatchable, "advance");

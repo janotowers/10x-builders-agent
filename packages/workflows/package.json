@@ -14,6 +14,11 @@
     "test:impact-engine": "tsx src/impact-engine.selftest.ts",
     "test:executors": "tsx src/executors/executors.selftest.ts",
     "test:compiler": "tsx src/compiler/compiler.selftest.ts",
+    "test:authoring-router": "tsx src/compiler/authoring-router.selftest.ts",
+    "test:authoring-discovery": "tsx src/compiler/authoring-discovery.selftest.ts",
+    "test:authoring-conversation": "tsx src/compiler/authoring-conversation.selftest.ts",
+    "test:solution-patterns": "tsx src/compiler/solution-patterns.selftest.ts",
+    "test:durable-task-spec": "tsx src/compiler/durable-task-spec.selftest.ts",
     "test:soak": "tsx src/soak.selftest.ts"
   },
   "dependencies": {

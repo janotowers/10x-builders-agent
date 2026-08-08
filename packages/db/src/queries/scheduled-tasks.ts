@@ -7,6 +7,7 @@ export interface ScheduledTask {
   prompt: string;
   user_request?: string | null;
   display_title?: string | null;
+  durable_task_id?: string | null;
   skill_id?: string | null;
   tool_approval_policy?: ToolApprovalPolicy | null;
   approval_policy_version?: number;
@@ -50,6 +51,7 @@ export async function createScheduledTask(
     prompt: string;
     userRequest?: string | null;
     displayTitle?: string | null;
+    durableTaskId?: string | null;
     skillId?: string | null;
     toolApprovalPolicy?: ToolApprovalPolicy | null;
     scheduleType: "one_time" | "recurring";
@@ -66,6 +68,7 @@ export async function createScheduledTask(
       prompt: params.prompt,
       user_request: params.userRequest ?? null,
       display_title: params.displayTitle ?? null,
+      durable_task_id: params.durableTaskId ?? null,
       skill_id: params.skillId ?? null,
       tool_approval_policy: params.toolApprovalPolicy ?? {},
       schedule_type: params.scheduleType,
