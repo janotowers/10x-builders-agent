@@ -23,6 +23,67 @@ let cachedRoot: string | null = null;
 let lastResolvedRootLogged: string | null = null;
 
 /**
+ * A single draft account skill supplied by an authenticated, server-side
+ * qualification caller. This is deliberately turn-scoped: it is never added
+ * to the process cache or persisted by the agent runtime.
+ */
+export interface SkillUnderTestInput {
+  readonly slug: string;
+  readonly userId: string;
+  readonly bodyMd: string;
+}
+
+export class SkillUnderTestValidationError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(message);
+    this.name = "SkillUnderTestValidationError";
+  }
+}
+
+export function validateSkillUnderTestInput(
+  skillUnderTest: SkillUnderTestInput,
+  turnUserId: string
+): void {
+  if (
+    !skillUnderTest ||
+    typeof skillUnderTest !== "object" ||
+    Array.isArray(skillUnderTest)
+  ) {
+    throw new SkillUnderTestValidationError(
+      "skillUnderTest must be a single draft skill object"
+    );
+  }
+  if (
+    typeof skillUnderTest.userId !== "string" ||
+    skillUnderTest.userId.length === 0 ||
+    skillUnderTest.userId !== skillUnderTest.userId.trim()
+  ) {
+    throw new SkillUnderTestValidationError(
+      "skillUnderTest.userId must be a non-empty canonical user id"
+    );
+  }
+  if (skillUnderTest.userId !== turnUserId) {
+    throw new SkillUnderTestValidationError(
+      "skillUnderTest.userId must match the runAgent userId"
+    );
+  }
+  if (
+    typeof skillUnderTest.slug !== "string" ||
+    skillUnderTest.slug.length === 0 ||
+    skillUnderTest.slug !== skillUnderTest.slug.trim()
+  ) {
+    throw new SkillUnderTestValidationError(
+      "skillUnderTest.slug must be a non-empty canonical slug"
+    );
+  }
+  if (typeof skillUnderTest.bodyMd !== "string") {
+    throw new SkillUnderTestValidationError(
+      "skillUnderTest.bodyMd must be a string"
+    );
+  }
+}
+
+/**
  * Resolve the path of the repo root (or wherever the `skills/` directory
  * lives). The default tries, in order:
  *
@@ -185,6 +246,45 @@ export async function getSkillRegistryForUser(
     }
   }
   return buildRegistryFromRecords(Array.from(merged.values()));
+}
+
+/**
+ * Return a new registry where exactly one parsed draft account skill shadows
+ * the tenant's normal registry. The base registry is not mutated, so the
+ * draft cannot leak into selectors, cron runs, another tenant, or later calls.
+ *
+ * Ownership and slug checks are runtime checks (not just TypeScript checks)
+ * because this input crosses a server boundary. Any mismatch or parse failure
+ * is fatal to the qualification run.
+ */
+export function overlaySkillRegistryForTurn(
+  baseRegistry: SkillRegistry,
+  skillUnderTest: SkillUnderTestInput,
+  turnUserId: string
+): SkillRegistry {
+  validateSkillUnderTestInput(skillUnderTest, turnUserId);
+
+  let draftRecord: SkillRecord;
+  try {
+    draftRecord = parseAccountSkillSource(
+      skillUnderTest.bodyMd,
+      skillUnderTest.slug,
+      skillUnderTest.userId
+    );
+  } catch (err) {
+    throw new SkillUnderTestValidationError(
+      `invalid skillUnderTest body for '${skillUnderTest.slug}'`,
+      err
+    );
+  }
+
+  const overlaid = new Map<string, SkillRecord>();
+  for (const metadata of baseRegistry.list()) {
+    const record = baseRegistry.get(metadata.name);
+    if (record) overlaid.set(metadata.name, record);
+  }
+  overlaid.set(draftRecord.metadata.name, draftRecord);
+  return buildRegistryFromRecords(Array.from(overlaid.values()));
 }
 
 /**

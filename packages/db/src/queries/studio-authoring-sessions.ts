@@ -135,15 +135,18 @@ export async function updateStudioAuthoringSession(
  */
 export async function claimStudioAuthoringSessionForMaterialization(
   db: DbClient,
-  params: { userId: string; sessionId: string }
+  params: { userId: string; sessionId: string; expectedUpdatedAt?: string }
 ): Promise<StudioAuthoringSession | null> {
-  const { data, error } = await db
+  let query = db
     .from("studio_authoring_sessions")
     .update({ status: "materializing" })
     .eq("user_id", params.userId)
     .eq("id", params.sessionId)
-    .eq("status", "active")
-    .select("*");
+    .eq("status", "active");
+  if (params.expectedUpdatedAt) {
+    query = query.eq("updated_at", params.expectedUpdatedAt);
+  }
+  const { data, error } = await query.select("*");
   if (error) throw error;
   const rows = (data ?? []) as StudioAuthoringSession[];
   return rows[0] ?? null;

@@ -54,5 +54,15 @@ export {
   getCachedSkillsRegistryRoot,
   buildPlaybookInjection,
   defaultSkillsRoot,
+  overlaySkillRegistryForTurn,
+  SkillUnderTestValidationError,
+  validateSkillUnderTestInput,
   type GetSkillRegistryOptions,
+  type SkillUnderTestInput,
 } from "./runtime";
+
+export {
+  summarizeSkillQualificationEvidence,
+  type SkillQualificationOutputLike,
+  type SkillQualificationSummary,
+} from "./qualification-summary";

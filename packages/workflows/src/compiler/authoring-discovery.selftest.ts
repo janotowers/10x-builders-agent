@@ -11,6 +11,7 @@ import {
   splitAuthoringText,
   validateAuthoringDiscoveryEvidence,
 } from "./authoring-discovery";
+import { planAuthoringGaps } from "./authoring-gap-planner";
 
 const description =
   "Cada vez que prepares un seguimiento para un propietario, resume el último acuerdo.";
@@ -69,6 +70,58 @@ const discovery = authoringDiscoveryOutputSchema.parse({
     gaps: [],
   },
 });
+assert.deepEqual(discovery.input_requirements, []);
+assert.deepEqual(discovery.invocation_channels, []);
+assert.equal(discovery.gap_plan, undefined);
+
+const discoveryWithPlan = authoringDiscoveryOutputSchema.parse({
+  ...discovery,
+  gaps: ["stale flat gap"],
+  understanding: { ...discovery.understanding, gaps: ["stale flat gap"] },
+  gap_plan: planAuthoringGaps([
+    {
+      key: "source",
+      summary: "Falta fuente concreta",
+      target_dimension: "data_sources",
+      question: "¿Cuál es la fuente?",
+      severity: "blocking",
+    },
+  ]),
+});
+assert.deepEqual(discoveryWithPlan.gaps, ["Falta fuente concreta"]);
+assert.deepEqual(discoveryWithPlan.understanding.gaps, [
+  "Falta fuente concreta",
+]);
+
+const semanticDiscovery = authoringDiscoveryOutputSchema.parse({
+  ...discovery,
+  input_requirements: [
+    {
+      kind: "runtime_input",
+      key: "source_document",
+      label: "Documento fuente",
+      scope: "task_run",
+      resolve_at: "run_start",
+      source_hint: "chat_attachment",
+    },
+  ],
+  invocation_channels: [
+    {
+      channel: "web_chat",
+      label: "Web Chat",
+      availability: "available",
+      supports_text: true,
+      supports_generic_attachments: true,
+      limitations: [],
+    },
+  ],
+});
+assert.equal(semanticDiscovery.input_requirements[0]?.kind, "runtime_input");
+assert.equal(
+  semanticDiscovery.input_requirements[0]?.source_hint,
+  "chat_attachment"
+);
+assert.equal(semanticDiscovery.invocation_channels[0]?.channel, "web_chat");
 
 assert.deepEqual(
   validateAuthoringDiscoveryEvidence({ discovery, description, answers }),
@@ -191,6 +244,29 @@ assert.ok(recovered);
 assert.equal(recovered?.gaps.length, 2);
 assert.equal(recovered?.gaps.join(""), longGap);
 assert.ok(recovered?.gaps.every((gap) => gap.length <= 500));
+const numericEvidenceIndex = parseAuthoringDiscoveryOutput(
+  sanitizeAuthoringDiscoveryRaw({
+    ...discovery,
+    covered_dimensions: [
+      {
+        key: "data_sources",
+        status: "covered",
+        summary: "Documento aportado.",
+        evidence: [
+          {
+            source: "answer",
+            answer_index: "0",
+            quote: "documento Word",
+          },
+        ],
+      },
+    ],
+  })
+);
+assert.equal(
+  numericEvidenceIndex?.covered_dimensions[0]?.evidence[0]?.answer_index,
+  0
+);
 const prose =
   `${"Primera idea importante. ".repeat(18)}` +
   `${"Segunda idea relacionada y completa. ".repeat(18)}`;

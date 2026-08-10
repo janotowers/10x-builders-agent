@@ -391,6 +391,8 @@ export async function recordOpenRouterCallUsage(params: {
     turnId: store.context.turnId ?? null,
     operationalCaseId: store.context.operationalCaseId ?? null,
     workflowDefinitionId: store.context.workflowDefinitionId ?? null,
+    studioQualificationRunId:
+      store.context.studioQualificationRunId ?? null,
     workItemId: store.context.workItemId ?? null,
     workItemAttemptId: store.context.workItemAttemptId ?? null,
     inputTokens: usage.inputTokens,
@@ -468,6 +470,11 @@ export function createAiUsageCallbackHandler(params: {
         sessionId: store.context.sessionId ?? null,
         turnId: store.context.turnId ?? null,
         operationalCaseId: store.context.operationalCaseId ?? null,
+        workflowDefinitionId: store.context.workflowDefinitionId ?? null,
+        studioQualificationRunId:
+          store.context.studioQualificationRunId ?? null,
+        workItemId: store.context.workItemId ?? null,
+        workItemAttemptId: store.context.workItemAttemptId ?? null,
         ...tokens,
         reportedCostMicroUsd,
         providerRequestId,
@@ -492,6 +499,11 @@ export function createAiUsageCallbackHandler(params: {
         sessionId: store.context.sessionId ?? null,
         turnId: store.context.turnId ?? null,
         operationalCaseId: store.context.operationalCaseId ?? null,
+        workflowDefinitionId: store.context.workflowDefinitionId ?? null,
+        studioQualificationRunId:
+          store.context.studioQualificationRunId ?? null,
+        workItemId: store.context.workItemId ?? null,
+        workItemAttemptId: store.context.workItemAttemptId ?? null,
         latencyMs: startedAt ? Date.now() - startedAt : null,
         status: "error",
         errorCode:

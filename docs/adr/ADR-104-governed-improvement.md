@@ -24,6 +24,14 @@ Every loop declares what it may improve and under which gates:
 
 Autonomy is earned per operation with measured approval quality; it is not assumed.
 
+Workflow/Skill qualification distinguishes deterministic simulation from a
+run with the resolved production model. The latter stores an
+artifact+runtime fingerprint and may use an independent LLM-as-judge behind
+deterministic assertions. A changed model, rubric, scenario suite or artifact
+marks prior qualification `stale`; it does not silently fail or unpublish
+active work. Failed qualification may create a bounded, versioned proposal,
+never mutate or publish the live artifact.
+
 Distinguish:
 
 - **Regeneration:** inputs changed → repair declared dependent artifacts.

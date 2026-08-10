@@ -3,6 +3,10 @@ import {
   isCatalogIntegrationSatisfied,
   type TenantProviderSnapshot,
 } from "@/lib/tool-readiness/provider-readiness";
+import type {
+  AuthoringInvocationChannel,
+  InputRequirement,
+} from "@agents/workflows";
 
 export const CAPABILITY_CATEGORY_IDS = [
   "user_email",
@@ -116,6 +120,8 @@ export interface CapabilityCategoryResolution {
 
 export interface AuthoringCapabilityContext {
   detectedCategories: CapabilityCategoryResolution[];
+  inputRequirements: InputRequirement[];
+  invocationChannels: AuthoringInvocationChannel[];
 }
 
 export const CAPABILITY_CATEGORIES: readonly CapabilityCategorySpec[] = [
@@ -567,17 +573,9 @@ const DETECTION_RULES: ReadonlyArray<{
   pattern: RegExp;
 }> = [
   {
-    categoryId: "user_email",
-    pattern: /\b(email|e-mail|correo(?:\s+electr[oó]nico)?|gmail|outlook)\b/i,
-  },
-  {
     categoryId: "transactional_email",
     pattern:
       /\b(postmark|sendgrid|amazon\s+ses|correo\s+masivo|email\s+transaccional|newsletter)\b/i,
-  },
-  {
-    categoryId: "messaging",
-    pattern: /\b(telegram|whatsapp|sms|mensaje(?:r[ií]a)?)\b/i,
   },
   {
     categoryId: "real_estate_crm",
@@ -595,7 +593,7 @@ const DETECTION_RULES: ReadonlyArray<{
   {
     categoryId: "document_storage",
     pattern:
-      /\b(documento|archivo|word|docx|pdf|txt|drive|dropbox|sharepoint|onedrive)\b/i,
+      /\b(google\s+drive|drive|dropbox|sharepoint|onedrive|almacenamiento\s+de\s+(?:documentos|archivos))\b/i,
   },
   {
     categoryId: "electronic_signature",
@@ -627,6 +625,84 @@ const DETECTION_RULES: ReadonlyArray<{
     pattern: /\b(zapier|make(?:\.com)?|n8n|automatizaci[oó]n)\b/i,
   },
 ];
+
+type OutboundCommunicationCategory = "user_email" | "messaging";
+
+const OUTBOUND_ACTION =
+  String.raw`(?:env[ií](?:a|e|es|an|en|ar|ado|ada|alo|elo|arlo|árselo)?|mand(?:a|e|an|en|ar|ado|ada)|notific(?:a|e|an|en|ar|aci[oó]n|aciones)|avis(?:a|e|an|en|ar|o)|compart(?:e|an|ir)|remit(?:e|an|ir)|send|notify)`;
+const EMAIL_CHANNEL =
+  String.raw`(?:email|e-mail|correo(?:\s+electr[oó]nico)?|gmail|outlook)`;
+const TELEGRAM_CHANNEL = String.raw`telegram`;
+
+function communicationPattern(source: string): RegExp {
+  return new RegExp(source, "i");
+}
+
+function hasOutboundExecutionIntent(
+  value: string,
+  categoryId: OutboundCommunicationCategory
+): boolean {
+  const channel =
+    categoryId === "user_email" ? EMAIL_CHANNEL : TELEGRAM_CHANNEL;
+  const viaChannel =
+    categoryId === "messaging"
+      ? String.raw`(?:por|v[ií]a|mediante|usando)\s+${channel}`
+      : String.raw`(?:(?:por|v[ií]a|mediante|usando)\s+)?(?:un\s+)?${channel}`;
+  return [
+    communicationPattern(
+      String.raw`\b${OUTBOUND_ACTION}\b.{0,100}\b${viaChannel}\b`
+    ),
+    communicationPattern(
+      String.raw`\b${channel}\b.{0,50}\bpara\s+${OUTBOUND_ACTION}\b`
+    ),
+    communicationPattern(
+      String.raw`\b${channel}\b.{0,60}\b(?:enviado|enviada|mandado|mandada)\b`
+    ),
+  ].some((pattern) => pattern.test(value));
+}
+
+function rejectsOutboundExecution(
+  value: string,
+  categoryId: OutboundCommunicationCategory
+): boolean {
+  const channel =
+    categoryId === "user_email" ? EMAIL_CHANNEL : TELEGRAM_CHANNEL;
+  return [
+    communicationPattern(
+      String.raw`\b(?:no|nunca|sin)\b[^.;\n]{0,60}\b${OUTBOUND_ACTION}\b[^.;\n]{0,100}\b${channel}\b`
+    ),
+    communicationPattern(
+      String.raw`\bya\s+no\b[^.;\n]{0,60}\b${OUTBOUND_ACTION}\b[^.;\n]{0,100}\b${channel}\b`
+    ),
+    communicationPattern(
+      String.raw`\b(?:no|nunca|sin|ya\s+no)\s+(?:usar|uses?|utilizar|utilices?)\s+(?:el\s+|la\s+)?${channel}\b`
+    ),
+    communicationPattern(
+      String.raw`\b(?:en\s+lugar\s+de|instead\s+of)\s+(?:el\s+|la\s+)?${channel}\b`
+    ),
+  ].some((pattern) => pattern.test(value));
+}
+
+function currentOutboundCommunicationCategories(
+  values: readonly string[]
+): Set<OutboundCommunicationCategory> {
+  const current = new Set<OutboundCommunicationCategory>();
+  for (const value of values) {
+    for (const categoryId of [
+      "user_email",
+      "messaging",
+    ] as const satisfies readonly OutboundCommunicationCategory[]) {
+      if (rejectsOutboundExecution(value, categoryId)) {
+        current.delete(categoryId);
+        continue;
+      }
+      if (hasOutboundExecutionIntent(value, categoryId)) {
+        current.add(categoryId);
+      }
+    }
+  }
+  return current;
+}
 
 function settingsConnectionHref(authoringSessionId?: string | null): string {
   const params = new URLSearchParams({
@@ -683,9 +759,111 @@ export function detectCapabilityCategories(
   values: readonly string[]
 ): CapabilityCategoryId[] {
   const text = values.join("\n");
-  return DETECTION_RULES.filter(({ pattern }) => pattern.test(text)).map(
-    ({ categoryId }) => categoryId
+  const detected = new Set(
+    DETECTION_RULES.filter(({ pattern }) => pattern.test(text)).map(
+      ({ categoryId }) => categoryId
+    )
   );
+  for (const categoryId of currentOutboundCommunicationCategories(values)) {
+    detected.add(categoryId);
+  }
+  return CAPABILITY_CATEGORY_IDS.filter((categoryId) =>
+    detected.has(categoryId)
+  );
+}
+
+const REUSABLE_ACCOUNT_FILE_PATTERN =
+  /\b(plantilla|template|marca\s+de\s+agua|watermark|brand\s*book|manual\s+de\s+marca|gu[ií]a\s+de\s+estilo)\b/i;
+const RUNTIME_FILE_PATTERN =
+  /\b(word|docx|txt|pdf|documento|archivo|adjunto|adjuntar|subir|cargar)\b/i;
+
+export function inferAuthoringInputRequirements(
+  values: readonly string[]
+): InputRequirement[] {
+  const text = values.join("\n");
+  const latest = values[values.length - 1] ?? "";
+  const rejectsReusableAsset =
+    /\b(?:no\s+es|no\s+ser[aá]|sin)\b.{0,50}\b(?:plantilla|template|recurso\s+permanente|archivo\s+reutilizable|account_asset)\b/i.test(
+      latest
+    );
+  const requirements: InputRequirement[] = [];
+  if (REUSABLE_ACCOUNT_FILE_PATTERN.test(text) && !rejectsReusableAsset) {
+    requirements.push({
+      kind: "account_asset",
+      key: "reusable_account_file",
+      label: "Archivo reutilizable de la cuenta",
+      required: true,
+      scope: "account",
+      resolve_at: "authoring",
+      source_hint: "account_assets",
+      retention: "durable",
+    });
+  }
+  if (
+    RUNTIME_FILE_PATTERN.test(text) &&
+    !(
+      REUSABLE_ACCOUNT_FILE_PATTERN.test(text) &&
+      !rejectsReusableAsset &&
+      !/\b(cada\s+(?:vez|ejecuci[oó]n)|por\s+(?:caso|ejecuci[oó]n)|adjunt|subir|cargar)\b/i.test(
+        text
+      )
+    )
+  ) {
+    requirements.push({
+      kind: "runtime_input",
+      key: "source_document",
+      label: "Documento fuente de esta ejecución",
+      required: true,
+      scope: "task_run",
+      resolve_at: "run_start",
+      source_hint: "chat_attachment",
+      retention: "run",
+    });
+  }
+  return requirements;
+}
+
+const PER_EXECUTION_INPUT_KINDS = new Set<InputRequirement["kind"]>([
+  "runtime_input",
+  "case_fact",
+  "business_record",
+  "knowledge_requirement",
+  "human_input",
+]);
+
+export function isPerExecutionInputRequirement(
+  requirement: Pick<InputRequirement, "kind">
+): boolean {
+  return PER_EXECUTION_INPUT_KINDS.has(requirement.kind);
+}
+
+export function invocationChannelsFromSnapshot(
+  snapshot: TenantProviderSnapshot
+): AuthoringInvocationChannel[] {
+  const channels: AuthoringInvocationChannel[] = [
+    {
+      channel: "web_chat",
+      label: "Web Chat",
+      availability: "available",
+      supports_text: true,
+      supports_generic_attachments: true,
+      limitations: [],
+    },
+  ];
+  if (snapshot.telegramLinked) {
+    channels.push({
+      channel: "telegram",
+      label: "Telegram",
+      availability: "available",
+      supports_text: true,
+      supports_generic_attachments: true,
+      limitations: [
+        "Los archivos .xls heredados no están habilitados; deben convertirse a .xlsx.",
+        "Los formatos con macros (.docm, .xlsm y .pptm) no están habilitados.",
+      ],
+    });
+  }
+  return channels;
 }
 
 export function resolveCapabilityCategory(
@@ -764,6 +942,8 @@ export function buildAuthoringCapabilityContext(params: {
           authoringSessionId: params.authoringSessionId,
         })
     ),
+    inputRequirements: inferAuthoringInputRequirements(params.values),
+    invocationChannels: invocationChannelsFromSnapshot(params.snapshot),
   };
 }
 

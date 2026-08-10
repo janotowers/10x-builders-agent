@@ -52,6 +52,21 @@ export async function getAccountSkill(
   return (data as AccountSkill | null) ?? null;
 }
 
+export async function getAccountSkillById(
+  db: DbClient,
+  userId: string,
+  skillId: string
+): Promise<AccountSkill | null> {
+  const { data, error } = await db
+    .from("account_skills")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("id", skillId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as AccountSkill | null) ?? null;
+}
+
 export interface UpsertAccountSkillInput {
   userId: string;
   slug: string;

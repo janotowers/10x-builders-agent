@@ -9,6 +9,11 @@ import {
   AUTHORING_ROUTER_KINDS,
   REUSABLE_SKILL_SUBTYPES,
 } from "./authoring-router";
+import { inputRequirementSchema } from "./input-requirements";
+import {
+  authoringGapPlanSchema,
+  deriveFlatAuthoringGaps,
+} from "./authoring-gap-planner";
 
 export const AUTHORING_DISCOVERY_DIMENSIONS = [
   "objective",
@@ -40,6 +45,7 @@ export const authoringClarifyingQuestionSchema = z.object({
   question: z.string().trim().min(1).max(2000),
   target_dimension: z.enum(AUTHORING_DISCOVERY_DIMENSIONS),
   gap: z.string().trim().min(1).max(2000),
+  gap_id: z.string().trim().regex(/^gap_[a-z0-9]{8}$/).optional(),
   examples: z
     .array(z.string().trim().min(1).max(240))
     .max(3)
@@ -68,6 +74,18 @@ export const authoringCapabilityNeedSchema = z.object({
     .max(24)
     .default([]),
   connect_href: z.string().trim().max(1000).nullable().default(null),
+});
+
+export const authoringInvocationChannelSchema = z.object({
+  channel: z.enum(["web_chat", "telegram"]),
+  label: z.string().trim().min(1).max(120),
+  availability: z.enum(["available", "limited"]),
+  supports_text: z.boolean(),
+  supports_generic_attachments: z.boolean(),
+  limitations: z
+    .array(z.string().trim().min(1).max(500))
+    .max(8)
+    .default([]),
 });
 
 const summaryField = z
@@ -115,6 +133,7 @@ export const authoringDiscoveryOutputSchema = z
       .default([]),
     assumptions: summaryField,
     gaps: summaryField,
+    gap_plan: authoringGapPlanSchema.optional(),
     requested_side_effects: z
       .array(
         z.enum([
@@ -129,6 +148,11 @@ export const authoringDiscoveryOutputSchema = z
     capability_needs: z
       .array(authoringCapabilityNeedSchema)
       .max(16)
+      .default([]),
+    input_requirements: z.array(inputRequirementSchema).max(32).default([]),
+    invocation_channels: z
+      .array(authoringInvocationChannelSchema)
+      .max(8)
       .default([]),
     readiness: z.enum([
       "needs_clarification",
@@ -221,6 +245,18 @@ export const authoringDiscoveryOutputSchema = z
         message: "redirect debe corresponder exactamente a redirect_to_chat",
       });
     }
+  })
+  .transform((value) => {
+    if (!value.gap_plan) return value;
+    const gaps = deriveFlatAuthoringGaps(value.gap_plan);
+    return {
+      ...value,
+      gaps,
+      understanding: {
+        ...value.understanding,
+        gaps,
+      },
+    };
   });
 
 export type AuthoringDiscoveryOutput = z.infer<
@@ -231,6 +267,9 @@ export type AuthoringClarifyingQuestion = z.infer<
 >;
 export type AuthoringCapabilityNeed = z.infer<
   typeof authoringCapabilityNeedSchema
+>;
+export type AuthoringInvocationChannel = z.infer<
+  typeof authoringInvocationChannelSchema
 >;
 
 const SUMMARY_ITEM_MAX = 500;
@@ -409,8 +448,16 @@ export function sanitizeAuthoringDiscoveryRaw(raw: unknown): unknown {
             item = parseJsonContainer(item);
             if (!item || typeof item !== "object") return item;
             const ev = item as Record<string, unknown>;
+            const numericAnswerIndex =
+              typeof ev.answer_index === "string" &&
+              /^\d+$/.test(ev.answer_index.trim())
+                ? Number(ev.answer_index)
+                : ev.answer_index;
             return {
               ...ev,
+              ...(numericAnswerIndex !== undefined
+                ? { answer_index: numericAnswerIndex }
+                : {}),
               quote:
                 typeof ev.quote === "string"
                   ? ev.quote.trim().slice(0, EVIDENCE_QUOTE_MAX).trimEnd()
@@ -490,6 +537,18 @@ export function sanitizeAuthoringDiscoveryRaw(raw: unknown): unknown {
         };
       })
       .slice(0, 16);
+  }
+  const rawInputRequirements = coerceArray(input.input_requirements);
+  if (rawInputRequirements) {
+    output.input_requirements = rawInputRequirements
+      .map((item) => parseJsonContainer(item))
+      .slice(0, 32);
+  }
+  const rawInvocationChannels = coerceArray(input.invocation_channels);
+  if (rawInvocationChannels) {
+    output.invocation_channels = rawInvocationChannels
+      .map((item) => parseJsonContainer(item))
+      .slice(0, 8);
   }
 
   return output;

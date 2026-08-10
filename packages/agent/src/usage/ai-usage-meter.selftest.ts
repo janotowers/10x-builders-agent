@@ -315,6 +315,7 @@ async function testRecordOpenRouterCallUsageAttribution(): Promise<void> {
         sessionId: "session-1",
         turnId: "turn-1",
         operationalCaseId: "case-1",
+        studioQualificationRunId: "qualification-run-1",
       },
       null,
       () =>
@@ -338,6 +339,7 @@ async function testRecordOpenRouterCallUsageAttribution(): Promise<void> {
   assert.equal(event.sessionId, "session-1");
   assert.equal(event.turnId, "turn-1");
   assert.equal(event.operationalCaseId, "case-1");
+  assert.equal(event.studioQualificationRunId, "qualification-run-1");
   assert.equal(event.inputTokens, 100);
   assert.equal(event.outputTokens, 10);
   assert.equal(event.providerRequestId, "gen-abc");

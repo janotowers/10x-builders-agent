@@ -9,7 +9,8 @@ export type EvidenceSubjectKind =
   | "work_item_attempt"
   | "workflow_definition"
   | "case_artifact"
-  | "release";
+  | "release"
+  | "studio_qualification_run";
 
 export interface EvidenceRecord {
   id: string;

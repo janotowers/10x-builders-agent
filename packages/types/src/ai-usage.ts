@@ -46,6 +46,8 @@ export const AI_USAGE_MODEL_ROLES = {
   INTENT_DECOMPOSER: "intent_decomposer",
   /** Compilador NL → business/implementation spec + grafo (Slice 4.2; §15). */
   WORKFLOW_COMPILER: "workflow_compiler",
+  /** Independent LLM-as-judge for Studio operational qualification runs. */
+  STUDIO_OPERATIONAL_JUDGE: "studio_operational_judge",
 } as const;
 
 export type AiUsageStatus = "ok" | "error";
@@ -88,6 +90,7 @@ export interface AiUsageContext {
     | "heartbeat"
     | "case_runner"
     | "settings"
+    | "studio_operational_test"
     /** Local live evals / walkthrough scripts (OpenRouter still billed). */
     | "cli"
     | null;
@@ -96,6 +99,7 @@ export interface AiUsageContext {
   operationalCaseId?: string | null;
   /** Future correlation ids (work plane, Phase 2+). No FKs yet. */
   workflowDefinitionId?: string | null;
+  studioQualificationRunId?: string | null;
   workItemId?: string | null;
   workItemAttemptId?: string | null;
 }
@@ -120,6 +124,7 @@ export interface AiUsageEventInput extends AiUsageTokenBreakdown, AiUsageCostBre
   turnId?: string | null;
   operationalCaseId?: string | null;
   workflowDefinitionId?: string | null;
+  studioQualificationRunId?: string | null;
   workItemId?: string | null;
   workItemAttemptId?: string | null;
   occurredAt?: string;
@@ -159,6 +164,7 @@ export interface AiUsageEvent {
   turn_id: string | null;
   operational_case_id: string | null;
   workflow_definition_id: string | null;
+  studio_qualification_run_id: string | null;
   work_item_id: string | null;
   work_item_attempt_id: string | null;
   metadata_jsonb: Record<string, unknown>;

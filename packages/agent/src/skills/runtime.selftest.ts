@@ -6,7 +6,9 @@ import {
   defaultSkillsRoot,
   getCachedSkillsRegistryRoot,
   getGlobalSkillRegistry,
+  overlaySkillRegistryForTurn,
   resetGlobalSkillRegistryForTests,
+  SkillUnderTestValidationError,
 } from "./runtime";
 
 async function makeRootWithSkill(): Promise<string> {
@@ -96,12 +98,155 @@ async function testCachedRootAfterLoad(): Promise<void> {
   }
 }
 
+function draftSkillSource(slug: string, body: string): string {
+  return [
+    "---",
+    `name: ${slug}`,
+    "description: Draft skill used only for qualification.",
+    "scope: business",
+    "allowed_tools:",
+    "  - qualification_tool",
+    "---",
+    "",
+    body,
+  ].join("\n");
+}
+
+async function testDraftOverlayPrecedence(): Promise<void> {
+  resetGlobalSkillRegistryForTests();
+  const root = await makeRootWithSkill();
+  try {
+    const base = await getGlobalSkillRegistry({ rootDirOverride: root });
+    const overlaid = overlaySkillRegistryForTurn(
+      base,
+      {
+        slug: "alpha",
+        userId: "user-a",
+        bodyMd: draftSkillSource("alpha", "Draft alpha body."),
+      },
+      "user-a"
+    );
+
+    assert.equal(await overlaid.get("alpha")?.loadBody(), "Draft alpha body.");
+    assert.deepEqual(overlaid.get("alpha")?.metadata.allowedTools, [
+      "qualification_tool",
+    ]);
+    assert.equal(
+      await base.get("alpha")?.loadBody(),
+      "Alpha body.",
+      "the turn overlay must not mutate the base registry"
+    );
+  } finally {
+    resetGlobalSkillRegistryForTests();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testDraftOverlayIsolation(): Promise<void> {
+  resetGlobalSkillRegistryForTests();
+  const root = await makeRootWithSkill();
+  try {
+    const base = await getGlobalSkillRegistry({ rootDirOverride: root });
+    const firstTurn = overlaySkillRegistryForTurn(
+      base,
+      {
+        slug: "draft-only",
+        userId: "user-a",
+        bodyMd: draftSkillSource("draft-only", "First turn only."),
+      },
+      "user-a"
+    );
+    const secondTurn = overlaySkillRegistryForTurn(
+      base,
+      {
+        slug: "draft-only",
+        userId: "user-a",
+        bodyMd: draftSkillSource("draft-only", "Second turn only."),
+      },
+      "user-a"
+    );
+
+    assert.equal(await firstTurn.get("draft-only")?.loadBody(), "First turn only.");
+    assert.equal(
+      await secondTurn.get("draft-only")?.loadBody(),
+      "Second turn only."
+    );
+    assert.equal(base.has("draft-only"), false, "draft must not leak to later calls");
+    assert.throws(
+      () =>
+        overlaySkillRegistryForTurn(
+          base,
+          [] as unknown as {
+            slug: string;
+            userId: string;
+            bodyMd: string;
+          },
+          "user-a"
+        ),
+      SkillUnderTestValidationError,
+      "runtime validation must reject non-object overlay payloads"
+    );
+    assert.throws(
+      () =>
+        overlaySkillRegistryForTurn(
+          base,
+          {
+            slug: "draft-only",
+            userId: "user-b",
+            bodyMd: draftSkillSource("draft-only", "Wrong tenant."),
+          },
+          "user-a"
+        ),
+      SkillUnderTestValidationError
+    );
+  } finally {
+    resetGlobalSkillRegistryForTests();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testDraftOverlayRejectsInvalidBody(): Promise<void> {
+  resetGlobalSkillRegistryForTests();
+  const root = await makeRootWithSkill();
+  try {
+    const base = await getGlobalSkillRegistry({ rootDirOverride: root });
+    assert.throws(
+      () =>
+        overlaySkillRegistryForTurn(
+          base,
+          {
+            slug: "alpha",
+            userId: "user-a",
+            bodyMd: [
+              "---",
+              "name: another-slug",
+              "description: Mismatched draft.",
+              "---",
+              "",
+              "Invalid draft.",
+            ].join("\n"),
+          },
+          "user-a"
+        ),
+      (err: unknown) =>
+        err instanceof SkillUnderTestValidationError &&
+        err.message.includes("invalid skillUnderTest body")
+    );
+  } finally {
+    resetGlobalSkillRegistryForTests();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   await testEnvOverride();
   await testEnvOverrideRelative();
   await testResolvedRootHasSkillsGlobal();
   await testCachedRootAfterLoad();
-  console.log("skills/runtime.selftest: all 4 cases passed");
+  await testDraftOverlayPrecedence();
+  await testDraftOverlayIsolation();
+  await testDraftOverlayRejectsInvalidBody();
+  console.log("skills/runtime.selftest: all 7 cases passed");
 }
 
 main().catch((err) => {

@@ -57,6 +57,7 @@ function event(
     turn_id: null,
     operational_case_id: null,
     workflow_definition_id: null,
+    studio_qualification_run_id: null,
     work_item_id: null,
     work_item_attempt_id: null,
     metadata_jsonb: {},

@@ -70,6 +70,7 @@ import {
   validateDefinitionAction,
 } from "../actions";
 import { CompileForm } from "./compile-form";
+import { OperationalAiTestPanel } from "./operational-ai-test-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -130,6 +131,10 @@ function DurableTaskDetail({
           Actualizada {formatUpdatedAt(task.updated_at)}
         </p>
       </div>
+      <OperationalAiTestPanel
+        artifactKind={schedule ? "schedule" : "durable_task"}
+        artifactId={schedule?.id ?? task.id}
+      />
       {spec ? (
         <>
           {schedule ? (
@@ -256,6 +261,10 @@ function AccountSkillDetail({ skill }: { skill: AccountSkill }) {
           {formatUpdatedAt(skill.updated_at)}
         </p>
       </div>
+      <OperationalAiTestPanel
+        artifactKind="reusable_skill"
+        artifactId={skill.id}
+      />
       <Section title="Capacidades y composición">
         <p>
           Herramientas:{" "}
@@ -623,6 +632,11 @@ async function DraftDetail({
           </p>
         ) : null}
       </div>
+
+      <OperationalAiTestPanel
+        artifactKind="case_workflow"
+        artifactId={definition.id}
+      />
 
       <div className="grid gap-3 md:grid-cols-2">
         <Section title="Especificación de negocio">

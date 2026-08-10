@@ -23,9 +23,12 @@ import {
 } from "@agents/agent";
 import {
   AUTHORING_HARD_LIMIT_TURN,
+  AUTHORING_MAX_PROPOSAL_REVISIONS,
+  appendAuthoringProposalRevision,
   authoringConversationMetaSchema,
   authoringDiscoveryCompactStateSchema,
   authoringDiscoveryOutputSchema,
+  authoringGapPlanSchema,
   canonicalizeJson,
   isArtifactKind,
   isGenericAuthoringSlug,
@@ -57,6 +60,7 @@ type StudioAuthoringAction =
   | "discover"
   | "answer"
   | "confirm"
+  | "revise_proposal"
   | "continue_discovery"
   | "proceed_to_proposal";
 
@@ -72,15 +76,29 @@ function readConversationMeta(
 function readCompactState(
   routerOutput: Record<string, unknown> | null | undefined
 ): AuthoringDiscoveryCompactState | null {
+  const directPlan = authoringGapPlanSchema.safeParse(routerOutput?.gap_plan);
   const fromConversation = authoringDiscoveryCompactStateSchema.safeParse(
     (routerOutput?.conversation as { compact_state?: unknown } | undefined)
       ?.compact_state
   );
-  if (fromConversation.success) return fromConversation.data;
+  if (fromConversation.success) {
+    return directPlan.success && !fromConversation.data.gap_plan
+      ? authoringDiscoveryCompactStateSchema.parse({
+          ...fromConversation.data,
+          gap_plan: directPlan.data,
+        })
+      : fromConversation.data;
+  }
   const direct = authoringDiscoveryCompactStateSchema.safeParse(
     routerOutput?.compact_state
   );
-  return direct.success ? direct.data : null;
+  if (!direct.success) return null;
+  return directPlan.success && !direct.data.gap_plan
+    ? authoringDiscoveryCompactStateSchema.parse({
+        ...direct.data,
+        gap_plan: directPlan.data,
+      })
+    : direct.data;
 }
 
 function patternCompositionForDiscovery(
@@ -150,8 +168,49 @@ function collectAnswers(body: {
 
 function discoveryHash(discovery: AuthoringDiscoveryOutput): string {
   return `sha256:${createHash("sha256")
-    .update(canonicalizeJson(discovery), "utf8")
+    .update(
+      canonicalizeJson({
+        discovery,
+        gap_plan: discovery.gap_plan ?? null,
+      }),
+      "utf8"
+    )
     .digest("hex")}`;
+}
+
+function gapPresentation(discovery: AuthoringDiscoveryOutput) {
+  const gaps = discovery.gap_plan?.gaps ?? [];
+  return {
+    pending_blockers: gaps.filter(
+      (gap) =>
+        gap.severity === "blocking" &&
+        gap.state !== "answered" &&
+        gap.state !== "resolved_by_evidence" &&
+        gap.state !== "defaulted"
+    ),
+    safe_defaults: gaps.flatMap((gap) =>
+      gap.severity === "defaultable" &&
+      gap.safe_default &&
+      gap.state !== "answered" &&
+      gap.state !== "resolved_by_evidence" &&
+      gap.state !== "defaulted" &&
+      gap.state !== "blocked_dependency"
+        ? [
+            {
+              gap_id: gap.id,
+              summary: gap.summary,
+              value: gap.safe_default,
+            },
+          ]
+        : []
+    ),
+  };
+}
+
+function pendingDecisionCopy(count: number): string {
+  return `Queda ${count} decisión${count === 1 ? "" : "es"} necesaria${
+    count === 1 ? "" : "s"
+  }.`;
 }
 
 export async function GET(request: Request) {
@@ -211,8 +270,10 @@ export async function POST(request: Request) {
     sessionId?: unknown;
     action?: unknown;
     confirmationHash?: unknown;
+    proposalCorrection?: unknown;
     clarificationAnswer?: unknown;
     answers?: unknown;
+    defaultGapIds?: unknown;
   };
   try {
     body = (await request.json()) as typeof body;
@@ -227,13 +288,25 @@ export async function POST(request: Request) {
   const actionRaw = cleanText(body.action);
   const action: StudioAuthoringAction =
     actionRaw === "confirm" ||
+    actionRaw === "revise_proposal" ||
     actionRaw === "answer" ||
     actionRaw === "continue_discovery" ||
     actionRaw === "proceed_to_proposal"
       ? actionRaw
       : "discover";
   const confirmationHash = cleanText(body.confirmationHash) || null;
+  const proposalCorrection = cleanText(body.proposalCorrection);
   const newAnswers = collectAnswers(body);
+  const requestedDefaultGapIds = Array.isArray(body.defaultGapIds)
+    ? [
+        ...new Set(
+          body.defaultGapIds.filter(
+            (gapId): gapId is string =>
+              typeof gapId === "string" && /^gap_[a-z0-9]{8}$/.test(gapId)
+          )
+        ),
+      ].slice(0, 32)
+    : [];
 
   if (!description && !sessionIdIn) {
     return NextResponse.json(
@@ -370,14 +443,22 @@ export async function POST(request: Request) {
             (msg): msg is Record<string, unknown> =>
               !!msg &&
               typeof msg === "object" &&
-              (msg as Record<string, unknown>).role === "user_answer"
+              ((msg as Record<string, unknown>).role === "user_answer" ||
+                (msg as Record<string, unknown>).role ===
+                  "proposal_correction")
           )
           .map((msg) => cleanText(msg.content))
           .filter(Boolean);
         const priorQuestions = (session.messages_jsonb ?? []).flatMap((msg) => {
           if (!msg || typeof msg !== "object") return [];
           const record = msg as Record<string, unknown>;
-          if (record.role !== "discovery_question") return [];
+          if (
+            record.role !== "discovery_question" &&
+            record.role !== "discovery_checkpoint" &&
+            record.role !== "compiler_clarify"
+          ) {
+            return [];
+          }
           return Array.isArray(record.questions)
             ? record.questions.filter(
                 (question): question is string =>
@@ -441,6 +522,259 @@ export async function POST(request: Request) {
           ReturnType<typeof buildCapabilityCatalogsForUser>
         > | null = null;
 
+        if (action === "revise_proposal") {
+          if (!proposalCorrection) {
+            send({
+              type: "error",
+              error: "Escribe el ajuste que quieres aplicar a la propuesta.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
+          const stored = authoringDiscoveryOutputSchema.safeParse(
+            session.router_output_jsonb?.discovery
+          );
+          if (
+            !stored.success ||
+            stored.data.readiness !== "ready_for_confirmation"
+          ) {
+            send({
+              type: "error",
+              error: "La sesión no tiene una propuesta vigente para corregir.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
+          const expectedHash = discoveryHash(stored.data);
+          if (!confirmationHash || confirmationHash !== expectedHash) {
+            send({
+              type: "error",
+              error:
+                "La propuesta cambió o está desactualizada. Revisa la versión vigente antes de enviar el ajuste.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
+          if (
+            (priorConversation?.proposal_revision_count ?? 0) >=
+            AUTHORING_MAX_PROPOSAL_REVISIONS
+          ) {
+            send({
+              type: "error",
+              error:
+                "Se alcanzó el límite de ajustes de esta propuesta. Conservamos la sesión; reformula la solicitud para continuar.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
+
+          stage("revising_proposal", "Aplicando tu ajuste a la propuesta…");
+          await persistProgress(session.id, { stage: "revising_proposal" });
+          const [loadedCatalogs, providerSnapshot] = await Promise.all([
+            buildCapabilityCatalogsForUser(db, user.id),
+            loadTenantProviderSnapshot(db, user.id),
+          ]);
+          catalogs = loadedCatalogs;
+          const revisionAnswers = [
+            ...clarificationAnswers,
+            proposalCorrection,
+          ];
+          const capabilityContext = buildAuthoringCapabilityContext({
+            values: [descriptionNl, ...revisionAnswers],
+            snapshot: providerSnapshot,
+            authoringSessionId: session.id,
+          });
+          const revisionRouterSignal: RouteAuthoringResult = {
+            kind: stored.data.final_kind,
+            skill_subtype: stored.data.skill_subtype,
+            confidence: stored.data.confidence,
+            reasons: stored.data.rationale,
+            clarifying_questions: [],
+            suggested_title: stored.data.suggested_title,
+            suggested_slug: stored.data.suggested_slug,
+            requested_side_effects: stored.data.requested_side_effects,
+            modelId: session.model_id,
+            source: "model",
+          };
+          const discoveryResult = await runWithAiUsageContext(
+            { userId: user.id, channel: "web" },
+            db,
+            () =>
+              runAuthoringDiscovery({
+                description: descriptionNl,
+                answers: revisionAnswers,
+                latestAnswer: proposalCorrection,
+                priorQuestions,
+                compactState: priorCompact,
+                routerSignal: revisionRouterSignal,
+                catalogs: {
+                  skills: [...catalogs!.skillSlugs],
+                  tools: [...catalogs!.toolIds],
+                  integrations: [...catalogs!.connectedIntegrations],
+                  assets: [...catalogs!.tenantConfiguredAssetKeys],
+                  workerCapabilities: [...catalogs!.workerCapabilities],
+                },
+                capabilityContext,
+                signal: request.signal,
+              })
+          );
+          const proceeded = proceedAuthoringDiscoveryToProposal({
+            discovery: discoveryResult.discovery,
+            answerTurnCount: session.clarification_round ?? 0,
+            priorQuestions,
+            extendedAfterCheckpoint,
+            proposalRevisions:
+              priorConversation?.proposal_revisions ?? [],
+          });
+          if (!proceeded.ok) {
+            send({
+              type: "error",
+              error:
+                "No pude convertir ese ajuste en una propuesta segura. La propuesta anterior sigue vigente; reformula el ajuste.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
+          const hash = discoveryHash(proceeded.discovery);
+          if (hash === expectedHash) {
+            send({
+              type: "error",
+              error:
+                "El ajuste no produjo un cambio verificable. Exprésalo de forma más concreta; la propuesta anterior sigue vigente.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
+
+          const current = await getStudioAuthoringSession(
+            db,
+            user.id,
+            session.id
+          );
+          const currentStored = authoringDiscoveryOutputSchema.safeParse(
+            current?.router_output_jsonb?.discovery
+          );
+          const currentConversation = readConversationMeta(
+            current?.router_output_jsonb as Record<string, unknown> | null
+          );
+          if (
+            !current ||
+            current.status !== "active" ||
+            !currentStored.success ||
+            discoveryHash(currentStored.data) !== expectedHash ||
+            (currentConversation?.proposal_revision_count ?? 0) >=
+              AUTHORING_MAX_PROPOSAL_REVISIONS
+          ) {
+            send({
+              type: "error",
+              error:
+                "La propuesta cambió mientras aplicábamos el ajuste. Recarga la versión vigente antes de continuar.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
+          const revisedAt = new Date().toISOString();
+          const conversation = appendAuthoringProposalRevision({
+            meta: {
+              ...proceeded.meta,
+              proposal_revision_count:
+                currentConversation?.proposal_revision_count ?? 0,
+              proposal_revisions:
+                currentConversation?.proposal_revisions ?? [],
+            },
+            correction: proposalCorrection,
+            priorHash: expectedHash,
+            proposalHash: hash,
+            revisedAt,
+          });
+          const patternComposition = patternCompositionForDiscovery(
+            proceeded.discovery
+          );
+          const updated = await updateStudioAuthoringSession(db, {
+            userId: user.id,
+            sessionId: current.id,
+            expectedUpdatedAt: current.updated_at,
+            routerKind: proceeded.discovery.final_kind,
+            routerOutput: {
+              ...(current.router_output_jsonb ?? {}),
+              discovery: proceeded.discovery,
+              gap_plan: proceeded.discovery.gap_plan,
+              discovery_hash: hash,
+              discovery_result: discoveryResult.kind,
+              evidence_failures: discoveryResult.evidenceFailures,
+              capability_context: capabilityContext,
+              pattern_composition: patternComposition,
+              conversation,
+              compact_state: conversation.compact_state,
+            },
+            messages: [
+              ...(current.messages_jsonb ?? []),
+              {
+                role: "proposal_correction",
+                content: proposalCorrection,
+                prior_discovery_hash: expectedHash,
+                at: revisedAt,
+              },
+              {
+                role: "understanding_summary",
+                discovery_hash: hash,
+                content: proceeded.discovery.understanding,
+                gap_plan: proceeded.discovery.gap_plan,
+                ...gapPresentation(proceeded.discovery),
+                capability_needs: proceeded.discovery.capability_needs,
+                input_requirements: proceeded.discovery.input_requirements,
+                invocation_channels: proceeded.discovery.invocation_channels,
+                at: revisedAt,
+              },
+            ],
+            modelId: discoveryResult.modelId,
+            suggestedSlug:
+              proceeded.discovery.suggested_slug ?? current.suggested_slug,
+            title:
+              current.title ?? proceeded.discovery.suggested_title ?? null,
+            status: "active",
+            provenance: {
+              ...(current.provenance_jsonb ?? {}),
+              discovery_hash: hash,
+              prior_discovery_hash: expectedHash,
+              discovery_model_id: discoveryResult.modelId,
+              discovery_updated_at: revisedAt,
+              proposal_revised_at: revisedAt,
+            },
+          });
+          if (!updated) {
+            send({
+              type: "error",
+              error:
+                "La propuesta cambió mientras guardábamos el ajuste. Recarga la versión vigente antes de continuar.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
+          stage("review_ready", "Propuesta actualizada. Revisa los cambios.", {
+            sessionId: updated.id,
+            discovery: proceeded.discovery,
+            confirmationHash: hash,
+            conversationPhase: "proposal",
+            conversation,
+            patternComposition,
+          });
+          stage("done", "Esperando confirmación humana.", {
+            sessionId: updated.id,
+            awaiting: "confirmation",
+          });
+          controller.close();
+          return;
+        }
+
         if (action === "continue_discovery") {
           const pending =
             priorConversation?.pending_questions?.filter(
@@ -467,6 +801,9 @@ export async function POST(request: Request) {
             clarificationRound: session.clarification_round ?? 0,
             routerOutput: {
               ...(session.router_output_jsonb ?? {}),
+              gap_plan: storedDiscovery.success
+                ? storedDiscovery.data.gap_plan
+                : session.router_output_jsonb?.gap_plan,
               conversation: {
                 ...(priorConversation ?? {}),
                 conversation_phase: "discovering",
@@ -489,6 +826,9 @@ export async function POST(request: Request) {
             sessionId: session.id,
             conversationPhase: "discovering",
             discovery: storedDiscovery.success ? storedDiscovery.data : null,
+            ...(storedDiscovery.success
+              ? gapPresentation(storedDiscovery.data)
+              : {}),
           });
           await appendStudioAuthoringSessionMessage(db, {
             userId: user.id,
@@ -501,6 +841,9 @@ export async function POST(request: Request) {
                     (detail) => pending.includes(detail.question)
                   )
                 : [],
+              gap_plan: storedDiscovery.success
+                ? storedDiscovery.data.gap_plan
+                : undefined,
               at: new Date().toISOString(),
             },
           });
@@ -530,12 +873,16 @@ export async function POST(request: Request) {
             answerTurnCount: session.clarification_round ?? 0,
             priorQuestions,
             extendedAfterCheckpoint,
+            proposalRevisions:
+              priorConversation?.proposal_revisions ?? [],
+            defaultGapIds: requestedDefaultGapIds,
           });
           if (!proceeded.ok) {
             stage("blocked", proceeded.meta.human_message ?? proceeded.reason, {
               sessionId: session.id,
               conversation: proceeded.meta,
               discovery: storedDiscovery.data,
+              ...gapPresentation(storedDiscovery.data),
             });
             await updateStudioAuthoringSession(db, {
               userId: user.id,
@@ -544,6 +891,9 @@ export async function POST(request: Request) {
               routerOutput: {
                 ...(session.router_output_jsonb ?? {}),
                 conversation: proceeded.meta,
+                gap_plan:
+                  proceeded.meta.compact_state?.gap_plan ??
+                  storedDiscovery.data.gap_plan,
               },
             });
             stage("done", "No se pudo cerrar la propuesta.", {
@@ -564,6 +914,7 @@ export async function POST(request: Request) {
             routerOutput: {
               ...(session.router_output_jsonb ?? {}),
               discovery: proceeded.discovery,
+              gap_plan: proceeded.discovery.gap_plan,
               discovery_hash: hash,
               conversation: proceeded.meta,
               compact_state: proceeded.meta.compact_state,
@@ -587,7 +938,11 @@ export async function POST(request: Request) {
               role: "understanding_summary",
               discovery_hash: hash,
               content: proceeded.discovery.understanding,
+              gap_plan: proceeded.discovery.gap_plan,
+              ...gapPresentation(proceeded.discovery),
               capability_needs: proceeded.discovery.capability_needs,
+              input_requirements: proceeded.discovery.input_requirements,
+              invocation_channels: proceeded.discovery.invocation_channels,
               at: new Date().toISOString(),
             },
           });
@@ -620,6 +975,15 @@ export async function POST(request: Request) {
             controller.close();
             return;
           }
+          if (stored.data.gap_plan && !stored.data.gap_plan.can_proceed) {
+            send({
+              type: "error",
+              error: "Quedan decisiones necesarias antes de crear el borrador.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
           const expectedHash = discoveryHash(stored.data);
           if (!confirmationHash || confirmationHash !== expectedHash) {
             send({
@@ -631,9 +995,35 @@ export async function POST(request: Request) {
             controller.close();
             return;
           }
+          const confirmationSession = await getStudioAuthoringSession(
+            db,
+            user.id,
+            session.id
+          );
+          const confirmationStored = authoringDiscoveryOutputSchema.safeParse(
+            confirmationSession?.router_output_jsonb?.discovery
+          );
+          if (
+            !confirmationSession ||
+            !confirmationStored.success ||
+            discoveryHash(confirmationStored.data) !== confirmationHash
+          ) {
+            send({
+              type: "error",
+              error:
+                "La revisión cambió o está desactualizada. Revísala nuevamente antes de crear el borrador.",
+              ts: Date.now(),
+            });
+            controller.close();
+            return;
+          }
           const claimed = await claimStudioAuthoringSessionForMaterialization(
             db,
-            { userId: user.id, sessionId: session.id }
+            {
+              userId: user.id,
+              sessionId: session.id,
+              expectedUpdatedAt: confirmationSession.updated_at,
+            }
           );
           if (!claimed) {
             send({
@@ -648,14 +1038,15 @@ export async function POST(request: Request) {
           session = claimed;
           claimedSessionId = claimed.id;
           routed = {
-            kind: stored.data.final_kind,
-            skill_subtype: stored.data.skill_subtype,
-            confidence: stored.data.confidence,
-            reasons: stored.data.rationale,
+            kind: confirmationStored.data.final_kind,
+            skill_subtype: confirmationStored.data.skill_subtype,
+            confidence: confirmationStored.data.confidence,
+            reasons: confirmationStored.data.rationale,
             clarifying_questions: [],
-            suggested_title: stored.data.suggested_title,
-            suggested_slug: stored.data.suggested_slug,
-            requested_side_effects: stored.data.requested_side_effects,
+            suggested_title: confirmationStored.data.suggested_title,
+            suggested_slug: confirmationStored.data.suggested_slug,
+            requested_side_effects:
+              confirmationStored.data.requested_side_effects,
             modelId: session.model_id,
             source: "model",
           };
@@ -754,6 +1145,8 @@ export async function POST(request: Request) {
               ...discoveryResult.discovery.clarifying_questions,
             ],
             extendedAfterCheckpoint,
+            proposalRevisions:
+              priorConversation?.proposal_revisions ?? [],
           });
           const discovery = resolvedTurn.discovery;
           const conversation = resolvedTurn.meta;
@@ -788,6 +1181,7 @@ export async function POST(request: Request) {
             routerOutput: {
               router: routerSignal,
               discovery,
+              gap_plan: discovery.gap_plan,
               discovery_hash: hash,
               discovery_result: discoveryResult.kind,
               evidence_failures: discoveryResult.evidenceFailures,
@@ -839,7 +1233,11 @@ export async function POST(request: Request) {
                 role: "understanding_summary",
                 discovery_hash: hash,
                 content: discovery.understanding,
+                gap_plan: discovery.gap_plan,
+                ...gapPresentation(discovery),
                 capability_needs: discovery.capability_needs,
+                input_requirements: discovery.input_requirements,
+                invocation_channels: discovery.invocation_channels,
                 at: new Date().toISOString(),
               },
             });
@@ -849,6 +1247,7 @@ export async function POST(request: Request) {
               confirmationHash: hash,
               conversationPhase: "proposal",
               conversation,
+              ...gapPresentation(discovery),
             });
             stage("done", "Esperando confirmación humana.", {
               sessionId: session.id,
@@ -859,15 +1258,19 @@ export async function POST(request: Request) {
           }
 
           if (resolvedTurn.phase === "blocked") {
+            const blockerCount = discovery.gap_plan?.counts.blockers ?? 0;
             stage(
               "blocked",
-              conversation.human_message ??
-                "Aún faltan datos materiales. Reformula la solicitud.",
+              blockerCount > 0
+                ? pendingDecisionCopy(blockerCount)
+                : conversation.human_message ??
+                    "Aún faltan datos materiales. Reformula la solicitud.",
               {
                 sessionId: session.id,
                 discovery,
                 conversation,
                 conversationPhase: "blocked",
+                ...gapPresentation(discovery),
               }
             );
             stage("done", "Discovery bloqueado; reformula la solicitud.", {
@@ -879,10 +1282,13 @@ export async function POST(request: Request) {
           }
 
           if (resolvedTurn.phase === "checkpoint") {
+            const blockerCount = discovery.gap_plan?.counts.blockers ?? 0;
             stage(
               "checkpoint",
-              conversation.human_message ??
-                "¿Seguimos aclarando o preparamos la propuesta?",
+              blockerCount > 0
+                ? pendingDecisionCopy(blockerCount)
+                : conversation.human_message ??
+                    "¿Seguimos aclarando o preparamos la propuesta?",
               {
                 sessionId: session.id,
                 discovery,
@@ -893,6 +1299,7 @@ export async function POST(request: Request) {
                   discovery.clarifying_question_details.filter((detail) =>
                     conversation.pending_questions.includes(detail.question)
                   ),
+                ...gapPresentation(discovery),
               }
             );
             await appendStudioAuthoringSessionMessage(db, {
@@ -906,6 +1313,8 @@ export async function POST(request: Request) {
                   discovery.clarifying_question_details.filter((detail) =>
                     conversation.pending_questions.includes(detail.question)
                   ),
+                gap_plan: discovery.gap_plan,
+                ...gapPresentation(discovery),
                 capability_needs: discovery.capability_needs,
                 at: new Date().toISOString(),
               },
@@ -934,6 +1343,8 @@ export async function POST(request: Request) {
                 sessionId: session.id,
                 conversationPhase: "discovering",
                 conversation,
+                discovery,
+                ...gapPresentation(discovery),
               }
             );
             await appendStudioAuthoringSessionMessage(db, {
@@ -943,6 +1354,7 @@ export async function POST(request: Request) {
                 role: "discovery_question",
                 questions,
                 question_details: questionDetails,
+                gap_plan: discovery.gap_plan,
                 at: new Date().toISOString(),
               },
             });

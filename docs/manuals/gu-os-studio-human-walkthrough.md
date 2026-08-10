@@ -37,6 +37,13 @@ pasaba mientras la UX de retry/notificaciones tenía huecos).
       para que el capability map tenga contra qué resolver.
 - [ ] Anotar versión/`definition_hash` de todo lo publicado ANTES de empezar
       (para verificar después que nada publicado mutó).
+- [ ] Verificar migraciones `00077`/`00078` y aplicar
+      **`00079_generic_attachments.sql`** antes de probar adjuntos genéricos.
+      Confirmar bucket `user-files` privado, RLS y paths por tenant.
+- [ ] Registrar estado de los flags/canary. Hoy las superficies nuevas no
+      consumen flags dedicados; no asumir rollback por flag hasta cablear los
+      definidos en
+      [`rollout-and-observability.md`](../workflow-studio/rollout-and-observability.md).
 
 ## 3. Estructura: dos pasadas
 
@@ -71,9 +78,22 @@ checks transversales.
       no repiten lo ya respondido (O). Las preguntas abstractas muestran
       ejemplos breves y contextuales como inspiración, no como opciones
       obligatorias.
+- [ ] En detalles técnicos, cada gap mantiene ID estable, severidad
+      `blocking | defaultable | optional`, dependencia y estado. Nuevas
+      respuestas anexan/reconcilian el plan sin borrar gaps previos abiertos.
+- [ ] Checkpoint y hard limit respetan blockers: **Preparar propuesta** no se
+      habilita con un `blocking` abierto. Solo gaps `defaultable` con default
+      seguro y elección explícita pueden cerrarse por default. Por turno se
+      seleccionan como máximo cuatro preguntas independientes.
 - [ ] Mientras Gu analiza, el composer no invita a escribir: se reemplaza por
       un estado visible y una acción **Detener análisis** que cancela la
       solicitud en curso.
+- [ ] El estado humano actual permanece visible aun con **Detalles técnicos**
+      cerrado. Dentro del detalle, cada fila empieza por lenguaje natural y
+      termina con el `stage` atenuado; el último evento no se duplica.
+- [ ] En “Esto entendí” se puede escribir una corrección sin reiniciar la
+      sesión. La corrección produce un resumen/hash nuevo; **Crear borrador**
+      confirma únicamente la revisión vigente.
 - [ ] La transformación es VISIBLE: la descripción NL del operador se preserva
       **verbatim** en la spec de negocio y el operador puede ver ambas — su
       "What" y la interpretación del sistema — lado a lado (H). Si la
@@ -98,6 +118,21 @@ checks transversales.
 - [ ] Disciplina de skills (Q, finding 25): si un gap sugiere crear un skill
       nuevo, la pregunta previa es "¿el modelo + contexto ya lo hace?" — crear
       skill es la última opción, no la primera.
+- [ ] Separar **Disponible desde** (Web/Telegram), **Entradas por ejecución**
+      (adjunto del turno) y **Herramientas para ejecutar** (p. ej. Gmail).
+      Un DOCX aportado en cada uso nunca aparece como recurso reusable de
+      cuenta; Telegram no se presenta como salida si el efecto confirmado es
+      email.
+- [ ] Probar el mismo `runtime_input` por Web y Telegram con PDF, DOCX, PPTX,
+      XLSX, TXT y CSV: storage/envelope/extracción/tools read-only son
+      compartidos. Si se resuelve un caso, el archivo se promueve a su pipeline
+      documental canónico.
+- [ ] Subir `.xls`: debe rechazarse con explicación de seguridad y pedir
+      conversión a `.xlsx`. **XLSX soportado no significa XLS legacy
+      soportado.** Tampoco presentar `scan_status=not_scanned` como malware-safe.
+- [ ] Declarar Telegram como invocación nunca añade
+      `telegram_send_message_to_contact`; Gmail solo aparece ante intención
+      explícita de correo saliente.
 
 ### 4.4 Diseño — gates, simulación y publicación
 
@@ -108,7 +143,22 @@ checks transversales.
 - [ ] Tras publicar: queda claro qué versión quedó activa y qué pasa con casos
       en curso de la versión anterior.
 
-### 4.5 Ejecución — caso sintético
+### 4.5 Prueba con IA operativa
+
+- [ ] La simulación estructural se distingue de la prueba que usa el modelo
+      operativo real.
+- [ ] La corrida muestra modelo ejecutor, juez, escenarios, costo/latencia y
+      evidencia; writes externos permanecen simulados.
+- [ ] Para un skill documental, los fixtures privados TXT/DOCX llevan
+      provenance `studio_qualification_fixture`; únicamente las tres tools
+      read-only de runtime attachments pueden ejecutarse. Cualquier Gmail,
+      Telegram, publicación u otra tool fuera de ese allowlist falla cerrado.
+- [ ] Cambiar artefacto/modelo/rúbrica vuelve la calificación
+      **Desactualizada**, no fallida, y ofrece recalificar.
+- [ ] Un fallo solo puede producir una nueva versión borrador; nunca modifica
+      ni publica silenciosamente la vigente.
+
+### 4.6 Ejecución — caso sintético
 
 - [ ] Crear el caso `test_mode` fijado a la versión publicada, desde la UI.
 - [ ] En **Trabajo durable** y **Unidades de trabajo**: labels naturales en
@@ -138,6 +188,23 @@ checks transversales.
 | L/M | (Observación registrada, no check de esta pasada) Headless-first: vistas ricas como links firmados con retorno fácil al canal — insumo para activar §16.1. |
 | N | Formato skill: `SKILL.md` + frontmatter; paridad de paquete completo es Slice 4.3 (diferido). |
 | MCP | (No es check de esta pasada) MCP **no** se evalúa ni se espera como 4ª pestaña de Integraciones. Tools ≠ MCP: MCP es transporte; cuando exista, cae en Conexiones + catálogo de Tools (finding 27 / Technical Plan §28.14). |
+
+### 5.1 Observabilidad y decisión de rollout
+
+- [ ] Revisar métricas de gap planner: `fail_closed` por código/modelo,
+      preguntas por turno, blockers en checkpoint/hard limit, defaults y tiempo
+      hasta materialización.
+- [ ] Revisar adjuntos por canal/formato: accepted/rejected/failed, p95 de
+      extracción, truncamiento, ZIP guards, denegaciones tenant/envelope y
+      promoción a casos. `.xls` rechazado se reporta como política esperada.
+- [ ] Revisar calificación: pass/fail/stale, costo/latencia, tool denials,
+      fixture gates y reparaciones. Write externo observado = detener canary.
+- [x] Ejecutar regresión determinista y N-run live owner de batería #1 (5/5,
+      concurrency 5). Recuperaciones conservadoras cubren payloads truncados u
+      omitidos del proveedor; un `fail_closed` sin recuperación sigue siendo
+      alerta de canary.
+- [ ] Seguir la secuencia y rollback canónicos en
+      [`rollout-and-observability.md`](../workflow-studio/rollout-and-observability.md).
 
 ## 6. UI: evaluar antes de construir
 
@@ -226,8 +293,8 @@ Hallazgos de Pasada 2 ya corregidos en código (finding 30):
 
 ### Hallazgo de batería #1 — discovery y revisión de borrador
 
-**Implementado en código (finding 31, 2026-08-07); repetición manual #1/#2
-pendiente tras aplicar migración `00076`.**
+**Implementado en código (finding 31 y extensiones 32–36); walkthrough manual y
+rollout externo siguen pendientes.**
 La clasificación correcta no prueba que la solicitud esté completa. En
 “Seguimiento cordial a propietarios”, Studio reconoció
 `reusable_skill/simple`, pero materializó sin preguntar de dónde leer el
@@ -273,12 +340,19 @@ Contrato de UX esperado antes de reanudar la batería:
 Evidencia automatizada:
 
 - contrato Zod + citas de evidencia + selftests;
+- gap planner determinista: IDs estables, merge append-preserving,
+  dependencias/severidades, máximo cuatro preguntas, defaults explícitos y
+  checkpoint/hard limit blocker-aware;
 - type-check web/workflows/db y suite `test:workflow-studio`;
-- validadores de skills/migraciones;
-- batería live #1–#10 con `anthropic/claude-opus-5`: los diez destinos
-  conservaron la taxonomía esperada; #1/#2 pidieron aclaraciones materiales;
-- compilación live de `owner-followup-message`: SKILL.md válido, tenant-aware y
-  dos tools reales del catálogo, sin persistir el artefacto durante el eval.
+- validadores de skills/migraciones y selftest del pipeline genérico de
+  adjuntos;
+- regresión determinista y N-run live owner de la batería #1 (5/5). La batería
+  live histórica #1–#10 validó taxonomía y preguntas bajo el contrato anterior;
+  el contrato actual añade planner, paridad de adjuntos y recuperaciones ante
+  payloads incompletos del proveedor;
+- compilación live histórica de `owner-followup-message`: SKILL.md válido,
+  tenant-aware y dos tools reales del catálogo, sin persistir el artefacto
+  durante el eval.
 
 ### Taxonomía del router de autoría (corregida — 2026-08-07)
 

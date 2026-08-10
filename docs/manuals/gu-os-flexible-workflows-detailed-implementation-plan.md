@@ -544,8 +544,8 @@
 
 ### Slice 5.3.1 — Studio discovery + unified draft review
 
-**Status:** [~] implemented in code 2026-08-07; migration apply + manual
-walkthrough #1/#2 pending (finding 31)
+**Status:** [~] implemented in code 2026-08-09; manual walkthrough, live N-run
+stabilization and external rollout pending (findings 31–36)
 **Objective:** Studio must use Gu's existing authoring doctrine to understand an open-ended request before materializing it, then show a consistent review surface for every creation kind.
 
 **Canonical inputs (reuse, do not fork):**
@@ -560,15 +560,60 @@ walkthrough #1/#2 pending (finding 31)
 
 - [x] 1. Shared authoring-doctrine loader: `authoring-doctrine.ts`; references use `read_skill_reference`; both APIs preload the same body/references.
 - [x] 2. Model-backed discovery on every authoring request: `authoring-discovery.ts` + pure Zod contract; deterministic router is advisory/fallback only.
-- [x] 3. Deterministic enforcement: schema, 1–4 questions/turn, evidence quote existence, tenant catalogs, side-effect/compiler gates and explicit confirmation.
+- [x] 3. Deterministic enforcement: schema, evidence quote existence, tenant
+  catalogs, side-effect/compiler gates and explicit confirmation. El modelo
+  propone `gap_candidates`; el planner asigna IDs estables, merge
+  append-preserving, dependencias, severidad
+  `blocking | defaultable | optional`, máximo cuatro preguntas y defaults
+  explícitos. Checkpoint/hard limit no atraviesan blockers.
 - [x] 4. Conversational wizard in Diseño: **Analizar solicitud** → hilo chat (composer único) → checkpoint 3+2 → `Esto entendí` + forma propuesta → **Crear borrador**.
 - [x] 5. Session integrity: tenant-scoped GET resume (reconstruye hilo), confirmation hash, optimistic JSON append, atomic `materializing` claim (migration `00076`), compiled replay and cancellation.
 - [x] 6. Common post-create review in Diseño for all four artifact kinds; skill editor is an explicit later action.
 - [x] 7. Human progress in the thread; technical provenance collapsed; `aria-live` and composer focus after questions.
 - [x] 8. Conversation policy `SOFT_CHECKPOINT=3` / `HARD_LIMIT=5` persisted in `router_output_jsonb.conversation`; compact discovery state reduces tokens after the first answer turn. Automated transcript purge/retention job remains follow-up.
-- [~] 9. Evidence: schema/selftests (incl. conversation policy + thread hydrate), type-check, Studio suite. Manual browser walkthrough #1/#2 and live eval refresh remain.
+- [x] 9. Semántica separada: canales de invocación, inputs de runtime y
+  tools/efectos son dimensiones distintas. Telegram como entrada no implica
+  envío; Gmail solo se propone para intención explícita de email saliente.
+- [x] 10. Evidence: schema/selftests (incl. gap planner, conversation policy +
+  thread hydrate), type-check, Studio suite, N-run determinista y N-run live
+  owner de batería #1 (5/5). El walkthrough manual de canary permanece abierto.
 
 **Non-goals:** a free-form LangGraph chat; a closed catalog of hardcoded questions as the happy path; auto-activation; replacing workflow/capability/publication gates with model judgment; exposing deterministic/model provenance chips in the default UI.
+
+### Slice 5.3.2 — Adjuntos genéricos + calificación operacional
+
+**Status:** [~] foundation implementado 2026-08-09; migraciones por ambiente,
+flags/telemetría de rollout y canary externo pendientes
+**Objective:** una entrada documental por turno funciona igual en Web/Telegram
+y un skill se califica con el modelo operativo sin acceso a efectos externos.
+
+**Tasks:**
+
+- [x] 1. Migración `00077`: runs tenant-scoped con fingerprint, staleness,
+  resultado/costo/latencia y correlación a `ai_usage_events`; migración `00078`:
+  propuestas de repair acotadas, idempotentes y review-only.
+- [x] 2. Migración `00079`: `user_files`, `message_attachments`, bucket privado
+  `user-files`, RLS/path ownership y lifecycle explícito. `not_scanned` no hace
+  afirmación de malware safety.
+- [x] 3. Pipeline genérico compartido Web/Telegram: validación, storage,
+  extracción, envelope, resolver de runtime y tools read-only. Si routing
+  resuelve un caso, promoción al pipeline documental canónico.
+- [x] 4. Formatos de lectura PDF/DOCX/PPTX/XLSX/texto estructurado; guards ZIP,
+  límites y truncamiento. `.xls` se rechaza con
+  `legacy_xls_parser_unsafe` porque el parser disponible es inseguro; convertir
+  a `.xlsx`.
+- [x] 5. Calificación `reusable_skill`: skill forzado, modelo operativo,
+  fixtures privados TXT/DOCX con provenance, solo tres tools read-only,
+  assertions mecánicas antes de juez independiente y repair que nunca aplica.
+- [~] 6. Rollout: aplicar `00079` por ambiente, cablear flags tenant-scoped,
+  emitir eventos estructurados y observar canary. Contrato canónico:
+  [`../workflow-studio/rollout-and-observability.md`](../workflow-studio/rollout-and-observability.md).
+
+**Compat/rollback:** sesiones sin gap plan migran conservadoramente; envelopes
+legacy solo se aceptan bajo ownership; casos conservan su pipeline documental.
+No hacer down-migration de `00077`–`00079`: flag-off/deploy rollback deja filas
+inertes y auditables. Hasta que los flags se cableen, no existe rollback por
+flag para estas superficies.
 
 **Phase 5 exit checks:** [x] ADR + §7.0 aligned · [~] batch durable task compile/run without phantom case (live E2E pending) · [x] Diseño and Control operativo list durable tasks · [x] Studio router distinguishes batch vs case NL · [x] dynamic workflows still gated until verification envelopes + roots land.
 
@@ -611,6 +656,11 @@ walkthrough #1/#2 pending (finding 31)
 | 29 | 2026-08-07 | **`one_shot_skill` en el router de autoría no tenía definición y mezclaba ontologías.** Solo aparecía en Slice 5.3 y Technical Plan §16; una consulta puntual no debe crear nada en Studio, mientras un skill por definición es un procedimiento reusable. `capability_gap` tampoco es un tipo de artefacto: es diagnóstico de compilación/readiness. | Medium (contrato del router antes de Phase 5) | **Taken (user-approved 2026-08-07):** artefactos = `case_workflow | durable_task | reusable_skill(simple|composite) | schedule`; resultados sin artefacto = `clarify | redirect_to_chat`. `schedule` referencia/programa trabajo subyacente; no convierte una consulta en skill. Batería del walkthrough actualizada y Slice 5.3 corregido antes de implementación. |
 | 30 | 2026-08-07 | **Studio Pasada 2 reveló que el compilador siempre producía case workflows;** `required_assets` clasificaba mal datos de runtime como assets de cuenta; la simulación BFS elegía terminales `cancelled` como éxito. | High (calidad authoring + gates) | **Taken:** router de autoría antes de compile; taxonomía `input_requirements` (prerrequisitos vs datos de runtime); simulación ancla en success-terminal; parity de proposers; fidelity gate. Phase 5 amplía alcance a *authoring foundation* además de raíces durable. |
 | 31 | 2026-08-07 | **La batería #1 expuso dos pipelines de autoría divergentes.** `skills/global/skill-authoring/SKILL.md` ya exige capturar outcome, trigger, datos/externos, read-vs-write, HITL y overlap, y `use-case-authoring-vision.md` ya define `discovery → propuesta → revisión humana`; sin embargo `/api/studio-authoring` no carga esa doctrina. Una clasificación determinística `reusable_skill/simple` de alta confianza saltó todo juicio de completitud y materializó `owner-followup-message` con `requires_tenant_context:true`, `allowed_tools:[]` y sin saber dónde leer el último acuerdo. Después redirigió al editor raw de Skills de cuenta, sin resumen común ni confirmación. | High (calidad/autoridad de definiciones; UX de Studio) | **Taken (user-approved 2026-08-07):** Slice 5.3.1. Reusar —no duplicar— `skill-authoring` + referencias y fuentes canónicas; discovery model-backed siempre, con preguntas dinámicas y evidencia; enforcement determinístico solo para contratos/tenancy/catálogos/side-effects/confirmación; wizard especializado `Revisar solicitud → preguntas → Esto entendí → Crear borrador`; resultado estándar en Diseño para los cuatro tipos. |
+| 32 | 2026-08-09 | **Walkthrough humano #1: la revisión era de aceptar-o-reiniciar.** “Esto entendí” no admitía correcciones semánticas; el estado final se ocultaba dentro de detalles técnicos y se duplicaba; `mensaje` mezcló Telegram como canal de invocación con Gmail como efecto, y un DOCX por ejecución apareció como recurso reusable de cuenta. | High (confirmación humana no corregible + contrato de inputs/canales) | **Taken:** Slice Studio correction — revisión conversacional ligada a `confirmationHash`; estado humano persistente; detalle `mensaje · stage`; `runtime_input`/`account_asset` separados; canales de invocación distintos de tools/efectos; resumen único sin chips duplicados. |
+| 33 | 2026-08-09 | **La simulación del Studio no ejecuta el modelo operativo.** Los gates prueban estructura/replay, pero una propuesta creada con Opus puede comportarse distinto al ejecutarse con `MAIN_AGENT_MODEL_ID` o aliases económicos. | High (evidencia de activación incompleta para trabajo agéntico) | **Taken:** Slice de **Prueba con IA operativa** separada de simulación: runner de producción en sandbox, juez independiente por rol/env detrás de assertions deterministas, fingerprint artefacto+runtime con `stale`, cobertura proporcional por tipo y repair loop acotado que solo propone versiones draft. Contrato en `docs/workflow-studio/operational-ai-qualification.md`. |
+| 34 | 2026-08-09 | **Una lista plana de preguntas no era un plan durable de gaps.** El modelo podía omitir en el turno siguiente un faltante no preguntado, reabrir dimensiones resueltas o llegar al checkpoint/hard limit sin distinguir blockers de puntos defaultables/opcionales. | High (materialización insegura o conversación inestable) | **Taken:** planner determinista versionado con IDs estables, merge append-preserving, dependencias/aging, severidad, máximo cuatro preguntas y defaults seguros explícitos; sesión/hash/thread/UI integrados. Regresión determinista #1 y N-run live owner 5/5 pasaron, con recuperación conservadora ante payloads truncados/omitidos del proveedor. |
+| 35 | 2026-08-09 | **Los adjuntos conversacionales estaban fragmentados por canal/caso y la documentación reducía Telegram a capacidades parciales.** Un `runtime_input` genérico necesitaba tenancy, storage, extracción, envelope y tools comunes; además `.xls` dependía de un parser con advisories sin converter mantenido. | High (paridad, seguridad y promesas de producto) | **Taken:** migración `00079`, bucket privado tenant-owned, pipeline genérico Web/Telegram, resolver y tres tools read-only; promoción explícita al pipeline de caso. PDF/DOCX/PPTX/XLSX/TXT/CSV y demás formatos de política soportados; `.xls` rechazado como `legacy_xls_parser_unsafe` y requiere conversión a `.xlsx`. |
+| 36 | 2026-08-09 | **El código aditivo de gap planner, adjuntos y calificación no consume todavía flags tenant-scoped dedicados.** La regla global del plan exige canary/rollback por flag, pero hoy una emergencia depende de rollback de despliegue. | Medium (riesgo operacional, no invalida selftests) | **Pending runtime follow-up; documented now:** usar `account_feature_flags` para `studio_authoring_gap_planner_v1`, `generic_attachments_v1` y `studio_operational_qualification_v1`, apagados por defecto antes del canary externo. No afirmar rollback por flag hasta cablearlos; no hacer down-migration de `00077`–`00079`. |
 | — | | *(append as found)* | | |
 
 **Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 2.7-1, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3); channel-linked generated views (Technical Plan §28.12 — no slice until activated); MCP server connections / tool materialization (Technical Plan §28.14 — finding 27; deferred until sandboxing + real need).

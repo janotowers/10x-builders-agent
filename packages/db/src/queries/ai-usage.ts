@@ -57,6 +57,7 @@ export async function insertAiUsageEvent(
       turn_id: input.turnId ?? null,
       operational_case_id: input.operationalCaseId ?? null,
       workflow_definition_id: input.workflowDefinitionId ?? null,
+      studio_qualification_run_id: input.studioQualificationRunId ?? null,
       work_item_id: input.workItemId ?? null,
       work_item_attempt_id: input.workItemAttemptId ?? null,
       metadata_jsonb: input.metadata ?? {},

@@ -110,6 +110,9 @@ export const DEFAULT_WORKFLOW_VERIFIER_MODEL_ID = "openai/gpt-5.4-mini";
 export const DEFAULT_WORKFLOW_INTENT_DECOMPOSER_MODEL_ID = "openai/gpt-5.4-mini";
 /** Default del compilador NL → spec (Phase 4; juicio alto, volumen bajo). */
 export const DEFAULT_WORKFLOW_COMPILER_MODEL_ID = "openai/gpt-5.4-mini";
+/** Default del juez independiente de calificación operativa del Studio. */
+export const DEFAULT_WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID =
+  "anthropic/claude-opus-5";
 
 /** Verificadores independientes de workflows (env override > default). */
 export const WORKFLOW_VERIFIER_MODEL_ID =
@@ -125,6 +128,23 @@ export const WORKFLOW_INTENT_DECOMPOSER_MODEL_ID =
 export const WORKFLOW_COMPILER_MODEL_ID =
   process.env.WORKFLOW_COMPILER_MODEL_ID?.trim() ||
   DEFAULT_WORKFLOW_COMPILER_MODEL_ID;
+
+/**
+ * Juez LLM del Studio. Cadena deliberadamente separada del ejecutor:
+ * override propio → override explícito del compilador → default frontera.
+ */
+export function resolveWorkflowOperationalJudgeModelId(
+  env: Record<string, string | undefined> = process.env
+): string {
+  return (
+    env.WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID?.trim() ||
+    env.WORKFLOW_COMPILER_MODEL_ID?.trim() ||
+    DEFAULT_WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID
+  );
+}
+
+export const WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID =
+  resolveWorkflowOperationalJudgeModelId();
 
 /**
  * Mapa central alias lógico → id de OpenRouter (§9.1). Los perfiles de
