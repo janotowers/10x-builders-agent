@@ -183,6 +183,122 @@ const decisionGeneral = resolveTelegramConversationRoute({
 });
 assert.equal(decisionGeneral.route, "general");
 
+// Regresión 2026-08-09 (2): "dame los leads de junio" no tiene palabra de
+// conteo pero es claramente una petición de métricas — no debe caer en el
+// aclarador del caso, ni siquiera sin contexto de mensajes recientes.
+const analyticsImperative = resolveTelegramConversationRoute({
+  message: "dame los leads de junio",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", operationalCase]]),
+  explicitIntent: false,
+});
+assert.equal(analyticsImperative.route, "general");
+if (analyticsImperative.route === "general") {
+  assert.equal(analyticsImperative.reason, "analytics_query");
+}
+assert.equal(
+  shouldBindTelegramMessageToConversationalCase({
+    message: "dame los leads de junio",
+    opCase: intakeCase,
+  }),
+  false
+);
+
+// Sustantivo inequívoco + mes, sin verbo ni conteo ("los leads de junio").
+const analyticsNounPeriod = resolveTelegramConversationRoute({
+  message: "los leads de junio",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", operationalCase]]),
+  explicitIntent: false,
+});
+assert.equal(analyticsNounPeriod.route, "general");
+
+// «venta» + mes NO debe tratarse como analítica: es vocabulario inmobiliario
+// («disponible para venta en junio» puede ser respuesta del caso).
+const reviewCaseForAnalyticsGuard = {
+  ...operationalCase,
+  status: "waiting_internal",
+  current_step: "documents_received",
+} as OperationalCase;
+const propertySaleWithMonth = resolveTelegramConversationRoute({
+  message: "la operacion es venta, disponible en junio",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", reviewCaseForAnalyticsGuard]]),
+  explicitIntent: false,
+});
+assert.equal(propertySaleWithMonth.route, "case");
+
+// Contexto conversacional: hilo reciente de métricas + mensaje ambiguo sin
+// datos de propiedad → general (no aclarar contra el caso).
+const analyticsContextMessages = [
+  {
+    id: "message-analytics-ctx",
+    session_id: "session-1",
+    role: "assistant" as const,
+    content: "En julio tuvimos 0 leads creados. Lo medimos en horario de México CDMX.",
+    created_at: new Date().toISOString(),
+  },
+];
+const ambiguousWithAnalyticsContext = resolveTelegramConversationRoute({
+  message: "y esas cifras de donde salen?",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", operationalCase]]),
+  explicitIntent: false,
+  recentMessages: analyticsContextMessages,
+});
+assert.equal(ambiguousWithAnalyticsContext.route, "general");
+if (ambiguousWithAnalyticsContext.route === "general") {
+  assert.equal(
+    ambiguousWithAnalyticsContext.reason,
+    "analytics_context_continuation"
+  );
+}
+
+// El mismo mensaje SIN contexto analítico conserva el aclarador (no regresión
+// del flujo operativo).
+const ambiguousWithoutContext = resolveTelegramConversationRoute({
+  message: "y esas cifras de donde salen?",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", operationalCase]]),
+  explicitIntent: false,
+});
+assert.equal(ambiguousWithoutContext.route, "clarify");
+
+// Con adjuntos, el contexto analítico NO desvía: un archivo es señal fuerte
+// de que el mensaje pertenece al caso.
+const attachmentDespiteAnalyticsContext = resolveTelegramConversationRoute({
+  message: "aqui esta lo que me pediste",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", operationalCase]]),
+  explicitIntent: false,
+  recentMessages: analyticsContextMessages,
+  hasAttachments: true,
+});
+assert.equal(attachmentDespiteAnalyticsContext.route, "clarify");
+
+// Regresión 2026-08-09: una continuación mensual breve conserva el contexto
+// analítico y no debe disparar la asociación con un caso inmobiliario activo.
+const analyticsMonthFollowUp = resolveTelegramConversationRoute({
+  message: "y en julio?",
+  bindings: [binding],
+  candidateCasesById: new Map([["case-1", operationalCase]]),
+  explicitIntent: false,
+  recentMessages: [
+    {
+      id: "message-analytics",
+      session_id: "session-1",
+      role: "assistant",
+      content:
+        "En abril tuvimos 510 leads creados. Lo medimos en horario de México CDMX y considerando la inmobiliaria Alebrixe.",
+      created_at: new Date().toISOString(),
+    },
+  ],
+});
+assert.equal(analyticsMonthFollowUp.route, "general");
+if (analyticsMonthFollowUp.route === "general") {
+  assert.equal(analyticsMonthFollowUp.reason, "analytics_period_followup");
+}
+
 const duplicateBinding = {
   ...binding,
   id: "binding-duplicate",

@@ -1,5 +1,10 @@
-import { isPropertyOptioningIntent } from "@agents/agent";
+import {
+  isPropertyOptioningIntent,
+  isShortMonthPeriodFollowUp,
+  recentMessagesSuggestCompanyData,
+} from "@agents/agent";
 import type {
+  AgentMessage,
   OperationalCase,
   OperationalCaseConversationBinding,
 } from "@agents/types";
@@ -16,15 +21,46 @@ function normalize(value: string) {
     .trim();
 }
 
+const ANALYTICS_COUNT_RE =
+  /\b(cuantos|cuantas|cuanto|cuanta|total|conteo|numero|cantidad|promedio|conversion|tasa)\b/;
+const ANALYTICS_METRIC_NOUN_RE =
+  /\b(leads?|prospectos?|citas?|ventas?|cierres?|mensajes?|usuarios?)\b/;
+/**
+ * Sustantivos de métrica que NO colisionan con el vocabulario inmobiliario
+ * ("casa en venta", "renta"). Solo estos habilitan la detección relajada por
+ * periodo, para no robarle mensajes legítimos a un caso de opcionamiento.
+ */
+const ANALYTICS_UNAMBIGUOUS_NOUN_RE =
+  /\b(leads?|prospectos?|citas?|mensajes?|usuarios?|kpis?|metricas?)\b/;
+const ANALYTICS_REQUEST_VERB_RE =
+  /\b(dame|dime|muestrame|muestra|ensename|listame|traeme|reporte|reportame|tuvimos|hubo|registramos|generamos)\b/;
+const ANALYTICS_PERIOD_RE =
+  /\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|hoy|ayer|20\d{2})\b/;
+
+/**
+ * Consulta de métricas del negocio. Tres señales, de más estricta a más
+ * relajada: conteo explícito ("cuántos leads"), verbo de petición de datos
+ * ("dame los leads"), o sustantivo inequívoco + periodo ("leads de junio").
+ * La entrada debe venir normalizada (sin acentos, minúsculas).
+ */
 function looksLikeBusinessAnalyticsQuestion(text: string) {
+  if (ANALYTICS_COUNT_RE.test(text) && ANALYTICS_METRIC_NOUN_RE.test(text)) {
+    return true;
+  }
+  if (
+    ANALYTICS_REQUEST_VERB_RE.test(text) &&
+    ANALYTICS_METRIC_NOUN_RE.test(text)
+  ) {
+    return true;
+  }
   return (
-    /\b(cuantos|cuantas|cuanto|cuanta|total|conteo|numero|cantidad|promedio|conversion|tasa)\b/.test(
-      text
-    ) &&
-    /\b(leads?|prospectos?|citas?|ventas?|cierres?|mensajes?|usuarios?)\b/.test(
-      text
-    )
+    ANALYTICS_PERIOD_RE.test(text) && ANALYTICS_UNAMBIGUOUS_NOUN_RE.test(text)
   );
+}
+
+/** Variante para texto crudo (normaliza internamente). Para callers externos. */
+export function looksLikeAnalyticsRequestMessage(raw: string): boolean {
+  return looksLikeBusinessAnalyticsQuestion(normalize(raw));
 }
 
 /**
@@ -215,6 +251,9 @@ export function resolveTelegramConversationRoute(params: {
   bindings: OperationalCaseConversationBinding[];
   candidateCasesById: Map<string, OperationalCase>;
   explicitIntent: boolean;
+  recentMessages?: readonly AgentMessage[];
+  /** Adjuntos del turno: señal fuerte de que el mensaje sí es del caso. */
+  hasAttachments?: boolean;
 }): ConversationRouteDecision {
   const text = normalize(params.message);
   if (!text) {
@@ -230,6 +269,17 @@ export function resolveTelegramConversationRoute(params: {
       route: "general",
       confidence: "low",
       reason: "analytics_query",
+      candidateSummaries: [],
+    };
+  }
+  if (
+    isShortMonthPeriodFollowUp(params.message) &&
+    recentMessagesSuggestCompanyData(params.recentMessages ?? [])
+  ) {
+    return {
+      route: "general",
+      confidence: "low",
+      reason: "analytics_period_followup",
       candidateSummaries: [],
     };
   }
@@ -329,6 +379,22 @@ export function resolveTelegramConversationRoute(params: {
         candidateSummaries,
       };
     }
+    // Contexto conversacional: si el hilo reciente es de métricas y este
+    // mensaje no trae datos de propiedad ni adjuntos, es continuación
+    // analítica ("dame los leads de junio", "y la semana pasada?") — no debe
+    // caer en el aclarador del caso.
+    if (
+      !params.hasAttachments &&
+      !looksLikePropertyDataDetails(text) &&
+      recentMessagesSuggestCompanyData(params.recentMessages ?? [])
+    ) {
+      return {
+        route: "general",
+        confidence: "low",
+        reason: "analytics_context_continuation",
+        candidateSummaries,
+      };
+    }
     if (opCase) {
       return {
         route: "clarify",
@@ -381,6 +447,22 @@ export function resolveTelegramConversationRoute(params: {
         candidateSummaries,
       };
     }
+  }
+
+  // Mismo guard de contexto analítico para el aclarador multi-caso (un
+  // arranque explícito de opcionamiento sí debe seguir aclarando).
+  if (
+    !params.explicitIntent &&
+    !params.hasAttachments &&
+    !looksLikePropertyDataDetails(text) &&
+    recentMessagesSuggestCompanyData(params.recentMessages ?? [])
+  ) {
+    return {
+      route: "general",
+      confidence: "low",
+      reason: "analytics_context_continuation",
+      candidateSummaries,
+    };
   }
 
   return {

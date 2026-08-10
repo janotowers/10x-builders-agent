@@ -19,12 +19,15 @@ import {
   getOperationalCase,
   setConversationBindingStatus,
 } from "@agents/db";
+import { isShortMonthPeriodFollowUp } from "@agents/agent";
 import { isAdoptableConversationalCaseForE2ELab } from "./e2e-lab-routing-isolation";
 import type {
+  AgentMessage,
   OperationalCase,
   OperationalCaseConversationBinding,
 } from "@agents/types";
 import {
+  looksLikeAnalyticsRequestMessage,
   resolveTelegramConversationRoute,
   shouldBindTelegramMessageToConversationalCase,
 } from "./conversational-case-routing";
@@ -476,10 +479,20 @@ export async function routeConversationalMessageAgainstBindings(params: {
   explicitIntent: boolean;
   candidateCasesById?: Map<string, OperationalCase>;
   /**
+   * Contexto inmediato del chat para reconocer continuaciones analíticas
+   * breves ("y en julio?") sin confundirlas con un caso operativo.
+   */
+  recentMessages?: readonly AgentMessage[];
+  /**
    * Adjuntos del turno (web staging). Se persisten en pending_message_jsonb
    * al pedir aclaración para no perderlos al responder 1/sí.
    */
   attachments?: PendingAttachmentRef[];
+  /**
+   * Telegram trae media inbound sin envelope de staging web. Marca el turno
+   * como con adjunto para no desviar el routing por contexto analítico.
+   */
+  hasAttachments?: boolean;
 }): Promise<ConversationalRouteResult> {
   const { db, message, pendingBindings, explicitIntent } = params;
   let candidateCasesById = params.candidateCasesById;
@@ -498,6 +511,11 @@ export async function routeConversationalMessageAgainstBindings(params: {
     bindings: pendingBindings,
     candidateCasesById,
     explicitIntent,
+    recentMessages: params.recentMessages,
+    hasAttachments: Boolean(
+      params.hasAttachments ||
+        (params.attachments && params.attachments.length > 0)
+    ),
   });
 
   if (routeDecision.route === "case") {
@@ -568,6 +586,46 @@ export async function routeConversationalMessageAgainstBindings(params: {
           : {}),
       };
     }
+    return { route: "none" };
+  }
+
+  // El mensaje (o su contexto) es una consulta de métricas. No aplicar el
+  // fallback de mensajes cortos del caso operativo.
+  const analyticsRouteReasons = new Set([
+    "analytics_query",
+    "analytics_period_followup",
+    "analytics_context_continuation",
+  ]);
+  if (analyticsRouteReasons.has(routeDecision.reason)) {
+    // Autorrecuperación para conversaciones que ya recibieron el prompt
+    // incorrecto antes de desplegar esta corrección. Sólo se limpia una
+    // aclaración cuyo mensaje pendiente también sea analítico (cambio de mes
+    // o petición de métricas).
+    const staleAnalyticsClarifications = pendingBindings.filter((binding) => {
+      const pendingText =
+        typeof binding.pending_message_jsonb?.text === "string"
+          ? binding.pending_message_jsonb.text
+          : "";
+      return (
+        binding.status === "clarification_needed" &&
+        (isShortMonthPeriodFollowUp(pendingText) ||
+          looksLikeAnalyticsRequestMessage(pendingText))
+      );
+    });
+    await Promise.all(
+      staleAnalyticsClarifications.map((binding) =>
+        setConversationBindingStatus(db, {
+          bindingId: binding.id,
+          status: "awaiting_user",
+          pendingMessage: {},
+          candidateRoutes: [],
+          metadataMerge: {
+            clarification_last_decision: "analytics_bypass",
+            clarification_resolved_at: new Date().toISOString(),
+          },
+        })
+      )
+    );
     return { route: "none" };
   }
 

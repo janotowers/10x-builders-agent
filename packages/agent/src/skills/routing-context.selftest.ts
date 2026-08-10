@@ -68,6 +68,44 @@ function run(): void {
     /"lastActiveSkill": "lead-follow-up-draft"/
   );
 
+  // Regresión 2026-08-09: el copy operativo del asistente ("Tu mensaje podría
+  // corresponder a este caso en curso…") contiene la palabra «mensaje» y
+  // secuestraba la continuidad hacia lead-follow-up-draft. Un cambio de mes
+  // tras un turno de métricas debe seguir siendo company-data.
+  const analyticsAfterClarifyNoise = deriveSkillRoutingContext(
+    [
+      msg("user", "cuantos leads tuvimos en abril?"),
+      msg(
+        "assistant",
+        "En abril tuvimos 510 leads creados. Lo medimos en horario de México CDMX y considerando la inmobiliaria Alebrixe."
+      ),
+      msg("user", "y en julio?"),
+      msg(
+        "assistant",
+        "Tu mensaje podría corresponder a este caso en curso:\n• [Real] Casa en venta en Las Fuentes\n¿Quieres que lo asocie a ese caso? Responde: sí / no."
+      ),
+    ],
+    "y en julio?",
+    { identity: { org_name: "Alebrixe" } }
+  );
+  assert.equal(analyticsAfterClarifyNoise.isContinuation, true);
+  assert.equal(analyticsAfterClarifyNoise.lastActiveSkill, "company-data");
+  assert.equal(shouldRouteFromContinuity(analyticsAfterClarifyNoise), true);
+
+  // Incluso sin la palabra «total»/«cuántos» en el historial (metric ausente),
+  // un fragmento de solo-mes con dominio reciente es continuación analítica.
+  const analyticsDeclarativeHistory = deriveSkillRoutingContext(
+    [
+      msg(
+        "assistant",
+        "En abril tuvimos 510 leads creados. Lo medimos en horario de México CDMX."
+      ),
+    ],
+    "y en julio?",
+    {}
+  );
+  assert.equal(analyticsDeclarativeHistory.lastActiveSkill, "company-data");
+
   const leadFollowUpWithArticle = deriveSkillRoutingContext(
     [
       msg("user", "Ayúdame a escribir un WhatsApp para darle seguimiento a un lead"),

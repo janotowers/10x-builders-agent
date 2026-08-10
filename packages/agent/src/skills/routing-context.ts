@@ -43,8 +43,12 @@ const COUNT_RE =
   /\b(cuantos|cuantas|cuanto|cuanta|total|conteo|numero|cantidad|count)\b/;
 const CONTINUATION_RE =
   /^(?:y\s+)?(?:(?:en|para|de)\s+)?(?:ese\s+)?(?:mes|periodo|trimestre|año|ano|semana|dia|día|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s*[?!.]*)?$/;
+// «mensaje» a secas es demasiado genérico: aparece en copy operativo del
+// propio asistente ("Tu mensaje podría corresponder a este caso…") y
+// secuestraba la continuidad hacia lead-follow-up-draft. Solo la frase
+// completa «mensaje de seguimiento» cuenta como señal.
 const LEAD_FOLLOW_UP_CONTEXT_RE =
-  /\b(?:whatsapp|mensaje|seguimiento|follow[-\s]?up|lead|prospecto|prospecta|cliente potencial|nombre del lead|propiedad o desarrollo|ultima interaccion|accion deseada)\b/;
+  /\b(?:whatsapp|mensaje de seguimiento|seguimiento|follow[-\s]?up|lead|prospecto|prospecta|cliente potencial|nombre del lead|propiedad o desarrollo|ultima interaccion|accion deseada)\b/;
 const SHORT_DETAIL_REPLY_RE =
   /^(?:(?:su|el|la)\s+)?(?:nombre|se llama|propiedad|desarrollo|tono|formal|amigable|casual|ultima interaccion|accion deseada)\b|^(?:quiero|busca|le interesa|prefiere|fue|vino|pregunto|pregunt[oó]|consult[oó])\b/;
 
@@ -93,18 +97,24 @@ export function deriveSkillRoutingContext(
   const currentMetric = detectMetric(currentNorm);
   const currentPeriod = detectPeriod(currentNorm);
   const currentConversationSkill = detectConversationSkill(currentNorm);
+  const isPeriodShiftContinuation =
+    currentNorm.length > 0 && CONTINUATION_RE.test(currentNorm);
   const isContinuation =
     currentNorm.length > 0 &&
-    (CONTINUATION_RE.test(currentNorm) ||
+    (isPeriodShiftContinuation ||
       (Boolean(recentConversationSkill) && isShortDetailReply(currentNorm)));
   if (currentDomain) lastDomain = currentDomain;
   if (currentMetric) lastMetric = currentMetric;
   if (currentPeriod) lastPeriod = currentPeriod;
 
+  // Un fragmento que solo cambia el periodo ("y en julio?") es continuación
+  // analítica, no una respuesta de detalle de otro skill conversacional.
   const lastActiveSkill =
     currentConversationSkill ??
-    recentConversationSkill ??
-    (lastDomain && lastMetric ? "company-data" : undefined);
+    (isPeriodShiftContinuation && lastDomain
+      ? "company-data"
+      : (recentConversationSkill ??
+        (lastDomain && lastMetric ? "company-data" : undefined)));
   const confidence = scoreConfidence({
     isContinuation,
     lastActiveSkill,

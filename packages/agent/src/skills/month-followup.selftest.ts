@@ -8,6 +8,7 @@ function run(): void {
   assert.equal(isShortMonthPeriodFollowUp("y en abril?"), true);
   assert.equal(isShortMonthPeriodFollowUp("¿y en febrero?"), true);
   assert.equal(isShortMonthPeriodFollowUp("y en marzo"), true);
+  assert.equal(isShortMonthPeriodFollowUp("y en julio?"), true);
   assert.equal(isShortMonthPeriodFollowUp("marzo"), true);
   assert.equal(isShortMonthPeriodFollowUp("cuantos leads en abril"), false);
   assert.equal(isShortMonthPeriodFollowUp("hola"), false);
