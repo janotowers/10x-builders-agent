@@ -1,6 +1,6 @@
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 
 const MAX_EXTRACTED_CHARS = 24_000;
 
@@ -90,16 +90,34 @@ async function extractDocxText(buffer: Buffer): Promise<string> {
 }
 
 async function extractXlsxText(buffer: Buffer): Promise<string> {
-  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(
+    buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]
+  );
   const sheets: string[] = [];
-  for (const sheetName of workbook.SheetNames) {
-    const sheet = workbook.Sheets[sheetName];
-    if (!sheet) continue;
-    const csv = XLSX.utils.sheet_to_csv(sheet).trim();
-    if (csv) {
-      sheets.push(`## Hoja: ${sheetName}\n${csv}`);
-    }
-  }
+  workbook.eachSheet((sheet) => {
+    const rows: string[] = [];
+    sheet.eachRow({ includeEmpty: false }, (row) => {
+      const values = row.values;
+      if (!Array.isArray(values)) return;
+      rows.push(
+        values
+          .slice(1)
+          .map((value) => {
+            const text =
+              value && typeof value === "object" && "text" in value
+                ? String(value.text ?? "")
+                : String(value ?? "");
+            return /[",\n]/.test(text)
+              ? `"${text.replace(/"/g, '""')}"`
+              : text;
+          })
+          .join(",")
+      );
+    });
+    const csv = rows.join("\n").trim();
+    if (csv) sheets.push(`## Hoja: ${sheet.name}\n${csv}`);
+  });
   return sheets.join("\n\n");
 }
 
@@ -160,4 +178,4 @@ export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 export const CHAT_IMAGE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 
 export const CHAT_ATTACHMENT_ACCEPT =
-  "image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.gif,.bmp,.tif,.tiff,.pdf,.docx,.xlsx,.txt,.md,.csv,.json,.xml,.html,.log,.yaml,.yml,text/*,application/pdf,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  "image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.gif,.bmp,.tif,.tiff,.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.xml,.html,.log,.yaml,.yml,text/*,application/pdf,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation";

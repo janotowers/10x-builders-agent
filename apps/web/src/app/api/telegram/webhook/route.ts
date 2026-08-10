@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import {
   createServerClient,
   decryptToken,
@@ -13,6 +14,7 @@ import {
   getInternalUserNotification,
   getOperationalCase,
   getActiveE2ELabSession,
+  getSessionMessages,
   getTelegramChatId,
   insertOperationalCaseEvent,
   listInternalUserNotifications,
@@ -80,7 +82,11 @@ import {
 } from "@/lib/operational-cases/case-document-ingestion";
 import { ensureConversationalCase } from "@/lib/operational-cases/ensure-conversational-case";
 import { buildTelegramOperationalCaseToolApprovalPolicy } from "@/lib/operational-cases/telegram-operational-case-tool-policy";
-import type { InternalUserNotification, OperationalCase } from "@agents/types";
+import type {
+  AgentRuntimeInput,
+  InternalUserNotification,
+  OperationalCase,
+} from "@agents/types";
 import {
   operationalCaseDocumentRequestTargetFromContext,
 } from "@agents/types";
@@ -160,6 +166,11 @@ import {
   inspectPendingMediaGroupAcks,
   MEDIA_GROUP_ACK_WINDOW_MS,
 } from "@/lib/operational-cases/telegram-media-group-ack-store";
+import {
+  AttachmentRuntimeError,
+  ingestGenericAttachment,
+  resolveAttachmentRuntimeInput,
+} from "@/lib/attachments";
 
 /**
  * Ejecuta el tick del agente E2E que quedó diferido por la aprobación de
@@ -2917,6 +2928,13 @@ export async function POST(request: Request) {
       }
     }
     if (!conversationalCase && !forceNewConversationalCase) {
+      // Paridad web: con bindings activos, cargar el hilo reciente para no
+      // confundir continuaciones analíticas ("y en julio?", "dame los leads
+      // de junio") con un caso operativo pendiente.
+      const recentMessagesForRouting =
+        routingBindings.length > 0
+          ? await getSessionMessages(db, session.id, 8)
+          : undefined;
       const routeResult = await routeConversationalMessageAgainstBindings({
         db,
         channel: "telegram",
@@ -2924,6 +2942,8 @@ export async function POST(request: Request) {
         pendingBindings: routingBindings,
         explicitIntent: explicitPropertyIntent,
         candidateCasesById: routingCasesById,
+        recentMessages: recentMessagesForRouting,
+        hasAttachments: Boolean(inboundMedia),
       });
       if (routeResult.route === "clarify") {
         // Salvaguarda: si el mensaje trae archivo, NUNCA cortamos con clarify
@@ -3645,9 +3665,67 @@ export async function POST(request: Request) {
   let processedTurnId: string | null = null;
 
   try {
+    const runtimeTurnId = randomUUID();
+    let runtimeInput: AgentRuntimeInput | undefined;
+    if (inboundMedia) {
+      try {
+        const fileInfo = await getTelegramFile(inboundMedia.fileId);
+        if (!fileInfo.file_path) {
+          throw new Error("telegram_file_path_missing");
+        }
+        const bytes = new Uint8Array(
+          await downloadTelegramFile(fileInfo.file_path)
+        );
+        const stored = await ingestGenericAttachment({
+          db,
+          userId,
+          fileName: inboundMedia.originalName,
+          mimeType: inboundMedia.contentType,
+          bytes,
+          channel: "telegram",
+          source: "external_copy",
+          metadata: {
+            source: "telegram_inbound",
+            telegram_message_id: message.message_id,
+            telegram_file_id: inboundMedia.fileId,
+            telegram_file_unique_id: inboundMedia.uniqueId,
+          },
+        });
+        runtimeInput = await resolveAttachmentRuntimeInput({
+          db,
+          userId,
+          sessionId: session.id,
+          turnId: runtimeTurnId,
+          channel: "telegram",
+          envelopes: [stored.envelope],
+        });
+        if (!agentMessageText) {
+          agentMessageText = `Analiza el archivo adjunto «${inboundMedia.originalName}» según la habilidad aplicable.`;
+        }
+      } catch (error) {
+        if (
+          error instanceof AttachmentRuntimeError &&
+          error.code.startsWith("attachment_validation:")
+        ) {
+          await sendTelegramMessage(
+            chatId,
+            error.code.endsWith("legacy_xls_parser_unsafe")
+              ? "Los archivos .xls antiguos no están habilitados porque el parser disponible no cumple el estándar de seguridad. Convierte el archivo a .xlsx."
+              : "No pude aceptar ese archivo. Usa PDF, DOCX, PPTX, XLSX, TXT, CSV, JSON, XML, HTML, YAML o una imagen compatible de hasta 25 MB."
+          );
+          return NextResponse.json({
+            ok: true,
+            routed: "generic_attachment_rejected",
+            reason: error.code,
+          });
+        }
+        throw error;
+      }
+    }
     const result = await withTypingHeartbeat(chatId, () =>
       runAgent({
         message: agentMessageText,
+        turnId: runtimeTurnId,
         userId,
         sessionId: session.id,
         systemPrompt:
@@ -3694,6 +3772,7 @@ export async function POST(request: Request) {
         caseId: conversationalCase?.id,
         toolApprovalPolicy:
           buildTelegramOperationalCaseToolApprovalPolicy(conversationalCase),
+        runtimeInput,
       })
     );
     processedTurnId = result.turnId ?? null;

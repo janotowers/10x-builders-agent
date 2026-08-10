@@ -36,6 +36,7 @@ import type {
   ToolApprovalPolicy,
   ToolCallSource,
   OperationalCaseFlowStep,
+  AgentRuntimeInput,
 } from "@agents/types";
 import {
   generatedDocumentDedupKey,
@@ -51,7 +52,10 @@ import {
   DEFAULT_HEARTBEAT_TEMPERATURE,
   DEFAULT_INTERACTIVE_TEMPERATURE,
 } from "./model";
-import { bindAiUsageContext } from "./usage/ai-usage-context";
+import {
+  bindAiUsageContext,
+  currentAiUsageContext,
+} from "./usage/ai-usage-context";
 import {
   buildLangChainTools,
   resolveToolApprovalMode,
@@ -63,6 +67,10 @@ import {
   getSkillRegistryForUser,
   buildPlaybookInjection,
   getCachedSkillsRegistryRoot,
+  overlaySkillRegistryForTurn,
+  SkillUnderTestValidationError,
+  validateSkillUnderTestInput,
+  type SkillUnderTestInput,
 } from "./skills/runtime";
 import { selectSkillForTurn } from "./skills/select";
 import {
@@ -93,6 +101,7 @@ import {
   writeTurnSummary,
   type TurnSummaryInput,
 } from "./turn_log";
+import { buildRuntimeAttachmentEvidenceBlock } from "./tools/runtime-attachments";
 
 export interface AgentInput {
   message?: string;
@@ -144,6 +153,18 @@ export interface AgentInput {
   toolApprovalPolicy?: ToolApprovalPolicy;
   /** Force a specific skill for this run (e.g. persisted scheduled task skill). */
   forcedSkillId?: string | null;
+  /**
+   * Turn-local draft account skill used only by authenticated server-side
+   * Studio qualification. The runtime validates ownership and frontmatter,
+   * overlays this one record on the user's normal registry, and forces it for
+   * this call without mutating any registry cache.
+   */
+  skillUnderTest?: SkillUnderTestInput;
+  /**
+   * Trusted, turn-scoped channel-neutral attachment evidence. Callers must
+   * resolve ownership/lifecycle before invoking runAgent.
+   */
+  runtimeInput?: AgentRuntimeInput;
   /**
    * Operational case binding. Cuando se provee, runAgent:
    *   1. Lee operational_cases + últimos eventos y los inyecta en el system
@@ -1149,6 +1170,24 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     | "heartbeat"
     | "case_runner" = channel ? channel : input.autoApproveTools ? "cron" : "web";
 
+  if (input.skillUnderTest) {
+    validateSkillUnderTestInput(input.skillUnderTest, input.userId);
+  }
+  if (input.skillUnderTest && resumeDecision) {
+    throw new SkillUnderTestValidationError(
+      "skillUnderTest cannot be supplied when resuming an in-flight turn"
+    );
+  }
+  if (
+    input.skillUnderTest &&
+    input.forcedSkillId &&
+    input.forcedSkillId !== input.skillUnderTest.slug
+  ) {
+    throw new SkillUnderTestValidationError(
+      "forcedSkillId must match skillUnderTest.slug when both are supplied"
+    );
+  }
+
   // Slice 0.4 — AI usage metering: ata la atribución del turno (tenant,
   // canal, sesión, turn, caso) al contexto async. Los modelos del grafo
   // (main/selector/compaction) y las llamadas OpenRouter internas de los
@@ -1164,6 +1203,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       workflowDefinitionId: input.workflowDefinitionId ?? null,
       workItemId: input.workItemId ?? null,
       workItemAttemptId: input.workItemAttemptId ?? null,
+      studioQualificationRunId:
+        currentAiUsageContext()?.context.studioQualificationRunId ?? null,
     },
     db
   );
@@ -1207,7 +1248,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // El bloque de contexto "[Caso operacional]" se construye aquí y se
   // concatena al system prompt más abajo.
   let operationalCaseContextBlock = "";
-  let resolvedForcedSkillId = input.forcedSkillId ?? null;
+  let resolvedForcedSkillId =
+    input.skillUnderTest?.slug ?? input.forcedSkillId ?? null;
   let boundOperationalStepKey: string | null = null;
   let boundOperationalFlow: OperationalCaseFlowStep[] | undefined;
   const resolvedToolCallSource = resolveToolCallSource(input);
@@ -1279,7 +1321,14 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   let skillSelectionSnapshot: TurnSummaryInput["skillSelection"];
   if (resolvedForcedSkillId && !resumeDecision) {
     try {
-      const registry = await getSkillRegistryForUser(input.db, input.userId);
+      const baseRegistry = await getSkillRegistryForUser(input.db, input.userId);
+      const registry = input.skillUnderTest
+        ? overlaySkillRegistryForTurn(
+            baseRegistry,
+            input.skillUnderTest,
+            input.userId
+          )
+        : baseRegistry;
       const registrySize = registry.list().length;
       const registryRoot = getCachedSkillsRegistryRoot() ?? undefined;
       activeSkill = await resolveSkill(resolvedForcedSkillId, registry);
@@ -1295,6 +1344,14 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
         registrySize,
       };
     } catch (err) {
+      if (input.skillUnderTest) {
+        throw err instanceof SkillUnderTestValidationError
+          ? err
+          : new SkillUnderTestValidationError(
+              `skillUnderTest '${input.skillUnderTest.slug}' could not be resolved`,
+              err
+            );
+      }
       console.warn(
         `[skills] forced skill failed; continuing without a skill: ${err instanceof Error ? err.message : String(err)}`
       );
@@ -1350,6 +1407,9 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
           !input.autoApproveTools &&
           shouldRouteFromContinuity(routingContext) &&
           routingContext.lastActiveSkill === "lead-follow-up-draft" &&
+          // Un cambio de mes ("y en julio?") jamás es un detalle de lead:
+          // no debe desplazar la selección analítica del selector.
+          !isShortMonthPeriodFollowUp(message) &&
           selection.skillId !== routingContext.lastActiveSkill &&
           skillCandidateIsEnabled(routingContext.lastActiveSkill, candidateSlugs)
         ) {
@@ -1523,6 +1583,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     operationalStepKey: boundOperationalStepKey,
     toolCallSource: resolvedToolCallSource,
     toolApprovalPolicy: input.toolApprovalPolicy,
+    runtimeInput: input.runtimeInput,
   });
   emitEvent({
     type: "tools_bound",
@@ -1589,6 +1650,8 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   const baseWithCase = operationalCaseContextBlock
     ? baseWithSkill + operationalCaseContextBlock
     : baseWithSkill;
+  const baseWithRuntimeInput =
+    baseWithCase + buildRuntimeAttachmentEvidenceBlock(input.runtimeInput);
 
   // V1-C-α: tenant context block. Solo se inyecta si la skill activa pide
   // `requires_tenant_context: true` Y hay business brain o admin flag —
@@ -1598,7 +1661,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     process.env.BIGQUERY_PROJECT_ID?.trim() || undefined;
   const envBigqueryLocation =
     process.env.BIGQUERY_LOCATION?.trim() || undefined;
-  const tenantContextWired = appendTenantContextBlock(baseWithCase, {
+  const tenantContextWired = appendTenantContextBlock(baseWithRuntimeInput, {
     requiresTenantContext: activeSkill?.requiresTenantContext ?? false,
     businessBrain: input.businessBrain ?? {},
     isUnggaAdmin: input.isUnggaAdmin ?? false,

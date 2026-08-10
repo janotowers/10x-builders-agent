@@ -1,8 +1,10 @@
 # File attachments and document skills
 
-This document records the architecture needed before document-oriented skills
-(`pdf`, `xlsx`, `docx`, `pptx`) can be exposed as reliable user-facing
-capabilities.
+> Status: generic read/inspection foundation implemented (2026-08-09);
+> generation/editing tools remain future work.
+
+This document records the current generic attachment architecture and the
+remaining path for document-oriented skills (`pdf`, `xlsx`, `docx`, `pptx`).
 
 The key principle is simple: **skills are playbooks; tools perform bounded file
 operations**. Do not let skill folders run arbitrary scripts in V1/V1.5.
@@ -34,32 +36,34 @@ operations**. Do not let skill folders run arbitrary scripts in V1/V1.5.
 
 ## Storage model
 
-For the web product, **Supabase Storage should be the source of truth** for
-files the user uploads and files the assistant generates.
+For the web product, **private Supabase Storage is the source of truth** for
+bytes. Migration `00079_generic_attachments.sql` creates the private
+`user-files` bucket (25 MB object limit), tenant-scoped metadata and
+message/turn associations.
 
-Recommended buckets:
+Current bucket:
 
 | Bucket | Purpose | Visibility |
 |--------|---------|------------|
-| `user-files` | Original user uploads and connected external copies. | Private |
-| `generated-files` | Files created or modified by the assistant. | Private |
+| `user-files` | Uploads, external copies and future generated files. | Private; path/RLS scoped to tenant |
 
-Recommended path shape:
+Current path shape:
 
 ```text
 users/<user_id>/uploads/<file_id>/<original_name>
-users/<user_id>/generated/<file_id>/<filename>
 ```
 
 Use short-lived signed URLs for downloads and previews. Avoid public buckets for
 user documents.
 
+`scan_status=not_scanned` is an explicit “no scanner result” state, not a claim
+that the object is malware-safe. Migration `00079` does not install scanning.
+
 ---
 
 ## Metadata tables
 
-The exact schema can evolve, but the product needs metadata separate from the
-blob bytes.
+Metadata remains separate from blob bytes.
 
 ### `user_files`
 
@@ -68,14 +72,18 @@ Tracks each stored file.
 | Column | Purpose |
 |--------|---------|
 | `id` | Stable file ID used by tools and chat attachments. |
-| `user_id` | Owner account. RLS key in V1. |
+| `user_id` | Owner account and RLS/path key. |
 | `bucket` | Supabase Storage bucket. |
 | `path` | Private storage path. |
 | `original_name` | User-facing filename. |
 | `mime_type` | Content type. |
 | `size_bytes` | Quotas and UI. |
 | `source` | `upload`, `generated`, `external_copy`, etc. |
-| `status` | `ready`, `processing`, `failed`, `deleted`. |
+| `status` | `pending_upload`, `uploaded`, `processing`, `ready`, `failed`, `deleted`. |
+| `validation_status` | `pending`, `accepted`, `rejected`, `failed`. |
+| `scan_status` | `not_scanned`, `pending`, `clean`, `flagged`, `failed`. |
+| `sha256` | Integrity/envelope binding; not a public identifier. |
+| `retention` / `expires_at` | Lifecycle and expiration policy. |
 | `created_at` / `updated_at` | Lifecycle tracking. |
 
 ### `message_attachments`
@@ -85,15 +93,19 @@ Associates files with chat messages and generated outputs.
 | Column | Purpose |
 |--------|---------|
 | `id` | Attachment row ID. |
-| `message_id` | Message owning/displaying the attachment. |
+| `message_id` | Optional message owning/displaying the attachment. |
 | `session_id` | Chat/session context. |
 | `user_id` | Owner account for RLS and query speed. |
 | `file_id` | Reference to `user_files.id`. |
+| `turn_id` | Optional runtime turn; at least message or turn is required. |
+| `channel` | `web`, `telegram`, `email`, `api` or `system`. |
 | `role` | `input` or `output`. |
+| `ordinal` | Stable ordering within the message/turn. |
 | `created_at` | UI ordering. |
 
-If the app already stores chat upload metadata elsewhere, keep one source of
-truth and map tools to that table instead of duplicating state.
+Legacy case-document metadata remains the canonical evidence model for cases.
+The generic turn attachment is promoted/copied into that pipeline only after
+routing resolves a case; it is not silently converted into an `account_asset`.
 
 ---
 
@@ -116,20 +128,23 @@ web product.
 
 ## Tool set
 
-Document skills should call purpose-built attachment tools. These tools should
-be registered in the existing tool catalog/adapters, just like current calendar,
-file, GitHub, and BigQuery tools.
+Document skills call purpose-built runtime attachment tools registered in the
+existing tool catalog/adapters. They are read-only and bounded to the current
+turn's resolved `runtime_input`.
 
-### Read/inspect tools
+### Implemented read/inspect tools
 
 | Tool | Risk | Purpose |
 |------|------|---------|
-| `list_attachments` | low | List files attached to the current message/session, with filenames, MIME types, sizes, and IDs. |
-| `read_attachment_text` | low | Return extracted text/preview for a supported attachment. |
-| `extract_pdf_text` | low/medium | Extract text from PDFs; OCR can be a separate later capability because it is slower and costlier. |
-| `inspect_spreadsheet` | low | Return workbook sheets, headers, row counts, sample rows, and basic schema. |
+| `list_runtime_attachments` | low | List attachments resolved for the current execution. |
+| `read_runtime_attachment` | low | Return a bounded slice of extracted text by attachment ID. |
+| `search_runtime_attachments` | low | Search bounded extracted text across current attachments. |
 
-### Create/save tools
+The resolver verifies tenant ownership, `ready` + accepted validation state,
+expiry, bucket/path, envelope fields and SHA-256 before exposing an attachment.
+Unknown, cross-tenant, expired, non-ready or mismatched envelopes fail closed.
+
+### Future create/save tools
 
 | Tool | Risk | Purpose |
 |------|------|---------|
@@ -151,7 +166,9 @@ so they need operational attributes:
 - `capability`: e.g. `read`, `extract`, `generate`, `modify`.
 
 Skills still carry `scope: business | personal | shared`; document tools are
-mostly `shared` capabilities used by those skills.
+mostly `shared` capabilities used by those skills. A Web/Telegram invocation
+channel is not an execution tool, and attaching a file does not imply an
+outbound Telegram or Gmail effect.
 
 ---
 
@@ -197,35 +214,57 @@ upload logo/assets into Supabase Storage and reference the resulting `file_id`.
 
 ## Processing and sandbox policy
 
-Use closed backend tools or workers for file operations. Examples:
+Current extraction uses closed backend libraries:
 
-- XLSX: `exceljs`, `xlsx`, or a controlled Python worker with `openpyxl`.
-- PDF: `pdf-parse`, `pdf-lib`, `poppler`, or OCR service for scanned docs.
-- DOCX: `docx`, `mammoth`, or controlled Python `python-docx`.
-- PPTX: `pptxgenjs` or controlled Python `python-pptx`.
+- XLSX: `exceljs`.
+- PDF: `pdf-parse` (text PDFs; no OCR claim).
+- DOCX: `mammoth`.
+- PPTX: guarded ZIP/XML text extraction.
+- TXT/Markdown/CSV/JSON/XML/HTML/YAML/log: bounded text extraction.
 
 Do not let a `SKILL.md` introduce arbitrary scripts that run inside the product
-server. If a sandbox is later introduced, treat it as a separate V2+ project
-with strict limits, ephemeral filesystem, network policy, CPU/memory/time caps,
-and malware/PII considerations.
+server. ZIP-based Office files are inspected before inflation: path traversal,
+entry count, per-entry size, total uncompressed size and compression ratio are
+bounded. Extracted text is truncated to the runtime limit.
+
+Web and Telegram now share the generic ingestion/resolution path for
+conversational files. The current allowlist includes PDF, DOCX, PPTX, XLSX,
+text/structured-text extensions and supported images. Images can be carried as
+runtime attachments but this foundation does not claim OCR.
+
+Studio qualification adds a narrower fail-closed sandbox: documentary
+qualification injects private deterministic TXT/DOCX fixtures and autoexecutes
+only the three runtime attachment read tools. External messages, Gmail,
+publication, scheduling and other writes are denied.
+
+Legacy `.xls` is intentionally rejected. The previously installed
+`xlsx@0.18.5` parser has unresolved security advisories, and this repository
+does not currently include a maintained, auditable `.xls` converter. Users
+must convert `.xls` to `.xlsx`; `.xlsx` extraction uses `exceljs` after the
+shared ZIP-container guards run.
 
 ---
 
-## Suggested build sequence
+## Rollout and remaining build sequence
 
-1. Confirm the existing web upload flow and where upload metadata currently
-   lands.
-2. Add or normalize `user_files` / `message_attachments` with RLS.
-3. Store uploads in private Supabase Storage and render message attachment cards.
-4. Add `list_attachments` and `read_attachment_text`.
-5. Add `extract_pdf_text` and `inspect_spreadsheet`.
-6. Introduce `pdf` and `xlsx` skills in read/analysis mode.
-7. Add `save_generated_file`.
-8. Add `create_spreadsheet`, then `create_document`, then
-   `create_presentation`.
-9. Introduce `docx`, `pptx`, and `brand-kit` workflows.
-10. Add Settings UI indicators: available, staged, disabled, missing tool, or
-    missing storage.
+1. Verify qualification migrations `00077`/`00078`, then apply
+   **`00079_generic_attachments.sql`** before enabling generic uploads.
+2. Validate private bucket/RLS/path ownership and lifecycle transitions; do not
+   advertise malware scanning.
+3. Run `test:attachments`, Studio foundation/selftests and migration validation.
+4. Canary Web ingestion, then Telegram, across the supported matrix and all
+   rejection paths. Explicitly test `.xls` → `legacy_xls_parser_unsafe`.
+5. Canary documentary Studio qualification and assert only the three read tools
+   execute.
+6. Wire tenant flags and structured events before external expansion. Canonical
+   metrics, alert conditions and rollback:
+   [`../workflow-studio/rollout-and-observability.md`](../workflow-studio/rollout-and-observability.md).
+7. After the read foundation is stable, add `save_generated_file`,
+   `create_spreadsheet`, `create_document` and `create_presentation` as separate
+   reviewed capabilities; generation is not implied by current read support.
+8. Add Settings indicators and later OCR/scanning only with explicit contracts,
+   limits and observability.
 
-This sequence lets the product ship useful reading/analysis workflows before
-more complex generation/editing workflows.
+Rollback disables the canary surface or reverts the deployment while retaining
+`00079` metadata/objects for audit. Do not down-migrate, delete tenant files or
+re-enable `.xls` as a fallback.

@@ -359,20 +359,77 @@ export async function getTelegramFile(fileId: string): Promise<TelegramFileInfo>
   return body.result;
 }
 
-export async function downloadTelegramFile(filePath: string): Promise<ArrayBuffer> {
+export const TELEGRAM_INBOUND_FILE_MAX_BYTES = 25 * 1024 * 1024;
+export const TELEGRAM_INBOUND_FILE_TIMEOUT_MS = 15_000;
+
+export async function downloadTelegramFile(
+  filePath: string,
+  options?: { maxBytes?: number; timeoutMs?: number }
+): Promise<ArrayBuffer> {
   const token = BOT_TOKEN().trim();
   if (!token) {
     throw new Error("Telegram file download not configured: TELEGRAM_BOT_TOKEN is empty");
   }
-  const res = await telegramBotFetch(
-    `https://api.telegram.org/file/bot${token}/${filePath}`,
-    undefined,
-    { throwOnError: true, label: "downloadFile" }
-  );
-  if (!res!.ok) {
-    throw new Error(`Telegram file download failed: HTTP ${res!.status}`);
+  if (
+    !filePath ||
+    filePath.includes("\\") ||
+    filePath.includes("\0") ||
+    filePath.split("/").some((segment) => segment === "..")
+  ) {
+    throw new Error("Telegram file download rejected: unsafe file path");
   }
-  return res!.arrayBuffer();
+  const maxBytes = Math.min(
+    Math.max(1, options?.maxBytes ?? TELEGRAM_INBOUND_FILE_MAX_BYTES),
+    TELEGRAM_INBOUND_FILE_MAX_BYTES
+  );
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    Math.max(1, options?.timeoutMs ?? TELEGRAM_INBOUND_FILE_TIMEOUT_MS)
+  );
+  try {
+    const res = await telegramBotFetch(
+      `https://api.telegram.org/file/bot${token}/${filePath}`,
+      { signal: controller.signal },
+      { throwOnError: true, label: "downloadFile" }
+    );
+    if (!res?.ok) {
+      throw new Error(`Telegram file download failed: HTTP ${res?.status}`);
+    }
+    const length = Number(res.headers.get("content-length"));
+    if (Number.isFinite(length) && length > maxBytes) {
+      throw new Error("Telegram file download rejected: file_too_large");
+    }
+    if (!res.body) {
+      const bytes = await res.arrayBuffer();
+      if (bytes.byteLength > maxBytes) {
+        throw new Error("Telegram file download rejected: file_too_large");
+      }
+      return bytes;
+    }
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel("file_too_large");
+        throw new Error("Telegram file download rejected: file_too_large");
+      }
+      chunks.push(value);
+    }
+    const combined = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      combined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return combined.buffer;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /**

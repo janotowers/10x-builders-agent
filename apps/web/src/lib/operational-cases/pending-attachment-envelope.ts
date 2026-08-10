@@ -1,23 +1,22 @@
+import type { AttachmentEnvelope } from "@agents/types";
+import { normalizeAttachmentEnvelope } from "@/lib/attachments/envelope";
+
 /**
  * Envelope durable de adjuntos web a través de aclaraciones multi-caso.
  * Solo referencias de staging validadas (sin OCR). El caller promueve con
  * ingestStagedCaseDocument al resolver el caso.
  */
 
-export type PendingAttachmentRef = {
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  storageBucket: string;
-  storagePath: string;
-  sha256: string;
-  suggestedKind?: string;
+export type PendingAttachmentRef = Omit<AttachmentEnvelope, "version"> & {
+  version?: 1;
 };
 
 export function serializePendingAttachments(
   attachments: PendingAttachmentRef[]
 ): PendingAttachmentRef[] {
   return attachments.map((attachment) => ({
+    ...(attachment.version === 1 ? { version: 1 as const } : {}),
+    ...(attachment.fileId ? { fileId: attachment.fileId } : {}),
     fileName: attachment.fileName,
     mimeType: attachment.mimeType,
     sizeBytes: attachment.sizeBytes,
@@ -27,6 +26,12 @@ export function serializePendingAttachments(
     ...(typeof attachment.suggestedKind === "string"
       ? { suggestedKind: attachment.suggestedKind }
       : {}),
+    ...(attachment.channel ? { channel: attachment.channel } : {}),
+    ...(attachment.sessionId ? { sessionId: attachment.sessionId } : {}),
+    ...(attachment.turnId ? { turnId: attachment.turnId } : {}),
+    ...(attachment.role ? { role: attachment.role } : {}),
+    ...(attachment.retention ? { retention: attachment.retention } : {}),
+    ...(attachment.expiresAt ? { expiresAt: attachment.expiresAt } : {}),
   }));
 }
 
@@ -40,37 +45,14 @@ export function parsePendingAttachments(
   const userId = opts?.userId?.trim() || null;
   const parsed: PendingAttachmentRef[] = [];
   for (const item of raw) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const record = item as Record<string, unknown>;
-    if (
-      typeof record.fileName !== "string" ||
-      typeof record.mimeType !== "string" ||
-      typeof record.storageBucket !== "string" ||
-      typeof record.storagePath !== "string" ||
-      typeof record.sha256 !== "string"
-    ) {
-      continue;
-    }
-    if (userId && !record.storagePath.startsWith(`${userId}/`)) {
-      continue;
-    }
-    const ref: PendingAttachmentRef = {
-      fileName: record.fileName,
-      mimeType: record.mimeType,
-      sizeBytes:
-        typeof record.sizeBytes === "number" && Number.isFinite(record.sizeBytes)
-          ? record.sizeBytes
-          : 0,
-      storageBucket: record.storageBucket,
-      storagePath: record.storagePath,
-      sha256: record.sha256,
-    };
-    if (typeof record.suggestedKind === "string") {
-      ref.suggestedKind = record.suggestedKind;
-    } else {
-      ref.suggestedKind = "unknown";
-    }
-    parsed.push(ref);
+    const normalized = normalizeAttachmentEnvelope(item, {
+      ...(userId ? { userId } : {}),
+    });
+    if (!normalized) continue;
+    parsed.push({
+      ...normalized,
+      suggestedKind: normalized.suggestedKind ?? "unknown",
+    });
   }
   return parsed;
 }

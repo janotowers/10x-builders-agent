@@ -18,11 +18,14 @@ export {
   DEFAULT_WORKFLOW_VERIFIER_MODEL_ID,
   DEFAULT_WORKFLOW_INTENT_DECOMPOSER_MODEL_ID,
   DEFAULT_WORKFLOW_COMPILER_MODEL_ID,
+  DEFAULT_WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID,
   WORKFLOW_VERIFIER_MODEL_ID,
   WORKFLOW_INTENT_DECOMPOSER_MODEL_ID,
   WORKFLOW_COMPILER_MODEL_ID,
+  WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID,
   WORKER_MODEL_ALIAS_MAP,
   resolveWorkerModel,
+  resolveWorkflowOperationalJudgeModelId,
   resolveHeartbeatModelId,
   createChatModel,
   createCompactionModel,
@@ -33,6 +36,10 @@ export {
   type ResolvedWorkerModel,
 } from "./model";
 export { isPropertyOptioningIntent } from "./skills/property-optioning-intent";
+export {
+  isShortMonthPeriodFollowUp,
+  recentMessagesSuggestCompanyData,
+} from "./skills/month-followup";
 export {
   buildOperationalCaseIntakeUpdateContext,
   buildOperationalCaseCreateContext,
@@ -108,6 +115,13 @@ export {
 } from "./tools/adapters";
 export type { ToolContext } from "./tools/tool-context";
 export {
+  buildRuntimeAttachmentEvidenceBlock,
+  listRuntimeAttachments,
+  readRuntimeAttachment,
+  RUNTIME_ATTACHMENT_TOOL_IDS,
+  searchRuntimeAttachments,
+} from "./tools/runtime-attachments";
+export {
   normalizeTelegramSendText,
   telegramSendInputsMatch,
 } from "@agents/types";
@@ -148,9 +162,11 @@ export {
   NO_SKILL_ID,
   getGlobalSkillRegistry,
   getSkillRegistryForUser,
+  overlaySkillRegistryForTurn,
   resetGlobalSkillRegistryForTests,
   buildPlaybookInjection,
   defaultSkillsRoot,
+  summarizeSkillQualificationEvidence,
 } from "./skills";
 export type {
   SkillMetadata,

@@ -626,11 +626,19 @@ ligero alineado al *Skill Development Cycle* (GStack/GBrain):
 
 1. **Discovery:** ¿existe skill global que ya cubre el 80%? ¿Es delta de `account_skills`?
 2. **Rúbrica `skill-authoring`:** ningún ítem FAIL; WARN documentados.
-3. **Evals:** ≥3 prompts positivos + ≥3 near-miss que el selector debe rechazar.
+3. **Evals:** ≥3 prompts positivos + ≥3 near-miss que el selector debe rechazar;
+   las ejecuciones usan el modelo operativo resuelto, no el compilador fuerte.
 4. **Tools:** N1 en integraciones de riesgo medio/alto si la skill las usa en producción.
 5. **MECE:** ver §12.3 — sin solapamiento con skills vecinas.
-6. **Evidencia:** 3–10 corridas reales o supervisadas documentadas (no solo teoría).
+6. **Evidencia:** 3–10 corridas reales o supervisadas documentadas (no solo
+   teoría), ligadas a hash del skill y fingerprint del runtime.
 7. **Activación:** humano explícito; nunca auto-activar desde Pattern Layer sin HITL.
+
+La **Prueba con IA operativa** de Studio instrumenta este checklist: corre el
+skill forzado con el modelo de producción dentro de un sandbox y puede usar un
+juez independiente detrás de assertions deterministas. Un cambio de modelo,
+rúbrica o skill vuelve la evidencia `stale`. Contrato:
+[`workflow-studio/operational-ai-qualification.md`](workflow-studio/operational-ai-qualification.md).
 
 ### 12.3 MECE — ownership de skills
 

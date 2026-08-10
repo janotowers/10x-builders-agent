@@ -37,6 +37,8 @@ export * from "./queries/case-approvals";
 export * from "./queries/worker-profiles";
 export * from "./queries/durable-tasks";
 export * from "./queries/studio-authoring-sessions";
+export * from "./queries/studio-qualification-runs";
+export * from "./queries/attachments";
 export { encryptToken, decryptToken, encryptJson, decryptJson } from "./crypto";
 export {
   GOOGLE_CALENDAR_PROVIDER,

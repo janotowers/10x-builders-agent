@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
 import {
   addMessage,
@@ -8,6 +9,7 @@ import {
   getGoogleCalendarAccessToken,
   getActiveE2ELabSession,
   getOperationalCase,
+  getSessionMessages,
   insertOperationalCaseEvent,
   touchConversationBindingForCase,
 } from "@agents/db";
@@ -79,6 +81,11 @@ import {
   buildUserMessageStructuredPayload,
   stripEmbeddedAttachmentOcr,
 } from "@/lib/chat/attachment-message-display";
+import {
+  isAttachmentPathOwnedByUser,
+  normalizeAttachmentEnvelopes,
+  resolveAttachmentRuntimeInput,
+} from "@/lib/attachments";
 
 const TOOL_CALL_SELECT =
   "id, turn_id, tool_name, arguments_json, result_json, status, requires_confirmation, created_at, finished_at, executor_kind";
@@ -107,7 +114,7 @@ function attachmentOwnedByUser(
   attachment: IncomingAttachment,
   userId: string
 ): boolean {
-  return attachment.storagePath.startsWith(`${userId}/`);
+  return isAttachmentPathOwnedByUser(attachment.storagePath, userId);
 }
 
 function filterAttachmentsOwnedByUser(
@@ -141,34 +148,10 @@ function caseWaitingContractRevisionUpload(opCase: OperationalCase): boolean {
 
 function normalizeIncomingAttachments(raw: unknown): IncomingAttachment[] {
   if (!Array.isArray(raw)) return [];
-  return raw
-    .map((item) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-      const record = item as Record<string, unknown>;
-      if (
-        typeof record.fileName !== "string" ||
-        typeof record.mimeType !== "string" ||
-        typeof record.storageBucket !== "string" ||
-        typeof record.storagePath !== "string" ||
-        typeof record.sha256 !== "string"
-      ) {
-        return null;
-      }
-      return {
-        fileName: record.fileName,
-        mimeType: record.mimeType,
-        sizeBytes:
-          typeof record.sizeBytes === "number" && Number.isFinite(record.sizeBytes)
-            ? record.sizeBytes
-            : 0,
-        storageBucket: record.storageBucket,
-        storagePath: record.storagePath,
-        sha256: record.sha256,
-        suggestedKind:
-          typeof record.suggestedKind === "string" ? record.suggestedKind : "unknown",
-      } as IncomingAttachment;
-    })
-    .filter((item): item is IncomingAttachment => Boolean(item));
+  return normalizeAttachmentEnvelopes(raw).map((attachment) => ({
+    ...attachment,
+    suggestedKind: attachment.suggestedKind ?? "unknown",
+  }));
 }
 
 async function registerInternalCaseAttachments(params: {
@@ -319,7 +302,7 @@ export async function POST(request: Request) {
     const requestTurnId =
       typeof body.turnId === "string" && uuidRe.test(body.turnId)
         ? body.turnId
-        : undefined;
+        : randomUUID();
     const incomingAttachments = filterAttachmentsOwnedByUser(
       normalizeIncomingAttachments(body.attachments),
       user.id
@@ -960,6 +943,13 @@ export async function POST(request: Request) {
       // Con adjuntos: si hace falta selección se aclara, pero el envelope
       // (texto + staging refs) queda persistido — nunca se pierde el archivo.
       if (!conversationalCase) {
+        // Contexto inmediato del hilo: permite distinguir continuaciones
+        // analíticas ("y en julio?", "dame los leads de junio") de mensajes
+        // del caso operativo antes de decidir aclarar.
+        const recentMessagesForRouting =
+          routingWebBindings.length > 0
+            ? await getSessionMessages(db, session.id, 8)
+            : undefined;
         const routeResult = await routeConversationalMessageAgainstBindings({
           db,
           channel: "web",
@@ -968,6 +958,7 @@ export async function POST(request: Request) {
           explicitIntent: explicitOperationalIntent,
           candidateCasesById: routingCasesById,
           attachments: effectiveAttachments,
+          recentMessages: recentMessagesForRouting,
         });
         if (routeResult.route === "clarify") {
           return await respondConversational(routeResult.responseText, {
@@ -1318,6 +1309,14 @@ export async function POST(request: Request) {
       }
     }
 
+    const runtimeInput = await resolveAttachmentRuntimeInput({
+      db,
+      userId: user.id,
+      sessionId: session.id,
+      turnId: requestTurnId,
+      channel: "web",
+      envelopes: effectiveAttachments,
+    });
     const result = await runAgent({
       message: effectiveMessage,
       turnId: requestTurnId,
@@ -1360,6 +1359,7 @@ export async function POST(request: Request) {
       isUnggaAdmin: (profile?.is_ungga_admin as boolean | null) ?? false,
       channel: "web",
       googleCalendarAccessToken,
+      runtimeInput,
       onEvent: (event) => {
         const eventTurnId = event.turnId ?? requestTurnId;
         if (eventTurnId) publishTurnEvent(eventTurnId, event);

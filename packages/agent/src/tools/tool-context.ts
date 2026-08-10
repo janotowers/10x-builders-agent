@@ -1,5 +1,6 @@
 import type { DbClient } from "@agents/db";
 import type {
+  AgentRuntimeInput,
   Channel,
   ToolApprovalPolicy,
   ToolCallSource,
@@ -73,6 +74,8 @@ export interface ToolContext {
   channel: Channel;
   /** Optional per-tool/per-operation approval policy for automated turns. */
   toolApprovalPolicy?: ToolApprovalPolicy;
+  /** Trusted, turn-scoped attachment evidence. Never contains storage paths. */
+  runtimeInput?: AgentRuntimeInput;
   /**
    * Envíos Telegram ya realizados en este proceso (mismo turno).
    * Se marca al enviar (no al crear la fila de auditoría) para no bloquear

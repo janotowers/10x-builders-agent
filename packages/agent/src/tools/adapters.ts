@@ -73,6 +73,12 @@ import {
 import { selectSkillForTurn } from "../skills/select";
 import { resolveSkill } from "../skills/resolve";
 import type { ResolvedSkill } from "../skills/types";
+import {
+  listRuntimeAttachments,
+  readRuntimeAttachment,
+  RUNTIME_ATTACHMENT_TOOL_IDS,
+  searchRuntimeAttachments,
+} from "./runtime-attachments";
 
 export type { ToolContext } from "./tool-context";
 export { toolOwnsAuditTrail } from "./tool-audit-ownership";
@@ -613,8 +619,13 @@ function invalidMemoryIdResult(memoryId: string): string | null {
 }
 
 function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
+  const isRuntimeAttachmentTool = RUNTIME_ATTACHMENT_TOOL_IDS.has(toolId);
+  const hasSkillScopedRuntimeAttachments =
+    isRuntimeAttachmentTool &&
+    Boolean(ctx.activeSkillName) &&
+    (ctx.runtimeInput?.attachments.length ?? 0) > 0;
   const setting = ctx.enabledTools.find((t) => t.tool_id === toolId);
-  if (!setting?.enabled) return false;
+  if (!setting?.enabled && !hasSkillScopedRuntimeAttachments) return false;
 
   if (ctx.toolApprovalPolicy?.[toolId] === "deny") {
     return false;
@@ -627,7 +638,8 @@ function isToolAvailable(toolId: string, ctx: ToolContext): boolean {
   if (
     Array.isArray(ctx.activeSkillAllowedTools) &&
     ctx.activeSkillAllowedTools.length > 0 &&
-    !ctx.activeSkillAllowedTools.includes(toolId)
+    !ctx.activeSkillAllowedTools.includes(toolId) &&
+    !hasSkillScopedRuntimeAttachments
   ) {
     return false;
   }
@@ -892,6 +904,106 @@ export function buildLangChainTools(ctx: ToolContext) {
           description:
             "Lists tools that are enabled and can run in this session (integrations connected and tokens available).",
           schema: z.object({}),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("list_runtime_attachments", ctx)) {
+    tools.push(
+      tool(
+        async () => {
+          const record = await createTrackedToolCall(
+            ctx,
+            "list_runtime_attachments",
+            {},
+            false
+          );
+          const result = listRuntimeAttachments(ctx.runtimeInput);
+          await updateToolCallStatus(ctx.db, record.id, "executed", result);
+          return JSON.stringify(result);
+        },
+        {
+          name: "list_runtime_attachments",
+          description:
+            "Lists metadata, attachment_id, hash, and provenance for files attached to this turn. It never returns storage coordinates.",
+          schema: z.object({}),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("read_runtime_attachment", ctx)) {
+    tools.push(
+      tool(
+        async (input: { attachment_id: string; max_chars?: number }) => {
+          const record = await createTrackedToolCall(
+            ctx,
+            "read_runtime_attachment",
+            input,
+            false
+          );
+          const result = readRuntimeAttachment(ctx.runtimeInput, {
+            attachmentId: input.attachment_id,
+            maxChars: input.max_chars,
+          });
+          await updateToolCallStatus(
+            ctx.db,
+            record.id,
+            result.status === "ok" ? "executed" : "failed",
+            result as unknown as Record<string, unknown>
+          );
+          return JSON.stringify(result);
+        },
+        {
+          name: "read_runtime_attachment",
+          description:
+            "Reads bounded extracted text for one attachment_id from this turn. Cannot access storage URLs, paths, other turns, or other users.",
+          schema: z.object({
+            attachment_id: z.string().min(1).max(128),
+            max_chars: optionalPositiveInt(12_000),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("search_runtime_attachments", ctx)) {
+    tools.push(
+      tool(
+        async (input: {
+          query: string;
+          attachment_id?: string;
+          max_results?: number;
+        }) => {
+          const record = await createTrackedToolCall(
+            ctx,
+            "search_runtime_attachments",
+            input,
+            false
+          );
+          const result = searchRuntimeAttachments(ctx.runtimeInput, {
+            query: input.query,
+            attachmentId: input.attachment_id,
+            maxResults: input.max_results,
+          });
+          await updateToolCallStatus(
+            ctx.db,
+            record.id,
+            result.status === "ok" ? "executed" : "failed",
+            result as unknown as Record<string, unknown>
+          );
+          return JSON.stringify(result);
+        },
+        {
+          name: "search_runtime_attachments",
+          description:
+            "Literal bounded search over extracted text for files attached to this turn. Results include provenance and bounded snippets.",
+          schema: z.object({
+            query: z.string().min(1).max(500),
+            attachment_id: emptyStringOptional(z.string().min(1).max(128)),
+            max_results: optionalPositiveInt(20),
+          }),
         }
       )
     );

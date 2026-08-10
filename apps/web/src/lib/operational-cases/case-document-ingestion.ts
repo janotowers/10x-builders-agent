@@ -233,6 +233,33 @@ export interface IngestStagedCaseDocumentInput {
 export async function ingestStagedCaseDocument(
   input: IngestStagedCaseDocumentInput
 ): Promise<IngestedCaseDocument> {
+  const genericPrefix = `users/${input.userId}/`;
+  if (input.stagedPath.startsWith(genericPrefix)) {
+    const { data, error } = await input.db.storage
+      .from(input.stagedBucket)
+      .download(input.stagedPath);
+    if (error || !data) throw error ?? new Error("staged_download_failed");
+    const bytes = Buffer.from(await data.arrayBuffer());
+    const actualHash = createHash("sha256").update(bytes).digest("hex");
+    if (actualHash !== input.sha256 || bytes.byteLength !== input.sizeBytes) {
+      throw new Error("staged_attachment_integrity_mismatch");
+    }
+    return ingestCaseDocument({
+      db: input.db,
+      caseId: input.caseId,
+      userId: input.userId,
+      source: input.source,
+      fileName: input.fileName,
+      contentType: input.contentType,
+      bytes,
+      captionText: input.captionText,
+      fileSizeBytes: input.sizeBytes,
+      sourceMetadata: {
+        ...(input.sourceMetadata ?? {}),
+        generic_file_copied: true,
+      },
+    });
+  }
   if (!input.stagedPath.startsWith(`${input.userId}/`)) {
     throw new Error("staged_path_not_owned_by_user");
   }

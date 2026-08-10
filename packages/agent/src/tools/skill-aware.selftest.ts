@@ -267,6 +267,45 @@ function testBigQueryDoesNotAutofillWhenOtherNamedParamMissing(): void {
   assert.match(result.error, /@source/i);
 }
 
+function testRuntimeAttachmentToolsAreSkillScoped(): void {
+  const runtimeInput = {
+    attachments: [
+      {
+        id: "file-1",
+        fileName: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 5,
+        sha256: "a".repeat(64),
+        channel: "web" as const,
+        role: "input" as const,
+        format: "text",
+        extractedText: "hello",
+        provenance: {
+          kind: "message_attachment" as const,
+          sessionId: "session-1",
+          source: "upload" as const,
+          validationStatus: "accepted" as const,
+          scanStatus: "not_scanned" as const,
+        },
+      },
+    ],
+  };
+  const withoutSkill = names(buildLangChainTools(baseCtx({ runtimeInput })));
+  assert.ok(!withoutSkill.includes("read_runtime_attachment"));
+  const withSkill = names(
+    buildLangChainTools(
+      baseCtx({
+        runtimeInput,
+        activeSkillName: "fixture-skill",
+        activeSkillAllowedTools: ["get_user_preferences"],
+      })
+    )
+  );
+  assert.ok(withSkill.includes("list_runtime_attachments"));
+  assert.ok(withSkill.includes("read_runtime_attachment"));
+  assert.ok(withSkill.includes("search_runtime_attachments"));
+}
+
 function main(): void {
   testNoSkillDoesNotNarrow();
   testEmptyAllowlistDoesNotNarrow();
@@ -282,7 +321,8 @@ function main(): void {
   testBigQueryAutofillsMonthlyDateParamsFromPrompt();
   testBigQueryDoesNotAutofillMultiPeriodPrompt();
   testBigQueryDoesNotAutofillWhenOtherNamedParamMissing();
-  console.log("tools/skill-aware.selftest: all 14 cases passed");
+  testRuntimeAttachmentToolsAreSkillScoped();
+  console.log("tools/skill-aware.selftest: all 15 cases passed");
 }
 
 main();

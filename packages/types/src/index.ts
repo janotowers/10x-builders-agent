@@ -1119,3 +1119,5 @@ export * from "./workflow-definitions";
 export * from "./work-items";
 export * from "./impact";
 export * from "./durable-tasks";
+export * from "./studio-qualification";
+export * from "./attachments";

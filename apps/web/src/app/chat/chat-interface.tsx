@@ -45,6 +45,8 @@ interface ChatAttachmentMeta {
 }
 
 interface PendingAttachment {
+  version?: 1;
+  fileId?: string;
   fileName: string;
   mimeType: string;
   sizeBytes: number;
@@ -2675,6 +2677,8 @@ export function ChatInterface({
       });
       const data = (await res.json().catch(() => ({}))) as {
         fileName?: string;
+        version?: 1;
+        fileId?: string;
         mimeType?: string;
         sizeBytes?: number;
         text?: string;
@@ -2708,6 +2712,8 @@ export function ChatInterface({
       setPendingAttachments((current) => [
         ...current,
         {
+          version: data.version,
+          fileId: data.fileId,
           fileName: extractedName,
           mimeType: data.mimeType ?? file.type,
           sizeBytes: data.sizeBytes ?? file.size,
@@ -2793,6 +2799,8 @@ export function ChatInterface({
         message: agentMessage,
         turnId: clientTurnId,
         attachments: attachmentsForTurn.map((attachment) => ({
+          version: attachment.version,
+          fileId: attachment.fileId,
           fileName: attachment.fileName,
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,

@@ -21,6 +21,45 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     parameters_schema: { type: "object", properties: {}, required: [] },
   },
   {
+    id: "list_runtime_attachments",
+    name: "list_runtime_attachments",
+    description:
+      "Lists metadata and provenance for attachments scoped to the current reusable-skill turn. Never returns storage paths or URLs.",
+    risk: "low",
+    parameters_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    id: "read_runtime_attachment",
+    name: "read_runtime_attachment",
+    description:
+      "Reads bounded extracted text from one attachment in the current turn by attachment_id. Read-only and turn-scoped.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        attachment_id: { type: "string" },
+        max_chars: { type: "number", maximum: 12000 },
+      },
+      required: ["attachment_id"],
+    },
+  },
+  {
+    id: "search_runtime_attachments",
+    name: "search_runtime_attachments",
+    description:
+      "Performs bounded literal search over extracted text in current-turn attachments. Never searches arbitrary paths.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        attachment_id: { type: "string" },
+        max_results: { type: "number", maximum: 20 },
+      },
+      required: ["query"],
+    },
+  },
+  {
     id: "github_list_repos",
     name: "github_list_repos",
     description:
