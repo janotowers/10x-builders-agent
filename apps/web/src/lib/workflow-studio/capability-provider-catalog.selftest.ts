@@ -8,8 +8,6 @@ import {
   accountProviderIdsReferencedByCatalog,
   buildAuthoringCapabilityContext,
   configuredAccountProviderIds,
-  detectCapabilityCategories,
-  inferAuthoringInputRequirements,
   invocationChannelsFromSnapshot,
   isPerExecutionInputRequirement,
   resolveCapabilityCategory,
@@ -78,86 +76,6 @@ for (const id of accountProviderIdsReferencedByCatalog()) {
   );
 }
 
-assert.deepEqual(
-  detectCapabilityCategories([
-    "Envía por correo un documento Word y después espera la respuesta.",
-  ]),
-  ["user_email"]
-);
-assert.deepEqual(detectCapabilityCategories(["Publica la propiedad en Ungga."]), [
-  "listing_publication",
-]);
-assert.deepEqual(
-  detectCapabilityCategories(["Consulta EasyBroker y avisa por Telegram."]),
-  ["messaging", "real_estate_crm"]
-);
-assert.deepEqual(
-  detectCapabilityCategories(["Prepara un mensaje cordial para el propietario."]),
-  [],
-  "mensaje genérico no implica ejecución por Telegram"
-);
-assert.deepEqual(
-  detectCapabilityCategories([
-    "El usuario inicia el trabajo desde Telegram y aprueba la propuesta por Telegram.",
-  ]),
-  [],
-  "invocación y aprobación por Telegram no implican ejecución saliente"
-);
-assert.deepEqual(
-  detectCapabilityCategories([
-    "Cuando el usuario apruebe, notifica por Telegram al propietario.",
-  ]),
-  ["messaging"],
-  "un envío saliente explícito por Telegram sí requiere mensajería"
-);
-assert.deepEqual(
-  detectCapabilityCategories(["Consulta Gmail para encontrar el acuerdo vigente."]),
-  [],
-  "mencionar Gmail como fuente no implica la capacidad de envío"
-);
-assert.deepEqual(
-  detectCapabilityCategories(["Gu envía un email al propietario."]),
-  ["user_email"],
-  "un email saliente explícito sí requiere un proveedor de correo"
-);
-assert.deepEqual(
-  detectCapabilityCategories([
-    "Envía el resultado por Telegram.",
-    "Corrección: no uses Telegram; envíalo por email.",
-  ]),
-  ["user_email"],
-  "la corrección más reciente elimina un canal de ejecución anterior"
-);
-assert.deepEqual(
-  detectCapabilityCategories([
-    "Gu envía el resultado por email y notifica por Telegram al propietario.",
-    "Corrección: ya no envíes por email ni por Telegram; entrega solo un borrador.",
-  ]),
-  [],
-  "la negación posterior recomputa y elimina ambos proveedores salientes"
-);
-assert.deepEqual(
-  inferAuthoringInputRequirements([
-    "Cada vez, el asesor adjunta un documento Word o TXT en el chat.",
-  ]).map((requirement) => ({
-    kind: requirement.kind,
-    source_hint: requirement.source_hint,
-  })),
-  [{ kind: "runtime_input", source_hint: "chat_attachment" }]
-);
-assert.deepEqual(
-  inferAuthoringInputRequirements([
-    "Usa la plantilla reusable y la marca de agua de la cuenta.",
-  ]).map((requirement) => requirement.kind),
-  ["account_asset"]
-);
-assert.deepEqual(
-  inferAuthoringInputRequirements([
-    "Usa una plantilla Word.",
-    "Corrección: el Word se adjunta en cada ejecución; no es una plantilla permanente.",
-  ]).map((requirement) => requirement.kind),
-  ["runtime_input"]
-);
 assert.equal(
   isPerExecutionInputRequirement({
     kind: "human_input",
@@ -193,10 +111,13 @@ assert.ok(
 
 {
   const context = buildAuthoringCapabilityContext({
-    values: ["El usuario inicia y aprueba el trabajo desde Telegram."],
     snapshot: snapshot({ telegramLinked: false }),
   });
-  assert.deepEqual(context.detectedCategories, []);
+  assert.deepEqual(
+    context.availableCategories.map((category) => category.categoryId),
+    CAPABILITY_CATEGORY_IDS,
+    "el contexto expone catálogo/tenant sin interpretar el transcript"
+  );
   assert.deepEqual(
     context.invocationChannels.map((channel) => channel.channel),
     ["web_chat"],
@@ -248,23 +169,16 @@ assert.ok(
 
 {
   const context = buildAuthoringCapabilityContext({
-    values: ["Enviar un email al propietario usando el Word que suba."],
     snapshot: snapshot({
       oauthIntegrations: [{ provider: "gmail", status: "active" }],
     }),
   });
-  assert.deepEqual(
-    context.detectedCategories.map((category) => category.categoryId),
-    ["user_email"]
+  const email = context.availableCategories.find(
+    (category) => category.categoryId === "user_email"
   );
   assert.equal(
-    context.detectedCategories[0]?.recommendedProviderId,
+    email?.recommendedProviderId,
     "gmail"
-  );
-  assert.equal(context.inputRequirements[0]?.kind, "runtime_input");
-  assert.equal(
-    context.inputRequirements[0]?.source_hint,
-    "chat_attachment"
   );
   assert.deepEqual(
     context.invocationChannels.map((channel) => channel.channel),
@@ -273,42 +187,22 @@ assert.ok(
 }
 
 {
-  const ownerTranscript = [
-    "Cada vez que prepares un mensaje de seguimiento para un propietario, resume el último acuerdo.",
-    "El usuario inicia desde Telegram. El acuerdo está en un documento Word que adjunta en cada ejecución.",
-    "Gu entrega un borrador para aprobación por Telegram y, si se aprueba, envía un email al propietario.",
-  ];
   const context = buildAuthoringCapabilityContext({
-    values: ownerTranscript,
     snapshot: snapshot({
       oauthIntegrations: [{ provider: "gmail", status: "active" }],
       telegramLinked: true,
     }),
   });
-  assert.deepEqual(
-    context.detectedCategories.map((category) => category.categoryId),
-    ["user_email"],
-    "owner transcript separates Telegram invocation/approval from Gmail execution"
+  assert.equal(
+    context.availableCategories.find(
+      (category) => category.categoryId === "user_email"
+    )?.providers.find((provider) => provider.id === "gmail")?.state,
+    "connected"
   );
   assert.deepEqual(
     context.invocationChannels.map((channel) => channel.channel),
     ["web_chat", "telegram"],
     "available invocation channels come only from the tenant snapshot"
-  );
-  assert.deepEqual(
-    context.inputRequirements.map((requirement) => requirement.kind),
-    ["runtime_input"],
-    "the owner document remains source evidence supplied per execution"
-  );
-  assert.ok(
-    context.inputRequirements.every(
-      (requirement) =>
-        requirement.kind !== "tool" &&
-        requirement.kind !== "integration" &&
-        !/gmail/i.test(requirement.key) &&
-        !/gmail/i.test(requirement.label)
-    ),
-    "Gmail execution must not appear as a runtime/input requirement"
   );
   assert.equal(
     context.invocationChannels.find((channel) => channel.channel === "telegram")
@@ -324,18 +218,16 @@ assert.ok(
 
 {
   const context = buildAuthoringCapabilityContext({
-    values: ["Gu notifica por Telegram al propietario."],
     snapshot: snapshot({ telegramLinked: true }),
   });
-  assert.deepEqual(
-    context.detectedCategories.map((category) => category.categoryId),
-    ["messaging"]
+  const messaging = context.availableCategories.find(
+    (category) => category.categoryId === "messaging"
   );
   assert.equal(
-    context.detectedCategories[0]?.recommendedProviderId,
+    messaging?.recommendedProviderId,
     "telegram_bot"
   );
-  assert.equal(context.detectedCategories[0]?.providers[0]?.state, "connected");
+  assert.equal(messaging?.providers[0]?.state, "connected");
 }
 
 console.log("capability-provider-catalog.selftest: ok");

@@ -6,9 +6,8 @@
  */
 
 import {
-  WORKFLOW_COMPILER_MODEL_ID,
-  DEFAULT_WORKFLOW_COMPILER_MODEL_ID,
   recordOpenRouterCallUsage,
+  resolveStudioModelId,
   type OpenRouterUsagePayload,
 } from "@agents/agent";
 import {
@@ -31,12 +30,7 @@ export type RouteAuthoringResult = AuthoringRouterOutput & {
 
 /** Cadena: WORKFLOW_AUTHORING_ROUTER_MODEL_ID → WORKFLOW_COMPILER_MODEL_ID → default. */
 export function resolveAuthoringRouterModelId(): string {
-  return (
-    process.env.WORKFLOW_AUTHORING_ROUTER_MODEL_ID?.trim() ||
-    process.env.WORKFLOW_COMPILER_MODEL_ID?.trim() ||
-    WORKFLOW_COMPILER_MODEL_ID ||
-    DEFAULT_WORKFLOW_COMPILER_MODEL_ID
-  );
+  return resolveStudioModelId("authoring_router", process.env);
 }
 
 function failClosedClarify(reason: string): RouteAuthoringResult {
@@ -158,7 +152,7 @@ async function invokeOpenRouterRouter(prompt: string): Promise<{
   if (!response.ok) {
     await recordOpenRouterCallUsage({
       modelId,
-      modelRole: "workflow_compiler",
+      modelRole: "studio_authoring_router",
       operation: "chat_completion",
       latencyMs: Date.now() - startedAt,
       status: "error",
@@ -173,7 +167,7 @@ async function invokeOpenRouterRouter(prompt: string): Promise<{
   };
   await recordOpenRouterCallUsage({
     modelId,
-    modelRole: "workflow_compiler",
+    modelRole: "studio_authoring_router",
     operation: "chat_completion",
     usage: json.usage ?? null,
     providerRequestId: typeof json.id === "string" ? json.id : null,
