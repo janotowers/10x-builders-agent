@@ -49,12 +49,61 @@ export type HumanInvolvementType = (typeof HUMAN_INVOLVEMENT_TYPES)[number];
 export type RegisteredAuthoringComponent =
   (typeof REGISTERED_AUTHORING_COMPONENTS)[number];
 
-const authoringHintSchema = z.object({
-  targetDimension: z.enum(AUTHORING_DISCOVERY_DIMENSIONS),
-  gap: z.string().trim().min(1),
-  question: z.string().trim().min(1),
-  examples: z.array(z.string().trim().min(1)).max(4).default([]),
-});
+export const AUTHORING_HINT_SEVERITIES = [
+  "blocking",
+  "defaultable",
+  "important",
+] as const;
+
+export const SOLUTION_PATTERN_READINESS_GATE_IDS = [
+  "outbound_delivery_route",
+  "outbound_recipient_resolution",
+  "outbound_approval_authority",
+] as const;
+
+export type SolutionPatternReadinessGateId =
+  (typeof SOLUTION_PATTERN_READINESS_GATE_IDS)[number];
+
+const stableLegacyGapKey = (targetDimension: string, gap: string): string => {
+  let hash = 2166136261;
+  for (const character of `${targetDimension}\0${gap.trim()}`) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `legacy.${targetDimension}.${(hash >>> 0).toString(36)}`;
+};
+
+const authoringGapKeySchema = z
+  .string()
+  .trim()
+  .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/);
+
+export const authoringHintSchema = z
+  .object({
+    targetDimension: z.enum(AUTHORING_DISCOVERY_DIMENSIONS),
+    gapKey: authoringGapKeySchema.optional(),
+    severity: z.enum(AUTHORING_HINT_SEVERITIES).default("important"),
+    dependsOn: z.array(authoringGapKeySchema).default([]),
+    appliesWhen: z.array(z.enum(SOLUTION_PATTERN_TRIGGERS)).min(1).optional(),
+    gap: z.string().trim().min(1),
+    question: z.string().trim().min(1),
+    examples: z.array(z.string().trim().min(1)).max(4).default([]),
+    safeDefault: z.string().trim().min(1).max(1000).optional(),
+  })
+  .superRefine((hint, ctx) => {
+    if (hint.severity === "defaultable" && !hint.safeDefault) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["safeDefault"],
+        message: "un hint defaultable requiere safeDefault explícito",
+      });
+    }
+  })
+  .transform((hint) => ({
+    ...hint,
+    gapKey:
+      hint.gapKey ?? stableLegacyGapKey(hint.targetDimension, hint.gap),
+  }));
 
 const testContractSchema = z.object({
   levels: z
@@ -90,12 +139,16 @@ export const solutionPatternSchema = z.object({
   authoringHints: z.array(authoringHintSchema).default([]),
   compileDirectives: z.array(z.string().trim().min(1)).min(1),
   validationRuleIds: z.array(z.string().trim().min(1)).min(1),
+  readinessGateIds: z
+    .array(z.enum(SOLUTION_PATTERN_READINESS_GATE_IDS))
+    .default([]),
   testContract: testContractSchema,
   implementationPaths: z.array(z.string().trim().min(1)).min(1),
   evidenceDocs: z.array(z.string().trim().min(1)).min(1),
 });
 
 export type SolutionPattern = z.infer<typeof solutionPatternSchema>;
+export type AuthoringHint = z.infer<typeof authoringHintSchema>;
 
 const ALL_FORMS = [...SOLUTION_PATTERN_WORK_FORMS];
 const CASE_AND_TASK: SolutionPatternWorkForm[] = [
@@ -106,7 +159,7 @@ const CASE_AND_TASK: SolutionPatternWorkForm[] = [
 const DOC =
   "docs/operational-cases/operational-case-reusable-patterns.md";
 
-const RAW_SOLUTION_PATTERNS: SolutionPattern[] = [
+const RAW_SOLUTION_PATTERNS: Array<z.input<typeof solutionPatternSchema>> = [
   {
     id: "PATTERN_BASE_CASE_WORKFLOW",
     version: 1,
@@ -221,9 +274,9 @@ const RAW_SOLUTION_PATTERNS: SolutionPattern[] = [
     authoringHints: [
       {
         targetDimension: "mece_overlap",
-        gap: "Faltan límites frente a skills parecidas.",
+        gap: "Falta delimitar cuándo usar esta función y cuándo no.",
         question:
-          "¿En qué casos debe activarse esta capacidad y en cuáles debe ceder a otra?",
+          "¿En qué situaciones debe usar Gu esta función y en cuáles no?",
         examples: ["solo propietarios representados", "no usar para compradores"],
       },
     ],
@@ -281,6 +334,8 @@ const RAW_SOLUTION_PATTERNS: SolutionPattern[] = [
     authoringHints: [
       {
         targetDimension: "recurrence",
+        gapKey: "schedule.recurrence_policy",
+        severity: "blocking",
         gap: "Faltan timezone, misfire y política de fallo.",
         question:
           "¿En qué zona horaria corre, qué debe pasar si se omite una ejecución y cuándo se pausa para revisión?",
@@ -322,6 +377,73 @@ const RAW_SOLUTION_PATTERNS: SolutionPattern[] = [
     evidenceDocs: [DOC, "docs/manuals/gu-os-flexible-workflows-technical-plan.md"],
   },
   {
+    id: "PATTERN_REUSABLE_SKILL_DOCUMENT_INPUT",
+    version: 1,
+    status: "active",
+    label: "Documento de ejecución para skill reusable",
+    description:
+      "Lectura de un documento aportado en cada ejecución sin convertirlo en recurso permanente de cuenta.",
+    workForms: ["reusable_skill"],
+    mandatoryWhen: ["document_intake"],
+    requiredCapabilities: [],
+    humanInvolvement: ["human_contribution"],
+    uiComponents: [],
+    persistenceContracts: [],
+    auditEvents: ["runtime_document_received", "runtime_document_read"],
+    runtimeGuarantees: [
+      "El documento se modela como una sola entrada efímera de ejecución.",
+      "La skill no supone una ruta de entrega que el operador no haya definido.",
+    ],
+    dependencies: [],
+    incompatibilities: [],
+    authoringHints: [
+      {
+        targetDimension: "data_sources",
+        gapKey: "data_sources.document_intake_route",
+        severity: "blocking",
+        gap:
+          "Falta definir cómo llegará el documento a una entrada de ejecución disponible.",
+        question:
+          "¿Cómo entregará la persona el documento en cada ejecución y desde qué canal disponible iniciará el trabajo?",
+        examples: [
+          "adjuntarlo al iniciar desde Web Chat",
+          "adjuntarlo al iniciar desde Telegram",
+        ],
+      },
+      {
+        targetDimension: "data_sources",
+        gapKey: "data_sources.document_intake_policy",
+        severity: "defaultable",
+        dependsOn: ["data_sources.document_intake_route"],
+        gap: "Falta definir qué formatos documentales se admitirán.",
+        question:
+          "¿Qué formatos de documento debe aceptar Gu en cada ejecución?",
+        examples: ["DOCX", "PDF", "TXT"],
+        safeDefault:
+          "Aceptar únicamente formatos compatibles y seguros habilitados por la plataforma.",
+      },
+    ],
+    compileDirectives: [
+      "Materializar exactamente un runtime_input chat_attachment por cada dato documental canónico.",
+      "Enlazar data_sources.document_intake_route con esa entrada y un canal de invocación disponible que acepte adjuntos.",
+      "Usar read_runtime_attachment o search_runtime_attachments sin persistir el archivo como account_asset.",
+    ],
+    validationRuleIds: ["runtime_document_input_contract"],
+    testContract: {
+      levels: ["n0", "n1", "n2", "n3"],
+      scenarios: [
+        "document_attached",
+        "document_missing",
+        "unsupported_document_format",
+      ],
+    },
+    implementationPaths: [
+      "apps/web/src/lib/workflow-studio/compile-reusable-skill.ts",
+      "apps/web/src/lib/agent/wire-tool-deps.ts",
+    ],
+    evidenceDocs: ["docs/skills-tools-architecture.md"],
+  },
+  {
     id: "PATTERN_CHANNEL_COPY_RENDERING",
     version: 1,
     status: "active",
@@ -340,7 +462,7 @@ const RAW_SOLUTION_PATTERNS: SolutionPattern[] = [
       "HTML se escapa y un rechazo degrada a texto plano.",
       "El copy conserva intención sin depender de formato no soportado.",
     ],
-    dependencies: [],
+    dependencies: ["PATTERN_EXTERNAL_MESSAGE_DELIVERY"],
     incompatibilities: [],
     authoringHints: [
       {
@@ -482,13 +604,33 @@ const RAW_SOLUTION_PATTERNS: SolutionPattern[] = [
     authoringHints: [
       {
         targetDimension: "data_sources",
-        gap: "Faltan formatos, procedencia y manejo de reemplazos.",
+        gapKey: "data_sources.document_intake_route",
+        severity: "blocking",
+        gap:
+          "Falta definir cómo llegará el documento a una entrada de ejecución disponible.",
         question:
-          "¿Qué archivos puede subir la persona, qué debe extraerse y cómo reemplaza o corrige un borrador?",
-        examples: ["DOCX/PDF/TXT", "comentario de cambios", "nuevo archivo aprobado"],
+          "¿Cómo entregará la persona el documento en cada ejecución y desde qué canal disponible iniciará el trabajo?",
+        examples: [
+          "adjuntarlo al iniciar desde Web Chat",
+          "adjuntarlo al iniciar desde Telegram",
+        ],
+      },
+      {
+        targetDimension: "data_sources",
+        gapKey: "data_sources.document_intake_policy",
+        severity: "defaultable",
+        dependsOn: ["data_sources.document_intake_route"],
+        gap: "Falta definir qué formatos documentales se admitirán.",
+        question:
+          "¿Qué formatos de documento debe aceptar Gu en cada ejecución?",
+        examples: ["DOCX", "PDF", "TXT"],
+        safeDefault:
+          "Aceptar únicamente formatos compatibles y seguros habilitados por la plataforma.",
       },
     ],
     compileDirectives: [
+      "Materializar data_sources.document_intake_route solo con evidencia de entrega por ejecución; un formato de archivo por sí solo no implica una ruta de carga.",
+      "Enlazar la estrategia de fuente con exactamente un runtime_input chat_attachment y un canal de invocación disponible que acepte adjuntos.",
       "Declarar tipos/tamaño, malware scan, procedencia, hash, retención y extracción.",
       "Modelar contribución inicial, comentario, archivo de reemplazo, aprobación y reanudación.",
     ],
@@ -547,6 +689,132 @@ const RAW_SOLUTION_PATTERNS: SolutionPattern[] = [
     evidenceDocs: [DOC],
   },
   {
+    id: "PATTERN_EXTERNAL_MESSAGE_DELIVERY",
+    version: 1,
+    status: "active",
+    label: "Entrega externa gobernada",
+    description:
+      "Contrato genérico de entrega para cualquier mensaje externo, con ruta, estrategia de destinatario, autorización y evidencia verificables.",
+    workForms: ALL_FORMS,
+    mandatoryWhen: ["sends_external_message"],
+    requiredCapabilities: [],
+    humanInvolvement: ["action_authorization"],
+    uiComponents: ["DeliveryPreview", "DecisionCard"],
+    persistenceContracts: ["pending_confirmations", "tool_calls"],
+    auditEvents: [
+      "external_message_delivery_requested",
+      "external_message_delivery_approved",
+      "external_message_delivered",
+    ],
+    runtimeGuarantees: [
+      "Todo mensaje externo tiene una ruta de entrega lista o un fallback manual explícito.",
+      "La estrategia para obtener el destinatario queda definida en autoría; su valor y formato se validan antes del envío.",
+      "La autoridad de aprobación y la evidencia aprobada quedan vinculadas al efecto.",
+    ],
+    dependencies: [
+      "PATTERN_OPERATIONAL_WRITE_GATE",
+      "PATTERN_HITL_ACTION_CONTRACT",
+    ],
+    incompatibilities: [],
+    authoringHints: [
+      {
+        targetDimension: "side_effects",
+        gapKey: "external_message.delivery_mode",
+        severity: "blocking",
+        dependsOn: [],
+        appliesWhen: [
+          "sends_external_message",
+          "sends_external_email",
+          "sends_telegram_message",
+        ],
+        gap: "Falta acordar cómo se entrega el mensaje.",
+        question:
+          "Después de preparar el mensaje, ¿Gu debe enviarlo tras tu aprobación o solo dejarlo listo para que lo envíes tú?",
+        examples: ["enviarlo después de mi aprobación", "dejarlo listo para envío manual"],
+      },
+      {
+        targetDimension: "capabilities",
+        gapKey: "external_message.channel_provider",
+        severity: "defaultable",
+        dependsOn: ["external_message.delivery_mode"],
+        appliesWhen: [
+          "sends_external_message",
+          "sends_external_email",
+          "sends_telegram_message",
+        ],
+        gap: "Falta definir cómo se realizará la entrega.",
+        question:
+          "¿Desde qué cuenta o herramienta debe salir el mensaje?",
+        examples: ["Gmail conectado a la cuenta", "dejarlo listo para envío manual"],
+        safeDefault:
+          "Dejar el mensaje aprobado listo para envío manual sin ejecutar la entrega externa.",
+      },
+      {
+        targetDimension: "actors",
+        gapKey: "external_message.recipient_resolution",
+        severity: "blocking",
+        dependsOn: [],
+        appliesWhen: [
+          "sends_external_message",
+          "sends_external_email",
+          "sends_telegram_message",
+        ],
+        gap: "Falta saber de dónde tomará Gu el contacto en cada uso.",
+        question:
+          "¿Cómo recibirá Gu el email o contacto del destinatario cada vez que se use esta función?",
+        examples: ["el usuario lo escribe en el chat", "se toma de la ficha del caso"],
+      },
+      {
+        targetDimension: "human_decisions",
+        gapKey: "external_message.approval_evidence",
+        severity: "blocking",
+        dependsOn: [
+          "external_message.delivery_mode",
+          "external_message.recipient_resolution",
+        ],
+        appliesWhen: [
+          "sends_external_message",
+          "sends_external_email",
+          "sends_telegram_message",
+        ],
+        gap: "Falta definir quién aprueba y qué revisa antes del envío.",
+        question:
+          "¿Quién debe aprobar el envío y qué necesita revisar antes de autorizarlo?",
+        examples: ["el usuario inmobiliario revisa destinatario y mensaje final"],
+      },
+    ],
+    compileDirectives: [
+      "Declarar modo de entrega, ruta de canal/proveedor y fallback manual gobernado.",
+      "Materializar la estrategia de destinatario y validar su valor antes de solicitar autorización.",
+      "Vincular autoridad y evidencia aprobada al efecto externo ejecutado.",
+    ],
+    validationRuleIds: [
+      "external_message_delivery_mode",
+      "external_message_delivery_route",
+      "external_message_recipient",
+      "external_message_approval",
+    ],
+    readinessGateIds: [
+      "outbound_delivery_route",
+      "outbound_recipient_resolution",
+      "outbound_approval_authority",
+    ],
+    testContract: {
+      levels: ["n0", "n1", "n2", "n3", "n4"],
+      scenarios: [
+        "provider_route",
+        "manual_fallback",
+        "recipient_unresolved",
+        "approval_missing",
+        "approved_delivery",
+      ],
+    },
+    implementationPaths: [
+      "packages/workflows/src/compiler/solution-patterns.ts",
+    ],
+    evidenceDocs: [DOC],
+  },
+  {
     id: "PATTERN_EMAIL_SEND_WITH_APPROVAL",
     version: 1,
     status: "active",
@@ -566,6 +834,7 @@ const RAW_SOLUTION_PATTERNS: SolutionPattern[] = [
       "Cambiar el borrador invalida la autorización anterior.",
     ],
     dependencies: [
+      "PATTERN_EXTERNAL_MESSAGE_DELIVERY",
       "PATTERN_HITL_ACTION_CONTRACT",
       "PATTERN_OPERATIONAL_WRITE_GATE",
       "PATTERN_TOOL_AUDIT_SINGLE_OWNER",
@@ -687,7 +956,7 @@ const RAW_SOLUTION_PATTERNS: SolutionPattern[] = [
     persistenceContracts: ["tool_calls"],
     auditEvents: ["telegram_send_deduplicated"],
     runtimeGuarantees: ["Un texto equivalente se entrega como máximo una vez por turno."],
-    dependencies: [],
+    dependencies: ["PATTERN_EXTERNAL_MESSAGE_DELIVERY"],
     incompatibilities: [],
     authoringHints: [],
     compileDirectives: [
@@ -882,44 +1151,98 @@ export interface SolutionPatternComposition {
   issues: string[];
 }
 
+export const SOLUTION_PATTERN_READINESS_ROUTE_STATUSES = [
+  "ready",
+  "manual_fallback",
+  "unresolved",
+] as const;
+
+export interface SolutionPatternReadinessCapabilityNeed {
+  capabilityId: string;
+  requiredFor: readonly string[];
+  routing: {
+    status: (typeof SOLUTION_PATTERN_READINESS_ROUTE_STATUSES)[number];
+    routeId?: string;
+    evidence?: readonly string[];
+  };
+}
+
+export interface SolutionPatternReadinessDimension {
+  key: (typeof AUTHORING_DISCOVERY_DIMENSIONS)[number];
+  status: "covered" | "partial" | "missing" | "not_applicable";
+  evidence?: readonly string[];
+}
+
+export interface SolutionPatternReadinessState {
+  requestedSideEffects: readonly string[];
+  capabilityNeeds: readonly SolutionPatternReadinessCapabilityNeed[];
+  understanding: {
+    dimensions?: readonly SolutionPatternReadinessDimension[];
+    recipientResolution?: {
+      status: "resolved" | "runtime_resolvable" | "unresolved";
+      evidence?: readonly string[];
+    };
+    approvalAuthority?: {
+      authorityId: string;
+      evidence?: readonly string[];
+    };
+  };
+}
+
+export interface SolutionPatternReadinessViolation {
+  gateId: SolutionPatternReadinessGateId;
+  code:
+    | "outbound_route_unresolved"
+    | "outbound_recipient_unresolved"
+    | "outbound_approval_authority_unresolved";
+  message: string;
+  patternIds: string[];
+}
+
+export interface SolutionPatternReadinessResult {
+  ready: boolean;
+  gateIds: SolutionPatternReadinessGateId[];
+  passedGateIds: SolutionPatternReadinessGateId[];
+  violations: SolutionPatternReadinessViolation[];
+}
+
 export function inferSolutionPatternTriggers(params: {
   requestedSideEffects?: readonly string[];
   capabilityCategoryIds?: readonly string[];
-  understandingEffects?: readonly string[];
-  understandingSources?: readonly string[];
+  capabilityProviderIds?: readonly string[];
+  inputRequirementKinds?: readonly string[];
+  inputSourceHints?: readonly string[];
 }): SolutionPatternTrigger[] {
   const sideEffects = new Set(params.requestedSideEffects ?? []);
   const categories = new Set(params.capabilityCategoryIds ?? []);
-  const text = [
-    ...(params.understandingEffects ?? []),
-    ...(params.understandingSources ?? []),
-  ].join("\n");
+  const providers = new Set(params.capabilityProviderIds ?? []);
+  const inputKinds = new Set(params.inputRequirementKinds ?? []);
+  const inputSourceHints = new Set(params.inputSourceHints ?? []);
   const triggers = new Set<SolutionPatternTrigger>();
   if (sideEffects.has("schedule_recurrence")) triggers.add("scheduled_execution");
   if (sideEffects.has("external_write")) triggers.add("external_write");
   if (sideEffects.has("human_approval")) triggers.add("human_approval");
   if (sideEffects.has("send_message")) triggers.add("sends_external_message");
-  if (categories.has("user_email") || /\b(email|correo|gmail)\b/i.test(text)) {
+  if (categories.has("user_email") || categories.has("transactional_email")) {
     triggers.add("sends_external_email");
     triggers.add("integration_dependency");
   }
-  if (categories.has("messaging") && /\btelegram\b/i.test(text)) {
+  if (categories.has("messaging") && providers.has("telegram_bot")) {
     triggers.add("sends_telegram_message");
     triggers.add("integration_dependency");
   }
   if (
     categories.has("document_storage") ||
-    /\b(documento|archivo|word|docx|pdf|txt)\b/i.test(text)
+    inputSourceHints.has("chat_attachment") ||
+    inputSourceHints.has("document_source")
   ) {
     triggers.add("document_intake");
     triggers.add("human_contribution");
   }
-  if (/\b(generar|borrador).{0,30}\b(archivo|documento|docx|pdf)\b/i.test(text)) {
+  if (inputKinds.has("generated_artifact")) {
     triggers.add("generated_document");
   }
-  if (/\b(esperar|respuesta|responda|conteste)\b/i.test(text)) {
-    triggers.add("external_response_wait");
-  }
+  if (categories.size > 0) triggers.add("integration_dependency");
   return [...triggers].sort();
 }
 
@@ -984,15 +1307,150 @@ export function resolveSolutionPatternComposition(params: {
   };
 }
 
+export function readinessGateIdsForComposition(
+  composition: SolutionPatternComposition
+): SolutionPatternReadinessGateId[] {
+  const contributed = new Set(
+    composition.patterns.flatMap((pattern) => pattern.readinessGateIds)
+  );
+  return SOLUTION_PATTERN_READINESS_GATE_IDS.filter((gateId) =>
+    contributed.has(gateId)
+  );
+}
+
+const hasReadinessEvidence = (evidence?: readonly string[]): boolean =>
+  Boolean(evidence?.some((item) => item.trim().length > 0));
+
+const dimensionReadinessEvidence = (
+  state: SolutionPatternReadinessState,
+  key: SolutionPatternReadinessDimension["key"]
+): readonly string[] | undefined => {
+  const dimension = state.understanding.dimensions?.find(
+    (candidate) =>
+      candidate.key === key &&
+      (candidate.status === "covered" || candidate.status === "partial")
+  );
+  return dimension?.evidence;
+};
+
+export function evaluateSolutionPatternReadiness(params: {
+  composition: SolutionPatternComposition;
+  state: SolutionPatternReadinessState;
+}): SolutionPatternReadinessResult {
+  const gateIds = readinessGateIdsForComposition(params.composition);
+  const passedGateIds: SolutionPatternReadinessGateId[] = [];
+  const violations: SolutionPatternReadinessViolation[] = [];
+  const requestedSideEffects = new Set(params.state.requestedSideEffects);
+
+  for (const gateId of gateIds) {
+    const patternIds = params.composition.patterns
+      .filter((pattern) => pattern.readinessGateIds.includes(gateId))
+      .map((pattern) => pattern.id)
+      .sort();
+
+    if (gateId === "outbound_delivery_route") {
+      const capabilitiesEvidence = dimensionReadinessEvidence(
+        params.state,
+        "capabilities"
+      );
+      const routeReady = params.state.capabilityNeeds.some((need) => {
+        if (
+          !need.requiredFor.some((sideEffect) =>
+            requestedSideEffects.has(sideEffect)
+          )
+        ) {
+          return false;
+        }
+        if (need.routing.status === "ready") {
+          return Boolean(need.routing.routeId?.trim());
+        }
+        return (
+          need.routing.status === "manual_fallback" &&
+          (hasReadinessEvidence(need.routing.evidence) ||
+            hasReadinessEvidence(capabilitiesEvidence))
+        );
+      });
+      if (routeReady) {
+        passedGateIds.push(gateId);
+      } else {
+        violations.push({
+          gateId,
+          code: "outbound_route_unresolved",
+          message:
+            "Outbound delivery requires a ready route or an evidenced manual fallback.",
+          patternIds,
+        });
+      }
+      continue;
+    }
+
+    if (gateId === "outbound_recipient_resolution") {
+      const recipient = params.state.understanding.recipientResolution;
+      const recipientEvidence =
+        recipient?.evidence ??
+        dimensionReadinessEvidence(params.state, "actors");
+      if (
+        recipient &&
+        recipient.status !== "unresolved" &&
+        hasReadinessEvidence(recipientEvidence)
+      ) {
+        passedGateIds.push(gateId);
+      } else {
+        violations.push({
+          gateId,
+          code: "outbound_recipient_unresolved",
+          message:
+            "Outbound delivery requires an evidenced deterministic or runtime recipient resolution.",
+          patternIds,
+        });
+      }
+      continue;
+    }
+
+    const approval = params.state.understanding.approvalAuthority;
+    const approvalEvidence =
+      approval?.evidence ??
+      dimensionReadinessEvidence(params.state, "human_decisions");
+    if (
+      approval?.authorityId.trim() &&
+      hasReadinessEvidence(approvalEvidence)
+    ) {
+      passedGateIds.push(gateId);
+    } else {
+      violations.push({
+        gateId,
+        code: "outbound_approval_authority_unresolved",
+        message:
+          "Outbound delivery requires an identified approval authority with supporting evidence.",
+        patternIds,
+      });
+    }
+  }
+
+  return {
+    ready: violations.length === 0,
+    gateIds,
+    passedGateIds,
+    violations,
+  };
+}
+
 export function authoringHintsForComposition(
   composition: SolutionPatternComposition
 ): SolutionPattern["authoringHints"] {
   const seen = new Set<string>();
   return composition.patterns.flatMap((pattern) =>
     pattern.authoringHints.filter((hint) => {
-      const key = `${hint.targetDimension}:${hint.gap}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      if (
+        hint.appliesWhen &&
+        !hint.appliesWhen.some((trigger) =>
+          composition.triggers.includes(trigger)
+        )
+      ) {
+        return false;
+      }
+      if (seen.has(hint.gapKey)) return false;
+      seen.add(hint.gapKey);
       return true;
     })
   );

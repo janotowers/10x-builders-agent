@@ -17,6 +17,7 @@
     "test:authoring-router": "tsx src/compiler/authoring-router.selftest.ts",
     "test:authoring-discovery": "tsx src/compiler/authoring-discovery.selftest.ts",
     "test:authoring-gap-planner": "tsx src/compiler/authoring-gap-planner.selftest.ts",
+    "test:authoring-gap-round-ux": "tsx src/compiler/authoring-gap-round-ux.selftest.ts",
     "test:authoring-conversation": "tsx src/compiler/authoring-conversation.selftest.ts",
     "test:solution-patterns": "tsx src/compiler/solution-patterns.selftest.ts",
     "test:durable-task-spec": "tsx src/compiler/durable-task-spec.selftest.ts",

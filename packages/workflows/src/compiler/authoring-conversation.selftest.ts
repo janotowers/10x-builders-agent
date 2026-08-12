@@ -8,13 +8,17 @@ import {
   AUTHORING_MAX_PROPOSAL_REVISIONS,
   AUTHORING_SOFT_CHECKPOINT_TURN,
   appendAuthoringProposalRevision,
+  appendAuthoringQaExchange,
   authoringConversationMetaSchema,
+  authoringDiscoveryCompactStateSchema,
+  authoringQaExchangeSchema,
   proceedAuthoringDiscoveryToProposal,
   resolveAuthoringConversationTurn,
 } from "./authoring-conversation";
 import {
   createAuthoringGapId,
   planAuthoringGaps,
+  selectAuthoringGapQuestions,
 } from "./authoring-gap-planner";
 
 const nonBlockingPlan = planAuthoringGaps([
@@ -101,6 +105,64 @@ const early = resolveAuthoringConversationTurn({
 assert.equal(early.phase, "discovering");
 assert.equal(early.discovery.clarifying_questions.length, 2);
 
+// Discovery already selected and marked its batch; the turn policy must reuse
+// that selection instead of consuming the next one, which previously surfaced
+// unrelated questions and dropped every example.
+const preselectedPlan = selectAuthoringGapQuestions(
+  planAuthoringGaps([
+    {
+      key: "source",
+      summary: "Fuente del acuerdo",
+      target_dimension: "data_sources",
+      question: "¿De qué fuente sale el último acuerdo?",
+      severity: "blocking",
+      priority: 95,
+      examples: ["documento Word", "correo"],
+    },
+    {
+      key: "format",
+      summary: "Formato del mensaje",
+      target_dimension: "acceptance_criteria",
+      question: "¿Qué formato debe tener el mensaje?",
+      severity: "optional",
+      priority: 20,
+    },
+  ]),
+  1
+);
+const preselected = resolveAuthoringConversationTurn({
+  discovery: baseDiscovery({
+    gap_plan: preselectedPlan.plan,
+    clarifying_questions: ["¿De qué fuente sale el último acuerdo?"],
+    clarifying_question_details: [
+      {
+        question: "¿De qué fuente sale el último acuerdo?",
+        target_dimension: "data_sources",
+        gap: "Fuente del acuerdo",
+        examples: ["documento Word", "correo"],
+      },
+    ],
+  }),
+  answerTurnCount: 1,
+});
+assert.deepEqual(preselected.meta.pending_questions, [
+  "¿De qué fuente sale el último acuerdo?",
+]);
+assert.deepEqual(preselected.discovery.clarifying_questions, [
+  "¿De qué fuente sale el último acuerdo?",
+]);
+assert.deepEqual(
+  preselected.discovery.clarifying_question_details[0]?.examples,
+  ["documento Word", "correo"],
+  "examples selected by discovery must survive the turn policy"
+);
+assert.equal(
+  preselected.discovery.gap_plan?.gaps.filter((gap) => gap.state === "asked")
+    .length,
+  1,
+  "the turn policy must not mark a second batch as asked"
+);
+
 const checkpoint = resolveAuthoringConversationTurn({
   discovery: baseDiscovery(),
   answerTurnCount: AUTHORING_SOFT_CHECKPOINT_TURN,
@@ -113,18 +175,17 @@ const blockedCheckpoint = resolveAuthoringConversationTurn({
   discovery: baseDiscovery({ gap_plan: blockingPlan }),
   answerTurnCount: AUTHORING_SOFT_CHECKPOINT_TURN,
 });
-assert.equal(blockedCheckpoint.phase, "checkpoint");
+assert.equal(
+  blockedCheckpoint.phase,
+  "discovering",
+  "el checkpoint suave no interrumpe mientras hay blockers preguntables"
+);
 assert.equal(blockedCheckpoint.meta.allow_proceed_to_proposal, false);
 assert.equal(blockedCheckpoint.discovery.gap_plan?.counts.blockers, 1);
-assert.match(
-  blockedCheckpoint.meta.human_message ?? "",
-  /Queda 1 decisión necesaria/i,
-  "blocker-aware checkpoint copy must surface the pending decision"
-);
 assert.doesNotMatch(
   blockedCheckpoint.meta.human_message ?? "",
-  /preparo la propuesta/i,
-  "checkpoint with blockers must not invite preparing a proposal"
+  /checkpoint|preparo la propuesta|Queda 1 decisión/i,
+  "el turno continúa como aclaración normal"
 );
 
 const afterContinue = resolveAuthoringConversationTurn({
@@ -251,6 +312,43 @@ const legacyMeta = authoringConversationMetaSchema.parse({
 });
 assert.equal(legacyMeta.proposal_revision_count, 0);
 assert.deepEqual(legacyMeta.proposal_revisions, []);
+
+const ledgerGapId = createAuthoringGapId({
+  key: "ledger-source",
+  summary: "Fuente exacta",
+  target_dimension: "data_sources",
+});
+const verbatimAnswer = "  Está en BigQuery, dataset `ventas_owner`.  ";
+const exchange = authoringQaExchangeSchema.parse({
+  batch_id: "batch-2",
+  turn_id: "turn-3",
+  gap_ids: [ledgerGapId],
+  questions: ["¿Cuál es la fuente exacta?"],
+  question_details: [
+    {
+      question: "¿Cuál es la fuente exacta?",
+      target_dimension: "data_sources",
+      gap: "Fuente exacta",
+      gap_id: ledgerGapId,
+      examples: ["BigQuery"],
+    },
+  ],
+  answer: verbatimAnswer,
+  timestamp: "2026-08-10T20:00:00.000Z",
+});
+assert.equal(exchange.answer, verbatimAnswer, "QA answer must remain verbatim");
+const compactWithLedger = appendAuthoringQaExchange({
+  compactState: authoringDiscoveryCompactStateSchema.parse({
+    ...early.meta.compact_state!,
+    qa_exchanges: [],
+    question_number_registry: [{ gap_id: ledgerGapId, number: 7 }],
+  }),
+  exchange,
+});
+assert.equal(compactWithLedger.qa_exchanges.length, 1);
+assert.equal(compactWithLedger.qa_exchanges[0]?.answer, verbatimAnswer);
+assert.equal(compactWithLedger.question_number_registry[0]?.number, 7);
+assert.equal(early.meta.compact_state?.qa_exchanges.length, 0);
 
 const cannotProceed = proceedAuthoringDiscoveryToProposal({
   discovery: baseDiscovery({

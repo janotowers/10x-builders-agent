@@ -123,6 +123,102 @@ assert.equal(
 );
 assert.equal(semanticDiscovery.invocation_channels[0]?.channel, "web_chat");
 
+const documentRouteDiscovery = authoringDiscoveryOutputSchema.parse({
+  ...discovery,
+  source_strategy: {
+    kind: "operator_supplied_at_runtime",
+    label: "Documento aportado para esta ejecución",
+    source_ref: {
+      type: "input_requirement",
+      key: "source_document",
+    },
+    evidence: [
+      {
+        source: "answer",
+        answer_index: 0,
+        quote: "se consultan en BigQuery",
+      },
+    ],
+  },
+  data_sources: {
+    document_source: {
+      formats: [],
+      evidence: [
+        {
+          source: "answer",
+          answer_index: 0,
+          quote: "se consultan en BigQuery",
+        },
+      ],
+    },
+    document_intake_route: {
+      input_ref: {
+        type: "input_requirement",
+        key: "source_document",
+      },
+      invocation_channel: "web_chat",
+      evidence: [
+        {
+          source: "answer",
+          answer_index: 0,
+          quote: "se consultan en BigQuery",
+        },
+      ],
+    },
+  },
+  input_requirements: [
+    {
+      kind: "runtime_input",
+      key: "source_document",
+      datum_key: "agreement_source_document",
+      label: "Documento fuente",
+      scope: "turn",
+      resolve_at: "run_start",
+      source_hint: "chat_attachment",
+    },
+  ],
+  invocation_channels: [
+    {
+      channel: "web_chat",
+      label: "Web Chat",
+      availability: "available",
+      supports_text: true,
+      supports_generic_attachments: true,
+      limitations: [],
+    },
+  ],
+});
+assert.equal(
+  documentRouteDiscovery.data_sources.document_intake_route?.input_ref.key,
+  "source_document"
+);
+assert.equal(
+  authoringDiscoveryOutputSchema.safeParse({
+    ...documentRouteDiscovery,
+    invocation_channels: [
+      {
+        ...documentRouteDiscovery.invocation_channels[0],
+        supports_generic_attachments: false,
+      },
+    ],
+  }).success,
+  false,
+  "document intake requires an attachment-capable invocation channel"
+);
+assert.equal(
+  authoringDiscoveryOutputSchema.parse({
+    ...discovery,
+    source_strategy: {
+      kind: "unknown",
+      label: "DOCX",
+      source_ref: null,
+      evidence: [],
+    },
+  }).data_sources.document_intake_route,
+  null,
+  "a document format alone must not imply an upload route"
+);
+
 assert.deepEqual(
   validateAuthoringDiscoveryEvidence({ discovery, description, answers }),
   []

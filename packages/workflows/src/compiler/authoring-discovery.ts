@@ -12,6 +12,7 @@ import {
 import { inputRequirementSchema } from "./input-requirements";
 import {
   authoringGapPlanSchema,
+  authoringPriorGapDispositionSchema,
   deriveFlatAuthoringGaps,
 } from "./authoring-gap-planner";
 
@@ -34,9 +35,86 @@ export const authoringDiscoveryEvidenceSchema = z.object({
   quote: z.string().trim().min(1).max(500),
 });
 
+const semanticEvidence = z
+  .array(authoringDiscoveryEvidenceSchema)
+  .max(6)
+  .default([]);
+
+export const authoringDataSourceRefSchema = z.object({
+  type: z.literal("input_requirement"),
+  key: z.string().trim().min(1).max(160),
+});
+
+export const authoringSourceStrategySchema = z.object({
+  kind: z.enum([
+    "operator_supplied_at_runtime",
+    "system_record",
+    "conversation_history",
+    "unknown",
+  ]),
+  label: z.string().trim().min(1).max(240).nullable().default(null),
+  source_ref: authoringDataSourceRefSchema.nullable().default(null),
+  evidence: semanticEvidence,
+});
+
+export const authoringRecipientSourceRefSchema = z.object({
+  type: z.enum(["input_requirement", "capability"]),
+  key: z.string().trim().min(1).max(160),
+});
+
+/**
+ * Atestación interna de que un verificador semántico independiente revisó
+ * exactamente la estrategia identificada por `fingerprint`.
+ *
+ * `waived` solo se usa para feature flags o modelos inyectados en tests; queda
+ * visible para no confundir un bypass operativo explícito con entailment.
+ */
+export const authoringRecipientProvenanceReviewSchema = z
+  .object({
+    verdict: z.enum(["entailed", "waived"]),
+    fingerprint: z.string().trim().regex(/^[a-f0-9]{64}$/),
+    model_id: z.string().trim().min(1).max(240).nullable().default(null),
+    evidence_quote: z.string().trim().min(1).max(500).nullable().default(null),
+  })
+  .strict();
+
+export const authoringOutboundContractSchema = z.object({
+  recipient_strategy: z.object({
+    kind: z.preprocess(
+      (value) => (value === "case_contact_field" ? "context_field" : value),
+      z.enum([
+        "operator_supplied_at_runtime",
+        "context_field",
+        "business_record_field",
+        "external_lookup",
+        "unknown",
+      ])
+    ),
+    address_type: z
+      .enum(["email", "phone", "chat_id", "other"])
+      .nullable()
+      .default(null),
+    label: z.string().trim().min(1).max(240).nullable().default(null),
+    source_ref: authoringRecipientSourceRefSchema.nullable().default(null),
+    evidence: semanticEvidence,
+  }),
+  approval: z.object({
+    approver: z.string().trim().min(1).max(240).nullable().default(null),
+    scope: z
+      .array(z.enum(["recipient", "content", "sources", "attachments"]))
+      .max(4)
+      .default([]),
+    evidence: semanticEvidence,
+  }),
+  delivery: z.object({
+    mode: z.enum(["after_approval", "automatic", "manual", "unknown"]),
+    evidence: semanticEvidence,
+  }),
+});
+
 export const authoringDiscoveryDimensionSchema = z.object({
   key: z.enum(AUTHORING_DISCOVERY_DIMENSIONS),
-  status: z.enum(["covered", "partial", "missing"]),
+  status: z.enum(["covered", "partial", "missing", "not_applicable"]),
   summary: z.string().trim().min(1).max(2000),
   evidence: z.array(authoringDiscoveryEvidenceSchema).max(6).default([]),
 });
@@ -46,6 +124,7 @@ export const authoringClarifyingQuestionSchema = z.object({
   target_dimension: z.enum(AUTHORING_DISCOVERY_DIMENSIONS),
   gap: z.string().trim().min(1).max(2000),
   gap_id: z.string().trim().regex(/^gap_[a-z0-9]{8}$/).optional(),
+  display_number: z.number().int().positive().optional(),
   examples: z
     .array(z.string().trim().min(1).max(240))
     .max(3)
@@ -86,6 +165,23 @@ export const authoringInvocationChannelSchema = z.object({
     .array(z.string().trim().min(1).max(500))
     .max(8)
     .default([]),
+});
+
+export const authoringDocumentIntakeRouteSchema = z.object({
+  input_ref: authoringDataSourceRefSchema,
+  invocation_channel: z.enum(["web_chat", "telegram"]),
+  evidence: semanticEvidence,
+});
+
+export const authoringDocumentSourceSchema = z.object({
+  formats: z.array(z.string().trim().min(1).max(80)).max(16).default([]),
+  evidence: semanticEvidence,
+});
+
+export const authoringDataSourcesContractSchema = z.object({
+  document_source: authoringDocumentSourceSchema.nullable().default(null),
+  document_intake_route:
+    authoringDocumentIntakeRouteSchema.nullable().default(null),
 });
 
 const summaryField = z
@@ -134,6 +230,10 @@ export const authoringDiscoveryOutputSchema = z
     assumptions: summaryField,
     gaps: summaryField,
     gap_plan: authoringGapPlanSchema.optional(),
+    prior_gap_dispositions: z
+      .array(authoringPriorGapDispositionSchema)
+      .max(128)
+      .default([]),
     requested_side_effects: z
       .array(
         z.enum([
@@ -154,6 +254,14 @@ export const authoringDiscoveryOutputSchema = z
       .array(authoringInvocationChannelSchema)
       .max(8)
       .default([]),
+    source_strategy: authoringSourceStrategySchema.optional(),
+    data_sources: authoringDataSourcesContractSchema.default({
+      document_source: null,
+      document_intake_route: null,
+    }),
+    outbound_contract: authoringOutboundContractSchema.optional(),
+    recipient_provenance_review:
+      authoringRecipientProvenanceReviewSchema.optional(),
     readiness: z.enum([
       "needs_clarification",
       "ready_for_confirmation",
@@ -171,6 +279,120 @@ export const authoringDiscoveryOutputSchema = z
     understanding: authoringUnderstandingSummarySchema,
   })
   .superRefine((value, ctx) => {
+    if (
+      value.source_strategy &&
+      value.source_strategy.kind !== "unknown" &&
+      value.source_strategy.evidence.length === 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["source_strategy", "evidence"],
+        message: "una estrategia de fuente concreta requiere evidencia",
+      });
+    }
+    const documentRoute = value.data_sources.document_intake_route;
+    const documentSource = value.data_sources.document_source;
+    if (documentSource && documentSource.evidence.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["data_sources", "document_source", "evidence"],
+        message: "document_source requiere evidencia semántica",
+      });
+    }
+    if (documentRoute) {
+      if (!documentSource) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["data_sources", "document_intake_route"],
+          message: "document_intake_route requiere document_source",
+        });
+      }
+      const linkedInputs = value.input_requirements.filter(
+        (requirement) => requirement.key === documentRoute.input_ref.key
+      );
+      const linkedInput = linkedInputs[0];
+      const linkedChannel = value.invocation_channels.find(
+        (channel) => channel.channel === documentRoute.invocation_channel
+      );
+      if (
+        linkedInputs.length !== 1 ||
+        linkedInput?.kind !== "runtime_input" ||
+        linkedInput.source_hint !== "chat_attachment"
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["data_sources", "document_intake_route", "input_ref"],
+          message:
+            "document_intake_route requiere exactamente un runtime_input chat_attachment",
+        });
+      }
+      if (
+        !linkedChannel ||
+        linkedChannel.availability !== "available" ||
+        !linkedChannel.supports_generic_attachments
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["data_sources", "document_intake_route", "invocation_channel"],
+          message:
+            "document_intake_route requiere un canal disponible compatible con adjuntos",
+        });
+      }
+      if (
+        value.source_strategy?.source_ref?.key !==
+        documentRoute.input_ref.key
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["source_strategy", "source_ref"],
+          message:
+            "la estrategia de fuente debe enlazar la entrada de document_intake_route",
+        });
+      }
+      if (documentRoute.evidence.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["data_sources", "document_intake_route", "evidence"],
+          message: "document_intake_route requiere evidencia semántica",
+        });
+      }
+    }
+    const recipient = value.outbound_contract?.recipient_strategy;
+    if (
+      recipient &&
+      recipient.kind !== "unknown" &&
+      (recipient.address_type === null || recipient.evidence.length === 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["outbound_contract", "recipient_strategy"],
+        message:
+          "una estrategia de destinatario concreta requiere tipo y evidencia",
+      });
+    }
+    const approval = value.outbound_contract?.approval;
+    if (
+      approval?.approver &&
+      (approval.scope.length === 0 || approval.evidence.length === 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["outbound_contract", "approval"],
+        message: "un aprobador requiere alcance y evidencia",
+      });
+    }
+    const delivery = value.outbound_contract?.delivery;
+    if (
+      delivery &&
+      delivery.mode !== "unknown" &&
+      delivery.evidence.length === 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["outbound_contract", "delivery", "evidence"],
+        message: "un modo de entrega concreto requiere evidencia",
+      });
+    }
     if (
       value.final_kind === "reusable_skill" &&
       value.skill_subtype === undefined
@@ -270,6 +492,27 @@ export type AuthoringCapabilityNeed = z.infer<
 >;
 export type AuthoringInvocationChannel = z.infer<
   typeof authoringInvocationChannelSchema
+>;
+export type AuthoringSourceStrategy = z.infer<
+  typeof authoringSourceStrategySchema
+>;
+export type AuthoringDataSourcesContract = z.infer<
+  typeof authoringDataSourcesContractSchema
+>;
+export type AuthoringDocumentIntakeRoute = z.infer<
+  typeof authoringDocumentIntakeRouteSchema
+>;
+export type AuthoringDocumentSource = z.infer<
+  typeof authoringDocumentSourceSchema
+>;
+export type AuthoringOutboundContract = z.infer<
+  typeof authoringOutboundContractSchema
+>;
+export type AuthoringRecipientSourceRef = z.infer<
+  typeof authoringRecipientSourceRefSchema
+>;
+export type AuthoringRecipientProvenanceReview = z.infer<
+  typeof authoringRecipientProvenanceReviewSchema
 >;
 
 const SUMMARY_ITEM_MAX = 500;
@@ -372,6 +615,26 @@ export function sanitizeAuthoringDiscoveryRaw(raw: unknown): unknown {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
   const input = raw as Record<string, unknown>;
   const output: Record<string, unknown> = { ...input };
+
+  // Providers occasionally emit short aliases instead of the contract enum.
+  if (typeof input.readiness === "string") {
+    const readiness = input.readiness.trim().toLowerCase();
+    if (
+      readiness === "ready" ||
+      readiness === "ready_for_confirm" ||
+      readiness === "confirmation"
+    ) {
+      output.readiness = "ready_for_confirmation";
+    } else if (
+      readiness === "clarify" ||
+      readiness === "clarification" ||
+      readiness === "needs_clarify"
+    ) {
+      output.readiness = "needs_clarification";
+    } else if (readiness === "blocked" || readiness === "reformulate") {
+      output.readiness = "blocked_reformulate";
+    }
+  }
 
   output.rationale = splitStringArray(input.rationale, RATIONALE_ITEM_MAX);
   output.material_ambiguities = splitStringArray(

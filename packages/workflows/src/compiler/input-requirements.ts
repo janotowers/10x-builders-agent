@@ -45,6 +45,12 @@ export type InputRequirementResolveAt =
 export const inputRequirementSchema = z.object({
   kind: z.enum(INPUT_REQUIREMENT_KINDS),
   key: z.string().min(1),
+  /**
+   * Identidad canónica del dato de negocio. El modelo decide la identidad
+   * semántica; el compilador solo la usa para evitar representar el mismo dato
+   * más de una vez con distintas formas de adquisición.
+   */
+  datum_key: z.string().trim().min(1).max(160).optional(),
   label: z.string().min(1),
   required: z.boolean().optional(),
   scope: z.enum(INPUT_REQUIREMENT_SCOPES).optional(),

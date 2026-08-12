@@ -9,8 +9,12 @@
 import { z } from "zod";
 import {
   authoringCapabilityNeedSchema,
+  authoringDataSourcesContractSchema,
   authoringDiscoveryOutputSchema,
   authoringInvocationChannelSchema,
+  authoringOutboundContractSchema,
+  authoringRecipientProvenanceReviewSchema,
+  authoringSourceStrategySchema,
   authoringUnderstandingSummarySchema,
   type AuthoringDiscoveryOutput,
 } from "./authoring-discovery";
@@ -21,11 +25,16 @@ import {
   authoringAppliedDefaultSchema,
   authoringGapPlanSchema,
   buildAuthoringGapPlan,
+  isAuthoringGapResolved,
   migrateLegacyAuthoringGapPlan,
   selectAuthoringGapQuestions,
   type AuthoringAppliedDefault,
   type AuthoringGapPlan,
 } from "./authoring-gap-planner";
+import {
+  inferSolutionPatternTriggers,
+  resolveSolutionPatternComposition,
+} from "./solution-patterns";
 
 export const AUTHORING_SOFT_CHECKPOINT_TURN = 3;
 export const AUTHORING_HARD_LIMIT_TURN = 5;
@@ -44,13 +53,95 @@ export const AUTHORING_CONVERSATION_PHASES = [
 export type AuthoringConversationPhase =
   (typeof AUTHORING_CONVERSATION_PHASES)[number];
 
+/**
+ * Verbatim operator exchange. Text fields intentionally do not trim or
+ * normalize: this is an append-only evidence ledger, not a presentation view.
+ */
+export const authoringQaExchangeQuestionDetailSchema = z.object({
+  question: z.string().min(1).max(8000),
+  target_dimension: z.string().min(1).max(160),
+  gap: z.string().min(1).max(8000),
+  gap_id: z.string().regex(/^gap_[a-z0-9]{8}$/),
+  examples: z.array(z.string().max(2000)).max(8).default([]),
+});
+
+export const authoringQaExchangeSchema = z
+  .object({
+    batch_id: z.string().min(1).max(160),
+    turn_id: z.string().min(1).max(160),
+    gap_ids: z
+      .array(z.string().regex(/^gap_[a-z0-9]{8}$/))
+      .min(1)
+      .max(AUTHORING_MAX_QUESTIONS_PER_TURN),
+    questions: z
+      .array(z.string().min(1).max(8000))
+      .min(1)
+      .max(AUTHORING_MAX_QUESTIONS_PER_TURN),
+    question_details: z
+      .array(authoringQaExchangeQuestionDetailSchema)
+      .min(1)
+      .max(AUTHORING_MAX_QUESTIONS_PER_TURN),
+    answer: z.string().max(32_000),
+    timestamp: z.string().datetime(),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.gap_ids.length !== value.questions.length ||
+      value.questions.length !== value.question_details.length
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["question_details"],
+        message: "gap_ids, questions y question_details deben estar alineados",
+      });
+    }
+    value.question_details.forEach((detail, index) => {
+      if (
+        detail.gap_id !== value.gap_ids[index] ||
+        detail.question !== value.questions[index]
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["question_details", index],
+          message: "cada detalle debe conservar el gap_id y la pregunta exactos",
+        });
+      }
+    });
+  });
+
+export const authoringQuestionNumberRegistryEntrySchema = z.object({
+  gap_id: z.string().regex(/^gap_[a-z0-9]{8}$/),
+  number: z.number().int().positive(),
+});
+
+export type AuthoringQaExchange = z.infer<typeof authoringQaExchangeSchema>;
+export type AuthoringQuestionNumberRegistryEntry = z.infer<
+  typeof authoringQuestionNumberRegistryEntrySchema
+>;
+
+export const authoringPatternCompositionSnapshotSchema = z.object({
+  work_form: z.enum([
+    "case_workflow",
+    "durable_task",
+    "reusable_skill",
+    "schedule",
+  ]),
+  triggers: z.array(z.string()).default([]),
+  pattern_ids: z.array(z.string()).default([]),
+});
+
 export const authoringDiscoveryCompactStateSchema = z.object({
   understanding: authoringUnderstandingSummarySchema,
   covered_dimensions: z
     .array(
       z.object({
         key: z.string(),
-        status: z.enum(["covered", "partial", "missing"]),
+        status: z.enum([
+          "covered",
+          "partial",
+          "missing",
+          "not_applicable",
+        ]),
         summary: z.string(),
         evidence: z
           .array(
@@ -71,8 +162,33 @@ export const authoringDiscoveryCompactStateSchema = z.object({
   material_ambiguities: z.array(z.string()).default([]),
   input_requirements: z.array(inputRequirementSchema).default([]),
   invocation_channels: z.array(authoringInvocationChannelSchema).default([]),
+  source_strategy: authoringSourceStrategySchema.optional(),
+  data_sources: authoringDataSourcesContractSchema.default({
+    document_source: null,
+    document_intake_route: null,
+  }),
+  outbound_contract: authoringOutboundContractSchema.optional(),
+  recipient_provenance_review:
+    authoringRecipientProvenanceReviewSchema.optional(),
   capability_needs: z.array(authoringCapabilityNeedSchema).default([]),
+  requested_side_effects: z
+    .array(
+      z.enum([
+        "send_message",
+        "human_approval",
+        "schedule_recurrence",
+        "external_write",
+        "create_case",
+      ])
+    )
+    .default([]),
+  pattern_composition: authoringPatternCompositionSnapshotSchema.optional(),
   prior_questions: z.array(z.string()).default([]),
+  qa_exchanges: z.array(authoringQaExchangeSchema).max(128).default([]),
+  question_number_registry: z
+    .array(authoringQuestionNumberRegistryEntrySchema)
+    .max(128)
+    .default([]),
   answer_turn_count: z.number().int().nonnegative(),
   proposed_kind: z.string().optional(),
   skill_subtype: z.string().optional(),
@@ -127,7 +243,30 @@ export function buildAuthoringDiscoveryCompactState(params: {
   priorQuestions: readonly string[];
   answerTurnCount: number;
   appliedDefaults?: readonly AuthoringAppliedDefault[];
+  qaExchanges?: readonly AuthoringQaExchange[];
+  questionNumberRegistry?: readonly AuthoringQuestionNumberRegistryEntry[];
 }): AuthoringDiscoveryCompactState {
+  const patternComposition = isArtifactKind(params.discovery.final_kind)
+    ? resolveSolutionPatternComposition({
+        workForm: params.discovery.final_kind,
+        triggers: inferSolutionPatternTriggers({
+          requestedSideEffects: params.discovery.requested_side_effects ?? [],
+          capabilityCategoryIds: (params.discovery.capability_needs ?? []).map(
+            (need) => need.category_id
+          ),
+          capabilityProviderIds: (
+            params.discovery.capability_needs ?? []
+          ).flatMap((need) => (need.provider_id ? [need.provider_id] : [])),
+          inputRequirementKinds: (params.discovery.input_requirements ?? []).map(
+            (requirement) => requirement.kind
+          ),
+          inputSourceHints: (params.discovery.input_requirements ?? []).flatMap(
+            (requirement) =>
+              requirement.source_hint ? [requirement.source_hint] : []
+          ),
+        }),
+      })
+    : null;
   return authoringDiscoveryCompactStateSchema.parse({
     understanding: params.discovery.understanding,
     covered_dimensions: params.discovery.covered_dimensions.map((dimension) => ({
@@ -143,8 +282,23 @@ export function buildAuthoringDiscoveryCompactState(params: {
     material_ambiguities: params.discovery.material_ambiguities,
     input_requirements: params.discovery.input_requirements,
     invocation_channels: params.discovery.invocation_channels,
+    source_strategy: params.discovery.source_strategy,
+    data_sources: params.discovery.data_sources,
+    outbound_contract: params.discovery.outbound_contract,
+    recipient_provenance_review:
+      params.discovery.recipient_provenance_review,
     capability_needs: params.discovery.capability_needs,
+    requested_side_effects: params.discovery.requested_side_effects ?? [],
+    pattern_composition: patternComposition
+      ? {
+          work_form: patternComposition.workForm,
+          triggers: patternComposition.triggers,
+          pattern_ids: patternComposition.patternIds,
+        }
+      : undefined,
     prior_questions: [...params.priorQuestions],
+    qa_exchanges: [...(params.qaExchanges ?? [])],
+    question_number_registry: [...(params.questionNumberRegistry ?? [])],
     answer_turn_count: params.answerTurnCount,
     proposed_kind:
       isArtifactKind(params.discovery.final_kind) ||
@@ -152,6 +306,21 @@ export function buildAuthoringDiscoveryCompactState(params: {
         ? params.discovery.final_kind
         : undefined,
     skill_subtype: params.discovery.skill_subtype,
+  });
+}
+
+/** Returns a new compact state with one exact exchange appended to its ledger. */
+export function appendAuthoringQaExchange(params: {
+  compactState: AuthoringDiscoveryCompactState;
+  exchange: AuthoringQaExchange;
+}): AuthoringDiscoveryCompactState {
+  const compactState = authoringDiscoveryCompactStateSchema.parse(
+    params.compactState
+  );
+  const exchange = authoringQaExchangeSchema.parse(params.exchange);
+  return authoringDiscoveryCompactStateSchema.parse({
+    ...compactState,
+    qa_exchanges: [...compactState.qa_exchanges, exchange],
   });
 }
 
@@ -281,6 +450,8 @@ export function resolveAuthoringConversationTurn(params: {
   proposalRevisions?: readonly AuthoringProposalRevision[];
   appliedDefaults?: readonly AuthoringAppliedDefault[];
   defaultGapIds?: readonly string[];
+  qaExchanges?: readonly AuthoringQaExchange[];
+  questionNumberRegistry?: readonly AuthoringQuestionNumberRegistryEntry[];
 }): {
   phase: AuthoringConversationPhase;
   discovery: AuthoringDiscoveryOutput;
@@ -300,15 +471,25 @@ export function resolveAuthoringConversationTurn(params: {
     (entry, index, all) =>
       all.findIndex((candidate) => candidate.gap_id === entry.gap_id) === index
   );
-  const selected = selectAuthoringGapQuestions(defaultResult.plan);
-  const pending =
-    selected.questions.length > 0
-      ? selected.questions
-      : params.discovery.clarifying_questions.slice(
-          0,
-          AUTHORING_MAX_QUESTIONS_PER_TURN
-        );
-  const plan = selected.plan;
+  // Discovery already owns gap selection: it marks the chosen gaps as `asked`
+  // and emits those questions together with their examples. Selecting again
+  // here would consume a second batch, show the operator questions the plan
+  // never paired with details, and drop every example. Only legacy outputs
+  // without a deterministic selection fall back to selecting here.
+  const stillAskable = new Set(
+    defaultResult.plan.gaps
+      .filter((gap) => !isAuthoringGapResolved(gap) && gap.question)
+      .map((gap) => gap.question as string)
+  );
+  const alreadySelected = params.discovery.clarifying_questions
+    .filter((question) => stillAskable.has(question))
+    .slice(0, AUTHORING_MAX_QUESTIONS_PER_TURN);
+  const fallback =
+    alreadySelected.length > 0
+      ? null
+      : selectAuthoringGapQuestions(defaultResult.plan);
+  const pending = fallback ? fallback.questions : alreadySelected;
+  const plan = fallback?.plan ?? defaultResult.plan;
 
   let discovery = discoveryWithGapPlan({
     discovery: params.discovery,
@@ -335,6 +516,8 @@ export function resolveAuthoringConversationTurn(params: {
     priorQuestions,
     answerTurnCount: turn,
     appliedDefaults,
+    qaExchanges: params.qaExchanges,
+    questionNumberRegistry: params.questionNumberRegistry,
   });
 
   if (discovery.readiness === "redirect") {
@@ -396,6 +579,8 @@ export function resolveAuthoringConversationTurn(params: {
             priorQuestions,
             answerTurnCount: turn,
             appliedDefaults,
+            qaExchanges: params.qaExchanges,
+            questionNumberRegistry: params.questionNumberRegistry,
           }),
           message:
             "Llegamos al límite de aclaraciones. Revisa el resumen y los supuestos antes de crear el borrador.",
@@ -417,6 +602,8 @@ export function resolveAuthoringConversationTurn(params: {
           priorQuestions,
           answerTurnCount: turn,
           appliedDefaults,
+          qaExchanges: params.qaExchanges,
+          questionNumberRegistry: params.questionNumberRegistry,
         }),
         message:
           "Aún faltan datos materiales para proponer un borrador seguro. Reformula la solicitud con lo que ya aclaramos.",
@@ -424,8 +611,14 @@ export function resolveAuthoringConversationTurn(params: {
     };
   }
 
-  // Soft checkpoint exactly after the 3rd answer, before opt-in continuation.
-  if (turn === AUTHORING_SOFT_CHECKPOINT_TURN && !extended) {
+  // El checkpoint suave solo interrumpe cuando existe una decisión real:
+  // preparar la propuesta o seguir afinándola. Si quedan blockers con una
+  // pregunta concreta, continuar preguntando evita una pausa sin salida útil.
+  if (
+    turn === AUTHORING_SOFT_CHECKPOINT_TURN &&
+    !extended &&
+    (plan.can_proceed || pending.length === 0)
+  ) {
     const canProceed = isArtifactKind(discovery.final_kind) && plan.can_proceed;
     const blockerCount = plan.counts.blockers;
     return {
@@ -478,6 +671,8 @@ export function proceedAuthoringDiscoveryToProposal(params: {
   proposalRevisions?: readonly AuthoringProposalRevision[];
   appliedDefaults?: readonly AuthoringAppliedDefault[];
   defaultGapIds?: readonly string[];
+  qaExchanges?: readonly AuthoringQaExchange[];
+  questionNumberRegistry?: readonly AuthoringQuestionNumberRegistryEntry[];
 }):
   | {
       ok: true;
@@ -511,6 +706,8 @@ export function proceedAuthoringDiscoveryToProposal(params: {
     priorQuestions: params.priorQuestions ?? [],
     answerTurnCount: params.answerTurnCount,
     appliedDefaults,
+    qaExchanges: params.qaExchanges,
+    questionNumberRegistry: params.questionNumberRegistry,
   });
   if (!forced) {
     return {
@@ -545,6 +742,8 @@ export function proceedAuthoringDiscoveryToProposal(params: {
         priorQuestions: params.priorQuestions ?? [],
         answerTurnCount: params.answerTurnCount,
         appliedDefaults,
+        qaExchanges: params.qaExchanges,
+        questionNumberRegistry: params.questionNumberRegistry,
       }),
       message: "Confirma lo entendido antes de crear el borrador.",
     }),
