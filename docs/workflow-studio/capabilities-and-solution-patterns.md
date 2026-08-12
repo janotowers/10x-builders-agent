@@ -12,17 +12,57 @@
 3. Presenta una recomendación concreta: confirmar el único conectado, elegir
    entre varios, conectar uno soportado o continuar manualmente.
 4. El router propone la forma de trabajo.
-5. El kernel compone el paquete base de esa forma con patrones disparados por
-   efectos externos, documentos, cron, canales y esperas humanas.
-6. El modelo propone `gap_candidates`; el planner determinista asigna IDs
-   estables, conserva gaps previos no resueltos, ordena dependencias y
-   severidades, y selecciona como máximo cuatro preguntas por turno.
-7. El checkpoint (3 respuestas), hard limit (5) y uso explícito de defaults son
-   blocker-aware: un gap `blocking` abierto impide preparar/materializar.
+5. En cada turno, el kernel recompone el paquete base de esa forma con patrones
+   disparados por la descripción y la evidencia acumulada sobre efectos
+   externos, documentos, cron, canales y esperas humanas.
+6. El modelo propone `gap_candidates` y los patrones compuestos aportan
+   candidatos de política desde sus `authoringHints`. El modelo decide
+   suficiencia semántica y traduce lenguaje libre a estrategias estructuradas
+   con evidencia; el planner asigna IDs estables, conserva gaps previos,
+   ordena dependencias/severidades y selecciona máximo cuatro preguntas.
+7. El checkpoint suave se evalúa tras 3 respuestas, pero solo interrumpe si hay
+   una decisión real (seguir afinando o preparar). Si quedan blockers con
+   preguntas concretas, la conversación continúa. El hard limit es 5 y un gap
+   `blocking` abierto siempre impide preparar/materializar.
 8. Los compiladores reciben `compileDirectives`; materialización persiste IDs,
    versiones, triggers y reglas de validación en provenance.
-9. Un conflicto, patrón obligatorio ausente o forma de trabajo distinta bloquea
-   materialización.
+9. Los `readinessGateIds` de patrones obligatorios separan suficiencia
+   semántica de disponibilidad ejecutora. Una carencia de proveedor no reabre
+   una pregunta ya respondida: se muestra como acción de conexión/elección o
+   fallback seguro.
+
+El puente `authoringHints → gap_plan → readiness gates` es genérico: no está
+limitado a email. `PATTERN_EXTERNAL_MESSAGE_DELIVERY` gobierna cualquier entrega
+externa y los patrones de email o Telegram se componen como especializaciones.
+Si una necesidad no coincide con una capacidad verificada, Studio pide una ruta
+o fallback manual y no inventa un proveedor.
+
+Frontera de responsabilidades:
+
+- El LLM interpreta intención, entidades y relaciones; decide si una respuesta
+  resolvió total o parcialmente un gap, extrae la estrategia de fuente,
+  destinatario, aprobación, entrega, entradas y categorías de capacidad, y
+  redacta preguntas en lenguaje de negocio.
+- El código valida schema, evidencia verbatim, IDs/estados, catálogos, tenancy,
+  límites conversacionales y políticas de seguridad. No usa listas de
+  sinónimos o regex lingüísticos para inferir categorías, triggers o
+  suficiencia semántica. Reemplaza provider/status emitidos por la verdad del
+  tenant.
+- Una disposición semántica no se degrada porque falte conectar una capacidad:
+  resolución conversacional y readiness de ejecución son estados distintos.
+  El mismo gap no se pregunta más de dos veces sin un residual realmente nuevo.
+- Una estrategia de destinatario concreta nueva pasa por una revisión semántica
+  enfocada antes de aceptarse. El código solo dispara esa revisión por el cambio
+  estructural; un modelo decide si la cita realmente expresa el origen.
+- `operator_supplied_at_runtime` es una estrategia válida de destinatario. El
+  formato del valor concreto y la confirmación de destinatario/contenido se
+  validan en runtime mediante HITL. Toda estrategia concreta incluye
+  `source_ref`: apunta a un `input_requirement` o capacidad real. Una cita que
+  solo dice «enviar por email» no demuestra de dónde sale la dirección.
+- El scope del dato vive en `input_requirements`
+  (`account | case | task_run | turn`), no en el tipo de artefacto. Una skill
+  reusable puede recibir contexto de caso o tarea si lo declara explícitamente;
+  un schedule usa el contrato del trabajo que dispara.
 
 Fuentes de verdad:
 
@@ -45,8 +85,8 @@ Fuentes de verdad:
   confirma un efecto de correo saliente; leer/procesar un adjunto no lo implica.
 - Un archivo adjuntado en cada turno es `runtime_input`; `account_asset` se
   reserva para archivos reusables del tenant como plantillas o brand books.
-- Si hay exactamente un proveedor conectado, proponerlo y confirmar el
-  supuesto.
+- Si hay exactamente un proveedor conectado, proponerlo y mostrar explícitamente
+  que será la ruta usada tras aprobación; la revisión permite corregirlo.
 - Si hay varios conectados, pedir una elección concreta.
 - Si ninguno está conectado pero existe adapter soportado, ofrecer conexión
   profunda desde Studio y mantener la alternativa manual.

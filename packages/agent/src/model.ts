@@ -114,6 +114,141 @@ export const DEFAULT_WORKFLOW_COMPILER_MODEL_ID = "openai/gpt-5.4-mini";
 export const DEFAULT_WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID =
   "anthropic/claude-opus-5";
 
+// ============================================================
+// Studio authoring model policy
+// ============================================================
+
+/** Stable logical tasks used by Studio authoring and qualification. */
+export const STUDIO_MODEL_TASKS = [
+  "authoring_router",
+  "authoring_discovery",
+  "case_workflow_compiler",
+  "durable_task_compiler",
+  "reusable_skill_compiler",
+  "skill_repair",
+  "operational_judge",
+  "capability_coder",
+] as const;
+
+export type StudioModelTask = (typeof STUDIO_MODEL_TASKS)[number];
+
+export const STUDIO_MODEL_TIERS = ["primary", "escalation"] as const;
+
+export type StudioModelTier = (typeof STUDIO_MODEL_TIERS)[number];
+
+export type StudioModelEnv = Readonly<Record<string, string | undefined>>;
+
+/** Cheap default for routine Studio authoring and compiler calls. */
+export const DEFAULT_STUDIO_PRIMARY_MODEL_ID =
+  DEFAULT_WORKFLOW_COMPILER_MODEL_ID;
+/** Frontier default for escalation, repair, judging, and capability coding. */
+export const DEFAULT_STUDIO_ESCALATION_MODEL_ID =
+  DEFAULT_WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID;
+
+/** Code defaults after all applicable env fallbacks are exhausted. */
+export const STUDIO_TASK_DEFAULT_MODEL_IDS: Readonly<
+  Record<StudioModelTask, string>
+> = {
+  authoring_router: DEFAULT_STUDIO_PRIMARY_MODEL_ID,
+  authoring_discovery: DEFAULT_STUDIO_PRIMARY_MODEL_ID,
+  case_workflow_compiler: DEFAULT_STUDIO_PRIMARY_MODEL_ID,
+  durable_task_compiler: DEFAULT_STUDIO_PRIMARY_MODEL_ID,
+  reusable_skill_compiler: DEFAULT_STUDIO_PRIMARY_MODEL_ID,
+  skill_repair: DEFAULT_STUDIO_ESCALATION_MODEL_ID,
+  operational_judge: DEFAULT_WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID,
+  capability_coder: DEFAULT_STUDIO_ESCALATION_MODEL_ID,
+};
+
+const STUDIO_PRIMARY_ENV_CHAINS: Readonly<
+  Record<Exclude<StudioModelTask, "operational_judge">, readonly string[]>
+> = {
+  authoring_router: [
+    "WORKFLOW_AUTHORING_ROUTER_MODEL_ID",
+    "WORKFLOW_COMPILER_MODEL_ID",
+  ],
+  authoring_discovery: [
+    "WORKFLOW_AUTHORING_DISCOVERY_MODEL_ID",
+    "WORKFLOW_COMPILER_MODEL_ID",
+  ],
+  case_workflow_compiler: [
+    "WORKFLOW_CASE_COMPILER_MODEL_ID",
+    "WORKFLOW_COMPILER_MODEL_ID",
+  ],
+  durable_task_compiler: [
+    "WORKFLOW_DURABLE_TASK_COMPILER_MODEL_ID",
+    "WORKFLOW_COMPILER_MODEL_ID",
+  ],
+  reusable_skill_compiler: [
+    "WORKFLOW_AUTHORING_SKILL_MODEL_ID",
+    "WORKFLOW_COMPILER_MODEL_ID",
+  ],
+  // The narrower repair override wins; the old shared skill chain remains a
+  // fallback when it is absent, preserving existing deployments.
+  skill_repair: [
+    "WORKFLOW_AUTHORING_SKILL_REPAIR_MODEL_ID",
+    "WORKFLOW_AUTHORING_SKILL_MODEL_ID",
+    "WORKFLOW_COMPILER_MODEL_ID",
+  ],
+  // Capability coding is intentionally isolated from the cheap compiler env.
+  capability_coder: ["WORKFLOW_CAPABILITY_CODER_MODEL_ID"],
+};
+
+const STUDIO_ESCALATION_ENV_BY_TASK: Readonly<
+  Record<Exclude<StudioModelTask, "operational_judge">, string>
+> = {
+  authoring_router: "WORKFLOW_AUTHORING_ROUTER_ESCALATION_MODEL_ID",
+  authoring_discovery: "WORKFLOW_AUTHORING_DISCOVERY_ESCALATION_MODEL_ID",
+  case_workflow_compiler: "WORKFLOW_CASE_COMPILER_ESCALATION_MODEL_ID",
+  durable_task_compiler: "WORKFLOW_DURABLE_TASK_COMPILER_ESCALATION_MODEL_ID",
+  reusable_skill_compiler: "WORKFLOW_AUTHORING_SKILL_ESCALATION_MODEL_ID",
+  skill_repair: "WORKFLOW_AUTHORING_SKILL_REPAIR_ESCALATION_MODEL_ID",
+  capability_coder: "WORKFLOW_CAPABILITY_CODER_ESCALATION_MODEL_ID",
+};
+
+function firstConfiguredModelId(
+  env: StudioModelEnv,
+  names: readonly string[]
+): string | undefined {
+  for (const name of names) {
+    const value = env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Pure Studio task resolver. Callers inject their env snapshot so tests and
+ * request-time policy resolution do not depend on module import order.
+ *
+ * Primary: task-specific compatibility chain → code task default.
+ * Escalation: task escalation override → shared escalation override → Opus.
+ * The operational judge deliberately ignores tier and retains its dedicated
+ * override → compiler override → Opus semantics.
+ */
+export function resolveStudioModelId(
+  task: StudioModelTask,
+  env: StudioModelEnv,
+  tier: StudioModelTier = "primary"
+): string {
+  if (task === "operational_judge") {
+    return resolveWorkflowOperationalJudgeModelId(env);
+  }
+
+  if (tier === "escalation") {
+    return (
+      firstConfiguredModelId(env, [
+        STUDIO_ESCALATION_ENV_BY_TASK[task],
+        "WORKFLOW_AUTHORING_ESCALATION_MODEL_ID",
+      ]) || DEFAULT_STUDIO_ESCALATION_MODEL_ID
+    );
+  }
+
+  return (
+    firstConfiguredModelId(env, STUDIO_PRIMARY_ENV_CHAINS[task]) ||
+    STUDIO_TASK_DEFAULT_MODEL_IDS[task]
+  );
+}
+
 /** Verificadores independientes de workflows (env override > default). */
 export const WORKFLOW_VERIFIER_MODEL_ID =
   process.env.WORKFLOW_VERIFIER_MODEL_ID?.trim() ||

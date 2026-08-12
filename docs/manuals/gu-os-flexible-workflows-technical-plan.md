@@ -452,7 +452,7 @@ Slugs already follow the Anthropic Skills convention. Gu adds multi-tenant metad
 
 Anthropic-style “skill with scripts the agent runs as black boxes” maps in Gu OS to **tools and registered deterministic services**, not to unrestricted `scripts/` execution. That is deliberate for multi-tenant SaaS: downloaded scripts are supply-chain code.
 
-**Interoperability target:** adapt toward the emerging package standard so external skills are *importable with adaptation*, never *executable on download*.
+**Interoperability target:** adapt toward the emerging package standard so external skills are *importable with adaptation*, never *executable on download*. The accepted future storage/governance direction is [`ADR-0011`](adr/0011-skill-package-interoperability.md); its implementation remains deferred to Slice 4.3.
 
 ```text
 Import package → identify format/license/provenance
@@ -464,7 +464,7 @@ Import package → identify format/license/provenance
 → activate as account_skill (private) or global template
 ```
 
-**Private skill gap [V]:** `account_skills` stores only `body_md` + `metadata_jsonb` today — no `references/` / `assets/` / `scripts/` package. True import parity needs either `account_skill_files` or object-storage bundles with a manifest hash. That work is **Phase 4+ / post-compiler**, not a Phase 0–2 blocker; until then private skills remain single-file markdown (current product behavior). Scripts, if ever enabled, enter only as quarantined candidates that promote into registered deterministic services after review — never as model-chosen arbitrary execution.
+**Private skill gap [V]:** `account_skills` stores only `body_md` + `metadata_jsonb` today — no complete package or immutable reviewed version. The accepted future target is hybrid: immutable `account_skill_versions` plus manifest hash/governance and an `account_skill_files` index in Postgres; private Supabase Storage bytes for tenant/skill/version-scoped `SKILL.md`, `references/`, and inert `assets/`; and version-pinned runtime resolution for `read_skill_reference`. RLS applies to the control plane, private Storage policies mirror tenant boundaries, and service-role runtime reads still require explicit verified tenant ownership. That implementation is **Phase 4+ / post-compiler**, separate from current remediation and not a Phase 0–2 blocker; until then private skills retain current behavior. Imported scripts remain quarantined and can be promoted only into registered tools or deterministic services after review — never into model-chosen arbitrary execution.
 
 ---
 
@@ -1013,7 +1013,7 @@ Vercel-style serverless constraints persist (durable workers deferred on hosting
 8. **ADR-008** Lab/testing parity: shared production primitives for execution, simulation, replay.
 9. **ADR-009** Definition versioning, active-case pinning, migration, rollback; global vs private ownership and fork lineage (§5.1.1).
 10. **ADR-010** Tenant scoping as required parameters + RLS defense in depth on new planes.
-11. **ADR-011** Skill package interoperability: portable core + Gu extensions; import-with-adaptation; scripts quarantine; account skill file storage when import ships (§9.2).
+11. **[ADR-011](adr/0011-skill-package-interoperability.md)** Skill package interoperability: portable core + Gu extensions; hybrid Postgres/private-Storage package persistence; version-pinned reference resolution; governed publish/rollback; scripts quarantine (§9.2). Accepted direction; implementation deferred to Slice 4.3.
 12. **Knowledge/storage planes:** Object Storage/SOR externo for raw, Postgres for compiled/indexed truth, Markdown as representation — see [`ADR-100`](../adr/ADR-100-hybrid-knowledge-storage.md).
 13. **Knowledge ownership scopes:** platform/industry/organization/team/user, distinct from Skill `scope` — see [`ADR-102`](../adr/ADR-102-knowledge-ownership-scopes.md) and [`ADR-101`](../adr/ADR-101-organization-tenancy.md).
 14. **Governed improvement authority:** proposal/eval/publish/canary/rollback boundaries by target — see [`ADR-104`](../adr/ADR-104-governed-improvement.md).

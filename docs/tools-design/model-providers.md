@@ -18,6 +18,44 @@ Inventario canónico. **Defaults y lectura de env** viven en [`packages/agent/sr
 
 Tope global de salida: `OPENROUTER_MAX_TOKENS` (default código 2048).
 
+## Política por tarea del Studio
+
+Studio no usa un único “modelo de creación”. La resolución tipada vive en
+`resolveStudioModelId(task, env, tier)` y separa costo, juicio y metering:
+
+- `authoring_router`, `authoring_discovery`, `case_workflow_compiler`,
+  `durable_task_compiler` y `reusable_skill_compiler` usan
+  `openai/gpt-5.4-mini` como primario;
+- discovery y los compiladores pueden consumir una sola completion de
+  escalación (`WORKFLOW_AUTHORING_ESCALATION_MODEL_ID`, default
+  `anthropic/claude-opus-5`) únicamente después de un fallo de contrato o gate
+  que el primario no pueda resolver;
+- `skill_repair`, `operational_judge` y el rol reservado
+  `capability_coder` usan un modelo frontier por defecto;
+- reintentos de transporte 429/5xx/red no consumen el presupuesto semántico de
+  completions; el botón manual aparece solo después de agotar la recuperación
+  automática;
+- cada tarea usa un `model_role` `studio_*` distinto y metadata `tier`, para no
+  mezclar router, discovery, compilación, reparación, juez y coding en el costo
+  histórico de `workflow_compiler`.
+
+La configuración recomendada y todas las cadenas de fallback están comentadas
+en `apps/web/.env.example`. Los call sites no deben leer defaults de proveedor
+por su cuenta.
+
+### Contrato reservado de capability coder
+
+`capability_coder` define política y atribución, pero **no activa hoy generación
+de código desde Studio**. Cuando se implemente, solo podrá abrirse después de
+confirmar que el catálogo no contiene una capacidad suficiente y deberá recibir
+un contrato confirmado de inputs, outputs, permisos, side effects y pruebas.
+Su salida será un borrador versionado (patch/manifest/tests/riesgos), nunca un
+deploy, publicación, secreto, migración aplicada ni write externo. Requerirá
+sandbox, allowlist de archivos/APIs, validación determinista, revisión humana y
+aprobación explícita antes de integrar. El modelo por defecto es Opus mediante
+`WORKFLOW_CAPABILITY_CODER_MODEL_ID`; el costo se atribuye a
+`studio_capability_coder`.
+
 ## Estado (multi-proveedor)
 
 | Aspecto | Estado |

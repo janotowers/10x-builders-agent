@@ -52,6 +52,7 @@ comportamiento accidental de runtime.
 | Documentos | Extracción, comentario, reemplazo y reanudación del mismo pendiente | attachment envelope/case collection | `PATTERN_DOCUMENT_INTAKE_REVIEW` |
 | Artefactos | Inputs/version/hash y staleness | impact plane | `PATTERN_GENERATED_CASE_DOCUMENT_ACCESS` |
 | Artefactos | No compartir signed URL efímera en mensajes | generated document proxy | `PATTERN_GENERATED_CASE_DOCUMENT_ACCESS` |
+| Entrega externa | Todo mensaje resuelve modo, ruta/proveedor o fallback manual, destinatario y aprobación con evidencia | Pattern Composition Kernel + gap planner | `PATTERN_EXTERNAL_MESSAGE_DELIVERY` |
 | Email | Preview de destinatario/asunto/cuerpo/adjuntos/fuentes | contract review | `PATTERN_EMAIL_SEND_WITH_APPROVAL` |
 | Email | Aprobación fijada a evidencia; un cambio la invalida | approvals/impact plane | `PATTERN_EMAIL_SEND_WITH_APPROVAL` |
 | Integración | Readiness, reconexión y retry se distinguen de fallback manual | provider readiness | `PATTERN_INTEGRATION_RECONNECT_DEGRADED_CONTINUATION` |
@@ -61,7 +62,7 @@ comportamiento accidental de runtime.
 
 | Tipo | Componente registrado | Patrones |
 | --- | --- | --- |
-| Autorización de acción/tool | `DeliveryPreview`, `DecisionCard` | `PATTERN_EMAIL_SEND_WITH_APPROVAL`, `PATTERN_OPERATIONAL_WRITE_GATE` |
+| Autorización de acción/tool | `DeliveryPreview`, `DecisionCard` | `PATTERN_EXTERNAL_MESSAGE_DELIVERY`, `PATTERN_EMAIL_SEND_WITH_APPROVAL`, `PATTERN_OPERATIONAL_WRITE_GATE` |
 | Decisión de negocio | `DecisionCard` | `PATTERN_HITL_ACTION_CONTRACT` y decisiones registradas |
 | Contribución/tarea humana | `FileContribution`, `ArtifactPreview` | `PATTERN_DOCUMENT_INTAKE_REVIEW` |
 | Revisión de excepción | `ExceptionPanel` | cron, correlación, integración y remediación |
@@ -142,6 +143,7 @@ no se convierten en defaults de toda forma de trabajo.
 - `PATTERN_CHANNEL_LENGTH_AND_ATTACHMENT_SAFETY`
 - `PATTERN_EXTERNAL_RESPONSE_CORRELATION`
 - `PATTERN_DOCUMENT_INTAKE_REVIEW`
+- `PATTERN_EXTERNAL_MESSAGE_DELIVERY`
 - `PATTERN_EMAIL_SEND_WITH_APPROVAL`
 
 ## Invariantes automatizables
@@ -155,3 +157,8 @@ no se convierten en defaults de toda forma de trabajo.
 7. Todo trigger de efecto externo selecciona gate, auditoría y prueba.
 8. Ningún provider `candidate` se presenta como conectado o recomendado sin
    verificación y readiness.
+9. Todo `authoringHint` aplicable de un patrón compuesto se convierte en un gap
+   determinista cuando su dimensión carece de evidencia; sus readiness gates
+   impiden confirmar mientras permanezca una violación `blocking`.
+10. La composición se recalcula con la evidencia acumulada en cada turno: un
+    efecto nuevo activa sus patrones aunque no estuviera en la descripción inicial.

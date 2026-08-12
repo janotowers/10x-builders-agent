@@ -48,6 +48,16 @@ export const AI_USAGE_MODEL_ROLES = {
   WORKFLOW_COMPILER: "workflow_compiler",
   /** Independent LLM-as-judge for Studio operational qualification runs. */
   STUDIO_OPERATIONAL_JUDGE: "studio_operational_judge",
+  STUDIO_AUTHORING_ROUTER: "studio_authoring_router",
+  STUDIO_AUTHORING_DISCOVERY: "studio_authoring_discovery",
+  STUDIO_AUTHORING_PROPOSAL_AUDIT: "studio_authoring_proposal_audit",
+  STUDIO_AUTHORING_RECIPIENT_PROVENANCE_VERIFIER:
+    "studio_authoring_recipient_provenance_verifier",
+  STUDIO_CASE_COMPILER: "studio_case_compiler",
+  STUDIO_DURABLE_TASK_COMPILER: "studio_durable_task_compiler",
+  STUDIO_REUSABLE_SKILL_COMPILER: "studio_reusable_skill_compiler",
+  STUDIO_SKILL_REPAIR: "studio_skill_repair",
+  STUDIO_CAPABILITY_CODER: "studio_capability_coder",
 } as const;
 
 export type AiUsageStatus = "ok" | "error";

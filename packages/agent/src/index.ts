@@ -19,6 +19,11 @@ export {
   DEFAULT_WORKFLOW_INTENT_DECOMPOSER_MODEL_ID,
   DEFAULT_WORKFLOW_COMPILER_MODEL_ID,
   DEFAULT_WORKFLOW_OPERATIONAL_JUDGE_MODEL_ID,
+  DEFAULT_STUDIO_PRIMARY_MODEL_ID,
+  DEFAULT_STUDIO_ESCALATION_MODEL_ID,
+  STUDIO_MODEL_TASKS,
+  STUDIO_MODEL_TIERS,
+  STUDIO_TASK_DEFAULT_MODEL_IDS,
   WORKFLOW_VERIFIER_MODEL_ID,
   WORKFLOW_INTENT_DECOMPOSER_MODEL_ID,
   WORKFLOW_COMPILER_MODEL_ID,
@@ -26,6 +31,7 @@ export {
   WORKER_MODEL_ALIAS_MAP,
   resolveWorkerModel,
   resolveWorkflowOperationalJudgeModelId,
+  resolveStudioModelId,
   resolveHeartbeatModelId,
   createChatModel,
   createCompactionModel,
@@ -34,6 +40,9 @@ export {
   createWorkerModel,
   type ResolveWorkerModelInput,
   type ResolvedWorkerModel,
+  type StudioModelTask,
+  type StudioModelTier,
+  type StudioModelEnv,
 } from "./model";
 export { isPropertyOptioningIntent } from "./skills/property-optioning-intent";
 export {

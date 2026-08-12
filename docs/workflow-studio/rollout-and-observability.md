@@ -1,16 +1,27 @@
 # Studio: rollout y observabilidad
 
-> Estado: contrato de despliegue (2026-08-09). La base de authoring, adjuntos y
+> Estado: contrato de despliegue (2026-08-10). La base de authoring, adjuntos y
 > calificación está implementada, pero el rollout externo sigue condicionado a
-> migraciones, telemetría y canary. La regresión determinista y el N-run live
-> owner de la prueba #1 (5/5, concurrency 5) pasaron con recuperaciones
-> conservadoras ante payloads truncados u omitidos del proveedor.
+> migraciones, telemetría y canary. La cobertura determinista de estabilización
+> de discovery está implementada, incluida recuperación conservadora cuando el
+> proveedor omite por completo `gap_candidates`. La política candidata
+> mini→Opus pasó 10/10 conversaciones owner (30 turnos) el 2026-08-10: 28
+> aceptadas por mini y 2 escaladas. La muestra baseline Opus volvió a truncarse
+> por `finish_reason=length`; por eso Opus queda como escalación, no primario.
+> El lifecycle de gaps v2 quedó cubierto por la suite determinista y por el
+> N-run metered `gap-lifecycle-v2-20260810-retry3` (5/5, 2026-08-10).
+> El puente kernel→gaps/readiness, la recomposición por turno y los fallbacks
+> conservadores de disposiciones quedaron cubiertos por
+> `kernel-gap-bridge-20260810-final3` (5/5 metered, 2026-08-10).
 
 ## 1. Alcance y fuentes persistidas
 
-- Authoring conserva el `gap_plan` versionado, estado compacto, hash de
-  confirmación e hilo en la sesión de Studio. Los gaps tienen ID estable,
-  dependencias, severidad `blocking | defaultable | optional` y estado.
+- Authoring conserva el `gap_plan` v2, estado compacto, hash de confirmación e
+  hilo en la sesión de Studio. Los gaps tienen ID estable, dependencias,
+  severidad `blocking | defaultable | optional`, disposición semántica,
+  evidencia/residuo/supersession y estado de cola. El estado compacto incluye
+  un ledger Q&A verbatim append-only por batch/turn/gap y el registro de
+  numeración visible.
 - `studio_qualification_runs` (migración `00077`) conserva estado, fingerprint,
   modelos, suite, rúbrica, política sandbox, latencia, tokens y costo.
   `ai_usage_events.studio_qualification_run_id` atribuye llamadas al run.
@@ -35,13 +46,42 @@ tools.
 ### Authoring / gap planner
 
 - `studio.authoring.gap_plan_built`: `session_id`, `turn_id`, versión,
-  conteos por severidad/estado, preguntas seleccionadas y modelo resuelto.
+  conteos por severidad/estado, preguntas seleccionadas, modelo resuelto y solo
+  códigos/path/stage de quality warnings.
 - `studio.authoring.turn_resolved`: fase, número de turno, checkpoint/hard
   limit, `can_proceed`, blockers, defaults aplicados y revisiones de propuesta.
 - `studio.authoring.fail_closed`: etapa, modelo y códigos de validación; debe
-  distinguir `missing_gap_candidates` de errores HTTP/schema.
+  incluir `failureClass`, `finish_reason`, shape de transporte/respuesta y call
+  count, y distinguir omisiones/schema del contrato de fallos materiales.
 - `studio.authoring.draft_materialized`: tipo de artefacto, revisión y
   `confirmation_hash`; nunca contenido de negocio.
+
+La correlación segura usa `session_id`, `turn_id`/AI turn y el evento de usage;
+los diagnósticos se limitan a códigos de quality warning, `failureClass`,
+`finish_reason`, response shape, stage y call count. Nunca registrar prompts,
+respuestas crudas, citas de evidencia ni contenido de negocio.
+
+Contrato de validación y recuperación:
+
+- ejemplos incompletos o malformados son quality warnings y nunca constituyen,
+  por sí solos, un blocker material;
+- `gap_candidates` se valida elemento por elemento: gaps válidos sobreviven a
+  siblings recuperablemente malformados; se descartan/truncan solo los ítems
+  afectados con códigos estables;
+- evidencia no soportada se elimina y una dimensión falsamente `covered` se
+  degrada a `partial`; si el modelo no representó ese faltante, se abre un gap
+  blocking conservador. No se acepta la afirmación y no se paga una completion
+  frontier solo para copiar una cita;
+- solo fallos fatales de proveedor/schema disparan una completion de escalación;
+  después se intenta salvage conservador del primer resultado materialmente
+  válido o del plan persistido.
+
+Clases canónicas: `provider_contract_retryable`,
+`material_validation_failed` e `internal_error`. Las clases retryable/internal
+son fallos del sistema: no se muestran como decisiones humanas ni piden
+reformular. Ofrecen `retry_discovery` en la misma sesión y con la misma
+descripción, sin añadir respuesta ni ronda de aclaración. Solo la ambigüedad
+material conserva `blocked`/`reformulate`.
 
 ### Adjuntos
 
@@ -74,10 +114,12 @@ servicio: se cuenta aparte y el usuario debe convertirlo a `.xlsx`.
 
 ## 3. Métricas y alertas
 
-- **Gap planner:** `fail_closed / runs` por código/modelo; preguntas p50/p95 por
-  turno (máximo contractual 4); blockers al checkpoint; hard-limit bloqueado vs
-  propuesta; defaults aplicados/rechazados; gaps reabiertos o re-preguntados;
-  tiempo hasta confirmación/materialización.
+- **Gap planner:** quality warnings y `fail_closed / runs` por
+  `failureClass`/código/modelo/stage; repairs, salvages y retries por call count
+  y response shape; preguntas p50/p95 por turno (máximo contractual 4);
+  blockers al checkpoint; hard-limit bloqueado vs propuesta; defaults
+  aplicados/rechazados; gaps reabiertos o re-preguntados; tiempo hasta
+  confirmación/materialización.
 - **Adjuntos:** aceptados/rechazados/fallidos por canal y formato; p95 de
   ingestión/extracción; truncamiento; ZIP guards; lifecycle atascado; denegaciones
   de tenancy/envelope; paridad Web/Telegram; promociones a caso.
@@ -89,7 +131,9 @@ servicio: se cuenta aparte y el usuario debe convertirlo a `.xlsx`.
 Alertas de parada inmediata: acceso cross-tenant exitoso, write externo durante
 calificación, archivo no validado que llegue a `ready`, o materialización con
 blocker abierto. `fail_closed` protege al usuario, pero una tasa elevada —en
-particular sin recuperación— bloquea ampliar el canary.
+particular sin recuperación— bloquea ampliar el canary. Fallos
+`provider_contract_retryable`/`internal_error` se contabilizan como salud del
+sistema, nunca como decisiones pendientes del operador.
 
 ## 4. Flags y compatibilidad
 
@@ -106,6 +150,10 @@ Compatibilidad:
 
 - Sesiones antiguas sin `gap_plan` migran en lectura a gaps `blocking`; la vista
   plana `gaps` sigue derivándose para consumidores anteriores.
+- Planes persistidos v1 migran en lectura a v2. La ausencia de un gap en la
+  siguiente salida nunca lo cierra ni reabre: cada turno posterior requiere
+  una disposición explícita por gap previo. Un gap parcial conserva ID/número
+  y reemplaza su pregunta por el residuo.
 - Envelopes legacy de staging se normalizan solo si su path pertenece al tenant;
   no obtienen acceso a `user_files` por inferencia.
 - El pipeline documental de casos permanece canónico. Web y Telegram usan el
@@ -135,8 +183,16 @@ Compatibilidad:
 6. Habilitar el gap planner para el mismo canary. Ejecutar selftests, regresión
    determinista y el live N-run owner de prueba #1
    (`npm run eval:authoring-discovery -- --conversation --runs=5 --concurrency=5`).
-   Un `fail_closed` residual del proveedor debe recuperarse vía plan previo,
-   question details o estado compacto; si no, bloquear la expansión del canary.
+   Ejecutarlo con `AI_USAGE_CLI_USER_ID` o `--user <uuid>`; no usar
+   `--no-meter` como evidencia de rollout.
+   La política candidata mini→Opus pasó 10/10 conversaciones (30 turnos), con
+   28 primarios mini y 2 escalaciones; la batería acumulada bajo el contrato
+   final pasó 30/30. El baseline Opus volvió a truncarse, por lo que no debe
+   restaurarse como primario sin evidencia nueva. Mantener la verificación de
+   warnings de calidad, salvage de candidatos válidos, las tres failure classes
+   y `retry_discovery` sin consumir ronda. Un `fail_closed` residual del
+   proveedor debe recuperarse vía plan previo, question details, dimensiones no
+   cubiertas o estado compacto; si no, bloquear la expansión del canary.
 7. Observar al menos una ventana de canary con métricas por tenant/canal;
    expandir gradualmente solo sin alertas de parada.
 

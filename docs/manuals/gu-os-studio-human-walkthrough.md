@@ -27,10 +27,10 @@ pasaba mientras la UX de retry/notificaciones tenía huecos).
 - [ ] Caso sintético **`test_mode`**: el walkthrough NO involucra EasyBroker ni
       Ungga. Esa integración ya quedó probada E2E; volver a usarla contaminaría
       la evaluación del Studio con ruido de destinos externos.
-- [ ] `WORKFLOW_COMPILER_MODEL_ID=anthropic/claude-opus-5` activo (decisión
-      2026-08-06, finding 26): rol de juicio alto y volumen bajísimo; los gates
-      deterministas siguen siendo la seguridad — el modelo fuerte mejora la
-      calidad de la propuesta, no la reemplaza.
+- [ ] Política Studio por tarea activa: primarios de router/discovery/compilers
+      en `openai/gpt-5.4-mini`; escalación compartida, repair, juez y futuro
+      capability coder en `anthropic/claude-opus-5`. Los gates deterministas
+      siguen siendo la seguridad; Opus no se invoca en cada turno.
 - [ ] Snapshot del catálogo de precios `2026-08-06.1` activo (el metering debe
       poder estimar el costo de las compilaciones).
 - [ ] Tenant de prueba con catálogos reales (skills, tools, guards, assets)
@@ -74,26 +74,81 @@ checks transversales.
 
 - [ ] Las preguntas de aclaración están **conversacionales y adaptativas**
       (lenguaje de negocio, 1–4 por turno, sin mostrar “ronda X de N”), con
-      checkpoint interno tras 3 respuestas y extensión voluntaria hasta 5;
-      no repiten lo ya respondido (O). Las preguntas abstractas muestran
-      ejemplos breves y contextuales como inspiración, no como opciones
-      obligatorias.
+      checkpoint interno tras 3 respuestas solo cuando existe una elección
+      real y extensión voluntaria hasta 5; con blockers preguntables continúa
+      sin interrumpir. No repiten lo ya respondido (O). Las preguntas abstractas
+      explican el término y muestran ejemplos breves y contextuales como
+      inspiración, no como opciones obligatorias; la nota de que son ejemplos
+      aparece una sola vez por tanda.
+- [ ] En cada turno posterior, la respuesta visible refleja el delta real:
+      puntos cerrados, parciales, nuevos, reencolados o desbloqueados. Un gap
+      parcial pregunta solo el residuo; uno no respondido puede volver a la
+      cola sin perder identidad. La numeración continúa por sesión y el mismo
+      gap conserva su número. El copy no expone términos del ledger como
+      “cerré puntos”, “reencolado” o “recién desbloqueado”.
+      Un gap idéntico no se pregunta más de dos veces; si no cambió, Studio
+      reconoce el bloqueo y ofrece una acción/default seguro en vez de entrar
+      en bucle.
 - [ ] En detalles técnicos, cada gap mantiene ID estable, severidad
       `blocking | defaultable | optional`, dependencia y estado. Nuevas
       respuestas anexan/reconcilian el plan sin borrar gaps previos abiertos.
+- [ ] Ejemplos incompletos o malformados aparecen, como máximo, como
+      advertencias de calidad; nunca bloquean por sí solos. La lista de
+      candidatos se valida ítem por ítem: un sibling inválido no elimina gaps
+      válidos ni sus preguntas.
 - [ ] Checkpoint y hard limit respetan blockers: **Preparar propuesta** no se
       habilita con un `blocking` abierto. Solo gaps `defaultable` con default
       seguro y elección explícita pueden cerrarse por default. Por turno se
-      seleccionan como máximo cuatro preguntas independientes.
+      seleccionan como máximo cuatro preguntas independientes. Si preparar no
+      está disponible, el botón no se muestra; el motivo pendiente aparece una
+      sola vez.
+- [ ] El modelo decide intención, relaciones, suficiencia y residuo semántico,
+      y extrae estrategias, inputs y categorías de capacidad con evidencia. El
+      código valida schemas, citas, IDs, catálogos, estado del tenant y
+      seguridad; ninguna lista de sinónimos o regex lingüístico decide
+      categorías, triggers o si una respuesta libre fue suficiente.
+- [ ] Resolver una pregunta y tener una ruta ejecutora lista son estados
+      distintos. Una conexión ausente aparece como acción de conectar/elegir o
+      fallback manual; no degrada una respuesta a “no contestada” ni reabre la
+      misma pregunta.
+- [ ] Una estrategia de destinatario concreta referencia una entrada o
+      capacidad real. «Enviar por email» no resuelve de dónde sale la dirección;
+      si no se declaró, Gu hace una pregunta residual. Si el operador dará el
+      email en cada uso, Studio crea una entrada runtime enlazada.
 - [ ] Mientras Gu analiza, el composer no invita a escribir: se reemplaza por
       un estado visible y una acción **Detener análisis** que cancela la
       solicitud en curso.
-- [ ] El estado humano actual permanece visible aun con **Detalles técnicos**
-      cerrado. Dentro del detalle, cada fila empieza por lenguaje natural y
-      termina con el `stage` atenuado; el último evento no se duplica.
+- [ ] El estado humano actual permanece visible mientras Gu trabaja o espera una
+      respuesta. En una propuesta idle no se intercala «Esperando confirmación»
+      entre el hilo y la tarjeta/CTAs; esa información queda en detalles
+      técnicos. Dentro del detalle, cada fila termina con el `stage` atenuado.
 - [ ] En “Esto entendí” se puede escribir una corrección sin reiniciar la
       sesión. La corrección produce un resumen/hash nuevo; **Crear borrador**
       confirma únicamente la revisión vigente.
+- [ ] En la propuesta, **Fuentes** solo resume orígenes de datos (qué dato, de
+      dónde, en qué formato). No copia oraciones completas de aprobación, envío
+      o alcance de uso; eso vive en decisiones, efectos y criterios.
+- [ ] **Entradas por ejecución** son datos del turno (p. ej. documento adjunto,
+      email del destinatario). La aprobación humana aparece como
+      **Intervenciones humanas** o decisión del flujo, no como entrada duplicada.
+- [ ] Si hay envío externo tras aprobación, bajo **Efectos externos** se lee
+      que Gu mostrará destinatario y contenido final antes de enviar.
+- [ ] Si el identificador ya existe en la cuenta (borrador o activo), Studio
+      advierte la colisión. Crear borrador solo reemplaza tras decisión
+      explícita; cambiar el identificador evita el reemplazo.
+- [ ] Al pulsar **Crear borrador**, el progreso aparece en el botón
+      («Creando borrador…») sin saltar el scroll al hilo. Si la creación falla,
+      la sesión sigue activa y el botón ofrece **Reintentar creación** con
+      mensaje humano; el detalle técnico queda bajo «Ver detalles técnicos».
+- [ ] Con un solo proveedor outbound conectado, “Herramientas para ejecutar”
+      lo presenta también como ruta propuesta tras aprobación; con varios,
+      Studio solicita elección.
+- [ ] `provider_contract_retryable` e `internal_error` muestran un banner de
+      fallo reintentable y **Reintentar análisis**, no decisiones humanas ni
+      pedido de reformulación. `retry_discovery` conserva sesión y descripción,
+      no agrega mensaje de respuesta ni consume ronda; recargar/reanudar
+      preserva ese estado. `material_validation_failed` sí mantiene
+      bloqueo/reformulación por ambigüedad material.
 - [ ] La transformación es VISIBLE: la descripción NL del operador se preserva
       **verbatim** en la spec de negocio y el operador puede ver ambas — su
       "What" y la interpretación del sistema — lado a lado (H). Si la
@@ -119,7 +174,8 @@ checks transversales.
       nuevo, la pregunta previa es "¿el modelo + contexto ya lo hace?" — crear
       skill es la última opción, no la primera.
 - [ ] Separar **Disponible desde** (Web/Telegram), **Entradas por ejecución**
-      (adjunto del turno) y **Herramientas para ejecutar** (p. ej. Gmail).
+      (adjunto/dato del turno), **Intervenciones humanas** (aprobación u otros
+      pasos del flujo) y **Herramientas para ejecutar** (p. ej. Gmail).
       Un DOCX aportado en cada uso nunca aparece como recurso reusable de
       cuenta; Telegram no se presenta como salida si el efecto confirmado es
       email.
@@ -155,6 +211,9 @@ checks transversales.
       Telegram, publicación u otra tool fuera de ese allowlist falla cerrado.
 - [ ] Cambiar artefacto/modelo/rúbrica vuelve la calificación
       **Desactualizada**, no fallida, y ofrece recalificar.
+- [ ] Un error HTTP o contrato inválido del juez queda **Inconclusa**, conserva
+      la salida y evidencia mecánica del ejecutor, y ofrece recalificar sin CTA
+      de reparación. Solo un veredicto sustantivo fallido habilita reparación.
 - [ ] Un fallo solo puede producir una nueva versión borrador; nunca modifica
       ni publica silenciosamente la vigente.
 
@@ -191,18 +250,43 @@ checks transversales.
 
 ### 5.1 Observabilidad y decisión de rollout
 
-- [ ] Revisar métricas de gap planner: `fail_closed` por código/modelo,
-      preguntas por turno, blockers en checkpoint/hard limit, defaults y tiempo
-      hasta materialización.
+- [ ] Revisar métricas de gap planner: quality warning codes y `fail_closed`
+      por `failureClass`/código/modelo/stage, `finish_reason`, response shape,
+      call count, preguntas por turno, blockers en checkpoint/hard limit,
+      defaults y tiempo hasta materialización. Correlacionar por sesión/AI turn
+      y usage; comprobar que no se persisten prompts, respuestas crudas, citas
+      ni contenido de negocio.
 - [ ] Revisar adjuntos por canal/formato: accepted/rejected/failed, p95 de
       extracción, truncamiento, ZIP guards, denegaciones tenant/envelope y
       promoción a casos. `.xls` rechazado se reporta como política esperada.
 - [ ] Revisar calificación: pass/fail/stale, costo/latencia, tool denials,
       fixture gates y reparaciones. Write externo observado = detener canary.
-- [x] Ejecutar regresión determinista y N-run live owner de batería #1 (5/5,
-      concurrency 5). Recuperaciones conservadoras cubren payloads truncados u
-      omitidos del proveedor; un `fail_closed` sin recuperación sigue siendo
-      alerta de canary.
+- [x] Cobertura determinista implementada para warnings de ejemplos, validación
+      item-by-item, un único repair, salvage conservador, failure classes y
+      retry sin consumir ronda. El N-run live owner histórico de batería #1
+      pasó 5/5 (concurrency 5) antes de esta estabilización.
+- [ ] Regresión exacta del incidente: la salida inicial contiene ejemplos
+      incompletos de actor/evidencia y el repair omite `gap_candidates`; el
+      primer resultado material válido continúa con preguntas + warnings, sin
+      `fail_closed`. Verificar además banner/botón de retryable, cero ronda
+      consumida y preservación al reanudar.
+- [x] N-run live de política candidata (2026-08-10): 10/10 conversaciones,
+      30 turnos; 28 completions aceptadas con mini y 2 escaladas a Opus. La
+      muestra baseline Opus falló por truncamiento `finish_reason=length`.
+      Batería #1–#10: dos rondas completas previas + una ronda completa posterior
+      al fix de preservación del router = 30/30.
+- [x] Selección de preguntas con dueño único: discovery elige el lote y la
+      política de turnos lo respeta. La doble selección previa mostraba
+      preguntas de baja prioridad sin ejemplos y marcaba como `asked` gaps que
+      el operador nunca vio.
+- [x] Lifecycle v2 determinista: migración de planes v1, disposiciones
+      semánticas por gap previo, ledger verbatim por batch/gap, cobertura
+      obligatoria de las diez dimensiones, selección `min(4,N)`, copy por delta,
+      numeración estable e hidratación legacy. Type-checks y
+      `test:workflow-studio` pasan.
+- [x] N-run owner con metering (`gap-lifecycle-v2-20260810-retry3`, 2026-08-10):
+      5/5 conversaciones estables; mini primario con escalaciones Opus acotadas;
+      ledger `channel=cli` atribuido al tenant de Studio.
 - [ ] Seguir la secuencia y rollback canónicos en
       [`rollout-and-observability.md`](../workflow-studio/rollout-and-observability.md).
 
@@ -293,8 +377,8 @@ Hallazgos de Pasada 2 ya corregidos en código (finding 30):
 
 ### Hallazgo de batería #1 — discovery y revisión de borrador
 
-**Implementado en código (finding 31 y extensiones 32–36); walkthrough manual y
-rollout externo siguen pendientes.**
+**Implementado en código (finding 31 y extensiones 32–36, incluida la regresión
+multiturno outbound); walkthrough manual y rollout externo siguen pendientes.**
 La clasificación correcta no prueba que la solicitud esté completa. En
 “Seguimiento cordial a propietarios”, Studio reconoció
 `reusable_skill/simple`, pero materializó sin preguntar de dónde leer el
@@ -328,14 +412,21 @@ Contrato de UX esperado antes de reanudar la batería:
    pregunta “¿quieres HITL/botón?”, sino quién decide y qué necesita ver.
 4. El modelo cita qué texto/respuesta cubre cada dimensión. Código
    determinístico valida schema, límites, evidencia existente, tenancy,
-   catálogo, side effects y autoridad; no pretende decidir suficiencia
-   semántica con regex.
+   catálogo, side effects y autoridad. Los contratos registrados del kernel
+   aplican guardas semánticas conservadoras: Web Chat/Telegram son canales de
+   invocación, no la fuente del último acuerdo; “un propietario” es una clase
+   de destinatario, no una regla para resolver el contacto exacto.
 5. Muestra **Esto entendí** y solo entonces la **Forma propuesta** (skill,
-   caso, tarea durable o programación), junto con supuestos y gaps.
-6. Solo **Crear borrador** materializa tras confirmación humana.
+   caso, tarea durable o programación), junto con supuestos y gaps. En la
+   propuesta, Fuentes resume solo orígenes de datos; entradas e intervenciones
+   humanas se separan; el envío externo declara la salvaguarda final.
+6. Solo **Crear borrador** materializa tras confirmación humana. Una colisión
+   de identificador exige decisión explícita (cambiar slug o reemplazar).
+   Fallos de creación dejan la sesión recuperable con **Reintentar creación**.
 7. Los cuatro tipos aterrizan en una revisión común dentro de Diseño; el
    editor técnico de Ajustes se abre como acción posterior explícita.
-8. Progreso humano en el hilo; provenance técnica bajo “Ver detalles”.
+8. Progreso humano cerca de la acción (botón/status); provenance técnica bajo
+   “Ver detalles”.
 
 Evidencia automatizada:
 
@@ -346,13 +437,19 @@ Evidencia automatizada:
 - type-check web/workflows/db y suite `test:workflow-studio`;
 - validadores de skills/migraciones y selftest del pipeline genérico de
   adjuntos;
-- regresión determinista y N-run live owner de la batería #1 (5/5). La batería
-  live histórica #1–#10 validó taxonomía y preguntas bajo el contrato anterior;
-  el contrato actual añade planner, paridad de adjuntos y recuperaciones ante
-  payloads incompletos del proveedor;
+- regresión determinista, N-run live owner 10/10 de la política mini→Opus
+  (28/30 turnos sin escalación) y batería live #1–#10 acumulada 30/30 bajo el
+  contrato actual;
+- regresión exacta de batería #1 en dos turnos: activar email después de
+  persistir el compact no puede insertar gaps nuevos en
+  `prior_gap_dispositions`; una respuesta parcial produce preguntas residuales
+  para fuente, contacto exacto y evidencia de aprobación, no fail-closed ni
+  confirmación prematura. N-run live
+  `studio-turn-transition-20260810-final2`: 5/5 conversaciones estables;
 - compilación live histórica de `owner-followup-message`: SKILL.md válido,
-  tenant-aware y dos tools reales del catálogo, sin persistir el artefacto
-  durante el eval.
+  tenant-aware y tools reales del catálogo, sin persistir el artefacto
+  durante el eval. El compilador Studio emite metadata estructurada; el código
+  serializa el frontmatter y lo valida con el parser real antes de persistir.
 
 ### Taxonomía del router de autoría (corregida — 2026-08-07)
 
@@ -384,6 +481,13 @@ tipo de artefacto.
    pregunta dónde vive el último acuerdo/historial (y cualquier otra
    ambigüedad material), no pregunta si debe enviar porque “preparar” ya
    implica draft-only; resumen `Esto entendí`; creación solo tras confirmar.
+   Si una respuesta posterior agrega envío, Studio recompone los patrones y
+   activa `PATTERN_EXTERNAL_MESSAGE_DELIVERY`: debe resolver semánticamente
+   destinatario y autoridad/evidencia de aprobación; ruta/proveedor se cruza
+   con el catálogo/tenant y, si falta, aparece como acción o fallback seguro,
+   no como re-pregunta. Una corrección como “el documento se adjunta en cada ejecución”
+   se suma al hecho previo “DOCX/texto aportado por el usuario”; no regenera una
+   versión más pobre ni copia la descripción original en Fuentes.
 2. **Skill compuesto:** “Antes de una cita de captación, prepara una carpeta
    con datos de la propiedad, zona, comparables, pendientes, antecedentes del
    propietario y agenda sugerida.”

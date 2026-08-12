@@ -112,7 +112,17 @@ export async function withCliAiUsageMetering<T>(
       `[ai-usage] ${label}: metering disabled (--no-meter or enabled:false). ` +
         "OpenRouter will still bill; /settings/ai-usage will undercount."
     );
-    return fn();
+    const priorFlag = process.env.AI_USAGE_METERING_ENABLED;
+    process.env.AI_USAGE_METERING_ENABLED = "false";
+    try {
+      return await fn();
+    } finally {
+      if (priorFlag === undefined) {
+        delete process.env.AI_USAGE_METERING_ENABLED;
+      } else {
+        process.env.AI_USAGE_METERING_ENABLED = priorFlag;
+      }
+    }
   }
 
   const userId = resolveCliMeteringUserId({

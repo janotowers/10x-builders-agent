@@ -36,19 +36,31 @@ function testNoMeterFlag(): void {
 }
 
 async function testNoMeterSkipsBinding(): Promise<void> {
+  const previousFlag = process.env.AI_USAGE_METERING_ENABLED;
+  process.env.AI_USAGE_METERING_ENABLED = "true";
   let ran = false;
-  await withCliAiUsageMetering(
-    async () => {
-      ran = true;
-      return 1;
-    },
-    {
-      label: "selftest",
-      argv: ["--no-meter"],
-      require: true,
+  try {
+    await withCliAiUsageMetering(
+      async () => {
+        ran = true;
+        assert.equal(process.env.AI_USAGE_METERING_ENABLED, "false");
+        return 1;
+      },
+      {
+        label: "selftest",
+        argv: ["--no-meter"],
+        require: true,
+      }
+    );
+    assert.equal(ran, true);
+    assert.equal(process.env.AI_USAGE_METERING_ENABLED, "true");
+  } finally {
+    if (previousFlag === undefined) {
+      delete process.env.AI_USAGE_METERING_ENABLED;
+    } else {
+      process.env.AI_USAGE_METERING_ENABLED = previousFlag;
     }
-  );
-  assert.equal(ran, true);
+  }
 }
 
 async function testMissingUserThrowsWhenRequired(): Promise<void> {

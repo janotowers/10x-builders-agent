@@ -58,24 +58,52 @@ function argNumber(flag: string, fallback: number): number {
   return fallback;
 }
 
+function argString(flag: string): string | null {
+  const eq = process.argv.find((argument) =>
+    argument.startsWith(`${flag}=`)
+  );
+  if (eq) return eq.slice(flag.length + 1).trim() || null;
+  const index = process.argv.indexOf(flag);
+  return index >= 0 ? process.argv[index + 1]?.trim() || null : null;
+}
+
 loadEnv(resolve(__dirname, "..", ".env.local"));
 
 async function main(): Promise<void> {
   const days = argNumber("--days", 30);
+  const benchmarkId = argString("--benchmark-id");
   const db = createServerClient();
   const sinceIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
   // Any admin-wide read needs a user id for the helper contract; use a
   // placeholder — adminWide ignores tenant filter.
-  const events = await listAiUsageEvents(db, {
+  const loadedEvents = await listAiUsageEvents(db, {
     userId: "00000000-0000-0000-0000-000000000000",
     adminWide: true,
     sinceIso,
     limit: 10_000,
   });
+  const events = benchmarkId
+    ? loadedEvents.filter(
+        (event) => event.metadata_jsonb?.benchmark_id === benchmarkId
+      )
+    : loadedEvents;
 
   const opus = events.filter((e) => e.model_id.includes("opus"));
-  const compiler = events.filter((e) => e.model_role === "workflow_compiler");
+  const studioRoles = new Set([
+    "workflow_compiler",
+    "studio_authoring_router",
+    "studio_authoring_discovery",
+    "studio_authoring_proposal_audit",
+    "studio_authoring_recipient_provenance_verifier",
+    "studio_case_compiler",
+    "studio_durable_task_compiler",
+    "studio_reusable_skill_compiler",
+    "studio_skill_repair",
+    "studio_capability_coder",
+    "studio_operational_judge",
+  ]);
+  const studio = events.filter((event) => studioRoles.has(event.model_role));
 
   const byChannel = (rows: typeof events) => {
     const map = new Map<
@@ -94,7 +122,11 @@ async function main(): Promise<void> {
     return [...map.entries()].sort((a, b) => b[1].costMicro - a[1].costMicro);
   };
 
-  console.log(`Window: last ${days} days · loaded ${events.length} events`);
+  console.log(
+    `Window: last ${days} days · loaded ${events.length} events${
+      benchmarkId ? ` · benchmark=${benchmarkId}` : ""
+    }`
+  );
   console.log(
     `All models accounted: ${formatUsdFromMicro(totalEffectiveCostMicroUsd(events))}`
   );
@@ -113,15 +145,23 @@ async function main(): Promise<void> {
   }
   console.log("");
   console.log(
-    `workflow_compiler role: ${compiler.length} calls · ${formatUsdFromMicro(
-      totalEffectiveCostMicroUsd(compiler)
+    `Studio model roles: ${studio.length} calls · ${formatUsdFromMicro(
+      totalEffectiveCostMicroUsd(studio)
     )}`
   );
-  for (const [channel, bucket] of byChannel(compiler)) {
+  const studioByRole = new Map<string, typeof studio>();
+  for (const event of studio) {
+    const rows = studioByRole.get(event.model_role) ?? [];
+    rows.push(event);
+    studioByRole.set(event.model_role, rows);
+  }
+  for (const [role, rows] of [...studioByRole.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0])
+  )) {
     console.log(
-      `  channel=${channel} · calls=${bucket.events} · accounted=${formatUsdFromMicro(
-        bucket.costMicro
-      )} · reported=${bucket.reported}/${bucket.events}`
+      `  role=${role} · calls=${rows.length} · accounted=${formatUsdFromMicro(
+        totalEffectiveCostMicroUsd(rows)
+      )}`
     );
   }
 

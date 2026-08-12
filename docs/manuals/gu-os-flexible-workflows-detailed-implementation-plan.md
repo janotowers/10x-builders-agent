@@ -449,17 +449,17 @@
 
 ### Slice 4.3 — Skill package interoperability (deferred foundation; not a Phase 0–2 blocker)
 
-**Status:** [ ] pending · **Depends on:** Phase 4 compiler landing; ADR-011 draft accepted.
-**Objective:** document and, when prioritized, implement import-with-adaptation toward the portable skill package shape without allowing download-and-run scripts.
+**Status:** [~] architecture accepted 2026-08-11; implementation deferred · **Depends on:** Phase 4 compiler landing; [`ADR-0011`](adr/0011-skill-package-interoperability.md) accepted.
+**Objective:** document and, when separately prioritized, implement import-with-adaptation toward the portable skill package shape without allowing download-and-run scripts. This slice is not part of the current `account_skills` remediation.
 
 **Tasks (when scheduled):**
-- [ ] 1. Write ADR-011 from Technical Plan §9.2 (portable core vs Gu extensions; quarantine; no silent activation).
-- [ ] 2. Define the Gu governance record around (not inside) the portable package: immutable version, canonical manifest/content hash, lifecycle `draft → reviewed → published → deprecated|archived`, creator/reviewer/publisher provenance, required capabilities, granted capabilities, and rollback target. A published version is immutable; any content change creates a new draft version (never silently mutates or keeps prior approval).
-- [ ] 3. Design `account_skill_files` **or** object-storage bundle + canonical manifest hash so private skills can carry `references/` / `assets/` (closes the `body_md`-only gap vs globals). The hash covers every package file and executable bit/path metadata, not only `SKILL.md`.
+- [x] 1. Write and accept [`ADR-0011`](adr/0011-skill-package-interoperability.md) from Technical Plan §9.2 (portable core vs Gu extensions; quarantine; no silent activation).
+- [x] 2. Record the future Gu governance control plane: immutable `account_skill_versions`, canonical manifest hash, lifecycle `draft → reviewed → published → deprecated|archived`, creator/reviewer/publisher provenance, capability grants, version pinning, and rollback by pointer to a prior published version. Exact schemas and migrations remain implementation work.
+- [x] 3. Select the hybrid package design: `account_skill_files` as the Postgres manifest index plus private Supabase Storage bytes partitioned by tenant/skill/version for `SKILL.md`, `references/`, and inert `assets/`. RLS/storage policy boundaries and service-role ownership verification are mandatory. Exact buckets, policies, retention, and migration from V1 remain implementation work.
 - [ ] 4. Import pipeline stub: validate `SKILL.md` → identify license/provenance → map Gu fields → capability/gap report → quarantine → review → human publication as `account_skills` (private) or global PR path. Publication fails closed while any required capability is ungranted or any required gate lacks passing evidence.
 - [ ] 5. Governance transitions: review records the reviewed content hash; post-review edits return the candidate to `draft`; publish accepts only the same reviewed hash; deprecate/archive preserves prior versions for audit and rollback. Add transition/hash-tampering/capability-gap selftests.
 - [ ] 6. Scope promotion remains admin-gated and explicit. Do not implement organization promotion until Technical Plan §28.9 activates organization ownership; when it does, promotion creates a new organization-scoped governed version with lineage rather than moving or mutating the source.
-- [ ] 7. Scripts: accept into quarantine only; promotion path is “register deterministic_service”, never model-chosen arbitrary execution.
+- [ ] 7. Scripts: accept into a separate quarantine only; promotion path is “register tool/deterministic service” with tenancy, capability contract, tests, observability, and rollback — never model-chosen arbitrary execution.
 - [ ] 8. Optional frontmatter `industry` / `domains` on Gu skills after parser schema bump (catalog only).
 
 **Evidence when scheduled:** lifecycle transition matrix; content-hash tampering rejection; publication blocked by missing capability; edit-after-review requires re-review; rollback resolves the prior immutable version; tenant/scope isolation fixture. QM's lifecycle is implementation prior art (reference analysis §3.4), not a data model to copy.
@@ -544,8 +544,9 @@
 
 ### Slice 5.3.1 — Studio discovery + unified draft review
 
-**Status:** [~] implemented in code 2026-08-09; manual walkthrough, live N-run
-stabilization and external rollout pending (findings 31–36)
+**Status:** [~] implemented in code; discovery stabilization approved
+2026-08-10 with deterministic coverage and live N-run 5/5 completed. Manual
+walkthrough and external rollout remain pending (findings 31–37).
 **Objective:** Studio must use Gu's existing authoring doctrine to understand an open-ended request before materializing it, then show a consistent review surface for every creation kind.
 
 **Canonical inputs (reuse, do not fork):**
@@ -565,7 +566,11 @@ stabilization and external rollout pending (findings 31–36)
   propone `gap_candidates`; el planner asigna IDs estables, merge
   append-preserving, dependencias, severidad
   `blocking | defaultable | optional`, máximo cuatro preguntas y defaults
-  explícitos. Checkpoint/hard limit no atraviesan blockers.
+  explícitos. Checkpoint/hard limit no atraviesan blockers. Ejemplos incompletos
+  o malformados son quality warnings, nunca blockers por sí solos; candidatos
+  se validan item-by-item y los válidos sobreviven siblings recuperablemente
+  inválidos. Solo fallos fatales de provider/schema/evidencia disparan un único
+  repair, seguido de salvage conservador.
 - [x] 4. Conversational wizard in Diseño: **Analizar solicitud** → hilo chat (composer único) → checkpoint 3+2 → `Esto entendí` + forma propuesta → **Crear borrador**.
 - [x] 5. Session integrity: tenant-scoped GET resume (reconstruye hilo), confirmation hash, optimistic JSON append, atomic `materializing` claim (migration `00076`), compiled replay and cancellation.
 - [x] 6. Common post-create review in Diseño for all four artifact kinds; skill editor is an explicit later action.
@@ -575,8 +580,18 @@ stabilization and external rollout pending (findings 31–36)
   tools/efectos son dimensiones distintas. Telegram como entrada no implica
   envío; Gmail solo se propone para intención explícita de email saliente.
 - [x] 10. Evidence: schema/selftests (incl. gap planner, conversation policy +
-  thread hydrate), type-check, Studio suite, N-run determinista y N-run live
-  owner de batería #1 (5/5). El walkthrough manual de canary permanece abierto.
+  thread hydrate, quality warnings, item salvage y retry sin ronda), type-check
+  y Studio suite. El N-run live owner posterior a esta estabilización pasó 5/5
+  en dos corridas y 4/5 en una tercera (concurrency 5, 2026-08-10), por un
+  payload del proveedor sin `gap_candidates` ni `understanding`; el walkthrough
+  manual de canary permanece abierto.
+- [x] 11. Failure/telemetry contract: `provider_contract_retryable`,
+  `material_validation_failed`, `internal_error`. Retryable/internal ofrecen
+  `retry_discovery` en la misma sesión/descripción, sin decisión humana,
+  reformulación, mensaje de respuesta ni ronda nueva; solo ambigüedad material
+  conserva blocked/reformulate. Observabilidad guarda códigos de warning,
+  `failureClass`, finish reason, response shape, stage/call count y correlación
+  sesión/usage, nunca prompt/respuesta/contenido de negocio.
 
 **Non-goals:** a free-form LangGraph chat; a closed catalog of hardcoded questions as the happy path; auto-activation; replacing workflow/capability/publication gates with model judgment; exposing deterministic/model provenance chips in the default UI.
 
@@ -661,6 +676,11 @@ flag para estas superficies.
 | 34 | 2026-08-09 | **Una lista plana de preguntas no era un plan durable de gaps.** El modelo podía omitir en el turno siguiente un faltante no preguntado, reabrir dimensiones resueltas o llegar al checkpoint/hard limit sin distinguir blockers de puntos defaultables/opcionales. | High (materialización insegura o conversación inestable) | **Taken:** planner determinista versionado con IDs estables, merge append-preserving, dependencias/aging, severidad, máximo cuatro preguntas y defaults seguros explícitos; sesión/hash/thread/UI integrados. Regresión determinista #1 y N-run live owner 5/5 pasaron, con recuperación conservadora ante payloads truncados/omitidos del proveedor. |
 | 35 | 2026-08-09 | **Los adjuntos conversacionales estaban fragmentados por canal/caso y la documentación reducía Telegram a capacidades parciales.** Un `runtime_input` genérico necesitaba tenancy, storage, extracción, envelope y tools comunes; además `.xls` dependía de un parser con advisories sin converter mantenido. | High (paridad, seguridad y promesas de producto) | **Taken:** migración `00079`, bucket privado tenant-owned, pipeline genérico Web/Telegram, resolver y tres tools read-only; promoción explícita al pipeline de caso. PDF/DOCX/PPTX/XLSX/TXT/CSV y demás formatos de política soportados; `.xls` rechazado como `legacy_xls_parser_unsafe` y requiere conversión a `.xlsx`. |
 | 36 | 2026-08-09 | **El código aditivo de gap planner, adjuntos y calificación no consume todavía flags tenant-scoped dedicados.** La regla global del plan exige canary/rollback por flag, pero hoy una emergencia depende de rollback de despliegue. | Medium (riesgo operacional, no invalida selftests) | **Pending runtime follow-up; documented now:** usar `account_feature_flags` para `studio_authoring_gap_planner_v1`, `generic_attachments_v1` y `studio_operational_qualification_v1`, apagados por defecto antes del canary externo. No afirmar rollback por flag hasta cablearlos; no hacer down-migration de `00077`–`00079`. |
+| 37 | 2026-08-10 | **Discovery confundía degradación de calidad con invalidez material.** Ejemplos incompletos de actor/evidencia o un sibling malformado podían arrastrar gaps válidos hacia repair/fail-closed; fallos retryable podían reaparecer como decisiones del operador y consumir una ronda. | High (continuidad de autoría + atribución correcta del fallo) | **Taken (user-approved 2026-08-10):** warnings no materiales; validación item-by-item; un repair solo ante fallo fatal y salvage conservador, incluida derivación desde dimensiones no cubiertas si faltan por completo los candidatos; failure classes + retry en misma sesión sin ronda; telemetría sanitizada. Cobertura determinista y N-run live nuevo 5/5 completados; regresión manual exacta pendiente. |
+| 38 | 2026-08-10 | **La selección de preguntas tenía dos dueños.** `runAuthoringDiscovery` elegía el lote determinista, lo marcaba `asked` y emitía sus ejemplos; después `resolveAuthoringConversationTurn` volvía a seleccionar sobre el mismo plan, consumía el siguiente lote y filtraba `clarifying_question_details` contra preguntas que ya no coincidían. Efecto observado en la prueba #1: una sola pregunta opcional (prioridad 35) en la primera ronda mientras dos blockers (95, 88) se marcaban `asked` sin mostrarse, cero ejemplos en toda la conversación y repetición de una pregunta ya respondida. | High (calidad del discovery y confianza del operador) | **Taken (2026-08-10):** dueño único. Discovery selecciona y la política de turnos reutiliza `clarifying_questions`, descartando solo las resueltas por defaults; el fallback de selección queda para salidas legacy sin plan. Regresión en `authoring-conversation.selftest` que falla con la conducta anterior. |
+| 39 | 2026-08-10 | **Opus era primario para tareas rutinarias del Studio y además podía truncar payloads largos.** Router, discovery y compiladores compartían un default frontier; los retries no distinguían transporte de completion y el ledger agrupaba casi todo como `workflow_compiler`. | High (costo, latencia y estabilidad) | **Taken (2026-08-10):** resolver central tipado por tarea/tier; mini primario para router/discovery/compilers; Opus para una escalación acotada, repair, juez y contrato reservado de capability coder; roles `studio_*`, metadata tier/benchmark, retries 429/5xx sin gastar completion y estado compacto sin contexto duplicado. Evidencia live: candidato 10/10 conversaciones, 28/30 turnos solo mini y 2 escalaciones; baseline Opus falló por `finish_reason=length`; batería acumulada final 30/30. Evidencia inválida se elimina, degrada `covered→partial` y abre gap conservador en vez de aceptar el claim o pagar Opus para copiar una cita. |
+| 40 | 2026-08-10 | **El merge append-preserving no distinguía “respondido parcialmente” de “no respondido”, y el contexto compacto no conservaba qué batch/pregunta produjo cada respuesta.** Una omisión o reemisión del modelo podía mantener un gap en `asked`, reabrirlo sin evidencia, repetir la pregunta completa o perder la continuidad visual entre rondas. | High (repetición, completitud y trazabilidad de discovery) | **Taken (2026-08-10):** `gap_plan` v2 con migración de v1, identidad por key/ID estable y disposición explícita por gap previo (`resolved | partial | unanswered | superseded | open`), evidencia verbatim, residual y supersession. En turnos posteriores el modelo emite solo gaps genuinamente nuevos y debe clasificar cada gap previo; las 10 dimensiones aparecen exactamente una vez y cada `partial/missing` queda representada. Ledger Q&A append-only ligado a batch/turn/gap, selección determinista `min(4,N)` con aging/dependencias, copy por delta y numeración estable por sesión con hidratación legacy. Salvajes adicionales: `residual:""` → ausente/`unanswered`, reemisión de gaps previos descartada, coerción de `needs_clarification` vacío y de `redirect` sin `redirect_to_chat`. Evidencia: `test:workflow-studio` + N-run metered `gap-lifecycle-v2-20260810-retry3` 5/5. |
+| 41 | 2026-08-10 | **Los patrones del kernel aportaban `authoringHints` solo al prompt; no eran gaps ni gates deterministas.** Además, la composición se calculaba con la señal inicial, por lo que una respuesta posterior como “también deberá enviar” podía llegar a propuesta sin canal/proveedor, resolución del destinatario ni aprobación completa. Una corrección de propuesta regeneraba `understanding` y podía perder hechos confirmados o copiar la descripción original en Fuentes. | High (garantías reutilizables, seguridad de efectos y confianza en revisión) | **Taken (2026-08-10):** puente genérico patrón→gap/readiness con claves, severidad y dependencias estables; recomposición por turno y snapshot en compact state; `PATTERN_EXTERNAL_MESSAGE_DELIVERY` transversal a las cuatro formas, con email/Telegram como especializaciones; gates de ruta, destinatario y autoridad; schedule sin recurrence prueba que el puente no es específico de mensajería. Las revisiones son parches conservadores: preservan dimensiones no tocadas, acumulan precisiones no contradictorias y eliminan ecos de la descripción en Fuentes. Fallbacks conservadores reencolan disposiciones omitidas o con evidencia inválida y preservan la forma de artefacto establecida. Evidencia: `test:workflow-studio`, type-checks y N-run metered `kernel-gap-bridge-20260810-final3` 5/5. |
 | — | | *(append as found)* | | |
 
 **Open [H] gates blocking specific tasks:** ~~valuation-methodology inputs~~ (resolved — finding 3); route/IA naming (blocks 2.5-2, 2.7-1, 4.2-4 final names — interim names acceptable behind role gate); dual-dispatch tolerance (informs 2.6 soak length); approval re-derivation vs immediate surfacing (informs 3.3-2 UX); organization-owned workflows (default: global+user only until asked); skill-import timing (slice 4.3); channel-linked generated views (Technical Plan §28.12 — no slice until activated); MCP server connections / tool materialization (Technical Plan §28.14 — finding 27; deferred until sandboxing + real need).

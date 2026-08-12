@@ -18,7 +18,7 @@ Canonical roadmap for evolving the assistant (Skills, Heartbeat, Business Brain)
 | **V1.5** | Visible **Skill Registry** + `user_skill_settings` toggles/config per account; tenant-configurable `brand-kit`; staged document/file skills behind attachment tools |
 | **V1.6 (NEW, in progress)** | **`account_skills` V1 (Opción B mínima)**: tabla `account_skills(slug, body_md, metadata_jsonb, status, version)` + RLS por `user_id`; runtime compone `account_skills(active) ∪ skills/global/*` con override por slug; UI mínima en Ajustes (textarea + frontmatter + Zod). Sin draft/review/archived/rollback ni shared per-org. |
 | **V1.7 (NEW, in progress)** | **Subsistema `operational_cases`**: cron `/api/cron/operational-cases`, lock optimista por `version`, binding directo de skill por `case_type`, `notify_user` multi-canal con inbox persistente (`internal_user_notifications`), HITL de negocio (`price_approval`), status `waiting_internal`, webhook entrante que asocia respuestas externas (Telegram). Pilot end-to-end: `property-optioning-coach` para Alebrixe. |
-| **V2** | `account_skills` versioning completo (draft/active/archived, rollback, QA pre-publicación, editor con preview), admin UI + test harness para playbooks custom across `scope: business | personal | shared` |
+| **V2** | Governed private skill packages per [`ADR-0011`](manuals/adr/0011-skill-package-interoperability.md): immutable `account_skill_versions` + manifest governance and `account_skill_files` index in Postgres; private Supabase Storage bytes; review/publish/version pinning/rollback; admin UI + test harness. Architecture accepted; implementation deferred and separately scheduled. |
 | **V3** | `organizations` + memberships + RLS; `account_skills` shareables a nivel de organización; optional dynamic multi-skill router/subagents |
 
 ---
@@ -1022,9 +1022,12 @@ su propia `property-optioning-coach` sin contaminar el catálogo global.
 | 1.6-5 | API `/api/account-skills` (list/upsert) y `/api/account-skills/[slug]` (archive). |
 | 1.6-6 | UI mínima `/settings/account-skills`: lista, edición con textarea, validación inline, archivar. |
 
-**Out of V1.6 (queda para V2):** draft/review/active/archived con rollback,
-QA pre-publicación, editor con preview, compartir entre cuentas de la
-misma organización, embeddings para selector escalado.
+**Out of V1.6 (queda para V2):** paquetes privados completos y gobernados según
+[`ADR-0011`](manuals/adr/0011-skill-package-interoperability.md), incluyendo
+versiones inmutables, `references/`/`assets/`, review/publish/rollback, QA
+pre-publicación y editor con preview; también compartir entre cuentas de la
+misma organización y embeddings para selector escalado. Esta arquitectura está
+aceptada, pero su implementación es separada de la remediación actual.
 
 ---
 
@@ -1103,15 +1106,26 @@ Un piloto no se gradúa por generar más actividad, respuestas o tokens. Se grad
 ## V2 — Custom skills lifecycle
 
 > **Update:** la base mínima (`account_skills` V1) ya está implementada en
-> V1.6. V2 añade el ciclo de vida completo encima de esa base: draft/active/
-> archived con rollback, QA pre-publicación, test harness, editor con
-> preview en UI. No se rompe la API actual; se extiende `status` y se
-> agrega versionado granular.
+> V1.6. [`ADR-0011`](manuals/adr/0011-skill-package-interoperability.md)
+> fija la arquitectura V2, pero no la implementa ni modifica la remediación
+> actual.
 
-DB `account_skills` con versionado completo, draft/active/archived,
-rollback, test harness, UI editor con preview. Esto es para
-playbooks custom autoridados per cuenta. Sigue a V1.5 (configured global
-skills) y V1.6 (account_skills mínimo).
+V2 separa el control de los bytes: Postgres conserva
+`account_skill_versions` inmutables, hash/manifiesto y gobierno, con
+`account_skill_files` como índice; Supabase Storage privado conserva los bytes
+de `SKILL.md`, `references/` y `assets/` por tenant/skill/version. El runtime
+fija una versión publicada y `read_skill_reference` resuelve exclusivamente
+contra ese pin, verificando ruta, tenant y hash. RLS protege el plano de control;
+las políticas de Storage reflejan el tenant y el uso server-side de service role
+debe volver a verificar ownership explícito.
+
+El ciclo objetivo es `draft → reviewed → published → deprecated|archived`.
+Editar crea una nueva versión draft, publicar exige el mismo hash revisado y
+rollback sólo cambia el puntero activo a una versión publicada anterior. Los
+scripts importados quedan en cuarentena y sólo pueden promoverse mediante un
+proyecto separado a tools o servicios determinísticos registrados; nunca se
+ejecutan directamente desde el paquete. Migraciones, buckets/policies, runtime,
+UI, importador y pruebas se planifican como implementación V2 separada.
 
 ---
 

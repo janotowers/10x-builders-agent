@@ -17,4 +17,4 @@ Status meanings:
 - **Implemented:** verified in current code/migrations.
 - **Superseded:** retained for history with a link to the replacement.
 
-Workflow-specific ADRs recommended in the flexible-workflows plan may be added separately; the `100+` range here avoids claiming those numbers.
+Workflow-specific ADRs live under [`../manuals/adr/`](../manuals/adr/); the `100+` range here avoids claiming those numbers. Current records include [ADR-0001 — Durable work roots](../manuals/adr/0001-durable-work-roots.md) and [ADR-0011 — Governed hybrid storage for private skill packages](../manuals/adr/0011-skill-package-interoperability.md).

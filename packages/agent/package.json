@@ -49,6 +49,7 @@
     "test:ai-usage-meter": "tsx src/usage/ai-usage-meter.selftest.ts",
     "test:model-price-catalog": "tsx src/usage/model-price-catalog.selftest.ts",
     "test:operational-judge-model": "tsx src/model-operational-judge.selftest.ts",
+    "test:studio-model-policy": "tsx src/model-studio-policy.selftest.ts",
     "test:ai-usage-openrouter-probe": "tsx src/usage/ai-usage-openrouter-probe.selftest.ts",
     "test:valuation-verifier": "tsx src/operational-cases/valuation-verifier.selftest.ts"
   },
