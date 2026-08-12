@@ -9,21 +9,38 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  authoringClarifyingQuestionSchema,
   isGenericAuthoringSlug,
   suggestEnglishSlug,
   type AuthoringCapabilityNeed,
   type AuthoringClarifyingQuestion,
+  type AuthoringDiscoveryOutput,
   type AuthoringGap,
   type AuthoringGapPlan,
   type AuthoringInvocationChannel,
+  type AuthoringOutboundContract,
   type InputRequirement,
 } from "@agents/workflows";
 import {
+  authoringQuestionNumberingRegistryFromThread,
   authoringHumanStatus,
+  createAuthoringThreadQuestionNumberingRegistry,
+  deriveStructuredExternalEffects,
   formatAuthoringTechnicalProgress,
   hydrateAuthoringThread,
+  isRetryableAuthoringDiscoveryFailure,
+  readAuthoringDiscoveryFailureClass,
+  readAuthoringThreadQuestionDetails,
+  requiresFinalSendConfirmation,
+  resolveActiveSlugConflict,
+  RETRYABLE_DISCOVERY_COPY,
+  shouldAutoScrollAuthoringThread,
+  shouldShowAuthoringStatusBar,
+  numberAuthoringThreadQuestions,
+  visibleAuthoringBlockers,
   workFormLabelFromKind,
+  type AuthoringDiscoveryFailureClass,
+  type AuthoringThreadQuestionDetail,
+  type AuthoringThreadQuestionNumberingRegistry,
   type AuthoringThreadMessage,
 } from "@/lib/workflow-studio/authoring-thread";
 import { isPerExecutionInputRequirement } from "@/lib/workflow-studio/capability-provider-catalog";
@@ -71,6 +88,15 @@ type DiscoveryReview = {
   suggested_slug?: string;
   readiness?: string;
   gap_plan?: AuthoringGapPlan;
+  outbound_contract?: AuthoringOutboundContract;
+  requested_side_effects?: AuthoringDiscoveryOutput["requested_side_effects"];
+};
+
+type SlugConflict = {
+  slug: string;
+  status: string;
+  version: number;
+  updatedAt: string;
 };
 
 type ConversationPhase =
@@ -87,7 +113,8 @@ type AuthoringAction =
   | "confirm"
   | "revise_proposal"
   | "continue_discovery"
-  | "proceed_to_proposal";
+  | "proceed_to_proposal"
+  | "retry_discovery";
 
 function suggestSlugFromTitle(title: string): string {
   const trimmed = title.trim();
@@ -104,12 +131,8 @@ function nextMessageId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function parseQuestionDetails(value: unknown): AuthoringClarifyingQuestion[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    const parsed = authoringClarifyingQuestionSchema.safeParse(item);
-    return parsed.success ? [parsed.data] : [];
-  });
+function parseQuestionDetails(value: unknown): AuthoringThreadQuestionDetail[] {
+  return readAuthoringThreadQuestionDetails(value);
 }
 
 function gapPresentationFromReview(review: DiscoveryReview | undefined) {
@@ -202,6 +225,67 @@ function UnderstandingLists({
   );
 }
 
+function AuthoringQuestionList({
+  message,
+}: {
+  message: Extract<AuthoringThreadMessage, { role: "gu" }>;
+}) {
+  const presentations =
+    message.questionPresentations ??
+    (message.questions ?? []).map((question, index) => {
+      const detail = message.questionDetails?.find(
+        (candidate) => candidate.question === question
+      );
+      return {
+        question,
+        gapId: detail?.gap_id,
+        displayNumber: detail?.display_number ?? index + 1,
+        examples: detail?.examples ?? [],
+      };
+    });
+  if (presentations.length === 0) return null;
+  const introId = `authoring-message-${message.id}-intro`;
+  const hasExamples = presentations.some(
+    (presentation) => presentation.examples.length > 0
+  );
+  return (
+    <div>
+      <ul
+        className="mt-2 space-y-1 text-neutral-700 dark:text-neutral-200"
+        aria-labelledby={introId}
+      >
+        {presentations.map((presentation) => (
+          <li
+            key={`${presentation.gapId ?? presentation.question}:${presentation.displayNumber}`}
+            className="flex items-start gap-1.5 whitespace-pre-wrap break-words"
+            aria-label={`Pregunta ${presentation.displayNumber}: ${presentation.question}`}
+          >
+            <span
+              className="min-w-[1.5rem] text-right font-semibold tabular-nums"
+              aria-hidden="true"
+            >
+              {presentation.displayNumber}.
+            </span>
+            <span>
+              {presentation.question}
+              {presentation.examples.length ? (
+                <span className="mt-1 block text-[11px] text-neutral-500 dark:text-neutral-400">
+                  Por ejemplo: {presentation.examples.join("; ")}.
+                </span>
+              ) : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {hasExamples ? (
+        <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+          Los ejemplos solo orientan; responde con tus propias palabras.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function GapDecisionPanel({
   blockers,
   safeDefaults,
@@ -250,8 +334,10 @@ function GapDecisionPanel({
 
 function CapabilityNeeds({
   needs,
+  showProposedRoute = false,
 }: {
   needs: readonly AuthoringCapabilityNeed[] | undefined;
+  showProposedRoute?: boolean;
 }) {
   if (!needs?.length) return null;
   const uniqueNeeds = [
@@ -268,6 +354,13 @@ function CapabilityNeeds({
     catalog_only: "Opción de catálogo; integración pendiente",
     unresolved: "Por elegir",
   };
+  const connectedOutbound = uniqueNeeds.filter(
+    (need) =>
+      need.status === "connected" &&
+      ["user_email", "transactional_email", "messaging"].includes(
+        need.category_id
+      )
+  );
   return (
     <div className="mt-2">
       <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
@@ -294,12 +387,39 @@ function CapabilityNeeds({
           </span>
         ))}
       </div>
+      {showProposedRoute && connectedOutbound.length === 1 ? (
+        <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-300">
+          Ruta propuesta: Gu usará{" "}
+          {connectedOutbound[0]!.provider_name ??
+            connectedOutbound[0]!.category_label}{" "}
+          después de tu aprobación. Puedes cambiar esta decisión antes de crear
+          el borrador.
+        </p>
+      ) : null}
       {uniqueNeeds.some((need) => need.resolution === "manual_fallback") ? (
         <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
           Gu preparará un resultado para uso manual mientras se evalúa una
           integración gobernada.
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function InvocationChannels({
+  channels,
+}: {
+  channels: readonly AuthoringInvocationChannel[] | undefined;
+}) {
+  if (!channels?.length) return null;
+  return (
+    <div className="mt-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+        Disponible desde
+      </p>
+      <p className="mt-1 text-[11px] text-neutral-700 dark:text-neutral-200">
+        {channels.map((channel) => channel.label).join(" · ")}
+      </p>
     </div>
   );
 }
@@ -318,8 +438,21 @@ function ProposalSemanticReview({ review }: { review: DiscoveryReview }) {
             limitations: [],
           },
         ];
+  const recipientInputKey =
+    review.outbound_contract?.recipient_strategy.source_ref?.type ===
+    "input_requirement"
+      ? review.outbound_contract.recipient_strategy.source_ref.key
+      : null;
   const runtimeInputs = (review.input_requirements ?? []).filter(
-    isPerExecutionInputRequirement
+    (requirement) =>
+      isPerExecutionInputRequirement(requirement) &&
+      (requirement.kind !== "human_input" ||
+        requirement.key === recipientInputKey)
+  );
+  const humanInterventions = (review.input_requirements ?? []).filter(
+    (requirement) =>
+      requirement.kind === "human_input" &&
+      requirement.key !== recipientInputKey
   );
   const accountAssets = (review.input_requirements ?? []).filter(
     (requirement) => requirement.kind === "account_asset"
@@ -327,6 +460,15 @@ function ProposalSemanticReview({ review }: { review: DiscoveryReview }) {
   const gmailOutput = review.capability_needs?.some(
     (need) => need.provider_id === "gmail"
   );
+  const externalEffects = deriveStructuredExternalEffects({
+    requestedSideEffects: review.requested_side_effects ?? [],
+    outboundContract: review.outbound_contract,
+    capabilityNeeds: review.capability_needs,
+  });
+  const showFinalSendConfirmation = requiresFinalSendConfirmation({
+    outboundContract: review.outbound_contract,
+    capabilityNeeds: review.capability_needs,
+  });
 
   return (
     <div className="space-y-3">
@@ -382,26 +524,49 @@ function ProposalSemanticReview({ review }: { review: DiscoveryReview }) {
         ) : null}
       </section>
 
+      {humanInterventions.length > 0 ? (
+        <section>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Intervenciones humanas
+          </p>
+          <ul className="mt-1 list-disc space-y-1 pl-4 text-neutral-700 dark:text-neutral-200">
+            {humanInterventions.map((requirement) => (
+              <li key={`${requirement.kind}:${requirement.key}`}>
+                {requirement.label}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <CapabilityNeeds needs={review.capability_needs} />
 
       <section>
         <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
           Efectos externos
         </p>
-        {review.understanding.effects.length > 0 ? (
+        {externalEffects.length > 0 ? (
           <ul className="mt-1 list-disc space-y-1 pl-4 text-neutral-700 dark:text-neutral-200">
-            {review.understanding.effects.map((effect) => (
-              <li key={effect}>{effect}</li>
+            {externalEffects.map((effect) => (
+              <li key={effect.id}>{effect.copy}</li>
             ))}
           </ul>
         ) : (
-          <p className="mt-1 text-neutral-500">No se declararon efectos externos.</p>
+          <p className="mt-1 text-neutral-500">
+            Sin efectos externos: el resultado es un borrador que tú decides usar.
+          </p>
         )}
         {gmailOutput &&
         runtimeInputs.some((input) => input.kind === "runtime_input") ? (
           <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
             Los documentos fuente son evidencia o referencia. No se adjuntan ni
             se copian al cuerpo del email salvo que lo pidas.
+          </p>
+        ) : null}
+        {showFinalSendConfirmation ? (
+          <p className="mt-2 rounded-md bg-emerald-50 px-2 py-1.5 text-[11px] font-medium text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+            Antes de enviar, Gu te mostrará el destinatario y el contenido final
+            para que los confirmes.
           </p>
         ) : null}
       </section>
@@ -421,6 +586,9 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
   );
   const [progress, setProgress] = useState<ProgressEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [technicalError, setTechnicalError] = useState<string | null>(null);
+  const [materializationRetryable, setMaterializationRetryable] = useState(false);
+  const [slugConflict, setSlugConflict] = useState<SlugConflict | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [questions, setQuestions] = useState<string[]>([]);
   const [composer, setComposer] = useState("");
@@ -428,6 +596,8 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
   const [proposedKind, setProposedKind] = useState<WorkForm | null>(null);
   const [skillSubtype, setSkillSubtype] = useState<string | null>(null);
   const [review, setReview] = useState<DiscoveryReview | null>(null);
+  const [discoveryFailureClass, setDiscoveryFailureClass] =
+    useState<AuthoringDiscoveryFailureClass | null>(null);
   const [confirmationHash, setConfirmationHash] = useState<string | null>(null);
   const [thread, setThread] = useState<AuthoringThreadMessage[]>([]);
   const [allowContinue, setAllowContinue] = useState(false);
@@ -436,21 +606,24 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
     []
   );
   const abortRef = useRef<AbortController | null>(null);
+  const questionNumberingRef =
+    useRef<AuthoringThreadQuestionNumberingRegistry>(
+      createAuthoringThreadQuestionNumberingRegistry()
+    );
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const reviewRef = useRef<HTMLDivElement | null>(null);
-  const threadEndRef = useRef<HTMLDivElement | null>(null);
+  const threadContainerRef = useRef<HTMLDivElement | null>(null);
+  const previousThreadLengthRef = useRef(0);
 
   const inConversation = phase !== "intake";
   const awaitingConfirmation = phase === "proposal" && confirmationHash !== null;
   const showCaseTypeReuse = proposedKind === "case_workflow" && phase === "proposal";
-  const pendingBlockers =
-    review?.gap_plan?.gaps.filter(
-      (gap) =>
-        gap.severity === "blocking" &&
-        gap.state !== "answered" &&
-        gap.state !== "resolved_by_evidence" &&
-        gap.state !== "defaulted"
-    ) ?? [];
+  const retryableDiscoveryFailure =
+    isRetryableAuthoringDiscoveryFailure(discoveryFailureClass);
+  const pendingBlockers = visibleAuthoringBlockers(
+    review?.gap_plan?.gaps ?? [],
+    discoveryFailureClass
+  );
   const safeDefaults =
     review?.gap_plan?.gaps.flatMap((gap) =>
       gap.severity === "defaultable" &&
@@ -475,10 +648,16 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
     [title]
   );
   const effectiveSlug = slugTouched ? slug : slug || suggestedSlug;
+  const activeSlugConflict = resolveActiveSlugConflict({
+    slugConflict,
+    effectiveSlug,
+    suggestedSlug: review?.suggested_slug,
+  });
   const currentHumanStatus = authoringHumanStatus({
     phase,
     pendingAction,
     progress,
+    failureClass: discoveryFailureClass,
   });
 
   useEffect(() => {
@@ -492,8 +671,19 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
   }, [phase, questions]);
 
   useEffect(() => {
-    threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [thread, pending]);
+    if (
+      shouldAutoScrollAuthoringThread(
+        previousThreadLengthRef.current,
+        thread
+      )
+    ) {
+      const container = threadContainerRef.current;
+      if (container) {
+        container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+      }
+    }
+    previousThreadLengthRef.current = thread.length;
+  }, [thread]);
 
   useEffect(() => {
     const currentParams = new URLSearchParams(window.location.search);
@@ -518,6 +708,7 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
           clarificationRound: number;
           messages: unknown[];
           progress: unknown[];
+          slugConflict: SlugConflict | null;
         };
       })
       .then((data) => {
@@ -530,10 +721,15 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
             ? data.suggestedSlug
             : ""
         );
-        setThread(
-          hydrateAuthoringThread({
+        setSlugConflict(data.slugConflict ?? null);
+        const resumedFailureClass = readAuthoringDiscoveryFailureClass(
+          data.routerOutput?.discovery_failure_class
+        );
+        setDiscoveryFailureClass(resumedFailureClass);
+        const hydratedThread = hydrateAuthoringThread({
             description: data.description,
             messages: data.messages ?? [],
+            failureClass: resumedFailureClass,
           }).map((message) =>
             gmailJustConnected && message.role === "gu"
               ? {
@@ -544,8 +740,10 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
                   ),
                 }
               : message
-          )
-        );
+          );
+        questionNumberingRef.current =
+          authoringQuestionNumberingRegistryFromThread(hydratedThread);
+        setThread(hydratedThread);
         setProgress(
           (data.progress ?? []).flatMap((entry) => {
             if (!entry || typeof entry !== "object") return [];
@@ -593,7 +791,23 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
             : storedDiscovery;
         const hash = data.routerOutput?.discovery_hash;
 
-        if (conversation?.conversation_phase) {
+        if (data.status === "abandoned") {
+          setPhase("blocked");
+          setQuestions([]);
+          setAllowContinue(false);
+          setAllowProceed(false);
+          setReview(null);
+          setConfirmationHash(null);
+          setError("La sesión ya no está activa. Empieza de nuevo para continuar.");
+          return;
+        } else if (isRetryableAuthoringDiscoveryFailure(resumedFailureClass)) {
+          setPhase("blocked");
+          setQuestions([]);
+          setAllowContinue(false);
+          setAllowProceed(false);
+          setReview(null);
+          setConfirmationHash(null);
+        } else if (conversation?.conversation_phase) {
           setPhase(conversation.conversation_phase);
           setAllowContinue(Boolean(conversation.allow_continue));
           setAllowProceed(Boolean(conversation.allow_proceed_to_proposal));
@@ -603,6 +817,7 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
         }
         if (
           discovery &&
+          !isRetryableAuthoringDiscoveryFailure(resumedFailureClass) &&
           (conversation?.conversation_phase === "checkpoint" ||
             conversation?.conversation_phase === "blocked")
         ) {
@@ -623,6 +838,7 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
 
         if (
           discovery?.understanding &&
+          !isRetryableAuthoringDiscoveryFailure(resumedFailureClass) &&
           discovery.readiness === "ready_for_confirmation" &&
           typeof hash === "string"
         ) {
@@ -633,6 +849,7 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
 
         if (
           data.status === "clarifying" &&
+          !isRetryableAuthoringDiscoveryFailure(resumedFailureClass) &&
           conversation?.conversation_phase !== "checkpoint" &&
           conversation?.conversation_phase !== "blocked"
         ) {
@@ -672,14 +889,20 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
     setPending(true);
     setPendingAction(opts.action);
     setError(null);
+    setTechnicalError(null);
+    setMaterializationRetryable(false);
     setProgress([]);
     const baseConfirmationHash = confirmationHash;
 
     if (opts.action === "discover") {
+      questionNumberingRef.current =
+        createAuthoringThreadQuestionNumberingRegistry();
+      setDiscoveryFailureClass(null);
       setProposedKind(null);
       setSkillSubtype(null);
       setReview(null);
       setConfirmationHash(null);
+      setSlugConflict(null);
       setAllowContinue(false);
       setAllowProceed(false);
       setSelectedDefaultGapIds([]);
@@ -707,6 +930,9 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
     };
     if (opts.action === "confirm" || opts.action === "revise_proposal") {
       body.confirmationHash = baseConfirmationHash;
+    }
+    if (opts.action === "confirm" && activeSlugConflict) {
+      body.overwriteExisting = true;
     }
     if (opts.action === "revise_proposal") {
       body.proposalCorrection = opts.proposalCorrection;
@@ -751,12 +977,24 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
       let redirectPath: string | null = null;
 
       const handleEvent = (
-        event: ProgressEvent | { type: "error"; error: string; details?: string }
+        event:
+          | ProgressEvent
+          | {
+              type: "error";
+              error: string;
+              details?: string;
+              code?: string;
+              retriable?: boolean;
+            }
       ) => {
         if (event.type === "error") {
-          setError(
-            event.details ? `${event.error}: ${event.details}` : event.error
-          );
+          setError(event.error);
+          setTechnicalError(event.details ?? null);
+          if (opts.action === "confirm" && event.retriable) {
+            setMaterializationRetryable(true);
+            setPhase("proposal");
+            setConfirmationHash(baseConfirmationHash);
+          }
           setQuestions([]);
           if (opts.action === "revise_proposal") {
             setConfirmationHash(baseConfirmationHash);
@@ -765,6 +1003,16 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
         }
         setProgress((prev) => [...prev, event]);
         const payload = event.payload ?? {};
+        const hasFailureClass = Object.prototype.hasOwnProperty.call(
+          payload,
+          "failureClass"
+        );
+        const streamedFailureClass = readAuthoringDiscoveryFailureClass(
+          payload.failureClass
+        );
+        if (hasFailureClass) {
+          setDiscoveryFailureClass(streamedFailureClass);
+        }
         const conversation = payload.conversation as
           | {
               allow_continue?: boolean;
@@ -812,12 +1060,19 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
         }
 
         if (event.stage === "clarifying") {
+          setDiscoveryFailureClass(null);
           const qs = Array.isArray(payload.questions)
             ? payload.questions.filter(
                 (q): q is string => typeof q === "string" && q.trim().length > 0
               )
             : [];
           const questionDetails = parseQuestionDetails(payload.questionDetails);
+          const numberedQuestions = numberAuthoringThreadQuestions({
+            questions: qs,
+            questionDetails,
+            registry: questionNumberingRef.current,
+          });
+          questionNumberingRef.current = numberedQuestions.registry;
           setQuestions(qs);
           setPhase("discovering");
           setAllowContinue(false);
@@ -832,11 +1087,12 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
               role: "gu",
               kind: "questions",
               text:
-                typeof event.message === "string" && event.message
-                  ? event.message
-                  : "Para preparar un borrador seguro, necesito aclarar:",
+                conversation?.human_message ||
+                event.message ||
+                "Para preparar un borrador seguro, necesito aclarar:",
               questions: qs,
               questionDetails,
+              questionPresentations: numberedQuestions.presentations,
             },
           ]);
           if (typeof payload.sessionId === "string") {
@@ -845,6 +1101,7 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
         }
 
         if (event.stage === "checkpoint") {
+          setDiscoveryFailureClass(null);
           const discovery = payload.discovery as DiscoveryReview | undefined;
           const qs = Array.isArray(payload.questions)
             ? payload.questions.filter(
@@ -852,6 +1109,12 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
               )
             : conversation?.pending_questions ?? [];
           const questionDetails = parseQuestionDetails(payload.questionDetails);
+          const numberedQuestions = numberAuthoringThreadQuestions({
+            questions: qs,
+            questionDetails,
+            registry: questionNumberingRef.current,
+          });
+          questionNumberingRef.current = numberedQuestions.registry;
           setPhase("checkpoint");
           setQuestions(qs);
           setAllowContinue(Boolean(conversation?.allow_continue ?? qs.length > 0));
@@ -865,11 +1128,12 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
               role: "gu",
               kind: "checkpoint",
               text:
-                event.message ||
                 conversation?.human_message ||
+                event.message ||
                 "¿Seguimos aclarando o preparo la propuesta con lo entendido?",
               questions: qs,
               questionDetails,
+              questionPresentations: numberedQuestions.presentations,
               understanding: discovery?.understanding,
               capabilityNeeds: discovery?.capability_needs,
               ...gapPresentationFromReview(discovery),
@@ -878,6 +1142,18 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
         }
 
         if (event.stage === "blocked") {
+          if (
+            isRetryableAuthoringDiscoveryFailure(streamedFailureClass)
+          ) {
+            setPhase("blocked");
+            setQuestions([]);
+            setAllowContinue(false);
+            setAllowProceed(false);
+            setSelectedDefaultGapIds([]);
+            setReview(null);
+            setConfirmationHash(null);
+            return;
+          }
           const discovery = payload.discovery as DiscoveryReview | undefined;
           setPhase("blocked");
           setQuestions([]);
@@ -901,7 +1177,21 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
           ]);
         }
 
+        if (event.stage === "discovery_retryable") {
+          setDiscoveryFailureClass(
+            streamedFailureClass ?? "provider_contract_retryable"
+          );
+          setPhase("blocked");
+          setQuestions([]);
+          setAllowContinue(false);
+          setAllowProceed(false);
+          setSelectedDefaultGapIds([]);
+          setReview(null);
+          setConfirmationHash(null);
+        }
+
         if (event.stage === "review_ready") {
+          setDiscoveryFailureClass(null);
           const value = payload.discovery as DiscoveryReview | undefined;
           const hash = payload.confirmationHash;
           if (value?.understanding && typeof hash === "string") {
@@ -912,6 +1202,24 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
             setAllowContinue(false);
             setAllowProceed(false);
             setSelectedDefaultGapIds([]);
+            const conflict = payload.slugConflict as
+              | Partial<SlugConflict>
+              | undefined;
+            setSlugConflict(
+              conflict &&
+                typeof conflict.slug === "string" &&
+                typeof conflict.status === "string" &&
+                typeof conflict.version === "number" &&
+                typeof conflict.updatedAt === "string"
+                ? {
+                    slug: conflict.slug,
+                    status: conflict.status,
+                    version: conflict.version,
+                    updatedAt: conflict.updatedAt,
+                  }
+                : null
+            );
+            setMaterializationRetryable(false);
             if (isWorkForm(value.final_kind)) {
               setProposedKind(value.final_kind);
             }
@@ -926,6 +1234,27 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
                 capabilityNeeds: value.capability_needs,
               },
             ]);
+          }
+        }
+
+        if (event.stage === "materialize_failed") {
+          setMaterializationRetryable(payload.retriable === true);
+          const conflict = payload.slugConflict as
+            | Partial<SlugConflict>
+            | undefined;
+          if (
+            conflict &&
+            typeof conflict.slug === "string" &&
+            typeof conflict.status === "string" &&
+            typeof conflict.version === "number" &&
+            typeof conflict.updatedAt === "string"
+          ) {
+            setSlugConflict({
+              slug: conflict.slug,
+              status: conflict.status,
+              version: conflict.version,
+              updatedAt: conflict.updatedAt,
+            });
           }
         }
 
@@ -1134,10 +1463,20 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
 
       {inConversation ? (
         <div
+          ref={threadContainerRef}
           className="max-h-[28rem] space-y-3 overflow-y-auto rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950/40"
           aria-live="polite"
         >
-          {thread.map((message) => (
+          {thread
+            .filter(
+              (message) =>
+                !(
+                  retryableDiscoveryFailure &&
+                  message.role === "gu" &&
+                  message.kind === "blocked"
+                )
+            )
+            .map((message) => (
             <div
               key={message.id}
               className={
@@ -1149,55 +1488,40 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
               <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
                 {message.role === "user" ? "Tú" : "Gu"}
               </p>
-              <p className="mt-1 whitespace-pre-wrap break-words text-neutral-800 dark:text-neutral-100">
+              <p
+                id={`authoring-message-${message.id}-intro`}
+                className="mt-1 whitespace-pre-wrap break-words text-neutral-800 dark:text-neutral-100"
+              >
                 {message.text}
               </p>
-              {message.role === "gu" && message.questions?.length ? (
-                <ol className="mt-2 list-decimal space-y-1 pl-4 text-neutral-700 dark:text-neutral-200">
-                  {message.questions.map((question) => {
-                    const detail = message.questionDetails?.find(
-                      (candidate) => candidate.question === question
-                    );
-                    return (
-                      <li
-                        key={question}
-                        className="whitespace-pre-wrap break-words"
-                      >
-                        {question}
-                        {detail?.examples.length ? (
-                          <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-                            Por ejemplo: {detail.examples.join("; ")}. Puedes
-                            responder de otra manera.
-                          </p>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ol>
+              {message.role === "gu" ? (
+                <AuthoringQuestionList message={message} />
               ) : null}
               {message.role === "gu" &&
               message.understanding &&
               (message.kind === "checkpoint" ||
                 message.kind === "blocked") ? (
                 <>
-                  <UnderstandingLists
-                    understanding={message.understanding}
-                    omitGaps
-                  />
-                  <GapDecisionPanel
-                    blockers={message.pendingBlockers ?? []}
-                    safeDefaults={message.safeDefaults}
-                  />
+                  <p className="mt-2 text-neutral-700 dark:text-neutral-200">
+                    <span className="font-medium">Lo entendido hasta ahora: </span>
+                    {message.understanding.objective}
+                  </p>
+                  <InvocationChannels channels={message.invocationChannels} />
                   <CapabilityNeeds needs={message.capabilityNeeds} />
                 </>
               ) : null}
             </div>
-          ))}
-          <div ref={threadEndRef} />
+            ))}
         </div>
       ) : null}
 
-      {inConversation && currentHumanStatus ? (
+      {shouldShowAuthoringStatusBar({
+        inConversation,
+        status: currentHumanStatus,
+        phase,
+        pending,
+        retryableFailure: retryableDiscoveryFailure,
+      }) ? (
         <div
           className="flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-100"
           role="status"
@@ -1211,6 +1535,20 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
             />
           ) : null}
           {currentHumanStatus}
+        </div>
+      ) : null}
+
+      {retryableDiscoveryFailure ? (
+        <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+          <p>{RETRYABLE_DISCOVERY_COPY}</p>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => void runAuthoring({ action: "retry_discovery" })}
+            className="rounded-md bg-amber-700 px-3 py-1.5 font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+          >
+            Reintentar análisis
+          </button>
         </div>
       ) : null}
 
@@ -1293,6 +1631,20 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
               />
             </label>
           </details>
+          {activeSlugConflict ? (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-2 py-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+              <p className="font-medium">
+                Ya existe un skill con el identificador{" "}
+                <span className="font-mono">{activeSlugConflict.slug}</span>.
+              </p>
+              <p className="mt-1 text-[11px]">
+                Es un {activeSlugConflict.status === "draft" ? "borrador" : "skill"}{" "}
+                versión {activeSlugConflict.version}, actualizado el{" "}
+                {new Date(activeSlugConflict.updatedAt).toLocaleDateString("es-MX")}.
+                Puedes cambiar el identificador arriba o reemplazarlo explícitamente.
+              </p>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -1338,35 +1690,32 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
               Seguir aclarando
             </button>
           ) : null}
-          <button
-            type="button"
-            disabled={pending || !canPrepareProposal}
-            onClick={() =>
-              void runAuthoring({
-                action: "proceed_to_proposal",
-                defaultGapIds: selectedDefaultGapIds,
-              })
-            }
-            className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-50"
-          >
-            Preparar propuesta con lo entendido
-          </button>
-          {!canPrepareProposal ? (
+          {canPrepareProposal ? (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() =>
+                void runAuthoring({
+                  action: "proceed_to_proposal",
+                  defaultGapIds: selectedDefaultGapIds,
+                })
+              }
+              className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-50"
+            >
+              Preparar propuesta con lo entendido
+            </button>
+          ) : null}
+          {!canPrepareProposal && pendingBlockers.length === 0 ? (
             <p className="w-full text-xs text-amber-700 dark:text-amber-300">
-              {pendingBlockers.length > 0
-                ? `Queda ${pendingBlockers.length} decisión${
-                    pendingBlockers.length === 1 ? "" : "es"
-                  } necesaria${
-                    pendingBlockers.length === 1 ? "" : "s"
-                  }. Sigue aclarando para preparar la propuesta.`
-                : "Todavía no hay una forma de trabajo suficientemente clara. Sigue aclarando o reformula la descripción."}
+              Todavía no hay una forma de trabajo suficientemente clara. Sigue
+              aclarando o reformula la descripción.
             </p>
           ) : null}
           </div>
         </div>
       ) : null}
 
-      {phase === "blocked" ? (
+      {phase === "blocked" && !retryableDiscoveryFailure ? (
         <p className="rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
           No fue posible cerrar ambigüedades materiales. Reformula la descripción
           incorporando lo ya aclarado e inicia de nuevo.
@@ -1394,7 +1743,8 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
         </label>
       ) : null}
 
-      {phase === "proposal" && !pending ? (
+      {phase === "proposal" &&
+      (!pending || pendingAction === "revise_proposal") ? (
         <div className="space-y-2 rounded-lg border border-neutral-200 p-3 text-xs dark:border-neutral-800">
           <label className="block">
             <span className="font-medium text-neutral-600 dark:text-neutral-300">
@@ -1407,11 +1757,12 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
               onChange={(e) => setComposer(e.target.value)}
               placeholder="Ejemplo: el documento se adjunta en cada ejecución; no es una plantilla permanente."
               className="mt-1 w-full resize-y rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs whitespace-pre-wrap break-words dark:border-neutral-700 dark:bg-neutral-950"
+              disabled={pending}
             />
           </label>
           <button
             type="button"
-            disabled={!composer.trim() || !confirmationHash}
+            disabled={!composer.trim() || !confirmationHash || pending}
             onClick={() => {
               const correction = composer.trim();
               if (!correction) {
@@ -1435,7 +1786,17 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
             }}
             className="rounded-md border border-violet-300 bg-white px-3 py-1.5 font-semibold text-violet-800 hover:bg-violet-50 disabled:opacity-50 dark:border-violet-700 dark:bg-neutral-950 dark:text-violet-200"
           >
-            Enviar ajuste
+            {pending && pendingAction === "revise_proposal" ? (
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="h-3 w-3 animate-spin rounded-full border-2 border-violet-300 border-t-violet-800 dark:border-violet-700 dark:border-t-violet-200"
+                />
+                Aplicando ajuste…
+              </span>
+            ) : (
+              "Enviar ajuste"
+            )}
           </button>
           <p className="text-[10px] text-neutral-500">
             El botón «Crear borrador» sigue siendo la confirmación canónica. Un
@@ -1451,28 +1812,42 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
       ) : null}
 
       <div className="flex items-center gap-2">
-        {!pending &&
-        (phase === "intake" ||
+        {(phase === "intake" ||
           phase === "discovering" ||
           phase === "proposal") ? (
           <button
             type="submit"
             disabled={
-              phase === "proposal" &&
-              (!confirmationHash || composer.trim().length > 0)
+              pending ||
+              (phase === "proposal" &&
+                (!confirmationHash || composer.trim().length > 0))
             }
             title={
               phase === "proposal" && composer.trim().length > 0
                 ? "Envía o borra el ajuste antes de crear el borrador."
                 : undefined
             }
-            className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-50"
           >
-            {phase === "discovering"
-              ? "Enviar respuesta"
-              : phase === "proposal"
-                ? "Crear borrador"
-                : "Analizar solicitud"}
+            {pending && pendingAction === "confirm" ? (
+              <>
+                <span
+                  className="h-3 w-3 animate-spin rounded-full border-2 border-violet-300 border-t-white"
+                  aria-hidden="true"
+                />
+                Creando borrador…
+              </>
+            ) : phase === "discovering" ? (
+              "Enviar respuesta"
+            ) : phase === "proposal" ? (
+              activeSlugConflict
+                ? "Reemplazar borrador existente"
+                : materializationRetryable
+                  ? "Reintentar creación"
+                  : "Crear borrador"
+            ) : (
+              "Analizar solicitud"
+            )}
           </button>
         ) : null}
         {pending ? (
@@ -1480,19 +1855,21 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
             type="button"
             onClick={() => {
               abortRef.current?.abort();
-              setThread((prev) => [
-                ...prev,
-                {
-                  id: nextMessageId("stopped"),
-                  role: "gu",
-                  kind: "status",
-                  text: "Análisis detenido. Puedes escribir una corrección o continuar cuando estés listo.",
-                },
-              ]);
+              if (pendingAction !== "confirm") {
+                setThread((prev) => [
+                  ...prev,
+                  {
+                    id: nextMessageId("stopped"),
+                    role: "gu",
+                    kind: "status",
+                    text: "Análisis detenido. Puedes escribir una corrección o continuar cuando estés listo.",
+                  },
+                ]);
+              }
             }}
             className="rounded-md border border-red-300 px-3 py-1.5 text-xs text-red-700 dark:border-red-800 dark:text-red-300"
           >
-            Detener análisis
+            {pendingAction === "confirm" ? "Cancelar" : "Detener análisis"}
           </button>
         ) : null}
         {inConversation && !pending ? (
@@ -1503,10 +1880,16 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
               setThread([]);
               setQuestions([]);
               setReview(null);
+              setDiscoveryFailureClass(null);
               setConfirmationHash(null);
               setSessionId(null);
+              questionNumberingRef.current =
+                createAuthoringThreadQuestionNumberingRegistry();
               setComposer("");
               setError(null);
+              setTechnicalError(null);
+              setMaterializationRetryable(false);
+              setSlugConflict(null);
               const url = new URL(window.location.href);
               url.searchParams.delete("authoring_session");
               window.history.replaceState({}, "", url);
@@ -1519,7 +1902,7 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
       </div>
 
       <div>
-        {progress.length > 0 ? (
+        {progress.length > 0 || technicalError ? (
           <details className="rounded-md border border-neutral-200 bg-neutral-50 p-2 text-[10px] dark:border-neutral-800 dark:bg-neutral-950">
             <summary className="cursor-pointer font-medium">
               Ver detalles técnicos
@@ -1537,6 +1920,11 @@ export function CompileForm({ knownCaseTypes }: { knownCaseTypes: string[] }) {
                   </span>
                 </p>
               ))}
+              {technicalError ? (
+                <p className="break-all font-mono text-red-600 dark:text-red-300">
+                  {technicalError}
+                </p>
+              ) : null}
             </div>
           </details>
         ) : null}

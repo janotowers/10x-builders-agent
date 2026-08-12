@@ -20,6 +20,12 @@ type QualificationScenario = {
 
 type QualificationView = {
   status: QualificationStatus;
+  resultKind?:
+    | "passed"
+    | "failed_by_verdict"
+    | "inconclusive_infrastructure"
+    | null;
+  repairEligible?: boolean;
   fingerprint?: string | null;
   executorModels?: string[];
   judgeModel?: string | null;
@@ -54,7 +60,7 @@ const STATUS_LABEL: Record<QualificationStatus, string> = {
   passed: "Aprobada",
   failed: "Fallida",
   stale: "Desactualizada",
-  non_convergent: "Requiere revisión",
+  non_convergent: "Inconclusa",
 };
 
 function formatCost(microUsd: number | null | undefined): string | null {
@@ -129,6 +135,8 @@ export function OperationalAiTestPanel({
     if (
       artifactKind !== "reusable_skill" ||
       view.status !== "failed" ||
+      view.resultKind !== "failed_by_verdict" ||
+      !view.repairEligible ||
       !view.runId
     ) {
       return;
@@ -186,6 +194,13 @@ export function OperationalAiTestPanel({
           nueva activación.
         </p>
       ) : null}
+      {view.resultKind === "inconclusive_infrastructure" ? (
+        <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          La ejecución no recibió un veredicto válido por una falla de
+          infraestructura. No se considera un fallo del artefacto y no se puede
+          generar una reparación; vuelve a ejecutar la calificación.
+        </p>
+      ) : null}
       {view.summary ? (
         <p className="mt-2 text-neutral-700 dark:text-neutral-200">{view.summary}</p>
       ) : null}
@@ -217,6 +232,8 @@ export function OperationalAiTestPanel({
 
       {artifactKind === "reusable_skill" &&
       view.status === "failed" &&
+      view.resultKind === "failed_by_verdict" &&
+      view.repairEligible === true &&
       !repairProposal ? (
         <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 dark:border-amber-900 dark:bg-amber-950/30">
           <p className="text-[11px] text-amber-900 dark:text-amber-100">
@@ -298,7 +315,12 @@ export function OperationalAiTestPanel({
               <ul className="space-y-1">
                 {view.scenarios.map((scenario) => (
                   <li key={scenario.id}>
-                    {scenario.passed ? "✓" : "✗"} {scenario.label}
+                    {view.resultKind === "inconclusive_infrastructure"
+                      ? "?"
+                      : scenario.passed
+                        ? "✓"
+                        : "✗"}{" "}
+                    {scenario.label}
                     {scenario.detail ? ` — ${scenario.detail}` : ""}
                   </li>
                 ))}
