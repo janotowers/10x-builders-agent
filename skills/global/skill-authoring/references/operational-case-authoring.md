@@ -78,6 +78,16 @@ is no `case_id`, include collecting intake and calling
 - Use `input_requirements` for runtime or per-case data such as conversation
   history, the latest agreement, contacts, property records, uploaded
   documents, approvals, and selection criteria.
+- When a message is delivered externally, represent how the contact is obtained
+  as a structured recipient strategy. An address typed by the operator in each
+  Web/Telegram conversation is `operator_supplied_at_runtime`; a context field,
+  business record, or governed lookup references its exact input requirement or
+  verified capability. `scope` lives on that requirement
+  (`account | case | task_run | turn`), not on the artifact kind. Do not decide
+  this by matching verbs or synonyms in the operator's prose.
+- Runtime validates the concrete address format and requires approval over the
+  final recipient and content before sending. Discovery asks only for missing
+  business information, not for this standard implementation safeguard.
 - Never set `requires_tenant_context: true` while leaving the procedure unable
   to identify how required tenant data is obtained. Ask or record a capability
   gap first.

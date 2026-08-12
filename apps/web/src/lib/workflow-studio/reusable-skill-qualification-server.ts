@@ -84,6 +84,12 @@ export async function loadReusableSkillQualificationPlan(params: {
     allowed_tools: resolved.allowedTools,
     requires_tenant_context: resolved.requiresTenantContext,
     memory_extraction: resolved.memoryExtraction,
+    authoring_discovery_hash:
+      typeof skill.metadata_jsonb.discovery_hash === "string"
+        ? skill.metadata_jsonb.discovery_hash
+        : null,
+    reusable_skill_compilation_contract:
+      skill.metadata_jsonb.reusable_skill_compilation_contract ?? null,
     fixture_mode: fixtureMode,
     executor_context: {
       system_prompt: [profile.agent_system_prompt, systemBoundary].join("\n\n"),

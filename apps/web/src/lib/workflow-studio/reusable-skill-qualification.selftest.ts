@@ -7,6 +7,7 @@ import type {
 } from "@agents/types";
 import {
   buildReusableSkillDocumentaryRuntimeInput,
+  buildStudioQualificationInconclusiveResult,
   buildReusableSkillQualificationPlan,
   buildReusableSkillSandboxPolicyDefinition,
   buildReusableSkillScenario,
@@ -26,10 +27,12 @@ import {
 import {
   assertReusableSkillRepairEligibility,
   buildReusableSkillRepairMetadata,
+  extractReusableSkillJudgeFindings,
   MAX_REUSABLE_SKILL_REPAIR_ITERATIONS,
   parseReusableSkillRepairRequest,
   reusableSkillRepairIdempotencyKey,
 } from "./reusable-skill-repair";
+import type { ReusableSkillCompilationContract } from "./reusable-skill-compilation-contract";
 
 const skill: AccountSkill = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -225,8 +228,90 @@ const documentarySkill: AccountSkill = {
       "list_runtime_attachments",
       "read_runtime_attachment",
     ],
+    discovery_hash: `sha256:${"d".repeat(64)}`,
+    reusable_skill_compilation_contract: {
+      schema_version: "1",
+      discovery_hash: `sha256:${"d".repeat(64)}`,
+      title: "Documentary procedure",
+      slug: "documentary-procedure",
+      objective: "Summarize the document attached to this run.",
+      acceptance_criteria: [
+        "The output is grounded in the document attached to this run.",
+      ],
+      source_contract: {
+        strategy: {
+          kind: "operator_supplied_at_runtime",
+          label: "Per-run attachment",
+          source_ref: { type: "input_requirement", key: "run_document" },
+          evidence: [
+            {
+              source: "description",
+              quote: "document attached to this run",
+            },
+          ],
+        },
+        data_sources: {
+          document_source: {
+            formats: ["DOCX"],
+            evidence: [
+              {
+                source: "description",
+                quote: "document attached to this run",
+              },
+            ],
+          },
+          document_intake_route: {
+            input_ref: { type: "input_requirement", key: "run_document" },
+            invocation_channel: "web_chat",
+            evidence: [
+              {
+                source: "description",
+                quote: "document attached to this run",
+              },
+            ],
+          },
+        },
+        audited_sources: ["Document attached to this run"],
+      },
+      input_contract: {
+        requirements: [
+          {
+            kind: "runtime_input",
+            key: "run_document",
+            label: "Document attached to this run",
+            required: true,
+            scope: "turn",
+            resolve_at: "runtime",
+            source_hint: "chat_attachment",
+          },
+        ],
+        invocation_channels: [],
+      },
+      outbound_contract: null,
+      recipient_provenance_review: null,
+      requested_effects: [],
+      capabilities: [],
+    } satisfies ReusableSkillCompilationContract,
   },
 };
+
+const structuredDocumentarySkill: AccountSkill = {
+  ...documentarySkill,
+  id: randomUUID(),
+  body_md: documentarySkill.body_md.replace(
+    "allowed_tools:\n  - list_runtime_attachments\n  - read_runtime_attachment",
+    "allowed_tools: []"
+  ),
+  metadata_jsonb: {
+    ...documentarySkill.metadata_jsonb,
+    allowed_tools: [],
+  },
+};
+assert.equal(
+  skillNeedsDocumentaryQualificationFixture(structuredDocumentarySkill),
+  true,
+  "structured discovery input selects documentary qualification without body keyword inference"
+);
 
 const dependencyHash = hashQualificationDescriptor({
   composed_from: [skill.slug],
@@ -292,6 +377,22 @@ const documentaryPlanSame = buildReusableSkillQualificationPlan({
   }),
 });
 assert.equal(documentaryPlan.fingerprint, documentaryPlanSame.fingerprint);
+assert.notEqual(
+  documentaryPlan.runtimeInput,
+  documentaryPlanSame.runtimeInput,
+  "each qualification plan receives its own runtime_input attachment envelope"
+);
+assert.notEqual(
+  documentaryPlan.runtimeInput?.attachments,
+  documentaryPlanSame.runtimeInput?.attachments,
+  "documents are attached anew for each run"
+);
+assert.ok(
+  documentaryPlan.scenario.acceptanceCriteria.includes(
+    "The output is grounded in the document attached to this run."
+  )
+);
+assert.match(documentaryPlan.scenario.input.message, /attached to this run/i);
 assert.ok(REUSABLE_SKILL_ATTACHMENT_PIPELINE.contract_version);
 assert.ok(
   documentaryPlan.scenarioSet.hash !== plan.scenarioSet.hash,
@@ -373,7 +474,21 @@ function qualificationRun(
           scenario_id: plan.scenario.id,
           label: plan.scenario.label,
           passed: true,
-          judgment: { summary: "All required evidence is present." },
+          judgment: {
+            schema_version: "1",
+            verdict: "pass",
+            summary: "All required evidence is present.",
+            confidence: 1,
+            criteria: [
+              {
+                criterion_id: "useful-procedure-output",
+                passed: true,
+                score: 1,
+                explanation: "The output follows the procedure.",
+              },
+            ],
+            remediation_items: [],
+          },
         },
       ],
     },
@@ -483,6 +598,8 @@ assert.deepEqual(
 
 const view = mapStudioQualificationRunToView(qualificationRun(), plan);
 assert.equal(view.status, "passed");
+assert.equal(view.resultKind, "passed");
+assert.equal(view.repairEligible, false);
 assert.equal(view.costMicroUsd, 42);
 assert.equal(view.latencyMs, 1234);
 assert.equal(view.scenarios[0]?.passed, true);
@@ -498,7 +615,87 @@ const staleView = mapStudioQualificationRunToView(
 assert.equal(staleView.status, "stale");
 assert.deepEqual(staleView.staleReasons, ["artifact_changed"]);
 
-const failedRun = qualificationRun({ status: "failed", repair_iteration: 0 });
+const failedResult = {
+  schema_version: "1",
+  result_kind: "failed_by_verdict",
+  summary: "The procedure omitted the required documentary evidence.",
+  scenario_results: [
+    {
+      scenario_id: plan.scenario.id,
+      label: plan.scenario.label,
+      passed: false,
+      judgment: {
+        schema_version: "1",
+        verdict: "fail",
+        summary: "The output was not grounded in the required evidence.",
+        confidence: 0.95,
+        criteria: [
+          {
+            criterion_id: "useful-procedure-output",
+            passed: false,
+            score: 0.2,
+            explanation: "The output omitted the required source evidence.",
+          },
+        ],
+        remediation_items: ["Require grounding in the supplied source."],
+      },
+    },
+  ],
+};
+const failedRun = qualificationRun({
+  status: "failed",
+  repair_iteration: 0,
+  result_jsonb: failedResult,
+});
+const failedView = mapStudioQualificationRunToView(failedRun, plan);
+assert.equal(failedView.resultKind, "failed_by_verdict");
+assert.equal(failedView.repairEligible, true);
+
+const preservedMechanicalEvidence = {
+  active_draft_applied: true,
+  no_external_write_tools: true,
+  toolCalls: { total: 0, unique: [], sequence: [] },
+};
+const inconclusiveResult = buildStudioQualificationInconclusiveResult({
+  summary: "Judge infrastructure was unavailable.",
+  latencyMs: 321,
+  accountedCostMicroUsd: 17,
+  scenario: plan.scenario,
+  infrastructure: {
+    code: "judge_provider_http_error",
+    message: "Operational judge provider rejected the request (HTTP 400)",
+    attempts: 1,
+    httpStatus: 400,
+    providerCode: "unsupported_response_format",
+  },
+  execution: {
+    turnId: "turn-preserved",
+    response: "Executor output is preserved.",
+    mechanicalEvidence: preservedMechanicalEvidence,
+  },
+});
+const inconclusiveScenario = (
+  inconclusiveResult.scenario_results as Array<Record<string, unknown>>
+)[0]!;
+const inconclusiveExecution =
+  inconclusiveScenario.execution as Record<string, unknown>;
+assert.deepEqual(
+  inconclusiveExecution.mechanical_evidence,
+  preservedMechanicalEvidence,
+  "judge infrastructure failures preserve executor mechanical evidence"
+);
+assert.equal(inconclusiveExecution.response, "Executor output is preserved.");
+const inconclusiveRun = qualificationRun({
+  status: "non_convergent",
+  result_jsonb: inconclusiveResult,
+  error_jsonb: { code: "qualification_judge_inconclusive" },
+});
+const inconclusiveView = mapStudioQualificationRunToView(inconclusiveRun, plan);
+assert.equal(inconclusiveView.status, "non_convergent");
+assert.equal(inconclusiveView.resultKind, "inconclusive_infrastructure");
+assert.equal(inconclusiveView.repairEligible, false);
+assert.equal(inconclusiveView.scenarios[0]?.passed, false);
+
 assert.deepEqual(
   parseReusableSkillRepairRequest({
     artifactKind: "reusable_skill",
@@ -523,8 +720,60 @@ assert.equal(
 assert.throws(
   () =>
     assertReusableSkillRepairEligibility({
+      run: inconclusiveRun,
+      latestRun: inconclusiveRun,
+      currentSkill: skill,
+      currentFingerprint: plan.fingerprint,
+    }),
+  (error) =>
+    error instanceof StudioQualificationRequestError &&
+    error.code === "repair_source_not_failed",
+  "infrastructure-inconclusive runs must not create repair proposals"
+);
+assert.deepEqual(extractReusableSkillJudgeFindings(failedRun), {
+  summary: "The output was not grounded in the required evidence.",
+  failed_criteria: [
+    {
+      criterion_id: "useful-procedure-output",
+      score: 0.2,
+      explanation: "The output omitted the required source evidence.",
+    },
+  ],
+  remediation_items: ["Require grounding in the supplied source."],
+});
+assert.throws(
+  () =>
+    assertReusableSkillRepairEligibility({
+      run: qualificationRun({
+        status: "failed",
+        error_jsonb: {
+          code: "qualification_execution_failed",
+          message: "judge timeout",
+        },
+      }),
+      latestRun: qualificationRun({
+        status: "failed",
+        error_jsonb: {
+          code: "qualification_execution_failed",
+          message: "judge timeout",
+        },
+      }),
+      currentSkill: skill,
+      currentFingerprint: plan.fingerprint,
+    }),
+  (error) =>
+    error instanceof StudioQualificationRequestError &&
+    error.code === "repair_judge_findings_required"
+);
+assert.throws(
+  () =>
+    assertReusableSkillRepairEligibility({
       run: failedRun,
-      latestRun: qualificationRun({ id: randomUUID(), status: "failed" }),
+      latestRun: qualificationRun({
+        id: randomUUID(),
+        status: "failed",
+        result_jsonb: failedResult,
+      }),
       currentSkill: skill,
       currentFingerprint: plan.fingerprint,
     }),
@@ -538,10 +787,12 @@ assert.throws(
       run: qualificationRun({
         status: "failed",
         repair_iteration: MAX_REUSABLE_SKILL_REPAIR_ITERATIONS,
+        result_jsonb: failedResult,
       }),
       latestRun: qualificationRun({
         status: "failed",
         repair_iteration: MAX_REUSABLE_SKILL_REPAIR_ITERATIONS,
+        result_jsonb: failedResult,
       }),
       currentSkill: skill,
       currentFingerprint: plan.fingerprint,

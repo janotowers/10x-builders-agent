@@ -1,24 +1,19 @@
 import {
-  DEFAULT_WORKFLOW_COMPILER_MODEL_ID,
   recordOpenRouterCallUsage,
-  WORKFLOW_COMPILER_MODEL_ID,
+  resolveStudioModelId,
   type OpenRouterUsagePayload,
 } from "@agents/agent";
 import { z } from "zod";
 import type { AccountSkill, StudioQualificationRun } from "@agents/types";
 import { loadAuthoringDoctrine } from "./authoring-doctrine";
+import { extractReusableSkillJudgeFindings } from "./reusable-skill-repair";
 
 const repairDraftSchema = z.object({
   skill_markdown: z.string().trim().min(100).max(60_000),
 });
 
 export function resolveReusableSkillRepairModelId(): string {
-  return (
-    process.env.WORKFLOW_AUTHORING_SKILL_MODEL_ID?.trim() ||
-    process.env.WORKFLOW_COMPILER_MODEL_ID?.trim() ||
-    WORKFLOW_COMPILER_MODEL_ID ||
-    DEFAULT_WORKFLOW_COMPILER_MODEL_ID
-  );
+  return resolveStudioModelId("skill_repair", process.env);
 }
 
 function parseJsonContent(content: unknown): unknown {
@@ -35,6 +30,7 @@ export async function compileReusableSkillRepair(input: {
 }): Promise<{ bodyMd: string; modelId: string }> {
   const doctrine = await loadAuthoringDoctrine();
   const modelId = resolveReusableSkillRepairModelId();
+  const judgeFindings = extractReusableSkillJudgeFindings(input.sourceRun);
   const prompt = [
     "Propose a repaired Gu OS account SKILL.md from one failed operational qualification.",
     'Return ONLY JSON shaped as {"skill_markdown":"..."}.',
@@ -57,9 +53,7 @@ export async function compileReusableSkillRepair(input: {
     JSON.stringify({
       run_id: input.sourceRun.id,
       fingerprint: input.sourceRun.qualification_fingerprint,
-      status: input.sourceRun.status,
-      result: input.sourceRun.result_jsonb,
-      error: input.sourceRun.error_jsonb,
+      judge_findings: judgeFindings,
     }),
     "<<<end_failed_qualification_evidence>>>",
   ].join("\n");
@@ -93,11 +87,12 @@ export async function compileReusableSkillRepair(input: {
   if (!response.ok) {
     await recordOpenRouterCallUsage({
       modelId,
-      modelRole: "workflow_compiler",
+      modelRole: "studio_skill_repair",
       operation: "chat_completion",
       latencyMs: Date.now() - startedAt,
       status: "error",
       errorCode: `http_${response.status}`,
+      metadata: { studio_task: "skill_repair", tier: "primary" },
     });
     throw new Error(`OpenRouter respondió ${response.status}`);
   }
@@ -108,11 +103,12 @@ export async function compileReusableSkillRepair(input: {
   };
   await recordOpenRouterCallUsage({
     modelId,
-    modelRole: "workflow_compiler",
+    modelRole: "studio_skill_repair",
     operation: "chat_completion",
     usage: json.usage ?? null,
     providerRequestId: typeof json.id === "string" ? json.id : null,
     latencyMs: Date.now() - startedAt,
+    metadata: { studio_task: "skill_repair", tier: "primary" },
   });
   const parsed = repairDraftSchema.safeParse(
     parseJsonContent(json.choices?.[0]?.message?.content)

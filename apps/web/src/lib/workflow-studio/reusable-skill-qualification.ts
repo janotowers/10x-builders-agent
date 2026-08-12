@@ -19,6 +19,10 @@ import {
   STUDIO_OPERATIONAL_TEST_SANDBOX_POLICY_VERSION,
   studioOperationalTestSandboxPolicyHash,
 } from "./operational-test-tool-policy";
+import {
+  reusableSkillCompilationContractSchema,
+  type ReusableSkillCompilationContract,
+} from "./reusable-skill-compilation-contract";
 
 export const REUSABLE_SKILL_QUALIFICATION_RUNNER_VERSION = "reusable-skill-v1";
 export const REUSABLE_SKILL_SCENARIO_SET_ID =
@@ -152,6 +156,11 @@ export interface QualificationUsageRollup {
   pricingVersion: string | null;
 }
 
+export type StudioQualificationResultKind =
+  | "passed"
+  | "failed_by_verdict"
+  | "inconclusive_infrastructure";
+
 export interface StudioQualificationView {
   status:
     | "missing"
@@ -177,6 +186,8 @@ export interface StudioQualificationView {
   summary: string | null;
   runId: string | null;
   repairIteration: number | null;
+  resultKind: StudioQualificationResultKind | null;
+  repairEligible: boolean;
 }
 
 function sha256(value: unknown): string {
@@ -312,6 +323,15 @@ function metadataStringList(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function compilationContractFromMetadata(
+  metadata: Record<string, unknown>
+): ReusableSkillCompilationContract | null {
+  const parsed = reusableSkillCompilationContractSchema.safeParse(
+    metadata.reusable_skill_compilation_contract
+  );
+  return parsed.success ? parsed.data : null;
+}
+
 /**
  * Documentary reusable skills need private runtime_input fixtures. Detection is
  * fail-closed and keyword-light: only explicit attachment-tool / chat_attachment
@@ -325,6 +345,19 @@ export function skillNeedsDocumentaryQualificationFixture(
     ...metadataStringList(skill.metadata_jsonb.allowed_tools),
     ...resolvedAllowedTools.map((tool) => tool.trim()).filter(Boolean),
   ]);
+  const compilationContract = compilationContractFromMetadata(
+    skill.metadata_jsonb
+  );
+  if (
+    compilationContract?.source_contract.data_sources.document_intake_route ||
+    compilationContract?.input_contract.requirements.some(
+      (requirement) =>
+        requirement.kind === "runtime_input" &&
+        requirement.source_hint === "chat_attachment"
+    )
+  ) {
+    return true;
+  }
   for (const toolId of REUSABLE_SKILL_FIXTURE_READ_TOOL_IDS) {
     if (allowed.has(toolId)) return true;
     if (skill.body_md.includes(toolId)) return true;
@@ -336,9 +369,7 @@ export function skillNeedsDocumentaryQualificationFixture(
   ) {
     return true;
   }
-  return /(?:^|\b)(?:runtime_input\s*[:=]\s*chat_attachment|source_hint\s*[:=]\s*chat_attachment|chat_attachment)(?:\b|$)/i.test(
-    skill.body_md
-  );
+  return false;
 }
 
 function fixtureSha256Hex(text: string): string {
@@ -426,10 +457,12 @@ export function buildReusableSkillScenario(
     120
   );
   const description = cleanText(
-    skill.metadata_jsonb.description,
+    compilationContractFromMetadata(skill.metadata_jsonb)?.objective ??
+      skill.metadata_jsonb.description,
     `Apply the ${skill.slug} reusable procedure`,
     700
   );
+  const contract = compilationContractFromMetadata(skill.metadata_jsonb);
   const outline = markdownHeadings(skill.body_md);
   const fixture = {
     title,
@@ -469,6 +502,7 @@ export function buildReusableSkillScenario(
         "sandbox-respected",
         "fixture-evidence-used",
         "no-fabricated-real-world-action",
+        ...(contract?.acceptance_criteria ?? []),
       ],
     };
   }
@@ -491,6 +525,7 @@ export function buildReusableSkillScenario(
       "useful-procedure-output",
       "sandbox-respected",
       "no-fabricated-real-world-action",
+      ...(contract?.acceptance_criteria ?? []),
     ],
   };
 }
@@ -794,6 +829,52 @@ export function evaluateReusableSkillMechanicalGate(input: {
   };
 }
 
+export function buildStudioQualificationInconclusiveResult(input: {
+  summary: string;
+  latencyMs: number;
+  accountedCostMicroUsd: number;
+  scenario: { id: string; label: string };
+  infrastructure: {
+    code: string;
+    message: string;
+    attempts?: number;
+    httpStatus?: number;
+    providerCode?: string;
+  };
+  execution?: {
+    turnId: string;
+    response: string;
+    mechanicalEvidence: Record<string, unknown>;
+  };
+}): Record<string, unknown> {
+  return {
+    schema_version: "1",
+    result_kind: "inconclusive_infrastructure",
+    summary: input.summary,
+    latency_ms: input.latencyMs,
+    accounted_cost_micro_usd: input.accountedCostMicroUsd,
+    scenario_results: [
+      {
+        scenario_id: input.scenario.id,
+        label: input.scenario.label,
+        passed: false,
+        detail:
+          "La ejecución no pudo calificarse por una falla de infraestructura del juez.",
+        ...(input.execution
+          ? {
+              execution: {
+                turn_id: input.execution.turnId,
+                response: input.execution.response.slice(0, 20_000),
+                mechanical_evidence: input.execution.mechanicalEvidence,
+              },
+            }
+          : {}),
+        judge_infrastructure: input.infrastructure,
+      },
+    ],
+  };
+}
+
 function sameRecord(
   left: Record<string, string>,
   right: Record<string, string>
@@ -909,6 +990,29 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function qualificationResultKind(
+  run: StudioQualificationRun,
+  result: Record<string, unknown>,
+  error: Record<string, unknown>
+): StudioQualificationResultKind | null {
+  const explicit = stringValue(result.result_kind);
+  if (
+    explicit === "passed" ||
+    explicit === "failed_by_verdict" ||
+    explicit === "inconclusive_infrastructure"
+  ) {
+    return explicit;
+  }
+  if (run.status === "passed") return "passed";
+  if (run.status === "non_convergent") return "inconclusive_infrastructure";
+  if (run.status === "failed") {
+    return stringValue(error.code) === "qualification_execution_failed"
+      ? "inconclusive_infrastructure"
+      : "failed_by_verdict";
+  }
+  return null;
+}
+
 function scenarioViews(
   run: StudioQualificationRun
 ): StudioQualificationView["scenarios"] {
@@ -953,6 +1057,8 @@ export function mapStudioQualificationRunToView(
       summary: null,
       runId: null,
       repairIteration: null,
+      resultKind: null,
+      repairEligible: false,
     };
   }
   const staleReasons = deriveQualificationStaleReasons(run, current);
@@ -965,6 +1071,7 @@ export function mapStudioQualificationRunToView(
   );
   const result = record(run.result_jsonb);
   const error = record(run.error_jsonb);
+  const resultKind = qualificationResultKind(run, result, error);
   const executorModels = Object.entries(run.resolved_models_jsonb)
     .filter(([role]) => role !== "operational_judge")
     .map(([, modelId]) => modelId)
@@ -999,5 +1106,8 @@ export function mapStudioQualificationRunToView(
       null,
     runId: run.id,
     repairIteration: run.repair_iteration,
+    resultKind,
+    repairEligible:
+      status === "failed" && resultKind === "failed_by_verdict",
   };
 }

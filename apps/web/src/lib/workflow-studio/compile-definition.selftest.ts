@@ -148,6 +148,34 @@ async function main() {
     assert.equal(result.kind, "error");
   });
 
+  await ok("compile: contrato primario inválido ⇒ una escalación válida", async () => {
+    let primaryCalls = 0;
+    let escalationCalls = 0;
+    const result = await compileWorkflowDescription(
+      baseInput(),
+      {
+        compile: async () => {
+          primaryCalls += 1;
+          return { clarifying_questions: "invalid" };
+        },
+      },
+      {
+        compile: async () => {
+          escalationCalls += 1;
+          return {
+            clarifying_questions: [],
+            business_spec: validBusinessSpec(),
+            implementation_spec: validImplementationSpec(),
+            graph: validGraph(),
+          };
+        },
+      }
+    );
+    assert.equal(result.kind, "draft");
+    assert.equal(primaryCalls, 1);
+    assert.equal(escalationCalls, 1);
+  });
+
   await ok("compile: descripción vacía ⇒ error sin invocar el modelo", async () => {
     let invoked = false;
     const result = await compileWorkflowDescription(

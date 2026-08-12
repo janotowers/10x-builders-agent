@@ -3,7 +3,9 @@ import {
   canTransitionStudioQualificationStatus,
   computeStudioQualificationFingerprint,
   deriveStudioQualificationStatus,
+  operationalJudgeResponseContractInstructions,
   operationalJudgeVerdictSchema,
+  parseOperationalJudgeVerdict,
   studioQualificationBlocksActivation,
   type StudioQualificationFingerprintInput,
 } from "./studio-qualification";
@@ -119,11 +121,90 @@ assert.equal(
       {
         criterion_id: "result-contract",
         passed: false,
+        score: 0.2,
         explanation: "The result contract is not satisfied.",
       },
     ],
+    remediation_items: ["Fix the result contract."],
   }).success,
   false
+);
+assert.equal(
+  operationalJudgeVerdictSchema.safeParse({
+    schema_version: "1",
+    verdict: "pass",
+    summary: "Unexpected field.",
+    confidence: 0.9,
+    criteria: [
+      {
+        criterion_id: "result-contract",
+        passed: true,
+        score: 0.9,
+        explanation: "Satisfied.",
+        extra: true,
+      },
+    ],
+    remediation_items: [],
+  }).success,
+  false,
+  "judge objects fail closed on additional fields"
+);
+assert.equal(
+  parseOperationalJudgeVerdict(
+    {
+      schema_version: "1",
+      verdict: "fail",
+      summary: "Second criterion failed.",
+      confidence: 0.8,
+      criteria: [
+        {
+          criterion_id: "first",
+          passed: true,
+          score: 1,
+          explanation: "Supported.",
+        },
+        {
+          criterion_id: "second",
+          passed: false,
+          score: 0.1,
+          explanation: "Unsupported.",
+        },
+      ],
+      remediation_items: ["Support the second criterion."],
+    },
+    ["first", "second"]
+  ).verdict,
+  "fail"
+);
+assert.throws(() =>
+  parseOperationalJudgeVerdict(
+    {
+      schema_version: "1",
+      verdict: "fail",
+      summary: "Wrong order.",
+      confidence: 0.8,
+      criteria: [
+        {
+          criterion_id: "second",
+          passed: false,
+          score: 0.1,
+          explanation: "Unsupported.",
+        },
+        {
+          criterion_id: "first",
+          passed: true,
+          score: 1,
+          explanation: "Supported.",
+        },
+      ],
+      remediation_items: [],
+    },
+    ["first", "second"]
+  )
+);
+assert.match(
+  operationalJudgeResponseContractInstructions(["first", "second"]),
+  /score \(number 0\.\.1\)/
 );
 
 console.log("studio-qualification.selftest: ok");

@@ -5,8 +5,8 @@
  * produce objetivo, aceptación, requisitos, work templates y retención.
  */
 import {
-  WORKFLOW_COMPILER_MODEL_ID,
   recordOpenRouterCallUsage,
+  resolveStudioModelId,
   type OpenRouterUsagePayload,
 } from "@agents/agent";
 import {
@@ -26,7 +26,7 @@ export interface CompileDurableTaskInput {
 
 export type CompileDurableTaskResult =
   | { kind: "clarification"; questions: string[] }
-  | { kind: "spec"; spec: DurableTaskSpec }
+  | { kind: "spec"; spec: DurableTaskSpec; modelId?: string }
   | { kind: "error"; message: string };
 
 export interface DurableTaskCompilerModel {
@@ -89,11 +89,13 @@ function parseJsonContent(content: unknown): unknown {
 }
 
 async function invokeOpenRouter(
-  input: CompileDurableTaskInput
+  input: CompileDurableTaskInput,
+  model: string,
+  tier: "primary" | "escalation",
+  retryOrdinal: number
 ): Promise<unknown> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY no configurada");
-  const model = WORKFLOW_COMPILER_MODEL_ID;
   const startedAt = Date.now();
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -121,11 +123,13 @@ async function invokeOpenRouter(
   if (!response.ok) {
     await recordOpenRouterCallUsage({
       modelId: model,
-      modelRole: "workflow_compiler",
+      modelRole: "studio_durable_task_compiler",
       operation: "chat_completion",
       latencyMs: Date.now() - startedAt,
       status: "error",
       errorCode: `http_${response.status}`,
+      retryOrdinal,
+      metadata: { studio_task: "durable_task_compiler", tier },
     });
     throw new Error(`OpenRouter respondió ${response.status}`);
   }
@@ -136,49 +140,98 @@ async function invokeOpenRouter(
   };
   await recordOpenRouterCallUsage({
     modelId: model,
-    modelRole: "workflow_compiler",
+    modelRole: "studio_durable_task_compiler",
     operation: "chat_completion",
     usage: json.usage ?? null,
     providerRequestId: json.id ?? null,
     latencyMs: Date.now() - startedAt,
+    retryOrdinal,
+    metadata: { studio_task: "durable_task_compiler", tier },
   });
   return parseJsonContent(json.choices?.[0]?.message?.content);
 }
 
+function classifyDurableTaskCompilerOutput(
+  raw: unknown
+): CompileDurableTaskResult {
+  const parsed = durableTaskCompilerOutputSchema.safeParse(raw);
+  if (!parsed.success) {
+    return {
+      kind: "error",
+      message: `La salida durable no cumple el contrato: ${parsed.error.issues
+        .slice(0, 3)
+        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .join("; ")}`,
+    };
+  }
+  if (parsed.data.clarifying_questions.length > 0) {
+    return {
+      kind: "clarification",
+      questions: parsed.data.clarifying_questions,
+    };
+  }
+  if (!parsed.data.task_spec) {
+    return {
+      kind: "error",
+      message: "El compilador no devolvió preguntas ni una especificación.",
+    };
+  }
+  return { kind: "spec", spec: parsed.data.task_spec };
+}
+
 export async function compileDurableTaskDescription(
   input: CompileDurableTaskInput,
-  model?: DurableTaskCompilerModel
+  model?: DurableTaskCompilerModel,
+  escalationModel?: DurableTaskCompilerModel
 ): Promise<CompileDurableTaskResult> {
   if (!input.description.trim()) {
     return { kind: "error", message: "La descripción está vacía." };
   }
   try {
-    const raw = model
-      ? await model.compile(input)
-      : await invokeOpenRouter(input);
-    const parsed = durableTaskCompilerOutputSchema.safeParse(raw);
-    if (!parsed.success) {
-      return {
+    if (model) {
+      const primary = classifyDurableTaskCompilerOutput(
+        await model.compile(input)
+      );
+      return primary.kind === "error" && escalationModel
+        ? classifyDurableTaskCompilerOutput(
+            await escalationModel.compile(input)
+          )
+        : primary;
+    }
+    const primaryModelId = resolveStudioModelId(
+      "durable_task_compiler",
+      process.env
+    );
+    let primary: CompileDurableTaskResult;
+    try {
+      primary = classifyDurableTaskCompilerOutput(
+        await invokeOpenRouter(input, primaryModelId, "primary", 0)
+      );
+    } catch (error) {
+      primary = {
         kind: "error",
-        message: `La salida durable no cumple el contrato: ${parsed.error.issues
-          .slice(0, 3)
-          .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-          .join("; ")}`,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Fallo desconocido del compilador durable.",
       };
     }
-    if (parsed.data.clarifying_questions.length > 0) {
-      return {
-        kind: "clarification",
-        questions: parsed.data.clarifying_questions,
-      };
+    if (primary.kind !== "error") {
+      return primary.kind === "spec"
+        ? { ...primary, modelId: primaryModelId }
+        : primary;
     }
-    if (!parsed.data.task_spec) {
-      return {
-        kind: "error",
-        message: "El compilador no devolvió preguntas ni una especificación.",
-      };
-    }
-    return { kind: "spec", spec: parsed.data.task_spec };
+    const escalationModelId = resolveStudioModelId(
+      "durable_task_compiler",
+      process.env,
+      "escalation"
+    );
+    const escalated = classifyDurableTaskCompilerOutput(
+      await invokeOpenRouter(input, escalationModelId, "escalation", 1)
+    );
+    return escalated.kind === "spec"
+      ? { ...escalated, modelId: escalationModelId }
+      : escalated;
   } catch (error) {
     return {
       kind: "error",

@@ -19,8 +19,8 @@
  */
 
 import {
-  WORKFLOW_COMPILER_MODEL_ID,
   recordOpenRouterCallUsage,
+  resolveStudioModelId,
   type OpenRouterUsagePayload,
 } from "@agents/agent";
 import {
@@ -54,6 +54,7 @@ export type CompileDescriptionResult =
       businessSpec: BusinessSpec;
       implementationSpec: ImplementationSpec;
       graph: WorkflowGraph;
+      modelId?: string;
     }
   | { kind: "error"; message: string };
 
@@ -145,11 +146,13 @@ function parseJsonContent(content: unknown) {
 }
 
 async function invokeOpenRouterCompiler(
-  input: CompileDescriptionInput
+  input: CompileDescriptionInput,
+  model: string,
+  tier: "primary" | "escalation",
+  retryOrdinal: number
 ): Promise<unknown> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY no configurada");
-  const model = WORKFLOW_COMPILER_MODEL_ID;
   const startedAt = Date.now();
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -177,11 +180,16 @@ async function invokeOpenRouterCompiler(
   if (!response.ok) {
     await recordOpenRouterCallUsage({
       modelId: model,
-      modelRole: "workflow_compiler",
+      modelRole: "studio_case_compiler",
       operation: "chat_completion",
       latencyMs: Date.now() - startedAt,
       status: "error",
       errorCode: `http_${response.status}`,
+      retryOrdinal,
+      metadata: {
+        studio_task: "case_workflow_compiler",
+        tier,
+      },
     });
     throw new Error(`OpenRouter respondió ${response.status}`);
   }
@@ -192,11 +200,16 @@ async function invokeOpenRouterCompiler(
   };
   await recordOpenRouterCallUsage({
     modelId: model,
-    modelRole: "workflow_compiler",
+    modelRole: "studio_case_compiler",
     operation: "chat_completion",
     usage: json.usage ?? null,
     providerRequestId: typeof json.id === "string" ? json.id : null,
     latencyMs: Date.now() - startedAt,
+    retryOrdinal,
+    metadata: {
+      studio_task: "case_workflow_compiler",
+      tier,
+    },
   });
   return parseJsonContent(json.choices?.[0]?.message?.content);
 }
@@ -234,16 +247,54 @@ export function classifyCompilerOutput(raw: unknown): CompileDescriptionResult {
 
 export async function compileWorkflowDescription(
   input: CompileDescriptionInput,
-  model?: WorkflowCompilerModel
+  model?: WorkflowCompilerModel,
+  escalationModel?: WorkflowCompilerModel
 ): Promise<CompileDescriptionResult> {
   if (!input.description.trim()) {
     return { kind: "error", message: "La descripción está vacía." };
   }
   try {
-    const raw = model
-      ? await model.compile(input)
-      : await invokeOpenRouterCompiler(input);
-    return classifyCompilerOutput(raw);
+    if (model) {
+      const primary = classifyCompilerOutput(await model.compile(input));
+      return primary.kind === "error" && escalationModel
+        ? classifyCompilerOutput(await escalationModel.compile(input))
+        : primary;
+    }
+    const primaryModelId = resolveStudioModelId(
+      "case_workflow_compiler",
+      process.env
+    );
+    let primary: CompileDescriptionResult;
+    try {
+      primary = classifyCompilerOutput(
+        await invokeOpenRouterCompiler(input, primaryModelId, "primary", 0)
+      );
+    } catch (error) {
+      console.warn("[workflow-compiler] primary failed:", error);
+      primary = {
+        kind: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Fallo desconocido del compilador.",
+      };
+    }
+    if (primary.kind !== "error") {
+      return primary.kind === "draft"
+        ? { ...primary, modelId: primaryModelId }
+        : primary;
+    }
+    const escalationModelId = resolveStudioModelId(
+      "case_workflow_compiler",
+      process.env,
+      "escalation"
+    );
+    const escalated = classifyCompilerOutput(
+      await invokeOpenRouterCompiler(input, escalationModelId, "escalation", 1)
+    );
+    return escalated.kind === "draft"
+      ? { ...escalated, modelId: escalationModelId }
+      : escalated;
   } catch (error) {
     console.warn("[workflow-compiler] failed:", error);
     return {

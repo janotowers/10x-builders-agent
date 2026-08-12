@@ -10,6 +10,7 @@ import {
   withCliAiUsageMetering,
 } from "../ai-usage/cli-metering";
 import { compileReusableSkillDescription } from "./compile-reusable-skill";
+import type { ReusableSkillCompilationContract } from "./reusable-skill-compilation-contract";
 
 const repoRoot = path.resolve(process.cwd(), "../..");
 loadWebEnvLocal(process.cwd());
@@ -22,9 +23,53 @@ async function main() {
         rootDirOverride: repoRoot,
       });
       const tools = TOOL_CATALOG.map((tool) => tool.id);
-      const compiled = await compileReusableSkillDescription({
-        slug: "owner-followup-message",
+      const contract: ReusableSkillCompilationContract = {
+        schema_version: "1",
+        discovery_hash: `sha256:${"0".repeat(64)}`,
         title: "Seguimiento cordial a propietarios",
+        slug: "owner-followup-message",
+        objective:
+          "Preparar un seguimiento basado en el último acuerdo registrado.",
+        acceptance_criteria: [
+          "No inventa compromisos ni fechas.",
+          "El asesor decide si se envía.",
+        ],
+        source_contract: {
+          strategy: {
+            kind: "system_record",
+            label: "BigQuery",
+            source_ref: {
+              type: "input_requirement",
+              key: "owner_history",
+            },
+            evidence: [],
+          },
+          data_sources: {
+            document_source: null,
+            document_intake_route: null,
+          },
+          audited_sources: ["BigQuery"],
+        },
+        input_contract: {
+          requirements: [
+            {
+              kind: "business_record",
+              key: "owner_history",
+              label: "Historial y último acuerdo del propietario",
+              required: true,
+              resolve_at: "runtime",
+              source_hint: "BigQuery",
+            },
+          ],
+          invocation_channels: [],
+        },
+        outbound_contract: null,
+        recipient_provenance_review: null,
+        requested_effects: [],
+        capabilities: [],
+      };
+      const compiled = await compileReusableSkillDescription({
+        contract,
         description:
           "Cada vez que prepares un seguimiento para un propietario, resume el último acuerdo y propone una siguiente acción; no inventes compromisos ni fechas.",
         skillSubtype: "simple",

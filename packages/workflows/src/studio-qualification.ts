@@ -110,22 +110,28 @@ export function canTransitionStudioQualificationStatus(
 // Structured independent-judge contract
 // ---------------------------------------------------------------------------
 
-export const operationalJudgeCriterionSchema = z.object({
-  criterion_id: z.string().min(1),
-  passed: z.boolean(),
-  score: z.number().min(0).max(1).optional(),
-  explanation: z.string().min(1),
-});
+export const OPERATIONAL_JUDGE_CONTRACT_VERSION = "1" as const;
+export const OPERATIONAL_JUDGE_VERDICTS = ["pass", "fail"] as const;
+
+export const operationalJudgeCriterionSchema = z
+  .object({
+    criterion_id: z.string().min(1),
+    passed: z.boolean(),
+    score: z.number().min(0).max(1),
+    explanation: z.string().min(1),
+  })
+  .strict();
 
 export const operationalJudgeVerdictSchema = z
   .object({
-    schema_version: z.literal("1"),
-    verdict: z.enum(["pass", "fail"]),
+    schema_version: z.literal(OPERATIONAL_JUDGE_CONTRACT_VERSION),
+    verdict: z.enum(OPERATIONAL_JUDGE_VERDICTS),
     summary: z.string().min(1),
     confidence: z.number().min(0).max(1),
     criteria: z.array(operationalJudgeCriterionSchema).min(1),
-    remediation_items: z.array(z.string().min(1)).default([]),
+    remediation_items: z.array(z.string().min(1)),
   })
+  .strict()
   .superRefine((value, ctx) => {
     const anyFailed = value.criteria.some((criterion) => !criterion.passed);
     if (value.verdict === "pass" && anyFailed) {
@@ -135,11 +141,57 @@ export const operationalJudgeVerdictSchema = z
         path: ["verdict"],
       });
     }
+    if (value.verdict === "fail" && !anyFailed) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "fail verdict must contain at least one failed criterion",
+        path: ["verdict"],
+      });
+    }
   });
 
 export type OperationalJudgeVerdict = z.infer<
   typeof operationalJudgeVerdictSchema
 >;
+
+/**
+ * The json_object transport cannot enforce a provider-side schema, so this
+ * instruction and the strict Zod parser together define the wire contract.
+ */
+export function operationalJudgeResponseContractInstructions(
+  expectedCriterionIds: readonly string[]
+): string {
+  return [
+    "Return exactly one JSON object with no markdown and no additional fields.",
+    `schema_version must be "${OPERATIONAL_JUDGE_CONTRACT_VERSION}".`,
+    'verdict must be "pass" or "fail".',
+    "summary must be a non-empty string.",
+    "confidence must be a number from 0 through 1.",
+    "criteria must contain exactly one object for each criterion_id in this order:",
+    JSON.stringify(expectedCriterionIds),
+    "Every criteria item must contain exactly criterion_id (string), passed (boolean), score (number 0..1), and explanation (non-empty string).",
+    "remediation_items must be an array of non-empty strings; use [] when none.",
+    'A "pass" verdict requires every criterion passed; a "fail" verdict requires at least one failed criterion.',
+  ].join("\n");
+}
+
+export function parseOperationalJudgeVerdict(
+  value: unknown,
+  expectedCriterionIds: readonly string[]
+): OperationalJudgeVerdict {
+  const verdict = operationalJudgeVerdictSchema.parse(value);
+  const actualIds = verdict.criteria.map((criterion) => criterion.criterion_id);
+  if (
+    actualIds.length !== expectedCriterionIds.length ||
+    new Set(actualIds).size !== actualIds.length ||
+    actualIds.some((id, index) => id !== expectedCriterionIds[index])
+  ) {
+    throw new Error(
+      "Operational judge verdict did not cover the exact rubric criteria in order"
+    );
+  }
+  return verdict;
+}
 
 export interface OperationalJudgeRequest {
   runId: string;

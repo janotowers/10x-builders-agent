@@ -75,6 +75,33 @@ export interface UpsertAccountSkillInput {
   status?: AccountSkillStatus;
 }
 
+/**
+ * Inserta un skill sin reemplazar una fila existente. Los flujos que requieren
+ * consentimiento explícito ante colisiones deben usar esta función.
+ */
+export async function insertAccountSkill(
+  db: DbClient,
+  input: UpsertAccountSkillInput
+): Promise<AccountSkill> {
+  const now = new Date().toISOString();
+  const { data, error } = await db
+    .from("account_skills")
+    .insert({
+      user_id: input.userId,
+      slug: input.slug,
+      body_md: input.bodyMd,
+      metadata_jsonb: input.metadata,
+      status: input.status ?? "draft",
+      version: 1,
+      created_at: now,
+      updated_at: now,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as AccountSkill;
+}
+
 export async function upsertAccountSkill(
   db: DbClient,
   input: UpsertAccountSkillInput
@@ -97,22 +124,7 @@ export async function upsertAccountSkill(
     if (error) throw error;
     return data as AccountSkill;
   }
-  const { data, error } = await db
-    .from("account_skills")
-    .insert({
-      user_id: input.userId,
-      slug: input.slug,
-      body_md: input.bodyMd,
-      metadata_jsonb: input.metadata,
-      status: input.status ?? "draft",
-      version: 1,
-      created_at: now,
-      updated_at: now,
-    })
-    .select("*")
-    .single();
-  if (error) throw error;
-  return data as AccountSkill;
+  return insertAccountSkill(db, input);
 }
 
 export async function deleteAccountSkill(

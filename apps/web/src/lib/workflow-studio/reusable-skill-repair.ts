@@ -5,10 +5,86 @@ import type {
   AccountSkillMetadata,
   StudioQualificationRun,
 } from "@agents/types";
+import {
+  operationalJudgeVerdictSchema,
+  type OperationalJudgeVerdict,
+} from "@agents/workflows";
 import { StudioQualificationRequestError } from "./reusable-skill-qualification";
 
 /** Deliberately below the database-wide maximum of five. */
 export const MAX_REUSABLE_SKILL_REPAIR_ITERATIONS = 3;
+
+export type ReusableSkillJudgeFindings = {
+  summary: string;
+  failed_criteria: Array<{
+    criterion_id: string;
+    score: number;
+    explanation: string;
+  }>;
+  remediation_items: string[];
+};
+
+export function extractReusableSkillJudgeFindings(
+  run: StudioQualificationRun
+): ReusableSkillJudgeFindings {
+  if (run.error_jsonb) {
+    throw new StudioQualificationRequestError(
+      "Infrastructure or execution failures cannot be used as skill repair findings. Requalify first.",
+      409,
+      "repair_judge_findings_required"
+    );
+  }
+  const result =
+    run.result_jsonb &&
+    typeof run.result_jsonb === "object" &&
+    !Array.isArray(run.result_jsonb)
+      ? (run.result_jsonb as Record<string, unknown>)
+      : {};
+  const scenarioResults = Array.isArray(result.scenario_results)
+    ? result.scenario_results
+    : [];
+  const judgments: OperationalJudgeVerdict[] = [];
+  for (const scenarioResult of scenarioResults) {
+    if (
+      !scenarioResult ||
+      typeof scenarioResult !== "object" ||
+      Array.isArray(scenarioResult)
+    ) {
+      continue;
+    }
+    const parsed = operationalJudgeVerdictSchema.safeParse(
+      (scenarioResult as Record<string, unknown>).judgment
+    );
+    if (parsed.success) judgments.push(parsed.data);
+  }
+  const failedCriteria = judgments.flatMap((judgment) =>
+    judgment.criteria.flatMap((criterion) =>
+      criterion.passed
+        ? []
+        : [
+            {
+              criterion_id: criterion.criterion_id,
+              score: criterion.score,
+              explanation: criterion.explanation,
+            },
+          ]
+    )
+  );
+  if (failedCriteria.length === 0) {
+    throw new StudioQualificationRequestError(
+      "The failed run has no valid independent-judge findings to repair. Requalify first.",
+      409,
+      "repair_judge_findings_required"
+    );
+  }
+  return {
+    summary: judgments.map((judgment) => judgment.summary).join(" "),
+    failed_criteria: failedCriteria,
+    remediation_items: [
+      ...new Set(judgments.flatMap((judgment) => judgment.remediation_items)),
+    ],
+  };
+}
 
 export function parseReusableSkillRepairRequest(value: unknown): {
   artifactKind: "reusable_skill";
@@ -54,13 +130,17 @@ export function assertReusableSkillRepairEligibility(input: {
       "repair_source_mismatch"
     );
   }
-  if (run.status !== "failed" && run.status !== "non_convergent") {
+  if (
+    run.status !== "failed" ||
+    run.result_jsonb.result_kind === "inconclusive_infrastructure"
+  ) {
     throw new StudioQualificationRequestError(
-      "Only a failed or non-convergent qualification can be repaired.",
+      "Only a qualification failed by a substantive verdict can be repaired.",
       409,
       "repair_source_not_failed"
     );
   }
+  extractReusableSkillJudgeFindings(run);
   if (!latestRun || latestRun.id !== run.id) {
     throw new StudioQualificationRequestError(
       "This is no longer the latest applicable qualification run.",
@@ -69,8 +149,8 @@ export function assertReusableSkillRepairEligibility(input: {
     );
   }
   if (
-    latestRun.status !== "failed" &&
-    latestRun.status !== "non_convergent"
+    latestRun.status !== "failed" ||
+    latestRun.result_jsonb.result_kind === "inconclusive_infrastructure"
   ) {
     throw new StudioQualificationRequestError(
       "The latest qualification is no longer eligible for repair.",

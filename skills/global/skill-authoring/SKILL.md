@@ -83,12 +83,20 @@ enable, save, or run the proposed skill.
 5. **Review before writing.** Present an “Esto entendí” summary and ask for
    explicit human confirmation before any API, file, database, or activation
    write. High classification confidence never proves semantic completeness.
+   Keep sources as data origins only; keep run inputs MECE; treat human approval
+   as a flow decision, not a startup input. When identity collides with an
+   existing tenant skill slug/title, surface the overlap and require a human
+   choice (new identifier vs replace) before write.
 6. **Draft conservatively.** Prefer one dominant owner per workflow. Use atomic
    `includes` only when a step is reusable elsewhere. Keep `allowed_tools`
-   minimal and aligned with body instructions.
+   minimal and aligned with body instructions. For Studio materialization, emit
+   structured metadata + body; never hand-author YAML `---` fences that Gu must
+   parse later—the application serializes the supported frontmatter subset.
 7. **Validate before returning.** Run the rubric from
    `read_skill_reference("skill-contract")`. If any item is FAIL, return the draft
    annotated with the failure and propose a fix instead of declaring success.
+   Studio also parses the serialized draft with the real account-skill parser
+   before persistence.
 8. **Recommend activation, never perform it.** Use `do_not_activate`,
    `activate_after_tests`, or `skill_only` based on evidence and risk.
 
@@ -98,14 +106,50 @@ enable, save, or run the proposed skill.
   router can supply advisory signals and enforce mechanical invariants, but
   cannot skip discovery or act as the final work-form authority. The flow is
   conversational: `Analizar solicitud` → adaptive clarifying turns (1–4
-  questions, soft checkpoint after 3 answers, hard limit 5) → `Esto entendí`
-  with proposed work form → explicit `Crear borrador`. The four artifact kinds
-  land in a common review shell; the type-specific editor is a later human
-  action.
+  questions, soft checkpoint after 3 answers only when there is a real choice,
+  hard limit 5) → `Esto entendí` with proposed work form → explicit
+  `Crear borrador`. If blocking questions remain at turn 3, continue asking
+  instead of interrupting with a checkpoint that cannot proceed. The four
+  artifact kinds land in a common review shell; the type-specific editor is a
+  later human action.
 - **Skill authoring automation:** remains proposal-only and uses the same
   doctrine, references, validation rubric, and confirmation-before-write rule.
 - Never create a second Studio-specific doctrine. Share the authoring kernel
   and keep persistence/UI concerns in their respective surfaces.
+
+## Semantic judgment and deterministic enforcement
+
+- The model owns interpretation and judgment: intent, entities, relationships,
+  whether an answer is sufficient or partial, the exact residual, work-form
+  classification, and clear business-language questions and summaries.
+- The model translates free language into evidenced structures such as source
+  strategy, recipient strategy, approval authority/scope, delivery mode, input
+  requirements, and capability category IDs. It must not require special
+  keywords from the operator.
+- Deterministic code owns schema validation, exact evidence existence, stable
+  gap IDs and lifecycle, catalog/tenant truth, conversational limits, and
+  safety enforcement. It must not use synonym lists or lexical regexes as the
+  authority for semantic sufficiency, capability detection, or pattern
+  triggers. It validates model-selected category IDs and replaces provider
+  status with tenant truth.
+- Semantic gap resolution and execution readiness are distinct. A missing
+  connection becomes a connection/choice/manual-fallback action; it never
+  downgrades an evidenced answer or causes the same question to loop.
+- A newly asserted concrete recipient strategy receives a focused semantic
+  review before acceptance. Deterministic code detects the structural change;
+  the reviewing model decides whether the cited language truly supports it.
+- For external delivery, an operator-supplied runtime address is a valid
+  recipient strategy and creates a linked runtime input. Every other concrete
+  recipient strategy must reference a real case/task/turn input, business
+  record, or verified read/search capability. A delivery-channel quote does not
+  prove a recipient source. Address syntax validation and confirmation of the
+  final recipient and content happen at runtime under HITL.
+- Input scope (`account | case | task_run | turn`) describes data lifecycle,
+  not artifact kind. A reusable skill may explicitly accept case/task context;
+  a schedule inherits the contract of the work it triggers.
+- Write questions for non-technical business operators. Explain abstract terms
+  in the question and include short contextual examples; product names and
+  formats such as Gmail, Telegram, DOCX, and TXT are fine when useful.
 
 ## Skill Development Cycle
 
@@ -139,7 +183,12 @@ compact and put the full draft in `<skill-draft>`, never inside JSON.
 - The selector reads only `description` and metadata when choosing a skill, not
   the body.
 - Gu's parser accepts only its constrained frontmatter subset. When uncertain,
-  read `references/skill-contract.md` before drafting.
+  read `references/skill-contract.md` before drafting. Studio compilers must
+  emit structured metadata and let deterministic code serialize that subset;
+  malformed LLM-written fences are a known failure mode (`could not split
+  frontmatter`).
+- Identity collisions are human decisions: never silently overwrite an account
+  skill that belongs to another authoring session.
 - `requires_tenant_context: true` is what makes tenant tools work. Setting it
   wrong silently breaks runtime tool calls.
 - `heartbeat: blocked` means the skill will not run from cron. Use it for

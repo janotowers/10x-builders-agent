@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
 import {
   flushPendingAiUsageMeterWrites,
-  recordOpenRouterCallUsage,
   runAgent,
   runWithAiUsageContext,
   summarizeSkillQualificationEvidence,
-  type OpenRouterUsagePayload,
 } from "@agents/agent";
 import {
   createServerClient,
@@ -22,12 +20,10 @@ import {
   markStudioQualificationRunRunning,
   markStudioQualificationRunsStale,
 } from "@agents/db";
-import {
-  operationalJudgeVerdictSchema,
-  type OperationalJudgeVerdict,
-} from "@agents/workflows";
+import { type OperationalJudgeVerdict } from "@agents/workflows";
 import { createClient } from "@/lib/supabase/server";
 import {
+  buildStudioQualificationInconclusiveResult,
   evaluateReusableSkillMechanicalGate,
   mapStudioQualificationRunToView,
   parseStudioQualificationArtifactRequest,
@@ -36,60 +32,15 @@ import {
   type ReusableSkillQualificationPlan,
 } from "@/lib/workflow-studio/reusable-skill-qualification";
 import {
+  OperationalJudgeInfrastructureError,
+  requestOperationalJudgeVerdict,
+} from "@/lib/workflow-studio/operational-judge-openrouter";
+import {
   loadReusableSkillQualificationPlan,
   reusableSkillQualificationSystemBoundary,
 } from "@/lib/workflow-studio/reusable-skill-qualification-server";
 
 export const maxDuration = 180;
-
-const JUDGE_RESPONSE_JSON_SCHEMA = {
-  name: "studio_operational_judge_verdict",
-  strict: true,
-  schema: {
-    type: "object",
-    additionalProperties: false,
-    required: [
-      "schema_version",
-      "verdict",
-      "summary",
-      "confidence",
-      "criteria",
-      "remediation_items",
-    ],
-    properties: {
-      schema_version: { type: "string", const: "1" },
-      verdict: { type: "string", enum: ["pass", "fail"] },
-      summary: { type: "string", minLength: 1 },
-      confidence: { type: "number", minimum: 0, maximum: 1 },
-      criteria: {
-        type: "array",
-        minItems: 1,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["criterion_id", "passed", "score", "explanation"],
-          properties: {
-            criterion_id: { type: "string", minLength: 1 },
-            passed: { type: "boolean" },
-            score: { type: "number", minimum: 0, maximum: 1 },
-            explanation: { type: "string", minLength: 1 },
-          },
-        },
-      },
-      remediation_items: {
-        type: "array",
-        items: { type: "string", minLength: 1 },
-      },
-    },
-  },
-} as const;
-
-function parseJsonContent(content: unknown): unknown {
-  if (typeof content !== "string") return content;
-  const trimmed = content.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return JSON.parse(fenced?.[1] ?? trimmed);
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -110,7 +61,13 @@ async function judgeExecution(params: {
   mechanicalEvidence: Record<string, unknown>;
 }): Promise<OperationalJudgeVerdict> {
   const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured");
+  if (!apiKey) {
+    throw new OperationalJudgeInfrastructureError(
+      "judge_not_configured",
+      "Operational judge is not configured",
+      { attempts: 0 }
+    );
+  }
   const modelId = params.plan.models.judgeModelId;
   const prompt = [
     "Independently judge one controlled reusable-skill qualification run.",
@@ -138,74 +95,15 @@ async function judgeExecution(params: {
       mechanical_evidence: params.mechanicalEvidence,
     }),
   ].join("\n");
-  const startedAt = Date.now();
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://agents.local",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      temperature: 0,
-      max_tokens: 1800,
-      response_format: {
-        type: "json_schema",
-        json_schema: JUDGE_RESPONSE_JSON_SCHEMA,
-      },
-      usage: { include: true },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are Gu OS Studio's independent operational judge. Return only the strict JSON-schema verdict. You have no tools.",
-        },
-        { role: "user", content: prompt },
-      ],
-    }),
-  });
-  if (!response.ok) {
-    await recordOpenRouterCallUsage({
-      modelId,
-      modelRole: "studio_operational_judge",
-      operation: "chat_completion",
-      latencyMs: Date.now() - startedAt,
-      status: "error",
-      errorCode: `http_${response.status}`,
-    });
-    throw new Error(`Operational judge returned HTTP ${response.status}`);
-  }
-  const json = (await response.json()) as {
-    id?: string;
-    choices?: Array<{ message?: { content?: unknown } }>;
-    usage?: OpenRouterUsagePayload;
-  };
-  await recordOpenRouterCallUsage({
-    modelId,
-    modelRole: "studio_operational_judge",
-    operation: "chat_completion",
-    usage: json.usage ?? null,
-    providerRequestId: typeof json.id === "string" ? json.id : null,
-    latencyMs: Date.now() - startedAt,
-  });
-  const verdict = operationalJudgeVerdictSchema.parse(
-    parseJsonContent(json.choices?.[0]?.message?.content)
-  );
   const expectedIds = params.plan.rubricDefinition.criteria.map(
     (criterion) => criterion.criterion_id
   );
-  const actualIds = verdict.criteria.map((criterion) => criterion.criterion_id);
-  if (
-    actualIds.length !== expectedIds.length ||
-    new Set(actualIds).size !== actualIds.length ||
-    expectedIds.some((id) => !actualIds.includes(id))
-  ) {
-    throw new Error(
-      "Operational judge verdict did not cover the exact rubric criteria"
-    );
-  }
-  return verdict;
+  return requestOperationalJudgeVerdict({
+    apiKey,
+    modelId,
+    prompt,
+    expectedCriterionIds: expectedIds,
+  });
 }
 
 async function persistEvidence(params: {
@@ -256,11 +154,12 @@ export async function GET(request: Request) {
           sourceRunId: latest.id,
         })
       : null;
+    const view = mapStudioQualificationRunToView(latest ?? null, plan);
     return NextResponse.json(
       {
-        ...mapStudioQualificationRunToView(latest ?? null, plan),
+        ...view,
         repairProposal:
-          repairProposal?.status === "proposed"
+          view.repairEligible && repairProposal?.status === "proposed"
             ? {
                 id: repairProposal.id,
                 status: repairProposal.status,
@@ -415,13 +314,27 @@ export async function POST(request: Request) {
             (attachment) => attachment.id
           ),
         };
-        const judgment = await judgeExecution({
-          runId: runId!,
-          plan: plan!,
-          executorOutput: output.response,
-          mechanicalEvidence,
-        });
-        return { output, mechanicalEvidence, judgment, gate };
+        try {
+          const judgment = await judgeExecution({
+            runId: runId!,
+            plan: plan!,
+            executorOutput: output.response,
+            mechanicalEvidence,
+          });
+          return { output, mechanicalEvidence, judgment, gate };
+        } catch (error) {
+          if (!(error instanceof OperationalJudgeInfrastructureError)) throw error;
+          return {
+            output,
+            mechanicalEvidence,
+            gate,
+            judgeInfrastructure: {
+              code: error.code,
+              message: error.message,
+              ...error.details,
+            },
+          };
+        }
       }
     );
 
@@ -429,6 +342,63 @@ export async function POST(request: Request) {
     const usage = summarizeQualificationUsage(
       await listAiUsageEventsForStudioQualificationRun(db, { userId, runId })
     );
+    if (
+      "judgeInfrastructure" in execution &&
+      execution.judgeInfrastructure
+    ) {
+      const result = buildStudioQualificationInconclusiveResult({
+        summary:
+          "La ejecución terminó, pero el juez no pudo producir una calificación válida. Reintenta la calificación.",
+        latencyMs: Date.now() - startedAt,
+        accountedCostMicroUsd: usage.accountedCostMicroUsd,
+        scenario: plan.scenario,
+        infrastructure: execution.judgeInfrastructure,
+        execution: {
+          turnId: execution.output.turnId,
+          response: execution.output.response,
+          mechanicalEvidence: execution.mechanicalEvidence,
+        },
+      });
+      const finished = await finishStudioQualificationRun(db, {
+        userId,
+        runId,
+        status: "non_convergent",
+        result,
+        error: {
+          code: "qualification_judge_inconclusive",
+          infrastructure: execution.judgeInfrastructure,
+        },
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        totalTokens: usage.totalTokens,
+        reportedCostMicroUsd: usage.reportedCostMicroUsd,
+        estimatedCostMicroUsd: usage.estimatedCostMicroUsd,
+        pricingVersion: usage.pricingVersion,
+      });
+      if (!finished) throw new Error("Qualification run lost its completion CAS");
+      await persistEvidence({
+        db,
+        userId,
+        runId,
+        artifactHash: plan.artifact.contentHash,
+        passed: false,
+        detail: {
+          result_kind: "inconclusive_infrastructure",
+          fingerprint: plan.fingerprint,
+          scenario_id: plan.scenario.id,
+          judge_model_id: plan.models.judgeModelId,
+          executor_model_ids: Object.values(plan.models.executorModels),
+          execution: {
+            turn_id: execution.output.turnId,
+            response: execution.output.response.slice(0, 20_000),
+          },
+          mechanical_evidence: execution.mechanicalEvidence,
+          judge_infrastructure: execution.judgeInfrastructure,
+        },
+      });
+      return NextResponse.json(mapStudioQualificationRunToView(finished, plan));
+    }
+
     const mechanicallyPassed = execution.gate.passed;
     const passed =
       mechanicallyPassed &&
@@ -436,6 +406,7 @@ export async function POST(request: Request) {
       execution.judgment.criteria.every((criterion) => criterion.passed);
     const result = {
       schema_version: "1",
+      result_kind: passed ? "passed" : "failed_by_verdict",
       summary: execution.judgment.summary,
       latency_ms: Date.now() - startedAt,
       accounted_cost_micro_usd: usage.accountedCostMicroUsd,
@@ -473,6 +444,7 @@ export async function POST(request: Request) {
       artifactHash: plan.artifact.contentHash,
       passed,
       detail: {
+        result_kind: passed ? "passed" : "failed_by_verdict",
         fingerprint: plan.fingerprint,
         scenario_id: plan.scenario.id,
         judge_model_id: plan.models.judgeModelId,
@@ -503,24 +475,21 @@ export async function POST(request: Request) {
             runId,
           })
         );
-        const result = {
-          schema_version: "1",
-          summary: `Qualification failed closed: ${message}`,
-          latency_ms: startedAt ? Date.now() - startedAt : 0,
-          accounted_cost_micro_usd: usage.accountedCostMicroUsd,
-          scenario_results: [
-            {
-              scenario_id: plan.scenario.id,
-              label: plan.scenario.label,
-              passed: false,
-              detail: message,
-            },
-          ],
-        };
+        const result = buildStudioQualificationInconclusiveResult({
+          summary:
+            "La calificación no pudo completarse por una falla de infraestructura.",
+          latencyMs: startedAt ? Date.now() - startedAt : 0,
+          accountedCostMicroUsd: usage.accountedCostMicroUsd,
+          scenario: plan.scenario,
+          infrastructure: {
+            code: "qualification_execution_failed",
+            message,
+          },
+        });
         const finished = await finishStudioQualificationRun(db, {
           userId,
           runId,
-          status: "failed",
+          status: "non_convergent",
           result,
           error: {
             code: "qualification_execution_failed",
@@ -541,6 +510,7 @@ export async function POST(request: Request) {
             artifactHash: plan.artifact.contentHash,
             passed: false,
             detail: {
+              result_kind: "inconclusive_infrastructure",
               fingerprint: plan.fingerprint,
               error: { code: "qualification_execution_failed", message },
             },
@@ -555,8 +525,8 @@ export async function POST(request: Request) {
     }
     return NextResponse.json(
       {
-        error: `Qualification failed closed: ${message}`,
-        code: "qualification_execution_failed",
+        error: `Qualification inconclusive: ${message}`,
+        code: "qualification_inconclusive_infrastructure",
       },
       { status: error instanceof StudioQualificationRequestError ? error.status : 500 }
     );

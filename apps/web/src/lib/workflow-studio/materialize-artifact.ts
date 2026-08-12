@@ -10,6 +10,8 @@ import { Cron } from "croner";
 import {
   createDurableTask,
   createScheduledTask,
+  getAccountSkill,
+  insertAccountSkill,
   insertDraftDefinition,
   listWorkflowDefinitionsVisibleToUser,
   updateDurableTask,
@@ -18,13 +20,14 @@ import {
 } from "@agents/db";
 import {
   parseAccountSkillSource,
+  resolveStudioModelId,
   SkillParseError,
-  WORKFLOW_COMPILER_MODEL_ID,
 } from "@agents/agent";
 import {
   computeDefinitionHash,
   durableTaskSpecSchema,
   suggestEnglishSlug,
+  type AuthoringDiscoveryOutput,
   type AuthoringRouterKind,
   type ReusableSkillSubtype,
   type SolutionPatternComposition,
@@ -32,6 +35,10 @@ import {
 import { compileWorkflowDescription } from "./compile-definition";
 import { compileDurableTaskDescription } from "./compile-durable-task";
 import { compileReusableSkillDescription } from "./compile-reusable-skill";
+import {
+  buildReusableSkillCompilationContract,
+  type ReusableSkillCompilationContract,
+} from "./reusable-skill-compilation-contract";
 
 export interface AuthoringMaterializeCatalogs {
   availableGuards: string[];
@@ -49,8 +56,11 @@ export interface MaterializeAuthoringArtifactInput {
   slug?: string | null;
   description: string;
   clarificationAnswers?: string[];
+  authoringDiscovery?: AuthoringDiscoveryOutput;
+  discoveryHash?: string;
   catalogs?: AuthoringMaterializeCatalogs;
   authoringSessionId?: string;
+  overwriteExisting?: boolean;
   patternComposition?: SolutionPatternComposition;
   /** Zona horaria para schedules (default America/Mexico_City). */
   timezone?: string;
@@ -61,6 +71,15 @@ export interface MaterializeAuthoringArtifactResult {
   redirectPath?: string;
   artifactRef: Record<string, unknown>;
   error?: string;
+  errorCode?: "compile_failed" | "validation_failed" | "slug_conflict";
+  errorDetails?: string;
+  retriable?: boolean;
+  conflict?: {
+    slug: string;
+    status: string;
+    version: number;
+    updatedAt: string;
+  };
   /** Preguntas del compilador de caso (no del router). */
   clarifyingQuestions?: string[];
 }
@@ -79,6 +98,28 @@ function normalizeSnakeSlug(value: string): string {
 
 function snakeToKebab(slug: string): string {
   return slug.replace(/_/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+}
+
+export function normalizeReusableSkillSlug(value: string): string {
+  return snakeToKebab(normalizeSnakeSlug(value));
+}
+
+export function reusableSkillWriteDecision(params: {
+  existing: boolean;
+  existingAuthoringSessionId: string | null;
+  currentAuthoringSessionId?: string;
+  overwriteExisting?: boolean;
+}): "insert" | "update" | "conflict" {
+  if (!params.existing) return "insert";
+  if (
+    (Boolean(params.currentAuthoringSessionId) &&
+      params.existingAuthoringSessionId ===
+        params.currentAuthoringSessionId) ||
+    params.overwriteExisting
+  ) {
+    return "update";
+  }
+  return "conflict";
 }
 
 function parseRecurringSchedule(
@@ -182,7 +223,9 @@ async function materializeCaseWorkflow(
     implementationSpec: compiled.implementationSpec,
     provenance: {
       compiler: {
-        model: WORKFLOW_COMPILER_MODEL_ID,
+        model:
+          compiled.modelId ??
+          resolveStudioModelId("case_workflow_compiler", process.env),
         compiled_at: new Date().toISOString(),
         authoring_router: true,
         studio_authoring_session_id: input.authoringSessionId ?? null,
@@ -258,7 +301,9 @@ async function materializeDurableTask(
     resultContract: spec.result_contract,
     provenance: {
       authoring_router: true,
-      compiler_model: WORKFLOW_COMPILER_MODEL_ID,
+      compiler_model:
+        compiled.modelId ??
+        resolveStudioModelId("durable_task_compiler", process.env),
       created_at: new Date().toISOString(),
       studio_authoring_session_id: input.authoringSessionId ?? null,
       solution_patterns: input.patternComposition
@@ -292,6 +337,32 @@ async function materializeReusableSkill(
     };
   }
   const title = input.title?.trim() || slug.replace(/-/g, " ");
+  const existing = await getAccountSkill(input.db, input.userId, slug);
+  const existingSessionId =
+    typeof existing?.metadata_jsonb?.studio_authoring_session_id === "string"
+      ? existing.metadata_jsonb.studio_authoring_session_id
+      : null;
+  const writeDecision = reusableSkillWriteDecision({
+    existing: Boolean(existing),
+    existingAuthoringSessionId: existingSessionId,
+    currentAuthoringSessionId: input.authoringSessionId,
+    overwriteExisting: input.overwriteExisting,
+  });
+  if (existing && writeDecision === "conflict") {
+    return {
+      kind: "reusable_skill",
+      artifactRef: {},
+      error: `Ya existe un skill con el identificador «${slug}». Revisa la advertencia y confirma si quieres reemplazarlo.`,
+      errorCode: "slug_conflict",
+      retriable: true,
+      conflict: {
+        slug,
+        status: existing.status,
+        version: existing.version,
+        updatedAt: existing.updated_at,
+      },
+    };
+  }
   if (!input.catalogs) {
     return {
       kind: "reusable_skill",
@@ -301,15 +372,27 @@ async function materializeReusableSkill(
   }
   let bodyMd: string;
   let compilerModelId: string;
+  let compilationContract: ReusableSkillCompilationContract;
   try {
-    const compiled = await compileReusableSkillDescription({
-      slug,
+    if (!input.authoringDiscovery || !input.discoveryHash) {
+      throw new Error(
+        "Falta el discovery auditado persistido para compilar el skill."
+      );
+    }
+    compilationContract = buildReusableSkillCompilationContract({
+      discovery: input.authoringDiscovery,
+      discoveryHash: input.discoveryHash,
       title,
+      slug,
+    });
+    const compiled = await compileReusableSkillDescription({
+      contract: compilationContract,
       description: input.description,
       skillSubtype: input.skillSubtype,
       clarificationAnswers: input.clarificationAnswers,
       catalogs: input.catalogs,
       patternComposition: input.patternComposition,
+      ownerUserId: input.userId,
     });
     bodyMd = compiled.bodyMd;
     compilerModelId = compiled.modelId;
@@ -318,9 +401,11 @@ async function materializeReusableSkill(
       kind: "reusable_skill",
       artifactRef: {},
       error:
-        error instanceof Error
-          ? `No se pudo compilar el skill: ${error.message}`
-          : "No se pudo compilar el skill.",
+        "No se pudo generar un borrador válido del skill. Puedes reintentar la creación.",
+      errorCode: "compile_failed",
+      errorDetails:
+        error instanceof Error ? error.message : "Error desconocido del compilador.",
+      retriable: true,
     };
   }
 
@@ -360,6 +445,8 @@ async function materializeReusableSkill(
       provenance: "studio_native",
       studio_authoring_session_id: input.authoringSessionId ?? null,
       compiler_model_id: compilerModelId,
+      discovery_hash: compilationContract.discovery_hash,
+      reusable_skill_compilation_contract: compilationContract,
       solution_patterns: input.patternComposition
         ? {
             base_bundle_id: input.patternComposition.baseBundleId,
@@ -378,17 +465,31 @@ async function materializeReusableSkill(
     return {
       kind: "reusable_skill",
       artifactRef: {},
-      error: `No se pudo validar el borrador del skill: ${message}`,
+      error:
+        "No se pudo validar el borrador del skill. Puedes reintentar la creación.",
+      errorCode: "validation_failed",
+      errorDetails: message,
+      retriable: true,
     };
   }
 
-  await upsertAccountSkill(input.db, {
-    userId: input.userId,
-    slug,
-    bodyMd,
-    metadata,
-    status: "draft",
-  });
+  if (writeDecision === "update") {
+    await upsertAccountSkill(input.db, {
+      userId: input.userId,
+      slug,
+      bodyMd,
+      metadata,
+      status: "draft",
+    });
+  } else {
+    await insertAccountSkill(input.db, {
+      userId: input.userId,
+      slug,
+      bodyMd,
+      metadata,
+      status: "draft",
+    });
+  }
 
   return {
     kind: "reusable_skill",
