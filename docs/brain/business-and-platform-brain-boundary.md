@@ -1,6 +1,8 @@
 # Business Brain y conocimiento de mejora de plataforma
 
 > **Estado:** dirección aceptada para diseño futuro cercano (2026-08-08).
+> Aclaración de no-duplicación operativa (2026-08-21): Brain no es cola de
+> acción; ver §2.
 >
 > **Propósito:** aclarar la expresión informal «dos Brains» sin crear dos
 > arquitecturas cognitivas incompatibles. Este documento complementa
@@ -58,6 +60,23 @@ case_facts / evidencia autorizada
   -> revisión cuando corresponda
   -> brain timeline / compiled truth / link / signal
 ```
+
+Ownership, sin segunda copia del estado operativo (2026-08-21):
+
+- **Cases** poseen responsabilidad operativa: expediente, paso, esperas, HITL,
+  `next_action_at`.
+- **`case_facts`** posee verdad comercial *del caso*, con provenance y
+  supersession.
+- **CRM / BigQuery** siguen siendo SOR transaccional. No son lo mismo que
+  `case_facts`.
+- **Business Brain** posee conocimiento compilado, reutilizable y cross-caso
+  (entidades, relaciones, señales, playbooks candidatos).
+
+`brain_pages` no es cola de acción ni segunda copia de `status` /
+`next_action` / commitments del Case. Sin auto-copy. El leftover v1.1 de
+columnas operacionales en pages quedó fuera del schema MVP; ver
+[`gbrain-evaluation-and-plan.md`](gbrain-evaluation-and-plan.md) §1.4.8,
+§1.5.1, Bloque 1 y §12.1.
 
 ## 3. Platform Knowledge and Improvement Plane
 

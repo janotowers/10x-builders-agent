@@ -1,7 +1,7 @@
 # Evaluación de G Brain y plan de integración con Ungga / Gu OS
 
 > **Estado:** propuesta para revisión (actualizada agosto 2026)
-> **Versión:** 1.6 (v1.5.2 + pipeline híbrido, legibilidad empresarial, scopes platform→user y artefactos/vistas regenerables)
+> **Versión:** 1.6.1 (v1.6 + leftover v1.1: Brain no es cola de acción)
 > **Audiencia:** Janot (arquitecto/dueño)
 > **Decide:** si arrancamos la "Brain Layer" como capa nueva paralela a `memories`, siguiendo Opción B (portar **8 ideas** de G Brain sin importar su código), en convivencia explícita con `operational_cases` y `account_skills`
 > **No decide:** si en el futuro lejano se integra G Brain como microservicio (Opción C) — eso queda como puerta abierta, con matiz post-company-brain (ver [§8](#8-recomendación-y-razones))
@@ -10,6 +10,15 @@
 > conocimiento interno con el que Gu OS mejora su propio producto —sin duplicar
 > el modelo de 7 capas— vive en
 > [`business-and-platform-brain-boundary.md`](business-and-platform-brain-boundary.md).
+
+### Cambios v1.6.1 vs v1.6
+
+> Marcadores `[v1.6.1]`. Normalización editorial del leftover v1.1 que trataba `brain_pages` como cola de acción. **No reabre ownership:** Cases / `case_facts` / SOR / Brain siguen como en la Regla 5 y [`business-and-platform-brain-boundary.md`](business-and-platform-brain-boundary.md). Brain sigue post-workflows.
+
+- **Principio 1.5.1:** "operacional" es el norte de producto (conocimiento que ayuda a ejecutar), no una licencia para que Brain posea `next_action` / `stage` / `due_at`. La cola de acción vive en Cases / Heartbeat / `scheduled_tasks`.
+- **Bloque 1:** columnas `next_action`, `due_at`, `stage`, `priority`, `health` **fuera del schema MVP**. Si en el futuro se proyectan sobre una page, son compiladas, no-SOR, y nunca autoridad del Case.
+- **§1.4.8, §12.1 y glosario:** "Operational Truth" = hecho vs interpretación *dentro* de Brain; no es el estado operativo del Case.
+- Nota cruzada en el documento de frontera (2026-08-21).
 
 ### Cambios v1.6 vs v1.5.2
 
@@ -124,8 +133,8 @@
 1.2. [Evolución de G Brain v0.28 → v0.42](#12-evolución-de-g-brain-v028--v042-lo-relevante-para-gu-os) `[v1.5]`
 1.3. [Estado de Gu OS desde v1.4.1](#13-estado-de-gu-os-desde-v141-lo-construido-en-paralelo) `[v1.5]`
 1.4. [Modelo de capas: 7 capas, 4 dominios](#14-modelo-de-capas-7-capas-4-dominios) `[v1.4]`
-   - 1.4.8. [Casos operacionales vs Brain Layer (frontera)](#148-casos-operacionales-vs-brain-layer-frontera-de-responsabilidades-v15) `[v1.5]`
-1.5. [Principios rectores de la Brain Layer](#15-principios-rectores-de-la-brain-layer) `[v1.1]`
+   - 1.4.8. [Casos operacionales vs Brain Layer (frontera)](#148-casos-operacionales-vs-brain-layer-frontera-de-responsabilidades-v15) `[v1.5]` `[v1.6.1]`
+1.5. [Principios rectores de la Brain Layer](#15-principios-rectores-de-la-brain-layer) `[v1.1]` `[v1.6.1]`
    - 1.5.8. [Pipeline híbrido y legibilidad empresarial](#158-pipeline-híbrido-y-legibilidad-empresarial-v16) `[v1.6]`
    - 1.5.9. [Ownership scopes: platform → user](#159-ownership-scopes-platform--user-v16) `[v1.6]`
    - 1.5.10. [Artefactos, vistas regenerables y knowledge coverage](#1510-artefactos-vistas-regenerables-y-knowledge-coverage-v16) `[v1.6]`
@@ -497,7 +506,7 @@ Para el reviewer técnico que quiere ubicar dónde vive cada capa en el repo:
 3. **Establece el patrón de promoción HITL** — las dos flechas (Signal→Memory, Pattern→Skill) codifican como invariante arquitectural que la autonomía se gana, no se asume. Cualquier nueva capa o promoción futura debe encajar en este patrón.
 4. **Respeta lo que ya funciona** — las capas 6 y 7 (Skill, Workflow) ya existen en Gu OS y **no se reemplazan**. La intervención de Brain Layer es quirúrgica en las capas 2–4, con hooks ligeros para 1 y 5, e **integración explícita** con `operational_cases` y `account_skills` (§1.4.8).
 
-### 1.4.8 Casos operacionales vs Brain Layer: frontera de responsabilidades `[v1.5]`
+### 1.4.8 Casos operacionales vs Brain Layer: frontera de responsabilidades `[v1.5]` `[v1.6.1]`
 
 > *El subsistema de casos operacionales no estaba en el modelo v1.4. v1.5 lo incorpora como primitiva existente de la capa 7. **`property_optioning` validó la plataforma**; flujos futuros reutilizan componentes y solo construyen lo particular.*
 
@@ -565,6 +574,8 @@ flowchart LR
 
 **Regla 5 — `case_facts` es la fuente preferida de promoción selectiva.** `case_facts` (append-only, con `source_kind`/`source_ref`, confianza y supersession) es la **verdad comercial del caso**; `brain_pages` (compiled truth + timeline) es **cognición cross-caso de entidades** (lead/property/zona). No son lo mismo y no se fusionan. Cuando el Brain arranque, el camino de promoción hacia `brain_pages` es `case_facts → HITL selectivo → brain_pages.timeline / compiled_truth` — **no** minar `context_jsonb` (la regla 2 se actualiza en espíritu: `case_facts` trae provenance y supersession de fábrica, `context_jsonb` no). Sin auto-copy: la regla HITL de la regla 2 aplica igual.
 
+`[v1.6.1]` La regla 1 cubre también el leftover v1.1: **no** copiar `status`, `current_step`, `next_action_at`, commitments ni stage del expediente a columnas de `brain_pages`. Esas columnas (`next_action`, `due_at`, `stage`, `priority`, `health`) **no entran al schema MVP**. Si más adelante se proyectan sobre una entidad, son compiladas y no-SOR — nunca la cola de acción. Ver principio 1.5.1 y Bloque 1.
+
 **Regla 6 — assets: insumo operativo ≠ conocimiento.** Con la taxonomía de assets del plan técnico §11 y de [`gu-os-qm-reference-analysis.md`](../manuals/gu-os-qm-reference-analysis.md) §5:
 
 | Clase de asset | ¿Knowledge-bearing? | Camino al Brain |
@@ -586,20 +597,22 @@ flowchart LR
 
 > **Tagline rector `[v1.3]`** — La Brain Layer está optimizada para **conservative intelligence amplification**, NO para **maximal autonomous complexity**. Toda decisión de diseño debe leerse a la luz de esa preferencia. Cuando dudes entre dos caminos, elige el más conservador y demuestra que la versión más ambiciosa es necesaria antes de ir por ella.
 
-### 1.5.1 Operacional, no Obsidian
+### 1.5.1 Operacional, no Obsidian `[v1.6.1]`
 
 > *Nota `[v1.2]`: para lectores que no conozcan Obsidian — es una herramienta popular de "second brain" / personal knowledge management basada en archivos markdown con wikilinks `[[entre-corchetes]]` y visualización de grafo. Optimiza para **exploración intelectual** (investigadores, escritores, founders tomando notas). G Brain heredó muchos de sus patrones (markdown como source of truth, links wiki, grafo navegable). El principio aquí dice: **adoptamos los patrones, NO la mentalidad de "knowledge garden"**. Tu producto optimiza para ejecución operacional (cerrar deals, no perder leads), no para reflexión.*
 
 La Brain Layer existe para **mejorar outcomes operacionales** (cerrar deals, no perder leads, priorizar follow-ups), no para "almacenar conocimiento bonito".
 
+`[v1.6.1]` "Operacional" es el **norte de producto** (el conocimiento debe ayudar a ejecutar), no una licencia para que Brain sea una segunda cola de trabajo. La responsabilidad operativa —expediente, paso, esperas, `next_action_at`, commitments— vive en Cases / Heartbeat / `scheduled_tasks`. Brain consulta y contextualiza; no posee el inbox.
+
 Esto significa:
 
-- Schema y tools priorizan **acción**: `next_action`, `due_at`, `stage`, `priority`, `health` por entidad.
-- Tools que se priorizan: `list_pages_needing_action(kind, due_before)` por encima de `search_brain_pages(text)`.
-- UI futura: dashboard accionable ("tienes 3 leads sin tocar en >7 días"), no wiki navegable.
-- Lo que se evita: tags coloridos, edición rica de markdown como feature destacada, visualización de grafos como elemento principal de UX, "knowledge garden" mentality.
+- Schema y tools priorizan **cognición accionable**: compiled truth, timeline y relaciones de entidades que el agente usa *mientras* Cases ejecutan. No columnas de autoridad `next_action`, `due_at`, `stage`, `priority`, `health` en `brain_pages` (fuera del MVP; ver Bloque 1).
+- Tools que se priorizan: `get_brain_page` y retrieval de entidad/grafo por encima de un `list_pages_needing_action` que duplique el board de Cases. La pregunta "qué hay que hacer hoy" se responde desde Cases / Heartbeat, no desde pages.
+- UI futura: el dashboard accionable ("3 leads sin tocar") sale del plano operativo. Brain puede alimentar contexto ("qué sabemos de este lead"), no el vencimiento canónico.
+- Lo que se evita: tags coloridos, edición rica de markdown como feature destacada, visualización de grafos como elemento principal de UX, "knowledge garden" mentality — y el anti-patrón de copiar estado del Case a la page.
 
-Sin este norte, el equipo termina agregando accidental complexity de Obsidian/Notion y la Brain Layer se vuelve un knowledge garden en lugar de un motor operacional. **Test rápido:** si una decisión de diseño no tiene un caminito claro hacia "el agente cierra un deal antes" o "el usuario no pierde un lead", probablemente sobra.
+Sin este norte, el equipo termina agregando accidental complexity de Obsidian/Notion y la Brain Layer se vuelve un knowledge garden — o un segundo CRM. **Test rápido:** si una decisión de diseño no tiene un caminito claro hacia "el agente cierra un deal antes" o "el usuario no pierde un lead", probablemente sobra. Si el caminito es "duplicar `next_action` en la page", también sobra.
 
 ### 1.5.2 Progressive synthesis, NOT creative rewriting
 
@@ -1211,14 +1224,10 @@ create table public.brain_pages (
   frontmatter     jsonb not null default '{}'::jsonb,  -- aliases, tags, refs externas (BigQuery id, Calendar id, etc.)
   body_hash       text not null,                       -- sha256(compiled_truth) para dedupe / change detection
 
-  -- Columnas operacionales [v1.1] (principio 1.5.1: operacional, no Obsidian)
-  -- Opcionales por kind; convencion: el adapter de cada tool sabe que campos
-  -- pueblan / leen segun el dominio. Ejemplos por kind en la tabla siguiente.
-  next_action     text,                                -- que falta hacer con esta entidad
-  due_at          timestamptz,                         -- cuando se vence
-  stage           text,                                -- etapa kind-dependiente (ver tabla siguiente)
-  priority        smallint check (priority is null or priority between 1 and 5),
-  health          text check (health is null or health in ('hot','warm','cold','stale')),
+  -- [v1.6.1] NO agregar next_action / due_at / stage / priority / health.
+  -- Esas columnas fueron leftover v1.1 (Brain como cola de accion) y
+  -- contradicen §1.4.8 / principio 1.5.1. La cola vive en Cases.
+  -- Una proyeccion compilada futura, si existe, es no-SOR y no entra al MVP.
 
   -- Provenance [v1.4] (lightweight hook para Ingestion Layer futura, ver seccion 12.2)
   -- NULL = page creada por usuario directamente o por agente turn-by-turn.
@@ -1236,13 +1245,6 @@ create table public.brain_pages (
 
 create index brain_pages_user_kind_idx on public.brain_pages (user_id, kind);
 create index brain_pages_user_updated_idx on public.brain_pages (user_id, updated_at desc);
--- Indices operacionales [v1.1] para queries del tipo "que necesita accion hoy"
-create index brain_pages_user_due_idx
-  on public.brain_pages (user_id, due_at) where due_at is not null;
-create index brain_pages_user_priority_idx
-  on public.brain_pages (user_id, priority desc) where priority is not null;
-create index brain_pages_user_health_idx
-  on public.brain_pages (user_id, health) where health is not null;
 
 alter table public.brain_pages enable row level security;
 create policy "Users manage own brain pages"
@@ -1337,21 +1339,23 @@ create trigger brain_pages_snapshot
 - `packages/agent/src/brain/page.selftest.ts` — render/parse roundtrip, hash estable, slugify.
 - `packages/db/src/queries/brain-pages.selftest.ts` — RLS, dedupe por slug, snapshot trigger dispara version.
 
-#### Convenciones operacionales por kind `[v1.1]`
+#### Convenciones de entidad por kind `[v1.1]` `[v1.6.1: no son columnas MVP]`
 
-Las columnas operacionales (`stage`, `health`, `next_action`, `due_at`, `priority`) son opcionales en el schema pero su semántica vive por convención por `kind`. Tabla inicial sugerida (iterable):
+`[v1.6.1]` Las columnas `stage`, `health`, `next_action`, `due_at` y `priority` **no forman parte del schema MVP** de `brain_pages`. El leftover v1.1 las trataba como cola de acción por entidad; eso contradice §1.4.8 y el principio 1.5.1. Stage / due / next action del **expediente** viven en Cases. Stage comercial de una **propiedad o deal** en el SOR (CRM / BigQuery), no como autoridad en Brain.
+
+La tabla de abajo es vocabulario de dominio, no DDL. Si más adelante se materializa una proyección compilada (p. ej. `health` cross-caso de un lead), es **no-SOR**, se deriva con provenance, y nunca sustituye `operational_cases.next_action_at` ni `case_facts`.
 
 
-| Kind        | Stages típicos                                                                                     | Health                                                                                   | Notas                                                                 |
+| Kind        | Stages típicos (dueño: Case / SOR, no Brain)                                                       | Health (solo si un día se proyecta, no-SOR)                                              | Notas                                                                 |
 | ----------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `lead`      | `nuevo`, `calificado`, `visita_agendada`, `oferta_presentada`, `cerrado_ganado`, `cerrado_perdido` | `hot` (interés activo <7d) / `warm` (<30d) / `cold` (>30d) / `stale` (sin contacto >90d) | `next_action` = próximo touchpoint                                    |
-| `property`  | `disponible`, `apartada`, `en_oferta`, `bajo_contrato`, `vendida`, `retirada`                      | n/a típicamente                                                                          | `due_at` = fecha de retiro / renovación de contrato                   |
-| `deal`      | `negociacion`, `oferta`, `acepteado`, `due_diligence`, `firma`, `cerrado`                          | n/a                                                                                      | `due_at` = fecha objetivo de firma; `priority` = monto / probabilidad |
-| `developer` | n/a                                                                                                | `warm` (proyecto activo) / `cold` (sin proyecto)                                         | `next_action` = próxima reunión / actualización                       |
-| `visit`     | `agendada`, `realizada`, `cancelada`, `no_show`                                                    | n/a                                                                                      | `due_at` = fecha de la visita                                         |
+| `lead`      | `nuevo`, `calificado`, `visita_agendada`, `oferta_presentada`, `cerrado_ganado`, `cerrado_perdido` | `hot` / `warm` / `cold` / `stale` como lectura compilada, no inbox                       | Próximo touchpoint = Case / Heartbeat                                 |
+| `property`  | `disponible`, `apartada`, `en_oferta`, `bajo_contrato`, `vendida`, `retirada`                      | n/a típicamente                                                                          | Fecha de retiro / contrato = SOR                                      |
+| `deal`      | `negociacion`, `oferta`, `acepteado`, `due_diligence`, `firma`, `cerrado`                          | n/a                                                                                      | Fecha objetivo de firma = Case / SOR                                  |
+| `developer` | n/a                                                                                                | `warm` / `cold` como lectura, no tarea                                                   | Próxima reunión = Case / Calendar                                     |
+| `visit`     | `agendada`, `realizada`, `cancelada`, `no_show`                                                    | n/a                                                                                      | Fecha de la visita = Case                                             |
 
 
-Esta tabla es **convención**, no enum. Ningún check constraint impone valores — el schema deja flexibilidad para evolucionar el dominio sin migración. Validación vive en los adapters de tools por kind.
+Esta tabla es **convención de lenguaje**, no enum ni columnas. Ningún check constraint las impone en `brain_pages`.
 
 #### Reglas de gobierno del Compiled Truth `[v1.1]`
 
@@ -1369,8 +1373,9 @@ Estas reglas aplican a TODO escritor de `brain_pages.compiled_truth` (agente, us
 #### Definition of done
 
 - Puedes crear manualmente una `brain_page` para un Lead en el chat ("crea la página de Julieta Evelia"), agregar 3 timeline entries, editar `compiled_truth`, y al revisar versions ver los snapshots.
-- Tu Heartbeat puede pre-fetchear `brain_pages` `kind='lead'` con `health in ('hot','warm') and due_at <= now() + interval '3 days'` ordenadas por `priority desc` — patrón "leads que necesitan acción esta semana".
+- El Heartbeat / cron drena Cases vencidos (`next_action_at`). Puede **consultar** la `brain_page` de la entidad relacionada para contexto ("qué sabemos de este lead"); **no** decide due/priority/inbox desde columnas de la page.
 - Selftest de governance pasa: footnote markers existen en timeline, hedges se preservan en fixture, cap del 30% rechaza diffs grandes.
+- Selftest negativo `[v1.6.1]`: la migración de `brain_pages` **no** declara `next_action`, `due_at`, `stage`, `priority` ni `health`.
 
 ---
 
@@ -2069,11 +2074,13 @@ Decisiones conscientes de descartar para esta fase:
 5. **Migración del modelo `organizations`** — multi-tenant se mantiene por usuario (RLS sobre `auth.uid()`). Cuando llegue el modelo organizacional (V3 del roadmap), las tablas `brain_*` se ajustan mecánicamente agregando `organization_id` y políticas RLS sin cambio estructural.
 6. **Reemplazo del `memory_injection_node`** — solo se **extiende** (Bloque 3) para sumar un bloque adicional de "conocimiento del negocio". El bloque `[MEMORIA DEL USUARIO]` actual se mantiene intacto.
 7. **Operational Truth vs Cognitive Interpretation como concepto first-class** `[v1.3]` — distinción **arquitectural diferida** para v1, documentada explícitamente como consideración futura. Ver detalle abajo. Contraste G Brain facts/takes en §12.1.
-8. **Reemplazo de `operational_cases` por brain pages** `[v1.5]` — descartado. Los expedientes multi-día siguen en la plataforma operational_cases; Brain Layer complementa con cognición cross-entidad (§1.4.8).
+8. **Reemplazo de `operational_cases` por brain pages** `[v1.5]` — descartado. Los expedientes multi-día siguen en la plataforma operational_cases; Brain Layer complementa con cognición cross-entidad (§1.4.8). `[v1.6.1]` Tampoco se copian columnas de cola de acción (`next_action`, `due_at`, `stage`, `priority`, `health`) a `brain_pages`.
 
-### 12.1 Forward-looking: Operational Truth vs Cognitive Interpretation `[v1.3]`
+### 12.1 Forward-looking: Operational Truth vs Cognitive Interpretation `[v1.3]` `[v1.6.1]`
 
 > *Esta sub-sección NO propone cambios al MVP. Documenta una distinción que la Brain Layer maneja de forma parcial/implícita en v1, y que probablemente necesite volverse first-class si el dolor aparece. El propósito es dejarlo escrito hoy para que cuando el dolor llegue (mes 6-12 estimado) la solución no se invente desde cero.*
+
+`[v1.6.1]` Esta distinción es **interna a Brain**: hecho verificable vs lectura inferida *dentro de una page*. **No** asigna a Brain el estado del Case. La verdad comercial del expediente vive en `case_facts`; el estado del flujo vive en `operational_cases`; CRM/BigQuery siguen siendo SOR transaccional. Ver §1.4.8 Regla 5.
 
 **Dos tipos de información cualitativamente distintos** conviven dentro de una page:
 
@@ -2086,17 +2093,19 @@ Decisiones conscientes de descartar para esta fase:
 
 **Cómo el v1 las separa parcialmente (estado actual del plan):**
 
-- `brain_pages` operational columns (`stage`, `due_at`, `priority`, `health`, `next_action`) → **Operational Truth** estructurada
+- Hechos durables promovidos a `brain_timeline` / `compiled_truth` (provenance + HITL, Regla 5) → **Operational Truth** compilada; no autoridad del Case ni del SOR
 - `brain_links` (hard edges) → **Operational Truth** relacional (verificable)
 - `brain_signals` (con `cluster_key` y lifecycle) → **Cognitive Interpretation** explícita (raw → cluster → HITL → promoted)
 - `brain_pages.compiled_truth` → **mezcla ambas** una vez que un signal cluster es promovido (acá vive el riesgo)
+
+Las columnas `stage` / `due_at` / `priority` / `health` / `next_action` **ya no** son el slot de Operational Truth estructurada. Ese leftover v1.1 quedó fuera del schema MVP (§1.5.1, Bloque 1).
 
 **El problema futuro previsible:** una vez que el synthesizer empiece a integrar señales promovidas al `compiled_truth`, el agente leerá ambas como "el mismo tipo de cosa". Eso es operacionalmente peligroso en sales/financiamiento/legal: citar "el cliente está ansioso" con la misma confianza con la que cita "el precio es 12M" lleva a malas decisiones.
 
 **Tres opciones de implementación si el dolor aparece** (en orden creciente de invasividad sobre el schema):
 
 1. **Marcadores en `compiled_truth` (más liviano).** Análogo a los footnote markers de evidencia (`[^t<id>]`), pero distinguiendo origen: `[fact:^t12]` vs `[interp:^c5]`. Cero cambio de schema. El render del compiled_truth puede usar tipografía/color distinto. Permite al agente filtrar al inyectar prompt: "solo facts" vs "facts + interpretations explícitas".
-2. **Source-side separation, render unificado (intermedia, recomendada como primera apuesta).** No cambiar `compiled_truth` directamente; en vez de eso, definir que su contenido se **renderiza** desde dos buckets distintos en runtime: `compiled_facts` (derivado de frontmatter operacional + traversal de hard edges) y `compiled_interpretation` (derivado de signals promovidos + síntesis LLM). El `compiled_truth` storage se vuelve un **view materializado o caché** del render, no la fuente. Permite consultar cada bucket por separado (tools como `get_compiled_facts(page_id)` vs `get_compiled_interpretation(page_id)`).
+2. **Source-side separation, render unificado (intermedia, recomendada como primera apuesta).** No cambiar `compiled_truth` directamente; en vez de eso, definir que su contenido se **renderiza** desde dos buckets distintos en runtime: `compiled_facts` (derivado de hechos promovidos + traversal de hard edges) y `compiled_interpretation` (derivado de signals promovidos + síntesis LLM). El `compiled_truth` storage se vuelve un **view materializado o caché** del render, no la fuente. Permite consultar cada bucket por separado (tools como `get_compiled_facts(page_id)` vs `get_compiled_interpretation(page_id)`).
 3. **Schema split (más invasiva).** Dos campos en `brain_pages`: `compiled_facts text` + `compiled_interpretation text`, cada uno con su propio versionado y synthesizer separado. Más limpio conceptualmente, pero rompe compatibilidad y duplica governance.
 
 **Cuándo migrar:** señales tempranas que justifican mover a v1.5+:
@@ -2639,7 +2648,7 @@ Verificados en el repo (paths reales):
 
 **Hard edges vs Soft signals** `[v1.2]` — distinción arquitectural: relaciones operacionales verificables van a `brain_links` (alta confianza, queryables como grafo), observaciones probabilísticas van a `brain_signals` (baja-media confianza, sujetas a corroboración antes de promoción). NUNCA se mezclan modelando señales como links con `confidence` baja. Ver [principio 1.5.5](#155-hard-edges-links-vs-soft-signals--nunca-mezclarlos-v12).
 
-**Operational Truth vs Cognitive Interpretation** `[v1.3]` — distinción **forward-looking** entre dos tipos de información cualitativamente distintos dentro de una page: hechos operacionales verificables ("Lead asignado a Carlos", "Visit agendada 12-may") vs interpretaciones cognitivas inferidas ("Lead parece ansioso por financiamiento", "Relación enfriándose"). El v1 las separa parcialmente (operational truth en columnas operacionales + `brain_links`; interpretations en `brain_signals`), pero `compiled_truth` puede mezclarlas tras síntesis. Documentado como consideración arquitectural diferida — no es cambio de schema en MVP. Ver [sección 12.1](#121-forward-looking-operational-truth-vs-cognitive-interpretation-v13) para 3 opciones de implementación futura.
+**Operational Truth vs Cognitive Interpretation** `[v1.3]` `[v1.6.1]` — distinción **forward-looking** e **interna a Brain** entre dos tipos de información cualitativamente distintos dentro de una page: hechos verificables ("Property price = 12M MXN", "Lead confirmó precio mínimo") vs interpretaciones inferidas ("Lead parece ansioso por financiamiento", "Relación enfriándose"). **No** es el estado operativo del Case (`status`, `next_action_at`, commitments) ni la verdad comercial del expediente (`case_facts`). El v1 las separa parcialmente (hechos promovidos + `brain_links`; interpretations en `brain_signals`), pero `compiled_truth` puede mezclarlas tras síntesis. Las columnas operacionales v1.1 ya no son el slot de hechos. Documentado como consideración arquitectural diferida — no es cambio de schema en MVP. Ver [sección 12.1](#121-forward-looking-operational-truth-vs-cognitive-interpretation-v13).
 
 **Facts / Takes** `[v1.5]` — modelo G Brain v0.31+ para separar verdad estructurada de interpretación graduable. **Facts:** hechos en fence `## Facts`, reconciliados en dream cycle (`extract_facts`). **Takes:** afirmaciones con evidencia y calibración (`propose_takes` → `grade_takes`). Referencia para evolucionar §12.1 si el dolor de mezcla en `compiled_truth` aparece antes del mes 6–12; MVP Gu OS puede bastar con `brain_signals` + governance de síntesis.
 
