@@ -1,6 +1,6 @@
 # Gu OS Agentic Product & Software Development Methodology
 
-> **Version:** v0.2.1  
+> **Version:** v0.2.2  
 > **Status:** Canonical development methodology  
 > **Scope:** Tool-agnostic operating method for humans + coding agents  
 > **Intended repo path:** `docs/development/agentic-product-software-development-methodology.md`
@@ -272,6 +272,8 @@ The older Cursor rule used TDD proportional to risk. The underlying idea survive
 
 The methodology is designed for strong agent autonomy without collapsing human authority. The human role shifts upward from typing code toward product intent, specification quality, architecture trade-offs, risk acceptance and outcome review. This does not mean humans disappear from implementation; it means human attention is concentrated where judgment and accountability have the highest leverage.
 
+**Mapping note.** The artifact-ownership table in Section 4 and the operating-model table below are not intended to map 1:1. Section 4 separates artifacts because they own different kinds of truth; this table highlights collaboration and human gates. A distinct artifact does not automatically create a distinct human approval checkpoint.
+
 | **Stage**               | **Agent/human collaboration**                                                                                             | **Primary human gate**                                     |
 |-------------------------|---------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------|
 | Discover / clarify      | Human leads intent and evidence; agent interviews, researches repo/context, identifies contradictions and drafts options. | Human confirms problem framing.                            |
@@ -279,6 +281,7 @@ The methodology is designed for strong agent autonomy without collapsing human a
 | Feature / Business Spec | Agent drafts/test-challenges; human/domain owner resolves ambiguous behavior and risk.                                    | Human approval for consequential scope.                    |
 | Architecture / ADR      | Agent inspects repo and compares alternatives; humans accept durable trade-offs.                                          | Architecture/product approval proportional to consequence. |
 | Technical Plan          | Agent can derive plan; engineering owner reviews feasibility, security, compatibility and rollback.                       | Plan approval when risk/size warrants.                     |
+| Tasks / Vertical Slices | Agent decomposes the approved Plan into bounded, ordered, independently verifiable execution units; human/engineering owner reviews when decomposition materially changes scope, risk, dependencies or release strategy. | No separate approval by default; review proportional to consequence. |
 | Implementation          | Agent can write/refactor/test within bounded scope; humans may pair/review hotspots.                                      | No routine approval for every edit.                        |
 | Verification            | Agent runs tests/evals/replay/readiness and gathers evidence; humans review failures, risk and business acceptance.       | Evidence gate.                                             |
 | Release                 | Agent may prepare release/canary/rollback steps; authorized human/system policy controls consequential release.           | Release authority.                                         |
@@ -454,7 +457,7 @@ Adoption should itself be brownfield. Do not stop engineering to rewrite all his
 
 | **Order** | **Action**                                                                                                                                                                                                                                                                                                                                                                   |
 |-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Step 1    | Approve this Methodology v0.2.1 conceptually, including the four-layer agent instruction architecture and proportional test/eval-first guidance.                                                                                                                                                                                                                             |
+| Step 1    | Approve this Methodology v0.2.2 conceptually, including the four-layer agent instruction architecture and proportional test/eval-first guidance.                                                                                                                                                                                                                             |
 | Step 2    | Audit current docs, strategic documents and agent-instruction files using a matrix: retain canonical / contributes to PRD / link from PRD / merge / supersede / historical/archive / agent-adapter-only. Treat apps/web/AGENTS.md and apps/web/CLAUDE.md as tracked app-scoped adapters.                                                                                     |
 | Step 3    | Create the canonical Gu / Gu OS Product PRD from reconciled existing material, not from a blank page.                                                                                                                                                                                                                                                                        |
 | Step 4    | Publish the concise Principles & Design Doctrine using the adjudicated Registry plus this Methodology/product intent.                                                                                                                                                                                                                                                        |
