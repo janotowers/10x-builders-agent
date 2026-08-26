@@ -3,7 +3,7 @@
 > **Version:** v0.6  
 > **Status:** Discovery / architecture input — not an ADR or Technical Plan  
 > **Initiative:** R1 — Relationship Operations v1  
-> **Companion Brief:** `docs/product/initiatives/relationship-operations/brief.md` — v0.9 draft  
+> **Companion Brief:** `docs/product/initiatives/relationship-operations/brief.md` — v0.9 approved for Feature / Business Spec and Architecture Analysis  
 > **Repository reviewed:** `janotowers/10x-builders-agent`, `main`  
 > **Purpose:** Map the approved R1 product concepts to the Gu OS durable-work primitives that already exist, identify genuine gaps, and prevent Relationship Operations from becoming a domain-specific mini-runtime.
 
