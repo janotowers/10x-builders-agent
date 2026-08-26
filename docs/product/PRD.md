@@ -127,7 +127,7 @@ These responsibilities are supported by more detailed technical capabilities suc
 
 ## 6. Product principles
 
-This PRD does not replace the future Gu OS Principles & Design Doctrine. The following product-level guardrails are included because they materially shape product intent.
+This PRD does not replace the canonical Gu OS Principles & Design Doctrine. The following product-level guardrails are included because they materially shape product intent.
 
 1. **Start from responsibility and outcome.** Do not start with a feature, screen, tool or agent. Ask what business work should become delegable and what outcome proves useful progress/completion.
 2. **Define operational truth before the prompt.** Conversation and model interpretation are context, not the sole source of business truth.
