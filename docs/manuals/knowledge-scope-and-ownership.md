@@ -1,6 +1,6 @@
 # Knowledge scope and ownership in Gu OS
 
-**Status:** target semantics. Current runtime remains mostly `user_id`-scoped; organization/team support requires the V3 organization model.
+**Status:** canonical target semantics. Current runtime remains mostly `user_id`-scoped. R1 Relationship Operations includes the minimum organization/multi-seat slice required for its multi-advisor operating model; broader organization/team maturity remains evidence-gated beyond that slice.
 
 This document is canonical for **who owns and may access knowledge**. It does not replace the DDL in the Brain or flexible-workflows plans.
 
@@ -64,25 +64,30 @@ Start with flat, many-to-many memberships. Add nested teams only after a real au
 
 ## 4. External identity bridge
 
-The existing operating system exposes:
+The current Traditional Gu operating model exposes legacy organization/account semantics rather than a separate first-class Organization entity:
 
-- `org_id` / `organization_id`: stable external organization identity.
-- `org_name`: mutable display name.
-- `role_user='super-admin'`: principal organization account.
-- `role_user='vendedor'`: affiliated sales user.
+- `users.document_id` is the canonical legacy user identifier used by lead, appointment, property, deal and Gu-number references.
+- `organization_id` is effectively a reference/key anchored to the principal `super-admin` user. Treat it as a **legacy organization key**, not as the permanent/canonical Gu OS organization identity.
+- `org_name` is a mutable brokerage display name, not identity.
+- `role_user='super-admin'` identifies the principal user representing the brokerage in the legacy model.
+- `role_user='admin'` identifies a user granted account-administration authority by the principal user.
+- `role_user='vendedor'` identifies an advisor/sales user to whom responsibility for selected leads can be delegated.
+- There is no separate first-class Organization table in the current legacy model.
 
-Target mapping:
+The target Gu OS model must bridge those legacy semantics into first-class organization, membership and role concepts without permanently equating an organization with one user. Conceptually:
 
 ```text
-organizations.external_org_id <- external org_id
-organizations.name            <- external org_name
-membership.role=owner/admin   <- super-admin
-membership.role=sales_agent   <- vendedor
+legacy organization key (`organization_id`) -> Gu OS organization identity bridge
+legacy `super-admin`                       -> principal owner/admin membership
+legacy `admin`                             -> organization-admin membership
+legacy `vendedor`                          -> sales-agent membership
 ```
 
 `profiles.is_ungga_admin` is platform staff authority and must never be inferred from those external roles.
 
-Leads remain organization-owned even when the external system currently relates them through the receiving `super-admin`. Gu OS should preserve `external_lead_id`, `external_org_id`, and current assignee, while the external intake system remains authoritative until a separate migration is approved.
+Leads remain organization-owned even when the legacy system currently relates them through the receiving/principal `super-admin`. Gu OS should preserve the external lead identifier, legacy organization key, current assignee and source provenance while the external intake/assignment system remains authoritative, until an explicit migration changes that ownership contract.
+
+R1 Relationship Operations requires the **minimum viable organization/multi-seat slice** needed to model multi-advisor responsibility, assignment, authority and access correctly. This does not imply that all broader organization/team administration must be completed in R1.
 
 ## 5. Retrieval and precedence
 
@@ -134,12 +139,13 @@ Prefer sharing an authorized view over copying the artifact. Revocation must rem
 
 ## 8. Migration sequence
 
-1. Keep current user-scoped RLS and external `organization_id` binding.
-2. Add `organizations` and memberships with external ID mapping.
-3. Move organization-owned assets, workflow definitions, skills, and Brain rows behind org-aware authorization.
-4. Add teams only with concrete collaboration requirements.
-5. Add platform/industry semantic catalogs and unified retrieval.
-6. Backfill ownership and verify cross-tenant denial before enabling multi-seat access.
+1. Keep current `user_id`-scoped RLS and the legacy organization-key binding while the brownfield bridge is introduced.
+2. In R1, add the minimum first-class organization/membership/role bridge required for Relationship Operations multi-advisor semantics, preserving legacy identifiers and provenance.
+3. Put the R1 organization-owned Case/assignment/approval surfaces that require multi-seat access behind organization-aware authorization, with explicit cross-tenant denial tests.
+4. Expand broader organization-owned assets, workflow definitions, skills and Brain rows behind organization-aware authorization as product increments require them.
+5. Add teams only with concrete collaboration/authorization requirements; do not make full team administration a prerequisite for the minimum R1 slice.
+6. Add platform/industry semantic catalogs and unified retrieval when the relevant Brain/knowledge increment is pulled by product need.
+7. Backfill ownership and verify cross-tenant denial before broadening multi-seat access beyond the controlled R1 scope.
 
 ## 9. Non-goals
 
