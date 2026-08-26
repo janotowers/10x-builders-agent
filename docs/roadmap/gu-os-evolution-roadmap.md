@@ -153,7 +153,7 @@ Those belong in Git history, architecture/topic documents and reference analyses
 
 ## 10. Supersession plan
 
-With v1.0 approved:
+With this roadmap approved:
 
 1. Create `docs/roadmap/gu-os-evolution-roadmap.md` from this document.
 2. Update `docs/README.md` so **Product sequencing** points to the new roadmap.
