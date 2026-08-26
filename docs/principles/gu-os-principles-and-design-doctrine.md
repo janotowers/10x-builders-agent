@@ -1,7 +1,7 @@
 # Gu OS Principles & Design Doctrine
 
 > **Version:** v1.0  
-> **Status:** Draft for founder / product / architecture review  
+> **Status:** Canonical decision doctrine  
 > **Intended repo path:** `docs/principles/gu-os-principles-and-design-doctrine.md`  
 > **Purpose:** Canonical decision doctrine for Gu / Gu OS. This document distills the evidence-rich Principle Registry into a compact operating constitution; it does not replace the PRD, Development Methodology, ADRs, architecture sources, Specs or executable mechanisms.
 
