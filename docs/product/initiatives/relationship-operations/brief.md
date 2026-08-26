@@ -1,7 +1,7 @@
 # Relationship Operations — Initiative Brief
 
 > **Version:** v0.9  
-> **Status:** Draft — P0 and P1-9 through P1-12 product directions approved; Feature / Business Spec and Architecture Analysis next  
+> **Status:** Approved for Feature / Business Spec and Architecture Analysis; P0 and P1-9 through P1-12 product directions approved  
 > **Intended repo path:** `docs/product/initiatives/relationship-operations/brief.md`  
 > **Roadmap increment:** R1 — Relationship Operations v1  
 > **Parent product intent:** [`../../PRD.md`](../../PRD.md)  
@@ -1127,7 +1127,7 @@ Every R1 Spec that authorizes material executable work should state the observab
 
 ## 20. Exit criterion for this Initiative Brief
 
-At v0.5, the Initiative Brief has completed its primary P0 product-direction gate: **P0-1 through P0-8 have approved directions**. The Brief can now support downstream specification work when the following are also true enough for the specific Spec being opened:
+At v0.9, the Initiative Brief has completed its P0 and P1 product-direction gates: **P0-1 through P0-8 and P1-9 through P1-12 have approved directions**. The Brief can now support downstream specification work when the following are also true enough for the specific Spec being opened:
 
 1. product/domain leadership continues to accept the initiative responsibility and non-goals;
 2. the companion **R1 Concept → Shared Kernel Mapping** has classified the major R1 concepts against current Gu OS primitives and surfaced genuine architecture gaps instead of assuming domain-local infrastructure;
@@ -1137,7 +1137,7 @@ At v0.5, the Initiative Brief has completed its primary P0 product-direction gat
 6. the working data/system boundary — including durable responsibility vs runtime authority vs conversation authority, and fact-level source ownership/write-back — is accepted strongly enough to open Architecture Analysis without pretending the Brief itself is an ADR.
 7. R1 economic telemetry is mapped as a cross-cutting requirement: material variable resource usage must remain measurable/correlatable, while customer credits/billing remain a separate future contract.
 
-The next product artifacts may therefore be Feature / Business Specs, with Architecture Analysis progressing in parallel where product behavior is sufficiently settled. P1 decisions should be reviewed before they become blockers for a selected Spec or pilot. A Technical Plan or implementation task list should not be approved before the relevant Spec and architectural constraints are sufficiently resolved.
+The next product artifacts may therefore be Feature / Business Specs, with Architecture Analysis progressing in parallel where product behavior is sufficiently settled. The approved P1 directions should be carried into the relevant Specs and pilot design rather than reopened by default. A Technical Plan or implementation task list should not be approved before the relevant Spec and architectural constraints are sufficiently resolved.
 
 ## Appendix 0 — v0.7 update note
 
