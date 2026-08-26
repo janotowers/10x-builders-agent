@@ -1,6 +1,6 @@
 # Gu OS Agentic Product & Software Development Methodology
 
-> **Version:** v0.2.2  
+> **Version:** v0.2.3  
 > **Status:** Canonical development methodology  
 > **Scope:** Tool-agnostic operating method for humans + coding agents  
 > **Intended repo path:** `docs/development/agentic-product-software-development-methodology.md`
@@ -16,7 +16,7 @@ This document defines how Ungga should design and build Gu OS with AI coding age
 
 It deliberately separates three concerns that are easy to blur: product intent, intended behavior, and implementation. A PRD can be excellent while a feature Spec is incomplete; a Spec can be correct while an implementation plan is wrong; code can pass unit tests while failing the business contract. The methodology exists to keep those layers connected without collapsing them.
 
-| **Three-document model.** This Methodology explains HOW we work. The canonical Principles & Design Doctrine explains WHAT rules guide decisions. The future Templates / Playbooks package explains HOW to create each artifact in practice. The actual Gu / Gu OS PRD is a product artifact created under this methodology, not part of the methodology itself. |
+| **Three-document model.** This Methodology explains HOW we work. The canonical Principles & Design Doctrine explains WHAT rules guide decisions. The Development Templates / Playbooks package provides practical authoring scaffolds as they are adopted; the canonical Feature / Business Spec template now lives at `docs/development/templates/feature-business-spec-template.md`. The actual Gu / Gu OS PRD is a product artifact created under this methodology, not part of the methodology itself. |
 |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 
 # 2. Source hierarchy used to build this methodology
@@ -165,6 +165,8 @@ For consequential non-trivial work, the Feature / Business Spec is the governing
 
 | **Spec-driven means behavior-driven, not bureaucracy.** A Spec should be proportional to risk and ambiguity. The goal is not to produce more Markdown; it is to prevent a coding agent from silently resolving product questions inside implementation. |
 |---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
+**Canonical authoring template:** [`templates/feature-business-spec-template.md`](templates/feature-business-spec-template.md). The template is a scaffold, not a second source of truth: the copied and approved Spec owns intended behavior. Sections may be omitted when genuinely irrelevant; detail remains proportional to consequence, ambiguity and risk.
 
 # 8. Architecture Analysis and ADRs
 
@@ -447,7 +449,7 @@ They share principles: explicit intent, versioning, evidence, bounded authority,
 | PRD file path/name                                                              | The current canonical product-intent path is `docs/product/PRD.md`; this Methodology does not redefine that path.                                                                                                                                                            |
 | Whether brief.md is moved/renamed/archived                                      | The repo already treats it as historical/reference; audit links and provenance before changing paths.                                                                                                                                                                        |
 | Whether Gu OS needs one PRD or product + initiative PRDs                        | Methodology defines roles; documentation audit/product synthesis should choose minimum non-duplicative structure.                                                                                                                                                            |
-| Exact template fields/frontmatter                                               | Templates/Playbooks is a separate deliverable after methodology and PRD/document audit.                                                                                                                                                                                      |
+| Remaining artifact templates / playbooks beyond Feature / Business Spec         | The canonical Feature / Business Spec template now exists at `docs/development/templates/feature-business-spec-template.md`. PRD, Initiative Brief, ADR, Technical Plan, Slice/Task, Verification and reusable playbook templates remain incremental deliverables pulled by concrete need. |
 | Final distribution of agent instructions across AGENTS.md, IDE rules and Skills | apps/web/AGENTS.md + apps/web/CLAUDE.md already provide a tracked app-scoped layer. The remaining design decision is whether to add a concise root-wide AGENTS.md + CLAUDE.md adapter and which additional rules belong in nested/path-scoped files versus on-demand Skills. |
 | Principles & Design Doctrine wording                                            | Owned by the canonical Doctrine at `docs/principles/gu-os-principles-and-design-doctrine.md`; future changes follow the same artifact-governance method defined here.                                                                                                          |
 
@@ -457,13 +459,17 @@ Adoption should itself be brownfield. Do not stop engineering to rewrite all his
 
 | **Order** | **Action**                                                                                                                                                                                                                                                                                                                                                                   |
 |-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Step 1    | Approve this Methodology v0.2.2 conceptually, including the four-layer agent instruction architecture and proportional test/eval-first guidance.                                                                                                                                                                                                                             |
+| Step 1    | Maintain this Methodology (current v0.2.3) as the canonical development method, including the four-layer agent instruction architecture and proportional test/eval-first guidance.                                                                                                                                                                                                                             |
 | Step 2    | Audit current docs, strategic documents and agent-instruction files using a matrix: retain canonical / contributes to PRD / link from PRD / merge / supersede / historical/archive / agent-adapter-only. Treat apps/web/AGENTS.md and apps/web/CLAUDE.md as tracked app-scoped adapters.                                                                                     |
 | Step 3    | Create the canonical Gu / Gu OS Product PRD from reconciled existing material, not from a blank page.                                                                                                                                                                                                                                                                        |
 | Step 4    | Maintain the concise Principles & Design Doctrine as the canonical decision-doctrine artifact, using the adjudicated Registry, this Methodology and product intent as governed inputs rather than duplicating their responsibilities.                                                                                                      |
-| Step 5    | Create Templates / Playbooks for PRD, Initiative Brief, Feature/Business Spec, ADR, Technical Plan, Slice/Task and Verification.                                                                                                                                                                                                                                             |
+| Step 5    | Grow Templates / Playbooks incrementally. The canonical Feature / Business Spec template is now adopted; add PRD, Initiative Brief, ADR, Technical Plan, Slice/Task, Verification and reusable procedure templates only when concrete work benefits from standardization.                                                                                                                                                                                                                                             |
 | Step 6    | Update docs/README.md authority map; preserve apps/web/AGENTS.md + apps/web/CLAUDE.md as web-scoped adapters; add a concise root AGENTS.md + root CLAUDE.md only for monorepo-wide rules if the audit confirms the need; add further nested/path-scoped IDE rules/Skills only where they reduce noise or encode real procedure; mark superseded/historical files explicitly. |
 | Step 7    | Use one real upcoming Gu OS initiative as a pilot; measure whether the method reduces drift/rework and improves verification, then refine.                                                                                                                                                                                                                                   |
+
+# 23.1 v0.2.3 update note
+
+v0.2.3 adopts the first canonical Development Template: `docs/development/templates/feature-business-spec-template.md`. It does not change the artifact ownership model. The update makes the existing Feature / Business Spec requirements operational through a reusable scaffold, preserves proportionality (irrelevant sections may be omitted), and explicitly separates the approved Spec from the template itself. Remaining templates/playbooks stay incremental and demand-driven.
 
 # 24. Working glossary
 
