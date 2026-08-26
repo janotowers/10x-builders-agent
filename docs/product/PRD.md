@@ -1,7 +1,7 @@
 # Gu / Gu OS Product Requirements Document
 
 > **Version:** v0.1.1  
-> **Status:** Draft for founder/product review  
+> **Status:** Approved — canonical product intent  
 > **Product:** Gu / Gu OS  
 > **Category:** The AI Operating System for Real Estate  
 > **Purpose:** Canonical owner of product intent. This document does not replace architecture manuals, ADRs, technical plans, Feature / Business Specs, roadmaps, or verification evidence.
