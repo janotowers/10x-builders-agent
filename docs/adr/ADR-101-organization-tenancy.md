@@ -1,7 +1,8 @@
 # ADR-101 — Organization tenancy
 
-**Status:** Accepted direction  
+**Status:** Superseded  
 **Date:** 2026-08-02  
+**Superseded by:** [ADR-106 — Organization-native multi-seat tenancy and legacy identity bridge](ADR-106-organization-native-multiseat-tenancy.md)  
 **Related:** [`../manuals/knowledge-scope-and-ownership.md`](../manuals/knowledge-scope-and-ownership.md), [`../business-brain-evolution-roadmap.md`](../business-brain-evolution-roadmap.md) V3, [`../manuals/architecture-manual.md`](../manuals/architecture-manual.md) §3
 
 ## Context
