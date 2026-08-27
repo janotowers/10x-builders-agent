@@ -1,10 +1,9 @@
-# ADR-TBD — Resource Usage & Cost Attribution
+# ADR-110 — Resource Usage & Cost Attribution
 
-**Status:** Accepted direction — numeric identifier pending ADR-109 Case-relationship audit  
+**Status:** Accepted direction  
 **Date:** 2026-08-27  
-**Related:** [`../product/initiatives/relationship-operations/architecture-analysis.md`](../product/initiatives/relationship-operations/architecture-analysis.md), [`../product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md`](../product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md), [ADR-108 — Versioned organization policy](ADR-108-versioned-organization-policy.md)
+**Related:** [`../product/initiatives/relationship-operations/architecture-analysis.md`](../product/initiatives/relationship-operations/architecture-analysis.md), [`../product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md`](../product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md), [ADR-108 — Versioned organization policy](ADR-108-versioned-organization-policy.md), [ADR-109 — Generic Case relationships and lineage](ADR-109-generic-case-relationships-lineage.md)
 
-> **Numbering note:** The decision is accepted, but the final ADR number is intentionally unassigned until the repository audit determines whether Generic Case Relationships requires ADR-109. Rename this file and update the ADR index once that question is resolved.
 
 ## Context
 
