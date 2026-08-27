@@ -1,7 +1,7 @@
 # R1 Relationship Operations — Concept → Shared Kernel Mapping
 
-> **Version:** v0.7  
-> **Status:** Discovery / architecture input — aligned with completed R1 Architecture Analysis v0.10; not an ADR or Technical Plan  
+> **Version:** v0.8  
+> **Status:** Discovery / architecture input — aligned with R1 Architecture Analysis v0.11, completed Generic Case↔Case audit and accepted ADR-109/ADR-110; not an ADR or Technical Plan  
 > **Initiative:** R1 — Relationship Operations v1  
 > **Companion Brief:** `docs/product/initiatives/relationship-operations/brief.md` — v0.9 approved for Feature / Business Spec and Architecture Analysis  
 > **Repository reviewed:** `janotowers/10x-builders-agent`, `main`  
@@ -63,7 +63,7 @@ Every statement in this mapping should be read under one of these labels:
 
 Absence from the reviewed files is **not proof that a capability is absent from the entire repo**. Where this mapping says “not found,” it means “not established by the evidence reviewed here.”
 
-> **v0.7 status-reading note:** classifications such as **ARCHITECTURE DECISION**, **GENERIC EXTENSION CANDIDATE**, **OPEN — ARCHITECTURE** and the A1–A9 queue below record what this discovery mapping identified/escalated at the time it was produced. They are not, by themselves, the current unresolved-status register after Architecture Analysis v0.10. Current architecture resolution and remaining source-audit / Technical Design work are summarized in §10 and governed by `architecture-analysis.md` plus the accepted ADRs.
+> **v0.8 status-reading note:** classifications such as **ARCHITECTURE DECISION**, **GENERIC EXTENSION CANDIDATE**, **OPEN — ARCHITECTURE** and the A1–A9 queue below record what this discovery mapping identified/escalated at the time it was produced. They are not, by themselves, the current unresolved-status register after Architecture Analysis v0.10. Current architecture resolution and remaining source-audit / Technical Design work are summarized in §10 and governed by `architecture-analysis.md` plus the accepted ADRs, including ADR-109 and ADR-110.
 
 ## 3. Shared kernel inventory verified in the current repo
 
@@ -149,7 +149,7 @@ The classification is intentionally conservative:
 | **Current requirements / profile constraints** | `case_facts` sourced from messages, advisor input, integration or derived interpretation | **REUSE + DOMAIN SEMANTIC** | `source_kind`, `source_ref`, `confidence`, supersession. | Spec must define when semantic interpretation is admissible and when explicit confirmation is required. |
 | **One contact → multiple Opportunities** | Multiple Case instances referencing one operational contact identity | **DOMAIN SEMANTIC** | Multiple Case instances are supported. | Canonical contact/reference binding and duplicate detection need identity architecture; contact data should not be fully mirrored into each Case. |
 | **Opportunity continuity vs new Opportunity** | Domain decision using objective continuity; result creates/retains Cases | **DOMAIN SEMANTIC + SPEC** | Shared Case roots/facts can represent either result. | Exact judgment criteria, audit trail and operator correction behavior. |
-| **Opportunity merge / split / supersession** | Generic Case relationship/lineage primitive if available; preserve facts/events/provenance | **ARCHITECTURE DECISION** | No canonical Case-to-Case relationship primitive was established in the reviewed evidence. | Audit full repo; if absent, design a generic Case relationship/lineage contract, not a Relationship-only merge table. |
+| **Opportunity merge / split / supersession** | Shared generic Case Relationship / Lineage contract; preserve facts/events/provenance | **GENERIC SHARED PRIMITIVE — ADR-109** | Full-repo audit confirmed no adequate first-class generic Case-to-Case primitive in current Gu OS; ADR-109 now establishes the cross-domain contract. | Exact persistence/API mechanics and initial typed relationship vocabulary remain Technical Design; do not create a Relationship-only merge table. |
 | **Commercial viability** | `case_facts` / derived current projection, not generic Case `status` | **DOMAIN SEMANTIC** | Facts can hold current claims with provenance. | Spec vocabulary and evidence/decision rules. `status=active` must not be equated to commercial viability. |
 | **Commercial temporary hold** | Business fact + `next_action_at` / Work `not_before` / engagement policy as appropriate | **REUSE + DOMAIN SEMANTIC** | Shared wake-up and deferred-work primitives exist. | Exact mapping depends on cause. Do **not** mechanically set runtime `paused` when the Case must wake automatically. |
 | **Runtime Case status** | Existing `operational_cases.status` | **REUSE AS-IS** | Generic modes: `active`, waiting states, `paused`, `completed`, `failed`. | Relationship should not add `lost`, `qualified`, `visit_scheduled`, etc. to runtime status merely to model business lifecycle. |
@@ -467,9 +467,9 @@ Economic attribution anchors → Case / Work / Attempt / Work Run correlation
 
 This is exactly the architecture we wanted to preserve: **shared operating primitives, domain-specific semantics.**
 
-### 10.2 Cross-cutting seams after Architecture Analysis v0.10
+### 10.2 Cross-cutting seams after Architecture Analysis v0.11
 
-Architecture Analysis v0.10 has now accepted the architectural direction for AC-1 through AC-10. The remaining uncertainty is therefore no longer whether R1 should create Relationship-specific infrastructure; it should not. The remaining work is to verify source contracts and translate accepted cross-domain directions into exact Specs / Technical Design.
+Architecture Analysis v0.11 records AC-1 through AC-10 as accepted, the Generic Case↔Case audit as complete, and ADR-109 / ADR-110 as accepted. The remaining uncertainty is therefore no longer whether R1 should create Relationship-specific infrastructure; it should not. The remaining work is to verify source contracts and translate accepted cross-domain directions into exact Specs / Technical Design.
 
 Important remaining seams include:
 
@@ -478,10 +478,10 @@ Important remaining seams include:
 - exact cross-system write/idempotency/reconciliation mechanics for the accepted fact-level SOR direction;
 - source-audited runtime/conversation-authority signals and WhatsApp transport guarantees under ADR-107;
 - exact external-conversation binding extension and engagement-policy behavior for prospect-facing delivery;
-- full-repo verification of whether a canonical generic Case-to-Case relationship/lineage primitive already exists before deciding whether ADR-109/new storage is required;
+- exact Generic Case Relationship / Lineage persistence, typed vocabulary, authorization and mutation mechanics under ADR-109;
 - exact organization-policy storage/resolution mechanics under ADR-108;
 - source-level audit of legacy appointment/human-takeover/Legacy Deal semantics;
-- exact generic resource-usage ledger / valuation / allocation migration under the accepted provisional Resource Usage & Cost Attribution ADR;
+- exact generic resource-usage ledger / valuation / allocation migration under ADR-110 Resource Usage & Cost Attribution;
 - future interoperability with customer Pricing / Credits / Billing while preserving the accepted cost-vs-price separation.
 
 These remain cross-cutting platform seams, source-audit questions or Technical Design work—not reasons to build a Relationship-specific mini-runtime.
@@ -493,21 +493,21 @@ With the Brief, S1 and Architecture Analysis now approved/aligned, the current s
 ```text
 Initiative Brief v0.9
 + S1 Lead Opportunity Lifecycle v0.3
-+ this mapping v0.7
-+ Architecture Analysis v0.10 (AC-1..AC-10 accepted)
++ this mapping v0.8
++ Architecture Analysis v0.11
++ ADR-109 Generic Case Relationships / Lineage
++ ADR-110 Resource Usage & Cost Attribution
           ↓
-full-repo Case↔Case audit + remaining legacy source audits
+remaining legacy source audits
           ↓
 remaining Feature / Business Specs (S2 / S3 / S4 as needed)
           ↓
-conditional ADR-109 decision + finalize provisional economic ADR numbering
-          ↓
-repo-specific Technical Plans
+repo-specific Technical Plans / Technical Design
           ↓
 Tasks / Slices / Verification / Pilot evidence
 ```
 
-ADR-106, ADR-107 and ADR-108 are already accepted cross-cutting decisions; the Resource Usage & Cost Attribution decision is accepted under a provisional identifier. The mapping itself remains **not an ADR** and does not authorize implementation by itself.
+ADR-106, ADR-107, ADR-108, ADR-109 and ADR-110 are accepted cross-cutting decisions. The mapping itself remains **not an ADR** and does not authorize implementation by itself.
 
 ## Appendix — v0.5 update note
 
@@ -580,7 +580,7 @@ v0.3 incorporates the approved P1-9 terminology/product direction and strengthen
 - The Traditional Gu repository has **not** yet been source-audited in this artifact.
 - The legacy appointment field semantics used by P0-6 remain domain-confirmed / analytical-schema-informed until verified against the production legacy source.
 - The current database migration proves that engagement-policy overrides can represent cooldowns/escalation/delivery windows; this mapping has **not** yet proved that the current runtime resolver applies those semantics to prospect-facing WhatsApp delivery.
-- The reviewed evidence did not establish a canonical generic Case-to-Case relationship/lineage primitive. Full-repo audit is required before concluding that one must be added.
+- The subsequent full-repo Generic Case↔Case audit confirmed that the current repo has no adequate first-class generic Case relationship/lineage primitive; ADR-109 therefore establishes the new shared cross-domain contract.
 - `evidence_records` is currently verification/release evidence with constrained subject kinds; it should not be silently repurposed as business-event evidence without a deliberate architecture decision.
 - `ai_usage_events` currently meters only `ai_model` resource usage and is explicitly internal observability, not billing. This mapping has **not** established a current generic ledger for WhatsApp/voice/external-provider costs or a many-to-many cost-allocation primitive.
 - The current AI ledger has direct `user_id` and Case/Work correlation seams; organization/account-level aggregation and exact tenant semantics must be verified rather than assumed.
@@ -600,3 +600,13 @@ v0.7 is a documentation-maintenance alignment update after completion of R1 Arch
 - distinguishes accepted architecture direction from the source audits and Technical Design mechanics that remain unresolved;
 - records ADR-106, ADR-107 and ADR-108 as accepted and Resource Usage & Cost Attribution as accepted under provisional numbering;
 - keeps ADR-109 conditional on the full-repo Generic Case Relationships audit.
+
+## Appendix F — v0.8 alignment note
+
+v0.8 is a documentation-maintenance alignment update after completion of the full-repo Generic Case↔Case audit and ADR packaging. It does not reopen or change the approved mapping/product semantics. Relative to v0.7 it:
+
+- records that the audit found no adequate first-class generic Case↔Case relationship/lineage primitive;
+- records ADR-109 as the accepted shared Generic Case Relationship / Lineage contract;
+- finalizes Resource Usage & Cost Attribution as ADR-110;
+- removes the now-resolved audit/numbering gate from the next-step sequence;
+- leaves exact relationship persistence/API mechanics, economic-ledger mechanics and remaining legacy source audits to downstream Technical Design/source audit.
