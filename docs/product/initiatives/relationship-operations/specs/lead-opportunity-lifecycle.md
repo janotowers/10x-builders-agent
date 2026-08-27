@@ -11,7 +11,7 @@
 > **Roadmap:** [Gu OS Evolution Roadmap](../../../../roadmap/gu-os-evolution-roadmap.md) — R1  
 > **Doctrine:** [Gu OS Principles & Design Doctrine](../../../../principles/gu-os-principles-and-design-doctrine.md)  
 > **Development method:** [Gu OS Agentic Product & Software Development Methodology](../../../../development/agentic-product-software-development-methodology.md)  
-> **Architecture Analysis / ADRs:** [R1 Architecture Analysis](../architecture-analysis.md) — v0.10 complete; ADR-101 was reevaluated and superseded by ADR-106. Relevant accepted cross-cutting directions include ADR-106, ADR-107, ADR-108 and the provisional Resource Usage & Cost Attribution ADR.  
+> **Architecture Analysis / ADRs:** [R1 Architecture Analysis](../architecture-analysis.md) — v0.11 complete; ADR-101 was reevaluated and superseded by ADR-106. Relevant accepted cross-cutting directions include ADR-106, ADR-107, ADR-108, ADR-109 Generic Case Relationships / Lineage and ADR-110 Resource Usage & Cost Attribution.  
 > **Intended repo path:** `docs/product/initiatives/relationship-operations/specs/lead-opportunity-lifecycle.md`  
 > **Artifact role:** Governing contract for Lead Opportunity admission, identity/continuity, durable responsibility, business viability/progression, closure and reactivation. This Spec does not own implementation design, exact schemas, migration order, model/provider selection, API shapes, or storage mechanisms.
 
@@ -101,7 +101,7 @@ A pilot brokerage can show repeated real Opportunity journeys where Gu:
 | Legacy multi-advisor roles `super-admin/admin/vendedor` and `organization_id` as legacy organization key | CURRENT — DOMAIN CONFIRMED | Initiative Brief + knowledge ownership doc |
 | Exact production Traditional Gu admission, routing, merge/dedup and same-thread behavior mechanisms | OPEN — SOURCE AUDIT | Must be inspected before Technical Plan |
 | Exact policy storage/schema/resolution engine | OPEN — ARCHITECTURE | R1 Architecture Analysis |
-| Exact Case relationship representation for merge/split/supersession | OPEN — ARCHITECTURE | Shared-kernel mapping |
+| Exact Case relationship persistence/API representation for merge/split/supersession | OPEN — TECHNICAL DESIGN | ADR-109 accepted; exact mechanics remain downstream |
 
 **Status rule:** absence from inspected evidence is not proof of absence. Product/domain-confirmed legacy facts must not be silently converted into implementation facts before source audit where the distinction matters.
 
@@ -841,19 +841,19 @@ Internal cost-to-serve remains separate from customer pricing/credits/wallet beh
 
 ## 16. Architecture dependencies and structural-resolution status
 
-The questions below are preserved because they explain which structural contracts S1 depends on. Architecture Analysis v0.10 has resolved their **architecture direction**; remaining work is source audit, primitive reuse verification, downstream Specs or Technical Design as indicated. This status alignment does not change S1 behavior.
+The questions below are preserved because they explain which structural contracts S1 depends on. Architecture Analysis v0.11 has resolved their **architecture direction**, including the completed Case↔Case audit and accepted ADR-109/ADR-110; remaining work is source audit, downstream Specs or Technical Design as indicated. This status alignment does not change S1 behavior.
 
 | ID | Question / dependency | Why it matters to behavior | Current owning artifact / status |
 |---|---|---|---|
 | A1 | What fresh operational gateway/capabilities will expose lead/contact/message context from Traditional Gu? | Admission cannot depend on ~8h warehouse freshness for live interactions. | Architecture direction accepted in R1 Architecture Analysis; exact legacy source contract / gateway mechanics remain source-audit + Technical Design. |
 | A2 | What fact-level SOR/provenance/write-back contract applies to identity, lead, Opportunity and closure facts? | Prevents duplicate truth and stale overwrites. | Architecture direction accepted: fact-level/domain-aware authority + selective governed write-back; exact field matrix/idempotency/reconciliation remain Technical Design/source audit. |
 | A3 | How are legacy users/`organization_id` mapped to first-class Gu OS organization/membership/seat identity? | Admission policy and candidate lookup must be tenant-correct. | **ADR-106 accepted**; exact schema/RLS/backfill/identity mapping remains Technical Design. ADR-101 is superseded. |
-| A4 | What generic Case relationship/lineage primitive represents duplicate/merge/split/supersession/Transaction linkage? | S1 requires traceable continuity correction without Relationship-local runtime hacks. | AC-6 direction accepted; full-repo Case↔Case audit remains required to decide reuse/extension vs new primitive and whether ADR-109 is needed. |
+| A4 | What generic Case relationship/lineage primitive represents duplicate/merge/split/supersession/Transaction linkage? | S1 requires traceable continuity correction without Relationship-local runtime hacks. | **ADR-109 accepted** after full-repo audit confirmed no adequate first-class generic primitive; exact persistence/API/vocabulary mechanics remain Technical Design. |
 | A5 | How are organization admission policies represented, versioned, validated, published and resolved? | Raw NL cannot be runtime authority; policy version must be auditable. | **ADR-108 accepted**; exact schema/resolver/authorization/activation mechanics remain Technical Design. |
 | A6 | What authority model governs advisor corrections, close/reopen, human takeover and organization-policy changes? | Product behavior depends on actor authority without hardcoding legacy roles. | **ADR-107 accepted** for durable/runtime/conversation/approval authority separation; exact role grants and source-audited takeover signals remain downstream design/audit. |
 | A7 | How is WhatsApp/channel identity bound to contact + Opportunity without conflating Gu business number and advisor human numbers? | Admission/continuity depends on correct identity/routing. | Generic external-conversation binding direction accepted; exact WhatsApp/legacy binding and transport guarantees remain source audit + Technical Design. |
 | A8 | Which progression/closure facts should be `case_facts`, projections, Case events or other generic primitives? | Preserve shared-kernel semantics. | AC-7 accepted: provenance-backed Case Facts + derived projections; facts/events/projections/lifecycle dimensions remain distinct. Exact fact keys/read models remain downstream Spec/Technical Design. |
-| A9 | How is resource usage generalized beyond AI and attributed to Opportunity/Work/outcome? | S1 evaluations need cost-to-serve correlation from the beginning. | AC-10 accepted; provisional Resource Usage & Cost Attribution ADR accepted. Exact generic ledger/valuation/allocation migration remains Technical Design. |
+| A9 | How is resource usage generalized beyond AI and attributed to Opportunity/Work/outcome? | S1 evaluations need cost-to-serve correlation from the beginning. | **ADR-110 accepted**; exact generic ledger/valuation/allocation migration remains Technical Design. |
 | A10 | Does Relationship Operations need `current_step` at all, and if so for what durable procedural milestone? | Avoid forcing a CRM funnel onto a non-linear Opportunity. | AC-7 accepted: use `current_step` only for genuine procedural execution state, never as CRM stage/projection convenience. Exact use, if any, remains downstream design. |
 
 **Rule:** Architecture may reveal that a proposed behavior is unsafe, impossible or underspecified. If so, revise this Spec explicitly; architecture must not silently redefine it.
@@ -897,7 +897,7 @@ Before S1 can be marked **Approved**, confirm:
 
 ### S1 approval note
 
-The final whole-S1 review found no unresolved product-behavior contradiction or architecture leakage that should block approval. R1 Architecture Analysis v0.10 has since resolved the structural **architecture direction** for the dependencies listed in §16; source audits, primitive-reuse verification and exact Technical Design remain downstream. Approval of S1 continues to freeze the intended behavior while preserving implementation freedom and the ability to revise the Spec explicitly if later architecture/source evidence reveals a contradiction.
+The final whole-S1 review found no unresolved product-behavior contradiction or architecture leakage that should block approval. R1 Architecture Analysis v0.11 has since resolved the structural **architecture direction** for the dependencies listed in §16; the Generic Case↔Case audit is complete and ADR-109/ADR-110 are accepted; remaining source audits and exact Technical Design remain downstream. Approval of S1 continues to freeze the intended behavior while preserving implementation freedom and the ability to revise the Spec explicitly if later architecture/source evidence reveals a contradiction.
 
 ## 19. Decision / change log
 
@@ -907,4 +907,4 @@ The final whole-S1 review found no unresolved product-behavior contradiction or 
 | v0.2 / 2026-08-26 | Approved and refined four Spec-level blocks: admission defaults, policy UX, closure model, and continuity rules. | Product/domain leadership | Trusted sources now create eligibility rather than mechanical admission; policy UX is conversation-first + inspectable Settings; closure separates outcome/reason/evidence and treats achieved-elsewhere as lost; continuity uses four semantic independence tests and stronger reactivation criteria. |
 | v0.3 / 2026-08-26 | Final whole-S1 consistency and scope-boundary review; Spec approved. | Product/domain leadership | Confirmed internal consistency, acceptance coverage, security/evidence boundaries and architecture handoff. Removed residual auto-admit wording and avoided a broken link to the not-yet-created Architecture Analysis. |
 
-**Maintenance note — 2026-08-27:** aligned architecture-status references with completed R1 Architecture Analysis v0.10, ADR-106/107/108 and the provisional Resource Usage & Cost Attribution ADR. No S1 product/behavior decision changed; the governing behavioral-contract version remains **v0.3**.
+**Maintenance note — 2026-08-27:** aligned architecture-status references with completed R1 Architecture Analysis v0.11, completed Generic Case↔Case audit, ADR-106/107/108/109 and finalized ADR-110 Resource Usage & Cost Attribution. No S1 product/behavior decision changed; the governing behavioral-contract version remains **v0.3**.
