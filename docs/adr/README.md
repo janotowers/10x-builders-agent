@@ -13,12 +13,8 @@ ADRs capture cross-cutting decisions that should not remain buried in long plans
 | [ADR-106](ADR-106-organization-native-multiseat-tenancy.md) | Organization-native multi-seat tenancy with legacy identity bridge | Accepted direction |
 | [ADR-107](ADR-107-runtime-conversation-authority.md) | Runtime, conversation and approval authority during brownfield migration | Accepted direction |
 | [ADR-108](ADR-108-versioned-organization-policy.md) | Typed, versioned organization policy with governed publication and runtime resolution | Accepted direction |
-
-## Provisional accepted ADRs awaiting numeric assignment
-
-- [`ADR-TBD — Resource Usage & Cost Attribution`](ADR-TBD-resource-usage-cost-attribution.md) — **Accepted direction; final number pending the ADR-109 Generic Case Relationships audit.**
-
-The provisional identifier prevents number collision while preserving an approved cross-domain decision. Once the Case-relationship audit determines whether ADR-109 is required, rename the resource-usage ADR to the next available numeric identifier and move it into the numbered table above.
+| [ADR-109](ADR-109-generic-case-relationships-lineage.md) | Generic cross-domain Case relationships and lineage; association remains distinct from identity/history lineage | Accepted direction |
+| [ADR-110](ADR-110-resource-usage-cost-attribution.md) | Cross-domain resource usage, cost valuation and causal attribution kept separate from customer pricing/billing | Accepted direction |
 
 Status meanings:
 
