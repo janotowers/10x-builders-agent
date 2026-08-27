@@ -12,6 +12,13 @@ ADRs capture cross-cutting decisions that should not remain buried in long plans
 | [ADR-105](ADR-105-shareable-regenerable-views.md) | Share views, not duplicate truth; software may be situational under constraints | Accepted direction |
 | [ADR-106](ADR-106-organization-native-multiseat-tenancy.md) | Organization-native multi-seat tenancy with legacy identity bridge | Accepted direction |
 | [ADR-107](ADR-107-runtime-conversation-authority.md) | Runtime, conversation and approval authority during brownfield migration | Accepted direction |
+| [ADR-108](ADR-108-versioned-organization-policy.md) | Typed, versioned organization policy with governed publication and runtime resolution | Accepted direction |
+
+## Provisional accepted ADRs awaiting numeric assignment
+
+- [`ADR-TBD — Resource Usage & Cost Attribution`](ADR-TBD-resource-usage-cost-attribution.md) — **Accepted direction; final number pending the ADR-109 Generic Case Relationships audit.**
+
+The provisional identifier prevents number collision while preserving an approved cross-domain decision. Once the Case-relationship audit determines whether ADR-109 is required, rename the resource-usage ADR to the next available numeric identifier and move it into the numbered table above.
 
 Status meanings:
 
