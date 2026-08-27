@@ -1,7 +1,7 @@
 # R1 Relationship Operations — Concept → Shared Kernel Mapping
 
-> **Version:** v0.6  
-> **Status:** Discovery / architecture input — not an ADR or Technical Plan  
+> **Version:** v0.7  
+> **Status:** Discovery / architecture input — aligned with completed R1 Architecture Analysis v0.10; not an ADR or Technical Plan  
 > **Initiative:** R1 — Relationship Operations v1  
 > **Companion Brief:** `docs/product/initiatives/relationship-operations/brief.md` — v0.9 approved for Feature / Business Spec and Architecture Analysis  
 > **Repository reviewed:** `janotowers/10x-builders-agent`, `main`  
@@ -62,6 +62,8 @@ Every statement in this mapping should be read under one of these labels:
 - **OPEN — SPEC:** exact externally meaningful behavior or domain vocabulary to define in a Feature / Business Spec.
 
 Absence from the reviewed files is **not proof that a capability is absent from the entire repo**. Where this mapping says “not found,” it means “not established by the evidence reviewed here.”
+
+> **v0.7 status-reading note:** classifications such as **ARCHITECTURE DECISION**, **GENERIC EXTENSION CANDIDATE**, **OPEN — ARCHITECTURE** and the A1–A9 queue below record what this discovery mapping identified/escalated at the time it was produced. They are not, by themselves, the current unresolved-status register after Architecture Analysis v0.10. Current architecture resolution and remaining source-audit / Technical Design work are summarized in §10 and governed by `architecture-analysis.md` plus the accepted ADRs.
 
 ## 3. Shared kernel inventory verified in the current repo
 
@@ -277,6 +279,8 @@ The following should be treated as architecture smells unless a cross-domain ana
 
 ## 7. Architecture decision queue produced by this mapping
 
+> **Discovery-time queue:** this section preserves the architecture questions produced by the mapping. Architecture Analysis v0.10 subsequently resolved AC-1 through AC-10 at architecture-direction level; use §10 for the current unresolved boundary. The queue remains useful as provenance for why each cross-cutting decision/audit exists.
+
 The mapping strengthens the existing A1–A6 queue and adds three cross-kernel questions.
 
 ### A1 — Real-time operational data access boundary
@@ -463,45 +467,47 @@ Economic attribution anchors → Case / Work / Attempt / Work Run correlation
 
 This is exactly the architecture we wanted to preserve: **shared operating primitives, domain-specific semantics.**
 
-### 10.2 The important gaps are cross-cutting seams, not a reason for a Relationship mini-app
+### 10.2 Cross-cutting seams after Architecture Analysis v0.10
 
-The largest unresolved areas are:
+Architecture Analysis v0.10 has now accepted the architectural direction for AC-1 through AC-10. The remaining uncertainty is therefore no longer whether R1 should create Relationship-specific infrastructure; it should not. The remaining work is to verify source contracts and translate accepted cross-domain directions into exact Specs / Technical Design.
 
-- real-time legacy operational access and event ingestion;
-- identity mapping;
-- cross-system write consistency;
-- runtime/conversation authority during Traditional Gu migration;
-- WhatsApp-capable conversation binding/routing;
-- generic Case relationship/lineage for Opportunity ↔ Transaction and merge/split;
-- organization-level policy/ownership if required by the first pilot;
-- exact fit of existing engagement policy to prospect-facing delivery;
-- source-level audit of legacy appointment/human-takeover behavior.
-- generic non-AI resource metering and shared-cost allocation/cost-driver semantics for full variable cost-to-serve;
-- future boundary/interoperability with customer credits/billing in Traditional Gu without conflating cost and price.
+Important remaining seams include:
 
-These are Architecture Analysis inputs. Most would be useful beyond Relationship Operations, which is evidence that they should not be buried as lead-specific implementation details.
+- source-audited real-time legacy operational access and event ingestion;
+- exact identity-bridge implementation and organization/membership/RLS mechanics under ADR-106;
+- exact cross-system write/idempotency/reconciliation mechanics for the accepted fact-level SOR direction;
+- source-audited runtime/conversation-authority signals and WhatsApp transport guarantees under ADR-107;
+- exact external-conversation binding extension and engagement-policy behavior for prospect-facing delivery;
+- full-repo verification of whether a canonical generic Case-to-Case relationship/lineage primitive already exists before deciding whether ADR-109/new storage is required;
+- exact organization-policy storage/resolution mechanics under ADR-108;
+- source-level audit of legacy appointment/human-takeover/Legacy Deal semantics;
+- exact generic resource-usage ledger / valuation / allocation migration under the accepted provisional Resource Usage & Cost Attribution ADR;
+- future interoperability with customer Pricing / Credits / Billing while preserving the accepted cost-vs-price separation.
+
+These remain cross-cutting platform seams, source-audit questions or Technical Design work—not reasons to build a Relationship-specific mini-runtime.
 
 ### 10.3 Recommended next gate
 
-After this mapping, the sequence should be:
+With the Brief, S1 and Architecture Analysis now approved/aligned, the current sequence is:
 
 ```text
-Initiative Brief v0.8 + this mapping v0.5
+Initiative Brief v0.9
++ S1 Lead Opportunity Lifecycle v0.3
++ this mapping v0.7
++ Architecture Analysis v0.10 (AC-1..AC-10 accepted)
           ↓
-P0/P1 Brief-level product framing closed
+full-repo Case↔Case audit + remaining legacy source audits
           ↓
-Feature / Business Specs
-        ↘       ↙
-      Architecture Analysis
+remaining Feature / Business Specs (S2 / S3 / S4 as needed)
           ↓
-material ADRs
+conditional ADR-109 decision + finalize provisional economic ADR numbering
           ↓
 repo-specific Technical Plans
           ↓
-Tasks / Slices / Verification
+Tasks / Slices / Verification / Pilot evidence
 ```
 
-The mapping itself is **not** an ADR and does not authorize implementation. Its job is to prevent accidental architecture before the Spec and architecture gates.
+ADR-106, ADR-107 and ADR-108 are already accepted cross-cutting decisions; the Resource Usage & Cost Attribution decision is accepted under a provisional identifier. The mapping itself remains **not an ADR** and does not authorize implementation by itself.
 
 ## Appendix — v0.5 update note
 
@@ -583,3 +589,14 @@ v0.3 incorporates the approved P1-9 terminology/product direction and strengthen
 ## Appendix D — v0.6 update note
 
 v0.6 closes **P1-12 — Pilot environment** and aligns the mapping with Relationship Operations Brief v0.9. The P0/P1 Brief-level product framing is now closed; remaining open items are Spec, source-audit, Architecture Analysis/ADR, Technical Plan and verification decisions rather than additional P1 product framing.
+
+
+## Appendix E — v0.7 alignment note
+
+v0.7 is a documentation-maintenance alignment update after completion of R1 Architecture Analysis v0.10. It does not reopen or change the approved product/mapping semantics. Relative to v0.6 it:
+
+- records that AC-1 through AC-10 are now accepted architecture direction;
+- updates the next-gate sequence so Architecture Analysis is no longer shown as pending;
+- distinguishes accepted architecture direction from the source audits and Technical Design mechanics that remain unresolved;
+- records ADR-106, ADR-107 and ADR-108 as accepted and Resource Usage & Cost Attribution as accepted under provisional numbering;
+- keeps ADR-109 conditional on the full-repo Generic Case Relationships audit.
