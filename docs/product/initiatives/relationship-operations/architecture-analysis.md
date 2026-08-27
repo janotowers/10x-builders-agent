@@ -1,7 +1,7 @@
 # R1 Relationship Operations — Architecture Analysis
 
-> **Version:** v0.4  
-> **Status:** Draft — AC-1 through AC-4 accepted as architecture direction; AC-5 through AC-10 remain recommendations pending review. ADRs/Technical Plan remain separate artifacts.  
+> **Version:** v0.10  
+> **Status:** Architecture review complete — AC-1 through AC-10 accepted as architecture direction. ADRs/source audits/Specs/Technical Plan remain separate downstream artifacts.  
 > **Initiative:** R1 — Relationship Operations v1  
 > **Parent product intent:** `docs/product/PRD.md`  
 > **Initiative Brief:** `docs/product/initiatives/relationship-operations/brief.md`  
@@ -370,12 +370,12 @@ S1 local references should be read as `S1-A1`, `S1-A2`, etc.
 | **AC-2 SOR & Cross-System Effects** | fact authority, writes, idempotency, evidence, reconciliation | **Accepted direction** |
 | **AC-3 Organization, Membership, Tenancy & Identity** | multi-seat, legacy bridge, RLS, assignment, identity | **Accepted direction** |
 | **AC-4 Interaction / Conversation Authority** | Legacy vs Gu OS authority, human takeover, WhatsApp/channel binding | **Accepted direction** |
-| **AC-5 Organization Policy Architecture** | admission policy, versioning, authoring vs runtime contract | Recommendation pending review |
-| **AC-6 Case Relationships & Lineage** | duplicate, merge, split, supersession, Transaction links | Recommendation pending review |
-| **AC-7 Relationship Facts / Progression Projection** | viability, closure, milestones, `current_step` restraint | Recommendation pending review |
-| **AC-8 Work Orchestration & Wake-up** | situational work, timers, external events, evidence reconciliation | Recommendation pending review |
-| **AC-9 Supervisory Projection & Multi-seat UX** | Work Portfolio / Needs Attention authorization and projection | Recommendation pending review |
-| **AC-10 Economic Telemetry** | resource usage, direct/shared cost, outcome correlation, billing boundary | Recommendation pending review |
+| **AC-5 Organization Policy Architecture** | admission policy, versioning, authoring vs runtime contract | **Accepted direction** |
+| **AC-6 Case Relationships & Lineage** | duplicate, merge, split, supersession, Transaction links | **Accepted direction** |
+| **AC-7 Relationship Facts / Progression Projection** | viability, closure, milestones, `current_step` restraint | **Accepted direction** |
+| **AC-8 Work Orchestration & Wake-up** | situational work, timers, external events, evidence reconciliation | **Accepted direction** |
+| **AC-9 Supervisory Projection & Multi-seat UX** | Work Portfolio / Needs Attention authorization and projection | **Accepted direction** |
+| **AC-10 Economic Telemetry** | resource usage, valuation, direct/shared attribution, outcome correlation, billing boundary | **Accepted direction** |
 
 ---
 # 6. AC-1 — Operational Access & Eventing
@@ -1005,9 +1005,11 @@ Internal authority state may be rich, but users should see the practical result 
 ---
 # 10. AC-5 — Organization Policy Architecture
 
-## 10.1 Product requirement
+> **Review status:** Accepted architecture direction. ADR-108 required.
 
-S1 approves:
+## 10.1 Product requirement and boundary
+
+S1 approves the governing sequence:
 
 ```text
 platform hard bounds
@@ -1017,59 +1019,177 @@ organization policy
 Gu contextual judgment
 ```
 
-Policy authoring is:
+The organization decides, within non-overridable platform/security/privacy bounds, when Gu may or should assume responsibility and how configured behavior should operate. Model confidence alone never grants authority.
+
+Policy must remain distinct from other Gu OS artifacts:
+
+| Artifact | Primary question |
+|---|---|
+| **Platform hard bound** | What may never be weakened by a tenant? |
+| **Organization Policy** | What does this organization permit, require or constrain within platform bounds? |
+| **Workflow** | What durable procedural guarantees govern this work? |
+| **Skill / model judgment** | What does this concrete situation mean and what work appears appropriate? |
+| **Knowledge / Brain** | What does the organization/system know? |
+| **Prompt/context** | What relevant information is compiled for this decision? |
+
+> **Knowledge informs. Policy authorizes/constrains. Workflow guarantees process. Model judgment interprets.**
+
+Do not use Brain pages, prompt prose or workflow definitions as the sole runtime authorization mechanism for organization policy.
+
+## 10.2 Generic primitive, domain-specific policy semantics
+
+R1 should introduce a **generic versioned organization-policy capability/contract**, while keeping individual policy purposes typed and domain-specific.
+
+Conceptually:
 
 ```text
-natural language
-→ interpreted structured proposal
-→ examples / confirmation
-→ approved version
-→ runtime policy
+Organization
+   ├─ relationship admission policy
+   ├─ relationship engagement / escalation policy
+   ├─ future property-operation policy
+   ├─ future transaction policy
+   └─ other typed policy purposes
 ```
 
-Raw prose is not runtime authority.
+Exact policy type names are not fixed here.
 
-## 10.2 Existing policy infrastructure fit
+Do **not** create one unbounded "organization policy JSON" that accumulates every business rule, and do not create a Relationship-only infrastructure primitive if the same lifecycle/versioning/authorization contract is cross-domain.
 
-Existing notification engagement overrides are useful but should **not** become the generic admission-policy store by convenience.
+## 10.3 Authoring plane ≠ runtime plane
 
-Admission policy needs:
+Policy authoring should support:
 
-- organization ownership;
-- typed policy purpose/domain;
-- versioning;
-- draft / validated / published-like lifecycle;
-- publication authority;
-- provenance;
-- deterministic validation;
-- runtime resolution by active version;
-- auditability ("which policy version governed this decision?");
-- future reuse by other domains.
+```text
+natural-language intent
+      ↓
+model-assisted interpretation
+      ↓
+structured policy proposal
+      +
+human-readable explanation / examples / edge cases
+      ↓
+deterministic validation
+      ↓
+authorized human review
+      ↓
+publish immutable version
+```
 
-## 10.3 Recommended architectural direction
+The original natural-language intent should be retained as provenance, but **raw prose is not runtime authority**.
 
-Introduce a **generic versioned organization-policy primitive** or equivalent reusable contract, separate from workflow definitions and semantic knowledge.
+At runtime:
 
-Do not:
-- store the sole policy as prompt text;
-- hide it in `context_jsonb`;
-- use Brain pages as authorization;
-- clone policy fields onto every Case;
-- treat a workflow definition as a catch-all policy store.
+```text
+current situation
+      ↓
+semantic interpretation where required
+      ↓
+published structured policy resolution
+      ↓
+allowed / blocked / required / approval-needed / other typed result
+```
 
-The organization policy contract should be reusable for future domain policies where the same governance/versioning requirements apply.
+The runtime must not repeatedly ask a model to reinterpret what a manager "probably meant" from free-form policy prose.
 
-Exact schema and policy DSL/JSON shape remain Technical Plan work.
+## 10.4 Structured policy does not eliminate model judgment
 
-## 10.4 Decision recommendation
+Do not attempt to encode all commercial semantics as a deterministic DSL.
 
-> **Adopt a generic, versioned, organization-owned policy contract. Natural language is an authoring interface; the published structured policy is runtime authority.**
+Preferred boundary:
 
-This likely warrants an ADR if the primitive becomes cross-domain.
+```text
+model / Skill
+interprets ambiguous business meaning
+        ↓
+structured semantic result + evidence refs
+        ↓
+deterministic/governed policy resolver
+applies the published organization's constraints
+```
+
+Example: the model may judge whether a genuine commercial objective is present; the policy resolver determines whether, given that judgment and the active published policy, autonomous admission is allowed/expected.
+
+> **The policy deterministically constrains authority without requiring every business predicate to be deterministic.**
+
+## 10.5 Versioning, publication and audit
+
+Published policy versions are immutable.
+
+Conceptually:
+
+```text
+v1 published
+v2 draft
+v2 validated
+v2 published
+```
+
+Drafts do not affect production behavior.
+
+Each consequential policy-governed decision/effect must record or be able to reconstruct:
+
+- organization;
+- policy purpose/type;
+- effective published version;
+- relevant rule/path;
+- semantic input/evidence references where applicable;
+- result;
+- actor/service that evaluated or published it.
+
+This makes questions such as "why did Gu admit/contact/escalate this Opportunity?" auditable.
+
+Publication requires an authorized Organization Membership/role/grant; model-generated drafts or advisor suggestions do not self-publish.
+
+## 10.6 Effective version and Case lifetime
+
+Do **not** automatically pin every Organization Policy to a Case for the Case's entire lifetime.
+
+Workflow-definition pinning and policy resolution solve different problems.
+
+Historical decisions retain the policy version that governed them, but newly published organization policy normally governs future decisions from its effective point.
+
+If a policy type needs retroactive reassessment of existing Cases, that behavior must be explicit and governed; publishing a new version must not silently rewrite historical Case truth.
+
+## 10.7 Missing/invalid policy is not broader authority
+
+Missing, invalid or unresolved organization policy must never be interpreted as permission to exercise broader autonomy.
+
+The exact product behavior may be a safe platform baseline, onboarding-required policy, no autonomous action for that policy purpose, or another explicitly defined fail-safe default.
+
+Exact fallback semantics belong to Product/Technical Plan per policy type, but the architecture is **fail-closed with respect to additional authority**.
+
+## 10.8 Relationship to existing engagement preferences
+
+Existing user-level engagement/notification overrides may coexist with Organization Policy.
+
+A narrower/user preference may further restrict behavior or override a higher-level policy only where the higher-level contract explicitly permits that override.
+
+Do not encode a universal precedence rule such as `user > organization`; provenance and policy-specific override authority govern resolution.
+
+## 10.9 Policy examples as verification evidence
+
+Model-assisted authoring should be able to produce examples such as SHOULD allow/admit, SHOULD block/not admit, NEEDS semantic judgment, and boundary/edge cases.
+
+These examples are verification artifacts for the policy intent, not necessarily the runtime policy itself.
+
+The lifecycle should permit simulation/replay against historical or synthetic Cases before publication, even if sophisticated replay is not required for initial R1.
+
+## 10.10 Policy is not Case truth
+
+Organization Policy is organization-owned configuration/authority. Case facts describe the specific Opportunity.
+
+Do not clone policy text/rules into every Case as source of truth. Instead, persist the policy version/reference used by policy-governed decisions where auditability requires it.
+
+Likewise, prompts may include a compact relevant policy representation for reasoning, but prompt content is not enforcement authority.
+
+## 10.11 Accepted decision
+
+> **Gu OS adopts a generic, organization-owned, typed and versioned policy contract. Natural language is an authoring interface, not runtime authority. Published versions are immutable and explicitly authorized; model judgment may provide structured semantic interpretations, while governed/deterministic mechanisms enforce policy constraints. Consequential decisions remain attributable to the effective policy version. New policy versions govern future decisions without silently rewriting history, and missing/invalid policy never broadens authority.**
 
 ---
-
 # 11. AC-6 — Case Relationships & Lineage
+
+> **Review status:** Accepted architecture direction. A full-repo audit is still required before deciding whether this means reusing/extending an existing generic primitive or introducing a new one.
 
 ## 11.1 Product need
 
@@ -1082,101 +1202,184 @@ S1 requires traceable:
 - reactivation history;
 - Lead Opportunity ↔ Transaction relationship.
 
-The reviewed shared kernel does not establish a canonical generic Case-to-Case relationship primitive.
+The files inspected for this analysis do not establish a canonical generic Case-to-Case relationship primitive. Per the source-status discipline in §2, that is **not** sufficient evidence that no equivalent exists elsewhere in the repository.
 
-## 11.2 Alternatives
+## 11.2 Lineage is not generic association
+
+AC-6 distinguishes two different ideas:
+
+1. **Lineage / lifecycle relationship** — a relationship that explains how durable Cases came to exist, changed identity/continuity, or replaced/contributed to one another. Examples include duplicate, merge, split and supersession.
+2. **Business association** — two Cases are related in the business domain without one being the historical successor/predecessor of the other. Lead Opportunity ↔ Transaction is the clearest R1 example.
+
+Do not collapse these semantics into an unbounded generic `related_to` edge. Relationship types should remain few, typed, directed where direction matters, and governed by explicit semantics.
+
+## 11.3 Alternatives
 
 ### Option A — encode relationships in `context_jsonb`
 
-**Reject** for durable canonical lineage.
+**Rejected** for durable canonical lineage.
 
-Hard to query, validate, authorize and reuse cross-domain.
+It is hard to query, validate, authorize, constrain and reuse cross-domain, and it makes historical identity semantics dependent on mutable Case context.
 
 ### Option B — Relationship-specific merge/split table
 
-**Reject unless no generic contract can work.**
+**Rejected unless a repo audit proves the shared kernel has a materially incompatible existing contract.**
 
-Property, Transaction and other domains can also need Case lineage/relationships.
+Property, Transaction and other domains can also need Case lineage/relationships. R1 should not create a private lineage subsystem for convenience.
 
-### Option C — generic Case relationship primitive
+### Option C — reuse or introduce a generic Case relationship primitive
 
-**RECOMMENDED.**
+**Accepted direction.**
 
-Conceptually support typed, directed relationships such as:
+The target contract should support a deliberately small vocabulary of typed relationships, conceptually including only the types proven necessary, such as:
 
-- duplicate_of
-- supersedes / superseded_by
-- split_from
-- merged_into
-- related_transaction
-- resumed_from / other carefully governed types if needed
+- `duplicate_of`;
+- `supersedes` / `superseded_by`;
+- `split_from`;
+- `merged_into`;
+- a typed Opportunity ↔ Transaction association;
+- other carefully governed types only when concrete cross-domain need is demonstrated.
 
-Exact vocabulary should remain small and evidence-driven; do not create an ontology prematurely.
+The exact canonical names and whether inverse edges are stored or derived belong to Technical Design. Do not create an ontology prematurely.
 
-## 11.3 Decision recommendation
+## 11.4 Continuity semantics
 
-> **If full-repo audit confirms no existing generic relationship primitive, introduce a shared Case relationship/lineage contract rather than a Relationship-specific table.**
+### Reactivation
 
-The exact merge/split data-movement semantics belong to Technical Plan and S1/S2 behavior; lineage should preserve history rather than physically pretending the past never existed.
+Reactivation normally continues the **same Case**. A Case that becomes dormant, lost, paused or otherwise inactive should not acquire a new identity merely because work resumes. A new Case plus lineage link is justified only when the owning product semantics establish a genuinely new durable commercial responsibility.
+
+### Merge
+
+A merge must preserve historical identities and provenance. It must not erase source Cases or pretend their earlier facts, Work, approvals, conversations or external bindings were always owned by the surviving Case. Exact reconciliation/data-movement rules belong to Technical Plan and the owning Specs.
+
+### Split
+
+A split creates distinct durable responsibility while preserving the source Case and the provenance of what motivated or seeded each resulting Case. Facts, Work and bindings are not implicitly copied wholesale; transfer/derivation must follow explicit semantics.
+
+### Supersession and duplicate
+
+Duplicate and supersession are durable business facts/relationships, not destructive rewrites. Completion/closure projections may use them, but history remains reconstructable.
+
+## 11.5 Authority, evidence and organizational boundary
+
+Creating or mutating a lineage relationship can alter which Case humans and Gu treat as authoritative. Therefore:
+
+- lineage mutations require authorized execution, not free-form model state mutation;
+- the reason/evidence/provenance for consequential relationships must be retained or reconstructable;
+- model/Skill judgment may identify or propose a relationship, but governed mechanisms validate and persist it;
+- relationships are organization-contained by default; cross-organization Case linkage is not implied by this primitive and requires a separately governed product requirement;
+- merge/split/supersession must not silently transfer runtime, conversation or business-approval authority; ADR-107 boundaries still apply.
+
+## 11.6 Opportunity ↔ Transaction does not imply closure
+
+A Lead Opportunity may be associated with one or more downstream Transaction Cases when the Transaction boundary predicate is satisfied. That association does **not**, by itself, mean the Opportunity is complete, lost or superseded. Closure remains an evidence-backed business projection governed by the Relationship lifecycle contract.
+
+This preserves the distinction already established in §4.11: a Legacy Deal is not automatically a Transaction Case, and a Transaction relationship is not automatically a Relationship closure event.
+
+## 11.7 Accepted decision
+
+> **Gu OS adopts generic, governed Case relationship semantics for durable lineage and typed cross-Case business association. Reuse/extend an existing shared primitive if the full-repo audit finds one; otherwise introduce a shared primitive rather than a Relationship-specific table. Keep the relationship vocabulary small and typed; preserve Case history and provenance across merge/split/supersession; treat reactivation as same-Case continuity by default; require authority/evidence for consequential mutations; keep relationships organization-contained by default; and do not infer Opportunity closure from a Transaction association alone.**
+
+The full-repo audit is now an implementation/ADR packaging gate, not a reopening of AC-6. If an adequate generic primitive already exists, R1 should reuse it and ADR-109 may be unnecessary. If none exists, ADR-109 may capture the new cross-platform contract before Technical Design chooses the exact schema.
 
 ---
 
 # 12. AC-7 — Relationship Facts, Progression and `current_step`
 
-## 12.1 Recommended truth model
+**Accepted direction.**
 
-Use:
+## 12.1 Truth model: evidence/facts → business projection
+
+Relationship Operations should not collapse commercial truth into one mutable CRM-style stage. The preferred conceptual shape is:
 
 ```text
-case_facts
-    ↓
-current business projection
-    ├─ objective / requirements
-    ├─ viability
-    ├─ delivery constraints
-    ├─ progression milestones
-    ├─ closure outcome/reason
-    └─ accepted evidence
+observable occurrence / source evidence
+(message, appointment, prospect statement, advisor correction, transaction event, ...)
+                ↓
+      provenance-backed Case facts
+                ↓
+       derived business projection
+                ├─ objective / requirements
+                ├─ durable responsibility
+                ├─ commercial viability
+                ├─ delivery / engagement eligibility
+                ├─ progression / milestone history
+                ├─ closure outcome / reason
+                └─ accepted evidence / uncertainty
 ```
 
-The projection may be materialized/denormalized later if needed for supervision/query performance, but the domain semantics should remain evidence-backed and reconstructable.
+The projection is the current operational interpretation of accumulated evidence; it is not a replacement source of truth that erases provenance. It may later be materialized/denormalized for supervision/query performance, but the underlying semantics should remain evidence-backed, attributable and reconstructable.
 
-## 12.2 `current_step`
+Facts, events and projections must remain conceptually distinct. A source event may supply evidence; accepted evidence may become a Case fact; one or more facts may support a current business projection. Technical Design may choose exact storage/materialization mechanics without changing that semantic boundary.
+
+## 12.2 Business dimensions remain separate
+
+R1 must preserve the S1 separation between at least:
+
+- durable commercial responsibility;
+- commercial viability;
+- progression;
+- delivery / engagement eligibility;
+- closure outcome; and
+- generic runtime status.
+
+No single CRM-style `stage` or enum should become the authoritative answer to all of these questions. For example, a commercially viable Opportunity may be temporarily non-contactable while its runtime remains wakeable; a commercially lost Opportunity may complete successfully at the runtime level rather than `failed`.
+
+## 12.3 Progression is evidence-backed, non-linear and potentially repeating
+
+Progression milestones such as:
+
+- `opportunity_admitted`;
+- `meaningful_interaction`;
+- `visit_requested`;
+- `visit_scheduled`;
+- `visit_attended`;
+- `transaction_started`;
+
+should be treated as evidence-backed commercial milestones/history, not necessarily as mutually exclusive values of one monotonic scalar.
+
+An Opportunity may have multiple visit requests/visits, cancellations/reschedules, changed requirements, return to matching, more than one transaction attempt, or a failed Transaction followed by renewed Relationship progression. The projection should therefore preserve the commercially relevant history/current interpretation rather than pretending that the Opportunity occupies exactly one irreversible funnel stage.
+
+Property matching by itself remains an actionable input, not proof of commercial progression.
+
+## 12.4 `current_step` restraint
 
 Relationship Operations is not naturally a linear procedure like Property Optioning.
 
-**RECOMMENDATION:** R1 should **not require `current_step` as a CRM stage/funnel**.
+R1 should **not require `current_step` as a CRM stage/funnel or as a UI convenience field**.
 
-`current_step` may remain null or be used only if a true durable procedural milestone emerges that:
+`current_step` may remain null or be used only if a genuine procedural execution state later emerges that:
 
-- meaningfully changes allowed work;
-- is mutually understandable;
-- is not merely a projection of concurrent facts;
-- benefits workflow guards/readiness.
+- materially governs allowed work or readiness;
+- represents a durable procedural condition rather than a business projection;
+- is mutually understandable across runtime/operations; and
+- provides value to workflow guards or execution semantics that cannot be represented more cleanly by facts, Work state or policy.
 
-Progression such as visit requested/scheduled/attended should default to evidence-backed facts/projections rather than being forced into `current_step`.
+A progression milestone such as `visit_attended` does not, by itself, imply a mandatory next procedural step and therefore should not be forced into `current_step`.
 
-## 12.3 Closure
+## 12.5 Closure remains business truth, not runtime status
 
-S1-approved:
+S1-approved top-level closure outcomes remain:
 
-- `objective_achieved`
-- `lost`
-- `invalid`
-- `duplicate`
-- `superseded`
+- `objective_achieved`;
+- `lost`;
+- `invalid`;
+- `duplicate`;
+- `superseded`;
 
-with separate reason/evidence.
+with separate closure reason and supporting evidence.
 
-These should be business facts/projection used by completion predicates, not new generic runtime statuses.
+These are business facts/projections used by completion predicates and supervisory views, not new values of `operational_cases.status`. Inactivity, coldness, temporary waiting or lack of response do not themselves establish closure. Business `lost` is not runtime `failed`; runtime `failed` remains a technical/execution condition.
 
-## 12.4 Decision recommendation
+## 12.6 Accepted decision
 
-> **Use `case_facts` + derived projection for Relationship lifecycle/progression. Keep `operational_cases.status` generic and use `current_step` only if a true procedural state is later proven useful.**
+> **Relationship Operations represents current commercial truth through provenance-backed Case Facts and derived business projections rather than a CRM-style stage machine. Commercial viability, progression, delivery/engagement eligibility, durable responsibility and closure remain distinct from generic Case runtime status. Progression is evidence-backed and potentially non-linear/repeating rather than a single monotonic scalar. `current_step` is not required for R1 and should be used only if a genuine procedural execution state emerges that materially governs allowed work or readiness—not to represent CRM progression or simplify UI. Closure outcome/reason/evidence remain business truth used by completion predicates, while `operational_cases.status` retains generic runtime semantics.**
 
 ---
 
 # 13. AC-8 — Work Orchestration & Wake-up
+
+> **Review status:** Accepted architecture direction.
 
 ## 13.1 Case Supervisor concept
 
@@ -1189,33 +1392,117 @@ R1 needs an agentic/runtime role that, for one Opportunity, can decide:
 - should a human be involved?
 - when should the Case be reconsidered?
 
-This is the **Case Supervisor** concept, not necessarily a new service/process/table.
+This is the **Case Supervisor** concept, not necessarily a new service/process/table. The shared Case runner + root Skill/workflow policy may provide the initial implementation surface, while a more general Case Supervisor remains an evolution target.
 
-It may be implemented through the existing Case runner + root Skill/workflow policy initially.
+The Supervisor reasons about **how best to advance the durable objective now**. It does not become the source of authority for the objective, permissions, invariants, business approvals, evidence requirements or completion semantics.
 
-## 13.2 Work generation
+## 13.2 Wake-up means situational reconsideration
 
-Prefer **situational work generation**:
+A scheduled or event-driven Case wake-up should normally mean **reconsider the current situation**, not blindly execute a future action that was chosen from stale context.
 
 ```text
-wake
- ↓
-compile current Case context + fresh source facts + policy
- ↓
-model/Skill judgment
- ↓
-0..n bounded proposed actions
- ↓
-deterministic authority/policy checks
- ↓
-Work Items / immediate bounded actions as appropriate
+external event / scheduled wake-up / human intervention / changed fact
+        ↓
+compile current Case contract + current facts + fresh source context + policy
+        ↓
+Case Supervisor / model-Skill judgment
+        ↓
+0..n bounded proposed actions / waits / human requests
+        ↓
+deterministic authority, policy, invariant and verification checks
+        ↓
+inline bounded execution and/or durable Work Items
 ```
 
-Do not instantiate a long predetermined future sequence merely because a workflow definition can represent one.
+A source event or timer does not itself mandate an outbound message. The reconsideration may legitimately decide to do nothing, wait, gather more evidence, ask a human, or create one or more pieces of Work.
 
-## 13.3 Evidence gaps
+### Scheduled reconsideration vs committed deferred work
 
-Missing expected evidence should usually create reconciliation work, e.g.:
+R1 must distinguish:
+
+```text
+scheduled reconsideration
+≠
+scheduled committed work
+```
+
+A reminder such as “re-evaluate this Opportunity Friday morning” should wake the Case and reassess current reality. By contrast, an already-authorized commitment such as “send the requested documents tomorrow at 09:00” may be represented as durable deferred Work with `not_before`/equivalent scheduling semantics.
+
+Even committed deferred Work must revalidate relevant authority, material preconditions and changed facts immediately before a consequential external effect.
+
+## 13.3 Work granularity: not every thought becomes a Work Item
+
+The Work Plane should persist work that deserves independent operational identity, not every read/reason/tool step performed during reconsideration.
+
+**Inline / immediate bounded execution** is appropriate for ephemeral reads, deterministic lookups, context assembly, reasoning or small synchronous actions that do not need independent waiting/retry/dependency/evidence semantics.
+
+A **durable Work Item** is appropriate when the work materially benefits from one or more of:
+
+- surviving beyond the current turn/run;
+- waiting until a later time or external condition;
+- retries/recovery;
+- explicit dependencies or fan-out/fan-in;
+- human participation/review;
+- material external effects;
+- idempotency or post-condition verification;
+- independent execution evidence/auditability.
+
+This keeps Work Items as durable execution units rather than a log of every internal reasoning step.
+
+## 13.4 Dynamic work may adapt execution, not invent authority
+
+Relationship Operations should be able to use **situational/dynamic work generation** rather than instantiate a long predetermined sequence merely because the workflow-definition format can encode one. The work graph may branch, loop, parallelize, wait, replan or create additional bounded Work as reality changes.
+
+However, dynamic planning does **not** grant dynamic authority. The Case Supervisor may determine or propose work only within the Case contract and other governing constraints, including:
+
+- durable Case objective/responsibility;
+- allowed capabilities;
+- platform hard bounds and organization policy;
+- workflow/Case invariants;
+- resource/cost constraints where applicable;
+- human-authority and approval rules;
+- evidence, verification and completion requirements.
+
+The model may choose strategy where intelligence is valuable; deterministic/governed mechanisms remain authoritative where reality, permissions, commitments and consequential effects must be hard.
+
+## 13.5 Relationship to routines, dynamic workflows, Work Items and loops
+
+The mechanisms should remain distinct:
+
+```text
+Routine / external observer
+        ↓ detects something relevant
+source event / scheduled wake-up
+        ↓
+Operational Case
+        ↓ preserves durable responsibility
+Case Supervisor
+        ↓ decides what best advances the Case now
+Dynamic work graph
+        ↓ coordinates adaptive work
+Work Items
+        ↓ durable units where persistence is needed
+Worker / agent loop
+        ↓ iterates inside bounded execution
+verification / guards / policy
+        ↓ govern consequential outcomes
+```
+
+In shorthand:
+
+- **routines detect**;
+- **Cases remember/own the durable commitment**;
+- **Case Supervisors reconsider**;
+- **dynamic work graphs coordinate adaptive execution**;
+- **Work Items make necessary work durable**;
+- **loops execute and correct within bounded work**;
+- **guards/policy govern**.
+
+Dynamic workflows therefore complement rather than replace durable Operational Cases.
+
+## 13.6 Evidence gaps are ordinary Work
+
+Missing expected evidence should usually create reconciliation work, for example:
 
 ```text
 appointment happened?
@@ -1227,51 +1514,158 @@ reread source / ask advisor / ask prospect if appropriate
 accepted Case fact or remain unknown
 ```
 
-Do not create `relationship_evidence_gaps` by default.
+Do not create a Relationship-specific `relationship_evidence_gaps` table, scheduler or retry engine by default. Reconciliation should reuse shared Work/attempt/evidence mechanisms unless a later requirement proves a genuinely distinct cross-domain primitive is needed.
 
-## 13.4 Decision recommendation
+## 13.7 Child Case boundary
 
-> **Use Case wake-up as reconsideration, Work Items as durable execution, and evidence reconciliation as Work—not a Relationship-specific scheduler or fixed future-message queue.**
+Dynamic decomposition must not turn every subtask into a Case. Create a child Case only when the subproblem acquires its own durable business responsibility or lifecycle—for example, its own participants, waits, authority, commitments or completion evidence. Otherwise keep it as Work inside the parent Case.
+
+## 13.8 Accepted decision
+
+> **Use Case wake-up as situational reconsideration and the shared Work Plane for durable execution. A Case Supervisor may determine or propose what work best advances the Case after relevant events, scheduled wake-ups, human interventions or changed facts, including adapting the work graph within the Case contract. Dynamic planning does not grant dynamic authority: proposed work remains bounded by the Case objective, allowed capabilities, organization/platform policy, invariants, resource constraints, human-authority rules and deterministic verification. Use inline bounded execution for ephemeral read/reason steps, and durable Work Items when work must wait, retry, depend on other work, involve humans, create material external effects or preserve independent execution/evidence. Distinguish scheduled reconsideration from already-committed deferred work; both revalidate relevant authority and material preconditions before external effects. Represent evidence reconciliation as ordinary Work, not as a Relationship-specific scheduler or evidence-gap subsystem. Create a child Case only when the subproblem acquires its own durable business responsibility/lifecycle.**
 
 ---
 
 # 14. AC-9 — Supervisory Projection & Multi-seat UX
 
-## 14.1 Work Portfolio is a projection
+> **Review status:** Accepted architecture direction.
 
-S4's Work Portfolio should derive from:
+## 14.1 Work Portfolio is a projection, not operational truth
+
+S4's Work Portfolio should derive from shared operating truth, including:
 
 - organization-authorized Cases;
 - assignment/DRI;
 - current facts/progression;
-- open Work Items;
-- approvals;
+- open Work Items and blocked work;
+- approvals / human decisions;
 - delivery/authority state;
-- relevant outcomes.
+- commitments and timing;
+- relevant outcomes and evidence.
 
-It is **not** a second SOR or manually editable CRM pipeline.
+It is **not** a second SOR, a manually editable CRM pipeline or a durable queue separate from Case / Work / Fact / Approval truth.
 
-## 14.2 Authorization implications
+Human actions initiated from Work Portfolio must update the canonical mechanism that owns the decision or state (for example Case approval, fact, Work Item, assignment, governed override/policy action). Presentation-only state such as a personal `seen`, `snooze` or filter preference must remain explicitly separate from operating truth.
+
+## 14.2 Authorization happens before cross-Case reasoning
 
 R1 needs at least:
 
-- **My Work** — assigned/DRI-relevant Opportunities;
-- **Organization Work** — broader view for authorized admin/principal roles;
-- **Needs Attention** — ranked human intervention subset;
-- **In Motion** — autonomous work;
-- **Outcomes** — evidence-backed result projection.
+- **My Work** — assigned/DRI-relevant Opportunities visible to the authenticated actor;
+- **Organization Work** — broader organization scope for authorized roles;
+- **Needs Attention** — human-intervention subset;
+- **In Motion** — autonomous work that remains visible but does not currently require human intervention;
+- **Outcomes** — evidence-backed result/progression projection.
 
-This is one reason organization-aware tenancy must exist before R1 multi-seat graduation.
+Authorization must be resolved **before** ranking or model reasoning across Cases:
 
-## 14.3 Ranking
+```text
+authenticated actor
+      ↓
+organization / membership / role / assignment authorization
+      ↓
+authorized Cases
+      ↓
+attention predicates + contextual ranking
+      ↓
+Work Portfolio
+```
 
-Hard urgency/authority commitments should be deterministic bands/constraints; model judgment may order within contextual ranges and explain why attention is needed.
+The model that ranks/explains a user's Work Portfolio should not receive unauthorized Cases merely because they will be filtered out later.
 
-## 14.4 Decision recommendation
+This is one reason organization-aware tenancy must exist before R1 multi-seat graduation. `My Work` and `Organization Work` are different authorized projections over the same operating truth, not separate databases.
 
-> **Implement Work Portfolio as an organization-authorized read/projection over shared operating truth, not a new operational database or pipeline.**
+## 14.3 Must-surface conditions vs contextual ranking
 
-Exact query/read-model strategy belongs after S4 behavior is approved.
+`Needs Attention` should rank **the need for human intervention**, not generic lead attractiveness.
+
+Some human-attention conditions are governed obligations and should be deterministic or policy-enforced **must-surface** conditions. Examples include, where the applicable contract/policy says so:
+
+- an explicit approval or protected decision pending from a human;
+- Work blocked on required human authority/input;
+- a material commitment or deadline that has crossed a governed threshold;
+- a high-consequence external effect whose execution outcome is uncertain and requires human resolution;
+- an authority/policy exception that Gu cannot resolve autonomously.
+
+Model ranking must not suppress these obligations.
+
+After hard inclusion/urgency/authority constraints are applied, model/Skill judgment may prioritize discretionary human attention using contextual factors such as:
+
+- consequence;
+- urgency;
+- blockage;
+- relationship risk/frustration/ambiguity;
+- uncertainty;
+- business relevance;
+- expected value of human involvement;
+- interaction among multiple Case facts that would be brittle to encode as a growing rule set.
+
+This preserves the intended hybrid boundary:
+
+```text
+DETERMINISTIC / GOVERNED
+- who may see the Case
+- whether a human decision is mandatory
+- hard deadlines / approvals / authority blockers
+- what facts, Work and commitments actually exist
+
+        ↓
+
+MODEL / SKILL JUDGMENT
+- which discretionary intervention matters most now
+- relationship / contextual risk
+- expected value of human involvement
+- concise situation summary and rationale
+
+        ↓
+
+DETERMINISTIC / GOVERNED
+- what intervention the actor is authorized to perform
+- where the resulting decision is persisted
+- whether execution actually succeeded
+```
+
+## 14.4 Explainability and evidence grounding
+
+A ranking score alone is insufficient operationally.
+
+The Work Portfolio should be able to explain *why* attention is needed using traceable operating evidence, for example:
+
+```text
+Needs attention because:
+- prospect expressed frustration;
+- advisor commitment conflicts with current availability;
+- Gu lacks authority to revise the commitment;
+- response is due today.
+```
+
+The model may use probabilistic/contextual judgment, but its explanation must be grounded in authorized Case / Work / Fact / Approval / commitment / event evidence rather than opaque free-form intuition.
+
+> **Principle:** Judgment may be probabilistic; the evidence it reasons over must remain traceable.
+
+## 14.5 No required Portfolio Supervisor agent for R1
+
+R1 does not require a new durable `Portfolio Supervisor` agent/service/root merely to produce Work Portfolio. A viable initial architecture is:
+
+```text
+shared operating truth
+      ↓
+authorized projection
+      ↓
+hard attention predicates
+      ↓
+optional contextual model ranking / explanation
+      ↓
+Work Portfolio
+```
+
+A future cross-Case agentic supervisor may become useful for capacity allocation, portfolio-wide pattern detection or proactive coordination, but that is a separate capability and should not be smuggled into the R1 projection contract.
+
+Terminology remains deliberate: **Work Portfolio** is the human-facing supervisory surface; `Supervisor` remains reserved for agentic/runtime concepts.
+
+## 14.6 Accepted decision
+
+> **Implement Work Portfolio as an exception-first, organization-authorized read/projection over shared operating truth rather than a second operational database or CRM pipeline. Authorization and hard attention eligibility must be resolved before cross-Case ranking. Cases requiring human action because of explicit authority, approval, blocked work, material commitments, high-consequence uncertainty or other governed conditions must surface deterministically and must not be suppressible by model scoring. Within authorized and policy-bounded attention candidates, model/Skill judgment may rank contextual human-intervention priority using factors such as consequence, urgency, blockage, relationship risk, uncertainty, business relevance and expected value of human involvement, with evidence-linked explanations. `Needs Attention` ranks the need for human intervention, not generic lead attractiveness. `In Motion` and `Outcomes` remain derived projections. Human actions initiated from Work Portfolio must update the canonical Case / Work / Fact / Approval / assignment / policy mechanisms—or clearly separate user presentation state—rather than mutate a parallel portfolio truth. Exact ranking bands, projection implementation and visual design remain downstream Technical Design/Spec concerns.**
 
 ---
 
@@ -1279,9 +1673,11 @@ Exact query/read-model strategy belongs after S4 behavior is approved.
 
 ## 15.1 Current base
 
+> **Review status:** Accepted architecture direction. A generic cross-domain ADR is warranted; exact schema/migration remains Technical Design.
+
 `ai_usage_events` already provides the right append-only and correlation principles for model cost.
 
-## 15.2 R1 target
+## 15.2 R1 target and separation of concerns
 
 Track material variable resources such as:
 
@@ -1293,55 +1689,89 @@ Track material variable resources such as:
 - specialist service/provider fees causally attributable to work;
 - other material variable resources.
 
-Separate:
+Keep four concerns distinct:
 
 ```text
-resource usage event
+1. resource usage
         ↓
-provider/resource cost
+2. cost valuation
         ↓
-direct attribution
-OR
-documented shared allocation
-OR
-explicit unallocated/shared cost
+3. causal attribution / explicit shared allocation
         ↓
-cost-to-serve by
-organization / Case / Work / activity / outcome
+4. cost-to-serve projections by
+   organization / Case / Work / activity / outcome
 
-SEPARATE:
+SEPARATE CONTRACT:
 customer price / credits / wallet / billing
 ```
 
-## 15.3 Ledger evolution recommendation
+> **Invariant:** Usage measures consumption. Cost valuation measures economic input. Attribution/allocation explains causal ownership. Billing monetizes customer value. They must not collapse into one ledger or one price rule.
 
-Do not create Relationship-specific cost tables.
+## 15.3 Usage evidence and valuation maturity
 
-A generic resource-usage ledger should preserve:
+Do not create Relationship-specific cost tables. A generic cross-domain resource/economic telemetry contract should preserve:
 
-- append-only/auditable usage;
+- append-only/auditable resource usage;
 - provider/resource/operation;
 - quantity/unit;
-- reported vs estimated cost;
-- pricing version;
-- status/retry;
+- reported vs estimated cost and the pricing version used;
+- status/retry/failure where consumption occurred;
 - organization/account;
-- Case/Work/Attempt correlations;
-- non-content allowlisted metadata.
+- Case/Work Item/Attempt/Work Run correlations;
+- minimal non-content allowlisted metadata.
 
-`ai_usage_events` may become an input/backfill/compatibility view or specialized source into that generic model. The exact migration strategy should be decided in Technical Design to avoid unnecessary dual-write.
+A resource usage event is durable evidence that consumption occurred. Cost knowledge may mature later: an initial estimate may be replaced in the current projection by provider-reported or reconciled valuation, but later valuation must not erase the original usage evidence or the historical basis used at the time. The exact event/valuation table shape belongs in Technical Design.
 
-Shared cost allocation should remain explicit and versioned; if no defensible causal driver exists, retain the cost as shared/unallocated rather than inventing false per-Case precision.
+`ai_usage_events` should therefore be **extended/evolved rather than conceptually replaced**. It may become a specialized source, compatibility view or migration input into the generic model; avoid unnecessary dual-write unless Technical Design proves it necessary.
 
-## 15.4 Decision recommendation
+## 15.4 Correlation, attribution and allocation
 
-> **Generalize economic observability cross-domain, preserving the append-only/correlation semantics already proven by `ai_usage_events`. Keep cost-to-serve separate from customer billing.**
+Hierarchical correlation is not multiple economic allocation. One resource event may be correlated simultaneously to an Organization, Case, Work Item and Attempt; those are different roll-up dimensions over the same underlying cost, not four costs.
+
+Use this precedence:
+
+```text
+1. direct causal attribution
+        ↓ if not defensible
+2. explicit shared-cost allocation using a documented/versioned driver
+        ↓ if no defensible driver exists
+3. retain shared / platform / unallocated cost
+```
+
+Shared allocation may use defensible activity drivers such as attributable tokens/context, messages, pages, minutes, API calls, properties or Opportunities processed. Do not divide shared cost merely because a per-Case number is desirable.
+
+Economic roll-ups must remain reconcilable:
+
+```text
+total recorded resource cost
+= directly attributed cost
++ allocated shared cost
++ explicit shared/unallocated cost
+```
+
+## 15.5 Failures, retries, activity semantics and outcomes
+
+Retries, failures and reconciliation consume real resources and remain cost-bearing usage rather than being hidden from successful-work economics. This enables later analysis of productive cost vs retry/failure/reconciliation waste.
+
+Cost-to-Serve may be analyzed against evidence-backed business outcomes, but the economic ledger does not become the owner of those outcomes. Outcome truth remains in Case/Work/domain semantics.
+
+Likewise, strategically useful activity categories such as qualification, matching, follow-up, visit coordination or reconciliation should derive from governed Work/capability/domain semantics, not arbitrary free-text labels invented independently by callers.
+
+Economic telemetry should remain deliberately poor in business content: record identity, resource, quantity, causal correlation and cost metadata without copying prompts, messages, documents or transcripts merely for cost accounting.
+
+## 15.6 Billing boundary
+
+Customer credits, subscriptions, wallets, outcome pricing and billing are a separate contract. They may consume economic telemetry and outcome truth, but customer charges are **not derived 1:1 from internal provider cost**. Preserve separate provider-pricing versions and future customer-pricing/credit-policy versions.
+
+## 15.7 Accepted decision
+
+> **Generalize Gu OS economic observability as a cross-domain resource-usage and cost-attribution contract, extending rather than replacing the append-only, versioned-pricing and correlation semantics already established by `ai_usage_events`. Keep resource usage, cost valuation, cost attribution/allocation and customer pricing/billing as distinct concerns. Durable usage evidence must remain auditable even when cost estimates later mature, reconcile or receive provider adjustments. Prefer direct causal attribution to Case / Work Item / Attempt / Work Run when defensible; treat hierarchical correlations as lineage rather than multiple allocations, and use explicit versioned shared-cost allocation only when a defensible cost driver exists. Preserve unallocated/shared cost rather than inventing false per-Case precision, and require economic roll-ups to remain reconcilable to their underlying resource events. Retry, failure and reconciliation consumption remain real cost-bearing usage. Business activity and outcome analysis should derive from governed Case/Work semantics rather than making the economic ledger a second owner of business truth. Keep telemetry metadata minimal and allowlisted, avoiding unnecessary business content. Customer credits, price, wallet and billing remain a separate contract that may consume economic/outcome telemetry but is not derived 1:1 from internal cost. Do not create Relationship-specific economic tables.**
 
 ---
 
 # 16. ADR recommendations
 
-AC-1 through AC-4 are now accepted at architecture-direction level. Durable cross-cutting decisions should move into ADRs without importing Technical Plan mechanics.
+AC-1 through AC-10 are now accepted at architecture-direction level. Durable cross-cutting decisions should move into ADRs without importing Technical Plan mechanics.
 
 ## 16.1 ADR-106 — Organization-native multi-seat tenancy and legacy identity bridge
 
@@ -1386,17 +1816,50 @@ After reviewing ADR-106/107, decide whether to create:
 
 The architecture directions themselves are already accepted; this is ADR packaging/granularity, not reopening AC-1/AC-2.
 
-## 16.4 Versioned organization policy
+## 16.4 ADR-108 — Versioned organization policy
 
-ADR if AC-5 is accepted and introduced as a new shared cross-domain infrastructure primitive.
+**Draft now.**
 
-## 16.5 Generic Case relationships
+Capture:
 
-ADR if AC-6 is accepted and full-repo audit confirms a new generic primitive is required.
+- generic organization-owned policy contract with typed/domain-specific policy purposes;
+- Platform hard bounds / Policy / Workflow / Knowledge / model judgment separation;
+- natural-language authoring vs structured published runtime authority;
+- immutable published versions and authorized publication;
+- semantic model interpretation feeding deterministic/governed policy resolution;
+- decision-level effective policy-version attribution;
+- future-policy resolution rather than lifetime pinning of all policy to a Case;
+- explicit/non-silent retroactive reassessment;
+- missing/invalid policy cannot broaden autonomy;
+- subordinate/user overrides only where explicitly permitted.
 
-## 16.6 Economic telemetry
+## 16.5 Potential ADR-109 — Generic Case relationships
 
-ADR only if AC-10 is accepted and the generic resource ledger creates a durable cross-platform contract; otherwise an Architecture/Technical Plan may suffice.
+**Do not draft yet.** AC-6 is accepted, but the full-repo audit must first determine whether an adequate generic Case relationship primitive already exists.
+
+- If an adequate primitive exists, reuse/extend it; ADR-109 is unnecessary unless the required semantic change is itself a consequential cross-cutting decision.
+- If no adequate primitive exists, draft ADR-109 for the new generic Case relationship/lineage contract before Technical Design selects the exact schema.
+
+## 16.6 Provisional ADR — Resource Usage & Cost Attribution
+
+**Draft now, but do not assign the final numeric ID until the ADR-109 Case-relationship question is resolved.**
+
+AC-10 now clearly creates a durable cross-domain contract that warrants an ADR. Capture:
+
+- resource usage ≠ cost valuation ≠ attribution/allocation ≠ customer billing;
+- append-only usage evidence and versioned/reconcilable valuation;
+- direct causal attribution before shared allocation;
+- correlation/lineage is not repeated economic allocation;
+- explicit versioned shared allocation only with a defensible driver;
+- explicit shared/unallocated cost rather than false precision;
+- mathematical reconciliability of roll-ups to underlying resource events;
+- retries/failures/reconciliation as cost-bearing usage;
+- activity/outcome semantics sourced from governed operational truth;
+- minimal allowlisted metadata / no unnecessary business content;
+- cross-domain primitive, not Relationship-specific tables;
+- billing/pricing/credits as a separate future contract.
+
+Exact table names, migration/dual-write strategy, valuation record shape and read-model implementation remain Technical Design.
 
 ---
 # 17. Brownfield migration strategy
@@ -1577,15 +2040,15 @@ Not every blocker must be fully implemented before the Technical Plan is written
 6. **ADR-101:** supersede with ADR-106 reflecting current multi-seat and legacy-identity semantics.
 7. **Authority:** durable responsibility, runtime authority, conversation authority and business approval authority remain distinct; Case existence does not transfer runtime authority.
 8. **WhatsApp/external conversation:** generic external-conversation binding; legacy `lead_id` is opaque external context; prefer reuse/wrapping of Traditional Gu outbound transport subject to source-audited guarantees.
+9. **Policy:** generic organization-owned typed/versioned policy contract; NL is authoring interface, published structured version is runtime authority; consequential decisions remain policy-version attributable; missing/invalid policy cannot broaden authority.
+10. **Case relationships / lineage:** generic governed Case relationship semantics; reuse an adequate shared primitive if present, otherwise introduce one; lineage preserves history/provenance, reactivation normally continues the same Case, consequential mutations require authority/evidence, relationships are organization-contained by default, and Opportunity ↔ Transaction association does not itself close the Opportunity.
+11. **Relationship truth/projection:** provenance-backed `case_facts` + derived business projections; keep viability/progression/delivery/closure separate from generic runtime status; progression is non-linear/repeating; `current_step` is reserved for genuine procedural execution state, not CRM staging.
 
-## Recommendations still pending review
+12. **Work:** situational Case reconsideration + adaptive shared Work Plane; dynamic planning remains inside Case/authority/invariant/evidence bounds; distinguish scheduled reconsideration from committed deferred Work; reconciliation is ordinary Work and child Cases require independent durable responsibility.
 
-9. **Policy:** generic versioned organization policy; NL is authoring interface, published structure is runtime authority.
-10. **Case lineage:** generic Case relationship primitive if none exists after full-repo audit.
-11. **Relationship truth/projection:** `case_facts` + projections; no CRM-stage abuse of runtime status/current_step.
-12. **Work:** situational Case reconsideration + shared Work Items; no fixed future-message queue.
-13. **Work Portfolio:** organization-authorized projection over shared truth, not a second SOR.
-14. **Economics:** cross-domain resource usage/cost telemetry preserving current append-only AI ledger semantics; billing remains separate.
+13. **Work Portfolio:** exception-first organization-authorized projection over shared truth; authorization and governed must-surface predicates precede model ranking; model judgment may prioritize contextual human-intervention need with evidence-linked explanations; UI actions write to canonical operating mechanisms, not portfolio truth.
+
+14. **Economics:** cross-domain resource usage/cost telemetry separates usage, valuation, causal attribution/shared allocation and billing; preserves append-only evidence, reconciliability, no-false-precision rules and cross-domain semantics.
 
 ---
 # 23. Open questions that require source audit or later Specs
@@ -1630,16 +2093,16 @@ Current status:
 - [x] Legacy vs Gu OS runtime decision authority accepted conceptually.
 - [x] Human takeover / conversation authority separation accepted.
 - [x] Fact-level SOR/write consistency pattern accepted.
-- [ ] Generic organization-policy direction (AC-5) reviewed/accepted.
-- [ ] Generic Case relationship direction (AC-6) reviewed/accepted or full-repo audit finds an existing equivalent.
-- [ ] Relationship facts/projection vs `current_step` direction (AC-7) reviewed/accepted.
-- [ ] Work/evidence-reconciliation reuse and situational wake-up direction (AC-8) reviewed/accepted.
-- [ ] Work Portfolio projection principle (AC-9) reviewed/accepted.
-- [ ] Generic economic telemetry direction (AC-10) reviewed/accepted.
+- [x] Generic organization-policy direction (AC-5) reviewed/accepted.
+- [x] Generic Case relationship direction (AC-6) reviewed/accepted; full-repo audit remains required only to determine reuse vs new primitive / ADR-109 need.
+- [x] Relationship facts/projection vs `current_step` direction (AC-7) reviewed/accepted.
+- [x] Work/evidence-reconciliation reuse, situational wake-up and bounded dynamic-work direction (AC-8) reviewed/accepted.
+- [x] Work Portfolio projection / authorization / human-attention ranking principle (AC-9) reviewed/accepted.
+- [x] Generic economic telemetry direction (AC-10) reviewed/accepted.
 - [ ] Legacy source-audit checklist assigned before Technical Plan.
 - [x] Architecture changes affecting S1 behavior were kept aligned with the approved S1 contract; future behavior changes must return to the owning Spec.
 
-**ADR drafting may proceed now for the accepted cross-cutting decisions.** The Architecture Analysis itself should remain Draft until the remaining AC-5 through AC-10 recommendations are reviewed or explicitly deferred.
+**Architecture-cluster review is complete: AC-1 through AC-10 are accepted.** ADR drafting/source audits/Specs/Technical Design remain downstream work. ADR-109 remains gated on the full-repo Case-relationship audit; the Resource Usage & Cost Attribution ADR should be drafted now with a provisional identifier and receive its final numeric ID once that numbering question is resolved. The remaining unchecked legacy source-audit assignment is an implementation-readiness blocker, not an unresolved architecture-cluster decision.
 
 ---
 # 25. Documentation cleanup recommendations
@@ -1659,3 +2122,9 @@ These are documentation-maintenance items, not architecture decisions:
 | v0.2 / 2026-08-26 | Incorporated supplemental seven-dataset legacy catalog, naming-layer discipline, Prospect vs Legacy Lead vs Lead Opportunity distinction, composite Legacy Lead identity semantics, Legacy Deal ≠ Transaction, and existing Traditional Gu outbound WhatsApp HTTP seam. | Draft for architecture/product review |
 | v0.3 / 2026-08-26 | Corrected the outbound WhatsApp audit wording so `lead_id` is treated explicitly as the composite Legacy Lead identifier (`prospect_phone + gu_phone + owner_phone`) rather than as a third independent identity; added terminology guardrails for the three components. | Draft for architecture/product review |
 | v0.4 / 2026-08-26 | Consolidated the accepted AC-1 through AC-4 decisions, added event/fact/wake/action separation, fresh-read and concurrency rules, selective writeback/unknown-outcome handling, explicit external-identity bridge semantics, pre-effect authority revalidation, decision-authority-vs-transport distinction, and ADR-106/ADR-107 drafting status. | Draft — AC-1 through AC-4 accepted direction |
+| v0.5 / 2026-08-27 | Accepted and expanded AC-5 Organization Policy Architecture: typed generic policy contract, NL authoring vs runtime separation, immutable publication lifecycle, model-interpretation/deterministic-enforcement boundary, effective-version audit, non-retroactivity by default, fail-closed authority semantics, and ADR-108 drafting status. | Draft — AC-1 through AC-5 accepted direction |
+| v0.6 / 2026-08-27 | Accepted and expanded AC-6 Case Relationships & Lineage: lineage vs business-association distinction; generic reuse-or-introduce contract; same-Case reactivation by default; history/provenance-preserving merge/split/supersession; governed authority/evidence for mutations; organization-contained default; Opportunity ↔ Transaction without implied Opportunity closure; ADR-109 gated on full-repo audit. | Draft — AC-1 through AC-6 accepted direction |
+| v0.7 / 2026-08-27 | Accepted and expanded AC-7 Relationship Facts / Progression Projection: provenance-backed facts separated from events/projections; durable responsibility, viability, progression, delivery eligibility, closure and runtime status remain distinct; progression is non-linear/repeating rather than a single stage; `current_step` is reserved for genuine procedural execution state; closure remains business truth with reason/evidence rather than runtime status. | Draft — AC-1 through AC-7 accepted direction |
+| v0.8 / 2026-08-27 | Accepted and expanded AC-8 Work Orchestration & Wake-up: wake-up as situational reconsideration; scheduled reconsideration distinguished from committed deferred Work; inline-vs-durable Work granularity; Case Supervisor may adapt work but cannot invent authority; routines/Cases/Supervisor/dynamic work/Work Items/loops separated; evidence reconciliation reuses shared Work; child Cases require independent durable responsibility/lifecycle. | Draft — AC-1 through AC-8 accepted direction |
+| v0.9 / 2026-08-27 | Accepted and expanded AC-9 Supervisory Projection & Multi-seat UX: Work Portfolio remains an exception-first authorized projection; authorization precedes cross-Case reasoning; governed must-surface conditions cannot be suppressed by model ranking; model/Skill judgment may rank contextual human-intervention need with evidence-linked explanations; Needs Attention is not lead scoring; UI actions update canonical Case/Work/Fact/Approval/assignment/policy mechanisms; no new Portfolio Supervisor agent is required for R1. | Draft — AC-1 through AC-9 accepted direction |
+| v0.10 / 2026-08-27 | Accepted and expanded AC-10 Resource Usage, Cost Attribution & Economic Telemetry: usage, valuation, attribution/allocation and billing separated; durable usage evidence survives later valuation maturity; correlation distinguished from allocation; direct causal attribution preferred; shared allocation requires a defensible versioned driver; shared/unallocated cost is preserved rather than fabricated; roll-ups remain reconcilable; retries/failures/reconciliation are cost-bearing; activity/outcome semantics remain owned by governed operational truth; generic cross-domain ADR warranted with provisional numbering. | Architecture review complete — AC-1 through AC-10 accepted direction |
