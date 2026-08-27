@@ -1,7 +1,7 @@
 # R1 Relationship Operations — Architecture Analysis
 
-> **Version:** v0.10  
-> **Status:** Architecture review complete — AC-1 through AC-10 accepted as architecture direction. ADRs/source audits/Specs/Technical Plan remain separate downstream artifacts.  
+> **Version:** v0.11  
+> **Status:** Architecture review complete — AC-1 through AC-10 accepted; full-repo Generic Case↔Case audit complete; ADR-109 and ADR-110 accepted. Remaining legacy source audits / Specs / Technical Design remain downstream.  
 > **Initiative:** R1 — Relationship Operations v1  
 > **Parent product intent:** `docs/product/PRD.md`  
 > **Initiative Brief:** `docs/product/initiatives/relationship-operations/brief.md`  
@@ -1189,7 +1189,7 @@ Likewise, prompts may include a compact relevant policy representation for reaso
 ---
 # 11. AC-6 — Case Relationships & Lineage
 
-> **Review status:** Accepted architecture direction. A full-repo audit is still required before deciding whether this means reusing/extending an existing generic primitive or introducing a new one.
+> **Review status:** Accepted architecture direction. The full-repo audit is complete and found no adequate first-class generic Case↔Case relationship/lineage primitive; ADR-109 therefore establishes a new shared cross-domain contract. Exact persistence/API mechanics remain Technical Design.
 
 ## 11.1 Product need
 
@@ -1280,7 +1280,7 @@ This preserves the distinction already established in §4.11: a Legacy Deal is n
 
 > **Gu OS adopts generic, governed Case relationship semantics for durable lineage and typed cross-Case business association. Reuse/extend an existing shared primitive if the full-repo audit finds one; otherwise introduce a shared primitive rather than a Relationship-specific table. Keep the relationship vocabulary small and typed; preserve Case history and provenance across merge/split/supersession; treat reactivation as same-Case continuity by default; require authority/evidence for consequential mutations; keep relationships organization-contained by default; and do not infer Opportunity closure from a Transaction association alone.**
 
-The full-repo audit is now an implementation/ADR packaging gate, not a reopening of AC-6. If an adequate generic primitive already exists, R1 should reuse it and ADR-109 may be unnecessary. If none exists, ADR-109 may capture the new cross-platform contract before Technical Design chooses the exact schema.
+The full-repo audit is complete. It found no adequate first-class generic Case↔Case relationship/lineage primitive in the current Gu OS repository. ADR-109 therefore captures the new shared cross-domain contract; Technical Design still chooses the exact persistence/API shape. This resolves the audit/ADR-packaging gate without reopening AC-6.
 
 ---
 
@@ -1833,16 +1833,13 @@ Capture:
 - missing/invalid policy cannot broaden autonomy;
 - subordinate/user overrides only where explicitly permitted.
 
-## 16.5 Potential ADR-109 — Generic Case relationships
+## 16.5 ADR-109 — Generic Case relationships and lineage
 
-**Do not draft yet.** AC-6 is accepted, but the full-repo audit must first determine whether an adequate generic Case relationship primitive already exists.
+**Accepted direction.** The full-repo audit found no adequate first-class generic Case↔Case relationship/lineage primitive. [ADR-109](../../../adr/ADR-109-generic-case-relationships-lineage.md) establishes the shared cross-domain Case Relationship / Lineage contract. Exact persistence schema, relationship registry/vocabulary representation, indexes, RLS, APIs, mutation mechanics and migration/backfill remain Technical Design.
 
-- If an adequate primitive exists, reuse/extend it; ADR-109 is unnecessary unless the required semantic change is itself a consequential cross-cutting decision.
-- If no adequate primitive exists, draft ADR-109 for the new generic Case relationship/lineage contract before Technical Design selects the exact schema.
+## 16.6 ADR-110 — Resource Usage & Cost Attribution
 
-## 16.6 Provisional ADR — Resource Usage & Cost Attribution
-
-**Draft now, but do not assign the final numeric ID until the ADR-109 Case-relationship question is resolved.**
+**Accepted direction.** With ADR-109 assigned to Generic Case Relationships, the previously provisional economic-observability decision is finalized as [ADR-110](../../../adr/ADR-110-resource-usage-cost-attribution.md).
 
 AC-10 now clearly creates a durable cross-domain contract that warrants an ADR. Capture:
 
@@ -2094,7 +2091,7 @@ Current status:
 - [x] Human takeover / conversation authority separation accepted.
 - [x] Fact-level SOR/write consistency pattern accepted.
 - [x] Generic organization-policy direction (AC-5) reviewed/accepted.
-- [x] Generic Case relationship direction (AC-6) reviewed/accepted; full-repo audit remains required only to determine reuse vs new primitive / ADR-109 need.
+- [x] Generic Case relationship direction (AC-6) reviewed/accepted; full-repo audit completed, no adequate first-class primitive found, and ADR-109 accepted for the new shared contract.
 - [x] Relationship facts/projection vs `current_step` direction (AC-7) reviewed/accepted.
 - [x] Work/evidence-reconciliation reuse, situational wake-up and bounded dynamic-work direction (AC-8) reviewed/accepted.
 - [x] Work Portfolio projection / authorization / human-attention ranking principle (AC-9) reviewed/accepted.
@@ -2102,7 +2099,7 @@ Current status:
 - [ ] Legacy source-audit checklist assigned before Technical Plan.
 - [x] Architecture changes affecting S1 behavior were kept aligned with the approved S1 contract; future behavior changes must return to the owning Spec.
 
-**Architecture-cluster review is complete: AC-1 through AC-10 are accepted.** ADR drafting/source audits/Specs/Technical Design remain downstream work. ADR-109 remains gated on the full-repo Case-relationship audit; the Resource Usage & Cost Attribution ADR should be drafted now with a provisional identifier and receive its final numeric ID once that numbering question is resolved. The remaining unchecked legacy source-audit assignment is an implementation-readiness blocker, not an unresolved architecture-cluster decision.
+**Architecture-cluster review is complete: AC-1 through AC-10 are accepted.** The Generic Case↔Case audit and ADR packaging gate are also complete: ADR-109 establishes the shared Case Relationship / Lineage contract and ADR-110 finalizes Resource Usage & Cost Attribution. The remaining unchecked legacy source-audit assignment is an implementation-readiness blocker, not an unresolved architecture-cluster decision. Remaining Specs and exact Technical Design continue downstream.
 
 ---
 # 25. Documentation cleanup recommendations
@@ -2128,3 +2125,4 @@ These are documentation-maintenance items, not architecture decisions:
 | v0.8 / 2026-08-27 | Accepted and expanded AC-8 Work Orchestration & Wake-up: wake-up as situational reconsideration; scheduled reconsideration distinguished from committed deferred Work; inline-vs-durable Work granularity; Case Supervisor may adapt work but cannot invent authority; routines/Cases/Supervisor/dynamic work/Work Items/loops separated; evidence reconciliation reuses shared Work; child Cases require independent durable responsibility/lifecycle. | Draft — AC-1 through AC-8 accepted direction |
 | v0.9 / 2026-08-27 | Accepted and expanded AC-9 Supervisory Projection & Multi-seat UX: Work Portfolio remains an exception-first authorized projection; authorization precedes cross-Case reasoning; governed must-surface conditions cannot be suppressed by model ranking; model/Skill judgment may rank contextual human-intervention need with evidence-linked explanations; Needs Attention is not lead scoring; UI actions update canonical Case/Work/Fact/Approval/assignment/policy mechanisms; no new Portfolio Supervisor agent is required for R1. | Draft — AC-1 through AC-9 accepted direction |
 | v0.10 / 2026-08-27 | Accepted and expanded AC-10 Resource Usage, Cost Attribution & Economic Telemetry: usage, valuation, attribution/allocation and billing separated; durable usage evidence survives later valuation maturity; correlation distinguished from allocation; direct causal attribution preferred; shared allocation requires a defensible versioned driver; shared/unallocated cost is preserved rather than fabricated; roll-ups remain reconcilable; retries/failures/reconciliation are cost-bearing; activity/outcome semantics remain owned by governed operational truth; generic cross-domain ADR warranted with provisional numbering. | Architecture review complete — AC-1 through AC-10 accepted direction |
+| v0.11 / 2026-08-27 | Documentation-maintenance alignment after the full-repo Generic Case↔Case audit: audit confirmed no adequate first-class generic primitive; ADR-109 accepted for the shared Case Relationship / Lineage contract; provisional economic ADR finalized as ADR-110. No AC-1..AC-10 architecture direction changed. | Architecture review complete; Case-relationship audit / ADR numbering gate resolved |
