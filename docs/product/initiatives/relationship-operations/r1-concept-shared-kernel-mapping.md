@@ -1,10 +1,11 @@
 # R1 Relationship Operations — Concept → Shared Kernel Mapping
 
-> **Version:** v0.8  
-> **Status:** Discovery / architecture input — aligned with R1 Architecture Analysis v0.11, completed Generic Case↔Case audit and accepted ADR-109/ADR-110; not an ADR or Technical Plan  
+> **Version:** v0.9  
+> **Status:** Discovery / architecture input — aligned with R1 Architecture Analysis v0.12, completed Generic Case↔Case audit, accepted ADR-109/ADR-110 and completed minimum Traditional Gu legacy source audit; not an ADR or Technical Plan  
 > **Initiative:** R1 — Relationship Operations v1  
 > **Companion Brief:** `docs/product/initiatives/relationship-operations/brief.md` — v0.9 approved for Feature / Business Spec and Architecture Analysis  
 > **Repository reviewed:** `janotowers/10x-builders-agent`, `main`  
+> **Legacy source audit:** `docs/product/initiatives/relationship-operations/legacy-source-audit.md` — v0.1 complete for R1 Technical-Plan entry  
 > **Purpose:** Map the approved R1 product concepts to the Gu OS durable-work primitives that already exist, identify genuine gaps, and prevent Relationship Operations from becoming a domain-specific mini-runtime.
 
 ## 1. Decision this mapping supports
@@ -56,14 +57,16 @@ This mapping deliberately does **not** approve exact schemas, new migrations, AP
 Every statement in this mapping should be read under one of these labels:
 
 - **CURRENT — REPO VERIFIED:** observed in the current Gu OS repository/migrations/docs reviewed for this mapping.
-- **CURRENT — DOMAIN CONFIRMED:** current Traditional Gu behavior/data topology confirmed by product/domain leadership but not yet source-audited in the legacy repository.
+- **CURRENT — DOMAIN CONFIRMED:** current Traditional Gu behavior/data topology confirmed by product/domain leadership but not source-verified in the legacy repository for the specific statement.
+- **CURRENT — LEGACY SOURCE VERIFIED:** observed directly in the audited Traditional Gu production repositories/branches recorded in `legacy-source-audit.md`.
 - **TARGET — PRODUCT APPROVED:** direction approved in Relationship Operations P0-1 through P0-8.
 - **OPEN — ARCHITECTURE:** a durable technical choice or missing contract that must be resolved through Architecture Analysis / ADR after fuller source inspection.
 - **OPEN — SPEC:** exact externally meaningful behavior or domain vocabulary to define in a Feature / Business Spec.
+- **OPEN — TECHNICAL DESIGN:** architecture/source contract is sufficiently known, but exact implementation mechanics remain downstream.
 
 Absence from the reviewed files is **not proof that a capability is absent from the entire repo**. Where this mapping says “not found,” it means “not established by the evidence reviewed here.”
 
-> **v0.8 status-reading note:** classifications such as **ARCHITECTURE DECISION**, **GENERIC EXTENSION CANDIDATE**, **OPEN — ARCHITECTURE** and the A1–A9 queue below record what this discovery mapping identified/escalated at the time it was produced. They are not, by themselves, the current unresolved-status register after Architecture Analysis v0.10. Current architecture resolution and remaining source-audit / Technical Design work are summarized in §10 and governed by `architecture-analysis.md` plus the accepted ADRs, including ADR-109 and ADR-110.
+> **v0.9 status-reading note:** classifications such as **ARCHITECTURE DECISION**, **GENERIC EXTENSION CANDIDATE**, **OPEN — ARCHITECTURE** and the A1–A9 queue below record what this discovery mapping identified/escalated at the time it was produced. They are not, by themselves, the current unresolved-status register after Architecture Analysis v0.12. Current architecture resolution is governed by `architecture-analysis.md` and the accepted ADRs. Traditional Gu source-audit questions that blocked Technical-Plan entry are now governed by `legacy-source-audit.md`; remaining exact adapter/schema/reconciliation mechanics are Technical Design.
 
 ## 3. Shared kernel inventory verified in the current repo
 
@@ -156,8 +159,8 @@ The classification is intentionally conservative:
 | **Closure outcome** | `case_facts` / completion outcome projection + Case completion transition when durable responsibility truly ends | **DOMAIN SEMANTIC + SPEC** | Facts + completion contract exist. | Final vocabulary (`objective_achieved`, `lost`, `invalid`, `duplicate`, `superseded`, etc.) and the predicate for completing the Case. Business `lost` ≠ runtime `failed`. |
 | **Progression milestones** | Evidence-backed `case_facts`, possibly derived projection; only use `current_step` when a true durable procedural milestone exists | **DOMAIN SEMANTIC + ARCHITECTURE FIT** | Facts and workflow states both exist. | Avoid rigid CRM funnel. Decide which, if any, Relationship milestones deserve `current_step`; `visit_requested` etc. need not automatically be steps. |
 | **`current_step` in Relationship Ops** | Keep as shared durable procedural pointer if the workflow needs a meaningful current state | **REUSE WITH RESTRAINT** | Kernel explicitly defines it as a durable business/procedural milestone, not a Skill/substate. | Relationship may be less linear than Property Optioning. Do not force all simultaneous facts/events into one step pointer. |
-| **`visit_requested`** | Current operational appointment creation → accepted `case_fact` / progression event with integration provenance | **REUSE + DOMAIN SEMANTIC** | `case_facts` supports integration evidence. | Legacy source audit should verify the operational contract, but domain-confirmed behavior already makes appointment creation a strong positive signal. Absence remains non-proof. |
-| **`visit_scheduled` / rescheduled / cancelled / attended / no-show** | Evidence candidates from appointment source/messages/advisor/prospect → accepted Case facts; unresolved outcome → reconciliation work | **DOMAIN SEMANTIC + SPEC** | Facts + Work support accepted truth and reconciliation. | Define source admissibility per milestone. Missing/stale legacy field does not establish a negative. Exact Mongo/Firebase operational semantics require legacy audit. |
+| **`visit_requested`** | Current operational appointment creation → accepted `case_fact` / progression event with integration provenance | **REUSE + DOMAIN SEMANTIC** | `case_facts` supports integration evidence. | Legacy source audit confirms appointment creation is a strong positive signal but legacy persistence can partially succeed across stores. Exact Case Fact acceptance/reconciliation rules remain Technical Design/Spec work. |
+| **`visit_scheduled` / rescheduled / cancelled / attended / no-show** | Evidence candidates from appointment source/messages/advisor/prospect → accepted Case facts; unresolved outcome → reconciliation work | **DOMAIN SEMANTIC + SPEC** | Facts + Work support accepted truth and reconciliation. | Legacy audit confirms appointment status and explicit post-visit attendance evidence are distinct, and missing attendance evidence remains unknown. Exact source-admissibility rules remain Spec/Technical Design. |
 | **Business evidence provenance** | `case_facts.source_kind`, `source_ref`, `confidence`, supersession; approval snapshots for protected decisions | **REUSE** | Current Impact Plane directly represents commercial facts with provenance. | If R1 needs richer multi-evidence bundles/contradictions than one `source_ref`/confidence can express, prefer a generic provenance extension after architecture analysis. |
 | **Evidence gap** | Unresolved/expected outcome represented in Case facts/context as needed + durable reconciliation `work_item` with `not_before`/`due_at`/verification contract | **REUSE FIRST; GENERIC EXTENSION ONLY IF NEEDED** | Work Plane gives durable work, timing, attempts, result and verification. | **Do not create `relationship_evidence_gaps` by default.** Determine whether an explicit generic “expected evidence/obligation” primitive adds cross-domain value beyond facts + Work. |
 | **Conflicting evidence** | Preserve both source claims/provenance; create reconciliation work; accepted current fact supersedes prior claim only under domain rule | **REUSE + DOMAIN SEMANTIC** | `case_facts` preserves historical claims and supersession. | Need Spec/Architecture rule for contradiction handling; never generic last-write-wins. |
@@ -166,24 +169,24 @@ The classification is intentionally conservative:
 | **Cooldowns / delivery windows / frequency policy** | Shared engagement-policy resolver / overrides + work scheduling eligibility | **REUSE CONCEPT; VERIFY IMPLEMENTATION SCOPE** | DB seam explicitly includes cooldowns, escalation and delivery windows. | Audit resolver and transport integration. If current implementation is advisor-notification-only or lacks WhatsApp audience semantics, extend the shared policy layer rather than create lead-specific cooldown fields. |
 | **Advisor notification** | Existing `notify()` / notification preferences + domain trigger/urgency | **REUSE** | Channel priority and internal-user notification preferences exist. | WhatsApp advisor channel in Traditional Gu may remain legacy capability during migration; do not confuse advisor notification channel with prospect interaction channel. |
 | **Human approval** | `case_approvals` + workflow approval/guard contracts | **REUSE + DOMAIN SEMANTIC** | Evidence-pinned approvals and deterministic transition contracts. | P0-7/Spec decides which actions truly require approval. Do not turn all relationship ambiguity into HITL. |
-| **Human takeover / speaking suppression** | Conversation-authority state + channel routing/suppression; Case continues observing | **ARCHITECTURE DECISION (A6)** | Conversation binding exists, but no reviewed primitive establishes `GU | HUMAN_ACTIVE` speaking authority across WhatsApp. | Preserve proven Traditional Gu behavior conceptually. Exact timeout/re-entry/routing must be generic and source-audited. |
-| **Runtime decision authority (`LEGACY` vs `GU_OS`)** | Explicit authority-resolution contract external to channel-specific agent logic | **ARCHITECTURE DECISION (A6)** | No verified generic primitive in reviewed migrations. | Exactly one authoritative decision-maker per interaction. Case existence alone must not route/cut over. Prefer bounded resolver over legacy direct DB inference. |
-| **Conversation ↔ Case correlation** | `operational_case_conversation_bindings` pattern | **GENERIC EXTENSION CANDIDATE** | Durable binding exists for web/Telegram. | Current DB CHECK does not include WhatsApp. Extend generically or find the already-existing external-channel binding during fuller audit; do not create Relationship-only conversation correlation. |
-| **Off-platform advisor action capture** | Ingest normalized interaction/evidence when observable; otherwise evidence-gap reconciliation Work | **ARCHITECTURE + INTEGRATION** | Case facts/Work can consume normalized evidence. | Separate WhatsApp/phone capture remains partially unobservable in current legacy behavior; future transcript/capture should feed shared evidence semantics. |
+| **Human takeover / speaking suppression** | Conversation-authority state + channel routing/suppression; Case continues observing | **ARCHITECTURE DECISION (A6)** | Conversation binding exists; Traditional Gu same-thread takeover/resume behavior is now source-verified. | Preserve proven behavior conceptually. Exact Gu OS authority state/policy/routing implementation remains Technical Design. |
+| **Runtime decision authority (`LEGACY` vs `GU_OS`)** | Explicit authority-resolution contract external to channel-specific agent logic | **ARCHITECTURE DECISION (A6)** | No verified generic primitive in reviewed Gu OS migrations. | Exactly one authoritative decision-maker per interaction. Case existence alone must not route/cut over. Prefer bounded resolver over legacy direct DB inference. |
+| **Conversation ↔ Case correlation** | `operational_case_conversation_bindings` pattern | **GENERIC EXTENSION CANDIDATE** | Durable binding exists for web/Telegram. | Current DB CHECK does not include WhatsApp. Extend generically using the source-verified legacy identifiers; do not create Relationship-only conversation correlation. |
+| **Off-platform advisor action capture** | Ingest normalized interaction/evidence when observable; otherwise evidence-gap reconciliation Work | **ARCHITECTURE + INTEGRATION** | Case facts/Work can consume normalized evidence. | Separate WhatsApp/phone capture remains partially unobservable; future transcript/capture should feed shared evidence semantics. |
 | **Property matching / current inventory reads** | Bounded inventory/domain capabilities → source-aware operational adapters | **REUSE PATTERN; INTEGRATION WORK** | Gu OS Skills/tools architecture supports bounded capabilities. | Do not persist a full property mirror in the Lead Opportunity. Re-read current property facts before consequential actions. |
-| **Appointment operational writes** | Bounded appointment capability with idempotency/evidence → legacy operational source; Case records accepted outcome | **ARCHITECTURE + INTEGRATION** | Shared Work/idempotency/evidence contracts are available. | Exact legacy API/adapter and field authority require source audit. Selective write-back only. |
+| **Appointment operational writes** | Bounded appointment capability with idempotency/evidence → legacy operational source; Case records accepted outcome | **ARCHITECTURE + INTEGRATION** | Shared Work/idempotency/evidence contracts are available. | Legacy audit confirms partial Firestore/Mongo persistence is possible. Exact adapter/read precedence/reconciliation and field authority remain Technical Design. |
 | **Cross-system write reconciliation** | Work Item attempts + idempotency + accepted Case facts; architecture defines outbox/retry/reconciliation | **ARCHITECTURE DECISION (A4)** | Shared Work Plane already has idempotency/attempt/recovery seams. | No distributed-ACID assumption. Case truth and operational synchronization outcome must remain distinguishable. |
 | **Lead/contact Source of Record** | Existing operational lead source; Case stores reference + necessary durable facts | **P0-8 DOMAIN OWNERSHIP** | Shared Case can reference external context. | Identity mapping A3; no wholesale Gu OS lead mirror. |
-| **Message Source of Record** | Messaging/channel source; Case stores references/derived facts | **P0-8 DOMAIN OWNERSHIP** | Facts support source refs. | Message transport/persistence contract remains legacy/source-specific during migration. |
-| **Property Source of Record** | Source-aware operational inventory / upstream CRM where authoritative | **P0-8 DOMAIN OWNERSHIP** | Case can consume capabilities and preserve provenance. | No Relationship-owned property truth store. |
+| **Message Source of Record** | Messaging/channel source; Case stores references/derived facts | **P0-8 DOMAIN OWNERSHIP** | Facts support source refs. | Message transport/persistence contract remains source-specific during migration; source roles are documented in `legacy-source-audit.md`. |
+| **Property Source of Record** | Source-aware operational inventory / upstream CRM where authoritative | **P0-8 DOMAIN OWNERSHIP** | Case can consume capabilities and preserve provenance. | No Relationship-owned property truth store. Firestore-vs-serving-layer legacy roles are source-verified. |
 | **Visit progression Source of Truth** | Gu OS accepted, evidence-backed Opportunity fact; operational appointment remains its own object/SOR | **P0-8 DOMAIN OWNERSHIP** | Case facts can hold accepted progression truth. | Selective write-back if operational appointment must know the reconciled fact. |
-| **Transaction handoff** | Link Lead Opportunity Case to Transaction Case; shift primary responsibility, keep lineage | **ARCHITECTURE DECISION + SPEC** | Generic Case roots exist. | Canonical Case-to-Case relationship/primary-responsibility transfer primitive not established in reviewed evidence. |
-| **Transaction failure → Relationship resume** | Linked Case relationship + event/fact/wake-up | **ARCHITECTURE + DOMAIN SEMANTIC** | Shared Case wake-up/facts available. | Needs Case relationship contract and exact product handoff semantics. |
+| **Transaction handoff** | Link Lead Opportunity Case to Transaction Case; shift primary responsibility, keep lineage | **ARCHITECTURE DECISION + SPEC** | Generic Case roots exist; ADR-109 establishes the generic Case relationship contract. | Exact Transaction boundary and primary-responsibility semantics remain Transaction/Relationship Spec + Technical Design work. |
+| **Transaction failure → Relationship resume** | Linked Case relationship + event/fact/wake-up | **ARCHITECTURE + DOMAIN SEMANTIC** | Shared Case wake-up/facts available; ADR-109 covers the relationship seam. | Exact product handoff semantics remain downstream Spec work. |
 | **Work Portfolio** | Human supervisory read model/projection over Cases, Work Items, facts, approvals, evidence gaps, outcomes and priority signals; primary `Needs Attention`, secondary `In Motion` and lightweight outcomes | **P1-9 APPROVED + REUSE PRINCIPLE** | Shared underlying data planes exist and can support cross-Case supervision without a new durable root. | Do not make Work Portfolio a second SOR/pipeline. Rank explainable human attention rather than merely lead attractiveness. Reserve `Supervisor` terminology for agentic/runtime roles such as Case Supervisor. |
-| **Organization / brokerage identity** | Generic Gu OS organization identity mapped initially to the legacy principal-`super-admin`/`organization_id` representation | **P1-10 APPROVED + GENERIC EXTENSION / A3** | Legacy business semantics already identify a brokerage through a principal `super-admin` plus associated users; workflow definitions reserve organization scope. | Do not canonize the principal user id as the permanent organization id. Introduce/map a first-class organization abstraction sufficient for R1 and preserve legacy provenance. |
-| **Organization membership / advisor role** | Membership relation between organization and authenticated human identity; legacy roles `super-admin`, `admin`, `vendedor` are migration inputs | **P1-10 APPROVED + GENERIC EXTENSION / A3** | Traditional Gu already supports multiple advisors associated to one brokerage. | Role names are legacy semantics, not necessarily the permanent Gu OS authorization model. R1 needs enough membership/role semantics for assignment, visibility and routing without building a full enterprise IAM system. |
-| **Assigned advisor / DRI** | Opportunity-level business assignment distinct from Case tenant ownership and actor/approver identity | **P1-10 APPROVED + DOMAIN SEMANTIC / A3** | `operational_cases.assigned_to_user_id` shows an existing assignment seam, but current tenant/RLS remains user-centric. | Do not infer that `case.user_id` is the advisor, approver or human contact. Exact Gu OS↔legacy advisor identity mapping and assignment authority need architecture/source audit. |
-| **Advisor human contact endpoint** | Per-advisor WhatsApp/contact identity for notifications, input and takeover, separate from Gu's prospect-facing business-number identity | **P1-10 APPROVED + A3/A6 INTEGRATION** | Domain-confirmed Traditional Gu has separate advisor WhatsApp numbers and a principal account associated with the Gu WhatsApp API/business-number identity. | Exact routing/linkage is not source-audited. Do not collapse advisor phone, Gu business number, authenticated user and conversation authority into one identifier. |
+| **Organization / brokerage identity** | Generic Gu OS organization identity mapped initially to the legacy principal-`super-admin`/`organization_id` representation | **P1-10 APPROVED + GENERIC EXTENSION / A3** | Legacy business semantics and mixed `organization_id` representation are source-verified. | Do not canonize the principal user id as the permanent organization id. Introduce/map a first-class organization abstraction sufficient for R1 and preserve legacy provenance. |
+| **Organization membership / advisor role** | Membership relation between organization and authenticated human identity; legacy roles `super-admin`, `admin`, `vendedor` are migration inputs | **P1-10 APPROVED + GENERIC EXTENSION / A3** | Traditional Gu multi-advisor model and legacy Firebase identity/role bridge are source-verified. | Role names are migration semantics, not the permanent Gu OS authorization model. |
+| **Assigned advisor / DRI** | Opportunity-level business assignment distinct from Case tenant ownership and actor/approver identity | **P1-10 APPROVED + DOMAIN SEMANTIC / A3** | `operational_cases.assigned_to_user_id` shows an existing assignment seam; legacy sticky assignment behavior is source-verified. | Do not infer that `case.user_id` or legacy principal is the advisor, approver or human contact. Exact Gu OS↔legacy advisor mapping remains Technical Design. |
+| **Advisor human contact endpoint** | Per-advisor WhatsApp/contact identity for notifications, input and takeover, separate from Gu's prospect-facing business-number identity | **P1-10 APPROVED + A3/A6 INTEGRATION** | Traditional Gu same-thread owner/advisor intervention and Gu business-number routing are source-verified. | Exact Gu OS routing/linkage remains Technical Design. Do not collapse advisor phone, Gu business number, authenticated user and conversation authority into one identifier. |
 | **Cost-to-Serve / material resource usage** | Existing `ai_usage_events` for AI + generic future resource-usage/cost primitive for messaging, voice, document processing, geocoding/search, specialized providers and other paid resources | **REUSE AI SEAM + GENERIC EXTENSION CANDIDATE (A9)** | AI ledger already captures reported/estimated cost, pricing version, retries and Case/Work correlation seams. | Ensure every R1 execution path propagates correlation. Do not create Relationship-only cost tables. Non-AI resource taxonomy/unit/cost semantics need generic architecture. |
 | **Direct cost attribution** | Resource event correlated directly to Case / Work Item / Attempt / Work Run when causal ownership is known | **REUSE/EXTEND CORRELATION** | Current AI ledger can directly correlate to Case/Work objects. | Account/organization aggregation and all execution paths must be verified. Knowledge that a Case benefited is not enough unless correlation is causally defensible. |
 | **Shared/batch cost allocation** | Preserve original shared resource event + explicit allocation records/policy using a documented cost driver | **ARCHITECTURE DECISION (A9)** | Durable Task / Work Run provides a natural root for some batch work; AI ledger does not currently model many-to-many cost allocations. | Prefer direct attribution first; otherwise use Activity-Based Costing driver such as opportunities processed, attributable tokens/context, messages, properties, pages, minutes or API calls. If no defensible driver exists, retain shared/account/platform cost rather than invent per-Case precision. |
@@ -233,21 +236,21 @@ The classification is intentionally conservative:
 **Product semantic:** positive evidence establishes milestones; missing evidence remains unknown and creates reconciliation work when material.  
 **Kernel fit:** `case_facts` + Work Items are strong primitives; release-oriented `evidence_records` is not the same thing.  
 **Do not build:** a clean Relationship visit-state table that blindly mirrors unreliable legacy statuses.  
-**Open:** source-admissibility matrix and exact legacy appointment semantics.
+**Open:** exact source-admissibility matrix and Case Fact acceptance/reconciliation rules; legacy appointment/visit evidence semantics are now source-verified in `legacy-source-audit.md`.
 
 ### P0-7 Human gates
 
 **Product semantic:** involvement proportional to consequence/authority/ambiguity/recoverability.  
 **Kernel fit:** `case_approvals`, workflow guards and shared notification mechanisms.  
 **Do not build:** manual approval for every uncertain conversational decision.  
-**Open:** exact positive gate rules/action taxonomy and A6 takeover mechanics.
+**Open:** exact positive gate rules/action taxonomy and A6 Gu OS takeover mechanics.
 
 ### P0-8 Source of Record / write-back
 
 **Product semantic:** fact-level ownership + selective write-back.  
 **Kernel fit:** Case facts preserve durable interpreted truth; Work/attempts can execute/reconcile writes.  
 **Do not build:** bidirectional full-database mirroring between legacy and Gu OS.  
-**Open:** A1/A3/A4 integration contracts, field-level authority matrix and idempotent write path.
+**Open:** A1/A3/A4 exact adapter contracts, field-level authority matrix and idempotent write path.
 
 ### Cross-cutting — Cost-to-Serve / Resource Usage
 
@@ -279,7 +282,7 @@ The following should be treated as architecture smells unless a cross-domain ana
 
 ## 7. Architecture decision queue produced by this mapping
 
-> **Discovery-time queue:** this section preserves the architecture questions produced by the mapping. Architecture Analysis v0.10 subsequently resolved AC-1 through AC-10 at architecture-direction level; use §10 for the current unresolved boundary. The queue remains useful as provenance for why each cross-cutting decision/audit exists.
+> **Discovery-time queue:** this section preserves the architecture questions produced by the mapping. Architecture Analysis v0.12 subsequently resolved AC-1 through AC-10 at architecture-direction level, the Generic Case↔Case audit resolved ADR-109, and `legacy-source-audit.md` resolved the minimum Traditional Gu source-contract questions required for Technical-Plan entry. Use §10 for the current unresolved boundary. The queue remains useful as provenance for why each cross-cutting decision/audit exists.
 
 The mapping strengthens the existing A1–A6 queue and adds three cross-kernel questions.
 
@@ -320,7 +323,7 @@ Priority subquestions:
 
 ### A8 — Case relationship / lineage and transaction handoff
 
-Verify whether a canonical primitive already exists; otherwise define generic semantics for:
+ADR-109 establishes the generic relationship/lineage contract. Technical Design still defines exact persistence/API mechanics for:
 
 - related Cases;
 - parent/child or predecessor/successor where meaningful;
@@ -383,10 +386,10 @@ Should define:
 - visit milestone/event semantics;
 - admissible source/evidence hierarchy;
 - unknown/conflict/reconciliation behavior;
-- legacy current positive evidence and known blind spots;
+- source-verified current positive evidence and known blind spots;
 - how visit outcomes update the Opportunity and later analytics.
 
-It should **not** assume legacy appointment status fields are authoritative without source audit.
+It should **not** assume every legacy appointment field is authoritative; use the source roles and partial-persistence behavior documented in `legacy-source-audit.md`.
 
 ### Spec D — Portfolio Supervision & Operator Control
 
@@ -408,7 +411,7 @@ The minimum R1 human-supervision experience is an **exception-first Work Portfol
 
 ### P1-10 — Minimum organization / multi-seat slice — DIRECTION APPROVED
 
-Traditional Gu already has **multi-advisor business semantics**: a principal `super-admin` user represents the brokerage in the legacy model, `admin` and `vendedor` users can be associated through `organization_id` / `org_name`, and leads/appointments/properties/deals/Gu-number records reference specific legacy users. There is no separate first-class Organization table in the confirmed legacy model; `organization_id` behaves like a reference to the principal user and must therefore be treated as a **legacy organization key**, not as the permanent Gu OS organization identity.
+Traditional Gu already has **multi-advisor business semantics**: a principal `super-admin` user represents the brokerage in the legacy model, `admin` and `vendedor` users can be associated through `organization_id` / `org_name`, and leads/appointments/properties/deals/Gu-number records reference specific legacy users. The source audit further confirms that `organization_id` has mixed historical representation and is intertwined with principal-user context; it must therefore be treated as a **legacy organization key/bridge**, not as the permanent Gu OS organization identity.
 
 R1 should pull forward the **minimum viable organization/multi-seat foundation** needed by Relationship Operations: organization identity, membership/authenticated advisor identity, Opportunity assignment/DRI, role-appropriate visibility, human routing/contact identity and enough authority semantics for protected decisions. The R1 target must support multiple authenticated advisors as a first-class near-term requirement even if the first operational slice begins with one seat.
 
@@ -467,38 +470,38 @@ Economic attribution anchors → Case / Work / Attempt / Work Run correlation
 
 This is exactly the architecture we wanted to preserve: **shared operating primitives, domain-specific semantics.**
 
-### 10.2 Cross-cutting seams after Architecture Analysis v0.11
+### 10.2 Cross-cutting seams after Architecture Analysis v0.12
 
-Architecture Analysis v0.11 records AC-1 through AC-10 as accepted, the Generic Case↔Case audit as complete, and ADR-109 / ADR-110 as accepted. The remaining uncertainty is therefore no longer whether R1 should create Relationship-specific infrastructure; it should not. The remaining work is to verify source contracts and translate accepted cross-domain directions into exact Specs / Technical Design.
+Architecture Analysis v0.12 records AC-1 through AC-10 as accepted, the Generic Case↔Case audit as complete, ADR-109 / ADR-110 as accepted, and the minimum Traditional Gu production-source audit as complete for Technical-Plan entry. The remaining uncertainty is therefore no longer whether R1 should create Relationship-specific infrastructure or whether the basic legacy contracts exist; it should not, and the relevant brownfield contracts are now documented. Remaining work is to translate accepted cross-domain directions and source-verified contracts into exact Specs / Technical Design.
 
 Important remaining seams include:
 
-- source-audited real-time legacy operational access and event ingestion;
+- exact real-time legacy operational gateway and normalized event-ingestion implementation over source-verified contracts;
 - exact identity-bridge implementation and organization/membership/RLS mechanics under ADR-106;
 - exact cross-system write/idempotency/reconciliation mechanics for the accepted fact-level SOR direction;
-- source-audited runtime/conversation-authority signals and WhatsApp transport guarantees under ADR-107;
+- exact Gu OS runtime/conversation-authority state/resolver and WhatsApp wrapper under ADR-107, using the source-verified takeover/resume/provider-ID behavior;
 - exact external-conversation binding extension and engagement-policy behavior for prospect-facing delivery;
 - exact Generic Case Relationship / Lineage persistence, typed vocabulary, authorization and mutation mechanics under ADR-109;
 - exact organization-policy storage/resolution mechanics under ADR-108;
-- source-level audit of legacy appointment/human-takeover/Legacy Deal semantics;
+- exact appointment read precedence/reconciliation and visit Fact source-admissibility rules;
 - exact generic resource-usage ledger / valuation / allocation migration under ADR-110 Resource Usage & Cost Attribution;
 - future interoperability with customer Pricing / Credits / Billing while preserving the accepted cost-vs-price separation.
 
-These remain cross-cutting platform seams, source-audit questions or Technical Design work—not reasons to build a Relationship-specific mini-runtime.
+These remain cross-cutting platform seams or Technical Design work—not reasons to build a Relationship-specific mini-runtime.
 
 ### 10.3 Recommended next gate
 
-With the Brief, S1 and Architecture Analysis now approved/aligned, the current sequence is:
+With the Brief, S1, Architecture Analysis and minimum legacy source audit now approved/aligned, the current sequence is:
 
 ```text
 Initiative Brief v0.9
 + S1 Lead Opportunity Lifecycle v0.3
-+ this mapping v0.8
-+ Architecture Analysis v0.11
++ this mapping v0.9
++ Architecture Analysis v0.12
++ Traditional Gu Legacy Source Audit v0.1
++ ADR-106 / ADR-107 / ADR-108
 + ADR-109 Generic Case Relationships / Lineage
 + ADR-110 Resource Usage & Cost Attribution
-          ↓
-remaining legacy source audits
           ↓
 remaining Feature / Business Specs (S2 / S3 / S4 as needed)
           ↓
@@ -577,10 +580,10 @@ v0.3 incorporates the approved P1-9 terminology/product direction and strengthen
 
 ### Important current-source caveats
 
-- The Traditional Gu repository has **not** yet been source-audited in this artifact.
-- The legacy appointment field semantics used by P0-6 remain domain-confirmed / analytical-schema-informed until verified against the production legacy source.
-- The current database migration proves that engagement-policy overrides can represent cooldowns/escalation/delivery windows; this mapping has **not** yet proved that the current runtime resolver applies those semantics to prospect-facing WhatsApp delivery.
-- The subsequent full-repo Generic Case↔Case audit confirmed that the current repo has no adequate first-class generic Case relationship/lineage primitive; ADR-109 therefore establishes the new shared cross-domain contract.
+- The minimum Traditional Gu production-source audit required for R1 Technical-Plan entry is now complete and recorded in `legacy-source-audit.md`.
+- Legacy appointment persistence, post-visit evidence, Legacy Deal semantics, property source/search roles, assignment, `lead_id`, same-thread takeover/resumption and outbound provider correlation are source-verified at the audited production revisions. Exact Gu OS adapter/reconciliation mechanics remain Technical Design.
+- The current Gu OS database migration proves that engagement-policy overrides can represent cooldowns/escalation/delivery windows; this mapping has **not** yet proved that the current Gu OS runtime resolver applies those semantics to prospect-facing WhatsApp delivery.
+- The full-repo Generic Case↔Case audit confirmed that the current repo has no adequate first-class generic Case relationship/lineage primitive; ADR-109 therefore establishes the new shared cross-domain contract.
 - `evidence_records` is currently verification/release evidence with constrained subject kinds; it should not be silently repurposed as business-event evidence without a deliberate architecture decision.
 - `ai_usage_events` currently meters only `ai_model` resource usage and is explicitly internal observability, not billing. This mapping has **not** established a current generic ledger for WhatsApp/voice/external-provider costs or a many-to-many cost-allocation primitive.
 - The current AI ledger has direct `user_id` and Case/Work correlation seams; organization/account-level aggregation and exact tenant semantics must be verified rather than assumed.
@@ -610,3 +613,13 @@ v0.8 is a documentation-maintenance alignment update after completion of the ful
 - finalizes Resource Usage & Cost Attribution as ADR-110;
 - removes the now-resolved audit/numbering gate from the next-step sequence;
 - leaves exact relationship persistence/API mechanics, economic-ledger mechanics and remaining legacy source audits to downstream Technical Design/source audit.
+
+## Appendix G — v0.9 alignment note
+
+v0.9 is a documentation-maintenance and source-status alignment update after completion of the minimum Traditional Gu production-source audit. It does not reopen or change approved mapping/product semantics. Relative to v0.8 it:
+
+- links `legacy-source-audit.md` v0.1 as the canonical source-verified brownfield contract for R1;
+- upgrades relevant identity, `lead_id`, assignment, human takeover/resumption, appointment/visit evidence, Legacy Deal, property and outbound-provider statements from audit-pending/domain-confirmed to source-verified;
+- updates Architecture Analysis references to v0.12;
+- removes the minimum legacy source audit from the Technical-Plan-entry gate;
+- leaves exact adapter/schema/event/reconciliation mechanics to downstream Technical Design.
