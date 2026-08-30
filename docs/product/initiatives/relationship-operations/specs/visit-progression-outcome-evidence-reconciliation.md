@@ -9,8 +9,8 @@
 > **Initiative Brief:** [Relationship Operations — Initiative Brief](../brief.md)  
 > **S1 behavioral contract:** [Lead Opportunity Lifecycle & Responsibility](./lead-opportunity-lifecycle.md) — v0.3 approved  
 > **S2 behavioral contract:** [Situational Progression, Next Work & Human Authority](./situational-progression-next-work-human-authority.md) — v0.3 approved  
-> **Architecture Analysis:** [R1 Architecture Analysis](../architecture-analysis.md) — v0.12 complete  
-> **Legacy source audit:** [Traditional Gu Legacy Source Audit](../legacy-source-audit.md) — v0.1 complete for R1 Technical-Plan entry  
+> **Architecture Analysis:** [R1 Architecture Analysis](../architecture-analysis.md) — v0.13 complete  
+> **Legacy source audit:** [Traditional Gu Legacy Source Audit](../legacy-source-audit.md) — v0.2 complete for R1 Technical-Plan entry  
 > **Relevant ADRs:** ADR-106 Organization-Native Multi-seat Tenancy; ADR-107 Runtime / Conversation Authority; ADR-108 Versioned Organization Policy; ADR-109 Generic Case Relationships / Lineage; ADR-110 Resource Usage & Cost Attribution  
 > **Roadmap:** [Gu OS Evolution Roadmap](../../../../roadmap/gu-os-evolution-roadmap.md) — R1  
 > **Doctrine:** [Gu OS Principles & Design Doctrine](../../../../principles/gu-os-principles-and-design-doctrine.md)  
@@ -2908,27 +2908,29 @@ The following intentionally remain downstream:
 
 These questions must not reopen S3 semantics unless implementation evidence reveals a genuine product contradiction.
 
-# 23. Required downstream document sync after S3 approval
+# 23. Post-approval companion document sync — completed
 
-## Architecture Analysis / AC-8 clarification
+The two documentation alignments required by S3 approval have been completed. They refine wording and target-semantic references without reopening architecture decisions or changing source-verified legacy facts.
 
-Clarify:
+## Architecture Analysis / AC-8 clarification — completed
+
+`architecture-analysis.md` v0.13 now clarifies:
 
 > **Evidence gaps are ordinary shared Case work when resolving them is worthwhile; they do not automatically create Work Items. Durable Work is used when reconciliation requires durable execution semantics.**
 
 This is a wording refinement, not an architecture reversal.
 
-## Legacy Source Audit clarification
+## Legacy Source Audit clarification — completed
 
-Retain the source-verified legacy mapping table, but annotate that:
+`legacy-source-audit.md` v0.2 now makes S3 the governing target semantic contract for Visit progression/evidence and clarifies that:
 
 - `visit_confirmed` was an early evidence-mapping candidate, not a target mandatory progression milestone;
 - legacy negative occurrence evidence supports non-occurrence but does not itself establish actor-specific no-show;
-- S3 is now the governing target semantic contract for Visit progression/evidence.
+- unresolved occurrence may remain `unknown`/conflicted and reconciliation is pursued only when materially worthwhile.
 
-The source facts remain unchanged.
+The source-verified legacy facts remain unchanged.
 
-No accepted ADR needs revision solely because of S3.
+No accepted ADR was revised solely because of S3.
 
 # 24. Approval statement
 
