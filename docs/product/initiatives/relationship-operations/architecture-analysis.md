@@ -1,6 +1,6 @@
 # R1 Relationship Operations — Architecture Analysis
 
-> **Version:** v0.12  
+> **Version:** v0.13  
 > **Status:** Architecture review complete — AC-1 through AC-10 accepted; Generic Case↔Case audit complete; ADR-109 and ADR-110 accepted; minimum Traditional Gu legacy source audit complete for Technical-Plan entry. Remaining Specs / Technical Design remain downstream.  
 > **Initiative:** R1 — Relationship Operations v1  
 > **Parent product intent:** `docs/product/PRD.md`  
@@ -217,7 +217,6 @@ The following constraints are treated as non-negotiable inputs unless the owning
 ### 4.4 Conversation binding exists, but is not yet suitable for WhatsApp R1
 
 `operational_case_conversation_bindings` currently:
-
 - binds a Case to a conversation;
 - supports late replies / clarification / ambiguity;
 - is user-scoped;
@@ -657,7 +656,6 @@ The source audit reinforces this with two concrete brownfield examples:
 
 - appointment creation may partially succeed across Firestore/Mongo/Google Calendar;
 - WhatsApp HTTP acceptance/queue acceptance/provider `wamid` and later failure callbacks are separate states.
-
 Reuse existing Work Item / Attempt / evidence primitives first. Do not introduce a Relationship-specific external-effects ledger unless a shared missing contract is demonstrated.
 
 ## 7.6 Selective writeback, not generic mirroring
@@ -1317,7 +1315,6 @@ R1 must preserve the S1 separation between at least:
 No single CRM-style `stage` or enum should become the authoritative answer to all of these questions. For example, a commercially viable Opportunity may be temporarily non-contactable while its runtime remains wakeable; a commercially lost Opportunity may complete successfully at the runtime level rather than `failed`.
 
 ## 12.3 Progression is evidence-backed, non-linear and potentially repeating
-
 Progression milestones such as:
 
 - `opportunity_admitted`;
@@ -1493,21 +1490,31 @@ In shorthand:
 
 Dynamic workflows therefore complement rather than replace durable Operational Cases.
 
-## 13.6 Evidence gaps are ordinary Work
+## 13.6 Evidence gaps use ordinary shared Work when resolution is worthwhile
 
-Missing expected evidence should usually create reconciliation work, for example:
+Missing expected evidence does not automatically require action or a durable Work Item.
+
+The Case Supervisor should first determine whether resolving the gap is materially worthwhile for the current decision, responsibility or outcome. If not, the gap may legitimately remain unknown.
+
+When reconciliation is worthwhile, it is ordinary Case work and should reuse shared Work/attempt/evidence mechanisms rather than a Relationship-specific evidence-gap subsystem. A durable Work Item is appropriate only when the reconciliation itself benefits from durable execution semantics such as waiting, retry, dependencies, human participation, material effects, idempotency/post-condition verification or independent execution evidence.
+
+For example:
 
 ```text
 appointment happened?
         ↓ unknown
-reconciliation Work Item
-        ↓
-reread source / ask advisor / ask prospect if appropriate
-        ↓
-accepted Case fact or remain unknown
+is resolution materially worthwhile?
+        ├─ no  → preserve unknown / no further active work
+        └─ yes
+              ↓
+       inline reconciliation and/or durable Work Item
+              ↓
+       reread source / ask advisor / ask prospect if appropriate
+              ↓
+       accepted Case fact or remain unknown
 ```
 
-Do not create a Relationship-specific `relationship_evidence_gaps` table, scheduler or retry engine by default. Reconciliation should reuse shared Work/attempt/evidence mechanisms unless a later requirement proves a genuinely distinct cross-domain primitive is needed.
+Do not create a Relationship-specific `relationship_evidence_gaps` table, scheduler or retry engine by default.
 
 ## 13.7 Child Case boundary
 
@@ -1515,7 +1522,7 @@ Dynamic decomposition must not turn every subtask into a Case. Create a child Ca
 
 ## 13.8 Accepted decision
 
-> **Use Case wake-up as situational reconsideration and the shared Work Plane for durable execution. A Case Supervisor may determine or propose what work best advances the Case after relevant events, scheduled wake-ups, human interventions or changed facts, including adapting the work graph within the Case contract. Dynamic planning does not grant dynamic authority: proposed work remains bounded by the Case objective, allowed capabilities, organization/platform policy, invariants, resource constraints, human-authority rules and deterministic verification. Use inline bounded execution for ephemeral read/reason steps, and durable Work Items when work must wait, retry, depend on other work, involve humans, create material external effects or preserve independent execution/evidence. Distinguish scheduled reconsideration from already-committed deferred work; both revalidate relevant authority and material preconditions before external effects. Represent evidence reconciliation as ordinary Work, not as a Relationship-specific scheduler or evidence-gap subsystem. Create a child Case only when the subproblem acquires its own durable business responsibility/lifecycle.**
+> **Use Case wake-up as situational reconsideration and the shared Work Plane for durable execution. A Case Supervisor may determine or propose what work best advances the Case after relevant events, scheduled wake-ups, human interventions or changed facts, including adapting the work graph within the Case contract. Dynamic planning does not grant dynamic authority: proposed work remains bounded by the Case objective, allowed capabilities, organization/platform policy, invariants, resource constraints, human-authority rules and deterministic verification. Use inline bounded execution for ephemeral read/reason steps, and durable Work Items when work must wait, retry, depend on other work, involve humans, create material external effects or preserve independent execution/evidence. Distinguish scheduled reconsideration from already-committed deferred work; both revalidate relevant authority and material preconditions before external effects. When resolving an evidence gap is materially worthwhile, represent reconciliation through ordinary shared Case work and use durable Work Items only when durable execution semantics are needed; do not create a Relationship-specific scheduler or evidence-gap subsystem. Create a child Case only when the subproblem acquires its own durable business responsibility/lifecycle.**
 
 ---
 
@@ -1757,7 +1764,6 @@ Economic telemetry should remain deliberately poor in business content: record i
 Customer credits, subscriptions, wallets, outcome pricing and billing are a separate contract. They may consume economic telemetry and outcome truth, but customer charges are **not derived 1:1 from internal provider cost**. Preserve separate provider-pricing versions and future customer-pricing/credit-policy versions.
 
 ## 15.7 Accepted decision
-
 > **Generalize Gu OS economic observability as a cross-domain resource-usage and cost-attribution contract, extending rather than replacing the append-only, versioned-pricing and correlation semantics already established by `ai_usage_events`. Keep resource usage, cost valuation, cost attribution/allocation and customer pricing/billing as distinct concerns. Durable usage evidence must remain auditable even when cost estimates later mature, reconcile or receive provider adjustments. Prefer direct causal attribution to Case / Work Item / Attempt / Work Run when defensible; treat hierarchical correlations as lineage rather than multiple allocations, and use explicit versioned shared-cost allocation only when a defensible cost driver exists. Preserve unallocated/shared cost rather than inventing false per-Case precision, and require economic roll-ups to remain reconcilable to their underlying resource events. Retry, failure and reconciliation consumption remain real cost-bearing usage. Business activity and outcome analysis should derive from governed Case/Work semantics rather than making the economic ledger a second owner of business truth. Keep telemetry metadata minimal and allowlisted, avoiding unnecessary business content. Customer credits, price, wallet and billing remain a separate contract that may consume economic/outcome telemetry but is not derived 1:1 from internal cost. Do not create Relationship-specific economic tables.**
 
 ---
@@ -2034,7 +2040,7 @@ The Technical Plan must now make the remaining implementation choices explicitly
 9. **Policy:** generic organization-owned typed/versioned policy contract; NL is authoring interface, published structured version is runtime authority; consequential decisions remain policy-version attributable; missing/invalid policy cannot broaden authority.
 10. **Case relationships / lineage:** generic governed Case relationship semantics under ADR-109; lineage preserves history/provenance, reactivation normally continues the same Case, consequential mutations require authority/evidence, relationships are organization-contained by default, and Opportunity ↔ Transaction association does not itself close the Opportunity.
 11. **Relationship truth/projection:** provenance-backed `case_facts` + derived business projections; keep viability/progression/delivery/closure separate from generic runtime status; progression is non-linear/repeating; `current_step` is reserved for genuine procedural execution state, not CRM staging.
-12. **Work:** situational Case reconsideration + adaptive shared Work Plane; dynamic planning remains inside Case/authority/invariant/evidence bounds; distinguish scheduled reconsideration from committed deferred Work; reconciliation is ordinary Work and child Cases require independent durable responsibility.
+12. **Work:** situational Case reconsideration + adaptive shared Work Plane; dynamic planning remains inside Case/authority/invariant/evidence bounds; distinguish scheduled reconsideration from committed deferred Work; evidence reconciliation uses ordinary shared Case work when resolution is materially worthwhile, and durable Work Items only when durable execution semantics are needed; child Cases require independent durable responsibility.
 13. **Work Portfolio:** exception-first organization-authorized projection over shared truth; authorization and governed must-surface predicates precede model ranking; model judgment may prioritize contextual human-intervention need with evidence-linked explanations; UI actions write to canonical operating mechanisms, not portfolio truth.
 14. **Economics:** cross-domain resource usage/cost telemetry separates usage, valuation, causal attribution/shared allocation and billing; preserves append-only evidence, reconciliability, no-false-precision rules and cross-domain semantics.
 
@@ -2124,3 +2130,4 @@ These are documentation-maintenance items, not architecture decisions:
 | v0.10 / 2026-08-27 | Accepted and expanded AC-10 Resource Usage, Cost Attribution & Economic Telemetry: usage, valuation, attribution/allocation and billing separated; durable usage evidence survives later valuation maturity; correlation distinguished from allocation; direct causal attribution preferred; shared allocation requires a defensible versioned driver; shared/unallocated cost is preserved rather than fabricated; roll-ups remain reconcilable; retries/failures/reconciliation are cost-bearing; activity/outcome semantics remain owned by governed operational truth; generic cross-domain ADR warranted with provisional numbering. | Architecture review complete — AC-1 through AC-10 accepted direction |
 | v0.11 / 2026-08-27 | Documentation-maintenance alignment after the full-repo Generic Case↔Case audit: audit confirmed no adequate first-class generic primitive; ADR-109 accepted for the shared Case Relationship / Lineage contract; provisional economic ADR finalized as ADR-110. No AC-1..AC-10 architecture direction changed. | Architecture review complete; Case-relationship audit / ADR numbering gate resolved |
 | v0.12 / 2026-08-28 | Source-status/documentation alignment after the minimum Traditional Gu production-source audit. Added the canonical `legacy-source-audit.md` reference; source-verified identity/organization, `lead_id`, assignment, takeover/resumption, appointment/visit evidence, Legacy Deal, property and WhatsApp-provider contracts; moved the legacy audit out of the Technical-Plan blocker list; updated accepted ADR statuses. No AC-1..AC-10 or S1 behavior changed. | Architecture review complete; minimum legacy source-audit gate resolved for Technical-Plan entry |
+| v0.13 / 2026-08-30 | Post-S3 documentation alignment. Refined AC-8 so evidence gaps create reconciliation work only when resolving them is materially worthwhile, and durable Work Items only when durable execution semantics are needed. Updated the decision register accordingly. No AC-1..AC-10 architecture direction or ADR changed. | Architecture review complete; aligned with approved S3 Visit behavior |
