@@ -7,7 +7,7 @@
 > **Initiative Brief:** `docs/product/initiatives/relationship-operations/brief.md`  
 > **S1 behavioral contract:** `docs/product/initiatives/relationship-operations/specs/lead-opportunity-lifecycle.md`  
 > **Shared-kernel mapping:** `docs/product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md`  
-> **Legacy source audit:** `docs/product/initiatives/relationship-operations/legacy-source-audit.md` — v0.1 complete for R1 Technical-Plan entry  
+> **Legacy source audit:** `docs/product/initiatives/relationship-operations/legacy-source-audit.md` — v0.2 complete for R1 Technical-Plan entry  
 > **Roadmap:** `docs/roadmap/gu-os-evolution-roadmap.md` — R1  
 > **Doctrine:** `docs/principles/gu-os-principles-and-design-doctrine.md`  
 > **Development method:** `docs/development/agentic-product-software-development-methodology.md`  
@@ -1937,7 +1937,7 @@ R1 architecture should explicitly handle:
 | Source read unavailable | Preserve known truth + mark freshness/uncertainty; retry/reconcile; do not invent |
 | External command timeout | Unknown outcome until postcondition/reconciliation |
 | External effect succeeded, local acknowledgment failed | Re-read/postcondition + reconcile; do not blindly repeat |
-| Local Work succeeded, external evidence missing | Reconciliation Work Item |
+| Local Work succeeded, external evidence missing | Preserve the evidence gap; reconcile when materially worthwhile, using durable Work only when durable execution semantics are needed. |
 | Human intervened | Suppress Gu speaking as required; Case may continue observing/thinking |
 | Policy changed mid-run | Active published version governs until new version is explicitly activated |
 | Identity ambiguous | Fail closed where tenant/data-sharing risk exists |
