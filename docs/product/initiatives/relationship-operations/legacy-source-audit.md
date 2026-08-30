@@ -1,6 +1,6 @@
 # R1 Relationship Operations — Traditional Gu Legacy Source Audit
 
-> **Version:** v0.1  
+> **Version:** v0.2  
 > **Status:** Complete for R1 architecture/Technical-Plan entry — source-verified legacy contracts and risks; exact adapter/API/schema mechanics remain Technical Design  
 > **Initiative:** R1 — Relationship Operations v1  
 > **Audit date:** 2026-08-28  
@@ -494,18 +494,21 @@ This evidence is written to Mongo `appointments` and used in owner notification/
 
 ## 12.3 R1 evidence mapping
 
-**TARGET — S1 / AC-7**
+**TARGET — S3 APPROVED / S1 / AC-7**
 
-| R1 concept | Legacy evidence candidate | Required caution |
+S3 (`specs/visit-progression-outcome-evidence-reconciliation.md`) is the governing target semantic contract for Visit progression, occurrence, no-show attribution and reconciliation. The table below maps source-verified legacy evidence into those target semantics; it does not promote legacy appointment statuses into canonical Gu OS Visit states.
+
+| R1 concept / claim | Legacy evidence candidate | Required caution |
 |---|---|---|
-| `visit_requested` | appointment successfully created in an accepted operational source | partial-replication awareness required |
-| `visit_scheduled` | date/time plus source-specific scheduling/confirmation evidence | do not equate mere request with schedule confirmation |
-| `visit_confirmed` | explicit advisor/prospect confirmation evidence | source/actor authority matters |
-| `visit_attended` | explicit `property_was_visited = Afirmativo` or future equivalent authoritative evidence | appointment existence/confirmation alone is insufficient |
-| `visit_not_attended` | explicit `Negativo` / no-show evidence from an admissible source | missing survey field is not proof of no-show |
-| unresolved visit outcome | no defensible attended/not-attended evidence yet | create/reuse reconciliation work rather than inventing a negative fact |
+| `visit_requested` | appointment successfully created in an accepted operational source | partial-replication awareness required; target Gu OS may recognize a sufficiently concrete Visit request earlier than legacy persistence |
+| `visit_scheduled` | date/time plus source-specific scheduling/confirmation evidence | do not equate mere request or Calendar-event existence with a sufficiently reliable arrangement |
+| scheduling/readiness confirmation evidence | explicit advisor/prospect confirmation and related source evidence | confirmation is claim-specific evidence supporting scheduling/readiness; S3 does **not** define a mandatory canonical `visit_confirmed` progression milestone |
+| `visit_attended` | explicit `property_was_visited = Afirmativo` or future equivalent admissible occurrence evidence | appointment existence/confirmation alone is insufficient; assigned-advisor physical presence is not required |
+| Visit non-occurrence | explicit `property_was_visited = Negativo` / `appointment_qualification = "No hubo visita"` or future equivalent admissible evidence | establishes/supports non-occurrence, not automatically its cause or an actor-specific no-show |
+| actor-specific no-show | additional admissible evidence that a particular expected actor failed to participate without sufficient prior cancellation/reschedule evidence | silence, missing survey fields and generic `Negativo` evidence are insufficient by themselves |
+| unresolved Visit occurrence | no defensible occurrence/non-occurrence conclusion yet, or unresolved material conflict | preserve `unknown`/conflict; reconcile only when materially worthwhile and use durable Work only when the reconciliation needs durable execution semantics |
 
-This does not lock exact Case Fact keys or source-priority rules; those remain Feature/Technical Design concerns.
+This mapping does not lock exact Case Fact keys, evidence enums, source-priority rules or persistence mechanics; those remain Technical Design concerns under the approved S3 behavior.
 
 ---
 
@@ -841,4 +844,4 @@ These questions should not reopen the accepted product/architecture semantics un
 
 # 22. Audit completion statement
 
-> **R1's minimum Traditional Gu production-source audit is complete for Architecture Analysis and Technical-Plan entry. The audit source-verifies identity/organization bridging, Legacy Lead composition, assignment, WhatsApp event/takeover/resume behavior, appointment persistence, visit evidence, Legacy Deal semantics, property source/search roles, outbound provider correlation and relevant authorization risks. These findings refine source status and brownfield adapter requirements; they do not reopen AC-1 through AC-10 or change the approved S1 behavioral contract.**
+> **R1's minimum Traditional Gu production-source audit is complete for Architecture Analysis and Technical-Plan entry. The audit source-verifies identity/organization bridging, Legacy Lead composition, assignment, WhatsApp event/takeover/resume behavior, appointment persistence, visit evidence, Legacy Deal semantics, property source/search roles, outbound provider correlation and relevant authorization risks. These findings refine source status and brownfield adapter requirements; they do not reopen AC-1 through AC-10 or change the approved S1 behavioral contract. The approved S3 Visit Spec now governs target Visit progression, occurrence, no-show attribution and reconciliation semantics while this audit remains the source-verified record of legacy behavior.**
