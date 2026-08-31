@@ -46,6 +46,7 @@ A later implementation can invalidate an outdated Technical Plan, but it cannot 
 | Product sequencing | [`roadmap/gu-os-evolution-roadmap.md`](roadmap/gu-os-evolution-roadmap.md) | Current Gu OS sequencing, dependencies, graduation evidence and deferred horizons |
 | Current stack and migrations | [`architecture.md`](architecture.md) | Concise description of implemented runtime |
 | Integrated architecture | [`manuals/architecture-manual.md`](manuals/architecture-manual.md) | Main map of current and future subsystems |
+| Experience Architecture / Agentic UX | [`manuals/gu-os-experience-architecture.md`](manuals/gu-os-experience-architecture.md) | Cross-domain Design System, Semantic Interaction, Contextual Views/Artifacts, identity, adaptive/generative Experience, cross-surface continuity, personalization and Experience governance |
 | Brain / organizational cognition | [`brain/gbrain-evaluation-and-plan.md`](brain/gbrain-evaluation-and-plan.md) | Detailed Brain Layer design and implementation blocks; not the parent product roadmap |
 | Business Brain vs platform improvement | [`brain/business-and-platform-brain-boundary.md`](brain/business-and-platform-brain-boundary.md) | Shared 7-layer model, scope boundary and governed internal learning |
 | Personal long-term memory | [`memory/long_term_memory_plan.md`](memory/long_term_memory_plan.md) | Personal memory extraction and retrieval |
