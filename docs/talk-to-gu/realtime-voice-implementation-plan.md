@@ -2,6 +2,8 @@
 
 **Governing source:** [Talk to Gu product and architecture vision](./vision.md). Este documento traduce la primera etapa de esa visión a slices ejecutables; no redefine la visión. Es hermano **en formato**, no en dependencia, de `docs/manuals/gu-os-flexible-workflows-detailed-implementation-plan.md`.
 
+**Fuente cross-domain consumida:** [Gu OS Experience Architecture](../manuals/gu-os-experience-architecture.md). No sustituye a la visión ni reabre las decisiones de §0.
+
 **Convención:** `[ ]` pending · `[x]` done · `[~]` in progress · `[!]` blocked. Si la implementación contradice una decisión de §0, registrarla en §X y pedir decisión.
 
 ---
@@ -209,7 +211,7 @@ Ruta: voz crea/prueba el core → web migra → Telegram migra al final.
 
 Talk to Gu habla, muestra, recibe documentos y coordina canales conservando identidad, evidencia y autoridad.
 
-Reglas: fuente estructurada única; artefacto ≠ delivery; inbound conservador; asesor propio = bajo riesgo; tercero = HITL. El contrato canónico de turn artifacts pertenece a `docs/manuals/gu-os-cross-channel-continuity-architecture.md`. Un diseño dedicado de artifact service se escribe al agendar V6.1; una política de telefonía se escribe antes de V8.
+Reglas: fuente estructurada única; artefacto ≠ delivery; inbound conservador; asesor propio = bajo riesgo; tercero = HITL. El contrato canónico de turn artifacts pertenece a `docs/manuals/gu-os-cross-channel-continuity-architecture.md`. La semántica cross-domain de Experiencia (Human Interaction semántica, Contextual Views/Artifacts, entrega y atención) pertenece a `docs/manuals/gu-os-experience-architecture.md`; `channel="voice"`, `tool_calls` y `structured_payload` son seams brownfield del spike, no el esquema objetivo de Experiencia. Un diseño dedicado de artifact service se escribe al agendar V6.1; una política de telefonía se escribe antes de V8.
 
 ---
 

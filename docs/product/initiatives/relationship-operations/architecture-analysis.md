@@ -1,11 +1,15 @@
 # R1 Relationship Operations — Architecture Analysis
 
-> **Version:** v0.13  
-> **Status:** Architecture review complete — AC-1 through AC-10 accepted; Generic Case↔Case audit complete; ADR-109 and ADR-110 accepted; minimum Traditional Gu legacy source audit complete for Technical-Plan entry. Remaining Specs / Technical Design remain downstream.  
+> **Version:** v0.14  
+> **Status:** Architecture review complete — AC-1 through AC-10 accepted; Generic Case↔Case audit complete; ADR-109 and ADR-110 accepted; minimum Traditional Gu legacy source audit complete for Technical-Plan entry; behavioral Specs S1–S4 approved; S4 owns AC-9 behavioral semantics. Technical Design remains downstream.  
 > **Initiative:** R1 — Relationship Operations v1  
 > **Parent product intent:** `docs/product/PRD.md`  
 > **Initiative Brief:** `docs/product/initiatives/relationship-operations/brief.md`  
-> **S1 behavioral contract:** `docs/product/initiatives/relationship-operations/specs/lead-opportunity-lifecycle.md`  
+> **S1 behavioral contract:** `docs/product/initiatives/relationship-operations/specs/lead-opportunity-lifecycle.md` — v0.3 approved  
+> **S2 behavioral contract:** `docs/product/initiatives/relationship-operations/specs/situational-progression-next-work-human-authority.md` — v0.3 approved  
+> **S3 behavioral contract:** `docs/product/initiatives/relationship-operations/specs/visit-progression-outcome-evidence-reconciliation.md` — v0.2 approved  
+> **S4 behavioral contract:** `docs/product/initiatives/relationship-operations/specs/work-portfolio-supervisory-experience.md` — v0.1 approved  
+> **Cross-domain Experience source:** `docs/manuals/gu-os-experience-architecture.md` — v0.1 approved  
 > **Shared-kernel mapping:** `docs/product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md`  
 > **Legacy source audit:** `docs/product/initiatives/relationship-operations/legacy-source-audit.md` — v0.2 complete for R1 Technical-Plan entry  
 > **Roadmap:** `docs/roadmap/gu-os-evolution-roadmap.md` — R1  
@@ -1663,7 +1667,11 @@ A future cross-Case agentic supervisor may become useful for capacity allocation
 
 Terminology remains deliberate: **Work Portfolio** is the human-facing supervisory surface; `Supervisor` remains reserved for agentic/runtime concepts.
 
-## 14.6 Accepted decision
+## 14.6 Behavioral ownership after S4 approval
+
+S4 (`specs/work-portfolio-supervisory-experience.md`) now owns Work Portfolio / Needs Attention / Gu Handling / Waiting / Watching / stalled / Outcome behavior; the cross-domain Experience Architecture (`docs/manuals/gu-os-experience-architecture.md`) owns semantic Human Interaction primitives, Contextual Views/Artifacts, rendering and attention delivery. `Needs Attention` is a supervisory projection over one or more materially relevant Human Interactions, not itself a Human Interaction primitive. AC-9 remains the accepted architecture direction and is unchanged; where wording overlaps, S4 owns behavior and Experience Architecture owns expression.
+
+## 14.7 Accepted decision
 
 > **Implement Work Portfolio as an exception-first, organization-authorized read/projection over shared operating truth rather than a second operational database or CRM pipeline. Authorization and hard attention eligibility must be resolved before cross-Case ranking. Cases requiring human action because of explicit authority, approval, blocked work, material commitments, high-consequence uncertainty or other governed conditions must surface deterministically and must not be suppressible by model scoring. Within authorized and policy-bounded attention candidates, model/Skill judgment may rank contextual human-intervention priority using factors such as consequence, urgency, blockage, relationship risk, uncertainty, business relevance and expected value of human involvement, with evidence-linked explanations. `Needs Attention` ranks the need for human intervention, not generic lead attractiveness. `In Motion` and `Outcomes` remain derived projections. Human actions initiated from Work Portfolio must update the canonical Case / Work / Fact / Approval / assignment / policy mechanisms—or clearly separate user presentation state—rather than mutate a parallel portfolio truth. Exact ranking bands, projection implementation and visual design remain downstream Technical Design/Spec concerns.**
 
@@ -2131,3 +2139,4 @@ These are documentation-maintenance items, not architecture decisions:
 | v0.11 / 2026-08-27 | Documentation-maintenance alignment after the full-repo Generic Case↔Case audit: audit confirmed no adequate first-class generic primitive; ADR-109 accepted for the shared Case Relationship / Lineage contract; provisional economic ADR finalized as ADR-110. No AC-1..AC-10 architecture direction changed. | Architecture review complete; Case-relationship audit / ADR numbering gate resolved |
 | v0.12 / 2026-08-28 | Source-status/documentation alignment after the minimum Traditional Gu production-source audit. Added the canonical `legacy-source-audit.md` reference; source-verified identity/organization, `lead_id`, assignment, takeover/resumption, appointment/visit evidence, Legacy Deal, property and WhatsApp-provider contracts; moved the legacy audit out of the Technical-Plan blocker list; updated accepted ADR statuses. No AC-1..AC-10 or S1 behavior changed. | Architecture review complete; minimum legacy source-audit gate resolved for Technical-Plan entry |
 | v0.13 / 2026-08-30 | Post-S3 documentation alignment. Refined AC-8 so evidence gaps create reconciliation work only when resolving them is materially worthwhile, and durable Work Items only when durable execution semantics are needed. Updated the decision register accordingly. No AC-1..AC-10 architecture direction or ADR changed. | Architecture review complete; aligned with approved S3 Visit behavior |
+| v0.14 / 2026-08-31 | Documentation-alignment update after approval of the cross-domain Experience Architecture and the S4 Work Portfolio Spec: the header now lists the four approved R1 behavioral contracts (S1 v0.3, S2 v0.3, S3 v0.2, S4 v0.1) plus the cross-domain Experience source, and new §14.6 records AC-9 behavioral/expression ownership. No AC-1..AC-10 architecture direction, ADR or S1–S3 behavior changed. | Architecture review complete; companion sync for S4 / Experience Architecture |

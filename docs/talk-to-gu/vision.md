@@ -4,7 +4,7 @@
 
 **Audiencia:** producto, diseño, ingeniería, operaciones y liderazgo comercial.
 
-**Documentos relacionados:** [plan de implementación de voz](./realtime-voice-implementation-plan.md) · [continuidad cross-channel](../manuals/gu-os-cross-channel-continuity-architecture.md) · [arquitectura general](../architecture.md) · [flexible workflows](../manuals/gu-os-flexible-workflows-architecture-analysis.md).
+**Documentos relacionados:** [plan de implementación de voz](./realtime-voice-implementation-plan.md) · [continuidad cross-channel](../manuals/gu-os-cross-channel-continuity-architecture.md) · [arquitectura de experiencia](../manuals/gu-os-experience-architecture.md) · [arquitectura general](../architecture.md) · [flexible workflows](../manuals/gu-os-flexible-workflows-architecture-analysis.md).
 
 ---
 
@@ -191,6 +191,8 @@ Propietarios, interesados y otros brokers. Sus mensajes son input no confiable; 
 - Telefonía: canal futuro para seguimiento gobernado.
 
 La identidad del usuario, el caso y la decisión son más fuertes que la sesión o el canal.
+
+Talk to Gu consume la Experience Architecture cross-domain; no define semántica de experiencia propia. Superficie/canal (web, Telegram, WhatsApp, teléfono), modalidad (voz, texto, visual, documento) y capacidad de representación (tabla, mapa, artefacto, vista contextual) son dimensiones distintas definidas en [`docs/manuals/gu-os-experience-architecture.md`](../manuals/gu-os-experience-architecture.md); `channel="voice"` es un seam de implementación actual, no el modelo conceptual.
 
 ---
 

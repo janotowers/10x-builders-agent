@@ -189,7 +189,7 @@ Not every important rule belongs in the cross-cutting core. The following are ca
 
 | ID | Rule | Scope / interpretation |
 |---|---|---|
-| UX-01 | **Shared semantics, surface-specific rendering** | One decision/artifact meaning may render differently in web, messaging, voice or generated views. Conversation remains primary, and richer interfaces appear where the work requires them. |
+| UX-01 | **Shared semantics, surface-specific rendering** | One decision/artifact meaning may render differently in web, messaging, voice or generated views. Conversation remains primary, and richer interfaces appear where the work requires them. Cross-domain expansion — Semantic Human Interaction, Contextual Views/Artifacts, identity/representation, adaptive/generative Experience, cross-surface expression, personalization and Experience governance — is owned by `docs/manuals/gu-os-experience-architecture.md`, which expands UX-01/RP-09 without redefining authority doctrine. |
 | NET-01 | **Rights, routing, attribution and economics must be explicit** | Shared inventory, referrals, representation, commission, routing and cross-company economic rights cannot be improvised by the model. |
 | SEC/DEV-01 | **Generated code is not execution authority** | Generation/import/publication of code or scripts does not grant runtime authority. Isolation, capability contracts, security review, verification and release controls govern execution. |
 | DOC-01 | **Separate current, next/evolving and vision precisely** | Status precision prevents both overclaiming unproven capability and rebuilding foundations that already exist. |

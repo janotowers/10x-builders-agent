@@ -2,7 +2,7 @@
 
 **Status:** Architectural direction and evidence-gated backlog (not fully implemented).
 **Scope:** Internal-user continuity across the current web chat and Telegram surfaces. Future channels may reuse the contracts, but they do not justify speculative implementation.
-**Related:** [Agent architecture analysis](./gu-os-agent-architecture-analysis.md) · [Flexible workflows technical plan](./gu-os-flexible-workflows-technical-plan.md) · [Operational-case architecture](../operational-cases/architecture.md) · [Long-term memory plan](../memory/long_term_memory_plan.md) · [G Brain evaluation](../brain/gbrain-evaluation-and-plan.md) · [Talk to Gu vision](../talk-to-gu/vision.md) · [Realtime voice plan](../talk-to-gu/realtime-voice-implementation-plan.md)
+**Related:** [Agent architecture analysis](./gu-os-agent-architecture-analysis.md) · [Flexible workflows technical plan](./gu-os-flexible-workflows-technical-plan.md) · [Operational-case architecture](../operational-cases/architecture.md) · [Long-term memory plan](../memory/long_term_memory_plan.md) · [G Brain evaluation](../brain/gbrain-evaluation-and-plan.md) · [Talk to Gu vision](../talk-to-gu/vision.md) · [Realtime voice plan](../talk-to-gu/realtime-voice-implementation-plan.md) · [Experience Architecture](./gu-os-experience-architecture.md)
 
 ---
 
@@ -67,7 +67,7 @@ Gu OS has **shared user/business state and partial cross-channel behavior**, but
 | Antecedent | Prior turn/result referenced by a follow-up | Future resolver over recent turns/artifacts |
 | Durable memory | Stable user fact/preference worth recalling later | `memories` |
 | Business cognition | Durable entity knowledge, links and signals | Future `brain_*` layer |
-| Turn artifact | Bounded, attributable output/result set useful for a later follow-up | Future ephemeral artifact contract |
+| Turn artifact | Bounded, attributable output/result set useful for a later follow-up; a conversational subtype of the broader Gu OS `Artifact` concept owned by the Experience Architecture | Future ephemeral artifact contract |
 
 These identities must not be conflated. In particular:
 
@@ -208,6 +208,13 @@ Brain connectors normalize durable external knowledge and resolve business entit
 ### Notifications and delivery
 
 Channel preference and fallback for proactive notifications are separate from resolving what an inbound follow-up refers to. Delivery can reuse an artifact/decision correlation, but delivery success does not define conversation identity.
+
+### Experience Architecture
+
+- This document owns conversational continuity mechanisms; the cross-domain [Experience Architecture](./gu-os-experience-architecture.md) owns Semantic Human Interaction, Contextual Views/Artifacts, identity/representation and attention delivery.
+- `Turn Artifact` is a bounded conversational subtype of `Artifact`; artifact identity/lifecycle semantics are Experience-owned.
+- ADR-CC-001's deferral of a universal `conversation_id` is consistent with the Experience Architecture rule that continuous cross-surface Experience does not require a universal durable conversation identity.
+- `internal_user_notifications` remains a brownfield seam that may currently combine decision persistence and delivery; it does not define target Notification semantics.
 
 ---
 
