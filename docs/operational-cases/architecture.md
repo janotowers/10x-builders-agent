@@ -881,6 +881,7 @@ importantes para no repetir la iteración:
 | Idempotencia de eventos | Cuando el cron detecta una desincronización (ej. respuesta externa ya integrada), inserta un evento `state_changed` con `payload.reason: 'reconciled'`. |
 | Bloqueo de tools fuera de allowlist | Igual que Heartbeat: el canal `case_runner` puede tener su propia allowlist conservadora si lo amerita. |
 | Tracing | Cada turno del agente emite `AgentTurnEvent`; los eventos persistidos llevan `turn_id` correlacionado. |
+| Un caso con hechos no se puede borrar (comportamiento actual, sin resolver) | `operational_cases → case_facts` es `on delete cascade`, pero `case_facts` tiene un trigger append-only que rechaza el `DELETE` del cascade. En la práctica **un caso que ya tiene hechos no es borrable**, y el `DELETE` falla con `case_facts is append-only` en lugar de con un error de permisos o de negocio. Es una inconsistencia entre las dos decisiones (cascade vs. append-only), no un fallo de ninguna de ellas por separado: la evidencia es deliberadamente inmutable, pero el `on delete cascade` sugiere que el borrado debería funcionar. Verificado contra PostgreSQL real el 2026-09-01. Resolver requiere una decisión de producto sobre qué significa borrar un caso (borrado lógico, retención de evidencia, o `on delete restrict` explícito); queda **abierto**, fuera del alcance de R1 SL-0. |
 
 ---
 
