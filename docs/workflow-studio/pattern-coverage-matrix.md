@@ -50,6 +50,7 @@ comportamiento accidental de runtime.
 | Respuesta externa | Ambigüedad no muta estado; escala a revisión | guards/router | `PATTERN_EXTERNAL_RESPONSE_CORRELATION` |
 | Documentos | Tipo/tamaño, malware, procedencia, hash y retención | intake/upload/storage | `PATTERN_DOCUMENT_INTAKE_REVIEW` |
 | Documentos | Extracción, comentario, reemplazo y reanudación del mismo pendiente | attachment envelope/case collection | `PATTERN_DOCUMENT_INTAKE_REVIEW` |
+| Documentos | Documento aportado en cada ejecución es entrada efímera: no se convierte en recurso permanente de cuenta ni asume una ruta de entrega que el operador no haya declarado | Skill Lab / document intake (`docs/skills-tools-architecture.md`) | `PATTERN_REUSABLE_SKILL_DOCUMENT_INPUT` |
 | Artefactos | Inputs/version/hash y staleness | impact plane | `PATTERN_GENERATED_CASE_DOCUMENT_ACCESS` |
 | Artefactos | No compartir signed URL efímera en mensajes | generated document proxy | `PATTERN_GENERATED_CASE_DOCUMENT_ACCESS` |
 | Entrega externa | Todo mensaje resuelve modo, ruta/proveedor o fallback manual, destinatario y aprobación con evidencia | Pattern Composition Kernel + gap planner | `PATTERN_EXTERNAL_MESSAGE_DELIVERY` |
