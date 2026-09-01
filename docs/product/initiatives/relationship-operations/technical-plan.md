@@ -1,6 +1,6 @@
 # Integrated R1 Relationship Operations — Technical Plan
 
-> **Version:** v1.3
+> **Version:** v1.4
 > **Status:** Approved — governing Technical Plan for R1 implementation; slices pending execution
 > **Artifact role:** Implementation Spec / Technical Plan per Methodology §9 — translates the approved S1–S4 behavior, AC-1..AC-10 architecture, ADR-106..110 and the source-verified legacy contracts into implementation design and ordered vertical slices. It does not redefine product behavior or architecture.
 > **Governing sources:** S1 v0.3 · S2 v0.3 · S3 v0.2 · S4 v0.1 · Architecture Analysis v0.15 · ADR-106/107/108/109/110 · `legacy-source-audit.md` v0.3 · kernel mapping v0.9 · Brief v0.9 · Experience Architecture v0.1 · cross-channel continuity architecture · Roadmap R1 · repo `AGENTS.md` operating contract.
@@ -270,22 +270,53 @@ Legend: [L] = needs a cross-repo contract live. DoD always includes: type-check/
 | **SL-12 Portfolio v2 (contextual ranking)** | TD-9 v2 model ranking + evidence-grounded explanations + conversational portfolio tools | SL-7 (+SL-8 for richer evidence) | eval set passes S4-derived rubric; must-surface never suppressed (adversarial fixtures); model-failure fallback to deterministic order |
 | **SL-13 Economics v1** | TD-10 resource events + valuations + WhatsApp metering + reconciliation selftest | SL-9 | send path emits keyed usage; late valuation lands without history rewrite; rollup identity (direct + shared_unallocated) proven |
 
-**Execution status — SL-0: Partial (pending pilot evidence).** Landed in the repository: migrations
-`00080_organizations_core` (incl. the hardened `is_active_org_member`), `00081_operational_cases_organization`
-(permissive membership read + per-command restrictive guards, so membership grants READ only and every
-Organization-owned write stays server-authorized), `00082_external_identity_bindings` (incl. the generic
-`bootstrap_organization` RPC), `00083_case_relationships`; the `packages/types` registries; the
-`packages/db` query modules and `authorizeOrgAction`; the generic bootstrap script; and the DB-backed
-cross-tenant suite (`npm run test:rls`) with its CI job. **Evidenced:** validators, type-check, lint,
-module selftests, and the cross-tenant suite executed against a real PostgreSQL 16 (pgvector) — the full
-86-migration chain applies cleanly and **31 checks pass**, covering the six RLS-composition cases on read
-*and* write paths, ADR-109 Organization containment, the Work-Plane scope assertion, both function
-hardening contracts and bootstrap convergence. A mutation check confirms the guard is load-bearing:
-dropping the restrictive UPDATE policy turns the creator-member's blocked write (`UPDATE 0`) into a
-successful one (`UPDATE 1`). **Pending:** *"Alebrixe org resolvable end-to-end"* awaits the pilot legacy
-organization key and seat mapping. SL-0 is **not** complete on mechanism alone. `docs/architecture.md`
-is deliberately not updated yet: it describes what actually runs, and these migrations are not applied to
-any environment (it is separately stale from 00069 — see §10).
+**Execution status — SL-0: Implemented (all four DoD clauses evidenced).** Landed in the repository:
+migrations `00080_organizations_core` (incl. the hardened `is_active_org_member`),
+`00081_operational_cases_organization` (permissive membership read + per-command restrictive guards, so
+membership grants READ only and every Organization-owned write stays server-authorized),
+`00082_external_identity_bindings`, `00083_case_relationships`, and `00084_bootstrap_organization_provenance`
+(the bootstrap RPC taking the normalized key and the raw legacy source as separate arguments); the
+`packages/types` registries; the `packages/db` query modules and `authorizeOrgAction`; the generic
+bootstrap script; and the DB-backed cross-tenant suite (`npm run test:rls`) with its CI job.
+
+**Deterministic evidence (release-gating).** Validators, type-check, lint and module selftests green;
+the cross-tenant suite executed against a real PostgreSQL 16 (pgvector) — the frozen **87-migration**
+chain applies cleanly and **36 checks pass**, covering the six RLS-composition cases on read *and* write
+paths, ADR-109 Organization containment, the Work-Plane scope assertion, both function hardening
+contracts and bootstrap convergence. A mutation check confirms the guard is load-bearing: dropping the
+restrictive UPDATE policy turns the creator-member's blocked write (`UPDATE 0`) into a successful one
+(`UPDATE 1`). This deterministic suite remains the release-gating evidence for the RLS contract.
+
+**Pilot evidence (hosted, Gate A).** Obtained in the **`Gu-OS-Stage`** environment, not production. The
+frozen 87-file chain applied there in full through `00084` via the ordered-apply path (no Supabase CLI
+migration history, no baseline), and every hosted security invariant matched the deterministic local
+assertions. Evidenced there:
+
+- **Alebrixe Organization resolvable end-to-end** — `resolveOrganizationByExternalId` resolves the
+  **normalized bare owner UID** to the Organization; the raw `users/<uid>` form is retained in the
+  binding's provenance and **does not resolve as a routing key**; exactly one Organization and one
+  `legacy_organization_key` binding after apply *and* after an identical idempotent rerun.
+- **Explicit pilot seat mapping** — Mariana = active `owner`, Alejandro = active `advisor`. Both
+  memberships exist only because each seat was supplied explicitly; the rerun mutated neither.
+- **JSONB fallback compatibility** — a profile carrying the exact source-verified legacy shape
+  (`identity.organization_id = "users/<ownerUid>"`) is **byte-identical before and after** bootstrap, with
+  `org_name` and `country` intact. Bootstrap consumes that value as a discovery source and neither
+  depends on it nor mutates it.
+- **Negative control (falsifiable)** — a profile carrying the same legacy discovery signal *and*
+  `is_ungga_admin = true`, absent from the membership inputs, holds **zero Organization memberships**
+  before bootstrap, after bootstrap and after the rerun. Neither legacy discovery state nor platform
+  authority confers Organization membership; membership requires explicit input.
+- **Hosted cross-tenant read/write** — verified with real authenticated user JWTs (never the privileged
+  service credential): a member reads their own Organization's Case; a member of another Organization
+  cannot; a non-member cannot; a **revoked** member is denied on the Case they created; and a user-JWT
+  write to an Organization-owned Case is blocked.
+
+**Production boundary.** Gate A evidence comes from `Gu-OS-Stage` only. **Production is untouched** — no
+migration applied, no data written, no connection made during Gate A. Production rollout is a separate
+future **Gate B**, and a **read-only production schema-state preflight is mandatory** before `00080`–`00084`
+are applied there: the absence of CLI migration history is not itself proof of the current schema state.
+`docs/architecture.md` therefore stays unchanged for now — it describes what actually runs in production,
+where these migrations are not yet applied (it is separately stale from 00069 — see §10).
 
 Parallel tracks: SL-7 alongside SL-5/6; SL-8b alongside SL-9; SL-12/SL-13 alongside SL-10/11. Stage gates (shadow SL-0..8b → assisted SL-9..10 → selective live SL-11+) are business/authority gates per Methodology §12, not per-slice approvals. Human-reviewed merge/split flows remain post-R1 behaviors on the existing primitive.
 
@@ -295,7 +326,7 @@ Update in the same changes: `docs/architecture.md` (stale — pre-00069 content)
 
 ## 11. Assumptions & remaining OPEN items (resolved inside named slices)
 
-**Assumptions:** legacy plans deliver C1–C4 and **C6 before the assisted stage** and C7 per §4; bootstrap read credentials (Mongo collection-scoped; Firestore whole-database read — documented, shadow-only, time-boxed) obtainable; Alebrixe legacy organization key/seat mapping provided; waProbe evidence remains optional (never load-bearing).
+**Assumptions:** legacy plans deliver C1–C4 and **C6 before the assisted stage** and C7 per §4; bootstrap read credentials (Mongo collection-scoped; Firestore whole-database read — documented, shadow-only, time-boxed) obtainable; Alebrixe legacy organization key/seat mapping provided (**satisfied at SL-0**: normalized key and both pilot seats established and evidenced in `Gu-OS-Stage`); waProbe evidence remains optional (never load-bearing).
 
 **OPEN (slice-owned, no human gate needed):** final fact-key vocabulary + `closure_reason` enums (SL-2/SL-8 with product touchpoint per S1); contact-preference representation beyond `preferences_jsonb` if evidence demands a generic primitive (SL-4+); event-CHECK extension (evidence-gated, TD-11); C4 adoption vs §15.7-read-only for delivery evidence (SL-9); exact ranking-model prompt/rubric (SL-12, eval-gated); `snooze_until` cap value (TD-9, TENTATIVE 14d).
 
@@ -337,3 +368,4 @@ The plan's CURRENT claims were verified during authoring against repo `main` @ `
 | v1.1 / 2026-08-31 | Implementation-hardening and consistency corrections to the approved design: `is_active_org_member` `SECURITY DEFINER` hardening invariant (TD-1, §6, SL-0 DoD); Organization integrity for Case Subjects made structural by derivation — `case_subjects` / `case_subject_external_refs` carry no `organization_id` (TD-14, M-SUBJECTS, §6, §8); `unique(id, organization_id)` on `operational_cases` stated as the composite-FK target TD-1 already required (M-CASE-ORG); provenance made repo-durable (header, Appendix A, Appendix B). No approved behavior, architecture decision, authority model, cross-repo contract or slice sequencing changed. | Approved |
 | v1.2 / 2026-08-31 | SL-0 execution sync. Corrected the TD-14 kernel-precedent sentence (`operational_case_events` is the derivation precedent; the other Case children denormalize the tenant key) and recorded SL-0 as **Partial — pending pilot evidence** in §9 with its evidenced/pending split. Implementation detail resolved during execution, no design change: M-ORG lands as two migrations (`organizations_core`, `external_identity_bindings`) around M-CASE-ORG, because the bindings' composite FK targets `operational_cases(id, organization_id)` while the Case policies need `organization_memberships` — a unit-level cycle, not an object-level one. No approved behavior, architecture decision, authority model or slice sequencing changed. | Approved |
 | v1.3 / 2026-09-01 | SL-0 amendment after first-hand legacy-source verification of the Organization identity representation. TD-1 Bootstrap now states that `profiles.business_brain.identity.organization_id` is a **discovery source, not the key**: the binding carries the normalized bare owner UID while the raw `users/<uid>` path is persisted as provenance in the same statement (migration `00084` evolves the bootstrap RPC to take both, and drops the superseded two-argument signature so it cannot remain an alternate path). Records that inbound WhatsApp routing binds as `gu_whatsapp_number`, and that membership is never inferred from the discovery profile — every seat is explicit, and platform authority (`is_ungga_admin`) is independent of Organization role. No approved behavior, architecture decision, authority model, DoD or slice sequencing changed. | Approved |
+| v1.4 / 2026-09-01 | **SL-0 closed: Partial → Implemented.** Execution status in §9 rewritten to the state proven by the Gate A staging run: all four approved DoD clauses evidenced. Deterministic release-gating evidence updated to the frozen **87**-migration chain and **36** RLS checks (was 86/31, pre-`00084`). Hosted pilot evidence recorded from **`Gu-OS-Stage`**: Alebrixe Organization resolvable via the normalized bare owner UID with the raw `users/<uid>` form retained as provenance only; explicit seat mapping Mariana `owner` / Alejandro `advisor`; JSONB discovery source byte-identical across bootstrap and idempotent rerun; falsifiable negative control proving neither legacy discovery state nor `is_ungga_admin` confers membership; hosted cross-tenant read/write verified with real user JWTs. §11 assumption marked satisfied. Production boundary made explicit: production untouched, rollout is a separate Gate B, and a read-only production schema-state preflight remains mandatory before `00080`–`00084`. No approved behavior, architecture decision, authority model, DoD or slice sequencing changed. | Approved |
