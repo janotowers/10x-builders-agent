@@ -1,11 +1,13 @@
 # R1 Relationship Operations — Traditional Gu Legacy Source Audit
 
-> **Version:** v0.2  
-> **Status:** Complete for R1 architecture/Technical-Plan entry — source-verified legacy contracts and risks; exact adapter/API/schema mechanics remain Technical Design  
+> **Version:** v0.3  
+> **Status:** Complete for R1 architecture/Technical-Plan entry — v0.2 full audit (2026-08-28) plus targeted drift revalidation (2026-08-31); source-verified legacy contracts and risks; exact adapter/API/schema mechanics remain Technical Design  
 > **Initiative:** R1 — Relationship Operations v1  
-> **Audit date:** 2026-08-28  
+> **Audit date:** 2026-08-28 (original full audit)  
+> **Targeted drift revalidation:** 2026-08-31 — targeted R1-relevant revalidation, **not** a full new audit; see §23  
 > **Gu OS repository:** `janotowers/10x-builders-agent`, `main`  
-> **Traditional Gu repositories audited:** `UnggaMX/ungga-full`, `gcp/main` at `ae9f107a1d53c8bc25a327bece5701aac192ac49`; `UnggaMX/ungga-landing`, `main` at `77e3dc7fb562f9b249a5d5ec7f8f159e6f2ccdfa`  
+> **Traditional Gu repositories audited (v0.2 baseline):** `UnggaMX/ungga-full`, `gcp/main` at `ae9f107a1d53c8bc25a327bece5701aac192ac49`; `UnggaMX/ungga-landing`, `main` at `77e3dc7fb562f9b249a5d5ec7f8f159e6f2ccdfa`  
+> **Revalidated through (2026-08-31):** `UnggaMX/ungga-full`, `gcp/main` at `c88792530152c0c91a1e74c59e26a416103e68ff`; `UnggaMX/ungga-landing`, `main` at `82cab192bec2f23a0709c57ce06204d21007a179`  
 > **Companion Architecture Analysis:** `docs/product/initiatives/relationship-operations/architecture-analysis.md`  
 > **S1 behavioral contract:** `docs/product/initiatives/relationship-operations/specs/lead-opportunity-lifecycle.md`  
 > **Shared-kernel mapping:** `docs/product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md`  
@@ -34,6 +36,8 @@ The appropriate R1 migration strategy remains:
 
 > **Wrap and govern selected Traditional Gu capabilities behind a bounded operational gateway; preserve source-specific evidence and external identifiers; make Gu OS authoritative only for the responsibilities/facts it owns; and reconcile partial/unknown external effects instead of pretending the brownfield estate is one transactional database.**
 
+**Revalidation outcome (2026-08-31):** a targeted drift revalidation at the new branch heads (§23) found **no audited contract invalidated**. One additive material change (conversation persistence is now multi-thread per Lead, §10), one new relevant seam (advisor-linked WhatsApp capture / `waProbe`, §9.1), a strengthened outbound delivery-failure evidence path (§15.7), and identity/permission clarifications (§4.5). The previously recorded authorization risks persist (§16). The drift does not contradict S1–S4 and does not reopen AC-1 through AC-10 or ADR-106 through ADR-110; it strengthens the case for the bounded operational gateway and adds useful evidence/identity/delivery seams for Technical Design.
+
 ---
 
 ## 2. Source-status discipline
@@ -46,7 +50,11 @@ This audit uses the following labels:
 - **OPEN — TECHNICAL DESIGN** — exact adapter, schema, API, event, migration or reconciliation mechanics still to design.
 - **OUT OF R1 AUDIT SCOPE** — source area not needed to unblock the current R1 architecture/Technical Plan.
 
-Source verification is scoped to the branches and commits recorded in the header. A later Traditional Gu change may require revalidation of the affected contract before implementation if the source has materially moved.
+v0.3 adds one label:
+
+- **REVALIDATED — 2026-08-31** — re-verified (or newly verified) at the revalidation heads recorded in the header.
+
+Source verification is scoped to the branches and commits recorded in the header. Statements not explicitly marked as revalidated remain pinned to the v0.2 audit commits; the 2026-08-31 pass was a **targeted R1-relevant drift revalidation** (diff-driven over the seams in §3 plus newly added code), not a re-execution of the full audit. A later Traditional Gu change may still require revalidation of the affected contract before implementation if the source has materially moved.
 
 ---
 
@@ -139,6 +147,16 @@ Do not make the canonical Gu OS Organization ID equal to `organization_id` or th
 
 Exact external-identity schema remains **OPEN — TECHNICAL DESIGN**.
 
+## 4.5 Acting context, staff impersonation and field-scoped org permission
+
+**REVALIDATED — 2026-08-31**
+
+`ungga-landing` now resolves an **acting context** distinct from the raw session: staff can impersonate a user ("ver como usuario"), so authorization gates must use the acting uid, not the session claims. A cached helper `ownerUidOf(uid)` (`src/lib/firebase/session.ts`) resolves the organization owner for **any** uid — an owner resolves to their own uid (owners self-reference or lack `organization_id`); an advisor resolves through `organization_id` to the principal. New org-observing gates (for example the WhatsApp-linking pilot) key on `ownerUidOf(actingUid)`.
+
+`PATCH /api/users/me` no longer requires `organizacion.editar` for the whole body: the `users/{uid}` document mixes **person fields** (name, phone, photo, social) and **organization fields** (`type_user`, `org_name`, `web`, `org_location*`, `privacy_url`), and the permission gate is now applied only when organization fields are touched, so advisors can edit their own personal data.
+
+**Status discipline:** these are legacy clarifications of the identity/permission bridge, **not** Gu OS authorization semantics. The existing rule stands unchanged: legacy Firebase claims and role strings must not become Gu OS grants (ADR-106); Gu OS resolves organization authorization explicitly.
+
 ---
 
 # 5. Legacy Lead identity and persistence
@@ -201,6 +219,14 @@ assigned advisor if known
 ```
 
 while preserving the original opaque identifier for source readback/correlation.
+
+## 5.4 Lead-origin classification
+
+**REVALIDATED — 2026-08-31**
+
+`guv3` lead-origin classification (`src/guv3/gu/api/lead_origins.py`, with `gu/core/message_links.py`) is now deterministic and richer: links are extracted from the raw message text (not the LLM tool argument), and origin is derived from real query-string parameters — `src` button marks (`portal-ficha`, `portal-listado`, `gu-compartido`, advisor-shared `wa`) with `utm_source` as fallback, including recognition of AI-assistant referrals (ChatGPT, Gemini, Perplexity, Claude, Copilot, etc., mirrored in the landing's `src/lib/analytics/fuentes.ts`). Gu-shared fichas now use the public portal link tagged `src=gu-compartido`.
+
+**R1 relevance:** this taxonomy is useful **source evidence** for future S1 admission policy (trusted-source eligibility, campaign/listing context behind short inquiries). Legacy origin labels are evidence with provenance, **not** canonical Gu OS admission semantics.
 
 ---
 
@@ -366,6 +392,31 @@ Architectural implication:
 
 The current mechanics are legacy-specific and need not be copied literally.
 
+## 9.1 Advisor-linked WhatsApp capture (`waProbe`) — NEW RELEVANT SEAM
+
+**REVALIDATED — 2026-08-31 (new since the v0.2 audit)**
+
+Traditional Gu now contains an advisor-linked WhatsApp capability, currently pilot-grade:
+
+- **`ungga-full/src/waProbe/`** maintains a **linked-device WhatsApp session per advisor** (the WhatsApp Web mechanism, hosted server-side), exposed through a minimal session API (`POST/GET/DELETE /sessions/:userId`) consumed by the landing onboarding.
+- **`ungga-landing`** adds the onboarding/linking flow: QR/pairing from Perfil/onboarding, proxied through `POST/GET/DELETE /api/whatsapp/vinculacion`, which always forwards the **verified session uid** (never a client-supplied id) plus a service token.
+- **Pilot / whitelist nature:** enabled **per inmobiliaria** via a hardcoded owner-uid whitelist (`hasWhatsAppPilot(ownerUid)` in `src/lib/beta-features.ts`), enforced at **both** the UI and the API route; advisors inherit access through `ownerUidOf`.
+- **Consent-versioned:** the advisor accepts a permissions text tracked by `CONSENT_VERSION` (currently `2026-08-06`); widening capture scope requires re-consent.
+- **Known-lead filtering before content capture:** the session resolves the counterpart phone and checks it against a lead index (`bot_phone_number`-scoped Firestore load or local file) **before** reading message content; non-lead traffic is dropped unread and unlogged.
+- **Persistence, separate from Gu's LLM memory:** captured advisor↔prospect 1:1 messages (text, transcribed voice notes, described images) are written to Firestore `leads/{lead_id}/wsp_messeges/asesor_<phone>` documents and to Mongo `gu2.chats` per-advisor arrays (`messages_from_<phone>`). **Mongo `messagesv2` — the memory `guv3` feeds to Gu's LLM — is deliberately not touched**, so legacy Gu does not "see" advisor threads; connecting them to Gu reasoning is an explicit future decision requiring `guv3` changes.
+- **Advisor endpoint identity:** the linked number is persisted as `users/{uid}.whatsapp_link.{status,phone}` — a source-verified external mapping for the **advisor human WhatsApp endpoint** identity dimension (ADR-106).
+- **Operational grade:** the service is a spike — stateful in-process sockets, one per linked advisor, no scale-to-zero, unofficial client. **It is best-effort and MUST NOT become load-bearing for Gu OS correctness**; Gu OS may consume its output as evidence when present.
+
+### 9.1.1 Conversation-authority rule for `advisor_wa` observations
+
+**TARGET — EXISTING ADR-107, clarified by this revalidation**
+
+`advisor_wa` captures are **evidence of off-thread human activity** (the advisor's own WhatsApp with the prospect), reducing the off-thread evidence gap recorded in ADR-107 and S2. They are **not** a conversation-authority transition:
+
+- they do **not** set `bypass_bot` and do not touch the same-thread takeover/resume mechanics of §8 (which remain unchanged);
+- they must **not** automatically suppress Gu speaking on the Gu-number conversation;
+- any suppression or authority effect derived from observed advisor activity requires explicit, ADR-107-conformant policy plus current authority resolution in Gu OS.
+
 ---
 
 # 10. Conversation persistence is deliberately multi-store
@@ -385,6 +436,23 @@ Relevant source includes:
 - `UnggaMX/ungga-landing/src/lib/firebase/leads.ts`
 
 R1 must therefore avoid the statement "Firestore is the source of truth for all conversations" or "Mongo is the source of truth for all conversations." The operational gateway should expose **business-semantic reads with explicit source/evidence semantics** rather than leaking this replication topology into the Case Supervisor.
+
+## 10.1 Multi-thread persistence per Lead
+
+**REVALIDATED — 2026-08-31 (material additive change)**
+
+The Firestore conversation store is now **multi-thread per Lead**. `leads/{lead_id}/wsp_messeges` holds:
+
+- the Gu-number conversation document(s), as before; and
+- one `asesor_<phone>` document per linked advisor who attended the prospect from their own WhatsApp (§9.1), whose items carry `source: "advisor_wa"` plus the advisor as author.
+
+The platform (`ungga-landing/src/lib/firebase/leads.ts`) flattens all thread documents into the prospect timeline with typed threads (`gu` vs `advisor`) and enforces **server-side visibility rules**: the owner (and staff) sees every thread; an advisor sees the Gu thread and colleagues' threads but **not their own** (that conversation already lives in their WhatsApp). Mongo `gu2.chats` mirrors advisor threads as `messages_from_<phone>` arrays, while `messagesv2` remains Gu-only LLM memory.
+
+Consequences for R1:
+
+- conversation reads through the operational gateway must model the **thread dimension** (which thread, which participants, which source) and preserve per-item provenance (`source`, author, `wamid`, delivery fields — see §15.7);
+- visibility of advisor threads is itself a legacy product semantic to preserve/replace deliberately, not accidentally;
+- the v0.2 rule stands, reinforced: **no single legacy store may be promoted to the universal conversation source of truth.**
 
 ---
 
@@ -670,6 +738,19 @@ result/evidence persisted on Work Attempt
 
 Exact transport endpoint and whether the wrapper calls queue/service/direct provider paths are **OPEN — TECHNICAL DESIGN**.
 
+## 15.7 Delivery-status writeback into the conversation store
+
+**REVALIDATED — 2026-08-31 (strengthened evidence path)**
+
+`saveFailedTemplates.controller.ts` now propagates late provider failure callbacks into the **user-visible conversation store**: the conversation item matching the provider `wamid` in `leads/{lead_id}/wsp_messeges` is updated with `delivery_status: "failed"` and, when reported, `delivery_error_code`. Previously a Meta-rejected message could keep its "sent" appearance in the platform chat forever. The platform chat renders these delivery fields per item.
+
+Retry semantics are now explicit and **asymmetric**:
+
+- only **template** messages enter the `unsent_templates` retry queue (retry re-enqueues from `template_payload`);
+- **free-text** messages (for example advisor sends from the platform) are marked failed but are **never queued for retry**.
+
+The v0.2 contract stands unchanged and is reinforced: **HTTP/queue acceptance ≠ provider acceptance ≠ delivery ≠ final outcome.** For Gu OS, the Firestore `delivery_status`/`delivery_error_code` fields are an additional **delivery-evidence read source** for the future `send_prospect_message` reconciliation design; they do not replace the Work-attempt/idempotency wrapper required by §15.6.
+
 ---
 
 # 16. Current authorization risks that Gu OS must not inherit
@@ -716,6 +797,14 @@ R1 should:
 - revalidate organization + actor/grant + Case/runtime/conversation authority before material effects;
 - add cross-tenant negative tests;
 - avoid requiring a broad legacy security cleanup unless a selected adapter cannot be safely bounded without one.
+
+## 16.4 Revalidation status of these risks
+
+**REVALIDATED — 2026-08-31**
+
+The audited routes behind §16.1 (`appointments-access.ts` `super-admin` over-authorization) and §16.2 (`/api/whatsapp/send` without explicit organization-ownership revalidation) are **unchanged at the revalidation heads — both risks persist**.
+
+**CURRENT — LEGACY RISK (new observation):** `ungga-landing/src/lib/beta-features.ts` currently ships `REDESIGN_REVIEW_OPEN_ACCESS = true` — a temporary switch, explicitly marked for removal, that makes **all routes and nav items visible regardless of role/beta/multi-user gating** while the platform redesign lasts. Route-level permission gates still apply where present, but module/nav gating is bypassed. This is additional evidence for the standing rule: **legacy product-layer visibility/access must not be inherited as Gu OS authority**; Gu OS capabilities resolve organization/actor authorization explicitly regardless of what the legacy UI exposes.
 
 ---
 
@@ -765,6 +854,7 @@ R1 should use a fact/source-aware matrix rather than the statement "Traditional 
 | Property original/current Ungga record | Firestore `properties` | source-aware authoritative property read |
 | Property serving/search | Mongo `property_data` + semantic index | search/read optimization, not authority by itself |
 | WhatsApp provider effect | Meta request + `wamid` + later status webhooks | Work-backed correlated effect with unknown-outcome reconciliation |
+| Advisor↔prospect off-thread conversation (revalidated 2026-08-31) | `waProbe` capture → Firestore `asesor_<phone>` threads + Mongo per-advisor arrays; excluded from `messagesv2` | best-effort evidence source with provenance; never load-bearing for Gu OS correctness; no authority effect without ADR-107-conformant policy |
 | BigQuery mirrors | delayed analytical copies | analytics/evaluation only, not live operational authority |
 | Customer credits/billing | current billing service/backend | separate contract from internal economic telemetry |
 
@@ -817,6 +907,13 @@ The Technical Plan may now assume, subject to normal implementation-time revalid
 12. selected legacy authorization paths are insufficient as organization-scoped Gu OS authority checks.
 13. BigQuery remains analytical and must not govern live R1 decisions.
 
+Added by the 2026-08-31 revalidation:
+
+14. The Firestore conversation store is multi-thread per Lead (Gu thread(s) + `asesor_<phone>` advisor threads with `source: "advisor_wa"` and server-side visibility rules); gateway conversation reads must model the thread dimension.
+15. `advisor_wa` captures are evidence of off-thread human activity, not a conversation-authority signal; they do not set `bypass_bot` and must not automatically suppress Gu.
+16. Provider failure callbacks write `delivery_status`/`delivery_error_code` onto the Firestore conversation item by `wamid` — an additional delivery-evidence read source for send reconciliation; only template messages are retried by the legacy queue.
+17. `waProbe` is pilot/spike-grade (stateful per-advisor sockets, whitelist-gated, consent-versioned); Gu OS may consume its output as evidence but must not depend on it for correctness.
+
 Remaining work is no longer an **architecture source-audit blocker**. It is downstream **Technical Design / adapter implementation / verification work**.
 
 ---
@@ -838,6 +935,12 @@ This audit deliberately leaves the following unresolved for the Technical Plan/i
 - exact lab bootstrap-binding migration into canonical Organization external bindings;
 - observability/alerting for authorization conflicts, source drift and reconciliation failures.
 
+Added by the 2026-08-31 revalidation:
+
+- admissibility rules for `advisor_wa` evidence (which claims advisor-thread messages may support in S2/S3 semantics, and with what confirmation requirements);
+- whether/how the operational gateway exposes advisor threads (thread dimension, visibility semantics, freshness) versus Gu-thread-only reads for the first slices;
+- how the Firestore `delivery_status`/`delivery_error_code` writeback participates in the `send_prospect_message` reconciliation contract alongside `wamid` correlation and failure webhooks.
+
 These questions should not reopen the accepted product/architecture semantics unless implementation evidence exposes a genuine contradiction.
 
 ---
@@ -845,3 +948,51 @@ These questions should not reopen the accepted product/architecture semantics un
 # 22. Audit completion statement
 
 > **R1's minimum Traditional Gu production-source audit is complete for Architecture Analysis and Technical-Plan entry. The audit source-verifies identity/organization bridging, Legacy Lead composition, assignment, WhatsApp event/takeover/resume behavior, appointment persistence, visit evidence, Legacy Deal semantics, property source/search roles, outbound provider correlation and relevant authorization risks. These findings refine source status and brownfield adapter requirements; they do not reopen AC-1 through AC-10 or change the approved S1 behavioral contract. The approved S3 Visit Spec now governs target Visit progression, occurrence, no-show attribution and reconciliation semantics while this audit remains the source-verified record of legacy behavior.**
+
+v0.3 extends this statement with the targeted drift revalidation of 2026-08-31 (§23): the revalidation confirms the audited contracts at the new branch heads, records the additive changes described in §4.5, §5.4, §9.1, §10.1, §15.7 and §16.4, and does not alter the completion status above.
+
+---
+
+# 23. Targeted drift revalidation — 2026-08-31
+
+## 23.1 Method and scope
+
+Performed from the Gu OS side as a **targeted R1-relevant drift revalidation**, not a full new audit:
+
+1. current remote heads resolved independently (`git ls-remote`);
+2. both repositories partial-cloned; the v0.2 audit pins verified as **ancestors** of the current heads (fast-forward history, no rewrites);
+3. full `diff --stat` between pin and head for each repo;
+4. targeted diffs/reads on every changed file relevant to the §3 question set plus all newly added code;
+5. audited files with no diff were classified STILL VALID without re-reading their v0.2 content.
+
+## 23.2 Pins and heads
+
+| Repo / branch | v0.2 audit pin (2026-08-28) | Revalidation head (2026-08-31) | Commits |
+|---|---|---|---|
+| `UnggaMX/ungga-full` @ `gcp/main` | `ae9f107a1d53c8bc25a327bece5701aac192ac49` | `c88792530152c0c91a1e74c59e26a416103e68ff` | 6 |
+| `UnggaMX/ungga-landing` @ `main` | `77e3dc7fb562f9b249a5d5ec7f8f159e6f2ccdfa` | `82cab192bec2f23a0709c57ce06204d21007a179` | 24 |
+
+## 23.3 Contract classification
+
+| Audited contract (v0.2) | Classification |
+|---|---|
+| §4 Firebase Auth identity; `organization_id` principal bridge; claims unreliable | STILL VALID (reinforced by `ownerUidOf` / acting-context — §4.5) |
+| §5 `lead_id` composition; multi-representation Lead creation | STILL VALID (untouched); lead-origin taxonomy clarified — §5.4 |
+| §6 organization ownership vs sticky assignment (`guard-lead-one`) | STILL VALID (untouched) |
+| §7 WhatsApp inbound identity, provider IDs, queue-based webhook | STILL VALID (untouched) |
+| §8 same-thread takeover (`bypass_bot` + `last_owner_interaction_wba`), >5-min resume, billing gate | STILL VALID (untouched) |
+| §9 owner-app send convergence (`/api/whatsapp/send`, `wamid`, webhook synthesis) | STILL VALID (route untouched) |
+| §10 conversation persistence multi-store | MATERIAL CHANGE (additive) — multi-thread per Lead; §10.1 |
+| §11 appointment creation partial persistence / Calendar orphan risk | STILL VALID (untouched) |
+| §12 visit confirmation and attendance evidence | STILL VALID (untouched) |
+| §13 Legacy Deal semantics | STILL VALID (untouched) |
+| §14 property Firestore-original / Mongo-serving / Qdrant topology | STILL VALID; Gu now shares the public-portal ficha tagged `src=gu-compartido` (link behavior refined) |
+| §15 outbound provider correlation; acceptance ≠ delivery; legacy retries insufficient | VALID WITH CLARIFICATION (strengthened) — delivery-status writeback and template-only retry; §15.7 |
+| §16 authorization risks | STILL VALID — risks persist; new temporary open-access observation; §16.4 |
+| §17 billing caller contract | STILL VALID (untouched) |
+| — Advisor-linked WhatsApp capture (`waProbe`) | NEW RELEVANT SEAM — §9.1 |
+| — Acting context / staff impersonation / field-scoped org permission | VALID WITH CLARIFICATION — §4.5 |
+
+## 23.4 Architectural conclusion
+
+> **The observed drift does NOT contradict S1–S4, does NOT reopen AC-1 through AC-10, and does NOT reopen ADR-106 through ADR-110.** The advisor-linked WhatsApp pilot in fact supports accepted direction: it begins to reduce the off-thread evidence gap ADR-107 already anticipates, and it supplies a source-verified mapping for the advisor human-WhatsApp endpoint identity dimension of ADR-106. The multi-thread conversation store and delivery-status writeback **strengthen the need for the bounded operational gateway** (business-semantic, thread-aware, provenance-preserving reads rather than raw store access) and add useful **evidence, identity and delivery seams** for Technical Design. `advisor_wa` capture remains evidence, never authority; `waProbe` remains best-effort and must not become load-bearing for Gu OS correctness.
