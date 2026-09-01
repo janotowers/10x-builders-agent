@@ -1121,3 +1121,5 @@ export * from "./impact";
 export * from "./durable-tasks";
 export * from "./studio-qualification";
 export * from "./attachments";
+export * from "./organizations";
+export * from "./case-relationships";

@@ -47,3 +47,44 @@ jobs:
 
       - name: Selftests
         run: npm run test:selftests
+
+  # Cross-tenant / RLS suite (R1 Technical Plan §8). Separate job because it is
+  # the only one that needs a database: row-level security, permissive/
+  # restrictive composition and SECURITY DEFINER behaviour are PostgreSQL
+  # semantics and cannot be verified against the in-memory fake client the
+  # other DB selftests use. The `ci` job above stays database-free.
+  rls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        # pgvector, not plain postgres: migration 00005 creates the `vector`
+        # extension and match_memories takes vector(1536).
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gu_os_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cross-tenant / RLS suite
+        run: npm run test:rls
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/gu_os_test

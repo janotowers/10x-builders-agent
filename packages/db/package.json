@@ -15,7 +15,9 @@
     "test:work-plane": "tsx src/queries/work-items.selftest.ts",
     "test:impact-plane": "tsx src/queries/impact-plane.selftest.ts",
     "test:durable-tasks": "tsx src/queries/durable-tasks.selftest.ts",
-    "test:attachments": "tsx src/queries/attachments.selftest.ts"
+    "test:attachments": "tsx src/queries/attachments.selftest.ts",
+    "test:organizations": "tsx src/queries/organizations.selftest.ts",
+    "test:rls": "tsx test-rls/run.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",
@@ -23,6 +25,8 @@
     "@agents/workflows": "*"
   },
   "devDependencies": {
+    "@types/pg": "^8.15.6",
+    "pg": "^8.20.0",
     "tsx": "^4.19.0",
     "typescript": "^5"
   }
