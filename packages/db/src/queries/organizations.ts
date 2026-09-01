@@ -38,27 +38,47 @@ export async function getOrganizationById(
 }
 
 /**
- * Idempotent resolve-or-create of an Organization from an opaque legacy key.
+ * Idempotent resolve-or-create of an Organization from its legacy identity.
  *
- * Delegates to the `bootstrap_organization` SQL function rather than doing
- * select-then-insert here: supabase-js has no transaction API, so only the
- * database can create the Organization and its identity binding atomically. A
- * crash therefore leaves either nothing or a complete pair, never an
- * Organization without the binding that identifies it. Re-runs and concurrent
- * runs converge on the same Organization.
+ * Two distinct strings, deliberately separate parameters:
+ *   * `legacyOrganizationKey` — the NORMALIZED identity (the bare owner UID).
+ *     This is the external routing key and the only thing resolution matches on.
+ *   * `rawLegacySource` — the raw representation it was normalized from (e.g.
+ *     `users/<uid>`), recorded as provenance in the same statement. It explains
+ *     where the key came from; nothing ever routes on it.
+ *
+ * Inbound WhatsApp routing is a different external identity and binds as
+ * `gu_whatsapp_number` — never through this function.
+ *
+ * Delegates to the SQL function rather than doing select-then-insert here:
+ * supabase-js has no transaction API, so only the database can create the
+ * Organization, its binding and that provenance atomically. A crash leaves
+ * either nothing or a complete record. Re-runs and concurrent runs converge.
+ *
+ * Creates NO membership. The profile a legacy identity was discovered on does
+ * not become a member as a side effect — membership is supplied explicitly,
+ * with an explicit role, via `ensureOrganizationMembership`.
  *
  * Service-role only — the function's EXECUTE privilege is restricted.
  */
 export async function bootstrapOrganizationFromLegacyKey(
   db: DbClient,
-  params: { legacyKey: string; organizationName?: string | null }
+  params: {
+    legacyOrganizationKey: string;
+    rawLegacySource?: string | null;
+    organizationName?: string | null;
+  }
 ): Promise<string> {
-  const legacyKey = params.legacyKey?.trim();
-  if (!legacyKey) {
-    throw new Error("bootstrapOrganizationFromLegacyKey: legacyKey is required");
+  const legacyOrganizationKey = params.legacyOrganizationKey?.trim();
+  if (!legacyOrganizationKey) {
+    throw new Error(
+      "bootstrapOrganizationFromLegacyKey: legacyOrganizationKey is required " +
+        "(normalized bare owner UID, not the raw users/<uid> path)"
+    );
   }
   const { data, error } = await db.rpc("bootstrap_organization", {
-    p_legacy_key: legacyKey,
+    p_legacy_organization_key: legacyOrganizationKey,
+    p_raw_legacy_source: params.rawLegacySource?.trim() || null,
     p_org_name: params.organizationName?.trim() || null,
   });
   if (error) throw error;

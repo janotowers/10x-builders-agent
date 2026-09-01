@@ -206,38 +206,100 @@ async function testAuthorization(): Promise<void> {
     );
   }
 
+  {
+    // Platform authority is independent of Organization role. A user who holds
+    // is_ungga_admin but no membership is denied: authorization consults
+    // organization_memberships only, and never the platform flag.
+    const { db } = fakeDb({
+      profiles: [{ id: USER, is_ungga_admin: true }],
+      organization_memberships: [],
+    });
+    const result = await authorizeOrgAction(db, USER, ORG, "case.write");
+    assert.equal(result.allowed, false);
+    assert.equal(result.reason, "no_active_membership");
+  }
+
+  {
+    // The converse also holds: the same person may legitimately hold platform
+    // authority AND an explicit Organization membership. The membership is what
+    // authorizes here, and it was supplied — not inferred from the flag.
+    const { db } = fakeDb({
+      profiles: [{ id: USER, is_ungga_admin: true }],
+      organization_memberships: [membershipRow({ role: "advisor" })],
+    });
+    const result = await authorizeOrgAction(db, USER, ORG, "case.write");
+    assert.equal(result.allowed, true);
+    assert.equal(result.membership?.role, "advisor");
+    // Platform authority still confers no Organization administration.
+    const admin = await authorizeOrgAction(
+      db,
+      USER,
+      ORG,
+      "organization.manage_members"
+    );
+    assert.equal(admin.allowed, false);
+    assert.equal(admin.reason, "role_not_permitted");
+  }
+
   console.log("  ok  authorizeOrgAction: membership + role, fail-closed");
+  console.log("  ok  platform authority is never an Organization role");
 }
 
 async function testBootstrapSemantics(): Promise<void> {
   {
+    // The normalized key and the raw representation travel in separate slots
+    // and must never be conflated: only the former is the routing key.
     const { db, rpcCalls } = fakeDb({}, { bootstrap_organization: () => ORG });
     const id = await bootstrapOrganizationFromLegacyKey(db, {
-      legacyKey: "  alebrixe-key  ",
+      legacyOrganizationKey: "  vowMl9le6jQsOAYuSIIERGuOW1F2  ",
+      rawLegacySource: "  users/vowMl9le6jQsOAYuSIIERGuOW1F2  ",
       organizationName: "  Pilot  ",
     });
     assert.equal(id, ORG);
     assert.equal(rpcCalls[0].name, "bootstrap_organization");
-    assert.equal(rpcCalls[0].args.p_legacy_key, "alebrixe-key");
+    assert.equal(
+      rpcCalls[0].args.p_legacy_organization_key,
+      "vowMl9le6jQsOAYuSIIERGuOW1F2"
+    );
+    assert.equal(
+      rpcCalls[0].args.p_raw_legacy_source,
+      "users/vowMl9le6jQsOAYuSIIERGuOW1F2"
+    );
     assert.equal(rpcCalls[0].args.p_org_name, "Pilot");
   }
 
   {
-    // An empty name must not become an empty Organization name; the function
-    // falls back to the legacy key instead.
+    // Provenance is optional; omitting it must send null rather than "".
     const { db, rpcCalls } = fakeDb({}, { bootstrap_organization: () => ORG });
     await bootstrapOrganizationFromLegacyKey(db, {
-      legacyKey: "k",
+      legacyOrganizationKey: "k",
       organizationName: "   ",
     });
+    assert.equal(rpcCalls[0].args.p_raw_legacy_source, null);
     assert.equal(rpcCalls[0].args.p_org_name, null);
   }
 
   {
     const { db } = fakeDb({}, { bootstrap_organization: () => ORG });
     await assert.rejects(() =>
-      bootstrapOrganizationFromLegacyKey(db, { legacyKey: "   " })
+      bootstrapOrganizationFromLegacyKey(db, { legacyOrganizationKey: "   " })
     );
+  }
+
+  {
+    // Bootstrap resolves Organization identity only. It issues exactly one RPC
+    // and never writes a membership, so the profile a legacy identity happens
+    // to be discovered on cannot become a member as a side effect.
+    const { db, rpcCalls, upserts } = fakeDb(
+      { organization_memberships: [] },
+      { bootstrap_organization: () => ORG }
+    );
+    await bootstrapOrganizationFromLegacyKey(db, {
+      legacyOrganizationKey: "vowMl9le6jQsOAYuSIIERGuOW1F2",
+      rawLegacySource: "users/vowMl9le6jQsOAYuSIIERGuOW1F2",
+    });
+    assert.equal(rpcCalls.length, 1);
+    assert.equal(upserts.length, 0, "bootstrap must not create memberships");
   }
 
   {

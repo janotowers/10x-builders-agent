@@ -1,13 +1,28 @@
-// Bootstraps an Organization from an opaque legacy organization key
+// Bootstraps an Organization from its normalized legacy organization identity
 // (R1 Relationship Operations, SL-0 / Technical Plan TD-1).
 //
 // Generic on purpose: no tenant is named here or in any migration. The operator
-// supplies the legacy key and the seats; this script is the mechanism, the run
-// is the pilot data.
+// supplies the identity and the seats; this script is the mechanism, the run is
+// the pilot data.
+//
+// Two distinct legacy strings, supplied separately and never conflated:
+//   --legacy-organization-key  the NORMALIZED identity (bare owner UID). This is
+//                              the external routing key.
+//   --raw-legacy-source        the raw representation it came from, e.g.
+//                              users/<uid>. Provenance only; nothing routes on it.
+//
+// Inbound WhatsApp routing is a SEPARATE external identity and binds as
+// `gu_whatsapp_number`. It is deliberately not settable here.
+//
+// Membership is never inferred. The profile a legacy identity happened to be
+// discovered on does not become a member: every seat is named explicitly with
+// an explicit role, and platform authority (is_ungga_admin) is not an
+// Organization role and grants nothing here.
 //
 // Usage:
-//   npx tsx scripts/bootstrap-organization.ts --legacy-key <key> [--name "Org"]
-//                                             [--member <userId>:<role>]... [--apply]
+//   npx tsx scripts/bootstrap-organization.ts \
+//     --legacy-organization-key <uid> [--raw-legacy-source "users/<uid>"] \
+//     [--name "Org"] [--member <userId>:<role>]... [--apply]
 //
 // Dry-run is the DEFAULT. Nothing is written without --apply, because this
 // creates a tenancy boundary. Reads credentials from apps/web/.env.local.
@@ -59,40 +74,65 @@ function loadEnv(path: string): Record<string, string> {
 const ROLES: readonly OrganizationRole[] = ["owner", "org_admin", "advisor"];
 
 interface Args {
-  legacyKey: string;
+  legacyOrganizationKey: string;
+  rawLegacySource: string | null;
   name: string | null;
   members: Array<{ userId: string; role: OrganizationRole }>;
   apply: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  let legacyKey = "";
+  let legacyOrganizationKey = "";
+  let rawLegacySource: string | null = null;
   let name: string | null = null;
   const members: Args["members"] = [];
   let apply = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === "--legacy-key") legacyKey = argv[++i] ?? "";
+    if (arg === "--legacy-organization-key") legacyOrganizationKey = argv[++i] ?? "";
+    else if (arg === "--raw-legacy-source") rawLegacySource = argv[++i] ?? null;
     else if (arg === "--name") name = argv[++i] ?? null;
     else if (arg === "--apply") apply = true;
     else if (arg === "--member") {
       const raw = argv[++i] ?? "";
       const sep = raw.lastIndexOf(":");
-      const userId = sep > 0 ? raw.slice(0, sep) : raw;
-      const role = (sep > 0 ? raw.slice(sep + 1) : "advisor") as OrganizationRole;
-      if (!ROLES.includes(role)) {
-        throw new Error(`--member role must be one of ${ROLES.join(" | ")}, got "${role}"`);
+      const userId = sep > 0 ? raw.slice(0, sep) : "";
+      const role = (sep > 0 ? raw.slice(sep + 1) : "") as OrganizationRole;
+      if (!userId) {
+        throw new Error("--member requires <userId>:<role>");
       }
-      if (!userId) throw new Error("--member requires <userId>:<role>");
+      // The role is never defaulted: which Organization role a person holds is
+      // a governed decision, not something this script may guess.
+      if (!ROLES.includes(role)) {
+        throw new Error(
+          `--member requires an explicit role, one of ${ROLES.join(" | ")} (got "${role}")`
+        );
+      }
       members.push({ userId, role });
     }
   }
 
-  if (!legacyKey.trim()) {
-    throw new Error("--legacy-key is required (the opaque legacy organization key)");
+  if (!legacyOrganizationKey.trim()) {
+    throw new Error(
+      "--legacy-organization-key is required (the NORMALIZED bare owner UID, " +
+        "not the raw users/<uid> path — pass that as --raw-legacy-source)"
+    );
   }
-  return { legacyKey: legacyKey.trim(), name, members, apply };
+  if (legacyOrganizationKey.includes("/")) {
+    throw new Error(
+      `--legacy-organization-key looks like a raw path ("${legacyOrganizationKey}"). ` +
+        "Pass the normalized bare owner UID here and the path as --raw-legacy-source."
+    );
+  }
+
+  return {
+    legacyOrganizationKey: legacyOrganizationKey.trim(),
+    rawLegacySource: rawLegacySource?.trim() || null,
+    name,
+    members,
+    apply,
+  };
 }
 
 async function main(): Promise<void> {
@@ -109,8 +149,11 @@ async function main(): Promise<void> {
   }
   const db = createClient(url, serviceKey);
 
-  console.log(`legacy key : ${args.legacyKey}`);
-  console.log(`mode       : ${args.apply ? "APPLY" : "dry-run (pass --apply to write)"}`);
+  console.log(`legacy organization key : ${args.legacyOrganizationKey}`);
+  console.log(`raw legacy source       : ${args.rawLegacySource ?? "(none supplied)"}`);
+  console.log(
+    `mode                    : ${args.apply ? "APPLY" : "dry-run (pass --apply to write)"}`
+  );
 
   // Resolve first so the operator sees create-vs-reuse before anything happens.
   const { data: existing, error: lookupError } = await db
@@ -118,16 +161,23 @@ async function main(): Promise<void> {
     .select("organization_id")
     .eq("source_system", "traditional_gu")
     .eq("binding_kind", "legacy_organization_key")
-    .eq("external_id", args.legacyKey)
+    .eq("external_id", args.legacyOrganizationKey)
     .maybeSingle();
   if (lookupError) throw lookupError;
 
   const existingOrgId = (existing as { organization_id: string } | null)?.organization_id;
   console.log(
     existingOrgId
-      ? `organization: REUSE ${existingOrgId} (binding already exists)`
-      : "organization: CREATE (no binding for this legacy key yet)"
+      ? `organization            : REUSE ${existingOrgId} (binding already exists)`
+      : "organization            : CREATE (no binding for this legacy key yet)"
   );
+
+  if (args.members.length === 0) {
+    console.log(
+      "members                 : none supplied — no membership will be created. " +
+        "Membership is never inferred from the discovery profile."
+    );
+  }
 
   if (!args.apply) {
     for (const member of args.members) {
@@ -138,10 +188,11 @@ async function main(): Promise<void> {
   }
 
   const organizationId = await bootstrapOrganizationFromLegacyKey(db, {
-    legacyKey: args.legacyKey,
+    legacyOrganizationKey: args.legacyOrganizationKey,
+    rawLegacySource: args.rawLegacySource,
     organizationName: args.name,
   });
-  console.log(`organization: ${organizationId}`);
+  console.log(`organization            : ${organizationId}`);
 
   for (const member of args.members) {
     const membership = await ensureOrganizationMembership(db, {
@@ -153,11 +204,13 @@ async function main(): Promise<void> {
       console.log(`  membership ${member.userId}: FAILED to read back`);
       continue;
     }
-    const untouched =
+    const preExisting =
       membership.role !== member.role || membership.status !== "active";
     console.log(
       `  membership ${member.userId}: role=${membership.role} status=${membership.status}` +
-        (untouched ? "  (pre-existing — left unchanged, reactivation is a separate decision)" : "")
+        (preExisting
+          ? "  (pre-existing — left unchanged, reactivation is a separate decision)"
+          : "")
     );
   }
 

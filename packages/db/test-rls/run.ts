@@ -565,6 +565,25 @@ async function main(): Promise<void> {
       assert.equal(meta.service_exec, true);
     });
 
+    await t("the superseded two-argument bootstrap signature no longer exists", async () => {
+      // 00084 replaced the signature. CREATE OR REPLACE with a different arity
+      // would have left the old contract reachable as an overload, letting a
+      // caller store an un-normalized key; it must have been dropped instead.
+      const { rows } = await client.query<{ args: string }>(
+        `select pg_get_function_identity_arguments(p.oid) as args
+           from pg_proc p
+           join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname = 'public' and p.proname = 'bootstrap_organization'
+          order by args`
+      );
+      assert.equal(rows.length, 1, "exactly one bootstrap_organization overload");
+      assert.equal(
+        rows[0].args,
+        "p_legacy_organization_key text, p_raw_legacy_source text, p_org_name text",
+        "the surviving signature must separate the normalized key from its raw source"
+      );
+    });
+
     await t("an authenticated JWT cannot execute bootstrap_organization", async () => {
       const code = await errorCode(() =>
         asRole(client, authed(f.creatorA), () =>
@@ -578,8 +597,8 @@ async function main(): Promise<void> {
       const id = await asRole(client, service, async () =>
         (
           await client.query<{ bootstrap_organization: string }>(
-            "select public.bootstrap_organization($1, $2)",
-            ["k-service", "Service Org"]
+            "select public.bootstrap_organization($1, $2, $3)",
+            ["k-service", "users/k-service", "Service Org"]
           )
         ).rows[0].bootstrap_organization
       );
@@ -589,17 +608,94 @@ async function main(): Promise<void> {
     // ---------------------------------------------------------------
     console.log("\nbootstrap convergence");
 
-    const bootstrap = async (key: string, name?: string) =>
+    const bootstrap = async (key: string, rawSource?: string | null, name?: string) =>
       (
         await client.query<{ bootstrap_organization: string }>(
-          "select public.bootstrap_organization($1, $2)",
-          [key, name ?? null]
+          "select public.bootstrap_organization($1, $2, $3)",
+          [key, rawSource ?? null, name ?? null]
         )
       ).rows[0].bootstrap_organization;
 
+    await t("the raw legacy representation is persisted as provenance, not as the key", async () => {
+      const orgId = await bootstrap("uid-prov", "users/uid-prov", "Provenance Org");
+      const { rows } = await client.query<{
+        external_id: string;
+        raw_legacy_source: string | null;
+        source: string | null;
+      }>(
+        `select b.external_id,
+                b.provenance_jsonb ->> 'raw_legacy_source' as raw_legacy_source,
+                b.provenance_jsonb ->> 'source'            as source
+           from public.external_identity_bindings b
+          where b.organization_id = $1
+            and b.binding_kind = 'legacy_organization_key'`,
+        [orgId]
+      );
+      assert.equal(rows.length, 1);
+      // The routing key is the normalized value; the raw path is provenance.
+      assert.equal(rows[0].external_id, "uid-prov");
+      assert.equal(rows[0].raw_legacy_source, "users/uid-prov");
+      assert.equal(rows[0].source, "bootstrap_organization");
+
+      // The raw path must never itself be resolvable as an organization key.
+      const { rows: byRaw } = await client.query(
+        `select 1 from public.external_identity_bindings
+          where binding_kind = 'legacy_organization_key' and external_id = $1`,
+        ["users/uid-prov"]
+      );
+      assert.equal(byRaw.length, 0, "raw path must not be a routing key");
+    });
+
+    await t("omitting the raw source stores no empty provenance placeholder", async () => {
+      const orgId = await bootstrap("uid-noraw");
+      const { rows } = await client.query<{ keys: string | null }>(
+        `select (select string_agg(k, ',' order by k)
+                   from jsonb_object_keys(b.provenance_jsonb) k) as keys
+           from public.external_identity_bindings b
+          where b.organization_id = $1
+            and b.binding_kind = 'legacy_organization_key'`,
+        [orgId]
+      );
+      assert.equal(rows[0].keys, "source", "nulls must be stripped, not stored");
+    });
+
+    await t("bootstrap creates no membership: identity inputs are not membership inputs", async () => {
+      const orgId = await bootstrap("uid-nomember", "users/uid-nomember", "No Member Org");
+      const { rows } = await client.query<{ n: string }>(
+        "select count(*)::text as n from public.organization_memberships where organization_id = $1",
+        [orgId]
+      );
+      assert.equal(
+        rows[0].n,
+        "0",
+        "the profile a legacy identity is discovered on must never become a member"
+      );
+    });
+
+    await t("platform authority is not an Organization role", async () => {
+      // A profile flagged is_ungga_admin holds independent platform authority.
+      // It grants nothing inside an Organization: without an explicit active
+      // membership the org-owned Case stays invisible, and the flag is never
+      // consulted by is_active_org_member.
+      await client.query("update public.profiles set is_ungga_admin = true where id = $1", [
+        f.legacyUser,
+      ]);
+      assert.equal(await countCases(authed(f.legacyUser), f.orgCaseA), 0);
+
+      // Conversely, holding an Organization role does not imply platform
+      // authority: memberships carry no is_ungga_admin coupling at all.
+      const { rows } = await client.query<{ n: string }>(
+        `select count(*)::text as n
+           from information_schema.columns
+          where table_name = 'organization_memberships'
+            and column_name = 'is_ungga_admin'`
+      );
+      assert.equal(rows[0].n, "0", "membership must not carry platform authority");
+    });
+
     await t("re-running bootstrap returns the same Organization and creates no duplicate", async () => {
-      const first = await bootstrap("legacy-key-1", "Pilot");
-      const second = await bootstrap("legacy-key-1", "A Different Name");
+      const first = await bootstrap("legacy-key-1", "users/legacy-key-1", "Pilot");
+      const second = await bootstrap("legacy-key-1", "users/legacy-key-1", "A Different Name");
       assert.equal(second, first, "must converge on the same Organization");
 
       const { rows } = await client.query<{ n: string }>(
@@ -622,8 +718,8 @@ async function main(): Promise<void> {
         await client.query("begin");
         const winner = (
           await client.query<{ bootstrap_organization: string }>(
-            "select public.bootstrap_organization($1, $2)",
-            ["legacy-key-race", "Racer"]
+            "select public.bootstrap_organization($1, $2, $3)",
+            ["legacy-key-race", "users/legacy-key-race", "Racer"]
           )
         ).rows[0].bootstrap_organization;
 
@@ -650,7 +746,11 @@ async function main(): Promise<void> {
     });
 
     await t("bootstrap re-run never revives a deactivated membership", async () => {
-      const orgId = await bootstrap("legacy-key-lifecycle", "Lifecycle Org");
+      const orgId = await bootstrap(
+        "legacy-key-lifecycle",
+        "users/legacy-key-lifecycle",
+        "Lifecycle Org"
+      );
       const upsert = () =>
         client.query(
           `insert into public.organization_memberships
