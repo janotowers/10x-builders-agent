@@ -2,7 +2,7 @@
 
 **Status:** Accepted direction  
 **Date:** 2026-08-27  
-**Related:** [`../product/initiatives/relationship-operations/architecture-analysis.md`](../product/initiatives/relationship-operations/architecture-analysis.md), [`../product/initiatives/relationship-operations/specs/lead-opportunity-lifecycle.md`](../product/initiatives/relationship-operations/specs/lead-opportunity-lifecycle.md), [`../operational-cases/architecture.md`](../operational-cases/architecture.md), [ADR-106 — Organization-native multi-seat tenancy and legacy identity bridge](ADR-106-organization-native-multiseat-tenancy.md), [ADR-107 — Runtime, conversation and approval authority during brownfield migration](ADR-107-runtime-conversation-authority.md)
+**Related:** [`../product/initiatives/relationship-operations/architecture-analysis.md`](../product/initiatives/relationship-operations/architecture-analysis.md), [`../product/initiatives/relationship-operations/technical-plan.md`](../product/initiatives/relationship-operations/technical-plan.md), [`../product/initiatives/relationship-operations/specs/lead-opportunity-lifecycle.md`](../product/initiatives/relationship-operations/specs/lead-opportunity-lifecycle.md), [`../operational-cases/architecture.md`](../operational-cases/architecture.md), [ADR-106 — Organization-native multi-seat tenancy and legacy identity bridge](ADR-106-organization-native-multiseat-tenancy.md), [ADR-107 — Runtime, conversation and approval authority during brownfield migration](ADR-107-runtime-conversation-authority.md)
 
 ## Context
 

@@ -1,7 +1,7 @@
 # R1 Relationship Operations — Architecture Analysis
 
-> **Version:** v0.15  
-> **Status:** Architecture review complete — AC-1 through AC-10 accepted; Generic Case↔Case audit complete; ADR-109 and ADR-110 accepted; minimum Traditional Gu legacy source audit complete for Technical-Plan entry; behavioral Specs S1–S4 approved; S4 owns AC-9 behavioral semantics. Technical Design remains downstream.  
+> **Version:** v0.16  
+> **Status:** Architecture review complete — AC-1 through AC-10 accepted; Generic Case↔Case audit complete; ADR-109 and ADR-110 accepted; minimum Traditional Gu legacy source audit complete for Technical-Plan entry; behavioral Specs S1–S4 approved; S4 owns AC-9 behavioral semantics. Technical Design is complete and approved — see the governing Technical Plan below.  
 > **Initiative:** R1 — Relationship Operations v1  
 > **Parent product intent:** `docs/product/PRD.md`  
 > **Initiative Brief:** `docs/product/initiatives/relationship-operations/brief.md`  
@@ -12,6 +12,7 @@
 > **Cross-domain Experience source:** `docs/manuals/gu-os-experience-architecture.md` — v0.1 approved  
 > **Shared-kernel mapping:** `docs/product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md`  
 > **Legacy source audit:** `docs/product/initiatives/relationship-operations/legacy-source-audit.md` — v0.3 (v0.2 full audit + targeted drift revalidation 2026-08-31) complete for R1 Technical-Plan entry  
+> **Technical Plan:** `docs/product/initiatives/relationship-operations/technical-plan.md` — v1.1 approved; translates AC-1..AC-10 and S1–S4 into implementation design and slices SL-0..SL-13, and does not redefine this analysis  
 > **Roadmap:** `docs/roadmap/gu-os-evolution-roadmap.md` — R1  
 > **Doctrine:** `docs/principles/gu-os-principles-and-design-doctrine.md`  
 > **Development method:** `docs/development/agentic-product-software-development-methodology.md`  
@@ -2141,3 +2142,4 @@ These are documentation-maintenance items, not architecture decisions:
 | v0.13 / 2026-08-30 | Post-S3 documentation alignment. Refined AC-8 so evidence gaps create reconciliation work only when resolving them is materially worthwhile, and durable Work Items only when durable execution semantics are needed. Updated the decision register accordingly. No AC-1..AC-10 architecture direction or ADR changed. | Architecture review complete; aligned with approved S3 Visit behavior |
 | v0.14 / 2026-08-31 | Documentation-alignment update after approval of the cross-domain Experience Architecture and the S4 Work Portfolio Spec: the header now lists the four approved R1 behavioral contracts (S1 v0.3, S2 v0.3, S3 v0.2, S4 v0.1) plus the cross-domain Experience source, and new §14.6 records AC-9 behavioral/expression ownership. No AC-1..AC-10 architecture direction, ADR or S1–S3 behavior changed. | Architecture review complete; companion sync for S4 / Experience Architecture |
 | v0.15 / 2026-08-31 | Legacy-source-revalidation alignment only: the Legacy source audit reference now points to `legacy-source-audit.md` v0.3, which records the targeted drift revalidation at the new `gcp/main` / `main` heads (advisor-linked WhatsApp / `waProbe` seam, multi-thread conversation store, delivery-status writeback, identity/permission clarifications, persisting §16 risks). No AC-1..AC-10 architecture direction, ADR decision, behavioral ownership, acceptance scenario or Technical Design direction changed. | Architecture review complete; aligned with legacy source audit v0.3 |
+| v0.16 / 2026-08-31 | Companion sync after approval of the R1 Technical Plan: the header now references `technical-plan.md` (v1.1 approved) and the Status line no longer states that Technical Design remains downstream. No AC-1..AC-10 architecture direction, ADR decision, behavioral ownership, acceptance scenario or S1–S4 behavior changed. | Architecture review complete; companion sync for the approved Technical Plan |

@@ -2,7 +2,7 @@
 
 **Status:** Accepted direction  
 **Date:** 2026-08-27  
-**Related:** [`../product/initiatives/relationship-operations/architecture-analysis.md`](../product/initiatives/relationship-operations/architecture-analysis.md), [`../product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md`](../product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md), [ADR-108 — Versioned organization policy](ADR-108-versioned-organization-policy.md), [ADR-109 — Generic Case relationships and lineage](ADR-109-generic-case-relationships-lineage.md)
+**Related:** [`../product/initiatives/relationship-operations/architecture-analysis.md`](../product/initiatives/relationship-operations/architecture-analysis.md), [`../product/initiatives/relationship-operations/technical-plan.md`](../product/initiatives/relationship-operations/technical-plan.md), [`../product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md`](../product/initiatives/relationship-operations/r1-concept-shared-kernel-mapping.md), [ADR-108 — Versioned organization policy](ADR-108-versioned-organization-policy.md), [ADR-109 — Generic Case relationships and lineage](ADR-109-generic-case-relationships-lineage.md)
 
 
 ## Context
