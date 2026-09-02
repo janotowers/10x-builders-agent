@@ -1,0 +1,355 @@
+{
+  "$comment": "FROZEN legacy migration chain. Historical, applied by hand to deployed environments, and containing three duplicated numeric prefixes the Supabase CLI cannot represent. Never add, remove, rename or edit these files — forward migrations live in packages/db/forward/supabase/migrations. Regenerate ONLY with an explicit approved decision: npm run migrations:freeze.",
+  "frozenAt": "SL-0 closure (Technical Plan v1.4)",
+  "count": 87,
+  "files": [
+    {
+      "file": "00001_initial_schema.sql",
+      "sha256": "5f4ec2171fbd76c54d09c5043a818a753dfa7bb2af32eba46bc53f501f639757"
+    },
+    {
+      "file": "00002_calendar_booking_links.sql",
+      "sha256": "0cc883e51f7969ad6cbeee6032ea1996e130772784971669465aa46b6092137f"
+    },
+    {
+      "file": "00003_scheduled_tasks.sql",
+      "sha256": "5f56a9e871d6f05ed3252e7ff558c20a2fbb26e91a3c69d30b8195ecccd867f6"
+    },
+    {
+      "file": "00004_scheduled_tasks_retry.sql",
+      "sha256": "66e9a97135fb1820d49aab5b7e019737f153938e3c4ae7edbf2b2bc45e6a5f03"
+    },
+    {
+      "file": "00005_memories.sql",
+      "sha256": "fab31b5adcb6e3675d3fb8729446566d74eabbd27811a610cb6db5e353ac3e63"
+    },
+    {
+      "file": "00006_match_memories_threshold.sql",
+      "sha256": "66f36082b5dd609b11581fb5c8add45eab8a7b213f163720ebf736fc1e5833ae"
+    },
+    {
+      "file": "00007_profile_contact_fields.sql",
+      "sha256": "1a00ab519b32573d5f36db5fc156ccb08704baaa33a24b19e1ecc9bf41c5508c"
+    },
+    {
+      "file": "00008_match_memories_default_threshold_050.sql",
+      "sha256": "47c0bb45622fd18f0ee2c11aff870e6dc377e8b38ccebd4c607c92c42e892398"
+    },
+    {
+      "file": "00009_business_brain.sql",
+      "sha256": "6d8c36555c6f0dd8a8516a53833c35b027dfd5985d389894ab972bc3073989b1"
+    },
+    {
+      "file": "00010_user_skill_settings.sql",
+      "sha256": "9279c7421943d283d27481022de865c3299be7a543d475f3893a957e7cec5a92"
+    },
+    {
+      "file": "00011_memories_archived.sql",
+      "sha256": "441d51dd78246bb81d20da14ee38856adee9ad8a2ed71040eca82b3dfb95edec"
+    },
+    {
+      "file": "00012_profile_assets.sql",
+      "sha256": "2edd37223eb4242eb68963a497770063dc1f20855bb73954f2fda06fdcbc998d"
+    },
+    {
+      "file": "00013_agent_turn_correlation.sql",
+      "sha256": "81fa0bb9a45d89c11b75f79c62b4efa4f09bb978ebf091f40d4ae1ffd33ae0fa"
+    },
+    {
+      "file": "00014_heartbeat_runs.sql",
+      "sha256": "ba9ac1ea9018549737498d2bb4aff85902664fc81bb6c0c29c06af2fb57c7a41"
+    },
+    {
+      "file": "00015_scheduled_tasks_display_fields.sql",
+      "sha256": "bc4422dc43de2f0b7833808cc7444a0d6aff7a00ae2d4a147cc7beeb0bff20f7"
+    },
+    {
+      "file": "00016_scheduled_tasks_skill_policy.sql",
+      "sha256": "5826da9ca9437b1878c769ded9b9981f8d15f1f0024bc283dfdd2db02fccb8ca"
+    },
+    {
+      "file": "00017_heartbeat_checklist_templates.sql",
+      "sha256": "c871cb995c7b0a98c14e6175229989f9470d7cb5d8605df5f7055212d1c2be4f"
+    },
+    {
+      "file": "00018_tool_calls_executor_kind.sql",
+      "sha256": "af8fbbc12bc9fc816c0c7a9b0d1f8e63aeb3dde75b32987ba09615978cbfc041"
+    },
+    {
+      "file": "00019_operational_cases.sql",
+      "sha256": "66c200cb6c1b35b6c928a5a1cf193939b7c0f320d75d7346c8854480776d5acc"
+    },
+    {
+      "file": "00020_account_skills.sql",
+      "sha256": "a374179a76969c75efd0a8b61c3fc3de28f810cc369e5f580eda16ee0caa4e44"
+    },
+    {
+      "file": "00021_user_notification_preferences.sql",
+      "sha256": "e671bdfc33afdac65e0a38bd2cda9c3be852807f39cfd6265378f76b572195f7"
+    },
+    {
+      "file": "00022_operational_case_type_ownership_intake.sql",
+      "sha256": "946686bb9b3f77c6a54b75a8f98306b502e5949a23bde793dc973b093caf8f69"
+    },
+    {
+      "file": "00023_global_tool_requests.sql",
+      "sha256": "afd12d3ce3ebdea48f359fcc47cfbf561a2e952032ecd55db3d28293adcb7aea"
+    },
+    {
+      "file": "00024_account_tool_secrets.sql",
+      "sha256": "9073c7e08bf7a9765e5bbdd3bc562300e24c305f2b91084211d0eb561cfe7950"
+    },
+    {
+      "file": "00025_operational_case_flow.sql",
+      "sha256": "a4259f3b9c6854a95b96c382a6b4ea9b1f988ccd711b6fce3c4fe86c281ed724"
+    },
+    {
+      "file": "00026_inherit_operational_case_flow.sql",
+      "sha256": "c42e11ada14d215df105e6ebe75093d47ffcf1902029019d3d14df8024a9ef3b"
+    },
+    {
+      "file": "00027_property_optioning_flow_fixes.sql",
+      "sha256": "0906c0af6f0c00b5917c5374b56ddb581d5560f0e51986133a3aa82ad5b04932"
+    },
+    {
+      "file": "00028_ungga_publish_cli_copy.sql",
+      "sha256": "2f8f9c0de035c9735cc8f7348ad96b3aff095ab13daf0ccb90f7eb32e00ceaa9"
+    },
+    {
+      "file": "00029_operational_case_activation_policy.sql",
+      "sha256": "ca5d9cb67de9c6ca0bcb296d510ab11abb390bf52f9793504e4232c308d2df56"
+    },
+    {
+      "file": "00030_account_assets.sql",
+      "sha256": "1291b3c8ba996305ff0e6699f40f456468a45fe9e538fd3bac659bd2d16bb86b"
+    },
+    {
+      "file": "00031_property_optioning_required_assets.sql",
+      "sha256": "efe3e0449de52b48302d37e41d691449b70bcbfce683c01f9122f75755a7ba3d"
+    },
+    {
+      "file": "00032_easybroker_comparable_copy.sql",
+      "sha256": "aa74a8d974aa7b44e415db2008265ba04061b46abdd4a66ae729cbc3e2f2f42c"
+    },
+    {
+      "file": "00033_property_optioning_test_intake.sql",
+      "sha256": "2b71e84900e4d84fefd5c0f1ba770ed441e253dded1c98682437a276676ae93f"
+    },
+    {
+      "file": "00034_property_optioning_intake_patch_existing.sql",
+      "sha256": "ee0017d6f696792a6350a9a8f3305049b0fa3e173b02635ea342b43167cc5b3b"
+    },
+    {
+      "file": "00035_persistent_notifications.sql",
+      "sha256": "4e810376c61371312f2898f2442c691b6ce71fa9e9364955512afcfaeb42de85"
+    },
+    {
+      "file": "00036_notification_engagement_policy_overrides.sql",
+      "sha256": "a8d8d405505c18d63bceae7b49a4806197521c881a130d8096ae105db1fb7b2c"
+    },
+    {
+      "file": "00036_waiting_internal_status.sql",
+      "sha256": "9530afeb170788a0977081549e7ce9ce7916426c381c8dee784aef22219d7795"
+    },
+    {
+      "file": "00037_operational_case_documents.sql",
+      "sha256": "643726d1a18cefa0a463b01ed26af0118161f13ae772d6f2a83b6fe7de2e48e1"
+    },
+    {
+      "file": "00038_property_optioning_document_flow.sql",
+      "sha256": "4950472a40143859915575fed697291d3f5b3ce2d6e37a71385d73febc79ad29"
+    },
+    {
+      "file": "00039_property_optioning_intake_flow_copy.sql",
+      "sha256": "468a79cff589f23e05f41098293437e611296d83dbaa4df912de1e01483f8d32"
+    },
+    {
+      "file": "00040_operational_case_test_runs.sql",
+      "sha256": "485737774525c198ace2536b0576a98484a1cbbb647416b368872f2c69a93625"
+    },
+    {
+      "file": "00041_commission_contract_template_docx_only.sql",
+      "sha256": "9cf7b09a3ef8297be7da8c274e701183b0f66c1e24b13d41f2082e88dcb7bf23"
+    },
+    {
+      "file": "00042_tool_calls_metadata_jsonb.sql",
+      "sha256": "d5372c2d0cb5b6fb3ee8f75990be13035e7737210e05d7b4be363633bb8c87ba"
+    },
+    {
+      "file": "00043_property_optioning_comparables_internal_tools.sql",
+      "sha256": "5eb5dab71b57d2f53cebff9076e9ea2db6dac70ce5d08bbbe98dc7cc4bc59348"
+    },
+    {
+      "file": "00044_operational_case_conversation_bindings.sql",
+      "sha256": "e7a6636b2777aa9428606a029d12a04e6a1efb39398f2815bd57b509945038bc"
+    },
+    {
+      "file": "00044_property_optioning_add_avaclick_tool.sql",
+      "sha256": "7484c65dfaf7bb3ed859fe7b27c412213ab7acc1c95c106cbb947b5549612c5b"
+    },
+    {
+      "file": "00045_operational_case_e2e_lab_sessions.sql",
+      "sha256": "1ea19869605ef271d7a75789b7f650571cf19aaabe5cdbef3448763d49524e39"
+    },
+    {
+      "file": "00045_property_optioning_add_geocode_tool.sql",
+      "sha256": "d14496d57c175742fe5b9cf2bf6cf836539eb10992ddff3cd315d07f7eb4ddb9"
+    },
+    {
+      "file": "00046_property_optioning_reorder_geocode_before_avaclick.sql",
+      "sha256": "17a9ff941a615f995db237d320ba0d7b7b18f2eec4fcde2bb34dc90a1b44e2bc"
+    },
+    {
+      "file": "00047_property_optioning_intake_add_optional_address_fields.sql",
+      "sha256": "57884657e3f7d9fc9845c25830f868ea1a135d0ddaadfae761407f6b8c04d286"
+    },
+    {
+      "file": "00048_property_optioning_intake_reorder_telegram_last.sql",
+      "sha256": "aad67ee2196346920de07d6bb3377ed4a921400a1b3c4a90f95686f34a6b26f5"
+    },
+    {
+      "file": "00049_external_contact_link_tokens.sql",
+      "sha256": "eb11c2703107b0ced94b2cce8680f09e13c14be0d8dc9119f7ebb61e6ab21623"
+    },
+    {
+      "file": "00050_property_optioning_photos_and_publish_labels.sql",
+      "sha256": "5a552734fc7fb1e48f4606adb59eb8eeb85f20792a097eec08f642ab85290351"
+    },
+    {
+      "file": "00051_property_optioning_photos_requested_rename.sql",
+      "sha256": "24df775abebfdabc4cb95aa06bf5af253d3603306fe484f13ec50a2669dfe3fe"
+    },
+    {
+      "file": "00052_telegram_webhook_updates.sql",
+      "sha256": "5145650d733689d64f893792de6f0b7cd2b8060eae1f948e4220cc2340afda0e"
+    },
+    {
+      "file": "00053_property_optioning_package_ready_description_flow.sql",
+      "sha256": "06c432ed833e9c7cc91e9abd3842e183c86c313b45de41c612bb92b000e36954"
+    },
+    {
+      "file": "00054_property_optioning_package_ready_description_flow_fix.sql",
+      "sha256": "2701aca3f5e13259ade5873e3fe287f817ee40df314cc573454ac31937e029c1"
+    },
+    {
+      "file": "00055_property_optioning_package_ready_tool_order.sql",
+      "sha256": "f5f3f82c09d45cf1d26fa3f436ba2afe7e19cce3fc1265069b849ebb077dd5fb"
+    },
+    {
+      "file": "00056_property_optioning_package_ready_closing_notify.sql",
+      "sha256": "17a44ea598a2c580c9426e27e825910f7c477033ec2e56c5e8fe10104c9711e6"
+    },
+    {
+      "file": "00057_property_optioning_intake_split_area.sql",
+      "sha256": "6fad1c72041876528a210b442109bffdf72f62cdefacf9cc71a07bc76089f8af"
+    },
+    {
+      "file": "00058_property_optioning_awaiting_documents_branch_copy.sql",
+      "sha256": "2236ad16453b6f81244080437b5bacf704f87b56800a45ccb229c67e2c0bf679"
+    },
+    {
+      "file": "00059_property_optioning_awaiting_documents_step_decision.sql",
+      "sha256": "adf32f0475b8d6ed76066ca987981bc611a7e72c914fd432a132179242423d5d"
+    },
+    {
+      "file": "00060_property_optioning_step_decision_documents_comparables.sql",
+      "sha256": "80eef50a62b21dd10230375f6728194a33dcefe414c6cfed09abc736859ddf46"
+    },
+    {
+      "file": "00061_property_optioning_documents_received_pending_internal_branch.sql",
+      "sha256": "489b87928535a5c682059db342d94083dcb985c37c1870d93e8dc6e58b4c9d7a"
+    },
+    {
+      "file": "00062_property_optioning_case_type_description.sql",
+      "sha256": "1fb12462e07aa5eec66e1b0513b6c78e8397dc821770c204e21d082c2b3415c1"
+    },
+    {
+      "file": "00063_publication_operations_and_notification_uniqueness.sql",
+      "sha256": "b1ba73ff353f0e8806d128a7093c72b9f7fd5118db179062a206962b4c690961"
+    },
+    {
+      "file": "00064_ai_usage_events.sql",
+      "sha256": "e4ffd00548ae4f97ad876703e7b7da08329d95199ee4fc88e68b4c6c68a66210"
+    },
+    {
+      "file": "00065_workflow_definitions.sql",
+      "sha256": "6461314c602f5f3f7e0ac5ea92e5a8aaca810e81013194b9635b7a99393cc196"
+    },
+    {
+      "file": "00066_operational_cases_definition_pin.sql",
+      "sha256": "30ce42559dc81d18565990bdd8dc0748e9aa383f3a6a7de946a8cd78f34f2e44"
+    },
+    {
+      "file": "00067_account_feature_flags.sql",
+      "sha256": "76f386d206e97093183a923c3f0af822981ae52142b21883bf0c19a698245eee"
+    },
+    {
+      "file": "00068_evidence_records.sql",
+      "sha256": "1a28520f97252efd54d7ddfdf5079be60eab3b08da0ac6035c9bc1f2610d4301"
+    },
+    {
+      "file": "00069_work_plane.sql",
+      "sha256": "e8d4701a471d25d1489bfc4d3c231ce54c7d53e556863ed4a47166fd4427c55a"
+    },
+    {
+      "file": "00070_impact_plane.sql",
+      "sha256": "6f03a2f85a78af46f8b9da0dbf2385aeb83a07b1c3461a9e7d8f27b1eadd5e92"
+    },
+    {
+      "file": "00071_worker_profiles.sql",
+      "sha256": "acf6f8d284c95437de71ce82b4c42263bf21bb3342a584b22683f6289ac8204b"
+    },
+    {
+      "file": "00072_competency_capability_names.sql",
+      "sha256": "23503097423d1011441f0cd0167f63bd58af4f9e6bdd9ed38c1b7f46493ca543"
+    },
+    {
+      "file": "00073_executor_mode_taxonomy.sql",
+      "sha256": "fee4a151ded191805a10dddc7ad585ecf4b5cd9041db2a76d5675d2d9ce56c62"
+    },
+    {
+      "file": "00074_durable_task_roots.sql",
+      "sha256": "72d74b2f27637208a9999ccc311f852d98c269bcb00f56007c9e61b5dd25dfb3"
+    },
+    {
+      "file": "00075_durable_task_runtime.sql",
+      "sha256": "31250c5a4c0aee7703dc72a46448f3ee2243071bcd7a9dffcc141367716e6af6"
+    },
+    {
+      "file": "00076_studio_authoring_session_integrity.sql",
+      "sha256": "df7ed9047015a455845654557f162f8c4c71f41efe905326a010bf0bb1bdb234"
+    },
+    {
+      "file": "00077_studio_qualification_runs.sql",
+      "sha256": "cacb2b4cb768a20c976dd92c2c4dd632b377fa9f819b7b65f52636f8ab4dc921"
+    },
+    {
+      "file": "00078_studio_skill_repair_proposals.sql",
+      "sha256": "f77029089104f8a0e8485b07b075b67c5c17d06413c5ba72267ab5ede711420d"
+    },
+    {
+      "file": "00079_generic_attachments.sql",
+      "sha256": "44cbfb8fae352398ad126b0f50a1a738debdf17d97fabbf18803f05d230e5343"
+    },
+    {
+      "file": "00080_organizations_core.sql",
+      "sha256": "1c561dd9016dee59719b66923e48d61719450671518dc5f0e2917b25932c9085"
+    },
+    {
+      "file": "00081_operational_cases_organization.sql",
+      "sha256": "98812c9f8175bb4687153560239eb9a3919d6883fa0e359cbbb6ebf24c30d8b1"
+    },
+    {
+      "file": "00082_external_identity_bindings.sql",
+      "sha256": "36010beda73c50de006bbe33c1987670915c02b2bf6ee2cced4b4eb871038da8"
+    },
+    {
+      "file": "00083_case_relationships.sql",
+      "sha256": "85feda472e0508ba043debee89e96b3c7ff8860a8217357b382f6159ef0d1f73"
+    },
+    {
+      "file": "00084_bootstrap_organization_provenance.sql",
+      "sha256": "3b9d7786b1ffedf95036a7e8df91522521cb368cc4a1a75d69760a8ede413f3f"
+    }
+  ]
+}

@@ -15,6 +15,15 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  diffAgainstManifest,
+  readLegacyChain,
+  readManifest,
+} from "./lib/legacy-manifest.mjs";
+import {
+  listForwardMigrations,
+  validateForwardSet,
+} from "./lib/forward-migrations.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.resolve(
@@ -88,6 +97,28 @@ async function main() {
     }
   }
 
+  // --- B′: the legacy set is FROZEN by exact set + content hash -------------
+  // The prefix rules above only stop a NEW duplicate. They would still allow a
+  // new unique 00085, a deletion, a rename or an edit to an already-applied
+  // file — each of which silently changes what a fresh rebuild produces.
+  // The complementary CHANGE invariant lives in scripts/check-frozen-paths.mjs.
+  try {
+    const manifest = await readManifest();
+    const actual = await readLegacyChain();
+    const frozen = diffAgainstManifest(actual, manifest);
+    errors.push(...frozen.errors);
+  } catch (error) {
+    errors.push(
+      `frozen legacy manifest unreadable (${error.message}). ` +
+        "Expected packages/db/supabase/legacy-manifest.json."
+    );
+  }
+
+  // --- B′: the forward-only era ---------------------------------------------
+  const forwardFiles = await listForwardMigrations();
+  const forward = validateForwardSet(forwardFiles, sqlFiles);
+  errors.push(...forward.errors);
+
   if (errors.length > 0) {
     console.error("validate-migrations: FAILED");
     for (const error of errors) console.error(`  - ${error}`);
@@ -95,8 +126,9 @@ async function main() {
   }
   const maxPrefix = [...byPrefix.keys()].sort().at(-1);
   console.log(
-    `validate-migrations: ok (${sqlFiles.length} files, latest ${maxPrefix}, ` +
-      `${LEGACY_DUPLICATE_ALLOWLIST.size} frozen legacy duplicate numbers)`
+    `validate-migrations: ok (frozen legacy ${sqlFiles.length} files, latest ${maxPrefix}, ` +
+      `${LEGACY_DUPLICATE_ALLOWLIST.size} frozen legacy duplicate numbers; ` +
+      `forward era ${forwardFiles.length} migrations)`
   );
 }
 

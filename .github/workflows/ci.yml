@@ -17,7 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Full history: the frozen-path check diffs base..head.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -27,10 +30,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # CHANGE invariant. validate:migrations checks that the chain matches the
+      # manifest, but that alone is defeatable: edit a frozen migration, then
+      # regenerate the manifest, and the content check passes again. This check
+      # fails on the diff instead, so a coordinated migration+manifest edit
+      # cannot land through a normal change. There is no override flag —
+      # changing the frozen era is auditable repository maintenance.
+      - name: Frozen legacy era is immutable (change invariant)
+        run: |
+          node scripts/check-frozen-paths.mjs \
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}" \
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+
       - name: Validate skills
         run: npm run validate:skills
 
-      - name: Validate migrations
+      # Also enforces the B′ migration eras: the frozen legacy set by exact
+      # file set + content hash, and forward-era structure/version uniqueness.
+      - name: Validate migrations (frozen legacy integrity + forward era)
         run: npm run validate:migrations
 
       - name: Validate model price catalog
@@ -84,7 +101,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Cross-tenant / RLS suite
+      # Rebuilds a fresh database through BOTH eras — frozen legacy chain then
+      # forward-only era — and runs the cross-tenant suite against the result,
+      # so CI keeps testing the schema an environment actually composes.
+      - name: Fresh rebuild (legacy → forward) + cross-tenant / RLS suite
         run: npm run test:rls
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/gu_os_test

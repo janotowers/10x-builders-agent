@@ -270,6 +270,25 @@ The older Cursor rule used TDD proportional to risk. The underlying idea survive
 | **Independent verification pattern.** For high-risk changes, prefer verification that is sufficiently independent of the implementer: deterministic tests/CI, a separate reviewer or human, or an isolated verification-agent pass. This is a development-process pattern, not a requirement to build Gu OS as a multi-agent product. |
 |---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 
+**Writing the required tests is part of implementation, not a separate permission.** When a slice's approved Definition of Done names verification — unit, integration, contract, workflow/eval/replay, E2E, security, migration or other proportional evidence — creating, updating and running it falls inside the coding agent's autonomous scope. An implementation that omits the evidence its DoD requires is incomplete, not merely untested.
+
+## 11.5 Four verification layers
+
+Verification happens at four distinct levels. They answer different questions and must not be collapsed into one another; in particular, a later layer never substitutes for an earlier one.
+
+| **Layer**              | **Runs against**                        | **Answers**                                                        |
+|------------------------|-----------------------------------------|--------------------------------------------------------------------|
+| Local tests            | the developer's / agent's machine        | Does the implementation behave as intended while building?         |
+| CI                     | a clean, disposable environment          | Is it deterministically correct independent of any one machine?    |
+| Hosted verification    | a real hosted environment (e.g. staging) | Does the deployed system behave in a real project?                 |
+| Post-release           | production, after a release              | Did the release do what was expected, and is it safe to widen?     |
+
+The deterministic suites remain the release-gating evidence. Hosted and post-release verification add environment-specific evidence — schema/migration state, deployed security invariants, contract and pilot evidence a slice's DoD requires — that a disposable CI environment cannot establish.
+
+Destructive verification is bound to the layer it was designed for. A suite that rebuilds a database from scratch belongs to CI and local use and must never be pointed at a hosted environment.
+
+Tool- and environment-specific execution detail for these layers lives in the operational playbook ([`release-path-playbook.md`](release-path-playbook.md)), not in this methodology.
+
 # 12. Human + coding-agent operating model
 
 The methodology is designed for strong agent autonomy without collapsing human authority. The human role shifts upward from typing code toward product intent, specification quality, architecture trade-offs, risk acceptance and outcome review. This does not mean humans disappear from implementation; it means human attention is concentrated where judgment and accountability have the highest leverage.

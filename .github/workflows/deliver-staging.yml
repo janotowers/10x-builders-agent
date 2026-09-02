@@ -1,0 +1,166 @@
+# Controlled delivery to staging.
+#
+# Manual dispatch is the trigger, but NOT the authority. Before any hosted
+# mutation the workflow proves:
+#
+#   exact main-line SHA + green required CI for that SHA → eligible
+#
+# rather than `workflow_dispatch → eligible`. Otherwise anyone able to run the
+# workflow could deliver an arbitrary branch — including code that never passed
+# CI — into a hosted database.
+#
+# Delivery and verification are separate jobs: "the migration applied" and "the
+# environment behaves" are different claims.
+#
+# Requires a GitHub Environment named `staging`; see
+# docs/development/release-path-playbook.md for the exact human setup. Its
+# deployment branch policy must permit only `main`, which is the enforcement
+# layer GitHub itself applies on top of the check below. If the environment or
+# its configuration is absent, this workflow fails closed.
+name: Deliver to staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full 40-char commit SHA to deliver (must be on main with green CI)."
+        required: true
+        type: string
+      apply:
+        description: "Write to staging? Leave false for a dry-run."
+        type: boolean
+        default: false
+      verify:
+        description: "Run hosted verification after delivery."
+        type: boolean
+        default: true
+
+# Workflow-level serialization: a second dispatch queues behind the first
+# rather than cancelling it. A running database migration must never be
+# cancelled merely because another delivery was requested.
+concurrency:
+  group: deliver-staging
+  cancel-in-progress: false
+
+jobs:
+  eligibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ inputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # APPLY requires the SHA to BE current main HEAD with green CI for that
+      # exact SHA. Ancestry alone is too weak for a forward-only migration path:
+      # a historical commit may carry a stale forward era. A dry-run cannot
+      # mutate hosted state, so it relaxes to main-line ancestry.
+      - name: Check delivery eligibility
+        run: |
+          node scripts/check-delivery-eligibility.mjs \
+            --sha "${{ inputs.sha }}" \
+            --branch main \
+            --workflow CI \
+            ${{ inputs.apply && '--require-head --require-green' || '' }}
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+  deliver:
+    needs: eligibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Attach GitHub Environment protection rules (required reviewers) here, and
+    # restrict its deployment branches to `main`.
+    environment: staging
+    # Job-level serialization for the MUTATING path specifically.
+    concurrency:
+      group: deliver-staging-mutate
+      cancel-in-progress: false
+
+    steps:
+      # Deliver exactly the commit that was proven eligible — not the branch tip,
+      # which may have moved since.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Never deliver a chain whose frozen era has drifted.
+      - name: Validate migrations
+        run: npm run validate:migrations
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Closes the approval-time race. The eligibility job ran BEFORE this job
+      # waited on the environment's protection rules; `main` may have advanced
+      # during that wait. Revalidate immediately before the hosted write and
+      # fail closed rather than silently delivering the older SHA.
+      - name: Revalidate eligibility immediately before the write
+        if: ${{ inputs.apply }}
+        run: |
+          node scripts/check-delivery-eligibility.mjs \
+            --sha "${{ inputs.sha }}" \
+            --branch main \
+            --workflow CI \
+            --require-head --require-green
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # Least privilege: the generic path needs only the database connection.
+      # No privileged Supabase credential is provided here; slice-specific
+      # verification that genuinely needs one adds it under its own governance.
+      - name: Deliver forward-era migrations
+        run: npm run deliver:forward -- --env staging ${{ inputs.apply && '--apply' || '' }}
+        env:
+          GUOS_TARGET_ENV: staging
+          GUOS_TARGET_PROJECT_REF: ${{ vars.GUOS_STAGING_SUPABASE_PROJECT_REF }}
+          GUOS_TARGET_DATABASE_URL: ${{ secrets.GUOS_STAGING_SUPABASE_DATABASE_URL }}
+
+  verify:
+    needs: deliver
+    if: ${{ inputs.verify }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      # Read-only and non-destructive. `npm run test:rls` is local-only forever —
+      # it drops the public, storage and auth schemas.
+      - name: Hosted verification
+        run: npm run verify:hosted -- --env staging --json staging-evidence.json
+        env:
+          GUOS_TARGET_ENV: staging
+          GUOS_TARGET_PROJECT_REF: ${{ vars.GUOS_STAGING_SUPABASE_PROJECT_REF }}
+          GUOS_TARGET_SUPABASE_URL: ${{ vars.GUOS_STAGING_SUPABASE_URL }}
+          GUOS_TARGET_PUBLISHABLE_KEY: ${{ vars.GUOS_STAGING_SUPABASE_PUBLISHABLE_KEY }}
+          GUOS_TARGET_DATABASE_URL: ${{ secrets.GUOS_STAGING_SUPABASE_DATABASE_URL }}
+
+      - name: Upload staging evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-evidence-${{ inputs.sha }}
+          path: staging-evidence.json
+          if-no-files-found: warn

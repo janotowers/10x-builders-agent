@@ -43,6 +43,7 @@ A later implementation can invalidate an outdated Technical Plan, but it cannot 
 | Product intent | [`product/PRD.md`](product/PRD.md) | Gu / Gu OS product truth: why, for whom, scope, product model, domains and success direction |
 | Principles & design doctrine | [`principles/gu-os-principles-and-design-doctrine.md`](principles/gu-os-principles-and-design-doctrine.md) | Values → principles → invariants → patterns → decision/mechanism/evidence discipline |
 | Development methodology | [`development/agentic-product-software-development-methodology.md`](development/agentic-product-software-development-methodology.md) | Human + coding-agent development lifecycle and artifact governance |
+| Development & release execution | [`development/release-path-playbook.md`](development/release-path-playbook.md) | Operational playbook: migration eras, CI, staging delivery, hosted verification, production release path |
 | Product sequencing | [`roadmap/gu-os-evolution-roadmap.md`](roadmap/gu-os-evolution-roadmap.md) | Current Gu OS sequencing, dependencies, graduation evidence and deferred horizons |
 | Current stack and migrations | [`architecture.md`](architecture.md) | Concise description of implemented runtime |
 | Integrated architecture | [`manuals/architecture-manual.md`](manuals/architecture-manual.md) | Main map of current and future subsystems |

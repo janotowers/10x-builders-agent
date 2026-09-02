@@ -26,6 +26,8 @@ import { Client } from "pg";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.resolve(__dirname, "..", "supabase", "migrations");
+/** Forward-only era (B′) — applied after the frozen legacy chain. */
+const FORWARD_DIR = path.resolve(__dirname, "..", "forward", "supabase", "migrations");
 
 const RLS_VIOLATION = "42501";
 const FK_VIOLATION = "23503";
@@ -85,14 +87,32 @@ async function rebuildSchema(client: Client): Promise<void> {
 
   await applySqlFile(client, path.join(__dirname, "platform-shim.sql"));
 
+  // Era 1 — the frozen legacy chain, applied by ordered-apply in full-filename
+  // order (what disambiguates the duplicated numeric prefixes).
   const entries = await fs.readdir(MIGRATIONS_DIR);
   const migrations = entries.filter((n) => n.endsWith(".sql")).sort();
   for (const name of migrations) {
     await applySqlFile(client, path.join(MIGRATIONS_DIR, name));
   }
 
+  // Era 2 — the forward-only era (B′), applied after it in timestamp order, so
+  // a fresh rebuild exercises `legacy → forward` exactly as a real environment
+  // composes them. Legitimately empty until the first post-cutover migration;
+  // the loop is the contract, not the count.
+  let forward: string[] = [];
+  try {
+    forward = (await fs.readdir(FORWARD_DIR)).filter((n) => n.endsWith(".sql")).sort();
+  } catch (error) {
+    if ((error as { code?: string }).code !== "ENOENT") throw error;
+  }
+  for (const name of forward) {
+    await applySqlFile(client, path.join(FORWARD_DIR, name));
+  }
+
   await applySqlFile(client, path.join(__dirname, "grants.sql"));
-  console.log(`  applied platform shim + ${migrations.length} migrations + grants`);
+  console.log(
+    `  applied platform shim + ${migrations.length} legacy + ${forward.length} forward migrations + grants`
+  );
 }
 
 /**

@@ -1,0 +1,8 @@
+Intentionally empty.
+
+The forward-only migration era starts here. It stays empty until the first
+genuine post-cutover migration — there is deliberately no artificial baseline
+file, because supabase_migrations.schema_migrations must be created by real
+work, not by a placeholder.
+
+Create the first one with:  npm run migration:new -- <name>
