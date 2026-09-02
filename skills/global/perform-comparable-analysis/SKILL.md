@@ -223,7 +223,7 @@ En Ajustes → **Paso 3 · Análisis de comparables** (`comparables_in_progress`
 | N3 | Misma habilidad | **Sin muestra defendible — no avanzar a precio** — permanece en paso + `waiting_internal` + `notify_user` |
 | N4 | **Probar paso** (habilidad raíz) | Mismos escenarios; valida cierre del hito, no sustituye N3 |
 
-Si N1 está en verde pero el pill del paso dice **Falló N3/N4**, revisa el panel del último run (tools faltantes, `persist` sin ejecutar, transición bloqueada por gate). Ver `PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE` y [`testing-framework.md`](../../docs/operational-cases/testing-framework.md) §7.
+Si N1 está en verde pero el pill del paso dice **Falló N3/N4**, revisa el panel del último run (tools faltantes, `persist` sin ejecutar, transición bloqueada por gate). Ver `PATTERN_COMPARABLES_INSUFFICIENT_NO_ADVANCE` y [`testing-framework.md`](../../../docs/operational-cases/testing-framework.md) §7.
 
 ## Antipatrones
 

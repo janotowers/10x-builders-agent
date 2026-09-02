@@ -21,7 +21,7 @@ isProject: false
 
 ## Contexto de arquitectura
 
-El agente se ejecuta en Node dentro de la API (`[apps/web/src/app/api/chat/route.ts](apps/web/src/app/api/chat/route.ts)`) llamando a `[runAgent](packages/agent/src/graph.ts)`. No existe hoy ningún puente al terminal del IDE; los comandos correrán en **el mismo proceso/host que sirve Next.js** (útil en desarrollo local o despliegue self-hosted con control del servidor).
+El agente se ejecuta en Node dentro de la API ([`apps/web/src/app/api/chat/route.ts`](../../apps/web/src/app/api/chat/route.ts)) llamando a [`runAgent`](../../packages/agent/src/graph.ts). No existe hoy ningún puente al terminal del IDE; los comandos correrán en **el mismo proceso/host que sirve Next.js** (útil en desarrollo local o despliegue self-hosted con control del servidor).
 
 ```mermaid
 flowchart LR
@@ -44,13 +44,13 @@ flowchart LR
 - **Inputs**: `prompt` (string, obligatorio): comando a ejecutar en el **shell detectado del servidor**:
   - En Unix / WSL: `bash -lc <prompt>`.
   - En Windows: primero intenta Git Bash (`C:\Program Files\Git\bin\bash.exe`); si no existe, hace fallback a PowerShell (`powershell -NoProfile -Command <prompt>`).
-- **Proceso**: tras aprobación HITL (riesgo `high` → `[toolRequiresConfirmation](packages/types/src/catalog.ts)`), ejecutar un comando one-shot y devolver stdout/stderr y código de salida como texto/JSON en el `ToolMessage`.
+- **Proceso**: tras aprobación HITL (riesgo `high` → `toolRequiresConfirmation`), ejecutar un comando one-shot y devolver stdout/stderr y código de salida como texto/JSON en el `ToolMessage`.
 - **Working directory**: por defecto `process.cwd()` del servidor, o override opcional vía env (ver abajo). No se persiste `cwd` entre llamadas salvo que más adelante se amplíe el diseño.
 
 ## Riesgo y confirmación
 
-- `risk: "high"` en el catálogo → el flujo existente en `[toolExecutorNode](packages/agent/src/graph.ts)` ya pide confirmación antes de invocar la herramienta.
-- Añadir un caso en `[buildConfirmationMessage](packages/agent/src/graph.ts)` para `bash` que muestre un resumen seguro (p. ej. truncar `prompt` largo) y el `terminal`.
+- `risk: "high"` en el catálogo → el flujo existente en [`toolExecutorNode`](../../packages/agent/src/graph.ts) ya pide confirmación antes de invocar la herramienta.
+- Añadir un caso en [`buildConfirmationMessage`](../../packages/agent/src/graph.ts) para `bash` que muestre un resumen seguro (p. ej. truncar `prompt` largo) y el `terminal`.
 
 ## Guardrails recomendados (fail-closed)
 
@@ -64,16 +64,16 @@ flowchart LR
 
 | Área            | Archivo                                                                            | Cambio                                                                                                                                                                                                                                                                 |
 | --------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Catálogo        | `[packages/agent/src/tools/catalog.ts](packages/agent/src/tools/catalog.ts)`       | Nueva entrada `id`/`name` `bash`, `risk: "high"`, `parameters_schema` con `terminal` y `prompt`.                                                                                                                                                                      |
-| Zod             | Esquema en `[packages/agent/src/tools/adapters.ts](packages/agent/src/tools/adapters.ts)` (mismo patrón que el resto de tools) | `terminal` opcional (default `"default"`), `prompt` string con `.min(1).max(32000)`.                                                                                                                                                                                    |
-| Runtime         | `[packages/agent/src/tools/adapters.ts](packages/agent/src/tools/adapters.ts)`       | Importar `executeBashCommand` desde `bashExec.ts`; registrar tool `bash` si `isToolAvailable`.                                                                                                                                                                            |
-| Ejecución       | `[packages/agent/src/tools/bashExec.ts](packages/agent/src/tools/bashExec.ts)`     | `execFile` contra el shell resuelto (`bash`/Git Bash o PowerShell según plataforma), capturar stdout/stderr, exit code; `BASH_TOOL_ENABLED`, `BASH_TOOL_CWD`, timeout, maxBuffer; devolver JSON serializable (incluye `shell` activo).                              |
-| UX confirmación | `[packages/agent/src/graph.ts](packages/agent/src/graph.ts)`                       | `case "bash"` en `buildConfirmationMessage`.                                                                                                                                                                                                                           |
-| Onboarding      | `[apps/web/src/app/onboarding/wizard.tsx](apps/web/src/app/onboarding/wizard.tsx)` | Incluir `"bash"` en el array `TOOL_IDS` usado en `handleFinish`, igual que el resto de herramientas persistibles (hoy el array no incluye todos los del catálogo; al menos `bash` debe estar en la lista para que el toggle del paso “Herramientas” guarde el estado). |
-| Docs de entorno | `[apps/web/.env.example](apps/web/.env.example)`                                   | Documentar `BASH_TOOL_ENABLED` y `BASH_TOOL_CWD`.                                                                                                                                                                                                                      |
+| Catálogo        | [`packages/agent/src/tools/catalog.ts`](../../packages/agent/src/tools/catalog.ts)       | Nueva entrada `id`/`name` `bash`, `risk: "high"`, `parameters_schema` con `terminal` y `prompt`.                                                                                                                                                                      |
+| Zod             | Esquema en [`packages/agent/src/tools/adapters.ts`](../../packages/agent/src/tools/adapters.ts) (mismo patrón que el resto de tools) | `terminal` opcional (default `"default"`), `prompt` string con `.min(1).max(32000)`.                                                                                                                                                                                    |
+| Runtime         | [`packages/agent/src/tools/adapters.ts`](../../packages/agent/src/tools/adapters.ts)       | Importar `executeBashCommand` desde `bashExec.ts`; registrar tool `bash` si `isToolAvailable`.                                                                                                                                                                            |
+| Ejecución       | [`packages/agent/src/tools/bashExec.ts`](../../packages/agent/src/tools/bashExec.ts)     | `execFile` contra el shell resuelto (`bash`/Git Bash o PowerShell según plataforma), capturar stdout/stderr, exit code; `BASH_TOOL_ENABLED`, `BASH_TOOL_CWD`, timeout, maxBuffer; devolver JSON serializable (incluye `shell` activo).                              |
+| UX confirmación | [`packages/agent/src/graph.ts`](../../packages/agent/src/graph.ts)                       | `case "bash"` en `buildConfirmationMessage`.                                                                                                                                                                                                                           |
+| Onboarding      | [`apps/web/src/app/onboarding/wizard.tsx`](../../apps/web/src/app/onboarding/wizard.tsx) | Incluir `"bash"` en el array `TOOL_IDS` usado en `handleFinish`, igual que el resto de herramientas persistibles (hoy el array no incluye todos los del catálogo; al menos `bash` debe estar en la lista para que el toggle del paso “Herramientas” guarde el estado). |
+| Docs de entorno | [`apps/web/.env.example`](../../apps/web/.env.example)                                   | Documentar `BASH_TOOL_ENABLED` y `BASH_TOOL_CWD`.                                                                                                                                                                                                                      |
 
 
-No hace falta migración SQL: las herramientas se habilitan por fila en `user_tool_settings` y el UI ya itera `[TOOL_CATALOG](apps/web/src/app/settings/settings-form.tsx)`.
+No hace falta migración SQL: las herramientas se habilitan por fila en `user_tool_settings` y el UI ya itera [`TOOL_CATALOG`](../../apps/web/src/app/settings/settings-form.tsx).
 
 ## Pruebas manuales sugeridas
 
