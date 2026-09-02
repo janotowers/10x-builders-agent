@@ -1,6 +1,6 @@
 # Gu OS Agentic Product & Software Development Methodology
 
-> **Version:** v0.2.3  
+> **Version:** v0.3.0  
 > **Status:** Canonical development methodology  
 > **Scope:** Tool-agnostic operating method for humans + coding agents  
 > **Intended repo path:** `docs/development/agentic-product-software-development-methodology.md`
@@ -100,6 +100,8 @@ Learn / Evolve</strong></th>
 
 This is not a waterfall. Artifacts can be revised when evidence reveals a contradiction. The key discipline is that the correction goes to the artifact that owns the defect, rather than letting implementation silently become the new truth.
 
+**Where the planning layer sits.** The chain above says which artifacts exist. The **Vertical Slice** is where humans plan against it: Slices are prioritized, sized, made ready and planned into a short **Execution Cycle** (Section 12.1), after which the coding agent derives Tasks just in time and executes autonomously inside approved scope. Planning a Slice into a Cycle schedules already-approved work; it adds no approval gate to the chain.
+
 # 4. Artifact architecture: which document owns which truth?
 
 The methodology treats documentation as an architecture of responsibilities. Multiple documents are useful only when each owns a different question. A document that has no distinct ownership role should usually be merged, linked or retired.
@@ -111,7 +113,9 @@ The methodology treats documentation as an architecture of responsibilities. Mul
 | Behavior truth              | Feature / Business Spec                                        | Exactly what must the feature/capability do and not do, including happy/unhappy paths, business contracts and acceptance scenarios?           |
 | Architecture decision truth | Architecture Analysis + ADR                                    | What boundaries/trade-offs matter and what consequential design choice was accepted/rejected?                                                 |
 | Implementation intent       | Implementation Spec / Technical Plan                           | How will the approved behavior/architecture be realized in this system?                                                                       |
-| Execution work              | Tasks / Vertical Slices                                        | What is the smallest ordered, verifiable implementation work and what is its Definition of Done?                                              |
+| Slice contract truth        | Slice Plan (`slice-plan.md`, per initiative)                   | Which bounded increments prove the approved behavior, in what order, and for each: inspectable outcome, acceptance contract, Definition of Done, Release Scope and readiness? |
+| Execution work              | Just-in-time agent Task plan (agent runtime / PR body / commit sequence) | What ordered implementation Tasks realize a planned Slice? Derived at execution time; not canonical Markdown truth.                  |
+| Live execution state        | GitHub (branches, commits, PRs, CI, merge state, Actions, environment approvals) | Where is the work right now, and what did it actually produce?                                                       |
 | Implemented reality         | Code, schemas, migrations, configuration                       | What actually runs now? Implemented reality can invalidate an outdated plan but cannot silently redefine product intent or accepted behavior. |
 | Verification truth          | Tests, evals, replay/simulation, readiness, evidence           | What evidence proves the implementation satisfies the Spec and invariants?                                                                    |
 | Release truth               | Release record / flags / migration state / canary evidence     | What was released, where, under what controls, and how can it be rolled back?                                                                 |
@@ -166,6 +170,24 @@ For consequential non-trivial work, the Feature / Business Spec is the governing
 | **Spec-driven means behavior-driven, not bureaucracy.** A Spec should be proportional to risk and ambiguity. The goal is not to produce more Markdown; it is to prevent a coding agent from silently resolving product questions inside implementation. |
 |---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 
+## 7.1 Granularity: a Spec is not a backlog unit
+
+The word "Feature" in the artifact name describes the *kind* of truth owned, not the *size* of the increment. A Feature / Business Spec is a **behavioral contract and may be capability-sized**. It is not necessarily an Agile Feature, a User Story, or a backlog item, and a single Spec may govern behavior that is realized through several Vertical Slices.
+
+| **Artifact** | **Owns**                                                                                          |
+|--------------|---------------------------------------------------------------------------------------------------|
+| Spec         | The intended behavior — what the capability must do and not do, at capability scope.               |
+| Slice        | A bounded increment that proves part of that behavior, or a required enabling capability.          |
+| Task         | The implementation steps that realize one Slice, derived just in time by the coding agent.         |
+
+Consequences:
+
+- Do not force a 1:1 mapping between a Spec, a Slice and a unit of planning.
+- Do not wait for an entire large Spec to be implemented before meaningful behavior can be verified. Each Slice declares the subset of governing behavior it proves (Section 10.1).
+- Do not restate Spec behavior inside a Slice contract. The Slice references the governing acceptance scenarios; the Spec remains their owner.
+
+The current artifact name is retained. A future rename such as *Business Behavior Spec* remains deliberately deferred (Section 22); this Methodology resolves the ambiguity by rule rather than by renaming approved artifacts.
+
 **Canonical authoring template:** [`templates/feature-business-spec-template.md`](templates/feature-business-spec-template.md). The template is a scaffold, not a second source of truth: the copied and approved Spec owns intended behavior. Sections may be omitted when genuinely irrelevant; detail remains proportional to consequence, ambiguity and risk.
 
 # 8. Architecture Analysis and ADRs
@@ -192,9 +214,15 @@ The Technical Plan is the bridge from approved behavior/architecture into implem
 | Exit criterion     | The implementation can be decomposed into ordered, independently verifiable slices without requiring each coding session to re-decide architecture.                                                                                 |
 | Contradiction rule | Implementation evidence may invalidate the Plan. Record the contradiction; fix Plan/ADR/Spec as appropriate. Do not let code become an undocumented design fork.                                                                    |
 
-# 10. Tasks and vertical slices
+**Boundary with the Slice Plan.** The Technical Plan owns technical design, governing technical decisions and implementation sequencing. It may carry a **concise slice index** — identifier, title, governing decisions, dependencies, one-line intent — so the sequencing logic stays readable. It does **not** own the detailed Slice contracts: acceptance traceability, Slice Acceptance Contract, Definition of Done / evidence, Release Scope, estimates or readiness belong to the Slice Plan (Section 10). Avoid duplicated, competing Definition-of-Done or scope definitions across the two artifacts; where both mention a Slice, the Slice Plan is the detail owner and the Technical Plan links to it.
+
+# 10. Vertical slices and Tasks
+
+**The Vertical Slice is the primary unit of human planning; the Task is the unit of agent execution.** Humans prioritize, assess readiness, plan and hold accountability at Slice level. Coding agents decompose a Slice into Tasks at execution time.
 
 Tasks are execution units, not miniature Specs. The preferred shape is a vertical slice: a small end-to-end increment that can demonstrate a real contract and produce evidence. Horizontal plumbing is acceptable when it is itself a prerequisite contract, but broad layers with no demonstrable behavior should be treated cautiously.
+
+**Rolling wave / progressive elaboration.** Future Slices may exist at contract level — enough to sequence, size and prioritize them — while detailed Tasks are created near execution time. Defining every Task for every future Slice up front is waste: the repository, the dependencies and the evidence available all change before the work starts.
 
 | **Aspect**             | **Rule**                                                                                                                                                                                                                                                                  |
 |------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -203,6 +231,102 @@ Tasks are execution units, not miniature Specs. The preferred shape is a vertica
 | Ordering               | Work top-to-bottom unless dependencies allow parallelization. Parallel work should be isolated enough to avoid conflicting ownership of the same contracts/files.                                                                                                         |
 | Checkpointing          | Implement -\> verify -\> checkpoint -\> continue is a useful playbook pattern, not a universal law. Use small commits/checkpoints when they improve review, rollback and agent context.                                                                                   |
 | Agent autonomy         | Once the slice is bounded and governing artifacts are approved, a coding agent may implement broadly, inspect the repo and repair local defects without asking for line-by-line permission. It must not cross the approved scope or silently redefine governing behavior. |
+
+## 10.1 The durable Slice contract
+
+Each non-trivial Slice has a durable contract recorded in the initiative's Slice Plan. The contract exists to make the Slice plannable, traceable, autonomously executable and verifiable — not to restate the Spec or pre-empt implementation.
+
+| **Element**                        | **What it must answer**                                                                                                                                                          |
+|------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Slice ID / title                   | How is this Slice referred to across the Slice Plan, PRs and evidence?                                                                                                            |
+| Type                               | Behavior, enabling capability, operational infrastructure, or repair (below).                                                                                                     |
+| Inspectable outcome / value        | What observable business, user, system or enabling capability is true when this Slice is complete?                                                                                |
+| Governing behavior / traceability  | Which Spec(s), acceptance scenarios, ADR(s), technical decisions or invariants govern this increment?                                                                             |
+| Slice Acceptance Contract          | What must be demonstrably true for this increment specifically, and by what evidence type?                                                                                        |
+| Dependencies                       | What must already be satisfied, and which prerequisites are still outstanding?                                                                                                     |
+| Definition of Done / evidence      | What evidence closes this Slice, beyond the initiative's shared baseline?                                                                                                          |
+| Release Scope                      | RS-1 / RS-2 / RS-3 (Section 14.2) — the Done boundary this Slice claims.                                                                                                          |
+| Estimate                           | Elapsed agent-assisted engineering time to evidence-ready (Section 10.4).                                                                                                          |
+| Estimate confidence / uncertainty  | High / Medium / Low, plus the driver of the uncertainty where useful.                                                                                                             |
+| Material risk                      | Security, tenancy, authority, data, external-effect, flag/compatibility and rollback impact. *None* is a valid answer; silence is not.                                             |
+| Readiness                          | The Definition of Ready result (Section 10.2) and any blocking gap.                                                                                                                |
+
+**Type.** A minimal vocabulary, deliberately not a taxonomy:
+
+| **Type**                   | **Meaning**                                                                                                                             |
+|----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| Behavior                   | Proves part of an approved Spec's intended behavior.                                                                                    |
+| Enabling capability        | A prerequisite contract other Slices depend on; it is itself independently verifiable. This is the disciplined form of "horizontal plumbing" the table above allows. |
+| Operational infrastructure | Development, verification, delivery or observability capability rather than product behavior.                                            |
+| Repair                     | Correction of a defect whose owning artifact has been classified (Section 15).                                                          |
+
+**Inspectable outcome.** State in one concise form what will be observably true. Avoid implementation-only outcomes such as "create tables" or "implement service layer" **unless that technical capability is itself the independently verifiable enabling contract** — in which case say what it guarantees, not what it constructs.
+
+**Acceptance traceability.** Where the governing Spec already carries identifiers such as `AC-*`, `EC-*` or `HP-*`, use those identifiers. A Slice normally proves a **subset**, and identifying that subset is what allows meaningful behavior to be verified without waiting for a whole Spec to be implemented. A Slice may additionally carry **slice-local assertions** required to prove the increment. For enabling Slices with no direct user/business acceptance scenario, traceability points instead to the governing ADR, technical decision, invariant or prerequisite capability. Do not duplicate the Spec inside the Slice Plan.
+
+**Slice Acceptance Contract.** A concise statement of the inspectable outcome, the relevant governing acceptance scenarios, the relevant happy path, the relevant unhappy paths and edge cases, and any slice-local assertions. Each item names an appropriate **evidence type** — deterministic test, contract test, integration test, eval, replay/simulation, hosted verification, or source/operational evidence — without prescribing implementation detail prematurely.
+
+**Proportionality.** A Slice contract should normally stay close to one screen in spirit. There is no hard page limit: high-risk security, tenancy, authority or migration evidence can legitimately need more. Unusual length is a **granularity signal** — check whether the Slice should be split — not a formatting violation. Tiny or local work does not need a Slice contract at all unless consequence or risk justifies one (Section 18).
+
+## 10.2 Definition of Ready
+
+Definition of Ready is a **readiness condition** of a Slice, not a workflow column and not an approval gate. It answers one question: can this Slice be planned and then executed autonomously without a human having to resolve a consequential question mid-flight?
+
+Proportionally to the Slice's consequence, a Slice is **READY** when:
+
+- governing behavior / architectural intent is sufficiently approved;
+- no unresolved consequential product question exists inside the Slice scope;
+- the Slice Acceptance Contract is stated and testable;
+- the required evidence can be produced — or creating the verification capability is explicitly part of the Slice;
+- Release Scope is declared;
+- security / tenancy / authority / data / external-effect impact has been assessed;
+- estimate and estimate confidence are recorded;
+- a human Accountable / DRI is named;
+- dependencies satisfy the rule below.
+
+**Dependencies.**
+
+| **Case** | **Dependency situation**                                                                                                                                                          | **Effect**                                                                     |
+|----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------|
+| A        | Satisfied.                                                                                                                                                                        | READY.                                                                          |
+| B        | Controlled by our team, planned earlier in the same Execution Cycle, and expected with sufficient confidence to satisfy its contract before this Slice starts.                     | MAY be READY for planning, but **not EXECUTABLE** until actually satisfied.     |
+| C        | Unresolved and outside our control.                                                                                                                                               | NOT READY.                                                                      |
+
+There is deliberately no generic "planned but externally blocked" exception: case C is simply not ready.
+
+**READY is not EXECUTABLE.** A Slice may be Ready and Planned yet not executable, because a prerequisite is not actually satisfied or execution capacity is not available. See Section 12.1.
+
+**Not required for READY:** detailed Tasks, an exact file list, an exact migration number, a branch name, or a commit structure. Those are execution-time concerns (Section 10.3).
+
+## 10.3 Just-in-time Task planning
+
+JIT Task planning is the **first execution activity** after a Slice is READY, PLANNED and EXECUTABLE — not before. This is the rolling-wave boundary.
+
+The coding agent produces a concise **visible execution plan** before substantial implementation. *Visible does not mean separately approved*: Section 12 keeps Tasks and code edits outside routine human approval. The plan normally identifies:
+
+- ordered Tasks and their dependencies;
+- expected repository areas / files;
+- the verification instruments to create and run;
+- migration impact, if any;
+- flag / compatibility impact;
+- assumptions being proceeded under;
+- known blockers.
+
+**Task-level estimates are not a required human planning artifact.** An agent may use them internally. The calibration and planning target is the Slice, not the Task.
+
+**JIT Tasks do not become canonical Markdown truth.** Their expected homes are the agent runtime / coding session, the PR body where useful, and the commit sequence where appropriate (Section 19).
+
+## 10.4 Slice estimation
+
+The initial estimation concept is **elapsed agent-assisted engineering time to evidence-ready**.
+
+- Do **not** estimate historical manual coding time.
+- Do **not** assume a productivity multiplier such as "10x".
+- Do **not** introduce Story Points yet.
+
+Use simple ranges — for example `≤ 0.5 day`, `~1 day`, `1–2 days`, `2–3 days`, `3–5 days` — together with an estimate confidence of High / Medium / Low and a concise uncertainty driver where useful.
+
+**An estimate is a planning signal, not evidence.** It never contributes to a Definition of Done, and it is never presented as a measured result. Calibration of estimate bias and variance is handled empirically in Section 17.1.
 
 # 11. Cross-cutting context artifacts: Design and repo operating instructions
 
@@ -303,10 +427,86 @@ The methodology is designed for strong agent autonomy without collapsing human a
 | Architecture / ADR      | Agent inspects repo and compares alternatives; humans accept durable trade-offs.                                          | Architecture/product approval proportional to consequence. |
 | Technical Plan          | Agent can derive plan; engineering owner reviews feasibility, security, compatibility and rollback.                       | Plan approval when risk/size warrants.                     |
 | Tasks / Vertical Slices | Agent decomposes the approved Plan into bounded, ordered, independently verifiable execution units; human/engineering owner reviews when decomposition materially changes scope, risk, dependencies or release strategy. | No separate approval by default; review proportional to consequence. |
+| Execution Cycle planning | System/agent proposes READY Slices for the upcoming Cycle from roadmap priority, dependencies, capacity, estimates, risk, continuity and available Accountable; human/team confirms inclusion, the Accountable / DRI and any planning adjustment. | Planning confirmation. **Not an additional approval gate** — see 12.1. |
+| Task decomposition (JIT) | Agent derives ordered Tasks once the Slice is Ready, Planned and Executable, and publishes a visible execution plan before substantial implementation. | Visible, not approved. |
 | Implementation          | Agent can write/refactor/test within bounded scope; humans may pair/review hotspots.                                      | No routine approval for every edit.                        |
 | Verification            | Agent runs tests/evals/replay/readiness and gathers evidence; humans review failures, risk and business acceptance.       | Evidence gate.                                             |
 | Release                 | Agent may prepare release/canary/rollback steps; authorized human/system policy controls consequential release.           | Release authority.                                         |
 | Observe / learn         | Agent mines incidents/outcomes and proposes changes; humans govern promotion/policy/code changes.                         | Governed improvement.                                      |
+
+## 12.1 Execution Cycle and human accountability
+
+An **Execution Cycle** is a short, tool-agnostic planning time box, analogous in spirit to a Scrum Sprint. Approximately one week is a reasonable operational starting point; **the length is not a methodology invariant** and should be revised from evidence.
+
+The Execution Cycle is a short-horizon *planning container*. It does **not** replace product roadmap sequencing, architecture dependencies, evidence gates or release authority.
+
+**How a Cycle is formed.** The system or agent may propose READY Slices for the upcoming Cycle based on roadmap priority, dependencies, capacity, estimates, risk, continuity of work in progress, and the availability of an Accountable / DRI. The human or team then reviews the proposed Cycle.
+
+| **Status**   | **Meaning**                                                                                                                                     |
+|--------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
+| `Proposed`   | System-proposed for the upcoming Execution Cycle.                                                                                                |
+| `Planned`    | Human/team-confirmed as part of the Execution Cycle, including the named human Accountable / DRI.                                                |
+| `Executable` | A **derived condition**: Planned, required prerequisites actually satisfied, and execution/WIP capacity available. Normally a condition, not a workflow column. |
+
+The confirmation step determines which Slices are included, who is Accountable, and any explicit planning adjustment. After it, autonomous execution resumes: **a Planned Slice may start automatically once it becomes Executable, and no further routine human approval is required before Agent Planning.**
+
+| **Selecting a Slice into an Execution Cycle schedules already-approved work. Cycle planning is not an additional approval gate.** It does not re-approve product behavior, architecture, Slice scope, agent Tasks or code edits. The human authority boundaries defined in Section 12 and in the repository operating contract remain intact and unchanged. |
+|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
+The term `commit` / `committed` is deliberately **not** used for Slice planning status: it collides with its Git meaning and implies an immutable delivery promise that cycle planning does not make.
+
+**Human Accountable / DRI is not the AI execution actor.** Every non-trivial Slice has one named human Accountable, even when one person currently fills several roles.
+
+| **Role**                 | **Responsible for**                                                                                                                                                                                                                     |
+|--------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Human Accountable / DRI  | Outcome; escalation response; coordination of external dependencies; participation in consequential decisions; ensuring the Slice reaches its governed Done boundary.                                                                     |
+| AI / coding agent        | Inspecting; planning Tasks; implementing; refactoring; creating required tests; running tests; diagnosing; repairing; branching; committing; pushing; creating and updating PRs; responding to CI failures; gathering verification evidence — inside approved scope and repository policy. |
+
+The Accountable is **not** redefined as a line-by-line code approver.
+
+**When execution must return to human planning.** These are the existing agent-autonomy and escalation principles, consolidated rather than replaced. Human re-planning or decision is required when execution discovers:
+
+- a genuine contradiction between governing sources;
+- a missing consequential product decision;
+- a missing consequential architecture decision;
+- that intended behavior would materially change;
+- that architecture or domain boundaries would materially change;
+- that a security / tenancy / authority boundary would change;
+- that external-effect authority would increase;
+- that release strategy or accepted risk would materially change;
+- that an assumed dependency is not actually available;
+- non-convergence after bounded repair attempts (Section 15);
+- an explicit human or release authority gate;
+- that the Slice estimate has become materially invalid.
+
+For estimate invalidation, roughly **2× the upper estimate bound** is a documented initial practical trigger, not a rigid invariant. The purpose is to surface material planning failure, not to interrupt execution for ordinary variance.
+
+## 12.2 Slice execution-state model
+
+The following is a **conceptual** model of how a Slice progresses. It describes stages of work, not a mandatory board layout.
+
+```text
+Backlog
+  -> This Cycle / To Do        (Proposed -> Planned)
+  -> Agent Planning
+  -> Implementing
+  -> Local Verify / Repair
+  -> PR / CI / Merge
+  -> Hosted Verify
+  -> Release / Post-release    (only when the Slice's Release Scope requires it)
+  -> Done
+```
+
+- `Proposed` and `Planned` are planning statuses **inside** This Cycle / To Do.
+- `Executable` is normally a derived condition, not a column.
+- This model does **not** require every state to become a physical column in any future board.
+- Git commits are events/metadata, not workflow states. Branch creation is likewise an event, not necessarily a column.
+
+**Orthogonal flags, not linear columns:** `Blocked`, `Needs Human Attention`, `Expedite`. A Slice keeps its actual execution stage while any of these flags is active.
+
+**This vocabulary is scoped exclusively to Slice execution.** Do not reuse it for document status, roadmap increment status, architecture/capability status or doctrine status — each of those already has its own vocabulary, and conflating them would make status statements ambiguous.
+
+Progressing through `Local Verify`, `PR / CI / Merge` and `Hosted Verify` is *progress through* the verification layers of Section 11.5. A state model never substitutes for a layer: reaching a later state does not retire the evidence owed to an earlier one.
 
 # 13. Model judgment vs deterministic engineering in development
 
@@ -349,6 +549,38 @@ Verification should be designed before or alongside implementation whenever the 
 | User/business workflow                    | Acceptance scenarios first                          | Observable happy/unhappy paths and evidence contract satisfied           |
 | Operational release                       | Replay/simulation/readiness + canary where relevant | Same runtime contracts pass; release evidence and rollback path exist    |
 
+## 14.2 Release Scope and the Done boundary
+
+The four verification layers of Section 11.5 stay exactly as they are. **Release Scope** is a separate, Slice-level declaration: how far a specific Slice must reach before it can be Done. It composes with the layers; it does not replace, collapse or reorder them.
+
+| **Release Scope**    | **Required evidence**                                                                                                                                                                                                                     | **Typical Slices**                                                                     |
+|----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| **RS-1 Deterministic** | Appropriate local verification plus the required deterministic CI evidence. **No hosted-environment claim is made.**                                                                                                                       | Refactors; deterministic verification capability; local contract fixture work.          |
+| **RS-2 Hosted**        | RS-1, plus the hosted/staging evidence required by the Slice Acceptance Contract.                                                                                                                                                          | Hosted schema/security/tenancy capability; shadow behavior; pilot capability.            |
+| **RS-3 Production**    | RS-2, plus explicit production authorization, the required production preflight, controlled deploy/release, post-release verification, and canary / flags / observability / rollback discipline as applicable.                             | User-visible external effects; authority transfer; consequential production evolution.   |
+
+Rules that keep the boundary honest:
+
+- **Production is required for Done only for RS-3.**
+- **Release Scope is declared at READY**, not chosen at completion. It must not be silently lowered so that a Slice can be called Done.
+- **Increasing Release Scope mid-flight requires the appropriate human authority** (Section 16); it is not an agent decision.
+- **Behavior/authority mode is not Release Scope.** `shadow` — flag-off, no external effects — is a behavior and authority mode; a shadow Slice will often be RS-2. Do not conflate the two.
+
+### Done
+
+A Slice is **Done** when:
+
+- its Slice Acceptance Contract is satisfied;
+- its applicable Definition of Done is satisfied;
+- the required verification evidence exists;
+- the evidence required by its declared Release Scope is satisfied;
+- no unresolved consequential blocker remains.
+
+The Done record makes explicit: the **environment reached**, the **Release Scope achieved**, the **material assertions verified**, and the **material things intentionally not exercised**.
+
+| **Merged is not Done. CI green is not Done. Deployed to staging is not Done.** Each is evidence at one layer. Done is the satisfaction of the Slice's own acceptance contract, Definition of Done and declared Release Scope. |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
 # 15. Failure classification and owning-artifact repair
 
 Verification failure is routed to the artifact that owns the defect. This is a repo-native Gu OS idea and a key extension beyond simple Spec -\> Plan -\> Code loops.
@@ -377,6 +609,19 @@ For reported bugs, the default sequence is: reproduce -\> isolate -\> classify c
 | Regression evidence | What test/eval/scenario proves the failure is fixed and adjacent contracts remain safe?                                                          |
 | Document            | Did the accepted behavior, architecture or control change? If yes, reconcile the owning Spec/ADR/plan/docs.                                      |
 
+## 15.2 Intake of bugs, unexpected work and incidents
+
+The classification and owning-artifact repair model above is unchanged. This subsection adds only the **operational intake** question that classification does not answer: how does unplanned work enter the Slice Plan and the Execution Cycle?
+
+| **Situation**                                                            | **Intake rule**                                                                                                                                                                                                                                                                     |
+|--------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **A.** Defect inside the active Slice's own scope                        | Not a new backlog item by default. Repair inside the Slice and add regression evidence. The Slice is **not Done** until corrected.                                                                                                                                                    |
+| **B.** Pre-existing regression discovered incidentally                   | Do not silently absorb it into the current Slice. Record it as repair work — a repair-type Slice or a proportional bug item — and classify the owning artifact (Section 15). Schedule it explicitly, unless fixing it immediately is clearly justified and stated.                     |
+| **C.** Apparent "bug" that is actually ambiguous or changed behavior     | Route to the governing Spec / product artifact. The coding agent must not silently decide intended product behavior. It blocks the affected acceptance scenarios, not necessarily the whole Slice.                                                                                    |
+| **D.** Production, security, tenancy or data-integrity incident          | **Expedite.** May interrupt the normal Cycle. A named human is accountable. Contain, classify, repair, verify; a follow-up owning-artifact correction is required when applicable, and the governance in Section 16 applies to the fix.                                               |
+
+`Blocked`, `Needs Human Attention` and `Expedite` remain orthogonal flags (Section 12.2), not stages.
+
 # 16. Review, approval and release
 
 Human review should be concentrated at consequential boundaries rather than sprayed across every agent action. Approval intensity is proportional to product, security, data, business and operational risk.
@@ -388,6 +633,8 @@ Human review should be concentrated at consequential boundaries rather than spra
 | Data/tenancy/security change                     | Authorization, RLS, secrets, data ownership/scope, external side effects. | Security/architecture review + explicit verification/rollback.             |
 | Workflow/case authority change                   | Transitions, approvals, evidence, durable state, external commitments.    | Business/architecture approval + simulation/replay/readiness.              |
 | Production code/policy self-improvement proposal | Generated from incidents/evals/outcomes.                                  | PR + tests/evals + human release authority; never silent runtime mutation. |
+
+**Relationship to Release Scope.** A Slice's declared Release Scope (Section 14.2) says how far it must reach; this table says who must authorize it. RS-1 and RS-2 are ordinarily satisfied inside the governance a Slice already carries. **RS-3 always engages release authority**, and raising a Slice from RS-1 or RS-2 to RS-3 mid-flight is a human decision at the boundary its change class implies.
 
 Release safely means retaining a credible rollback path: additive migrations where practical, feature flags, versioned behavior, canary/staged rollout and preserved prior artifacts. “Generated quickly” is not a reason to make consequential change irreversible.
 
@@ -405,6 +652,26 @@ After release, product and engineering outcomes feed the next cycle. Gu OS alrea
 | Measure           | Did the change improve the intended outcome without unacceptable regressions/cost?                                |
 | Retain / rollback | Keep evidence-linked successful changes; revert or revise unsuccessful ones.                                      |
 
+## 17.1 Calibrating agent-assisted development
+
+The same loop applies to how we plan, not only to what we ship. Slice estimation (Section 10.4) is a new practice with no local evidence base, so the first **3–5 real Slices** record a minimal empirical dataset.
+
+| **#** | **Recorded**                                                                                                       |
+|-------|----------------------------------------------------------------------------------------------------------------------|
+| 1     | Initial estimate range + confidence, **frozen at READY / planning time** and not edited afterwards.                  |
+| 2     | Actual agent-assisted engineering elapsed time to evidence-ready.                                                    |
+| 3     | Human/external wait time, recorded **separately** from (2).                                                          |
+| 4     | Total calendar elapsed time from execution start to evidence-ready / Done — preferably derived from timestamps.      |
+| 5     | Re-planning events: count and concise cause, mapped where possible to the failure classification in Section 15.      |
+| 6     | Reopen / rework after Done, and the artifact that owned the defect.                                                  |
+| 7     | Declared Release Scope versus the Release Scope actually required.                                                   |
+| 8     | Whether new verification capability had to be created inside the Slice.                                              |
+
+Deliberately **not** collected yet: story points, velocity, burndown, a productivity multiplier, or per-Task time as a required metric.
+
+| **What 3–5 Slices can and cannot show.** They can begin calibrating estimate bias and variance. They cannot establish a trustworthy productivity multiplier, and must not be reported as one. |
+|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
 # 18. Which artifacts are required? Proportionality matrix
 
 The methodology must not turn every two-line fix into a paperwork exercise. Artifact depth scales with ambiguity, consequence and cross-cutting impact.
@@ -417,6 +684,8 @@ The methodology must not turn every two-line fix into a paperwork exercise. Arti
 | Architecture/platform change     | Cross-cutting runtime/data/security/tooling constraint.                     | Architecture Analysis + ADR + Technical Plan; affected Specs if behavior changes.                             | PRD only if product intent/scope changes.                   |
 | Workflow/case definition         | Durable responsibility, transitions, approvals, evidence or dynamic work.   | Business/Feature Spec + workflow implementation spec + verification/replay/readiness + versioned publication. | Architecture/ADR when new primitive/boundary is introduced. |
 | High-risk security/data change   | Tenancy, authorization, privacy, credentials, destructive/external effects. | Spec/ADR/plan + explicit security evidence and rollback.                                                      | Human approval mandatory at relevant authority boundary.    |
+
+**Slice contracts are proportional too.** A Slice contract (Section 10.1) is required for work that is planned, sequenced, sized and closed with evidence — the "normal feature" row and heavier. Tiny refactors, typos and local bug fixes do not get one unless consequence or risk justifies it; a change note plus the relevant checks remains sufficient. Conversely, an architecture/platform or high-risk security/data Slice may legitimately carry a longer contract, because the evidence it must name is itself larger.
 
 # 19. Documentation governance and authority
 
@@ -434,6 +703,33 @@ The repo already has an authority order in docs/README.md. This methodology pres
 
 | **Current repo note.** docs/README.md already classifies brief.md and plan.md as historical/reference. architecture.md remains the concise implemented-runtime overview, while manuals/architecture-manual.md and topic plans carry integrated/current-target design. The later documentation audit will decide how the new PRD changes that map; this Methodology intentionally does not pre-empt that audit. |
 |----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
+## 19.1 Authority boundaries across repo, GitHub, agent runtime and a future control plane
+
+Development work now produces truth in more than one system. Each system owns a different kind, and none may silently redefine another's.
+
+| **System**                                    | **Owns**                                                                                                                                            |
+|-----------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
+| Repository canonical documents                | Product intent; behavior contracts; architecture decisions; implementation intent; **durable Slice contracts**; this Methodology.                    |
+| GitHub                                        | Branches; commits; PRs; CI; merge state; Actions; environment approvals; the deployment evidence it generates.                                       |
+| Agent runtime / coding environment            | Just-in-time Task decomposition; implementation execution; local verification execution; agent-local execution context.                              |
+| Future Development Control Plane / Board      | Projection and orchestration of the above: Cycle planning, Accountable / DRI visibility, human attention, workflow visualization, metrics/learning. |
+
+A future board **projects** existing truth. It must not become a competing source of truth for data another system already owns. The board itself remains deliberately undesigned here (Section 22).
+
+## 19.2 Transitional execution register
+
+No control plane exists yet. Until one does, a **minimal transitional register** may live alongside the Slice Plan, recording only:
+
+- the Execution Cycle a Slice belongs to;
+- the human Accountable / DRI;
+- the initial estimate and confidence, by reference where useful;
+- final actual metrics and retrospective outcome **after** Done (Section 17.1).
+
+Any such register must state explicitly that GitHub remains the authority for branch/commit/PR/CI/merge/Actions state, that the agent runtime owns JIT Tasks and execution, that the register is **not** authority for live state, and that it should shrink or disappear once a proper control plane exists.
+
+| **Do not track live execution in Markdown.** Editing a document to move a Slice through `Implementing -> Local Verify -> PR / CI` is not a tracking mechanism; it manufactures a stale second copy of state that GitHub and the agent runtime already own. |
+|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 
 # 20. Worked example: Relationship Operations / Lead Opportunity Case
 
@@ -468,7 +764,10 @@ They share principles: explicit intent, versioning, evidence, bounded authority,
 | PRD file path/name                                                              | The current canonical product-intent path is `docs/product/PRD.md`; this Methodology does not redefine that path.                                                                                                                                                            |
 | Whether brief.md is moved/renamed/archived                                      | The repo already treats it as historical/reference; audit links and provenance before changing paths.                                                                                                                                                                        |
 | Whether Gu OS needs one PRD or product + initiative PRDs                        | Methodology defines roles; documentation audit/product synthesis should choose minimum non-duplicative structure.                                                                                                                                                            |
-| Remaining artifact templates / playbooks beyond Feature / Business Spec         | The canonical Feature / Business Spec template now exists at `docs/development/templates/feature-business-spec-template.md`. PRD, Initiative Brief, ADR, Technical Plan, Slice/Task, Verification and reusable playbook templates remain incremental deliverables pulled by concrete need. |
+| Remaining artifact templates / playbooks                                        | Canonical templates now exist for the Feature / Business Spec (`docs/development/templates/feature-business-spec-template.md`) and the Slice Plan (`docs/development/templates/slice-plan-template.md`). PRD, Initiative Brief, ADR, Technical Plan, Verification and reusable playbook templates remain incremental deliverables pulled by concrete need. |
+| Whether `Feature / Business Spec` is eventually renamed                         | Section 7.1 resolves the granularity ambiguity by rule. A rename such as *Business Behavior Spec* would touch the authority map, this Methodology, the Doctrine, the templates and four approved Specs for a purely lexical gain, so it is deliberately deferred until there is a reason beyond wording. |
+| Development Control Plane / Board design                                        | Section 19.1 fixes only the authority boundary a future board must respect. Its data model, surface and interaction design are out of scope here and require their own product and architecture decisions. |
+| Durable Execution Cycle length                                                  | Approximately one week is an operational starting point (Section 12.1), not an invariant. Revise it from the calibration evidence of Section 17.1 rather than by preference. |
 | Final distribution of agent instructions across AGENTS.md, IDE rules and Skills | apps/web/AGENTS.md + apps/web/CLAUDE.md already provide a tracked app-scoped layer. The remaining design decision is whether to add a concise root-wide AGENTS.md + CLAUDE.md adapter and which additional rules belong in nested/path-scoped files versus on-demand Skills. |
 | Principles & Design Doctrine wording                                            | Owned by the canonical Doctrine at `docs/principles/gu-os-principles-and-design-doctrine.md`; future changes follow the same artifact-governance method defined here.                                                                                                          |
 
@@ -478,17 +777,25 @@ Adoption should itself be brownfield. Do not stop engineering to rewrite all his
 
 | **Order** | **Action**                                                                                                                                                                                                                                                                                                                                                                   |
 |-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Step 1    | Maintain this Methodology (current v0.2.3) as the canonical development method, including the four-layer agent instruction architecture and proportional test/eval-first guidance.                                                                                                                                                                                                                             |
+| Step 1    | Maintain this Methodology (current v0.3.0) as the canonical development method, including the four-layer agent instruction architecture, proportional test/eval-first guidance, and the Slice / Execution Cycle planning model.                                                                                                                                                                                                                             |
 | Step 2    | Audit current docs, strategic documents and agent-instruction files using a matrix: retain canonical / contributes to PRD / link from PRD / merge / supersede / historical/archive / agent-adapter-only. Treat apps/web/AGENTS.md and apps/web/CLAUDE.md as tracked app-scoped adapters.                                                                                     |
 | Step 3    | Create the canonical Gu / Gu OS Product PRD from reconciled existing material, not from a blank page.                                                                                                                                                                                                                                                                        |
 | Step 4    | Maintain the concise Principles & Design Doctrine as the canonical decision-doctrine artifact, using the adjudicated Registry, this Methodology and product intent as governed inputs rather than duplicating their responsibilities.                                                                                                      |
-| Step 5    | Grow Templates / Playbooks incrementally. The canonical Feature / Business Spec template is now adopted; add PRD, Initiative Brief, ADR, Technical Plan, Slice/Task, Verification and reusable procedure templates only when concrete work benefits from standardization.                                                                                                                                                                                                                                             |
+| Step 5    | Grow Templates / Playbooks incrementally. The canonical Feature / Business Spec and Slice Plan templates are now adopted; add PRD, Initiative Brief, ADR, Technical Plan, Verification and reusable procedure templates only when concrete work benefits from standardization.                                                                                                                                                                                                                                             |
 | Step 6    | Update docs/README.md authority map; preserve apps/web/AGENTS.md + apps/web/CLAUDE.md as web-scoped adapters; add a concise root AGENTS.md + root CLAUDE.md only for monorepo-wide rules if the audit confirms the need; add further nested/path-scoped IDE rules/Skills only where they reduce noise or encode real procedure; mark superseded/historical files explicitly. |
 | Step 7    | Use one real upcoming Gu OS initiative as a pilot; measure whether the method reduces drift/rework and improves verification, then refine.                                                                                                                                                                                                                                   |
 
 # 23.1 v0.2.3 update note
 
 v0.2.3 adopts the first canonical Development Template: `docs/development/templates/feature-business-spec-template.md`. It does not change the artifact ownership model. The update makes the existing Feature / Business Spec requirements operational through a reusable scaffold, preserves proportionality (irrelevant sections may be omitted), and explicitly separates the approved Spec from the template itself. Remaining templates/playbooks stay incremental and demand-driven.
+
+# 23.2 v0.3.0 update note
+
+v0.3.0 is a **model change**, not a template addition. It makes the Agile planning layer of the existing Spec-driven, agentic method explicit, without moving any authority.
+
+What it adds: the Vertical Slice as the primary human planning unit (Section 10); the durable Slice contract (10.1); Definition of Ready as a readiness condition (10.2); just-in-time Task planning (10.3); Slice estimation (10.4); the Execution Cycle with `Proposed` / `Planned` / `Executable` and the human Accountable / DRI (12.1); the conceptual Slice execution-state model (12.2); Release Scope RS-1/RS-2/RS-3 and the Done boundary (14.2); intake of bugs and incidents (15.2); development calibration metrics (17.1); and the repo / GitHub / agent-runtime / future-board authority boundary (19.1–19.2). It adopts a second canonical template, `docs/development/templates/slice-plan-template.md`.
+
+What it deliberately does **not** change: the artifact ownership model; the four verification layers of Section 11.5; the failure-classification and owning-artifact repair model of Section 15; and the human authority boundaries of Section 12. **Selecting a Slice into an Execution Cycle schedules already-approved work; it is not an additional approval gate.** Section 7.1 resolves Spec granularity by rule; nothing is renamed.
 
 # 24. Working glossary
 
@@ -501,7 +808,16 @@ v0.2.3 adopts the first canonical Development Template: `docs/development/templa
 | Architecture Analysis                | Evidence-based exploration of system boundaries, alternatives, risks and design space.                                                                                                                   |
 | ADR                                  | Architecture Decision Record; concise accepted/rejected consequential decision with context and consequences.                                                                                            |
 | Implementation Spec / Technical Plan | Detailed translation of approved behavior/architecture into implementation design.                                                                                                                       |
-| Vertical Slice                       | Small end-to-end increment that can be demonstrated and verified against a real contract.                                                                                                                |
+| Vertical Slice                       | Small end-to-end increment that can be demonstrated and verified against a real contract. The **primary unit of human planning**: prioritized, sized, made ready, planned into a Cycle and closed with evidence. |
+| Slice Plan                           | Per-initiative canonical artifact owning the durable Slice contracts and their order; not a live execution-state store.                                                                                   |
+| Slice Acceptance Contract            | The concise, testable statement of what one Slice must demonstrate — its inspectable outcome, the governing acceptance scenarios it proves, relevant paths and edge cases, and any slice-local assertions. |
+| Task                                 | An implementation execution unit derived just in time by the coding agent after a Slice is Ready, Planned and Executable; not canonical Markdown truth.                                                    |
+| Execution Cycle                      | Short, tool-agnostic planning time box holding the Slices planned for the near horizon. A planning container, not a sequencing, evidence or release authority.                                             |
+| Proposed / Planned                   | Slice planning statuses inside an Execution Cycle: system-proposed, then human/team-confirmed with a named Accountable / DRI. Deliberately not called *committed*.                                         |
+| Executable                           | Derived condition: a Planned Slice whose prerequisites are actually satisfied and for which execution capacity is available. Ready is not the same as Executable.                                          |
+| Definition of Ready                  | Readiness condition of a Slice — governing behavior approved, acceptance contract testable, evidence achievable, Release Scope declared, risk assessed, estimate recorded, Accountable named, dependencies resolved. Not an approval gate. |
+| Accountable / DRI                    | The named human responsible for a Slice's outcome, escalation response, external coordination and its reaching the governed Done boundary — distinct from the AI actor that executes it.                    |
+| Release Scope                        | Slice-level Done boundary: RS-1 deterministic, RS-2 hosted, RS-3 production. Declared at Ready; composes with the four verification layers rather than replacing them.                                     |
 | Definition of Done                   | Explicit conditions/evidence that make a task/slice complete.                                                                                                                                            |
 | Verification Evidence                | Tests/evals/replay/simulation/readiness/E2E evidence that supports a completion or release claim.                                                                                                        |
 | Owning artifact                      | The document/system that has authority over the type of truth implicated by a failure or change.                                                                                                         |

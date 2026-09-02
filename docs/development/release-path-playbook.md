@@ -1,6 +1,6 @@
 # Gu OS Development & Release Path — operational playbook
 
-> **Version:** v1.0
+> **Version:** v1.1
 > **Status:** Canonical operational playbook for migration, CI, staging delivery and release execution
 > **Artifact role:** Tool- and environment-specific execution detail. The **HOW Gu OS development is governed** lives in [`agentic-product-software-development-methodology.md`](agentic-product-software-development-methodology.md); the deterministic **enforcement** lives in `scripts/` and `.github/workflows/`. This document is the third thing: how to actually run them.
 > **Scope:** does not decide product behavior, architecture or release authority.
@@ -8,7 +8,7 @@
 ## 1. The path
 
 ```
-approved Spec / Architecture / Technical Plan / slice + DoD
+approved Spec / Architecture / Technical Plan / Slice contract + DoD + Release Scope
   → agent implementation, including the tests the DoD requires
   → local verification
   → commit / push
@@ -21,6 +21,8 @@ approved Spec / Architecture / Technical Plan / slice + DoD
 ```
 
 Humans keep product intent, consequential architecture decisions, acceptable risk and production release authority. The coding agent executes autonomously inside approved scope and escalates only on a real contradiction, a missing consequential decision, an architecture or product-behavior change, an authority/risk increase, or a release gate.
+
+**Not every slice runs the whole path.** How far a slice must go is its declared Release Scope (§5). A slice is Done when its own acceptance contract, DoD and Release Scope evidence are satisfied — merged, CI green and delivered-to-staging are each evidence at one layer, not Done.
 
 ## 2. Two migration eras (B′)
 
@@ -106,6 +108,14 @@ Secrets never enter tracked files, logs or command output. `.env.staging.local` 
 
 Hosted and post-release verification are **additional layers**, never substitutes for implementation tests or CI. The deterministic suites remain the release-gating evidence.
 
+**Release Scope selects how far down this list a slice must go; it does not collapse the list.** A slice declares RS-1 (deterministic), RS-2 (hosted) or RS-3 (production) at readiness — see Methodology §14.2 — and each scope *adds* a layer rather than excusing an earlier one. RS-2 does not retire the CI evidence RS-1 owes; RS-3 does not retire either.
+
+| Release Scope | Layers this playbook runs | Sections |
+|---|---|---|
+| RS-1 | local tests + CI | §3, §10 |
+| RS-2 | RS-1 + staging delivery and hosted verification | §6 |
+| RS-3 | RS-2 + the production release path | §7 |
+
 `npm run verify:hosted -- --env staging --groups smoke,schema,security --json evidence.json` is read-only, non-destructive, and emits an evidence file. Slice-specific business assertions belong in that slice's own evidence run, not hardcoded here as universal CI.
 
 ## 6. Staging delivery
@@ -146,6 +156,8 @@ CI green
 ```
 
 There is deliberately **no production delivery workflow**. Creating one is a separate decision requiring its own review.
+
+This path runs **only for RS-3 slices**. A slice that declared RS-1 or RS-2 does not enter it, and raising a slice to RS-3 mid-flight is a human decision at the authority boundary its change class implies — never an agent one.
 
 **Never assume production's migration state.** Production has no `supabase_migrations.schema_migrations` — its chain was applied by hand — so the absence of history proves nothing about what is applied. `npm run preflight:schema` establishes actual state read-only and reports `READY` / `PARTIAL` / `ALREADY APPLIED` / `BLOCKED`.
 

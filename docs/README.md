@@ -16,7 +16,8 @@ When two documents appear to disagree, first determine whether they are trying t
 | What must a consequential feature / business capability do? | Approved Feature / Business Spec for that initiative | Behavior truth: scope/non-goals, actors, state/decision rules, happy/unhappy paths, evidence and acceptance scenarios. |
 | What architecture decision is binding? | Accepted ADR + relevant canonical architecture/topic source | ADRs record consequential decisions; topic sources preserve broader design context. |
 | How is approved behavior intended to be realized? | Current Implementation Spec / Technical Plan | Repo-grounded implementation intent; should translate governing sources rather than silently redesign them. |
-| What is the execution work? | Tasks / Vertical Slices | Ordered, bounded, independently verifiable work with Definition of Done and evidence. |
+| What is the execution work? | The initiative's Slice Plan (`slice-plan.md`) | Durable Slice contracts: ordered, bounded, independently verifiable increments with inspectable outcome, acceptance traceability, Definition of Done, Release Scope, estimate and readiness. Implementation Tasks are derived just in time by the coding agent and are not Markdown truth. |
+| Where is the work right now, and what did it produce? | GitHub | Branches, commits, PRs, CI, merge state, Actions, environment approvals and the deployment evidence they generate. Repo documents do not mirror live execution state. |
 | What actually runs now? | Current code, migrations/config + [`architecture.md`](architecture.md) | Implemented reality. Proposed schema in a plan is not implemented behavior. |
 | Is the implementation correct / ready? | Tests, evals, replay/simulation, readiness and release evidence | Verification truth; an agent saying “done” is not evidence. |
 | What should happen next and in what sequence? | [`roadmap/gu-os-evolution-roadmap.md`](roadmap/gu-os-evolution-roadmap.md) | Sequencing, dependencies, evidence gates and deliberately deferred work. |
@@ -44,6 +45,7 @@ A later implementation can invalidate an outdated Technical Plan, but it cannot 
 | Principles & design doctrine | [`principles/gu-os-principles-and-design-doctrine.md`](principles/gu-os-principles-and-design-doctrine.md) | Values → principles → invariants → patterns → decision/mechanism/evidence discipline |
 | Development methodology | [`development/agentic-product-software-development-methodology.md`](development/agentic-product-software-development-methodology.md) | Human + coding-agent development lifecycle and artifact governance |
 | Development & release execution | [`development/release-path-playbook.md`](development/release-path-playbook.md) | Operational playbook: migration eras, CI, staging delivery, hosted verification, production release path |
+| Development authoring scaffolds | [`development/templates/README.md`](development/templates/README.md) | Canonical templates for the Feature / Business Spec and the per-initiative Slice Plan; scaffolds only, never a second source of truth |
 | Product sequencing | [`roadmap/gu-os-evolution-roadmap.md`](roadmap/gu-os-evolution-roadmap.md) | Current Gu OS sequencing, dependencies, graduation evidence and deferred horizons |
 | Current stack and migrations | [`architecture.md`](architecture.md) | Concise description of implemented runtime |
 | Integrated architecture | [`manuals/architecture-manual.md`](manuals/architecture-manual.md) | Main map of current and future subsystems |
@@ -73,7 +75,8 @@ Discover / Clarify
   -> Feature / Business Spec
   -> Architecture Analysis / ADR (when needed)
   -> Implementation Spec / Technical Plan
-  -> Tasks / Vertical Slices
+  -> Slice Plan (Vertical Slices)
+  -> Just-in-time agent Tasks
   -> Implement
   -> Verify / Classify / Repair
   -> Review / Approve
@@ -82,6 +85,8 @@ Discover / Clarify
 ```
 
 This is **not a waterfall**. Evidence can send the work back to the artifact that owns the defect. Different artifacts do not imply a human approval gate at every boundary; human review is proportional to consequence, as defined by the Development Methodology.
+
+Humans plan at **Vertical Slice** level and hold accountability there; the coding agent derives Tasks at execution time. Selecting a Slice into an Execution Cycle schedules already-approved work — it is not an additional approval gate.
 
 ## Five-plane knowledge pipeline
 
