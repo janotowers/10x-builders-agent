@@ -9,7 +9,7 @@
 > **Technical Plan:** {{link}}  
 > **Development method:** {{Methodology link}}  
 > **Intended repo path:** `{{initiative directory}}/slice-plan.md`  
-> **Artifact role:** Owns the durable Slice contracts for this initiative and their order. It does **not** own intended behavior (the Specs do), technical design (the Technical Plan does), live execution state (GitHub does), or implementation Tasks (the coding agent derives them just in time).
+> **Artifact role:** Owns the durable Slice contracts for this initiative and their order. It does **not** own intended behavior (the Specs do), technical design (the Technical Plan does), pre-PR execution state and implementation Tasks (the agent runtime does), or recorded execution state — branch, commits, PR, CI, merge, Actions, environment approvals (GitHub does).
 
 Authoring guidance lives in [`README.md`](README.md); the governing rules are Methodology §10–§10.4, §12.1–§12.2, §14.2 and §19.1–§19.2. Remove sections that are genuinely irrelevant rather than filling them with boilerplate.
 
@@ -18,6 +18,7 @@ Authoring guidance lives in [`README.md`](README.md); the governing rules are Me
 - The **Spec** owns intended behavior. A Slice owns a bounded increment that proves part of it, or a required enabling capability.
 - Slice contracts are written **rolling wave**: near-term Slices in full, later Slices as stubs carrying enough to sequence, size and prioritize them.
 - **Tasks are not written here.** They are derived by the coding agent once a Slice is Ready, Planned and Executable.
+- **Readiness lives here; execution stage does not.** A Slice can be READY with nobody assigned; the Accountable / DRI is confirmed at planning time and recorded in §5.
 - Nothing in this document is a live status board. See §5.
 
 ## 2. Shared baseline
@@ -32,9 +33,11 @@ State once what every Slice in this initiative inherits, so individual contracts
 
 Order and dependencies at a glance. Detail lives in §4.
 
-| Slice | Title | Type | Depends on | Inspectable outcome (one line) | Release Scope | Status |
+| Slice | Title | Type | Depends on | Inspectable outcome (one line) | Release Scope | Readiness |
 |---|---|---|---|---|---|---|
-| {{SL-n}} | {{title}} | {{behavior / enabling capability / operational infrastructure / repair}} | {{—}} | {{what becomes observably true}} | {{RS-1 / RS-2 / RS-3}} | {{Backlog / Proposed / Planned / … / Done}} |
+| {{SL-n}} | {{title}} | {{behavior / enabling capability / operational infrastructure / repair}} | {{—}} | {{what becomes observably true}} | {{RS-1 / RS-2 / RS-3}} | {{READY / NOT READY}} |
+
+Readiness belongs here because it is part of the durable Slice contract. **Execution stage does not.** There is deliberately no `Status` column carrying `Proposed` / `Planned` / `Agent Planning` / `Implementing` / `Local Verify` / `PR / CI / Merge` / `Hosted Verify` / `Release` / `Done` — those are projected from the agent runtime and GitHub, never transcribed here (Methodology §19.1–§19.2).
 
 ## 4. Slice contracts
 
@@ -52,7 +55,6 @@ Repeat the block below per non-trivial Slice. Keep each close to one screen in s
 - **Estimate:** {{≤ 0.5 day / ~1 day / 1–2 days / 2–3 days / 3–5 days}} elapsed agent-assisted engineering time to evidence-ready
 - **Estimate confidence:** {{High / Medium / Low}} — {{uncertainty driver}}
 - **Material risk:** {{security / tenancy / authority / data / external effects / flag-compatibility / rollback. "None" is a valid answer; silence is not.}}
-- **Accountable / DRI:** {{named human}}
 
 **Slice Acceptance Contract**
 
@@ -71,15 +73,17 @@ Cover proportionally: the happy path, the material unhappy paths, the relevant e
 - {{READY / NOT READY}} — {{blocking gap, if any}}
 - Dependency case: {{A satisfied / B ours, planned earlier this Cycle — Ready but not Executable until satisfied / C outside our control — not Ready}}
 
+Readiness describes the Slice, not the team: a Slice can be READY with nobody assigned. The Accountable / DRI is confirmed when the Slice is planned into a Cycle and is recorded in §5, not here.
+
 ---
 
 ## 5. Execution register (transitional)
 
-Present only while no Development Control Plane exists, and deliberately minimal.
+Present only while no Development Control Plane exists, and deliberately minimal. It records four things: the Cycle, the **confirmed Accountable / DRI** (a planning fact, which is why it is not in the durable contract above), the frozen estimate, and the actual metrics **after** execution.
 
-**This section is not authority for live state.** GitHub owns branches, commits, PRs, CI, merge state, Actions and environment approvals. The agent runtime owns just-in-time Tasks and execution. Do not edit this document to move a Slice through `Implementing → Local Verify → PR / CI`; that manufactures a stale second copy of state. This section should shrink or disappear once a proper control plane exists.
+**This section is not authority for live state, and carries no execution stage.** The agent runtime owns just-in-time Tasks and pre-PR implementation and local verification; GitHub owns branch, commits, PR, CI results, merge state, Actions and environment approvals. Do not edit this document to move a Slice through `Proposed → Planned → Implementing → Local Verify → PR / CI`; that manufactures a stale second copy of state. This section should shrink or disappear once a proper control plane exists.
 
-| Slice | Execution Cycle | Accountable / DRI | Estimate (frozen at Ready) | Actual to evidence-ready | Human/external wait | Calendar elapsed | Re-planning events | Reopened after Done | Declared → required Release Scope | New verification capability built? |
+| Slice | Execution Cycle | Accountable / DRI (confirmed at Planned) | Estimate (frozen at Ready) | Actual to evidence-ready | Human/external wait | Calendar elapsed | Re-planning events | Reopened after Done | Declared → required Release Scope | New verification capability built? |
 |---|---|---|---|---|---|---|---|---|---|---|
 | {{SL-n}} | {{cycle}} | {{name}} | {{range + confidence}} | {{ }} | {{ }} | {{ }} | {{count + cause}} | {{no / artifact that owned the defect}} | {{RS-n → RS-n}} | {{no / what}} |
 

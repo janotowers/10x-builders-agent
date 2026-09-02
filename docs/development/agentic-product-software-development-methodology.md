@@ -1,6 +1,6 @@
 # Gu OS Agentic Product & Software Development Methodology
 
-> **Version:** v0.3.0  
+> **Version:** v0.3.1  
 > **Status:** Canonical development methodology  
 > **Scope:** Tool-agnostic operating method for humans + coding agents  
 > **Intended repo path:** `docs/development/agentic-product-software-development-methodology.md`
@@ -114,8 +114,8 @@ The methodology treats documentation as an architecture of responsibilities. Mul
 | Architecture decision truth | Architecture Analysis + ADR                                    | What boundaries/trade-offs matter and what consequential design choice was accepted/rejected?                                                 |
 | Implementation intent       | Implementation Spec / Technical Plan                           | How will the approved behavior/architecture be realized in this system?                                                                       |
 | Slice contract truth        | Slice Plan (`slice-plan.md`, per initiative)                   | Which bounded increments prove the approved behavior, in what order, and for each: inspectable outcome, acceptance contract, Definition of Done, Release Scope and readiness? |
-| Execution work              | Just-in-time agent Task plan (agent runtime / PR body / commit sequence) | What ordered implementation Tasks realize a planned Slice? Derived at execution time; not canonical Markdown truth.                  |
-| Live execution state        | GitHub (branches, commits, PRs, CI, merge state, Actions, environment approvals) | Where is the work right now, and what did it actually produce?                                                       |
+| Execution work in progress  | Agent runtime / coding environment                             | What ordered Tasks realize a planned Slice, and where has implementation and local verification actually got to before a PR exists? Derived at execution time; not canonical Markdown truth. |
+| Recorded execution state    | GitHub                                                         | Branch, commits, PR, CI results, merge state, Actions runs, environment approvals, and the deployment evidence GitHub itself generates. |
 | Implemented reality         | Code, schemas, migrations, configuration                       | What actually runs now? Implemented reality can invalidate an outdated plan but cannot silently redefine product intent or accepted behavior. |
 | Verification truth          | Tests, evals, replay/simulation, readiness, evidence           | What evidence proves the implementation satisfies the Spec and invariants?                                                                    |
 | Release truth               | Release record / flags / migration state / canary evidence     | What was released, where, under what controls, and how can it be rolled back?                                                                 |
@@ -270,7 +270,7 @@ Each non-trivial Slice has a durable contract recorded in the initiative's Slice
 
 ## 10.2 Definition of Ready
 
-Definition of Ready is a **readiness condition** of a Slice, not a workflow column and not an approval gate. It answers one question: can this Slice be planned and then executed autonomously without a human having to resolve a consequential question mid-flight?
+Definition of Ready is a **readiness condition** of a Slice, not a workflow column and not an approval gate. It answers one question about the Slice itself: is it sufficiently defined, governed, testable, estimable and dependency-classified to be **eligible for Cycle planning**?
 
 Proportionally to the Slice's consequence, a Slice is **READY** when:
 
@@ -281,8 +281,9 @@ Proportionally to the Slice's consequence, a Slice is **READY** when:
 - Release Scope is declared;
 - security / tenancy / authority / data / external-effect impact has been assessed;
 - estimate and estimate confidence are recorded;
-- a human Accountable / DRI is named;
 - dependencies satisfy the rule below.
+
+**Readiness is a property of the Slice, not of the team.** A Slice may be READY before anyone has been assigned to it: the human Accountable / DRI is confirmed when the Slice becomes `Planned`, not when it becomes ready (Section 12.1). Requiring an assignment for readiness would make a well-specified Slice look unready merely because nobody has picked it up yet.
 
 **Dependencies.**
 
@@ -294,9 +295,9 @@ Proportionally to the Slice's consequence, a Slice is **READY** when:
 
 There is deliberately no generic "planned but externally blocked" exception: case C is simply not ready.
 
-**READY is not EXECUTABLE.** A Slice may be Ready and Planned yet not executable, because a prerequisite is not actually satisfied or execution capacity is not available. See Section 12.1.
+**READY is not PLANNED, and PLANNED is not necessarily EXECUTABLE.** Readiness makes a Slice eligible for a Cycle; planning puts it in one and confirms its Accountable; executability additionally requires that prerequisites are actually satisfied and capacity is available. See Section 12.1.
 
-**Not required for READY:** detailed Tasks, an exact file list, an exact migration number, a branch name, or a commit structure. Those are execution-time concerns (Section 10.3).
+**Not required for READY:** an assigned Accountable / DRI, detailed Tasks, an exact file list, an exact migration number, a branch name, or a commit structure. The first is a planning-time concern (Section 12.1); the rest are execution-time concerns (Section 10.3).
 
 ## 10.3 Just-in-time Task planning
 
@@ -427,7 +428,7 @@ The methodology is designed for strong agent autonomy without collapsing human a
 | Architecture / ADR      | Agent inspects repo and compares alternatives; humans accept durable trade-offs.                                          | Architecture/product approval proportional to consequence. |
 | Technical Plan          | Agent can derive plan; engineering owner reviews feasibility, security, compatibility and rollback.                       | Plan approval when risk/size warrants.                     |
 | Tasks / Vertical Slices | Agent decomposes the approved Plan into bounded, ordered, independently verifiable execution units; human/engineering owner reviews when decomposition materially changes scope, risk, dependencies or release strategy. | No separate approval by default; review proportional to consequence. |
-| Execution Cycle planning | System/agent proposes READY Slices for the upcoming Cycle from roadmap priority, dependencies, capacity, estimates, risk, continuity and available Accountable; human/team confirms inclusion, the Accountable / DRI and any planning adjustment. | Planning confirmation. **Not an additional approval gate** — see 12.1. |
+| Execution Cycle planning | System/agent proposes READY Slices for the upcoming Cycle from roadmap priority, dependencies, capacity, estimates, risk and continuity, and may propose an Accountable; human/team confirms inclusion, **confirms the Accountable / DRI** and makes any planning adjustment. | Planning confirmation. **Not an additional approval gate** — see 12.1. |
 | Task decomposition (JIT) | Agent derives ordered Tasks once the Slice is Ready, Planned and Executable, and publishes a visible execution plan before substantial implementation. | Visible, not approved. |
 | Implementation          | Agent can write/refactor/test within bounded scope; humans may pair/review hotspots.                                      | No routine approval for every edit.                        |
 | Verification            | Agent runs tests/evals/replay/readiness and gathers evidence; humans review failures, risk and business acceptance.       | Evidence gate.                                             |
@@ -440,22 +441,24 @@ An **Execution Cycle** is a short, tool-agnostic planning time box, analogous in
 
 The Execution Cycle is a short-horizon *planning container*. It does **not** replace product roadmap sequencing, architecture dependencies, evidence gates or release authority.
 
-**How a Cycle is formed.** The system or agent may propose READY Slices for the upcoming Cycle based on roadmap priority, dependencies, capacity, estimates, risk, continuity of work in progress, and the availability of an Accountable / DRI. The human or team then reviews the proposed Cycle.
+**How a Cycle is formed.** The system or agent may propose READY Slices for the upcoming Cycle based on roadmap priority, dependencies, capacity, estimates, risk and continuity of work in progress, and may propose an Accountable / DRI for each. The human or team then reviews the proposed Cycle.
 
 | **Status**   | **Meaning**                                                                                                                                     |
 |--------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| `Proposed`   | System-proposed for the upcoming Execution Cycle.                                                                                                |
-| `Planned`    | Human/team-confirmed as part of the Execution Cycle, including the named human Accountable / DRI.                                                |
-| `Executable` | A **derived condition**: Planned, required prerequisites actually satisfied, and execution/WIP capacity available. Normally a condition, not a workflow column. |
+| `Proposed`   | A READY Slice proposed for the upcoming Execution Cycle. An Accountable / DRI may be *suggested* here, but is not yet confirmed.                 |
+| `Planned`    | Human/team-confirmed as part of the Execution Cycle, **including a confirmed human Accountable / DRI**.                                          |
+| `Executable` | A **derived condition**: Planned (therefore with a confirmed Accountable), required prerequisites actually satisfied, and execution/WIP capacity available. Normally a condition, not a workflow column. |
 
 The confirmation step determines which Slices are included, who is Accountable, and any explicit planning adjustment. After it, autonomous execution resumes: **a Planned Slice may start automatically once it becomes Executable, and no further routine human approval is required before Agent Planning.**
+
+**A Slice must not become Executable or enter Agent Planning without a confirmed Accountable / DRI.** This is not an extra approval of the work — the work was already approved upstream — it is the guarantee that autonomous execution always has a named human who will answer an escalation, coordinate an external dependency and carry the Slice to its Done boundary. Readiness carries no such requirement (Section 10.2): a Slice can be well specified long before anyone is assigned to it.
 
 | **Selecting a Slice into an Execution Cycle schedules already-approved work. Cycle planning is not an additional approval gate.** It does not re-approve product behavior, architecture, Slice scope, agent Tasks or code edits. The human authority boundaries defined in Section 12 and in the repository operating contract remain intact and unchanged. |
 |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 
 The term `commit` / `committed` is deliberately **not** used for Slice planning status: it collides with its Git meaning and implies an immutable delivery promise that cycle planning does not make.
 
-**Human Accountable / DRI is not the AI execution actor.** Every non-trivial Slice has one named human Accountable, even when one person currently fills several roles.
+**Human Accountable / DRI is not the AI execution actor.** Every non-trivial Slice has one confirmed human Accountable **before it executes**, even when one person currently fills several roles. Assignment happens at planning time, not at readiness time, and it never transfers accountability to the agent that does the work.
 
 | **Role**                 | **Responsible for**                                                                                                                                                                                                                     |
 |--------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -486,8 +489,8 @@ For estimate invalidation, roughly **2× the upper estimate bound** is a documen
 The following is a **conceptual** model of how a Slice progresses. It describes stages of work, not a mandatory board layout.
 
 ```text
-Backlog
-  -> This Cycle / To Do        (Proposed -> Planned)
+Backlog                        (a Slice becomes READY here — no assignment yet)
+  -> This Cycle / To Do        (Proposed -> Planned + confirmed Accountable / DRI)
   -> Agent Planning            (entered when the Slice becomes Executable)
   -> Implementing
   -> Local Verify / Repair
@@ -497,8 +500,9 @@ Backlog
   -> Done
 ```
 
-- `Proposed` and `Planned` are planning statuses **inside** This Cycle / To Do.
-- `Executable` is normally a derived condition, not a column: it is what allows a Planned Slice to enter Agent Planning without further approval.
+- `READY` is an attribute of the Slice (Section 10.2), not a stage: it is what makes a Slice eligible to be proposed for a Cycle.
+- `Proposed` and `Planned` are planning statuses **inside** This Cycle / To Do. The Accountable / DRI may be suggested at `Proposed` and is confirmed at `Planned`.
+- `Executable` is normally a derived condition, not a column: it is what allows a Planned Slice — which therefore already has a confirmed Accountable — to enter Agent Planning without further approval.
 - The stages a Slice actually traverses depend on its declared **Release Scope** (Section 14.2). An RS-1 Slice is Done after `PR / CI / Merge`; it makes no hosted claim and does not pass through the later stages.
 - This model does **not** require every state to become a physical column in any future board.
 - Git commits are events/metadata, not workflow states. Branch creation is likewise an event, not necessarily a column.
@@ -659,7 +663,7 @@ The same loop applies to how we plan, not only to what we ship. Slice estimation
 
 | **#** | **Recorded**                                                                                                       |
 |-------|----------------------------------------------------------------------------------------------------------------------|
-| 1     | Initial estimate range + confidence, **frozen at READY / planning time** and not edited afterwards.                  |
+| 1     | Initial estimate range + confidence, **frozen when the Slice becomes READY** and not edited afterwards.              |
 | 2     | Actual agent-assisted engineering elapsed time to evidence-ready.                                                    |
 | 3     | Human/external wait time, recorded **separately** from (2).                                                          |
 | 4     | Total calendar elapsed time from execution start to evidence-ready / Done — preferably derived from timestamps.      |
@@ -711,23 +715,27 @@ Development work now produces truth in more than one system. Each system owns a 
 
 | **System**                                    | **Owns**                                                                                                                                            |
 |-----------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| Repository canonical documents                | Product intent; behavior contracts; architecture decisions; implementation intent; **durable Slice contracts**; this Methodology.                    |
-| GitHub                                        | Branches; commits; PRs; CI; merge state; Actions; environment approvals; the deployment evidence it generates.                                       |
-| Agent runtime / coding environment            | Just-in-time Task decomposition; implementation execution; local verification execution; agent-local execution context.                              |
-| Future Development Control Plane / Board      | Projection and orchestration of the above: Cycle planning, Accountable / DRI visibility, human attention, workflow visualization, metrics/learning. |
+| Repository canonical documents                | Durable intent and contracts: product intent; behavior contracts; architecture decisions; implementation intent; **durable Slice contracts**; this Methodology. |
+| Agent runtime / coding environment            | The just-in-time Task plan, and the **current pre-PR execution context**: implementation in progress and local verification results that do not yet exist anywhere else. |
+| GitHub                                        | Branch; commits; PR; CI results; merge state; Actions runs; environment approvals; and the deployment evidence GitHub itself generates.               |
+| Future Development Control Plane / Board      | Projection and orchestration across those sources: Cycle planning, Accountable / DRI visibility, human attention, workflow visualization, metrics/learning. |
 
-A future board **projects** existing truth. It must not become a competing source of truth for data another system already owns. The board itself remains deliberately undesigned here (Section 22).
+**No single system owns "where the work is right now."** Before a PR exists, that lives in the agent runtime; once work is pushed, GitHub records it. Asking GitHub for the state of unpushed work, or the repo documents for either, produces a confident wrong answer.
+
+A future board **projects** existing truth across these sources. It must not become an independent competing source of truth for data another system already owns. The board itself remains deliberately undesigned here (Section 22).
 
 ## 19.2 Transitional execution register
 
 No control plane exists yet. Until one does, a **minimal transitional register** may live alongside the Slice Plan, recording only:
 
 - the Execution Cycle a Slice belongs to;
-- the human Accountable / DRI;
+- the **confirmed human Accountable / DRI** — assignment is a planning fact, not part of the durable Slice contract, so until a control plane exists this register is its temporary home;
 - the initial estimate and confidence, by reference where useful;
 - final actual metrics and retrospective outcome **after** Done (Section 17.1).
 
-Any such register must state explicitly that GitHub remains the authority for branch/commit/PR/CI/merge/Actions state, that the agent runtime owns JIT Tasks and execution, that the register is **not** authority for live state, and that it should shrink or disappear once a proper control plane exists.
+That is the whole list. In particular the register does **not** carry the execution stage of a Slice: `Proposed`, `Planned`, `Agent Planning`, `Implementing`, `Local Verify / Repair`, `PR / CI / Merge`, `Hosted Verify` and `Release / Post-release` are projected from their real authorities, never transcribed.
+
+Any such register must state explicitly that GitHub remains the authority for branch/commit/PR/CI/merge/Actions state, that the agent runtime owns JIT Tasks and pre-PR execution, that the register is **not** authority for live state, and that it should shrink or disappear once a proper control plane exists.
 
 | **Do not track live execution in Markdown.** Editing a document to move a Slice through `Implementing -> Local Verify -> PR / CI` is not a tracking mechanism; it manufactures a stale second copy of state that GitHub and the agent runtime already own. |
 |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -778,7 +786,7 @@ Adoption should itself be brownfield. Do not stop engineering to rewrite all his
 
 | **Order** | **Action**                                                                                                                                                                                                                                                                                                                                                                   |
 |-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Step 1    | Maintain this Methodology (current v0.3.0) as the canonical development method, including the four-layer agent instruction architecture, proportional test/eval-first guidance, and the Slice / Execution Cycle planning model.                                                                                                                                                                                                                             |
+| Step 1    | Maintain this Methodology (current v0.3.1) as the canonical development method, including the four-layer agent instruction architecture, proportional test/eval-first guidance, and the Slice / Execution Cycle planning model.                                                                                                                                                                                                                             |
 | Step 2    | Audit current docs, strategic documents and agent-instruction files using a matrix: retain canonical / contributes to PRD / link from PRD / merge / supersede / historical/archive / agent-adapter-only. Treat apps/web/AGENTS.md and apps/web/CLAUDE.md as tracked app-scoped adapters.                                                                                     |
 | Step 3    | Create the canonical Gu / Gu OS Product PRD from reconciled existing material, not from a blank page.                                                                                                                                                                                                                                                                        |
 | Step 4    | Maintain the concise Principles & Design Doctrine as the canonical decision-doctrine artifact, using the adjudicated Registry, this Methodology and product intent as governed inputs rather than duplicating their responsibilities.                                                                                                      |
@@ -798,6 +806,18 @@ What it adds: the Vertical Slice as the primary human planning unit (Section 10)
 
 What it deliberately does **not** change: the artifact ownership model; the four verification layers of Section 11.5; the failure-classification and owning-artifact repair model of Section 15; and the human authority boundaries of Section 12. **Selecting a Slice into an Execution Cycle schedules already-approved work; it is not an additional approval gate.** Section 7.1 resolves Spec granularity by rule; nothing is renamed.
 
+# 23.3 v0.3.1 update note
+
+v0.3.1 is a **coherence correction** to the model adopted in v0.3.0. It introduces no new concept, no new artifact and no new authority.
+
+Three inconsistencies are repaired:
+
+1. **Accountable / DRI was required by the Definition of Ready.** That conflated a property of the *Slice* with a property of the *team*, and made a well-specified Slice look unready merely because nobody had picked it up. Readiness no longer requires an assignment; the Accountable / DRI is confirmed when the Slice becomes `Planned`, and a Slice must not become `Executable` or enter Agent Planning without one (Sections 10.2, 12.1, 12.2).
+2. **The Slice Plan template's index carried a live `Status` column** (`Backlog` / `Proposed` / … / `Done`), contradicting the same document's statement that it is not authority for execution state. The index now carries **Readiness** — part of the durable contract — and the durable per-Slice block no longer carries an assignment; the transitional register in Section 19.2 is the temporary owner of the confirmed Accountable.
+3. **"Where is the work right now" was attributed wholly to GitHub**, which is broader than GitHub's actual authority. Before a PR exists that state lives in the agent runtime; GitHub owns what execution has recorded — branch, commits, PR, CI, merge state, Actions, environment approvals and the deployment evidence it generates (Sections 4, 19.1).
+
+Unchanged: the artifact ownership model, the four verification layers, Release Scope RS-1/RS-2/RS-3 and the Done boundary, failure classification and owning-artifact repair, and the human authority boundaries of Section 12. **Selecting or planning a Slice remains scheduling, not an approval gate.**
+
 # 24. Working glossary
 
 | **Term**                             | **Working definition**                                                                                                                                                                                   |
@@ -814,10 +834,10 @@ What it deliberately does **not** change: the artifact ownership model; the four
 | Slice Acceptance Contract            | The concise, testable statement of what one Slice must demonstrate — its inspectable outcome, the governing acceptance scenarios it proves, relevant paths and edge cases, and any slice-local assertions. |
 | Task                                 | An implementation execution unit derived just in time by the coding agent after a Slice is Ready, Planned and Executable; not canonical Markdown truth.                                                    |
 | Execution Cycle                      | Short, tool-agnostic planning time box holding the Slices planned for the near horizon. A planning container, not a sequencing, evidence or release authority.                                             |
-| Proposed / Planned                   | Slice planning statuses inside an Execution Cycle: system-proposed, then human/team-confirmed with a named Accountable / DRI. Deliberately not called *committed*.                                         |
-| Executable                           | Derived condition: a Planned Slice whose prerequisites are actually satisfied and for which execution capacity is available. Ready is not the same as Executable.                                          |
-| Definition of Ready                  | Readiness condition of a Slice — governing behavior approved, acceptance contract testable, evidence achievable, Release Scope declared, risk assessed, estimate recorded, Accountable named, dependencies resolved. Not an approval gate. |
-| Accountable / DRI                    | The named human responsible for a Slice's outcome, escalation response, external coordination and its reaching the governed Done boundary — distinct from the AI actor that executes it.                    |
+| Proposed / Planned                   | Slice planning statuses inside an Execution Cycle: system-proposed (Accountable may be suggested), then human/team-confirmed **with a confirmed Accountable / DRI**. Deliberately not called *committed*.  |
+| Executable                           | Derived condition: a Planned Slice (so with a confirmed Accountable) whose prerequisites are actually satisfied and for which execution capacity is available. Ready is not Planned; Planned is not necessarily Executable. |
+| Definition of Ready                  | Readiness condition of the Slice itself — governing behavior approved, acceptance contract testable, evidence achievable, Release Scope declared, risk assessed, estimate recorded, dependencies classified. Not an approval gate, and not dependent on anyone being assigned. |
+| Accountable / DRI                    | The human responsible for a Slice's outcome, escalation response, external coordination and its reaching the governed Done boundary — confirmed when the Slice becomes `Planned`, required before it can execute, and distinct from the AI actor that executes it. |
 | Release Scope                        | Slice-level Done boundary: RS-1 deterministic, RS-2 hosted, RS-3 production. Declared at Ready; composes with the four verification layers rather than replacing them.                                     |
 | Definition of Done                   | Explicit conditions/evidence that make a task/slice complete.                                                                                                                                            |
 | Verification Evidence                | Tests/evals/replay/simulation/readiness/E2E evidence that supports a completion or release claim.                                                                                                        |

@@ -33,7 +33,8 @@ Additional PRD, Initiative Brief, ADR, Technical Plan, Verification, and Playboo
 3. Fill Slice contracts using rolling wave: the near-term Slices in full, later Slices at stub level. Detailed Tasks are never written here — the coding agent derives them at execution time.
 4. Reference governing acceptance scenarios by their Spec identifiers (`AC-*`, `EC-*`, `HP-*`). Do not restate Spec behavior.
 5. Declare Release Scope at readiness, not at completion.
-6. Keep the Slice Plan free of live execution state. GitHub owns branch/commit/PR/CI/merge/Actions state; the agent runtime owns Tasks and execution.
+6. Keep the Slice Plan free of execution state. It carries **readiness**, never execution stage: the agent runtime owns Tasks and pre-PR execution, and GitHub owns branch/commit/PR/CI/merge/Actions state.
+7. Record the confirmed Accountable / DRI in the transitional execution register, not in the durable Slice contract — a Slice can be READY before anyone is assigned.
 
 ## Relationship to Agile / backlog work
 

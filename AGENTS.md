@@ -153,7 +153,7 @@ Human review/authority is concentrated at high-leverage boundaries:
 
 There is **no default requirement for human approval of every Task / Vertical Slice or every code edit**. A distinct artifact does not automatically imply a distinct human gate.
 
-**Selecting a Slice into an Execution Cycle schedules already-approved work. Cycle planning is not an additional approval gate** — it does not re-approve product behavior, architecture, Slice scope, agent Tasks or code edits. A Planned Slice may start as soon as it is Executable (prerequisites actually satisfied, capacity available), with no further routine approval before Task planning. What cycle planning does add is a named human Accountable / DRI per Slice, who remains responsible for outcome and escalation without becoming a line-by-line code approver.
+**Selecting a Slice into an Execution Cycle schedules already-approved work. Cycle planning is not an additional approval gate** — it does not re-approve product behavior, architecture, Slice scope, agent Tasks or code edits. A Planned Slice may start as soon as it is Executable (prerequisites actually satisfied, capacity available), with no further routine approval before Task planning. What cycle planning does add is a **confirmed human Accountable / DRI** per Slice — required before the Slice executes, not before it is ready — who remains responsible for outcome and escalation without becoming a line-by-line code approver.
 
 Do not cross approved scope, relax authority, or redefine intended behavior merely to complete the implementation.
 
