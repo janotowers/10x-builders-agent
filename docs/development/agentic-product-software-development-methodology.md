@@ -488,17 +488,18 @@ The following is a **conceptual** model of how a Slice progresses. It describes 
 ```text
 Backlog
   -> This Cycle / To Do        (Proposed -> Planned)
-  -> Agent Planning
+  -> Agent Planning            (entered when the Slice becomes Executable)
   -> Implementing
   -> Local Verify / Repair
   -> PR / CI / Merge
-  -> Hosted Verify
-  -> Release / Post-release    (only when the Slice's Release Scope requires it)
+  -> Hosted Verify             (RS-2 and RS-3 only)
+  -> Release / Post-release    (RS-3 only)
   -> Done
 ```
 
 - `Proposed` and `Planned` are planning statuses **inside** This Cycle / To Do.
-- `Executable` is normally a derived condition, not a column.
+- `Executable` is normally a derived condition, not a column: it is what allows a Planned Slice to enter Agent Planning without further approval.
+- The stages a Slice actually traverses depend on its declared **Release Scope** (Section 14.2). An RS-1 Slice is Done after `PR / CI / Merge`; it makes no hosted claim and does not pass through the later stages.
 - This model does **not** require every state to become a physical column in any future board.
 - Git commits are events/metadata, not workflow states. Branch creation is likewise an event, not necessarily a column.
 
