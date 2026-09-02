@@ -1,6 +1,6 @@
 # CI seed (flexible-workflows plan, Slice 0.5-7 / Technical Plan §25 prerequisite).
-# Runs type-check, lint, skill + migration validation and the chained selftests
-# on every PR and on pushes to main.
+# Runs type-check, lint, skill + migration + documentation-link validation and
+# the chained selftests on every PR and on pushes to main.
 name: CI
 
 on:
@@ -52,6 +52,14 @@ jobs:
 
       - name: Validate model price catalog
         run: npm run validate:model-price-catalog
+
+      # Documentation authority is expressed as links: docs/README.md routes
+      # every question to its owning artifact, so a link that stops resolving
+      # turns the authority map into a confident wrong answer. PR #5 repaired 39
+      # of them; this keeps the repaired state enforceable. Not in `prebuild` —
+      # reference integrity is a CI concern, not a product build concern.
+      - name: Validate documentation links
+        run: npm run validate:doc-links
 
       - name: Type-check
         run: npm run type-check
