@@ -40,14 +40,15 @@ Do not invent commands, APIs, file paths, tables, migrations, environment variab
 
 For consequential non-trivial work, use the development chain defined by the Methodology:
 
-`PRD / parent intent -> Initiative Brief (when useful) -> Feature / Business Spec -> Architecture / ADR (when needed) -> Technical Plan -> Tasks / Vertical Slices -> Implement -> Verify -> Release -> Observe / Learn`
+`PRD / parent intent -> Initiative Brief (when useful) -> Feature / Business Spec -> Architecture / ADR (when needed) -> Technical Plan -> Slice Plan (Vertical Slices) -> just-in-time Tasks -> Implement -> Verify -> Release -> Observe / Learn`
 
 This is not a waterfall.
 
-- A Feature / Business Spec owns intended behavior.
+- A Feature / Business Spec owns intended behavior. It is a behavioral contract and may be capability-sized; it is not a backlog unit, and one Spec may be realized through several Slices.
 - An ADR owns a consequential architecture decision.
-- A Technical Plan translates approved behavior/architecture into implementation intent.
-- Tasks / Vertical Slices own bounded execution work.
+- A Technical Plan translates approved behavior/architecture into implementation intent, and indexes slices and sequencing.
+- The initiative's Slice Plan owns the durable Slice contracts: inspectable outcome, acceptance traceability, Definition of Done, Release Scope, estimate and readiness.
+- Tasks own bounded execution work. They are derived just in time once a Slice is Ready, Planned and Executable, live in the agent runtime / PR / commit sequence, and are not canonical Markdown truth.
 - Code/migrations/config own implemented reality.
 - Tests/evals/readiness/release evidence own verification truth.
 - Implementation may reveal that a governing artifact is wrong or stale; surface and repair the owning artifact instead of creating silent design drift.
@@ -151,6 +152,8 @@ Human review/authority is concentrated at high-leverage boundaries:
 - business acceptance and governed promotion after outcome evidence.
 
 There is **no default requirement for human approval of every Task / Vertical Slice or every code edit**. A distinct artifact does not automatically imply a distinct human gate.
+
+**Selecting a Slice into an Execution Cycle schedules already-approved work. Cycle planning is not an additional approval gate** — it does not re-approve product behavior, architecture, Slice scope, agent Tasks or code edits. A Planned Slice may start as soon as it is Executable (prerequisites actually satisfied, capacity available), with no further routine approval before Task planning. What cycle planning does add is a named human Accountable / DRI per Slice, who remains responsible for outcome and escalation without becoming a line-by-line code approver.
 
 Do not cross approved scope, relax authority, or redefine intended behavior merely to complete the implementation.
 
