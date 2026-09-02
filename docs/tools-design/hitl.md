@@ -77,15 +77,15 @@ flowchart TD
 
 ## Key files changed
 
-- `[packages/agent/package.json](packages/agent/package.json)` — add `@langchain/langgraph-checkpoint-postgres`
-- `[packages/agent/src/checkpointer.ts](packages/agent/src/checkpointer.ts)` — new: singleton `PostgresSaver` factory
-- `[packages/agent/src/graph.ts](packages/agent/src/graph.ts)` — core changes (interrupt, resume, Postgres checkpointer)
+- [`packages/agent/package.json`](../../packages/agent/package.json) — add `@langchain/langgraph-checkpoint-postgres`
+- [`packages/agent/src/checkpointer.ts`](../../packages/agent/src/checkpointer.ts) — new: singleton `PostgresSaver` factory
+- [`packages/agent/src/graph.ts`](../../packages/agent/src/graph.ts) — core changes (interrupt, resume, Postgres checkpointer)
 - Tool adapters (`adapters.ts`, `calendar-adapters.ts`) — HITL solo en `graph.ts`; sin ramas `pending_confirmation` en handlers
-- `[packages/db/src/queries/tool-calls.ts](packages/db/src/queries/tool-calls.ts)` — add `findExistingPendingToolCall` (idempotency)
-- `[apps/web/src/app/api/chat/confirm/route.ts](apps/web/src/app/api/chat/confirm/route.ts)` — call `runAgent({ resumeDecision })` instead of direct tool execution
-- `[apps/web/src/app/chat/page.tsx](apps/web/src/app/chat/page.tsx)` — query `tool_calls` for pending items on load
-- `[apps/web/src/app/chat/chat-interface.tsx](apps/web/src/app/chat/chat-interface.tsx)` — accept `initialPendingConfirmation` prop
-- `[apps/web/src/app/api/telegram/webhook/route.ts](apps/web/src/app/api/telegram/webhook/route.ts)` — resume graph on callback_query, send agent response
+- [`packages/db/src/queries/tool-calls.ts`](../../packages/db/src/queries/tool-calls.ts) — add `findExistingPendingToolCall` (idempotency)
+- [`apps/web/src/app/api/chat/confirm/route.ts`](../../apps/web/src/app/api/chat/confirm/route.ts) — call `runAgent({ resumeDecision })` instead of direct tool execution
+- [`apps/web/src/app/chat/page.tsx`](../../apps/web/src/app/chat/page.tsx) — query `tool_calls` for pending items on load
+- [`apps/web/src/app/chat/chat-interface.tsx`](../../apps/web/src/app/chat/chat-interface.tsx) — accept `initialPendingConfirmation` prop
+- [`apps/web/src/app/api/telegram/webhook/route.ts`](../../apps/web/src/app/api/telegram/webhook/route.ts) — resume graph on callback_query, send agent response
 
 ## Step-by-step changes
 
@@ -299,12 +299,12 @@ Si el LLM pide una tool que **no** está en `lcTools` (integración sin token, t
 
 ### Variables de entorno
 
-- **`DATABASE_URL`**: URI directa Postgres (Supabase → Database → connection string). Si falta, se usa `MemorySaver` (checkpoints en memoria; el resume HITL no sobrevive al reinicio del proceso). Documentado también en `[apps/web/.env.example](apps/web/.env.example)`.
+- **`DATABASE_URL`**: URI directa Postgres (Supabase → Database → connection string). Si falta, se usa `MemorySaver` (checkpoints en memoria; el resume HITL no sobrevive al reinicio del proceso). Documentado también en [`apps/web/.env.example`](../../apps/web/.env.example).
 - **`OPENROUTER_API_KEY`**, **`ENCRYPTION_KEY`**, OAuth Google/GitHub: sin ellos el refresh o el cifrado de tokens pueden fallar de forma independiente del diseño HITL.
 
 ### Chat web: carga de historial
 
-En `[apps/web/src/app/chat/page.tsx](apps/web/src/app/chat/page.tsx)` los mensajes se cargan con **`ORDER BY created_at DESC LIMIT 50`** y luego se invierte el arreglo para mostrarlos en orden cronológico. Así, tras un refresh, el usuario ve los **50 mensajes más recientes** de la sesión activa, no los 50 más antiguos (que podían ocultar el final de la conversación).
+En [`apps/web/src/app/chat/page.tsx`](../../apps/web/src/app/chat/page.tsx) los mensajes se cargan con **`ORDER BY created_at DESC LIMIT 50`** y luego se invierte el arreglo para mostrarlos en orden cronológico. Así, tras un refresh, el usuario ve los **50 mensajes más recientes** de la sesión activa, no los 50 más antiguos (que podían ocultar el final de la conversación).
 
 ### Calendario: texto de confirmación HITL y `calendar_id`
 

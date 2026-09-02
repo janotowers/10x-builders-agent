@@ -196,7 +196,7 @@ Adaptacion de la guia del ensayo *Thin Harness, Fat Skills* al stack Gu OS.
 | Capability packs internos | Roadmap V3+ en `business-brain-evolution-roadmap.md` | Planeado |
 | Implementacion nativa por cuenta sin codigo upstream | Parcial via `account_skills`; no generacion automatica de integraciones | V2+ |
 
-**Disciplina OpenClaw citada en el ensayo:** *"Si me pides algo dos veces, fallaste"* → codificar en skill o automatizar en cron/heartbeat. En Gu OS: usar [`skill-authoring`](../skills/global/skill-authoring/SKILL.md), operational cases y scheduled tasks; no dejar procedimientos repetibles solo en conversacion.
+**Disciplina OpenClaw citada en el ensayo:** *"Si me pides algo dos veces, fallaste"* → codificar en skill o automatizar en cron/heartbeat. En Gu OS: usar [`skill-authoring`](../../skills/global/skill-authoring/SKILL.md), operational cases y scheduled tasks; no dejar procedimientos repetibles solo en conversacion.
 
 ---
 
