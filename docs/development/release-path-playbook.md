@@ -171,6 +171,8 @@ Until the `staging` environment and its configuration exist, the delivery workfl
 
 **Reviewer policy.** Required reviewers on `staging` are an intentionally conservative starting point for v1. They can be relaxed later if evidence supports autonomous staging delivery — that is a governed decision, not a default. **Production release authority remains explicitly human-gated regardless**, and no amount of staging evidence changes that.
 
+Both `deliver` **and** `verify` sit behind that gate, so a delivery costs two approvals. That is known friction, and it is deliberate: `verify-hosted` is read-only *by mechanism*, but the `GUOS_STAGING_SUPABASE_DATABASE_URL` credential it receives is itself write-capable. Moving that credential to an ungated environment would weaken the real authority boundary even though the current script only reads. Removing the second approval therefore requires a genuinely read-only database credential or role for verification, or another design preserving equivalent authority isolation — not merely a second environment without reviewers.
+
 ## 9. Destructive Git experiments run in an isolated worktree
 
 Destructive Git operations — `reset --hard`, `clean -fd`, checkout over local work, deliberate tamper tests of the frozen migration era, freeze/regenerate experiments, or anything that rewrites tracked state to prove a control works — **must not run in the primary working tree** that holds user or implementation work.
