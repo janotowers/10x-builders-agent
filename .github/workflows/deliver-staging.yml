@@ -49,7 +49,7 @@ jobs:
     outputs:
       sha: ${{ inputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # APPLY requires the SHA to BE current main HEAD with green CI for that
       # exact SHA. Ancestry alone is too weak for a forward-only migration path:
@@ -81,11 +81,11 @@ jobs:
     steps:
       # Deliver exactly the commit that was proven eligible — not the branch tip,
       # which may have moved since.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.sha }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -98,7 +98,7 @@ jobs:
         run: npm run validate:migrations
 
       - name: Install Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@v3
         with:
           version: latest
 
@@ -136,10 +136,10 @@ jobs:
     environment: staging
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -159,7 +159,7 @@ jobs:
 
       - name: Upload staging evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: staging-evidence-${{ inputs.sha }}
           path: staging-evidence.json
